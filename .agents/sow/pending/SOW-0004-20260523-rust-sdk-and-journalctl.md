@@ -36,6 +36,8 @@ Unknowns:
 
 - Rust exposes idiomatic SDK APIs and a libsystemd-compatible reader facade, unless a SOW records concrete evidence for a scoped exception.
 - Rust writer and reader pass the shared conformance suite.
+- Rust writer passes live one-writer/multiple-reader tests with stock `journalctl --file` and stock libsystemd readers while the writer is appending.
+- Rust reader passes live-read tests against files actively appended by every repository writer available at this phase, and against stock systemd writers where the environment can provide them without violating repository-boundary rules.
 - Rust journalctl rewrite passes file-backed/query behavior tests.
 - Rust journalctl implements repeated same-field OR matching and the `+` disjunction separator for file-backed behavior.
 - Daemon-only journalctl commands are not implemented and return documented unsupported behavior.
@@ -55,6 +57,7 @@ Current state:
 Risks:
 
 - Rust API decisions still shape later language ports, but the Go writer now shapes the first production-oriented writer contract.
+- Live stock-reader and cross-language reader/writer concurrency is now a mandatory compatibility gate for both Rust writer and Rust reader.
 - CLI behavior drift can multiply across implementations.
 
 ## Pre-Implementation Gate
@@ -69,7 +72,7 @@ Evidence reviewed:
 
 - `.agents/sow/done/SOW-0002-20260523-repo-scaffold-and-rust-source-import.md`
 - `.agents/sow/done/SOW-0003-20260523-systemd-test-inventory-and-shared-harness.md`
-- `.agents/sow/pending/SOW-0005-20260523-go-sdk-and-journalctl.md`
+- `.agents/sow/done/SOW-0005-20260523-go-sdk-and-journalctl.md`
 
 Affected contracts and surfaces:
 
@@ -104,6 +107,8 @@ Validation plan:
 
 - Shared conformance suite passes Rust.
 - Rust package tests pass.
+- Live stock-reader concurrency suite passes Rust writer.
+- Live repository-reader concurrency suite passes Rust reader.
 - journalctl CLI tests pass.
 
 Artifact impact plan:

@@ -249,6 +249,7 @@ Deferred by design:
 ## Followup
 
 - SOW-0010: complete Go reader facade and Go journalctl rewrite after writer-first delivery.
+- SOW-0011: add mandatory live stock-reader and cross-language one-writer/multiple-reader compatibility gate before claiming the Go writer is production-compatible for concurrent reader operation.
 - SOW-0008 or a dedicated writer feature SOW: add compression, Forward Secure Sealing, compact format support, and arbitrary historical-file append coverage.
 - Add writer fault-injection tests for payload-size limits, short writes, disk-full behavior, and corruption recovery expectations.
 - Document goroutine-safety expectations for all language writer APIs consistently.

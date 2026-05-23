@@ -32,6 +32,8 @@ Unknowns:
 - Node.js reader and writer expose idiomatic APIs equivalent to the shared SDK contract, plus a libsystemd-compatible reader facade unless a SOW records concrete evidence for a scoped exception.
 - Node.js uses no native addons and no system journal library linkage.
 - Node.js passes the shared conformance suite.
+- Node.js writer passes live one-writer/multiple-reader tests with stock `journalctl --file` and stock libsystemd readers while the writer is appending.
+- Node.js reader passes live-read tests against files actively appended by every repository writer available at this phase, and against stock systemd writers where the environment can provide them without violating repository-boundary rules.
 - Node.js participates in the cross-language interoperability matrix.
 - Node.js journalctl rewrite passes file-backed/query behavior tests.
 - Node.js journalctl implements repeated same-field OR matching and the `+` disjunction separator for file-backed behavior.
@@ -52,6 +54,7 @@ Risks:
 
 - Native dependency leakage would violate the project goal.
 - Event-loop blocking and Buffer handling can create correctness or performance issues.
+- Live concurrency bugs can make the Node.js writer unreadable by stock readers until close, which is not compatible.
 
 ## Pre-Implementation Gate
 
@@ -98,6 +101,8 @@ Validation plan:
 
 - Shared conformance suite passes Node.js.
 - Package tests pass.
+- Live stock-reader concurrency suite passes Node.js writer.
+- Live repository-reader concurrency suite passes Node.js reader.
 - Dependency audit confirms no native addons.
 
 Artifact impact plan:

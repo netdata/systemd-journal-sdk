@@ -29,7 +29,7 @@ Unknowns:
 
 ### Acceptance Criteria
 
-- Benchmarks cover reading, writing, filtering, journalctl queries, corruption handling where relevant, and cross-language file sizes.
+- Benchmarks cover reading, writing, live one-writer/multiple-reader operation, filtering, journalctl queries, corruption handling where relevant, and cross-language file sizes.
 - Profiling identifies bottlenecks before optimization work.
 - Optimizations are driven by measurements and do not weaken conformance.
 - Performance results are documented with reproducible commands.
@@ -97,6 +97,7 @@ Validation plan:
 - Benchmark commands and results recorded.
 - Conformance suite remains passing.
 - Interoperability matrix remains passing.
+- Live stock-reader and cross-language concurrency matrix remains passing after optimization.
 - Reviewers confirm no correctness tradeoff.
 
 Artifact impact plan:

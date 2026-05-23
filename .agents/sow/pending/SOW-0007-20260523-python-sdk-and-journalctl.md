@@ -32,6 +32,8 @@ Unknowns:
 - Python reader and writer expose idiomatic APIs equivalent to the shared SDK contract, plus a libsystemd-compatible reader facade unless a SOW records concrete evidence for a scoped exception.
 - Python uses no native journal bindings and no system journal library linkage.
 - Python passes the shared conformance suite.
+- Python writer passes live one-writer/multiple-reader tests with stock `journalctl --file` and stock libsystemd readers while the writer is appending.
+- Python reader passes live-read tests against files actively appended by every repository writer available at this phase, and against stock systemd writers where the environment can provide them without violating repository-boundary rules.
 - Python participates in the cross-language interoperability matrix.
 - Python journalctl rewrite passes file-backed/query behavior tests.
 - Python journalctl implements repeated same-field OR matching and the `+` disjunction separator for file-backed behavior.
@@ -52,6 +54,7 @@ Risks:
 
 - Native journal binding leakage would violate the project goal.
 - Pure-Python parsing and GIL behavior can become bottlenecks.
+- Live concurrency bugs can make the Python writer unreadable by stock readers until close, which is not compatible.
 
 ## Pre-Implementation Gate
 
@@ -98,6 +101,8 @@ Validation plan:
 
 - Shared conformance suite passes Python.
 - Package tests pass.
+- Live stock-reader concurrency suite passes Python writer.
+- Live repository-reader concurrency suite passes Python reader.
 - Dependency audit confirms no native journal bindings.
 
 Artifact impact plan:

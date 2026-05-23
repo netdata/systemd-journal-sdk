@@ -36,6 +36,7 @@ Unknowns:
 
 - Go exposes idiomatic reader APIs equivalent to the shared SDK contract.
 - Go exposes a libsystemd-compatible reader facade unless this SOW records concrete evidence for a scoped exception.
+- Go reader passes live-read tests against files actively appended by every repository writer available at this phase, and against stock systemd writers where the environment can provide them without violating repository-boundary rules.
 - Go journalctl rewrite passes file-backed/query behavior tests.
 - Go journalctl implements repeated same-field OR matching and the `+` disjunction separator for file-backed behavior.
 - Daemon-only journalctl commands return documented unsupported behavior.
@@ -57,6 +58,7 @@ Risks:
 
 - Reader facade API may be shaped by writer package layout.
 - journalctl match behavior drift can diverge from the other language implementations.
+- Live reader bugs can incorrectly report corruption or miss entries while a compatible writer is appending.
 
 ## Pre-Implementation Gate
 
@@ -68,7 +70,7 @@ Problem / root-cause model:
 
 Evidence reviewed:
 
-- `.agents/sow/pending/SOW-0005-20260523-go-sdk-and-journalctl.md`
+- `.agents/sow/done/SOW-0005-20260523-go-sdk-and-journalctl.md`
 - `.agents/sow/specs/product-scope.md`
 
 Affected contracts and surfaces:
@@ -108,6 +110,8 @@ Validation plan:
 - Shared conformance suite passes Go for reader and file-backed journalctl behavior.
 - Go package tests pass.
 - Dependency audit confirms no CGO and no system journal library linkage.
+- Live repository-reader concurrency suite passes Go reader.
+- Stock-writer live reader evidence is recorded, or the SOW remains blocked from claiming full reader compatibility.
 - journalctl same-key OR and `+` disjunction tests pass.
 
 Artifact impact plan:

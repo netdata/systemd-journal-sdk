@@ -31,8 +31,9 @@ Bootstrap mode: empty/new project.
 
 ## Next SOW
 
-- To be selected after the Go writer-first commit.
-- Recommended next candidates:
+- Recommended next: `.agents/sow/pending/SOW-0011-20260523-live-concurrency-compatibility-gate.md`
+- Rationale: live stock-reader and cross-language one-writer/multiple-reader validation is now mandatory before any writer or reader can be called production-compatible.
+- Subsequent candidates after SOW-0011:
   - `.agents/sow/pending/SOW-0010-20260523-go-reader-and-journalctl-completion.md` to complete the Go SDK/journalctl surface.
   - `.agents/sow/pending/SOW-0004-20260523-rust-sdk-and-journalctl.md` if Rust API finalization should precede the remaining languages.
 
@@ -51,4 +52,5 @@ Bootstrap mode: empty/new project.
 - SOW-0003 external review completed with all round-6 reviewers returning `PRODUCTION GRADE`.
 - SOW-0003 closeout cleanup completed and is ready for commit.
 - 2026-05-23 priority update: after SOW-0003, activate Go writer-first work before Rust, Node.js, Python, full interoperability, or benchmarks.
-- SOW-0005 completed the pure-Go writer-first implementation and is ready for commit.
+- SOW-0005 completed the pure-Go writer-first implementation and was committed.
+- 2026-05-23 compatibility clarification: live one-writer/multiple-reader compatibility with stock readers is mandatory. SOW-0011 now gates production-compatible claims for writers and readers.

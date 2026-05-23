@@ -32,6 +32,9 @@ Do not use this skill for:
 - The `+` separator is a systemd journalctl disjunction feature to replicate for file-backed journalctl behavior; it is not a new extension.
 - Each language must provide two API layers: idiomatic SDK API plus a libsystemd-compatible reader facade. The facade is required unless a SOW records concrete evidence that it would require native bindings, violate the pure-language policy, or create an unsafe/unrepresentable API in that language.
 - The final writer target includes compression and Forward Secure Sealing, but implementation may be phased.
+- Live concurrency compatibility is mandatory for every writer and reader. A writer is not production-compatible unless stock `journalctl --file` and stock libsystemd readers can safely read the file while that writer is appending. A reader is not production-compatible unless it can safely read files while they are being appended by each repository writer and, where testable without violating repository-boundary rules, stock systemd writers.
+- The live concurrency contract is one writer plus multiple readers on the same journal file. Tests must cover online state, append publication windows, tail metadata changes, entry-array growth, reader follow/tail behavior, clean close verification, and interruption/reopen scenarios for the claimed feature slice.
+- Smoke tests are not sufficient evidence for production compatibility. SOW validation must record exact stock systemd version, commands/helpers, stress duration, entry counts, reader counts, and failure criteria.
 - Pure-language dependencies are allowed; CGO, native Node.js addons, and linking to system journal libraries are not allowed.
 - Every external-agent prompt must include the canonical repository-boundary block verbatim from `AGENTS.md` or `.agents/skills/project-agent-orchestration/SKILL.md`.
 
@@ -39,7 +42,9 @@ Do not use this skill for:
 
 - Treat systemd source and tests as the compatibility authority when documentation and implementation disagree.
 - Keep shared tests language-neutral and run them against all SDKs.
+- Add shared live-concurrency tests before accepting a writer or reader as production-compatible.
 - Prove cross-language interoperability with files written by each implementation and read by every implementation.
+- Prove stock-reader interoperability while repository writers are actively appending, not only after close.
 - Separate reader support for existing historical files from writer feature milestones.
 - Record excluded upstream tests with a reason and extract file-level behavior where practical.
 
@@ -47,6 +52,8 @@ Do not use this skill for:
 
 - Do not implement daemon/service behavior just to satisfy journalctl daemon-control options.
 - Do not rely on one language's tests as sufficient for all languages.
+- Do not claim compatibility from closed-file `journalctl --verify` alone.
+- Do not treat live-reader smoke tests as sufficient for production compatibility.
 - Do not use native bindings or system journal libraries to pass tests.
 - Do not silently skip corrupted fixture behavior; record expected errors and recovery behavior.
 
@@ -55,9 +62,11 @@ Do not use this skill for:
 1. Confirm the active SOW names the exact compatibility surface being changed.
 2. Identify relevant systemd tests, fixtures, and Netdata Rust source paths.
 3. Add or update shared tests before accepting implementation as complete.
-4. Run the same conformance suite across every affected language.
-5. Run interoperability tests across every writer/reader pair affected by the SOW.
-6. Record benchmark or profiling evidence when the SOW includes performance claims.
+4. Add or update live stock-reader and cross-language concurrency tests before accepting writer/reader compatibility.
+5. Run the same conformance suite across every affected language.
+6. Run interoperability tests across every writer/reader pair affected by the SOW.
+7. Run live one-writer/multiple-reader tests for every affected writer and reader.
+8. Record benchmark or profiling evidence when the SOW includes performance claims.
 
 ## Validation Checklist
 
@@ -66,6 +75,10 @@ Before claiming production-grade compatibility:
 - Shared conformance tests pass for every targeted language.
 - Cross-language writer/reader matrix passes for every targeted file variant.
 - journalctl behavior is tested against file-backed fixtures.
+- Stock `journalctl --file` reads each targeted writer's files while the writer is appending.
+- Stock libsystemd reader APIs read each targeted writer's files while the writer is appending.
+- Each targeted reader reads live files produced by each targeted writer.
+- Reader follow/tail behavior is compared with stock `journalctl` file-backed behavior.
 - Daemon-only journalctl commands are not implemented and have documented behavior.
 - Dependency audit confirms no CGO, native Node.js addon, or system journal library linkage.
 

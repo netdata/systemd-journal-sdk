@@ -31,6 +31,8 @@ Unknowns:
 ### Acceptance Criteria
 
 - Every writer/reader pair in Rust, Go, Node.js, and Python passes the interoperability matrix.
+- Every writer passes live stock `journalctl --file` and stock libsystemd reader tests while appending.
+- Every reader passes live-read tests against every repository writer while appending, plus stock systemd writer evidence where the environment can provide it without violating repository-boundary rules.
 - Writer feature gaps from earlier phases are either implemented or represented by concrete follow-up SOWs.
 - Compression writing is tested across languages where implemented.
 - Forward Secure Sealing support is implemented or explicitly split into a narrower follow-up with evidence.
@@ -51,6 +53,7 @@ Risks:
 
 - FSS and compression are high-risk due to crypto, compression, and verification semantics.
 - Cross-language subtle differences can corrupt files or hide reader bugs.
+- Live concurrency differences can make closed-file verification pass while stock readers fail during normal one-writer/multiple-reader operation.
 
 ## Pre-Implementation Gate
 
@@ -89,13 +92,15 @@ Sensitive data handling plan:
 Implementation plan:
 
 1. Build full writer/reader matrix.
-2. Implement remaining compression writing features.
-3. Implement or split FSS/sealing work.
-4. Validate with systemd-compatible tooling where applicable.
+2. Build full live writer/reader concurrency matrix.
+3. Implement remaining compression writing features.
+4. Implement or split FSS/sealing work.
+5. Validate with systemd-compatible tooling where applicable.
 
 Validation plan:
 
 - Full matrix passes.
+- Live stock-reader and cross-language concurrency matrix passes.
 - systemd-compatible verification evidence is recorded where applicable.
 - Dependency audit remains clean.
 
