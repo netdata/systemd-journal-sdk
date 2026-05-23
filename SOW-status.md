@@ -27,12 +27,14 @@ Bootstrap mode: empty/new project.
 - `.agents/sow/done/SOW-0001-20260523-project-bootstrap-and-orchestration.md`
 - `.agents/sow/done/SOW-0002-20260523-repo-scaffold-and-rust-source-import.md`
 - `.agents/sow/done/SOW-0003-20260523-systemd-test-inventory-and-shared-harness.md`
+- `.agents/sow/done/SOW-0005-20260523-go-sdk-and-journalctl.md`
 
 ## Next SOW
 
-- `.agents/sow/pending/SOW-0005-20260523-go-sdk-and-journalctl.md`
-- Priority decision: Go writer must be delivered first for the Netdata plugin use case.
-- Activation is next after the SOW-0003 close commit.
+- To be selected after the Go writer-first commit.
+- Recommended next candidates:
+  - `.agents/sow/pending/SOW-0010-20260523-go-reader-and-journalctl-completion.md` to complete the Go SDK/journalctl surface.
+  - `.agents/sow/pending/SOW-0004-20260523-rust-sdk-and-journalctl.md` if Rust API finalization should precede the remaining languages.
 
 ## Guardrails
 
@@ -49,3 +51,4 @@ Bootstrap mode: empty/new project.
 - SOW-0003 external review completed with all round-6 reviewers returning `PRODUCTION GRADE`.
 - SOW-0003 closeout cleanup completed and is ready for commit.
 - 2026-05-23 priority update: after SOW-0003, activate Go writer-first work before Rust, Node.js, Python, full interoperability, or benchmarks.
+- SOW-0005 completed the pure-Go writer-first implementation and is ready for commit.
