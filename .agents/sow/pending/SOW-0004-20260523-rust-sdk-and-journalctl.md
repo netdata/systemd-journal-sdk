@@ -4,13 +4,13 @@
 
 Status: open
 
-Sub-state: pending after shared harness exists.
+Sub-state: pending after shared harness exists; deprioritized until the Go writer-first SOW is completed.
 
 ## Requirements
 
 ### Purpose
 
-Make Rust the first complete SDK implementation against the shared tests.
+Implement the Rust SDK and file-backed journalctl rewrite against the shared tests after the Go writer-first SOW completes.
 
 ### User Request
 
@@ -20,16 +20,17 @@ Rust must provide the same reader/writer APIs and journalctl rewrite behavior as
 
 Facts:
 
-- Rust is blocked on source import and shared harness completion.
-- Rust will be the first complete SDK implementation against the shared tests.
+- Rust is blocked on source import, shared harness completion, and the user-directed Go writer-first priority.
+- Rust remains required, but it is no longer the first complete SDK implementation target.
+- The Go writer must be completed first for the Netdata plugin use case.
 
 Inferences:
 
-- Rust API decisions should not be finalized until SOW-0002 and SOW-0003 produce concrete contracts.
+- Rust API decisions should not be finalized until SOW-0002, SOW-0003, and the Go writer-first SOW produce concrete contracts.
 
 Unknowns:
 
-- Final Rust public API shape is blocked on prerequisite SOW outcomes.
+- Final Rust public API shape is blocked on prerequisite SOW outcomes and the Go writer-first priority.
 
 ### Acceptance Criteria
 
@@ -44,16 +45,16 @@ Unknowns:
 
 Sources checked:
 
-- `.agents/sow/pending/SOW-0002-20260523-repo-scaffold-and-rust-source-import.md`
-- `.agents/sow/pending/SOW-0003-20260523-systemd-test-inventory-and-shared-harness.md`
+- `.agents/sow/done/SOW-0002-20260523-repo-scaffold-and-rust-source-import.md`
+- `.agents/sow/done/SOW-0003-20260523-systemd-test-inventory-and-shared-harness.md`
 
 Current state:
 
-- Blocked until SOW-0002 and SOW-0003 complete.
+- Blocked until SOW-0002, SOW-0003, and the Go writer-first SOW complete.
 
 Risks:
 
-- Rust API decisions shape later language ports.
+- Rust API decisions still shape later language ports, but the Go writer now shapes the first production-oriented writer contract.
 - CLI behavior drift can multiply across implementations.
 
 ## Pre-Implementation Gate
@@ -62,12 +63,13 @@ Status: blocked
 
 Problem / root-cause model:
 
-- Rust implementation depends on SOW-0002 source import and SOW-0003 shared tests.
+- Rust implementation depends on SOW-0002 source import, SOW-0003 shared tests, and the Go writer-first priority.
 
 Evidence reviewed:
 
-- `.agents/sow/pending/SOW-0002-20260523-repo-scaffold-and-rust-source-import.md`
-- `.agents/sow/pending/SOW-0003-20260523-systemd-test-inventory-and-shared-harness.md`
+- `.agents/sow/done/SOW-0002-20260523-repo-scaffold-and-rust-source-import.md`
+- `.agents/sow/done/SOW-0003-20260523-systemd-test-inventory-and-shared-harness.md`
+- `.agents/sow/pending/SOW-0005-20260523-go-sdk-and-journalctl.md`
 
 Affected contracts and surfaces:
 
@@ -83,7 +85,7 @@ Existing patterns to reuse:
 
 Risk and blast radius:
 
-- Rust API decisions shape all language ports.
+- Rust API decisions shape later language ports, but must not block the Go writer deliverable.
 - CLI behavior drift would multiply into Go, Node.js, and Python.
 
 Sensitive data handling plan:
@@ -119,14 +121,14 @@ Open decisions:
 ## Implications And Decisions
 
 1. Rust API and CLI contract
-   - Current state: blocked on SOW-0002 and SOW-0003.
-   - Required before activation: record the imported Rust layout, shared harness contract, and exact Rust public API shape.
-   - Implication: Rust becomes the first complete implementation and will guide the other language ports.
+   - Current state: blocked on SOW-0002, SOW-0003, and the Go writer-first SOW.
+   - Required before activation: record the imported Rust layout, shared harness contract, Go writer lessons, and exact Rust public API shape.
+   - Implication: Rust remains a required implementation, but it is no longer the first production-oriented writer contract.
    - Risk: premature API choices can force incompatible or unnatural APIs in Go, Node.js, and Python.
 
 ## Plan
 
-1. Wait for SOW-0002 and SOW-0003 to complete.
+1. Wait for SOW-0002, SOW-0003, and the Go writer-first SOW to complete.
 2. Enrich this SOW with the imported Rust layout and shared harness contract before activation.
 3. Delegate Rust SDK and journalctl implementation using the repository-boundary block.
 4. Review shared test results, Rust tests, audit output, and docs before closing.

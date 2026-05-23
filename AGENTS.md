@@ -329,9 +329,9 @@ Output/reference skills:
 - Pure-language dependencies are allowed; CGO, native Node.js addons, and linking to system journal libraries are not allowed.
 - Preferred implementer agent: `llm-netdata-cloud/minimax-m2.7-coder`.
 - Fallback implementer hierarchy: `llm-netdata-cloud/qwen3.6-plus`, then `llm-netdata-cloud/glm-5.1`, then another approved model only if the active SOW records why the first fallbacks were unavailable or unsuitable.
-- Reviewer pool: `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/mimo-v2.5-pro`, `llm-netdata-cloud/qwen3.6-plus`, and `llm-netdata-cloud/glm-5.1`.
+- Reviewer pool: `llm-netdata-cloud/minimax-m2.7-coder`, `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/mimo-v2.5-pro`, `llm-netdata-cloud/qwen3.6-plus`, and `llm-netdata-cloud/glm-5.1`. Prefer Minimax as implementer, but use it as reviewer when implementation work is done locally or by another model.
 - A phase cannot advance until the implementer has completed the active SOW and reviewer findings have been resolved or explicitly dispositioned in the SOW.
 - After each verified chunk, prefer committing the chunk before starting the next external-agent run, using explicit path staging only.
 - If `llm-netdata-cloud/minimax-m2.7-coder` fails or is unavailable, record the failure in the active SOW and switch according to the fallback implementer hierarchy.
-- After SOW-0004 completes, SOW-0005, SOW-0006, and SOW-0007 may run in any order, but only one implementation SOW may be active at a time.
+- After SOW-0003 completes, SOW-0005 (Go writer first) activates before SOW-0004, SOW-0006, SOW-0007, SOW-0008, SOW-0009, or SOW-0010. After SOW-0005 completes, continue according to the active SOW dependency chain, but only one implementation SOW may be active at a time.
 - Reviewer agents may run in parallel within the active SOW; implementation SOWs must not run in parallel unless the user explicitly changes the one-SOW-at-a-time rule.

@@ -11,6 +11,12 @@ This project produces pure SDKs and file-backed journalctl-compatible tools for 
 - Node.js
 - Python
 
+## Delivery Priority
+
+- The Go writer is the first implementation deliverable after the shared test harness is accepted.
+- The Go writer is prioritized because the user needs a pure-Go journal writer for a Netdata plugin integration.
+- Rust, Go reader/journalctl completion, Node.js, Python, full interoperability, benchmarks, and optimization remain required, but they must not be started ahead of the Go writer unless the user changes this priority.
+
 ## Core Contracts
 
 - Implementations must not link to system journal libraries.

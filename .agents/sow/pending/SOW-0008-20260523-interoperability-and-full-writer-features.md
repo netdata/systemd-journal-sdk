@@ -4,7 +4,7 @@
 
 Status: open
 
-Sub-state: pending after all baseline language SDKs pass shared conformance.
+Sub-state: pending after all baseline language SDKs pass shared conformance, including the Go writer-first split and Go reader/journalctl completion.
 
 ## Requirements
 
@@ -17,6 +17,7 @@ Complete cross-language interoperability and close remaining writer feature gaps
 Facts:
 
 - This phase requires all baseline language SDKs to pass shared conformance first.
+- The Go baseline is split across SOW-0005 (writer first) and SOW-0010 (reader and journalctl completion).
 - It closes cross-language interoperability and remaining writer feature gaps.
 
 Inferences:
@@ -44,7 +45,7 @@ Sources checked:
 
 Current state:
 
-- Blocked until SOW-0004, SOW-0005, SOW-0006, and SOW-0007 complete.
+- Blocked until SOW-0004, SOW-0005, SOW-0006, SOW-0007, and SOW-0010 complete.
 
 Risks:
 
@@ -62,7 +63,7 @@ Problem / root-cause model:
 Evidence reviewed:
 
 - Product scope spec.
-- Pending language SOWs.
+- Pending language SOWs, including SOW-0010 for deferred Go reader/journalctl completion.
 
 Affected contracts and surfaces:
 
@@ -113,7 +114,7 @@ Open decisions:
 ## Implications And Decisions
 
 1. Interoperability and full writer completion boundary
-   - Current state: blocked on SOW-0004, SOW-0005, SOW-0006, and SOW-0007 being completed and passing the shared conformance suite.
+   - Current state: blocked on SOW-0004, SOW-0005, SOW-0006, SOW-0007, and SOW-0010 being completed and passing the shared conformance suite.
    - Required before activation: record the completed baseline feature matrix and decide whether any remaining compression or Forward Secure Sealing work needs narrower follow-up SOWs.
    - Implication: this SOW closes cross-language file compatibility after all baseline SDKs exist.
    - Risk: starting before all language baselines pass can hide whether failures come from core format handling, individual SDK bugs, or interoperability assumptions.

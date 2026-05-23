@@ -1,0 +1,216 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://systemd-journal-sdk.github.io/schemas/conformance-manifest-v1.json",
+  "title": "SystemdJournalConformanceManifest",
+  "description": "Language-neutral conformance test manifest for systemd journal SDKs. Each manifest describes a single test case with declarative expected outcomes. Per-language adapter executables consume this format and return structured JSON results.",
+  "type": "object",
+  "required": ["manifest_version", "test_suite"],
+  "additionalProperties": true,
+  "definitions": {
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version of the manifest schema"
+    },
+    "fixture_ref": {
+      "type": "object",
+      "required": ["type", "path"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["file", "inline", "generated", "external"],
+          "description": "How the fixture is sourced"
+        },
+        "path": {
+          "type": "string",
+          "description": "Path relative to the repository root, or special tokens like 'stdout'"
+        },
+        "description": {
+          "type": "string"
+        },
+        "generated_by": {
+          "type": "string",
+          "description": "Command/script that generates this fixture if type is 'generated'"
+        },
+        "source_path": {
+          "type": "string",
+          "description": "Path to committed source inputs required to generate this fixture. Required when type is 'generated' unless the fixture requires a live daemon (use 'daemon-required' as the value to document this)."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "type": { "const": "generated" } }
+          },
+          "then": {
+            "required": ["source_path"],
+            "description": "Generated fixtures must declare source_path to committed inputs, or 'daemon-required' if a live daemon is needed"
+          }
+        }
+      ]
+    },
+    "fixture_set": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/fixture_ref"
+      }
+    },
+    "match_clause": {
+      "type": "object",
+      "description": "A single match predicate",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "expected_outcome": {
+      "type": "object",
+      "required": ["result_format", "entries_match"],
+      "properties": {
+        "result_format": {
+          "type": "string",
+          "enum": ["entry-list", "cursor-list", "field-list", "export", "count", "boolean", "error"],
+          "description": "What the adapter should return"
+        },
+        "entries_match": {
+          "oneOf": [
+            {
+              "type": "object",
+              "description": "Map of field->value pairs that entries must contain"
+            },
+            {
+              "type": "array",
+              "description": "List of entry objects, order-sensitive"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            }
+          ],
+          "description": "Expected value or pattern for pass/fail"
+        },
+        "count": {
+          "type": "integer",
+          "description": "Expected entry count if result_format is 'count'"
+        },
+        "error_contains": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Substring that must appear in error message if result_format is 'error'. Must be non-empty."
+        },
+        "fields_present": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Field names that must be present in each entry"
+        },
+        "note": {
+          "type": "string"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "result_format": { "const": "error" } }
+          },
+          "then": {
+            "required": ["error_contains"]
+          }
+        }
+      ]
+    },
+    "test_case": {
+      "type": "object",
+      "required": ["test_name", "category", "fixtures", "adapter_cmd", "expected"],
+      "properties": {
+        "test_name": {
+          "type": "string",
+          "description": "Unique identifier for this test case"
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "file-format",
+            "entry-parse",
+            "entry-write",
+            "matching",
+            "enumeration",
+            "verification",
+            "sealing",
+            "compression",
+            "corruption-resilience",
+            "cursor-navigation",
+            "stream",
+            "import-export",
+            "journalctl-cli"
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "fixtures": {
+          "$ref": "#/definitions/fixture_set"
+        },
+        "adapter_cmd": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Command-line arguments passed to the adapter executable"
+        },
+        "expected": {
+          "$ref": "#/definitions/expected_outcome"
+        },
+        "tags": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "test_suite": {
+      "type": "object",
+      "required": ["suite_name", "systemd_baseline", "test_cases"],
+      "properties": {
+        "suite_name": {
+          "type": "string"
+        },
+        "suite_version": {
+          "type": "string"
+        },
+        "manifest_version": {
+          "$ref": "#/definitions/version"
+        },
+        "systemd_baseline": {
+          "type": "object",
+          "required": ["repo", "commit"],
+          "properties": {
+            "repo": {
+              "type": "string"
+            },
+            "commit": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            }
+          }
+        },
+        "test_cases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/test_case"
+          }
+        }
+      }
+    }
+  },
+  "properties": {
+    "manifest_version": {
+      "$ref": "#/definitions/version"
+    },
+    "test_suite": {
+      "$ref": "#/definitions/test_suite"
+    }
+  }
+}

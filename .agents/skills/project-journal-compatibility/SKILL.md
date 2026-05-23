@@ -73,7 +73,7 @@ Before claiming production-grade compatibility:
 
 - `AGENTS.md`: project goals and scope decisions.
 - `.agents/sow/specs/product-scope.md`: product scope and compatibility contracts.
-- `.agents/sow/current/SOW-0001-20260523-project-bootstrap-and-orchestration.md`: initial decisions and evidence ledger.
+- `.agents/sow/done/SOW-0001-20260523-project-bootstrap-and-orchestration.md`: initial decisions and evidence ledger.
 
 ## Update Rules
 

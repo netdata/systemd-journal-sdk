@@ -6,3 +6,7 @@ rust/target/
 rust/src/crates/*/target/
 rust/src/crates/jf/target/
 **/target/
+
+# Python build artifacts
+__pycache__/
+*.py[cod]

@@ -1,0 +1,407 @@
+{
+  "manifest_version": "1.0.0",
+  "test_suite": {
+    "suite_name": "systemd-journal-conformance",
+    "suite_version": "0.1.0",
+    "systemd_baseline": {
+      "repo": "systemd/systemd",
+      "commit": "c0a5a2516d28601fb3afc1a77d7b42fcfe38fced",
+      "tag": "v260.1"
+    },
+    "test_cases": [
+      {
+        "test_name": "journal-file-parse-uid-from-filename",
+        "category": "file-format",
+        "description": "Verify UID extraction from user journal filenames per systemd conventions",
+        "fixtures": {},
+        "adapter_cmd": [],
+        "expected": {
+          "result_format": "boolean",
+          "entries_match": true,
+          "note": "Tested patterns: user-1000.journal->UID 1000, system.journal->system (no UID), user-foo.journal->EINVAL, user-65535.journal->ENXIO, user@*.journal~->EREMOTE. No fixture file needed; tests filename string parsing only."
+        },
+        "tags": [
+          "file-format",
+          "uid-parsing"
+        ]
+      },
+      {
+        "test_name": "journal-importer-basic-parsing",
+        "category": "entry-parse",
+        "description": "Parse journal export text into fields; verify field count, field ordering, and EOF behavior",
+        "fixtures": {
+          "importer_data": {
+            "type": "file",
+            "path": "fixtures/systemd/test-data/journal-1.txt",
+            "description": "journal-data/journal-1.txt from systemd v260.1 test fixtures"
+          }
+        },
+        "adapter_cmd": [],
+        "expected": {
+          "result_format": "entry-list",
+          "entries_match": [
+            {
+              "_BOOT_ID": "1531fd22ec84429e85ae888b12fadb91"
+            },
+            {
+              "_TRANSPORT": "journal"
+            },
+            {
+              "COREDUMP_RLIMIT": "-1"
+            },
+            {
+              "_SOURCE_REALTIME_TIMESTAMP": "1478389147837945"
+            }
+          ],
+          "fields_present": [
+            "_BOOT_ID",
+            "_TRANSPORT",
+            "COREDUMP_RLIMIT",
+            "_SOURCE_REALTIME_TIMESTAMP"
+          ],
+          "note": "Original systemd importer test checks a complete entry boundary; this manifest checks four key fields as an ordered subset. EOF behavior: journal_importer_process_data returns 0 on incomplete line, 1 on complete entry."
+        },
+        "tags": [
+          "entry-parse",
+          "importer",
+          "field-order"
+        ]
+      },
+      {
+        "test_name": "journal-importer-eof",
+        "category": "entry-parse",
+        "description": "Verify journal_importer_eof returns true only after complete entry is parsed",
+        "fixtures": {
+          "importer_data": {
+            "type": "file",
+            "path": "fixtures/systemd/test-data/journal-1.txt",
+            "description": "journal-data/journal-1.txt from systemd v260.1"
+          }
+        },
+        "adapter_cmd": [],
+        "expected": {
+          "result_format": "boolean",
+          "entries_match": true,
+          "note": "EOF not set until journal_importer_process_data returns 1 (complete entry). Returns 0 on incomplete data until entry complete."
+        },
+        "tags": [
+          "entry-parse",
+          "eof"
+        ]
+      },
+      {
+        "test_name": "journal-match-boolean-logic",
+        "category": "matching",
+        "description": "Verify AND/OR match semantics via sd_journal_add_match/disjunction/conjunction",
+        "fixtures": {},
+        "adapter_cmd": [],
+        "expected": {
+          "result_format": "entry-list",
+          "entries_match": true,
+          "note": "Expected match string: (((L3=ok OR L3=yes) OR ((L4_2=ok OR L4_2=yes) AND (L4_1=ok OR L4_1=yes))) AND ((TWO=two AND (ONE=two OR ONE=one)) OR (PIFF=paff AND (QUUX=yyyyy OR QUUX=xxxxx OR QUUX=mmmm) AND (HALLO= OR HALLO=WALDO) AND B=C\\000D AND A=\\001\\002)))"
+        },
+        "tags": [
+          "matching",
+          "boolean-logic"
+        ]
+      },
+      {
+        "test_name": "journal-match-invalid-input",
+        "category": "matching",
+        "description": "Verify sd_journal_add_match rejects invalid match strings",
+        "fixtures": {},
+        "adapter_cmd": [],
+        "expected": {
+          "result_format": "error",
+          "entries_match": false,
+          "error_contains": "EINVAL",
+          "note": "Invalid patterns: 'foobar', 'foobar=waldo', '', '=', '=xxxxx' - all should return error"
+        },
+        "tags": [
+          "matching",
+          "validation"
+        ]
+      },
+      {
+        "test_name": "journal-stream-directory-iteration",
+        "category": "stream",
+        "description": "Test sd_journal_open_directory with multiple journal files; verify SD_JOURNAL_FOREACH forwards and backwards",
+        "fixtures": {
+          "journal_dir": {
+            "type": "file",
+            "path": "fixtures/systemd/test-data/no-rtc",
+            "description": "Directory of 7 compressed journal files from systemd v260.1 test/test-journals/no-rtc/"
+          }
+        },
+        "adapter_cmd": [],
+        "expected": {
+          "result_format": "entry-list",
+          "entries_match": true,
+          "note": "Open the committed no-rtc journal directory and verify forward and backward iteration across all 7 compressed journal files. Synthetic skip/seek behaviors from test-journal-stream.c and test-journal-interleaving.c are inventoried for later generated fixtures and are not asserted by this fixture-backed case."
+        },
+        "tags": [
+          "stream",
+          "directory",
+          "iteration"
+        ]
+      },
+      {
+        "test_name": "journal-query-unique-fields",
+        "category": "enumeration",
+        "description": "Verify sd_journal_query_unique enumerates unique values for a field",
+        "fixtures": {
+          "journal_dir": {
+            "type": "file",
+            "path": "fixtures/systemd/test-data/no-rtc",
+            "description": "Directory of 7 compressed journal files from systemd v260.1 test/test-journals/no-rtc/"
+          }
+        },
+        "adapter_cmd": [],
+        "expected": {
+          "result_format": "field-list",
+          "entries_match": true,
+          "note": "QUERY_UNIQUE returns all unique values for specified field name"
+        },
+        "tags": [
+          "enumeration",
+          "unique-values"
+        ]
+      },
+      {
+        "test_name": "journal-cursor-test",
+        "category": "cursor-navigation",
+        "description": "Verify sd_journal_test_cursor confirms cursor validity",
+        "fixtures": {
+          "journal_dir": {
+            "type": "file",
+            "path": "fixtures/systemd/test-data/no-rtc",
+            "description": "Directory of 7 compressed journal files from systemd v260.1 test/test-journals/no-rtc/"
+          }
+        },
+        "adapter_cmd": [],
+        "expected": {
+          "result_format": "boolean",
+          "entries_match": true,
+          "note": "sd_journal_get_cursor returns cursor string; sd_journal_test_cursor returns true for same cursor"
+        },
+        "tags": [
+          "cursor",
+          "navigation"
+        ]
+      },
+      {
+        "test_name": "journal-verify-sealed",
+        "category": "verification",
+        "description": "Verify journal_file_verify correctly validates FSS-sealed journals",
+        "fixtures": {
+          "sealed_journal": {
+            "type": "generated",
+            "path": "fixtures/systemd/test-data/sealed.journal",
+            "description": "FSS-sealed journal generated by journalctl --setup-keys",
+            "generated_by": "journalctl --force --setup-keys --interval=2 --output=json",
+            "source_path": "daemon-required"
+          }
+        },
+        "adapter_cmd": [],
+        "expected": {
+          "result_format": "boolean",
+          "entries_match": true,
+          "note": "With valid FSS key: PASS. Without key or wrong key: FAIL or ERROR. journal_file_verify returns verification range [from, to]"
+        },
+        "tags": [
+          "verification",
+          "sealing",
+          "fss"
+        ]
+      },
+      {
+        "test_name": "journal-verify-corruption-detection",
+        "category": "corruption-resilience",
+        "description": "Corrupted journal file should fail verification with detectable error",
+        "fixtures": {
+          "corrupted_file": {
+            "type": "file",
+            "path": "fixtures/systemd/test-data/corrupted/zstd-truncated-frame.zst",
+            "description": "Truncated zstd frame corruption fixture from systemd v260.1 test/test-journals/corrupted/"
+          }
+        },
+        "adapter_cmd": [],
+        "expected": {
+          "result_format": "error",
+          "entries_match": false,
+          "error_contains": "corrupt",
+          "note": "Truncated zstd frame: verification or decompression should fail with error mentioning truncation or corruption. Based on upstream test-journal-verify.c bit-flip detection pattern."
+        },
+        "tags": [
+          "corruption",
+          "verification"
+        ]
+      },
+      {
+        "test_name": "journal-zstd-compressed-read",
+        "category": "compression",
+        "description": "Verify zstd-compressed journal fixture can be decompressed and read",
+        "fixtures": {
+          "journal_file": {
+            "type": "file",
+            "path": "fixtures/systemd/test-data/no-rtc/system.journal.zst",
+            "description": "Compressed system journal from systemd v260.1 test/test-journals/no-rtc/"
+          }
+        },
+        "adapter_cmd": [],
+        "expected": {
+          "result_format": "boolean",
+          "entries_match": true,
+          "note": "The fixture is a zstd-compressed systemd journal. This test covers compressed fixture read/decompression, not SYSTEMD_JOURNAL_COMPRESS writer algorithm selection or SYSTEMD_JOURNAL_COMPACT offset format variants."
+        },
+        "tags": [
+          "compression"
+        ]
+      },
+      {
+        "test_name": "journal-corruption-append-resilient",
+        "category": "corruption-resilience",
+        "description": "Corrupted journal file should not crash on reopen; write after corruption returns error gracefully",
+        "fixtures": {
+          "corrupted_file": {
+            "type": "file",
+            "path": "fixtures/systemd/test-data/corrupted/zstd-truncated-frame.zst",
+            "description": "Truncated zstd frame corruption fixture from systemd v260.1 test/test-journals/corrupted/"
+          },
+          "afl_corrupted_1": {
+            "type": "file",
+            "path": "fixtures/systemd/test-data/corrupted/id:000000,sig:06,src:000711,time:110015157,execs:33104794,op:MOpt_havoc,rep:2.zst",
+            "description": "AFL fuzz-generated corrupted journal from systemd v260.1 test/test-journals/corrupted/"
+          },
+          "afl_corrupted_2": {
+            "type": "file",
+            "path": "fixtures/systemd/test-data/corrupted/id:000000,src:000031,time:210669947,execs:34191940,op:havoc,rep:32.zst",
+            "description": "AFL fuzz-generated corrupted journal from systemd v260.1 test/test-journals/corrupted/"
+          }
+        },
+        "adapter_cmd": [],
+        "expected": {
+          "result_format": "boolean",
+          "entries_match": true,
+          "note": "Reopen after corruption: error returned gracefully, not crash. Write after corruption: error logged, no crash. Tests all 3 corrupted fixtures."
+        },
+        "tags": [
+          "corruption",
+          "resilience"
+        ]
+      },
+      {
+        "test_name": "journal-file-header-parse",
+        "category": "file-format",
+        "description": "Parse journal file header fields: signature, flags, state, and header size",
+        "fixtures": {
+          "journal_file": {
+            "type": "file",
+            "path": "fixtures/systemd/test-data/no-rtc/system.journal.zst",
+            "description": "Compressed system journal from systemd v260.1 test/test-journals/no-rtc/"
+          }
+        },
+        "adapter_cmd": [],
+        "expected": {
+          "result_format": "entry-list",
+          "entries_match": [
+            {
+              "signature": "LPKSHHRH"
+            }
+          ],
+          "fields_present": [
+            "signature",
+            "state",
+            "compatible_flags",
+            "incompatible_flags",
+            "header_size"
+          ],
+          "note": "Header fields include signature (8 bytes 'LPKSHHRH'), compatible_flags (uint32LE), incompatible_flags (uint32LE), state (uint8), and header_size (uint64LE). systemd journal headers have no version field."
+        },
+        "tags": [
+          "file-format",
+          "header",
+          "parsing"
+        ]
+      },
+      {
+        "test_name": "journal-list-boots",
+        "category": "journalctl-cli",
+        "description": "Verify journalctl --list-boots returns boot entries with index, boot_id, first/last_entry timestamps",
+        "fixtures": {
+          "journal_dir": {
+            "type": "file",
+            "path": "fixtures/systemd/test-data/no-rtc",
+            "description": "Directory of 7 compressed journal files from systemd v260.1 test/test-journals/no-rtc/"
+          }
+        },
+        "adapter_cmd": [
+          "--list-boots",
+          "--directory"
+        ],
+        "expected": {
+          "result_format": "entry-list",
+          "entries_match": [
+            {
+              "index": -3
+            },
+            {
+              "index": -2
+            },
+            {
+              "index": -1
+            },
+            {
+              "index": 0
+            }
+          ],
+          "fields_present": [
+            "index",
+            "boot_id",
+            "first_entry",
+            "last_entry"
+          ],
+          "note": "Expected 4 boots in no-rtc fixture; format: [{\"index\":-3,\"boot_id\":\"...\",\"first_entry\":1666569600994371,\"last_entry\":1666584266223608},...]"
+        },
+        "tags": [
+          "journalctl-cli",
+          "list-boots"
+        ]
+      },
+      {
+        "test_name": "journal-export-format",
+        "category": "import-export",
+        "description": "Verify journal export format matches systemd journal-export spec",
+        "fixtures": {
+          "journal_dir": {
+            "type": "file",
+            "path": "fixtures/systemd/test-data/no-rtc",
+            "description": "Directory of 7 compressed journal files from systemd v260.1 test/test-journals/no-rtc/"
+          }
+        },
+        "adapter_cmd": [
+          "--output=export"
+        ],
+        "expected": {
+          "result_format": "entry-list",
+          "entries_match": true,
+          "fields_present": [
+            "__CURSOR",
+            "__REALTIME_TIMESTAMP",
+            "__MONOTONIC_TIMESTAMP",
+            "_BOOT_ID",
+            "_MACHINE_ID",
+            "_HOSTNAME",
+            "PRIORITY",
+            "_TRANSPORT"
+          ],
+          "note": "Export format: KEY=VALUE per line; __CURSOR= unique cursor per entry; __REALTIME_TIMESTAMP in microseconds"
+        },
+        "tags": [
+          "export",
+          "format"
+        ]
+      }
+    ]
+  }
+}

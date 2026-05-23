@@ -1,40 +1,50 @@
-# SOW-0005 - Go SDK And journalctl
+# SOW-0005 - Go Writer First
 
 ## Status
 
 Status: open
 
-Sub-state: pending after Rust API and shared harness stabilize. May run before or after Node.js/Python SOWs, but only one implementation SOW may be active at a time.
+Sub-state: next implementation SOW after SOW-0003 completes. User priority requires the Go writer before Rust, Go reader/journalctl completion, Node.js, Python, interoperability, or benchmarks.
 
 ## Requirements
 
 ### Purpose
 
-Implement the Go SDK and file-backed journalctl rewrite with no CGO.
+Deliver a production-grade pure-Go systemd journal writer first, for Netdata plugin integration use.
+
+This SOW intentionally narrows the previous Go SDK scope to the writer. The Go reader facade and Go journalctl rewrite remain required, but are deferred to a follow-up SOW after the writer is usable.
+
+### User Request
+
+The user needs the Go writer finished before anything else because it is needed in a Netdata plugin. The order is Go writer first, then everything else.
 
 ### Assistant Understanding
 
 Facts:
 
-- Go must implement the shared SDK contract without CGO or system journal library linkage.
-- This phase is blocked until Rust and the shared harness stabilize.
+- Go writer must be the first implementation deliverable after the shared harness is accepted.
+- Go must use no CGO and no system journal library linkage.
+- The writer must produce systemd journal files that readers in this repo and systemd-compatible tooling can read according to the project compatibility target.
+- Rust, Go reader/journalctl completion, Node.js, Python, interoperability, benchmarks, and optimization remain required but are lower priority until this writer is done.
 
 Inferences:
 
-- Go-specific file I/O, locking, and dependency risks must be enriched before activation.
+- The writer SOW should be smaller than the original full Go SDK SOW so the Netdata plugin use case is not delayed by Go reader/journalctl completion.
+- Minimal read-back tooling may be needed only to validate writer output; it should not expand this SOW into the full Go reader implementation.
 
 Unknowns:
 
-- Final Go API mapping is blocked on prerequisite SOW outcomes.
+- Exact initial writer feature subset must be enriched from SOW-0003 and systemd journal file format evidence before activation.
 
 ### Acceptance Criteria
 
-- Go reader and writer expose idiomatic APIs equivalent to the shared SDK contract, plus a libsystemd-compatible reader facade unless a SOW records concrete evidence for a scoped exception.
-- Go uses no CGO and no system journal library linkage.
-- Go passes the shared conformance suite.
-- Go participates in the cross-language interoperability matrix.
-- Go journalctl rewrite passes file-backed/query behavior tests.
-- Go journalctl implements repeated same-field OR matching and the `+` disjunction separator for file-backed behavior.
+- Go exposes an idiomatic writer API that can create and append systemd journal entries to journal files.
+- Go writer uses no CGO and no system journal library linkage.
+- Go writer produces journal files readable by the repo's imported Rust reader or other shared validation tooling available at activation time.
+- Go writer output is validated against the shared writer/file-format conformance cases available after SOW-0003.
+- Go writer implements systemd journal file locking/concurrency expectations for one writer and multiple readers, or records any initial scoped limitation with follow-up SOW coverage.
+- Go writer has focused docs/examples sufficient for Netdata plugin integration.
+- Go reader facade, Go journalctl rewrite, and full cross-language matrix are explicitly deferred and tracked after this SOW.
 - No changes are made outside this repository.
 
 ## Analysis
@@ -42,16 +52,20 @@ Unknowns:
 Sources checked:
 
 - Product scope spec.
-- Pending Rust and harness SOWs.
+- Pending harness SOW.
+- User priority update on 2026-05-23.
 
 Current state:
 
-- Blocked until SOW-0003 and SOW-0004 complete.
+- Blocked until SOW-0003 completes and is committed.
+- This SOW now precedes Rust SDK/journalctl, Go reader/journalctl completion, Node.js, Python, interoperability, and benchmarks.
 
 Risks:
 
 - CGO or native dependency leakage would violate the project goal.
-- Go binary parsing and file locking mistakes can break interoperability.
+- Incorrect journal object layout, hash tables, tag objects, entry arrays, or file header fields can produce unreadable or corrupt files.
+- File locking mistakes can break the one-writer/multiple-reader journal rule and the Netdata plugin use case.
+- Over-expanding into reader/journalctl work would delay the user-prioritized writer deliverable.
 
 ## Pre-Implementation Gate
 
@@ -59,29 +73,35 @@ Status: blocked
 
 Problem / root-cause model:
 
-- Go implementation must follow the SDK/API/test contracts established by earlier phases.
+- Go writer implementation must follow the systemd journal file format and the shared harness contract established by SOW-0003.
+- The immediate product need is writer output for a Netdata plugin, not a full Go SDK/journalctl stack.
 
 Evidence reviewed:
 
 - Product scope spec.
-- Pending Rust and harness SOWs.
+- User priority update on 2026-05-23.
+- Pending harness SOW.
 
 Affected contracts and surfaces:
 
-- Go public APIs.
-- Go CLI.
-- Shared harness adapter.
+- Go writer public API.
+- Journal file format writer behavior.
+- File locking and concurrency behavior.
+- Shared harness writer adapter.
 - Dependency policy.
 
 Existing patterns to reuse:
 
-- Shared SDK contract and Rust behavior.
+- Imported Rust writer/reference behavior from SOW-0002.
+- Shared fixtures and conformance harness from SOW-0003.
+- systemd journal file format evidence.
 
 Risk and blast radius:
 
 - CGO or native dependency leakage would violate the project goal.
 - Writer behavior must remain interoperable with Rust and future languages.
-- Go-specific risks, such as pure-Go binary parsing, file mapping strategy, and concurrency/locking behavior, must be enriched before this SOW moves to current.
+- Incorrect write ordering, object offsets, hashes, compression framing, or file state transitions can produce journals that appear to write successfully but fail under readers.
+- Go-specific risks, such as pure-Go binary serialization, file mapping strategy, append safety, fsync behavior, and locking behavior, must be enriched before this SOW moves to current.
 
 Sensitive data handling plan:
 
@@ -89,42 +109,53 @@ Sensitive data handling plan:
 
 Implementation plan:
 
-1. Implement Go reader.
-2. Implement Go writer.
-3. Implement Go journalctl CLI.
-4. Wire shared tests.
+1. Enrich the writer feature subset from SOW-0003 and systemd journal format evidence.
+2. Design the idiomatic Go writer API and file lifecycle.
+3. Implement pure-Go journal file creation and append path.
+4. Implement required file locking and flush/sync behavior.
+5. Wire writer-focused shared tests and read-back validation.
+6. Add Netdata-plugin-oriented docs/examples for writer usage.
 
 Validation plan:
 
-- Shared conformance suite passes Go.
+- Writer-focused shared conformance cases pass Go.
 - Go package tests pass.
 - Dependency audit confirms no CGO.
+- Output journal files are read back by available repository readers or systemd-compatible file-backed tooling.
+- Corruption/partial-write behavior is tested where SOW-0003 provides relevant cases.
 
 Artifact impact plan:
 
-- Specs: update if Go exposes language-specific contract differences.
-- End-user/operator docs: create Go SDK docs.
-- SOW lifecycle: blocked until prerequisites complete.
+- Specs: update writer feature contract and Go writer priority.
+- End-user/operator docs: create Go writer docs/examples.
+- SOW lifecycle: blocked until SOW-0003 completes.
 - SOW-status.md: update when this SOW moves to current or closes.
 
 Open decisions:
 
-- Blocked on prerequisite SOW outcomes.
+- No user decision is currently needed. The priority decision is recorded: Go writer first.
 
 ## Implications And Decisions
 
-1. Go API and no-CGO implementation strategy
-   - Current state: blocked on SOW-0003 and SOW-0004.
-   - Required before activation: record how the shared SDK contract maps to idiomatic Go APIs, file I/O, locking, memory mapping, and dependency constraints.
-   - Implication: the Go implementation must pass the same suite without CGO or native journal linkage.
-   - Risk: incorrect binary parsing or locking assumptions can corrupt interoperability tests even if local Go tests pass.
+1. Go writer-first priority
+   - Current state: resolved by user decision on 2026-05-23.
+   - Selection: deliver the pure-Go journal writer before Rust, Go reader/journalctl completion, Node.js, Python, interoperability, or benchmarks.
+   - Rationale: the writer is needed for a Netdata plugin integration.
+   - Implication: this SOW is intentionally narrowed to writer delivery and validation.
+   - Risk: deferring Go reader/journalctl means the Go SDK is not complete after this SOW; follow-up SOW coverage is required.
+
+2. Go no-CGO writer strategy
+   - Current state: blocked on SOW-0003 completion and writer feature enrichment.
+   - Required before activation: record how systemd journal file creation, append, file I/O, locking, sync, and dependency constraints map to idiomatic Go.
+   - Implication: the Go writer must pass writer-focused conformance without CGO or native journal linkage.
+   - Risk: incorrect binary serialization or locking assumptions can corrupt files even if local Go tests pass.
 
 ## Plan
 
-1. Wait for the shared harness and Rust SDK contract to stabilize.
-2. Enrich Go-specific risks and API mapping before activation.
-3. Delegate Go SDK and journalctl implementation using the repository-boundary block.
-4. Review conformance, dependency audit, interoperability participation, docs, and audit output before closing.
+1. Wait for SOW-0003 to complete and commit.
+2. Enrich writer-specific risks, systemd journal format requirements, and Go API mapping before activation.
+3. Delegate Go writer implementation using the repository-boundary block.
+4. Review writer conformance, read-back validation, dependency audit, docs/examples, and audit output before closing.
 
 ## Delegation Plan
 
@@ -135,7 +166,7 @@ Open decisions:
 
 ## Execution Log
 
-Pending activation.
+- 2026-05-23: Scope changed from full Go SDK/journalctl to Go writer-first per user priority. Go reader/journalctl completion moved to follow-up planning.
 
 ## Validation
 
@@ -147,7 +178,8 @@ Pending.
 
 ## Lessons Extracted
 
-Pending activation.
+- Go reader facade and Go journalctl rewrite remain required after the writer-first SOW.
+- Full cross-language writer/reader matrix remains required after all language implementations exist.
 
 ## Followup
 
