@@ -29,11 +29,12 @@ Bootstrap mode: empty/new project.
 - `.agents/sow/done/SOW-0003-20260523-systemd-test-inventory-and-shared-harness.md`
 - `.agents/sow/done/SOW-0005-20260523-go-sdk-and-journalctl.md`
 - `.agents/sow/done/SOW-0011-20260523-live-concurrency-compatibility-gate.md`
+- `.agents/sow/done/SOW-0012-20260523-go-writer-binary-fields.md`
 
 ## Next SOW
 
 - Recommended next: `.agents/sow/pending/SOW-0010-20260523-go-reader-and-journalctl-completion.md`
-- Rationale: the Go writer now has a live stock-reader compatibility gate, so the natural next step is completing the Go reader and file-backed journalctl surface while reusing the same live harness.
+- Rationale: after the Go writer live compatibility and binary field gates, the natural next step is completing the Go reader and file-backed journalctl surface while reusing the same live harness.
 - Alternative: `.agents/sow/pending/SOW-0004-20260523-rust-sdk-and-journalctl.md` if Rust API finalization should precede the remaining languages.
 
 ## Guardrails
@@ -53,3 +54,4 @@ Bootstrap mode: empty/new project.
 - 2026-05-23 priority update: after SOW-0003, activate Go writer-first work before Rust, Node.js, Python, full interoperability, or benchmarks.
 - SOW-0005 completed the pure-Go writer-first implementation and was committed.
 - 2026-05-23 compatibility clarification: live one-writer/multiple-reader compatibility with stock readers is mandatory. SOW-0011 completed the reusable live gate and applied it to the Go writer feature slice.
+- 2026-05-23 binary field priority update: SOW-0012 completed binary field compatibility validation for the Go writer before later SDK phases continue.

@@ -2,6 +2,8 @@ package journal
 
 import (
 	"bytes"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -250,6 +252,74 @@ func TestEntryArrayGrowthAndJournalctlReadback(t *testing.T) {
 	if got := runJournalctlLineCount(t, path, "PRIORITY=6"); got != initialEntryArrayCap+1 {
 		t.Fatalf("filtered row count = %d, want %d", got, initialEntryArrayCap+1)
 	}
+}
+
+func TestWriterBinaryFieldCompatibility(t *testing.T) {
+	if _, err := exec.LookPath("journalctl"); err != nil {
+		t.Skip("journalctl is not installed")
+	}
+
+	path := filepath.Join(t.TempDir(), "binary-fields.journal")
+	binaryValue := []byte{0x00, 0x01, 0x02, 'A', '\n', 0x7f, 0x80, 0xff}
+	matchableBinaryValue := []byte{'a', 'b', 'c', 0x07, 'd', 'e', 'f'}
+	emptyBinaryValue := []byte{}
+
+	w, err := Create(path, testOptions())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := w.Append([]Field{
+		StringField("MESSAGE", "binary compatibility"),
+		StringField("TEST_ID", "binary-field"),
+		{Name: "BINARY_PAYLOAD", Value: binaryValue},
+		{Name: "BINARY_MATCH", Value: matchableBinaryValue},
+		{Name: "BINARY_EMPTY", Value: emptyBinaryValue},
+	}, EntryOptions{RealtimeUsec: 1_700_000_030_000_000, MonotonicUsec: 301}); err != nil {
+		t.Fatalf("Append(binary) error = %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	payload := append([]byte("BINARY_PAYLOAD="), binaryValue...)
+	matchablePayload := append([]byte("BINARY_MATCH="), matchableBinaryValue...)
+	emptyPayload := append([]byte("BINARY_EMPTY="), emptyBinaryValue...)
+	snapshot := readJournalSnapshot(t, path)
+	if got := snapshot.dataByPayload[string(payload)].payload; !bytes.Equal(got, payload) {
+		t.Fatalf("raw DATA payload = %x, want %x", got, payload)
+	}
+	if got := snapshot.dataByPayload[string(matchablePayload)].payload; !bytes.Equal(got, matchablePayload) {
+		t.Fatalf("raw matchable DATA payload = %x, want %x", got, matchablePayload)
+	}
+	if got := snapshot.dataByPayload[string(emptyPayload)].payload; !bytes.Equal(got, emptyPayload) {
+		t.Fatalf("raw empty DATA payload = %x, want %x", got, emptyPayload)
+	}
+
+	verifyJournalctl(t, path)
+
+	rows := runJournalctlJSON(t, path, "TEST_ID=binary-field")
+	if len(rows) != 1 {
+		t.Fatalf("filtered row count = %d, want 1; rows=%v", len(rows), rows)
+	}
+	assertJSONByteArray(t, rows[0], "BINARY_PAYLOAD", binaryValue)
+	assertJSONByteArray(t, rows[0], "BINARY_MATCH", matchableBinaryValue)
+	assertJSONField(t, rows[0], "BINARY_EMPTY", "")
+
+	rows = runJournalctlJSON(t, path, "BINARY_MATCH=abc\x07def")
+	if len(rows) != 1 {
+		t.Fatalf("binary match row count = %d, want 1; rows=%v", len(rows), rows)
+	}
+
+	exported := runJournalctlExport(t, path, "TEST_ID=binary-field")
+	assertExportField(t, exported, "BINARY_PAYLOAD", binaryValue)
+	assertExportField(t, exported, "BINARY_MATCH", matchableBinaryValue)
+	assertExportField(t, exported, "BINARY_EMPTY", emptyBinaryValue)
+
+	t.Run("libsystemd", func(t *testing.T) {
+		runLibsystemdBinaryFieldReader(t, path, "BINARY_PAYLOAD", binaryValue, "TEST_ID=binary-field")
+		runLibsystemdBinaryFieldReader(t, path, "BINARY_MATCH", matchableBinaryValue, "TEST_ID=binary-field")
+		runLibsystemdBinaryFieldReader(t, path, "BINARY_EMPTY", emptyBinaryValue, "TEST_ID=binary-field")
+	})
 }
 
 func TestHashCollisionChainsDeduplicate(t *testing.T) {
@@ -520,12 +590,123 @@ func runJournalctlLineCount(t *testing.T, path string, matches ...string) int {
 	return bytes.Count(output, []byte{'\n'}) + 1
 }
 
+func runJournalctlExport(t *testing.T, path string, matches ...string) map[string][][]byte {
+	t.Helper()
+
+	args := append([]string{"--file", path, "--output=export", "--no-pager"}, matches...)
+	cmd := exec.Command("journalctl", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("journalctl %s failed: %v\n%s", strings.Join(args, " "), err, output)
+	}
+
+	entries := parseJournalExport(t, output)
+	if len(entries) != 1 {
+		t.Fatalf("export entry count = %d, want 1; output=%x", len(entries), output)
+	}
+	return entries[0]
+}
+
+func parseJournalExport(t *testing.T, data []byte) []map[string][][]byte {
+	t.Helper()
+
+	var entries []map[string][][]byte
+	entry := make(map[string][][]byte)
+	for pos := 0; pos < len(data); {
+		lineEnd := bytes.IndexByte(data[pos:], '\n')
+		if lineEnd < 0 {
+			t.Fatalf("unterminated export field at offset %d", pos)
+		}
+		lineEnd += pos
+		line := data[pos:lineEnd]
+		pos = lineEnd + 1
+
+		if len(line) == 0 {
+			if len(entry) > 0 {
+				entries = append(entries, entry)
+				entry = make(map[string][][]byte)
+			}
+			continue
+		}
+
+		if eq := bytes.IndexByte(line, '='); eq >= 0 {
+			name := string(line[:eq])
+			value := append([]byte(nil), line[eq+1:]...)
+			entry[name] = append(entry[name], value)
+			continue
+		}
+
+		remaining := len(data) - pos
+		if remaining < 8 {
+			t.Fatalf("binary export field %q at offset %d lacks length", line, pos)
+		}
+		size := binary.LittleEndian.Uint64(data[pos : pos+8])
+		pos += 8
+		remaining = len(data) - pos
+		if size > uint64(remaining) {
+			t.Fatalf("binary export field %q size %d exceeds remaining %d", line, size, remaining)
+		}
+		value := append([]byte(nil), data[pos:pos+int(size)]...)
+		pos += int(size)
+		if pos >= len(data) || data[pos] != '\n' {
+			t.Fatalf("binary export field %q is not newline terminated", line)
+		}
+		pos++
+		name := string(line)
+		entry[name] = append(entry[name], value)
+	}
+	if len(entry) > 0 {
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
 func verifyJournalctl(t *testing.T, path string) {
 	t.Helper()
 
 	verify := exec.Command("journalctl", "--verify", "--file", path)
 	if output, err := verify.CombinedOutput(); err != nil {
 		t.Fatalf("journalctl --verify failed: %v\n%s", err, output)
+	}
+}
+
+func assertJSONByteArray(t *testing.T, row map[string]any, key string, want []byte) {
+	t.Helper()
+
+	got, ok := row[key]
+	if !ok {
+		t.Fatalf("field %s missing from row %v", key, row)
+	}
+	items, ok := got.([]any)
+	if !ok {
+		t.Fatalf("field %s = %T(%v), want JSON byte array", key, got, got)
+	}
+	if len(items) != len(want) {
+		t.Fatalf("field %s byte count = %d, want %d; got=%v", key, len(items), len(want), got)
+	}
+	for i, item := range items {
+		number, ok := item.(float64)
+		if !ok {
+			t.Fatalf("field %s byte %d = %T(%v), want number", key, i, item, item)
+		}
+		if number != float64(want[i]) {
+			t.Fatalf("field %s byte %d = %v, want %d", key, i, number, want[i])
+		}
+	}
+}
+
+func assertExportField(t *testing.T, fields map[string][][]byte, key string, want []byte) {
+	t.Helper()
+
+	values, ok := fields[key]
+	if !ok {
+		t.Fatalf("export field %s missing from %v", key, fields)
+	}
+	if len(values) != 1 {
+		t.Fatalf("export field %s value count = %d, want 1", key, len(values))
+	}
+	if !bytes.Equal(values[0], want) {
+		t.Fatalf("export field %s = %x, want %x", key, values[0], want)
 	}
 }
 
@@ -538,5 +719,46 @@ func assertJSONField(t *testing.T, row map[string]any, key, want string) {
 	}
 	if fmt.Sprint(got) != want {
 		t.Fatalf("field %s = %v, want %q", key, got, want)
+	}
+}
+
+func runLibsystemdBinaryFieldReader(t *testing.T, path, field string, expected []byte, matches ...string) {
+	t.Helper()
+
+	cc, err := exec.LookPath("cc")
+	if err != nil {
+		t.Skip("cc is not installed")
+	}
+	if _, err := exec.LookPath("pkg-config"); err != nil {
+		t.Skip("pkg-config is not installed")
+	}
+	pkg := exec.Command("pkg-config", "--cflags", "--libs", "libsystemd")
+	pkgOutput, err := pkg.Output()
+	if err != nil {
+		t.Skipf("libsystemd development files are not available: %v", err)
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	source := filepath.Clean(filepath.Join(wd, "..", "..", "tests", "conformance", "binary", "libsystemd_binary_field_reader.c"))
+	if _, err := os.Stat(source); err != nil {
+		t.Fatalf("libsystemd helper source missing: %v", err)
+	}
+
+	exe := filepath.Join(t.TempDir(), "libsystemd-binary-field-reader")
+	args := []string{source, "-o", exe}
+	args = append(args, strings.Fields(string(pkgOutput))...)
+	build := exec.Command(cc, args...)
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build libsystemd helper failed: %v\n%s", err, output)
+	}
+
+	runArgs := []string{path, field, hex.EncodeToString(expected)}
+	runArgs = append(runArgs, matches...)
+	run := exec.Command(exe, runArgs...)
+	if output, err := run.CombinedOutput(); err != nil {
+		t.Fatalf("libsystemd binary field readback failed: %v\n%s", err, output)
 	}
 }

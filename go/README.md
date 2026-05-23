@@ -8,6 +8,7 @@ Current writer scope:
 - regular, non-compact journal files;
 - uncompressed DATA objects;
 - keyed hash tables using the journal file ID;
+- byte-safe field values through `journal.Field{Name, Value []byte}`;
 - create, close, and reopen/append for files created by this writer;
 - data and field de-duplication;
 - global entry arrays and per-DATA entry links;
@@ -39,3 +40,15 @@ return w.Append([]journal.Field{
     journal.StringField("SYSLOG_IDENTIFIER", "netdata-plugin"),
 }, journal.EntryOptions{})
 ```
+
+Binary-safe values:
+
+```go
+err := w.Append([]journal.Field{
+    journal.StringField("MESSAGE", "sample with binary payload"),
+    {Name: "BINARY_PAYLOAD", Value: []byte{0x00, 0x01, 0x02, 0xff}},
+}, journal.EntryOptions{})
+```
+
+Use `Append([]journal.Field{...})` for binary payloads. `AppendMap()` and
+`StringField()` are convenience helpers for string-valued fields.

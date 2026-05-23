@@ -15,6 +15,7 @@ This project produces pure SDKs and file-backed journalctl-compatible tools for 
 
 - The Go writer is the first implementation deliverable after the shared test harness is accepted.
 - The Go writer is prioritized because the user needs a pure-Go journal writer for a Netdata plugin integration.
+- The Go writer must support binary field values before later SDK phases continue, because the Netdata plugin integration requires byte-safe payloads.
 - Rust, Go reader/journalctl completion, Node.js, Python, full interoperability, benchmarks, and optimization remain required, but they must not be started ahead of the Go writer unless the user changes this priority.
 
 ## Core Contracts
@@ -122,6 +123,13 @@ Final writer target:
 - Forward Secure Sealing where systemd journal files define it.
 
 Delivery may be phased. Earlier phases may write a smaller feature subset if the SOW records the gap, shared readers/tests support the compatibility envelope, and follow-up SOWs track the remaining writer features.
+
+Current Go writer feature slice:
+
+- regular, non-compact, uncompressed journal files;
+- keyed hash tables using the journal file ID;
+- byte-safe DATA field values through `Field.Value []byte`;
+- live one-writer/multiple-reader compatibility with stock `journalctl --file` and stock libsystemd readers for the current writer slice.
 
 ## Reader Target
 
