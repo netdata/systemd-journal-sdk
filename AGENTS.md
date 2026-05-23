@@ -53,7 +53,7 @@ Canonical external-agent prompt block:
 ```text
 CRITICAL REPOSITORY BOUNDARY:
 - DO NOT MAKE CHANGES OUTSIDE THIS REPOSITORY FOR ANY REASON.
-- Repository path: /home/costa/Documents/systemd-journal-sdk
+- Repository path: current repository root.
 - You may inspect external references read-only when the task requires it.
 - Write, edit, delete, move, reset, checkout, install, generate, cache, or format nothing outside this repository.
 - The only write exception outside the repository is /tmp.

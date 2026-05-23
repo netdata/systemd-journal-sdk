@@ -25,11 +25,12 @@ Bootstrap mode: empty/new project.
 ## Completed SOWs
 
 - `.agents/sow/done/SOW-0001-20260523-project-bootstrap-and-orchestration.md`
+- `.agents/sow/done/SOW-0002-20260523-repo-scaffold-and-rust-source-import.md`
 
 ## Next SOW
 
-- `.agents/sow/pending/SOW-0002-20260523-repo-scaffold-and-rust-source-import.md`
-- Activation is blocked until the Rust workspace/package layout decision is recorded.
+- `.agents/sow/pending/SOW-0003-20260523-systemd-test-inventory-and-shared-harness.md`
+- Activation is blocked until the shared harness runner format decision is recorded.
 
 ## Guardrails
 
@@ -41,5 +42,5 @@ Bootstrap mode: empty/new project.
 
 - Phase breakdown and implementation SOWs have been created as SOW-0002 through SOW-0009.
 - Bootstrap external review ran in repeated rounds; governance findings were dispositioned in SOW-0001.
-- No implementation SOW has started yet.
-- First bootstrap commit is pending explicit path staging.
+- SOW-0002 external review completed with all four round-3 reviewers returning `PRODUCTION GRADE`.
+- SOW-0002 close commit completed.

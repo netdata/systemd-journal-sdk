@@ -1,0 +1,150 @@
+[workspace]
+resolver = "2"
+members = [
+    # JF reader crate (with its own internal workspace for sub-crates)
+    "src/crates/jf/error",
+    "src/crates/jf/journal_file",
+    "src/crates/jf/journal_reader_ffi",
+    "src/crates/jf/window_manager",
+    "src/crates/jf/sigbus",
+
+    # Core journal crates
+    "src/crates/journal-common",
+    "src/crates/journal-core",
+    "src/crates/journal-index",
+    "src/crates/journal-log-writer",
+    "src/crates/journal-registry",
+    "src/crates/journal-engine",
+    "src/crates/rdp",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[workspace.lints.clippy]
+collapsible_if = "allow"
+
+# Core workspace dependencies
+[workspace.dependencies]
+# Error handling
+thiserror = "2"
+anyhow = "1.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Memory mapping
+memmap2 = "0.9"
+
+# Zero-copy deserialization
+zerocopy = { version = "0.9.0-alpha.0", features = ["derive"] }
+
+# Hashing
+siphasher = "1.0"
+hashers = "1.0"
+twox-hash = { version = "2.1", default-features = false }
+md5 = "0.7"
+rustc-hash = "2.1"
+
+# Compression
+ruzstd = "0.8"
+lz4_flex = { version = "0.12", default-features = false, features = ["std", "safe-decode", "checked-decode"] }
+lzma-rust2 = { version = "0.15", default-features = false, features = ["std", "xz"] }
+
+# Random
+rand = "0.9"
+
+# Utilities
+static_assertions = "1.1"
+hex = "0.4"
+libc = "0.2"
+base64 = "0.22"
+parking_lot = "0.12"
+walkdir = "2.4"
+regex = "1.10"
+itoa = "1.0"
+
+# Async
+tokio = { version = "1.45", features = ["full"] }
+async-stream = "0.3"
+async-trait = "0.1.89"
+futures = "0.3"
+crossbeam-channel = "0.5"
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["codec"] }
+
+# Tracing
+tracing = { version = "0.1" }
+tracing-subscriber = "0.3"
+tracing-futures = { version = "0.2.5" }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUID
+uuid = { version = "1.0", features = ["v4", "rng", "serde"] }
+
+# System
+nix = { version = "0.30" }
+
+# File watching
+notify = "8.2"
+
+# Collections
+bitvec = "1.0.1"
+roaring = "0.11"
+indexmap = "2.9"
+hashbrown = "0.17.0"
+
+# Caching
+lru = "0.16"
+foyer = { version = "0.20.0", features = ["serde"] }
+
+# Memory analysis
+allocative = "0.3.4"
+
+# Parsing
+atoi = "2.0"
+bitflags = "2.9"
+bytes = "1"
+phf = { version = "0.12", default-features = false }
+proptest = "1.9"
+arbitrary = "1.3"
+
+# Dev/test utilities
+tempfile = "3"
+clap = { version = "4", features = ["derive"] }
+rayon = "1.11.0"
+cbindgen = "0.28.0"
+
+# Serialization helpers
+serde_yaml = "0.9.34"
+serde_regex = "1.1.0"
+rmp-serde = "1.3.1"
+
+# Flatten serde JSON (for journal-log-writer serde-api feature)
+# From upstream Netdata: https://github.com/meilisearch/meilisearch.git tag v1.22.1
+flatten-serde-json = { git = "https://github.com/meilisearch/meilisearch", tag = "v1.22.1" }
+
+# Internal crate path dependencies
+journal-common = { path = "src/crates/journal-common" }
+journal-registry = { path = "src/crates/journal-registry" }
+rdp = { path = "src/crates/rdp" }
+journal-core = { path = "src/crates/journal-core" }
+journal-index = { path = "src/crates/journal-index" }
+journal-log-writer = { path = "src/crates/journal-log-writer" }
+journal-engine = { path = "src/crates/journal-engine" }
+
+[profile.dev]
+opt-level = 1
+debug = true
+debug-assertions = true
+
+[profile.release]
+debug = true
+opt-level = 3
+lto = "fat"
+codegen-units = 1

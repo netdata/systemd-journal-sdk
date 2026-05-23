@@ -1,0 +1,25 @@
+[package]
+license = "GPL-3.0-or-later"
+name = "journal_file"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+error = { path = "../error" }
+window_manager = { path = "../window_manager" }
+memmap2 = { workspace = true }
+ruzstd = { workspace = true }
+lz4_flex = { workspace = true }
+lzma-rust2 = { workspace = true }
+siphasher = { workspace = true }
+hashers = { workspace = true }
+zerocopy = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

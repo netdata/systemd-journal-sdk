@@ -1,2 +1,8 @@
 .local/
 *.local.md
+
+# Rust build artifacts
+rust/target/
+rust/src/crates/*/target/
+rust/src/crates/jf/target/
+**/target/

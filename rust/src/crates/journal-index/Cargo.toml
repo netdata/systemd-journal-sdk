@@ -1,0 +1,34 @@
+[package]
+license = "GPL-3.0-or-later"
+name = "journal-index"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+allocative = [
+    "dep:allocative",
+    "journal-core/allocative",
+    "journal-common/allocative"
+]
+
+[dependencies]
+regex = { workspace = true }
+roaring = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
+static_assertions = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+journal-core = { workspace = true }
+journal-common = { workspace = true }
+journal-registry = { workspace = true }
+
+allocative = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+uuid = { workspace = true }

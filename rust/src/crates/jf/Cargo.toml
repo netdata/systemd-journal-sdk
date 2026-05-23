@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "error",
+    "journal_file",
+    "journal_reader_ffi",
+    "window_manager",
+    "sigbus",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+
+[workspace.lints.clippy]
+collapsible_if = "allow"
+
+[workspace.dependencies]
+memmap2 = "0.9"
+zerocopy = { version = "0.9.0-alpha.0", features = ["derive"] }
+thiserror = "2"
+rand = "0.9"
+siphasher = "1.0"
+hashers = "1.0"
+static_assertions = "1.1"
+serde_json = "1.0"
+ruzstd = "0.8"
+lz4_flex = { version = "0.12", default-features = false, features = ["std", "safe-decode", "checked-decode"] }
+lzma-rust2 = { version = "0.15", default-features = false, features = ["std", "xz"] }
+libc = "0.2"
+hex = "0.4"
+tempfile = "3"
+cbindgen = "0.28.0"
+
+[profile.release]
+lto = true
+codegen-units = 1
