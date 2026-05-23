@@ -52,10 +52,10 @@ impl FilterExpr {
 
                         match filter_expr.lookup(journal_file, current_offset.get(), direction)? {
                             Some(new_offset) => {
-                                if new_offset == 0 {
-                                    panic!("Wtf");
-                                }
-                                current_offset = NonZeroU64::new(new_offset).unwrap();
+                                let Some(new_offset) = NonZeroU64::new(new_offset) else {
+                                    return Err(JournalError::InvalidOffset);
+                                };
+                                current_offset = new_offset;
                             }
                             None => return Ok(None),
                         }
@@ -362,7 +362,7 @@ impl JournalFilter {
         self.current_matches.clear();
 
         match elements.len() {
-            0 => panic!("Could not create filter elements from current matches"),
+            0 => Ok(None),
             1 => Ok(Some(elements.remove(0))),
             _ => Ok(Some(FilterExpr::Conjunction(elements))),
         }

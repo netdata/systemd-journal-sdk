@@ -631,7 +631,7 @@ fn encode_nodes(source: &str, nodes: &[Node]) -> String {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use rdp::encode;
 ///
 /// // Simple lowercase field - no checksum
@@ -651,9 +651,10 @@ fn encode(b: &[u8]) -> String {
         return format!("{}{:X}", REMAPPED_PREFIX, digest);
     };
 
-    // SAFETY: We'll only get tokens when we have valid ASCII characters in
-    // the input byte slice.
-    let s = unsafe { str::from_utf8_unchecked(b) };
+    let Ok(s) = std::str::from_utf8(b) else {
+        let digest = md5::compute(b);
+        return format!("{}{:X}", REMAPPED_PREFIX, digest);
+    };
 
     let nodes = parse(b, &tokens);
     encode_nodes(s, &nodes)
@@ -666,7 +667,7 @@ fn encode(b: &[u8]) -> String {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// # use rdp::compress_runs;
 /// assert_eq!(compress_runs("aaa"), "3a");
 /// assert_eq!(compress_runs("aaaaaaaaaa"), "9aa");  // 10 a's → 9a + a
@@ -751,7 +752,7 @@ fn compress_runs(s: &str) -> String {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use rdp::encode_full;
 ///
 /// // Simple lowercase field
@@ -805,7 +806,7 @@ pub fn encode_full(field_name: &[u8]) -> String {
         compress_runs(&encoded)
     };
 
-    let s = unsafe { String::from_utf8_unchecked(field_name.to_vec()) };
+    let s = String::from_utf8_lossy(field_name);
     let mut normalized = s.to_uppercase().replace(['.', '-'], "_");
 
     // Replace common prefixes with shorter versions

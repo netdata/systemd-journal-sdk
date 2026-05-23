@@ -124,7 +124,7 @@ impl<M: MemoryMap> Default for JournalReader<'_, M> {
 impl<'a, M: MemoryMap> JournalReader<'a, M> {
     pub fn dump(&self, _journal_file: &'a JournalFile<M>) -> Result<String> {
         if let Some(_filter_expr) = self.cursor.filter_expr.as_ref() {
-            todo!();
+            Ok(String::from("filter expr active"))
         } else {
             Ok(String::from("no filter expr"))
         }

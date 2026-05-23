@@ -700,8 +700,13 @@ impl<M: MemoryMapMut> JournalFile<M> {
         self.header_map.flush()?;
 
         // Sync file page cache to disk
+        let (logical_size, header_size) = {
+            let header = self.journal_header_ref();
+            (header.header_size + header.arena_size, header.header_size)
+        };
+        let header_bytes = self.header_map[..header_size as usize].to_vec();
         let window_manager = self.window_manager.get_mut();
-        window_manager.sync()?;
+        window_manager.sync(logical_size, &header_bytes)?;
 
         Ok(())
     }
@@ -979,7 +984,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
         offset: NonZeroU64,
         size: Option<u64>,
     ) -> Result<ValueGuard<'_, EntryObject<&mut [u8]>>> {
-        let size = size.map(|n| std::mem::size_of::<DataObjectHeader>() as u64 + n);
+        let size = size.map(|n| std::mem::size_of::<EntryObjectHeader>() as u64 + n);
         self.journal_object_mut(ObjectType::Entry, offset, size)
     }
 

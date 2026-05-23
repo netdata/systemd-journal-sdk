@@ -1,0 +1,13 @@
+[package]
+name = "livewriter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+journal = { path = "../../../journal" }
+journal-core = { path = "../../../crates/journal-core" }
+uuid.workspace = true

@@ -94,7 +94,7 @@ impl FieldMap {
     pub fn fields(self) -> HashSet<String> {
         self.otel_to_systemd
             .into_keys()
-            .map(|x| unsafe { String::from_utf8_unchecked(x) })
+            .map(|x| String::from_utf8_lossy(&x).into_owned())
             .collect()
     }
 }

@@ -16,12 +16,23 @@ members = [
     "src/crates/journal-registry",
     "src/crates/journal-engine",
     "src/crates/rdp",
+
+    # Public SDK
+    "src/journal",
+
+    # CLI tools
+    "src/cmd/journalctl",
+    "src/internal/testcmd/livewriter",
+
+    # Conformance adapter
+    "src/adapter",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
+license = "GPL-3.0-or-later"
 
 [workspace.lints.clippy]
 collapsible_if = "allow"
@@ -66,6 +77,7 @@ parking_lot = "0.12"
 walkdir = "2.4"
 regex = "1.10"
 itoa = "1.0"
+ouroboros = "0.18"
 
 # Async
 tokio = { version = "1.45", features = ["full"] }

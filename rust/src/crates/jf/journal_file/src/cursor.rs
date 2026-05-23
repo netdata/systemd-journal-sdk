@@ -136,7 +136,11 @@ impl JournalCursor {
                 }
             }
             (Location::ResolvedEntry(_), Direction::Forward) => {
-                let Some(cursor) = self.array_cursor.unwrap().next(journal_file)? else {
+                let Some(cursor) = self
+                    .array_cursor
+                    .ok_or(JournalError::UnsetCursor)?
+                    .next(journal_file)?
+                else {
                     return Ok(None);
                 };
 
@@ -148,7 +152,11 @@ impl JournalCursor {
                 }
             }
             (Location::ResolvedEntry(_), Direction::Backward) => {
-                let Some(cursor) = self.array_cursor.unwrap().previous(journal_file)? else {
+                let Some(cursor) = self
+                    .array_cursor
+                    .ok_or(JournalError::UnsetCursor)?
+                    .previous(journal_file)?
+                else {
                     return Ok(None);
                 };
 
@@ -159,9 +167,7 @@ impl JournalCursor {
                     None
                 }
             }
-            _ => {
-                unimplemented!()
-            }
+            _ => return Err(JournalError::InvalidQueryConfiguration),
         };
 
         Ok(new_location)
@@ -227,9 +233,7 @@ impl JournalCursor {
                     None
                 }
             }
-            _ => {
-                unimplemented!();
-            }
+            _ => return Err(JournalError::InvalidQueryConfiguration),
         };
 
         Ok(resolved_location)

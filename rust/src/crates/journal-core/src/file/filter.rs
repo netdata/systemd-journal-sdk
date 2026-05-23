@@ -12,78 +12,6 @@ pub enum FilterExpr {
 }
 
 impl FilterExpr {
-    // pub fn lookup<M: MemoryMap>(
-    //     &self,
-    //     journal_file: &JournalFile<M>,
-    //     needle_offset: u64,
-    //     direction: Direction,
-    // ) -> Result<Option<u64>> {
-    //     let Some(needle_offset) = NonZeroU64::new(needle_offset) else {
-    //         return Err(JournalError::InvalidOffset);
-    //     };
-
-    //     let predicate =
-    //         move |entry_offset: NonZeroU64| -> Result<bool> { Ok(entry_offset < needle_offset) };
-
-    //     match self {
-    //         FilterExpr::Match(data_offset, _) => {
-    //             let Some(data_offset) = NonZeroU64::new(*data_offset) else {
-    //                 return Err(JournalError::InvalidOffset);
-    //             };
-    //             let entry_offset = journal_file.data_object_directed_partition_point(
-    //                 data_offset,
-    //                 predicate,
-    //                 direction,
-    //             )?;
-    //             Ok(entry_offset.map(|x| x.get()))
-    //         }
-    //         FilterExpr::Conjunction(filter_exprs) => {
-    //             let mut current_offset = needle_offset;
-
-    //             loop {
-    //                 let previous_offset = current_offset;
-
-    //                 for filter_expr in filter_exprs {
-    //                     if direction == Direction::Backward {
-    //                         current_offset = current_offset.saturating_add(1);
-    //                     }
-
-    //                     match filter_expr.lookup(journal_file, current_offset.get(), direction)? {
-    //                         Some(new_offset) => {
-    //                             if new_offset == 0 {
-    //                                 panic!("Wtf");
-    //                             }
-    //                             current_offset = NonZeroU64::new(new_offset).unwrap();
-    //                         }
-    //                         None => return Ok(None),
-    //                     }
-    //                 }
-
-    //                 if current_offset == previous_offset {
-    //                     return Ok(Some(current_offset.get()));
-    //                 }
-    //             }
-    //         }
-    //         FilterExpr::Disjunction(filter_exprs) => {
-    //             let cmp = match direction {
-    //                 Direction::Forward => std::cmp::min,
-    //                 Direction::Backward => std::cmp::max,
-    //             };
-
-    //             filter_exprs.iter().try_fold(None, |acc, expr| {
-    //                 let result = expr.lookup(journal_file, needle_offset.get(), direction)?;
-
-    //                 Ok(match (acc, result) {
-    //                     (None, Some(offset)) => Some(offset),
-    //                     (Some(best), Some(offset)) => Some(cmp(best, offset)),
-    //                     (acc, None) => acc,
-    //                 })
-    //             })
-    //         }
-    //         FilterExpr::None => Ok(None),
-    //     }
-    // }
-
     pub fn head(&mut self) -> &mut Self {
         match self {
             FilterExpr::None => (),
@@ -308,7 +236,7 @@ impl JournalFilter {
         self.current_matches.clear();
 
         match elements.len() {
-            0 => panic!("Could not create filter elements from current matches"),
+            0 => Ok(None),
             1 => Ok(Some(elements.remove(0))),
             _ => Ok(Some(FilterExpr::Conjunction(elements))),
         }

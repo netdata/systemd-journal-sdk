@@ -1,4 +1,4 @@
-use error::Result;
+use error::{JournalError, Result};
 use memmap2::{Mmap, MmapMut, MmapOptions};
 use std::fs::File;
 use std::ops::{Deref, DerefMut};
@@ -15,6 +15,12 @@ pub trait MemoryMapMut: MemoryMap + DerefMut {}
 
 impl MemoryMap for Mmap {
     fn create(file: &File, offset: u64, size: u64) -> Result<Self> {
+        let end = offset
+            .checked_add(size)
+            .ok_or(JournalError::ObjectExceedsFileBounds)?;
+        if end > file.metadata()?.len() {
+            return Err(JournalError::ObjectExceedsFileBounds);
+        }
         let mmap = unsafe {
             MmapOptions::new()
                 .offset(offset)
@@ -28,7 +34,9 @@ impl MemoryMap for Mmap {
 
 impl MemoryMap for MmapMut {
     fn create(file: &File, offset: u64, size: u64) -> Result<Self> {
-        let required_size = offset + size;
+        let required_size = offset
+            .checked_add(size)
+            .ok_or(JournalError::ObjectExceedsFileBounds)?;
 
         if required_size > file.metadata()?.len() {
             file.set_len(required_size)?;
@@ -63,16 +71,21 @@ impl<M: MemoryMap> std::fmt::Debug for Window<M> {
 }
 
 impl<M: MemoryMap> Window<M> {
-    fn end_offset(&self) -> u64 {
-        self.offset + self.size
+    fn end_offset(&self) -> Option<u64> {
+        self.offset.checked_add(self.size)
     }
 
     fn contains(&self, position: u64) -> bool {
-        position >= self.offset && position < self.end_offset()
+        self.end_offset()
+            .is_some_and(|end_offset| position >= self.offset && position < end_offset)
     }
 
     fn contains_range(&self, position: u64, size: u64) -> bool {
-        position >= self.offset && position + size <= self.end_offset()
+        let Some(end) = position.checked_add(size) else {
+            return false;
+        };
+        self.end_offset()
+            .is_some_and(|end_offset| position >= self.offset && end <= end_offset)
     }
 
     fn get_slice(&self, position: u64, size: u64) -> &[u8] {
@@ -122,14 +135,24 @@ impl<M: MemoryMap> WindowManager<M> {
         (position / self.chunk_size) * self.chunk_size
     }
 
-    fn get_chunk_aligned_end(&self, position: u64) -> u64 {
-        position.div_ceil(self.chunk_size) * self.chunk_size
+    fn get_chunk_aligned_end(&self, position: u64) -> Result<u64> {
+        position
+            .div_ceil(self.chunk_size)
+            .checked_mul(self.chunk_size)
+            .ok_or(JournalError::ObjectExceedsFileBounds)
     }
 
     fn create_window(&self, window_start: u64, chunk_count: u64) -> Result<Window<M>> {
         debug_assert_ne!(chunk_count, 0);
 
-        let size = chunk_count * self.chunk_size;
+        let requested_size = chunk_count
+            .checked_mul(self.chunk_size)
+            .ok_or(JournalError::ObjectExceedsFileBounds)?;
+        let file_size = self.file.metadata()?.len();
+        if window_start >= file_size {
+            return Err(JournalError::ObjectExceedsFileBounds);
+        }
+        let size = requested_size.min(file_size - window_start);
         let mmap = M::create(&self.file, window_start, size)?;
         Ok(Window {
             offset: window_start,
@@ -186,9 +209,13 @@ impl<M: MemoryMap> WindowManager<M> {
             // Remap the window
 
             let window = self.windows.remove(idx);
+            self.active_window_idx = None;
 
+            let range_end = position
+                .checked_add(size_needed)
+                .ok_or(JournalError::ObjectExceedsFileBounds)?;
             let window_start = window.offset;
-            let window_end = self.get_chunk_aligned_end(position + size_needed);
+            let window_end = self.get_chunk_aligned_end(range_end)?;
             let num_chunks = (window_end - window_start) / self.chunk_size;
 
             let new_window = self.create_window(window_start, num_chunks)?;
@@ -201,14 +228,16 @@ impl<M: MemoryMap> WindowManager<M> {
 
             if self.windows.len() >= self.max_windows {
                 self.windows.remove(self.find_window_to_evict());
+                self.active_window_idx = None;
             }
 
-            // NOTE: the active window index might have been invalidated. In
-            // the scope that follows, we should not use code that relies on it.
             {
                 // Calculate window start for this position
+                let range_end = position
+                    .checked_add(size_needed)
+                    .ok_or(JournalError::ObjectExceedsFileBounds)?;
                 let window_start = self.get_chunk_aligned_start(position);
-                let window_end = self.get_chunk_aligned_end(position + size_needed);
+                let window_end = self.get_chunk_aligned_end(range_end)?;
                 let num_chunks = (window_end - window_start) / self.chunk_size;
 
                 let new_window = self.create_window(window_start, num_chunks)?;
@@ -222,6 +251,12 @@ impl<M: MemoryMap> WindowManager<M> {
     }
 
     pub fn get_slice(&mut self, position: u64, size: u64) -> Result<&[u8]> {
+        let end = position
+            .checked_add(size)
+            .ok_or(JournalError::ObjectExceedsFileBounds)?;
+        if end > self.file.metadata()?.len() {
+            return Err(JournalError::ObjectExceedsFileBounds);
+        }
         let window = self.get_window(position, size)?;
         Ok(window.get_slice(position, size))
     }
@@ -229,6 +264,12 @@ impl<M: MemoryMap> WindowManager<M> {
 
 impl<M: MemoryMapMut> WindowManager<M> {
     pub fn get_slice_mut(&mut self, position: u64, size: u64) -> Result<&mut [u8]> {
+        let required_size = position
+            .checked_add(size)
+            .ok_or(JournalError::ObjectExceedsFileBounds)?;
+        if required_size > self.file.metadata()?.len() {
+            self.file.set_len(required_size)?;
+        }
         let window = self.get_window(position, size)?;
         Ok(window.get_mut_slice(position, size))
     }

@@ -6,14 +6,18 @@ use journal_core::collections::HashMap;
 use journal_core::file::Mmap;
 use journal_registry::repository;
 use journal_registry::repository::File;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 #[allow(unused_imports)]
 use tracing::{error, info, instrument};
 
+fn create_active_chain_file(path: &PathBuf) -> Option<repository::File> {
+    repository::File::from_path(&path.join("system.journal"))
+}
+
 // Helper function to create a File with archived status
-fn create_chain_file(
+fn create_archived_chain_file(
     path: &PathBuf,
     seqnum_id: Uuid,
     head_seqnum: u64,
@@ -27,9 +31,7 @@ fn create_chain_file(
         head_realtime
     );
 
-    let path = path.join(filename);
-
-    repository::File::from_path(&path)
+    repository::File::from_path(&path.join(filename))
 }
 
 /// Manages a directory of journal files with automatic cleanup.
@@ -142,14 +144,8 @@ impl OwnedChain {
     }
 
     /// Registers a new journal file with the directory.
-    pub(super) fn create_file(
-        &mut self,
-        seqnum_id: Uuid,
-        head_seqnum: u64,
-        head_realtime: u64,
-    ) -> Result<repository::File> {
-        let Some(file) = create_chain_file(&self.path, seqnum_id, head_seqnum, head_realtime)
-        else {
+    pub(super) fn create_active_file(&mut self) -> Result<repository::File> {
+        let Some(file) = create_active_chain_file(&self.path) else {
             return Err(WriterError::FileCreation(format!(
                 "failed to create journal file in {}",
                 self.path.display()
@@ -157,6 +153,63 @@ impl OwnedChain {
         };
         self.inner.insert_file(file.clone());
         Ok(file)
+    }
+
+    pub(super) fn archive_existing_active_file(&mut self) -> Result<Option<repository::File>> {
+        let Some(file) = self.inner.back().filter(|file| file.is_active()).cloned() else {
+            return Ok(None);
+        };
+
+        if !Path::new(file.path()).exists() {
+            self.file_sizes.remove(&file);
+            self.inner.remove_file(&file);
+            return Ok(None);
+        }
+
+        let (seqnum_id, head_seqnum, head_realtime) = {
+            let window_size = 4096;
+            let jf = JournalFile::<Mmap>::open(&file, window_size)?;
+            let header = jf.journal_header_ref();
+            (
+                Uuid::from_bytes(header.seqnum_id),
+                header.head_entry_seqnum,
+                header.head_entry_realtime,
+            )
+        };
+
+        if head_seqnum == 0 || head_realtime == 0 {
+            return Ok(None);
+        }
+
+        self.archive_file(&file, seqnum_id, head_seqnum, head_realtime)
+            .map(Some)
+    }
+
+    pub(super) fn archive_file(
+        &mut self,
+        file: &repository::File,
+        seqnum_id: Uuid,
+        head_seqnum: u64,
+        head_realtime: u64,
+    ) -> Result<repository::File> {
+        let Some(archived) =
+            create_archived_chain_file(&self.path, seqnum_id, head_seqnum, head_realtime)
+        else {
+            return Err(WriterError::FileCreation(format!(
+                "failed to create archived journal file name in {}",
+                self.path.display()
+            )));
+        };
+
+        if file.path() != archived.path() && std::path::Path::new(file.path()).exists() {
+            std::fs::rename(file.path(), archived.path())?;
+        }
+
+        let size = self.file_sizes.remove(file).unwrap_or(0);
+        self.inner.remove_file(file);
+        self.file_sizes.insert(archived.clone(), size);
+        self.inner.insert_file(archived.clone());
+        Ok(archived)
     }
 
     /// Updates the tracked size of a file in the chain
@@ -319,7 +372,7 @@ mod tests {
         fs::create_dir(&path).expect("create machine-id dir");
 
         let mut chain = OwnedChain::new(path.clone(), machine_id).expect("create chain");
-        let file = create_chain_file(&path, machine_id, 1, 1).expect("create chain file");
+        let file = create_archived_chain_file(&path, machine_id, 1, 1).expect("create chain file");
         fs::write(file.path(), b"journal").expect("write journal file");
 
         let file_size = fs::metadata(file.path()).expect("stat journal file").len();
@@ -356,10 +409,10 @@ mod tests {
         fs::create_dir(&path).expect("create machine-id dir");
 
         let mut chain = OwnedChain::new(path.clone(), machine_id).expect("create chain");
-        let deletable_file =
-            create_chain_file(&path, machine_id, 1, 1).expect("create deletable chain file");
+        let deletable_file = create_archived_chain_file(&path, machine_id, 1, 1)
+            .expect("create deletable chain file");
         let failed_file =
-            create_chain_file(&path, machine_id, 2, 2).expect("create failed chain file");
+            create_archived_chain_file(&path, machine_id, 2, 2).expect("create failed chain file");
 
         fs::write(deletable_file.path(), b"journal").expect("write deletable journal file");
         fs::create_dir(failed_file.path()).expect("create directory at failed journal path");

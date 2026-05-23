@@ -18,6 +18,9 @@ pub enum JournalError {
     #[error("invalid object location")]
     InvalidObjectLocation,
 
+    #[error("object exceeds file bounds")]
+    ObjectExceedsFileBounds,
+
     #[error("invalid zerocopy size")]
     InvalidZeroCopySize,
 
@@ -92,6 +95,9 @@ pub enum JournalError {
 
     #[error("not a directory")]
     NotADirectory,
+
+    #[error("invalid query configuration")]
+    InvalidQueryConfiguration,
 }
 
 const_assert!(std::mem::size_of::<JournalError>() <= 16);
@@ -103,6 +109,7 @@ impl JournalError {
             JournalError::InvalidJournalFileState => -2,
             JournalError::InvalidObjectType => -3,
             JournalError::InvalidObjectLocation => -4,
+            JournalError::ObjectExceedsFileBounds => -31,
             JournalError::InvalidZeroCopySize => -5,
             JournalError::ValueGuardInUse => -6,
             JournalError::Io(_) => -7,
@@ -128,6 +135,7 @@ impl JournalError {
             JournalError::SystemTimeError => -27,
             JournalError::DirectoryNotFound => -28,
             JournalError::NotADirectory => -29,
+            JournalError::InvalidQueryConfiguration => -30,
         }
     }
 }

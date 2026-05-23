@@ -41,7 +41,7 @@ pub trait HashTable {
 
     /// Make clippy happy
     fn is_empty(&self) -> bool {
-        todo!()
+        self.len() == 0
     }
 }
 

@@ -954,7 +954,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
         offset: NonZeroU64,
         size: Option<u64>,
     ) -> Result<ValueGuard<'_, EntryObject<&mut [u8]>>> {
-        let size = size.map(|n| std::mem::size_of::<DataObjectHeader>() as u64 + n);
+        let size = size.map(|n| std::mem::size_of::<EntryObjectHeader>() as u64 + n);
         self.journal_object_mut(ObjectType::Entry, offset, size)
     }
 

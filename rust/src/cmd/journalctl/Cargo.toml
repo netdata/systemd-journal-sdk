@@ -1,0 +1,17 @@
+[package]
+name = "journalctl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Pure-Rust systemd journalctl rewrite"
+license.workspace = true
+
+[[bin]]
+name = "journalctl"
+path = "main.rs"
+
+[dependencies]
+journal = { path = "../../journal" }
+clap = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }

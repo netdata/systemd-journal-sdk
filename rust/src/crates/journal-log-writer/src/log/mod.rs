@@ -109,11 +109,11 @@ impl ActiveFile {
         boot_id: uuid::Uuid,
         next_seqnum: u64,
         max_file_size: Option<u64>,
-        head_realtime: u64,
+        _head_realtime: u64,
     ) -> Result<Self> {
         let head_seqnum = next_seqnum;
 
-        let repository_file = chain.create_file(seqnum_id, head_seqnum, head_realtime)?;
+        let repository_file = chain.create_active_file()?;
 
         let options = JournalFileOptions::new(chain.machine_id, boot_id, seqnum_id)
             .with_window_size(8 * 1024 * 1024)
@@ -135,15 +135,14 @@ impl ActiveFile {
         self,
         chain: &mut OwnedChain,
         max_file_size: Option<u64>,
-        head_realtime: u64,
+        _head_realtime: u64,
     ) -> Result<Self> {
         let next_seqnum = self.writer.next_seqnum();
         let boot_id = self.writer.boot_id();
 
         let head_seqnum = next_seqnum;
 
-        let seqnum_id = uuid::Uuid::from_bytes(self.journal_file.journal_header_ref().seqnum_id);
-        let repository_file = chain.create_file(seqnum_id, head_seqnum, head_realtime)?;
+        let repository_file = chain.create_active_file()?;
 
         let mut journal_file = self
             .journal_file
@@ -575,6 +574,8 @@ impl Log {
                 &active_file.repository_file,
                 active_file.current_file_size(),
             );
+        } else {
+            self.chain.archive_existing_active_file()?;
         }
 
         // Respect retention policy
@@ -598,7 +599,13 @@ impl Log {
             // Set the old file's state to ARCHIVED before creating successor
             old_file.journal_file.journal_header_mut().state = JournalState::Archived as u8;
             old_file.journal_file.sync()?;
-            let archived = old_file.repository_file.clone();
+            let old_header = old_file.journal_file.journal_header_ref();
+            let archived = self.chain.archive_file(
+                &old_file.repository_file,
+                uuid::Uuid::from_bytes(old_header.seqnum_id),
+                old_header.head_entry_seqnum,
+                old_header.head_entry_realtime,
+            )?;
             let new_file = old_file.rotate(&mut self.chain, max_file_size, head_realtime)?;
             let active = new_file.repository_file.clone();
             (
@@ -747,10 +754,9 @@ impl Drop for Log {
         use journal_core::file::JournalState;
 
         if let Some(ref mut active_file) = self.active_file {
-            // A single file is opened for writing exactly once. Once closed, we
-            // treat them as immutable. We need a custom impl for `Drop` to keep
-            // this invariant true whenever the plugin receives a `SIGTERM` or
-            // a `SIGINT`.
+            // Keep the active path stable on close so file-backed readers that
+            // already follow system.journal can finish. The next writer startup
+            // archives this stale active file before creating a fresh one.
             active_file.journal_file.journal_header_mut().state = JournalState::Archived as u8;
 
             // Best/Last-effort sync just to be on the cautious side.
