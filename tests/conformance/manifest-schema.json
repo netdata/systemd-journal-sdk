@@ -145,7 +145,8 @@
             "cursor-navigation",
             "stream",
             "import-export",
-            "journalctl-cli"
+            "journalctl-cli",
+            "live-concurrency"
           ]
         },
         "description": {

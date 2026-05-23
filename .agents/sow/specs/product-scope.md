@@ -52,6 +52,8 @@ Required validation evidence:
 
 - A committed live-concurrency harness must exercise stock `journalctl --file` readers against each repository writer while appends are in progress.
 - A committed live-concurrency harness must exercise stock libsystemd reader APIs against each repository writer while appends are in progress.
+- The shared live-concurrency harness lives under `tests/conformance/live/` and uses a configurable monotonically increasing sequence field, defaulting to `LIVE_SEQ`, so stock readers prove ordered complete visibility.
+- Stock reader adapters may retry transient active-writer `ENODATA` open/read failures or partial snapshots only while the writer is active; after the writer exits, final ordered reads and `journalctl --verify --file` must pass without masking incompatibility.
 - A committed live-concurrency harness must exercise each repository reader against live files produced by each repository writer.
 - Where a stock systemd writer can be exercised without violating repository-boundary rules, each repository reader must be tested against it. If the environment cannot provide a stock writer safely, the SOW must record the missing evidence and cannot claim full reader compatibility.
 - Compatibility claims must record exact stock systemd version, commands/helpers used, stress duration, entry counts, reader counts, and failure criteria.

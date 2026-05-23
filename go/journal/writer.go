@@ -57,7 +57,6 @@ type Writer struct {
 	header       journalHeader
 	appendOffset uint64
 	nextSeqnum   uint64
-	writtenObjs  uint64
 	bootID       UUID
 	started      time.Time
 	closed       bool
@@ -222,6 +221,11 @@ func (w *Writer) Append(fields []Field, opts EntryOptions) error {
 		return err
 	}
 	w.objectAdded(entryOffset, entrySize)
+	// Publish object reachability only after the complete entry object exists.
+	// Entry count is committed last below so live stock readers see full rows.
+	if err := w.publishObjectMetadata(); err != nil {
+		return err
+	}
 
 	if err := w.appendToEntryArray(entryOffset); err != nil {
 		return err
@@ -232,7 +236,7 @@ func (w *Writer) Append(fields []Field, opts EntryOptions) error {
 		}
 	}
 	w.entryAdded(opts.RealtimeUsec, opts.MonotonicUsec, opts.BootID)
-	return w.writeHeader()
+	return w.publishEntryMetadata()
 }
 
 // Sync flushes file data and metadata to disk.
@@ -387,6 +391,41 @@ func (w *Writer) writeHeader() error {
 	return err
 }
 
+func (w *Writer) publishObjectMetadata() error {
+	if err := w.writeUint64At(96, w.header.arenaSize); err != nil {
+		return err
+	}
+	if err := w.writeUint64At(136, w.header.tailObjectOffset); err != nil {
+		return err
+	}
+	return w.writeUint64At(144, w.header.nObjects)
+}
+
+func (w *Writer) publishEntryMetadata() error {
+	if err := w.writeUUIDAt(56, w.header.tailEntryBootID); err != nil {
+		return err
+	}
+	if err := w.writeUint64At(160, w.header.tailEntrySeqnum); err != nil {
+		return err
+	}
+	if err := w.writeUint64At(168, w.header.headEntrySeqnum); err != nil {
+		return err
+	}
+	if err := w.writeUint64At(176, w.header.entryArrayOffset); err != nil {
+		return err
+	}
+	if err := w.writeUint64At(184, w.header.headEntryRealtime); err != nil {
+		return err
+	}
+	if err := w.writeUint64At(192, w.header.tailEntryRealtime); err != nil {
+		return err
+	}
+	if err := w.writeUint64At(200, w.header.tailEntryMonotonic); err != nil {
+		return err
+	}
+	return w.writeUint64At(152, w.header.nEntries)
+}
+
 func (w *Writer) writeObjectHeader(offset uint64, header objectHeader) error {
 	buf := make([]byte, objectHeaderSize)
 	putObjectHeader(buf, header)
@@ -414,13 +453,12 @@ func (w *Writer) hash(payload []byte) uint64 {
 func (w *Writer) objectAdded(offset, size uint64) {
 	w.header.tailObjectOffset = offset
 	w.appendOffset = align8(offset + size)
-	w.writtenObjs++
+	w.header.nObjects++
+	w.header.arenaSize = w.appendOffset - w.header.headerSize
 }
 
 func (w *Writer) entryAdded(realtime, monotonic uint64, bootID UUID) {
 	w.header.nEntries++
-	w.header.nObjects += w.writtenObjs
-	w.header.arenaSize = w.appendOffset - w.header.headerSize
 	if w.header.headEntrySeqnum == 0 {
 		w.header.headEntrySeqnum = w.nextSeqnum
 	}
@@ -432,7 +470,6 @@ func (w *Writer) entryAdded(realtime, monotonic uint64, bootID UUID) {
 	w.header.tailEntryMonotonic = monotonic
 	w.header.tailEntryBootID = bootID
 	w.nextSeqnum++
-	w.writtenObjs = 0
 }
 
 func (w *Writer) addData(payload []byte) (uint64, uint64, error) {
@@ -639,6 +676,11 @@ func (w *Writer) writeUint64At(offset, value uint64) error {
 	return err
 }
 
+func (w *Writer) writeUUIDAt(offset uint64, value UUID) error {
+	_, err := w.file.WriteAt(value[:], int64(offset))
+	return err
+}
+
 func (w *Writer) appendToEntryArray(entryOffset uint64) error {
 	if w.header.entryArrayOffset == 0 {
 		arrayOffset, err := w.allocateOffsetArray(initialEntryArrayCap)
@@ -685,6 +727,9 @@ func (w *Writer) allocateOffsetArray(capacity uint64) (uint64, error) {
 		return 0, err
 	}
 	w.objectAdded(offset, size)
+	if err := w.publishObjectMetadata(); err != nil {
+		return 0, err
+	}
 	return offset, nil
 }
 

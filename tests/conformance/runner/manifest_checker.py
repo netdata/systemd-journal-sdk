@@ -81,7 +81,7 @@ def stdlib_validate_manifest(data, schema):
         "file-format", "entry-parse", "entry-write", "matching",
         "enumeration", "verification", "sealing", "compression",
         "corruption-resilience", "cursor-navigation", "stream",
-        "import-export", "journalctl-cli",
+        "import-export", "journalctl-cli", "live-concurrency",
     }
     valid_result_formats = {
         "entry-list", "cursor-list", "field-list", "export",

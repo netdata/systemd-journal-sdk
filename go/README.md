@@ -11,7 +11,10 @@ Current writer scope:
 - create, close, and reopen/append for files created by this writer;
 - data and field de-duplication;
 - global entry arrays and per-DATA entry links;
-- Linux writer locking with advisory `flock`.
+- Linux writer locking with advisory `flock`;
+- live stock-reader validation for the current writer slice with `journalctl
+  --file`, `journalctl --file --follow --no-tail --boot=all`, and libsystemd
+  reader APIs, including live sequence-order checks.
 
 Deferred scope:
 

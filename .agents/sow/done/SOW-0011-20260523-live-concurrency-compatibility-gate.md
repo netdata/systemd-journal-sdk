@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: open
+Status: completed
 
-Sub-state: pending as the next recommended compatibility hardening SOW. This SOW blocks production-compatible claims for any writer or reader until stock-reader and live cross-language concurrency evidence exists.
+Sub-state: completed. The reusable live compatibility gate is now in place for the Go writer feature slice and is mandatory for future writer and reader SOWs.
 
 ## Requirements
 
@@ -126,6 +126,11 @@ Sensitive data handling plan:
 - Test logs must not include host journal data, real service names from the workstation, credentials, bearer tokens, SNMP communities, customer data, personal data, non-private customer-identifying IPs, private endpoints, or proprietary incident details.
 - Stock writer evidence must use synthetic test data or generated fixtures, not host production journals.
 
+Sensitive data gate:
+
+- Before review and close, scan changed durable artifacts for raw secrets, credentials, bearer tokens, SNMP communities, community member names, customer names, personal data, non-private customer-identifying IPs, private endpoints, and proprietary incident details.
+- Do not commit generated journal files, live harness logs, compiled helper binaries, or local scratch output.
+
 Implementation plan:
 
 1. Add a shared live-concurrency test harness under `tests/conformance/`.
@@ -223,23 +228,101 @@ Failure handling:
 ### 2026-05-23
 
 - Created this SOW after the user clarified live concurrency is mandatory for compatibility.
+- Activated as the next SOW after the user approved implementing the live concurrency compatibility gate.
+- Added reusable live harness files:
+  - `tests/conformance/live/run_live_concurrency.py`
+  - `tests/conformance/live/libsystemd_live_reader.c`
+  - `tests/conformance/live/README.md`
+- Added Go live writer test command at `go/internal/testcmd/livewriter/main.go`.
+- Added Go live tests at `go/journal/live_concurrency_test.go`:
+  - stock `journalctl --file` polling readers;
+  - stock `journalctl --file --follow --no-tail --boot=all` reader;
+  - stock libsystemd reader via `sd_journal_open_files`, `sd_journal_next`, and `sd_journal_wait`;
+  - clean-close verify;
+  - interruption, verify, reopen, append, verify;
+  - zero-delay live stress;
+  - second-writer rejection while a live writer holds the lock.
+- Updated `tests/conformance/ADAPTER_CONTRACT.md`, `tests/conformance/manifest-schema.json`, and `tests/conformance/runner/manifest_checker.py` to record the `live-concurrency` category and reusable reader/writer contract.
+- Updated `go/README.md` to record the current Go writer live stock-reader validation scope.
+- External review round 1:
+  - Minimax: production-grade for the original harness.
+  - Mimo: conditional production-grade; blocking lifecycle gap was stale SOW validation.
+  - Qwen: not production-grade; valid findings included hardcoded C helper field validation, sequence/order validation gap, interrupted-file verify gap, and stale SOW validation. The `--boot=all` objection was rejected because systemd documents `--boot=all` as negating earlier boot filtering and `journalctl --follow` enables current-boot filtering by default for synthetic journals.
+  - Kimi: not production-grade; valid findings included C helper numeric parsing, missing second-writer live test, missing stress/race coverage, and stale SOW validation.
+  - GLM: production-grade for the original harness with minor documentation recommendations.
+- Fixed review findings:
+  - C helper now validates numeric arguments and accepts a configurable sequence field instead of hardcoding `MESSAGE=live-`.
+  - Harness validates ordered `LIVE_SEQ` output for stock `journalctl` and stock libsystemd readers.
+  - Interruption test now runs `journalctl --verify --file` before reopen and after final close.
+  - Added zero-delay live stress test with sync on every entry.
+  - Added live second-writer rejection test.
+  - Documented `--boot=all` use and polling retry semantics.
+- The new sequence validation exposed a real Go writer publication-window issue: stock `journalctl --file PRIORITY=6` could transiently observe matched entries without the `LIVE_SEQ` field while the writer was active.
+- Repaired Go writer live publication order:
+  - object metadata (`arena_size`, `tail_object_offset`, `n_objects`) is published before entry links can expose new objects;
+  - entry metadata is published with `n_entries` last;
+  - object metadata publication is repeated when entry-array objects are allocated.
+- Kimi review found a real follow-reader startup race: `journalctl --follow` can return active-writer `ENODATA` while the writer is still appending. The harness now retries this specific active-writer condition and still requires a complete ordered final stream.
+- Local validation then exposed the same active-writer `ENODATA` shape in stock libsystemd `sd_journal_open_files`. The harness now retries that specific active-writer open failure and still requires the final libsystemd reader to observe the complete ordered sequence.
+- Kimi review found a real Go test data-race risk in the second-writer test's `strings.Builder` stdout/stderr capture. The test now uses a mutex-protected buffer, and `go test -race` passes.
+- Updated `.agents/sow/specs/product-scope.md` and `.agents/skills/project-journal-compatibility/SKILL.md` with the `tests/conformance/live/` harness path, `LIVE_SEQ` contract, active-writer retry semantics, final ordered-read requirement, and `journalctl --verify --file` requirement.
+- Reviewed the header publication-order concern against `systemd/systemd @ v260.1 src/libsystemd/sd-journal/journal-file.c`:
+  - `journal_file_append_object` updates object reachability fields individually.
+  - `link_entry_into_array` writes the entry array item before incrementing the relevant entry count.
+  - `journal_file_link_entry` uses an ordering fence and updates header fields individually, not a multi-field atomic header transaction.
+  - The earlier `PIPE_BUF` objection was rejected because `PIPE_BUF` is a pipe/FIFO write guarantee, not a regular-file header transaction guarantee.
+- Final full-scope review round:
+  - Minimax: PRODUCTION GRADE; rejected the header atomicity concern and accepted the active-writer retry contract.
+  - Mimo: PRODUCTION GRADE; independently compared systemd publication order from a `/tmp` reference clone and accepted the implementation.
+  - Qwen: PRODUCTION GRADE; rejected the header atomicity concern and accepted the current feature-slice compatibility claim.
+  - Kimi: PRODUCTION GRADE; left only non-blocking notes about one extra bounded libsystemd retry, optional `stop_event` propagation, and a pre-existing `Open()` state-validation follow-up.
+  - GLM final review attempt stalled without a final verdict and was stopped by terminating only the exact stale reviewer command; it was replaced by Qwen in the final review round.
 
 ## Validation
 
-Pending activation and implementation.
+Final local validation on the completed files:
+
+- `go test -count=1 ./...` from `go/`: PASS.
+- `go test -race -count=1 ./...` from `go/`: PASS.
+- `CGO_ENABLED=0 go test -count=1 ./...` from `go/`: PASS.
+- `go vet ./...` from `go/`: PASS.
+- `go list -deps -f '{{if .CgoFiles}}{{.ImportPath}} {{.CgoFiles}}{{end}}' ./...` from `go/`: no output.
+- Repeated targeted live suite 10 consecutive times:
+  - Command: `for i in 1 2 3 4 5 6 7 8 9 10; do go test -count=1 -run 'TestGoWriterLiveStockReaders|TestGoWriterLiveStockReadersStress|TestGoWriterLiveInterruptionReopenAndVerify|TestGoWriterLiveRejectsSecondWriter' ./journal || exit 1; done`
+  - Result: PASS 10/10.
+- Final reviewer Kimi independently repeated the targeted live suite 10 consecutive times:
+  - Result: PASS 10/10.
+- `python3 -m py_compile tests/conformance/live/run_live_concurrency.py`: PASS.
+- `cc tests/conformance/live/libsystemd_live_reader.c -o /tmp/libsystemd_live_reader.check $(pkg-config --cflags --libs libsystemd)`: PASS.
+- `python3 tests/conformance/runner/manifest_checker.py validate tests/conformance/manifests/conformance-v01.json`: PASS.
+- `python3 tests/conformance/runner/manifest_checker.py dry-run tests/conformance/manifests/conformance-v01.json`: PASS.
+- `bash .agents/sow/audit.sh`: PASS.
+- `SOW_AUDIT_SENSITIVE_CHANGED=1 bash .agents/sow/audit.sh`: PASS.
+- `git diff --check`: PASS.
+- ASCII scan of changed durable files: no output.
+- User-personal-name scan of changed durable files: no output.
 
 ## Outcome
 
-Pending.
+Completed.
+
+This SOW adds the reusable live one-writer/multiple-reader compatibility gate and applies it to the Go writer feature slice. The Go writer can now claim live stock-reader compatibility for its current feature slice only: regular uncompressed journal files without FSS/compression support. Future writers and readers must reuse and extend this live harness before making production-compatible claims.
 
 ## Lessons Extracted
 
-Pending activation.
+- Live compatibility tests must validate ordered content, not only final entry counts.
+- Stock `journalctl --file` polling can observe transient active-writer snapshots; the harness may retry those while the writer is active, but the final post-writer snapshot must be complete and ordered.
+- Stock `journalctl --follow` and stock libsystemd open can also return active-writer `ENODATA`; the harness may retry only while the writer is active, and final reads must pass.
+- The Go writer needed object metadata publication before entry links and `n_entries` publication last. Closed-file verification did not expose this class of bug.
+- Race-detector validation belongs in this gate because live test process plumbing can fail independently from journal file correctness.
+- `PIPE_BUF` is not evidence for regular-file header transaction atomicity; compare against systemd's actual journal-file publication order when reviewing this class of concern.
 
 ## Followup
 
-None yet.
+- Future Rust, Go reader, Node.js, and Python SOWs must reuse the live harness and keep `LIVE_SEQ` or an explicitly configured equivalent sequence field in their writer test commands.
+- Repository reader SOWs must add the corresponding live reader-side matrix against every repository writer available in that phase.
+- Track Go `Open()` state validation for archived or unknown-state journals in the next Go reader/journalctl SOW or a dedicated writer-hardening SOW. This is outside SOW-0011 because the current interruption/reopen path intentionally reopens online files after a writer interruption.
 
 ## Regression Log
 
-None yet.
+No regressions remain open for this SOW.

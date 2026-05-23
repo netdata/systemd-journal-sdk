@@ -169,6 +169,46 @@ The shared harness at `tests/conformance/runner/` orchestrates:
 5. Compares `actual` vs `expected` per the manifest
 6. Aggregates results
 
+## Live Concurrency Harness
+
+The live concurrency harness at `tests/conformance/live/` validates the
+mandatory one-writer/multiple-reader compatibility contract. This harness is
+separate from per-language adapters because it intentionally invokes stock
+systemd tools as external compatibility oracles.
+
+Writer live-test commands must:
+
+1. create or open the requested journal file;
+2. append at least one synthetic entry;
+3. create the provided ready-file after the first entry is committed;
+4. continue appending synthetic entries until the requested count or test mode
+   is reached;
+5. include a monotonically increasing `LIVE_SEQ` field starting at `000000`;
+6. exit with the expected status.
+
+The harness then runs these readers while the writer is still appending:
+
+- stock `journalctl --file` polling readers;
+- stock `journalctl --file --follow --no-tail --boot=all` readers;
+- stock libsystemd readers compiled from `libsystemd_live_reader.c`.
+
+All live readers validate the configured sequence field so publication-window
+bugs cannot pass by exposing entries out of order. `--boot=all` is required for
+`journalctl --follow` because stock journalctl enables current-boot filtering in
+follow mode, while these compatibility fixtures use synthetic boot IDs.
+
+The polling and follow `journalctl --file` readers, plus stock libsystemd
+readers, may retry transient active-writer `ENODATA` open/read failures or
+partial snapshots observed while a writer is actively mutating the file. The
+final post-writer snapshot or stream must pass sequence validation and
+`journalctl --verify`.
+
+Production-compatible writer claims require the live harness to pass for the
+claimed writer feature slice. Production-compatible reader claims require the
+corresponding repository reader to handle live files produced by every
+repository writer, plus stock systemd writer evidence where the environment can
+provide it safely.
+
 ## Plug-In for New SDKs
 
 To add a new language SDK:
