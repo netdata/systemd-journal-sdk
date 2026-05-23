@@ -32,8 +32,9 @@ const (
 )
 
 const (
-	stateOffline = 0
-	stateOnline  = 1
+	stateOffline  = 0
+	stateOnline   = 1
+	stateArchived = 2
 
 	incompatibleKeyedHash = 1 << 2
 )

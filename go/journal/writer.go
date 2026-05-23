@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -25,10 +26,14 @@ func NewUUID() (UUID, error) {
 
 // Options controls journal file creation.
 type Options struct {
-	MachineID             UUID
-	BootID                UUID
-	SeqnumID              UUID
-	FileID                UUID
+	MachineID UUID
+	BootID    UUID
+	SeqnumID  UUID
+	FileID    UUID
+	// HeadSeqnum is the sequence number assigned to the first entry in a newly
+	// created file. It defaults to 1. Directory writers use it to continue
+	// sequence numbers across rotated files.
+	HeadSeqnum            uint64
 	DataHashTableBuckets  int
 	FieldHashTableBuckets int
 }
@@ -54,6 +59,7 @@ func StringField(name, value string) Field {
 // Writer appends entries to a systemd journal file.
 type Writer struct {
 	file         *os.File
+	path         string
 	header       journalHeader
 	appendOffset uint64
 	nextSeqnum   uint64
@@ -79,7 +85,7 @@ func Create(path string, opts Options) (*Writer, error) {
 		return nil, err
 	}
 
-	w := &Writer{file: f, bootID: opts.BootID, started: time.Now()}
+	w := &Writer{file: f, path: path, bootID: opts.BootID, started: time.Now()}
 	if err := w.initialize(opts); err != nil {
 		_ = unlockAndClose(f)
 		return nil, err
@@ -127,6 +133,7 @@ func Open(path string) (*Writer, error) {
 	now := time.Now()
 	w := &Writer{
 		file:         f,
+		path:         path,
 		header:       header,
 		appendOffset: align8(header.tailObjectOffset + tail.size),
 		nextSeqnum:   header.tailEntrySeqnum + 1,
@@ -264,6 +271,39 @@ func (w *Writer) Close() error {
 	return errors.Join(err1, err2, err3, err4)
 }
 
+// CurrentSize returns the current committed journal file size in bytes.
+func (w *Writer) CurrentSize() uint64 {
+	return w.appendOffset
+}
+
+func (w *Writer) archiveTo(path string) error {
+	if w.closed {
+		return errWriterClosed
+	}
+	w.header.state = stateArchived
+	if err := w.writeHeader(); err != nil {
+		return err
+	}
+	if err := w.file.Sync(); err != nil {
+		return err
+	}
+	if err := os.Rename(w.path, path); err != nil {
+		w.header.state = stateOnline
+		restoreErr := w.writeHeader()
+		syncErr := w.file.Sync()
+		return errors.Join(err, restoreErr, syncErr)
+	}
+	w.path = path
+	dirErr := syncJournalDirectory(path)
+	unlockErr := syscall.Flock(int(w.file.Fd()), syscall.LOCK_UN)
+	closeErr := w.file.Close()
+	w.closed = true
+	if err := errors.Join(dirErr, unlockErr, closeErr); err != nil {
+		return err
+	}
+	return nil
+}
+
 type entryItem struct {
 	offset uint64
 	hash   uint64
@@ -282,6 +322,9 @@ func normalizeOptions(opts Options) Options {
 	if isZeroUUID(opts.FileID) {
 		opts.FileID = mustRandomUUID()
 	}
+	if opts.HeadSeqnum == 0 {
+		opts.HeadSeqnum = 1
+	}
 	if opts.DataHashTableBuckets == 0 {
 		opts.DataHashTableBuckets = defaultDataHashBuckets
 	}
@@ -289,6 +332,12 @@ func normalizeOptions(opts Options) Options {
 		opts.FieldHashTableBuckets = defaultFieldHashBuckets
 	}
 	return opts
+}
+
+// String returns the canonical 32-character lowercase hexadecimal UUID form
+// used by journal paths and headers.
+func (id UUID) String() string {
+	return hex.EncodeToString(id[:])
 }
 
 func mustRandomUUID() UUID {
@@ -370,7 +419,7 @@ func (w *Writer) initialize(opts Options) error {
 		nObjects:             2,
 	}
 	w.appendOffset = appendOffset
-	w.nextSeqnum = 1
+	w.nextSeqnum = opts.HeadSeqnum
 
 	if err := w.file.Truncate(int64(appendOffset)); err != nil {
 		return err

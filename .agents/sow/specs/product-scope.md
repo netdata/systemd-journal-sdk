@@ -129,6 +129,9 @@ Current Go writer feature slice:
 - regular, non-compact, uncompressed journal files;
 - keyed hash tables using the journal file ID;
 - byte-safe DATA field values through `Field.Value []byte`;
+- high-level directory writing with systemd-compatible active/archive naming;
+- rotation by entry count and active file size;
+- retention by archived file count and total byte size, scoped to the configured source/prefix and never deleting the active file;
 - live one-writer/multiple-reader compatibility with stock `journalctl --file` and stock libsystemd readers for the current writer slice.
 
 ## Reader Target

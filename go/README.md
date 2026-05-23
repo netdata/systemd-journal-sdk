@@ -15,7 +15,10 @@ Current writer scope:
 - Linux writer locking with advisory `flock`;
 - live stock-reader validation for the current writer slice with `journalctl
   --file`, `journalctl --file --follow --no-tail --boot=all`, and libsystemd
-  reader APIs, including live sequence-order checks.
+  reader APIs, including live sequence-order checks;
+- high-level directory writing with systemd-compatible active/archive file
+  naming, entry-count and file-size rotation, and file-count and byte-size
+  retention.
 
 Deferred scope:
 
@@ -23,6 +26,7 @@ Deferred scope:
 - Forward Secure Sealing and TAG objects;
 - compact-format writer support;
 - appending to arbitrary historical or systemd-created journal variants;
+- duration-based directory rotation and retention;
 - Go reader facade and journalctl-compatible CLI.
 
 Basic usage:
@@ -52,3 +56,31 @@ err := w.Append([]journal.Field{
 
 Use `Append([]journal.Field{...})` for binary payloads. `AppendMap()` and
 `StringField()` are convenience helpers for string-valued fields.
+
+Directory writer with rotation and retention:
+
+```go
+log, err := journal.NewLog("/var/log/journal-sdk", journal.LogConfig{
+    Source: "netdata-plugin",
+    RotationPolicy: journal.RotationPolicy{}.
+        WithMaxEntries(100000).
+        WithMaxFileSize(128 * 1024 * 1024),
+    RetentionPolicy: journal.RetentionPolicy{}.
+        WithMaxFiles(8).
+        WithMaxBytes(1024 * 1024 * 1024),
+})
+if err != nil {
+    return err
+}
+defer log.Close()
+
+return log.Append([]journal.Field{
+    journal.StringField("MESSAGE", "plugin started"),
+    journal.StringField("PRIORITY", "6"),
+}, journal.EntryOptions{})
+```
+
+`NewLog()` stores files below `<directory>/<machine-id>/`. Rotation archives the
+current active file and opens a new active file. Retention deletes only archived
+files owned by the configured `Source`; the active file is never deleted to
+satisfy a retention limit.
