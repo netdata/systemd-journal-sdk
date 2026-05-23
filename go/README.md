@@ -1,7 +1,7 @@
-# Go Journal Writer
+# Go Journal SDK
 
-This module contains a pure-Go systemd journal writer. It does not use CGO,
-native addons, or libsystemd linkage.
+This module contains pure-Go systemd journal reader and writer components. It
+does not use CGO, native addons, or libsystemd linkage.
 
 Current writer scope:
 
@@ -22,12 +22,41 @@ Current writer scope:
 
 Deferred scope:
 
-- DATA compression;
+- writer DATA compression;
 - Forward Secure Sealing and TAG objects;
 - compact-format writer support;
 - appending to arbitrary historical or systemd-created journal variants;
 - duration-based directory rotation and retention;
-- Go reader facade and journalctl-compatible CLI.
+- full journal verification/FSS validation.
+
+Current reader scope:
+
+- regular non-compact journal files;
+- `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst` files;
+- zstd-compressed fixture files and zstd-compressed DATA objects through a
+  pure-Go dependency;
+- directory reading across active and archived files;
+- forward/backward iteration, cursors, realtime timestamps, field enumeration,
+  unique values, binary field values, and export/json/text formatting;
+- `--output=export` uses systemd's size-prefixed binary field encoding and
+  blank-line entry separator; `--output=json` encodes duplicate fields as
+  arrays and non-printable/non-UTF-8 values as arrays of unsigned bytes;
+- libsystemd-style match behavior: AND between different fields, OR between
+  values for the same field, `AddDisjunction()` for `+`, and
+  `AddConjunction()` for explicit AND groups;
+- a file-backed `journalctl` command under `cmd/journalctl`;
+- a conformance adapter under `adapter`.
+
+Reader limitations:
+
+- compact-format journal files are rejected;
+- xz/lz4-compressed DATA objects are rejected;
+- directory iteration is sequential by journal file and intended for
+  non-overlapping rotated files in this slice; realtime interleaving across
+  overlapping multi-file directories is tracked with the broader
+  interoperability phase;
+- full journal verification, FSS validation, and daemon-only journalctl
+  operations are not implemented.
 
 Basic usage:
 
@@ -84,3 +113,39 @@ return log.Append([]journal.Field{
 current active file and opens a new active file. Retention deletes only archived
 files owned by the configured `Source`; the active file is never deleted to
 satisfy a retention limit.
+
+Basic reader usage:
+
+```go
+r, err := journal.OpenFile("/path/to/system.journal")
+if err != nil {
+    return err
+}
+defer r.Close()
+
+r.AddMatch([]byte("PRIORITY=6"))
+for {
+    ok, err := r.Step()
+    if err != nil || !ok {
+        return err
+    }
+    entry, err := r.GetEntry()
+    if err != nil {
+        return err
+    }
+    _ = entry.Fields["MESSAGE"]
+}
+```
+
+File-backed journalctl:
+
+```sh
+go run ./cmd/journalctl --file ../fixtures/systemd/test-data/no-rtc/system.journal.zst --head 1 --output=json
+```
+
+Repeated matches for the same field are OR alternatives. Matches for different
+fields are ANDed. A separate `+` argument creates an explicit disjunction:
+
+```sh
+go run ./cmd/journalctl --file ./sample.journal PRIORITY=3 PRIORITY=4 + MESSAGE=boot
+```

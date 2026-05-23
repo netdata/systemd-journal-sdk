@@ -31,12 +31,13 @@ Bootstrap mode: empty/new project.
 - `.agents/sow/done/SOW-0011-20260523-live-concurrency-compatibility-gate.md`
 - `.agents/sow/done/SOW-0012-20260523-go-writer-binary-fields.md`
 - `.agents/sow/done/SOW-0013-20260523-go-directory-writer-rotation-retention.md`
+- `.agents/sow/done/SOW-0010-20260523-go-reader-and-journalctl-completion.md`
 
 ## Next SOW
 
-- Recommended next: `.agents/sow/pending/SOW-0010-20260523-go-reader-and-journalctl-completion.md`
-- Rationale: after the Go writer live compatibility, binary field, and directory rotation/retention gates are complete, the natural next step is completing the Go reader and file-backed journalctl surface while reusing the same live harness.
-- Alternative: `.agents/sow/pending/SOW-0004-20260523-rust-sdk-and-journalctl.md` if Rust API finalization should precede the remaining languages.
+- Recommended next: `.agents/sow/pending/SOW-0004-20260523-rust-sdk-and-journalctl.md`
+- Rationale: the Go writer, Go directory writer, Go reader, Go facade, Go journalctl, and Go adapter slices are complete; the dependency chain now returns to Rust SDK/API and journalctl finalization before Node.js and Python.
+- Alternative: `.agents/sow/pending/SOW-0006-20260523-node-sdk-and-journalctl.md` only if the user explicitly wants to prioritize Node.js before Rust.
 
 ## Guardrails
 
@@ -57,3 +58,6 @@ Bootstrap mode: empty/new project.
 - 2026-05-23 compatibility clarification: live one-writer/multiple-reader compatibility with stock readers is mandatory. SOW-0011 completed the reusable live gate and applied it to the Go writer feature slice.
 - 2026-05-23 binary field priority update: SOW-0012 completed binary field compatibility validation for the Go writer before later SDK phases continue.
 - 2026-05-23 rotation/retention priority update: SOW-0013 completed the Go high-level directory writer with rotation and retention before later SDK phases continue.
+- 2026-05-23 Go completion update: SOW-0010 is active for the Go reader, libsystemd-compatible reader facade, file-backed journalctl rewrite, and Go conformance adapter.
+- 2026-05-23 Go completion progress: Minimax and Qwen implementation attempts did not finish cleanly; local repair completed a pre-review Go reader/journalctl/adapter slice with Go tests passing and verification/FSS intentionally still out of scope for this slice.
+- 2026-05-23 Go completion closed: SOW-0010 completed the Go reader, libsystemd-style facade, file-backed journalctl command, and Go conformance adapter with repeated external production-grade reviews and final validation passing.

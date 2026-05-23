@@ -36,7 +36,17 @@ const (
 	stateOnline   = 1
 	stateArchived = 2
 
-	incompatibleKeyedHash = 1 << 2
+	incompatibleCompressedXZ   = 1 << 0
+	incompatibleCompressedLZ4  = 1 << 1
+	incompatibleKeyedHash      = 1 << 2
+	incompatibleCompressedZSTD = 1 << 3
+	incompatibleCompact        = 1 << 4
+)
+
+const (
+	objectCompressedXZ   = 1 << 0
+	objectCompressedLZ4  = 1 << 1
+	objectCompressedZSTD = 1 << 2
 )
 
 var (
@@ -179,7 +189,7 @@ func parseHeader(src []byte) (journalHeader, error) {
 	h.tailEntryRealtime = binary.LittleEndian.Uint64(src[192:200])
 	h.tailEntryMonotonic = binary.LittleEndian.Uint64(src[200:208])
 
-	if h.headerSize != headerSize {
+	if h.headerSize < headerSize {
 		return journalHeader{}, errUnsupportedJournal
 	}
 	if h.incompatibleFlags&incompatibleKeyedHash == 0 {

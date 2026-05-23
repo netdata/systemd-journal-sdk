@@ -138,6 +138,37 @@ Current Go writer feature slice:
 
 Readers must support applicable historical journal files represented by the shared fixture suite, including corrupted fixture behavior where the expected result is a controlled error or partial recovery.
 
+Current Go reader feature slice:
+
+- regular, non-compact journal files;
+- files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
+- whole-file zstd fixtures and zstd-compressed DATA objects through a pure-Go
+  dependency;
+- directory iteration across active and archived files;
+- forward/backward iteration, cursors, realtime timestamps, binary field
+  values, field enumeration, and unique value enumeration;
+- systemd-compatible export output for binary fields using size-prefixed field
+  values and blank-line entry separators;
+- systemd-compatible JSON output for duplicate fields and binary values;
+- libsystemd-style match tree behavior from `sd_journal_add_match()`,
+  `sd_journal_add_disjunction()`, and `sd_journal_add_conjunction()`;
+- file-backed Go journalctl behavior for `--file`, `--directory`, text/json/export
+  output, field listing, boot listing, repeated same-field OR matches, and `+`
+  disjunction;
+- Go conformance adapter support for reader, matching, importer, compression,
+  cursor, enumeration, stream, export, and file-backed journalctl cases.
+
+Current Go reader limitations:
+
+- compact journal files are rejected;
+- xz/lz4-compressed DATA objects are rejected;
+- directory iteration is sequential by journal file and validated for
+  non-overlapping active/archive files; realtime interleaving across
+  overlapping multi-file directories is tracked under the interoperability
+  phase;
+- full journal verification and FSS validation are not implemented;
+- daemon-only journalctl operations remain unsupported.
+
 ## journalctl Target
 
 Implement journalctl rewrites in Rust, Go, Node.js, and Python for file-backed/query behavior.
