@@ -123,6 +123,8 @@ Final writer target:
 
 - keyed hash;
 - regular and compact journal formats where applicable;
+- explicit writer API selection between regular and compact output, with regular
+  output remaining the default unless a SOW records a user decision to change it;
 - compression where systemd journal files define it;
 - Forward Secure Sealing where systemd journal files define it.
 
