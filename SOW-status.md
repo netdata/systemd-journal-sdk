@@ -2,12 +2,11 @@
 
 ## Current
 
-- None.
+- `SOW-0016-20260524-byte-identical-writer-compatibility.md` - in-progress. Require byte-for-byte deterministic writer compatibility against systemd for the accepted corpus.
 
 ## Pending
 
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - open. Benchmark, profile, and optimize after correctness evidence is complete.
-- `SOW-0016-20260524-byte-identical-writer-compatibility.md` - open. Require byte-for-byte deterministic writer compatibility against systemd for the accepted corpus.
 - `SOW-0017-20260524-xz-lz4-data-writing.md` - open. Add xz/lz4 DATA compression reader/writer support after dependency review.
 - `SOW-0018-20260524-compact-journal-format.md` - open. Add compact journal format support after reference inventory.
 - `SOW-0019-20260524-forward-secure-sealing.md` - open. Add FSS and full verification support without daemon-only lifecycle commands.
@@ -34,6 +33,6 @@
 
 - The deterministic dataset must separate accepted rows from expected rejection cases.
 - SOW-0015 produced deterministic ingesters for systemd C, Rust, Go, Node.js, and Python.
-- SOW-0016 is the next implementation SOW and consumes the deterministic ingester outputs.
+- SOW-0016 is active and consumes the deterministic ingester outputs.
 - Byte-for-byte writer identity is the target for deterministic uncompressed journals. Any feature slice that cannot be made byte-identical must return with evidence before the acceptance condition is changed.
 - The external systemd source checkout is read-only for this project. Build outputs and generated files must remain inside this repository or `/tmp`.

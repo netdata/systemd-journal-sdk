@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: open
+Status: in-progress
 
-Sub-state: pending after deterministic dataset and ingesters.
+Sub-state: active after SOW-0014 and SOW-0015 completion commits.
 
 ## Requirements
 
@@ -48,13 +48,13 @@ Unknowns:
 
 Sources checked:
 
-- `.agents/sow/pending/SOW-0014-20260524-deterministic-ingestion-dataset.md`
-- `.agents/sow/pending/SOW-0015-20260524-deterministic-ingesters.md`
-- `systemd/systemd @ cf3156842209f8318753861a9dd2d821674f3f59`
+- `.agents/sow/done/SOW-0014-20260524-deterministic-ingestion-dataset.md`
+- `.agents/sow/done/SOW-0015-20260524-deterministic-ingesters.md`
+- `systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced`
 - `src/libsystemd/sd-journal/journal-file.c:401`
 - `src/libsystemd/sd-journal/journal-file.c:431`
 - `src/libsystemd/sd-journal/journal-file.c:435`
-- `src/libsystemd/sd-journal/journal-file.c:2533`
+- `src/libsystemd/sd-journal/journal-file.c:2527`
 
 Current state:
 
@@ -69,7 +69,7 @@ Risks:
 
 ## Pre-Implementation Gate
 
-Status: blocked
+Status: ready
 
 Problem / root-cause model:
 
@@ -104,7 +104,7 @@ Sensitive data handling plan:
 
 Implementation plan:
 
-1. Wait for SOW-0014 and SOW-0015 to complete.
+1. Consume completed SOW-0014 dataset and completed SOW-0015 ingesters.
 2. Build byte-comparison runner and object-aware diff diagnostics.
 3. Run uncompressed deterministic corpus and fix writer mismatches.
 4. Validate stock and repository readers on byte-identical files.
@@ -124,16 +124,16 @@ Artifact impact plan:
 - Specs: update compatibility claims with exact byte-identity scope.
 - End-user/operator docs: update only if user-facing compatibility claims change.
 - End-user/operator skills: no update expected.
-- SOW lifecycle: blocked until SOW-0014 and SOW-0015 complete.
+- SOW lifecycle: active after SOW-0014 and SOW-0015 completion.
 - SOW-status.md: update when created, activated, or closed.
 
 Open-source reference evidence:
 
-- `systemd/systemd @ cf3156842209f8318753861a9dd2d821674f3f59`
+- `systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced`
 - `src/libsystemd/sd-journal/journal-file.c:401`
 - `src/libsystemd/sd-journal/journal-file.c:431`
 - `src/libsystemd/sd-journal/journal-file.c:435`
-- `src/libsystemd/sd-journal/journal-file.c:2533`
+- `src/libsystemd/sd-journal/journal-file.c:2527`
 
 Open decisions:
 
@@ -181,15 +181,41 @@ Failure handling:
 
 ## Execution Log
 
-Pending activation.
+### 2026-05-24
+
+- Activated after:
+  - SOW-0014 completion commit `72d936f`.
+  - SOW-0015 completion commit `cdd3795`.
+- Updated baseline systemd evidence to the project compatibility target `systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced` (`v260.1`).
+- Confirmed SOW-0015 now provides deterministic ingesters for systemd C, Rust, Go, Node.js, and Python.
 
 ## Validation
 
-Pending activation and implementation.
+Activation evidence:
+
+- Passed: SOW-0014 is completed in `.agents/sow/done/`.
+- Passed: SOW-0015 is completed in `.agents/sow/done/`.
+- Passed: SOW-0015 completion commit `cdd3795` exists before activation.
+- Passed: no implementation changes made during activation.
+
+Sensitive data gate:
+
+- Activation edits contain only SOW status, synthetic dataset references, and upstream source references.
+- No secrets, credentials, bearer tokens, SNMP communities, customer names, personal data, non-private customer-identifying IPs, private endpoints, or proprietary incident details are present.
+
+Artifact maintenance gate:
+
+- AGENTS.md: no update needed for activation.
+- Runtime project skills: no update needed for activation.
+- Specs: no shipped product behavior changed during activation.
+- End-user/operator docs: no update needed for activation.
+- End-user/operator skills: no output/reference skill produced during activation.
+- SOW lifecycle: moved from pending to current with `Status: in-progress`.
+- `SOW-status.md`: updated for SOW-0016 activation.
 
 ## Outcome
 
-Pending.
+Active implementation SOW.
 
 ## Lessons Extracted
 
