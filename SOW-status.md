@@ -2,7 +2,7 @@
 
 ## Current
 
-- `SOW-0014-20260524-deterministic-ingestion-dataset.md` - in-progress. Define deterministic accepted, rejected, and performance ingestion corpora.
+- None.
 
 ## Pending
 
@@ -28,9 +28,11 @@
 - `SOW-0011-20260523-live-concurrency-compatibility-gate.md`
 - `SOW-0012-20260523-go-writer-binary-fields.md`
 - `SOW-0013-20260523-go-directory-writer-rotation-retention.md`
+- `SOW-0014-20260524-deterministic-ingestion-dataset.md`
 
 ## Notes
 
 - The deterministic dataset must separate accepted rows from expected rejection cases.
+- SOW-0015 is the next implementation SOW and consumes the deterministic dataset.
 - Byte-for-byte writer identity is the target for deterministic uncompressed journals. Any feature slice that cannot be made byte-identical must return with evidence before the acceptance condition is changed.
 - The external systemd source checkout is read-only for this project. Build outputs and generated files must remain inside this repository or `/tmp`.

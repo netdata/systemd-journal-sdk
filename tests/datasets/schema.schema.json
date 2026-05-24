@@ -1,0 +1,329 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://systemd-journal-sdk.local/schemas/ingestion-dataset-v1.schema.json",
+  "title": "Systemd Journal SDK Ingestion Dataset",
+  "description": "Language-neutral deterministic input records for systemd journal writer compatibility, rejection parity, and performance profiling.",
+  "type": "object",
+  "required": [
+    "dataset_version",
+    "schema_version",
+    "systemd_baseline",
+    "determinism",
+    "corpora",
+    "coverage"
+  ],
+  "additionalProperties": false,
+  "definitions": {
+    "value": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "text"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "utf8"
+            },
+            "text": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "base64", "size"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "bytes"
+            },
+            "base64": {
+              "type": "string"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "byte", "size"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "repeat"
+            },
+            "byte": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "preview": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "field": {
+      "type": "object",
+      "required": ["name", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/definitions/value"
+        },
+        "cardinality": {
+          "type": "string",
+          "enum": ["fixed", "single", "low", "medium", "high"]
+        },
+        "note": {
+          "type": "string"
+        }
+      }
+    },
+    "accepted_record": {
+      "type": "object",
+      "required": [
+        "record_type",
+        "entry_id",
+        "entry_index",
+        "realtime_usec",
+        "monotonic_usec",
+        "boot_id",
+        "machine_id",
+        "invocation_id",
+        "fields",
+        "coverage",
+        "expected_outcome"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "record_type": {
+          "const": "accepted"
+        },
+        "entry_id": {
+          "type": "string"
+        },
+        "entry_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "realtime_usec": {
+          "type": "integer"
+        },
+        "monotonic_usec": {
+          "type": "integer"
+        },
+        "boot_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "machine_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "invocation_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/field"
+          }
+        },
+        "duplicate_field_names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "coverage": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expected_outcome": {
+          "const": "accept"
+        },
+        "note": {
+          "type": "string"
+        }
+      }
+    },
+    "rejected_record": {
+      "type": "object",
+      "required": [
+        "record_type",
+        "case_id",
+        "case_index",
+        "input",
+        "coverage",
+        "expected_outcome",
+        "expected_error"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "record_type": {
+          "const": "rejected"
+        },
+        "case_id": {
+          "type": "string"
+        },
+        "case_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "input": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "coverage": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "expected_outcome": {
+          "const": "reject"
+        },
+        "expected_error": {
+          "type": "string"
+        },
+        "note": {
+          "type": "string"
+        }
+      }
+    },
+    "corpus": {
+      "type": "object",
+      "required": ["path", "record_count", "sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "record_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 of the committed corpus file, or the deterministic generated stream for non-committed corpora."
+        },
+        "generated_by": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "properties": {
+    "dataset_version": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "systemd_baseline": {
+      "type": "object",
+      "required": ["repo", "tag", "commit"],
+      "additionalProperties": false,
+      "properties": {
+        "repo": {
+          "const": "systemd/systemd"
+        },
+        "tag": {
+          "const": "v260.1"
+        },
+        "commit": {
+          "const": "c0a5a2516d28601fb3afc1a77d7b42fcfe38fced"
+        }
+      }
+    },
+    "determinism": {
+      "type": "object",
+      "required": [
+        "seed",
+        "base_realtime_usec",
+        "base_monotonic_usec",
+        "boot_id",
+        "machine_id",
+        "invocation_id",
+        "json"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "seed": {
+          "type": "integer"
+        },
+        "base_realtime_usec": {
+          "type": "integer"
+        },
+        "base_monotonic_usec": {
+          "type": "integer"
+        },
+        "boot_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "machine_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "invocation_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "json": {
+          "type": "string"
+        }
+      }
+    },
+    "corpora": {
+      "type": "object",
+      "required": ["correctness", "rejections", "performance"],
+      "additionalProperties": false,
+      "properties": {
+        "correctness": {
+          "$ref": "#/definitions/corpus"
+        },
+        "rejections": {
+          "$ref": "#/definitions/corpus"
+        },
+        "performance": {
+          "$ref": "#/definitions/corpus"
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["correctness_required", "rejections_required"],
+      "additionalProperties": false,
+      "properties": {
+        "correctness_required": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rejections_required": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
