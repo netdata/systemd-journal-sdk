@@ -116,3 +116,29 @@ python3 tests/interoperability/run_matrix.py
 
 - GLM and Mimo returned `PRODUCTION GRADE` for committing the first slice in both initial review and rerun after coverage improvements.
 - Their shared non-blocking OR/disjunction coverage concern was fixed before commit by adding two-entry same-field OR, two-entry `+` disjunction, zero-match, and cross-field AND checks.
+
+### Live Matrix Second Slice
+
+**Live matrix runner created** at `tests/interoperability/run_live_matrix.py` and `tests/interoperability/README.md` updated.
+
+- **Matrix executed**: 4/4 writers PASS | 0 FAIL on systemd 260 (260.1-2-manjaro)
+- **Coverage**: Go file-mode, Rust directory-mode, Node.js file-mode, Python file-mode writers, each with 2 polling readers per language (stock, Go, Rust, Node.js, Python) while the writer is active, and final snapshots after writer exit. For the Rust directory writer, the matrix discovers the active `.journal` file and validates file-backed readers against that file.
+- **Active observations**: all 4 writers confirmed every polling reader saw entries while the writer was still active
+- **Final completeness**: all final reads observed the complete ordered `LIVE_SEQ` sequence
+- **Stock verification**: `journalctl --verify --file` passed for every generated writer file
+- **Directory reader note**: full repository `--directory` traversal parity remains separate; this slice proves live file compatibility by passing discovered journal files to every reader.
+- **Known gaps not addressed in this slice**: compression writing, compact journal, FSS, binary stress, multi-writer scenarios, and daemon-only journalctl operations
+
+### Commands Run
+
+```bash
+python3 tests/interoperability/run_live_matrix.py
+```
+
+Result file: `.local/interoperability/live-matrix-results-20260524-092103.json`
+
+### Live Matrix Review
+
+- GLM and Qwen returned `PRODUCTION GRADE` for the live matrix slice.
+- Low-risk diagnostics/documentation findings were fixed before commit: stock journalctl flag parity, active-poll error capture, raw JSON `while_active` clarity, longer poll future timeout, and README `writer_stderr` documentation.
+- GLM and Qwen reruns after those fixes also returned `PRODUCTION GRADE`; remaining low findings are accepted as future hardening or declared scope limits.

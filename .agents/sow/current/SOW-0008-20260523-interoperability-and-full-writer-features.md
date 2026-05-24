@@ -310,3 +310,113 @@ Known limits of this first slice:
 - Implemented coverage improvements before commit: added zero-match filter validation, real same-field OR union validation, real `+` disjunction union validation, and cross-field AND validation to the matrix runner.
 - GLM rerun verdict: `PRODUCTION GRADE`; remaining low findings were accepted as future matrix improvements or existing open scope: multi-field `+` disjunction discrimination, explicit non-`LIVE_SEQ` value assertions, Rust direct-file writer mode in this matrix, and `.local/` result accumulation.
 - Mimo rerun verdict: `PRODUCTION GRADE`; remaining low findings were accepted as future matrix improvements or existing open scope: result-file accumulation, unrelated untracked `go/adapter/adapter`, repository-reader `--quiet` parity, JSON-only output coverage, and two-branch `+` coverage.
+
+### Live Cross-Language Interoperability Matrix Second Slice
+
+Implemented a committed live cross-language interoperability matrix runner:
+
+- `tests/interoperability/run_live_matrix.py`
+- Updated `tests/interoperability/README.md`
+
+The runner starts one writer per language (Go file-mode, Rust directory-mode,
+Node.js file-mode, Python file-mode) and polls multiple readers while the writer
+is actively appending. For the Rust directory writer, the runner discovers the
+actual active `.journal` file and validates file-backed reader compatibility
+against that file. After the writer exits, final reader snapshots are collected
+and validated.
+
+Command run:
+
+```bash
+python3 tests/interoperability/run_live_matrix.py
+```
+
+Systemd version: `systemd 260 (260.1-2-manjaro)`
+
+Live matrix result: 4/4 PASS, 0 FAIL.
+
+Coverage achieved:
+
+- 4 writers: Go (file), Rust (directory), Node.js (file), Python (file).
+- Readers per writer: stock journalctl, Go, Rust, Node.js, Python.
+- 2 polling reader tasks per language per writer.
+- Validation:
+  - at least one poll observed entries while the writer was still active;
+  - all final reads observed the complete ordered `LIVE_SEQ` sequence;
+  - `journalctl --verify --file` passed for every generated writer file.
+
+Key implementation decisions:
+
+1. **No `--follow` required**: repository readers that do not implement follow
+   mode (Go, Rust) are polled via file-backed `--file --output=json` queries.
+   This is intentional per SOW-0008 requirements. The live matrix validates
+   live behavior without requiring follow semantics.
+
+2. **Rust directory writer file discovery**: the Rust livewriter exercises the
+   SDK directory writer, but the live matrix validates file-backed reader
+   compatibility by discovering the generated `.journal` file under the
+   directory. Directory traversal parity is tracked separately from live file
+   compatibility.
+
+3. **Active polling instead of event-based**: readers poll at 0.1s intervals
+   while the writer is active. The `stop_poll` event coordinates graceful
+   shutdown when the writer exits.
+
+4. **Result JSON schema**: records `writer`, `journal_path`, `journal_mode`,
+   `entries`, `exit_code`, `active_polls` (while-active observations),
+   `final_reads` (post-exit snapshots), `verify` (stock --verify result for
+   the generated journal file), `status`, and `errors`.
+
+### Live Matrix Known Limits
+
+- Closed-file matrix (`run_matrix.py`) and live matrix (`run_live_matrix.py`)
+  are separate runners; they do not share execution state.
+- The live matrix tests one writer at a time with multiple concurrent readers,
+  not multiple concurrent writers.
+- Binary stress, compression writing, compact journals, and FSS are out of
+  scope for this slice and remain tracked in the writer feature gap inventory.
+- Full repository `--directory` traversal parity remains open; this slice proves
+  live file compatibility by passing discovered journal files to every reader.
+
+### Live Matrix Validation Results
+
+- Passed: `python3 tests/interoperability/run_live_matrix.py` with 30 entries
+  per writer.
+- Passed: `git diff --check`.
+- Passed: `bash .agents/sow/audit.sh`.
+- Generated result file:
+  `.local/interoperability/live-matrix-results-20260524-092103.json`.
+
+### Live Matrix Review Results
+
+- GLM review verdict: `PRODUCTION GRADE`; low findings about stock journalctl
+  flag parity, active-poll diagnostics, live match-logic breadth, theoretical
+  writer cleanup windows, poll-result timeout, and `.local/` result accumulation
+  were dispositioned.
+- Qwen review verdict: `PRODUCTION GRADE`; low findings about active-poll
+  diagnostics, raw JSON `while_active` clarity, stock journalctl flag parity,
+  README `writer_stderr` documentation, and `.local/` result accumulation were
+  dispositioned.
+- Implemented low-risk review improvements before commit: stock journalctl uses
+  `--quiet --no-pager`, active-poll failures record diagnostic text, active
+  poll result `while_active` reflects whether a live sequence was captured,
+  poll future timeout was raised to match reader subprocess timeout, and README
+  documents `writer_stderr`.
+- GLM and Qwen rerun verdicts after those fixes: `PRODUCTION GRADE`. Remaining
+  low findings were accepted as future hardening or scope notes: result-file
+  accumulation under `.local/`, live match-logic breadth, final-read
+  parallelism, and defensive exception logging in unreachable poll-future error
+  paths.
+
+### Writer Feature Gap Inventory (updated)
+
+| Gap | Status | Evidence | Follow-up |
+|-----|--------|----------|-----------|
+| Compressed DATA object writing | Not implemented | Current writers emit uncompressed DATA objects | SOW-0008 or split compression SOW |
+| xz/lz4/zstd writer parity | Not implemented | Writers do not write compressed DATA | SOW-0008 or split by compression family |
+| Compact journal format | Not implemented | Writers create regular non-compact journals | Requires systemd reference inventory |
+| Forward Secure Sealing / verification | Not implemented | Verification/FSS tests skipped in earlier SOWs | Split dedicated FSS SOW |
+| Live cross-language file matrix | Complete | `run_live_matrix.py` passes 4/4; active observations confirmed for all writers and all five readers | Closed |
+| Cross-language binary stress | Not complete | Livewriter fixtures do not include binary fields | Add binary fixture generation before SOW-0008 close |
+| Writer locking parity | Partial | Go and Python use fcntl; Node.js has no native flock; Rust writer lock removed from scope | Track whether Node/Rust need advisory lock |
+| Directory reader subdirectory traversal | Partial | Live matrix validates discovered files; full `--directory` traversal parity remains separate | SDK follow-up work |
