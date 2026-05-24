@@ -17,6 +17,7 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
-    "lz4js": "0.2.0"
+    "lz4js": "0.2.0",
+    "node-liblzma": "5.0.1"
   }
 }

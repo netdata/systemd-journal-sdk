@@ -199,7 +199,7 @@ By default the runner exercises zstd across all writers/readers. Use
 Current support is:
 
 - zstd: Go, Rust, Node.js, and Python writers/readers;
-- xz: Go, Rust, and Python writers/readers; Node.js xz remains unsupported;
+- xz: Go, Rust, Node.js, and Python writers/readers;
 - lz4: Go, Rust, Node.js, and Python writers/readers.
 
 Each writer fixture enables DATA compression with a low threshold and
@@ -253,7 +253,8 @@ completion unless `--keep-files` is passed.
 |-----|--------|----------|-----------|
 | Deterministic uncompressed byte identity | Complete for accepted corpus | `run_byte_identity.py` compares systemd, Rust, Go, Node.js, and Python byte-for-byte | Closed in SOW-0016 |
 | zstd compressed DATA object writing | Complete | `run_compression_matrix.py` validates zstd header/object flags plus stock/repository reads | Closed in SOW-0008 |
-| xz/lz4 writer parity | Partial | Rust, Go, and Python write/read xz; Rust, Go, Node.js, and Python write/read lz4; Node.js xz remains unsupported | Node.js xz tracked by SOW-0021 |
+| xz compressed DATA object writing | Complete | Rust, Go, Node.js, and Python write/read xz; stock journalctl, stock libsystemd, and all repository readers pass | Closed in SOW-0021 |
+| lz4 compressed DATA object writing | Complete | Rust, Go, Node.js, and Python write/read lz4 when Python `lz4==4.4.5` is installed; stock journalctl, stock libsystemd, and all repository readers pass | Closed in SOW-0017 |
 | Compact journal format | Not implemented | Writers create regular non-compact journals | Tracked by SOW-0018 |
 | Forward Secure Sealing / verification | Not implemented | Verification/FSS tests skipped in earlier SOWs | Tracked by SOW-0019 |
 | Cross-language binary stress | Complete | `run_binary_matrix.py` passes 52/52 across all writer/reader pairs plus stock libsystemd | Closed |

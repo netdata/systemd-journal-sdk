@@ -9,7 +9,6 @@
 - `SOW-0018-20260524-compact-journal-format.md` - open. Add compact journal format support after reference inventory.
 - `SOW-0019-20260524-forward-secure-sealing.md` - open. Add FSS and full verification support without daemon-only lifecycle commands.
 - `SOW-0020-20260524-directory-traversal-parity.md` - open. Bring SDK directory readers and file-backed journalctl `--directory` behavior to stock parity.
-- `SOW-0021-20260524-nodejs-xz-data-compression.md` - open. Resolve Node.js XZ DATA object reader/writer support after SOW-0017 split.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - open. Final benchmark, profile, and optimize pass after SOW-0017 through SOW-0021 are complete.
 
 ## Done
@@ -30,6 +29,7 @@
 - `SOW-0015-20260524-deterministic-ingesters.md`
 - `SOW-0016-20260524-byte-identical-writer-compatibility.md`
 - `SOW-0017-20260524-xz-lz4-data-writing.md`
+- `SOW-0021-20260524-nodejs-xz-data-compression.md`
 
 ## Notes
 
@@ -38,6 +38,7 @@
 - SOW-0016 consumed the deterministic ingester outputs and is completed.
 - SOW-0016 validation shows byte-for-byte identity for the accepted uncompressed corpus across online, offline, and archived final states, including exact DATA hash-chain depth parity, plus passing closed-file, binary, live, and zstd compression interoperability matrices.
 - SOW-0017 completed xz/lz4 DATA writing for Rust/Go/Python and lz4 DATA writing for Node.js, with Node.js xz split to SOW-0021.
+- SOW-0021 completed Node.js xz DATA reader/writer support through `node-liblzma@5.0.1` using the WASM-only runtime path accepted by user decision option B.
 - SOW-0009 is intentionally sequenced last. The user decided not to run baseline-only benchmarks now because performance work is expected to require profiling, allocation reduction, buffer reuse, and refactoring that later feature SOWs could invalidate.
 - Byte-for-byte writer identity is the target for deterministic uncompressed journals. Any feature slice that cannot be made byte-identical must return with evidence before the acceptance condition is changed.
 - The external systemd source checkout is read-only for this project. Build outputs and generated files must remain inside this repository or `/tmp`.

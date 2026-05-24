@@ -8,6 +8,7 @@ import {
 } from './header.js';
 import { zstdDecompressSync } from 'node:zlib';
 import { decompressLz4DataPayload } from './lz4-block.js';
+import { decompressXzDataPayload } from './xz-block.js';
 
 // Parse an entry object from a buffer at offset.
 // Returns { seqnum, realtime, monotonic, boot_id, xor_hash, items: [{offset, hash}] }.
@@ -64,17 +65,19 @@ export function parseDataObject(buf, offset) {
   let payload = buf.slice(offset + DATA_OBJECT_HEADER_SIZE, offset + Number(objSize));
 
   // Decompress if needed
+  const compressionFlags = objFlags & (OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4 | OBJECT_COMPRESSED_ZSTD);
   if ((objFlags & ~(OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4 | OBJECT_COMPRESSED_ZSTD)) !== 0) {
     throw new Error(`unsupported DATA object flags: 0x${objFlags.toString(16)}`);
   }
-  const unsupportedCompression = objFlags & OBJECT_COMPRESSED_XZ;
-  if (unsupportedCompression !== 0) {
+  if (compressionFlags !== 0 && (compressionFlags & (compressionFlags - 1)) !== 0) {
     throw new Error(`unsupported DATA object compression flags: 0x${objFlags.toString(16)}`);
   }
   if (objFlags & OBJECT_COMPRESSED_LZ4) {
     payload = decompressLz4DataPayload(payload);
   } else if (objFlags & OBJECT_COMPRESSED_ZSTD) {
     payload = zstdDecompressSync(payload);
+  } else if (objFlags & OBJECT_COMPRESSED_XZ) {
+    payload = decompressXzDataPayload(payload);
   }
 
   const eqPos = payload.indexOf(0x3d);

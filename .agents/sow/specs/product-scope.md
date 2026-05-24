@@ -22,7 +22,7 @@ This project produces pure SDKs and file-backed journalctl-compatible tools for 
 
 - Implementations must not link to system journal libraries.
 - Go implementations must not use CGO.
-- Node.js implementations must not use native addons.
+- Node.js implementations must not load or link native code at runtime. Dependency packages may ship native artifacts if the SDK runtime path is constrained and tested to use only non-native implementations (e.g. WASM).
 - Python implementations must not use native journal bindings.
 - Each language must provide two API layers: an idiomatic SDK API and a libsystemd-compatible reader facade.
 - The libsystemd-compatible reader facade is required unless a SOW records concrete evidence that it would require native bindings, violate the pure-language policy, or create an unsafe/unrepresentable API in that language.
@@ -256,9 +256,9 @@ Current Node.js writer feature slice:
 
 - regular, non-compact journal files;
 - uncompressed DATA objects by default;
-- optional zstd and lz4-compressed DATA object writing with configurable
-  compression threshold through Node.js built-in `node:zlib` and pure
-  JavaScript `lz4js@0.2.0`;
+- optional zstd, xz, and lz4-compressed DATA object writing with configurable
+  compression threshold through Node.js built-in `node:zlib`, pure
+  JavaScript `lz4js@0.2.0`, and `node-liblzma@5.0.1` WASM path;
 - keyed hash tables using the journal file ID;
 - byte-safe field values through `Buffer`, `Uint8Array`, and string-compatible
   field values;
@@ -278,8 +278,8 @@ Current Node.js reader feature slice:
 - regular, non-compact journal files;
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
 - whole-file zstd fixtures through Node.js built-in `node:zlib`;
-- zstd and lz4-compressed DATA objects through Node.js built-in `node:zlib`
-  and pure JavaScript `lz4js@0.2.0`;
+- zstd, xz, and lz4-compressed DATA objects through Node.js built-in `node:zlib`,
+  `node-liblzma@5.0.1` WASM path, and pure JavaScript `lz4js@0.2.0`;
 - directory iteration across active and archived files;
 - forward/backward iteration, cursors, realtime and monotonic timestamps, binary
   field values as `Buffer`, field enumeration, and unique value enumeration;
@@ -296,10 +296,6 @@ Current Node.js reader feature slice:
 Current Node.js reader/writer limitations:
 
 - compact journal files are rejected;
-- xz-compressed DATA objects are rejected;
-- xz-compressed DATA object writing is not implemented because the current
-  Node.js writer API is synchronous and the acceptable non-native XZ candidate
-  exposes async WASM compression;
 - directory iteration is sequential by journal file and validated for
   non-overlapping active/archive files; realtime interleaving across overlapping
   multi-file directories is tracked under the interoperability phase;

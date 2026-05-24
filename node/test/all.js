@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,15 +15,18 @@ import { parseDataObject } from '../src/lib/entry.js';
 import { exportEntry, jsonEntry, SdJournalOpen, SdJournalQueryUnique } from '../src/facade.js';
 import {
   DATA_OBJECT_HEADER_SIZE,
+  HEADER_SIZE,
   INCOMPATIBLE_COMPRESSED_XZ,
   INCOMPATIBLE_KEYED_HASH,
   OBJECT_COMPRESSED_LZ4,
   OBJECT_COMPRESSED_XZ,
   OBJECT_TYPE_DATA,
   STATE_ARCHIVED,
+  parseObjectHeader,
   writeObjectHeader,
 } from '../src/lib/header.js';
 import { compressLz4DataPayload } from '../src/lib/lz4-block.js';
+import { compressXzDataPayload, decompressXzDataPayload } from '../src/lib/xz-block.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, '..');
@@ -53,6 +57,23 @@ function run(cmd, args, options = {}) {
     throw new Error(`${cmd} ${args.join(' ')} failed with exit ${result.status}`);
   }
   return result.stdout;
+}
+
+function journalHasDataObjectFlag(path, flag) {
+  const buf = readFileSync(path);
+  let offset = HEADER_SIZE;
+
+  while (offset + 16 <= buf.length) {
+    const header = parseObjectHeader(buf, offset);
+    if (!header || header.type === 0 || header.size === 0n) return false;
+    if (header.type === OBJECT_TYPE_DATA && (header.flags & flag) !== 0) return true;
+
+    const next = Number(((BigInt(offset) + header.size + 7n) / 8n) * 8n);
+    if (next <= offset) return false;
+    offset = next;
+  }
+
+  return false;
 }
 
 const jenkinsVectors = [
@@ -102,7 +123,8 @@ for (const [length, expected] of sipVectors) {
 
     const fd = openSync(journalPath, 'r+');
     const flags = Buffer.alloc(4);
-    flags.writeUInt32LE(INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_XZ, 0);
+    const unsupportedFlag = 1 << 4;
+    flags.writeUInt32LE(INCOMPATIBLE_KEYED_HASH | unsupportedFlag, 0);
     writeSync(fd, flags, 0, flags.length, 12);
     closeSync(fd);
 
@@ -175,7 +197,21 @@ for (const [length, expected] of sipVectors) {
 
 {
   const buf = Buffer.alloc(DATA_OBJECT_HEADER_SIZE + 3);
-  writeObjectHeader(buf, 0, OBJECT_TYPE_DATA, OBJECT_COMPRESSED_XZ, BigInt(DATA_OBJECT_HEADER_SIZE + 3));
+  const unsupportedFlag = 0x80;
+  writeObjectHeader(buf, 0, OBJECT_TYPE_DATA, unsupportedFlag, BigInt(DATA_OBJECT_HEADER_SIZE + 3));
+  Buffer.from('A=x').copy(buf, DATA_OBJECT_HEADER_SIZE);
+  assert.throws(() => parseDataObject(buf, 0), /unsupported DATA object flags/);
+}
+
+{
+  const buf = Buffer.alloc(DATA_OBJECT_HEADER_SIZE + 3);
+  writeObjectHeader(
+    buf,
+    0,
+    OBJECT_TYPE_DATA,
+    OBJECT_COMPRESSED_LZ4 | OBJECT_COMPRESSED_XZ,
+    BigInt(DATA_OBJECT_HEADER_SIZE + 3),
+  );
   Buffer.from('A=x').copy(buf, DATA_OBJECT_HEADER_SIZE);
   assert.throws(() => parseDataObject(buf, 0), /unsupported DATA object compression flags/);
 }
@@ -190,6 +226,76 @@ for (const [length, expected] of sipVectors) {
   const parsed = parseDataObject(buf, 0);
   assert.deepEqual(parsed.name, Buffer.from('MESSAGE'));
   assert.deepEqual(parsed.value, Buffer.from('lz4-data-object'.repeat(16)));
+}
+
+{
+  const payload = Buffer.from(`MESSAGE=${'xz-data-object'.repeat(16)}`);
+  const compressed = compressXzDataPayload(payload);
+  assert.ok(compressed);
+  const buf = Buffer.alloc(DATA_OBJECT_HEADER_SIZE + compressed.length);
+  writeObjectHeader(buf, 0, OBJECT_TYPE_DATA, OBJECT_COMPRESSED_XZ, BigInt(DATA_OBJECT_HEADER_SIZE + compressed.length));
+  compressed.copy(buf, DATA_OBJECT_HEADER_SIZE);
+  const parsed = parseDataObject(buf, 0);
+  assert.deepEqual(parsed.name, Buffer.from('MESSAGE'));
+  assert.deepEqual(parsed.value, Buffer.from('xz-data-object'.repeat(16)));
+}
+
+{
+  // XZ CHECK_NONE: verify the emitted stream header uses check type 0 (None).
+  const payload = Buffer.from(`MESSAGE=${'xz-check-none-test'.repeat(16)}`);
+  const compressed = compressXzDataPayload(payload);
+  assert.ok(compressed);
+  // systemd XZ magic: fd 37 7a 58 5a 00 (6 bytes), then stream flags (2 bytes).
+  assert.equal(compressed.subarray(0, 6).toString('hex'), 'fd377a585a00');
+  assert.equal(compressed[6], 0x00, 'XZ stream flag byte 0 must be zero');
+  assert.equal(compressed[7], 0x00, 'XZ stream must use CHECK_NONE (0)');
+}
+
+{
+  // XZ rejects payloads below minimum compression threshold (80 bytes).
+  const smallPayload = Buffer.from('short');
+  assert.equal(compressXzDataPayload(smallPayload), null);
+}
+
+{
+  // XZ decompression rejects corrupt/invalid payloads.
+  const corrupt = Buffer.alloc(32, 0xff);
+  assert.throws(() => decompressXzDataPayload(corrupt), /xz decompression/);
+}
+
+{
+  // Verify no node-liblzma .node native addon is loaded at runtime.
+  const req = createRequire(import.meta.url);
+  const nativeAddonKeys = Object.keys(req.cache).filter(
+    (k) => k.includes('node-liblzma') && k.endsWith('.node'),
+  );
+  assert.equal(nativeAddonKeys.length, 0, 'node-liblzma .node native addon must not be loaded');
+}
+
+{
+  // Node writer -> Node reader round-trip with XZ-compressed DATA.
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const journalPath = join(tempDir, 'xz-writer-reader-roundtrip.journal');
+    const writer = Writer.create(journalPath, { compression: 'xz', compressionThresholdBytes: 80 });
+    const value = 'xz-roundtrip-test-value-'.repeat(16);
+    writer.append([{ name: 'MESSAGE', value }]);
+    writer.close();
+    assert.ok(
+      journalHasDataObjectFlag(journalPath, OBJECT_COMPRESSED_XZ),
+      'journal must contain at least one XZ-compressed DATA object',
+    );
+    const reader = FileReader.open(journalPath);
+    assert.ok(reader.header.incompatible_flags & INCOMPATIBLE_COMPRESSED_XZ, 'header must have XZ incompatible flag');
+    assert.ok(reader.next());
+    const entry = reader.getEntry();
+    assert.ok(entry);
+    assert.deepEqual(entry.fields.MESSAGE, Buffer.from(value));
+    assert.equal(reader.next(), false);
+    reader.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 {

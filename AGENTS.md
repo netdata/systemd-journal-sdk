@@ -7,7 +7,7 @@ This project produces pure SDKs for reading and writing systemd journal files in
 Success means:
 
 - SDKs read existing journal files without linking to system journal libraries.
-- SDKs write valid journal files without CGO, native Node.js addons, or external journal libraries.
+- SDKs write valid journal files without CGO, native Node.js runtime addon loading/linking, or external journal libraries. Dependency packages may ship native artifacts if the SDK runtime path is constrained and tested to use only non-native implementations (e.g. WASM).
 - Journal files written by one language can be read by every other language and by compatible systemd tooling where applicable.
 - The same shared conformance suite, fixtures, interoperability tests, benchmarks, and profiling workflows apply to every implementation.
 - journalctl rewrites exist for Rust, Go, Node.js, and Python for file-backed/query behavior.
@@ -326,7 +326,7 @@ Output/reference skills:
 - The `+` separator is a systemd journalctl disjunction feature to replicate for file-backed journalctl behavior; it is not a new extension.
 - Implement journalctl rewrites for file-backed/query behavior in Rust, Go, Node.js, and Python.
 - Do not implement daemon-only journalctl commands, including daemon sync, flush, rotate, and relinquish-var operations.
-- Common compression-library dependencies are allowed after dependency review. Journal parsing/writing must not depend on systemd/libjournal; CGO, native Node.js addons, and linking to system journal libraries remain disallowed unless the user explicitly changes those separate constraints.
+- Common compression-library dependencies are allowed after dependency review. Journal parsing/writing must not depend on systemd/libjournal; CGO, native Node.js runtime addon loading/linking, and linking to system journal libraries remain disallowed unless the user explicitly changes those separate constraints. Dependency packages may ship native artifacts if the SDK runtime path is constrained and tested to use only non-native implementations (e.g. WASM) and does not load or link native code at runtime.
 - Preferred implementer agent: `llm-netdata-cloud/kimi-k2.6`.
 - Fallback implementer hierarchy: `llm-netdata-cloud/qwen3.6-plus`, then `llm-netdata-cloud/glm-5.1`, then another approved model only if the active SOW records why the first fallbacks were unavailable or unsuitable.
 - Reviewer pool: `llm-netdata-cloud/minimax-m2.7-coder`, `llm-netdata-cloud/mimo-v2.5-pro`, `llm-netdata-cloud/qwen3.6-plus`, and `llm-netdata-cloud/glm-5.1`. Minimax is reviewer-only unless the user changes this routing.

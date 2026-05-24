@@ -11,7 +11,7 @@ import {
   OBJECT_TYPE_DATA, OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE,
   DATA_OBJECT_HEADER_SIZE, OFFSET_ARRAY_OBJECT_HEADER_SIZE,
   REGULAR_ENTRY_ITEM_SIZE, INCOMPATIBLE_KEYED_HASH, INCOMPATIBLE_COMPACT,
-  INCOMPATIBLE_COMPRESSED_ZSTD, INCOMPATIBLE_COMPRESSED_LZ4,
+  INCOMPATIBLE_COMPRESSED_XZ, INCOMPATIBLE_COMPRESSED_ZSTD, INCOMPATIBLE_COMPRESSED_LZ4,
 } from './header.js';
 import { decompressZstToTemp, isZstFile } from './compress.js';
 import { parseEntryObject, parseDataObject } from './entry.js';
@@ -59,8 +59,8 @@ export class FileReader {
         throw new Error('unsupported journal: keyed hash required');
       }
 
-      // Reject flags we cannot handle (compact, xz)
-      const supported = INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_ZSTD | INCOMPATIBLE_COMPRESSED_LZ4;
+      // Reject flags we cannot handle (compact)
+      const supported = INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_XZ | INCOMPATIBLE_COMPRESSED_ZSTD | INCOMPATIBLE_COMPRESSED_LZ4;
       if (header.incompatible_flags & ~supported) {
         throw new Error('unsupported journal: incompatible flags ' + header.incompatible_flags.toString(16));
       }

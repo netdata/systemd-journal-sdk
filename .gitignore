@@ -11,5 +11,8 @@ rust/src/crates/jf/target/
 __pycache__/
 *.py[cod]
 
+# Node.js dependencies
+node_modules/
+
 # Go build artifacts
 go/adapter/adapter
