@@ -99,6 +99,9 @@ In scope:
 - systemd journal fixtures and corrupted journal fixtures.
 - File-backed journalctl behavior against journal files or journal directories.
 - Live stock `journalctl` and stock libsystemd reader behavior against actively written journal files.
+- Deterministic dataset ingesters for the systemd C reference helper and every
+  SDK writer, with generated source/build/runtime artifacts kept under
+  `.local/`.
 - Cross-language writer/reader interoperability tests.
 - Cross-language live writer/reader concurrency tests.
 - Benchmarks, profiling, and optimization evidence.
@@ -184,6 +187,8 @@ Current Rust writer feature slice:
   threshold, including Rust zstd frame content-size metadata required by stock
   systemd verification;
 - keyed hash tables using the journal file ID;
+- deterministic file ID selection through `JournalFileOptions::with_file_id()`
+  for reference fixture generation and conformance checks;
 - byte-safe field values through `&[u8]` field payloads;
 - direct-file writing through `journal_core`;
 - high-level directory writing with systemd-compatible active/archive naming;

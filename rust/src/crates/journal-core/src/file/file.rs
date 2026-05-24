@@ -219,6 +219,11 @@ impl JournalFileOptions {
         self
     }
 
+    pub fn with_file_id(mut self, file_id: uuid::Uuid) -> Self {
+        self.file_id = file_id;
+        self
+    }
+
     pub fn with_compression(mut self, compression: Compression) -> Self {
         self.compression = compression;
         self

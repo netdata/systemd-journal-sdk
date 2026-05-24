@@ -23,6 +23,7 @@ members = [
     # CLI tools
     "src/cmd/journalctl",
     "src/internal/testcmd/livewriter",
+    "src/internal/testcmd/dataset_ingester",
 
     # Conformance adapter
     "src/adapter",

@@ -2,7 +2,7 @@
 
 ## Current
 
-- `SOW-0015-20260524-deterministic-ingesters.md` - in-progress. Build systemd C and SDK ingesters for the frozen deterministic dataset.
+- None.
 
 ## Pending
 
@@ -28,10 +28,12 @@
 - `SOW-0012-20260523-go-writer-binary-fields.md`
 - `SOW-0013-20260523-go-directory-writer-rotation-retention.md`
 - `SOW-0014-20260524-deterministic-ingestion-dataset.md`
+- `SOW-0015-20260524-deterministic-ingesters.md`
 
 ## Notes
 
 - The deterministic dataset must separate accepted rows from expected rejection cases.
-- SOW-0015 is the next implementation SOW and consumes the deterministic dataset.
+- SOW-0015 produced deterministic ingesters for systemd C, Rust, Go, Node.js, and Python.
+- SOW-0016 is the next implementation SOW and consumes the deterministic ingester outputs.
 - Byte-for-byte writer identity is the target for deterministic uncompressed journals. Any feature slice that cannot be made byte-identical must return with evidence before the acceptance condition is changed.
 - The external systemd source checkout is read-only for this project. Build outputs and generated files must remain inside this repository or `/tmp`.
