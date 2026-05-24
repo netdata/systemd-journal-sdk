@@ -1,0 +1,69 @@
+// Node.js SDK for systemd journal file reading and writing.
+// No native addons, pure JavaScript with Buffer/Uint8Array for binary values.
+
+import { FileReader } from './lib/reader.js';
+import { DirectoryReader } from './lib/directory-reader.js';
+import { Writer } from './lib/writer.js';
+import { Log } from './lib/directory-writer.js';
+import {
+  SdJournal, SdJournalOpen, SdJournalOpenDirectory,
+  SdJournalAddMatch, SdJournalAddDisjunction, SdJournalAddConjunction,
+  SdJournalFlushMatches, SdJournalNext, SdJournalPrevious,
+  SdJournalSeekHead, SdJournalSeekTail, SdJournalGetEntry,
+  SdJournalGetRealtimeUsec, SdJournalGetCursor, SdJournalTestCursor,
+  SdJournalEnumerateFields, SdJournalQueryUnique, SdJournalListBoots,
+  SdJournalSetOutputMode, SdJournalProcessOutput,
+  OUTPUT_MODE_DEFAULT, OUTPUT_MODE_JSON, OUTPUT_MODE_EXPORT,
+} from './facade.js';
+import { parseMatchString } from './lib/hash.js';
+
+// Re-export everything
+export { FileReader, DirectoryReader, Writer, Log };
+export { FilterBuilder } from './lib/reader.js';
+export {
+  SdJournal, SdJournalOpen, SdJournalOpenDirectory,
+  SdJournalAddMatch, SdJournalAddDisjunction, SdJournalAddConjunction,
+  SdJournalFlushMatches, SdJournalNext, SdJournalPrevious,
+  SdJournalSeekHead, SdJournalSeekTail, SdJournalGetEntry,
+  SdJournalGetRealtimeUsec, SdJournalGetCursor, SdJournalTestCursor,
+  SdJournalEnumerateFields, SdJournalQueryUnique, SdJournalListBoots,
+  SdJournalSetOutputMode, SdJournalProcessOutput,
+  OUTPUT_MODE_DEFAULT, OUTPUT_MODE_JSON, OUTPUT_MODE_EXPORT,
+} from './facade.js';
+export { parseMatchString, sipHash24, jenkinsHash64 } from './lib/hash.js';
+export { readUint64LE, writeUint64LE, writeUint32LE, writeUint8, align8, bufEqual, uuidToString, stringToUUID, isZeroUUID, randomUUID } from './lib/binary.js';
+export { decompressZstSync, isJournalFileName, isZstFile } from './lib/compress.js';
+export { parseEntryObject, parseDataObject } from './lib/entry.js';
+export {
+  HEADER_SIZE, OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE,
+  DATA_OBJECT_HEADER_SIZE, FIELD_OBJECT_HEADER_SIZE, HASH_ITEM_SIZE,
+  OBJECT_TYPE_DATA, OBJECT_TYPE_FIELD, OBJECT_TYPE_ENTRY,
+  OBJECT_TYPE_DATA_HASH_TABLE, OBJECT_TYPE_FIELD_HASH_TABLE,
+  OBJECT_TYPE_ENTRY_ARRAY,
+  parseFileHeader, parseObjectHeader,
+} from './lib/header.js';
+
+// Convenience factory functions
+export function openJournal(path) {
+  return SdJournal.open(path);
+}
+
+export function createJournal(path, options = {}) {
+  return Writer.create(path, options);
+}
+
+// String field helper
+export function stringField(name, value) {
+  return { name, value: Buffer.from(value, 'utf8') };
+}
+
+// Binary field helper
+export function binaryField(name, value) {
+  return { name, value: Buffer.isBuffer(value) ? value : Buffer.from(value) };
+}
+
+export default {
+  FileReader, DirectoryReader, Writer, Log,
+  SdJournal, SdJournalOpen, SdJournalOpenDirectory,
+  openJournal, createJournal, stringField, binaryField,
+};

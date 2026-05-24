@@ -1,0 +1,21 @@
+{
+  "name": "@netdata/systemd-journal-sdk",
+  "version": "0.1.0",
+  "description": "Pure-JavaScript systemd journal reader and writer SDK",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "journalctl": "cmd/journalctl/index.js",
+    "adapter": "adapter/index.js"
+  },
+  "scripts": {
+    "test": "node test/all.js",
+    "adapter": "node adapter/index.js",
+    "journalctl": "node cmd/journalctl/index.js"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

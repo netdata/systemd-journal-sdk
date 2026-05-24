@@ -20,7 +20,7 @@ Bootstrap mode: empty/new project.
 
 ## Active SOW
 
-- None.
+- None. The next implementation SOW can be activated after the Node.js closeout commit.
 
 ## Completed SOWs
 
@@ -33,12 +33,12 @@ Bootstrap mode: empty/new project.
 - `.agents/sow/done/SOW-0013-20260523-go-directory-writer-rotation-retention.md`
 - `.agents/sow/done/SOW-0010-20260523-go-reader-and-journalctl-completion.md`
 - `.agents/sow/done/SOW-0004-20260523-rust-sdk-and-journalctl.md`
+- `.agents/sow/done/SOW-0006-20260523-node-sdk-and-journalctl.md`
 
 ## Next SOW
 
-- Current next: `.agents/sow/pending/SOW-0006-20260523-node-sdk-and-journalctl.md`
-- Rationale: the Go writer, Go directory writer, Go reader, Go facade, Go journalctl, Go adapter, Rust SDK, Rust facade, Rust journalctl, and Rust adapter slices are complete; Node.js is next before Python unless the user changes priority.
-- Alternative: `.agents/sow/pending/SOW-0007-20260523-python-sdk-and-journalctl.md` only if the user explicitly wants to prioritize Python before Node.js after Rust.
+- Candidate: `.agents/sow/pending/SOW-0007-20260523-python-sdk-and-journalctl.md`
+- Rationale: the Go, Rust, and Node.js SDK/journalctl slices are complete; Python is the remaining per-language SDK/journalctl slice before full interoperability and benchmark/profiling phases.
 
 ## Guardrails
 
@@ -64,3 +64,6 @@ Bootstrap mode: empty/new project.
 - 2026-05-23 Go completion closed: SOW-0010 completed the Go reader, libsystemd-style facade, file-backed journalctl command, and Go conformance adapter with repeated external production-grade reviews and final validation passing.
 - 2026-05-23 Rust activation update: SOW-0004 is active after the SOW-0010 commit `2d349ad`; implementation is delegated under the shared conformance and live compatibility gates.
 - 2026-05-23 Rust closed: SOW-0004 completed the Rust SDK, libsystemd-style facade, file-backed journalctl command, Rust conformance adapter, current Rust writer/reader feature-slice docs, and Rust product-scope updates. Final validation passed with Rust workspace tests, real adapter execution at 13 PASS / 2 SKIP, full `no-rtc` fixture JSON drain, 6,516-row repeated same-field OR and `+` disjunction checks matching the JSON oracle, stock-reader live writer compatibility, `git diff --check`, and SOW audit. Mimo and GLM closeout reviews returned `PRODUCTION GRADE`.
+- 2026-05-23 Node.js activation update: SOW-0006 is active after the Rust closeout commit `97506b8`. The pre-implementation gate records plain JavaScript, no native addons, Buffer/Uint8Array binary values, BigInt internal 64-bit handling, and built-in Node runtime zstd support from Node.js `v22.22.2`.
+- 2026-05-24 Node.js pre-review progress: SOW-0006 had a locally validated Node.js reader, writer, directory writer, libsystemd-style facade, journalctl command, adapter, package test runner, README, product-scope update, and livewriter command. Validation passed syntax/runtime import checks, `npm test`, adapter manifest at 13 PASS / 2 SKIP, fixture journalctl counts, directory writer rotation/retention smoke, stock-reader live concurrency, and Node-reader live polling before external closeout review.
+- 2026-05-24 Node.js closed: SOW-0006 completed the pure Node.js SDK, libsystemd-style facade, file-backed journalctl command, conformance adapter, package tests, README, directory writer rotation/retention, and livewriter harness command. Final validation passed syntax/runtime import checks, `npm test`, shared conformance at 13 PASS / 2 SKIP, stock `journalctl --directory` live/closed reads, live stock `journalctl` and libsystemd reader concurrency on systemd `260 (260.1-2-manjaro)`, cross-language reads by stock/Go/Rust readers, dependency/native marker audit, `git diff --check`, and `.agents/sow/audit.sh`. Mimo and Minimax returned `VERDICT: PRODUCTION GRADE`; Kimi and GLM ran useful checks but timed out before final verdicts.

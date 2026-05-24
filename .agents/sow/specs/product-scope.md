@@ -212,6 +212,52 @@ Current Rust reader limitations:
 - full journal verification and FSS validation are not implemented;
 - daemon-only journalctl operations remain unsupported.
 
+Current Node.js writer feature slice:
+
+- regular, non-compact journal files;
+- uncompressed DATA objects;
+- keyed hash tables using the journal file ID;
+- byte-safe field values through `Buffer`, `Uint8Array`, and string-compatible
+  field values;
+- direct-file writing through `Writer`;
+- high-level directory writing through `Log` with systemd-compatible
+  active/archive naming;
+- entry-count and file-size rotation;
+- archived file-count and byte-size retention, without deleting the active file
+  to satisfy retention limits;
+- live one-writer/multiple-reader compatibility with stock `journalctl --file`
+  and stock libsystemd readers for the current writer slice.
+
+Current Node.js reader feature slice:
+
+- regular, non-compact journal files;
+- files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
+- whole-file zstd fixtures through Node.js built-in `node:zlib`;
+- directory iteration across active and archived files;
+- forward/backward iteration, cursors, realtime and monotonic timestamps, binary
+  field values as `Buffer`, field enumeration, and unique value enumeration;
+- systemd-compatible export/json/text formatting for the accepted fixture set;
+- libsystemd-style match tree behavior from `SdJournalAddMatch()`,
+  `SdJournalAddDisjunction()`, and `SdJournalAddConjunction()`;
+- file-backed Node.js journalctl behavior for `--file`, `--directory`,
+  text/json/export output, field listing, boot listing, repeated same-field OR
+  matches, and `+` disjunction;
+- Node.js conformance adapter support for reader, matching, importer,
+  compression, cursor, enumeration, stream, export, header parsing, and
+  file-backed journalctl cases.
+
+Current Node.js reader/writer limitations:
+
+- compact journal files are rejected;
+- xz/lz4-compressed DATA objects are rejected;
+- compressed DATA object writing is not implemented;
+- directory iteration is sequential by journal file and validated for
+  non-overlapping active/archive files; realtime interleaving across overlapping
+  multi-file directories is tracked under the interoperability phase;
+- boot listing uses file-level boot metadata in this slice;
+- full journal verification and FSS validation are not implemented;
+- daemon-only journalctl operations remain unsupported.
+
 ## journalctl Target
 
 Implement journalctl rewrites in Rust, Go, Node.js, and Python for file-backed/query behavior.
