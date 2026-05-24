@@ -14,12 +14,13 @@ from .header import (
     HEADER_SIZE, OBJECT_TYPE_DATA, OBJECT_TYPE_ENTRY,
     OBJECT_TYPE_DATA_HASH_TABLE, OBJECT_TYPE_FIELD_HASH_TABLE,
     OBJECT_TYPE_ENTRY_ARRAY, OBJECT_TYPE_FIELD,
-    STATE_ONLINE, STATE_OFFLINE, STATE_ARCHIVED,
+    STATE_OFFLINE, STATE_ONLINE, STATE_ARCHIVED,
     INCOMPATIBLE_KEYED_HASH, INCOMPATIBLE_COMPRESSED_ZSTD,
+    COMPATIBLE_TAIL_ENTRY_BOOT_ID,
     OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE, DATA_OBJECT_HEADER_SIZE,
     FIELD_OBJECT_HEADER_SIZE, HASH_ITEM_SIZE, OFFSET_ARRAY_OBJECT_HEADER_SIZE,
     REGULAR_ENTRY_ITEM_SIZE, OBJECT_COMPRESSED_XZ, OBJECT_COMPRESSED_LZ4, OBJECT_COMPRESSED_ZSTD,
-    DEFAULT_DATA_HASH_BUCKETS, DEFAULT_FIELD_HASH_BUCKETS,
+    DEFAULT_DATA_HASH_BUCKETS, DEFAULT_FIELD_HASH_BUCKETS, FILE_SIZE_INCREASE,
     INITIAL_ENTRY_ARRAY_CAP, INITIAL_DATA_ENTRY_ARRAY_CAP,
 )
 from .hash import sip_hash_24, jenkins_hash_64
@@ -127,10 +128,13 @@ class Writer:
 
         data_size = data_buckets * HASH_ITEM_SIZE
         field_size = field_buckets * HASH_ITEM_SIZE
-        data_offset = HEADER_SIZE + OBJECT_HEADER_SIZE
-        field_obj_offset = data_offset + data_size
+        # systemd creates FIELD_HASH_TABLE first, then DATA_HASH_TABLE
+        field_obj_offset = HEADER_SIZE
         field_offset = field_obj_offset + OBJECT_HEADER_SIZE
-        append_offset = field_offset + field_size
+        data_obj_offset = align8(field_offset + field_size)
+        data_offset = data_obj_offset + OBJECT_HEADER_SIZE
+        append_offset = align8(data_offset + data_size)
+        file_size = FILE_SIZE_INCREASE
 
         file_id = _uuid_option(opts.get('file_id'), random_uuid())
         machine_id = _uuid_option(opts.get('machine_id'), random_uuid())
@@ -143,20 +147,20 @@ class Writer:
 
         self._header = {
             'signature': 'LPKSHHRH',
-            'compatible_flags': 0,
+            'compatible_flags': COMPATIBLE_TAIL_ENTRY_BOOT_ID,  # v260+ sets TAIL_ENTRY_BOOT_ID
             'incompatible_flags': inc_flags,
             'state': STATE_ONLINE,
             'file_id': file_id,
             'machine_id': machine_id,
-            'tail_entry_boot_id': boot_id,
+            'tail_entry_boot_id': b'\x00' * 16,
             'seqnum_id': seqnum_id,
             'header_size': HEADER_SIZE,
-            'arena_size': append_offset - HEADER_SIZE,
+            'arena_size': file_size - HEADER_SIZE,
             'data_hash_table_offset': data_offset,
             'data_hash_table_size': data_size,
             'field_hash_table_offset': field_offset,
             'field_hash_table_size': field_size,
-            'tail_object_offset': field_obj_offset,
+            'tail_object_offset': data_obj_offset,
             'n_objects': 2,
             'n_entries': 0,
             'tail_entry_seqnum': 0,
@@ -165,22 +169,32 @@ class Writer:
             'head_entry_realtime': 0,
             'tail_entry_realtime': 0,
             'tail_entry_monotonic': 0,
+            'n_data': 0,
+            'n_fields': 0,
+            'n_tags': 0,
+            'n_entry_arrays': 0,
+            'data_hash_chain_depth': 0,
+            'field_hash_chain_depth': 0,
+            'tail_entry_array_offset': 0,
+            'tail_entry_array_n_entries': 0,
+            'tail_entry_offset': 0,
         }
 
         self._boot_id = boot_id
         self._append_offset = append_offset
         self._next_seqnum = opts.get('head_seqnum', 1)
 
-        os.ftruncate(self._fd, append_offset)
+        os.ftruncate(self._fd, file_size)
         self._write_header()
 
-        dht_buf = bytearray(OBJECT_HEADER_SIZE)
-        write_object_header(dht_buf, 0, OBJECT_TYPE_DATA_HASH_TABLE, 0, OBJECT_HEADER_SIZE + data_size)
-        os.pwrite(self._fd, dht_buf, data_offset - OBJECT_HEADER_SIZE)
-
+        # systemd writes FIELD hash table first, then DATA hash table
         fht_buf = bytearray(OBJECT_HEADER_SIZE)
         write_object_header(fht_buf, 0, OBJECT_TYPE_FIELD_HASH_TABLE, 0, OBJECT_HEADER_SIZE + field_size)
         os.pwrite(self._fd, fht_buf, field_obj_offset)
+
+        dht_buf = bytearray(OBJECT_HEADER_SIZE)
+        write_object_header(dht_buf, 0, OBJECT_TYPE_DATA_HASH_TABLE, 0, OBJECT_HEADER_SIZE + data_size)
+        os.pwrite(self._fd, dht_buf, data_obj_offset)
 
     def _write_header(self):
         buf = bytearray(HEADER_SIZE)
@@ -259,7 +273,7 @@ class Writer:
         for item in deduped:
             self._link_data_to_entry(item['offset'], entry_offset)
 
-        self._entry_added(realtime, monotonic, boot_id)
+        self._entry_added(entry_offset, realtime, monotonic, boot_id)
         self._publish_entry_metadata()
 
         return {'realtime': realtime, 'seqnum': self._next_seqnum - 1}
@@ -299,6 +313,7 @@ class Writer:
             self._header['data_hash_table_offset'],
             self._header['data_hash_table_size'],
             OBJECT_TYPE_DATA, h, offset)
+        self._header['n_data'] += 1
 
         eq_pos = payload.find(b'=')
         if eq_pos > 0:
@@ -330,6 +345,7 @@ class Writer:
             self._header['field_hash_table_offset'],
             self._header['field_hash_table_size'],
             OBJECT_TYPE_FIELD, h, offset)
+        self._header['n_fields'] += 1
         return offset
 
     def _find_data(self, h, payload):
@@ -337,12 +353,18 @@ class Writer:
         bucket_off = self._header['data_hash_table_offset'] + (h % n_buckets) * HASH_ITEM_SIZE
         item = self._read_hash_item(bucket_off)
 
+        depth = 0
         offset = item['head']
         while offset != 0:
             stored = self._read_data_payload(offset)
             if stored and buf_equal(stored, payload):
                 return offset
-            offset = self._read_uint64_at(offset + 24)
+            next_hash = self._read_uint64_at(offset + 24)
+            if next_hash != 0:
+                depth += 1
+                if depth > self._header['data_hash_chain_depth']:
+                    self._header['data_hash_chain_depth'] = depth
+            offset = next_hash
         return None
 
     def _find_field(self, h, payload):
@@ -350,12 +372,18 @@ class Writer:
         bucket_off = self._header['field_hash_table_offset'] + (h % n_buckets) * HASH_ITEM_SIZE
         item = self._read_hash_item(bucket_off)
 
+        depth = 0
         offset = item['head']
         while offset != 0:
             stored = self._read_field_payload(offset)
             if stored and buf_equal(stored, payload):
                 return offset
-            offset = self._read_uint64_at(offset + 24)
+            next_hash = self._read_uint64_at(offset + 24)
+            if next_hash != 0:
+                depth += 1
+                if depth > self._header['field_hash_chain_depth']:
+                    self._header['field_hash_chain_depth'] = depth
+            offset = next_hash
         return None
 
     def _read_hash_item(self, offset):
@@ -400,6 +428,9 @@ class Writer:
         buf = os.pread(self._fd, 8, offset)
         return read_uint64_le(buf, 0)
 
+    def _write_uint32_at(self, offset, value):
+        os.pwrite(self._fd, struct.pack('<I', value), offset)
+
     def _append_hash_item(self, table_offset, table_size, expected_type, h, object_offset):
         n_buckets = table_size // HASH_ITEM_SIZE
         bucket_off = table_offset + (h % n_buckets) * HASH_ITEM_SIZE
@@ -420,9 +451,8 @@ class Writer:
         self._header['tail_object_offset'] = offset
         self._append_offset = align8(offset + size)
         self._header['n_objects'] += 1
-        self._header['arena_size'] = self._append_offset - HEADER_SIZE
 
-    def _entry_added(self, realtime, monotonic, boot_id):
+    def _entry_added(self, entry_offset, realtime, monotonic, boot_id):
         self._header['n_entries'] += 1
         if self._header['head_entry_seqnum'] == 0:
             self._header['head_entry_seqnum'] = self._next_seqnum
@@ -432,12 +462,18 @@ class Writer:
         self._header['tail_entry_realtime'] = realtime
         self._header['tail_entry_monotonic'] = monotonic
         self._header['tail_entry_boot_id'] = boot_id
+        self._header['tail_entry_offset'] = entry_offset
         self._next_seqnum += 1
 
     def _publish_object_metadata(self):
         self._write_uint64_at(96, self._header['arena_size'])
         self._write_uint64_at(136, self._header['tail_object_offset'])
         self._write_uint64_at(144, self._header['n_objects'])
+        self._write_uint64_at(208, self._header['n_data'])
+        self._write_uint64_at(216, self._header['n_fields'])
+        self._write_uint64_at(232, self._header['n_entry_arrays'])
+        self._write_uint64_at(240, self._header['data_hash_chain_depth'])
+        self._write_uint64_at(248, self._header['field_hash_chain_depth'])
 
     def _publish_entry_metadata(self):
         self._write_uuid_at(56, self._header['tail_entry_boot_id'])
@@ -447,30 +483,60 @@ class Writer:
         self._write_uint64_at(184, self._header['head_entry_realtime'])
         self._write_uint64_at(192, self._header['tail_entry_realtime'])
         self._write_uint64_at(200, self._header['tail_entry_monotonic'])
+        self._write_uint32_at(256, self._header['tail_entry_array_offset'])
+        self._write_uint32_at(260, self._header['tail_entry_array_n_entries'])
+        self._write_uint64_at(264, self._header['tail_entry_offset'])
         self._write_uint64_at(152, self._header['n_entries'])
+
+    def _next_entry_array_capacity(self, index, previous_capacity):
+        capacity = previous_capacity
+        if index > capacity:
+            capacity = (index + 1) * 2
+        else:
+            capacity *= 2
+        return max(capacity, 4)
 
     def _append_to_entry_array(self, entry_offset):
         if self._header['entry_array_offset'] == 0:
-            array_off = self._allocate_offset_array(INITIAL_ENTRY_ARRAY_CAP)
+            array_off = self._allocate_offset_array(4)
             self._header['entry_array_offset'] = array_off
+            self._header['tail_entry_array_offset'] = array_off
+            self._header['tail_entry_array_n_entries'] = 1
             self._write_array_item(array_off, 0, entry_offset)
             return
 
-        remaining = self._header['n_entries']
-        offset = self._header['entry_array_offset']
+        tail_offset = self._header['tail_entry_array_offset']
+        if tail_offset == 0:
+            tail_offset = self._header['entry_array_offset']
+            remaining = self._header['n_entries']
+            while True:
+                cap, next_off = self._read_offset_array_header(tail_offset)
+                if remaining < cap or next_off == 0:
+                    break
+                remaining -= cap
+                tail_offset = next_off
 
-        while True:
-            cap, next_off = self._read_offset_array_header(offset)
-            if remaining < cap:
-                self._write_array_item(offset, remaining, entry_offset)
-                return
-            remaining -= cap
-            if next_off == 0:
-                new_off = self._allocate_offset_array(cap * 2)
-                self._write_uint64_at(offset + 16, new_off)
-                self._write_array_item(new_off, 0, entry_offset)
-                return
-            offset = next_off
+        cap, _ = self._read_offset_array_header(tail_offset)
+        tail_entries = self._header['tail_entry_array_n_entries']
+        if tail_entries == 0:
+            tail_entries = self._header['n_entries']
+            offset = self._header['entry_array_offset']
+            while offset != 0 and offset != tail_offset:
+                c, next_off = self._read_offset_array_header(offset)
+                tail_entries -= c
+                offset = next_off
+
+        if tail_entries < cap:
+            self._write_array_item(tail_offset, tail_entries, entry_offset)
+            self._header['tail_entry_array_offset'] = tail_offset
+            self._header['tail_entry_array_n_entries'] = tail_entries + 1
+            return
+
+        new_off = self._allocate_offset_array(self._next_entry_array_capacity(self._header['n_entries'], cap))
+        self._write_uint64_at(tail_offset + 16, new_off)
+        self._write_array_item(new_off, 0, entry_offset)
+        self._header['tail_entry_array_offset'] = new_off
+        self._header['tail_entry_array_n_entries'] = 1
 
     def _read_offset_array_header(self, offset):
         buf = os.pread(self._fd, OFFSET_ARRAY_OBJECT_HEADER_SIZE, offset)
@@ -489,6 +555,7 @@ class Writer:
         write_object_header(buf, 0, OBJECT_TYPE_ENTRY_ARRAY, 0, size)
         os.pwrite(self._fd, buf, offset)
         self._object_added(offset, size)
+        self._header['n_entry_arrays'] += 1
         self._publish_object_metadata()
         return offset
 
@@ -503,7 +570,7 @@ class Writer:
             self._write_uint64_at(data_offset + 40, entry_offset)
             self._write_uint64_at(data_offset + 56, 1)
         elif n_entries == 1:
-            array_off = self._allocate_offset_array(INITIAL_DATA_ENTRY_ARRAY_CAP)
+            array_off = self._allocate_offset_array(4)
             self._write_array_item(array_off, 0, entry_offset)
             self._write_uint64_at(data_offset + 48, array_off)
             self._write_uint64_at(data_offset + 56, 2)
@@ -524,7 +591,7 @@ class Writer:
                 return
             remaining -= cap
             if next_off == 0:
-                new_off = self._allocate_offset_array(cap * 2)
+                new_off = self._allocate_offset_array(self._next_entry_array_capacity(current_count, cap))
                 self._write_uint64_at(offset + 16, new_off)
                 self._write_array_item(new_off, 0, entry_offset)
                 return
@@ -537,11 +604,17 @@ class Writer:
         os.fsync(self._fd)
 
     def close(self):
+        self._close_with_state(STATE_ONLINE)
+
+    def close_offline(self):
+        self._close_with_state(STATE_OFFLINE)
+
+    def _close_with_state(self, state: int):
         if self._closed:
             return
         close_err = None
         try:
-            self._header['state'] = STATE_OFFLINE
+            self._header['state'] = state
             self._write_header()
             os.fsync(self._fd)
         except Exception as e:

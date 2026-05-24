@@ -1,6 +1,34 @@
 # Interoperability Matrix
 
-This directory contains five repo-local matrix runners for SOW-0008.
+This directory contains repo-local matrix runners for writer, reader,
+live-concurrency, compression, lock, and byte-identity validation.
+
+## Byte-Identity Matrix (`run_byte_identity.py`)
+
+Runs the deterministic systemd C ingester plus the Rust, Go, Node.js, and
+Python dataset ingesters, then compares the accepted-corpus output files
+byte-for-byte.
+
+```bash
+python3 tests/interoperability/run_byte_identity.py --final-state all
+```
+
+The byte-identity runner validates the strongest current regular-writer
+contract: deterministic uncompressed files from all SDK writers must be
+identical to the systemd v260.1 reference writer for the accepted corpus. On
+mismatch, it reports exact byte offsets plus header-field or object-span
+context. It also runs stock `journalctl --verify --file` for every generated
+accepted-corpus file.
+
+The accepted corpus includes deliberate DATA hash-bucket collisions. The runner
+requires the generated header `data_hash_chain_depth` to equal the systemd
+reference value (`3`) for every language and final state, so hash-chain
+publication cannot silently fall back to the no-collision path.
+
+Use `--final-state online`, `--final-state offline`, or `--final-state archived`
+to isolate one systemd close path. `online` matches plain `journal_file_close()`,
+`offline` matches `journal_file_offline_close()`, and `archived` matches
+`journal_file_archive()` followed by offlining.
 
 ## Closed-File Matrix (`run_matrix.py`)
 
@@ -213,6 +241,7 @@ completion unless `--keep-files` is passed.
 
 | Gap | Status | Evidence | Follow-up |
 |-----|--------|----------|-----------|
+| Deterministic uncompressed byte identity | Complete for accepted corpus | `run_byte_identity.py` compares systemd, Rust, Go, Node.js, and Python byte-for-byte | Closed in SOW-0016 |
 | zstd compressed DATA object writing | Complete | `run_compression_matrix.py` validates zstd header/object flags plus stock/repository reads | Closed in SOW-0008 |
 | xz/lz4 writer parity | Not implemented | SOW-0008 only implemented zstd DATA writing; Go, Node.js, and Python readers still reject xz/lz4 DATA objects | Tracked by SOW-0017 |
 | Compact journal format | Not implemented | Writers create regular non-compact journals | Tracked by SOW-0018 |

@@ -36,6 +36,9 @@ Do not use this skill for:
 - The live concurrency contract is one writer plus multiple readers on the same journal file. Tests must cover online state, append publication windows, tail metadata changes, entry-array growth, reader follow/tail behavior, clean close verification, and interruption/reopen scenarios for the claimed feature slice.
 - The reusable live-concurrency harness is under `tests/conformance/live/`. Writer tests should use the configured monotonically increasing sequence field, default `LIVE_SEQ`, so stock readers prove complete ordered visibility.
 - Stock reader harness adapters may retry transient active-writer `ENODATA` open/read failures or partial snapshots only while the writer is active. After the writer exits, final ordered reads and `journalctl --verify --file` must pass.
+- For deterministic regular uncompressed writer output, the layout target is byte-for-byte identity with the systemd v260.1 reference ingester for the accepted corpus. Writers must match systemd object order, alignment, initial allocation envelope, v260 header fields, entry-array growth, tail metadata, and hash-chain header behavior for that slice.
+- Deterministic byte-identity validation must cover systemd final-state variants: online/plain close, offline close, and archived close.
+- Header readers must use the on-disk `header_size` when validating object and hash-table locations. Do not compare historical file offsets against the current in-memory v260 `JournalHeader` struct size, and do not expose bytes beyond the on-disk header as newer header fields.
 - Smoke tests are not sufficient evidence for production compatibility. SOW validation must record exact stock systemd version, commands/helpers, stress duration, entry counts, reader counts, and failure criteria.
 - Pure-language dependencies are allowed; CGO, native Node.js addons, and linking to system journal libraries are not allowed.
 - Every external-agent prompt must include the canonical repository-boundary block verbatim from `AGENTS.md` or `.agents/skills/project-agent-orchestration/SKILL.md`.
@@ -50,6 +53,13 @@ Do not use this skill for:
 - For compressed-DATA writer changes, run `tests/interoperability/run_compression_matrix.py`
   and require header/object flag inspection plus stock journalctl, stock
   libsystemd, and all repository reader checks.
+- For deterministic writer layout changes, run
+  `tests/interoperability/run_byte_identity.py --final-state all` and require
+  `all_equal: true` for the accepted uncompressed corpus unless the active SOW
+  records exact byte deltas and a user decision changes the pass condition.
+  The accepted corpus must keep deliberate DATA hash-bucket collisions, and the
+  byte-identity runner must fail if `data_hash_chain_depth` does not match the
+  systemd reference value for every language and final state.
 - For writer lock changes, run `tests/interoperability/run_lock_matrix.py`
   and require all SDK writer pairs to reject a second active writer before the
   contender publishes a ready file, plus stale-lock cleanup after crashed

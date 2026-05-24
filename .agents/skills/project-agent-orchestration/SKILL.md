@@ -29,6 +29,8 @@ Do not use this skill for:
 - CRITICAL: Do not make changes outside this repository. This applies to all assistants and all delegated agents.
 - The only write exception outside the repository is `/tmp`; prefer `.local/` inside this repository for scratch files.
 - After each implementation chunk is implemented, reviewed, and verified, prefer committing that chunk before starting the next chunk. Stage explicit files only; never use `git add -A` or `git add .`.
+- Implementer agents must run in normal coding mode, for example `opencode run -m "<model>" "<prompt>"`. Do not pass `--agent code-reviewer` to implementers because that selects a read-only reviewer role and prevents the requested edits.
+- Reviewer agents must run read-only. For opencode reviewer runs, use `--agent code-reviewer` and prompts that forbid creating, modifying, deleting, moving, formatting, staging, committing, or changing files.
 
 Canonical external-agent prompt block:
 
@@ -62,8 +64,8 @@ CRITICAL REPOSITORY BOUNDARY:
 
 1. Confirm the active SOW has a completed pre-implementation gate.
 2. Write the implementer prompt from the SOW, including repository boundary rules.
-3. Run the implementer agent and capture its summary and changed files.
-4. Run reviewer agents in parallel with read-only prompts.
+3. Run the implementer agent in normal coding mode, without `--agent code-reviewer`, and capture its summary and changed files.
+4. Run reviewer agents in parallel with read-only prompts and reviewer mode.
 5. Record every finding in the SOW with disposition.
 6. Iterate implementer and reviewer cycles until phase gates are satisfied.
 7. Run the project-local audit and record results before closing.

@@ -6,7 +6,8 @@ import (
 )
 
 const (
-	headerSize                  = 208
+	headerMinSize               = 208
+	headerSize                  = 272 // v260+ uses 272-byte header
 	objectHeaderSize            = 16
 	hashItemSize                = 16
 	fieldObjectHeaderSize       = 40
@@ -16,10 +17,18 @@ const (
 	regularEntryItemSize        = 16
 	objectAlignment             = 8
 
-	defaultDataHashBuckets   = 4096
-	defaultFieldHashBuckets  = 512
+	// systemd v260.1 defaults for 64 MiB max_size:
+	// data: MAX(64*1024*1024*4/768/3, 2047) = 116508
+	// field: DEFAULT_FIELD_HASH_TABLE_SIZE = 1023
+	defaultDataHashBuckets   = 116508
+	defaultFieldHashBuckets  = 1023
 	initialEntryArrayCap     = 4096
 	initialDataEntryArrayCap = 64
+
+	// systemd default max file size for hash table sizing
+	defaultMaxFileSize = 64 * 1024 * 1024 // 64 MiB
+	// systemd FILE_SIZE_INCREASE for preallocation rounding
+	fileSizeIncrease = 8 * 1024 * 1024 // 8 MiB
 )
 
 const (
@@ -41,6 +50,9 @@ const (
 	incompatibleKeyedHash      = 1 << 2
 	incompatibleCompressedZSTD = 1 << 3
 	incompatibleCompact        = 1 << 4
+
+	// HEADER_COMPATIBLE_TAIL_ENTRY_BOOT_ID - set for new files (v260+)
+	compatibleTailEntryBootID = 1 << 1
 )
 
 const (
@@ -69,6 +81,7 @@ type journalHeader struct {
 	compatibleFlags      uint32
 	incompatibleFlags    uint32
 	state                uint8
+	reserved             [7]byte
 	fileID               UUID
 	machineID            UUID
 	tailEntryBootID      UUID
@@ -88,6 +101,20 @@ type journalHeader struct {
 	headEntryRealtime    uint64
 	tailEntryRealtime    uint64
 	tailEntryMonotonic   uint64
+	// Added in 187
+	nData   uint64
+	nFields uint64
+	// Added in 189
+	nTags        uint64
+	nEntryArrays uint64
+	// Added in 246
+	dataHashChainDepth  uint64
+	fieldHashChainDepth uint64
+	// Added in 252
+	tailEntryArrayOffset   uint32
+	tailEntryArrayNEntries uint32
+	// Added in 254
+	tailEntryOffset uint64
 }
 
 type objectHeader struct {
@@ -160,10 +187,24 @@ func putHeader(dst []byte, h journalHeader) {
 	binary.LittleEndian.PutUint64(dst[184:192], h.headEntryRealtime)
 	binary.LittleEndian.PutUint64(dst[192:200], h.tailEntryRealtime)
 	binary.LittleEndian.PutUint64(dst[200:208], h.tailEntryMonotonic)
+	// Added in 187
+	binary.LittleEndian.PutUint64(dst[208:216], h.nData)
+	binary.LittleEndian.PutUint64(dst[216:224], h.nFields)
+	// Added in 189
+	binary.LittleEndian.PutUint64(dst[224:232], h.nTags)
+	binary.LittleEndian.PutUint64(dst[232:240], h.nEntryArrays)
+	// Added in 246
+	binary.LittleEndian.PutUint64(dst[240:248], h.dataHashChainDepth)
+	binary.LittleEndian.PutUint64(dst[248:256], h.fieldHashChainDepth)
+	// Added in 252
+	binary.LittleEndian.PutUint32(dst[256:260], h.tailEntryArrayOffset)
+	binary.LittleEndian.PutUint32(dst[260:264], h.tailEntryArrayNEntries)
+	// Added in 254
+	binary.LittleEndian.PutUint64(dst[264:272], h.tailEntryOffset)
 }
 
 func parseHeader(src []byte) (journalHeader, error) {
-	if len(src) < headerSize {
+	if len(src) < headerMinSize {
 		return journalHeader{}, errInvalidJournal
 	}
 
@@ -195,8 +236,27 @@ func parseHeader(src []byte) (journalHeader, error) {
 	h.headEntryRealtime = binary.LittleEndian.Uint64(src[184:192])
 	h.tailEntryRealtime = binary.LittleEndian.Uint64(src[192:200])
 	h.tailEntryMonotonic = binary.LittleEndian.Uint64(src[200:208])
+	if h.headerSize >= headerSize {
+		if len(src) < headerSize {
+			return journalHeader{}, errInvalidJournal
+		}
+		// Added in 187
+		h.nData = binary.LittleEndian.Uint64(src[208:216])
+		h.nFields = binary.LittleEndian.Uint64(src[216:224])
+		// Added in 189
+		h.nTags = binary.LittleEndian.Uint64(src[224:232])
+		h.nEntryArrays = binary.LittleEndian.Uint64(src[232:240])
+		// Added in 246
+		h.dataHashChainDepth = binary.LittleEndian.Uint64(src[240:248])
+		h.fieldHashChainDepth = binary.LittleEndian.Uint64(src[248:256])
+		// Added in 252
+		h.tailEntryArrayOffset = binary.LittleEndian.Uint32(src[256:260])
+		h.tailEntryArrayNEntries = binary.LittleEndian.Uint32(src[260:264])
+		// Added in 254
+		h.tailEntryOffset = binary.LittleEndian.Uint64(src[264:272])
+	}
 
-	if h.headerSize < headerSize {
+	if h.headerSize < headerMinSize {
 		return journalHeader{}, errUnsupportedJournal
 	}
 	if h.incompatibleFlags&incompatibleKeyedHash == 0 {

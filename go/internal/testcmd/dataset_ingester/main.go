@@ -16,11 +16,13 @@ import (
 )
 
 const oversizedLimit = 4 * 1024 * 1024
+const seqnumIDHex = "22222222222222222222222222222222"
+const defaultArchiveRealtime = 1_700_000_000_000_000
 
 var (
 	bootID    = mustUUID("0123456789abcdef0123456789abcdef")
 	machineID = mustUUID("fedcba9876543210fedcba9876543210")
-	seqnumID  = mustUUID("22222222222222222222222222222222")
+	seqnumID  = mustUUID(seqnumIDHex)
 	fileID    = mustUUID("33333333333333333333333333333333")
 )
 
@@ -152,7 +154,27 @@ func makeWriter(path string) (*journal.Writer, error) {
 	})
 }
 
-func ingestAccepted(dataset, output string) result {
+func archivePathFor(output string, headRealtime uint64) string {
+	prefix := strings.TrimSuffix(output, ".journal")
+	return fmt.Sprintf("%s@%s-%016x-%016x.journal", prefix, seqnumIDHex, uint64(1), headRealtime)
+}
+
+func finalizeWriter(w *journal.Writer, output string, finalState string, headRealtime uint64) error {
+	switch finalState {
+	case "online":
+		return w.Close()
+	case "offline":
+		return w.CloseOffline()
+	case "archived":
+		archivePath := archivePathFor(output, headRealtime)
+		_ = os.Remove(archivePath)
+		return w.ArchiveTo(archivePath)
+	default:
+		return fmt.Errorf("invalid final state %q", finalState)
+	}
+}
+
+func ingestAccepted(dataset, output string, finalState string) result {
 	w, err := makeWriter(output)
 	if err != nil {
 		return result{Errors: []string{err.Error()}}
@@ -166,6 +188,7 @@ func ingestAccepted(dataset, output string) result {
 	defer file.Close()
 
 	res := result{Errors: []string{}}
+	headRealtime := uint64(0)
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
 	lineNo := 0
@@ -209,6 +232,9 @@ func ingestAccepted(dataset, output string) result {
 			res.Errors = append(res.Errors, fmt.Sprintf("line %d %s: append failed: %v", lineNo, rec.EntryID, err))
 			continue
 		}
+		if headRealtime == 0 {
+			headRealtime = rec.RealtimeUsec
+		}
 		res.Records++
 	}
 	if err := scanner.Err(); err != nil {
@@ -217,10 +243,16 @@ func ingestAccepted(dataset, output string) result {
 	if err := w.Sync(); err != nil {
 		res.Errors = append(res.Errors, err.Error())
 	}
+	if headRealtime == 0 {
+		headRealtime = defaultArchiveRealtime
+	}
+	if err := finalizeWriter(w, output, finalState, headRealtime); err != nil {
+		res.Errors = append(res.Errors, err.Error())
+	}
 	return res
 }
 
-func ingestRejections(dataset, output string) result {
+func ingestRejections(dataset, output string, finalState string) result {
 	file, err := os.Open(dataset)
 	if err != nil {
 		return result{Errors: []string{err.Error()}}
@@ -228,6 +260,7 @@ func ingestRejections(dataset, output string) result {
 	defer file.Close()
 
 	var w *journal.Writer
+	headRealtime := uint64(defaultArchiveRealtime)
 	res := result{Errors: []string{}}
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
@@ -276,6 +309,7 @@ func ingestRejections(dataset, output string) result {
 		}
 		err = w.Append([]journal.Field{{Name: rec.Input["field_name"].(string), Value: fieldValue}}, journal.EntryOptions{BootID: bootID})
 		if err == nil {
+			headRealtime = defaultArchiveRealtime
 			res.Errors = append(res.Errors, fmt.Sprintf("line %d %s: unexpectedly accepted", lineNo, rec.CaseID))
 		} else if rec.ExpectedError == "EINVAL" {
 			res.Records++
@@ -286,6 +320,11 @@ func ingestRejections(dataset, output string) result {
 	if err := scanner.Err(); err != nil {
 		res.Errors = append(res.Errors, err.Error())
 	}
+	if w != nil {
+		if err := finalizeWriter(w, output, finalState, headRealtime); err != nil {
+			res.Errors = append(res.Errors, err.Error())
+		}
+	}
 	return res
 }
 
@@ -293,17 +332,18 @@ func main() {
 	dataset := flag.String("dataset", "", "dataset JSONL path")
 	output := flag.String("output", "", "output journal path")
 	rejectionMode := flag.Bool("rejection-mode", false, "process rejection corpus")
+	finalState := flag.String("final-state", "online", "final journal state: online, offline, archived")
 	flag.Parse()
 	if *dataset == "" || *output == "" {
-		fmt.Fprintln(os.Stderr, "usage: dataset_ingester --dataset PATH --output PATH [--rejection-mode]")
+		fmt.Fprintln(os.Stderr, "usage: dataset_ingester --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived]")
 		os.Exit(2)
 	}
 
 	var res result
 	if *rejectionMode {
-		res = ingestRejections(*dataset, *output)
+		res = ingestRejections(*dataset, *output, *finalState)
 	} else {
-		res = ingestAccepted(*dataset, *output)
+		res = ingestAccepted(*dataset, *output, *finalState)
 	}
 	encoded, _ := json.Marshal(res)
 	fmt.Println(string(encoded))

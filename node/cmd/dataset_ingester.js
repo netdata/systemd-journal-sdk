@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Deterministic dataset ingester for the JavaScript journal writer.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { Writer } from '../src/lib/writer.js';
@@ -11,6 +11,7 @@ const MACHINE_ID = Buffer.from('fedcba9876543210fedcba9876543210', 'hex');
 const SEQNUM_ID = Buffer.from('22222222222222222222222222222222', 'hex');
 const FILE_ID = Buffer.from('33333333333333333333333333333333', 'hex');
 const OVERSIZED_LIMIT = 4 * 1024 * 1024;
+const DEFAULT_ARCHIVE_REALTIME = 1_700_000_000_000_000n;
 
 function materializeValue(value) {
   if (value.kind === 'utf8') return Buffer.from(value.text, 'utf8');
@@ -66,6 +67,22 @@ function makeWriter(path) {
   });
 }
 
+function archivePathFor(output, headRealtime) {
+  const prefix = output.endsWith('.journal') ? output.slice(0, -'.journal'.length) : output;
+  return `${prefix}@${SEQNUM_ID.toString('hex')}-0000000000000001-${headRealtime.toString(16).padStart(16, '0')}.journal`;
+}
+
+function finalizeWriter(writer, output, finalState, headRealtime) {
+  if (finalState === 'online') writer.close();
+  else if (finalState === 'offline') writer.closeOffline();
+  else if (finalState === 'archived') {
+    const archivePath = archivePathFor(output, headRealtime);
+    rmSync(archivePath, { force: true });
+    writer.archiveTo(archivePath);
+  }
+  else throw new Error(`invalid final state: ${finalState}`);
+}
+
 function records(path) {
   return readFileSync(path, 'utf8')
     .split('\n')
@@ -73,9 +90,10 @@ function records(path) {
     .map(line => JSON.parse(line));
 }
 
-function ingestAccepted(dataset, output) {
+function ingestAccepted(dataset, output, finalState) {
   const writer = makeWriter(output);
   let written = 0;
+  let headRealtime = 0n;
   const errors = [];
   try {
     for (const [index, record] of records(dataset).entries()) {
@@ -90,6 +108,7 @@ function ingestAccepted(dataset, output) {
           monotonicUsec: BigInt(record.monotonic_usec),
           bootId: Buffer.from(record.boot_id || BOOT_ID.toString('hex'), 'hex'),
         });
+        if (headRealtime === 0n) headRealtime = BigInt(record.realtime_usec);
         written++;
       } catch (error) {
         errors.push(`line ${index + 1}: append failed: ${error.message}`);
@@ -97,12 +116,12 @@ function ingestAccepted(dataset, output) {
     }
     writer.sync();
   } finally {
-    writer.close();
+    finalizeWriter(writer, output, finalState, headRealtime || DEFAULT_ARCHIVE_REALTIME);
   }
   return { records: written, errors };
 }
 
-function ingestRejections(dataset, output) {
+function ingestRejections(dataset, output, finalState) {
   let writer = null;
   let handled = 0;
   const errors = [];
@@ -128,28 +147,30 @@ function ingestRejections(dataset, output) {
       else errors.push(`line ${index + 1} ${record.case_id}: rejected as EINVAL, expected ${expected}`);
     }
   }
-  if (writer) writer.close();
+  if (writer) finalizeWriter(writer, output, finalState, DEFAULT_ARCHIVE_REALTIME);
   return { records: handled, errors };
 }
 
 function parseArgs(argv) {
-  const args = { rejectionMode: false };
+  const args = { finalState: 'online', rejectionMode: false };
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--rejection-mode') args.rejectionMode = true;
+    else if (arg === '--final-state') args.finalState = argv[++i];
     else if (arg === '--dataset') args.dataset = argv[++i];
     else if (arg === '--output') args.output = argv[++i];
     else throw new Error(`unknown argument: ${arg}`);
   }
-  if (!args.dataset || !args.output) throw new Error('usage: dataset_ingester --dataset PATH --output PATH [--rejection-mode]');
+  if (!['online', 'offline', 'archived'].includes(args.finalState)) throw new Error(`invalid final state: ${args.finalState}`);
+  if (!args.dataset || !args.output) throw new Error('usage: dataset_ingester --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived]');
   return args;
 }
 
 try {
   const args = parseArgs(process.argv);
   const result = args.rejectionMode
-    ? ingestRejections(args.dataset, args.output)
-    : ingestAccepted(args.dataset, args.output);
+    ? ingestRejections(args.dataset, args.output, args.finalState)
+    : ingestAccepted(args.dataset, args.output, args.finalState);
   console.log(JSON.stringify(result, Object.keys(result).sort()));
   process.exit(result.errors.length === 0 ? 0 : 1);
 } catch (error) {

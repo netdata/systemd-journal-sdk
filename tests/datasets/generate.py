@@ -39,6 +39,7 @@ CORRECTNESS_REQUIRED = [
     "high-cardinality-fields",
     "low-cardinality-fields",
     "hash-collision-pressure",
+    "hash-collision-chain",
     "entry-array-growth",
     "data-entry-array-growth",
     "sorted-entry-item-ordering",
@@ -257,7 +258,40 @@ def correctness_records() -> list[dict[str, object]]:
         )
     )
 
-    next_index = 7
+    collision_entries = [
+        ("AA", "cv-0299"),
+        ("AC", "cv-0163"),
+        ("AZ", "cv-0168"),
+        ("BB", "cv-0245"),
+    ]
+    collision_fields = base_fields(7)[:]
+    for fn, val in collision_entries:
+        collision_fields.append(field(fn, utf8(val), "high"))
+    records.append(
+        entry(
+            7,
+            collision_fields,
+            ["hash-collision-chain", "new-field-objects", "new-data-objects"],
+            "Deterministic DATA hash-bucket collision chain: bucket 85984, 4 unique colliding payloads, next_hash_offset chain traversal, data_hash_chain_depth publication.",
+        )
+    )
+
+    dup_collision_fields = base_fields(8)[:]
+    dup_collision_fields.append(field("AA", utf8("cv-0299"), "high"))
+    dup_collision_fields.append(field("AC", utf8("cv-0163"), "high"))
+    dup_collision_fields.append(field("AZ", utf8("cv-0168"), "high"))
+    dup_collision_fields.append(field("BB", utf8("cv-0245"), "high"))
+    dup_collision_fields.append(field("DUPLICATE_AA", utf8("cv-0299"), "high"))
+    records.append(
+        entry(
+            8,
+            dup_collision_fields,
+            ["hash-collision-chain", "reused-field-objects", "reused-data-objects"],
+            "Duplicate of AA=cv-0299 after chain is established: lookup traversal updates data_hash_chain_depth to the chain depth.",
+        )
+    )
+
+    next_index = 9
     for i in range(80):
         records.append(
             entry(

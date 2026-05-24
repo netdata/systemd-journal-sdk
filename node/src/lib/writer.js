@@ -11,12 +11,14 @@ import {
   HEADER_SIZE, OBJECT_TYPE_DATA, OBJECT_TYPE_ENTRY,
   OBJECT_TYPE_DATA_HASH_TABLE, OBJECT_TYPE_FIELD_HASH_TABLE,
   OBJECT_TYPE_ENTRY_ARRAY, OBJECT_TYPE_FIELD,
-  STATE_ONLINE, STATE_OFFLINE, STATE_ARCHIVED,
+  STATE_OFFLINE, STATE_ONLINE, STATE_ARCHIVED,
   INCOMPATIBLE_KEYED_HASH, INCOMPATIBLE_COMPRESSED_ZSTD,
+  COMPATIBLE_TAIL_ENTRY_BOOT_ID,
   OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE, DATA_OBJECT_HEADER_SIZE,
   FIELD_OBJECT_HEADER_SIZE, HASH_ITEM_SIZE, OFFSET_ARRAY_OBJECT_HEADER_SIZE,
   REGULAR_ENTRY_ITEM_SIZE, OBJECT_COMPRESSED_XZ, OBJECT_COMPRESSED_LZ4, OBJECT_COMPRESSED_ZSTD,
   DEFAULT_DATA_HASH_BUCKETS, DEFAULT_FIELD_HASH_BUCKETS,
+  FILE_SIZE_INCREASE,
   INITIAL_ENTRY_ARRAY_CAP, INITIAL_DATA_ENTRY_ARRAY_CAP,
 } from './header.js';
 import { sipHash24, jenkinsHash64 } from './hash.js';
@@ -45,7 +47,7 @@ export class Writer {
     const lock = WriterLock.acquire(path);
     let fd;
     try {
-      fd = openSync(path, 'w+');
+      fd = openSync(path, 'w+', 0o640);
       ftruncateSync(fd, 0);
       const w = new Writer(fd, path, lock);
       w.compression = normalizeCompression(opts.compression);
@@ -113,10 +115,13 @@ export class Writer {
 
     const dataSize = BigInt(dataBuckets * HASH_ITEM_SIZE);
     const fieldSize = BigInt(fieldBuckets * HASH_ITEM_SIZE);
-    const dataOffset = BigInt(HEADER_SIZE + OBJECT_HEADER_SIZE);
-    const fieldObjOffset = dataOffset + dataSize;
+    // systemd creates FIELD_HASH_TABLE first, then DATA_HASH_TABLE
+    const fieldObjOffset = BigInt(HEADER_SIZE);
     const fieldOffset = fieldObjOffset + BigInt(OBJECT_HEADER_SIZE);
-    const appendOffset = fieldOffset + fieldSize;
+    const dataObjOffset = align8(fieldOffset + fieldSize);
+    const dataOffset = dataObjOffset + BigInt(OBJECT_HEADER_SIZE);
+    const appendOffset = align8(dataOffset + dataSize);
+    const fileSize = BigInt(FILE_SIZE_INCREASE);
 
     const fileId = opts.fileId || randomUUID();
     const machineId = opts.machineId || randomUUID();
@@ -130,20 +135,20 @@ export class Writer {
 
     this.header = {
       signature: 'LPKSHHRH',
-      compatible_flags: 0,
+      compatible_flags: COMPATIBLE_TAIL_ENTRY_BOOT_ID,  // v260+ sets TAIL_ENTRY_BOOT_ID
       incompatible_flags: incFlags,
       state: STATE_ONLINE,
       file_id: fileId,
       machine_id: machineId,
-      tail_entry_boot_id: bootId,
+      tail_entry_boot_id: Buffer.alloc(16),
       seqnum_id: seqnumId,
       header_size: BigInt(HEADER_SIZE),
-      arena_size: appendOffset - BigInt(HEADER_SIZE),
+      arena_size: fileSize - BigInt(HEADER_SIZE),
       data_hash_table_offset: dataOffset,
       data_hash_table_size: dataSize,
       field_hash_table_offset: fieldOffset,
       field_hash_table_size: fieldSize,
-      tail_object_offset: fieldObjOffset,
+      tail_object_offset: dataObjOffset,
       n_objects: 2n,
       n_entries: 0n,
       tail_entry_seqnum: 0n,
@@ -152,24 +157,33 @@ export class Writer {
       head_entry_realtime: 0n,
       tail_entry_realtime: 0n,
       tail_entry_monotonic: 0n,
+      n_data: 0n,
+      n_fields: 0n,
+      n_tags: 0n,
+      n_entry_arrays: 0n,
+      data_hash_chain_depth: 0n,
+      field_hash_chain_depth: 0n,
+      tail_entry_array_offset: 0,
+      tail_entry_array_n_entries: 0,
+      tail_entry_offset: 0n,
     };
 
     this.bootId = Buffer.from(bootId);
     this.appendOffset = appendOffset;
     this.nextSeqnum = opts.headSeqnum ? BigInt(opts.headSeqnum) : 1n;
 
-    ftruncateSync(this.fd, Number(appendOffset));
+    ftruncateSync(this.fd, Number(fileSize));
     this._writeHeader();
+
+    // systemd writes FIELD hash table first, then DATA hash table
+    const fhtBuf = Buffer.alloc(OBJECT_HEADER_SIZE);
+    writeObjectHeader(fhtBuf, 0, OBJECT_TYPE_FIELD_HASH_TABLE, 0, BigInt(OBJECT_HEADER_SIZE) + fieldSize);
+    writeSync(this.fd, fhtBuf, 0, OBJECT_HEADER_SIZE, Number(fieldObjOffset));
 
     // Data hash table object header
     const dhtBuf = Buffer.alloc(OBJECT_HEADER_SIZE);
     writeObjectHeader(dhtBuf, 0, OBJECT_TYPE_DATA_HASH_TABLE, 0, BigInt(OBJECT_HEADER_SIZE) + dataSize);
-    writeSync(this.fd, dhtBuf, 0, OBJECT_HEADER_SIZE, Number(dataOffset - BigInt(OBJECT_HEADER_SIZE)));
-
-    // Field hash table object header
-    const fhtBuf = Buffer.alloc(OBJECT_HEADER_SIZE);
-    writeObjectHeader(fhtBuf, 0, OBJECT_TYPE_FIELD_HASH_TABLE, 0, BigInt(OBJECT_HEADER_SIZE) + fieldSize);
-    writeSync(this.fd, fhtBuf, 0, OBJECT_HEADER_SIZE, Number(fieldObjOffset));
+    writeSync(this.fd, dhtBuf, 0, OBJECT_HEADER_SIZE, Number(dataObjOffset));
   }
 
   _writeHeader() {
@@ -182,6 +196,12 @@ export class Writer {
     const buf = Buffer.alloc(8);
     writeUint64LE(buf, 0, value);
     writeSync(this.fd, buf, 0, 8, Number(offset));
+  }
+
+  _writeUint32At(offset, value) {
+    const buf = Buffer.alloc(4);
+    writeUint32LE(buf, 0, value);
+    writeSync(this.fd, buf, 0, 4, Number(offset));
   }
 
   _writeUUIDAt(offset, uuid) {
@@ -254,7 +274,7 @@ export class Writer {
     for (const item of deduped) this._linkDataToEntry(item.offset, entryOffset);
 
     // Commit entry metadata last (so live readers see complete rows)
-    this._entryAdded(realtime, monotonic, bootId);
+    this._entryAdded(entryOffset, realtime, monotonic, bootId);
     this._publishEntryMetadata();
 
     return { realtime, seqnum: this.nextSeqnum - 1n };
@@ -300,6 +320,7 @@ export class Writer {
 
     // Insert into data hash table
     this._appendHashItem(this.header.data_hash_table_offset, this.header.data_hash_table_size, OBJECT_TYPE_DATA, hash, offset);
+    this.header.n_data++;
 
     // Link to field
     const eqPos = payload.indexOf(0x3d);
@@ -333,6 +354,7 @@ export class Writer {
     this._objectAdded(offset, size);
 
     this._appendHashItem(this.header.field_hash_table_offset, this.header.field_hash_table_size, OBJECT_TYPE_FIELD, hash, offset);
+    this.header.n_fields++;
     return offset;
   }
 
@@ -341,11 +363,16 @@ export class Writer {
     const bucketOff = this.header.data_hash_table_offset + (hash % nBuckets) * BigInt(HASH_ITEM_SIZE);
     const item = this._readHashItem(bucketOff);
 
+    let depth = 0n;
     let offset = item.head;
     while (offset !== 0n) {
       const stored = this._readDataPayload(offset);
       if (stored && bufEqual(stored, payload)) return offset;
       const nextHash = this._readUint64At(offset + 24n);
+      if (nextHash !== 0n) {
+        depth++;
+        if (depth > this.header.data_hash_chain_depth) this.header.data_hash_chain_depth = depth;
+      }
       offset = nextHash;
     }
     return null;
@@ -356,11 +383,16 @@ export class Writer {
     const bucketOff = this.header.field_hash_table_offset + (hash % nBuckets) * BigInt(HASH_ITEM_SIZE);
     const item = this._readHashItem(bucketOff);
 
+    let depth = 0n;
     let offset = item.head;
     while (offset !== 0n) {
       const stored = this._readFieldPayload(offset);
       if (stored && bufEqual(stored, payload)) return offset;
       const nextHash = this._readUint64At(offset + 24n);
+      if (nextHash !== 0n) {
+        depth++;
+        if (depth > this.header.field_hash_chain_depth) this.header.field_hash_chain_depth = depth;
+      }
       offset = nextHash;
     }
     return null;
@@ -438,10 +470,9 @@ export class Writer {
     this.header.tail_object_offset = offset;
     this.appendOffset = align8(offset + size);
     this.header.n_objects++;
-    this.header.arena_size = this.appendOffset - BigInt(HEADER_SIZE);
   }
 
-  _entryAdded(realtime, monotonic, bootId) {
+  _entryAdded(entryOffset, realtime, monotonic, bootId) {
     this.header.n_entries++;
     if (this.header.head_entry_seqnum === 0n) this.header.head_entry_seqnum = this.nextSeqnum;
     if (this.header.head_entry_realtime === 0n) this.header.head_entry_realtime = realtime;
@@ -449,6 +480,7 @@ export class Writer {
     this.header.tail_entry_realtime = realtime;
     this.header.tail_entry_monotonic = monotonic;
     this.header.tail_entry_boot_id = Buffer.from(bootId);
+    this.header.tail_entry_offset = entryOffset;
     this.nextSeqnum++;
   }
 
@@ -456,6 +488,11 @@ export class Writer {
     this._writeUint64At(96n, this.header.arena_size);
     this._writeUint64At(136n, this.header.tail_object_offset);
     this._writeUint64At(144n, this.header.n_objects);
+    this._writeUint64At(208n, this.header.n_data);
+    this._writeUint64At(216n, this.header.n_fields);
+    this._writeUint64At(232n, this.header.n_entry_arrays);
+    this._writeUint64At(240n, this.header.data_hash_chain_depth);
+    this._writeUint64At(248n, this.header.field_hash_chain_depth);
   }
 
   _publishEntryMetadata() {
@@ -466,36 +503,66 @@ export class Writer {
     this._writeUint64At(184n, this.header.head_entry_realtime);
     this._writeUint64At(192n, this.header.tail_entry_realtime);
     this._writeUint64At(200n, this.header.tail_entry_monotonic);
+    this._writeUint32At(256n, this.header.tail_entry_array_offset);
+    this._writeUint32At(260n, this.header.tail_entry_array_n_entries);
+    this._writeUint64At(264n, this.header.tail_entry_offset);
     // n_entries last (makes entry visible to live readers)
     this._writeUint64At(152n, this.header.n_entries);
   }
 
+  _nextEntryArrayCapacity(index, previousCapacity) {
+    let capacity = previousCapacity;
+    if (index > capacity) capacity = (index + 1n) * 2n;
+    else capacity *= 2n;
+    return capacity < 4n ? 4n : capacity;
+  }
+
   _appendToEntryArray(entryOffset) {
     if (this.header.entry_array_offset === 0n) {
-      const arrayOff = this._allocateOffsetArray(BigInt(INITIAL_ENTRY_ARRAY_CAP));
+      const arrayOff = this._allocateOffsetArray(4n);
       this.header.entry_array_offset = arrayOff;
+      this.header.tail_entry_array_offset = Number(arrayOff);
+      this.header.tail_entry_array_n_entries = 1;
       this._writeArrayItem(arrayOff, 0n, entryOffset);
       return;
     }
 
-    let remaining = this.header.n_entries;
-    let offset = this.header.entry_array_offset;
-
-    for (;;) {
-      const { capacity, nextOffset } = this._readOffsetArrayHeader(offset);
-      if (remaining < BigInt(capacity)) {
-        this._writeArrayItem(offset, remaining, entryOffset);
-        return;
+    let tailOffset = BigInt(this.header.tail_entry_array_offset);
+    if (tailOffset === 0n) {
+      tailOffset = this.header.entry_array_offset;
+      let remaining = this.header.n_entries;
+      for (;;) {
+        const { capacity, nextOffset } = this._readOffsetArrayHeader(tailOffset);
+        if (remaining < BigInt(capacity) || nextOffset === 0n) break;
+        remaining -= BigInt(capacity);
+        tailOffset = nextOffset;
       }
-      remaining -= BigInt(capacity);
-      if (nextOffset === 0n) {
-        const newOff = this._allocateOffsetArray(BigInt(capacity) * 2n);
-        this._writeUint64At(offset + 16n, newOff);
-        this._writeArrayItem(newOff, 0n, entryOffset);
-        return;
-      }
-      offset = nextOffset;
     }
+
+    const { capacity } = this._readOffsetArrayHeader(tailOffset);
+    let tailEntries = BigInt(this.header.tail_entry_array_n_entries);
+    if (tailEntries === 0n) {
+      tailEntries = this.header.n_entries;
+      let offset = this.header.entry_array_offset;
+      while (offset !== 0n && offset !== tailOffset) {
+        const { capacity: c, nextOffset } = this._readOffsetArrayHeader(offset);
+        tailEntries -= BigInt(c);
+        offset = nextOffset;
+      }
+    }
+
+    if (tailEntries < BigInt(capacity)) {
+      this._writeArrayItem(tailOffset, tailEntries, entryOffset);
+      this.header.tail_entry_array_offset = Number(tailOffset);
+      this.header.tail_entry_array_n_entries = Number(tailEntries + 1n);
+      return;
+    }
+
+    const newOff = this._allocateOffsetArray(this._nextEntryArrayCapacity(this.header.n_entries, BigInt(capacity)));
+    this._writeUint64At(tailOffset + 16n, newOff);
+    this._writeArrayItem(newOff, 0n, entryOffset);
+    this.header.tail_entry_array_offset = Number(newOff);
+    this.header.tail_entry_array_n_entries = 1;
   }
 
   _readOffsetArrayHeader(offset) {
@@ -518,6 +585,7 @@ export class Writer {
     writeObjectHeader(buf, 0, OBJECT_TYPE_ENTRY_ARRAY, 0, size);
     writeSync(this.fd, buf, 0, buf.length, Number(this.appendOffset));
     this._objectAdded(offset, size);
+    this.header.n_entry_arrays++;
     this._publishObjectMetadata();
     return offset;
   }
@@ -533,7 +601,7 @@ export class Writer {
       this._writeUint64At(dataOffset + 40n, entryOffset);
       this._writeUint64At(dataOffset + 56n, 1n);
     } else if (nEntries === 1n) {
-      const arrayOff = this._allocateOffsetArray(BigInt(INITIAL_DATA_ENTRY_ARRAY_CAP));
+      const arrayOff = this._allocateOffsetArray(4n);
       this._writeArrayItem(arrayOff, 0n, entryOffset);
       this._writeUint64At(dataOffset + 48n, arrayOff);
       this._writeUint64At(dataOffset + 56n, 2n);
@@ -556,7 +624,7 @@ export class Writer {
       }
       remaining -= BigInt(capacity);
       if (nextOffset === 0n) {
-        const newOff = this._allocateOffsetArray(BigInt(capacity) * 2n);
+        const newOff = this._allocateOffsetArray(this._nextEntryArrayCapacity(currentCount, BigInt(capacity)));
         this._writeUint64At(offset + 16n, newOff);
         this._writeArrayItem(newOff, 0n, entryOffset);
         return;
@@ -572,10 +640,18 @@ export class Writer {
   }
 
   close() {
+    this._closeWithState(STATE_ONLINE);
+  }
+
+  closeOffline() {
+    this._closeWithState(STATE_OFFLINE);
+  }
+
+  _closeWithState(state) {
     if (this.closed) return;
     let closeError = null;
     try {
-      this.header.state = STATE_OFFLINE;
+      this.header.state = state;
       this._writeHeader();
       fsyncSync(this.fd);
     } catch (error) {

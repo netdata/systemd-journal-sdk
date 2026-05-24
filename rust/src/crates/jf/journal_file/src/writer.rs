@@ -136,6 +136,7 @@ impl JournalWriter {
 
         self.entry_added(
             journal_file.journal_header_mut(),
+            entry_offset,
             realtime,
             monotonic,
             boot_id,
@@ -153,14 +154,13 @@ impl JournalWriter {
     fn entry_added(
         &mut self,
         header: &mut JournalHeader,
+        entry_offset: NonZeroU64,
         realtime: u64,
         monotonic: u64,
         boot_id: [u8; 16],
     ) {
-        header.n_entries += 1;
         header.n_objects += self.num_written_objects;
         header.tail_object_offset = Some(self.tail_object_offset);
-        header.arena_size = self.append_offset.get() - header.header_size;
 
         if header.head_entry_seqnum == 0 {
             header.head_entry_seqnum = self.next_seqnum;
@@ -176,6 +176,8 @@ impl JournalWriter {
         header.tail_entry_realtime = realtime;
         header.tail_entry_monotonic = monotonic;
         header.tail_entry_boot_id = boot_id;
+        header.tail_entry_offset = entry_offset.get();
+        header.n_entries += 1;
 
         self.next_seqnum += 1;
         self.num_written_objects = 0;
@@ -189,7 +191,10 @@ impl JournalWriter {
         let hash = journal_file.hash(payload);
 
         match journal_file.find_data_offset(hash, payload)? {
-            Some(data_offset) => Ok(data_offset),
+            Some(data_offset) => {
+                Self::update_data_hash_chain_depth(journal_file, hash)?;
+                Ok(data_offset)
+            }
             None => {
                 // We will have to write the new data object at the current
                 // tail offset
@@ -207,6 +212,8 @@ impl JournalWriter {
 
                 // Update hash table
                 journal_file.data_hash_table_set_tail_offset(hash, data_offset)?;
+                Self::update_data_hash_chain_depth(journal_file, hash)?;
+                journal_file.journal_header_mut().n_data += 1;
 
                 // Add the field object, if we have any
                 if let Some(equals_pos) = payload.iter().position(|&b| b == b'=') {
@@ -260,6 +267,13 @@ impl JournalWriter {
 
                 // Update hash table
                 journal_file.field_hash_table_set_tail_offset(hash, field_offset)?;
+                let depth = Self::current_field_hash_chain_depth(journal_file, hash)?;
+                let max_depth = journal_file
+                    .journal_header_ref()
+                    .field_hash_chain_depth
+                    .max(depth);
+                journal_file.journal_header_mut().field_hash_chain_depth = max_depth;
+                journal_file.journal_header_mut().n_fields += 1;
 
                 // Return the offset where we wrote the newly added data object
                 Ok(field_offset)
@@ -269,7 +283,7 @@ impl JournalWriter {
 
     fn allocate_new_array(
         &mut self,
-        journal_file: &JournalFile<MmapMut>,
+        journal_file: &mut JournalFile<MmapMut>,
         capacity: NonZeroU64,
     ) -> Result<NonZeroU64> {
         // let new_capacity = previous_capacity.saturating_mul(NonZeroU64::new(2).unwrap());
@@ -281,8 +295,70 @@ impl JournalWriter {
             array_guard.header.object_header.aligned_size()
         };
         self.object_added(array_offset, array_size);
+        journal_file.journal_header_mut().n_entry_arrays += 1;
 
         Ok(array_offset)
+    }
+
+    fn next_entry_array_capacity(index: u64, previous_capacity: u64) -> u64 {
+        let mut capacity = previous_capacity;
+        if index > capacity {
+            capacity = (index + 1) * 2;
+        } else {
+            capacity *= 2;
+        }
+        capacity.max(4)
+    }
+
+    fn update_data_hash_chain_depth(
+        journal_file: &mut JournalFile<MmapMut>,
+        hash: u64,
+    ) -> Result<()> {
+        let depth = Self::current_data_hash_chain_depth(journal_file, hash)?;
+        let max_depth = journal_file
+            .journal_header_ref()
+            .data_hash_chain_depth
+            .max(depth);
+        journal_file.journal_header_mut().data_hash_chain_depth = max_depth;
+        Ok(())
+    }
+
+    fn current_data_hash_chain_depth(
+        journal_file: &JournalFile<MmapMut>,
+        hash: u64,
+    ) -> Result<u64> {
+        let Some(hash_table) = journal_file.data_hash_table_ref() else {
+            return Err(JournalError::MissingHashTable);
+        };
+        let mut depth = 0;
+        let mut object_offset = hash_table.hash_item_ref(hash).head_hash_offset;
+        while let Some(offset) = object_offset {
+            let object = journal_file.data_ref(offset)?;
+            object_offset = object.header.next_hash_offset;
+            if object_offset.is_some() {
+                depth += 1;
+            }
+        }
+        Ok(depth)
+    }
+
+    fn current_field_hash_chain_depth(
+        journal_file: &JournalFile<MmapMut>,
+        hash: u64,
+    ) -> Result<u64> {
+        let Some(hash_table) = journal_file.field_hash_table_ref() else {
+            return Err(JournalError::MissingHashTable);
+        };
+        let mut depth = 0;
+        let mut object_offset = hash_table.hash_item_ref(hash).head_hash_offset;
+        while let Some(offset) = object_offset {
+            let object = journal_file.field_ref(offset)?;
+            object_offset = object.header.next_hash_offset;
+            if object_offset.is_some() {
+                depth += 1;
+            }
+        }
+        Ok(depth)
     }
 
     fn append_to_entry_array(
@@ -295,41 +371,83 @@ impl JournalWriter {
         if entry_array_offset.is_none() {
             journal_file.journal_header_mut().entry_array_offset = {
                 let array_offset =
-                    self.allocate_new_array(journal_file, NonZeroU64::new(4096).unwrap())?;
+                    self.allocate_new_array(journal_file, NonZeroU64::new(4).unwrap())?;
                 let mut array_guard = journal_file.offset_array_mut(array_offset, None)?;
                 array_guard.set(0, entry_offset)?;
                 Some(array_offset)
             };
-        } else {
-            let tail_node = {
-                let entry_list = journal_file
-                    .entry_list()
-                    .ok_or(JournalError::EmptyOffsetArrayList)?;
-                entry_list.tail(journal_file)?
-            };
+            let header = journal_file.journal_header_mut();
+            let array_offset = header.entry_array_offset.unwrap();
+            header.tail_entry_array_offset = array_offset.get() as u32;
+            header.tail_entry_array_n_entries = 1;
+            return Ok(());
+        }
 
-            if tail_node.len() < tail_node.capacity() {
-                let mut array_guard = journal_file.offset_array_mut(tail_node.offset(), None)?;
-                array_guard.set(tail_node.len().get(), entry_offset)?;
-            } else {
-                let new_array_offset = {
-                    let new_capacity = tail_node.capacity().get().saturating_mul(2) as u64;
-                    let new_array_offset = self
-                        .allocate_new_array(journal_file, NonZeroU64::new(new_capacity).unwrap())?;
-                    let mut array_guard = journal_file.offset_array_mut(new_array_offset, None)?;
-                    array_guard.set(0, entry_offset)?;
-
-                    new_array_offset
-                };
-
-                // Link the old tail to the new array
-                {
-                    let mut array_guard =
-                        journal_file.offset_array_mut(tail_node.offset(), None)?;
-                    array_guard.header.next_offset_array = Some(new_array_offset);
+        let entry_count = journal_file.journal_header_ref().n_entries;
+        let mut tail_offset = NonZeroU64::new(
+            journal_file
+                .journal_header_ref()
+                .tail_entry_array_offset
+                .into(),
+        );
+        if tail_offset.is_none() {
+            let mut offset = entry_array_offset.unwrap();
+            let mut remaining = entry_count;
+            loop {
+                let array_guard = journal_file.offset_array_ref(offset)?;
+                let capacity = array_guard.capacity() as u64;
+                if remaining < capacity || array_guard.header.next_offset_array.is_none() {
+                    tail_offset = Some(offset);
+                    break;
                 }
+                remaining -= capacity;
+                offset = array_guard.header.next_offset_array.unwrap();
             }
         }
+
+        let tail_offset = tail_offset.ok_or(JournalError::EmptyOffsetArrayList)?;
+        let tail_capacity = {
+            let tail_guard = journal_file.offset_array_ref(tail_offset)?;
+            tail_guard.capacity() as u64
+        };
+        let mut tail_entries = journal_file.journal_header_ref().tail_entry_array_n_entries as u64;
+        if tail_entries == 0 {
+            tail_entries = entry_count;
+            let mut offset = entry_array_offset.unwrap();
+            while offset != tail_offset {
+                let array_guard = journal_file.offset_array_ref(offset)?;
+                tail_entries -= array_guard.capacity() as u64;
+                offset = array_guard
+                    .header
+                    .next_offset_array
+                    .ok_or(JournalError::InvalidOffsetArrayOffset)?;
+            }
+        }
+
+        if tail_entries < tail_capacity {
+            let mut tail_guard = journal_file.offset_array_mut(tail_offset, None)?;
+            tail_guard.set(tail_entries as usize, entry_offset)?;
+            drop(tail_guard);
+            let header = journal_file.journal_header_mut();
+            header.tail_entry_array_offset = tail_offset.get() as u32;
+            header.tail_entry_array_n_entries = (tail_entries + 1) as u32;
+            return Ok(());
+        }
+
+        let new_capacity = Self::next_entry_array_capacity(entry_count, tail_capacity);
+        let new_array_offset =
+            self.allocate_new_array(journal_file, NonZeroU64::new(new_capacity).unwrap())?;
+        {
+            let mut tail_guard = journal_file.offset_array_mut(tail_offset, None)?;
+            tail_guard.header.next_offset_array = Some(new_array_offset);
+        }
+        {
+            let mut new_array_guard = journal_file.offset_array_mut(new_array_offset, None)?;
+            new_array_guard.set(0, entry_offset)?;
+        }
+        let header = journal_file.journal_header_mut();
+        header.tail_entry_array_offset = new_array_offset.get() as u32;
+        header.tail_entry_array_n_entries = 1;
 
         Ok(())
     }
@@ -380,7 +498,11 @@ impl JournalWriter {
             tail_guard.set(entries_in_tail as usize, entry_offset)?;
         } else {
             // Need to create a new array
-            let new_capacity = NonZeroU64::new(tail_capacity * 2).unwrap(); // Double the size
+            let new_capacity = NonZeroU64::new(Self::next_entry_array_capacity(
+                current_count,
+                tail_capacity,
+            ))
+            .unwrap();
             let new_array_offset = self.allocate_new_array(journal_file, new_capacity)?;
 
             // Link the old tail to the new array
@@ -419,7 +541,7 @@ impl JournalWriter {
                         drop(data_guard);
 
                         // Create new entry array with initial capacity
-                        let array_capacity = NonZeroU64::new(64).unwrap();
+                        let array_capacity = NonZeroU64::new(4).unwrap();
                         let array_offset = self.allocate_new_array(journal_file, array_capacity)?;
 
                         // Load new array and set its first entry offset

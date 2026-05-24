@@ -127,6 +127,30 @@ Final writer target:
 
 Delivery may be phased. Earlier phases may write a smaller feature subset if the SOW records the gap, shared readers/tests support the compatibility envelope, and follow-up SOWs track the remaining writer features.
 
+Current shared writer layout contract:
+
+- Deterministic regular uncompressed files written by Rust, Go, Node.js, Python,
+  and the systemd v260.1 reference ingester must be byte-for-byte identical for
+  the accepted deterministic corpus across online/plain-close, offline-close,
+  and archived-close final states.
+- New regular files use v260-size headers, `HEADER_COMPATIBLE_TAIL_ENTRY_BOOT_ID`,
+  keyed hash tables, FIELD_HASH_TABLE before DATA_HASH_TABLE, the v260 header
+  counters/tail fields, systemd-compatible entry-array growth, and the same
+  initial 8 MiB allocation envelope as the systemd reference helper.
+- The deterministic accepted corpus intentionally exercises DATA hash-bucket
+  collisions. Writer byte identity includes `next_hash_offset` chain traversal
+  and exact `data_hash_chain_depth` publication, not only collision-free hash
+  table insertion.
+- Writer APIs must distinguish systemd's final-state paths: plain close leaves
+  `ONLINE`, explicit offline close writes `OFFLINE`, and archive close writes
+  `ARCHIVED` after the archive rename path.
+- Header parsing must respect the on-disk `header_size` for historical files.
+  Readers must not reject valid older files just because the in-memory struct for
+  new v260 files is larger.
+  Reader APIs must also return zero/default values for fields that are absent
+  from the on-disk header, rather than exposing bytes from the object arena as
+  newer header fields.
+
 Current Go writer feature slice:
 
 - regular, non-compact journal files;

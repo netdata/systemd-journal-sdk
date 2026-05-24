@@ -16,6 +16,8 @@ OUT = ROOT / ".local" / "datasets" / "ingesters"
 LANGUAGES = ("systemd", "rust", "go", "node", "python")
 REFERENCE = "systemd"
 INGESTER_TIMEOUT_SECONDS = 300
+SEQNUM_ID = "22222222222222222222222222222222"
+EXPECTED_DATA_HASH_CHAIN_DEPTH = 3
 
 HEADER_FIELDS = (
     ("signature", 0, 8, "bytes"),
@@ -42,6 +44,15 @@ HEADER_FIELDS = (
     ("head_entry_realtime", 184, 192, "u64"),
     ("tail_entry_realtime", 192, 200, "u64"),
     ("tail_entry_monotonic", 200, 208, "u64"),
+    ("n_data", 208, 216, "u64"),
+    ("n_fields", 216, 224, "u64"),
+    ("n_tags", 224, 232, "u64"),
+    ("n_entry_arrays", 232, 240, "u64"),
+    ("data_hash_chain_depth", 240, 248, "u64"),
+    ("field_hash_chain_depth", 248, 256, "u64"),
+    ("tail_entry_array_offset", 256, 260, "u32"),
+    ("tail_entry_array_n_entries", 260, 264, "u32"),
+    ("tail_entry_offset", 264, 272, "u64"),
 )
 
 OBJECT_TYPES = {
@@ -240,8 +251,28 @@ def first_differences(left: bytes, right: bytes, *, limit: int) -> list[dict]:
     return differences
 
 
-def journal_path(language: str) -> Path:
-    return OUT / language / "correctness.journal"
+def first_accepted_realtime() -> int:
+    dataset = ROOT / "tests" / "datasets" / "correctness" / "corpus.jsonl"
+    with dataset.open("r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if record.get("record_type") == "accepted":
+                return int(record["realtime_usec"])
+    return 0
+
+
+def archive_path_for(output: Path) -> Path:
+    prefix = output.name[:-len(".journal")] if output.name.endswith(".journal") else output.name
+    return output.with_name(
+        f"{prefix}@{SEQNUM_ID}-0000000000000001-{first_accepted_realtime():016x}.journal"
+    )
+
+
+def journal_path(language: str, final_state: str) -> Path:
+    output = (OUT / language if final_state == "online" else OUT / final_state / language) / "correctness.journal"
+    return archive_path_for(output) if final_state == "archived" else output
 
 
 def comparison_pairs(reference: str) -> list[tuple[str, str]]:
@@ -259,14 +290,28 @@ def comparison_pairs(reference: str) -> list[tuple[str, str]]:
 
     for language in LANGUAGES:
         add(reference, language)
-    for language in ("node", "python", "rust"):
-        add("go", language)
+    for i, left in enumerate(LANGUAGES):
+        for right in LANGUAGES[i + 1:]:
+            add(left, right)
     return pairs
 
 
-def compare_pair(left_name: str, right_name: str, *, limit: int) -> dict:
-    left_path = journal_path(left_name)
-    right_path = journal_path(right_name)
+def validate_chain_depth(data: bytes, path: Path) -> dict:
+    if len(data) < 272:
+        return {"returncode": 1, "stderr": "file too small for header"}
+    chain_depth = read_u64(data, 240)
+    return {
+        "returncode": 0,
+        "chain_depth": chain_depth,
+        "expected_chain_depth": EXPECTED_DATA_HASH_CHAIN_DEPTH,
+        "path": str(path),
+        "ok": chain_depth == EXPECTED_DATA_HASH_CHAIN_DEPTH,
+    }
+
+
+def compare_pair(left_name: str, right_name: str, *, final_state: str, limit: int) -> dict:
+    left_path = journal_path(left_name, final_state)
+    right_path = journal_path(right_name, final_state)
     left = left_path.read_bytes()
     right = right_path.read_bytes()
     equal = left == right
@@ -287,30 +332,69 @@ def main() -> int:
     parser.add_argument("--skip-run", action="store_true", help="compare existing .local ingester outputs")
     parser.add_argument("--diff-limit", type=int, default=16)
     parser.add_argument("--reference", choices=LANGUAGES, default=REFERENCE)
+    parser.add_argument(
+        "--final-state",
+        choices=("all", "online", "offline", "archived"),
+        default="online",
+        help="journal final state to compare; use all to run online, offline, and archived",
+    )
     args = parser.parse_args()
 
     summary: dict[str, object] = {}
-    if not args.skip_run:
-        ingest = run([sys.executable, str(INGESTER_RUNNER), "--both"])
-        summary["ingesters"] = ingest
-        if ingest["returncode"] != 0:
+    states = ["online", "offline", "archived"] if args.final_state == "all" else [args.final_state]
+    state_summaries: dict[str, object] = {}
+
+    for final_state in states:
+        state_summary: dict[str, object] = {}
+        if not args.skip_run:
+            ingest = run([sys.executable, str(INGESTER_RUNNER), "--both", "--final-state", final_state])
+            state_summary["ingesters"] = ingest
+            if ingest["returncode"] != 0:
+                state_summaries[final_state] = state_summary
+                summary["states"] = state_summaries
+                summary["all_equal"] = False
+                print(json.dumps(summary, indent=2, sort_keys=True))
+                return 1
+
+        paths = {language: str(journal_path(language, final_state)) for language in LANGUAGES}
+        missing = [path for path in paths.values() if not Path(path).exists()]
+        if missing:
+            state_summary["missing"] = missing
+            state_summaries[final_state] = state_summary
+            summary["states"] = state_summaries
+            summary["all_equal"] = False
             print(json.dumps(summary, indent=2, sort_keys=True))
             return 1
 
-    paths = {language: str(journal_path(language)) for language in LANGUAGES}
-    missing = [path for path in paths.values() if not Path(path).exists()]
-    if missing:
-        summary["missing"] = missing
-        print(json.dumps(summary, indent=2, sort_keys=True))
-        return 1
+        chain_depths = {}
+        for language in LANGUAGES:
+            path = journal_path(language, final_state)
+            data = path.read_bytes()
+            result = validate_chain_depth(data, path)
+            chain_depths[language] = result
+            if result["returncode"] != 0 or not result["ok"]:
+                state_summary[f"chain_depth_{language}"] = result
+                state_summaries[final_state] = state_summary
+                summary["states"] = state_summaries
+                summary["all_equal"] = False
+                print(json.dumps(summary, indent=2, sort_keys=True))
+                return 1
+        state_summary["chain_depths"] = {k: v["chain_depth"] for k, v in chain_depths.items()}
 
-    comparisons = [
-        compare_pair(left, right, limit=args.diff_limit)
-        for left, right in comparison_pairs(args.reference)
-    ]
-    summary["paths"] = paths
-    summary["comparisons"] = comparisons
-    summary["all_equal"] = all(item["equal"] for item in comparisons)
+        comparisons = [
+            compare_pair(left, right, final_state=final_state, limit=args.diff_limit)
+            for left, right in comparison_pairs(args.reference)
+        ]
+        state_summary["paths"] = paths
+        state_summary["comparisons"] = comparisons
+        state_summary["all_equal"] = all(item["equal"] for item in comparisons)
+        state_summaries[final_state] = state_summary
+
+    if len(states) == 1:
+        summary.update(state_summaries[states[0]])  # Preserve the original single-state shape.
+    else:
+        summary["states"] = state_summaries
+    summary["all_equal"] = all(state["all_equal"] for state in state_summaries.values())
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0 if summary["all_equal"] else 1
 

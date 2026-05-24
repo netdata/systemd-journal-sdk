@@ -2,7 +2,7 @@
 
 ## Current
 
-- `SOW-0016-20260524-byte-identical-writer-compatibility.md` - in-progress. Require byte-for-byte deterministic writer compatibility against systemd for the accepted corpus.
+- None.
 
 ## Pending
 
@@ -28,11 +28,13 @@
 - `SOW-0013-20260523-go-directory-writer-rotation-retention.md`
 - `SOW-0014-20260524-deterministic-ingestion-dataset.md`
 - `SOW-0015-20260524-deterministic-ingesters.md`
+- `SOW-0016-20260524-byte-identical-writer-compatibility.md`
 
 ## Notes
 
 - The deterministic dataset must separate accepted rows from expected rejection cases.
 - SOW-0015 produced deterministic ingesters for systemd C, Rust, Go, Node.js, and Python.
-- SOW-0016 is active and consumes the deterministic ingester outputs.
+- SOW-0016 consumed the deterministic ingester outputs and is completed.
+- SOW-0016 validation shows byte-for-byte identity for the accepted uncompressed corpus across online, offline, and archived final states, including exact DATA hash-chain depth parity, plus passing closed-file, binary, live, and zstd compression interoperability matrices.
 - Byte-for-byte writer identity is the target for deterministic uncompressed journals. Any feature slice that cannot be made byte-identical must return with evidence before the acceptance condition is changed.
 - The external systemd source checkout is read-only for this project. Build outputs and generated files must remain inside this repository or `/tmp`.

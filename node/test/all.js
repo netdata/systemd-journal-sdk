@@ -223,7 +223,7 @@ for (const [length, expected] of sipVectors) {
     const log = new Log(tempDir, {
       source: 'custom-source',
       maxEntries: 2,
-      maxBytes: 1024 * 1024,
+      maxBytes: 16 * 1024 * 1024,
       maxFiles: 10,
       machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
     });

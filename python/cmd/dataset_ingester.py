@@ -19,6 +19,7 @@ MACHINE_ID = bytes.fromhex("fedcba9876543210fedcba9876543210")
 SEQNUM_ID = bytes.fromhex("22222222222222222222222222222222")
 FILE_ID = bytes.fromhex("33333333333333333333333333333333")
 OVERSIZED_LIMIT = 4 * 1024 * 1024
+DEFAULT_ARCHIVE_REALTIME = 1_700_000_000_000_000
 
 
 def materialize_value(value: dict) -> bytes:
@@ -82,9 +83,29 @@ def make_writer(path: Path) -> Writer:
     )
 
 
-def ingest_accepted(dataset: Path, output: Path) -> dict:
+def archive_path_for(output: Path, head_realtime: int) -> Path:
+    prefix = output.name[:-len(".journal")] if output.name.endswith(".journal") else output.name
+    name = f"{prefix}@{SEQNUM_ID.hex()}-0000000000000001-{head_realtime:016x}.journal"
+    return output.with_name(name)
+
+
+def finalize_writer(writer: Writer, output: Path, final_state: str, head_realtime: int) -> None:
+    if final_state == "online":
+        writer.close()
+    elif final_state == "offline":
+        writer.close_offline()
+    elif final_state == "archived":
+        archive_path = archive_path_for(output, head_realtime)
+        archive_path.unlink(missing_ok=True)
+        writer.archive_to(str(archive_path))
+    else:
+        raise ValueError(f"invalid final state: {final_state}")
+
+
+def ingest_accepted(dataset: Path, output: Path, final_state: str) -> dict:
     writer = make_writer(output)
     written = 0
+    head_realtime = 0
     errors: list[str] = []
     try:
         with dataset.open("r", encoding="utf-8") as f:
@@ -107,17 +128,19 @@ def ingest_accepted(dataset: Path, output: Path) -> dict:
                             "boot_id": bytes.fromhex(record.get("boot_id", BOOT_ID.hex())),
                         },
                     )
+                    if head_realtime == 0:
+                        head_realtime = record["realtime_usec"]
                     written += 1
                 except Exception as err:  # pragma: no cover - command line diagnostic
                     errors.append(f"line {line_no}: append failed: {err}")
         writer.sync()
     finally:
-        writer.close()
+        finalize_writer(writer, output, final_state, head_realtime or DEFAULT_ARCHIVE_REALTIME)
 
     return {"records": written, "errors": errors}
 
 
-def ingest_rejections(dataset: Path, output: Path) -> dict:
+def ingest_rejections(dataset: Path, output: Path, final_state: str) -> dict:
     writer: Writer | None = None
     handled = 0
     errors: list[str] = []
@@ -154,7 +177,7 @@ def ingest_rejections(dataset: Path, output: Path) -> dict:
                     errors.append(f"line {line_no} {case_id}: rejected as EINVAL, expected {expected}")
 
     if writer is not None:
-        writer.close()
+        finalize_writer(writer, output, final_state, DEFAULT_ARCHIVE_REALTIME)
     return {"records": handled, "errors": errors}
 
 
@@ -163,12 +186,13 @@ def main() -> int:
     parser.add_argument("--dataset", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--rejection-mode", action="store_true")
+    parser.add_argument("--final-state", choices=("online", "offline", "archived"), default="online")
     args = parser.parse_args()
 
     result = (
-        ingest_rejections(args.dataset, args.output)
+        ingest_rejections(args.dataset, args.output, args.final_state)
         if args.rejection_mode
-        else ingest_accepted(args.dataset, args.output)
+        else ingest_accepted(args.dataset, args.output, args.final_state)
     )
     print(json.dumps(result, sort_keys=True))
     return 0 if not result["errors"] else 1

@@ -7,7 +7,7 @@ import { dirname } from 'node:path';
 import { readUint64LE, uuidToString, align8 } from './binary.js';
 import {
   parseFileHeader, parseObjectHeader,
-  HEADER_SIZE, OBJECT_TYPE_ENTRY, OBJECT_TYPE_ENTRY_ARRAY,
+  HEADER_MIN_SIZE, HEADER_SIZE, OBJECT_TYPE_ENTRY, OBJECT_TYPE_ENTRY_ARRAY,
   OBJECT_TYPE_DATA, OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE,
   DATA_OBJECT_HEADER_SIZE, OFFSET_ARRAY_OBJECT_HEADER_SIZE,
   REGULAR_ENTRY_ITEM_SIZE, INCOMPATIBLE_KEYED_HASH, INCOMPATIBLE_COMPACT,
@@ -44,13 +44,13 @@ export class FileReader {
         buffer = readFileSync(path);
       }
 
-      if (buffer.length < HEADER_SIZE) {
+      if (buffer.length < HEADER_MIN_SIZE) {
         throw new Error('file too small for journal header');
       }
 
       const header = parseFileHeader(buffer);
 
-      if (header.header_size < BigInt(HEADER_SIZE)) {
+      if (header.header_size < BigInt(HEADER_MIN_SIZE)) {
         throw new Error('unsupported journal: header size too small');
       }
 

@@ -7,7 +7,7 @@ import tempfile
 from .binary import read_uint64_le, uuid_to_string, align8, buf_equal
 from .header import (
     parse_file_header, parse_object_header,
-    HEADER_SIZE, OBJECT_TYPE_ENTRY, OBJECT_TYPE_ENTRY_ARRAY,
+    HEADER_MIN_SIZE, HEADER_SIZE, OBJECT_TYPE_ENTRY, OBJECT_TYPE_ENTRY_ARRAY,
     OBJECT_TYPE_DATA, OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE,
     DATA_OBJECT_HEADER_SIZE, OFFSET_ARRAY_OBJECT_HEADER_SIZE,
     REGULAR_ENTRY_ITEM_SIZE, INCOMPATIBLE_KEYED_HASH, INCOMPATIBLE_COMPACT,
@@ -43,11 +43,11 @@ class FileReader:
                 with open(path, 'rb') as f:
                     buffer = f.read()
 
-            if len(buffer) < HEADER_SIZE:
+            if len(buffer) < HEADER_MIN_SIZE:
                 raise ValueError('file too small for journal header')
 
             header = parse_file_header(buffer)
-            if header['header_size'] < HEADER_SIZE:
+            if header['header_size'] < HEADER_MIN_SIZE:
                 raise ValueError('unsupported journal: header size too small')
             if not (header['incompatible_flags'] & INCOMPATIBLE_KEYED_HASH):
                 raise ValueError('unsupported journal: keyed hash required')

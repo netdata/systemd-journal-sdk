@@ -34,7 +34,9 @@ LOCAL_DIR = REPO_ROOT / ".local" / "interoperability"
 BIN_DIR = LOCAL_DIR / "bin"
 FIXTURE_DIR = LOCAL_DIR / "compression"
 
-HEADER_SIZE = 208
+HEADER_MIN_SIZE = 208
+HEADER_SIZE_OFFSET = 88
+HEADER_SIZE_FIELD_SIZE = 8
 OBJECT_TYPE_DATA = 1
 OBJECT_COMPRESSED_ZSTD = 1 << 2
 INCOMPATIBLE_COMPRESSED_ZSTD = 1 << 3
@@ -215,13 +217,30 @@ def wait_for_file(path: Path, label: str, timeout: float = 10.0) -> None:
 def inspect_compression(journal_path: str) -> dict:
     path = Path(journal_path)
     data = path.read_bytes()
-    if len(data) < HEADER_SIZE:
+    if len(data) < HEADER_MIN_SIZE:
         return {"test": "compression-flags", "status": "FAIL", "error": "journal smaller than header"}
 
     incompatible_flags = int.from_bytes(data[12:16], "little")
+    header_size = int.from_bytes(
+        data[HEADER_SIZE_OFFSET:HEADER_SIZE_OFFSET + HEADER_SIZE_FIELD_SIZE],
+        "little",
+    )
+    if header_size < HEADER_MIN_SIZE:
+        return {
+            "test": "compression-flags",
+            "status": "FAIL",
+            "error": f"invalid journal header size: {header_size}",
+        }
+    if header_size > len(data):
+        return {
+            "test": "compression-flags",
+            "status": "FAIL",
+            "error": f"journal header size exceeds file size: {header_size}",
+        }
+
     data_objects = 0
     compressed_data_objects = 0
-    offset = HEADER_SIZE
+    offset = header_size
     file_len = len(data)
 
     while offset + 16 <= file_len:
@@ -247,6 +266,7 @@ def inspect_compression(journal_path: str) -> dict:
         "status": "FAIL" if errors else "PASS",
         "data_objects": data_objects,
         "compressed_data_objects": compressed_data_objects,
+        "header_size": header_size,
         "incompatible_flags": incompatible_flags,
         "error": "; ".join(errors),
     }

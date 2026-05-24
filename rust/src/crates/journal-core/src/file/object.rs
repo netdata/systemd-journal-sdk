@@ -307,7 +307,7 @@ pub struct JournalHeader {
     pub machine_id: [u8; 16],                        // Machine ID this belongs to
     pub tail_entry_boot_id: [u8; 16],                // Boot ID of the last entry
     pub seqnum_id: [u8; 16],                         // Sequence number ID
-    pub header_size: u64,                            // Size of the header
+    pub header_size: u64,                            // Size of the header (272 in v260+)
     pub arena_size: u64,                             // Size of the data arena
     pub data_hash_table_offset: Option<NonZeroU64>,  // Offset of the data hash table
     pub data_hash_table_size: Option<NonZeroU64>,    // Size of the data hash table
@@ -322,11 +322,6 @@ pub struct JournalHeader {
     pub head_entry_realtime: u64,                    // Realtime timestamp of the first entry
     pub tail_entry_realtime: u64,                    // Realtime timestamp of the last entry
     pub tail_entry_monotonic: u64,                   // Monotonic timestamp of the last entry
-}
-
-/*
-    NOTE: For the time being, we do not need the following fields.
-
     // Added in 187
     pub n_data: u64,   // Number of data objects
     pub n_fields: u64, // Number of field objects
@@ -341,7 +336,7 @@ pub struct JournalHeader {
     pub tail_entry_array_n_entries: u32, // Number of entries in the tail entry array
     // Added in 254
     pub tail_entry_offset: u64, // Offset to the tail entry
-*/
+}
 
 impl JournalHeader {
     pub fn has_incompatible_flag(&self, flag: HeaderIncompatibleFlags) -> bool {

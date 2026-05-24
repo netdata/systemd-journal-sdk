@@ -19,6 +19,7 @@ OUT = ROOT / ".local" / "datasets" / "ingesters"
 BIN = OUT / "bin"
 
 LANGUAGES = ("systemd", "rust", "go", "node", "python")
+SEQNUM_ID = "22222222222222222222222222222222"
 
 
 def run(cmd: list[str], *, cwd: Path = ROOT, env: dict[str, str] | None = None) -> dict:
@@ -74,7 +75,35 @@ def ensure_bins(language: str) -> tuple[Path | str, dict]:
     raise ValueError(language)
 
 
-def ingester_command(language: str, binary: Path | str, metadata: dict, dataset: Path, output: Path, rejection: bool) -> list[str]:
+def first_accepted_realtime(dataset: Path) -> int:
+    with dataset.open("r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            if record.get("record_type") == "accepted":
+                return int(record["realtime_usec"])
+    return 0
+
+
+def final_journal_path(output: Path, final_state: str, dataset: Path) -> Path:
+    if final_state != "archived":
+        return output
+    prefix = output.name[:-len(".journal")] if output.name.endswith(".journal") else output.name
+    return output.with_name(
+        f"{prefix}@{SEQNUM_ID}-0000000000000001-{first_accepted_realtime(dataset):016x}.journal"
+    )
+
+
+def ingester_command(
+    language: str,
+    binary: Path | str,
+    metadata: dict,
+    dataset: Path,
+    output: Path,
+    rejection: bool,
+    final_state: str,
+) -> list[str]:
     if language in {"python", "node"}:
         cmd = [str(binary), metadata["script"]]
     else:
@@ -82,6 +111,7 @@ def ingester_command(language: str, binary: Path | str, metadata: dict, dataset:
     cmd += ["--dataset", str(dataset), "--output", str(output)]
     if rejection:
         cmd.append("--rejection-mode")
+    cmd += ["--final-state", final_state]
     return cmd
 
 
@@ -91,21 +121,26 @@ def verify_journal(path: Path) -> dict:
     return run(["journalctl", "--verify", "--file", str(path)])
 
 
-def run_language(language: str, both: bool) -> dict:
+def run_language(language: str, both: bool, final_state: str) -> dict:
     binary, metadata = ensure_bins(language)
-    lang_out = OUT / language
+    lang_out = OUT / language if final_state == "online" else OUT / final_state / language
     lang_out.mkdir(parents=True, exist_ok=True)
     result: dict[str, dict] = {}
 
     accepted_output = lang_out / "correctness.journal"
-    accepted = run(ingester_command(language, binary, metadata, CORRECTNESS, accepted_output, False))
+    actual_output = final_journal_path(accepted_output, final_state, CORRECTNESS)
+    for path in {accepted_output, actual_output}:
+        path.unlink(missing_ok=True)
+    accepted = run(ingester_command(language, binary, metadata, CORRECTNESS, accepted_output, False, final_state))
     result["accepted"] = accepted
     if accepted["returncode"] == 0:
-        result["verify"] = verify_journal(accepted_output)
+        result["verify"] = verify_journal(actual_output)
+        result["journal"] = {"path": str(actual_output)}
 
     if both:
         rejection_output = lang_out / "rejections.journal"
-        result["rejections"] = run(ingester_command(language, binary, metadata, REJECTIONS, rejection_output, True))
+        rejection_output.unlink(missing_ok=True)
+        result["rejections"] = run(ingester_command(language, binary, metadata, REJECTIONS, rejection_output, True, "online"))
     return result
 
 
@@ -113,6 +148,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--language", choices=LANGUAGES)
     parser.add_argument("--both", action="store_true", help="run accepted and rejection corpora")
+    parser.add_argument("--final-state", choices=("online", "offline", "archived"), default="online")
     args = parser.parse_args()
 
     languages = [args.language] if args.language else list(LANGUAGES)
@@ -126,7 +162,7 @@ def main() -> int:
 
     for language in languages:
         try:
-            language_result = run_language(language, args.both)
+            language_result = run_language(language, args.both, args.final_state)
         except Exception as err:
             language_result = {"exception": str(err)}
             failed = True

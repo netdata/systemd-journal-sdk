@@ -88,6 +88,11 @@ w.append([
 w.close()
 ```
 
+`writer.close()` matches systemd's plain close path and leaves the file in
+`ONLINE` state. Use `writer.close_offline()` to finalize a single file as
+`OFFLINE`; directory rotation uses `writer.archive_to()` to produce `ARCHIVED`
+files.
+
 ## Directory Writer Usage
 
 ```python
@@ -144,7 +149,9 @@ python3 cmd/journalctl.py --file ./sample.journal PRIORITY=3 PRIORITY=4 + MESSAG
 - `Writer.create(path, options)` - Create new journal file
 - `writer.append(fields, options)` - Append entry
 - `writer.sync()` - Sync to disk
-- `writer.close()` - Close and finalize
+- `writer.close()` - Close while preserving `ONLINE` state
+- `writer.close_offline()` - Close with `OFFLINE` state
+- `writer.archive_to(path)` - Rename and close with `ARCHIVED` state
 - `Log(directory, options)` - Create a high-level directory writer
 - `log.append(fields, options)` - Append through the directory writer
 - `log.sync()` - Sync the active journal file

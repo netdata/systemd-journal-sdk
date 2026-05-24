@@ -3,7 +3,8 @@
 
 import { readUint64LE, writeUint64LE, writeUint32LE, writeUint8 } from './binary.js';
 
-export const HEADER_SIZE = 208;
+export const HEADER_MIN_SIZE = 208;
+export const HEADER_SIZE = 272;  // v260+ writer header size
 
 export const STATE_OFFLINE = 0;
 export const STATE_ONLINE = 1;
@@ -15,6 +16,9 @@ export const INCOMPATIBLE_COMPRESSED_LZ4 = 1 << 1;
 export const INCOMPATIBLE_KEYED_HASH = 1 << 2;
 export const INCOMPATIBLE_COMPRESSED_ZSTD = 1 << 3;
 export const INCOMPATIBLE_COMPACT = 1 << 4;
+
+// HEADER_COMPATIBLE_TAIL_ENTRY_BOOT_ID - set for new files (v260+)
+export const COMPATIBLE_TAIL_ENTRY_BOOT_ID = 1 << 1;
 
 // Object types (1-based)
 export const OBJECT_TYPE_DATA = 1;
@@ -55,8 +59,9 @@ export const OFFSET_ARRAY_OBJECT_HEADER_SIZE = 24;
 export const REGULAR_ENTRY_ITEM_SIZE = 16;
 
 // Default sizes for writer
-export const DEFAULT_DATA_HASH_BUCKETS = 4096;
-export const DEFAULT_FIELD_HASH_BUCKETS = 512;
+export const DEFAULT_DATA_HASH_BUCKETS = 116508;
+export const DEFAULT_FIELD_HASH_BUCKETS = 1023;
+export const FILE_SIZE_INCREASE = 8 * 1024 * 1024;
 export const INITIAL_ENTRY_ARRAY_CAP = 4096;
 export const INITIAL_DATA_ENTRY_ARRAY_CAP = 64;
 
@@ -78,17 +83,17 @@ export function writeObjectHeader(buf, offset, type, flags, size) {
   writeUint64LE(buf, offset + 8, size);
 }
 
-// Parse the file header from a 208-byte buffer.
+// Parse the file header from a journal buffer.
 export function parseFileHeader(buf) {
-  if (buf.length < HEADER_SIZE) {
-    throw new Error(`header buffer too small: ${buf.length} < ${HEADER_SIZE}`);
+  if (buf.length < HEADER_MIN_SIZE) {
+    throw new Error(`header buffer too small: ${buf.length} < ${HEADER_MIN_SIZE}`);
   }
   const sig = buf.toString('latin1', 0, 8);
   if (sig !== 'LPKSHHRH') {
     throw new Error('invalid journal signature');
   }
 
-  return {
+  const header = {
     signature: sig,
     compatible_flags: buf.readUInt32LE(8),
     incompatible_flags: buf.readUInt32LE(12),
@@ -112,10 +117,34 @@ export function parseFileHeader(buf) {
     head_entry_realtime: readUint64LE(buf, 184),
     tail_entry_realtime: readUint64LE(buf, 192),
     tail_entry_monotonic: readUint64LE(buf, 200),
+    n_data: 0n,
+    n_fields: 0n,
+    n_tags: 0n,
+    n_entry_arrays: 0n,
+    data_hash_chain_depth: 0n,
+    field_hash_chain_depth: 0n,
+    tail_entry_array_offset: 0,
+    tail_entry_array_n_entries: 0,
+    tail_entry_offset: 0n,
   };
+  if (header.header_size >= BigInt(HEADER_SIZE)) {
+    if (buf.length < HEADER_SIZE) {
+      throw new Error(`header buffer too small: ${buf.length} < ${HEADER_SIZE}`);
+    }
+    header.n_data = readUint64LE(buf, 208);
+    header.n_fields = readUint64LE(buf, 216);
+    header.n_tags = readUint64LE(buf, 224);
+    header.n_entry_arrays = readUint64LE(buf, 232);
+    header.data_hash_chain_depth = readUint64LE(buf, 240);
+    header.field_hash_chain_depth = readUint64LE(buf, 248);
+    header.tail_entry_array_offset = buf.readUInt32LE(256);
+    header.tail_entry_array_n_entries = buf.readUInt32LE(260);
+    header.tail_entry_offset = readUint64LE(buf, 264);
+  }
+  return header;
 }
 
-// Serialize a header object into a 208-byte buffer.
+// Serialize a header object into a v260 272-byte buffer.
 export function serializeFileHeader(buf, h) {
   if (buf.length < HEADER_SIZE) {
     throw new Error(`buffer too small for header: ${buf.length}`);
@@ -144,4 +173,18 @@ export function serializeFileHeader(buf, h) {
   writeUint64LE(buf, 184, h.head_entry_realtime);
   writeUint64LE(buf, 192, h.tail_entry_realtime);
   writeUint64LE(buf, 200, h.tail_entry_monotonic);
+  // Added in 187
+  writeUint64LE(buf, 208, h.n_data || 0);
+  writeUint64LE(buf, 216, h.n_fields || 0);
+  // Added in 189
+  writeUint64LE(buf, 224, h.n_tags || 0);
+  writeUint64LE(buf, 232, h.n_entry_arrays || 0);
+  // Added in 246
+  writeUint64LE(buf, 240, h.data_hash_chain_depth || 0);
+  writeUint64LE(buf, 248, h.field_hash_chain_depth || 0);
+  // Added in 252
+  buf.writeUInt32LE(h.tail_entry_array_offset || 0, 256);
+  buf.writeUInt32LE(h.tail_entry_array_n_entries || 0, 260);
+  // Added in 254
+  writeUint64LE(buf, 264, h.tail_entry_offset || 0);
 }

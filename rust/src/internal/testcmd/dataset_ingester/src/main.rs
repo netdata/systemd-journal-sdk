@@ -1,7 +1,9 @@
 use anyhow::{Context, Result, anyhow};
 use base64::Engine;
 use clap::Parser;
-use journal_core::file::{Compression, JournalFile, JournalFileOptions, JournalWriter, MmapMut};
+use journal_core::file::{
+    Compression, JournalFile, JournalFileOptions, JournalState, JournalWriter, MmapMut,
+};
 use journal_registry::repository::File as RepositoryFile;
 use serde::Deserialize;
 use serde_json::json;
@@ -13,6 +15,7 @@ const BOOT_ID: &str = "0123456789abcdef0123456789abcdef";
 const MACHINE_ID: &str = "fedcba9876543210fedcba9876543210";
 const SEQNUM_ID: &str = "22222222222222222222222222222222";
 const FILE_ID: &str = "33333333333333333333333333333333";
+const DEFAULT_ARCHIVE_REALTIME: u64 = 1_700_000_000_000_000;
 const OVERSIZED_LIMIT: u64 = 4 * 1024 * 1024;
 
 #[derive(Parser, Debug)]
@@ -23,6 +26,8 @@ struct Args {
     output: PathBuf,
     #[arg(long)]
     rejection_mode: bool,
+    #[arg(long, default_value = "online")]
+    final_state: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,10 +67,13 @@ struct RejectedRecord {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    if !matches!(args.final_state.as_str(), "online" | "offline" | "archived") {
+        return Err(anyhow!("invalid final state: {}", args.final_state));
+    }
     let result = if args.rejection_mode {
-        ingest_rejections(&args.dataset, &args.output)?
+        ingest_rejections(&args.dataset, &args.output, &args.final_state)?
     } else {
-        ingest_accepted(&args.dataset, &args.output)?
+        ingest_accepted(&args.dataset, &args.output, &args.final_state)?
     };
     println!("{}", serde_json::to_string(&result)?);
     if result["errors"]
@@ -107,6 +115,49 @@ fn create_writer(path: &Path) -> Result<(JournalFile<MmapMut>, JournalWriter)> {
     let writer =
         JournalWriter::new_with_compression(&mut journal_file, 1, boot_id, Compression::None, 64)?;
     Ok((journal_file, writer))
+}
+
+fn archive_path_for(output: &Path, head_realtime: u64) -> PathBuf {
+    let file_name = output
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("system.journal");
+    let prefix = file_name.strip_suffix(".journal").unwrap_or(file_name);
+    output.with_file_name(format!(
+        "{prefix}@{SEQNUM_ID}-0000000000000001-{head_realtime:016x}.journal"
+    ))
+}
+
+fn finalize_journal_file(
+    journal_file: &mut JournalFile<MmapMut>,
+    output: &Path,
+    final_state: &str,
+    head_realtime: u64,
+) -> Result<()> {
+    match final_state {
+        "online" => {
+            journal_file.journal_header_mut().state = JournalState::Online as u8;
+            journal_file.sync()?;
+        }
+        "offline" => {
+            journal_file.journal_header_mut().state = JournalState::Offline as u8;
+            journal_file.sync()?;
+        }
+        "archived" => {
+            let archive_path = archive_path_for(output, head_realtime);
+            match fs::remove_file(&archive_path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err.into()),
+            }
+            fs::rename(output, &archive_path)?;
+            journal_file.journal_header_mut().state = JournalState::Archived as u8;
+            journal_file.sync()?;
+        }
+        _ => return Err(anyhow!("invalid final state: {final_state}")),
+    }
+    journal_file.release_writer_lock()?;
+    Ok(())
 }
 
 fn materialize_value(value: &ValueDescriptor) -> Result<Vec<u8>> {
@@ -163,11 +214,12 @@ fn expected_rejection(input: &serde_json::Value) -> Option<&'static str> {
     None
 }
 
-fn ingest_accepted(dataset: &Path, output: &Path) -> Result<serde_json::Value> {
+fn ingest_accepted(dataset: &Path, output: &Path, final_state: &str) -> Result<serde_json::Value> {
     let (mut journal_file, mut writer) = create_writer(output)?;
     let reader = BufReader::new(File::open(dataset)?);
     let mut records = 0usize;
     let mut errors = Vec::new();
+    let mut head_realtime = 0;
 
     for (index, line) in reader.lines().enumerate() {
         let line = line?;
@@ -218,14 +270,30 @@ fn ingest_accepted(dataset: &Path, output: &Path) -> Result<serde_json::Value> {
                 record.entry_id
             ));
         } else {
+            if head_realtime == 0 {
+                head_realtime = record.realtime_usec;
+            }
             records += 1;
         }
     }
-    journal_file.sync()?;
+    finalize_journal_file(
+        &mut journal_file,
+        output,
+        final_state,
+        if head_realtime == 0 {
+            DEFAULT_ARCHIVE_REALTIME
+        } else {
+            head_realtime
+        },
+    )?;
     Ok(json!({ "records": records, "errors": errors }))
 }
 
-fn ingest_rejections(dataset: &Path, output: &Path) -> Result<serde_json::Value> {
+fn ingest_rejections(
+    dataset: &Path,
+    output: &Path,
+    final_state: &str,
+) -> Result<serde_json::Value> {
     let reader = BufReader::new(File::open(dataset)?);
     let mut writer_state: Option<(JournalFile<MmapMut>, JournalWriter)> = None;
     let mut records = 0usize;
@@ -287,7 +355,12 @@ fn ingest_rejections(dataset: &Path, output: &Path) -> Result<serde_json::Value>
         }
     }
     if let Some((mut journal_file, _writer)) = writer_state {
-        journal_file.sync()?;
+        finalize_journal_file(
+            &mut journal_file,
+            output,
+            final_state,
+            DEFAULT_ARCHIVE_REALTIME,
+        )?;
     }
     Ok(json!({ "records": records, "errors": errors }))
 }

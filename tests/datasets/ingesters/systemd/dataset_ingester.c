@@ -15,6 +15,7 @@
 #include "sd-json.h"
 
 #include "journal-file.h"
+#include "journal-file-util.h"
 #include "iovec-util.h"
 #include "log.h"
 #include "mmap-cache.h"
@@ -24,6 +25,11 @@
 static const char *arg_dataset = NULL;
 static const char *arg_output = NULL;
 static bool arg_rejection_mode = false;
+static enum {
+        FINAL_STATE_ONLINE,
+        FINAL_STATE_OFFLINE,
+        FINAL_STATE_ARCHIVED,
+} arg_final_state = FINAL_STATE_ONLINE;
 
 static int parse_args(int argc, char **argv) {
         for (int i = 1; i < argc; i++) {
@@ -33,8 +39,22 @@ static int parse_args(int argc, char **argv) {
                         arg_output = argv[++i];
                 else if (streq(argv[i], "--rejection-mode"))
                         arg_rejection_mode = true;
+                else if (streq(argv[i], "--final-state") && i + 1 < argc) {
+                        const char *state = argv[++i];
+
+                        if (streq(state, "online"))
+                                arg_final_state = FINAL_STATE_ONLINE;
+                        else if (streq(state, "offline"))
+                                arg_final_state = FINAL_STATE_OFFLINE;
+                        else if (streq(state, "archived"))
+                                arg_final_state = FINAL_STATE_ARCHIVED;
+                        else {
+                                fprintf(stderr, "invalid final state: %s\n", state);
+                                return -EINVAL;
+                        }
+                }
                 else {
-                        fprintf(stderr, "usage: %s --dataset PATH --output PATH [--rejection-mode]\n", argv[0]);
+                        fprintf(stderr, "usage: %s --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived]\n", argv[0]);
                         return -EINVAL;
                 }
         }
@@ -130,13 +150,26 @@ static int open_journal(const char *path, uint64_t max_size, MMapCache **ret_cac
         return 0;
 }
 
-static void close_journal(MMapCache *cache, JournalFile *file) {
+static int close_journal(MMapCache *cache, JournalFile *file) {
+        int r = 0;
+
         if (file) {
-                (void) journal_file_set_offline_thread_join(file);
-                journal_file_close(file);
+                if (arg_final_state == FINAL_STATE_ARCHIVED) {
+                        r = journal_file_archive(file, NULL);
+                        if (r < 0)
+                                journal_file_close(file);
+                        else
+                                journal_file_offline_close(file);
+                } else if (arg_final_state == FINAL_STATE_OFFLINE)
+                        journal_file_offline_close(file);
+                else {
+                        (void) journal_file_set_offline_thread_join(file);
+                        journal_file_close(file);
+                }
         }
         if (cache)
                 mmap_cache_unref(cache);
+        return r;
 }
 
 static sd_json_variant *by_key(sd_json_variant *v, const char *key) {
@@ -422,7 +455,11 @@ finish:
         free(line);
         if (input)
                 fclose(input);
-        close_journal(cache, file);
+        {
+                int close_r = close_journal(cache, file);
+                if (r >= 0 && close_r < 0)
+                        r = close_r;
+        }
         if (r < 0)
                 printf("{\"records\":%zu,\"errors\":[\"failed\"]}\n", records);
         else
@@ -526,7 +563,11 @@ finish:
         free(line);
         if (input)
                 fclose(input);
-        close_journal(cache, file);
+        {
+                int close_r = close_journal(cache, file);
+                if (r >= 0 && close_r < 0)
+                        r = close_r;
+        }
         if (r < 0)
                 printf("{\"records\":%zu,\"errors\":[\"failed\"]}\n", records);
         else

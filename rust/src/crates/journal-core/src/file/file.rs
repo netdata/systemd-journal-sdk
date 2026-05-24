@@ -138,8 +138,8 @@ impl JournalFileOptions {
             seqnum_id,
             file_id,
             window_size: 64 * 1024,
-            data_hash_table_buckets: 4096,
-            field_hash_table_buckets: 512,
+            data_hash_table_buckets: 116_508,
+            field_hash_table_buckets: 1_023,
             enable_keyed_hash: true,
             compression: Compression::None,
             compress_threshold: 64,
@@ -197,19 +197,13 @@ impl JournalFileOptions {
     }
 
     pub fn with_data_hash_table_buckets(mut self, buckets: usize) -> Self {
-        assert!(
-            buckets.is_power_of_two(),
-            "Hash table buckets should be a power of two"
-        );
+        assert!(buckets > 0, "Hash table buckets must be positive");
         self.data_hash_table_buckets = buckets;
         self
     }
 
     pub fn with_field_hash_table_buckets(mut self, buckets: usize) -> Self {
-        assert!(
-            buckets.is_power_of_two(),
-            "Hash table buckets should be a power of two"
-        );
+        assert!(buckets > 0, "Hash table buckets must be positive");
         self.field_hash_table_buckets = buckets;
         self
     }
@@ -302,6 +296,7 @@ pub struct JournalFile<M: MemoryMap> {
 
     // Persistent memory maps for journal header and data/field hash tables
     header_map: M,
+    sanitized_header: Option<JournalHeader>,
     data_hash_table_map: Option<M>,
     field_hash_table_map: Option<M>,
 
@@ -311,6 +306,7 @@ pub struct JournalFile<M: MemoryMap> {
 
 fn map_hash_table<M: MemoryMap>(
     file: &File,
+    header_size: u64,
     offset: Option<NonZeroU64>,
     size: Option<NonZeroU64>,
 ) -> Result<Option<M>> {
@@ -318,16 +314,48 @@ fn map_hash_table<M: MemoryMap>(
         return Ok(None);
     };
 
-    if offset.get() <= std::mem::size_of::<JournalHeader>() as u64 {
+    let object_header_size = std::mem::size_of::<ObjectHeader>() as u64;
+    if offset.get() < header_size + object_header_size {
         return Err(JournalError::InvalidObjectLocation);
     }
-    if size.get() <= std::mem::size_of::<ObjectHeader>() as u64 {
+    if size.get() <= object_header_size {
         return Err(JournalError::InvalidObjectLocation);
     }
 
-    let offset = offset.get() - std::mem::size_of::<ObjectHeader>() as u64;
-    let size = std::mem::size_of::<ObjectHeader>() as u64 + size.get();
+    let offset = offset.get() - object_header_size;
+    let size = object_header_size + size.get();
     M::create(file, offset, size).map(Some)
+}
+
+fn sanitize_header_for_size(mut header: JournalHeader) -> JournalHeader {
+    if header.header_size < 216 {
+        header.n_data = 0;
+    }
+    if header.header_size < 224 {
+        header.n_fields = 0;
+    }
+    if header.header_size < 232 {
+        header.n_tags = 0;
+    }
+    if header.header_size < 240 {
+        header.n_entry_arrays = 0;
+    }
+    if header.header_size < 248 {
+        header.data_hash_chain_depth = 0;
+    }
+    if header.header_size < 256 {
+        header.field_hash_chain_depth = 0;
+    }
+    if header.header_size < 260 {
+        header.tail_entry_array_offset = 0;
+    }
+    if header.header_size < 264 {
+        header.tail_entry_array_n_entries = 0;
+    }
+    if header.header_size < 272 {
+        header.tail_entry_offset = 0;
+    }
+    header
 }
 
 impl<M: MemoryMap> JournalFile<M> {
@@ -374,15 +402,19 @@ impl<M: MemoryMap> JournalFile<M> {
         if header.signature != *b"LPKSHHRH" {
             return Err(JournalError::InvalidMagicNumber);
         }
+        let sanitized_header =
+            (header.header_size < header_size).then(|| sanitize_header_for_size(*header));
 
         // Initialize the hash table maps if they exist
         let data_hash_table_map = map_hash_table(
             &fd,
+            header.header_size,
             header.data_hash_table_offset,
             header.data_hash_table_size,
         )?;
         let field_hash_table_map = map_hash_table(
             &fd,
+            header.header_size,
             header.field_hash_table_offset,
             header.field_hash_table_size,
         )?;
@@ -394,6 +426,7 @@ impl<M: MemoryMap> JournalFile<M> {
             file: file.clone(),
             writer_lock: None,
             header_map,
+            sanitized_header,
             data_hash_table_map,
             field_hash_table_map,
             window_manager,
@@ -449,7 +482,11 @@ impl<M: MemoryMap> JournalFile<M> {
     }
 
     pub fn journal_header_ref(&self) -> &JournalHeader {
-        JournalHeader::ref_from_prefix(&self.header_map).unwrap().0
+        if let Some(header) = &self.sanitized_header {
+            header
+        } else {
+            JournalHeader::ref_from_prefix(&self.header_map).unwrap().0
+        }
     }
 
     pub fn data_hash_table_map(&self) -> Option<&M> {
@@ -819,10 +856,11 @@ impl<M: MemoryMapMut> JournalFile<M> {
             options.field_hash_table_buckets * std::mem::size_of::<HashItem>();
 
         // Calculate hash table offsets
-        let data_hash_table_offset = std::mem::size_of::<JournalHeader>() as u64
+        // systemd creates FIELD_HASH_TABLE first, then DATA_HASH_TABLE
+        let field_hash_table_offset = std::mem::size_of::<JournalHeader>() as u64
             + std::mem::size_of::<ObjectHeader>() as u64;
-        let field_hash_table_offset = data_hash_table_offset
-            + data_hash_table_size as u64
+        let data_hash_table_offset = field_hash_table_offset
+            + field_hash_table_size as u64
             + std::mem::size_of::<ObjectHeader>() as u64;
 
         // Create header with options configuration
@@ -830,6 +868,8 @@ impl<M: MemoryMapMut> JournalFile<M> {
         header.signature = *b"LPKSHHRH";
 
         // Set flags based on options configuration
+        // HEADER_COMPATIBLE_TAIL_ENTRY_BOOT_ID is set for new files (v260+)
+        header.compatible_flags = HeaderCompatibleFlags::TailEntryBootId as u32;
         if options.enable_keyed_hash {
             header.incompatible_flags |= HeaderIncompatibleFlags::KeyedHash as u32;
         }
@@ -842,27 +882,30 @@ impl<M: MemoryMapMut> JournalFile<M> {
         header.field_hash_table_size = NonZeroU64::new(field_hash_table_size as u64);
 
         // Set other header fields
+        // tail_object_offset points to the last object written (data hash table)
         header.tail_object_offset =
-            NonZeroU64::new(data_hash_table_offset + data_hash_table_size as u64);
+            NonZeroU64::new(data_hash_table_offset - std::mem::size_of::<ObjectHeader>() as u64);
         header.header_size = std::mem::size_of::<JournalHeader>() as u64;
         header.n_objects = 2;
-        header.arena_size =
-            field_hash_table_offset + field_hash_table_size as u64 - header.header_size;
+        let file_size = 8 * 1024 * 1024;
+        fd.set_len(file_size)?;
+        header.arena_size = file_size - header.header_size;
 
         // Set IDs from options
         header.machine_id = *options.machine_id.as_bytes();
-        header.tail_entry_boot_id = *options.boot_id.as_bytes();
         header.file_id = *options.file_id.as_bytes();
         header.seqnum_id = *options.seqnum_id.as_bytes();
 
         // Create memory maps for hash tables
         let data_hash_table_map = map_hash_table(
             &fd,
+            header.header_size,
             header.data_hash_table_offset,
             header.data_hash_table_size,
         )?;
         let field_hash_table_map = map_hash_table(
             &fd,
+            header.header_size,
             header.field_hash_table_offset,
             header.field_hash_table_size,
         )?;
@@ -884,6 +927,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
             file: file.clone(),
             writer_lock: Some(writer_lock),
             header_map,
+            sanitized_header: None,
             data_hash_table_map,
             field_hash_table_map,
             window_manager,
@@ -1307,6 +1351,27 @@ mod tests {
 
     fn test_uuid(seed: u8) -> uuid::Uuid {
         uuid::Uuid::from_bytes([seed; 16])
+    }
+
+    #[test]
+    fn sanitize_header_for_historical_size_clears_absent_v260_tail_fields() {
+        let header = JournalHeader {
+            header_size: 256,
+            data_hash_chain_depth: 7,
+            field_hash_chain_depth: 8,
+            tail_entry_array_offset: 1,
+            tail_entry_array_n_entries: 2,
+            tail_entry_offset: 3,
+            ..JournalHeader::default()
+        };
+
+        let sanitized = sanitize_header_for_size(header);
+
+        assert_eq!(sanitized.data_hash_chain_depth, 7);
+        assert_eq!(sanitized.field_hash_chain_depth, 8);
+        assert_eq!(sanitized.tail_entry_array_offset, 0);
+        assert_eq!(sanitized.tail_entry_array_n_entries, 0);
+        assert_eq!(sanitized.tail_entry_offset, 0);
     }
 
     #[test]

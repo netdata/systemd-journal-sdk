@@ -39,6 +39,12 @@ cumulative fanout pressure. They are not asserting a single systemd threshold;
 they are shared pressure fixtures for later byte-compatibility and performance
 work.
 
+Records tagged with `hash-collision-chain` contain full DATA payloads that
+collide into the same systemd v260 keyed DATA hash bucket under the deterministic
+file ID. The byte-identity harness requires the resulting
+`data_hash_chain_depth` to match the systemd reference value, so this corpus
+exercises `next_hash_offset` traversal instead of only the no-collision path.
+
 ## Generate
 
 Regenerate committed corpus and manifest files:

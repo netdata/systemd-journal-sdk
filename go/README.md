@@ -10,7 +10,8 @@ Current writer scope:
 - optional zstd-compressed DATA object writing with `journal.Options`;
 - keyed hash tables using the journal file ID;
 - byte-safe field values through `journal.Field{Name, Value []byte}`;
-- create, close, and reopen/append for files created by this writer;
+- create, online close, explicit offline close, archive close, and
+  reopen/append for files created by this writer;
 - data and field de-duplication;
 - global entry arrays and per-DATA entry links;
 - pure cross-SDK cooperative lockfile with stale-owner detection, plus a
@@ -78,6 +79,11 @@ return w.Append([]journal.Field{
     journal.StringField("SYSLOG_IDENTIFIER", "netdata-plugin"),
 }, journal.EntryOptions{})
 ```
+
+`Close()` matches systemd's plain `journal_file_close()` behavior and leaves the
+file in `ONLINE` state. Use `CloseOffline()` when a single file should be
+finalized as `OFFLINE`; directory rotation uses `ArchiveTo()` internally to
+produce `ARCHIVED` files.
 
 Binary-safe values:
 

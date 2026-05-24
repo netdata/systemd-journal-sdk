@@ -100,6 +100,11 @@ writer.append([
 writer.close();
 ```
 
+`writer.close()` matches systemd's plain close path and leaves the file in
+`ONLINE` state. Use `writer.closeOffline()` to finalize a single file as
+`OFFLINE`; directory rotation uses `writer.archiveTo()` to produce `ARCHIVED`
+files.
+
 ## Directory Writer Usage
 
 ```javascript
@@ -161,7 +166,9 @@ node cmd/journalctl/index.js --file ./sample.journal PRIORITY=3 PRIORITY=4 + MES
 - `createJournal(path, options)` - Create new journal file
 - `writer.append(fields, options)` - Append entry
 - `writer.sync()` - Sync to disk
-- `writer.close()` - Close and finalize
+- `writer.close()` - Close while preserving `ONLINE` state
+- `writer.closeOffline()` - Close with `OFFLINE` state
+- `writer.archiveTo(path)` - Rename and close with `ARCHIVED` state
 - `new Log(directory, options)` - Create a high-level directory writer
 - `log.append(fields, options)` - Append through the directory writer
 - `log.sync()` - Sync the active journal file

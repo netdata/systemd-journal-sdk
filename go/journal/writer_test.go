@@ -58,8 +58,8 @@ func TestCreateAppendAndReopenLayout(t *testing.T) {
 	}
 
 	snapshot := readJournalSnapshot(t, path)
-	if snapshot.header.state != stateOffline {
-		t.Fatalf("state = %d, want offline", snapshot.header.state)
+	if snapshot.header.state != stateOnline {
+		t.Fatalf("state = %d, want online", snapshot.header.state)
 	}
 	if snapshot.header.nEntries != 2 {
 		t.Fatalf("nEntries = %d, want 2", snapshot.header.nEntries)
@@ -468,7 +468,21 @@ func readJournalSnapshot(t *testing.T, path string) journalSnapshot {
 		dataByPayload:  make(map[string]dataSnapshot),
 		fieldByPayload: make(map[string]fieldSnapshot),
 	}
-	for offset := uint64(headerSize); offset < uint64(len(content)); {
+	endOffset := uint64(len(content))
+	if header.tailObjectOffset != 0 {
+		if header.tailObjectOffset+objectHeaderSize > uint64(len(content)) {
+			t.Fatalf("tail object offset %d exceeds file size %d", header.tailObjectOffset, len(content))
+		}
+		tail, err := parseObjectHeader(content[header.tailObjectOffset : header.tailObjectOffset+objectHeaderSize])
+		if err != nil {
+			t.Fatalf("parseObjectHeader(tail %d) error = %v", header.tailObjectOffset, err)
+		}
+		if tail.size < objectHeaderSize {
+			t.Fatalf("tail object at offset %d has invalid size %d", header.tailObjectOffset, tail.size)
+		}
+		endOffset = align8(header.tailObjectOffset + tail.size)
+	}
+	for offset := header.headerSize; offset < endOffset; {
 		if offset+objectHeaderSize > uint64(len(content)) {
 			t.Fatalf("short object header at offset %d", offset)
 		}
