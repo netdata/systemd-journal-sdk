@@ -4,13 +4,13 @@
 
 Status: open
 
-Sub-state: pending after functional correctness, deterministic ingesters, and byte-level writer compatibility evidence are complete.
+Sub-state: intentionally last after remaining feature-completeness SOWs.
 
 ## Requirements
 
 ### Purpose
 
-Benchmark, profile, and optimize every SDK implementation after correctness is established, using the deterministic ingestion dataset and systemd reference writer as the baseline.
+Benchmark, profile, and optimize every SDK implementation after correctness and remaining feature-completeness work are established, using the deterministic ingestion dataset and systemd reference writer as the baseline.
 
 ### User Request
 
@@ -21,13 +21,14 @@ The user requested performance validation because the journal format is used in 
 Facts:
 
 - Benchmarking and optimization must happen after correctness, interoperability, and deterministic writer-equivalence evidence are proven.
+- The user decided on 2026-05-24 to push this SOW to the end, after remaining feature-completeness SOWs, because benchmarking is expected to reveal discrepancies that require profiling, allocation reduction, buffer reuse, and refactoring.
 - Optimizations must be measurement-driven and must not weaken conformance.
 - The user knows the Rust implementation can commit around 30k rows per second on one core for about 32 mixed-cardinality fields, and this is useful context but not a formal pass/fail threshold until measured on the project benchmark environment.
 
 Inferences:
 
-- SOW-0014 should provide the accepted performance corpus.
-- SOW-0015 should provide the systemd and SDK ingesters used by benchmarks.
+- SOW-0014 provides the accepted performance corpus.
+- SOW-0015 provides the systemd and SDK ingesters used by benchmarks.
 - systemd should be the reference baseline, with Rust also tracked as a known high-performance implementation.
 
 Unknowns:
@@ -55,13 +56,15 @@ Sources checked:
 
 Current state:
 
-- Blocked until SOW-0008, SOW-0014, SOW-0015, and SOW-0016 provide correctness, deterministic ingestion, and byte-level compatibility evidence.
+- Correctness, deterministic ingestion, and byte-level compatibility evidence are complete through SOW-0016.
+- User decision on 2026-05-24 keeps this SOW blocked until SOW-0017, SOW-0018, SOW-0019, and SOW-0020 are complete.
 
 Risks:
 
 - Premature optimization can introduce compatibility regressions.
 - Unrepresentative fixtures can create misleading performance claims.
 - Comparing writers without controlling sync policy, compression, CPU governor, and filesystem can produce invalid conclusions.
+- Performance refactors made before xz/lz4, compact journal, FSS, and directory traversal parity work may be invalidated by those later feature changes.
 
 ## Pre-Implementation Gate
 
@@ -69,13 +72,14 @@ Status: blocked
 
 Problem / root-cause model:
 
-- Optimization before correctness would risk hard-to-diagnose compatibility bugs. Benchmarks also need deterministic datasets and ingesters so performance results measure writer implementations instead of generator differences.
+- Optimization before feature completeness would risk hard-to-diagnose compatibility bugs and churn. Benchmarks also need deterministic datasets and ingesters so performance results measure writer implementations instead of generator differences. Because performance work is expected to require profiling, allocation cleanup, buffer reuse, and refactoring, it should run once against the final supported feature surface rather than before remaining file-format features land.
 
 Evidence reviewed:
 
 - Product scope spec.
 - Pending implementation and interoperability SOWs.
 - User performance requirement from 2026-05-24.
+- User sequencing decision from 2026-05-24: push SOW-0009 to the end instead of running a baseline-only benchmark now.
 
 Affected contracts and surfaces:
 
@@ -102,7 +106,7 @@ Sensitive data handling plan:
 
 Implementation plan:
 
-1. Wait for the deterministic dataset, ingesters, and byte-compatibility gates.
+1. Wait for SOW-0017, SOW-0018, SOW-0019, and SOW-0020 to complete.
 2. Define benchmark environment controls, commands, sync policy, compression modes, and reporting format.
 3. Run baseline measurements for systemd, Rust, Go, Node.js, and Python.
 4. Profile bottlenecks in implementations that lag the baseline or show pathological allocation/CPU behavior.
@@ -123,7 +127,7 @@ Artifact impact plan:
 - Specs: update performance guarantees only if they become product promises.
 - End-user/operator docs: publish benchmark methodology/results if this repository has user-facing benchmark docs at that point.
 - Runtime project skills: update if benchmark workflow becomes durable.
-- SOW lifecycle: blocked until correctness and deterministic-ingestion phases complete.
+- SOW lifecycle: blocked until SOW-0017, SOW-0018, SOW-0019, and SOW-0020 complete.
 - SOW-status.md: update when this SOW moves to current or closes.
 
 Open decisions:
@@ -133,14 +137,21 @@ Open decisions:
 ## Implications And Decisions
 
 1. Benchmark and optimization boundary
-   - Current state: blocked on SOW-0008, SOW-0014, SOW-0015, SOW-0016, and all correctness/interoperability evidence from SOW-0003 through SOW-0008.
+   - Current state: correctness, deterministic ingestion, and byte-level writer identity are complete through SOW-0016.
    - Required before activation: select target environment, sync policy, compression modes, filesystem, CPU governor, commands, and reporting format.
    - Implication: optimization work must be driven by measured bottlenecks after correctness is proven.
    - Risk: premature optimization can invalidate conformance, and unrepresentative fixtures can create misleading performance claims.
 
+2. Benchmark sequencing after remaining feature work
+   - Decision: push this SOW to the end, after SOW-0017, SOW-0018, SOW-0019, and SOW-0020.
+   - Evidence: SOW-0017 adds xz/lz4 compression, SOW-0018 changes compact journal layout, SOW-0019 adds FSS cryptographic tag/verification behavior, and SOW-0020 changes directory traversal and journalctl directory behavior.
+   - Reason: performance findings are expected to require profiling, allocation reduction, buffer reuse, and refactoring; doing that before remaining feature work risks rework and invalidated results.
+   - Implication: no baseline-only benchmark phase is planned now. SOW-0009 is the final broad benchmark/profile/optimize pass over the completed feature surface.
+   - Risk: serious performance problems may remain undiscovered until later, but the user explicitly prefers avoiding premature performance refactors that later feature work could invalidate.
+
 ## Plan
 
-1. Wait for correctness, interoperability, deterministic dataset, deterministic ingester, and byte-compatibility SOWs to complete.
+1. Wait for xz/lz4 compression, compact journal support, FSS, and directory traversal parity SOWs to complete.
 2. Select benchmark environment controls, commands, and reporting format before activation.
 3. Run systemd, Rust, Go, Node.js, and Python baselines on the same SOW-0014 performance corpus.
 4. Profile and optimize measured bottlenecks.
