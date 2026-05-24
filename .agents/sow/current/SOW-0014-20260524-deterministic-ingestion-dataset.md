@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: open
+Status: in-progress
 
-Sub-state: pending dataset design before deterministic ingester work.
+Sub-state: active dataset design before deterministic ingester work.
 
 ## Requirements
 
@@ -50,7 +50,7 @@ Sources checked:
 
 - `.agents/sow/specs/product-scope.md`
 - `.agents/sow/current/SOW-0008-20260523-interoperability-and-full-writer-features.md`
-- `systemd/systemd @ cf3156842209f8318753861a9dd2d821674f3f59`
+- `systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced`
 - `src/libsystemd/sd-journal/journal-file.c:1710`
 - `src/libsystemd/sd-journal/journal-file.c:1844`
 
@@ -128,7 +128,7 @@ Artifact impact plan:
 
 Open-source reference evidence:
 
-- `systemd/systemd @ cf3156842209f8318753861a9dd2d821674f3f59`
+- `systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced`
 - `src/libsystemd/sd-journal/journal-file.c:1710`
 - `src/libsystemd/sd-journal/journal-file.c:1844`
 
@@ -177,11 +177,33 @@ Failure handling:
 
 ## Execution Log
 
-Pending activation.
+### 2026-05-24
+
+- Activated after SOW-0008 closeout commit `dc4f892`.
+- Verified the baseline tag without changing the external checkout: `git ls-remote https://github.com/systemd/systemd.git 'refs/tags/v260.1*'` reports `refs/tags/v260.1^{}` as `c0a5a2516d28601fb3afc1a77d7b42fcfe38fced`.
+- Verified source-reference lines from GitHub raw content for the baseline commit: `journal_field_valid()` at `src/libsystemd/sd-journal/journal-file.c:1710` and `journal_file_append_data()` at `src/libsystemd/sd-journal/journal-file.c:1844`.
 
 ## Validation
 
-Pending activation and implementation.
+Activation evidence:
+
+- Passed: SOW-0008 closeout commit `dc4f892` exists before activation.
+- Passed: baseline systemd tag evidence confirmed with read-only `git ls-remote`.
+- Pending: dataset implementation, review, deterministic regeneration checks, and final SOW audit.
+
+Sensitive data gate:
+
+- Activation edits introduce only synthetic dataset planning text and upstream source references. No secrets, credentials, bearer tokens, SNMP communities, customer names, personal data, non-private customer-identifying IPs, private endpoints, or proprietary incident details are present.
+
+Artifact maintenance gate:
+
+- AGENTS.md: no update needed for activation.
+- Runtime project skills: no update needed for activation.
+- Specs: no shipped product behavior changed during activation.
+- End-user/operator docs: no update needed for activation.
+- End-user/operator skills: no output/reference skill is produced during activation.
+- SOW lifecycle: moved from `pending/` to `current/` with `Status: in-progress`.
+- SOW-status.md: updated for SOW-0014 activation.
 
 ## Outcome
 

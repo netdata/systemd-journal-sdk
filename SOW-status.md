@@ -2,12 +2,11 @@
 
 ## Current
 
-- None.
+- `SOW-0014-20260524-deterministic-ingestion-dataset.md` - in-progress. Define deterministic accepted, rejected, and performance ingestion corpora.
 
 ## Pending
 
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - open. Benchmark, profile, and optimize after correctness evidence is complete.
-- `SOW-0014-20260524-deterministic-ingestion-dataset.md` - open. Define deterministic accepted, rejected, and performance ingestion corpora.
 - `SOW-0015-20260524-deterministic-ingesters.md` - open. Build systemd C and SDK ingesters for the frozen dataset.
 - `SOW-0016-20260524-byte-identical-writer-compatibility.md` - open. Require byte-for-byte deterministic writer compatibility against systemd for the accepted corpus.
 - `SOW-0017-20260524-xz-lz4-data-writing.md` - open. Add xz/lz4 DATA compression reader/writer support after dependency review.
