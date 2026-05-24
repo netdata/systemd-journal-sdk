@@ -110,8 +110,8 @@ For each writer language, the matrix proves all of the following:
   traverse every directory layout; that remains tracked separately.
 
 - **Compression, compact journal, or FSS**: these are out of scope for the live
-  matrix. Binary stress fixtures are covered by `run_binary_matrix.py`; zstd
-  DATA compression is covered by `run_compression_matrix.py`.
+  matrix. Binary stress fixtures are covered by `run_binary_matrix.py`; DATA
+  object compression is covered by `run_compression_matrix.py`.
 
 - **Multi-writer scenarios**: the live matrix tests one writer at a time with
   multiple concurrent readers, not multiple concurrent writers.
@@ -171,15 +171,15 @@ For each generated writer file, the binary matrix validates:
   payloads;
 - stock libsystemd `sd_journal_get_data()` returns exact bytes for every binary
   field;
-- Go, Rust, Node.js, and Python journalctl rewrites return matching JSON and
-  export output;
+- selected repository journalctl rewrites return matching JSON and export
+  output;
 - `BINARY_MATCH=abc\x07def` works as a stock file-backed match through argv.
 
 ## Compression Matrix (`run_compression_matrix.py`)
 
-Generates a zstd-compressed DATA fixture journal with every writer, then
-validates each generated file with stock journalctl, stock libsystemd, and every
-repository journalctl implementation.
+Generates DATA-compressed fixture journals, then validates each generated file
+with stock journalctl, stock libsystemd, and selected repository journalctl
+implementations.
 
 ```bash
 python3 tests/interoperability/run_compression_matrix.py
@@ -190,13 +190,17 @@ Useful options:
 ```bash
 python3 tests/interoperability/run_compression_matrix.py --writers go python
 python3 tests/interoperability/run_compression_matrix.py --readers stock rust python
+python3 tests/interoperability/run_compression_matrix.py --writers go rust --readers stock go rust --compression xz lz4
 ```
 
-Each writer fixture enables zstd DATA compression with a low threshold and
+By default the runner exercises zstd across all writers/readers. Use
+`--compression xz lz4` with writers/readers that support those algorithms.
+
+Each writer fixture enables DATA compression with a low threshold and
 includes:
 
-- `TEST_ID=zstd-interoperability`
-- `MESSAGE=zstd interoperability`
+- `TEST_ID=<compression>-interoperability`
+- `MESSAGE=<compression> interoperability`
 - `PRIORITY=6`
 - `LIVE_SEQ=000000`
 - `COMPRESSED_PAYLOAD` as 256 printable bytes
@@ -204,8 +208,8 @@ includes:
 
 For each generated writer file, the compression matrix validates:
 
-- journal header has `HEADER_INCOMPATIBLE_COMPRESSED_ZSTD`;
-- at least one DATA object has `OBJECT_COMPRESSED_ZSTD`;
+- journal header has the expected compression incompatible flag;
+- at least one DATA object has the expected compression object flag;
 - stock `journalctl --verify --file` succeeds;
 - stock journalctl and stock libsystemd read decompressed field values;
 - Go, Rust, Node.js, and Python journalctl rewrites return matching JSON and
@@ -243,7 +247,7 @@ completion unless `--keep-files` is passed.
 |-----|--------|----------|-----------|
 | Deterministic uncompressed byte identity | Complete for accepted corpus | `run_byte_identity.py` compares systemd, Rust, Go, Node.js, and Python byte-for-byte | Closed in SOW-0016 |
 | zstd compressed DATA object writing | Complete | `run_compression_matrix.py` validates zstd header/object flags plus stock/repository reads | Closed in SOW-0008 |
-| xz/lz4 writer parity | Not implemented | SOW-0008 only implemented zstd DATA writing; Go, Node.js, and Python readers still reject xz/lz4 DATA objects | Tracked by SOW-0017 |
+| xz/lz4 writer parity | Partial | Rust and Go write and read xz/lz4 DATA objects; Node.js and Python still reject xz/lz4 DATA objects | Tracked by SOW-0017 |
 | Compact journal format | Not implemented | Writers create regular non-compact journals | Tracked by SOW-0018 |
 | Forward Secure Sealing / verification | Not implemented | Verification/FSS tests skipped in earlier SOWs | Tracked by SOW-0019 |
 | Cross-language binary stress | Complete | `run_binary_matrix.py` passes 52/52 across all writer/reader pairs plus stock libsystemd | Closed |

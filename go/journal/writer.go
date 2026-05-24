@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/pierrec/lz4/v4"
+	"github.com/ulikunitz/xz"
 )
 
 // UUID is a 128-bit identifier stored in journal files.
@@ -82,6 +84,9 @@ type Writer struct {
 // Create creates or truncates a journal file after acquiring the writer lock.
 func Create(path string, opts Options) (*Writer, error) {
 	opts = normalizeOptions(opts)
+	if !validCompression(opts.Compression) {
+		return nil, fmt.Errorf("unsupported journal compression: %d", opts.Compression)
+	}
 
 	lock, err := acquireWriterLock(path)
 	if err != nil {
@@ -144,7 +149,7 @@ func Open(path string) (*Writer, error) {
 		_ = lock.release()
 		return nil, err
 	}
-	const supportedWriterIncompatible = incompatibleKeyedHash | incompatibleCompressedZSTD
+	const supportedWriterIncompatible = incompatibleKeyedHash | incompatibleCompressedZSTD | incompatibleCompressedXZ | incompatibleCompressedLZ4
 	if header.incompatibleFlags&^supportedWriterIncompatible != 0 {
 		_ = unlockAndClose(f)
 		_ = lock.release()
@@ -166,6 +171,10 @@ func Open(path string) (*Writer, error) {
 	compression := CompressionNone
 	if header.incompatibleFlags&incompatibleCompressedZSTD != 0 {
 		compression = CompressionZSTD
+	} else if header.incompatibleFlags&incompatibleCompressedXZ != 0 {
+		compression = CompressionXZ
+	} else if header.incompatibleFlags&incompatibleCompressedLZ4 != 0 {
+		compression = CompressionLZ4
 	}
 	header.state = stateOnline
 	now := time.Now()
@@ -398,6 +407,15 @@ func normalizeOptions(opts Options) Options {
 	return opts
 }
 
+func validCompression(compression int) bool {
+	switch compression {
+	case CompressionNone, CompressionZSTD, CompressionXZ, CompressionLZ4:
+		return true
+	default:
+		return false
+	}
+}
+
 // String returns the canonical 32-character lowercase hexadecimal UUID form
 // used by journal paths and headers.
 func (id UUID) String() string {
@@ -484,6 +502,10 @@ func (w *Writer) initialize(opts Options) error {
 	incFlags := uint32(incompatibleKeyedHash)
 	if opts.Compression == CompressionZSTD {
 		incFlags |= incompatibleCompressedZSTD
+	} else if opts.Compression == CompressionXZ {
+		incFlags |= incompatibleCompressedXZ
+	} else if opts.Compression == CompressionLZ4 {
+		incFlags |= incompatibleCompressedLZ4
 	}
 
 	w.header = journalHeader{
@@ -654,6 +676,18 @@ func (w *Writer) addData(payload []byte) (uint64, uint64, error) {
 		if compressed, err := zstdCompress(payload); err == nil && len(compressed) < len(payload) {
 			objectPayload = compressed
 			compressionFlag = objectCompressedZSTD
+		}
+	}
+	if w.compression == CompressionXZ && len(payload) >= w.compressThreshold && len(payload) >= 80 {
+		if compressed, err := xzCompress(payload); err == nil && len(compressed) < len(payload) {
+			objectPayload = compressed
+			compressionFlag = objectCompressedXZ
+		}
+	}
+	if w.compression == CompressionLZ4 && len(payload) >= w.compressThreshold && len(payload) >= 9 {
+		if compressed := lz4Compress(payload); len(compressed) < len(payload) {
+			objectPayload = compressed
+			compressionFlag = objectCompressedLZ4
 		}
 	}
 	if objectPayload == nil {
@@ -838,8 +872,18 @@ func (w *Writer) readDataObject(offset uint64) (dataHeader, []byte, error) {
 			return dataHeader{}, nil, err
 		}
 		payload = decoded
-	} else if header.object.flag&(objectCompressedXZ|objectCompressedLZ4) != 0 {
-		return dataHeader{}, nil, errUnsupportedJournal
+	} else if header.object.flag&objectCompressedXZ != 0 {
+		decoded, err := xzDecompress(payload)
+		if err != nil {
+			return dataHeader{}, nil, err
+		}
+		payload = decoded
+	} else if header.object.flag&objectCompressedLZ4 != 0 {
+		decoded, err := lz4Decompress(payload)
+		if err != nil {
+			return dataHeader{}, nil, err
+		}
+		payload = decoded
 	}
 	return header, payload, nil
 }
@@ -1107,4 +1151,74 @@ func zstdDecompress(payload []byte) ([]byte, error) {
 	}
 	defer decoder.Close()
 	return decoder.DecodeAll(payload, nil)
+}
+
+func xzCompress(payload []byte) ([]byte, error) {
+	cfg := xz.WriterConfig{NoCheckSum: true}
+	var buf bytes.Buffer
+	w, err := cfg.NewWriter(&buf)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := w.Write(payload); err != nil {
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func xzDecompress(payload []byte) ([]byte, error) {
+	r, err := xz.NewReader(bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	return readAllLimited(r, maxUncompressedDataObjectSize)
+}
+
+func lz4Compress(payload []byte) []byte {
+	maxCompressedSize := lz4.CompressBlockBound(len(payload))
+	compressed := make([]byte, maxCompressedSize)
+	n, err := lz4.CompressBlock(payload, compressed, nil)
+	if err != nil || n == 0 {
+		return payload
+	}
+	compressed = compressed[:n]
+	out := make([]byte, 8+len(compressed))
+	binary.LittleEndian.PutUint64(out[:8], uint64(len(payload)))
+	copy(out[8:], compressed)
+	return out
+}
+
+func lz4Decompress(payload []byte) ([]byte, error) {
+	if len(payload) < 8 {
+		return nil, errors.New("lz4 compressed payload too short")
+	}
+	uncompressedSize := binary.LittleEndian.Uint64(payload[:8])
+	if uncompressedSize > maxUncompressedDataObjectSize {
+		return nil, errors.New("lz4 decompressed payload too large")
+	}
+	compressedData := payload[8:]
+	decoded := make([]byte, uncompressedSize)
+	n, err := lz4.UncompressBlock(compressedData, decoded)
+	if err != nil {
+		return nil, err
+	}
+	if uint64(n) != uncompressedSize {
+		return nil, errors.New("lz4 decompressed size mismatch")
+	}
+	return decoded, nil
+}
+
+func readAllLimited(r io.Reader, maxBytes int) ([]byte, error) {
+	limited := io.LimitReader(r, int64(maxBytes)+1)
+	decoded, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if len(decoded) > maxBytes {
+		return nil, errors.New("decompressed payload too large")
+	}
+	return decoded, nil
 }

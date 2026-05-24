@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Cross-language zstd-compressed DATA interoperability matrix.
+"""Cross-language zstd/xz/lz4-compressed DATA interoperability matrix.
 
-Generates journal files with zstd DATA-object compression enabled from each
+Generates journal files with DATA-object compression enabled from each
 writer language, verifies that at least one DATA object is actually compressed,
 then validates stock systemd and repository readers against each generated file.
 Runtime artifacts stay under .local/interoperability/.
 
 Compression fixture per writer:
-  TEST_ID=zstd-interoperability
-  MESSAGE=zstd interoperability
+  TEST_ID={compression}-interoperability
+  MESSAGE={compression} interoperability
   PRIORITY=6
   LIVE_SEQ=000000
   COMPRESSED_PAYLOAD=<256 printable bytes>
@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -38,13 +39,20 @@ HEADER_MIN_SIZE = 208
 HEADER_SIZE_OFFSET = 88
 HEADER_SIZE_FIELD_SIZE = 8
 OBJECT_TYPE_DATA = 1
+OBJECT_COMPRESSED_XZ = 1 << 0
+OBJECT_COMPRESSED_LZ4 = 1 << 1
 OBJECT_COMPRESSED_ZSTD = 1 << 2
+INCOMPATIBLE_COMPRESSED_XZ = 1 << 0
+INCOMPATIBLE_COMPRESSED_LZ4 = 1 << 1
 INCOMPATIBLE_COMPRESSED_ZSTD = 1 << 3
 
 COMPRESSED_PAYLOAD = bytes((i % 26) + 0x41 for i in range(256))
 COMPRESSED_MATCH = COMPRESSED_PAYLOAD[:32]
 COMPRESSED_PAYLOAD_TEXT = COMPRESSED_PAYLOAD.decode("ascii")
 COMPRESSED_MATCH_TEXT = COMPRESSED_MATCH.decode("ascii")
+
+COMPRESSION_FAMILIES = ["zstd", "xz", "lz4"]
+DEFAULT_COMPRESSION_FAMILIES = ["zstd"]
 
 
 @dataclass(frozen=True)
@@ -74,10 +82,18 @@ READERS = {
 }
 
 
-def run(cmd: list[str], *, cwd: Path = REPO_ROOT, timeout: int = 120, binary: bool = False) -> subprocess.CompletedProcess:
+def run(
+    cmd: list[str],
+    *,
+    cwd: Path = REPO_ROOT,
+    timeout: int = 120,
+    binary: bool = False,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         cmd,
         cwd=str(cwd),
+        env=env,
         text=None if binary else True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -100,31 +116,60 @@ def systemd_version() -> str:
     return "unavailable"
 
 
+def build_env() -> dict[str, str]:
+    env = os.environ.copy()
+    local = REPO_ROOT / ".local"
+    env.setdefault("GOMODCACHE", str(local / "go" / "pkg" / "mod"))
+    env.setdefault("GOCACHE", str(local / "go-build"))
+    env.setdefault("GOPATH", str(local / "go"))
+    env.setdefault("CARGO_HOME", str(local / "cargo-home"))
+    env.setdefault("CARGO_TARGET_DIR", str(local / "cargo-target"))
+    return env
+
+
 def build_tools() -> dict[str, str]:
     BIN_DIR.mkdir(parents=True, exist_ok=True)
+    env = build_env()
 
     go_livewriter = BIN_DIR / "go-livewriter"
     go_journalctl = BIN_DIR / "go-journalctl"
     require_ok(
-        run(["go", "build", "-o", str(go_livewriter), "./internal/testcmd/livewriter"], cwd=REPO_ROOT / "go"),
+        run(
+            ["go", "build", "-o", str(go_livewriter), "./internal/testcmd/livewriter"],
+            cwd=REPO_ROOT / "go",
+            env=env,
+        ),
         "build go livewriter",
     )
     require_ok(
-        run(["go", "build", "-o", str(go_journalctl), "./cmd/journalctl"], cwd=REPO_ROOT / "go"),
+        run(
+            ["go", "build", "-o", str(go_journalctl), "./cmd/journalctl"],
+            cwd=REPO_ROOT / "go",
+            env=env,
+        ),
         "build go journalctl",
     )
     require_ok(
-        run(["cargo", "build", "--manifest-path", str(REPO_ROOT / "rust/Cargo.toml"), "-p", "livewriter"], timeout=180),
+        run(
+            ["cargo", "build", "--manifest-path", str(REPO_ROOT / "rust/Cargo.toml"), "-p", "livewriter"],
+            timeout=180,
+            env=env,
+        ),
         "build rust livewriter",
     )
     require_ok(
-        run(["cargo", "build", "--manifest-path", str(REPO_ROOT / "rust/Cargo.toml"), "-p", "journalctl"], timeout=180),
+        run(
+            ["cargo", "build", "--manifest-path", str(REPO_ROOT / "rust/Cargo.toml"), "-p", "journalctl"],
+            timeout=180,
+            env=env,
+        ),
         "build rust journalctl",
     )
 
+    cargo_target = Path(env["CARGO_TARGET_DIR"])
     for src, dst in [
-        (REPO_ROOT / "rust/target/debug/livewriter", BIN_DIR / "rust-livewriter"),
-        (REPO_ROOT / "rust/target/debug/journalctl", BIN_DIR / "rust-journalctl"),
+        (cargo_target / "debug" / "livewriter", BIN_DIR / "rust-livewriter"),
+        (cargo_target / "debug" / "journalctl", BIN_DIR / "rust-journalctl"),
     ]:
         if src.exists():
             shutil.copy2(src, dst)
@@ -153,14 +198,14 @@ def build_libsystemd_reader() -> str:
     return str(dst)
 
 
-def writer_command(writer: WriterSpec, tools: dict[str, str], target: Path, ready: Path, entries: int) -> list[str]:
+def writer_command(writer: WriterSpec, tools: dict[str, str], target: Path, ready: Path, entries: int, compression: str) -> list[str]:
     common = [
         "--ready-file", str(ready),
         "--entries", str(entries),
         "--delay", "1ms",
-        "--compression", "zstd",
+        "--compression", compression,
         "--compress-threshold", "16",
-        "--zstd-fixture",
+        f"--{compression}-fixture",
     ]
     if writer.name == "go":
         return [tools["go_livewriter"], "--path", str(target), *common]
@@ -173,19 +218,19 @@ def writer_command(writer: WriterSpec, tools: dict[str, str], target: Path, read
     raise ValueError(writer.name)
 
 
-def generate_journal(writer: WriterSpec, tools: dict[str, str], entries: int) -> dict[str, str]:
-    writer_root = FIXTURE_DIR / writer.name
+def generate_journal(writer: WriterSpec, tools: dict[str, str], entries: int, compression: str) -> dict[str, str]:
+    writer_root = FIXTURE_DIR / f"{writer.name}-{compression}"
     if writer_root.exists():
         shutil.rmtree(writer_root)
     writer_root.mkdir(parents=True, exist_ok=True)
 
-    ready = FIXTURE_DIR / f"{writer.name}.ready"
+    ready = FIXTURE_DIR / f"{writer.name}-{compression}.ready"
     ready.unlink(missing_ok=True)
 
-    target = writer_root if writer.mode == "directory" else writer_root / f"{writer.name}.journal"
-    result = run(writer_command(writer, tools, target, ready, entries), timeout=max(60, entries // 2))
-    require_ok(result, f"{writer.name} compressed writer")
-    wait_for_file(ready, f"{writer.name} ready file")
+    target = writer_root if writer.mode == "directory" else writer_root / f"{writer.name}-{compression}.journal"
+    result = run(writer_command(writer, tools, target, ready, entries, compression), timeout=max(60, entries // 2))
+    require_ok(result, f"{writer.name} {compression} compressed writer")
+    wait_for_file(ready, f"{writer.name} {compression} ready file")
 
     if writer.mode == "directory":
         journal_files = sorted(writer_root.rglob("*.journal"))
@@ -200,6 +245,7 @@ def generate_journal(writer: WriterSpec, tools: dict[str, str], entries: int) ->
 
     return {
         "writer": writer.name,
+        "compression": compression,
         "journal_file": str(journal_path),
         "journal_directory": str(writer_root),
     }
@@ -214,7 +260,7 @@ def wait_for_file(path: Path, label: str, timeout: float = 10.0) -> None:
     raise RuntimeError(f"timed out waiting for {label}: {path}")
 
 
-def inspect_compression(journal_path: str) -> dict:
+def inspect_compression(journal_path: str, compression: str) -> dict:
     path = Path(journal_path)
     data = path.read_bytes()
     if len(data) < HEADER_MIN_SIZE:
@@ -238,6 +284,22 @@ def inspect_compression(journal_path: str) -> dict:
             "error": f"journal header size exceeds file size: {header_size}",
         }
 
+    if compression == "xz":
+        obj_flag = OBJECT_COMPRESSED_XZ
+        incompat_flag = INCOMPATIBLE_COMPRESSED_XZ
+        flag_name = "OBJECT_COMPRESSED_XZ"
+        incompat_name = "HEADER_INCOMPATIBLE_COMPRESSED_XZ"
+    elif compression == "lz4":
+        obj_flag = OBJECT_COMPRESSED_LZ4
+        incompat_flag = INCOMPATIBLE_COMPRESSED_LZ4
+        flag_name = "OBJECT_COMPRESSED_LZ4"
+        incompat_name = "HEADER_INCOMPATIBLE_COMPRESSED_LZ4"
+    else:
+        obj_flag = OBJECT_COMPRESSED_ZSTD
+        incompat_flag = INCOMPATIBLE_COMPRESSED_ZSTD
+        flag_name = "OBJECT_COMPRESSED_ZSTD"
+        incompat_name = "HEADER_INCOMPATIBLE_COMPRESSED_ZSTD"
+
     data_objects = 0
     compressed_data_objects = 0
     offset = header_size
@@ -251,15 +313,15 @@ def inspect_compression(journal_path: str) -> dict:
             break
         if obj_type == OBJECT_TYPE_DATA:
             data_objects += 1
-            if obj_flags & OBJECT_COMPRESSED_ZSTD:
+            if obj_flags & obj_flag:
                 compressed_data_objects += 1
         offset = (offset + obj_size + 7) & ~7
 
     errors = []
-    if not (incompatible_flags & INCOMPATIBLE_COMPRESSED_ZSTD):
-        errors.append("HEADER_INCOMPATIBLE_COMPRESSED_ZSTD not set")
+    if not (incompatible_flags & incompat_flag):
+        errors.append(f"{incompat_name} not set")
     if compressed_data_objects == 0:
-        errors.append("no DATA object has OBJECT_COMPRESSED_ZSTD")
+        errors.append(f"no DATA object has {flag_name}")
 
     return {
         "test": "compression-flags",
@@ -298,11 +360,11 @@ def parse_json_lines(stdout: str | bytes) -> list[dict]:
     return entries
 
 
-def validate_json_entry(entry: dict) -> list[str]:
+def validate_json_entry(entry: dict, compression: str) -> list[str]:
     errors = []
     expected = {
-        "TEST_ID": "zstd-interoperability",
-        "MESSAGE": "zstd interoperability",
+        "TEST_ID": f"{compression}-interoperability",
+        "MESSAGE": f"{compression} interoperability",
         "PRIORITY": "6",
         "LIVE_SEQ": "000000",
         "COMPRESSED_PAYLOAD": COMPRESSED_PAYLOAD_TEXT,
@@ -328,34 +390,34 @@ def check_stock_verify(journal_path: str) -> dict:
     }
 
 
-def check_stock_json(journal_path: str) -> dict:
-    cmd = ["journalctl", "--file", journal_path, "--output=json", "--quiet", "--no-pager", "TEST_ID=zstd-interoperability"]
-    return _check_json_command(cmd, "stock", "stock-json")
+def check_stock_json(journal_path: str, compression: str) -> dict:
+    cmd = ["journalctl", "--file", journal_path, "--output=json", "--quiet", "--no-pager", f"TEST_ID={compression}-interoperability"]
+    return _check_json_command(cmd, "stock", "stock-json", compression)
 
 
-def check_stock_export(journal_path: str) -> dict:
-    cmd = ["journalctl", "--file", journal_path, "--output=export", "--quiet", "--no-pager", "TEST_ID=zstd-interoperability"]
+def check_stock_export(journal_path: str, compression: str) -> dict:
+    cmd = ["journalctl", "--file", journal_path, "--output=export", "--quiet", "--no-pager", f"TEST_ID={compression}-interoperability"]
     result = run(cmd, timeout=30, binary=True)
     if result.returncode != 0:
         return {"test": "stock-export", "command": shell_join(cmd), "status": "FAIL", "error": text_tail(result.stderr)}
-    return _validate_export_output(result.stdout, "stock-export", cmd)
+    return _validate_export_output(result.stdout, "stock-export", cmd, compression)
 
 
-def check_stock_export_match(journal_path: str) -> dict:
+def check_stock_export_match(journal_path: str, compression: str) -> dict:
     cmd = ["journalctl", "--file", journal_path, "--output=export", "--quiet", "--no-pager", f"COMPRESSED_MATCH={COMPRESSED_MATCH_TEXT}"]
     result = run(cmd, timeout=30, binary=True)
     if result.returncode != 0:
         return {"test": "stock-export-match", "command": shell_join(cmd), "status": "FAIL", "error": text_tail(result.stderr)}
-    return _validate_export_output(result.stdout, "stock-export-match", cmd)
+    return _validate_export_output(result.stdout, "stock-export-match", cmd, compression)
 
 
-def check_libsystemd(journal_path: str, libsystemd_reader: str) -> dict:
+def check_libsystemd(journal_path: str, libsystemd_reader: str, compression: str) -> dict:
     errors = []
     for field, expected_hex in [
         ("COMPRESSED_PAYLOAD", COMPRESSED_PAYLOAD.hex()),
         ("COMPRESSED_MATCH", COMPRESSED_MATCH.hex()),
     ]:
-        cmd = [libsystemd_reader, journal_path, field, expected_hex, "TEST_ID=zstd-interoperability"]
+        cmd = [libsystemd_reader, journal_path, field, expected_hex, f"TEST_ID={compression}-interoperability"]
         result = run(cmd, timeout=30)
         if result.returncode != 0:
             errors.append(f"{field}: exit {result.returncode} {text_tail(result.stderr, 200)}")
@@ -364,37 +426,37 @@ def check_libsystemd(journal_path: str, libsystemd_reader: str) -> dict:
     return {"test": "libsystemd", "status": "PASS"}
 
 
-def check_reader_json(reader: ReaderSpec, tools: dict[str, str], journal_path: str, writer_name: str) -> dict:
-    cmd = _reader_json_cmd(reader, tools, journal_path)
-    result = _check_json_command(cmd, reader.name, "json")
+def check_reader_json(reader: ReaderSpec, tools: dict[str, str], journal_path: str, writer_name: str, compression: str) -> dict:
+    cmd = _reader_json_cmd(reader, tools, journal_path, compression)
+    result = _check_json_command(cmd, reader.name, "json", compression)
     result["writer"] = writer_name
     result["reader"] = reader.name
     return result
 
 
-def check_reader_export(reader: ReaderSpec, tools: dict[str, str], journal_path: str, writer_name: str) -> dict:
-    cmd = _reader_export_cmd(reader, tools, journal_path)
+def check_reader_export(reader: ReaderSpec, tools: dict[str, str], journal_path: str, writer_name: str, compression: str) -> dict:
+    cmd = _reader_export_cmd(reader, tools, journal_path, compression)
     result = run(cmd, timeout=30, binary=True)
     if result.returncode != 0:
         return {"writer": writer_name, "reader": reader.name, "test": "export", "command": shell_join(cmd), "status": "FAIL", "error": text_tail(result.stderr)}
-    validation = _validate_export_output(result.stdout, "export", cmd)
+    validation = _validate_export_output(result.stdout, "export", cmd, compression)
     validation["writer"] = writer_name
     validation["reader"] = reader.name
     return validation
 
 
-def check_reader_export_match(reader: ReaderSpec, tools: dict[str, str], journal_path: str, writer_name: str) -> dict:
-    cmd = _reader_export_match_cmd(reader, tools, journal_path)
+def check_reader_export_match(reader: ReaderSpec, tools: dict[str, str], journal_path: str, writer_name: str, compression: str) -> dict:
+    cmd = _reader_export_match_cmd(reader, tools, journal_path, compression)
     result = run(cmd, timeout=30, binary=True)
     if result.returncode != 0:
         return {"writer": writer_name, "reader": reader.name, "test": "export-match", "command": shell_join(cmd), "status": "FAIL", "error": text_tail(result.stderr)}
-    validation = _validate_export_output(result.stdout, "export-match", cmd)
+    validation = _validate_export_output(result.stdout, "export-match", cmd, compression)
     validation["writer"] = writer_name
     validation["reader"] = reader.name
     return validation
 
 
-def _check_json_command(cmd: list[str], reader_name: str, test_name: str) -> dict:
+def _check_json_command(cmd: list[str], reader_name: str, test_name: str, compression: str) -> dict:
     result = run(cmd, timeout=30)
     if result.returncode != 0:
         return {"reader": reader_name, "test": test_name, "command": shell_join(cmd), "status": "FAIL", "error": text_tail(result.stderr)}
@@ -404,7 +466,7 @@ def _check_json_command(cmd: list[str], reader_name: str, test_name: str) -> dic
         return {"reader": reader_name, "test": test_name, "command": shell_join(cmd), "status": "FAIL", "error": f"JSON parse error: {e}"}
     if len(entries) != 1:
         return {"reader": reader_name, "test": test_name, "command": shell_join(cmd), "status": "FAIL", "error": f"expected 1 entry, got {len(entries)}"}
-    field_errors = validate_json_entry(entries[0])
+    field_errors = validate_json_entry(entries[0], compression)
     if field_errors:
         return {"reader": reader_name, "test": test_name, "command": shell_join(cmd), "status": "FAIL", "error": "; ".join(field_errors)}
     return {"reader": reader_name, "test": test_name, "command": shell_join(cmd), "status": "PASS"}
@@ -440,12 +502,12 @@ def _parse_export_entries(output: bytes) -> dict[str, bytes]:
     return fields
 
 
-def _validate_export_output(output: bytes, test_name: str, cmd: list[str]) -> dict:
+def _validate_export_output(output: bytes, test_name: str, cmd: list[str], compression: str) -> dict:
     fields = _parse_export_entries(output)
     errors = []
     for field, expected in [
-        ("TEST_ID", b"zstd-interoperability"),
-        ("MESSAGE", b"zstd interoperability"),
+        ("TEST_ID", f"{compression}-interoperability".encode()),
+        ("MESSAGE", f"{compression} interoperability".encode()),
         ("COMPRESSED_PAYLOAD", COMPRESSED_PAYLOAD),
         ("COMPRESSED_MATCH", COMPRESSED_MATCH),
     ]:
@@ -458,35 +520,37 @@ def _validate_export_output(output: bytes, test_name: str, cmd: list[str]) -> di
     return {"test": test_name, "command": shell_join(cmd), "status": "PASS"}
 
 
-def _reader_json_cmd(reader: ReaderSpec, tools: dict[str, str], journal_path: str) -> list[str]:
+def _reader_json_cmd(reader: ReaderSpec, tools: dict[str, str], journal_path: str, compression: str) -> list[str]:
+    match_arg = f"TEST_ID={compression}-interoperability"
     if reader.name == "stock":
-        return ["journalctl", "--file", journal_path, "--output=json", "--quiet", "--no-pager", "TEST_ID=zstd-interoperability"]
+        return ["journalctl", "--file", journal_path, "--output=json", "--quiet", "--no-pager", match_arg]
     if reader.name == "go":
-        return [tools["go_journalctl"], "--file", journal_path, "--output=json", "TEST_ID=zstd-interoperability"]
+        return [tools["go_journalctl"], "--file", journal_path, "--output=json", match_arg]
     if reader.name == "rust":
-        return [tools["rust_journalctl"], "--file", journal_path, "--output=json", "TEST_ID=zstd-interoperability"]
+        return [tools["rust_journalctl"], "--file", journal_path, "--output=json", match_arg]
     if reader.name == "node":
-        return ["node", str(REPO_ROOT / "node/cmd/journalctl/index.js"), "--file", journal_path, "--output", "json", "TEST_ID=zstd-interoperability"]
+        return ["node", str(REPO_ROOT / "node/cmd/journalctl/index.js"), "--file", journal_path, "--output", "json", match_arg]
     if reader.name == "python":
-        return ["python3", str(REPO_ROOT / "python/cmd/journalctl.py"), "--file", journal_path, "--output", "json", "TEST_ID=zstd-interoperability"]
+        return ["python3", str(REPO_ROOT / "python/cmd/journalctl.py"), "--file", journal_path, "--output", "json", match_arg]
     raise ValueError(reader.name)
 
 
-def _reader_export_cmd(reader: ReaderSpec, tools: dict[str, str], journal_path: str) -> list[str]:
+def _reader_export_cmd(reader: ReaderSpec, tools: dict[str, str], journal_path: str, compression: str) -> list[str]:
+    match_arg = f"TEST_ID={compression}-interoperability"
     if reader.name == "stock":
-        return ["journalctl", "--file", journal_path, "--output=export", "--quiet", "--no-pager", "TEST_ID=zstd-interoperability"]
+        return ["journalctl", "--file", journal_path, "--output=export", "--quiet", "--no-pager", match_arg]
     if reader.name == "go":
-        return [tools["go_journalctl"], "--file", journal_path, "--output=export", "TEST_ID=zstd-interoperability"]
+        return [tools["go_journalctl"], "--file", journal_path, "--output=export", match_arg]
     if reader.name == "rust":
-        return [tools["rust_journalctl"], "--file", journal_path, "--output=export", "TEST_ID=zstd-interoperability"]
+        return [tools["rust_journalctl"], "--file", journal_path, "--output=export", match_arg]
     if reader.name == "node":
-        return ["node", str(REPO_ROOT / "node/cmd/journalctl/index.js"), "--file", journal_path, "--output", "export", "TEST_ID=zstd-interoperability"]
+        return ["node", str(REPO_ROOT / "node/cmd/journalctl/index.js"), "--file", journal_path, "--output", "export", match_arg]
     if reader.name == "python":
-        return ["python3", str(REPO_ROOT / "python/cmd/journalctl.py"), "--file", journal_path, "--output=export", "TEST_ID=zstd-interoperability"]
+        return ["python3", str(REPO_ROOT / "python/cmd/journalctl.py"), "--file", journal_path, "--output=export", match_arg]
     raise ValueError(reader.name)
 
 
-def _reader_export_match_cmd(reader: ReaderSpec, tools: dict[str, str], journal_path: str) -> list[str]:
+def _reader_export_match_cmd(reader: ReaderSpec, tools: dict[str, str], journal_path: str, compression: str) -> list[str]:
     match_arg = f"COMPRESSED_MATCH={COMPRESSED_MATCH_TEXT}"
     if reader.name == "stock":
         return ["journalctl", "--file", journal_path, "--output=export", "--quiet", "--no-pager", match_arg]
@@ -514,6 +578,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--writers", nargs="*", choices=sorted(WRITERS))
     parser.add_argument("--readers", nargs="*", choices=sorted(READERS))
+    parser.add_argument("--compression", nargs="*", choices=COMPRESSION_FAMILIES, default=DEFAULT_COMPRESSION_FAMILIES)
     parser.add_argument("--entries", type=int, default=10)
     parser.add_argument("--keep-files", action="store_true")
     args = parser.parse_args()
@@ -527,44 +592,46 @@ def main() -> int:
 
     writer_specs = selected(WRITERS, args.writers)
     reader_specs = selected(READERS, args.readers)
+    compression_families = args.compression
 
     generated = []
     all_checks: list[dict] = []
 
-    for writer in writer_specs:
-        print(f"\n--- Generating {writer.name} zstd fixture ---", flush=True)
-        try:
-            result = generate_journal(writer, tools, args.entries)
-            generated.append(result)
-        except Exception as e:
-            print(f"ERROR generating {writer.name}: {e}", flush=True)
-            all_checks.append({"writer": writer.name, "status": "FAIL", "error": str(e)})
-            continue
-
-        journal_path = result["journal_file"]
-        print(f"  journal: {journal_path}", flush=True)
-
-        for check in [
-            inspect_compression(journal_path),
-            check_stock_verify(journal_path),
-            check_stock_json(journal_path),
-            check_stock_export(journal_path),
-            check_stock_export_match(journal_path),
-            check_libsystemd(journal_path, libsystemd_reader),
-        ]:
-            all_checks.append({"writer": writer.name, **check})
-            print(f"  {check['test']}: {check['status']}", flush=True)
-
-        for reader in reader_specs:
-            if reader.name == "stock":
+    for compression in compression_families:
+        for writer in writer_specs:
+            print(f"\n--- Generating {writer.name} {compression} fixture ---", flush=True)
+            try:
+                result = generate_journal(writer, tools, args.entries, compression)
+                generated.append(result)
+            except Exception as e:
+                print(f"ERROR generating {writer.name} {compression}: {e}", flush=True)
+                all_checks.append({"writer": writer.name, "compression": compression, "status": "FAIL", "error": str(e)})
                 continue
+
+            journal_path = result["journal_file"]
+            print(f"  journal: {journal_path}", flush=True)
+
             for check in [
-                check_reader_json(reader, tools, journal_path, writer.name),
-                check_reader_export(reader, tools, journal_path, writer.name),
-                check_reader_export_match(reader, tools, journal_path, writer.name),
+                inspect_compression(journal_path, compression),
+                check_stock_verify(journal_path),
+                check_stock_json(journal_path, compression),
+                check_stock_export(journal_path, compression),
+                check_stock_export_match(journal_path, compression),
+                check_libsystemd(journal_path, libsystemd_reader, compression),
             ]:
-                all_checks.append(check)
-                print(f"  {reader.name}-{check['test']}: {check['status']}", flush=True)
+                all_checks.append({"writer": writer.name, "compression": compression, **check})
+                print(f"  {check['test']}: {check['status']}", flush=True)
+
+            for reader in reader_specs:
+                if reader.name == "stock":
+                    continue
+                for check in [
+                    check_reader_json(reader, tools, journal_path, writer.name, compression),
+                    check_reader_export(reader, tools, journal_path, writer.name, compression),
+                    check_reader_export_match(reader, tools, journal_path, writer.name, compression),
+                ]:
+                    all_checks.append(check)
+                    print(f"  {reader.name}-{check['test']}: {check['status']}", flush=True)
 
     passed = sum(1 for c in all_checks if c.get("status") == "PASS")
     failed = len(all_checks) - passed
@@ -574,6 +641,7 @@ def main() -> int:
         "systemd_version": systemd_version(),
         "writers": [w.name for w in writer_specs],
         "readers": [r.name for r in reader_specs],
+        "compression_families": compression_families,
         "generated": generated,
         "checks": all_checks,
         "summary": {"total": len(all_checks), "passed": passed, "failed": failed},
@@ -589,6 +657,7 @@ def main() -> int:
     print("\n=== SUMMARY ===", flush=True)
     print(f"systemd: {payload['systemd_version']}", flush=True)
     print(f"writers: {', '.join([w.name for w in writer_specs])}", flush=True)
+    print(f"compression: {', '.join(compression_families)}", flush=True)
     print(f"total: {len(all_checks)}, passed: {passed}, failed: {failed}", flush=True)
     print(f"results: {result_path}", flush=True)
 

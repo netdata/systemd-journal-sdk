@@ -155,8 +155,8 @@ Current Go writer feature slice:
 
 - regular, non-compact journal files;
 - uncompressed DATA objects by default;
-- optional zstd-compressed DATA object writing with configurable compression
-  threshold;
+- optional zstd, xz, and lz4-compressed DATA object writing with configurable
+  compression threshold;
 - keyed hash tables using the journal file ID;
 - byte-safe DATA field values through `Field.Value []byte`;
 - high-level directory writing with systemd-compatible active/archive naming;
@@ -175,8 +175,8 @@ Current Go reader feature slice:
 
 - regular, non-compact journal files;
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
-- whole-file zstd fixtures and zstd-compressed DATA objects through a pure-Go
-  dependency;
+- whole-file zstd fixtures and zstd, xz, and lz4-compressed DATA objects
+  through pure-Go dependencies;
 - directory iteration across active and archived files;
 - forward/backward iteration, cursors, realtime timestamps, binary field
   values, field enumeration, and unique value enumeration;
@@ -194,8 +194,6 @@ Current Go reader feature slice:
 Current Go reader limitations:
 
 - compact journal files are rejected;
-- xz/lz4-compressed DATA objects are rejected;
-- xz/lz4-compressed DATA object writing is not implemented;
 - directory iteration is sequential by journal file and validated for
   non-overlapping active/archive files; realtime interleaving across
   overlapping multi-file directories is tracked under the interoperability
@@ -207,9 +205,9 @@ Current Rust writer feature slice:
 
 - regular, non-compact journal files;
 - uncompressed DATA objects by default;
-- optional zstd-compressed DATA object writing with configurable compression
-  threshold, including Rust zstd frame content-size metadata required by stock
-  systemd verification;
+- optional zstd, xz, and lz4-compressed DATA object writing with configurable
+  compression threshold, including Rust zstd frame content-size metadata
+  required by stock systemd verification;
 - keyed hash tables using the journal file ID;
 - deterministic file ID selection through `JournalFileOptions::with_file_id()`
   for reference fixture generation and conformance checks;
@@ -246,7 +244,6 @@ Current Rust reader feature slice:
 Current Rust reader limitations:
 
 - compact journal files are not part of the accepted feature slice;
-- xz/lz4-compressed DATA object writing is not implemented;
 - directory iteration is sequential by journal file and validated for
   non-overlapping active/archive files; realtime interleaving across overlapping
   multi-file directories is tracked under the interoperability phase;

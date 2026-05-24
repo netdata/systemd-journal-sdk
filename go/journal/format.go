@@ -29,6 +29,8 @@ const (
 	defaultMaxFileSize = 64 * 1024 * 1024 // 64 MiB
 	// systemd FILE_SIZE_INCREASE for preallocation rounding
 	fileSizeIncrease = 8 * 1024 * 1024 // 8 MiB
+	// systemd's DATA object decompression limit is 768 MiB.
+	maxUncompressedDataObjectSize = 768 * 1024 * 1024
 )
 
 const (
@@ -64,6 +66,8 @@ const (
 const (
 	CompressionNone = 0
 	CompressionZSTD = 1
+	CompressionXZ   = 2
+	CompressionLZ4  = 3
 )
 
 const defaultCompressThreshold = 64

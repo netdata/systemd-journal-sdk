@@ -20,6 +20,8 @@ func main() {
 	var compressionStr string
 	var compressThreshold int
 	var zstdFixture bool
+	var xzFixture bool
+	var lz4Fixture bool
 
 	flag.StringVar(&path, "path", "", "journal path to create")
 	flag.StringVar(&readyFile, "ready-file", "", "path to create after the first entry is committed")
@@ -28,9 +30,11 @@ func main() {
 	flag.IntVar(&syncEvery, "sync-every", 25, "sync every N entries")
 	flag.IntVar(&crashAfter, "crash-after", 0, "exit with status 17 after N entries without closing")
 	flag.BoolVar(&binaryFixture, "binary-fixture", false, "write binary fields in the first entry")
-	flag.StringVar(&compressionStr, "compression", "none", "compression: none, zstd")
+	flag.StringVar(&compressionStr, "compression", "none", "compression: none, xz, lz4, zstd")
 	flag.IntVar(&compressThreshold, "compress-threshold", 64, "minimum payload size for compression")
 	flag.BoolVar(&zstdFixture, "zstd-fixture", false, "write zstd-compressed fields in the first entry")
+	flag.BoolVar(&xzFixture, "xz-fixture", false, "write xz-compressed fields in the first entry")
+	flag.BoolVar(&lz4Fixture, "lz4-fixture", false, "write lz4-compressed fields in the first entry")
 	flag.Parse()
 
 	if path == "" || readyFile == "" || entries <= 0 {
@@ -45,8 +49,17 @@ func main() {
 	}
 
 	compression := journal.CompressionNone
-	if compressionStr == "zstd" {
+	switch compressionStr {
+	case "none":
+	case "zstd":
 		compression = journal.CompressionZSTD
+	case "xz":
+		compression = journal.CompressionXZ
+	case "lz4":
+		compression = journal.CompressionLZ4
+	default:
+		fmt.Fprintf(os.Stderr, "unknown compression: %s\n", compressionStr)
+		os.Exit(2)
 	}
 
 	opts := journal.Options{Compression: compression, CompressThresholdBytes: compressThreshold}
@@ -82,6 +95,32 @@ func main() {
 			fields = []journal.Field{
 				journal.StringField("TEST_ID", "zstd-interoperability"),
 				journal.StringField("MESSAGE", "zstd interoperability"),
+				journal.StringField("PRIORITY", "6"),
+				journal.StringField("LIVE_SEQ", "000000"),
+				{Name: "COMPRESSED_PAYLOAD", Value: largePayload},
+				{Name: "COMPRESSED_MATCH", Value: largePayload[:32]},
+			}
+		} else if xzFixture && i == 0 {
+			largePayload := make([]byte, 256)
+			for j := range largePayload {
+				largePayload[j] = byte(j%26 + 'A')
+			}
+			fields = []journal.Field{
+				journal.StringField("TEST_ID", "xz-interoperability"),
+				journal.StringField("MESSAGE", "xz interoperability"),
+				journal.StringField("PRIORITY", "6"),
+				journal.StringField("LIVE_SEQ", "000000"),
+				{Name: "COMPRESSED_PAYLOAD", Value: largePayload},
+				{Name: "COMPRESSED_MATCH", Value: largePayload[:32]},
+			}
+		} else if lz4Fixture && i == 0 {
+			largePayload := make([]byte, 256)
+			for j := range largePayload {
+				largePayload[j] = byte(j%26 + 'A')
+			}
+			fields = []journal.Field{
+				journal.StringField("TEST_ID", "lz4-interoperability"),
+				journal.StringField("MESSAGE", "lz4 interoperability"),
 				journal.StringField("PRIORITY", "6"),
 				journal.StringField("LIVE_SEQ", "000000"),
 				{Name: "COMPRESSED_PAYLOAD", Value: largePayload},

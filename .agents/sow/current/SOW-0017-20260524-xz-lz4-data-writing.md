@@ -189,6 +189,52 @@ Failure handling:
 - Repaired the Phase 1 inventory against systemd v260.1 source and package documentation before using it to steer implementation.
 - Ran read-only reviews with `llm-netdata-cloud/qwen3.6-plus` and `llm-netdata-cloud/kimi-k2.6`; both returned `PRODUCTION GRADE` for the repaired Phase 1 inventory.
 - Reviewer orchestration note: reviewers performed package-fetch metadata checks that may have written tool caches outside this repository despite prompt instructions. Future prompts must explicitly forbid dependency-fetching commands unless `GOMODCACHE`, `GOCACHE`, `GOPATH`, `npm_config_cache`, `PIP_CACHE_DIR`, and equivalent caches are forced under `.local/` or `/tmp`.
+- Started a Phase 2A implementation pass with `llm-netdata-cloud/minimax-m2.7-coder`, then stopped it before code edits because it ran package/doc/source inspection commands against default cache paths despite explicit cache redirection rules. `git status --short` showed no tracked changes after the stop, but ignored `rust/target/` output was generated inside this repository.
+
+### 2026-05-24 - Phase 2A Rust + Go Implementation (fallback: llm-netdata-cloud/qwen3.6-plus)
+
+- Implemented as fallback implementer per AGENTS.md model hierarchy after Phase 2A minimax run was stopped.
+- Scope: Rust and Go xz/lz4 DATA object compression writer support, reader support, shared compression matrix updates, and validation.
+- The qwen implementer run hit its 30-minute timeout while updating this SOW. The project manager inspected the diff, fixed integration issues, formatted the touched code, and reran validation before review.
+
+Files changed by this Phase 2A chunk:
+
+- `rust/Cargo.toml`: added the `encoder` feature to the existing `lzma-rust2` workspace dependency.
+- `rust/src/crates/journal-core/src/file/file.rs`: added `Compression::Xz` and `Compression::Lz4`, mapped their header incompatible flags, and preserved compression choice when creating successor files.
+- `rust/src/crates/journal-core/src/file/writer.rs`: preserved xz/lz4 compression when reopening an existing compressed file, added xz/lz4 writer compression paths, and added systemd-compatible XZ/LZ4 DATA payload helpers.
+- `rust/src/internal/testcmd/livewriter/src/main.rs`: added `--xz-fixture` and `--lz4-fixture` fixture modes and compression parsing.
+- `go/go.mod` and `go/go.sum`: added pure-Go `github.com/pierrec/lz4/v4 v4.1.26` and `github.com/ulikunitz/xz v0.5.15`.
+- `go/journal/format.go`: added xz/lz4 compression constants and a 768 MiB decompressed DATA-object limit matching the Rust reader limit.
+- `go/journal/reader.go`: added xz/lz4 DATA decompression and reader incompatible-flag support, with LZ4 size-prefix validation and xz decompression limiting.
+- `go/journal/writer.go`: added xz/lz4 DATA compression, writer reopen support for xz/lz4 files, invalid compression rejection, and decompression helpers for duplicate-data lookup.
+- `go/journal/writer_test.go`: added a focused zstd/xz/lz4 create, reopen, compressed-object flag, and reader round-trip test.
+- `go/internal/testcmd/livewriter/main.go`: added xz/lz4 fixture flags and rejects unknown compression strings.
+- `tests/interoperability/run_compression_matrix.py`: parameterized the compression family, added xz/lz4 header/object flag checks, kept default execution at zstd for all-language compatibility, and redirected Go/Cargo build caches under root `.local/`.
+- `tests/interoperability/README.md`: documented the compression-family matrix behavior and current xz/lz4 partial support.
+- `.agents/sow/specs/product-scope.md`: updated Rust and Go reader/writer support slices for xz/lz4.
+- `.agents/sow/current/SOW-0017-20260524-xz-lz4-data-writing.md`: recorded execution, validation, and remaining scope.
+
+Validation commands and results run after project-manager fixes:
+
+- `GOMODCACHE=$PWD/../.local/go/pkg/mod GOCACHE=$PWD/../.local/go-build GOPATH=$PWD/../.local/go go test ./...` from `go/` - passed.
+- `CARGO_HOME=$PWD/.local/cargo-home CARGO_TARGET_DIR=$PWD/.local/cargo-target cargo test --manifest-path rust/Cargo.toml` - passed.
+- `python3 -m py_compile tests/interoperability/run_compression_matrix.py` - passed.
+- `python3 tests/interoperability/run_compression_matrix.py --writers rust go --readers rust go stock --compression xz lz4 --entries 5 --keep-files` - 48/48 passed.
+- `python3 tests/interoperability/run_compression_matrix.py --writers rust go --readers rust go stock --compression zstd --entries 5 --keep-files` - 24/24 passed.
+- `python3 tests/interoperability/run_compression_matrix.py --compression zstd --entries 5 --keep-files` - 72/72 passed across Go, Rust, Node.js, Python writers and readers.
+- `python3 tests/interoperability/run_compression_matrix.py --entries 5 --keep-files` - 72/72 passed, proving default behavior remains zstd-only for all-language compatibility.
+- `git diff --check` - passed.
+- `bash .agents/sow/audit.sh` - passed.
+
+Dependency versions:
+- Rust: `lz4_flex 0.12.2` (existing), `lzma-rust2 0.15.8` (existing, added `encoder` feature).
+- Go: `github.com/pierrec/lz4/v4 v4.1.26` (new), `github.com/ulikunitz/xz v0.5.15` (new).
+
+Remaining Node/Python decisions:
+- Node.js xz/lz4 writing remains unimplemented; no pure-JS xz/LZMA2 encoder or raw-block LZ4 package was found that meets the pure-language policy. Node.js xz/lz4 writing requires either in-repo implementation or a user-approved scope split.
+- Python xz writing: Python standard library `lzma` module can produce `.xz` streams with `CHECK_NONE` and `FILTER_LZMA2`, but policy acceptance must be handled consistently with existing Python zstd decision.
+- Python lz4 writing: PyPI `lz4` has C bindings and is not acceptable under pure-language policy; requires in-repo pure Python raw-block implementation.
+- Node.js and Python xz/lz4 reader support also remains unimplemented and should be addressed in a follow-up SOW or this SOW's remaining scope.
 
 ## Phase 1 - Dependency And systemd Reference Inventory
 
@@ -229,7 +275,9 @@ Compatibility implications:
 - Tests must assert object flags, header incompatible flags, actual compressed DATA objects, stock `journalctl --verify --file`, stock journalctl output, stock libsystemd reads, and every repository reader.
 - Byte-identical compressed output is not required by SOW-0016; valid stock-reader-compatible compressed DATA output is required unless a later SOW/user decision raises the requirement.
 
-### Current Repository Support Matrix
+### Phase 1 Pre-Implementation Repository Support Matrix
+
+This matrix records the starting point before Phase 2A edits. Current shipped support after Phase 2A is tracked in `.agents/sow/specs/product-scope.md`.
 
 | Language | Read XZ DATA | Read LZ4 DATA | Write XZ DATA | Write LZ4 DATA | Evidence |
 | --- | --- | --- | --- | --- | --- |
@@ -289,69 +337,97 @@ No compatibility claims are weakened by this inventory. If a language/format can
 
 Acceptance criteria evidence:
 
-- Pending implementation. Phase 1 records the systemd v260.1 compression frame requirements and current repository support gaps.
+- Rust xz/lz4 writer support: implemented via `Compression::Xz` and `Compression::Lz4` enum variants, `stored_data_payload()` dispatch, and `xz_compress()`/`lz4_compress()` helpers.
+- Go xz/lz4 reader and writer support: implemented via `CompressionXZ`/`CompressionLZ4` constants, `addData()` dispatch, `readDataPayload()` decompression, and helper functions.
+- Shared compression matrix: extended `run_compression_matrix.py` to support xz and lz4 families; 48/48 tests pass across xz/lz4 for Rust and Go writers with stock journalctl, stock libsystemd, Rust, and Go readers.
+- zstd writing remains compatible: zstd matrix tests pass 24/24 for Rust/Go scope and 72/72 for the default all-language scope.
+- No changes outside this repository.
 
 Tests or equivalent validation:
 
-- Pending implementation. Phase 1 SOW-only validation requires `git diff --check` and `bash .agents/sow/audit.sh`.
+- Rust: `cargo test --manifest-path rust/Cargo.toml` - passed.
+- Go: `go test ./...` from `go/` - passed.
+- Python syntax: `python3 -m py_compile tests/interoperability/run_compression_matrix.py` - passed.
+- Compression matrix (xz/lz4): 48/48 pass (Rust + Go writers, stock + libsystemd + Rust + Go readers).
+- Compression matrix (zstd Rust/Go): 24/24 pass.
+- Compression matrix default/all-language zstd: 72/72 pass.
+- `git diff --check`: clean.
+- `bash .agents/sow/audit.sh`: clean.
 
 Real-use evidence:
 
-- Pending implementation. No writer/reader behavior has changed in Phase 1.
+- Stock `journalctl --verify --file` passes for all xz/lz4 journals written by Rust and Go.
+- Stock `journalctl --output=json` reads back all xz/lz4 entries correctly.
+- Stock `journalctl --output=export` reads back all xz/lz4 entries correctly.
+- Stock libsystemd reader (`libsystemd_binary_field_reader`) reads xz/lz4 entries correctly.
+- Rust repository reader reads Go xz/lz4 journals and vice versa.
+- Go repository reader reads Rust xz/lz4 journals and vice versa.
 
 Reviewer findings:
 
+- Phase 2A `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`; no blocking findings. Non-blocking observations: Go LZ4 compression could defensively treat a theoretical `CompressBlock` zero-length output as uncompressed, the reopen compression threshold resets to the default because the threshold is not stored in the journal header, and Go zstd per-DATA decoder allocation is a pre-existing performance consideration.
+- Phase 2A `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`; no blocking findings. Non-blocking observations: same theoretical Go LZ4 zero-length-output guard, pre-existing reopen threshold reset, and pre-existing per-object Go zstd decoder allocation.
+- Disposition: added the Go LZ4 zero-length-output guard. Reopen threshold reset and per-object Go zstd decoder allocation are pre-existing behavior outside the xz/lz4 compatibility change; they remain non-blocking and can be revisited during the benchmark/profiling SOW.
+- Phase 2A second-pass `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`; no blocking findings after the Go LZ4 guard. Non-blocking observations were pre-existing Go reopen threshold reset and pre-existing per-object Go zstd decoder allocation.
+- Phase 2A second-pass `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`; no blocking findings after the Go LZ4 guard. Non-blocking observations were pre-existing Go reopen threshold reset, pre-existing per-object Go zstd decoder allocation, and matrix usability if a caller explicitly asks for xz/lz4 without restricting writers to Rust/Go.
 - `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`; no blocking findings. Non-blocking recommendation: present a Python standard-library native-module policy decision in Phase 2 because Python already uses standard-library `compression.zstd` while SOW-0017 flags standard-library `lzma`.
 - `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`; no blocking findings. Non-blocking recommendations were to cross-reference SOW-0016's compressed byte-identity carve-out, record exact Go dependency versions during Phase 2 verification, and make Phase 2 search for vendorable pure Node.js/Python LZ4 implementations before writing raw-block encoders from scratch.
-- Both reviewer runs validated `git diff --check` and `bash .agents/sow/audit.sh`.
+- Phase 1 reviewer runs validated `git diff --check` and `bash .agents/sow/audit.sh`.
 - Phase 1 implementer inventory was rejected as authoritative because local validation failed and primary sources contradicted several claims.
 
 Same-failure scan:
 
-- Pending implementation. Phase 2 must search for all zstd-only compression dispatches before editing.
+- Searched all zstd-only compression dispatches before editing; updated all relevant paths in Rust (`writer.rs:stored_data_payload`, `file.rs:Compression`), Go (`writer.go:addData`, `reader.go:readDataPayload`, `format.go:Compression*`), and test harness (`run_compression_matrix.py`).
 
 Sensitive data gate:
 
-- Phase 1 durable evidence uses public package names, public upstream paths, source line references, and synthetic fixture plans only. No raw secrets, credentials, bearer tokens, SNMP communities, community member names, customer names, personal data, non-private customer-identifying IPs, private endpoints, or proprietary incident details are recorded.
+- Phase 2A durable evidence uses public package names, public upstream paths, source line references, and synthetic fixture plans only. No raw secrets, credentials, bearer tokens, SNMP communities, community member names, customer names, personal data, non-private customer-identifying IPs, private endpoints, or proprietary incident details are recorded.
 
 Artifact maintenance gate:
 
-- AGENTS.md: no update for Phase 1; repository workflow rules did not change.
-- Runtime project skills: updated `.agents/skills/project-agent-orchestration/SKILL.md` with package-manager cache redirection rules after reviewer package metadata checks exposed a repository-boundary failure mode.
-- Specs: pending implementation; support matrices must be updated only after code behavior changes.
-- End-user/operator docs: pending implementation; README support matrices must be updated only after code behavior changes.
-- End-user/operator skills: no output/reference skills are affected by Phase 1.
-- SOW lifecycle: active in `.agents/sow/current/` with `Status: in-progress`; completion still requires implementation, review, validation, status update to `completed`, move to `.agents/sow/done/`, audit, and one implementation-close commit.
-- SOW-status.md: already updated on activation; no Phase 1 state change required.
+- AGENTS.md: no update; repository workflow rules did not change.
+- Runtime project skills: no update; compression workflow did not change durable future validation rules.
+- Specs: updated `.agents/sow/specs/product-scope.md` for Rust/Go xz/lz4 support and left Node/Python limitations intact.
+- End-user/operator docs: updated `tests/interoperability/README.md` for the parameterized compression matrix and current xz/lz4 partial support.
+- End-user/operator skills: no output/reference skills are affected by Phase 2A.
+- SOW lifecycle: active in `.agents/sow/current/` with `Status: in-progress`; Node/Python xz/lz4 scope remains open.
+- SOW-status.md: no state change required until SOW close.
 
 Specs update:
 
-- Pending implementation. No shipped behavior changed in Phase 1.
+- Updated `.agents/sow/specs/product-scope.md` so the current Rust and Go reader/writer support slices include xz/lz4 DATA objects, while Node.js and Python still explicitly list xz/lz4 as unsupported.
 
 Project skills update:
 
-- Updated `.agents/skills/project-agent-orchestration/SKILL.md` so future dependency-research prompts either forbid dependency-fetching commands or require package-manager caches under `.local/` or `/tmp`.
+- No update required for Phase 2A.
 
 End-user/operator docs update:
 
-- Pending implementation. No shipped behavior changed in Phase 1.
+- Updated `tests/interoperability/README.md` to explain zstd default coverage, explicit `--compression xz lz4` usage, and the partial Rust/Go-only xz/lz4 support state.
 
 End-user/operator skills update:
 
-- No output/reference skills are affected by Phase 1.
+- No output/reference skills are affected by Phase 2A.
 
 Lessons:
 
 - Systemd XZ DATA objects must be treated as `.xz` streams with LZMA2 and `CHECK_NONE`; describing them as raw LZMA2 blocks is wrong and can lead agents to choose incompatible libraries.
 - Dependency inventories must be validated against primary source evidence before they become implementation instructions.
 - External-review prompts must forbid dependency-fetching commands unless every package-manager cache is explicitly redirected under `.local/` or `/tmp`; otherwise read-only package metadata checks can still create files outside the repository.
+- Rust `lzma-rust2` requires the `encoder` feature flag to expose `XzWriter`/`XzOptions`; the default workspace dependency only had `xz` feature (reader-only).
+- Go `github.com/pierrec/lz4/v4` `CompressBlock` requires a third `[]int` argument (ignored); Go `github.com/ulikunitz/xz` uses `WriterConfig{NoCheckSum: true}` pattern, not a constant.
+- Go reader `supportedReaderIncompatible` constant must include xz/lz4 flags to avoid rejecting xz/lz4 journals on open.
+- Go writer `supportedWriterIncompatible` must also include xz/lz4 flags, or `Open()` rejects files that `Create()` can produce.
+- Rust reopen/successor paths must preserve xz/lz4 compression flags, not only zstd.
+- Compression matrix test harness must set `CARGO_TARGET_DIR` itself before copying Rust binaries, otherwise it can copy from the wrong target directory depending on caller environment.
 
 Follow-up mapping:
 
-- Phase 2 implementation prompt must include exact XZ and LZ4 frame requirements from this SOW.
-- Phase 2 implementation prompt must require exact Go module versions after fixture proof, not before.
-- Phase 2 implementation prompt must require a search for vendorable pure Node.js/Python LZ4 block implementations before adding in-repo encoders from scratch.
-- Any unresolved Node.js/Python pure-dependency gap must become either implemented in this SOW, rejected with evidence, or tracked by a real follow-up SOW before SOW-0017 can close.
+- Node.js xz/lz4 writing: requires either in-repo pure-JS implementation or user-approved scope split. No acceptable pure-JS xz/LZMA2 encoder or raw-block LZ4 package was found.
+- Python xz writing: requires policy decision on standard-library `lzma` module acceptance (consistent with existing Python zstd decision).
+- Python lz4 writing: requires in-repo pure Python raw-block implementation (PyPI `lz4` has C bindings).
+- Node.js and Python xz/lz4 reader support: should be addressed in a follow-up SOW or this SOW's remaining scope.
+- Node.js and Python xz/lz4 support remains active SOW scope; if it is split, create real follow-up SOW files before closing this SOW.
 
 ## Outcome
 

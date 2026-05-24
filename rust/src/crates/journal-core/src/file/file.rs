@@ -96,6 +96,8 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Compression {
     None,
+    Xz,
+    Lz4,
     Zstd,
 }
 
@@ -103,6 +105,8 @@ impl Compression {
     pub fn as_incompatible_flag(&self) -> u32 {
         match self {
             Compression::None => 0,
+            Compression::Xz => HeaderIncompatibleFlags::CompressedXz as u32,
+            Compression::Lz4 => HeaderIncompatibleFlags::CompressedLz4 as u32,
             Compression::Zstd => HeaderIncompatibleFlags::CompressedZstd as u32,
         }
     }
@@ -833,6 +837,10 @@ impl<M: MemoryMapMut> JournalFile<M> {
 
         let options = if header.has_incompatible_flag(HeaderIncompatibleFlags::CompressedZstd) {
             options.with_compression(Compression::Zstd)
+        } else if header.has_incompatible_flag(HeaderIncompatibleFlags::CompressedXz) {
+            options.with_compression(Compression::Xz)
+        } else if header.has_incompatible_flag(HeaderIncompatibleFlags::CompressedLz4) {
+            options.with_compression(Compression::Lz4)
         } else {
             options
         };

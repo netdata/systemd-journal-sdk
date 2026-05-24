@@ -93,6 +93,105 @@ func TestCreateAppendAndReopenLayout(t *testing.T) {
 	}
 }
 
+func TestCreateAndOpenCompressedDataAlgorithms(t *testing.T) {
+	tests := []struct {
+		name             string
+		compression      int
+		incompatibleFlag uint32
+		objectFlag       uint8
+	}{
+		{"zstd", CompressionZSTD, incompatibleCompressedZSTD, objectCompressedZSTD},
+		{"xz", CompressionXZ, incompatibleCompressedXZ, objectCompressedXZ},
+		{"lz4", CompressionLZ4, incompatibleCompressedLZ4, objectCompressedLZ4},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), tc.name+".journal")
+			opts := testOptions()
+			opts.Compression = tc.compression
+			opts.CompressThresholdBytes = 16
+
+			w, err := Create(path, opts)
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			if err := w.Append([]Field{
+				StringField("MESSAGE", "first"),
+				{Name: "COMPRESSED_PAYLOAD", Value: bytes.Repeat([]byte("A"), 512)},
+			}, EntryOptions{RealtimeUsec: 1_700_000_000_000_001, MonotonicUsec: 101}); err != nil {
+				t.Fatalf("Append(first) error = %v", err)
+			}
+			if err := w.Close(); err != nil {
+				t.Fatalf("Close(first) error = %v", err)
+			}
+
+			w, err = Open(path)
+			if err != nil {
+				t.Fatalf("Open() error = %v", err)
+			}
+			if err := w.Append([]Field{
+				StringField("MESSAGE", "second"),
+				{Name: "COMPRESSED_PAYLOAD", Value: bytes.Repeat([]byte("B"), 512)},
+			}, EntryOptions{RealtimeUsec: 1_700_000_000_000_002, MonotonicUsec: 102}); err != nil {
+				t.Fatalf("Append(second) error = %v", err)
+			}
+			if err := w.Close(); err != nil {
+				t.Fatalf("Close(second) error = %v", err)
+			}
+
+			snapshot := readJournalSnapshot(t, path)
+			if snapshot.header.incompatibleFlags&tc.incompatibleFlag == 0 {
+				t.Fatalf("incompatible flags %#x missing %#x", snapshot.header.incompatibleFlags, tc.incompatibleFlag)
+			}
+			compressedObjects := 0
+			for _, data := range snapshot.dataByPayload {
+				if data.header.object.flag&tc.objectFlag != 0 {
+					compressedObjects++
+				}
+			}
+			if compressedObjects < 2 {
+				t.Fatalf("compressed DATA objects = %d, want at least 2", compressedObjects)
+			}
+
+			r, err := OpenFile(path)
+			if err != nil {
+				t.Fatalf("OpenFile() error = %v", err)
+			}
+			defer r.Close()
+			if err := r.Next(); err != nil {
+				t.Fatalf("Next(first) error = %v", err)
+			}
+			entry, err := r.GetEntry()
+			if err != nil {
+				t.Fatalf("GetEntry(first) error = %v", err)
+			}
+			if got := string(entry.Fields["COMPRESSED_PAYLOAD"]); got != strings.Repeat("A", 512) {
+				t.Fatalf("first payload mismatch: %q", got)
+			}
+			if err := r.Next(); err != nil {
+				t.Fatalf("Next(second) error = %v", err)
+			}
+			entry, err = r.GetEntry()
+			if err != nil {
+				t.Fatalf("GetEntry(second) error = %v", err)
+			}
+			if got := string(entry.Fields["COMPRESSED_PAYLOAD"]); got != strings.Repeat("B", 512) {
+				t.Fatalf("second payload mismatch: %q", got)
+			}
+		})
+	}
+}
+
+func TestCreateRejectsUnsupportedCompression(t *testing.T) {
+	opts := testOptions()
+	opts.Compression = 99
+	if w, err := Create(filepath.Join(t.TempDir(), "invalid-compression.journal"), opts); err == nil {
+		_ = w.Close()
+		t.Fatal("Create() with unsupported compression succeeded")
+	}
+}
+
 func TestWriterRejectsInvalidEntries(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "invalid.journal")
 	w, err := Create(path, testOptions())

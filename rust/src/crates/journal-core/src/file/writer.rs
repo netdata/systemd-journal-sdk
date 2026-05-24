@@ -151,13 +151,17 @@ impl JournalWriter {
         next_seqnum: u64,
         boot_id: uuid::Uuid,
     ) -> Result<Self> {
-        let compression = if journal_file
-            .journal_header_ref()
-            .has_incompatible_flag(HeaderIncompatibleFlags::CompressedZstd)
-        {
-            Compression::Zstd
-        } else {
-            Compression::None
+        let compression = match journal_file.journal_header_ref() {
+            header if header.has_incompatible_flag(HeaderIncompatibleFlags::CompressedZstd) => {
+                Compression::Zstd
+            }
+            header if header.has_incompatible_flag(HeaderIncompatibleFlags::CompressedXz) => {
+                Compression::Xz
+            }
+            header if header.has_incompatible_flag(HeaderIncompatibleFlags::CompressedLz4) => {
+                Compression::Lz4
+            }
+            _ => Compression::None,
         };
 
         Self::new_with_compression(
@@ -399,14 +403,36 @@ impl JournalWriter {
     }
 
     fn stored_data_payload<'a>(&self, payload: &'a [u8]) -> (Cow<'a, [u8]>, u8) {
-        if self.compression == Compression::Zstd && payload.len() >= self.compress_threshold {
-            let compressed = ruzstd::encoding::compress_to_vec(
-                Cursor::new(payload),
-                ruzstd::encoding::CompressionLevel::Fastest,
-            );
-            let compressed = zstd_frame_with_content_size(compressed, payload.len());
-            if compressed.len() < payload.len() {
-                return (Cow::Owned(compressed), ObjectFlags::CompressedZstd as u8);
+        if payload.len() >= self.compress_threshold {
+            match self.compression {
+                Compression::Zstd => {
+                    let compressed = ruzstd::encoding::compress_to_vec(
+                        Cursor::new(payload),
+                        ruzstd::encoding::CompressionLevel::Fastest,
+                    );
+                    let compressed = zstd_frame_with_content_size(compressed, payload.len());
+                    if compressed.len() < payload.len() {
+                        return (Cow::Owned(compressed), ObjectFlags::CompressedZstd as u8);
+                    }
+                }
+                Compression::Xz => {
+                    if payload.len() >= 80 {
+                        if let Ok(compressed) = xz_compress(payload) {
+                            if compressed.len() < payload.len() {
+                                return (Cow::Owned(compressed), ObjectFlags::CompressedXz as u8);
+                            }
+                        }
+                    }
+                }
+                Compression::Lz4 => {
+                    if payload.len() >= 9 {
+                        let compressed = lz4_compress(payload);
+                        if compressed.len() < payload.len() {
+                            return (Cow::Owned(compressed), ObjectFlags::CompressedLz4 as u8);
+                        }
+                    }
+                }
+                Compression::None => {}
             }
         }
 
@@ -803,6 +829,25 @@ fn zstd_frame_with_content_size(frame: Vec<u8>, content_size: usize) -> Vec<u8> 
     patched.extend_from_slice(&frame_content_size);
     patched.extend_from_slice(&frame[6..]);
     patched
+}
+
+fn xz_compress(payload: &[u8]) -> std::io::Result<Vec<u8>> {
+    use lzma_rust2::{XzOptions, XzWriter};
+    use std::io::Write;
+
+    let mut options = XzOptions::with_preset(0);
+    options.set_check_sum_type(lzma_rust2::CheckType::None);
+    let mut writer = XzWriter::new(Vec::new(), options)?;
+    writer.write_all(payload)?;
+    writer.finish()
+}
+
+fn lz4_compress(payload: &[u8]) -> Vec<u8> {
+    let compressed = lz4_flex::block::compress(payload);
+    let mut out = Vec::with_capacity(8 + compressed.len());
+    out.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+    out.extend_from_slice(&compressed);
+    out
 }
 
 #[cfg(test)]

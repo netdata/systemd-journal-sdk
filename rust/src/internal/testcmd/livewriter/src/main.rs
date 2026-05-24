@@ -27,6 +27,10 @@ struct Args {
     binary_fixture: bool,
     #[arg(long = "zstd-fixture", default_value_t = false)]
     zstd_fixture: bool,
+    #[arg(long = "xz-fixture", default_value_t = false)]
+    xz_fixture: bool,
+    #[arg(long = "lz4-fixture", default_value_t = false)]
+    lz4_fixture: bool,
     #[arg(long = "compression", default_value = "none")]
     compression: String,
     #[arg(
@@ -52,6 +56,8 @@ fn run() -> Result<()> {
 
     let compression = match args.compression.as_str() {
         "none" => Compression::None,
+        "xz" => Compression::Xz,
+        "lz4" => Compression::Lz4,
         "zstd" => Compression::Zstd,
         other => return Err(anyhow!("unknown compression: {other}")),
     };
@@ -78,7 +84,13 @@ fn run() -> Result<()> {
 
     const REALTIME_BASE: u64 = 1_700_001_000_000_000;
     for i in 0..args.entries {
-        let fields = fields_for_entry(i, args.binary_fixture, args.zstd_fixture);
+        let fields = fields_for_entry(
+            i,
+            args.binary_fixture,
+            args.zstd_fixture,
+            args.xz_fixture,
+            args.lz4_fixture,
+        );
 
         let fields_refs: Vec<&[u8]> = fields.iter().map(|v| v.as_slice()).collect();
         log.write_entry_with_timestamps(
@@ -141,7 +153,13 @@ fn run_file_writer(
 
     const REALTIME_BASE: u64 = 1_700_001_000_000_000;
     for i in 0..args.entries {
-        let fields = fields_for_entry(i, args.binary_fixture, args.zstd_fixture);
+        let fields = fields_for_entry(
+            i,
+            args.binary_fixture,
+            args.zstd_fixture,
+            args.xz_fixture,
+            args.lz4_fixture,
+        );
 
         let fields_refs: Vec<&[u8]> = fields.iter().map(|v| v.as_slice()).collect();
         writer.add_entry(
@@ -170,7 +188,13 @@ fn run_file_writer(
     Ok(())
 }
 
-fn fields_for_entry(index: usize, binary_fixture: bool, zstd_fixture: bool) -> Vec<Vec<u8>> {
+fn fields_for_entry(
+    index: usize,
+    binary_fixture: bool,
+    zstd_fixture: bool,
+    xz_fixture: bool,
+    lz4_fixture: bool,
+) -> Vec<Vec<u8>> {
     if binary_fixture && index == 0 {
         return vec![
             b"TEST_ID=binary-interoperability".to_vec(),
@@ -192,6 +216,38 @@ fn fields_for_entry(index: usize, binary_fixture: bool, zstd_fixture: bool) -> V
         return vec![
             b"TEST_ID=zstd-interoperability".to_vec(),
             b"MESSAGE=zstd interoperability".to_vec(),
+            b"PRIORITY=6".to_vec(),
+            b"LIVE_SEQ=000000".to_vec(),
+            compressed_payload,
+            compressed_match,
+        ];
+    }
+
+    if xz_fixture && index == 0 {
+        let large_payload: Vec<u8> = (0..256usize).map(|i| (i % 26) as u8 + b'A').collect();
+        let mut compressed_payload = b"COMPRESSED_PAYLOAD=".to_vec();
+        compressed_payload.extend_from_slice(&large_payload);
+        let mut compressed_match = b"COMPRESSED_MATCH=".to_vec();
+        compressed_match.extend_from_slice(&large_payload[..32]);
+        return vec![
+            b"TEST_ID=xz-interoperability".to_vec(),
+            b"MESSAGE=xz interoperability".to_vec(),
+            b"PRIORITY=6".to_vec(),
+            b"LIVE_SEQ=000000".to_vec(),
+            compressed_payload,
+            compressed_match,
+        ];
+    }
+
+    if lz4_fixture && index == 0 {
+        let large_payload: Vec<u8> = (0..256usize).map(|i| (i % 26) as u8 + b'A').collect();
+        let mut compressed_payload = b"COMPRESSED_PAYLOAD=".to_vec();
+        compressed_payload.extend_from_slice(&large_payload);
+        let mut compressed_match = b"COMPRESSED_MATCH=".to_vec();
+        compressed_match.extend_from_slice(&large_payload[..32]);
+        return vec![
+            b"TEST_ID=lz4-interoperability".to_vec(),
+            b"MESSAGE=lz4 interoperability".to_vec(),
             b"PRIORITY=6".to_vec(),
             b"LIVE_SEQ=000000".to_vec(),
             compressed_payload,

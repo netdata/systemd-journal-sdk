@@ -14,6 +14,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/pierrec/lz4/v4"
+	"github.com/ulikunitz/xz"
 )
 
 var (
@@ -228,7 +230,7 @@ func OpenFile(path string) (*Reader, error) {
 		return nil, err
 	}
 
-	const supportedReaderIncompatible = incompatibleKeyedHash | incompatibleCompressedZSTD
+	const supportedReaderIncompatible = incompatibleKeyedHash | incompatibleCompressedZSTD | incompatibleCompressedXZ | incompatibleCompressedLZ4
 	if header.incompatibleFlags&^supportedReaderIncompatible != 0 {
 		_ = closeJournalFile(f, cleanupPath)
 		return nil, errUnsupportedJournal
@@ -569,8 +571,34 @@ func (r *Reader) readDataPayload(offset uint64) ([]byte, error) {
 			return nil, err
 		}
 		payload = decoded
-	} else if dataHdr.object.flag&(objectCompressedXZ|objectCompressedLZ4) != 0 {
-		return nil, errUnsupportedJournal
+	} else if dataHdr.object.flag&objectCompressedXZ != 0 {
+		r, err := xz.NewReader(bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		decoded, err := readAllLimited(r, maxUncompressedDataObjectSize)
+		if err != nil {
+			return nil, err
+		}
+		payload = decoded
+	} else if dataHdr.object.flag&objectCompressedLZ4 != 0 {
+		if len(payload) < 8 {
+			return nil, errors.New("lz4 compressed payload too short")
+		}
+		uncompressedSize := binary.LittleEndian.Uint64(payload[:8])
+		if uncompressedSize > maxUncompressedDataObjectSize {
+			return nil, errors.New("lz4 decompressed payload too large")
+		}
+		compressedData := payload[8:]
+		decoded := make([]byte, uncompressedSize)
+		n, err := lz4.UncompressBlock(compressedData, decoded)
+		if err != nil {
+			return nil, err
+		}
+		if uint64(n) != uncompressedSize {
+			return nil, errors.New("lz4 decompressed size mismatch")
+		}
+		payload = decoded
 	}
 
 	return payload, nil
