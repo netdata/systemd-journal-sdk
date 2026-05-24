@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: active after Go, Rust, and Node.js SDK slices completed.
+Sub-state: closed after implementation, validation, repeated external review, and final audit.
 
 ## Requirements
 
@@ -207,22 +207,97 @@ Open decisions:
 
 - 2026-05-24: Activated SOW-0007 after SOW-0006 completed and commit `3dd2a58` created the rollback point for the Node.js SDK/journalctl chunk.
 - 2026-05-24: Refreshed the pre-implementation gate using completed Go, Rust, and Node.js SDK slices, shared conformance/live harness contracts, Python runtime evidence (`Python 3.14.5`), and standard-library `compression.zstd` availability.
+- 2026-05-24: Committed SOW activation as `48a0998` before implementation, creating a rollback point for the Python phase.
+- 2026-05-24: Minimax implementer created the initial Python package scaffold, reader, writer, directory writer, facade, adapter, journalctl command, livewriter command, and README. The run was stopped by exact verified PIDs after it looped on filter-builder debugging. Accepted useful output: initial module structure, basic writer/reader roundtrip, adapter list/probe, and compile pass. Repaired locally afterward: Python `os.pwrite()` call signatures, filter-builder single-match wrapping, adapter temporary-file bug, directory reader step/subdirectory behavior, livewriter harness arguments, directory writer active/archive naming, UUID option handling, package tests, and product-scope updates.
+- 2026-05-24: Implemented the current Python SDK slice under `python/`: reader, writer, directory writer, libsystemd-style facade, journalctl CLI, conformance adapter, package test runner, README, and livewriter test command.
+- 2026-05-24: First read-only review cycle was stopped after Minimax found a real zstd DATA-object blocker: `python/journal/entry.py` referenced `compression.zstd.decompress()` without importing `compression`. Fixed by routing DATA-object zstd decompression through `decompress_zst_sync()` and added `python/test_all.py` coverage that constructs a compressed DATA object in memory.
+- 2026-05-24: Full read-only review cycle after the zstd fix: Minimax returned `VERDICT: PRODUCTION GRADE`; Kimi returned `VERDICT: PRODUCTION GRADE` with non-blocking findings; Qwen returned `VERDICT: NOT PRODUCTION GRADE` based on a lowercase-field claim contradicted by the cited code, and local proof/tests confirmed lowercase match and writer field names are rejected.
+- 2026-05-24: Addressed concrete non-blocking review findings: added writer `fcntl.flock()` exclusive non-blocking lock before create/truncate and open-for-append, fixed zstd temp-dir cleanup on write failure, fixed livewriter ns/us delay parsing, made adapter probe report runtime `_HAS_ZSTD`, replaced Python byte-by-byte comparison with bytes equality, added lowercase rejection tests, added exclusive writer-lock tests, changed match parsing from dead `index()`/`eq < 0` logic to `find()`, used a context manager for `/etc/machine-id`, and reused the shared journal filename helper in the directory reader.
+- 2026-05-24: Post-fix review cycle: Minimax returned `VERDICT: PRODUCTION GRADE`; Kimi second-cycle reviewer hung without a final verdict and was stopped by exact verified PIDs; GLM replacement review returned `VERDICT: PRODUCTION GRADE` with only low cosmetic findings, which were repaired and locally revalidated.
 
 ## Validation
 
-Validation starts after implementation. Planned closeout evidence is listed in the validation plan above and must include Python package tests, shared conformance, live compatibility, dependency audit, read-only external reviewer results, `git diff --check`, and `.agents/sow/audit.sh`.
+Acceptance criteria evidence:
+
+- Implemented: plain Python package, no native journal bindings, byte-safe `bytes` field values, Python integer internal 64-bit journal values, and standard-library `compression.zstd` support where present.
+- Implemented: idiomatic SDK API plus libsystemd-style facade functions.
+- Implemented: file-backed Python journalctl for `--file`, `--directory`, default/json/export output, `--fields`, `--list-boots`, `--head`, `--tail`, repeated same-field OR, `+` disjunction, and documented unsupported daemon-only operations including `--verify`.
+- Implemented: direct `Writer` and high-level `Log` directory writer with active/archive naming, entry-count and byte-size rotation, archived file-count and byte-size retention.
+- Implemented: Python livewriter command for the shared live concurrency harness.
+
+Tests or equivalent validation:
+
+- Passed: `python3 -m compileall python`.
+- Passed: `python3 python/test_all.py`; package tests include writer/reader binary export, zstd DATA-object parsing, directory writer rotation, libsystemd-style unique binary values, shared conformance execution, lowercase field rejection, livewriter delay parsing, and exclusive writer lock behavior.
+- Passed: full shared conformance manifest through `python/adapter.py run`: 15 results, 0 failures. The two accepted SKIPs are `journal-verify-sealed` and `journal-verify-corruption-detection`, both tracked by SOW-0008/FSS verification scope.
+- Passed: Python journalctl full `fixtures/systemd/test-data/no-rtc` JSON drain returned 10,757 rows.
+- Passed: Python journalctl `--list-boots` returned 4 rows.
+- Passed: Python journalctl `--fields` returned 202 rows.
+- Passed: Python journalctl repeated same-field OR check `SYSLOG_IDENTIFIER=kernel SYSLOG_IDENTIFIER=systemd` returned 6,516 rows.
+- Passed: Python journalctl `+` disjunction check `SYSLOG_IDENTIFIER=kernel + SYSLOG_IDENTIFIER=systemd` returned 6,516 rows.
+- Passed: direct file-writer stock compatibility smoke created `.local/python-stock-smoke.journal`; stock `journalctl --verify --file` returned PASS and stock `journalctl --file --output=json` read 10 rows.
+- Passed: directory writer stock-read validation wrote 5 entries with `source=netdata-test` and `machine_id=00112233445566778899aabbccddeeff`; stock `journalctl --directory` read 3 entries while `Log` was still open and 5 after close; Python `DirectoryReader` read ordered `LIVE_SEQ` values `000000` through `000004`.
+- Passed: dependency/native marker audit found no imports of `systemd`, `systemd.journal`, `ctypes`, or `cffi` in Python package code. Runtime `cffi` exists on the workstation but the package does not import it.
+- Passed: `git diff --check`.
+- Passed: `.agents/sow/audit.sh`.
+
+Real-use evidence:
+
+- Passed: shared live concurrency harness with systemd `260 (260.1-2-manjaro)`, 100 entries, 2 stock polling `journalctl --file` readers, 1 stock `journalctl --file --follow --no-tail --boot=all` reader, 1 stock libsystemd reader, ordered `LIVE_SEQ`, and final `journalctl --verify --file` PASS.
+
+Reviewer findings:
+
+- Minimax first focused review found the zstd DATA-object blocker and the implementation was repaired before close.
+- Minimax full review after zstd repair returned `VERDICT: PRODUCTION GRADE`.
+- Kimi full review after zstd repair returned `VERDICT: PRODUCTION GRADE`; non-blocking findings were either repaired or tracked by existing interoperability/performance SOWs.
+- Qwen full review reported `VERDICT: NOT PRODUCTION GRADE` for an asserted lowercase-field acceptance bug. Disposition: false positive. Evidence: `python/journal/hash.py` and `python/journal/writer.py` only accept `_`, `A-Z`, and `0-9` after a non-digit first-character check; local proof and `python/test_all.py` confirm lowercase match and writer field names are rejected.
+- Minimax post-fix review returned `VERDICT: PRODUCTION GRADE`.
+- Kimi post-fix rerun hung without a final verdict and was stopped by exact verified PIDs after silence; GLM was substituted as the second post-fix reviewer.
+- GLM post-fix review returned `VERDICT: PRODUCTION GRADE`; its low cosmetic findings were repaired and final local validation still passed.
+
+Same-failure scan:
+
+- Completed for repaired failure classes before review and close: searched for wrong `os.pwrite()` call patterns, malformed temporary-file `.name()` calls, native journal binding imports, `cffi`/`ctypes` imports, personal-name strings, match expression failures, directory reader missing `step()`, livewriter argument mismatch, directory writer active/archive naming mismatches, direct `compression.zstd` references outside `python/journal/compress.py`, lowercase field acceptance, missing writer file locks, and stale duplicate journal filename helpers.
 
 Sensitive data gate:
 
-- Planned closeout validation must confirm durable artifacts contain no raw secrets, credentials, bearer tokens, SNMP communities, community member names, customer names, personal data, non-private customer-identifying IPs, private endpoints, or proprietary incident details.
+- Passed pre-review scan by inspection and `rg`: durable artifacts added for Python contain only synthetic fixture paths, `.local` scratch examples, and public SDK documentation. No raw secrets, credentials, bearer tokens, SNMP communities, community member names, customer names, personal data, non-private customer-identifying IPs, private endpoints, or proprietary incident details were introduced.
+
+Artifact maintenance gate:
+
+- AGENTS.md: no update needed; repository-wide workflow and compatibility guardrails already cover the Python slice.
+- Runtime project skills: no update needed; local repairs did not expose a durable workflow rule beyond existing orchestration and compatibility skills.
+- Specs: updated `.agents/sow/specs/product-scope.md` with the current Python writer, reader, journalctl, and limitation slice.
+- End-user/operator docs: added `python/README.md`.
+- End-user/operator skills: no output/reference skill is produced or consumed by this SOW.
+- SOW lifecycle: closed with `Status: completed` and moved to `done/` with implementation and artifact updates in the same commit.
+- SOW-status.md: updated for Python closeout.
+
+Specs update:
+
+- Updated `.agents/sow/specs/product-scope.md`.
+
+Project skills update:
+
+- No update needed; existing project skills already cover the required workflow.
+
+End-user/operator docs update:
+
+- Added `python/README.md`.
+
+End-user/operator skills update:
+
+- No update needed; no end-user/operator skill artifact exists for this SDK slice.
 
 ## Outcome
 
-Implementation not complete yet.
+Implementation completed the current Python SDK and file-backed journalctl slice.
 
 ## Lessons Extracted
 
-No Python-specific lessons yet.
+- Python `os.pwrite()` uses `os.pwrite(fd, buffer, file_offset)`, unlike Node's explicit buffer-offset/length file write API; mechanical porting from Node is risky here.
+- Python match-builder tests need to assert exact match counts; a script that prints `ok=False` but exits 0 is not validation evidence.
+- Directory writer compatibility must validate both the active open file and archived close state with stock `journalctl --directory`.
 
 ## Followup
 

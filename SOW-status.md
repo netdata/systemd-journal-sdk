@@ -20,7 +20,7 @@ Bootstrap mode: empty/new project.
 
 ## Active SOW
 
-- `.agents/sow/current/SOW-0007-20260523-python-sdk-and-journalctl.md`
+- None. Next activation target is `.agents/sow/pending/SOW-0008-20260523-interoperability-and-full-writer-features.md`.
 
 ## Completed SOWs
 
@@ -34,11 +34,12 @@ Bootstrap mode: empty/new project.
 - `.agents/sow/done/SOW-0010-20260523-go-reader-and-journalctl-completion.md`
 - `.agents/sow/done/SOW-0004-20260523-rust-sdk-and-journalctl.md`
 - `.agents/sow/done/SOW-0006-20260523-node-sdk-and-journalctl.md`
+- `.agents/sow/done/SOW-0007-20260523-python-sdk-and-journalctl.md`
 
 ## Next SOW
 
-- Current active: `.agents/sow/current/SOW-0007-20260523-python-sdk-and-journalctl.md`
-- Rationale: the Go, Rust, and Node.js SDK/journalctl slices are complete; Python is the remaining per-language SDK/journalctl slice before full interoperability and benchmark/profiling phases.
+- Next: `.agents/sow/pending/SOW-0008-20260523-interoperability-and-full-writer-features.md`
+- Rationale: the Go, Rust, Node.js, and Python SDK/journalctl slices are complete; full interoperability and remaining writer-format features are next before benchmark/profiling.
 
 ## Guardrails
 
@@ -68,3 +69,5 @@ Bootstrap mode: empty/new project.
 - 2026-05-24 Node.js pre-review progress: SOW-0006 had a locally validated Node.js reader, writer, directory writer, libsystemd-style facade, journalctl command, adapter, package test runner, README, product-scope update, and livewriter command. Validation passed syntax/runtime import checks, `npm test`, adapter manifest at 13 PASS / 2 SKIP, fixture journalctl counts, directory writer rotation/retention smoke, stock-reader live concurrency, and Node-reader live polling before external closeout review.
 - 2026-05-24 Node.js closed: SOW-0006 completed the pure Node.js SDK, libsystemd-style facade, file-backed journalctl command, conformance adapter, package tests, README, directory writer rotation/retention, and livewriter harness command. Final validation passed syntax/runtime import checks, `npm test`, shared conformance at 13 PASS / 2 SKIP, stock `journalctl --directory` live/closed reads, live stock `journalctl` and libsystemd reader concurrency on systemd `260 (260.1-2-manjaro)`, cross-language reads by stock/Go/Rust readers, dependency/native marker audit, `git diff --check`, and `.agents/sow/audit.sh`. Mimo and Minimax returned `VERDICT: PRODUCTION GRADE`; Kimi and GLM ran useful checks but timed out before final verdicts.
 - 2026-05-24 Python activation update: SOW-0007 is active after the Node.js closeout commit `3dd2a58`. The pre-implementation gate records plain Python, no native journal bindings, bytes-like binary values, Python integer 64-bit handling, Python `3.14.5`, and available standard-library `compression.zstd` support.
+- 2026-05-24 Python pre-review progress: SOW-0007 has a locally validated Python reader, writer, directory writer, libsystemd-style facade, journalctl command, adapter, package test runner, README, product-scope update, and livewriter command. Validation currently passes `python3 -m compileall python`, `python3 python/test_all.py`, full shared conformance at 15 results / 0 failures / 2 expected verification SKIPs, fixture journalctl counts, stock-reader live concurrency, and directory writer stock open/closed reads. Read-only external production-grade review is pending before close.
+- 2026-05-24 Python closed: SOW-0007 completed the pure Python SDK, libsystemd-style facade, file-backed journalctl command, conformance adapter, package tests, README, directory writer rotation/retention, writer exclusive locking, and livewriter harness command. Final validation passed `python3 python/test_all.py`, `python3 -m compileall python`, shared conformance at 15 results / 0 failures / 2 expected verification SKIPs, stock-reader live concurrency on systemd `260 (260.1-2-manjaro)`, dependency/native marker audit, `git diff --check`, and `.agents/sow/audit.sh`. Minimax and GLM returned `VERDICT: PRODUCTION GRADE`; Kimi previously returned `VERDICT: PRODUCTION GRADE` with non-blocking findings that were fixed, and Qwen's lowercase-field finding was dispositioned as a false positive with tests.

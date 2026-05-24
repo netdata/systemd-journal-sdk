@@ -180,6 +180,8 @@ Current Rust writer feature slice:
 - entry-count and file-size rotation;
 - archived file-count and byte-size retention, without deleting the active file
   to satisfy retention limits;
+- exclusive non-blocking writer file locks to protect the one-writer contract
+  among cooperating repository writers;
 - live one-writer/multiple-reader compatibility with stock `journalctl --file`
   and stock libsystemd readers for the current writer slice.
 
@@ -247,6 +249,56 @@ Current Node.js reader feature slice:
   file-backed journalctl cases.
 
 Current Node.js reader/writer limitations:
+
+- compact journal files are rejected;
+- xz/lz4-compressed DATA objects are rejected;
+- compressed DATA object writing is not implemented;
+- directory iteration is sequential by journal file and validated for
+  non-overlapping active/archive files; realtime interleaving across overlapping
+  multi-file directories is tracked under the interoperability phase;
+- boot listing uses file-level boot metadata in this slice;
+- full journal verification and FSS validation are not implemented;
+- daemon-only journalctl operations remain unsupported.
+
+Current Python writer feature slice:
+
+- regular, non-compact journal files;
+- uncompressed DATA objects;
+- keyed hash tables using the journal file ID;
+- byte-safe field values through `bytes`, `bytearray`, `memoryview`, and
+  string-compatible field values;
+- direct-file writing through `Writer`;
+- high-level directory writing through `Log` with systemd-compatible
+  active/archive naming;
+- entry-count and file-size rotation;
+- archived file-count and byte-size retention, without deleting the active file
+  to satisfy retention limits;
+- exclusive non-blocking writer file locks to protect the one-writer contract
+  among cooperating repository writers;
+- live one-writer/multiple-reader compatibility with stock `journalctl --file`
+  and stock libsystemd readers for the current writer slice.
+
+Current Python reader feature slice:
+
+- regular, non-compact journal files;
+- files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
+- whole-file zstd fixtures and zstd-compressed DATA objects through Python
+  `compression.zstd` where the optional standard-library module is available;
+- directory iteration across active and archived files, including one machine-id
+  subdirectory level;
+- forward/backward iteration, cursors, realtime and monotonic timestamps, binary
+  field values as `bytes`, field enumeration, and unique value enumeration;
+- systemd-compatible export/json/text formatting for the accepted fixture set;
+- libsystemd-style match tree behavior from `SdJournalAddMatch()`,
+  `SdJournalAddDisjunction()`, and `SdJournalAddConjunction()`;
+- file-backed Python journalctl behavior for `--file`, `--directory`,
+  text/json/export output, field listing, boot listing, repeated same-field OR
+  matches, and `+` disjunction;
+- Python conformance adapter support for reader, matching, importer,
+  compression, cursor, enumeration, stream, export, header parsing, and
+  file-backed journalctl cases.
+
+Current Python reader/writer limitations:
 
 - compact journal files are rejected;
 - xz/lz4-compressed DATA objects are rejected;
