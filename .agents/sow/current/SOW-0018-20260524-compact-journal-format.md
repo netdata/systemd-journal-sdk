@@ -185,6 +185,7 @@ CRITICAL REPOSITORY BOUNDARY:
 Failure handling:
 
 - Record implementer failure, reviewer failure, audit failure, fixture gaps, or model unavailability before changing plan or model.
+- External-agent repository-boundary violations must stop the run immediately. Record the command class, side effect, and replacement implementer before continuing.
 
 ## Execution Log
 
@@ -193,6 +194,8 @@ Failure handling:
 - Activated after SOW-0021 completed and was pushed.
 - Recorded user decision: compact format is required, and writers must expose explicit regular/compact selection while preserving regular output as the default unless changed by a later user decision.
 - Updated delegation metadata to use Kimi as implementer and Minimax as reviewer-only per current project routing.
+- Stopped the first Kimi implementer run after it violated the repository boundary by running a live-host journal write command (`systemd-cat`) for compact probing. Side effect: a synthetic test entry was written to the workstation journal outside this repository. No repository files were changed by that run.
+- Recorded the boundary failure before switching implementer routing. Next implementer is `llm-netdata-cloud/qwen3.6-plus`, following the fallback hierarchy.
 
 ## Validation
 

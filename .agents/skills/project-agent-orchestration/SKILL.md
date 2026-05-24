@@ -32,6 +32,7 @@ Do not use this skill for:
 - Implementer agents must run in normal coding mode, for example `opencode run -m "<model>" "<prompt>"`. Do not pass `--agent code-reviewer` to implementers because that selects a read-only reviewer role and prevents the requested edits.
 - Reviewer agents must run read-only. For opencode reviewer runs, use `--agent code-reviewer` and prompts that forbid creating, modifying, deleting, moving, formatting, staging, committing, or changing files.
 - Read-only dependency metadata commands can still write package caches. Prompts that allow dependency inspection must either forbid dependency-fetching commands or require cache/output variables under `.local/` or `/tmp`, including `GOMODCACHE`, `GOCACHE`, `GOPATH`, `npm_config_cache`, `PIP_CACHE_DIR`, `CARGO_HOME`, and equivalent tool caches.
+- Journal work must not probe the live host journal. External-agent prompts for journal compatibility work must forbid `systemd-cat`, `logger`, live `journalctl` without `--file` or a repository-local `--directory`, writes to `/var/log/journal` or `/run/log/journal`, and any systemd command that changes host journal state.
 
 Canonical external-agent prompt block:
 

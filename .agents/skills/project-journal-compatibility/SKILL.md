@@ -42,6 +42,7 @@ Do not use this skill for:
 - Smoke tests are not sufficient evidence for production compatibility. SOW validation must record exact stock systemd version, commands/helpers, stress duration, entry counts, reader counts, and failure criteria.
 - Common compression-library dependencies are allowed after dependency review. Journal parsing/writing must not depend on systemd/libjournal; CGO, native Node.js runtime addon loading, and linking to system journal libraries remain disallowed unless the user explicitly changes those separate constraints. Dependency packages may ship native artifacts if the SDK runtime path is constrained and tested to use only non-native implementations (e.g. WASM) and does not load or link native code at runtime.
 - Every external-agent prompt must include the canonical repository-boundary block verbatim from `AGENTS.md` or `.agents/skills/project-agent-orchestration/SKILL.md`.
+- Compatibility probing must not use the workstation's live journal. Do not run `systemd-cat`, `logger`, live `journalctl`, or write under `/var/log/journal` or `/run/log/journal`; stock-reader validation must use `journalctl --file` or repository-local `--directory` fixtures only.
 
 ## Best Practices
 
