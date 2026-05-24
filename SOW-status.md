@@ -171,3 +171,34 @@ node --test node/test/all.js
 
 - Compression DATA writing, xz/lz4/zstd writer parity, compact journal format, FSS/full verification, writer locking parity, and full directory traversal parity remain open in SOW-0008.
 - GLM and Minimax returned `PRODUCTION GRADE` for the binary matrix slice. Minimax's low documentation inconsistency finding was fixed before commit; Qwen stalled after initial file reads and produced no verdict.
+
+### Compression Matrix Fourth Slice
+
+**zstd DATA writing implemented** for Go, Rust, Node.js, and Python writers, with `tests/interoperability/run_compression_matrix.py` added and `tests/interoperability/README.md` updated.
+
+- **Matrix executed**: 72/72 checks PASS | 0 FAIL on systemd 260 (260.1-2-manjaro)
+- **Coverage**: all 4 language writers produce at least one `OBJECT_COMPRESSED_ZSTD` DATA object, set `HEADER_INCOMPATIBLE_COMPRESSED_ZSTD`, pass stock `journalctl --verify --file`, and are readable through stock journalctl, stock libsystemd, and Go/Rust/Node.js/Python journalctl rewrites.
+- **Compatibility fixes included**: Rust zstd frame content-size metadata is patched for stock systemd verification; Node.js and Python SipHash now mask long-message length words correctly; writer dedup/search paths compare decompressed DATA payloads.
+
+### Compression Matrix Commands Run
+
+```bash
+python3 tests/interoperability/run_compression_matrix.py
+python3 tests/interoperability/run_matrix.py --entries 10
+python3 tests/interoperability/run_binary_matrix.py
+python3 tests/interoperability/run_live_matrix.py --entries 10 --poll-readers 1
+python3 -m py_compile tests/interoperability/run_compression_matrix.py python/journal/hash.py python/journal/writer.py python/test_all.py
+python3 python/test_all.py
+(cd go && go test ./journal ./cmd/journalctl ./internal/testcmd/livewriter)
+cargo test --manifest-path rust/Cargo.toml -p journal-core -p journal-log-writer -p journal
+cargo build --manifest-path rust/Cargo.toml -p livewriter
+node --test node/test/all.js
+```
+
+### Compression Matrix Remaining Gaps
+
+- xz/lz4 DATA writing, compact journal format, FSS/full verification, writer locking parity, and full directory traversal parity remain open in SOW-0008 or require concrete follow-up mapping before close.
+- External review completed with Minimax, GLM, and Mimo all returning `PRODUCTION GRADE`.
+- Low cleanup findings were fixed before commit: Rust zstd frame patching now has unit coverage, Rust livewriter zstd/binary fixture generation is shared, Python writer reopen now checks zstd availability eagerly, Python livewriter threshold flags are a single alias pair, and `go/adapter/adapter` is ignored as a local Go build artifact.
+- Post-cleanup validation repeated successfully: compression matrix 72/72, closed-file matrix 104/104, binary matrix 52/52, live matrix 4/4, Rust tests/build, Go tests, Node tests, Python tests, and Python compile checks.
+- Same-scope post-cleanup review rerun completed with Minimax, GLM, and Mimo all returning `PRODUCTION GRADE`. Remaining reviewer notes are either verified non-issues or mapped to SOW-0009 benchmark/profile/optimize work.

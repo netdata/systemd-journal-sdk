@@ -4,6 +4,7 @@
 
 import { openSync, writeSync, readSync, closeSync, ftruncateSync, fsyncSync, renameSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import { readUint64LE, writeUint64LE, writeUint32LE, writeUint8, align8, randomUUID, isZeroUUID, bufEqual } from './binary.js';
 import {
   serializeFileHeader, parseFileHeader, parseObjectHeader, writeObjectHeader,
@@ -11,14 +12,18 @@ import {
   OBJECT_TYPE_DATA_HASH_TABLE, OBJECT_TYPE_FIELD_HASH_TABLE,
   OBJECT_TYPE_ENTRY_ARRAY, OBJECT_TYPE_FIELD,
   STATE_ONLINE, STATE_OFFLINE, STATE_ARCHIVED,
-  INCOMPATIBLE_KEYED_HASH,
+  INCOMPATIBLE_KEYED_HASH, INCOMPATIBLE_COMPRESSED_ZSTD,
   OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE, DATA_OBJECT_HEADER_SIZE,
   FIELD_OBJECT_HEADER_SIZE, HASH_ITEM_SIZE, OFFSET_ARRAY_OBJECT_HEADER_SIZE,
-  REGULAR_ENTRY_ITEM_SIZE,
+  REGULAR_ENTRY_ITEM_SIZE, OBJECT_COMPRESSED_XZ, OBJECT_COMPRESSED_LZ4, OBJECT_COMPRESSED_ZSTD,
   DEFAULT_DATA_HASH_BUCKETS, DEFAULT_FIELD_HASH_BUCKETS,
   INITIAL_ENTRY_ARRAY_CAP, INITIAL_DATA_ENTRY_ARRAY_CAP,
 } from './header.js';
 import { sipHash24, jenkinsHash64 } from './hash.js';
+
+export const COMPRESSION_NONE = 0;
+export const COMPRESSION_ZSTD = 1;
+export const DEFAULT_COMPRESS_THRESHOLD = 64;
 
 export class Writer {
   constructor(fd, path) {
@@ -30,6 +35,8 @@ export class Writer {
     this.bootId = null;
     this.started = 0;
     this.closed = false;
+    this.compression = COMPRESSION_NONE;
+    this.compressThreshold = DEFAULT_COMPRESS_THRESHOLD;
   }
 
   // Create or truncate a journal file.
@@ -37,6 +44,8 @@ export class Writer {
     const fd = openSync(path, 'w+');
     ftruncateSync(fd, 0);
     const w = new Writer(fd, path);
+    w.compression = normalizeCompression(opts.compression);
+    w.compressThreshold = opts.compressionThresholdBytes ?? DEFAULT_COMPRESS_THRESHOLD;
     w._initialize(opts);
     return w;
   }
@@ -49,7 +58,8 @@ export class Writer {
     if (bytesRead < HEADER_SIZE) { closeSync(fd); throw new Error('cannot read journal header'); }
 
     const header = parseFileHeader(headerBuf);
-    if ((header.incompatible_flags & ~INCOMPATIBLE_KEYED_HASH) !== 0) {
+    const supportedWriterIncompatible = INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_ZSTD;
+    if ((header.incompatible_flags & ~supportedWriterIncompatible) !== 0) {
       closeSync(fd); throw new Error('unsupported journal: incompatible flags');
     }
     if ((header.incompatible_flags & INCOMPATIBLE_KEYED_HASH) === 0) {
@@ -72,6 +82,8 @@ export class Writer {
     w.bootId = Buffer.from(header.tail_entry_boot_id);
     if (isZeroUUID(w.bootId)) w.bootId = Buffer.from(header.file_id);
     w.started = now - monotonicBase;
+    w.compression = (header.incompatible_flags & INCOMPATIBLE_COMPRESSED_ZSTD) !== 0 ? COMPRESSION_ZSTD : COMPRESSION_NONE;
+    w.compressThreshold = DEFAULT_COMPRESS_THRESHOLD;
 
     w.header.state = STATE_ONLINE;
     w._writeHeader();
@@ -94,10 +106,15 @@ export class Writer {
     const bootId = opts.bootId || randomUUID();
     const seqnumId = opts.seqnumId || randomUUID();
 
+    let incFlags = INCOMPATIBLE_KEYED_HASH;
+    if (this.compression === COMPRESSION_ZSTD) {
+      incFlags |= INCOMPATIBLE_COMPRESSED_ZSTD;
+    }
+
     this.header = {
       signature: 'LPKSHHRH',
       compatible_flags: 0,
-      incompatible_flags: INCOMPATIBLE_KEYED_HASH,
+      incompatible_flags: incFlags,
       state: STATE_ONLINE,
       file_id: fileId,
       machine_id: machineId,
@@ -240,13 +257,27 @@ export class Writer {
     if (existing !== null) return { offset: existing, hash };
 
     const offset = this.appendOffset;
-    const size = BigInt(DATA_OBJECT_HEADER_SIZE + payload.length);
+
+    let objectPayload = payload;
+    let compressionFlag = 0;
+    if (this.compression === COMPRESSION_ZSTD && payload.length >= this.compressThreshold) {
+      try {
+        const compressed = zstdCompressSync(payload);
+        if (compressed.length < payload.length) {
+          objectPayload = compressed;
+          compressionFlag = OBJECT_COMPRESSED_ZSTD;
+        }
+      } catch (_) {
+        // compression failed, use uncompressed
+      }
+    }
+
+    const size = BigInt(DATA_OBJECT_HEADER_SIZE + objectPayload.length);
     const alignedSize = align8(size);
     const buf = Buffer.alloc(Number(alignedSize));
-    writeObjectHeader(buf, 0, OBJECT_TYPE_DATA, 0, size);
+    writeObjectHeader(buf, 0, OBJECT_TYPE_DATA, compressionFlag, size);
     writeUint64LE(buf, 16, hash);
-    // next_hash_offset (24), next_field_offset (32), entry_offset (40), entry_array_offset (48), n_entries (56) = 0
-    payload.copy(buf, DATA_OBJECT_HEADER_SIZE);
+    objectPayload.copy(buf, DATA_OBJECT_HEADER_SIZE);
     writeSync(this.fd, buf, 0, buf.length, Number(this.appendOffset));
     this._objectAdded(offset, size);
 
@@ -332,11 +363,19 @@ export class Writer {
   }
 
   _readDataPayload(offset) {
-    const objSize = readObjectSizeFromFd(this.fd, offset);
+    const objHeader = readObjectHeaderFromFd(this.fd, offset);
+    if (!objHeader || objHeader.type !== OBJECT_TYPE_DATA) return null;
+    const objSize = objHeader.size;
     const payloadLen = Number(objSize) - DATA_OBJECT_HEADER_SIZE;
     if (payloadLen <= 0) return null;
     const buf = Buffer.alloc(payloadLen);
     readSync(this.fd, buf, 0, payloadLen, Number(offset) + DATA_OBJECT_HEADER_SIZE);
+    if ((objHeader.flags & OBJECT_COMPRESSED_ZSTD) !== 0) {
+      return zstdDecompressSync(buf);
+    }
+    if ((objHeader.flags & (OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4)) !== 0) {
+      throw new Error(`unsupported DATA object compression flags: 0x${objHeader.flags.toString(16)}`);
+    }
     return buf;
   }
 
@@ -587,6 +626,16 @@ function syncParentDirectory(path) {
   } finally {
     closeSync(dirFd);
   }
+}
+
+function normalizeCompression(value) {
+  if (value === undefined || value === null || value === COMPRESSION_NONE || value === 'none') {
+    return COMPRESSION_NONE;
+  }
+  if (value === COMPRESSION_ZSTD || value === 'zstd') {
+    return COMPRESSION_ZSTD;
+  }
+  throw new Error(`unsupported compression: ${value}`);
 }
 
 function _validateFieldName(name) {

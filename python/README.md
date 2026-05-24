@@ -20,6 +20,7 @@ no system journal library linkage.
 
 - Create regular, non-compact, keyed-hash journal files
 - Byte-safe field values via `bytes`/`bytearray`/`memoryview`
+- Optional zstd-compressed DATA object writing via `compression: 'zstd'`
 - Append entries with integer timestamps and sequence numbers
 - Directory writer with source-scoped systemd active/archive names, rotation, and retention
 
@@ -152,7 +153,7 @@ python3 cmd/journalctl.py --file ./sample.journal PRIORITY=3 PRIORITY=4 + MESSAG
 ## Limitations
 
 - Compact journal format not supported
-- Xz/lz4 compressed DATA objects not supported
+- Xz/lz4 compressed DATA objects and xz/lz4 DATA writing not supported
 - Forward Secure Sealing (FSS) not implemented
 - Full journal verification not implemented
 - `--follow` not supported (would block the process)
@@ -163,7 +164,7 @@ python3 cmd/journalctl.py --file ./sample.journal PRIORITY=3 PRIORITY=4 + MESSAG
 No external packages. Uses only Python standard library:
 
 - `os`, `struct`, `tempfile`, `time`, `json` - Core I/O and utilities
-- `compression.zstd` - Zstd decompression (Python 3.14+)
+- `compression.zstd` - Zstd compression and decompression (Python 3.14+)
 
 ## Conformance
 

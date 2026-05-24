@@ -14,14 +14,19 @@ from .header import (
     OBJECT_TYPE_DATA_HASH_TABLE, OBJECT_TYPE_FIELD_HASH_TABLE,
     OBJECT_TYPE_ENTRY_ARRAY, OBJECT_TYPE_FIELD,
     STATE_ONLINE, STATE_OFFLINE, STATE_ARCHIVED,
-    INCOMPATIBLE_KEYED_HASH,
+    INCOMPATIBLE_KEYED_HASH, INCOMPATIBLE_COMPRESSED_ZSTD,
     OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE, DATA_OBJECT_HEADER_SIZE,
     FIELD_OBJECT_HEADER_SIZE, HASH_ITEM_SIZE, OFFSET_ARRAY_OBJECT_HEADER_SIZE,
-    REGULAR_ENTRY_ITEM_SIZE,
+    REGULAR_ENTRY_ITEM_SIZE, OBJECT_COMPRESSED_XZ, OBJECT_COMPRESSED_LZ4, OBJECT_COMPRESSED_ZSTD,
     DEFAULT_DATA_HASH_BUCKETS, DEFAULT_FIELD_HASH_BUCKETS,
     INITIAL_ENTRY_ARRAY_CAP, INITIAL_DATA_ENTRY_ARRAY_CAP,
 )
 from .hash import sip_hash_24, jenkins_hash_64
+from .compress import decompress_zst_sync
+
+COMPRESSION_NONE = 0
+COMPRESSION_ZSTD = 1
+DEFAULT_COMPRESS_THRESHOLD = 64
 
 
 class Writer:
@@ -34,6 +39,8 @@ class Writer:
         self._boot_id = None
         self._started = 0
         self._closed = False
+        self._compression = COMPRESSION_NONE
+        self._compress_threshold = DEFAULT_COMPRESS_THRESHOLD
 
     @staticmethod
     def create(path, opts=None):
@@ -43,6 +50,10 @@ class Writer:
             _lock_fd(fd)
             os.ftruncate(fd, 0)
             w = Writer(fd, path)
+            w._compression = _normalize_compression(opts.get('compression', COMPRESSION_NONE))
+            if w._compression == COMPRESSION_ZSTD:
+                _ensure_zstd_available()
+            w._compress_threshold = opts.get('compression_threshold_bytes', DEFAULT_COMPRESS_THRESHOLD)
             w._initialize(opts)
             return w
         except Exception:
@@ -64,7 +75,8 @@ class Writer:
 
         header = parse_file_header(header_buf)
         flags = header['incompatible_flags']
-        if flags & ~INCOMPATIBLE_KEYED_HASH:
+        supported_writer_incompatible = INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_ZSTD
+        if flags & ~supported_writer_incompatible:
             os.close(fd)
             raise ValueError(f'unsupported journal: incompatible flags 0x{flags:x}')
         if not (flags & INCOMPATIBLE_KEYED_HASH):
@@ -73,6 +85,13 @@ class Writer:
         if header['data_hash_table_offset'] == 0 or header['field_hash_table_offset'] == 0 or header['tail_object_offset'] == 0:
             os.close(fd)
             raise ValueError('invalid journal: missing hash tables')
+        compression = COMPRESSION_ZSTD if (flags & INCOMPATIBLE_COMPRESSED_ZSTD) else COMPRESSION_NONE
+        if compression == COMPRESSION_ZSTD:
+            try:
+                _ensure_zstd_available()
+            except Exception:
+                os.close(fd)
+                raise
 
         tail_size = _read_object_size_from_fd(fd, header['tail_object_offset'])
         now_ms = _current_time_ms()
@@ -86,6 +105,8 @@ class Writer:
         if is_zero_uuid(w._boot_id):
             w._boot_id = header['file_id']
         w._started = now_ms - monotonic_base
+        w._compression = compression
+        w._compress_threshold = DEFAULT_COMPRESS_THRESHOLD
 
         w._header['state'] = STATE_ONLINE
         w._write_header()
@@ -107,10 +128,14 @@ class Writer:
         boot_id = _uuid_option(opts.get('boot_id'), random_uuid())
         seqnum_id = _uuid_option(opts.get('seqnum_id'), random_uuid())
 
+        inc_flags = INCOMPATIBLE_KEYED_HASH
+        if self._compression == COMPRESSION_ZSTD:
+            inc_flags |= INCOMPATIBLE_COMPRESSED_ZSTD
+
         self._header = {
             'signature': 'LPKSHHRH',
             'compatible_flags': 0,
-            'incompatible_flags': INCOMPATIBLE_KEYED_HASH,
+            'incompatible_flags': inc_flags,
             'state': STATE_ONLINE,
             'file_id': file_id,
             'machine_id': machine_id,
@@ -240,12 +265,24 @@ class Writer:
             return existing, h
 
         offset = self._append_offset
-        size = DATA_OBJECT_HEADER_SIZE + len(payload)
+
+        object_payload = payload
+        compression_flag = 0
+        if self._compression == COMPRESSION_ZSTD and len(payload) >= self._compress_threshold:
+            try:
+                compressed = _zstd_compress(payload)
+                if len(compressed) < len(payload):
+                    object_payload = compressed
+                    compression_flag = OBJECT_COMPRESSED_ZSTD
+            except Exception:
+                pass
+
+        size = DATA_OBJECT_HEADER_SIZE + len(object_payload)
         aligned_size = align8(size)
         buf = bytearray(aligned_size)
-        write_object_header(buf, 0, OBJECT_TYPE_DATA, 0, size)
+        write_object_header(buf, 0, OBJECT_TYPE_DATA, compression_flag, size)
         struct.pack_into('<Q', buf, 16, h)
-        buf[DATA_OBJECT_HEADER_SIZE:DATA_OBJECT_HEADER_SIZE + len(payload)] = payload
+        buf[DATA_OBJECT_HEADER_SIZE:DATA_OBJECT_HEADER_SIZE + len(object_payload)] = object_payload
         os.pwrite(self._fd, buf, offset)
         self._object_added(offset, size)
 
@@ -324,11 +361,19 @@ class Writer:
         os.pwrite(self._fd, buf, offset)
 
     def _read_data_payload(self, offset):
-        obj_size = _read_object_size_from_fd(self._fd, offset)
+        obj_header = _read_object_header_from_fd(self._fd, offset)
+        if not obj_header or obj_header['type'] != OBJECT_TYPE_DATA:
+            return None
+        obj_size = obj_header['size']
         payload_len = obj_size - DATA_OBJECT_HEADER_SIZE
         if payload_len <= 0:
             return None
         buf = os.pread(self._fd, payload_len, offset + DATA_OBJECT_HEADER_SIZE)
+        flags = obj_header['flags']
+        if flags & OBJECT_COMPRESSED_ZSTD:
+            return decompress_zst_sync(buf)
+        if flags & (OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4):
+            raise ValueError(f'unsupported DATA object compression flags: 0x{flags:x}')
         return buf
 
     def _read_field_payload(self, offset):
@@ -586,3 +631,20 @@ def _uuid_option(value, fallback):
     if not isinstance(value, bytes) or len(value) != 16:
         raise ValueError('uuid options must be 16 bytes or 32 hex characters')
     return value
+
+
+def _normalize_compression(value):
+    if value is None or value == COMPRESSION_NONE or value == 'none':
+        return COMPRESSION_NONE
+    if value == COMPRESSION_ZSTD or value == 'zstd':
+        return COMPRESSION_ZSTD
+    raise ValueError(f'unsupported compression: {value}')
+
+
+def _zstd_compress(payload):
+    import compression.zstd
+    return compression.zstd.compress(payload)
+
+
+def _ensure_zstd_available():
+    import compression.zstd

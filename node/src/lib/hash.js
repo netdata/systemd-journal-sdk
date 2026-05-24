@@ -44,7 +44,7 @@ export function sipHash24(key, msg) {
     i += 8;
   }
 
-  let b = len << 56n;
+  let b = (len << 56n) & 0xffffffffffffffffn;
   for (let j = 0; i < msg.length; i++, j++) {
     b |= BigInt(msg[i]) << BigInt(8 * j);
   }

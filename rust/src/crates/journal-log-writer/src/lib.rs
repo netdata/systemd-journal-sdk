@@ -44,6 +44,7 @@ mod error;
 mod log;
 
 pub use error::{Result, WriterError};
+pub use journal_core::file::Compression;
 pub use log::{
     Config, EntryTimestamps, Log, LogLifecycleEvent, LogLifecycleObserver, RetentionPolicy,
     RotationPolicy,

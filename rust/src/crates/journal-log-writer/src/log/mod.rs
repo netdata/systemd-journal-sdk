@@ -11,7 +11,7 @@ use journal_core::field_map::{
     FieldMap, REMAPPING_MARKER, extract_field_name, is_systemd_compatible,
 };
 use journal_core::file::mmap::MmapMut;
-use journal_core::file::{JournalFile, JournalFileOptions, JournalWriter};
+use journal_core::file::{Compression, JournalFile, JournalFileOptions, JournalWriter};
 use journal_registry::repository;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -110,6 +110,8 @@ impl ActiveFile {
         next_seqnum: u64,
         max_file_size: Option<u64>,
         _head_realtime: u64,
+        compression: Compression,
+        compression_threshold: usize,
     ) -> Result<Self> {
         let head_seqnum = next_seqnum;
 
@@ -118,10 +120,18 @@ impl ActiveFile {
         let options = JournalFileOptions::new(chain.machine_id, boot_id, seqnum_id)
             .with_window_size(8 * 1024 * 1024)
             .with_optimized_buckets(None, max_file_size)
-            .with_keyed_hash(true);
+            .with_keyed_hash(true)
+            .with_compression(compression)
+            .with_compress_threshold(compression_threshold);
 
         let mut journal_file = JournalFile::create(&repository_file, options)?;
-        let writer = JournalWriter::new(&mut journal_file, head_seqnum, boot_id)?;
+        let writer = JournalWriter::new_with_compression(
+            &mut journal_file,
+            head_seqnum,
+            boot_id,
+            compression,
+            compression_threshold,
+        )?;
 
         Ok(Self {
             repository_file,
@@ -136,6 +146,8 @@ impl ActiveFile {
         chain: &mut OwnedChain,
         max_file_size: Option<u64>,
         _head_realtime: u64,
+        compression: Compression,
+        compression_threshold: usize,
     ) -> Result<Self> {
         let next_seqnum = self.writer.next_seqnum();
         let boot_id = self.writer.boot_id();
@@ -147,7 +159,13 @@ impl ActiveFile {
         let mut journal_file = self
             .journal_file
             .create_successor(&repository_file, max_file_size)?;
-        let writer = JournalWriter::new(&mut journal_file, head_seqnum, boot_id)?;
+        let writer = JournalWriter::new_with_compression(
+            &mut journal_file,
+            head_seqnum,
+            boot_id,
+            compression,
+            compression_threshold,
+        )?;
 
         Ok(Self {
             repository_file,
@@ -606,7 +624,13 @@ impl Log {
                 old_header.head_entry_seqnum,
                 old_header.head_entry_realtime,
             )?;
-            let new_file = old_file.rotate(&mut self.chain, max_file_size, head_realtime)?;
+            let new_file = old_file.rotate(
+                &mut self.chain,
+                max_file_size,
+                head_realtime,
+                self.config.compression,
+                self.config.compression_threshold,
+            )?;
             let active = new_file.repository_file.clone();
             (
                 new_file,
@@ -621,6 +645,8 @@ impl Log {
                     self.current_seqnum + 1,
                     max_file_size,
                     head_realtime,
+                    self.config.compression,
+                    self.config.compression_threshold,
                 )?,
                 None,
             )

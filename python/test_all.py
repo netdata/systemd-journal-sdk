@@ -31,6 +31,7 @@ from journal.header import (  # noqa: E402
     OBJECT_TYPE_DATA,
     write_object_header,
 )
+from journal.hash import sip_hash_24  # noqa: E402
 
 
 def run(args, *, input_data=None, cwd=REPO_ROOT):
@@ -60,6 +61,12 @@ def test_match_validation():
         else:
             raise AssertionError(f'expected invalid match rejection for {item!r}')
     parse_match_string('FOOBAR=waldo')
+
+
+def test_siphash_masks_long_message_length():
+    key = bytes.fromhex('de5f2812d87b89e81af97cfe8e1423e9')
+    payload = b'COMPRESSED_PAYLOAD=' + bytes((i % 26) + 0x41 for i in range(256))
+    assert sip_hash_24(key, payload) == 0xf9a795df589b5204
 
 
 def test_lowercase_field_rejected():

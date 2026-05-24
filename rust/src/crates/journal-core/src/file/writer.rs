@@ -4,20 +4,23 @@ use super::mmap::MemoryMapMut;
 use super::mmap::MmapMut;
 use crate::error::{JournalError, Result};
 use crate::file::{
-    CompactEntryItem, DataHashTable, DataObject, DataObjectHeader, DataPayloadType, EntryObject,
-    EntryObjectHeader, FieldHashTable, FieldObject, FieldObjectHeader, HashItem, HashTable,
-    HashTableMut, HashableObject, HashableObjectMut, HeaderIncompatibleFlags, JournalFile,
-    JournalFileOptions, JournalHeader, JournalState, ObjectHeader, ObjectType, RegularEntryItem,
-    hash::jenkins_hash64, journal_hash_data,
+    CompactEntryItem, Compression, DataHashTable, DataObject, DataObjectHeader, DataPayloadType,
+    EntryObject, EntryObjectHeader, FieldHashTable, FieldObject, FieldObjectHeader, HashItem,
+    HashTable, HashTableMut, HashableObject, HashableObjectMut, HeaderIncompatibleFlags,
+    JournalFile, JournalFileOptions, JournalHeader, JournalState, ObjectFlags, ObjectHeader,
+    ObjectType, RegularEntryItem, hash::jenkins_hash64, journal_hash_data,
 };
 use rand::{Rng, seq::IndexedRandom};
 use rustc_hash::{FxHashMap, FxHasher};
+use std::borrow::Cow;
 use std::hash::Hasher;
+use std::io::Cursor;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::Path;
 use zerocopy::{FromBytes, IntoBytes};
 
 const OBJECT_ALIGNMENT: u64 = 8;
+const DEFAULT_COMPRESS_THRESHOLD: usize = 64;
 const FIELD_CACHE_MAX_ENTRIES: usize = 1024;
 const FIELD_CACHE_MAX_PAYLOAD_LEN: usize = 128;
 const RECENT_DATA_CACHE_SLOTS: usize = 4096;
@@ -118,6 +121,8 @@ pub struct JournalWriter {
     recent_data_cache: RecentDataCache,
     first_entry_monotonic: Option<u64>,
     boot_id: uuid::Uuid,
+    compression: Compression,
+    compress_threshold: usize,
 }
 
 impl JournalWriter {
@@ -146,6 +151,31 @@ impl JournalWriter {
         next_seqnum: u64,
         boot_id: uuid::Uuid,
     ) -> Result<Self> {
+        let compression = if journal_file
+            .journal_header_ref()
+            .has_incompatible_flag(HeaderIncompatibleFlags::CompressedZstd)
+        {
+            Compression::Zstd
+        } else {
+            Compression::None
+        };
+
+        Self::new_with_compression(
+            journal_file,
+            next_seqnum,
+            boot_id,
+            compression,
+            DEFAULT_COMPRESS_THRESHOLD,
+        )
+    }
+
+    pub fn new_with_compression(
+        journal_file: &mut JournalFile<MmapMut>,
+        next_seqnum: u64,
+        boot_id: uuid::Uuid,
+        compression: Compression,
+        compress_threshold: usize,
+    ) -> Result<Self> {
         let append_offset = {
             let header = journal_file.journal_header_ref();
 
@@ -171,12 +201,20 @@ impl JournalWriter {
             recent_data_cache: RecentDataCache::new(),
             first_entry_monotonic: None,
             boot_id,
+            compression,
+            compress_threshold,
         })
     }
 
     /// Creates a successor writer for a new journal file
     pub fn create_successor(&self, journal_file: &mut JournalFile<MmapMut>) -> Result<Self> {
-        Self::new(journal_file, self.next_seqnum, self.boot_id)
+        Self::new_with_compression(
+            journal_file,
+            self.next_seqnum,
+            self.boot_id,
+            self.compression,
+            self.compress_threshold,
+        )
     }
 
     pub fn add_entry(
@@ -303,28 +341,26 @@ impl JournalWriter {
                 Ok(entry_item)
             }
             None => {
-                // We will have to write the new data object at the current
-                // tail offset
                 let data_offset = self.append_offset;
+                let (stored_payload, object_flags) = self.stored_data_payload(payload);
                 let data_size = {
                     let mut data_guard =
-                        journal_file.data_mut(data_offset, Some(payload.len() as u64))?;
+                        journal_file.data_mut(data_offset, Some(stored_payload.len() as u64))?;
 
                     data_guard.header.hash = hash;
-                    data_guard.set_payload(payload);
+                    data_guard.set_payload(&stored_payload);
+                    data_guard.header.object_header.flags = object_flags;
+
                     data_guard.header.object_header.aligned_size()
                 };
 
                 self.object_added(journal_file, data_offset, data_size);
 
-                // Update hash table
                 journal_file.data_hash_table_set_tail_offset(hash, data_offset)?;
 
-                // Add the field object, if we have any
                 if let Some(equals_pos) = payload.iter().position(|&b| b == b'=') {
                     let field_offset = self.add_field(journal_file, &payload[..equals_pos])?;
 
-                    // Link data object to the linked-list
                     {
                         let head_data_offset = {
                             let field_guard = journal_file.field_ref(field_offset)?;
@@ -335,7 +371,6 @@ impl JournalWriter {
                         data_guard.header.next_field_offset = head_data_offset;
                     }
 
-                    // Link field to the head of the linked list
                     {
                         let mut field_guard = journal_file.field_mut(field_offset, None)?;
                         field_guard.header.head_data_offset = Some(data_offset);
@@ -350,6 +385,21 @@ impl JournalWriter {
                 Ok(entry_item)
             }
         }
+    }
+
+    fn stored_data_payload<'a>(&self, payload: &'a [u8]) -> (Cow<'a, [u8]>, u8) {
+        if self.compression == Compression::Zstd && payload.len() >= self.compress_threshold {
+            let compressed = ruzstd::encoding::compress_to_vec(
+                Cursor::new(payload),
+                ruzstd::encoding::CompressionLevel::Fastest,
+            );
+            let compressed = zstd_frame_with_content_size(compressed, payload.len());
+            if compressed.len() < payload.len() {
+                return (Cow::Owned(compressed), ObjectFlags::CompressedZstd as u8);
+            }
+        }
+
+        (Cow::Borrowed(payload), 0)
     }
 
     fn add_field(
@@ -588,12 +638,54 @@ impl JournalWriter {
     }
 }
 
+fn zstd_frame_with_content_size(frame: Vec<u8>, content_size: usize) -> Vec<u8> {
+    const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
+    const SINGLE_SEGMENT_FLAG: u8 = 1 << 5;
+    const CONTENT_CHECKSUM_FLAG: u8 = 1 << 2;
+
+    if frame.len() < 6 || frame[0..4] != ZSTD_MAGIC {
+        return frame;
+    }
+
+    let descriptor = frame[4];
+    let dictionary_id_flag = descriptor & 0x03;
+    let frame_content_size_flag = descriptor >> 6;
+    if dictionary_id_flag != 0
+        || frame_content_size_flag != 0
+        || (descriptor & SINGLE_SEGMENT_FLAG) != 0
+    {
+        return frame;
+    }
+
+    let (new_frame_content_size_flag, frame_content_size) = if content_size <= 255 {
+        (0u8, vec![content_size as u8])
+    } else if content_size <= 65_791 {
+        (1u8, ((content_size - 256) as u16).to_le_bytes().to_vec())
+    } else if u32::try_from(content_size).is_ok() {
+        (2u8, (content_size as u32).to_le_bytes().to_vec())
+    } else {
+        (3u8, (content_size as u64).to_le_bytes().to_vec())
+    };
+
+    let mut patched = Vec::with_capacity(frame.len() + frame_content_size.len() - 1);
+    patched.extend_from_slice(&frame[..4]);
+    patched.push(
+        (new_frame_content_size_flag << 6)
+            | SINGLE_SEGMENT_FLAG
+            | (descriptor & CONTENT_CHECKSUM_FLAG),
+    );
+    patched.extend_from_slice(&frame_content_size);
+    patched.extend_from_slice(&frame[6..]);
+    patched
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         EntryItem, FIELD_CACHE_MAX_ENTRIES, FIELD_CACHE_MAX_PAYLOAD_LEN, FieldCache,
-        RECENT_DATA_CACHE_MAX_PAYLOAD_LEN, RecentDataCache,
+        RECENT_DATA_CACHE_MAX_PAYLOAD_LEN, RecentDataCache, zstd_frame_with_content_size,
     };
+    use std::io::{Cursor, Read};
     use std::num::NonZeroU64;
 
     #[test]
@@ -667,5 +759,60 @@ mod tests {
         cache.insert(&oversized, item);
 
         assert!(cache.get(&oversized).is_none());
+    }
+
+    #[test]
+    fn zstd_frame_with_content_size_adds_decodable_frame_size() {
+        let payload: Vec<u8> = (0..275usize)
+            .map(|index| (index % 26) as u8 + b'A')
+            .collect();
+        let frame = ruzstd::encoding::compress_to_vec(
+            Cursor::new(payload.as_slice()),
+            ruzstd::encoding::CompressionLevel::Fastest,
+        );
+
+        assert_eq!(&frame[..4], &[0x28, 0xb5, 0x2f, 0xfd]);
+        assert_eq!(frame[4] >> 6, 0);
+        assert_eq!(frame[4] & (1 << 5), 0);
+
+        let patched = zstd_frame_with_content_size(frame, payload.len());
+
+        assert_eq!(&patched[..4], &[0x28, 0xb5, 0x2f, 0xfd]);
+        assert_eq!(patched[4] >> 6, 1);
+        assert_ne!(patched[4] & (1 << 5), 0);
+        assert_eq!(
+            u16::from_le_bytes([patched[5], patched[6]]) as usize + 256,
+            payload.len()
+        );
+
+        let mut decoder = ruzstd::decoding::StreamingDecoder::new(patched.as_slice()).unwrap();
+        let mut decoded = Vec::new();
+        decoder.read_to_end(&mut decoded).unwrap();
+
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn zstd_frame_with_content_size_leaves_unsupported_frames_unchanged() {
+        let invalid = vec![0, 1, 2, 3, 4, 5];
+        assert_eq!(zstd_frame_with_content_size(invalid.clone(), 16), invalid);
+
+        let payload = b"FRAME_CONTENT_SIZE_ALREADY_SET";
+        let frame = ruzstd::encoding::compress_to_vec(
+            Cursor::new(payload.as_slice()),
+            ruzstd::encoding::CompressionLevel::Fastest,
+        );
+        let patched = zstd_frame_with_content_size(frame.clone(), payload.len());
+        assert_eq!(
+            zstd_frame_with_content_size(patched.clone(), payload.len()),
+            patched
+        );
+
+        let mut dictionary_frame = frame;
+        dictionary_frame[4] |= 1;
+        assert_eq!(
+            zstd_frame_with_content_size(dictionary_frame.clone(), payload.len()),
+            dictionary_frame
+        );
     }
 }

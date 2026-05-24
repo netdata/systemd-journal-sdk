@@ -17,6 +17,9 @@ func main() {
 	var syncEvery int
 	var crashAfter int
 	var binaryFixture bool
+	var compressionStr string
+	var compressThreshold int
+	var zstdFixture bool
 
 	flag.StringVar(&path, "path", "", "journal path to create")
 	flag.StringVar(&readyFile, "ready-file", "", "path to create after the first entry is committed")
@@ -25,6 +28,9 @@ func main() {
 	flag.IntVar(&syncEvery, "sync-every", 25, "sync every N entries")
 	flag.IntVar(&crashAfter, "crash-after", 0, "exit with status 17 after N entries without closing")
 	flag.BoolVar(&binaryFixture, "binary-fixture", false, "write binary fields in the first entry")
+	flag.StringVar(&compressionStr, "compression", "none", "compression: none, zstd")
+	flag.IntVar(&compressThreshold, "compress-threshold", 64, "minimum payload size for compression")
+	flag.BoolVar(&zstdFixture, "zstd-fixture", false, "write zstd-compressed fields in the first entry")
 	flag.Parse()
 
 	if path == "" || readyFile == "" || entries <= 0 {
@@ -38,7 +44,13 @@ func main() {
 		os.Exit(2)
 	}
 
-	w, err := journal.Create(path, journal.Options{})
+	compression := journal.CompressionNone
+	if compressionStr == "zstd" {
+		compression = journal.CompressionZSTD
+	}
+
+	opts := journal.Options{Compression: compression, CompressThresholdBytes: compressThreshold}
+	w, err := journal.Create(path, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create journal: %v\n", err)
 		os.Exit(1)
@@ -61,6 +73,19 @@ func main() {
 				{Name: "BINARY_PAYLOAD", Value: []byte{0x00, 0x01, 0x02, 'A', '\n', 0x7f, 0x80, 0xff}},
 				{Name: "BINARY_MATCH", Value: []byte{'a', 'b', 'c', 0x07, 'd', 'e', 'f'}},
 				{Name: "BINARY_EMPTY", Value: []byte{}},
+			}
+		} else if zstdFixture && i == 0 {
+			largePayload := make([]byte, 256)
+			for j := range largePayload {
+				largePayload[j] = byte(j%26 + 'A')
+			}
+			fields = []journal.Field{
+				journal.StringField("TEST_ID", "zstd-interoperability"),
+				journal.StringField("MESSAGE", "zstd interoperability"),
+				journal.StringField("PRIORITY", "6"),
+				journal.StringField("LIVE_SEQ", "000000"),
+				{Name: "COMPRESSED_PAYLOAD", Value: largePayload},
+				{Name: "COMPRESSED_MATCH", Value: largePayload[:32]},
 			}
 		}
 		if err := w.Append(fields, journal.EntryOptions{

@@ -39,6 +39,7 @@ pub trait BucketVisitor<'a> {
 struct PayloadMatcher<'data, T> {
     payload: &'data [u8],
     hash: u64,
+    decompression_buffer: Vec<u8>,
     _phantom: PhantomData<T>,
 }
 
@@ -47,6 +48,7 @@ impl<'data, B: ByteSlice> PayloadMatcher<'data, DataObject<B>> {
         Self {
             payload,
             hash,
+            decompression_buffer: Vec::new(),
             _phantom: PhantomData::<DataObject<B>>,
         }
     }
@@ -57,6 +59,7 @@ impl<'data, B: ByteSlice> PayloadMatcher<'data, FieldObject<B>> {
         Self {
             payload,
             hash,
+            decompression_buffer: Vec::new(),
             _phantom: PhantomData::<FieldObject<B>>,
         }
     }
@@ -70,11 +73,43 @@ where
     type Output = NonZeroU64;
 
     fn visit(&mut self, object: &ValueGuard<'a, Self::Object>) -> Result<Option<Self::Output>> {
-        if object.hash() == self.hash && object.raw_payload() == self.payload {
+        if object.hash() != self.hash {
+            return Ok(None);
+        }
+
+        let matches = if object.is_compressed() {
+            let len = object.decompress(&mut self.decompression_buffer)?;
+            self.decompression_buffer[..len] == *self.payload
+        } else {
+            object.raw_payload() == self.payload
+        };
+
+        if matches {
             Ok(Some(object.offset()))
         } else {
             Ok(None)
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compression {
+    None,
+    Zstd,
+}
+
+impl Compression {
+    pub fn as_incompatible_flag(&self) -> u32 {
+        match self {
+            Compression::None => 0,
+            Compression::Zstd => HeaderIncompatibleFlags::CompressedZstd as u32,
+        }
+    }
+}
+
+impl Default for Compression {
+    fn default() -> Self {
+        Compression::None
     }
 }
 
@@ -88,6 +123,8 @@ pub struct JournalFileOptions {
     data_hash_table_buckets: usize,
     field_hash_table_buckets: usize,
     enable_keyed_hash: bool,
+    compression: Compression,
+    compress_threshold: usize,
 }
 
 impl JournalFileOptions {
@@ -103,6 +140,8 @@ impl JournalFileOptions {
             data_hash_table_buckets: 4096,
             field_hash_table_buckets: 512,
             enable_keyed_hash: true,
+            compression: Compression::None,
+            compress_threshold: 64,
         }
     }
 
@@ -177,6 +216,24 @@ impl JournalFileOptions {
     pub fn with_keyed_hash(mut self, enabled: bool) -> Self {
         self.enable_keyed_hash = enabled;
         self
+    }
+
+    pub fn with_compression(mut self, compression: Compression) -> Self {
+        self.compression = compression;
+        self
+    }
+
+    pub fn with_compress_threshold(mut self, threshold: usize) -> Self {
+        self.compress_threshold = threshold;
+        self
+    }
+
+    pub fn compression(&self) -> Compression {
+        self.compression
+    }
+
+    pub fn compress_threshold(&self) -> usize {
+        self.compress_threshold
     }
 
     pub fn create<M: MemoryMapMut>(self, file: &crate::repository::File) -> Result<JournalFile<M>> {
@@ -729,6 +786,12 @@ impl<M: MemoryMapMut> JournalFile<M> {
         .with_optimized_buckets(bucket_utilization, max_file_size)
         .with_keyed_hash(header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash));
 
+        let options = if header.has_incompatible_flag(HeaderIncompatibleFlags::CompressedZstd) {
+            options.with_compression(Compression::Zstd)
+        } else {
+            options
+        };
+
         Self::create(file, options)
     }
 
@@ -761,6 +824,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
         if options.enable_keyed_hash {
             header.incompatible_flags |= HeaderIncompatibleFlags::KeyedHash as u32;
         }
+        header.incompatible_flags |= options.compression.as_incompatible_flag();
 
         // Set hash table configuration
         header.data_hash_table_offset = NonZeroU64::new(data_hash_table_offset);

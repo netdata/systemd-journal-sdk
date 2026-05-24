@@ -126,7 +126,10 @@ Delivery may be phased. Earlier phases may write a smaller feature subset if the
 
 Current Go writer feature slice:
 
-- regular, non-compact, uncompressed journal files;
+- regular, non-compact journal files;
+- uncompressed DATA objects by default;
+- optional zstd-compressed DATA object writing with configurable compression
+  threshold;
 - keyed hash tables using the journal file ID;
 - byte-safe DATA field values through `Field.Value []byte`;
 - high-level directory writing with systemd-compatible active/archive naming;
@@ -162,6 +165,7 @@ Current Go reader limitations:
 
 - compact journal files are rejected;
 - xz/lz4-compressed DATA objects are rejected;
+- xz/lz4-compressed DATA object writing is not implemented;
 - directory iteration is sequential by journal file and validated for
   non-overlapping active/archive files; realtime interleaving across
   overlapping multi-file directories is tracked under the interoperability
@@ -172,7 +176,10 @@ Current Go reader limitations:
 Current Rust writer feature slice:
 
 - regular, non-compact journal files;
-- uncompressed DATA objects;
+- uncompressed DATA objects by default;
+- optional zstd-compressed DATA object writing with configurable compression
+  threshold, including Rust zstd frame content-size metadata required by stock
+  systemd verification;
 - keyed hash tables using the journal file ID;
 - byte-safe field values through `&[u8]` field payloads;
 - direct-file writing through `journal_core`;
@@ -205,6 +212,7 @@ Current Rust reader feature slice:
 Current Rust reader limitations:
 
 - compact journal files are not part of the accepted feature slice;
+- xz/lz4-compressed DATA object writing is not implemented;
 - directory iteration is sequential by journal file and validated for
   non-overlapping active/archive files; realtime interleaving across overlapping
   multi-file directories is tracked under the interoperability phase;
@@ -215,7 +223,9 @@ Current Rust reader limitations:
 Current Node.js writer feature slice:
 
 - regular, non-compact journal files;
-- uncompressed DATA objects;
+- uncompressed DATA objects by default;
+- optional zstd-compressed DATA object writing with configurable compression
+  threshold through Node.js built-in `node:zlib`;
 - keyed hash tables using the journal file ID;
 - byte-safe field values through `Buffer`, `Uint8Array`, and string-compatible
   field values;
@@ -250,7 +260,7 @@ Current Node.js reader/writer limitations:
 
 - compact journal files are rejected;
 - xz/lz4-compressed DATA objects are rejected;
-- compressed DATA object writing is not implemented;
+- xz/lz4-compressed DATA object writing is not implemented;
 - directory iteration is sequential by journal file and validated for
   non-overlapping active/archive files; realtime interleaving across overlapping
   multi-file directories is tracked under the interoperability phase;
@@ -261,7 +271,9 @@ Current Node.js reader/writer limitations:
 Current Python writer feature slice:
 
 - regular, non-compact journal files;
-- uncompressed DATA objects;
+- uncompressed DATA objects by default;
+- optional zstd-compressed DATA object writing with configurable compression
+  threshold through Python `compression.zstd`;
 - keyed hash tables using the journal file ID;
 - byte-safe field values through `bytes`, `bytearray`, `memoryview`, and
   string-compatible field values;
@@ -300,7 +312,7 @@ Current Python reader/writer limitations:
 
 - compact journal files are rejected;
 - xz/lz4-compressed DATA objects are rejected;
-- compressed DATA object writing is not implemented;
+- xz/lz4-compressed DATA object writing is not implemented;
 - directory iteration is sequential by journal file and validated for
   non-overlapping active/archive files; realtime interleaving across overlapping
   multi-file directories is tracked under the interoperability phase;

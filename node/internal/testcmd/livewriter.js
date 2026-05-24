@@ -13,6 +13,9 @@ function parseArgs(argv) {
     syncEvery: 25,
     crashAfter: 0,
     binaryFixture: false,
+    zstdFixture: false,
+    compression: 'none',
+    compressionThresholdBytes: 64,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -42,6 +45,16 @@ function parseArgs(argv) {
         break;
       case '--binary-fixture':
         args.binaryFixture = true;
+        break;
+      case '--zstd-fixture':
+        args.zstdFixture = true;
+        break;
+      case '--compression':
+        args.compression = next();
+        break;
+      case '--compress-threshold':
+      case '--compression-threshold-bytes':
+        args.compressionThresholdBytes = parsePositiveInt(next(), '--compression-threshold-bytes');
         break;
       default:
         throw new Error(`unknown argument: ${arg}`);
@@ -98,7 +111,10 @@ async function main() {
   mkdirSync(dirname(args.path), { recursive: true });
   mkdirSync(dirname(args.readyFile), { recursive: true });
 
-  const writer = Writer.create(args.path);
+  const writer = Writer.create(args.path, {
+    compression: args.compression,
+    compressionThresholdBytes: args.compressionThresholdBytes,
+  });
   const realtimeBase = 1_700_001_000_000_000n;
 
   try {
@@ -113,6 +129,19 @@ async function main() {
           { name: 'BINARY_PAYLOAD', value: Buffer.from([0x00, 0x01, 0x02, 0x41, 0x0a, 0x7f, 0x80, 0xff]) },
           { name: 'BINARY_MATCH', value: Buffer.from([0x61, 0x62, 0x63, 0x07, 0x64, 0x65, 0x66]) },
           { name: 'BINARY_EMPTY', value: Buffer.from([]) },
+        ];
+      } else if (args.zstdFixture && i === 0) {
+        const largePayload = Buffer.alloc(256);
+        for (let j = 0; j < 256; j++) {
+          largePayload[j] = (j % 26) + 0x41;
+        }
+        fields = [
+          { name: 'TEST_ID', value: 'zstd-interoperability' },
+          { name: 'MESSAGE', value: 'zstd interoperability' },
+          { name: 'PRIORITY', value: '6' },
+          { name: 'LIVE_SEQ', value: '000000' },
+          { name: 'COMPRESSED_PAYLOAD', value: largePayload },
+          { name: 'COMPRESSED_MATCH', value: largePayload.subarray(0, 32) },
         ];
       } else {
         fields = [

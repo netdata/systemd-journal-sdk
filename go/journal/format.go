@@ -49,6 +49,13 @@ const (
 	objectCompressedZSTD = 1 << 2
 )
 
+const (
+	CompressionNone = 0
+	CompressionZSTD = 1
+)
+
+const defaultCompressThreshold = 64
+
 var (
 	errInvalidJournal     = errors.New("invalid journal file")
 	errUnsupportedJournal = errors.New("unsupported journal file")

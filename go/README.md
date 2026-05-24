@@ -6,7 +6,8 @@ does not use CGO, native addons, or libsystemd linkage.
 Current writer scope:
 
 - regular, non-compact journal files;
-- uncompressed DATA objects;
+- uncompressed DATA objects by default;
+- optional zstd-compressed DATA object writing with `journal.Options`;
 - keyed hash tables using the journal file ID;
 - byte-safe field values through `journal.Field{Name, Value []byte}`;
 - create, close, and reopen/append for files created by this writer;
@@ -22,7 +23,7 @@ Current writer scope:
 
 Deferred scope:
 
-- writer DATA compression;
+- xz/lz4 DATA object writing;
 - Forward Secure Sealing and TAG objects;
 - compact-format writer support;
 - appending to arbitrary historical or systemd-created journal variants;

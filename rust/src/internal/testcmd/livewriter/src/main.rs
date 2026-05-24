@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 use clap::Parser;
 use journal::{Config, EntryTimestamps, Log, Origin, RetentionPolicy, RotationPolicy, Source};
-use journal_core::file::{JournalFile, JournalFileOptions, JournalWriter, MmapMut};
+use journal_core::file::{Compression, JournalFile, JournalFileOptions, JournalWriter, MmapMut};
 use journal_core::repository::File as RepositoryFile;
 use std::fs;
 use std::path::PathBuf;
@@ -25,6 +25,16 @@ struct Args {
     crash_after: usize,
     #[arg(long = "binary-fixture", default_value_t = false)]
     binary_fixture: bool,
+    #[arg(long = "zstd-fixture", default_value_t = false)]
+    zstd_fixture: bool,
+    #[arg(long = "compression", default_value = "none")]
+    compression: String,
+    #[arg(
+        long = "compression-threshold-bytes",
+        alias = "compress-threshold",
+        default_value_t = 64
+    )]
+    compression_threshold: usize,
 }
 
 fn main() {
@@ -40,9 +50,14 @@ fn run() -> Result<()> {
         return Err(anyhow!("entries must be positive"));
     }
 
+    let compression = match args.compression.as_str() {
+        "none" => Compression::None,
+        "zstd" => Compression::Zstd,
+        other => return Err(anyhow!("unknown compression: {other}")),
+    };
     let delay = parse_duration(&args.delay)?;
     if let Some(path) = &args.path {
-        return run_file_writer(&args, path, delay);
+        return run_file_writer(&args, path, delay, compression);
     }
     let Some(dir) = &args.dir else {
         return Err(anyhow!("either --path or --dir is required"));
@@ -56,31 +71,14 @@ fn run() -> Result<()> {
         origin,
         RotationPolicy::default(),
         RetentionPolicy::default(),
-    );
+    )
+    .with_compression(compression)
+    .with_compression_threshold(args.compression_threshold);
     let mut log = Log::new(dir, config)?;
 
     const REALTIME_BASE: u64 = 1_700_001_000_000_000;
     for i in 0..args.entries {
-        let fields = if args.binary_fixture && i == 0 {
-            vec![
-                b"TEST_ID=binary-interoperability".to_vec(),
-                b"MESSAGE=binary interoperability".to_vec(),
-                b"PRIORITY=6".to_vec(),
-                b"LIVE_SEQ=000000".to_vec(),
-                b"BINARY_PAYLOAD=\x00\x01\x02A\n\x7f\x80\xff".to_vec(),
-                b"BINARY_MATCH=abc\x07def".to_vec(),
-                b"BINARY_EMPTY=".to_vec(),
-            ]
-        } else {
-            let message = format!("MESSAGE=live-{i:06}");
-            let seq = format!("LIVE_SEQ={i:06}");
-            vec![
-                message.into_bytes(),
-                b"PRIORITY=6".to_vec(),
-                b"SYSLOG_IDENTIFIER=rust-live-writer".to_vec(),
-                seq.into_bytes(),
-            ]
-        };
+        let fields = fields_for_entry(i, args.binary_fixture, args.zstd_fixture);
 
         let fields_refs: Vec<&[u8]> = fields.iter().map(|v| v.as_slice()).collect();
         log.write_entry_with_timestamps(
@@ -113,7 +111,12 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-fn run_file_writer(args: &Args, path: &PathBuf, delay: Duration) -> Result<()> {
+fn run_file_writer(
+    args: &Args,
+    path: &PathBuf,
+    delay: Duration,
+    compression: Compression,
+) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -124,32 +127,21 @@ fn run_file_writer(args: &Args, path: &PathBuf, delay: Duration) -> Result<()> {
     let seqnum_id = uuid::Uuid::new_v4();
     let options = JournalFileOptions::new(machine_id, boot_id, seqnum_id)
         .with_window_size(8 * 1024 * 1024)
-        .with_keyed_hash(true);
+        .with_keyed_hash(true)
+        .with_compression(compression)
+        .with_compress_threshold(args.compression_threshold);
     let mut journal_file = JournalFile::<MmapMut>::create(&repo_file, options)?;
-    let mut writer = JournalWriter::new(&mut journal_file, 1, boot_id)?;
+    let mut writer = JournalWriter::new_with_compression(
+        &mut journal_file,
+        1,
+        boot_id,
+        compression,
+        args.compression_threshold,
+    )?;
 
     const REALTIME_BASE: u64 = 1_700_001_000_000_000;
     for i in 0..args.entries {
-        let fields = if args.binary_fixture && i == 0 {
-            vec![
-                b"TEST_ID=binary-interoperability".to_vec(),
-                b"MESSAGE=binary interoperability".to_vec(),
-                b"PRIORITY=6".to_vec(),
-                b"LIVE_SEQ=000000".to_vec(),
-                b"BINARY_PAYLOAD=\x00\x01\x02A\n\x7f\x80\xff".to_vec(),
-                b"BINARY_MATCH=abc\x07def".to_vec(),
-                b"BINARY_EMPTY=".to_vec(),
-            ]
-        } else {
-            let message = format!("MESSAGE=live-{i:06}");
-            let seq = format!("LIVE_SEQ={i:06}");
-            vec![
-                message.into_bytes(),
-                b"PRIORITY=6".to_vec(),
-                b"SYSLOG_IDENTIFIER=rust-live-writer".to_vec(),
-                seq.into_bytes(),
-            ]
-        };
+        let fields = fields_for_entry(i, args.binary_fixture, args.zstd_fixture);
 
         let fields_refs: Vec<&[u8]> = fields.iter().map(|v| v.as_slice()).collect();
         writer.add_entry(
@@ -176,6 +168,45 @@ fn run_file_writer(args: &Args, path: &PathBuf, delay: Duration) -> Result<()> {
 
     journal_file.sync()?;
     Ok(())
+}
+
+fn fields_for_entry(index: usize, binary_fixture: bool, zstd_fixture: bool) -> Vec<Vec<u8>> {
+    if binary_fixture && index == 0 {
+        return vec![
+            b"TEST_ID=binary-interoperability".to_vec(),
+            b"MESSAGE=binary interoperability".to_vec(),
+            b"PRIORITY=6".to_vec(),
+            b"LIVE_SEQ=000000".to_vec(),
+            b"BINARY_PAYLOAD=\x00\x01\x02A\n\x7f\x80\xff".to_vec(),
+            b"BINARY_MATCH=abc\x07def".to_vec(),
+            b"BINARY_EMPTY=".to_vec(),
+        ];
+    }
+
+    if zstd_fixture && index == 0 {
+        let large_payload: Vec<u8> = (0..256usize).map(|i| (i % 26) as u8 + b'A').collect();
+        let mut compressed_payload = b"COMPRESSED_PAYLOAD=".to_vec();
+        compressed_payload.extend_from_slice(&large_payload);
+        let mut compressed_match = b"COMPRESSED_MATCH=".to_vec();
+        compressed_match.extend_from_slice(&large_payload[..32]);
+        return vec![
+            b"TEST_ID=zstd-interoperability".to_vec(),
+            b"MESSAGE=zstd interoperability".to_vec(),
+            b"PRIORITY=6".to_vec(),
+            b"LIVE_SEQ=000000".to_vec(),
+            compressed_payload,
+            compressed_match,
+        ];
+    }
+
+    let message = format!("MESSAGE=live-{index:06}");
+    let seq = format!("LIVE_SEQ={index:06}");
+    vec![
+        message.into_bytes(),
+        b"PRIORITY=6".to_vec(),
+        b"SYSLOG_IDENTIFIER=rust-live-writer".to_vec(),
+        seq.into_bytes(),
+    ]
 }
 
 fn parse_duration(input: &str) -> Result<Duration> {

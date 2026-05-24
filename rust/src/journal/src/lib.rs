@@ -25,7 +25,8 @@ pub use facade::{
 };
 pub use journal_core::error::JournalError;
 pub use journal_core::file::{
-    BucketUtilization, Direction, HashableObject, JournalFile, JournalReader, Location, Mmap,
+    BucketUtilization, Compression, Direction, HashableObject, JournalFile, JournalReader,
+    Location, Mmap,
 };
 pub use journal_log_writer::{
     Config, EntryTimestamps, Log, LogLifecycleEvent, LogLifecycleObserver, RetentionPolicy,

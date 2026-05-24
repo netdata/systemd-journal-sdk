@@ -13,7 +13,7 @@ mod value_guard;
 pub mod writer;
 
 // Core functionality
-pub use file::{BucketUtilization, JournalFile, JournalFileOptions};
+pub use file::{BucketUtilization, Compression, JournalFile, JournalFileOptions};
 pub use reader::JournalReader;
 pub use writer::JournalWriter;
 

@@ -525,3 +525,206 @@ Known limits remaining after this slice:
 
 - Compression DATA writing, compact journals, FSS/full verification, writer
   locking parity, and directory traversal parity remain open in SOW-0008.
+
+### Compression DATA Writing Fourth Slice - Scope
+
+Next bounded implementation target:
+
+- Implement zstd-compressed DATA object writing for Go, Rust, Node.js, and
+  Python writers.
+- Keep uncompressed writing as the default for backward-compatible APIs.
+- Add explicit writer options to request zstd DATA compression and configure a
+  compression threshold.
+- Add a shared compression interoperability matrix proving that files written
+  by each language are readable by stock `journalctl`, stock libsystemd, and
+  all repository readers/journalctl rewrites.
+- Prove that at least one DATA object is actually compressed by inspecting
+  journal header/object flags, not only by checking reader output.
+
+Systemd reference evidence:
+
+- `systemd/systemd @ c0a5a2516d28`
+- `src/libsystemd/sd-journal/journal-def.h:45` defines per-object compression
+  flags `OBJECT_COMPRESSED_XZ`, `OBJECT_COMPRESSED_LZ4`, and
+  `OBJECT_COMPRESSED_ZSTD`.
+- `src/libsystemd/sd-journal/journal-def.h:168` defines corresponding header
+  incompatible flags, including `HEADER_INCOMPATIBLE_COMPRESSED_ZSTD`.
+- `src/libsystemd/sd-journal/journal-file.c:417` sets header incompatible
+  compression flags when journal compression is requested.
+- `src/libsystemd/sd-journal/journal-file.c:1808` compresses payloads only
+  when compression is requested and the threshold is met.
+- `src/libsystemd/sd-journal/journal-file.c:1830` compresses into at most
+  `size - 1`, so compression is accepted only when the compressed payload is
+  smaller than the uncompressed payload.
+- `src/libsystemd/sd-journal/journal-file.c:1844` hashes and deduplicates DATA
+  objects by the original uncompressed `FIELD=value` payload, then stores the
+  compressed payload and per-object compression flag when compression wins.
+
+Scope exclusions for this slice:
+
+- xz and lz4 DATA-object writing remain open. The existing common denominator
+  across all four languages is zstd: Go has pure Go `klauspost/compress/zstd`,
+  Rust has pure Rust `ruzstd`, Node.js v22 has built-in zstd, and Python 3.14
+  has standard-library `compression.zstd`. xz/lz4 writer parity needs a
+  separate dependency and validation decision.
+- Compact journal format remains open because it changes object layouts and
+  offset widths beyond DATA compression.
+- Forward Secure Sealing remains open because it adds cryptographic tag object
+  state, key lifecycle, and verification semantics.
+
+### Compression DATA Writing Fourth Slice - Implementation
+
+Implemented zstd-compressed DATA object writing across all four writers:
+
+- Go: `journal.Options{Compression, CompressThresholdBytes}` controls DATA
+  compression; `LogConfig.Options` carries the same options through directory
+  rotation/retention.
+- Rust: `JournalFileOptions::with_compression()` and
+  `JournalWriter::new_with_compression()` control DATA compression; the existing
+  `JournalWriter::new()` remains backward compatible and defaults to current
+  file/header behavior.
+- Node.js: `Writer.create()` and `Log` accept `compression` and
+  `compressionThresholdBytes`; `Writer.open()` preserves zstd behavior for
+  reopened files.
+- Python: `Writer.create()` and `Log` accept `compression` and
+  `compression_threshold_bytes`; `Writer.open()` preserves zstd behavior for
+  reopened files.
+- Shared test command fixtures: Go, Rust, Node.js, and Python livewriters
+  accept `--compression zstd`, `--compress-threshold`, and `--zstd-fixture`.
+
+Compatibility fixes found by the matrix:
+
+- Rust `ruzstd` emits valid zstd frames that omit frame content size by default.
+  Stock systemd `decompress_blob_zstd()` rejects frames where
+  `ZSTD_getFrameContentSize()` returns unknown. The Rust writer now patches the
+  emitted pure-Rust zstd frame header to include frame content size before
+  storing the DATA object.
+- Node.js and Python SipHash implementations did not mask `len << 56` to
+  64 bits for payloads longer than 255 bytes. This produced invalid DATA hashes
+  for some long fields. Both implementations now mask the length word and have
+  deterministic long-payload regression tests.
+- Writer-side deduplication/search now compares decompressed DATA payloads when
+  reopening or adding entries to files that already contain compressed DATA
+  objects.
+
+Implemented shared compression matrix:
+
+- `tests/interoperability/run_compression_matrix.py`
+- `tests/interoperability/README.md`
+
+Compression matrix coverage:
+
+- 4 writers: Go file-mode, Rust directory-mode, Node.js file-mode, Python
+  file-mode.
+- Header/object inspection proves `HEADER_INCOMPATIBLE_COMPRESSED_ZSTD` and at
+  least one `OBJECT_COMPRESSED_ZSTD` DATA object per generated file.
+- Stock `journalctl --verify --file` passes for each generated file.
+- Stock `journalctl --output=json`, stock `journalctl --output=export`, and
+  stock libsystemd read decompressed field values.
+- Go, Rust, Node.js, and Python journalctl rewrites read JSON/export from every
+  generated file.
+- Stock and repository journalctl rewrites match the decompressed
+  `COMPRESSED_MATCH=<value>` field through argv filters.
+
+Implementation-delegation note:
+
+- Minimax implementation attempt for this slice was stopped after it changed
+  Rust public constructor call sites broadly and left incomplete/risky partial
+  code. The specific stopped process IDs were owned by that run. Local repair
+  and implementation completed the slice; Minimax should be used as reviewer for
+  this locally implemented work.
+
+Validation results for this slice before external review:
+
+- Passed: `python3 tests/interoperability/run_compression_matrix.py` with
+  72/72 checks on systemd `260 (260.1-2-manjaro)`.
+- Passed: `python3 tests/interoperability/run_matrix.py --entries 10` with
+  104/104 checks.
+- Passed: `python3 tests/interoperability/run_binary_matrix.py` with 52/52
+  checks.
+- Passed: `python3 tests/interoperability/run_live_matrix.py --entries 10 --poll-readers 1`
+  with 4/4 writers passing.
+- Passed: `python3 -m py_compile tests/interoperability/run_compression_matrix.py python/journal/hash.py python/journal/writer.py python/test_all.py`.
+- Passed: `python3 python/test_all.py`.
+- Passed: `go test ./journal ./cmd/journalctl ./internal/testcmd/livewriter` from `go/`.
+- Passed: `cargo test --manifest-path rust/Cargo.toml -p journal-core -p journal-log-writer -p journal`.
+- Passed: `cargo build --manifest-path rust/Cargo.toml -p livewriter`.
+- Passed: `node --test node/test/all.js`.
+
+Generated result files:
+
+- `.local/interoperability/compression-matrix-results-20260524-105521.json`
+- `.local/interoperability/matrix-results-20260524-105558.json`
+- `.local/interoperability/binary-matrix-results-20260524-105558.json`
+- `.local/interoperability/live-matrix-results-20260524-105607.json`
+
+External review and cleanup results:
+
+- Minimax verdict: `PRODUCTION GRADE`; no blocking findings. Non-blocking notes
+  about the Node unsupported-XZ flag rejection test and Rust decompression
+  buffer reuse were dispositioned as no production bug. The Node test is
+  intentionally checking that xz remains unsupported. The Rust decompression
+  comparison slices only the returned decompressed length, so stale tail bytes
+  cannot affect equality.
+- Mimo verdict: `PRODUCTION GRADE`; no blocking findings. Low findings were
+  fixed before commit by adding Rust unit tests for zstd frame content-size
+  patching, by collapsing the Python livewriter compression threshold options
+  into one aliased argument, and by adding `go/adapter/adapter` to `.gitignore`
+  as a local build artifact.
+- GLM verdict: `PRODUCTION GRADE`; no blocking findings. Low findings were
+  fixed before commit by sharing Rust livewriter fixture generation across
+  file/directory modes and by making Python writer reopen check
+  `compression.zstd` availability before accepting a zstd-enabled file for
+  append.
+
+Post-cleanup validation results:
+
+- Passed: `python3 tests/interoperability/run_compression_matrix.py` with
+  72/72 checks on systemd `260 (260.1-2-manjaro)`.
+- Passed: `python3 tests/interoperability/run_matrix.py --entries 10` with
+  104/104 checks.
+- Passed: `python3 tests/interoperability/run_binary_matrix.py` with 52/52
+  checks.
+- Passed: `python3 tests/interoperability/run_live_matrix.py --entries 10 --poll-readers 1`
+  with 4/4 writers passing.
+- Passed: `python3 -m py_compile tests/interoperability/run_compression_matrix.py python/journal/hash.py python/journal/writer.py python/cmd/livewriter.py python/test_all.py`.
+- Passed: `python3 python/test_all.py`.
+- Passed: `go test ./journal ./cmd/journalctl ./internal/testcmd/livewriter` from `go/`.
+- Passed: `cargo test --manifest-path rust/Cargo.toml -p journal-core -p journal-log-writer -p journal`.
+- Passed: `cargo build --manifest-path rust/Cargo.toml -p livewriter`.
+- Passed: `node --test node/test/all.js`.
+
+Post-cleanup generated result files:
+
+- `.local/interoperability/compression-matrix-results-20260524-111019.json`
+- `.local/interoperability/matrix-results-20260524-111035.json`
+- `.local/interoperability/binary-matrix-results-20260524-111034.json`
+- `.local/interoperability/live-matrix-results-20260524-111035.json`
+
+Same-scope post-cleanup review rerun:
+
+- Minimax verdict: `PRODUCTION GRADE`; no blocking findings. It verified the
+  cleanup fixes and reiterated that Go's zstd frames are stock-systemd
+  compatible without a Rust-style content-size patch because
+  `klauspost/compress/zstd` emits compatible frames for this use case. The
+  untracked `tests/interoperability/run_compression_matrix.py` note is expected
+  before this commit and is handled by explicit path staging.
+- GLM verdict: `PRODUCTION GRADE`; no blocking findings. Informational
+  performance notes about Go per-call zstd encoder allocation, Python deferred
+  import lookup, Rust compression allocations on incompressible data, and Rust
+  decompression buffer capacity reuse are mapped to
+  `.agents/sow/pending/SOW-0009-20260523-benchmark-profile-optimize.md`.
+  They are not correctness debt for this compatibility slice.
+- Mimo verdict: `PRODUCTION GRADE`; no blocking findings. Low notes about
+  Node.js zstd availability, Go zstd encoder allocation, and header compression
+  flag presence when no object compresses are dispositioned as follows:
+  Node.js zstd uses the project runtime's built-in `node:zlib`; Go encoder
+  performance is tracked in SOW-0009; the header flag semantics are valid
+  because per-object flags define actual compression and all stock/repository
+  readers validate that behavior.
+
+Known limits remaining after this slice:
+
+- xz/lz4 DATA writing, compact journal format, Forward Secure Sealing/full
+  verification, writer locking parity, and full directory traversal parity
+  remain open in SOW-0008 or need concrete follow-up mapping before close.

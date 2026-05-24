@@ -1,3 +1,4 @@
+use journal_core::file::Compression;
 use journal_registry::Origin;
 use std::time::Duration;
 
@@ -77,6 +78,10 @@ pub struct Config {
     pub rotation_policy: RotationPolicy,
     /// Policy for when to remove old files
     pub retention_policy: RetentionPolicy,
+    /// DATA object compression algorithm.
+    pub compression: Compression,
+    /// Minimum uncompressed DATA payload size before compression is attempted.
+    pub compression_threshold: usize,
 }
 
 impl Config {
@@ -90,6 +95,8 @@ impl Config {
             origin,
             rotation_policy,
             retention_policy,
+            compression: Compression::None,
+            compression_threshold: 64,
         }
     }
 
@@ -102,6 +109,16 @@ impl Config {
     /// Specifies the retention policy of the log directory
     pub fn with_retention_policy(mut self, policy: RetentionPolicy) -> Self {
         self.retention_policy = policy;
+        self
+    }
+
+    pub fn with_compression(mut self, compression: Compression) -> Self {
+        self.compression = compression;
+        self
+    }
+
+    pub fn with_compression_threshold(mut self, threshold: usize) -> Self {
+        self.compression_threshold = threshold;
         self
     }
 }

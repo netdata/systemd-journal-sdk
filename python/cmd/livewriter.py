@@ -19,6 +19,15 @@ def parse_args(argv):
     parser.add_argument('--sync-every', type=parse_non_negative_int, default=25)
     parser.add_argument('--crash-after', type=parse_non_negative_int, default=0)
     parser.add_argument('--binary-fixture', action='store_true')
+    parser.add_argument('--zstd-fixture', action='store_true')
+    parser.add_argument('--compression', default='none', choices=['none', 'zstd'])
+    parser.add_argument(
+        '--compression-threshold-bytes',
+        '--compress-threshold',
+        dest='compression_threshold_bytes',
+        type=parse_positive_int,
+        default=64,
+    )
     return parser.parse_args(argv)
 
 
@@ -60,7 +69,10 @@ def main():
     os.makedirs(os.path.dirname(args.path), exist_ok=True)
     os.makedirs(os.path.dirname(args.ready_file), exist_ok=True)
 
-    writer = Writer.create(args.path)
+    writer = Writer.create(args.path, {
+        'compression': args.compression,
+        'compression_threshold_bytes': args.compression_threshold_bytes,
+    })
     try:
         realtime_base = 1_700_001_000_000_000
         for seq in range(args.entries):
@@ -73,6 +85,16 @@ def main():
                     {'name': 'BINARY_PAYLOAD', 'value': bytes([0x00, 0x01, 0x02, 0x41, 0x0a, 0x7f, 0x80, 0xff])},
                     {'name': 'BINARY_MATCH', 'value': bytes([0x61, 0x62, 0x63, 0x07, 0x64, 0x65, 0x66])},
                     {'name': 'BINARY_EMPTY', 'value': b''},
+                ]
+            elif args.zstd_fixture and seq == 0:
+                large_payload = bytes([(i % 26) + 0x41 for i in range(256)])
+                fields = [
+                    {'name': 'TEST_ID', 'value': b'zstd-interoperability'},
+                    {'name': 'MESSAGE', 'value': b'zstd interoperability'},
+                    {'name': 'PRIORITY', 'value': b'6'},
+                    {'name': 'LIVE_SEQ', 'value': b'000000'},
+                    {'name': 'COMPRESSED_PAYLOAD', 'value': large_payload},
+                    {'name': 'COMPRESSED_MATCH', 'value': large_payload[:32]},
                 ]
             else:
                 fields = [

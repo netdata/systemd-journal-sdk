@@ -47,6 +47,9 @@ Do not use this skill for:
 - Add shared live-concurrency tests before accepting a writer or reader as production-compatible.
 - Prove cross-language interoperability with files written by each implementation and read by every implementation.
 - Prove stock-reader interoperability while repository writers are actively appending, not only after close.
+- For compressed-DATA writer changes, run `tests/interoperability/run_compression_matrix.py`
+  and require header/object flag inspection plus stock journalctl, stock
+  libsystemd, and all repository reader checks.
 - Separate reader support for existing historical files from writer feature milestones.
 - Record excluded upstream tests with a reason and extract file-level behavior where practical.
 

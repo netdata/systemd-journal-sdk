@@ -7,7 +7,9 @@ behavior.
 Current writer scope:
 
 - regular, non-compact journal files;
-- uncompressed DATA objects;
+- uncompressed DATA objects by default;
+- optional zstd-compressed DATA object writing through `JournalFileOptions` and
+  `journal::Config`;
 - keyed hash tables using the journal file ID;
 - byte-safe field values through `&[u8]` field payloads;
 - direct-file writing through `journal_core`;
@@ -21,7 +23,7 @@ Current writer scope:
 
 Deferred scope:
 
-- writer DATA compression;
+- xz/lz4 DATA object writing;
 - Forward Secure Sealing and TAG objects;
 - compact-format writer support;
 - appending to arbitrary historical or systemd-created journal variants;

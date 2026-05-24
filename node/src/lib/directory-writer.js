@@ -33,6 +33,8 @@ export class Log {
     this.seqnumId = options.seqnumId ? Buffer.from(options.seqnumId) : null;
     this.bootId = options.bootId ? Buffer.from(options.bootId) : null;
     this.machineId = options.machineId ? Buffer.from(options.machineId) : readMachineId() || randomUUID();
+    this.compression = options.compression ?? 'none';
+    this.compressionThresholdBytes = options.compressionThresholdBytes;
     this.directory = join(this.rootDirectory, uuidToString(this.machineId));
 
     this._ensureDirectory();
@@ -95,7 +97,10 @@ export class Log {
       return;
     }
 
-    const opts = { headSeqnum: this.nextSeqnum };
+    const opts = { headSeqnum: this.nextSeqnum, compression: this.compression };
+    if (this.compressionThresholdBytes !== undefined) {
+      opts.compressionThresholdBytes = this.compressionThresholdBytes;
+    }
     if (this.seqnumId) opts.seqnumId = this.seqnumId;
     if (this.bootId) opts.bootId = this.bootId;
     if (this.machineId) opts.machineId = this.machineId;

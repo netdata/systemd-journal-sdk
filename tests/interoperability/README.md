@@ -1,6 +1,6 @@
 # Interoperability Matrix
 
-This directory contains three repo-local matrix runners for SOW-0008.
+This directory contains four repo-local matrix runners for SOW-0008.
 
 ## Closed-File Matrix (`run_matrix.py`)
 
@@ -82,7 +82,8 @@ For each writer language, the matrix proves all of the following:
   traverse every directory layout; that remains tracked separately.
 
 - **Compression, compact journal, or FSS**: these are out of scope for the live
-  matrix. Binary stress fixtures are covered by `run_binary_matrix.py`.
+  matrix. Binary stress fixtures are covered by `run_binary_matrix.py`; zstd
+  DATA compression is covered by `run_compression_matrix.py`.
 
 - **Multi-writer scenarios**: the live matrix tests one writer at a time with
   multiple concurrent readers, not multiple concurrent writers.
@@ -146,6 +147,44 @@ For each generated writer file, the binary matrix validates:
   export output;
 - `BINARY_MATCH=abc\x07def` works as a stock file-backed match through argv.
 
+## Compression Matrix (`run_compression_matrix.py`)
+
+Generates a zstd-compressed DATA fixture journal with every writer, then
+validates each generated file with stock journalctl, stock libsystemd, and every
+repository journalctl implementation.
+
+```bash
+python3 tests/interoperability/run_compression_matrix.py
+```
+
+Useful options:
+
+```bash
+python3 tests/interoperability/run_compression_matrix.py --writers go python
+python3 tests/interoperability/run_compression_matrix.py --readers stock rust python
+```
+
+Each writer fixture enables zstd DATA compression with a low threshold and
+includes:
+
+- `TEST_ID=zstd-interoperability`
+- `MESSAGE=zstd interoperability`
+- `PRIORITY=6`
+- `LIVE_SEQ=000000`
+- `COMPRESSED_PAYLOAD` as 256 printable bytes
+- `COMPRESSED_MATCH` as the first 32 bytes of `COMPRESSED_PAYLOAD`
+
+For each generated writer file, the compression matrix validates:
+
+- journal header has `HEADER_INCOMPATIBLE_COMPRESSED_ZSTD`;
+- at least one DATA object has `OBJECT_COMPRESSED_ZSTD`;
+- stock `journalctl --verify --file` succeeds;
+- stock journalctl and stock libsystemd read decompressed field values;
+- Go, Rust, Node.js, and Python journalctl rewrites return matching JSON and
+  export output;
+- `COMPRESSED_MATCH=<value>` works as a file-backed match through argv for stock
+  journalctl and every repository journalctl rewrite.
+
 ## Shared Conventions
 
 All runtime artifacts (generated journals, binaries, result JSON files) live
@@ -156,8 +195,8 @@ completion unless `--keep-files` is passed.
 
 | Gap | Status | Evidence | Follow-up |
 |-----|--------|----------|-----------|
-| Compressed DATA object writing | Not implemented | Current writers emit uncompressed DATA objects | SOW-0008 or split compression SOW |
-| xz/lz4/zstd writer parity | Not implemented | Writers do not write compressed DATA | SOW-0008 or split by compression family |
+| zstd compressed DATA object writing | In progress | `run_compression_matrix.py` validates zstd header/object flags plus stock/repository reads | Close after review and commit |
+| xz/lz4 writer parity | Not implemented | This slice only implements zstd DATA writing | Split by compression family |
 | Compact journal format | Not implemented | Writers create regular non-compact journals | Requires systemd reference inventory |
 | Forward Secure Sealing / verification | Not implemented | Verification/FSS tests skipped in earlier SOWs | Split dedicated FSS SOW |
 | Cross-language binary stress | Complete | `run_binary_matrix.py` passes 52/52 across all writer/reader pairs plus stock libsystemd | Closed |

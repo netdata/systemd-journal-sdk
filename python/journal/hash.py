@@ -48,7 +48,7 @@ def sip_hash_24(key, msg):
         v0 ^= m
         i += 8
 
-    b = msg_len << 56
+    b = (msg_len << 56) & 0xFFFFFFFFFFFFFFFF
     for j in range(i, msg_len):
         b |= msg[j] << (8 * (j - i))
 

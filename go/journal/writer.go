@@ -12,6 +12,8 @@ import (
 	"sort"
 	"syscall"
 	"time"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 // UUID is a 128-bit identifier stored in journal files.
@@ -36,6 +38,12 @@ type Options struct {
 	HeadSeqnum            uint64
 	DataHashTableBuckets  int
 	FieldHashTableBuckets int
+	// Compression specifies the compression algorithm for DATA objects.
+	// Defaults to CompressionNone.
+	Compression int
+	// CompressThresholdBytes is the minimum uncompressed payload size in bytes
+	// required before compression is attempted. Defaults to 64.
+	CompressThresholdBytes int
 }
 
 // EntryOptions controls timestamps and boot ID for one appended entry.
@@ -58,14 +66,16 @@ func StringField(name, value string) Field {
 
 // Writer appends entries to a systemd journal file.
 type Writer struct {
-	file         *os.File
-	path         string
-	header       journalHeader
-	appendOffset uint64
-	nextSeqnum   uint64
-	bootID       UUID
-	started      time.Time
-	closed       bool
+	file              *os.File
+	path              string
+	header            journalHeader
+	appendOffset      uint64
+	nextSeqnum        uint64
+	bootID            UUID
+	started           time.Time
+	closed            bool
+	compression       int
+	compressThreshold int
 }
 
 // Create creates or truncates a journal file after acquiring the writer lock.
@@ -85,7 +95,10 @@ func Create(path string, opts Options) (*Writer, error) {
 		return nil, err
 	}
 
-	w := &Writer{file: f, path: path, bootID: opts.BootID, started: time.Now()}
+	w := &Writer{
+		file: f, path: path, bootID: opts.BootID, started: time.Now(),
+		compression: opts.Compression, compressThreshold: opts.CompressThresholdBytes,
+	}
 	if err := w.initialize(opts); err != nil {
 		_ = unlockAndClose(f)
 		return nil, err
@@ -114,7 +127,8 @@ func Open(path string) (*Writer, error) {
 		_ = unlockAndClose(f)
 		return nil, err
 	}
-	if header.incompatibleFlags&^incompatibleKeyedHash != 0 {
+	const supportedWriterIncompatible = incompatibleKeyedHash | incompatibleCompressedZSTD
+	if header.incompatibleFlags&^supportedWriterIncompatible != 0 {
 		_ = unlockAndClose(f)
 		return nil, errUnsupportedJournal
 	}
@@ -129,16 +143,22 @@ func Open(path string) (*Writer, error) {
 		return nil, err
 	}
 
+	compression := CompressionNone
+	if header.incompatibleFlags&incompatibleCompressedZSTD != 0 {
+		compression = CompressionZSTD
+	}
 	header.state = stateOnline
 	now := time.Now()
 	w := &Writer{
-		file:         f,
-		path:         path,
-		header:       header,
-		appendOffset: align8(header.tailObjectOffset + tail.size),
-		nextSeqnum:   header.tailEntrySeqnum + 1,
-		bootID:       header.tailEntryBootID,
-		started:      startTimeForTailMonotonic(now, header.tailEntryMonotonic),
+		file:              f,
+		path:              path,
+		header:            header,
+		appendOffset:      align8(header.tailObjectOffset + tail.size),
+		nextSeqnum:        header.tailEntrySeqnum + 1,
+		bootID:            header.tailEntryBootID,
+		started:           startTimeForTailMonotonic(now, header.tailEntryMonotonic),
+		compression:       compression,
+		compressThreshold: defaultCompressThreshold,
 	}
 	if isZeroUUID(w.bootID) {
 		w.bootID = header.fileID
@@ -331,6 +351,9 @@ func normalizeOptions(opts Options) Options {
 	if opts.FieldHashTableBuckets == 0 {
 		opts.FieldHashTableBuckets = defaultFieldHashBuckets
 	}
+	if opts.CompressThresholdBytes == 0 {
+		opts.CompressThresholdBytes = defaultCompressThreshold
+	}
 	return opts
 }
 
@@ -401,9 +424,14 @@ func (w *Writer) initialize(opts Options) error {
 	fieldOffset := fieldObjectOffset + objectHeaderSize
 	appendOffset := fieldOffset + fieldSize
 
+	incFlags := uint32(incompatibleKeyedHash)
+	if opts.Compression == CompressionZSTD {
+		incFlags |= incompatibleCompressedZSTD
+	}
+
 	w.header = journalHeader{
 		signature:            [8]byte{'L', 'P', 'K', 'S', 'H', 'H', 'R', 'H'},
-		incompatibleFlags:    incompatibleKeyedHash,
+		incompatibleFlags:    incFlags,
 		state:                stateOnline,
 		fileID:               opts.FileID,
 		machineID:            opts.MachineID,
@@ -528,13 +556,26 @@ func (w *Writer) addData(payload []byte) (uint64, uint64, error) {
 	}
 
 	offset := w.appendOffset
-	size := uint64(dataObjectHeaderSize + len(payload))
+
+	var objectPayload []byte
+	var compressionFlag uint8
+	if w.compression == CompressionZSTD && len(payload) >= w.compressThreshold {
+		if compressed, err := zstdCompress(payload); err == nil && len(compressed) < len(payload) {
+			objectPayload = compressed
+			compressionFlag = objectCompressedZSTD
+		}
+	}
+	if objectPayload == nil {
+		objectPayload = payload
+	}
+
+	size := uint64(dataObjectHeaderSize + len(objectPayload))
 	buf := make([]byte, align8(size))
 	putDataHeader(buf[:dataObjectHeaderSize], dataHeader{
-		object: objectHeader{typ: objectTypeData, size: size},
+		object: objectHeader{typ: objectTypeData, flag: compressionFlag, size: size},
 		hash:   hash,
 	})
-	copy(buf[dataObjectHeaderSize:], payload)
+	copy(buf[dataObjectHeaderSize:], objectPayload)
 	if err := w.writeObject(offset, buf); err != nil {
 		return 0, 0, err
 	}
@@ -683,6 +724,15 @@ func (w *Writer) readDataObject(offset uint64) (dataHeader, []byte, error) {
 	payload := make([]byte, header.object.size-dataObjectHeaderSize)
 	if _, err := w.file.ReadAt(payload, int64(offset+dataObjectHeaderSize)); err != nil {
 		return dataHeader{}, nil, err
+	}
+	if header.object.flag&objectCompressedZSTD != 0 {
+		decoded, err := zstdDecompress(payload)
+		if err != nil {
+			return dataHeader{}, nil, err
+		}
+		payload = decoded
+	} else if header.object.flag&(objectCompressedXZ|objectCompressedLZ4) != 0 {
+		return dataHeader{}, nil, errUnsupportedJournal
 	}
 	return header, payload, nil
 }
@@ -872,4 +922,28 @@ func dedupeEntryItems(items []entryItem) []entryItem {
 		}
 	}
 	return out
+}
+
+func zstdCompress(payload []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	enc, err := zstd.NewWriter(&buf, zstd.WithEncoderLevel(zstd.SpeedFastest))
+	if err != nil {
+		return nil, err
+	}
+	if _, err := enc.Write(payload); err != nil {
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func zstdDecompress(payload []byte) ([]byte, error) {
+	decoder, err := zstd.NewReader(nil)
+	if err != nil {
+		return nil, err
+	}
+	defer decoder.Close()
+	return decoder.DecodeAll(payload, nil)
 }

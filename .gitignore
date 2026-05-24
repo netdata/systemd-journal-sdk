@@ -10,3 +10,6 @@ rust/src/crates/jf/target/
 # Python build artifacts
 __pycache__/
 *.py[cod]
+
+# Go build artifacts
+go/adapter/adapter

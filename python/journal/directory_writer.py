@@ -31,6 +31,8 @@ class Log:
         self._seqnum_id = _uuid_from_config(config.get('seqnum_id'))
         self._boot_id = _uuid_from_config(config.get('boot_id'))
         self._machine_id = _uuid_from_config(config.get('machine_id')) or _read_machine_id() or random_uuid()
+        self._compression = config.get('compression', 'none')
+        self._compression_threshold_bytes = config.get('compression_threshold_bytes')
         self._journal_dir = os.path.join(self._root_path, uuid_to_string(self._machine_id))
         self._active_file = os.path.join(self._journal_dir, f'{self._source}.journal')
         self._active_writer = None
@@ -47,7 +49,10 @@ class Log:
             opts = {
                 'head_seqnum': self._next_seqnum,
                 'machine_id': self._machine_id,
+                'compression': self._compression,
             }
+            if self._compression_threshold_bytes is not None:
+                opts['compression_threshold_bytes'] = self._compression_threshold_bytes
             if self._seqnum_id:
                 opts['seqnum_id'] = self._seqnum_id
             if self._boot_id:

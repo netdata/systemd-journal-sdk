@@ -20,6 +20,7 @@ no system journal library linkage.
 
 - Create regular, non-compact, keyed-hash journal files
 - Byte-safe field values via `Buffer`/`Uint8Array`
+- Optional zstd-compressed DATA object writing via `compression: 'zstd'`
 - Append entries with BigInt timestamps and sequence numbers
 - Directory writer with source-scoped systemd active/archive names, rotation, and retention
 
@@ -169,7 +170,7 @@ node cmd/journalctl/index.js --file ./sample.journal PRIORITY=3 PRIORITY=4 + MES
 ## Limitations
 
 - Compact journal format not supported
-- Xz/lz4 compressed DATA objects not supported
+- Xz/lz4 compressed DATA objects and xz/lz4 DATA writing not supported
 - Forward Secure Sealing (FSS) not implemented
 - Full journal verification not implemented
 - `--follow` not supported (event-loop blocking concern)

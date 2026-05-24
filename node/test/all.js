@@ -14,7 +14,7 @@ import { parseDataObject } from '../src/lib/entry.js';
 import { exportEntry, jsonEntry, SdJournalOpen, SdJournalQueryUnique } from '../src/facade.js';
 import {
   DATA_OBJECT_HEADER_SIZE,
-  INCOMPATIBLE_COMPRESSED_ZSTD,
+  INCOMPATIBLE_COMPRESSED_XZ,
   INCOMPATIBLE_KEYED_HASH,
   OBJECT_COMPRESSED_XZ,
   OBJECT_TYPE_DATA,
@@ -83,6 +83,15 @@ for (const [length, expected] of sipVectors) {
 }
 
 {
+  const key = Buffer.from('de5f2812d87b89e81af97cfe8e1423e9', 'hex');
+  const payload = Buffer.concat([
+    Buffer.from('COMPRESSED_PAYLOAD='),
+    Buffer.from(Array.from({ length: 256 }, (_, i) => (i % 26) + 0x41)),
+  ]);
+  assert.equal(sipHash24(key, payload), 0xf9a795df589b5204n);
+}
+
+{
   const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
   try {
     const journalPath = join(tempDir, 'unsupported-flags.journal');
@@ -91,7 +100,7 @@ for (const [length, expected] of sipVectors) {
 
     const fd = openSync(journalPath, 'r+');
     const flags = Buffer.alloc(4);
-    flags.writeUInt32LE(INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_ZSTD, 0);
+    flags.writeUInt32LE(INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_XZ, 0);
     writeSync(fd, flags, 0, flags.length, 12);
     closeSync(fd);
 
