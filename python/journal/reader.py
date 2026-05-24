@@ -11,6 +11,7 @@ from .header import (
     OBJECT_TYPE_DATA, OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE,
     DATA_OBJECT_HEADER_SIZE, OFFSET_ARRAY_OBJECT_HEADER_SIZE,
     REGULAR_ENTRY_ITEM_SIZE, INCOMPATIBLE_KEYED_HASH, INCOMPATIBLE_COMPACT,
+    COMPACT_OFFSET_ARRAY_ITEM_SIZE, REGULAR_OFFSET_ARRAY_ITEM_SIZE,
     INCOMPATIBLE_COMPRESSED_ZSTD, INCOMPATIBLE_COMPRESSED_XZ, INCOMPATIBLE_COMPRESSED_LZ4,
 )
 from .compress import decompress_zst_to_temp, is_zst_file
@@ -54,7 +55,8 @@ class FileReader:
 
             supported = (
                 INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_ZSTD |
-                INCOMPATIBLE_COMPRESSED_XZ | INCOMPATIBLE_COMPRESSED_LZ4
+                INCOMPATIBLE_COMPRESSED_XZ | INCOMPATIBLE_COMPRESSED_LZ4 |
+                INCOMPATIBLE_COMPACT
             )
             if header['incompatible_flags'] & ~supported:
                 raise ValueError(f'unsupported journal: incompatible flags 0x{header["incompatible_flags"]:x}')
@@ -87,13 +89,20 @@ class FileReader:
             if obj_size < OFFSET_ARRAY_OBJECT_HEADER_SIZE:
                 break
             next_offset = read_uint64_le(self._buffer, offset + 16)
-            capacity = (obj_size - OFFSET_ARRAY_OBJECT_HEADER_SIZE) // 8
+            item_size = self._offset_array_item_size()
+            if (obj_size - OFFSET_ARRAY_OBJECT_HEADER_SIZE) % item_size != 0:
+                raise ValueError('entry array item payload has invalid compact alignment')
+            capacity = (obj_size - OFFSET_ARRAY_OBJECT_HEADER_SIZE) // item_size
 
             to_read = min(remaining, capacity)
             data_start = offset + OFFSET_ARRAY_OBJECT_HEADER_SIZE
 
             for i in range(to_read):
-                entry_off = read_uint64_le(self._buffer, data_start + i * 8)
+                item_offset = data_start + i * item_size
+                if self._is_compact():
+                    entry_off = int.from_bytes(self._buffer[item_offset:item_offset + COMPACT_OFFSET_ARRAY_ITEM_SIZE], 'little')
+                else:
+                    entry_off = read_uint64_le(self._buffer, item_offset)
                 if entry_off != 0 and self._valid_entry_offset(entry_off):
                     offsets.append(entry_off)
 
@@ -168,14 +177,14 @@ class FileReader:
         return self._read_entry_at(self._entry_offsets[self._entry_index])
 
     def _read_entry_at(self, offset):
-        e = parse_entry_object(self._buffer, offset)
+        e = parse_entry_object(self._buffer, offset, self._is_compact())
 
         fields = {}
         field_values = {}
 
         for item in e['items']:
             try:
-                do = parse_data_object(self._buffer, item['offset'])
+                do = parse_data_object(self._buffer, item['offset'], self._is_compact())
                 name_str = do['name'].decode('utf-8')
                 if name_str not in fields:
                     fields[name_str] = do['value']
@@ -212,7 +221,7 @@ class FileReader:
         if self._entry_index < 0 or self._entry_index >= len(self._entry_offsets):
             return None
         offset = self._entry_offsets[self._entry_index]
-        e = parse_entry_object(self._buffer, offset)
+        e = parse_entry_object(self._buffer, offset, self._is_compact())
         return self._make_cursor(offset, e)
 
     def test_cursor(self, cursor):
@@ -275,6 +284,12 @@ class FileReader:
                 pass
             self._cleanup_path = None
         self._buffer = None
+
+    def _is_compact(self):
+        return (self._header['incompatible_flags'] & INCOMPATIBLE_COMPACT) != 0
+
+    def _offset_array_item_size(self):
+        return COMPACT_OFFSET_ARRAY_ITEM_SIZE if self._is_compact() else REGULAR_OFFSET_ARRAY_ITEM_SIZE
 
 
 class FilterBuilder:

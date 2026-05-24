@@ -16,6 +16,7 @@ import { exportEntry, jsonEntry, SdJournalOpen, SdJournalQueryUnique } from '../
 import {
   DATA_OBJECT_HEADER_SIZE,
   HEADER_SIZE,
+  INCOMPATIBLE_COMPACT,
   INCOMPATIBLE_COMPRESSED_XZ,
   INCOMPATIBLE_KEYED_HASH,
   OBJECT_COMPRESSED_LZ4,
@@ -123,12 +124,48 @@ for (const [length, expected] of sipVectors) {
 
     const fd = openSync(journalPath, 'r+');
     const flags = Buffer.alloc(4);
-    const unsupportedFlag = 1 << 4;
+    const unsupportedFlag = 1 << 30;
     flags.writeUInt32LE(INCOMPATIBLE_KEYED_HASH | unsupportedFlag, 0);
     writeSync(fd, flags, 0, flags.length, 12);
     closeSync(fd);
 
     assert.throws(() => Writer.open(journalPath), /unsupported journal: incompatible flags/);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  // Node compact writer -> Node reader and stock journalctl round-trip.
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const journalPath = join(tempDir, 'compact-writer.journal');
+    const writer = Writer.create(journalPath, { compact: true });
+    for (let i = 0; i < 3; i++) {
+      writer.append([
+        { name: 'MESSAGE', value: `compact-${i}` },
+        { name: 'TEST_ID', value: 'node-compact' },
+        { name: 'REUSED', value: 'same' },
+      ], {
+        realtimeUsec: 1_700_000_040_000_000n + BigInt(i),
+        monotonicUsec: BigInt(i + 1),
+      });
+    }
+    writer.close();
+
+    const reader = FileReader.open(journalPath);
+    assert.ok(reader.header.incompatible_flags & INCOMPATIBLE_COMPACT, 'compact flag must be set');
+    const messages = [];
+    while (reader.next()) messages.push(reader.getEntry().fields.MESSAGE.toString('utf8'));
+    reader.close();
+    assert.deepEqual(messages, ['compact-0', 'compact-1', 'compact-2']);
+
+    const journalctl = spawnSync('journalctl', ['--version'], { encoding: 'utf8' });
+    if (journalctl.status === 0) {
+      run('journalctl', ['--verify', '--file', journalPath]);
+      const output = run('journalctl', ['--file', journalPath, '--output=json', '--no-pager', 'TEST_ID=node-compact']);
+      assert.equal(output.trim().split('\n').filter(Boolean).length, 3);
+    }
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }

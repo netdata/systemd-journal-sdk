@@ -6,10 +6,11 @@ behavior.
 
 Current writer scope:
 
-- regular, non-compact journal files;
+- regular journal files by default and compact journal files with
+  `JournalFileOptions::with_compact(true)` or `Config::with_compact(true)`;
 - uncompressed DATA objects by default;
-- optional zstd-compressed DATA object writing through `JournalFileOptions` and
-  `journal::Config`;
+- optional zstd, xz, and lz4-compressed DATA object writing through
+  `JournalFileOptions` and `journal::Config`;
 - keyed hash tables using the journal file ID;
 - byte-safe field values through `&[u8]` field payloads;
 - direct-file writing through `journal_core`;
@@ -27,16 +28,14 @@ Current writer scope:
 
 Deferred scope:
 
-- xz/lz4 DATA object writing;
 - Forward Secure Sealing and TAG objects;
-- compact-format writer support;
 - appending to arbitrary historical or systemd-created journal variants;
 - duration-based directory rotation and retention;
 - full journal verification/FSS validation.
 
 Current reader scope:
 
-- regular non-compact journal files;
+- regular and compact journal files;
 - `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst` files;
 - zstd-compressed fixture files;
 - zstd, lz4, and xz-compressed DATA objects through pure-Rust dependencies;
@@ -55,7 +54,6 @@ Current reader scope:
 
 Reader limitations:
 
-- compact-format journal files are not part of the accepted feature slice;
 - directory iteration is sequential by journal file and intended for
   non-overlapping rotated files in this slice; realtime interleaving across
   overlapping multi-file directories is tracked with the broader

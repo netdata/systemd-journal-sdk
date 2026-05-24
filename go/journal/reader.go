@@ -230,7 +230,7 @@ func OpenFile(path string) (*Reader, error) {
 		return nil, err
 	}
 
-	const supportedReaderIncompatible = incompatibleKeyedHash | incompatibleCompressedZSTD | incompatibleCompressedXZ | incompatibleCompressedLZ4
+	const supportedReaderIncompatible = incompatibleKeyedHash | incompatibleCompressedZSTD | incompatibleCompressedXZ | incompatibleCompressedLZ4 | incompatibleCompact
 	if header.incompatibleFlags&^supportedReaderIncompatible != 0 {
 		_ = closeJournalFile(f, cleanupPath)
 		return nil, errUnsupportedJournal
@@ -343,14 +343,20 @@ func (r *Reader) loadEntryArray() error {
 		if remaining < toRead {
 			toRead = remaining
 		}
+		itemSize := r.offsetArrayItemSize()
 		dataOffset := offset + offsetArrayObjectHeaderSize
-		dataSize := toRead * 8
+		dataSize := toRead * itemSize
 		buf := make([]byte, dataSize)
 		if _, err := r.file.ReadAt(buf, int64(dataOffset)); err != nil {
 			return err
 		}
 		for i := uint64(0); i < toRead; i++ {
-			off := binary.LittleEndian.Uint64(buf[i*8 : (i+1)*8])
+			var off uint64
+			if r.header.isCompact() {
+				off = uint64(binary.LittleEndian.Uint32(buf[i*itemSize : i*itemSize+compactOffsetArrayItemSize]))
+			} else {
+				off = binary.LittleEndian.Uint64(buf[i*itemSize : i*itemSize+regularOffsetArrayItemSize])
+			}
 			if off != 0 {
 				valid, err := r.validEntryObjectOffset(off)
 				if err != nil {
@@ -400,7 +406,11 @@ func (r *Reader) readOffsetArrayHeader(offset uint64) (offsetArrayHeader, uint64
 	if header.object.typ != objectTypeEntryArray || header.object.size < offsetArrayObjectHeaderSize {
 		return offsetArrayHeader{}, 0, errInvalidJournal
 	}
-	capacity := (header.object.size - offsetArrayObjectHeaderSize) / 8
+	itemSize := r.offsetArrayItemSize()
+	if (header.object.size-offsetArrayObjectHeaderSize)%itemSize != 0 {
+		return offsetArrayHeader{}, 0, errInvalidJournal
+	}
+	capacity := (header.object.size - offsetArrayObjectHeaderSize) / itemSize
 	return header, capacity, nil
 }
 
@@ -481,16 +491,25 @@ func (r *Reader) readEntryAt(offset uint64) (*Entry, error) {
 		return nil, err
 	}
 
-	nItems := (objHeader.size - entryObjectHeaderSize) / regularEntryItemSize
+	itemSize := r.entryItemSize()
+	if (objHeader.size-entryObjectHeaderSize)%itemSize != 0 {
+		return nil, errCorruptObject
+	}
+	nItems := (objHeader.size - entryObjectHeaderSize) / itemSize
 	entries := make([]uint64, 0, nItems)
 	itemsOffset := offset + entryObjectHeaderSize
-	itemsSize := nItems * regularEntryItemSize
+	itemsSize := nItems * itemSize
 	itemsBuf := make([]byte, itemsSize)
 	if _, err := r.file.ReadAt(itemsBuf, int64(itemsOffset)); err != nil {
 		return nil, err
 	}
 	for i := uint64(0); i < nItems; i++ {
-		dataOff := binary.LittleEndian.Uint64(itemsBuf[i*regularEntryItemSize : i*regularEntryItemSize+8])
+		var dataOff uint64
+		if r.header.isCompact() {
+			dataOff = uint64(binary.LittleEndian.Uint32(itemsBuf[i*itemSize : i*itemSize+compactEntryItemSize]))
+		} else {
+			dataOff = binary.LittleEndian.Uint64(itemsBuf[i*itemSize : i*itemSize+8])
+		}
 		if dataOff != 0 {
 			entries = append(entries, dataOff)
 		}
@@ -551,13 +570,14 @@ func (r *Reader) readDataPayload(offset uint64) ([]byte, error) {
 	if dataHdr.object.typ != objectTypeData {
 		return nil, errCorruptObject
 	}
-	if dataHdr.object.size < dataObjectHeaderSize {
+	payloadOffset := r.dataPayloadOffset()
+	if dataHdr.object.size < payloadOffset {
 		return nil, errCorruptObject
 	}
 
-	payloadLen := dataHdr.object.size - dataObjectHeaderSize
+	payloadLen := dataHdr.object.size - payloadOffset
 	payload := make([]byte, payloadLen)
-	if _, err := r.file.ReadAt(payload, int64(offset+dataObjectHeaderSize)); err != nil {
+	if _, err := r.file.ReadAt(payload, int64(offset+payloadOffset)); err != nil {
 		return nil, err
 	}
 	if dataHdr.object.flag&objectCompressedZSTD != 0 {
@@ -602,6 +622,27 @@ func (r *Reader) readDataPayload(offset uint64) ([]byte, error) {
 	}
 
 	return payload, nil
+}
+
+func (r *Reader) entryItemSize() uint64 {
+	if r.header.isCompact() {
+		return compactEntryItemSize
+	}
+	return regularEntryItemSize
+}
+
+func (r *Reader) offsetArrayItemSize() uint64 {
+	if r.header.isCompact() {
+		return compactOffsetArrayItemSize
+	}
+	return regularOffsetArrayItemSize
+}
+
+func (r *Reader) dataPayloadOffset() uint64 {
+	if r.header.isCompact() {
+		return compactDataObjectHeaderSize
+	}
+	return dataObjectHeaderSize
 }
 
 func parseEntryHeader(src []byte) (*entryHeader, error) {

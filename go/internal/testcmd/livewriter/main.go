@@ -22,6 +22,7 @@ func main() {
 	var zstdFixture bool
 	var xzFixture bool
 	var lz4Fixture bool
+	var compact bool
 
 	flag.StringVar(&path, "path", "", "journal path to create")
 	flag.StringVar(&readyFile, "ready-file", "", "path to create after the first entry is committed")
@@ -35,6 +36,7 @@ func main() {
 	flag.BoolVar(&zstdFixture, "zstd-fixture", false, "write zstd-compressed fields in the first entry")
 	flag.BoolVar(&xzFixture, "xz-fixture", false, "write xz-compressed fields in the first entry")
 	flag.BoolVar(&lz4Fixture, "lz4-fixture", false, "write lz4-compressed fields in the first entry")
+	flag.BoolVar(&compact, "compact", false, "write the systemd compact journal format")
 	flag.Parse()
 
 	if path == "" || readyFile == "" || entries <= 0 {
@@ -62,7 +64,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	opts := journal.Options{Compression: compression, CompressThresholdBytes: compressThreshold}
+	opts := journal.Options{Compression: compression, CompressThresholdBytes: compressThreshold, Compact: compact}
 	w, err := journal.Create(path, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create journal: %v\n", err)

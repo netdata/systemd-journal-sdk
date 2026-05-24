@@ -1,4 +1,4 @@
-// Journal file writer. Creates regular, non-compact, keyed-hash journal files.
+// Journal file writer. Creates regular-by-default keyed-hash journal files.
 // Compatible with stock journalctl readers during live append.
 
 import { openSync, writeSync, readSync, closeSync, ftruncateSync, fsyncSync, renameSync } from 'node:fs';
@@ -12,11 +12,14 @@ import {
   OBJECT_TYPE_DATA_HASH_TABLE, OBJECT_TYPE_FIELD_HASH_TABLE,
   OBJECT_TYPE_ENTRY_ARRAY, OBJECT_TYPE_FIELD,
   STATE_OFFLINE, STATE_ONLINE, STATE_ARCHIVED,
-  INCOMPATIBLE_KEYED_HASH, INCOMPATIBLE_COMPRESSED_XZ, INCOMPATIBLE_COMPRESSED_ZSTD, INCOMPATIBLE_COMPRESSED_LZ4,
+  INCOMPATIBLE_KEYED_HASH, INCOMPATIBLE_COMPRESSED_XZ, INCOMPATIBLE_COMPRESSED_ZSTD, INCOMPATIBLE_COMPRESSED_LZ4, INCOMPATIBLE_COMPACT,
   COMPATIBLE_TAIL_ENTRY_BOOT_ID,
   OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE, DATA_OBJECT_HEADER_SIZE,
   FIELD_OBJECT_HEADER_SIZE, HASH_ITEM_SIZE, OFFSET_ARRAY_OBJECT_HEADER_SIZE,
   REGULAR_ENTRY_ITEM_SIZE, OBJECT_COMPRESSED_XZ, OBJECT_COMPRESSED_LZ4, OBJECT_COMPRESSED_ZSTD,
+  COMPACT_ENTRY_ITEM_SIZE, COMPACT_OFFSET_ARRAY_ITEM_SIZE, REGULAR_OFFSET_ARRAY_ITEM_SIZE,
+  COMPACT_DATA_OBJECT_HEADER_SIZE, COMPACT_DATA_TAIL_OFFSET_OFFSET,
+  COMPACT_DATA_TAIL_ENTRIES_OFFSET, JOURNAL_COMPACT_SIZE_MAX,
   DEFAULT_DATA_HASH_BUCKETS, DEFAULT_FIELD_HASH_BUCKETS,
   FILE_SIZE_INCREASE,
   INITIAL_ENTRY_ARRAY_CAP, INITIAL_DATA_ENTRY_ARRAY_CAP,
@@ -44,6 +47,7 @@ export class Writer {
     this.closed = false;
     this.compression = COMPRESSION_NONE;
     this.compressThreshold = DEFAULT_COMPRESS_THRESHOLD;
+    this.compact = false;
   }
 
   // Create or truncate a journal file.
@@ -56,6 +60,7 @@ export class Writer {
       const w = new Writer(fd, path, lock);
       w.compression = normalizeCompression(opts.compression);
       w.compressThreshold = opts.compressionThresholdBytes ?? DEFAULT_COMPRESS_THRESHOLD;
+      w.compact = opts.compact === true || opts.format === 'compact';
       w._initialize(opts);
       return w;
     } catch (error) {
@@ -76,7 +81,7 @@ export class Writer {
       if (bytesRead < HEADER_SIZE) throw new Error('cannot read journal header');
 
       const header = parseFileHeader(headerBuf);
-      const supportedWriterIncompatible = INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_XZ | INCOMPATIBLE_COMPRESSED_ZSTD | INCOMPATIBLE_COMPRESSED_LZ4;
+      const supportedWriterIncompatible = INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_XZ | INCOMPATIBLE_COMPRESSED_ZSTD | INCOMPATIBLE_COMPRESSED_LZ4 | INCOMPATIBLE_COMPACT;
       if ((header.incompatible_flags & ~supportedWriterIncompatible) !== 0) {
         throw new Error('unsupported journal: incompatible flags');
       }
@@ -106,6 +111,7 @@ export class Writer {
         ? COMPRESSION_LZ4
         : ((header.incompatible_flags & INCOMPATIBLE_COMPRESSED_ZSTD) !== 0 ? COMPRESSION_ZSTD : COMPRESSION_NONE);
       w.compressThreshold = DEFAULT_COMPRESS_THRESHOLD;
+      w.compact = (header.incompatible_flags & INCOMPATIBLE_COMPACT) !== 0;
 
       w.header.state = STATE_ONLINE;
       w._writeHeader();
@@ -144,6 +150,7 @@ export class Writer {
     } else if (this.compression === COMPRESSION_LZ4) {
       incFlags |= INCOMPATIBLE_COMPRESSED_LZ4;
     }
+    if (this.compact) incFlags |= INCOMPATIBLE_COMPACT;
 
     this.header = {
       signature: 'LPKSHHRH',
@@ -261,7 +268,9 @@ export class Writer {
 
     // Write entry object
     const entryOffset = this.appendOffset;
-    const entrySize = BigInt(ENTRY_OBJECT_HEADER_SIZE + deduped.length * REGULAR_ENTRY_ITEM_SIZE);
+    const entryItemSize = this._entryItemSize();
+    const entrySize = BigInt(ENTRY_OBJECT_HEADER_SIZE + deduped.length * entryItemSize);
+    this._ensureCompactObjectFits(entryOffset, entrySize);
     const alignedSize = align8(entrySize);
     const entryBuf = Buffer.alloc(Number(alignedSize));
     writeObjectHeader(entryBuf, 0, OBJECT_TYPE_ENTRY, 0, entrySize);
@@ -271,9 +280,14 @@ export class Writer {
     bootId.copy(entryBuf, 40);
     writeUint64LE(entryBuf, 56, xorHash);
     for (let i = 0; i < deduped.length; i++) {
-      const off = ENTRY_OBJECT_HEADER_SIZE + i * REGULAR_ENTRY_ITEM_SIZE;
-      writeUint64LE(entryBuf, off, deduped[i].offset);
-      writeUint64LE(entryBuf, off + 8, deduped[i].hash);
+      const off = ENTRY_OBJECT_HEADER_SIZE + i * entryItemSize;
+      if (this.compact) {
+        this._ensureCompactOffset(deduped[i].offset);
+        entryBuf.writeUInt32LE(Number(deduped[i].offset), off);
+      } else {
+        writeUint64LE(entryBuf, off, deduped[i].offset);
+        writeUint64LE(entryBuf, off + 8, deduped[i].hash);
+      }
     }
     writeSync(this.fd, entryBuf, 0, entryBuf.length, Number(this.appendOffset));
     this._objectAdded(entryOffset, entrySize);
@@ -341,12 +355,14 @@ export class Writer {
       }
     }
 
-    const size = BigInt(DATA_OBJECT_HEADER_SIZE + objectPayload.length);
+    const payloadOffset = this._dataPayloadOffset();
+    const size = BigInt(payloadOffset + objectPayload.length);
+    this._ensureCompactObjectFits(offset, size);
     const alignedSize = align8(size);
     const buf = Buffer.alloc(Number(alignedSize));
     writeObjectHeader(buf, 0, OBJECT_TYPE_DATA, compressionFlag, size);
     writeUint64LE(buf, 16, hash);
-    objectPayload.copy(buf, DATA_OBJECT_HEADER_SIZE);
+    objectPayload.copy(buf, payloadOffset);
     writeSync(this.fd, buf, 0, buf.length, Number(this.appendOffset));
     this._objectAdded(offset, size);
 
@@ -376,6 +392,7 @@ export class Writer {
 
     const offset = this.appendOffset;
     const size = BigInt(FIELD_OBJECT_HEADER_SIZE + payload.length);
+    this._ensureCompactObjectFits(offset, size);
     const alignedSize = align8(size);
     const buf = Buffer.alloc(Number(alignedSize));
     writeObjectHeader(buf, 0, OBJECT_TYPE_FIELD, 0, size);
@@ -455,10 +472,11 @@ export class Writer {
       throw new Error(`unsupported DATA object compression flags: 0x${objHeader.flags.toString(16)}`);
     }
     const objSize = objHeader.size;
-    const payloadLen = Number(objSize) - DATA_OBJECT_HEADER_SIZE;
+    const payloadOffset = this._dataPayloadOffset();
+    const payloadLen = Number(objSize) - payloadOffset;
     if (payloadLen <= 0) return null;
     const buf = Buffer.alloc(payloadLen);
-    readSync(this.fd, buf, 0, payloadLen, Number(offset) + DATA_OBJECT_HEADER_SIZE);
+    readSync(this.fd, buf, 0, payloadLen, Number(offset) + payloadOffset);
     if ((objHeader.flags & OBJECT_COMPRESSED_ZSTD) !== 0) {
       return zstdDecompressSync(buf);
     }
@@ -615,14 +633,19 @@ export class Writer {
     if (!oh || oh.type !== OBJECT_TYPE_ENTRY_ARRAY) {
       throw new Error('invalid entry array object');
     }
-    const capacity = Number((oh.size - BigInt(OFFSET_ARRAY_OBJECT_HEADER_SIZE)) / 8n);
+    const itemSize = this._offsetArrayItemSize();
+    if ((oh.size - BigInt(OFFSET_ARRAY_OBJECT_HEADER_SIZE)) % BigInt(itemSize) !== 0n) {
+      throw new Error('invalid entry array object size');
+    }
+    const capacity = Number((oh.size - BigInt(OFFSET_ARRAY_OBJECT_HEADER_SIZE)) / BigInt(itemSize));
     const nextOffset = readUint64LE(buf, 16);
     return { capacity, nextOffset };
   }
 
   _allocateOffsetArray(capacity) {
     const offset = this.appendOffset;
-    const size = BigInt(OFFSET_ARRAY_OBJECT_HEADER_SIZE) + capacity * 8n;
+    const size = BigInt(OFFSET_ARRAY_OBJECT_HEADER_SIZE) + capacity * BigInt(this._offsetArrayItemSize());
+    this._ensureCompactObjectFits(offset, size);
     const alignedSize = align8(size);
     const buf = Buffer.alloc(Number(alignedSize));
     writeObjectHeader(buf, 0, OBJECT_TYPE_ENTRY_ARRAY, 0, size);
@@ -634,7 +657,13 @@ export class Writer {
   }
 
   _writeArrayItem(arrayOffset, index, entryOffset) {
-    this._writeUint64At(arrayOffset + BigInt(OFFSET_ARRAY_OBJECT_HEADER_SIZE) + index * 8n, entryOffset);
+    const itemOffset = arrayOffset + BigInt(OFFSET_ARRAY_OBJECT_HEADER_SIZE) + index * BigInt(this._offsetArrayItemSize());
+    if (this.compact) {
+      this._ensureCompactOffset(entryOffset);
+      this._writeUint32At(itemOffset, Number(entryOffset));
+      return;
+    }
+    this._writeUint64At(itemOffset, entryOffset);
   }
 
   _linkDataToEntry(dataOffset, entryOffset) {
@@ -647,11 +676,19 @@ export class Writer {
       const arrayOff = this._allocateOffsetArray(4n);
       this._writeArrayItem(arrayOff, 0n, entryOffset);
       this._writeUint64At(dataOffset + 48n, arrayOff);
+      if (this.compact) {
+        this._writeUint32At(dataOffset + COMPACT_DATA_TAIL_OFFSET_OFFSET, Number(arrayOff));
+        this._writeUint32At(dataOffset + COMPACT_DATA_TAIL_ENTRIES_OFFSET, 1);
+      }
       this._writeUint64At(dataOffset + 56n, 2n);
     } else {
       const entryArrayOff = this._readUint64At(dataOffset + 48n);
       if (entryArrayOff === 0n) throw new Error('invalid journal: missing data entry array');
-      this._appendToDataEntryArray(entryArrayOff, nEntries - 1n, entryOffset);
+      const { tailOffset, tailEntries } = this._appendToDataEntryArray(entryArrayOff, nEntries - 1n, entryOffset);
+      if (this.compact) {
+        this._writeUint32At(dataOffset + COMPACT_DATA_TAIL_OFFSET_OFFSET, Number(tailOffset));
+        this._writeUint32At(dataOffset + COMPACT_DATA_TAIL_ENTRIES_OFFSET, Number(tailEntries));
+      }
       this._writeUint64At(dataOffset + 56n, nEntries + 1n);
     }
   }
@@ -663,16 +700,41 @@ export class Writer {
       const { capacity, nextOffset } = this._readOffsetArrayHeader(offset);
       if (remaining < BigInt(capacity)) {
         this._writeArrayItem(offset, remaining, entryOffset);
-        return;
+        return { tailOffset: offset, tailEntries: remaining + 1n };
       }
       remaining -= BigInt(capacity);
       if (nextOffset === 0n) {
         const newOff = this._allocateOffsetArray(this._nextEntryArrayCapacity(currentCount, BigInt(capacity)));
         this._writeUint64At(offset + 16n, newOff);
         this._writeArrayItem(newOff, 0n, entryOffset);
-        return;
+        return { tailOffset: newOff, tailEntries: 1n };
       }
       offset = nextOffset;
+    }
+  }
+
+  _entryItemSize() {
+    return this.compact ? COMPACT_ENTRY_ITEM_SIZE : REGULAR_ENTRY_ITEM_SIZE;
+  }
+
+  _offsetArrayItemSize() {
+    return this.compact ? COMPACT_OFFSET_ARRAY_ITEM_SIZE : REGULAR_OFFSET_ARRAY_ITEM_SIZE;
+  }
+
+  _dataPayloadOffset() {
+    return this.compact ? COMPACT_DATA_OBJECT_HEADER_SIZE : DATA_OBJECT_HEADER_SIZE;
+  }
+
+  _ensureCompactOffset(offset) {
+    if (this.compact && offset > JOURNAL_COMPACT_SIZE_MAX) {
+      throw new Error('compact journal offset exceeds 32-bit range');
+    }
+  }
+
+  _ensureCompactObjectFits(offset, size) {
+    if (!this.compact) return;
+    if (offset > JOURNAL_COMPACT_SIZE_MAX || align8(offset + size) > JOURNAL_COMPACT_SIZE_MAX) {
+      throw new Error('compact journal cannot exceed 4 GiB');
     }
   }
 

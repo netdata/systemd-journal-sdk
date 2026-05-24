@@ -28,6 +28,8 @@ struct Args {
     rejection_mode: bool,
     #[arg(long, default_value = "online")]
     final_state: String,
+    #[arg(long)]
+    compact: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,9 +73,9 @@ fn main() -> Result<()> {
         return Err(anyhow!("invalid final state: {}", args.final_state));
     }
     let result = if args.rejection_mode {
-        ingest_rejections(&args.dataset, &args.output, &args.final_state)?
+        ingest_rejections(&args.dataset, &args.output, &args.final_state, args.compact)?
     } else {
-        ingest_accepted(&args.dataset, &args.output, &args.final_state)?
+        ingest_accepted(&args.dataset, &args.output, &args.final_state, args.compact)?
     };
     println!("{}", serde_json::to_string(&result)?);
     if result["errors"]
@@ -97,7 +99,7 @@ fn absolute_path(path: &Path) -> Result<PathBuf> {
     }
 }
 
-fn create_writer(path: &Path) -> Result<(JournalFile<MmapMut>, JournalWriter)> {
+fn create_writer(path: &Path, compact: bool) -> Result<(JournalFile<MmapMut>, JournalWriter)> {
     let path = absolute_path(path)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -110,7 +112,8 @@ fn create_writer(path: &Path) -> Result<(JournalFile<MmapMut>, JournalWriter)> {
         .with_window_size(8 * 1024 * 1024)
         .with_keyed_hash(true)
         .with_compression(Compression::None)
-        .with_compress_threshold(64);
+        .with_compress_threshold(64)
+        .with_compact(compact);
     let mut journal_file = JournalFile::<MmapMut>::create(&repo_file, options)?;
     let writer =
         JournalWriter::new_with_compression(&mut journal_file, 1, boot_id, Compression::None, 64)?;
@@ -214,8 +217,13 @@ fn expected_rejection(input: &serde_json::Value) -> Option<&'static str> {
     None
 }
 
-fn ingest_accepted(dataset: &Path, output: &Path, final_state: &str) -> Result<serde_json::Value> {
-    let (mut journal_file, mut writer) = create_writer(output)?;
+fn ingest_accepted(
+    dataset: &Path,
+    output: &Path,
+    final_state: &str,
+    compact: bool,
+) -> Result<serde_json::Value> {
+    let (mut journal_file, mut writer) = create_writer(output, compact)?;
     let reader = BufReader::new(File::open(dataset)?);
     let mut records = 0usize;
     let mut errors = Vec::new();
@@ -293,6 +301,7 @@ fn ingest_rejections(
     dataset: &Path,
     output: &Path,
     final_state: &str,
+    compact: bool,
 ) -> Result<serde_json::Value> {
     let reader = BufReader::new(File::open(dataset)?);
     let mut writer_state: Option<(JournalFile<MmapMut>, JournalWriter)> = None;
@@ -323,7 +332,7 @@ fn ingest_rejections(
         }
 
         if writer_state.is_none() {
-            writer_state = Some(create_writer(output)?);
+            writer_state = Some(create_writer(output, compact)?);
         }
         let value: ValueDescriptor = serde_json::from_value(record.input["value"].clone())?;
         let mut payload = record.input["field_name"]

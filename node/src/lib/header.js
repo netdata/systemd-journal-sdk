@@ -57,6 +57,13 @@ export const OFFSET_ARRAY_OBJECT_HEADER_SIZE = 24;
 
 // Entry items within an entry object: 16 bytes each (offset + hash)
 export const REGULAR_ENTRY_ITEM_SIZE = 16;
+export const COMPACT_ENTRY_ITEM_SIZE = 4;
+export const REGULAR_OFFSET_ARRAY_ITEM_SIZE = 8;
+export const COMPACT_OFFSET_ARRAY_ITEM_SIZE = 4;
+export const COMPACT_DATA_OBJECT_HEADER_SIZE = DATA_OBJECT_HEADER_SIZE + 8;
+export const COMPACT_DATA_TAIL_OFFSET_OFFSET = BigInt(DATA_OBJECT_HEADER_SIZE);
+export const COMPACT_DATA_TAIL_ENTRIES_OFFSET = BigInt(DATA_OBJECT_HEADER_SIZE + 4);
+export const JOURNAL_COMPACT_SIZE_MAX = 0xffffffffn;
 
 // Default sizes for writer
 export const DEFAULT_DATA_HASH_BUCKETS = 116508;

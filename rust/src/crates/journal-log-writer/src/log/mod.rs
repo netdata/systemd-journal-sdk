@@ -112,6 +112,7 @@ impl ActiveFile {
         _head_realtime: u64,
         compression: Compression,
         compression_threshold: usize,
+        compact: bool,
     ) -> Result<Self> {
         let head_seqnum = next_seqnum;
 
@@ -122,7 +123,8 @@ impl ActiveFile {
             .with_optimized_buckets(None, max_file_size)
             .with_keyed_hash(true)
             .with_compression(compression)
-            .with_compress_threshold(compression_threshold);
+            .with_compress_threshold(compression_threshold)
+            .with_compact(compact);
 
         let mut journal_file = JournalFile::create(&repository_file, options)?;
         let writer = JournalWriter::new_with_compression(
@@ -648,6 +650,7 @@ impl Log {
                     head_realtime,
                     self.config.compression,
                     self.config.compression_threshold,
+                    self.config.compact,
                 )?,
                 None,
             )

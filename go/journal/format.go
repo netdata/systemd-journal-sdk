@@ -6,16 +6,22 @@ import (
 )
 
 const (
-	headerMinSize               = 208
-	headerSize                  = 272 // v260+ uses 272-byte header
-	objectHeaderSize            = 16
-	hashItemSize                = 16
-	fieldObjectHeaderSize       = 40
-	offsetArrayObjectHeaderSize = 24
-	entryObjectHeaderSize       = 64
-	dataObjectHeaderSize        = 64
-	regularEntryItemSize        = 16
-	objectAlignment             = 8
+	headerMinSize                = 208
+	headerSize                   = 272 // v260+ uses 272-byte header
+	objectHeaderSize             = 16
+	hashItemSize                 = 16
+	fieldObjectHeaderSize        = 40
+	offsetArrayObjectHeaderSize  = 24
+	entryObjectHeaderSize        = 64
+	dataObjectHeaderSize         = 64
+	compactDataObjectHeaderSize  = dataObjectHeaderSize + 8
+	compactDataTailOffsetOffset  = dataObjectHeaderSize
+	compactDataTailEntriesOffset = dataObjectHeaderSize + 4
+	regularEntryItemSize         = 16
+	compactEntryItemSize         = 4
+	regularOffsetArrayItemSize   = 8
+	compactOffsetArrayItemSize   = 4
+	objectAlignment              = 8
 
 	// systemd v260.1 defaults for 64 MiB max_size:
 	// data: MAX(64*1024*1024*4/768/3, 2047) = 116508
@@ -31,6 +37,8 @@ const (
 	fileSizeIncrease = 8 * 1024 * 1024 // 8 MiB
 	// systemd's DATA object decompression limit is 768 MiB.
 	maxUncompressedDataObjectSize = 768 * 1024 * 1024
+	// Compact journals store object offsets in 32-bit fields.
+	journalCompactSizeMax = uint64(1<<32 - 1)
 )
 
 const (
@@ -161,6 +169,10 @@ type entryHeader struct {
 	monotonic uint64
 	bootID    UUID
 	xorHash   uint64
+}
+
+func (h journalHeader) isCompact() bool {
+	return h.incompatibleFlags&incompatibleCompact != 0
 }
 
 func align8(v uint64) uint64 {

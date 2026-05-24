@@ -27,6 +27,7 @@ from journal import (  # noqa: E402
 from journal.entry import parse_data_object  # noqa: E402
 from journal.header import (  # noqa: E402
     DATA_OBJECT_HEADER_SIZE,
+    INCOMPATIBLE_COMPACT,
     OBJECT_COMPRESSED_LZ4,
     OBJECT_COMPRESSED_XZ,
     OBJECT_COMPRESSED_ZSTD,
@@ -129,6 +130,36 @@ def test_writer_reader_and_binary_export():
 
         stock_count = run(['journalctl', '--file', path, '--output=json', '--no-pager'])
         assert len([line for line in stock_count.splitlines() if line.strip()]) == 1
+
+
+def test_compact_writer_reader_and_stock_verify():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'compact.journal')
+        writer = Writer.create(path, {'compact': True})
+        writer.append([
+            {'name': 'MESSAGE', 'value': 'compact entry'},
+            {'name': 'BINARY', 'value': bytes([0, 1, 0xfe, 0xff])},
+        ])
+        writer.append([
+            {'name': 'MESSAGE', 'value': 'second compact entry'},
+            {'name': 'PRIORITY', 'value': '6'},
+        ])
+        writer.close()
+
+        reader = FileReader.open(path)
+        header = reader.header()
+        assert header['incompatible_flags'] & INCOMPATIBLE_COMPACT
+        assert reader.step()
+        entry = reader.get_entry()
+        assert entry['fields']['MESSAGE'] == b'compact entry'
+        assert entry['fields']['BINARY'] == bytes([0, 1, 0xfe, 0xff])
+        assert reader.step()
+        assert reader.get_entry()['fields']['MESSAGE'] == b'second compact entry'
+        reader.close()
+
+        stock = run(['journalctl', '--file', path, '--output=json', '--no-pager'])
+        assert len([line for line in stock.splitlines() if line.strip()]) == 2
+        run(['journalctl', '--verify', '--file', path, '--no-pager'])
 
 
 def test_writer_exclusive_lock():
@@ -251,6 +282,7 @@ def main():
     test_lowercase_field_rejected()
     test_live_delay_parser()
     test_writer_reader_and_binary_export()
+    test_compact_writer_reader_and_stock_verify()
     test_writer_exclusive_lock()
     test_zstd_data_object_parse()
     test_xz_and_lz4_data_object_parse()

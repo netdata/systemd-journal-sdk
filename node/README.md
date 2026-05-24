@@ -8,7 +8,9 @@ no system journal library linkage.
 ### Reader
 
 - Read `.journal`, `.journal~`, `.journal.zst`, `.journal~.zst` files
+- Read regular and compact journal object layouts
 - Zstd compression support via built-in `node:zlib`
+- XZ DATA object support through `node-liblzma` WASM runtime
 - LZ4 DATA object support via pure JavaScript `lz4js`
 - Forward/backward iteration, cursors, timestamps
 - Binary field values as `Buffer`
@@ -19,10 +21,11 @@ no system journal library linkage.
 
 ### Writer
 
-- Create regular, non-compact, keyed-hash journal files
+- Create regular keyed-hash journal files by default, or compact journal files
+  with `compact: true` / `format: 'compact'`
 - Byte-safe field values via `Buffer`/`Uint8Array`
-- Optional zstd and lz4-compressed DATA object writing via
-  `compression: 'zstd'` or `compression: 'lz4'`
+- Optional zstd, xz, and lz4-compressed DATA object writing via
+  `compression: 'zstd'`, `compression: 'xz'`, or `compression: 'lz4'`
 - Append entries with BigInt timestamps and sequence numbers
 - Directory writer with source-scoped systemd active/archive names, rotation, and retention
 - Pure cross-SDK cooperative lockfile with stale-owner detection to prevent multiple SDK writers from opening the same file
@@ -180,8 +183,6 @@ node cmd/journalctl/index.js --file ./sample.journal PRIORITY=3 PRIORITY=4 + MES
 
 ## Limitations
 
-- Compact journal format not supported
-- XZ-compressed DATA objects and XZ DATA writing not supported
 - Forward Secure Sealing (FSS) not implemented
 - Full journal verification not implemented
 - `--follow` not supported (event-loop blocking concern)
@@ -189,11 +190,12 @@ node cmd/journalctl/index.js --file ./sample.journal PRIORITY=3 PRIORITY=4 + MES
 
 ## Dependencies
 
-Uses built-in Node.js modules and one JavaScript compression dependency:
+Uses built-in Node.js modules and compression dependencies:
 
 - `node:fs` - File I/O
 - `node:zlib` - Zstd compression (Node.js v22+)
 - `node:util` - Argument parsing
+- `node-liblzma@5.0.1` - WASM XZ compression/decompression runtime path
 - `lz4js@0.2.0` - Raw LZ4 block compression used with the systemd journal
   8-byte uncompressed-size prefix
 

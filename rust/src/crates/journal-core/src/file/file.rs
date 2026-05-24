@@ -121,7 +121,6 @@ impl Default for Compression {
 #[derive(Debug, Clone)]
 pub struct JournalFileOptions {
     machine_id: uuid::Uuid,
-    boot_id: uuid::Uuid,
     seqnum_id: uuid::Uuid,
     file_id: uuid::Uuid,
     window_size: u64,
@@ -130,15 +129,15 @@ pub struct JournalFileOptions {
     enable_keyed_hash: bool,
     compression: Compression,
     compress_threshold: usize,
+    compact: bool,
 }
 
 impl JournalFileOptions {
-    pub fn new(machine_id: uuid::Uuid, boot_id: uuid::Uuid, seqnum_id: uuid::Uuid) -> Self {
+    pub fn new(machine_id: uuid::Uuid, _boot_id: uuid::Uuid, seqnum_id: uuid::Uuid) -> Self {
         let file_id = uuid::Uuid::new_v4();
 
         Self {
             machine_id,
-            boot_id,
             seqnum_id,
             file_id,
             window_size: 64 * 1024,
@@ -147,6 +146,7 @@ impl JournalFileOptions {
             enable_keyed_hash: true,
             compression: Compression::None,
             compress_threshold: 64,
+            compact: false,
         }
     }
 
@@ -232,12 +232,21 @@ impl JournalFileOptions {
         self
     }
 
+    pub fn with_compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
+        self
+    }
+
     pub fn compression(&self) -> Compression {
         self.compression
     }
 
     pub fn compress_threshold(&self) -> usize {
         self.compress_threshold
+    }
+
+    pub fn compact(&self) -> bool {
+        self.compact
     }
 
     pub fn create<M: MemoryMapMut>(self, file: &crate::repository::File) -> Result<JournalFile<M>> {
@@ -833,7 +842,8 @@ impl<M: MemoryMapMut> JournalFile<M> {
         )
         .with_window_size(8 * 1024 * 1024)
         .with_optimized_buckets(bucket_utilization, max_file_size)
-        .with_keyed_hash(header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash));
+        .with_keyed_hash(header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash))
+        .with_compact(header.has_incompatible_flag(HeaderIncompatibleFlags::Compact));
 
         let options = if header.has_incompatible_flag(HeaderIncompatibleFlags::CompressedZstd) {
             options.with_compression(Compression::Zstd)
@@ -882,6 +892,9 @@ impl<M: MemoryMapMut> JournalFile<M> {
             header.incompatible_flags |= HeaderIncompatibleFlags::KeyedHash as u32;
         }
         header.incompatible_flags |= options.compression.as_incompatible_flag();
+        if options.compact {
+            header.incompatible_flags |= HeaderIncompatibleFlags::Compact as u32;
+        }
 
         // Set hash table configuration
         header.data_hash_table_offset = NonZeroU64::new(data_hash_table_offset);
@@ -1126,7 +1139,16 @@ impl<M: MemoryMapMut> JournalFile<M> {
         offset: NonZeroU64,
         size: Option<u64>,
     ) -> Result<ValueGuard<'_, DataObject<&mut [u8]>>> {
-        let size = size.map(|n| std::mem::size_of::<DataObjectHeader>() as u64 + n);
+        let size = size.map(|n| {
+            let mut size = std::mem::size_of::<DataObjectHeader>() as u64 + n;
+            if self
+                .journal_header_ref()
+                .has_incompatible_flag(HeaderIncompatibleFlags::Compact)
+            {
+                size += std::mem::size_of::<CompactDataFields>() as u64;
+            }
+            size
+        });
         self.journal_object_mut(ObjectType::Data, offset, size)
     }
 
@@ -1355,6 +1377,7 @@ impl<'a, M: MemoryMap> Iterator for EntryDataIterator<'a, M> {
 mod tests {
     use super::*;
     use crate::file::writer::JournalWriter;
+    use std::process::Command;
     use tempfile::TempDir;
 
     fn test_uuid(seed: u8) -> uuid::Uuid {
@@ -1451,5 +1474,115 @@ mod tests {
             iter.next().is_none(),
             "iterator should stop after the error"
         );
+    }
+
+    #[test]
+    fn compact_writer_reader_and_stock_journalctl() {
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3)).with_compact(true),
+        )
+        .expect("create compact journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[
+                    b"MESSAGE=compact entry".as_slice(),
+                    b"BINARY=\x00\x01\xfe\xff".as_slice(),
+                ],
+                1_000_000,
+                100,
+            )
+            .expect("write first compact entry");
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[
+                    b"MESSAGE=second compact entry".as_slice(),
+                    b"PRIORITY=6".as_slice(),
+                ],
+                1_000_001,
+                101,
+            )
+            .expect("write second compact entry");
+        journal_file.sync().expect("sync compact journal");
+
+        assert!(
+            journal_file
+                .journal_header_ref()
+                .has_incompatible_flag(HeaderIncompatibleFlags::Compact)
+        );
+
+        let mut entry_offsets = Vec::new();
+        journal_file
+            .entry_offsets(&mut entry_offsets)
+            .expect("collect compact entry offsets");
+        assert_eq!(entry_offsets.len(), 2);
+
+        let payloads = journal_file
+            .entry_data_objects(entry_offsets[0])
+            .expect("compact entry data iterator")
+            .map(|item| item.map(|object| object.raw_payload().to_vec()))
+            .collect::<Result<Vec<_>>>()
+            .expect("read compact data objects");
+        assert!(payloads.iter().any(|p| p == b"MESSAGE=compact entry"));
+        assert!(payloads.iter().any(|p| p == b"BINARY=\x00\x01\xfe\xff"));
+
+        if !journalctl_available() {
+            eprintln!("journalctl not available; skipping stock compact assertions");
+            return;
+        }
+
+        let output = Command::new("journalctl")
+            .arg("--file")
+            .arg(&path)
+            .arg("--output=json")
+            .arg("--no-pager")
+            .output()
+            .expect("run journalctl compact read");
+        assert!(
+            output.status.success(),
+            "journalctl compact read failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            output
+                .stdout
+                .split(|b| *b == b'\n')
+                .filter(|line| !line.is_empty())
+                .count(),
+            2
+        );
+
+        let output = Command::new("journalctl")
+            .arg("--verify")
+            .arg("--file")
+            .arg(&path)
+            .arg("--no-pager")
+            .output()
+            .expect("run journalctl compact verify");
+        assert!(
+            output.status.success(),
+            "journalctl compact verify failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn journalctl_available() -> bool {
+        Command::new("journalctl")
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
     }
 }

@@ -82,6 +82,8 @@ pub struct Config {
     pub compression: Compression,
     /// Minimum uncompressed DATA payload size before compression is attempted.
     pub compression_threshold: usize,
+    /// Use the systemd compact journal on-disk layout.
+    pub compact: bool,
 }
 
 impl Config {
@@ -97,6 +99,7 @@ impl Config {
             retention_policy,
             compression: Compression::None,
             compression_threshold: 64,
+            compact: false,
         }
     }
 
@@ -119,6 +122,11 @@ impl Config {
 
     pub fn with_compression_threshold(mut self, threshold: usize) -> Self {
         self.compression_threshold = threshold;
+        self
+    }
+
+    pub fn with_compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
         self
     }
 }

@@ -35,6 +35,7 @@ export class Log {
     this.machineId = options.machineId ? Buffer.from(options.machineId) : readMachineId() || randomUUID();
     this.compression = options.compression ?? 'none';
     this.compressionThresholdBytes = options.compressionThresholdBytes;
+    this.compact = options.compact === true || options.format === 'compact';
     this.directory = join(this.rootDirectory, uuidToString(this.machineId));
 
     this._ensureDirectory();
@@ -97,7 +98,7 @@ export class Log {
       return;
     }
 
-    const opts = { headSeqnum: this.nextSeqnum, compression: this.compression };
+    const opts = { headSeqnum: this.nextSeqnum, compression: this.compression, compact: this.compact };
     if (this.compressionThresholdBytes !== undefined) {
       opts.compressionThresholdBytes = this.compressionThresholdBytes;
     }

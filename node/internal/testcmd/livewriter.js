@@ -18,6 +18,7 @@ function parseArgs(argv) {
     xzFixture: false,
     compression: 'none',
     compressionThresholdBytes: 64,
+    compact: false,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -63,6 +64,9 @@ function parseArgs(argv) {
       case '--compress-threshold':
       case '--compression-threshold-bytes':
         args.compressionThresholdBytes = parsePositiveInt(next(), '--compression-threshold-bytes');
+        break;
+      case '--compact':
+        args.compact = true;
         break;
       default:
         throw new Error(`unknown argument: ${arg}`);
@@ -122,6 +126,7 @@ async function main() {
   const writer = Writer.create(args.path, {
     compression: args.compression,
     compressionThresholdBytes: args.compressionThresholdBytes,
+    compact: args.compact,
   });
   const realtimeBase = 1_700_001_000_000_000n;
 

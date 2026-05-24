@@ -153,10 +153,19 @@ Current shared writer layout contract:
   Reader APIs must also return zero/default values for fields that are absent
   from the on-disk header, rather than exposing bytes from the object arena as
   newer header fields.
+- Compact journal files use `HEADER_INCOMPATIBLE_COMPACT`, 32-bit ENTRY and
+  ENTRY_ARRAY item offsets, the compact DATA payload offset, and the compact
+  4 GiB offset ceiling. Regular output remains the default. Writer APIs and
+  test ingesters expose an explicit compact option.
+- Compact interoperability is validated by
+  `tests/interoperability/run_compact_matrix.py`, which checks compact layout,
+  stock `journalctl --verify --file`, stock journalctl reads, stock libsystemd
+  reads, and every repository reader against every repository writer.
 
 Current Go writer feature slice:
 
-- regular, non-compact journal files;
+- regular journal files by default and compact journal files when
+  `Options.Compact` is enabled;
 - uncompressed DATA objects by default;
 - optional zstd, xz, and lz4-compressed DATA object writing with configurable
   compression threshold;
@@ -176,7 +185,7 @@ Readers must support applicable historical journal files represented by the shar
 
 Current Go reader feature slice:
 
-- regular, non-compact journal files;
+- regular and compact journal files;
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
 - whole-file zstd fixtures and zstd, xz, and lz4-compressed DATA objects
   through pure-Go dependencies;
@@ -196,7 +205,6 @@ Current Go reader feature slice:
 
 Current Go reader limitations:
 
-- compact journal files are rejected;
 - directory iteration is sequential by journal file and validated for
   non-overlapping active/archive files; realtime interleaving across
   overlapping multi-file directories is tracked under the interoperability
@@ -206,7 +214,9 @@ Current Go reader limitations:
 
 Current Rust writer feature slice:
 
-- regular, non-compact journal files;
+- regular journal files by default and compact journal files when
+  `JournalFileOptions::with_compact(true)` or `journal::Config::with_compact(true)`
+  is enabled;
 - uncompressed DATA objects by default;
 - optional zstd, xz, and lz4-compressed DATA object writing with configurable
   compression threshold, including Rust zstd frame content-size metadata
@@ -227,7 +237,7 @@ Current Rust writer feature slice:
 
 Current Rust reader feature slice:
 
-- regular, non-compact journal files;
+- regular and compact journal files;
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
 - whole-file zstd fixtures and zstd, lz4, and xz-compressed DATA objects through
   pure-Rust dependencies;
@@ -246,7 +256,6 @@ Current Rust reader feature slice:
 
 Current Rust reader limitations:
 
-- compact journal files are not part of the accepted feature slice;
 - directory iteration is sequential by journal file and validated for
   non-overlapping active/archive files; realtime interleaving across overlapping
   multi-file directories is tracked under the interoperability phase;
@@ -256,7 +265,8 @@ Current Rust reader limitations:
 
 Current Node.js writer feature slice:
 
-- regular, non-compact journal files;
+- regular journal files by default and compact journal files when
+  `compact: true` or `format: 'compact'` is enabled;
 - uncompressed DATA objects by default;
 - optional zstd, xz, and lz4-compressed DATA object writing with configurable
   compression threshold through Node.js built-in `node:zlib`, pure
@@ -277,7 +287,7 @@ Current Node.js writer feature slice:
 
 Current Node.js reader feature slice:
 
-- regular, non-compact journal files;
+- regular and compact journal files;
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
 - whole-file zstd fixtures through Node.js built-in `node:zlib`;
 - zstd, xz, and lz4-compressed DATA objects through Node.js built-in `node:zlib`,
@@ -297,7 +307,6 @@ Current Node.js reader feature slice:
 
 Current Node.js reader/writer limitations:
 
-- compact journal files are rejected;
 - directory iteration is sequential by journal file and validated for
   non-overlapping active/archive files; realtime interleaving across overlapping
   multi-file directories is tracked under the interoperability phase;
@@ -307,7 +316,8 @@ Current Node.js reader/writer limitations:
 
 Current Python writer feature slice:
 
-- regular, non-compact journal files;
+- regular journal files by default and compact journal files when
+  `compact: True` or `format: 'compact'` is enabled;
 - uncompressed DATA objects by default;
 - optional zstd, xz, and lz4-compressed DATA object writing with configurable
   compression threshold through Python `compression.zstd`, standard-library
@@ -329,7 +339,7 @@ Current Python writer feature slice:
 
 Current Python reader feature slice:
 
-- regular, non-compact journal files;
+- regular and compact journal files;
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
 - whole-file zstd fixtures and zstd-compressed DATA objects through Python
   `compression.zstd` where the optional standard-library module is available;
@@ -351,7 +361,6 @@ Current Python reader feature slice:
 
 Current Python reader/writer limitations:
 
-- compact journal files are rejected;
 - directory iteration is sequential by journal file and validated for
   non-overlapping active/archive files; realtime interleaving across overlapping
   multi-file directories is tracked under the interoperability phase;

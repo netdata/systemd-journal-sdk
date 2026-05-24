@@ -11,6 +11,7 @@ import {
   OBJECT_TYPE_DATA, OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE,
   DATA_OBJECT_HEADER_SIZE, OFFSET_ARRAY_OBJECT_HEADER_SIZE,
   REGULAR_ENTRY_ITEM_SIZE, INCOMPATIBLE_KEYED_HASH, INCOMPATIBLE_COMPACT,
+  COMPACT_OFFSET_ARRAY_ITEM_SIZE, REGULAR_OFFSET_ARRAY_ITEM_SIZE,
   INCOMPATIBLE_COMPRESSED_XZ, INCOMPATIBLE_COMPRESSED_ZSTD, INCOMPATIBLE_COMPRESSED_LZ4,
 } from './header.js';
 import { decompressZstToTemp, isZstFile } from './compress.js';
@@ -59,8 +60,7 @@ export class FileReader {
         throw new Error('unsupported journal: keyed hash required');
       }
 
-      // Reject flags we cannot handle (compact)
-      const supported = INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_XZ | INCOMPATIBLE_COMPRESSED_ZSTD | INCOMPATIBLE_COMPRESSED_LZ4;
+      const supported = INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_XZ | INCOMPATIBLE_COMPRESSED_ZSTD | INCOMPATIBLE_COMPRESSED_LZ4 | INCOMPATIBLE_COMPACT;
       if (header.incompatible_flags & ~supported) {
         throw new Error('unsupported journal: incompatible flags ' + header.incompatible_flags.toString(16));
       }
@@ -96,13 +96,20 @@ export class FileReader {
         break;
       }
       const nextOffset = readUint64LE(this.buffer, Number(offset) + 16);
-      const capacity = Number((objSize - BigInt(OFFSET_ARRAY_OBJECT_HEADER_SIZE)) / 8n);
+      const itemSize = this._offsetArrayItemSize();
+      if ((objSize - BigInt(OFFSET_ARRAY_OBJECT_HEADER_SIZE)) % BigInt(itemSize) !== 0n) {
+        throw new Error('entry array item payload has invalid compact alignment');
+      }
+      const capacity = Number((objSize - BigInt(OFFSET_ARRAY_OBJECT_HEADER_SIZE)) / BigInt(itemSize));
 
       const toRead = Number(remaining < BigInt(capacity) ? remaining : BigInt(capacity));
       const dataStart = Number(offset) + OFFSET_ARRAY_OBJECT_HEADER_SIZE;
 
       for (let i = 0; i < toRead; i++) {
-        const entryOff = readUint64LE(this.buffer, dataStart + i * 8);
+        const itemOffset = dataStart + i * itemSize;
+        const entryOff = this._isCompact()
+          ? BigInt(this.buffer.readUInt32LE(itemOffset))
+          : readUint64LE(this.buffer, itemOffset);
         if (entryOff !== 0n && this._validEntryOffset(entryOff)) {
           offsets.push(entryOff);
         }
@@ -178,14 +185,14 @@ export class FileReader {
 
   _readEntryAt(offset) {
     const off = Number(offset);
-    const e = parseEntryObject(this.buffer, off);
+    const e = parseEntryObject(this.buffer, off, this._isCompact());
 
     const fields = Object.create(null);
     const fieldValues = Object.create(null);
 
     for (const item of e.items) {
       try {
-        const { name, value } = parseDataObject(this.buffer, Number(item.offset));
+        const { name, value } = parseDataObject(this.buffer, Number(item.offset), this._isCompact());
         const nameStr = name.toString('utf8');
         const valueBuf = Buffer.from(value);
         if (!(nameStr in fields)) fields[nameStr] = valueBuf;
@@ -222,7 +229,7 @@ export class FileReader {
   getCursor() {
     if (this.entryIndex < 0 || this.entryIndex >= this.entryOffsets.length) return null;
     const offset = this.entryOffsets[this.entryIndex];
-    const e = parseEntryObject(this.buffer, Number(offset));
+    const e = parseEntryObject(this.buffer, Number(offset), this._isCompact());
     return this._makeCursor(offset, e);
   }
 
@@ -280,6 +287,14 @@ export class FileReader {
       this.cleanupPath = null;
     }
     this.buffer = null;
+  }
+
+  _isCompact() {
+    return (this.header.incompatible_flags & INCOMPATIBLE_COMPACT) !== 0;
+  }
+
+  _offsetArrayItemSize() {
+    return this._isCompact() ? COMPACT_OFFSET_ARRAY_ITEM_SIZE : REGULAR_OFFSET_ARRAY_ITEM_SIZE;
   }
 }
 

@@ -284,6 +284,69 @@ func TestJournalctlReadsCreatedJournal(t *testing.T) {
 	assertJSONField(t, rows[0], "_SYSTEMD_UNIT", "go-writer.service")
 }
 
+func TestCompactWriterReaderAndJournalctl(t *testing.T) {
+	if _, err := exec.LookPath("journalctl"); err != nil {
+		t.Skip("journalctl is not installed")
+	}
+
+	path := filepath.Join(t.TempDir(), "compact-writer.journal")
+	opts := testOptions()
+	opts.Compact = true
+	w, err := Create(path, opts)
+	if err != nil {
+		t.Fatalf("Create(compact) error = %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := w.Append([]Field{
+			StringField("MESSAGE", fmt.Sprintf("compact-%d", i)),
+			StringField("TEST_ID", "go-compact"),
+			StringField("REUSED", "same"),
+		}, EntryOptions{RealtimeUsec: 1_700_000_040_000_000 + uint64(i), MonotonicUsec: uint64(i + 1)}); err != nil {
+			t.Fatalf("Append(%d) error = %v", i, err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	snapshot := readJournalSnapshot(t, path)
+	if snapshot.header.incompatibleFlags&incompatibleCompact == 0 {
+		t.Fatalf("compact flag missing from incompatible flags %#x", snapshot.header.incompatibleFlags)
+	}
+	if len(snapshot.entries) != 3 {
+		t.Fatalf("entry count = %d, want 3", len(snapshot.entries))
+	}
+	for _, entry := range snapshot.entries {
+		if got := (entry.header.object.size - entryObjectHeaderSize) % compactEntryItemSize; got != 0 {
+			t.Fatalf("entry object size %d is not compact-item aligned", entry.header.object.size)
+		}
+	}
+
+	r, err := OpenFile(path)
+	if err != nil {
+		t.Fatalf("OpenFile(compact) error = %v", err)
+	}
+	defer r.Close()
+	for i := 0; i < 3; i++ {
+		if err := r.Next(); err != nil {
+			t.Fatalf("Next(%d) error = %v", i, err)
+		}
+		entry, err := r.GetEntry()
+		if err != nil {
+			t.Fatalf("GetEntry(%d) error = %v", i, err)
+		}
+		if got := string(entry.Fields["MESSAGE"]); got != fmt.Sprintf("compact-%d", i) {
+			t.Fatalf("MESSAGE[%d] = %q", i, got)
+		}
+	}
+
+	verifyJournalctl(t, path)
+	rows := runJournalctlJSON(t, path, "TEST_ID=go-compact")
+	if len(rows) != 3 {
+		t.Fatalf("journalctl row count = %d, want 3; rows=%v", len(rows), rows)
+	}
+}
+
 func TestOpenAppendDefaultMonotonicPreservesJournalctlVerify(t *testing.T) {
 	if _, err := exec.LookPath("journalctl"); err != nil {
 		t.Skip("journalctl is not installed")
@@ -602,7 +665,11 @@ func readJournalSnapshot(t *testing.T, path string) journalSnapshot {
 			if err != nil {
 				t.Fatalf("parseDataHeader(%d) error = %v", offset, err)
 			}
-			payload := append([]byte(nil), content[offset+dataObjectHeaderSize:offset+oh.size]...)
+			payloadOffset := uint64(dataObjectHeaderSize)
+			if snapshot.header.isCompact() {
+				payloadOffset = compactDataObjectHeaderSize
+			}
+			payload := append([]byte(nil), content[offset+payloadOffset:offset+oh.size]...)
 			snapshot.dataByPayload[string(payload)] = dataSnapshot{offset: offset, header: header, payload: payload}
 		case objectTypeField:
 			header, err := parseFieldHeader(content[offset : offset+fieldObjectHeaderSize])
@@ -612,7 +679,7 @@ func readJournalSnapshot(t *testing.T, path string) journalSnapshot {
 			payload := append([]byte(nil), content[offset+fieldObjectHeaderSize:offset+oh.size]...)
 			snapshot.fieldByPayload[string(payload)] = fieldSnapshot{offset: offset, header: header, payload: payload}
 		case objectTypeEntry:
-			entry := parseEntryObject(t, offset, content[offset:offset+oh.size])
+			entry := parseEntryObject(t, offset, content[offset:offset+oh.size], snapshot.header.isCompact())
 			snapshot.entries = append(snapshot.entries, entry)
 		case objectTypeDataHashTable, objectTypeFieldHashTable, objectTypeEntryArray:
 		default:
@@ -624,14 +691,18 @@ func readJournalSnapshot(t *testing.T, path string) journalSnapshot {
 	return snapshot
 }
 
-func parseEntryObject(t *testing.T, offset uint64, content []byte) entrySnapshot {
+func parseEntryObject(t *testing.T, offset uint64, content []byte, compact bool) entrySnapshot {
 	t.Helper()
 
 	oh, err := parseObjectHeader(content[:objectHeaderSize])
 	if err != nil {
 		t.Fatalf("parseObjectHeader(entry) error = %v", err)
 	}
-	if oh.size < entryObjectHeaderSize || (oh.size-entryObjectHeaderSize)%regularEntryItemSize != 0 {
+	itemSize := uint64(regularEntryItemSize)
+	if compact {
+		itemSize = compactEntryItemSize
+	}
+	if oh.size < entryObjectHeaderSize || (oh.size-entryObjectHeaderSize)%itemSize != 0 {
 		t.Fatalf("entry at offset %d has invalid size %d", offset, oh.size)
 	}
 
@@ -645,8 +716,12 @@ func parseEntryObject(t *testing.T, offset uint64, content []byte) entrySnapshot
 	copy(header.bootID[:], content[40:56])
 
 	entry := entrySnapshot{offset: offset, header: header}
-	for i := entryObjectHeaderSize; i < len(content); i += regularEntryItemSize {
-		entry.itemOffsets = append(entry.itemOffsets, le64(content[i:i+8]))
+	for i := entryObjectHeaderSize; i < len(content); i += int(itemSize) {
+		if compact {
+			entry.itemOffsets = append(entry.itemOffsets, uint64(binary.LittleEndian.Uint32(content[i:i+compactEntryItemSize])))
+		} else {
+			entry.itemOffsets = append(entry.itemOffsets, le64(content[i:i+8]))
+		}
 	}
 	return entry
 }

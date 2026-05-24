@@ -23,6 +23,7 @@ def parse_args(argv):
     parser.add_argument('--xz-fixture', action='store_true')
     parser.add_argument('--lz4-fixture', action='store_true')
     parser.add_argument('--compression', default='none', choices=['none', 'zstd', 'xz', 'lz4'])
+    parser.add_argument('--compact', action='store_true')
     parser.add_argument(
         '--compression-threshold-bytes',
         '--compress-threshold',
@@ -74,6 +75,7 @@ def main():
     writer = Writer.create(args.path, {
         'compression': args.compression,
         'compression_threshold_bytes': args.compression_threshold_bytes,
+        'compact': args.compact,
     })
     try:
         realtime_base = 1_700_001_000_000_000

@@ -5,6 +5,7 @@ import {
   OBJECT_TYPE_ENTRY, OBJECT_TYPE_DATA, OBJECT_HEADER_SIZE,
   ENTRY_OBJECT_HEADER_SIZE, DATA_OBJECT_HEADER_SIZE,
   OBJECT_COMPRESSED_ZSTD, OBJECT_COMPRESSED_XZ, OBJECT_COMPRESSED_LZ4,
+  COMPACT_ENTRY_ITEM_SIZE, COMPACT_DATA_OBJECT_HEADER_SIZE,
 } from './header.js';
 import { zstdDecompressSync } from 'node:zlib';
 import { decompressLz4DataPayload } from './lz4-block.js';
@@ -12,7 +13,7 @@ import { decompressXzDataPayload } from './xz-block.js';
 
 // Parse an entry object from a buffer at offset.
 // Returns { seqnum, realtime, monotonic, boot_id, xor_hash, items: [{offset, hash}] }.
-export function parseEntryObject(buf, offset) {
+export function parseEntryObject(buf, offset, compact = false) {
   const objType = buf.readUInt8(offset);
   if (objType !== OBJECT_TYPE_ENTRY) {
     throw new Error(`expected ENTRY (type ${OBJECT_TYPE_ENTRY}), got type ${objType} at offset ${offset}`);
@@ -31,12 +32,16 @@ export function parseEntryObject(buf, offset) {
 
   // Data items follow the entry header
   const itemsStart = offset + ENTRY_OBJECT_HEADER_SIZE;
-  const nItems = Number((objSize - BigInt(ENTRY_OBJECT_HEADER_SIZE)) / BigInt(16));
+  const itemSize = compact ? COMPACT_ENTRY_ITEM_SIZE : 16;
+  if ((objSize - BigInt(ENTRY_OBJECT_HEADER_SIZE)) % BigInt(itemSize) !== 0n) {
+    throw new Error(`entry object item payload is not ${itemSize}-byte aligned`);
+  }
+  const nItems = Number((objSize - BigInt(ENTRY_OBJECT_HEADER_SIZE)) / BigInt(itemSize));
   const items = [];
   for (let i = 0; i < nItems; i++) {
-    const iOff = itemsStart + i * 16;
-    const dataOffset = readUint64LE(buf, iOff);
-    const dataHash = readUint64LE(buf, iOff + 8);
+    const iOff = itemsStart + i * itemSize;
+    const dataOffset = compact ? BigInt(buf.readUInt32LE(iOff)) : readUint64LE(buf, iOff);
+    const dataHash = compact ? 0n : readUint64LE(buf, iOff + 8);
     if (dataOffset !== 0n) {
       items.push({ offset: dataOffset, hash: dataHash });
     }
@@ -47,8 +52,9 @@ export function parseEntryObject(buf, offset) {
 
 // Parse a DATA object from buffer at offset.
 // Returns { name: Buffer, value: Buffer }.
-export function parseDataObject(buf, offset) {
-  if (buf.length < offset + DATA_OBJECT_HEADER_SIZE) {
+export function parseDataObject(buf, offset, compact = false) {
+  const payloadOffset = compact ? COMPACT_DATA_OBJECT_HEADER_SIZE : DATA_OBJECT_HEADER_SIZE;
+  if (buf.length < offset + payloadOffset) {
     throw new Error('buffer too small for data object');
   }
   const objType = buf.readUInt8(offset);
@@ -58,11 +64,11 @@ export function parseDataObject(buf, offset) {
   if (objType !== OBJECT_TYPE_DATA) {
     throw new Error(`expected DATA (type ${OBJECT_TYPE_DATA}), got type ${objType}`);
   }
-  if (objSize < BigInt(DATA_OBJECT_HEADER_SIZE)) {
+  if (objSize < BigInt(payloadOffset)) {
     throw new Error(`data object too small: ${objSize}`);
   }
 
-  let payload = buf.slice(offset + DATA_OBJECT_HEADER_SIZE, offset + Number(objSize));
+  let payload = buf.slice(offset + payloadOffset, offset + Number(objSize));
 
   // Decompress if needed
   const compressionFlags = objFlags & (OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4 | OBJECT_COMPRESSED_ZSTD);

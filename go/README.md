@@ -5,9 +5,11 @@ does not use CGO, native addons, or libsystemd linkage.
 
 Current writer scope:
 
-- regular, non-compact journal files;
+- regular journal files by default and compact journal files with
+  `journal.Options{Compact: true}`;
 - uncompressed DATA objects by default;
-- optional zstd-compressed DATA object writing with `journal.Options`;
+- optional zstd, xz, and lz4-compressed DATA object writing with
+  `journal.Options`;
 - keyed hash tables using the journal file ID;
 - byte-safe field values through `journal.Field{Name, Value []byte}`;
 - create, online close, explicit offline close, archive close, and
@@ -28,19 +30,17 @@ Current writer scope:
 
 Deferred scope:
 
-- xz/lz4 DATA object writing;
 - Forward Secure Sealing and TAG objects;
-- compact-format writer support;
 - appending to arbitrary historical or systemd-created journal variants;
 - duration-based directory rotation and retention;
 - full journal verification/FSS validation.
 
 Current reader scope:
 
-- regular non-compact journal files;
+- regular and compact journal files;
 - `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst` files;
-- zstd-compressed fixture files and zstd-compressed DATA objects through a
-  pure-Go dependency;
+- zstd-compressed fixture files and zstd, xz, and lz4-compressed DATA objects
+  through pure-Go dependencies;
 - directory reading across active and archived files;
 - forward/backward iteration, cursors, realtime timestamps, field enumeration,
   unique values, binary field values, and export/json/text formatting;
@@ -55,8 +55,6 @@ Current reader scope:
 
 Reader limitations:
 
-- compact-format journal files are rejected;
-- xz/lz4-compressed DATA objects are rejected;
 - directory iteration is sequential by journal file and intended for
   non-overlapping rotated files in this slice; realtime interleaving across
   overlapping multi-file directories is tracked with the broader

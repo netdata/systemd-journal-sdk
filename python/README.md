@@ -8,6 +8,7 @@ no system journal library linkage.
 ### Reader
 
 - Read `.journal`, `.journal~`, `.journal.zst`, `.journal~.zst` files
+- Read regular and compact journal object layouts
 - Zstd compression support via Python standard library `compression.zstd`
 - XZ DATA object support via Python standard library `lzma`
 - LZ4 DATA object support via `lz4` block compression
@@ -20,7 +21,8 @@ no system journal library linkage.
 
 ### Writer
 
-- Create regular, non-compact, keyed-hash journal files
+- Create regular keyed-hash journal files by default, or compact journal files
+  with `compact: True` / `format: 'compact'`
 - Byte-safe field values via `bytes`/`bytearray`/`memoryview`
 - Optional zstd, xz, and lz4-compressed DATA object writing via
   `compression: 'zstd'`, `compression: 'xz'`, or `compression: 'lz4'`
@@ -165,7 +167,6 @@ python3 cmd/journalctl.py --file ./sample.journal PRIORITY=3 PRIORITY=4 + MESSAG
 
 ## Limitations
 
-- Compact journal format not supported
 - Forward Secure Sealing (FSS) not implemented
 - Full journal verification not implemented
 - `--follow` not supported (would block the process)

@@ -39,6 +39,8 @@ struct Args {
         default_value_t = 64
     )]
     compression_threshold: usize,
+    #[arg(long = "compact", default_value_t = false)]
+    compact: bool,
 }
 
 fn main() {
@@ -79,7 +81,8 @@ fn run() -> Result<()> {
         RetentionPolicy::default(),
     )
     .with_compression(compression)
-    .with_compression_threshold(args.compression_threshold);
+    .with_compression_threshold(args.compression_threshold)
+    .with_compact(args.compact);
     let mut log = Log::new(dir, config)?;
 
     const REALTIME_BASE: u64 = 1_700_001_000_000_000;
@@ -141,7 +144,8 @@ fn run_file_writer(
         .with_window_size(8 * 1024 * 1024)
         .with_keyed_hash(true)
         .with_compression(compression)
-        .with_compress_threshold(args.compression_threshold);
+        .with_compress_threshold(args.compression_threshold)
+        .with_compact(args.compact);
     let mut journal_file = JournalFile::<MmapMut>::create(&repo_file, options)?;
     let mut writer = JournalWriter::new_with_compression(
         &mut journal_file,

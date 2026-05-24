@@ -4,11 +4,12 @@ use super::mmap::MemoryMapMut;
 use super::mmap::MmapMut;
 use crate::error::{JournalError, Result};
 use crate::file::{
-    CompactEntryItem, Compression, DataHashTable, DataObject, DataObjectHeader, DataPayloadType,
-    EntryObject, EntryObjectHeader, FieldHashTable, FieldObject, FieldObjectHeader, HashItem,
-    HashTable, HashTableMut, HashableObject, HashableObjectMut, HeaderIncompatibleFlags,
-    JournalFile, JournalFileOptions, JournalHeader, JournalState, ObjectFlags, ObjectHeader,
-    ObjectType, RegularEntryItem, hash::jenkins_hash64, journal_hash_data,
+    CompactDataFields, CompactEntryItem, Compression, DataHashTable, DataObject, DataObjectHeader,
+    DataPayloadType, EntryObject, EntryObjectHeader, FieldHashTable, FieldObject,
+    FieldObjectHeader, HashItem, HashTable, HashTableMut, HashableObject, HashableObjectMut,
+    HeaderIncompatibleFlags, JournalFile, JournalFileOptions, JournalHeader, JournalState,
+    ObjectFlags, ObjectHeader, ObjectType, RegularEntryItem, hash::jenkins_hash64,
+    journal_hash_data,
 };
 use rand::{Rng, seq::IndexedRandom};
 use rustc_hash::{FxHashMap, FxHasher};
@@ -20,6 +21,7 @@ use std::path::Path;
 use zerocopy::{FromBytes, IntoBytes};
 
 const OBJECT_ALIGNMENT: u64 = 8;
+const JOURNAL_COMPACT_SIZE_MAX: u64 = u32::MAX as u64;
 const DEFAULT_COMPRESS_THRESHOLD: usize = 64;
 const FIELD_CACHE_MAX_ENTRIES: usize = 1024;
 const FIELD_CACHE_MAX_PAYLOAD_LEN: usize = 128;
@@ -252,8 +254,15 @@ impl JournalWriter {
 
         // write the entry itself
         let entry_offset = self.append_offset;
+        let is_compact = Self::is_compact(journal_file);
+        let entry_payload_size = self.entry_items.len() as u64 * Self::entry_item_size(is_compact);
+        Self::ensure_compact_object_fits(
+            is_compact,
+            entry_offset,
+            std::mem::size_of::<EntryObjectHeader>() as u64 + entry_payload_size,
+        )?;
         let entry_size = {
-            let size = Some(self.entry_items.len() as u64 * 16);
+            let size = Some(entry_payload_size);
             let mut entry_guard = journal_file.entry_mut(entry_offset, size)?;
 
             entry_guard.header.seqnum = self.next_seqnum;
@@ -264,9 +273,9 @@ impl JournalWriter {
 
             // set each entry item
             for (index, entry_item) in self.entry_items.iter().enumerate() {
-                entry_guard
-                    .items
-                    .set(index, entry_item.offset, Some(entry_item.hash));
+                Self::ensure_compact_offset(is_compact, entry_item.offset)?;
+                let item_hash = (!is_compact).then_some(entry_item.hash);
+                entry_guard.items.set(index, entry_item.offset, item_hash);
             }
 
             entry_guard.header.object_header.aligned_size()
@@ -356,6 +365,12 @@ impl JournalWriter {
             None => {
                 let data_offset = self.append_offset;
                 let (stored_payload, object_flags) = self.stored_data_payload(payload);
+                let is_compact = Self::is_compact(journal_file);
+                Self::ensure_compact_object_fits(
+                    is_compact,
+                    data_offset,
+                    Self::data_object_size(is_compact, stored_payload.len() as u64),
+                )?;
                 let data_size = {
                     let mut data_guard =
                         journal_file.data_mut(data_offset, Some(stored_payload.len() as u64))?;
@@ -459,6 +474,12 @@ impl JournalWriter {
                 // We will have to write the new field object at the current
                 // tail offset
                 let field_offset = self.append_offset;
+                let is_compact = Self::is_compact(journal_file);
+                Self::ensure_compact_object_fits(
+                    is_compact,
+                    field_offset,
+                    std::mem::size_of::<FieldObjectHeader>() as u64 + payload.len() as u64,
+                )?;
                 let field_size = {
                     let mut field_guard =
                         journal_file.field_mut(field_offset, Some(payload.len() as u64))?;
@@ -495,6 +516,13 @@ impl JournalWriter {
         // let new_capacity = previous_capacity.saturating_mul(NonZeroU64::new(2).unwrap());
 
         let array_offset = self.append_offset;
+        let is_compact = Self::is_compact(journal_file);
+        Self::ensure_compact_object_fits(
+            is_compact,
+            array_offset,
+            std::mem::size_of::<crate::file::OffsetArrayObjectHeader>() as u64
+                + capacity.get() * Self::offset_array_item_size(is_compact),
+        )?;
         let array_size = {
             let array_guard = journal_file.offset_array_mut(array_offset, Some(capacity))?;
 
@@ -572,6 +600,8 @@ impl JournalWriter {
         journal_file: &mut JournalFile<MmapMut>,
         entry_offset: NonZeroU64,
     ) -> Result<()> {
+        let is_compact = Self::is_compact(journal_file);
+        Self::ensure_compact_offset(is_compact, entry_offset)?;
         let entry_array_offset = journal_file.journal_header_ref().entry_array_offset;
 
         if entry_array_offset.is_none() {
@@ -664,7 +694,10 @@ impl JournalWriter {
         mut array_offset: NonZeroU64,
         entry_offset: NonZeroU64,
         current_count: u64,
-    ) -> Result<()> {
+    ) -> Result<(NonZeroU64, u64)> {
+        let is_compact = Self::is_compact(journal_file);
+        Self::ensure_compact_offset(is_compact, entry_offset)?;
+
         // Navigate to the tail of the array chain
         let mut current_index = 0u64;
         #[allow(unused_assignments)]
@@ -702,6 +735,7 @@ impl JournalWriter {
             // There's space in the tail array
             let mut tail_guard = journal_file.offset_array_mut(tail_offset, None)?;
             tail_guard.set(entries_in_tail as usize, entry_offset)?;
+            Ok((tail_offset, entries_in_tail + 1))
         } else {
             // Need to create a new array
             let new_capacity = NonZeroU64::new(Self::next_entry_array_capacity(
@@ -719,9 +753,8 @@ impl JournalWriter {
             // Add entry to the new array
             let mut new_array_guard = journal_file.offset_array_mut(new_array_offset, None)?;
             new_array_guard.set(0, entry_offset)?;
+            Ok((new_array_offset, 1))
         }
-
-        Ok(())
     }
 
     fn link_data_to_entry(
@@ -758,20 +791,25 @@ impl JournalWriter {
                         }
 
                         // Update data object to point to the array
+                        let is_compact = Self::is_compact(journal_file);
                         let mut data_guard = journal_file.data_mut(data_offset, None)?;
                         data_guard.header.entry_array_offset = Some(array_offset);
+                        if is_compact {
+                            Self::set_compact_data_tail(&mut data_guard, array_offset, 1)?;
+                        }
                         data_guard.header.n_entries = NonZeroU64::new(2);
                     }
                     x => {
                         // There's already an entry array, append to it
                         let current_count = x - 1;
                         let array_offset = data_guard.header.entry_array_offset.unwrap();
+                        let is_compact = Self::is_compact(journal_file);
 
                         // Drop the data guard to avoid borrow conflicts
                         drop(data_guard);
 
                         // Find the tail of the entry array chain and append
-                        self.append_to_data_entry_array(
+                        let (tail_offset, tail_entries) = self.append_to_data_entry_array(
                             journal_file,
                             array_offset,
                             entry_offset,
@@ -780,6 +818,13 @@ impl JournalWriter {
 
                         // Update the count
                         let mut data_guard = journal_file.data_mut(data_offset, None)?;
+                        if is_compact {
+                            Self::set_compact_data_tail(
+                                &mut data_guard,
+                                tail_offset,
+                                tail_entries,
+                            )?;
+                        }
                         data_guard.header.n_entries = NonZeroU64::new(x + 1);
                     }
                 }
@@ -787,6 +832,80 @@ impl JournalWriter {
         }
 
         Ok(())
+    }
+
+    fn is_compact(journal_file: &JournalFile<MmapMut>) -> bool {
+        journal_file
+            .journal_header_ref()
+            .has_incompatible_flag(HeaderIncompatibleFlags::Compact)
+    }
+
+    fn entry_item_size(is_compact: bool) -> u64 {
+        if is_compact {
+            std::mem::size_of::<CompactEntryItem>() as u64
+        } else {
+            std::mem::size_of::<RegularEntryItem>() as u64
+        }
+    }
+
+    fn offset_array_item_size(is_compact: bool) -> u64 {
+        if is_compact {
+            std::mem::size_of::<u32>() as u64
+        } else {
+            std::mem::size_of::<u64>() as u64
+        }
+    }
+
+    fn data_object_size(is_compact: bool, payload_size: u64) -> u64 {
+        let mut size = std::mem::size_of::<DataObjectHeader>() as u64 + payload_size;
+        if is_compact {
+            size += std::mem::size_of::<CompactDataFields>() as u64;
+        }
+        size
+    }
+
+    fn ensure_compact_offset(is_compact: bool, offset: NonZeroU64) -> Result<()> {
+        if is_compact && offset.get() > JOURNAL_COMPACT_SIZE_MAX {
+            return Err(JournalError::ObjectExceedsFileBounds);
+        }
+        Ok(())
+    }
+
+    fn ensure_compact_object_fits(
+        is_compact: bool,
+        offset: NonZeroU64,
+        object_size: u64,
+    ) -> Result<()> {
+        if !is_compact {
+            return Ok(());
+        }
+
+        let end_offset = offset
+            .get()
+            .checked_add(object_size)
+            .ok_or(JournalError::ObjectExceedsFileBounds)?;
+        let aligned_end = (end_offset + (OBJECT_ALIGNMENT - 1)) & !(OBJECT_ALIGNMENT - 1);
+        if offset.get() > JOURNAL_COMPACT_SIZE_MAX || aligned_end > JOURNAL_COMPACT_SIZE_MAX {
+            return Err(JournalError::ObjectExceedsFileBounds);
+        }
+        Ok(())
+    }
+
+    fn set_compact_data_tail(
+        data_guard: &mut DataObject<&mut [u8]>,
+        tail_offset: NonZeroU64,
+        tail_entries: u64,
+    ) -> Result<()> {
+        match &mut data_guard.payload {
+            DataPayloadType::Compact { compact_fields, .. } => {
+                compact_fields.tail_entry_array_offset = u32::try_from(tail_offset.get())
+                    .map_err(|_| JournalError::ObjectExceedsFileBounds)?;
+                compact_fields.tail_entry_array_n_entries = u32::try_from(tail_entries)
+                    .map_err(|_| JournalError::ObjectExceedsFileBounds)?;
+                Ok(())
+            }
+            DataPayloadType::Regular(_) => Err(JournalError::InvalidObjectType),
+        }
     }
 }
 

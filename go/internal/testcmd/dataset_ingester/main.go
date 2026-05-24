@@ -139,7 +139,7 @@ func expectedRejection(input map[string]interface{}) string {
 	return ""
 }
 
-func makeWriter(path string) (*journal.Writer, error) {
+func makeWriter(path string, compact bool) (*journal.Writer, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
@@ -151,6 +151,7 @@ func makeWriter(path string) (*journal.Writer, error) {
 		HeadSeqnum:             1,
 		Compression:            journal.CompressionNone,
 		CompressThresholdBytes: 64,
+		Compact:                compact,
 	})
 }
 
@@ -174,8 +175,8 @@ func finalizeWriter(w *journal.Writer, output string, finalState string, headRea
 	}
 }
 
-func ingestAccepted(dataset, output string, finalState string) result {
-	w, err := makeWriter(output)
+func ingestAccepted(dataset, output string, finalState string, compact bool) result {
+	w, err := makeWriter(output, compact)
 	if err != nil {
 		return result{Errors: []string{err.Error()}}
 	}
@@ -252,7 +253,7 @@ func ingestAccepted(dataset, output string, finalState string) result {
 	return res
 }
 
-func ingestRejections(dataset, output string, finalState string) result {
+func ingestRejections(dataset, output string, finalState string, compact bool) result {
 	file, err := os.Open(dataset)
 	if err != nil {
 		return result{Errors: []string{err.Error()}}
@@ -289,7 +290,7 @@ func ingestRejections(dataset, output string, finalState string) result {
 		}
 
 		if w == nil {
-			w, err = makeWriter(output)
+			w, err = makeWriter(output, compact)
 			if err != nil {
 				res.Errors = append(res.Errors, err.Error())
 				break
@@ -333,17 +334,18 @@ func main() {
 	output := flag.String("output", "", "output journal path")
 	rejectionMode := flag.Bool("rejection-mode", false, "process rejection corpus")
 	finalState := flag.String("final-state", "online", "final journal state: online, offline, archived")
+	compact := flag.Bool("compact", false, "write the systemd compact journal format")
 	flag.Parse()
 	if *dataset == "" || *output == "" {
-		fmt.Fprintln(os.Stderr, "usage: dataset_ingester --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived]")
+		fmt.Fprintln(os.Stderr, "usage: dataset_ingester --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived] [--compact]")
 		os.Exit(2)
 	}
 
 	var res result
 	if *rejectionMode {
-		res = ingestRejections(*dataset, *output, *finalState)
+		res = ingestRejections(*dataset, *output, *finalState, *compact)
 	} else {
-		res = ingestAccepted(*dataset, *output, *finalState)
+		res = ingestAccepted(*dataset, *output, *finalState, *compact)
 	}
 	encoded, _ := json.Marshal(res)
 	fmt.Println(string(encoded))

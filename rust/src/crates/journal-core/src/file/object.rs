@@ -492,7 +492,10 @@ impl<B: ByteSliceMut> OffsetsType<B> {
     pub fn set(&mut self, index: usize, value: NonZeroU64) {
         match self {
             OffsetsType::Regular(offsets) => offsets[index] = Some(value),
-            OffsetsType::Compact(offsets) => offsets[index] = NonZeroU32::new(value.get() as u32),
+            OffsetsType::Compact(offsets) => {
+                assert!(value.get() <= u32::MAX as u64);
+                offsets[index] = NonZeroU32::new(value.get() as u32);
+            }
         }
     }
 }
@@ -669,7 +672,7 @@ impl<B: ByteSliceMut> EntryItemsType<B> {
             }
             EntryItemsType::Compact(entry_items) => {
                 debug_assert!(hash.is_none());
-                assert!(object_offset.get() < u32::MAX as u64);
+                assert!(object_offset.get() <= u32::MAX as u64);
                 entry_items[index].object_offset = object_offset.get() as u32;
             }
         }

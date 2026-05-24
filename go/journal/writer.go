@@ -46,6 +46,9 @@ type Options struct {
 	// CompressThresholdBytes is the minimum uncompressed payload size in bytes
 	// required before compression is attempted. Defaults to 64.
 	CompressThresholdBytes int
+	// Compact writes the systemd compact journal object layout. Regular layout
+	// remains the default for existing deterministic fixtures.
+	Compact bool
 }
 
 // EntryOptions controls timestamps and boot ID for one appended entry.
@@ -79,6 +82,7 @@ type Writer struct {
 	closed            bool
 	compression       int
 	compressThreshold int
+	compact           bool
 }
 
 // Create creates or truncates a journal file after acquiring the writer lock.
@@ -110,7 +114,7 @@ func Create(path string, opts Options) (*Writer, error) {
 
 	w := &Writer{
 		file: f, path: path, lock: lock, bootID: opts.BootID, started: time.Now(),
-		compression: opts.Compression, compressThreshold: opts.CompressThresholdBytes,
+		compression: opts.Compression, compressThreshold: opts.CompressThresholdBytes, compact: opts.Compact,
 	}
 	if err := w.initialize(opts); err != nil {
 		_ = unlockAndClose(f)
@@ -149,7 +153,7 @@ func Open(path string) (*Writer, error) {
 		_ = lock.release()
 		return nil, err
 	}
-	const supportedWriterIncompatible = incompatibleKeyedHash | incompatibleCompressedZSTD | incompatibleCompressedXZ | incompatibleCompressedLZ4
+	const supportedWriterIncompatible = incompatibleKeyedHash | incompatibleCompressedZSTD | incompatibleCompressedXZ | incompatibleCompressedLZ4 | incompatibleCompact
 	if header.incompatibleFlags&^supportedWriterIncompatible != 0 {
 		_ = unlockAndClose(f)
 		_ = lock.release()
@@ -189,6 +193,7 @@ func Open(path string) (*Writer, error) {
 		started:           startTimeForTailMonotonic(now, header.tailEntryMonotonic),
 		compression:       compression,
 		compressThreshold: defaultCompressThreshold,
+		compact:           header.isCompact(),
 	}
 	if isZeroUUID(w.bootID) {
 		w.bootID = header.fileID
@@ -263,7 +268,11 @@ func (w *Writer) Append(fields []Field, opts EntryOptions) error {
 	items = dedupeEntryItems(items)
 
 	entryOffset := w.appendOffset
-	entrySize := uint64(entryObjectHeaderSize + len(items)*regularEntryItemSize)
+	itemSize := w.entryItemSize()
+	entrySize := uint64(entryObjectHeaderSize + len(items)*int(itemSize))
+	if err := w.ensureCompactObjectFits(entryOffset, entrySize); err != nil {
+		return err
+	}
 	buf := make([]byte, align8(entrySize))
 	putEntryHeader(buf[:entryObjectHeaderSize], entryHeader{
 		object: objectHeader{typ: objectTypeEntry, size: entrySize},
@@ -271,9 +280,16 @@ func (w *Writer) Append(fields []Field, opts EntryOptions) error {
 		monotonic: opts.MonotonicUsec, bootID: opts.BootID, xorHash: xorHash,
 	})
 	for i, item := range items {
-		off := entryObjectHeaderSize + i*regularEntryItemSize
-		binary.LittleEndian.PutUint64(buf[off:off+8], item.offset)
-		binary.LittleEndian.PutUint64(buf[off+8:off+16], item.hash)
+		off := entryObjectHeaderSize + i*int(itemSize)
+		if w.compact {
+			if item.offset > journalCompactSizeMax {
+				return fmt.Errorf("%w: compact object offset exceeds 32-bit range", errInvalidJournal)
+			}
+			binary.LittleEndian.PutUint32(buf[off:off+compactEntryItemSize], uint32(item.offset))
+		} else {
+			binary.LittleEndian.PutUint64(buf[off:off+8], item.offset)
+			binary.LittleEndian.PutUint64(buf[off+8:off+16], item.hash)
+		}
 	}
 	if err := w.writeObject(entryOffset, buf); err != nil {
 		return err
@@ -507,6 +523,9 @@ func (w *Writer) initialize(opts Options) error {
 	} else if opts.Compression == CompressionLZ4 {
 		incFlags |= incompatibleCompressedLZ4
 	}
+	if opts.Compact {
+		incFlags |= incompatibleCompact
+	}
 
 	w.header = journalHeader{
 		signature:            [8]byte{'L', 'P', 'K', 'S', 'H', 'H', 'R', 'H'},
@@ -694,13 +713,17 @@ func (w *Writer) addData(payload []byte) (uint64, uint64, error) {
 		objectPayload = payload
 	}
 
-	size := uint64(dataObjectHeaderSize + len(objectPayload))
+	payloadOffset := w.dataPayloadOffset()
+	size := payloadOffset + uint64(len(objectPayload))
+	if err := w.ensureCompactObjectFits(offset, size); err != nil {
+		return 0, 0, err
+	}
 	buf := make([]byte, align8(size))
 	putDataHeader(buf[:dataObjectHeaderSize], dataHeader{
 		object: objectHeader{typ: objectTypeData, flag: compressionFlag, size: size},
 		hash:   hash,
 	})
-	copy(buf[dataObjectHeaderSize:], objectPayload)
+	copy(buf[payloadOffset:], objectPayload)
 	if err := w.writeObject(offset, buf); err != nil {
 		return 0, 0, err
 	}
@@ -739,6 +762,9 @@ func (w *Writer) addField(payload []byte) (uint64, error) {
 
 	offset := w.appendOffset
 	size := uint64(fieldObjectHeaderSize + len(payload))
+	if err := w.ensureCompactObjectFits(offset, size); err != nil {
+		return 0, err
+	}
 	buf := make([]byte, align8(size))
 	putFieldHeader(buf[:fieldObjectHeaderSize], fieldHeader{
 		object: objectHeader{typ: objectTypeField, size: size},
@@ -859,11 +885,12 @@ func (w *Writer) readDataObject(offset uint64) (dataHeader, []byte, error) {
 	if err != nil {
 		return dataHeader{}, nil, err
 	}
-	if header.object.typ != objectTypeData || header.object.size < dataObjectHeaderSize {
+	payloadOffset := w.dataPayloadOffset()
+	if header.object.typ != objectTypeData || header.object.size < payloadOffset {
 		return dataHeader{}, nil, errInvalidJournal
 	}
-	payload := make([]byte, header.object.size-dataObjectHeaderSize)
-	if _, err := w.file.ReadAt(payload, int64(offset+dataObjectHeaderSize)); err != nil {
+	payload := make([]byte, header.object.size-payloadOffset)
+	if _, err := w.file.ReadAt(payload, int64(offset+payloadOffset)); err != nil {
 		return dataHeader{}, nil, err
 	}
 	if header.object.flag&objectCompressedZSTD != 0 {
@@ -1021,7 +1048,10 @@ func (w *Writer) appendToEntryArray(entryOffset uint64) error {
 
 func (w *Writer) allocateOffsetArray(capacity uint64) (uint64, error) {
 	offset := w.appendOffset
-	size := uint64(offsetArrayObjectHeaderSize) + capacity*8
+	size := uint64(offsetArrayObjectHeaderSize) + capacity*w.offsetArrayItemSize()
+	if err := w.ensureCompactObjectFits(offset, size); err != nil {
+		return 0, err
+	}
 	buf := make([]byte, align8(size))
 	putOffsetArrayHeader(buf[:offsetArrayObjectHeaderSize], offsetArrayHeader{
 		object: objectHeader{typ: objectTypeEntryArray, size: size},
@@ -1049,11 +1079,22 @@ func (w *Writer) readOffsetArrayHeader(offset uint64) (offsetArrayHeader, uint64
 	if header.object.typ != objectTypeEntryArray || header.object.size < offsetArrayObjectHeaderSize {
 		return offsetArrayHeader{}, 0, errInvalidJournal
 	}
-	return header, (header.object.size - offsetArrayObjectHeaderSize) / 8, nil
+	itemSize := w.offsetArrayItemSize()
+	if (header.object.size-offsetArrayObjectHeaderSize)%itemSize != 0 {
+		return offsetArrayHeader{}, 0, errInvalidJournal
+	}
+	return header, (header.object.size - offsetArrayObjectHeaderSize) / itemSize, nil
 }
 
 func (w *Writer) writeArrayItem(arrayOffset, index, entryOffset uint64) error {
-	return w.writeUint64At(arrayOffset+offsetArrayObjectHeaderSize+index*8, entryOffset)
+	itemOffset := arrayOffset + offsetArrayObjectHeaderSize + index*w.offsetArrayItemSize()
+	if w.compact {
+		if entryOffset > journalCompactSizeMax {
+			return fmt.Errorf("%w: compact entry offset exceeds 32-bit range", errInvalidJournal)
+		}
+		return w.writeUint32At(itemOffset, uint32(entryOffset))
+	}
+	return w.writeUint64At(itemOffset, entryOffset)
 }
 
 func (w *Writer) linkDataToEntry(dataOffset, entryOffset uint64) error {
@@ -1078,42 +1119,96 @@ func (w *Writer) linkDataToEntry(dataOffset, entryOffset uint64) error {
 		if err := w.writeUint64At(dataOffset+48, arrayOffset); err != nil {
 			return err
 		}
+		if w.compact {
+			if err := w.writeUint32At(dataOffset+compactDataTailOffsetOffset, uint32(arrayOffset)); err != nil {
+				return err
+			}
+			if err := w.writeUint32At(dataOffset+compactDataTailEntriesOffset, 1); err != nil {
+				return err
+			}
+		}
 		return w.writeUint64At(dataOffset+56, 2)
 	default:
 		if header.entryArrayOffset == 0 {
 			return errInvalidJournal
 		}
-		if err := w.appendToDataEntryArray(header.entryArrayOffset, header.nEntries-1, entryOffset); err != nil {
+		tailOffset, tailEntries, err := w.appendToDataEntryArray(header.entryArrayOffset, header.nEntries-1, entryOffset)
+		if err != nil {
 			return err
+		}
+		if w.compact {
+			if err := w.writeUint32At(dataOffset+compactDataTailOffsetOffset, uint32(tailOffset)); err != nil {
+				return err
+			}
+			if err := w.writeUint32At(dataOffset+compactDataTailEntriesOffset, uint32(tailEntries)); err != nil {
+				return err
+			}
 		}
 		return w.writeUint64At(dataOffset+56, header.nEntries+1)
 	}
 }
 
-func (w *Writer) appendToDataEntryArray(arrayOffset, currentCount, entryOffset uint64) error {
+func (w *Writer) appendToDataEntryArray(arrayOffset, currentCount, entryOffset uint64) (uint64, uint64, error) {
 	remaining := currentCount
 	offset := arrayOffset
 	for {
 		header, cap, err := w.readOffsetArrayHeader(offset)
 		if err != nil {
-			return err
+			return 0, 0, err
 		}
 		if remaining < cap {
-			return w.writeArrayItem(offset, remaining, entryOffset)
+			if err := w.writeArrayItem(offset, remaining, entryOffset); err != nil {
+				return 0, 0, err
+			}
+			return offset, remaining + 1, nil
 		}
 		remaining -= cap
 		if header.nextArrayOffset == 0 {
 			newOffset, err := w.allocateOffsetArray(nextEntryArrayCapacity(currentCount, cap))
 			if err != nil {
-				return err
+				return 0, 0, err
 			}
 			if err := w.writeUint64At(offset+16, newOffset); err != nil {
-				return err
+				return 0, 0, err
 			}
-			return w.writeArrayItem(newOffset, 0, entryOffset)
+			if err := w.writeArrayItem(newOffset, 0, entryOffset); err != nil {
+				return 0, 0, err
+			}
+			return newOffset, 1, nil
 		}
 		offset = header.nextArrayOffset
 	}
+}
+
+func (w *Writer) entryItemSize() uint64 {
+	if w.compact {
+		return compactEntryItemSize
+	}
+	return regularEntryItemSize
+}
+
+func (w *Writer) offsetArrayItemSize() uint64 {
+	if w.compact {
+		return compactOffsetArrayItemSize
+	}
+	return regularOffsetArrayItemSize
+}
+
+func (w *Writer) dataPayloadOffset() uint64 {
+	if w.compact {
+		return compactDataObjectHeaderSize
+	}
+	return dataObjectHeaderSize
+}
+
+func (w *Writer) ensureCompactObjectFits(offset, size uint64) error {
+	if !w.compact {
+		return nil
+	}
+	if offset > journalCompactSizeMax || align8(offset+size) > journalCompactSizeMax {
+		return fmt.Errorf("%w: compact journal cannot exceed 4 GiB", errInvalidJournal)
+	}
+	return nil
 }
 
 func dedupeEntryItems(items []entryItem) []entryItem {

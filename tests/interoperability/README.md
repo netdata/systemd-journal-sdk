@@ -111,7 +111,8 @@ For each writer language, the matrix proves all of the following:
 
 - **Compression, compact journal, or FSS**: these are out of scope for the live
   matrix. Binary stress fixtures are covered by `run_binary_matrix.py`; DATA
-  object compression is covered by `run_compression_matrix.py`.
+  object compression is covered by `run_compression_matrix.py`; compact object
+  layout is covered by `run_compact_matrix.py`.
 
 - **Multi-writer scenarios**: the live matrix tests one writer at a time with
   multiple concurrent readers, not multiple concurrent writers.
@@ -223,6 +224,40 @@ For each generated writer file, the compression matrix validates:
 - `COMPRESSED_MATCH=<value>` works as a file-backed match through argv for stock
   journalctl and every repository journalctl rewrite.
 
+## Compact Matrix (`run_compact_matrix.py`)
+
+Generates compact-format fixture journals with every writer, then validates
+each generated file with stock journalctl, stock libsystemd, and every
+repository journalctl implementation.
+
+```bash
+python3 tests/interoperability/run_compact_matrix.py
+```
+
+Useful options:
+
+```bash
+python3 tests/interoperability/run_compact_matrix.py --writers go python
+python3 tests/interoperability/run_compact_matrix.py --readers stock rust python
+python3 tests/interoperability/run_compact_matrix.py --compression zstd --compression-threshold-bytes 1
+```
+
+Each writer fixture enables explicit compact output while keeping the binary
+fixture fields used by the binary matrix. For each generated writer file, the
+compact matrix validates:
+
+- `HEADER_INCOMPATIBLE_COMPACT` is set;
+- ENTRY items are 4-byte compact offsets;
+- DATA payloads begin after the compact DATA tail fields;
+- compact ENTRY_ARRAY layout is present;
+- stock `journalctl --verify --file` succeeds;
+- stock journalctl and stock libsystemd read binary fields;
+- Go, Rust, Node.js, and Python journalctl rewrites return matching JSON and
+  export output.
+
+The `--compression` option can be used to validate compact journals whose DATA
+objects are compressed with `zstd`, `xz`, or `lz4`.
+
 ## Writer Lock Matrix (`run_lock_matrix.py`)
 
 Starts one SDK writer as the active lock holder, then starts every SDK writer as
@@ -255,7 +290,7 @@ completion unless `--keep-files` is passed.
 | zstd compressed DATA object writing | Complete | `run_compression_matrix.py` validates zstd header/object flags plus stock/repository reads | Closed in SOW-0008 |
 | xz compressed DATA object writing | Complete | Rust, Go, Node.js, and Python write/read xz; stock journalctl, stock libsystemd, and all repository readers pass | Closed in SOW-0021 |
 | lz4 compressed DATA object writing | Complete | Rust, Go, Node.js, and Python write/read lz4 when Python `lz4==4.4.5` is installed; stock journalctl, stock libsystemd, and all repository readers pass | Closed in SOW-0017 |
-| Compact journal format | Not implemented | Writers create regular non-compact journals | Tracked by SOW-0018 |
+| Compact journal format | Complete | `run_compact_matrix.py` validates compact layout plus stock/repository reads across all writers | Closed in SOW-0018 |
 | Forward Secure Sealing / verification | Not implemented | Verification/FSS tests skipped in earlier SOWs | Tracked by SOW-0019 |
 | Cross-language binary stress | Complete | `run_binary_matrix.py` passes 52/52 across all writer/reader pairs plus stock libsystemd | Closed |
 | Writer locking parity | Complete | `run_lock_matrix.py` passes 8/8; all SDK writer pairs reject concurrent writers and stale locks left by crashed writers are cleaned | Closed |

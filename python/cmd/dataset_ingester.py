@@ -67,7 +67,7 @@ def valid_field_name(name: str) -> bool:
     return all(ch == "_" or "A" <= ch <= "Z" or "0" <= ch <= "9" for ch in name)
 
 
-def make_writer(path: Path) -> Writer:
+def make_writer(path: Path, compact: bool) -> Writer:
     path.parent.mkdir(parents=True, exist_ok=True)
     return Writer.create(
         str(path),
@@ -79,6 +79,7 @@ def make_writer(path: Path) -> Writer:
             "head_seqnum": 1,
             "compression": "none",
             "compression_threshold_bytes": 64,
+            "compact": compact,
         },
     )
 
@@ -102,8 +103,8 @@ def finalize_writer(writer: Writer, output: Path, final_state: str, head_realtim
         raise ValueError(f"invalid final state: {final_state}")
 
 
-def ingest_accepted(dataset: Path, output: Path, final_state: str) -> dict:
-    writer = make_writer(output)
+def ingest_accepted(dataset: Path, output: Path, final_state: str, compact: bool) -> dict:
+    writer = make_writer(output, compact)
     written = 0
     head_realtime = 0
     errors: list[str] = []
@@ -140,7 +141,7 @@ def ingest_accepted(dataset: Path, output: Path, final_state: str) -> dict:
     return {"records": written, "errors": errors}
 
 
-def ingest_rejections(dataset: Path, output: Path, final_state: str) -> dict:
+def ingest_rejections(dataset: Path, output: Path, final_state: str, compact: bool) -> dict:
     writer: Writer | None = None
     handled = 0
     errors: list[str] = []
@@ -164,7 +165,7 @@ def ingest_rejections(dataset: Path, output: Path, final_state: str) -> dict:
                 continue
 
             if writer is None:
-                writer = make_writer(output)
+                writer = make_writer(output, compact)
             name = input_data["field_name"]
             value = materialize_value(input_data["value"])
             try:
@@ -187,12 +188,13 @@ def main() -> int:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--rejection-mode", action="store_true")
     parser.add_argument("--final-state", choices=("online", "offline", "archived"), default="online")
+    parser.add_argument("--compact", action="store_true")
     args = parser.parse_args()
 
     result = (
-        ingest_rejections(args.dataset, args.output, args.final_state)
+        ingest_rejections(args.dataset, args.output, args.final_state, args.compact)
         if args.rejection_mode
-        else ingest_accepted(args.dataset, args.output, args.final_state)
+        else ingest_accepted(args.dataset, args.output, args.final_state, args.compact)
     )
     print(json.dumps(result, sort_keys=True))
     return 0 if not result["errors"] else 1

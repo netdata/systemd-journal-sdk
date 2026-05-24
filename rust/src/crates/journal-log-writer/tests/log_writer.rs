@@ -6,11 +6,12 @@
 //! - Retention policies
 
 use journal_common::{Microseconds, load_machine_id, monotonic_now};
+use journal_core::file::{HeaderIncompatibleFlags, JournalFile, Mmap};
 use journal_log_writer::{
     Config, EntryTimestamps, Log, LogLifecycleEvent, LogLifecycleObserver, RetentionPolicy,
     RotationPolicy,
 };
-use journal_registry::Origin;
+use journal_registry::{Origin, repository::File};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -228,6 +229,43 @@ fn test_rotation_by_file_size() {
 
     // Should have rotated at least once
     assert!(count_journal_files(&dir) > 1);
+}
+
+#[test]
+fn test_compact_rotation_preserves_compact_format() {
+    let dir = TempDir::new().unwrap();
+
+    let rotation = RotationPolicy::default().with_number_of_entries(1);
+    let config = test_config()
+        .with_rotation_policy(rotation)
+        .with_compact(true);
+    let mut log = Log::new(dir.path(), config).unwrap();
+
+    for i in 0..3 {
+        let message = format!("MESSAGE=compact rotated entry {}", i);
+        let entry = [message.as_bytes(), b"PRIORITY=6"];
+        log.write_entry(&entry, None).unwrap();
+    }
+    log.sync().unwrap();
+
+    let paths = journal_file_paths(&dir);
+    assert!(
+        paths.len() > 1,
+        "expected compact log to rotate, got {:?}",
+        paths
+    );
+
+    for path in paths {
+        let file = File::from_path(&path).expect("rotated journal path should parse");
+        let journal = JournalFile::<Mmap>::open(&file, 4096).expect("open rotated journal");
+        assert!(
+            journal
+                .journal_header_ref()
+                .has_incompatible_flag(HeaderIncompatibleFlags::Compact),
+            "rotated journal should remain compact: {}",
+            path.display()
+        );
+    }
 }
 
 #[test]

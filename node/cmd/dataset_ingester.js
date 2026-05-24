@@ -54,7 +54,7 @@ function expectedRejection(input) {
   return null;
 }
 
-function makeWriter(path) {
+function makeWriter(path, compact) {
   mkdirSync(dirname(path), { recursive: true });
   return Writer.create(path, {
     bootId: BOOT_ID,
@@ -64,6 +64,7 @@ function makeWriter(path) {
     headSeqnum: 1,
     compression: 'none',
     compressionThresholdBytes: 64,
+    compact,
   });
 }
 
@@ -90,8 +91,8 @@ function records(path) {
     .map(line => JSON.parse(line));
 }
 
-function ingestAccepted(dataset, output, finalState) {
-  const writer = makeWriter(output);
+function ingestAccepted(dataset, output, finalState, compact) {
+  const writer = makeWriter(output, compact);
   let written = 0;
   let headRealtime = 0n;
   const errors = [];
@@ -121,7 +122,7 @@ function ingestAccepted(dataset, output, finalState) {
   return { records: written, errors };
 }
 
-function ingestRejections(dataset, output, finalState) {
+function ingestRejections(dataset, output, finalState, compact) {
   let writer = null;
   let handled = 0;
   const errors = [];
@@ -135,7 +136,7 @@ function ingestRejections(dataset, output, finalState) {
       continue;
     }
 
-    writer ||= makeWriter(output);
+    writer ||= makeWriter(output, compact);
     try {
       writer.append(
         [{ name: record.input.field_name, value: materializeValue(record.input.value) }],
@@ -152,25 +153,26 @@ function ingestRejections(dataset, output, finalState) {
 }
 
 function parseArgs(argv) {
-  const args = { finalState: 'online', rejectionMode: false };
+  const args = { finalState: 'online', rejectionMode: false, compact: false };
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--rejection-mode') args.rejectionMode = true;
+    else if (arg === '--compact') args.compact = true;
     else if (arg === '--final-state') args.finalState = argv[++i];
     else if (arg === '--dataset') args.dataset = argv[++i];
     else if (arg === '--output') args.output = argv[++i];
     else throw new Error(`unknown argument: ${arg}`);
   }
   if (!['online', 'offline', 'archived'].includes(args.finalState)) throw new Error(`invalid final state: ${args.finalState}`);
-  if (!args.dataset || !args.output) throw new Error('usage: dataset_ingester --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived]');
+  if (!args.dataset || !args.output) throw new Error('usage: dataset_ingester --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived] [--compact]');
   return args;
 }
 
 try {
   const args = parseArgs(process.argv);
   const result = args.rejectionMode
-    ? ingestRejections(args.dataset, args.output, args.finalState)
-    : ingestAccepted(args.dataset, args.output, args.finalState);
+    ? ingestRejections(args.dataset, args.output, args.finalState, args.compact)
+    : ingestAccepted(args.dataset, args.output, args.finalState, args.compact);
   console.log(JSON.stringify(result, Object.keys(result).sort()));
   process.exit(result.errors.length === 0 ? 0 : 1);
 } catch (error) {

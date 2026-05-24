@@ -1,4 +1,4 @@
-# Journal file writer. Creates regular, non-compact, keyed-hash journal files.
+# Journal file writer. Creates regular-by-default keyed-hash journal files.
 # Compatible with stock journalctl readers during live append.
 
 import os
@@ -17,11 +17,14 @@ from .header import (
     OBJECT_TYPE_ENTRY_ARRAY, OBJECT_TYPE_FIELD,
     STATE_OFFLINE, STATE_ONLINE, STATE_ARCHIVED,
     INCOMPATIBLE_KEYED_HASH, INCOMPATIBLE_COMPRESSED_ZSTD,
-    INCOMPATIBLE_COMPRESSED_XZ, INCOMPATIBLE_COMPRESSED_LZ4,
+    INCOMPATIBLE_COMPRESSED_XZ, INCOMPATIBLE_COMPRESSED_LZ4, INCOMPATIBLE_COMPACT,
     COMPATIBLE_TAIL_ENTRY_BOOT_ID,
     OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE, DATA_OBJECT_HEADER_SIZE,
     FIELD_OBJECT_HEADER_SIZE, HASH_ITEM_SIZE, OFFSET_ARRAY_OBJECT_HEADER_SIZE,
     REGULAR_ENTRY_ITEM_SIZE, OBJECT_COMPRESSED_XZ, OBJECT_COMPRESSED_LZ4, OBJECT_COMPRESSED_ZSTD,
+    COMPACT_ENTRY_ITEM_SIZE, COMPACT_OFFSET_ARRAY_ITEM_SIZE, REGULAR_OFFSET_ARRAY_ITEM_SIZE,
+    COMPACT_DATA_OBJECT_HEADER_SIZE, COMPACT_DATA_TAIL_OFFSET_OFFSET,
+    COMPACT_DATA_TAIL_ENTRIES_OFFSET, JOURNAL_COMPACT_SIZE_MAX,
     DEFAULT_DATA_HASH_BUCKETS, DEFAULT_FIELD_HASH_BUCKETS, FILE_SIZE_INCREASE,
     INITIAL_ENTRY_ARRAY_CAP, INITIAL_DATA_ENTRY_ARRAY_CAP,
 )
@@ -48,6 +51,7 @@ class Writer:
         self._closed = False
         self._compression = COMPRESSION_NONE
         self._compress_threshold = DEFAULT_COMPRESS_THRESHOLD
+        self._compact = False
 
     @staticmethod
     def create(path, opts=None):
@@ -60,6 +64,7 @@ class Writer:
             os.ftruncate(fd, 0)
             w = Writer(fd, path, lock)
             w._compression = _normalize_compression(opts.get('compression', COMPRESSION_NONE))
+            w._compact = opts.get('compact') is True or opts.get('format') == 'compact'
             if w._compression == COMPRESSION_ZSTD:
                 _ensure_zstd_available()
             elif w._compression == COMPRESSION_XZ:
@@ -93,7 +98,8 @@ class Writer:
             flags = header['incompatible_flags']
             supported_writer_incompatible = (
                 INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_ZSTD |
-                INCOMPATIBLE_COMPRESSED_XZ | INCOMPATIBLE_COMPRESSED_LZ4
+                INCOMPATIBLE_COMPRESSED_XZ | INCOMPATIBLE_COMPRESSED_LZ4 |
+                INCOMPATIBLE_COMPACT
             )
             if flags & ~supported_writer_incompatible:
                 raise ValueError(f'unsupported journal: incompatible flags 0x{flags:x}')
@@ -132,6 +138,7 @@ class Writer:
             w._started = now_ms - monotonic_base
             w._compression = compression
             w._compress_threshold = DEFAULT_COMPRESS_THRESHOLD
+            w._compact = bool(flags & INCOMPATIBLE_COMPACT)
 
             w._header['state'] = STATE_ONLINE
             w._write_header()
@@ -167,6 +174,8 @@ class Writer:
             inc_flags |= INCOMPATIBLE_COMPRESSED_XZ
         elif self._compression == COMPRESSION_LZ4:
             inc_flags |= INCOMPATIBLE_COMPRESSED_LZ4
+        if self._compact:
+            inc_flags |= INCOMPATIBLE_COMPACT
 
         self._header = {
             'signature': 'LPKSHHRH',
@@ -275,7 +284,9 @@ class Writer:
                 deduped.append(items[i])
 
         entry_offset = self._append_offset
-        entry_size = ENTRY_OBJECT_HEADER_SIZE + len(deduped) * REGULAR_ENTRY_ITEM_SIZE
+        entry_item_size = self._entry_item_size()
+        entry_size = ENTRY_OBJECT_HEADER_SIZE + len(deduped) * entry_item_size
+        self._ensure_compact_object_fits(entry_offset, entry_size)
         aligned_size = align8(entry_size)
         entry_buf = bytearray(aligned_size)
         write_object_header(entry_buf, 0, OBJECT_TYPE_ENTRY, 0, entry_size)
@@ -285,9 +296,13 @@ class Writer:
         entry_buf[40:56] = boot_id
         struct.pack_into('<Q', entry_buf, 56, xor_hash)
         for i, item in enumerate(deduped):
-            off = ENTRY_OBJECT_HEADER_SIZE + i * REGULAR_ENTRY_ITEM_SIZE
-            struct.pack_into('<Q', entry_buf, off, item['offset'])
-            struct.pack_into('<Q', entry_buf, off + 8, item['hash'])
+            off = ENTRY_OBJECT_HEADER_SIZE + i * entry_item_size
+            if self._compact:
+                self._ensure_compact_offset(item['offset'])
+                struct.pack_into('<I', entry_buf, off, item['offset'])
+            else:
+                struct.pack_into('<Q', entry_buf, off, item['offset'])
+                struct.pack_into('<Q', entry_buf, off + 8, item['hash'])
         os.pwrite(self._fd, entry_buf, entry_offset)
         self._object_added(entry_offset, entry_size)
 
@@ -339,12 +354,14 @@ class Writer:
             except Exception:
                 pass
 
-        size = DATA_OBJECT_HEADER_SIZE + len(object_payload)
+        payload_offset = self._data_payload_offset()
+        size = payload_offset + len(object_payload)
+        self._ensure_compact_object_fits(offset, size)
         aligned_size = align8(size)
         buf = bytearray(aligned_size)
         write_object_header(buf, 0, OBJECT_TYPE_DATA, compression_flag, size)
         struct.pack_into('<Q', buf, 16, h)
-        buf[DATA_OBJECT_HEADER_SIZE:DATA_OBJECT_HEADER_SIZE + len(object_payload)] = object_payload
+        buf[payload_offset:payload_offset + len(object_payload)] = object_payload
         os.pwrite(self._fd, buf, offset)
         self._object_added(offset, size)
 
@@ -372,6 +389,7 @@ class Writer:
 
         offset = self._append_offset
         size = FIELD_OBJECT_HEADER_SIZE + len(payload)
+        self._ensure_compact_object_fits(offset, size)
         aligned_size = align8(size)
         buf = bytearray(aligned_size)
         write_object_header(buf, 0, OBJECT_TYPE_FIELD, 0, size)
@@ -441,10 +459,11 @@ class Writer:
         if not obj_header or obj_header['type'] != OBJECT_TYPE_DATA:
             return None
         obj_size = obj_header['size']
-        payload_len = obj_size - DATA_OBJECT_HEADER_SIZE
+        payload_offset = self._data_payload_offset()
+        payload_len = obj_size - payload_offset
         if payload_len <= 0:
             return None
-        buf = os.pread(self._fd, payload_len, offset + DATA_OBJECT_HEADER_SIZE)
+        buf = os.pread(self._fd, payload_len, offset + payload_offset)
         flags = obj_header['flags']
         if flags & OBJECT_COMPRESSED_ZSTD:
             return decompress_zst_sync(buf)
@@ -584,13 +603,17 @@ class Writer:
         oh = parse_object_header(buf, 0)
         if not oh or oh['type'] != OBJECT_TYPE_ENTRY_ARRAY:
             raise ValueError('invalid entry array object')
-        capacity = (oh['size'] - OFFSET_ARRAY_OBJECT_HEADER_SIZE) // 8
+        item_size = self._offset_array_item_size()
+        if (oh['size'] - OFFSET_ARRAY_OBJECT_HEADER_SIZE) % item_size != 0:
+            raise ValueError('invalid entry array object size')
+        capacity = (oh['size'] - OFFSET_ARRAY_OBJECT_HEADER_SIZE) // item_size
         next_offset = read_uint64_le(buf, 16)
         return capacity, next_offset
 
     def _allocate_offset_array(self, capacity):
         offset = self._append_offset
-        size = OFFSET_ARRAY_OBJECT_HEADER_SIZE + capacity * 8
+        size = OFFSET_ARRAY_OBJECT_HEADER_SIZE + capacity * self._offset_array_item_size()
+        self._ensure_compact_object_fits(offset, size)
         aligned_size = align8(size)
         buf = bytearray(aligned_size)
         write_object_header(buf, 0, OBJECT_TYPE_ENTRY_ARRAY, 0, size)
@@ -601,8 +624,12 @@ class Writer:
         return offset
 
     def _write_array_item(self, array_offset, index, entry_offset):
-        off = array_offset + OFFSET_ARRAY_OBJECT_HEADER_SIZE + index * 8
-        self._write_uint64_at(off, entry_offset)
+        off = array_offset + OFFSET_ARRAY_OBJECT_HEADER_SIZE + index * self._offset_array_item_size()
+        if self._compact:
+            self._ensure_compact_offset(entry_offset)
+            self._write_uint32_at(off, entry_offset)
+        else:
+            self._write_uint64_at(off, entry_offset)
 
     def _link_data_to_entry(self, data_offset, entry_offset):
         n_entries = self._read_uint64_at(data_offset + 56)
@@ -614,12 +641,18 @@ class Writer:
             array_off = self._allocate_offset_array(4)
             self._write_array_item(array_off, 0, entry_offset)
             self._write_uint64_at(data_offset + 48, array_off)
+            if self._compact:
+                self._write_uint32_at(data_offset + COMPACT_DATA_TAIL_OFFSET_OFFSET, array_off)
+                self._write_uint32_at(data_offset + COMPACT_DATA_TAIL_ENTRIES_OFFSET, 1)
             self._write_uint64_at(data_offset + 56, 2)
         else:
             entry_array_off = self._read_uint64_at(data_offset + 48)
             if entry_array_off == 0:
                 raise ValueError('invalid journal: missing data entry array')
-            self._append_to_data_entry_array(entry_array_off, n_entries - 1, entry_offset)
+            tail_offset, tail_entries = self._append_to_data_entry_array(entry_array_off, n_entries - 1, entry_offset)
+            if self._compact:
+                self._write_uint32_at(data_offset + COMPACT_DATA_TAIL_OFFSET_OFFSET, tail_offset)
+                self._write_uint32_at(data_offset + COMPACT_DATA_TAIL_ENTRIES_OFFSET, tail_entries)
             self._write_uint64_at(data_offset + 56, n_entries + 1)
 
     def _append_to_data_entry_array(self, array_offset, current_count, entry_offset):
@@ -629,14 +662,31 @@ class Writer:
             cap, next_off = self._read_offset_array_header(offset)
             if remaining < cap:
                 self._write_array_item(offset, remaining, entry_offset)
-                return
+                return offset, remaining + 1
             remaining -= cap
             if next_off == 0:
                 new_off = self._allocate_offset_array(self._next_entry_array_capacity(current_count, cap))
                 self._write_uint64_at(offset + 16, new_off)
                 self._write_array_item(new_off, 0, entry_offset)
-                return
+                return new_off, 1
             offset = next_off
+
+    def _entry_item_size(self):
+        return COMPACT_ENTRY_ITEM_SIZE if self._compact else REGULAR_ENTRY_ITEM_SIZE
+
+    def _offset_array_item_size(self):
+        return COMPACT_OFFSET_ARRAY_ITEM_SIZE if self._compact else REGULAR_OFFSET_ARRAY_ITEM_SIZE
+
+    def _data_payload_offset(self):
+        return COMPACT_DATA_OBJECT_HEADER_SIZE if self._compact else DATA_OBJECT_HEADER_SIZE
+
+    def _ensure_compact_offset(self, offset):
+        if self._compact and offset > JOURNAL_COMPACT_SIZE_MAX:
+            raise ValueError('compact journal offset exceeds 32-bit range')
+
+    def _ensure_compact_object_fits(self, offset, size):
+        if self._compact and (offset > JOURNAL_COMPACT_SIZE_MAX or align8(offset + size) > JOURNAL_COMPACT_SIZE_MAX):
+            raise ValueError('compact journal cannot exceed 4 GiB')
 
     def sync(self):
         if self._closed:
