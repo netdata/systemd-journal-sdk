@@ -188,6 +188,32 @@ Failure handling:
   - SOW-0015 completion commit `cdd3795`.
 - Updated baseline systemd evidence to the project compatibility target `systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced` (`v260.1`).
 - Confirmed SOW-0015 now provides deterministic ingesters for systemd C, Rust, Go, Node.js, and Python.
+- Added the first byte-identity diagnostic harness at `tests/interoperability/run_byte_identity.py`.
+- The harness runs the deterministic ingesters, compares generated `correctness.journal` files byte-for-byte, and reports exact offsets with header-field and object-span context.
+- Initial full harness run result is an expected failure because the current writers are not byte-identical yet:
+  - systemd output size: 8388608 bytes.
+  - Rust, Go, Node.js, and Python output size: 427624 bytes.
+  - systemd versus SDK first mismatch: offset 8, header field `compatible_flags`, systemd value `2`, SDK value `0`.
+  - Go, Node.js, and Python are byte-identical to each other.
+  - Go versus Rust first mismatch: offset 16, header field `state`, Go value `0`, Rust value `1`.
+- Review round 1:
+  - Minimax verdict: `PRODUCTION GRADE` for the diagnostic harness chunk. Non-blocking observations: add later verification after byte match, hash table diagnostics could become richer, truncated header diagnostics could be clearer.
+  - Mimo verdict: `PRODUCTION GRADE` for the diagnostic harness chunk. Non-blocking observations: `probable_source` had an unreachable EOF branch, ingester subprocess lacked a timeout, and bytes 17-23 of the header were unnamed reserved padding.
+- Dispositioned review round 1 low-severity findings:
+  - Added a 300-second ingester subprocess timeout with structured timeout output.
+  - Added the reserved header byte range to the header-field table.
+  - Reworked `probable_source` to use already-computed contexts so EOF size mismatches are classified correctly.
+- Review round 2:
+  - Minimax verdict: `PRODUCTION GRADE` for the diagnostic harness chunk. Non-blocking observations: post-byte-match stock verification remains a later SOW-0016 phase; timeout configurability can be added later if needed.
+  - Mimo verdict: `PRODUCTION GRADE` for the diagnostic harness chunk. Non-blocking observations: mixed EOF/header diagnostics could prioritize EOF more clearly; `--reference go` produced duplicate comparison pairs; object span recomputation is acceptable for diagnostic limits.
+- Dispositioned review round 2 low-severity findings:
+  - Moved EOF classification before header/object classification for clearer file-size mismatch diagnostics.
+  - Added comparison-pair de-duplication so alternate references do not repeat equivalent pairs.
+  - Left object-span memoization unchanged because the diagnostic loop is capped by `--diff-limit`; no reviewer considered it blocking.
+- Review round 3:
+  - Minimax verdict: `PRODUCTION GRADE` for the diagnostic harness chunk. Non-blocking observations: object-span parsing could be misleading for pathological corrupted object sizes, but this does not affect the deterministic corpus diagnostic purpose.
+  - Mimo verdict: `PRODUCTION GRADE` for the diagnostic harness chunk. Non-blocking observations: `--diff-limit 0` returns the first byte difference, size-mismatch entries can exceed the byte-diff limit by one, object-span recomputation is acceptable, the file is invoked through Python rather than executable bit, and byte values are printed as integers.
+  - No round 3 blocking findings.
 
 ## Validation
 
@@ -197,6 +223,46 @@ Activation evidence:
 - Passed: SOW-0015 is completed in `.agents/sow/done/`.
 - Passed: SOW-0015 completion commit `cdd3795` exists before activation.
 - Passed: no implementation changes made during activation.
+
+Harness evidence:
+
+- Passed: `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tests/interoperability/run_byte_identity.py`.
+- Expected failure: `python3 tests/interoperability/run_byte_identity.py --skip-run --diff-limit 4`.
+  - Evidence stored outside committed artifacts at `.local/validation/sow-0016/byte-identity-skip-run.json`.
+  - Result: `all_equal: false`.
+  - Result: Go equals Node.js and Python byte-for-byte; Go differs from Rust only at header `state` in the first reported difference.
+- Expected failure after regenerating journals: `python3 tests/interoperability/run_byte_identity.py --diff-limit 2`.
+  - Evidence stored outside committed artifacts at `.local/validation/sow-0016/byte-identity-full-run.json`.
+  - Ingesters returned `0`.
+  - Result: `all_equal: false`.
+  - Result: systemd versus every SDK first differs at header `compatible_flags`.
+- Passed after reviewer cleanup: `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tests/interoperability/run_byte_identity.py`.
+- Expected failure after reviewer cleanup: `python3 tests/interoperability/run_byte_identity.py --skip-run --diff-limit 4`.
+- Expected failure after reviewer cleanup and regenerated journals: `python3 tests/interoperability/run_byte_identity.py --diff-limit 2`.
+  - Ingesters returned `0`.
+  - Result: `all_equal: false`.
+  - Result: current mismatch classification remains stable after cleanup.
+- Passed after round 2 cleanup: `PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile tests/interoperability/run_byte_identity.py`.
+- Passed round 2 cleanup spot checks:
+  - `comparison_pairs("systemd")` returns 7 unique pairs.
+  - `comparison_pairs("go")` returns 4 unique pairs with no duplicates.
+  - EOF-vs-header source classification returns `file size, allocation, or truncation policy`.
+- Expected failure after round 2 cleanup: `python3 tests/interoperability/run_byte_identity.py --skip-run --diff-limit 4`.
+- Expected failure after round 2 cleanup and regenerated journals: `python3 tests/interoperability/run_byte_identity.py --diff-limit 2`.
+  - Ingesters returned `0`.
+  - Result: `all_equal: false`.
+  - Result: comparison count remains 7 for the default `systemd` reference.
+
+Reviewer evidence:
+
+- Round 1 Minimax: `PRODUCTION GRADE` for this diagnostic harness chunk; no blocking findings.
+- Round 1 Mimo: `PRODUCTION GRADE` for this diagnostic harness chunk; no blocking findings.
+- Round 1 low-severity findings were fixed before commit.
+- Round 2 Minimax: `PRODUCTION GRADE` for this diagnostic harness chunk; no blocking findings.
+- Round 2 Mimo: `PRODUCTION GRADE` for this diagnostic harness chunk; no blocking findings.
+- Round 2 low-severity findings were fixed before commit.
+- Round 3 Minimax: `PRODUCTION GRADE` for this diagnostic harness chunk; no blocking findings.
+- Round 3 Mimo: `PRODUCTION GRADE` for this diagnostic harness chunk; no blocking findings.
 
 Sensitive data gate:
 
