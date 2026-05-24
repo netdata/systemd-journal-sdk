@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: active after Go, Rust, Node.js, and Python baseline SDK/journalctl slices completed.
+Sub-state: completed after closed-file, live, binary-field, zstd-compression, and writer-lock interoperability slices passed and remaining feature gaps were mapped to concrete follow-up SOWs.
 
 ## Requirements
 
@@ -185,7 +185,12 @@ Activation evidence:
 
 Acceptance criteria evidence:
 
-- Closed-file matrix, live cross-language file matrix, and binary-field matrix slices pass for Go, Rust, Node.js, and Python writers/readers. Compression writing, compact journals, FSS, dependency audit, final docs/spec checks, and final SOW audit remain required before close.
+- Closed-file matrix passes for Go, Rust, Node.js, and Python writers/readers: `python3 tests/interoperability/run_matrix.py --entries 10` returned 104/104 checks.
+- Live cross-language matrix passes for all repository writers/readers while writers append: `python3 tests/interoperability/run_live_matrix.py --entries 10 --poll-readers 1` returned 4/4 writers passing.
+- Binary-field matrix passes for all repository writers/readers plus stock libsystemd: `python3 tests/interoperability/run_binary_matrix.py` returned 52/52 checks.
+- zstd DATA compression matrix passes for all repository writers/readers plus stock libsystemd: `python3 tests/interoperability/run_compression_matrix.py` returned 72/72 checks.
+- Cross-SDK writer lock matrix passes for all holder/contender pairs plus stale-lock recovery: `python3 tests/interoperability/run_lock_matrix.py --entries 200 --delay-ms 20` returned 8/8 checks.
+- Remaining writer/reader feature gaps are tracked by concrete follow-up SOWs: xz/lz4 DATA writing in SOW-0017, compact journal format in SOW-0018, Forward Secure Sealing/full verification in SOW-0019, and directory traversal parity in SOW-0020.
 
 Tests or equivalent validation:
 
@@ -209,41 +214,52 @@ Sensitive data gate:
 
 Artifact maintenance gate:
 
-- AGENTS.md: no update needed for activation; existing SOW and repository-boundary rules apply.
-- Runtime project skills: no update needed for activation; implementation may update compatibility/orchestration skills if the matrix creates a durable workflow.
-- Specs: no new shipped behavior during activation; specs will update when matrix results or writer feature reality changes.
-- End-user/operator docs: no update needed for activation; docs will update if the support matrix changes.
-- End-user/operator skills: no output/reference skill is produced during activation.
-- SOW lifecycle: moved from `pending/` to `current/` with `Status: in-progress`.
-- SOW-status.md: updated for SOW-0008 activation.
+- AGENTS.md: no update needed; existing SOW and repository-boundary rules apply.
+- Runtime project skills: compatibility and orchestration skills already include the durable matrix, live-concurrency, compression, and writer-lock workflow rules needed after this SOW.
+- Specs: `.agents/sow/specs/product-scope.md` already records the shipped zstd, binary, live, directory writer, and lock feature slices plus remaining limitations.
+- End-user/operator docs: `tests/interoperability/README.md` updated for the five matrix runners and final feature-gap mapping.
+- End-user/operator skills: no output/reference skill is produced by this SOW.
+- SOW lifecycle: moved from `current/` to `done/` with `Status: completed` after follow-up mapping and final audit.
+- SOW-status.md: updated for SOW-0008 completion and new pending follow-up SOWs.
 
 Specs update:
 
-- No spec update needed for activation beyond existing product scope.
+- No additional spec update needed during closeout; product scope already reflects the shipped feature slices and open limitations.
 
 Project skills update:
 
-- No project skill update needed for activation.
+- No additional project skill update needed during closeout; durable workflow rules were already updated before this closeout.
 
 End-user/operator docs update:
 
-- No end-user/operator docs update needed for activation.
+- `tests/interoperability/README.md` updated during closeout.
 
 End-user/operator skills update:
 
-- No end-user/operator skill update needed for activation.
+- No end-user/operator skill update needed; this SOW produces no output/reference skill.
 
 ## Outcome
 
-Pending.
+Completed.
+
+This SOW delivered the shared closed-file interoperability matrix, live cross-language matrix, binary-field matrix, zstd DATA compression matrix, and cross-SDK writer-lock matrix for Rust, Go, Node.js, and Python. It also mapped the remaining writer/reader gaps into concrete pending SOWs instead of leaving them as informal future work.
 
 ## Lessons Extracted
 
-Pending activation.
+- Keep high-risk format families in narrow SOWs once the core interoperability envelope is proven. zstd, xz/lz4, compact journals, and FSS share journal-object mechanics, but each has different dependency, parser, and validation risk.
+- Live compatibility and closed-file compatibility must stay separate validation gates. Closed-file `journalctl --verify --file` is necessary but does not prove active one-writer/multiple-reader behavior.
+- Writer locks are an SDK cooperation contract, not a stock systemd mutual-exclusion mechanism. Future writer changes must preserve the lockfile acquisition-before-truncate rule.
 
 ## Followup
 
-Pending activation.
+- SOW-0014 tracks the deterministic ingestion dataset.
+- SOW-0015 tracks systemd C and SDK ingesters for that dataset.
+- SOW-0016 tracks byte-for-byte deterministic writer compatibility against systemd.
+- SOW-0017 tracks xz/lz4 DATA writing and missing xz/lz4 reader support.
+- SOW-0018 tracks compact journal format support.
+- SOW-0019 tracks Forward Secure Sealing and full verification.
+- SOW-0020 tracks directory traversal parity.
+- SOW-0009 tracks benchmark, profile, and optimization work, including non-blocking performance notes from SOW-0008 reviewers.
 
 ## Regression Log
 
@@ -849,3 +865,29 @@ Post-review validation:
 Post-review generated result file:
 
 - `.local/interoperability/lock-matrix-results-20260524-125306.json`
+
+### Closeout - 2026-05-24
+
+Final follow-up mapping:
+
+- xz/lz4 DATA writing and missing xz/lz4 reader support are tracked by `.agents/sow/pending/SOW-0017-20260524-xz-lz4-data-writing.md`.
+- Compact journal format support is tracked by `.agents/sow/pending/SOW-0018-20260524-compact-journal-format.md`.
+- Forward Secure Sealing and full verification are tracked by `.agents/sow/pending/SOW-0019-20260524-forward-secure-sealing.md`.
+- Directory traversal parity is tracked by `.agents/sow/pending/SOW-0020-20260524-directory-traversal-parity.md`.
+- Deterministic ingestion dataset, ingesters, byte-for-byte identity, and performance optimization remain tracked by SOW-0014, SOW-0015, SOW-0016, and SOW-0009.
+
+Final validation:
+
+- Passed: `git diff --check`.
+- Passed: `bash .agents/sow/audit.sh`.
+- Passed: changed-file sensitive-data scan for user names, absolute workstation paths outside repository policy, common token prefixes, and private-key markers produced no matches.
+
+Artifact maintenance gate:
+
+- AGENTS.md: no update needed; repository-boundary, SOW, lock, and delegation rules already covered this closeout.
+- Runtime project skills: no update needed; SOW-0008 already updated durable compatibility workflow rules during implementation slices.
+- Specs: `.agents/sow/specs/product-scope.md` already describes the shipped writer/reader slices and remaining limitations.
+- End-user/operator docs: `tests/interoperability/README.md` updated to describe the five matrix runners and the final feature-gap mapping.
+- End-user/operator skills: no output/reference skill is produced by this SOW.
+- SOW lifecycle: this file is completed and moved to `.agents/sow/done/`; remaining valid gaps have pending SOWs.
+- `SOW-status.md`: updated for SOW-0008 completion and new pending follow-up SOWs.

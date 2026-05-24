@@ -1,6 +1,6 @@
 # Interoperability Matrix
 
-This directory contains four repo-local matrix runners for SOW-0008.
+This directory contains five repo-local matrix runners for SOW-0008.
 
 ## Closed-File Matrix (`run_matrix.py`)
 
@@ -185,20 +185,38 @@ For each generated writer file, the compression matrix validates:
 - `COMPRESSED_MATCH=<value>` works as a file-backed match through argv for stock
   journalctl and every repository journalctl rewrite.
 
+## Writer Lock Matrix (`run_lock_matrix.py`)
+
+Starts one SDK writer as the active lock holder, then starts every SDK writer as
+a contender against the same journal file. The contender must fail before it can
+publish a ready file or append data while the holder is active.
+
+```bash
+python3 tests/interoperability/run_lock_matrix.py --entries 200 --delay-ms 20
+```
+
+For each holder/contender pair, the lock matrix validates:
+
+- the holder publishes a ready marker and keeps the journal file open;
+- the contender exits non-zero before publishing its ready marker;
+- the holder exits cleanly and removes the lock file;
+- stock `journalctl --verify --file` passes after contention;
+- stale lock files left by crashed writers are cleaned by the next SDK writer.
+
 ## Shared Conventions
 
 All runtime artifacts (generated journals, binaries, result JSON files) live
-under `.local/interoperability/`. Both runners clean up `*.ready` files on
+under `.local/interoperability/`. The runners clean up `*.ready` files on
 completion unless `--keep-files` is passed.
 
 ## Current Writer Feature Gaps
 
 | Gap | Status | Evidence | Follow-up |
 |-----|--------|----------|-----------|
-| zstd compressed DATA object writing | In progress | `run_compression_matrix.py` validates zstd header/object flags plus stock/repository reads | Close after review and commit |
-| xz/lz4 writer parity | Not implemented | This slice only implements zstd DATA writing | Split by compression family |
-| Compact journal format | Not implemented | Writers create regular non-compact journals | Requires systemd reference inventory |
-| Forward Secure Sealing / verification | Not implemented | Verification/FSS tests skipped in earlier SOWs | Split dedicated FSS SOW |
+| zstd compressed DATA object writing | Complete | `run_compression_matrix.py` validates zstd header/object flags plus stock/repository reads | Closed in SOW-0008 |
+| xz/lz4 writer parity | Not implemented | SOW-0008 only implemented zstd DATA writing; Go, Node.js, and Python readers still reject xz/lz4 DATA objects | Tracked by SOW-0017 |
+| Compact journal format | Not implemented | Writers create regular non-compact journals | Tracked by SOW-0018 |
+| Forward Secure Sealing / verification | Not implemented | Verification/FSS tests skipped in earlier SOWs | Tracked by SOW-0019 |
 | Cross-language binary stress | Complete | `run_binary_matrix.py` passes 52/52 across all writer/reader pairs plus stock libsystemd | Closed |
 | Writer locking parity | Complete | `run_lock_matrix.py` passes 8/8; all SDK writer pairs reject concurrent writers and stale locks left by crashed writers are cleaned | Closed |
-| Directory reader subdirectory traversal | Partial | Live matrix validates discovered files; full `--directory` traversal parity remains separate | Address in SDK follow-up work |
+| Directory reader subdirectory traversal | Partial | Live matrix validates discovered files; full `--directory` traversal parity remains separate | Tracked by SOW-0020 |
