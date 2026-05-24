@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: open
+Status: in-progress
 
-Sub-state: pending after SOW-0008 interoperability closeout.
+Sub-state: active after SOW-0016 byte-identical regular writer closeout.
 
 ## Requirements
 
@@ -182,11 +182,67 @@ Failure handling:
 
 ## Execution Log
 
-Pending activation.
+- 2026-05-24: Activated after SOW-0016 completion and after sequencing SOW-0009 behind remaining feature-completeness SOWs.
 
 ## Validation
 
-Pending activation and implementation.
+Acceptance criteria evidence:
+
+- Pending implementation.
+
+Tests or equivalent validation:
+
+- Pending implementation.
+
+Real-use evidence:
+
+- Pending implementation.
+
+Reviewer findings:
+
+- Pending implementation.
+
+Same-failure scan:
+
+- Pending implementation.
+
+Sensitive data gate:
+
+- Pending implementation. Planned evidence uses synthetic compression fixtures, dependency names, licenses, commands, and sanitized diagnostics only; durable artifacts must not contain secrets, credentials, bearer tokens, SNMP communities, customer names, personal data, non-private customer-identifying IPs, private endpoints, or proprietary incident details.
+
+Artifact maintenance gate:
+
+- AGENTS.md: pending implementation.
+- Runtime project skills: pending implementation.
+- Specs: pending implementation.
+- End-user/operator docs: pending implementation.
+- End-user/operator skills: pending implementation.
+- SOW lifecycle: activated in `.agents/sow/current/` with `Status: in-progress`; completion requires status update to `completed`, move to `.agents/sow/done/`, audit, review disposition, and one implementation-close commit.
+- SOW-status.md: updated on activation.
+
+Specs update:
+
+- Pending implementation.
+
+Project skills update:
+
+- Pending implementation.
+
+End-user/operator docs update:
+
+- Pending implementation.
+
+End-user/operator skills update:
+
+- Pending implementation.
+
+Lessons:
+
+- Pending implementation.
+
+Follow-up mapping:
+
+- Pending implementation.
 
 ## Outcome
 

@@ -2,11 +2,10 @@
 
 ## Current
 
-- None.
+- `SOW-0017-20260524-xz-lz4-data-writing.md` - in-progress. Add xz/lz4 DATA compression reader/writer support after dependency review.
 
 ## Pending
 
-- `SOW-0017-20260524-xz-lz4-data-writing.md` - open. Add xz/lz4 DATA compression reader/writer support after dependency review.
 - `SOW-0018-20260524-compact-journal-format.md` - open. Add compact journal format support after reference inventory.
 - `SOW-0019-20260524-forward-secure-sealing.md` - open. Add FSS and full verification support without daemon-only lifecycle commands.
 - `SOW-0020-20260524-directory-traversal-parity.md` - open. Bring SDK directory readers and file-backed journalctl `--directory` behavior to stock parity.
