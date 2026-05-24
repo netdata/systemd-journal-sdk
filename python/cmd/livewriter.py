@@ -18,6 +18,7 @@ def parse_args(argv):
     parser.add_argument('--delay', default='1ms')
     parser.add_argument('--sync-every', type=parse_non_negative_int, default=25)
     parser.add_argument('--crash-after', type=parse_non_negative_int, default=0)
+    parser.add_argument('--binary-fixture', action='store_true')
     return parser.parse_args(argv)
 
 
@@ -63,12 +64,25 @@ def main():
     try:
         realtime_base = 1_700_001_000_000_000
         for seq in range(args.entries):
-            writer.append([
-                {'name': 'MESSAGE', 'value': f'live-{seq:06d}'},
-                {'name': 'PRIORITY', 'value': b'6'},
-                {'name': 'SYSLOG_IDENTIFIER', 'value': b'python-live-writer'},
-                {'name': 'LIVE_SEQ', 'value': f'{seq:06d}'},
-            ], {
+            if args.binary_fixture and seq == 0:
+                fields = [
+                    {'name': 'TEST_ID', 'value': b'binary-interoperability'},
+                    {'name': 'MESSAGE', 'value': b'binary interoperability'},
+                    {'name': 'PRIORITY', 'value': b'6'},
+                    {'name': 'LIVE_SEQ', 'value': b'000000'},
+                    {'name': 'BINARY_PAYLOAD', 'value': bytes([0x00, 0x01, 0x02, 0x41, 0x0a, 0x7f, 0x80, 0xff])},
+                    {'name': 'BINARY_MATCH', 'value': bytes([0x61, 0x62, 0x63, 0x07, 0x64, 0x65, 0x66])},
+                    {'name': 'BINARY_EMPTY', 'value': b''},
+                ]
+            else:
+                fields = [
+                    {'name': 'MESSAGE', 'value': f'live-{seq:06d}'},
+                    {'name': 'PRIORITY', 'value': b'6'},
+                    {'name': 'SYSLOG_IDENTIFIER', 'value': b'python-live-writer'},
+                    {'name': 'LIVE_SEQ', 'value': f'{seq:06d}'},
+                ]
+
+            writer.append(fields, {
                 'realtime_usec': realtime_base + seq,
                 'monotonic_usec': seq + 1,
             })

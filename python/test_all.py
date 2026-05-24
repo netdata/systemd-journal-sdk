@@ -21,6 +21,7 @@ from journal import (  # noqa: E402
     SdJournalQueryUnique,
     Writer,
     export_entry,
+    json_entry,
     parse_match_string,
 )
 from journal.entry import parse_data_object  # noqa: E402
@@ -113,6 +114,8 @@ def test_writer_reader_and_binary_export():
         assert entry['fields']['BINARY'] == bytes([0, 1, 0xff, 0xfe])
         exported = export_entry(entry)
         assert b'BINARY\n\x04\x00\x00\x00\x00\x00\x00\x00\x00\x01\xff\xfe\n' in exported
+        encoded = json_entry(entry)
+        assert encoded['BINARY'] == [0, 1, 255, 254]
         reader.close()
 
         stock_count = run(['journalctl', '--file', path, '--output=json', '--no-pager'])

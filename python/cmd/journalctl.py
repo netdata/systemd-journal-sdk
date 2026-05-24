@@ -134,10 +134,11 @@ def main():
                 if entry:
                     out = SdJournalProcessOutput(journal, entry)
                     if isinstance(out, bytes):
-                        out = out.decode('utf-8', errors='replace')
-                    entries.append(out)
+                        entries.append(out)
+                    else:
+                        entries.append(out.encode('utf-8'))
             for out in reversed(entries):
-                sys.stdout.write(out)
+                sys.stdout.buffer.write(out)
             journal.close()
             return 0
 
@@ -153,8 +154,9 @@ def main():
             if entry:
                 out = SdJournalProcessOutput(journal, entry)
                 if isinstance(out, bytes):
-                    out = out.decode('utf-8', errors='replace')
-                sys.stdout.write(out)
+                    sys.stdout.buffer.write(out)
+                else:
+                    sys.stdout.write(out)
             count += 1
 
         journal.close()

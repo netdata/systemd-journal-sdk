@@ -84,9 +84,9 @@ def json_entry(entry):
         vals = entry['field_values'].get(name, [entry['fields'][name]])
         json_vals = []
         for v in vals:
-            try:
+            if _is_printable(v, True):
                 json_vals.append(v.decode('utf-8'))
-            except Exception:
+            else:
                 json_vals.append(list(v))
         result[name] = json_vals[0] if len(json_vals) == 1 else json_vals
     return result

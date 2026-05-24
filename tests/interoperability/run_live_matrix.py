@@ -468,8 +468,8 @@ def main() -> int:
                         help="number of polling reader tasks per language (default: 2)")
     parser.add_argument("--poll-interval", type=float, default=0.1,
                         help="seconds between poll attempts (default: 0.1)")
-    parser.add_argument("--writer-delay-ms", type=int, default=5,
-                        help="delay between writer appends in milliseconds (default: 5)")
+    parser.add_argument("--writer-delay-ms", type=int, default=20,
+                        help="delay between writer appends in milliseconds (default: 20)")
     parser.add_argument("--keep-files", action="store_true")
     args = parser.parse_args()
 

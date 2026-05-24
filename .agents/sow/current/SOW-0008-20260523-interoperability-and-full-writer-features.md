@@ -176,7 +176,7 @@ Activation evidence:
 
 Acceptance criteria evidence:
 
-- Closed-file matrix first slice passes for Go, Rust, Node.js, and Python writers read by stock, Go, Rust, Node.js, and Python file-backed journalctl implementations. Live cross-language matrix, binary stress fixtures, compression writing, compact journals, FSS, dependency audit, final docs/spec checks, and final SOW audit remain required before close.
+- Closed-file matrix, live cross-language file matrix, and binary-field matrix slices pass for Go, Rust, Node.js, and Python writers/readers. Compression writing, compact journals, FSS, dependency audit, final docs/spec checks, and final SOW audit remain required before close.
 
 Tests or equivalent validation:
 
@@ -279,8 +279,8 @@ Coverage achieved:
 
 Known limits of this first slice:
 
-- Closed-file matrix only; live cross-language reader/writer concurrency remains open.
-- Livewriter fixtures do not include binary payload fields, so cross-language binary stress remains open.
+- Closed-file matrix only at the time of this first slice; live cross-language reader/writer concurrency was completed in the later live matrix slice.
+- Livewriter fixtures did not include binary payload fields at the time of this first slice; cross-language binary stress was completed in the later binary matrix slice.
 - The matrix validates journalctl reader surfaces, not every lower-level SDK reader API directly.
 
 ### Writer Feature Gap Inventory
@@ -291,8 +291,8 @@ Known limits of this first slice:
 | xz/lz4/zstd writer parity | Not implemented | Readers have different compression-read support; writers do not write compressed DATA | Continue in SOW-0008 or split by compression family |
 | Compact journal format | Not implemented | Current writers create regular non-compact journals | Requires systemd reference inventory before implementation |
 | Forward Secure Sealing / full verification | Not implemented | Verification/FSS tests are skipped or out of scope in earlier SOWs | Split a dedicated FSS SOW unless a safe narrow implementation emerges |
-| Live cross-language matrix | Not complete | Existing live harness proves stock-reader compatibility per writer; repository reader x repository writer live matrix remains open | Continue next in SOW-0008 |
-| Cross-language binary stress | Not complete | Per-language binary tests exist; matrix livewriter fixtures do not include binary fields yet | Add binary fixture generation before SOW-0008 close |
+| Live cross-language matrix | Complete in later slice | `run_live_matrix.py` passes 4/4 with active observations for all writers and readers | Closed in this SOW |
+| Cross-language binary stress | Complete in later slice | `run_binary_matrix.py` passes 52/52 across all writers/readers plus stock libsystemd | Closed in this SOW |
 | Writer locking parity | Partial | Go and Python use `fcntl` locks; Node.js has no native flock; Rust writer lock claim was removed from product scope after code search found no writer lock | Track whether Node/Rust need pure-language advisory lock behavior |
 | Directory ordering guarantees | Partial | Current directory readers iterate sequentially by file metadata and are validated for non-overlapping active/archive files | Continue under SOW-0008 matrix expansion |
 
@@ -417,6 +417,111 @@ Key implementation decisions:
 | Compact journal format | Not implemented | Writers create regular non-compact journals | Requires systemd reference inventory |
 | Forward Secure Sealing / verification | Not implemented | Verification/FSS tests skipped in earlier SOWs | Split dedicated FSS SOW |
 | Live cross-language file matrix | Complete | `run_live_matrix.py` passes 4/4; active observations confirmed for all writers and all five readers | Closed |
-| Cross-language binary stress | Not complete | Livewriter fixtures do not include binary fields | Add binary fixture generation before SOW-0008 close |
+| Cross-language binary stress | Complete | `run_binary_matrix.py` passes 52/52 across all writers/readers plus stock libsystemd | Closed |
 | Writer locking parity | Partial | Go and Python use fcntl; Node.js has no native flock; Rust writer lock removed from scope | Track whether Node/Rust need advisory lock |
 | Directory reader subdirectory traversal | Partial | Live matrix validates discovered files; full `--directory` traversal parity remains separate | SDK follow-up work |
+
+### Binary Field Interoperability Matrix Third Slice
+
+Implemented a binary-field interoperability matrix runner:
+
+- `tests/interoperability/run_binary_matrix.py`
+- Updated `tests/interoperability/README.md`
+- Extended the Go, Rust, Node.js, and Python livewriter test commands with a
+  `--binary-fixture` mode.
+
+The runner generates one binary fixture journal per writer language. Each
+fixture contains:
+
+- `TEST_ID=binary-interoperability`
+- `MESSAGE=binary interoperability`
+- `PRIORITY=6`
+- `LIVE_SEQ=000000`
+- `BINARY_PAYLOAD` bytes `00 01 02 41 0a 7f 80 ff`
+- `BINARY_MATCH` bytes `61 62 63 07 64 65 66`
+- `BINARY_EMPTY` as an empty value
+
+Validation command:
+
+```bash
+python3 tests/interoperability/run_binary_matrix.py
+```
+
+Systemd version: `systemd 260 (260.1-2-manjaro)`
+
+Binary matrix result: 52/52 PASS, 0 FAIL.
+
+Coverage achieved:
+
+- 4 writers: Go file-mode, Rust directory-mode, Node.js file-mode, Python file-mode.
+- Stock `journalctl --verify --file` passes for every generated file.
+- Stock `journalctl --output=json` validates byte-array JSON for
+  non-printable binary fields and empty-string JSON for empty binary fields.
+- Stock `journalctl --output=export` validates exact size-prefixed binary field
+  payloads.
+- Stock libsystemd helper `tests/conformance/binary/libsystemd_binary_field_reader.c`
+  validates byte-for-byte `sd_journal_get_data()` for `BINARY_PAYLOAD`,
+  `BINARY_MATCH`, and `BINARY_EMPTY`.
+- Go, Rust, Node.js, and Python journalctl rewrites validate JSON and export
+  output against all four generated writer files.
+- Stock file-backed `BINARY_MATCH=abc\x07def` match returns the expected entry
+  through argv and export output.
+
+Implementation notes:
+
+- Minimax implementer attempt created the initial binary fixture and runner
+  slice but stalled before a clean final result. The attempt was stopped by
+  targeted PIDs owned by this run after several minutes without output.
+- The matrix exposed two real compatibility bugs that were fixed in this
+  chunk:
+  - Rust and Python JSON formatting treated UTF-8-decodable control-character
+    values as strings; both now use stock-style printability checks before
+    choosing string vs byte-array JSON.
+  - Python journalctl decoded export bytes through UTF-8 replacement before
+    writing stdout; it now writes byte output through `stdout.buffer`.
+- The low-entry live regression command initially failed because the Python CLI
+  reader could miss a Go writer active window of about 50 ms. The live matrix
+  default writer delay was increased from 5 ms to 20 ms so low-entry live gates
+  observe live readers instead of process startup latency.
+
+Validation results for this slice:
+
+- Passed: `python3 tests/interoperability/run_binary_matrix.py` with 52/52
+  checks.
+- Passed: `python3 tests/interoperability/run_matrix.py --entries 10` with
+  104/104 checks.
+- Passed: `python3 tests/interoperability/run_live_matrix.py --entries 10 --poll-readers 1`
+  after hardening the default writer delay.
+- Passed: `python3 tests/interoperability/run_live_matrix.py --entries 30 --poll-readers 1`.
+- Passed: `python3 -m py_compile tests/interoperability/run_binary_matrix.py tests/interoperability/run_matrix.py tests/interoperability/run_live_matrix.py python/cmd/livewriter.py python/cmd/journalctl.py python/test_all.py`.
+- Passed: `python3 python/test_all.py`.
+- Passed: `go test ./journal ./cmd/journalctl ./internal/testcmd/livewriter` from `go/`.
+- Passed: `cargo test --manifest-path rust/Cargo.toml -p journal`.
+- Passed: `cargo build --manifest-path rust/Cargo.toml -p livewriter`.
+- Passed: `node --test node/test/all.js`.
+
+Generated result files:
+
+- `.local/interoperability/binary-matrix-results-20260524-095829.json`
+- `.local/interoperability/matrix-results-20260524-095849.json`
+- `.local/interoperability/live-matrix-results-20260524-095917.json`
+- `.local/interoperability/live-matrix-results-20260524-100029.json`
+
+Review results for this slice:
+
+- GLM verdict: `PRODUCTION GRADE`; no blocking findings. Low notes about
+  export parser single-entry scope, Rust livewriter fixture duplication, fixed
+  10-entry binary matrix size, and `.local/` result accumulation are accepted
+  as non-blocking scope or future hardening.
+- Minimax verdict: `PRODUCTION GRADE`; one low documentation finding was fixed
+  before commit by updating the older SOW/status gap rows so live and binary
+  matrix state no longer contradicts the updated feature inventory.
+- Qwen review attempt stalled after initial file reads and produced no verdict;
+  the specific `timeout` and `opencode` PIDs for that run were stopped after
+  several silent polling intervals. No Qwen finding was available to
+  disposition.
+
+Known limits remaining after this slice:
+
+- Compression DATA writing, compact journals, FSS/full verification, writer
+  locking parity, and directory traversal parity remain open in SOW-0008.

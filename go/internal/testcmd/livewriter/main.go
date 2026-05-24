@@ -16,6 +16,7 @@ func main() {
 	var delayText string
 	var syncEvery int
 	var crashAfter int
+	var binaryFixture bool
 
 	flag.StringVar(&path, "path", "", "journal path to create")
 	flag.StringVar(&readyFile, "ready-file", "", "path to create after the first entry is committed")
@@ -23,6 +24,7 @@ func main() {
 	flag.StringVar(&delayText, "delay", "1ms", "delay between appends")
 	flag.IntVar(&syncEvery, "sync-every", 25, "sync every N entries")
 	flag.IntVar(&crashAfter, "crash-after", 0, "exit with status 17 after N entries without closing")
+	flag.BoolVar(&binaryFixture, "binary-fixture", false, "write binary fields in the first entry")
 	flag.Parse()
 
 	if path == "" || readyFile == "" || entries <= 0 {
@@ -44,12 +46,24 @@ func main() {
 
 	const realtimeBase = uint64(1_700_001_000_000_000)
 	for i := 0; i < entries; i++ {
-		if err := w.Append([]journal.Field{
+		fields := []journal.Field{
 			journal.StringField("MESSAGE", fmt.Sprintf("live-%06d", i)),
 			journal.StringField("PRIORITY", "6"),
 			journal.StringField("SYSLOG_IDENTIFIER", "go-live-writer"),
 			journal.StringField("LIVE_SEQ", fmt.Sprintf("%06d", i)),
-		}, journal.EntryOptions{
+		}
+		if binaryFixture && i == 0 {
+			fields = []journal.Field{
+				journal.StringField("TEST_ID", "binary-interoperability"),
+				journal.StringField("MESSAGE", "binary interoperability"),
+				journal.StringField("PRIORITY", "6"),
+				journal.StringField("LIVE_SEQ", "000000"),
+				{Name: "BINARY_PAYLOAD", Value: []byte{0x00, 0x01, 0x02, 'A', '\n', 0x7f, 0x80, 0xff}},
+				{Name: "BINARY_MATCH", Value: []byte{'a', 'b', 'c', 0x07, 'd', 'e', 'f'}},
+				{Name: "BINARY_EMPTY", Value: []byte{}},
+			}
+		}
+		if err := w.Append(fields, journal.EntryOptions{
 			RealtimeUsec:  realtimeBase + uint64(i),
 			MonotonicUsec: uint64(i + 1),
 		}); err != nil {

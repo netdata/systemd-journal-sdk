@@ -1,6 +1,6 @@
 # Interoperability Matrix
 
-This directory contains two repo-local matrix runners for SOW-0008.
+This directory contains three repo-local matrix runners for SOW-0008.
 
 ## Closed-File Matrix (`run_matrix.py`)
 
@@ -47,6 +47,7 @@ Useful options:
 python3 tests/interoperability/run_live_matrix.py --entries 50
 python3 tests/interoperability/run_live_matrix.py --writers go rust --poll-readers 3
 python3 tests/interoperability/run_live_matrix.py --writers rust --poll-readers 4 --keep-files
+python3 tests/interoperability/run_live_matrix.py --entries 10 --poll-readers 1
 ```
 
 ### What the live matrix proves
@@ -81,7 +82,7 @@ For each writer language, the matrix proves all of the following:
   traverse every directory layout; that remains tracked separately.
 
 - **Compression, compact journal, or FSS**: these are out of scope for the live
-  matrix. Binary stress fixtures are also out of scope.
+  matrix. Binary stress fixtures are covered by `run_binary_matrix.py`.
 
 - **Multi-writer scenarios**: the live matrix tests one writer at a time with
   multiple concurrent readers, not multiple concurrent writers.
@@ -105,6 +106,46 @@ A `status` of `PASS` means: writer exited cleanly, every polling reader saw
 entries while the writer was active, and all final reads observed the complete
 ordered sequence.
 
+## Binary Matrix (`run_binary_matrix.py`)
+
+Generates a binary-field fixture journal with every writer, then validates each
+generated file with stock journalctl, stock libsystemd, and every repository
+journalctl implementation.
+
+```bash
+python3 tests/interoperability/run_binary_matrix.py
+```
+
+Useful options:
+
+```bash
+python3 tests/interoperability/run_binary_matrix.py --writers go python
+python3 tests/interoperability/run_binary_matrix.py --readers stock rust python
+```
+
+Each writer fixture includes:
+
+- `TEST_ID=binary-interoperability`
+- `MESSAGE=binary interoperability`
+- `PRIORITY=6`
+- `LIVE_SEQ=000000`
+- `BINARY_PAYLOAD` bytes `00 01 02 41 0a 7f 80 ff`
+- `BINARY_MATCH` bytes `61 62 63 07 64 65 66`
+- `BINARY_EMPTY` as an empty value
+
+For each generated writer file, the binary matrix validates:
+
+- stock `journalctl --verify --file` succeeds;
+- stock `journalctl --output=json` returns byte arrays for non-printable
+  binary values and an empty string for the empty binary value;
+- stock `journalctl --output=export` contains exact size-prefixed binary
+  payloads;
+- stock libsystemd `sd_journal_get_data()` returns exact bytes for every binary
+  field;
+- Go, Rust, Node.js, and Python journalctl rewrites return matching JSON and
+  export output;
+- `BINARY_MATCH=abc\x07def` works as a stock file-backed match through argv.
+
 ## Shared Conventions
 
 All runtime artifacts (generated journals, binaries, result JSON files) live
@@ -119,6 +160,6 @@ completion unless `--keep-files` is passed.
 | xz/lz4/zstd writer parity | Not implemented | Writers do not write compressed DATA | SOW-0008 or split by compression family |
 | Compact journal format | Not implemented | Writers create regular non-compact journals | Requires systemd reference inventory |
 | Forward Secure Sealing / verification | Not implemented | Verification/FSS tests skipped in earlier SOWs | Split dedicated FSS SOW |
-| Cross-language binary stress | Not complete | Livewriter fixtures do not include binary fields | Add binary fixture generation before SOW-0008 close |
+| Cross-language binary stress | Complete | `run_binary_matrix.py` passes 52/52 across all writer/reader pairs plus stock libsystemd | Closed |
 | Writer locking parity | Partial | Go and Python use fcntl; Node.js has no native flock; Rust writer lock was removed from scope | Track whether Node/Rust need advisory lock behavior |
 | Directory reader subdirectory traversal | Partial | Live matrix validates discovered files; full `--directory` traversal parity remains separate | Address in SDK follow-up work |

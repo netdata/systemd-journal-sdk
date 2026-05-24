@@ -23,6 +23,8 @@ struct Args {
     sync_every: usize,
     #[arg(long = "crash-after", default_value_t = 0)]
     crash_after: usize,
+    #[arg(long = "binary-fixture", default_value_t = false)]
+    binary_fixture: bool,
 }
 
 fn main() {
@@ -59,16 +61,30 @@ fn run() -> Result<()> {
 
     const REALTIME_BASE: u64 = 1_700_001_000_000_000;
     for i in 0..args.entries {
-        let message = format!("MESSAGE=live-{i:06}");
-        let seq = format!("LIVE_SEQ={i:06}");
-        let fields = [
-            message.as_bytes(),
-            b"PRIORITY=6".as_slice(),
-            b"SYSLOG_IDENTIFIER=rust-live-writer".as_slice(),
-            seq.as_bytes(),
-        ];
+        let fields = if args.binary_fixture && i == 0 {
+            vec![
+                b"TEST_ID=binary-interoperability".to_vec(),
+                b"MESSAGE=binary interoperability".to_vec(),
+                b"PRIORITY=6".to_vec(),
+                b"LIVE_SEQ=000000".to_vec(),
+                b"BINARY_PAYLOAD=\x00\x01\x02A\n\x7f\x80\xff".to_vec(),
+                b"BINARY_MATCH=abc\x07def".to_vec(),
+                b"BINARY_EMPTY=".to_vec(),
+            ]
+        } else {
+            let message = format!("MESSAGE=live-{i:06}");
+            let seq = format!("LIVE_SEQ={i:06}");
+            vec![
+                message.into_bytes(),
+                b"PRIORITY=6".to_vec(),
+                b"SYSLOG_IDENTIFIER=rust-live-writer".to_vec(),
+                seq.into_bytes(),
+            ]
+        };
+
+        let fields_refs: Vec<&[u8]> = fields.iter().map(|v| v.as_slice()).collect();
         log.write_entry_with_timestamps(
-            &fields,
+            &fields_refs,
             EntryTimestamps {
                 entry_realtime_usec: Some(REALTIME_BASE + i as u64),
                 entry_monotonic_usec: Some(i as u64 + 1),
@@ -114,17 +130,31 @@ fn run_file_writer(args: &Args, path: &PathBuf, delay: Duration) -> Result<()> {
 
     const REALTIME_BASE: u64 = 1_700_001_000_000_000;
     for i in 0..args.entries {
-        let message = format!("MESSAGE=live-{i:06}");
-        let seq = format!("LIVE_SEQ={i:06}");
-        let fields = [
-            message.as_bytes(),
-            b"PRIORITY=6".as_slice(),
-            b"SYSLOG_IDENTIFIER=rust-live-writer".as_slice(),
-            seq.as_bytes(),
-        ];
+        let fields = if args.binary_fixture && i == 0 {
+            vec![
+                b"TEST_ID=binary-interoperability".to_vec(),
+                b"MESSAGE=binary interoperability".to_vec(),
+                b"PRIORITY=6".to_vec(),
+                b"LIVE_SEQ=000000".to_vec(),
+                b"BINARY_PAYLOAD=\x00\x01\x02A\n\x7f\x80\xff".to_vec(),
+                b"BINARY_MATCH=abc\x07def".to_vec(),
+                b"BINARY_EMPTY=".to_vec(),
+            ]
+        } else {
+            let message = format!("MESSAGE=live-{i:06}");
+            let seq = format!("LIVE_SEQ={i:06}");
+            vec![
+                message.into_bytes(),
+                b"PRIORITY=6".to_vec(),
+                b"SYSLOG_IDENTIFIER=rust-live-writer".to_vec(),
+                seq.into_bytes(),
+            ]
+        };
+
+        let fields_refs: Vec<&[u8]> = fields.iter().map(|v| v.as_slice()).collect();
         writer.add_entry(
             &mut journal_file,
-            &fields,
+            &fields_refs,
             REALTIME_BASE + i as u64,
             i as u64 + 1,
         )?;

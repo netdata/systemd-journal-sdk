@@ -12,6 +12,7 @@ function parseArgs(argv) {
     delayMs: 1,
     syncEvery: 25,
     crashAfter: 0,
+    binaryFixture: false,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -38,6 +39,9 @@ function parseArgs(argv) {
         break;
       case '--crash-after':
         args.crashAfter = parseNonNegativeInt(next(), '--crash-after');
+        break;
+      case '--binary-fixture':
+        args.binaryFixture = true;
         break;
       default:
         throw new Error(`unknown argument: ${arg}`);
@@ -99,12 +103,27 @@ async function main() {
 
   try {
     for (let i = 0; i < args.entries; i++) {
-      writer.append([
-        { name: 'MESSAGE', value: `live-${i.toString().padStart(6, '0')}` },
-        { name: 'PRIORITY', value: '6' },
-        { name: 'SYSLOG_IDENTIFIER', value: 'node-live-writer' },
-        { name: 'LIVE_SEQ', value: i.toString().padStart(6, '0') },
-      ], {
+      let fields;
+      if (args.binaryFixture && i === 0) {
+        fields = [
+          { name: 'TEST_ID', value: 'binary-interoperability' },
+          { name: 'MESSAGE', value: 'binary interoperability' },
+          { name: 'PRIORITY', value: '6' },
+          { name: 'LIVE_SEQ', value: '000000' },
+          { name: 'BINARY_PAYLOAD', value: Buffer.from([0x00, 0x01, 0x02, 0x41, 0x0a, 0x7f, 0x80, 0xff]) },
+          { name: 'BINARY_MATCH', value: Buffer.from([0x61, 0x62, 0x63, 0x07, 0x64, 0x65, 0x66]) },
+          { name: 'BINARY_EMPTY', value: Buffer.from([]) },
+        ];
+      } else {
+        fields = [
+          { name: 'MESSAGE', value: `live-${i.toString().padStart(6, '0')}` },
+          { name: 'PRIORITY', value: '6' },
+          { name: 'SYSLOG_IDENTIFIER', value: 'node-live-writer' },
+          { name: 'LIVE_SEQ', value: i.toString().padStart(6, '0') },
+        ];
+      }
+
+      writer.append(fields, {
         realtimeUsec: realtimeBase + BigInt(i),
         monotonicUsec: BigInt(i + 1),
       });

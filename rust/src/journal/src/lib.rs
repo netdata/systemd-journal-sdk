@@ -784,15 +784,32 @@ pub fn json_entry(entry: &Entry) -> serde_json::Value {
 }
 
 fn json_value_for_bytes(value: &[u8]) -> serde_json::Value {
-    match std::str::from_utf8(value) {
-        Ok(value) => serde_json::Value::String(value.to_string()),
-        Err(_) => serde_json::Value::Array(
+    if json_bytes_printable(value) {
+        serde_json::Value::String(String::from_utf8_lossy(value).into_owned())
+    } else {
+        serde_json::Value::Array(
             value
                 .iter()
                 .map(|byte| serde_json::Value::Number((*byte).into()))
                 .collect(),
-        ),
+        )
     }
+}
+
+fn json_bytes_printable(value: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(value) else {
+        return false;
+    };
+    for ch in text.chars() {
+        let cp = ch as u32;
+        if cp < 0x20 && ch != '\t' && ch != '\n' {
+            return false;
+        }
+        if (0x7f..=0x9f).contains(&cp) {
+            return false;
+        }
+    }
+    true
 }
 
 pub fn format_entry_text(entry: &Entry) -> Vec<u8> {
@@ -887,6 +904,7 @@ mod tests {
         let mut field_values = HashMap::new();
         field_values.insert("MESSAGE".to_string(), vec!["héllo".as_bytes().to_vec()]);
         field_values.insert("BINARY".to_string(), vec![vec![0xff, 0x00]]);
+        field_values.insert("CONTROL".to_string(), vec![b"abc\x07def".to_vec()]);
 
         let entry = Entry {
             fields,
@@ -913,6 +931,18 @@ mod tests {
         assert_eq!(
             json.get("BINARY"),
             Some(&Value::Array(vec![Value::from(255), Value::from(0)]))
+        );
+        assert_eq!(
+            json.get("CONTROL"),
+            Some(&Value::Array(vec![
+                Value::from(97),
+                Value::from(98),
+                Value::from(99),
+                Value::from(7),
+                Value::from(100),
+                Value::from(101),
+                Value::from(102),
+            ]))
         );
     }
 

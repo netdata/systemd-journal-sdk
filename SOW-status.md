@@ -103,8 +103,8 @@ python3 tests/interoperability/run_matrix.py
 | Compressed DATA writing | Not implemented | zstd/xz/lz4 need dedicated implementation or split SOW |
 | Compact journal format | Not implemented | Requires investigation |
 | Writer FSS | Not implemented | Split follow-up SOW unless a safe narrow scope emerges |
-| Live cross-language matrix | Not complete | Next functional validation target in SOW-0008 |
-| Cross-language binary stress | Not complete | Livewriter fixtures do not include binary fields yet |
+| Live cross-language matrix | Complete | `run_live_matrix.py` passes 4/4 with active observations for all writers/readers |
+| Cross-language binary stress | Complete | `run_binary_matrix.py` passes 52/52 across all writers/readers plus stock libsystemd |
 | Writer locking parity | Partial | Go/Python use fcntl; Node/Rust need decision/evidence |
 
 ### Next Steps
@@ -142,3 +142,32 @@ Result file: `.local/interoperability/live-matrix-results-20260524-092103.json`
 - GLM and Qwen returned `PRODUCTION GRADE` for the live matrix slice.
 - Low-risk diagnostics/documentation findings were fixed before commit: stock journalctl flag parity, active-poll error capture, raw JSON `while_active` clarity, longer poll future timeout, and README `writer_stderr` documentation.
 - GLM and Qwen reruns after those fixes also returned `PRODUCTION GRADE`; remaining low findings are accepted as future hardening or declared scope limits.
+
+### Binary Matrix Third Slice
+
+**Binary-field matrix runner created** at `tests/interoperability/run_binary_matrix.py`, with `tests/interoperability/README.md` updated and all four livewriter test commands extended with `--binary-fixture`.
+
+- **Matrix executed**: 52/52 checks PASS | 0 FAIL on systemd 260 (260.1-2-manjaro)
+- **Coverage**: all 4 language writers generate the same binary fixture, stock `journalctl --verify --file` passes, stock JSON/export output matches binary-field expectations, stock libsystemd `sd_journal_get_data()` reads exact bytes, and Go/Rust/Node.js/Python journalctl rewrites read JSON/export from every generated file.
+- **Compatibility fixes included**: Rust and Python JSON output now use stock-style printability checks before emitting strings vs byte arrays; Python journalctl export output now writes bytes through `stdout.buffer` instead of lossy text decoding.
+- **Live harness hardening included**: default writer delay in `tests/interoperability/run_live_matrix.py` is 20 ms so low-entry live gates are not dominated by reader process startup latency.
+
+### Binary Matrix Commands Run
+
+```bash
+python3 tests/interoperability/run_binary_matrix.py
+python3 tests/interoperability/run_matrix.py --entries 10
+python3 tests/interoperability/run_live_matrix.py --entries 10 --poll-readers 1
+python3 tests/interoperability/run_live_matrix.py --entries 30 --poll-readers 1
+python3 -m py_compile tests/interoperability/run_binary_matrix.py tests/interoperability/run_matrix.py tests/interoperability/run_live_matrix.py python/cmd/livewriter.py python/cmd/journalctl.py python/test_all.py
+python3 python/test_all.py
+(cd go && go test ./journal ./cmd/journalctl ./internal/testcmd/livewriter)
+cargo test --manifest-path rust/Cargo.toml -p journal
+cargo build --manifest-path rust/Cargo.toml -p livewriter
+node --test node/test/all.js
+```
+
+### Binary Matrix Remaining Gaps
+
+- Compression DATA writing, xz/lz4/zstd writer parity, compact journal format, FSS/full verification, writer locking parity, and full directory traversal parity remain open in SOW-0008.
+- GLM and Minimax returned `PRODUCTION GRADE` for the binary matrix slice. Minimax's low documentation inconsistency finding was fixed before commit; Qwen stalled after initial file reads and produced no verdict.
