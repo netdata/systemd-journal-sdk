@@ -20,7 +20,7 @@ Bootstrap mode: empty/new project.
 
 ## Active SOW
 
-- None. Next activation target is `.agents/sow/pending/SOW-0008-20260523-interoperability-and-full-writer-features.md`.
+- `.agents/sow/current/SOW-0008-20260523-interoperability-and-full-writer-features.md`
 
 ## Completed SOWs
 
@@ -38,7 +38,7 @@ Bootstrap mode: empty/new project.
 
 ## Next SOW
 
-- Next: `.agents/sow/pending/SOW-0008-20260523-interoperability-and-full-writer-features.md`
+- Current active: `.agents/sow/current/SOW-0008-20260523-interoperability-and-full-writer-features.md`
 - Rationale: the Go, Rust, Node.js, and Python SDK/journalctl slices are complete; full interoperability and remaining writer-format features are next before benchmark/profiling.
 
 ## Guardrails
@@ -71,3 +71,4 @@ Bootstrap mode: empty/new project.
 - 2026-05-24 Python activation update: SOW-0007 is active after the Node.js closeout commit `3dd2a58`. The pre-implementation gate records plain Python, no native journal bindings, bytes-like binary values, Python integer 64-bit handling, Python `3.14.5`, and available standard-library `compression.zstd` support.
 - 2026-05-24 Python pre-review progress: SOW-0007 has a locally validated Python reader, writer, directory writer, libsystemd-style facade, journalctl command, adapter, package test runner, README, product-scope update, and livewriter command. Validation currently passes `python3 -m compileall python`, `python3 python/test_all.py`, full shared conformance at 15 results / 0 failures / 2 expected verification SKIPs, fixture journalctl counts, stock-reader live concurrency, and directory writer stock open/closed reads. Read-only external production-grade review is pending before close.
 - 2026-05-24 Python closed: SOW-0007 completed the pure Python SDK, libsystemd-style facade, file-backed journalctl command, conformance adapter, package tests, README, directory writer rotation/retention, writer exclusive locking, and livewriter harness command. Final validation passed `python3 python/test_all.py`, `python3 -m compileall python`, shared conformance at 15 results / 0 failures / 2 expected verification SKIPs, stock-reader live concurrency on systemd `260 (260.1-2-manjaro)`, dependency/native marker audit, `git diff --check`, and `.agents/sow/audit.sh`. Minimax and GLM returned `VERDICT: PRODUCTION GRADE`; Kimi previously returned `VERDICT: PRODUCTION GRADE` with non-blocking findings that were fixed, and Qwen's lowercase-field finding was dispositioned as a false positive with tests.
+- 2026-05-24 Interoperability activation update: SOW-0008 is active after the Python closeout commit `b1276a0`. The pre-implementation gate records that all baseline language SDK/journalctl slices are complete and that the phase starts with closed-file and live cross-language matrix evidence before deciding whether compression writing, compact journal support, verification, or FSS work must split into narrower follow-up SOWs.
