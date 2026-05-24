@@ -180,8 +180,6 @@ Current Rust writer feature slice:
 - entry-count and file-size rotation;
 - archived file-count and byte-size retention, without deleting the active file
   to satisfy retention limits;
-- exclusive non-blocking writer file locks to protect the one-writer contract
-  among cooperating repository writers;
 - live one-writer/multiple-reader compatibility with stock `journalctl --file`
   and stock libsystemd readers for the current writer slice.
 

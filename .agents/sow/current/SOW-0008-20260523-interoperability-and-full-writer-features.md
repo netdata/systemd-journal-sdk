@@ -176,19 +176,19 @@ Activation evidence:
 
 Acceptance criteria evidence:
 
-- Implementation validation has not started yet. The active gate defines the closed-file matrix, live cross-language matrix, stock-reader compatibility checks, writer-gap inventory, dependency audit, docs/spec updates, external reviews, and final SOW audit required before close.
+- Closed-file matrix first slice passes for Go, Rust, Node.js, and Python writers read by stock, Go, Rust, Node.js, and Python file-backed journalctl implementations. Live cross-language matrix, binary stress fixtures, compression writing, compact journals, FSS, dependency audit, final docs/spec checks, and final SOW audit remain required before close.
 
 Tests or equivalent validation:
 
-- Activation audit passed. Matrix implementation and test evidence will be added during implementation.
+- Activation audit passed. First-slice matrix validation passed `python3 tests/interoperability/run_matrix.py` with 104/104 checks on systemd `260 (260.1-2-manjaro)`.
 
 Real-use evidence:
 
-- No new runtime matrix has been generated during activation. Real-use evidence will be collected from generated `.local/` matrix files and stock systemd tools during implementation.
+- Generated journals and matrix results were written under `.local/interoperability/`; stock `journalctl --verify --file` passed for each generated writer file.
 
 Reviewer findings:
 
-- No implementation review has run for this SOW yet. Reviewer prompts must cover the full SOW scope and active matrix evidence after implementation.
+- GLM and Mimo returned `PRODUCTION GRADE` for committing the first closed-file matrix slice. Their shared non-blocking OR/disjunction coverage concern was fixed before commit with stronger same-field OR, `+` disjunction, zero-match, and cross-field AND checks.
 
 Same-failure scan:
 
@@ -239,3 +239,74 @@ Pending activation.
 ## Regression Log
 
 None yet.
+
+## Implementation Log - 2026-05-24
+
+### Interoperability Matrix First Slice
+
+Implemented a committed closed-file interoperability matrix runner:
+
+- `tests/interoperability/run_matrix.py`
+- `tests/interoperability/README.md`
+
+The runner generates journals under `.local/interoperability/` with the Go,
+Rust, Node.js, and Python livewriter commands, then reads every generated file
+with stock journalctl plus the Go, Rust, Node.js, and Python file-backed
+journalctl implementations.
+
+Command run:
+
+```bash
+python3 tests/interoperability/run_matrix.py
+```
+
+Systemd version: `systemd 260 (260.1-2-manjaro)`
+
+Matrix result: 104/104 PASS, 0 FAIL.
+
+Coverage achieved:
+
+- 4 writers: Go, Rust, Node.js, Python.
+- 5 readers/query tools per writer: stock journalctl, Go journalctl, Rust journalctl, Node.js journalctl, Python journalctl.
+- 5 read/query checks per writer/reader pair:
+  - `PRIORITY=6` reads exactly the expected entries;
+  - `PRIORITY=1` reads zero entries;
+  - repeated same-field OR via `MESSAGE=live-000000 MESSAGE=live-000001`;
+  - `+` disjunction via `MESSAGE=live-000000 + MESSAGE=live-000001`;
+  - cross-field AND via `PRIORITY=6 MESSAGE=live-000000`.
+- Sequence validation: every reader result must contain ordered `LIVE_SEQ` values from `000000`.
+- Stock verification: `journalctl --verify --file` passes for each generated writer file.
+
+Known limits of this first slice:
+
+- Closed-file matrix only; live cross-language reader/writer concurrency remains open.
+- Livewriter fixtures do not include binary payload fields, so cross-language binary stress remains open.
+- The matrix validates journalctl reader surfaces, not every lower-level SDK reader API directly.
+
+### Writer Feature Gap Inventory
+
+| Gap | Status | Evidence | Follow-up |
+|-----|--------|----------|-----------|
+| Compressed DATA object writing | Not implemented | Current writers emit uncompressed DATA objects | Continue in SOW-0008 or split a compression SOW |
+| xz/lz4/zstd writer parity | Not implemented | Readers have different compression-read support; writers do not write compressed DATA | Continue in SOW-0008 or split by compression family |
+| Compact journal format | Not implemented | Current writers create regular non-compact journals | Requires systemd reference inventory before implementation |
+| Forward Secure Sealing / full verification | Not implemented | Verification/FSS tests are skipped or out of scope in earlier SOWs | Split a dedicated FSS SOW unless a safe narrow implementation emerges |
+| Live cross-language matrix | Not complete | Existing live harness proves stock-reader compatibility per writer; repository reader x repository writer live matrix remains open | Continue next in SOW-0008 |
+| Cross-language binary stress | Not complete | Per-language binary tests exist; matrix livewriter fixtures do not include binary fields yet | Add binary fixture generation before SOW-0008 close |
+| Writer locking parity | Partial | Go and Python use `fcntl` locks; Node.js has no native flock; Rust writer lock claim was removed from product scope after code search found no writer lock | Track whether Node/Rust need pure-language advisory lock behavior |
+| Directory ordering guarantees | Partial | Current directory readers iterate sequentially by file metadata and are validated for non-overlapping active/archive files | Continue under SOW-0008 matrix expansion |
+
+### Validation Results
+
+- Passed: `python3 tests/interoperability/run_matrix.py` with 50 entries per writer.
+- Passed: `.agents/sow/audit.sh`.
+- Passed: `git diff --check`.
+- Generated result file: `.local/interoperability/matrix-results-20260524-083546.json`.
+
+### Review Results
+
+- GLM first review verdict: `PRODUCTION GRADE`; non-blocking findings about weak OR/disjunction coverage, missing zero-match filter, missing cross-field AND, Go lock documentation asymmetry, and result-file accumulation were dispositioned.
+- Mimo first review verdict: `PRODUCTION GRADE`; non-blocking findings about weak OR/disjunction coverage, stale in-progress validation text, repository-reader `--quiet` support, repeated rebuilds, and scratch artifacts were dispositioned.
+- Implemented coverage improvements before commit: added zero-match filter validation, real same-field OR union validation, real `+` disjunction union validation, and cross-field AND validation to the matrix runner.
+- GLM rerun verdict: `PRODUCTION GRADE`; remaining low findings were accepted as future matrix improvements or existing open scope: multi-field `+` disjunction discrimination, explicit non-`LIVE_SEQ` value assertions, Rust direct-file writer mode in this matrix, and `.local/` result accumulation.
+- Mimo rerun verdict: `PRODUCTION GRADE`; remaining low findings were accepted as future matrix improvements or existing open scope: result-file accumulation, unrelated untracked `go/adapter/adapter`, repository-reader `--quiet` parity, JSON-only output coverage, and two-branch `+` coverage.

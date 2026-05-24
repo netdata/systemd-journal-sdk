@@ -72,3 +72,47 @@ Bootstrap mode: empty/new project.
 - 2026-05-24 Python pre-review progress: SOW-0007 has a locally validated Python reader, writer, directory writer, libsystemd-style facade, journalctl command, adapter, package test runner, README, product-scope update, and livewriter command. Validation currently passes `python3 -m compileall python`, `python3 python/test_all.py`, full shared conformance at 15 results / 0 failures / 2 expected verification SKIPs, fixture journalctl counts, stock-reader live concurrency, and directory writer stock open/closed reads. Read-only external production-grade review is pending before close.
 - 2026-05-24 Python closed: SOW-0007 completed the pure Python SDK, libsystemd-style facade, file-backed journalctl command, conformance adapter, package tests, README, directory writer rotation/retention, writer exclusive locking, and livewriter harness command. Final validation passed `python3 python/test_all.py`, `python3 -m compileall python`, shared conformance at 15 results / 0 failures / 2 expected verification SKIPs, stock-reader live concurrency on systemd `260 (260.1-2-manjaro)`, dependency/native marker audit, `git diff --check`, and `.agents/sow/audit.sh`. Minimax and GLM returned `VERDICT: PRODUCTION GRADE`; Kimi previously returned `VERDICT: PRODUCTION GRADE` with non-blocking findings that were fixed, and Qwen's lowercase-field finding was dispositioned as a false positive with tests.
 - 2026-05-24 Interoperability activation update: SOW-0008 is active after the Python closeout commit `b1276a0`. The pre-implementation gate records that all baseline language SDK/journalctl slices are complete and that the phase starts with closed-file and live cross-language matrix evidence before deciding whether compression writing, compact journal support, verification, or FSS work must split into narrower follow-up SOWs.
+
+## 2026-05-24 SOW-0008 Interoperability Implementation
+
+### Progress
+
+SOW-0008 (interoperability and full writer features) is in progress. First slice complete:
+
+- **Interoperability matrix runner created** at `tests/interoperability/run_matrix.py` and `tests/interoperability/README.md`
+- **Matrix executed**: 104/104 checks PASS | 0 FAIL on systemd 260 (260.1-2-manjaro)
+- **Coverage**: all 4 language writers (Go, Rust, Node.js, Python) x stock/Go/Rust/Node.js/Python file-backed journalctl readers, with priority-read, zero-match filter, repeated same-field OR, `+` disjunction, cross-field AND, ordered `LIVE_SEQ`, and stock `journalctl --verify --file` checks
+
+### Commands Run
+
+```bash
+python3 tests/interoperability/run_matrix.py
+```
+
+### Key Findings
+
+1. All 4 language writers produce valid closed journal files readable by stock and repository file-backed journalctl implementations.
+2. All 4 generated journals pass stock `journalctl --verify --file`.
+3. Repeated same-field OR, `+` disjunction, zero-match filtering, and cross-field AND semantics are consistent across stock, Go, Rust, Node.js, and Python file-backed journalctl readers for generated files.
+4. Product-scope writer lock reality corrected: Go and Python use `fcntl` locks; Node.js has no native flock; Rust writer lock support was not found by code search and remains a SOW-0008 gap.
+
+### Writer Feature Gaps Inventoryed
+
+| Gap | Status | Notes |
+|-----|--------|-------|
+| Compressed DATA writing | Not implemented | zstd/xz/lz4 need dedicated implementation or split SOW |
+| Compact journal format | Not implemented | Requires investigation |
+| Writer FSS | Not implemented | Split follow-up SOW unless a safe narrow scope emerges |
+| Live cross-language matrix | Not complete | Next functional validation target in SOW-0008 |
+| Cross-language binary stress | Not complete | Livewriter fixtures do not include binary fields yet |
+| Writer locking parity | Partial | Go/Python use fcntl; Node/Rust need decision/evidence |
+
+### Next Steps
+
+- SOW-0008 remains open for the live cross-language matrix, binary stress fixtures, compression-writing/compact/FSS split decisions, and review.
+- SOW-0009 remains pending; no benchmark/profiling work has started.
+
+### Review
+
+- GLM and Mimo returned `PRODUCTION GRADE` for committing the first slice in both initial review and rerun after coverage improvements.
+- Their shared non-blocking OR/disjunction coverage concern was fixed before commit by adding two-entry same-field OR, two-entry `+` disjunction, zero-match, and cross-field AND checks.
