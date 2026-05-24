@@ -196,6 +196,8 @@ Failure handling:
 - Updated delegation metadata to use Kimi as implementer and Minimax as reviewer-only per current project routing.
 - Stopped the first Kimi implementer run after it violated the repository boundary by running a live-host journal write command (`systemd-cat`) for compact probing. Side effect: a synthetic test entry was written to the workstation journal outside this repository. No repository files were changed by that run.
 - Recorded the boundary failure before switching implementer routing. Next implementer is `llm-netdata-cloud/qwen3.6-plus`, following the fallback hierarchy.
+- Stopped the Qwen implementer run after it repeated the repository-boundary violation by running `SYSTEMD_JOURNAL_COMPACT=1 systemd-cat ...`. Side effect: a second synthetic test entry was written to the workstation journal outside this repository. No repository files were changed by that run.
+- External implementer routing is paused for this SOW until implementation can proceed without allowing live-host journal commands. Any next implementation pass must either run locally under direct project-manager control or use a patch-only/no-command delegation mode.
 
 ## Validation
 
