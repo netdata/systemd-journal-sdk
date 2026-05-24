@@ -31,6 +31,7 @@ Do not use this skill for:
 - After each implementation chunk is implemented, reviewed, and verified, prefer committing that chunk before starting the next chunk. Stage explicit files only; never use `git add -A` or `git add .`.
 - Implementer agents must run in normal coding mode, for example `opencode run -m "<model>" "<prompt>"`. Do not pass `--agent code-reviewer` to implementers because that selects a read-only reviewer role and prevents the requested edits.
 - Reviewer agents must run read-only. For opencode reviewer runs, use `--agent code-reviewer` and prompts that forbid creating, modifying, deleting, moving, formatting, staging, committing, or changing files.
+- Read-only dependency metadata commands can still write package caches. Prompts that allow dependency inspection must either forbid dependency-fetching commands or require cache/output variables under `.local/` or `/tmp`, including `GOMODCACHE`, `GOCACHE`, `GOPATH`, `npm_config_cache`, `PIP_CACHE_DIR`, `CARGO_HOME`, and equivalent tool caches.
 
 Canonical external-agent prompt block:
 
@@ -51,12 +52,14 @@ CRITICAL REPOSITORY BOUNDARY:
 - If `llm-netdata-cloud/minimax-m2.7-coder` fails or is unavailable, record the failure in the active SOW before switching according to the fallback implementer hierarchy.
 - Run independent reviewers in parallel after implementation.
 - Keep reviewer prompts neutral: include the original request, SOW filename, changed scope, validation commands, the canonical repository-boundary block, and ask for unwanted side effects and security issues.
+- For dependency research or package metadata checks, include explicit cache redirection instructions before allowing commands such as `go get`, `go list`, `npm view`, `npm pack`, `pip download`, `pip index`, `cargo metadata`, or `cargo doc`.
 - Repeat review cycles with the same scope until reviewers stop finding blocking issues.
 
 ## Bad Practices
 
 - Do not let an implementer edit outside this repository.
 - Do not let reviewers make changes; reviewers must be read-only.
+- Do not let external agents run package-manager commands with default caches, because they can write under home directories even when the visible command output is read-only.
 - Do not narrow follow-up reviewer prompts to only the last fix; keep the original review scope and add fix notes.
 - Do not advance a SOW on "mostly ok" or unresolved production-grade doubts.
 

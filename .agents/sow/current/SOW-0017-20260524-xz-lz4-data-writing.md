@@ -182,67 +182,176 @@ Failure handling:
 
 ## Execution Log
 
-- 2026-05-24: Activated after SOW-0016 completion and after sequencing SOW-0009 behind remaining feature-completeness SOWs.
+### 2026-05-24
+
+- Activated after SOW-0016 completion and after sequencing SOW-0009 behind remaining feature-completeness SOWs.
+- Ran a Phase 1 inventory implementer pass with `llm-netdata-cloud/minimax-m2.7-coder`. The pass edited only this SOW, but its results were not accepted as authoritative because `git diff --check` failed, the SOW audit failed after required validation sections were removed, and several compression/dependency claims were contradicted by primary source evidence.
+- Repaired the Phase 1 inventory against systemd v260.1 source and package documentation before using it to steer implementation.
+- Ran read-only reviews with `llm-netdata-cloud/qwen3.6-plus` and `llm-netdata-cloud/kimi-k2.6`; both returned `PRODUCTION GRADE` for the repaired Phase 1 inventory.
+- Reviewer orchestration note: reviewers performed package-fetch metadata checks that may have written tool caches outside this repository despite prompt instructions. Future prompts must explicitly forbid dependency-fetching commands unless `GOMODCACHE`, `GOCACHE`, `GOPATH`, `npm_config_cache`, `PIP_CACHE_DIR`, and equivalent caches are forced under `.local/` or `/tmp`.
+
+## Phase 1 - Dependency And systemd Reference Inventory
+
+Date: 2026-05-24
+
+Systemd reference:
+
+- `systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced`
+- Tag: `v260.1`
+
+### systemd v260.1 DATA Compression Format
+
+Evidence:
+
+- `systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced`
+- `src/libsystemd/sd-journal/journal-def.h:45-50`
+- `src/libsystemd/sd-journal/journal-def.h:166-171`
+- `src/basic/compress.c:170-214`
+- `src/basic/compress.c:250-279`
+- `src/basic/compress.c:347-445`
+- `src/libsystemd/sd-journal/journal-file.c:1808-1842`
+- `src/libsystemd/sd-journal/journal-file.c:1884-1894`
+
+Confirmed facts:
+
+- DATA object compression flags are `OBJECT_COMPRESSED_XZ = 1 << 0`, `OBJECT_COMPRESSED_LZ4 = 1 << 1`, and `OBJECT_COMPRESSED_ZSTD = 1 << 2`.
+- Header incompatible flags are `HEADER_INCOMPATIBLE_COMPRESSED_XZ = 1 << 0`, `HEADER_INCOMPATIBLE_COMPRESSED_LZ4 = 1 << 1`, `HEADER_INCOMPATIBLE_KEYED_HASH = 1 << 2`, and `HEADER_INCOMPATIBLE_COMPRESSED_ZSTD = 1 << 3`.
+- XZ compression uses `lzma_stream_buffer_encode()` with an LZMA2 filter chain and `LZMA_CHECK_NONE`; the on-disk DATA payload is an `.xz` stream with no journal-specific size prefix.
+- LZ4 compression writes an 8-byte little-endian uncompressed size prefix followed by a raw LZ4 block produced by `LZ4_compress_default()` or `LZ4_compress_HC()`.
+- LZ4 decompression reads the 8-byte prefix and then calls `LZ4_decompress_safe(src + 8, out, src_size - 8, size)`.
+- systemd attempts compression into a destination budget of `payload_size - 1`; if compression fails or does not fit, the DATA object is stored uncompressed.
+- systemd has hard compression-family minimums before attempting compression: XZ returns `-ENOBUFS` for payloads below 80 bytes, and LZ4 returns `-ENOBUFS` for payloads below 9 bytes.
+
+Compatibility implications:
+
+- XZ support must produce and read `.xz` streams using LZMA2 and no integrity check, not raw LZMA2 blocks and not the legacy `.lzma` format.
+- LZ4 support must use raw block APIs and manually preserve systemd's 8-byte uncompressed-size prefix. LZ4 frame APIs and size-prepended helper formats are not directly compatible unless adapted.
+- Tests must assert object flags, header incompatible flags, actual compressed DATA objects, stock `journalctl --verify --file`, stock journalctl output, stock libsystemd reads, and every repository reader.
+- Byte-identical compressed output is not required by SOW-0016; valid stock-reader-compatible compressed DATA output is required unless a later SOW/user decision raises the requirement.
+
+### Current Repository Support Matrix
+
+| Language | Read XZ DATA | Read LZ4 DATA | Write XZ DATA | Write LZ4 DATA | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| Rust | Yes | Yes | No | No | `rust/src/crates/journal-core/src/file/object.rs:1097-1110`, `rust/src/crates/journal-core/src/file/writer.rs:401-413` |
+| Go | No | No | No | No | `go/journal/writer.go:16`, `go/journal/writer.go:653-657`, `go/journal/writer.go:1088-1110` |
+| Node.js | No | No | No | No | `node/src/lib/entry.js:65-74`, `node/src/lib/writer.js:299-308`, `node/src/lib/writer.js:740-743` |
+| Python | No | No | No | No | `python/journal/entry.py:66-70`, `python/journal/writer.py:293-299`, `python/journal/writer.py:730-744` |
+
+### Dependency Inventory
+
+Rust:
+
+- Existing `lz4_flex` dependency exposes raw block `compress`, `compress_into`, and `decompress_into` APIs. Systemd's 8-byte prefix still has to be written manually because `compress_prepend_size` uses its own little-endian size-prepended helper format.
+- Existing `lzma-rust2` dependency includes `XzReader`, `XzWriter`, `XzOptions`, and encoder feature support. This matches the systemd XZ stream requirement better than raw LZMA2.
+- No new Rust compression dependency is expected for Phase 2.
+
+Go:
+
+- Existing `github.com/klauspost/compress` is used only for zstd in this repository. No verified LZ4 or XZ DATA support exists in the current Go code.
+- `github.com/pierrec/lz4/v4` is a strong LZ4 candidate because it exposes pure-Go raw block `Compressor.CompressBlock`, `CompressorHC.CompressBlock`, `UncompressBlock`, and `CompressBlockBound` APIs.
+- `github.com/ulikunitz/xz` is a strong XZ candidate because it exposes a Go XZ writer and `WriterConfig` supports disabling the checksum. Its standard package writes `.xz` streams; the deeper `github.com/ulikunitz/xz/v2/lzma` package exposes raw LZMA2 APIs but is a v2 development line and should not be selected without stronger evidence.
+- Go dependency choice requires implementer verification in Phase 2 with a small stock-systemd compatibility fixture before broad code changes; record exact proven module versions before broad edits.
+
+Node.js:
+
+- `node:zlib` currently provides zstd support only in this repository.
+- `lz4js` is pure JavaScript and has no dependencies, but its public high-level API is framed LZ4 and its npm documentation states it does not support raw block data. It is not acceptable for systemd DATA LZ4 unless lower-level code can be safely reused or a raw block implementation is added in-repo.
+- `lz4` has block APIs but includes native bindings, so it is not acceptable under the current no-native-addon policy unless a documented pure-JavaScript block path can be isolated and proven.
+- `xz` is a liblzma binding and is not acceptable.
+- `lzma-purejs` is pure JavaScript LZMA, but the npm documentation describes LZMA `.lzma` compression, not XZ/LZMA2 stream writing with `CHECK_NONE`.
+- Node.js XZ writing remains high-risk until a pure JavaScript XZ/LZMA2 encoder or an in-repo implementation plan is proven.
+
+Python:
+
+- Python's standard `lzma` module can produce `.xz` container streams, supports `CHECK_NONE`, and supports `FILTER_LZMA2`. This matches the systemd XZ stream format semantically, but it is a CPython standard-library module backed by the runtime's lzma implementation, so policy acceptance must be handled consistently with the existing Python zstd decision.
+- `python-xz` is a pure-Python XZ file-format layer, but its own description says it leverages the `lzma` module for compression, so it does not avoid the standard-library/native compression question.
+- PyPI `lz4` supports LZ4 block compression and can disable its own stored-size prefix, but it is Python bindings for the LZ4 library and has C classifiers, so it is not acceptable under the current pure-language dependency policy.
+- Python LZ4 likely requires an in-repo pure Python raw-block implementation if no acceptable pure dependency is found.
+
+### Phase 1 Conclusion
+
+Ready for implementation planning:
+
+- Rust LZ4 and XZ can likely use existing dependencies.
+- Go LZ4 and XZ have strong pure-Go candidates, but Phase 2 must prove exact stock-reader compatibility before broad edits.
+
+Needs deeper dependency or implementation design before claims:
+
+- Node.js LZ4 may need in-repo raw-block code instead of npm package use.
+- Node.js XZ may need in-repo XZ/LZMA2 code, a carefully audited pure JS package that was not yet found, or a user-approved scope split.
+- Python XZ needs a policy decision if standard-library native compression is considered acceptable for this project slice.
+- Python LZ4 likely needs in-repo raw-block code instead of PyPI `lz4`.
+
+No compatibility claims are weakened by this inventory. If a language/format cannot satisfy pure-language and stock-reader requirements in Phase 2, this SOW must stop and present the user with options before narrowing scope.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Pending implementation.
+- Pending implementation. Phase 1 records the systemd v260.1 compression frame requirements and current repository support gaps.
 
 Tests or equivalent validation:
 
-- Pending implementation.
+- Pending implementation. Phase 1 SOW-only validation requires `git diff --check` and `bash .agents/sow/audit.sh`.
 
 Real-use evidence:
 
-- Pending implementation.
+- Pending implementation. No writer/reader behavior has changed in Phase 1.
 
 Reviewer findings:
 
-- Pending implementation.
+- `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`; no blocking findings. Non-blocking recommendation: present a Python standard-library native-module policy decision in Phase 2 because Python already uses standard-library `compression.zstd` while SOW-0017 flags standard-library `lzma`.
+- `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`; no blocking findings. Non-blocking recommendations were to cross-reference SOW-0016's compressed byte-identity carve-out, record exact Go dependency versions during Phase 2 verification, and make Phase 2 search for vendorable pure Node.js/Python LZ4 implementations before writing raw-block encoders from scratch.
+- Both reviewer runs validated `git diff --check` and `bash .agents/sow/audit.sh`.
+- Phase 1 implementer inventory was rejected as authoritative because local validation failed and primary sources contradicted several claims.
 
 Same-failure scan:
 
-- Pending implementation.
+- Pending implementation. Phase 2 must search for all zstd-only compression dispatches before editing.
 
 Sensitive data gate:
 
-- Pending implementation. Planned evidence uses synthetic compression fixtures, dependency names, licenses, commands, and sanitized diagnostics only; durable artifacts must not contain secrets, credentials, bearer tokens, SNMP communities, customer names, personal data, non-private customer-identifying IPs, private endpoints, or proprietary incident details.
+- Phase 1 durable evidence uses public package names, public upstream paths, source line references, and synthetic fixture plans only. No raw secrets, credentials, bearer tokens, SNMP communities, community member names, customer names, personal data, non-private customer-identifying IPs, private endpoints, or proprietary incident details are recorded.
 
 Artifact maintenance gate:
 
-- AGENTS.md: pending implementation.
-- Runtime project skills: pending implementation.
-- Specs: pending implementation.
-- End-user/operator docs: pending implementation.
-- End-user/operator skills: pending implementation.
-- SOW lifecycle: activated in `.agents/sow/current/` with `Status: in-progress`; completion requires status update to `completed`, move to `.agents/sow/done/`, audit, review disposition, and one implementation-close commit.
-- SOW-status.md: updated on activation.
+- AGENTS.md: no update for Phase 1; repository workflow rules did not change.
+- Runtime project skills: updated `.agents/skills/project-agent-orchestration/SKILL.md` with package-manager cache redirection rules after reviewer package metadata checks exposed a repository-boundary failure mode.
+- Specs: pending implementation; support matrices must be updated only after code behavior changes.
+- End-user/operator docs: pending implementation; README support matrices must be updated only after code behavior changes.
+- End-user/operator skills: no output/reference skills are affected by Phase 1.
+- SOW lifecycle: active in `.agents/sow/current/` with `Status: in-progress`; completion still requires implementation, review, validation, status update to `completed`, move to `.agents/sow/done/`, audit, and one implementation-close commit.
+- SOW-status.md: already updated on activation; no Phase 1 state change required.
 
 Specs update:
 
-- Pending implementation.
+- Pending implementation. No shipped behavior changed in Phase 1.
 
 Project skills update:
 
-- Pending implementation.
+- Updated `.agents/skills/project-agent-orchestration/SKILL.md` so future dependency-research prompts either forbid dependency-fetching commands or require package-manager caches under `.local/` or `/tmp`.
 
 End-user/operator docs update:
 
-- Pending implementation.
+- Pending implementation. No shipped behavior changed in Phase 1.
 
 End-user/operator skills update:
 
-- Pending implementation.
+- No output/reference skills are affected by Phase 1.
 
 Lessons:
 
-- Pending implementation.
+- Systemd XZ DATA objects must be treated as `.xz` streams with LZMA2 and `CHECK_NONE`; describing them as raw LZMA2 blocks is wrong and can lead agents to choose incompatible libraries.
+- Dependency inventories must be validated against primary source evidence before they become implementation instructions.
+- External-review prompts must forbid dependency-fetching commands unless every package-manager cache is explicitly redirected under `.local/` or `/tmp`; otherwise read-only package metadata checks can still create files outside the repository.
 
 Follow-up mapping:
 
-- Pending implementation.
+- Phase 2 implementation prompt must include exact XZ and LZ4 frame requirements from this SOW.
+- Phase 2 implementation prompt must require exact Go module versions after fixture proof, not before.
+- Phase 2 implementation prompt must require a search for vendorable pure Node.js/Python LZ4 block implementations before adding in-repo encoders from scratch.
+- Any unresolved Node.js/Python pure-dependency gap must become either implemented in this SOW, rejected with evidence, or tracked by a real follow-up SOW before SOW-0017 can close.
 
 ## Outcome
 
@@ -250,11 +359,11 @@ Pending.
 
 ## Lessons Extracted
 
-Pending activation.
+Pending implementation closeout.
 
 ## Followup
 
-Pending activation.
+None yet.
 
 ## Regression Log
 
