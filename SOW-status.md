@@ -20,7 +20,7 @@ Bootstrap mode: empty/new project.
 
 ## Active SOW
 
-- `.agents/sow/current/SOW-0004-20260523-rust-sdk-and-journalctl.md`
+- None.
 
 ## Completed SOWs
 
@@ -32,11 +32,12 @@ Bootstrap mode: empty/new project.
 - `.agents/sow/done/SOW-0012-20260523-go-writer-binary-fields.md`
 - `.agents/sow/done/SOW-0013-20260523-go-directory-writer-rotation-retention.md`
 - `.agents/sow/done/SOW-0010-20260523-go-reader-and-journalctl-completion.md`
+- `.agents/sow/done/SOW-0004-20260523-rust-sdk-and-journalctl.md`
 
 ## Next SOW
 
-- Current next after active SOW completion: `.agents/sow/pending/SOW-0006-20260523-node-sdk-and-journalctl.md`
-- Rationale: the Go writer, Go directory writer, Go reader, Go facade, Go journalctl, and Go adapter slices are complete; SOW-0004 is now active for Rust SDK/API and journalctl finalization before Node.js and Python.
+- Current next: `.agents/sow/pending/SOW-0006-20260523-node-sdk-and-journalctl.md`
+- Rationale: the Go writer, Go directory writer, Go reader, Go facade, Go journalctl, Go adapter, Rust SDK, Rust facade, Rust journalctl, and Rust adapter slices are complete; Node.js is next before Python unless the user changes priority.
 - Alternative: `.agents/sow/pending/SOW-0007-20260523-python-sdk-and-journalctl.md` only if the user explicitly wants to prioritize Python before Node.js after Rust.
 
 ## Guardrails
@@ -62,4 +63,4 @@ Bootstrap mode: empty/new project.
 - 2026-05-23 Go completion progress: Minimax and Qwen implementation attempts did not finish cleanly; local repair completed a pre-review Go reader/journalctl/adapter slice with Go tests passing and verification/FSS intentionally still out of scope for this slice.
 - 2026-05-23 Go completion closed: SOW-0010 completed the Go reader, libsystemd-style facade, file-backed journalctl command, and Go conformance adapter with repeated external production-grade reviews and final validation passing.
 - 2026-05-23 Rust activation update: SOW-0004 is active after the SOW-0010 commit `2d349ad`; implementation is delegated under the shared conformance and live compatibility gates.
-- 2026-05-23 Rust progress: local repair produced a Rust SDK/facade/journalctl/adapter slice with Rust workspace tests passing, 11 supported adapter cases passing and 4 explicit SKIPs, full `no-rtc` fixture JSON drain passing, repeated same-field OR and `+` disjunction checks passing, and both direct-file and directory Rust writer live compatibility passing stock polling, stock follow, stock libsystemd, and verify. Round-4 review found and the implementation repaired an uncapped `journal-core` decompression path; round-5 Mimo and GLM full-scope reviews returned `PRODUCTION GRADE` with no intermediate-commit blocker. SOW-0004 remains active for docs/spec decisions and remaining close-time gaps before completion.
+- 2026-05-23 Rust closed: SOW-0004 completed the Rust SDK, libsystemd-style facade, file-backed journalctl command, Rust conformance adapter, current Rust writer/reader feature-slice docs, and Rust product-scope updates. Final validation passed with Rust workspace tests, real adapter execution at 13 PASS / 2 SKIP, full `no-rtc` fixture JSON drain, 6,516-row repeated same-field OR and `+` disjunction checks matching the JSON oracle, stock-reader live writer compatibility, `git diff --check`, and SOW audit. Mimo and GLM closeout reviews returned `PRODUCTION GRADE`.

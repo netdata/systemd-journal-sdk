@@ -169,6 +169,49 @@ Current Go reader limitations:
 - full journal verification and FSS validation are not implemented;
 - daemon-only journalctl operations remain unsupported.
 
+Current Rust writer feature slice:
+
+- regular, non-compact journal files;
+- uncompressed DATA objects;
+- keyed hash tables using the journal file ID;
+- byte-safe field values through `&[u8]` field payloads;
+- direct-file writing through `journal_core`;
+- high-level directory writing with systemd-compatible active/archive naming;
+- entry-count and file-size rotation;
+- archived file-count and byte-size retention, without deleting the active file
+  to satisfy retention limits;
+- live one-writer/multiple-reader compatibility with stock `journalctl --file`
+  and stock libsystemd readers for the current writer slice.
+
+Current Rust reader feature slice:
+
+- regular, non-compact journal files;
+- files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
+- whole-file zstd fixtures and zstd, lz4, and xz-compressed DATA objects through
+  pure-Rust dependencies;
+- directory iteration across active and archived files;
+- forward/backward iteration, cursors, realtime and monotonic timestamps, binary
+  field values, field enumeration, and systemd-compatible export/json/text
+  formatting;
+- libsystemd-style match tree behavior from `SdJournalAddMatch()`,
+  `SdJournalAddDisjunction()`, and `SdJournalAddConjunction()`;
+- file-backed Rust journalctl behavior for `--file`, `--directory`, text/json/export
+  output, field listing, boot listing, repeated same-field OR matches, and `+`
+  disjunction;
+- Rust conformance adapter support for reader, matching, importer, compression,
+  cursor, enumeration, stream, export, header parsing, and file-backed
+  journalctl cases.
+
+Current Rust reader limitations:
+
+- compact journal files are not part of the accepted feature slice;
+- directory iteration is sequential by journal file and validated for
+  non-overlapping active/archive files; realtime interleaving across overlapping
+  multi-file directories is tracked under the interoperability phase;
+- boot listing uses file-level boot metadata in this slice;
+- full journal verification and FSS validation are not implemented;
+- daemon-only journalctl operations remain unsupported.
+
 ## journalctl Target
 
 Implement journalctl rewrites in Rust, Go, Node.js, and Python for file-backed/query behavior.

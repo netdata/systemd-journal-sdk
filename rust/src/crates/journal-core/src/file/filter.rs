@@ -155,17 +155,17 @@ pub enum LogicalOp {
 
 #[derive(Debug)]
 pub struct JournalFilter {
-    filter_expr: Option<FilterExpr>,
+    level0: Vec<FilterExpr>,
+    level1: Vec<FilterExpr>,
     current_matches: Vec<Vec<u8>>,
-    current_op: LogicalOp,
 }
 
 impl Default for JournalFilter {
     fn default() -> Self {
         Self {
-            filter_expr: None,
+            level0: Vec::new(),
+            level1: Vec::new(),
             current_matches: Vec::new(),
-            current_op: LogicalOp::Conjunction,
         }
     }
 }
@@ -261,52 +261,44 @@ impl JournalFilter {
         }
     }
 
+    fn commit_current<M: MemoryMap>(&mut self, journal_file: &JournalFile<M>) -> Result<()> {
+        if let Some(expr) = self.convert_current_matches(journal_file)? {
+            self.level1.push(expr);
+        }
+        Ok(())
+    }
+
+    fn commit_level1(&mut self) {
+        match self.level1.len() {
+            0 => {}
+            1 => self.level0.push(self.level1.remove(0)),
+            _ => self
+                .level0
+                .push(FilterExpr::Disjunction(std::mem::take(&mut self.level1))),
+        }
+    }
+
     pub fn set_operation<M: MemoryMap>(
         &mut self,
         journal_file: &JournalFile<M>,
         op: LogicalOp,
     ) -> Result<()> {
-        let new_expr = self.convert_current_matches(journal_file)?;
-        if new_expr.is_none() {
-            self.current_op = op;
-            return Ok(());
+        self.commit_current(journal_file)?;
+        if op == LogicalOp::Conjunction {
+            self.commit_level1();
         }
-
-        if self.filter_expr.is_none() {
-            self.filter_expr = new_expr;
-            self.current_op = op;
-            return Ok(());
-        }
-
-        let new_expr = new_expr.unwrap();
-        let current_expr = self.filter_expr.take().unwrap();
-
-        self.filter_expr = Some(match (current_expr, self.current_op) {
-            (FilterExpr::Disjunction(mut exprs), LogicalOp::Disjunction) => {
-                exprs.push(new_expr);
-                FilterExpr::Disjunction(exprs)
-            }
-            (FilterExpr::Conjunction(mut exprs), LogicalOp::Conjunction) => {
-                exprs.push(new_expr);
-                FilterExpr::Conjunction(exprs)
-            }
-            (current_expr, LogicalOp::Disjunction) => {
-                FilterExpr::Disjunction(vec![current_expr, new_expr])
-            }
-            (current_expr, LogicalOp::Conjunction) => {
-                FilterExpr::Conjunction(vec![current_expr, new_expr])
-            }
-        });
-
-        self.current_op = op;
         Ok(())
     }
 
     pub fn build<M: MemoryMap>(&mut self, journal_file: &JournalFile<M>) -> Result<FilterExpr> {
-        self.set_operation(journal_file, self.current_op)?;
+        self.commit_current(journal_file)?;
+        self.commit_level1();
 
         self.current_matches.clear();
-        self.current_op = LogicalOp::Conjunction;
-        self.filter_expr.take().ok_or(JournalError::MalformedFilter)
+        match self.level0.len() {
+            0 => Err(JournalError::MalformedFilter),
+            1 => Ok(self.level0.remove(0)),
+            _ => Ok(FilterExpr::Conjunction(std::mem::take(&mut self.level0))),
+        }
     }
 }

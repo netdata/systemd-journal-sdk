@@ -134,6 +134,11 @@ pub struct BootInfo {
 
 #[derive(Debug, Clone)]
 pub struct FileHeader {
+    pub signature: [u8; 8],
+    pub compatible_flags: u32,
+    pub incompatible_flags: u32,
+    pub state: u8,
+    pub header_size: u64,
     pub head_entry_realtime: u64,
     pub tail_entry_realtime: u64,
     pub head_entry_seqnum: u64,
@@ -204,6 +209,11 @@ impl FileReader {
         self.inner.with_file(|file| {
             let header = file.journal_header_ref();
             FileHeader {
+                signature: header.signature,
+                compatible_flags: header.compatible_flags,
+                incompatible_flags: header.incompatible_flags,
+                state: header.state,
+                header_size: header.header_size,
                 head_entry_realtime: header.head_entry_realtime,
                 tail_entry_realtime: header.tail_entry_realtime,
                 head_entry_seqnum: header.head_entry_seqnum,

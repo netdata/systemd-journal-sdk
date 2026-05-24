@@ -1,8 +1,10 @@
 use anyhow::{Result as AnyResult, anyhow};
 use journal::{
-    OutputMode, SdJournalEnumerateFields, SdJournalGetCursor, SdJournalGetEntry,
-    SdJournalListBoots, SdJournalNext, SdJournalOpen, SdJournalProcessOutput, SdJournalSeekHead,
-    SdJournalSetOutputMode, SdJournalTestCursor, parse_match_string,
+    Config, EntryTimestamps, FileReader, Log, Origin, OutputMode, RetentionPolicy, RotationPolicy,
+    SdJournalAddConjunction, SdJournalAddDisjunction, SdJournalAddMatch, SdJournalEnumerateFields,
+    SdJournalGetCursor, SdJournalGetEntry, SdJournalListBoots, SdJournalNext, SdJournalOpen,
+    SdJournalProcessOutput, SdJournalSeekHead, SdJournalSetOutputMode, SdJournalTestCursor, Source,
+    parse_match_string,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -225,12 +227,7 @@ fn run_test(tc: &TestCase) -> AdapterResult {
         "journal-file-parse-uid-from-filename" => test_uid(tc, start),
         "journal-importer-basic-parsing" | "journal-importer-eof" => test_importer(tc, start),
         "journal-match-invalid-input" => test_invalid_match(tc, start),
-        "journal-match-boolean-logic" => AdapterResult::skip(
-            &tc.test_name,
-            &tc.expected.result_format,
-            "generated complex match fixture not implemented in Rust adapter yet",
-            start,
-        ),
+        "journal-match-boolean-logic" => test_complex_match(tc, start),
         "journal-stream-directory-iteration" | "journal-zstd-compressed-read" => {
             test_read_entries(tc, start)
         }
@@ -243,12 +240,7 @@ fn run_test(tc: &TestCase) -> AdapterResult {
             start,
         ),
         "journal-corruption-append-resilient" => test_corruption(tc, start),
-        "journal-file-header-parse" => AdapterResult::skip(
-            &tc.test_name,
-            &tc.expected.result_format,
-            "file-header adapter assertions are not implemented in the Rust adapter slice",
-            start,
-        ),
+        "journal-file-header-parse" => test_file_header(tc, start),
         "journal-list-boots" => test_list_boots(tc, start),
         "journal-export-format" => test_export(tc, start),
         _ => AdapterResult::skip(
@@ -300,6 +292,52 @@ fn test_uid(tc: &TestCase, start: Instant) -> AdapterResult {
         json!(true),
         start,
     )
+}
+
+fn test_file_header(tc: &TestCase, start: Instant) -> AdapterResult {
+    let Some(path) = fixture_path(tc, "journal_file") else {
+        return AdapterResult::error(
+            &tc.test_name,
+            &tc.expected.result_format,
+            "missing fixture",
+            start,
+        );
+    };
+
+    match FileReader::open(path) {
+        Ok(reader) => {
+            let header = reader.header();
+            let actual = vec![json!({
+                "signature": String::from_utf8_lossy(&header.signature).into_owned(),
+                "state": header.state,
+                "compatible_flags": header.compatible_flags,
+                "incompatible_flags": header.incompatible_flags,
+                "header_size": header.header_size,
+            })];
+            if !fields_present_in_values(&actual, tc) || !json_entries_match(&actual, tc) {
+                return AdapterResult::fail(
+                    &tc.test_name,
+                    &tc.expected.result_format,
+                    json!(actual),
+                    "journal header does not match manifest expectations",
+                    start,
+                );
+            }
+            AdapterResult::pass(
+                &tc.test_name,
+                &tc.expected.result_format,
+                json!(actual),
+                start,
+            )
+        }
+        Err(err) => AdapterResult::fail(
+            &tc.test_name,
+            &tc.expected.result_format,
+            serde_json::Value::Null,
+            err.to_string(),
+            start,
+        ),
+    }
 }
 
 fn parse_uid_from_journal_filename(name: &str) -> (u32, bool, &'static str) {
@@ -388,6 +426,214 @@ fn test_invalid_match(tc: &TestCase, start: Instant) -> AdapterResult {
             start,
         )
     }
+}
+
+fn test_complex_match(tc: &TestCase, start: Instant) -> AdapterResult {
+    let tmp = match tempfile::tempdir() {
+        Ok(tmp) => tmp,
+        Err(err) => {
+            return AdapterResult::fail(
+                &tc.test_name,
+                &tc.expected.result_format,
+                serde_json::Value::Null,
+                err.to_string(),
+                start,
+            );
+        }
+    };
+
+    let origin = Origin {
+        machine_id: None,
+        namespace: None,
+        source: Source::System,
+    };
+    let config = Config::new(
+        origin,
+        RotationPolicy::default(),
+        RetentionPolicy::default(),
+    );
+    let mut log = match Log::new(tmp.path(), config) {
+        Ok(log) => log,
+        Err(err) => {
+            return AdapterResult::fail(
+                &tc.test_name,
+                &tc.expected.result_format,
+                serde_json::Value::Null,
+                err.to_string(),
+                start,
+            );
+        }
+    };
+
+    let entries: Vec<Vec<Vec<u8>>> = vec![
+        vec![b"L3=ok".to_vec(), b"TWO=two".to_vec(), b"ONE=one".to_vec()],
+        vec![
+            b"L4_1=yes".to_vec(),
+            b"L4_2=ok".to_vec(),
+            b"PIFF=paff".to_vec(),
+            b"QUUX=xxxxx".to_vec(),
+            b"HALLO=WALDO".to_vec(),
+            b"B=C\0D".to_vec(),
+            b"A=\x01\x02".to_vec(),
+        ],
+        vec![b"L3=ok".to_vec()],
+        vec![b"TWO=two".to_vec(), b"ONE=one".to_vec()],
+    ];
+
+    const REALTIME_BASE: u64 = 1_700_010_000_000_000;
+    for (index, entry) in entries.iter().enumerate() {
+        let fields: Vec<&[u8]> = entry.iter().map(Vec::as_slice).collect();
+        if let Err(err) = log.write_entry_with_timestamps(
+            &fields,
+            EntryTimestamps {
+                entry_realtime_usec: Some(REALTIME_BASE + index as u64),
+                entry_monotonic_usec: Some(index as u64 + 1),
+                source_realtime_usec: None,
+            },
+        ) {
+            return AdapterResult::fail(
+                &tc.test_name,
+                &tc.expected.result_format,
+                serde_json::Value::Null,
+                err.to_string(),
+                start,
+            );
+        }
+    }
+    if let Err(err) = log.sync() {
+        return AdapterResult::fail(
+            &tc.test_name,
+            &tc.expected.result_format,
+            serde_json::Value::Null,
+            err.to_string(),
+            start,
+        );
+    }
+    let Some(active_path) = log.active_file().map(|file| file.path().to_string()) else {
+        return AdapterResult::fail(
+            &tc.test_name,
+            &tc.expected.result_format,
+            serde_json::Value::Null,
+            "writer did not expose an active file",
+            start,
+        );
+    };
+    drop(log);
+
+    let mut journal = match SdJournalOpen(&active_path, 0) {
+        Ok(journal) => journal,
+        Err(err) => {
+            return AdapterResult::fail(
+                &tc.test_name,
+                &tc.expected.result_format,
+                serde_json::Value::Null,
+                err.to_string(),
+                start,
+            );
+        }
+    };
+    if let Err(err) = add_systemd_complex_match_expression(&mut journal) {
+        return AdapterResult::fail(
+            &tc.test_name,
+            &tc.expected.result_format,
+            serde_json::Value::Null,
+            err,
+            start,
+        );
+    }
+
+    let mut matched = Vec::new();
+    loop {
+        match SdJournalNext(&mut journal) {
+            Ok(0) => break,
+            Ok(_) => match SdJournalGetEntry(&mut journal) {
+                Ok(entry) => {
+                    let fields = entry
+                        .fields
+                        .into_iter()
+                        .map(|(key, value)| (key, String::from_utf8_lossy(&value).into_owned()))
+                        .collect::<HashMap<_, _>>();
+                    matched.push(fields);
+                }
+                Err(err) => {
+                    return AdapterResult::fail(
+                        &tc.test_name,
+                        &tc.expected.result_format,
+                        json!(matched),
+                        err.to_string(),
+                        start,
+                    );
+                }
+            },
+            Err(err) => {
+                return AdapterResult::fail(
+                    &tc.test_name,
+                    &tc.expected.result_format,
+                    json!(matched),
+                    err.to_string(),
+                    start,
+                );
+            }
+        }
+    }
+
+    if matched.len() != 2
+        || !matched.iter().any(|entry| {
+            entry.get("L3").is_some_and(|value| value == "ok")
+                && entry.get("TWO").is_some_and(|value| value == "two")
+                && entry.get("ONE").is_some_and(|value| value == "one")
+        })
+        || !matched.iter().any(|entry| {
+            entry.get("L4_1").is_some_and(|value| value == "yes")
+                && entry.get("L4_2").is_some_and(|value| value == "ok")
+                && entry.get("PIFF").is_some_and(|value| value == "paff")
+                && entry.get("QUUX").is_some_and(|value| value == "xxxxx")
+                && entry.get("HALLO").is_some_and(|value| value == "WALDO")
+        })
+    {
+        return AdapterResult::fail(
+            &tc.test_name,
+            &tc.expected.result_format,
+            json!(matched),
+            format!(
+                "matched {} entries, want the two systemd complex-match entries",
+                matched.len()
+            ),
+            start,
+        );
+    }
+
+    AdapterResult::pass(
+        &tc.test_name,
+        &tc.expected.result_format,
+        json!(matched),
+        start,
+    )
+}
+
+fn add_systemd_complex_match_expression(journal: &mut journal::SdJournal) -> Result<(), String> {
+    SdJournalAddMatch(journal, b"A=\x01\x02").map_err(|err| err.to_string())?;
+    SdJournalAddMatch(journal, b"B=C\0D").map_err(|err| err.to_string())?;
+    SdJournalAddMatch(journal, b"HALLO=WALDO").map_err(|err| err.to_string())?;
+    SdJournalAddMatch(journal, b"QUUX=mmmm").map_err(|err| err.to_string())?;
+    SdJournalAddMatch(journal, b"QUUX=xxxxx").map_err(|err| err.to_string())?;
+    SdJournalAddMatch(journal, b"HALLO=").map_err(|err| err.to_string())?;
+    SdJournalAddMatch(journal, b"QUUX=xxxxx").map_err(|err| err.to_string())?;
+    SdJournalAddMatch(journal, b"QUUX=yyyyy").map_err(|err| err.to_string())?;
+    SdJournalAddMatch(journal, b"PIFF=paff").map_err(|err| err.to_string())?;
+    SdJournalAddDisjunction(journal).map_err(|err| err.to_string())?;
+    SdJournalAddMatch(journal, b"ONE=one").map_err(|err| err.to_string())?;
+    SdJournalAddMatch(journal, b"ONE=two").map_err(|err| err.to_string())?;
+    SdJournalAddMatch(journal, b"TWO=two").map_err(|err| err.to_string())?;
+    SdJournalAddConjunction(journal).map_err(|err| err.to_string())?;
+    SdJournalAddMatch(journal, b"L4_1=yes").map_err(|err| err.to_string())?;
+    SdJournalAddMatch(journal, b"L4_1=ok").map_err(|err| err.to_string())?;
+    SdJournalAddMatch(journal, b"L4_2=yes").map_err(|err| err.to_string())?;
+    SdJournalAddMatch(journal, b"L4_2=ok").map_err(|err| err.to_string())?;
+    SdJournalAddDisjunction(journal).map_err(|err| err.to_string())?;
+    SdJournalAddMatch(journal, b"L3=yes").map_err(|err| err.to_string())?;
+    SdJournalAddMatch(journal, b"L3=ok").map_err(|err| err.to_string())?;
+    Ok(())
 }
 
 fn test_read_entries(tc: &TestCase, start: Instant) -> AdapterResult {
@@ -709,6 +955,28 @@ fn fields_present_in_values(values: &[serde_json::Value], tc: &TestCase) -> bool
                 .is_some_and(|object| object.contains_key(field))
         })
     })
+}
+
+fn json_entries_match(values: &[serde_json::Value], tc: &TestCase) -> bool {
+    let Some(serde_json::Value::Array(expected)) = &tc.expected.entries_match else {
+        return true;
+    };
+    for expected_entry in expected {
+        let Some(expected_object) = expected_entry.as_object() else {
+            continue;
+        };
+        let matched = values.iter().any(|value| {
+            value.as_object().is_some_and(|actual_object| {
+                expected_object
+                    .iter()
+                    .all(|(key, expected_value)| actual_object.get(key) == Some(expected_value))
+            })
+        });
+        if !matched {
+            return false;
+        }
+    }
+    true
 }
 
 fn boot_indices_match(actual: &[serde_json::Value], tc: &TestCase) -> bool {
