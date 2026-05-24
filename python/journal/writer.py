@@ -4,6 +4,7 @@
 import os
 import struct
 import fcntl
+import lzma
 from .lock import WriterLock
 from .binary import (
     read_uint64_le, write_uint64_le, write_uint32_le, write_uint8,
@@ -16,6 +17,7 @@ from .header import (
     OBJECT_TYPE_ENTRY_ARRAY, OBJECT_TYPE_FIELD,
     STATE_OFFLINE, STATE_ONLINE, STATE_ARCHIVED,
     INCOMPATIBLE_KEYED_HASH, INCOMPATIBLE_COMPRESSED_ZSTD,
+    INCOMPATIBLE_COMPRESSED_XZ, INCOMPATIBLE_COMPRESSED_LZ4,
     COMPATIBLE_TAIL_ENTRY_BOOT_ID,
     OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE, DATA_OBJECT_HEADER_SIZE,
     FIELD_OBJECT_HEADER_SIZE, HASH_ITEM_SIZE, OFFSET_ARRAY_OBJECT_HEADER_SIZE,
@@ -24,10 +26,12 @@ from .header import (
     INITIAL_ENTRY_ARRAY_CAP, INITIAL_DATA_ENTRY_ARRAY_CAP,
 )
 from .hash import sip_hash_24, jenkins_hash_64
-from .compress import decompress_zst_sync
+from .compress import decompress_zst_sync, decompress_xz_sync, decompress_lz4_sync
 
 COMPRESSION_NONE = 0
 COMPRESSION_ZSTD = 1
+COMPRESSION_XZ = 2
+COMPRESSION_LZ4 = 3
 DEFAULT_COMPRESS_THRESHOLD = 64
 
 
@@ -58,6 +62,10 @@ class Writer:
             w._compression = _normalize_compression(opts.get('compression', COMPRESSION_NONE))
             if w._compression == COMPRESSION_ZSTD:
                 _ensure_zstd_available()
+            elif w._compression == COMPRESSION_XZ:
+                _ensure_xz_available()
+            elif w._compression == COMPRESSION_LZ4:
+                _ensure_lz4_available()
             w._compress_threshold = opts.get('compression_threshold_bytes', DEFAULT_COMPRESS_THRESHOLD)
             w._initialize(opts)
             return w
@@ -83,16 +91,27 @@ class Writer:
 
             header = parse_file_header(header_buf)
             flags = header['incompatible_flags']
-            supported_writer_incompatible = INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_ZSTD
+            supported_writer_incompatible = (
+                INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_ZSTD |
+                INCOMPATIBLE_COMPRESSED_XZ | INCOMPATIBLE_COMPRESSED_LZ4
+            )
             if flags & ~supported_writer_incompatible:
                 raise ValueError(f'unsupported journal: incompatible flags 0x{flags:x}')
             if not (flags & INCOMPATIBLE_KEYED_HASH):
                 raise ValueError('unsupported journal: keyed hash required')
             if header['data_hash_table_offset'] == 0 or header['field_hash_table_offset'] == 0 or header['tail_object_offset'] == 0:
                 raise ValueError('invalid journal: missing hash tables')
-            compression = COMPRESSION_ZSTD if (flags & INCOMPATIBLE_COMPRESSED_ZSTD) else COMPRESSION_NONE
-            if compression == COMPRESSION_ZSTD:
+            if flags & INCOMPATIBLE_COMPRESSED_XZ:
+                compression = COMPRESSION_XZ
+                _ensure_xz_available()
+            elif flags & INCOMPATIBLE_COMPRESSED_LZ4:
+                compression = COMPRESSION_LZ4
+                _ensure_lz4_available()
+            elif flags & INCOMPATIBLE_COMPRESSED_ZSTD:
+                compression = COMPRESSION_ZSTD
                 _ensure_zstd_available()
+            else:
+                compression = COMPRESSION_NONE
         except Exception:
             os.close(fd)
             lock.release()
@@ -144,6 +163,10 @@ class Writer:
         inc_flags = INCOMPATIBLE_KEYED_HASH
         if self._compression == COMPRESSION_ZSTD:
             inc_flags |= INCOMPATIBLE_COMPRESSED_ZSTD
+        elif self._compression == COMPRESSION_XZ:
+            inc_flags |= INCOMPATIBLE_COMPRESSED_XZ
+        elif self._compression == COMPRESSION_LZ4:
+            inc_flags |= INCOMPATIBLE_COMPRESSED_LZ4
 
         self._header = {
             'signature': 'LPKSHHRH',
@@ -299,6 +322,22 @@ class Writer:
                     compression_flag = OBJECT_COMPRESSED_ZSTD
             except Exception:
                 pass
+        elif self._compression == COMPRESSION_XZ and len(payload) >= self._compress_threshold and len(payload) >= 80:
+            try:
+                compressed = _xz_compress(payload)
+                if len(compressed) < len(payload):
+                    object_payload = compressed
+                    compression_flag = OBJECT_COMPRESSED_XZ
+            except Exception:
+                pass
+        elif self._compression == COMPRESSION_LZ4 and len(payload) >= self._compress_threshold and len(payload) >= 9:
+            try:
+                compressed = _lz4_compress(payload)
+                if len(compressed) < len(payload):
+                    object_payload = compressed
+                    compression_flag = OBJECT_COMPRESSED_LZ4
+            except Exception:
+                pass
 
         size = DATA_OBJECT_HEADER_SIZE + len(object_payload)
         aligned_size = align8(size)
@@ -409,8 +448,10 @@ class Writer:
         flags = obj_header['flags']
         if flags & OBJECT_COMPRESSED_ZSTD:
             return decompress_zst_sync(buf)
-        if flags & (OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4):
-            raise ValueError(f'unsupported DATA object compression flags: 0x{flags:x}')
+        if flags & OBJECT_COMPRESSED_XZ:
+            return decompress_xz_sync(buf)
+        if flags & OBJECT_COMPRESSED_LZ4:
+            return decompress_lz4_sync(buf)
         return buf
 
     def _read_field_payload(self, offset):
@@ -732,6 +773,10 @@ def _normalize_compression(value):
         return COMPRESSION_NONE
     if value == COMPRESSION_ZSTD or value == 'zstd':
         return COMPRESSION_ZSTD
+    if value == COMPRESSION_XZ or value == 'xz':
+        return COMPRESSION_XZ
+    if value == COMPRESSION_LZ4 or value == 'lz4':
+        return COMPRESSION_LZ4
     raise ValueError(f'unsupported compression: {value}')
 
 
@@ -740,5 +785,29 @@ def _zstd_compress(payload):
     return compression.zstd.compress(payload)
 
 
+def _xz_compress(payload):
+    return lzma.compress(
+        payload,
+        format=lzma.FORMAT_XZ,
+        check=lzma.CHECK_NONE,
+        filters=[{'id': lzma.FILTER_LZMA2, 'preset': 0}],
+    )
+
+
+def _lz4_compress(payload):
+    import lz4.block
+    compressed = lz4.block.compress(payload, store_size=False)
+    size_prefix = struct.pack('<Q', len(payload))
+    return size_prefix + compressed
+
+
 def _ensure_zstd_available():
     import compression.zstd
+
+
+def _ensure_xz_available():
+    import lzma
+
+
+def _ensure_lz4_available():
+    import lz4.block

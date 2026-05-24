@@ -27,6 +27,8 @@ from journal import (  # noqa: E402
 from journal.entry import parse_data_object  # noqa: E402
 from journal.header import (  # noqa: E402
     DATA_OBJECT_HEADER_SIZE,
+    OBJECT_COMPRESSED_LZ4,
+    OBJECT_COMPRESSED_XZ,
     OBJECT_COMPRESSED_ZSTD,
     OBJECT_TYPE_DATA,
     write_object_header,
@@ -158,6 +160,22 @@ def test_zstd_data_object_parse():
     assert parsed == {'name': b'MESSAGE', 'value': b'zstd-data-object'}
 
 
+def test_xz_and_lz4_data_object_parse():
+    from journal.writer import _lz4_compress, _xz_compress
+
+    payload = b'MESSAGE=' + (b'xz-lz4-data-object' * 8)
+    for flag, compressed in (
+        (OBJECT_COMPRESSED_XZ, _xz_compress(payload)),
+        (OBJECT_COMPRESSED_LZ4, _lz4_compress(payload)),
+    ):
+        size = DATA_OBJECT_HEADER_SIZE + len(compressed)
+        buf = bytearray(size)
+        write_object_header(buf, 0, OBJECT_TYPE_DATA, flag, size)
+        buf[DATA_OBJECT_HEADER_SIZE:] = compressed
+        parsed = parse_data_object(buf, 0)
+        assert parsed == {'name': b'MESSAGE', 'value': payload.split(b'=', 1)[1]}
+
+
 def test_directory_writer_rotation():
     with tempfile.TemporaryDirectory() as td:
         log = Log(td, {
@@ -235,6 +253,7 @@ def main():
     test_writer_reader_and_binary_export()
     test_writer_exclusive_lock()
     test_zstd_data_object_parse()
+    test_xz_and_lz4_data_object_parse()
     test_directory_writer_rotation()
     test_facade_unique_binary_values()
     test_conformance_manifest()

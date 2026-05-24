@@ -14,6 +14,7 @@ function parseArgs(argv) {
     crashAfter: 0,
     binaryFixture: false,
     zstdFixture: false,
+    lz4Fixture: false,
     compression: 'none',
     compressionThresholdBytes: 64,
   };
@@ -48,6 +49,9 @@ function parseArgs(argv) {
         break;
       case '--zstd-fixture':
         args.zstdFixture = true;
+        break;
+      case '--lz4-fixture':
+        args.lz4Fixture = true;
         break;
       case '--compression':
         args.compression = next();
@@ -138,6 +142,19 @@ async function main() {
         fields = [
           { name: 'TEST_ID', value: 'zstd-interoperability' },
           { name: 'MESSAGE', value: 'zstd interoperability' },
+          { name: 'PRIORITY', value: '6' },
+          { name: 'LIVE_SEQ', value: '000000' },
+          { name: 'COMPRESSED_PAYLOAD', value: largePayload },
+          { name: 'COMPRESSED_MATCH', value: largePayload.subarray(0, 32) },
+        ];
+      } else if (args.lz4Fixture && i === 0) {
+        const largePayload = Buffer.alloc(256);
+        for (let j = 0; j < 256; j++) {
+          largePayload[j] = (j % 26) + 0x41;
+        }
+        fields = [
+          { name: 'TEST_ID', value: 'lz4-interoperability' },
+          { name: 'MESSAGE', value: 'lz4 interoperability' },
           { name: 'PRIORITY', value: '6' },
           { name: 'LIVE_SEQ', value: '000000' },
           { name: 'COMPRESSED_PAYLOAD', value: largePayload },

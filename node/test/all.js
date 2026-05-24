@@ -16,11 +16,13 @@ import {
   DATA_OBJECT_HEADER_SIZE,
   INCOMPATIBLE_COMPRESSED_XZ,
   INCOMPATIBLE_KEYED_HASH,
+  OBJECT_COMPRESSED_LZ4,
   OBJECT_COMPRESSED_XZ,
   OBJECT_TYPE_DATA,
   STATE_ARCHIVED,
   writeObjectHeader,
 } from '../src/lib/header.js';
+import { compressLz4DataPayload } from '../src/lib/lz4-block.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, '..');
@@ -176,6 +178,18 @@ for (const [length, expected] of sipVectors) {
   writeObjectHeader(buf, 0, OBJECT_TYPE_DATA, OBJECT_COMPRESSED_XZ, BigInt(DATA_OBJECT_HEADER_SIZE + 3));
   Buffer.from('A=x').copy(buf, DATA_OBJECT_HEADER_SIZE);
   assert.throws(() => parseDataObject(buf, 0), /unsupported DATA object compression flags/);
+}
+
+{
+  const payload = Buffer.from(`MESSAGE=${'lz4-data-object'.repeat(16)}`);
+  const compressed = compressLz4DataPayload(payload);
+  assert.ok(compressed);
+  const buf = Buffer.alloc(DATA_OBJECT_HEADER_SIZE + compressed.length);
+  writeObjectHeader(buf, 0, OBJECT_TYPE_DATA, OBJECT_COMPRESSED_LZ4, BigInt(DATA_OBJECT_HEADER_SIZE + compressed.length));
+  compressed.copy(buf, DATA_OBJECT_HEADER_SIZE);
+  const parsed = parseDataObject(buf, 0);
+  assert.deepEqual(parsed.name, Buffer.from('MESSAGE'));
+  assert.deepEqual(parsed.value, Buffer.from('lz4-data-object'.repeat(16)));
 }
 
 {

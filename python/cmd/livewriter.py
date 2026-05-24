@@ -20,7 +20,9 @@ def parse_args(argv):
     parser.add_argument('--crash-after', type=parse_non_negative_int, default=0)
     parser.add_argument('--binary-fixture', action='store_true')
     parser.add_argument('--zstd-fixture', action='store_true')
-    parser.add_argument('--compression', default='none', choices=['none', 'zstd'])
+    parser.add_argument('--xz-fixture', action='store_true')
+    parser.add_argument('--lz4-fixture', action='store_true')
+    parser.add_argument('--compression', default='none', choices=['none', 'zstd', 'xz', 'lz4'])
     parser.add_argument(
         '--compression-threshold-bytes',
         '--compress-threshold',
@@ -91,6 +93,26 @@ def main():
                 fields = [
                     {'name': 'TEST_ID', 'value': b'zstd-interoperability'},
                     {'name': 'MESSAGE', 'value': b'zstd interoperability'},
+                    {'name': 'PRIORITY', 'value': b'6'},
+                    {'name': 'LIVE_SEQ', 'value': b'000000'},
+                    {'name': 'COMPRESSED_PAYLOAD', 'value': large_payload},
+                    {'name': 'COMPRESSED_MATCH', 'value': large_payload[:32]},
+                ]
+            elif args.xz_fixture and seq == 0:
+                large_payload = bytes([(i % 26) + 0x41 for i in range(256)])
+                fields = [
+                    {'name': 'TEST_ID', 'value': b'xz-interoperability'},
+                    {'name': 'MESSAGE', 'value': b'xz interoperability'},
+                    {'name': 'PRIORITY', 'value': b'6'},
+                    {'name': 'LIVE_SEQ', 'value': b'000000'},
+                    {'name': 'COMPRESSED_PAYLOAD', 'value': large_payload},
+                    {'name': 'COMPRESSED_MATCH', 'value': large_payload[:32]},
+                ]
+            elif args.lz4_fixture and seq == 0:
+                large_payload = bytes([(i % 26) + 0x41 for i in range(256)])
+                fields = [
+                    {'name': 'TEST_ID', 'value': b'lz4-interoperability'},
+                    {'name': 'MESSAGE', 'value': b'lz4 interoperability'},
                     {'name': 'PRIORITY', 'value': b'6'},
                     {'name': 'LIVE_SEQ', 'value': b'000000'},
                     {'name': 'COMPRESSED_PAYLOAD', 'value': large_payload},

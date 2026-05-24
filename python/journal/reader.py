@@ -11,7 +11,7 @@ from .header import (
     OBJECT_TYPE_DATA, OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE,
     DATA_OBJECT_HEADER_SIZE, OFFSET_ARRAY_OBJECT_HEADER_SIZE,
     REGULAR_ENTRY_ITEM_SIZE, INCOMPATIBLE_KEYED_HASH, INCOMPATIBLE_COMPACT,
-    INCOMPATIBLE_COMPRESSED_ZSTD,
+    INCOMPATIBLE_COMPRESSED_ZSTD, INCOMPATIBLE_COMPRESSED_XZ, INCOMPATIBLE_COMPRESSED_LZ4,
 )
 from .compress import decompress_zst_to_temp, is_zst_file
 from .entry import parse_entry_object, parse_data_object
@@ -52,7 +52,10 @@ class FileReader:
             if not (header['incompatible_flags'] & INCOMPATIBLE_KEYED_HASH):
                 raise ValueError('unsupported journal: keyed hash required')
 
-            supported = INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_ZSTD
+            supported = (
+                INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_ZSTD |
+                INCOMPATIBLE_COMPRESSED_XZ | INCOMPATIBLE_COMPRESSED_LZ4
+            )
             if header['incompatible_flags'] & ~supported:
                 raise ValueError(f'unsupported journal: incompatible flags 0x{header["incompatible_flags"]:x}')
 

@@ -16,6 +16,7 @@
   "engines": {
     "node": ">=22.0.0"
   },
-  "dependencies": {},
-  "devDependencies": {}
+  "dependencies": {
+    "lz4js": "0.2.0"
+  }
 }

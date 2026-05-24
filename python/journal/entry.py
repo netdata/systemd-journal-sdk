@@ -7,7 +7,7 @@ from .header import (
     OBJECT_COMPRESSED_ZSTD, OBJECT_COMPRESSED_XZ, OBJECT_COMPRESSED_LZ4,
     REGULAR_ENTRY_ITEM_SIZE,
 )
-from .compress import _HAS_ZSTD, decompress_zst_sync
+from .compress import _HAS_ZSTD, decompress_zst_sync, decompress_xz_sync, decompress_lz4_sync
 
 
 def parse_entry_object(buf, offset):
@@ -62,9 +62,11 @@ def parse_data_object(buf, offset):
     unsupported = obj_flags & ~(OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4 | OBJECT_COMPRESSED_ZSTD)
     if unsupported != 0:
         raise ValueError(f'unsupported DATA object flags: 0x{obj_flags:x}')
-    if obj_flags & (OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4):
-        raise ValueError(f'unsupported DATA object compression flags: 0x{obj_flags:x}')
-    if obj_flags & OBJECT_COMPRESSED_ZSTD:
+    if obj_flags & OBJECT_COMPRESSED_XZ:
+        payload = decompress_xz_sync(payload)
+    elif obj_flags & OBJECT_COMPRESSED_LZ4:
+        payload = decompress_lz4_sync(payload)
+    elif obj_flags & OBJECT_COMPRESSED_ZSTD:
         if not _HAS_ZSTD:
             raise RuntimeError('zstd decompression not available')
         payload = _decompress_zstd(payload)

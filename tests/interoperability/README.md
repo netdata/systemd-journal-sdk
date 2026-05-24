@@ -190,11 +190,17 @@ Useful options:
 ```bash
 python3 tests/interoperability/run_compression_matrix.py --writers go python
 python3 tests/interoperability/run_compression_matrix.py --readers stock rust python
-python3 tests/interoperability/run_compression_matrix.py --writers go rust --readers stock go rust --compression xz lz4
+python3 tests/interoperability/run_compression_matrix.py --writers go rust python --readers stock go rust python --compression xz
+python3 tests/interoperability/run_compression_matrix.py --writers go rust node python --readers stock go rust node python --compression lz4
 ```
 
 By default the runner exercises zstd across all writers/readers. Use
 `--compression xz lz4` with writers/readers that support those algorithms.
+Current support is:
+
+- zstd: Go, Rust, Node.js, and Python writers/readers;
+- xz: Go, Rust, and Python writers/readers; Node.js xz remains unsupported;
+- lz4: Go, Rust, Node.js, and Python writers/readers.
 
 Each writer fixture enables DATA compression with a low threshold and
 includes:
@@ -247,7 +253,7 @@ completion unless `--keep-files` is passed.
 |-----|--------|----------|-----------|
 | Deterministic uncompressed byte identity | Complete for accepted corpus | `run_byte_identity.py` compares systemd, Rust, Go, Node.js, and Python byte-for-byte | Closed in SOW-0016 |
 | zstd compressed DATA object writing | Complete | `run_compression_matrix.py` validates zstd header/object flags plus stock/repository reads | Closed in SOW-0008 |
-| xz/lz4 writer parity | Partial | Rust and Go write and read xz/lz4 DATA objects; Node.js and Python still reject xz/lz4 DATA objects | Tracked by SOW-0017 |
+| xz/lz4 writer parity | Partial | Rust, Go, and Python write/read xz; Rust, Go, Node.js, and Python write/read lz4; Node.js xz remains unsupported | Node.js xz tracked by SOW-0021 |
 | Compact journal format | Not implemented | Writers create regular non-compact journals | Tracked by SOW-0018 |
 | Forward Secure Sealing / verification | Not implemented | Verification/FSS tests skipped in earlier SOWs | Tracked by SOW-0019 |
 | Cross-language binary stress | Complete | `run_binary_matrix.py` passes 52/52 across all writer/reader pairs plus stock libsystemd | Closed |

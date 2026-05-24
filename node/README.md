@@ -9,6 +9,7 @@ no system journal library linkage.
 
 - Read `.journal`, `.journal~`, `.journal.zst`, `.journal~.zst` files
 - Zstd compression support via built-in `node:zlib`
+- LZ4 DATA object support via pure JavaScript `lz4js`
 - Forward/backward iteration, cursors, timestamps
 - Binary field values as `Buffer`
 - Field enumeration and unique value queries
@@ -20,7 +21,8 @@ no system journal library linkage.
 
 - Create regular, non-compact, keyed-hash journal files
 - Byte-safe field values via `Buffer`/`Uint8Array`
-- Optional zstd-compressed DATA object writing via `compression: 'zstd'`
+- Optional zstd and lz4-compressed DATA object writing via
+  `compression: 'zstd'` or `compression: 'lz4'`
 - Append entries with BigInt timestamps and sequence numbers
 - Directory writer with source-scoped systemd active/archive names, rotation, and retention
 - Pure cross-SDK cooperative lockfile with stale-owner detection to prevent multiple SDK writers from opening the same file
@@ -179,7 +181,7 @@ node cmd/journalctl/index.js --file ./sample.journal PRIORITY=3 PRIORITY=4 + MES
 ## Limitations
 
 - Compact journal format not supported
-- Xz/lz4 compressed DATA objects and xz/lz4 DATA writing not supported
+- XZ-compressed DATA objects and XZ DATA writing not supported
 - Forward Secure Sealing (FSS) not implemented
 - Full journal verification not implemented
 - `--follow` not supported (event-loop blocking concern)
@@ -187,11 +189,13 @@ node cmd/journalctl/index.js --file ./sample.journal PRIORITY=3 PRIORITY=4 + MES
 
 ## Dependencies
 
-No external npm packages. Uses only built-in Node.js modules:
+Uses built-in Node.js modules and one JavaScript compression dependency:
 
 - `node:fs` - File I/O
 - `node:zlib` - Zstd compression (Node.js v22+)
 - `node:util` - Argument parsing
+- `lz4js@0.2.0` - Raw LZ4 block compression used with the systemd journal
+  8-byte uncompressed-size prefix
 
 ## Conformance
 

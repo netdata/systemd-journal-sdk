@@ -1,6 +1,6 @@
 # Python Journal SDK
 
-Pure-Python systemd journal reader and writer SDK. No native journal bindings,
+Python systemd journal reader and writer SDK. No native journal bindings,
 no system journal library linkage.
 
 ## Current Features
@@ -9,6 +9,8 @@ no system journal library linkage.
 
 - Read `.journal`, `.journal~`, `.journal.zst`, `.journal~.zst` files
 - Zstd compression support via Python standard library `compression.zstd`
+- XZ DATA object support via Python standard library `lzma`
+- LZ4 DATA object support via `lz4` block compression
 - Forward/backward iteration, cursors, timestamps
 - Binary field values as `bytes`
 - Field enumeration and unique value queries
@@ -20,7 +22,8 @@ no system journal library linkage.
 
 - Create regular, non-compact, keyed-hash journal files
 - Byte-safe field values via `bytes`/`bytearray`/`memoryview`
-- Optional zstd-compressed DATA object writing via `compression: 'zstd'`
+- Optional zstd, xz, and lz4-compressed DATA object writing via
+  `compression: 'zstd'`, `compression: 'xz'`, or `compression: 'lz4'`
 - Append entries with integer timestamps and sequence numbers
 - Directory writer with source-scoped systemd active/archive names, rotation, and retention
 - Pure cross-SDK cooperative lockfile with stale-owner detection, plus a secondary advisory `flock`, to prevent multiple SDK writers from opening the same file
@@ -37,7 +40,8 @@ no system journal library linkage.
 
 ## Requirements
 
-Python 3.14+ (for `compression.zstd` standard library module).
+Python 3.14+ (for `compression.zstd` standard library module) and
+`lz4==4.4.5` for LZ4 DATA object compression/decompression.
 
 ## Basic Reader Usage
 
@@ -162,7 +166,6 @@ python3 cmd/journalctl.py --file ./sample.journal PRIORITY=3 PRIORITY=4 + MESSAG
 ## Limitations
 
 - Compact journal format not supported
-- Xz/lz4 compressed DATA objects and xz/lz4 DATA writing not supported
 - Forward Secure Sealing (FSS) not implemented
 - Full journal verification not implemented
 - `--follow` not supported (would block the process)
@@ -170,10 +173,12 @@ python3 cmd/journalctl.py --file ./sample.journal PRIORITY=3 PRIORITY=4 + MESSAG
 
 ## Dependencies
 
-No external packages. Uses only Python standard library:
+Uses Python standard library modules and one compression dependency:
 
 - `os`, `struct`, `tempfile`, `time`, `json` - Core I/O and utilities
 - `compression.zstd` - Zstd compression and decompression (Python 3.14+)
+- `lzma` - XZ compression and decompression
+- `lz4==4.4.5` - LZ4 block compression and decompression
 
 ## Conformance
 

@@ -40,7 +40,7 @@ Do not use this skill for:
 - Deterministic byte-identity validation must cover systemd final-state variants: online/plain close, offline close, and archived close.
 - Header readers must use the on-disk `header_size` when validating object and hash-table locations. Do not compare historical file offsets against the current in-memory v260 `JournalHeader` struct size, and do not expose bytes beyond the on-disk header as newer header fields.
 - Smoke tests are not sufficient evidence for production compatibility. SOW validation must record exact stock systemd version, commands/helpers, stress duration, entry counts, reader counts, and failure criteria.
-- Pure-language dependencies are allowed; CGO, native Node.js addons, and linking to system journal libraries are not allowed.
+- Common compression-library dependencies are allowed after dependency review. Journal parsing/writing must not depend on systemd/libjournal; CGO, native Node.js addons, and linking to system journal libraries remain disallowed unless the user explicitly changes those separate constraints.
 - Every external-agent prompt must include the canonical repository-boundary block verbatim from `AGENTS.md` or `.agents/skills/project-agent-orchestration/SKILL.md`.
 
 ## Best Practices
@@ -99,7 +99,7 @@ Before claiming production-grade compatibility:
 - Each targeted reader reads live files produced by each targeted writer.
 - Reader follow/tail behavior is compared with stock `journalctl` file-backed behavior.
 - Daemon-only journalctl commands are not implemented and have documented behavior.
-- Dependency audit confirms no CGO, native Node.js addon, or system journal library linkage.
+- Dependency audit confirms no CGO, native Node.js addon, or system journal library linkage unless a SOW records an explicit user policy change.
 
 ## Evidence
 

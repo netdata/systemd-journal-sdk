@@ -25,7 +25,7 @@ Do not use this skill for:
 ## Mandatory Knowledge
 
 - The project manager does not personally implement SDK feature code or perform the technical review for delegated implementation SOWs. Evidence: `AGENTS.md`.
-- Preferred implementer model is `llm-netdata-cloud/minimax-m2.7-coder`. Fallback implementer hierarchy is `llm-netdata-cloud/qwen3.6-plus`, then `llm-netdata-cloud/glm-5.1`, then another approved model only if the active SOW records why the first fallbacks were unavailable or unsuitable. Reviewer models are `llm-netdata-cloud/minimax-m2.7-coder`, `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/mimo-v2.5-pro`, `llm-netdata-cloud/qwen3.6-plus`, and `llm-netdata-cloud/glm-5.1`; use Minimax as reviewer when implementation work is done locally or by another model. Evidence: `AGENTS.md`.
+- Preferred implementer model is `llm-netdata-cloud/kimi-k2.6`. Fallback implementer hierarchy is `llm-netdata-cloud/qwen3.6-plus`, then `llm-netdata-cloud/glm-5.1`, then another approved model only if the active SOW records why the first fallbacks were unavailable or unsuitable. Reviewer models are `llm-netdata-cloud/minimax-m2.7-coder`, `llm-netdata-cloud/mimo-v2.5-pro`, `llm-netdata-cloud/qwen3.6-plus`, and `llm-netdata-cloud/glm-5.1`; Minimax is reviewer-only unless the user changes this routing. Evidence: `AGENTS.md`.
 - CRITICAL: Do not make changes outside this repository. This applies to all assistants and all delegated agents.
 - The only write exception outside the repository is `/tmp`; prefer `.local/` inside this repository for scratch files.
 - After each implementation chunk is implemented, reviewed, and verified, prefer committing that chunk before starting the next chunk. Stage explicit files only; never use `git add -A` or `git add .`.

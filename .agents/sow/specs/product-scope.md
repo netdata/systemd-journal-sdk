@@ -26,7 +26,8 @@ This project produces pure SDKs and file-backed journalctl-compatible tools for 
 - Python implementations must not use native journal bindings.
 - Each language must provide two API layers: an idiomatic SDK API and a libsystemd-compatible reader facade.
 - The libsystemd-compatible reader facade is required unless a SOW records concrete evidence that it would require native bindings, violate the pure-language policy, or create an unsafe/unrepresentable API in that language.
-- Pure-language dependencies are allowed after dependency review.
+- Common compression-library dependencies are allowed after dependency review.
+  Journal parsing/writing must not depend on systemd or libjournal libraries.
 - Cross-language interoperability is mandatory: every reader must read journal files produced by every writer.
 - The system must preserve systemd journal file concurrency expectations: one writer and multiple readers may operate on the same journal file according to journal rules.
 - Live concurrency compatibility is a MUST, not a follow-up optimization. No writer or reader implementation may be called production-compatible until this is confirmed with stock systemd tooling and the shared cross-language suite.
@@ -255,8 +256,9 @@ Current Node.js writer feature slice:
 
 - regular, non-compact journal files;
 - uncompressed DATA objects by default;
-- optional zstd-compressed DATA object writing with configurable compression
-  threshold through Node.js built-in `node:zlib`;
+- optional zstd and lz4-compressed DATA object writing with configurable
+  compression threshold through Node.js built-in `node:zlib` and pure
+  JavaScript `lz4js@0.2.0`;
 - keyed hash tables using the journal file ID;
 - byte-safe field values through `Buffer`, `Uint8Array`, and string-compatible
   field values;
@@ -276,6 +278,8 @@ Current Node.js reader feature slice:
 - regular, non-compact journal files;
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
 - whole-file zstd fixtures through Node.js built-in `node:zlib`;
+- zstd and lz4-compressed DATA objects through Node.js built-in `node:zlib`
+  and pure JavaScript `lz4js@0.2.0`;
 - directory iteration across active and archived files;
 - forward/backward iteration, cursors, realtime and monotonic timestamps, binary
   field values as `Buffer`, field enumeration, and unique value enumeration;
@@ -292,8 +296,10 @@ Current Node.js reader feature slice:
 Current Node.js reader/writer limitations:
 
 - compact journal files are rejected;
-- xz/lz4-compressed DATA objects are rejected;
-- xz/lz4-compressed DATA object writing is not implemented;
+- xz-compressed DATA objects are rejected;
+- xz-compressed DATA object writing is not implemented because the current
+  Node.js writer API is synchronous and the acceptable non-native XZ candidate
+  exposes async WASM compression;
 - directory iteration is sequential by journal file and validated for
   non-overlapping active/archive files; realtime interleaving across overlapping
   multi-file directories is tracked under the interoperability phase;
@@ -305,8 +311,9 @@ Current Python writer feature slice:
 
 - regular, non-compact journal files;
 - uncompressed DATA objects by default;
-- optional zstd-compressed DATA object writing with configurable compression
-  threshold through Python `compression.zstd`;
+- optional zstd, xz, and lz4-compressed DATA object writing with configurable
+  compression threshold through Python `compression.zstd`, standard-library
+  `lzma`, and `lz4==4.4.5`;
 - keyed hash tables using the journal file ID;
 - byte-safe field values through `bytes`, `bytearray`, `memoryview`, and
   string-compatible field values;
@@ -328,6 +335,8 @@ Current Python reader feature slice:
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
 - whole-file zstd fixtures and zstd-compressed DATA objects through Python
   `compression.zstd` where the optional standard-library module is available;
+- xz and lz4-compressed DATA objects through standard-library `lzma` and
+  `lz4==4.4.5`;
 - directory iteration across active and archived files, including one machine-id
   subdirectory level;
 - forward/backward iteration, cursors, realtime and monotonic timestamps, binary
@@ -345,8 +354,6 @@ Current Python reader feature slice:
 Current Python reader/writer limitations:
 
 - compact journal files are rejected;
-- xz/lz4-compressed DATA objects are rejected;
-- xz/lz4-compressed DATA object writing is not implemented;
 - directory iteration is sequential by journal file and validated for
   non-overlapping active/archive files; realtime interleaving across overlapping
   multi-file directories is tracked under the interoperability phase;

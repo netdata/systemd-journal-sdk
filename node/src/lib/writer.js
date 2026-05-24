@@ -12,7 +12,7 @@ import {
   OBJECT_TYPE_DATA_HASH_TABLE, OBJECT_TYPE_FIELD_HASH_TABLE,
   OBJECT_TYPE_ENTRY_ARRAY, OBJECT_TYPE_FIELD,
   STATE_OFFLINE, STATE_ONLINE, STATE_ARCHIVED,
-  INCOMPATIBLE_KEYED_HASH, INCOMPATIBLE_COMPRESSED_ZSTD,
+  INCOMPATIBLE_KEYED_HASH, INCOMPATIBLE_COMPRESSED_ZSTD, INCOMPATIBLE_COMPRESSED_LZ4,
   COMPATIBLE_TAIL_ENTRY_BOOT_ID,
   OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE, DATA_OBJECT_HEADER_SIZE,
   FIELD_OBJECT_HEADER_SIZE, HASH_ITEM_SIZE, OFFSET_ARRAY_OBJECT_HEADER_SIZE,
@@ -22,9 +22,11 @@ import {
   INITIAL_ENTRY_ARRAY_CAP, INITIAL_DATA_ENTRY_ARRAY_CAP,
 } from './header.js';
 import { sipHash24, jenkinsHash64 } from './hash.js';
+import { compressLz4DataPayload, decompressLz4DataPayload } from './lz4-block.js';
 
 export const COMPRESSION_NONE = 0;
 export const COMPRESSION_ZSTD = 1;
+export const COMPRESSION_LZ4 = 3;
 export const DEFAULT_COMPRESS_THRESHOLD = 64;
 
 export class Writer {
@@ -72,7 +74,7 @@ export class Writer {
       if (bytesRead < HEADER_SIZE) throw new Error('cannot read journal header');
 
       const header = parseFileHeader(headerBuf);
-      const supportedWriterIncompatible = INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_ZSTD;
+      const supportedWriterIncompatible = INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_ZSTD | INCOMPATIBLE_COMPRESSED_LZ4;
       if ((header.incompatible_flags & ~supportedWriterIncompatible) !== 0) {
         throw new Error('unsupported journal: incompatible flags');
       }
@@ -96,7 +98,9 @@ export class Writer {
       w.bootId = Buffer.from(header.tail_entry_boot_id);
       if (isZeroUUID(w.bootId)) w.bootId = Buffer.from(header.file_id);
       w.started = now - monotonicBase;
-      w.compression = (header.incompatible_flags & INCOMPATIBLE_COMPRESSED_ZSTD) !== 0 ? COMPRESSION_ZSTD : COMPRESSION_NONE;
+      w.compression = (header.incompatible_flags & INCOMPATIBLE_COMPRESSED_LZ4) !== 0
+        ? COMPRESSION_LZ4
+        : ((header.incompatible_flags & INCOMPATIBLE_COMPRESSED_ZSTD) !== 0 ? COMPRESSION_ZSTD : COMPRESSION_NONE);
       w.compressThreshold = DEFAULT_COMPRESS_THRESHOLD;
 
       w.header.state = STATE_ONLINE;
@@ -131,6 +135,8 @@ export class Writer {
     let incFlags = INCOMPATIBLE_KEYED_HASH;
     if (this.compression === COMPRESSION_ZSTD) {
       incFlags |= INCOMPATIBLE_COMPRESSED_ZSTD;
+    } else if (this.compression === COMPRESSION_LZ4) {
+      incFlags |= INCOMPATIBLE_COMPRESSED_LZ4;
     }
 
     this.header = {
@@ -307,6 +313,16 @@ export class Writer {
       } catch (_) {
         // compression failed, use uncompressed
       }
+    } else if (this.compression === COMPRESSION_LZ4 && payload.length >= this.compressThreshold && payload.length >= 9) {
+      try {
+        const compressed = compressLz4DataPayload(payload);
+        if (compressed && compressed.length < payload.length) {
+          objectPayload = compressed;
+          compressionFlag = OBJECT_COMPRESSED_LZ4;
+        }
+      } catch (_) {
+        // compression failed, use uncompressed
+      }
     }
 
     const size = BigInt(DATA_OBJECT_HEADER_SIZE + objectPayload.length);
@@ -422,7 +438,10 @@ export class Writer {
     if ((objHeader.flags & OBJECT_COMPRESSED_ZSTD) !== 0) {
       return zstdDecompressSync(buf);
     }
-    if ((objHeader.flags & (OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4)) !== 0) {
+    if ((objHeader.flags & OBJECT_COMPRESSED_LZ4) !== 0) {
+      return decompressLz4DataPayload(buf);
+    }
+    if ((objHeader.flags & OBJECT_COMPRESSED_XZ) !== 0) {
       throw new Error(`unsupported DATA object compression flags: 0x${objHeader.flags.toString(16)}`);
     }
     return buf;
@@ -739,6 +758,9 @@ function normalizeCompression(value) {
   }
   if (value === COMPRESSION_ZSTD || value === 'zstd') {
     return COMPRESSION_ZSTD;
+  }
+  if (value === COMPRESSION_LZ4 || value === 'lz4') {
+    return COMPRESSION_LZ4;
   }
   throw new Error(`unsupported compression: ${value}`);
 }
