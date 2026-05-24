@@ -2,7 +2,7 @@
 
 ## Current
 
-- `SOW-0008-20260523-interoperability-and-full-writer-features.md` - in-progress. Cross-language interoperability and remaining writer feature gaps are active.
+- `SOW-0008-20260523-interoperability-and-full-writer-features.md` - in-progress. Cross-language interoperability is active; zstd writing and SDK writer-lock parity slices have passed local validation.
 
 ## Pending
 

@@ -111,6 +111,27 @@ for (const [length, expected] of sipVectors) {
 }
 
 {
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const journalPath = join(tempDir, 'writer-lock.journal');
+    const writer = Writer.create(journalPath);
+    try {
+      writer.append([{ name: 'MESSAGE', value: 'held' }]);
+      assert.ok(existsSync(`${journalPath}.lock`));
+      assert.throws(() => Writer.open(journalPath), /journal writer lock held/);
+      assert.throws(() => Writer.create(journalPath), /journal writer lock held/);
+    } finally {
+      writer.close();
+    }
+    assert.equal(existsSync(`${journalPath}.lock`), false);
+    const reopened = Writer.open(journalPath);
+    reopened.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
   const value = Buffer.from('cafe\u0301', 'utf8');
   const entry = {
     fields: { MESSAGE: value },

@@ -1,11 +1,11 @@
 // Journal file writer. Creates regular, non-compact, keyed-hash journal files.
 // Compatible with stock journalctl readers during live append.
-// No native locking (Node.js has no flock); uses file descriptor sync.
 
 import { openSync, writeSync, readSync, closeSync, ftruncateSync, fsyncSync, renameSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import { readUint64LE, writeUint64LE, writeUint32LE, writeUint8, align8, randomUUID, isZeroUUID, bufEqual } from './binary.js';
+import { WriterLock } from './lock.js';
 import {
   serializeFileHeader, parseFileHeader, parseObjectHeader, writeObjectHeader,
   HEADER_SIZE, OBJECT_TYPE_DATA, OBJECT_TYPE_ENTRY,
@@ -26,9 +26,10 @@ export const COMPRESSION_ZSTD = 1;
 export const DEFAULT_COMPRESS_THRESHOLD = 64;
 
 export class Writer {
-  constructor(fd, path) {
+  constructor(fd, path, lock) {
     this.fd = fd;
     this.path = path;
+    this.lock = lock;
     this.header = null;
     this.appendOffset = 0n;
     this.nextSeqnum = 1n;
@@ -41,53 +42,69 @@ export class Writer {
 
   // Create or truncate a journal file.
   static create(path, opts = {}) {
-    const fd = openSync(path, 'w+');
-    ftruncateSync(fd, 0);
-    const w = new Writer(fd, path);
-    w.compression = normalizeCompression(opts.compression);
-    w.compressThreshold = opts.compressionThresholdBytes ?? DEFAULT_COMPRESS_THRESHOLD;
-    w._initialize(opts);
-    return w;
+    const lock = WriterLock.acquire(path);
+    let fd;
+    try {
+      fd = openSync(path, 'w+');
+      ftruncateSync(fd, 0);
+      const w = new Writer(fd, path, lock);
+      w.compression = normalizeCompression(opts.compression);
+      w.compressThreshold = opts.compressionThresholdBytes ?? DEFAULT_COMPRESS_THRESHOLD;
+      w._initialize(opts);
+      return w;
+    } catch (error) {
+      if (fd !== undefined) closeSync(fd);
+      lock.release();
+      throw error;
+    }
   }
 
   // Open an existing journal file for appending.
   static open(path) {
-    const fd = openSync(path, 'r+');
-    const headerBuf = Buffer.alloc(HEADER_SIZE);
-    const bytesRead = readSync(fd, headerBuf, 0, HEADER_SIZE, 0);
-    if (bytesRead < HEADER_SIZE) { closeSync(fd); throw new Error('cannot read journal header'); }
+    const lock = WriterLock.acquire(path);
+    let fd;
+    try {
+      fd = openSync(path, 'r+');
+      const headerBuf = Buffer.alloc(HEADER_SIZE);
+      const bytesRead = readSync(fd, headerBuf, 0, HEADER_SIZE, 0);
+      if (bytesRead < HEADER_SIZE) throw new Error('cannot read journal header');
 
-    const header = parseFileHeader(headerBuf);
-    const supportedWriterIncompatible = INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_ZSTD;
-    if ((header.incompatible_flags & ~supportedWriterIncompatible) !== 0) {
-      closeSync(fd); throw new Error('unsupported journal: incompatible flags');
+      const header = parseFileHeader(headerBuf);
+      const supportedWriterIncompatible = INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_ZSTD;
+      if ((header.incompatible_flags & ~supportedWriterIncompatible) !== 0) {
+        throw new Error('unsupported journal: incompatible flags');
+      }
+      if ((header.incompatible_flags & INCOMPATIBLE_KEYED_HASH) === 0) {
+        throw new Error('unsupported journal: keyed hash required');
+      }
+      if (header.data_hash_table_offset === 0n || header.field_hash_table_offset === 0n || header.tail_object_offset === 0n) {
+        throw new Error('invalid journal: missing hash tables');
+      }
+
+      const tailSize = readObjectSizeFromFd(fd, header.tail_object_offset);
+      const now = Date.now();
+      const monotonicBase = header.tail_entry_monotonic > 0n
+        ? Number(header.tail_entry_monotonic / 1000n)
+        : 0;
+
+      const w = new Writer(fd, path, lock);
+      w.header = header;
+      w.appendOffset = align8(header.tail_object_offset + tailSize);
+      w.nextSeqnum = header.tail_entry_seqnum + 1n;
+      w.bootId = Buffer.from(header.tail_entry_boot_id);
+      if (isZeroUUID(w.bootId)) w.bootId = Buffer.from(header.file_id);
+      w.started = now - monotonicBase;
+      w.compression = (header.incompatible_flags & INCOMPATIBLE_COMPRESSED_ZSTD) !== 0 ? COMPRESSION_ZSTD : COMPRESSION_NONE;
+      w.compressThreshold = DEFAULT_COMPRESS_THRESHOLD;
+
+      w.header.state = STATE_ONLINE;
+      w._writeHeader();
+      return w;
+    } catch (error) {
+      if (fd !== undefined) closeSync(fd);
+      lock.release();
+      throw error;
     }
-    if ((header.incompatible_flags & INCOMPATIBLE_KEYED_HASH) === 0) {
-      closeSync(fd); throw new Error('unsupported journal: keyed hash required');
-    }
-    if (header.data_hash_table_offset === 0n || header.field_hash_table_offset === 0n || header.tail_object_offset === 0n) {
-      closeSync(fd); throw new Error('invalid journal: missing hash tables');
-    }
-
-    const tailSize = readObjectSizeFromFd(fd, header.tail_object_offset);
-    const now = Date.now();
-    const monotonicBase = header.tail_entry_monotonic > 0n
-      ? Number(header.tail_entry_monotonic / 1000n)
-      : 0;
-
-    const w = new Writer(fd, path);
-    w.header = header;
-    w.appendOffset = align8(header.tail_object_offset + tailSize);
-    w.nextSeqnum = header.tail_entry_seqnum + 1n;
-    w.bootId = Buffer.from(header.tail_entry_boot_id);
-    if (isZeroUUID(w.bootId)) w.bootId = Buffer.from(header.file_id);
-    w.started = now - monotonicBase;
-    w.compression = (header.incompatible_flags & INCOMPATIBLE_COMPRESSED_ZSTD) !== 0 ? COMPRESSION_ZSTD : COMPRESSION_NONE;
-    w.compressThreshold = DEFAULT_COMPRESS_THRESHOLD;
-
-    w.header.state = STATE_ONLINE;
-    w._writeHeader();
-    return w;
   }
 
   _initialize(opts) {
@@ -569,6 +586,12 @@ export class Writer {
     } catch (error) {
       if (!closeError) closeError = error;
     }
+    try {
+      this.lock.release();
+    } catch (error) {
+      if (!closeError) closeError = error;
+    }
+    this.lock = null;
     this.closed = true;
     if (closeError) throw closeError;
   }
@@ -592,6 +615,12 @@ export class Writer {
       } catch (error) {
         if (!closeError) closeError = error;
       }
+      try {
+        this.lock.release();
+      } catch (error) {
+        if (!closeError) closeError = error;
+      }
+      this.lock = null;
       this.closed = true;
       if (closeError) throw closeError;
     } catch (error) {

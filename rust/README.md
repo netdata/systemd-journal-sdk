@@ -17,6 +17,10 @@ Current writer scope:
 - systemd-compatible active/archive file naming;
 - entry-count and file-size rotation;
 - archived file-count and byte-size retention;
+- pure cross-SDK cooperative lockfile with stale-owner detection to prevent
+  multiple SDK writers from opening the same file;
+- native systemd writers do not participate in the SDK lock protocol and remain
+  an operational exclusion;
 - live stock-reader validation for the current writer slice with `journalctl
   --file`, `journalctl --file --follow --no-tail --boot=all`, and libsystemd
   reader APIs, including live sequence-order checks.

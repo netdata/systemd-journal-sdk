@@ -23,6 +23,8 @@ no system journal library linkage.
 - Optional zstd-compressed DATA object writing via `compression: 'zstd'`
 - Append entries with integer timestamps and sequence numbers
 - Directory writer with source-scoped systemd active/archive names, rotation, and retention
+- Pure cross-SDK cooperative lockfile with stale-owner detection, plus a secondary advisory `flock`, to prevent multiple SDK writers from opening the same file
+- Native systemd writers do not participate in the SDK lock protocol and remain an operational exclusion
 
 ### journalctl
 

@@ -135,6 +135,9 @@ Current Go writer feature slice:
 - high-level directory writing with systemd-compatible active/archive naming;
 - rotation by entry count and active file size;
 - retention by archived file count and total byte size, scoped to the configured source/prefix and never deleting the active file;
+- pure cross-SDK cooperative lockfile with stale-owner detection, plus a
+  secondary POSIX `flock`, to protect the one-writer contract among
+  cooperating SDK writers;
 - live one-writer/multiple-reader compatibility with stock `journalctl --file` and stock libsystemd readers for the current writer slice.
 
 ## Reader Target
@@ -187,6 +190,8 @@ Current Rust writer feature slice:
 - entry-count and file-size rotation;
 - archived file-count and byte-size retention, without deleting the active file
   to satisfy retention limits;
+- pure cross-SDK cooperative lockfile with stale-owner detection to protect the
+  one-writer contract among cooperating SDK writers;
 - live one-writer/multiple-reader compatibility with stock `journalctl --file`
   and stock libsystemd readers for the current writer slice.
 
@@ -235,6 +240,8 @@ Current Node.js writer feature slice:
 - entry-count and file-size rotation;
 - archived file-count and byte-size retention, without deleting the active file
   to satisfy retention limits;
+- pure cross-SDK cooperative lockfile with stale-owner detection to protect the
+  one-writer contract among cooperating SDK writers;
 - live one-writer/multiple-reader compatibility with stock `journalctl --file`
   and stock libsystemd readers for the current writer slice.
 
@@ -283,8 +290,9 @@ Current Python writer feature slice:
 - entry-count and file-size rotation;
 - archived file-count and byte-size retention, without deleting the active file
   to satisfy retention limits;
-- exclusive non-blocking writer file locks to protect the one-writer contract
-  among cooperating repository writers;
+- pure cross-SDK cooperative lockfile with stale-owner detection, plus a
+  secondary POSIX `flock`, to protect the one-writer contract among
+  cooperating SDK writers;
 - live one-writer/multiple-reader compatibility with stock `journalctl --file`
   and stock libsystemd readers for the current writer slice.
 

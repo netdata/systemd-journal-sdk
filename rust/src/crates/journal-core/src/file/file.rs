@@ -5,6 +5,7 @@ use crate::collections::HashMap;
 use crate::error::{JournalError, Result};
 use crate::file::guarded_cell::GuardedCell;
 use crate::file::hash;
+use crate::file::lock::WriterLock;
 use crate::file::object::*;
 use crate::file::offset_array;
 use std::fs::{File, OpenOptions};
@@ -292,6 +293,7 @@ impl BucketUtilization {
 pub struct JournalFile<M: MemoryMap> {
     // The validated File this journal represents
     file: crate::repository::File,
+    writer_lock: Option<WriterLock>,
 
     // Persistent memory maps for journal header and data/field hash tables
     header_map: M,
@@ -385,6 +387,7 @@ impl<M: MemoryMap> JournalFile<M> {
 
         Ok(JournalFile {
             file: file.clone(),
+            writer_lock: None,
             header_map,
             data_hash_table_map,
             field_hash_table_map,
@@ -796,6 +799,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
     }
 
     pub fn create(file: &crate::repository::File, options: JournalFileOptions) -> Result<Self> {
+        let writer_lock = WriterLock::acquire(file.path())?;
         let fd = OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -873,6 +877,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
 
         let mut jf = JournalFile {
             file: file.clone(),
+            writer_lock: Some(writer_lock),
             header_map,
             data_hash_table_map,
             field_hash_table_map,
@@ -913,6 +918,13 @@ impl<M: MemoryMapMut> JournalFile<M> {
         jf.sync()?;
 
         Ok(jf)
+    }
+
+    pub fn release_writer_lock(&mut self) -> Result<()> {
+        if let Some(mut writer_lock) = self.writer_lock.take() {
+            writer_lock.release()?;
+        }
+        Ok(())
     }
 
     pub fn journal_header_mut(&mut self) -> &mut JournalHeader {
@@ -1290,6 +1302,27 @@ mod tests {
 
     fn test_uuid(seed: u8) -> uuid::Uuid {
         uuid::Uuid::from_bytes([seed; 16])
+    }
+
+    #[test]
+    fn writer_lock_rejects_same_process_create() {
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+        let options = JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3));
+
+        let _journal_file: JournalFile<crate::file::MmapMut> =
+            JournalFile::create(&repo_file, options.clone()).expect("create journal");
+        match JournalFile::<crate::file::MmapMut>::create(&repo_file, options) {
+            Ok(_) => panic!("second JournalFile::create succeeded while writer lock is held"),
+            Err(JournalError::Io(err)) => {
+                assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock);
+            }
+            Err(err) => panic!("second JournalFile::create returned unexpected error: {err}"),
+        }
     }
 
     #[test]

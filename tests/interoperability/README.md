@@ -200,5 +200,5 @@ completion unless `--keep-files` is passed.
 | Compact journal format | Not implemented | Writers create regular non-compact journals | Requires systemd reference inventory |
 | Forward Secure Sealing / verification | Not implemented | Verification/FSS tests skipped in earlier SOWs | Split dedicated FSS SOW |
 | Cross-language binary stress | Complete | `run_binary_matrix.py` passes 52/52 across all writer/reader pairs plus stock libsystemd | Closed |
-| Writer locking parity | Partial | Go and Python use fcntl; Node.js has no native flock; Rust writer lock was removed from scope | Track whether Node/Rust need advisory lock behavior |
+| Writer locking parity | Complete | `run_lock_matrix.py` passes 8/8; all SDK writer pairs reject concurrent writers and stale locks left by crashed writers are cleaned | Closed |
 | Directory reader subdirectory traversal | Partial | Live matrix validates discovered files; full `--directory` traversal parity remains separate | Address in SDK follow-up work |

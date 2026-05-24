@@ -68,6 +68,7 @@ func StringField(name, value string) Field {
 type Writer struct {
 	file              *os.File
 	path              string
+	lock              *writerLock
 	header            journalHeader
 	appendOffset      uint64
 	nextSeqnum        uint64
@@ -82,25 +83,33 @@ type Writer struct {
 func Create(path string, opts Options) (*Writer, error) {
 	opts = normalizeOptions(opts)
 
+	lock, err := acquireWriterLock(path)
+	if err != nil {
+		return nil, err
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o640)
 	if err != nil {
+		_ = lock.release()
 		return nil, err
 	}
 	if err := lockFile(f); err != nil {
 		_ = f.Close()
+		_ = lock.release()
 		return nil, err
 	}
 	if err := f.Truncate(0); err != nil {
 		_ = unlockAndClose(f)
+		_ = lock.release()
 		return nil, err
 	}
 
 	w := &Writer{
-		file: f, path: path, bootID: opts.BootID, started: time.Now(),
+		file: f, path: path, lock: lock, bootID: opts.BootID, started: time.Now(),
 		compression: opts.Compression, compressThreshold: opts.CompressThresholdBytes,
 	}
 	if err := w.initialize(opts); err != nil {
 		_ = unlockAndClose(f)
+		_ = lock.release()
 		return nil, err
 	}
 	return w, nil
@@ -108,38 +117,49 @@ func Create(path string, opts Options) (*Writer, error) {
 
 // Open opens a journal file created by this package for appending.
 func Open(path string) (*Writer, error) {
+	lock, err := acquireWriterLock(path)
+	if err != nil {
+		return nil, err
+	}
 	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
+		_ = lock.release()
 		return nil, err
 	}
 	if err := lockFile(f); err != nil {
 		_ = f.Close()
+		_ = lock.release()
 		return nil, err
 	}
 
 	buf := make([]byte, headerSize)
 	if _, err := f.ReadAt(buf, 0); err != nil {
 		_ = unlockAndClose(f)
+		_ = lock.release()
 		return nil, err
 	}
 	header, err := parseHeader(buf)
 	if err != nil {
 		_ = unlockAndClose(f)
+		_ = lock.release()
 		return nil, err
 	}
 	const supportedWriterIncompatible = incompatibleKeyedHash | incompatibleCompressedZSTD
 	if header.incompatibleFlags&^supportedWriterIncompatible != 0 {
 		_ = unlockAndClose(f)
+		_ = lock.release()
 		return nil, errUnsupportedJournal
 	}
 	if header.dataHashTableOffset == 0 || header.fieldHashTableOffset == 0 || header.tailObjectOffset == 0 {
 		_ = unlockAndClose(f)
+		_ = lock.release()
 		return nil, errInvalidJournal
 	}
 
 	tail, err := readObjectHeaderAt(f, header.tailObjectOffset)
 	if err != nil {
 		_ = unlockAndClose(f)
+		_ = lock.release()
 		return nil, err
 	}
 
@@ -152,6 +172,7 @@ func Open(path string) (*Writer, error) {
 	w := &Writer{
 		file:              f,
 		path:              path,
+		lock:              lock,
 		header:            header,
 		appendOffset:      align8(header.tailObjectOffset + tail.size),
 		nextSeqnum:        header.tailEntrySeqnum + 1,
@@ -165,6 +186,7 @@ func Open(path string) (*Writer, error) {
 	}
 	if err := w.writeHeader(); err != nil {
 		_ = unlockAndClose(f)
+		_ = lock.release()
 		return nil, err
 	}
 	return w, nil
@@ -287,8 +309,10 @@ func (w *Writer) Close() error {
 	err2 := w.file.Sync()
 	err3 := syscall.Flock(int(w.file.Fd()), syscall.LOCK_UN)
 	err4 := w.file.Close()
+	err5 := w.lock.release()
+	w.lock = nil
 	w.closed = true
-	return errors.Join(err1, err2, err3, err4)
+	return errors.Join(err1, err2, err3, err4, err5)
 }
 
 // CurrentSize returns the current committed journal file size in bytes.
@@ -317,8 +341,10 @@ func (w *Writer) archiveTo(path string) error {
 	dirErr := syncJournalDirectory(path)
 	unlockErr := syscall.Flock(int(w.file.Fd()), syscall.LOCK_UN)
 	closeErr := w.file.Close()
+	lockErr := w.lock.release()
+	w.lock = nil
 	w.closed = true
-	if err := errors.Join(dirErr, unlockErr, closeErr); err != nil {
+	if err := errors.Join(dirErr, unlockErr, closeErr, lockErr); err != nil {
 		return err
 	}
 	return nil

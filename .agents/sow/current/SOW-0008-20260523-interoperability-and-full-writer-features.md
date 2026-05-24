@@ -139,7 +139,8 @@ Artifact impact plan:
 
 Open decisions:
 
-- No immediate user decision blocks activation. The implementation may split compression-writing, compact journal, verification, and FSS work into narrower follow-up SOWs if evidence shows they are not safe to complete together with the interoperability matrix.
+- Writer locking contract resolved on 2026-05-24: implement a pure cross-SDK cooperative lockfile with stale-owner detection. Native systemd writers do not appear to participate in a journal-file lock protocol, so the SDK lock prevents accidental multiple SDK writers but cannot mechanically block a native systemd writer that bypasses the SDK.
+- The implementation may split compression-writing, compact journal, verification, and FSS work into narrower follow-up SOWs if evidence shows they are not safe to complete together with the interoperability matrix.
 
 ## Implications And Decisions
 
@@ -148,6 +149,14 @@ Open decisions:
    - Required before implementation: record the completed baseline feature matrix and decide from evidence whether any remaining compression or Forward Secure Sealing work needs narrower follow-up SOWs.
    - Implication: this SOW closes cross-language file compatibility after all baseline SDKs exist.
    - Risk: starting before all language baselines pass can hide whether failures come from core format handling, individual SDK bugs, or interoperability assumptions.
+
+2. Cross-SDK writer locking contract
+   - Evidence: systemd `JournalFile` has no lock-owner field and `journal_file_open()` / `journal_file_append_entry()` do not enforce a per-file advisory lock at the journal-file layer in `systemd/systemd @ cf3156842209f8318753861a9dd2d821674f3f59`.
+   - Decision: implement option A from the 2026-05-24 discussion: a pure cross-SDK cooperative lockfile with stale-owner detection for Rust, Go, Node.js, and Python writers.
+   - Scope: the lock protects cooperating SDK writers from accidentally opening the same journal file for writing concurrently.
+   - Limitation: native systemd writers can bypass this lock because they do not participate in the SDK lock protocol.
+   - Implication: stock systemd readers remain part of live compatibility validation; stock systemd writer mutual exclusion remains an operational contract, not an enforceable SDK guarantee.
+   - Risk: stale lock handling must be robust enough for process crashes and PID reuse; tests must cover cross-language rejection before any writer truncates or appends.
 
 ## Plan
 
@@ -293,7 +302,7 @@ Known limits of this first slice:
 | Forward Secure Sealing / full verification | Not implemented | Verification/FSS tests are skipped or out of scope in earlier SOWs | Split a dedicated FSS SOW unless a safe narrow implementation emerges |
 | Live cross-language matrix | Complete in later slice | `run_live_matrix.py` passes 4/4 with active observations for all writers and readers | Closed in this SOW |
 | Cross-language binary stress | Complete in later slice | `run_binary_matrix.py` passes 52/52 across all writers/readers plus stock libsystemd | Closed in this SOW |
-| Writer locking parity | Partial | Go and Python use `fcntl` locks; Node.js has no native flock; Rust writer lock claim was removed from product scope after code search found no writer lock | Track whether Node/Rust need pure-language advisory lock behavior |
+| Writer locking parity | Complete in later slice | `run_lock_matrix.py` passes 8/8; all SDK writers share a pure lockfile contract and clean stale crashed-writer locks | Closed in this SOW |
 | Directory ordering guarantees | Partial | Current directory readers iterate sequentially by file metadata and are validated for non-overlapping active/archive files | Continue under SOW-0008 matrix expansion |
 
 ### Validation Results
@@ -418,7 +427,7 @@ Key implementation decisions:
 | Forward Secure Sealing / verification | Not implemented | Verification/FSS tests skipped in earlier SOWs | Split dedicated FSS SOW |
 | Live cross-language file matrix | Complete | `run_live_matrix.py` passes 4/4; active observations confirmed for all writers and all five readers | Closed |
 | Cross-language binary stress | Complete | `run_binary_matrix.py` passes 52/52 across all writers/readers plus stock libsystemd | Closed |
-| Writer locking parity | Partial | Go and Python use fcntl; Node.js has no native flock; Rust writer lock removed from scope | Track whether Node/Rust need advisory lock |
+| Writer locking parity | Complete | `run_lock_matrix.py` passes 8/8; all SDK writer pairs reject concurrent writers and stale locks left by crashed writers are cleaned | Closed |
 | Directory reader subdirectory traversal | Partial | Live matrix validates discovered files; full `--directory` traversal parity remains separate | SDK follow-up work |
 
 ### Binary Field Interoperability Matrix Third Slice
@@ -726,5 +735,117 @@ Same-scope post-cleanup review rerun:
 Known limits remaining after this slice:
 
 - xz/lz4 DATA writing, compact journal format, Forward Secure Sealing/full
-  verification, writer locking parity, and full directory traversal parity
-  remain open in SOW-0008 or need concrete follow-up mapping before close.
+  verification, and full directory traversal parity remain open in SOW-0008 or
+  need concrete follow-up mapping before close.
+
+### Writer Locking Parity Fifth Slice
+
+Implemented the user-selected option A from the 2026-05-24 lock discussion:
+a pure cross-SDK cooperative lockfile with stale-owner detection.
+
+Implementation coverage:
+
+- Go: `go/journal/lock.go` plus writer integration before open/truncate; the
+  existing POSIX `flock` remains as a secondary local guard.
+- Rust: `journal-core` writer lock integrated into `JournalFile::create()`,
+  released on drop, and released before directory-writer rotation creates the
+  next active file.
+- Node.js: `node/src/lib/lock.js` plus writer integration before `w+` open, so
+  Node.js no longer truncates before contention is detected.
+- Python: `python/journal/lock.py` plus writer integration before open/truncate;
+  the existing POSIX `flock` remains as a secondary local guard.
+
+Lock contract:
+
+- Lock file path is `<journal-file>.lock`.
+- Metadata records lock format version, PID, Linux boot ID, and process start
+  time from `/proc/<pid>/stat`.
+- Acquisition uses atomic create-new semantics.
+- A held lock is considered stale when the PID is gone, the boot ID differs,
+  or the PID start time differs, which protects against normal process crash
+  and PID reuse cases.
+- Malformed or partially created lock files younger than the grace window are
+  treated as active; older malformed lock files are cleaned.
+- Native systemd writers do not participate in this SDK lock protocol and can
+  bypass it. The lock protects cooperating SDK writers only.
+
+Implemented shared lock matrix:
+
+- `tests/interoperability/run_lock_matrix.py`
+- `tests/interoperability/README.md`
+
+Lock matrix coverage:
+
+- 4 holders: Go, Rust, Node.js, Python.
+- 4 contenders per holder: Go, Rust, Node.js, Python.
+- Every contender must fail before publishing its ready file while the holder
+  is active.
+- Clean holder close must remove the lock file.
+- Stock `journalctl --verify --file` must pass after each contention run.
+- Stale-lock recovery is validated for crashed writers:
+  Go -> Rust, Rust -> Node.js, Node.js -> Python, and Python -> Go.
+
+Validation results before external review:
+
+- Passed: `go test ./journal ./internal/testcmd/livewriter` from `go/`.
+- Passed: `python3 python/test_all.py`.
+- Passed: `node --test node/test/all.js`.
+- Passed: `cargo test --manifest-path rust/Cargo.toml -p journal-core -p journal-log-writer -p journal`.
+- Passed: `python3 tests/interoperability/run_lock_matrix.py --entries 200 --delay-ms 20`
+  with 8/8 checks on systemd `260 (260.1-2-manjaro)`.
+- Passed: `python3 tests/interoperability/run_live_matrix.py --entries 10 --poll-readers 1`
+  with 4/4 writers passing.
+- Passed: `python3 tests/interoperability/run_binary_matrix.py` with 52/52
+  checks.
+- Passed: `python3 tests/interoperability/run_compression_matrix.py` with 72/72
+  checks.
+- Passed: `python3 tests/interoperability/run_matrix.py --entries 10` with
+  104/104 checks.
+
+Generated result files:
+
+- `.local/interoperability/lock-matrix-results-20260524-122351.json`
+- `.local/interoperability/live-matrix-results-20260524-122358.json`
+- `.local/interoperability/binary-matrix-results-20260524-122407.json`
+- `.local/interoperability/compression-matrix-results-20260524-122408.json`
+- `.local/interoperability/matrix-results-20260524-122408.json`
+
+External review rounds:
+
+- Round 1 reviewers: `llm-netdata-cloud/minimax-m2.7-coder`,
+  `llm-netdata-cloud/glm-5.1`, and `llm-netdata-cloud/mimo-v2.5-pro`.
+  All returned `PRODUCTION GRADE`.
+- Round 1 disposition: Node.js and Rust same-process writer-lock coverage was
+  added after low test-coverage notes. Go and Python already had same-process
+  writer-lock tests.
+- Round 2 reviewers: `llm-netdata-cloud/minimax-m2.7-coder`,
+  `llm-netdata-cloud/glm-5.1`, and `llm-netdata-cloud/mimo-v2.5-pro`.
+  All returned `PRODUCTION GRADE`.
+- Round 2 disposition: Python lock-acquire cleanup was fixed so a secondary
+  `os.close(fd)` failure cannot mask the original `_write_owner()` exception.
+- Final same-scope reviewers after that cleanup:
+  `llm-netdata-cloud/minimax-m2.7-coder` and `llm-netdata-cloud/glm-5.1`.
+  Both returned `PRODUCTION GRADE`.
+- Non-blocking hardening notes rejected for this slice: `O_NOFOLLOW` hardening
+  requires Linux-specific per-language handling and does not change the
+  accepted option A contract because journal directory write access is already
+  trusted; Go typed lock errors would add an SDK API contract not required by
+  this interoperability slice.
+
+Post-review validation:
+
+- Passed: `node --test node/test/all.js`.
+- Passed: `cargo test --manifest-path rust/Cargo.toml -p journal-core writer_lock_rejects_same_process_create`.
+- Passed: `cargo test --manifest-path rust/Cargo.toml -p journal-core -p journal-log-writer -p journal`.
+- Passed: `python3 -m py_compile python/journal/lock.py python/journal/writer.py tests/interoperability/run_lock_matrix.py`.
+- Passed: `python3 python/test_all.py`.
+- Passed: `python3 tests/interoperability/run_lock_matrix.py --entries 200 --delay-ms 20`
+  with 8/8 checks on systemd `260 (260.1-2-manjaro)`.
+- Passed: `git diff --check`.
+- Passed: changed-file sensitive-data scan for user names, absolute workstation
+  paths, common token prefixes, and private-key markers produced no matches.
+- Passed: `bash .agents/sow/audit.sh`.
+
+Post-review generated result file:
+
+- `.local/interoperability/lock-matrix-results-20260524-125306.json`

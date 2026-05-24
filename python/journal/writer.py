@@ -4,6 +4,7 @@
 import os
 import struct
 import fcntl
+from .lock import WriterLock
 from .binary import (
     read_uint64_le, write_uint64_le, write_uint32_le, write_uint8,
     align8, random_uuid, is_zero_uuid, buf_equal,
@@ -30,9 +31,10 @@ DEFAULT_COMPRESS_THRESHOLD = 64
 
 
 class Writer:
-    def __init__(self, fd, path):
+    def __init__(self, fd, path, lock):
         self._fd = fd
         self._path = path
+        self._lock = lock
         self._header = None
         self._append_offset = 0
         self._next_seqnum = 1
@@ -45,11 +47,13 @@ class Writer:
     @staticmethod
     def create(path, opts=None):
         opts = opts or {}
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+        lock = WriterLock.acquire(path)
+        fd = None
         try:
+            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
             _lock_fd(fd)
             os.ftruncate(fd, 0)
-            w = Writer(fd, path)
+            w = Writer(fd, path, lock)
             w._compression = _normalize_compression(opts.get('compression', COMPRESSION_NONE))
             if w._compression == COMPRESSION_ZSTD:
                 _ensure_zstd_available()
@@ -57,60 +61,65 @@ class Writer:
             w._initialize(opts)
             return w
         except Exception:
-            os.close(fd)
+            if fd is not None:
+                os.close(fd)
+            lock.release()
             raise
 
     @staticmethod
     def open(path):
-        fd = os.open(path, os.O_RDWR)
+        lock = WriterLock.acquire(path)
+        try:
+            fd = os.open(path, os.O_RDWR)
+        except Exception:
+            lock.release()
+            raise
         try:
             _lock_fd(fd)
+            header_buf = os.read(fd, HEADER_SIZE)
+            if len(header_buf) < HEADER_SIZE:
+                raise ValueError('cannot read journal header')
+
+            header = parse_file_header(header_buf)
+            flags = header['incompatible_flags']
+            supported_writer_incompatible = INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_ZSTD
+            if flags & ~supported_writer_incompatible:
+                raise ValueError(f'unsupported journal: incompatible flags 0x{flags:x}')
+            if not (flags & INCOMPATIBLE_KEYED_HASH):
+                raise ValueError('unsupported journal: keyed hash required')
+            if header['data_hash_table_offset'] == 0 or header['field_hash_table_offset'] == 0 or header['tail_object_offset'] == 0:
+                raise ValueError('invalid journal: missing hash tables')
+            compression = COMPRESSION_ZSTD if (flags & INCOMPATIBLE_COMPRESSED_ZSTD) else COMPRESSION_NONE
+            if compression == COMPRESSION_ZSTD:
+                _ensure_zstd_available()
         except Exception:
             os.close(fd)
+            lock.release()
             raise
-        header_buf = os.read(fd, HEADER_SIZE)
-        if len(header_buf) < HEADER_SIZE:
-            os.close(fd)
-            raise ValueError('cannot read journal header')
 
-        header = parse_file_header(header_buf)
-        flags = header['incompatible_flags']
-        supported_writer_incompatible = INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_ZSTD
-        if flags & ~supported_writer_incompatible:
-            os.close(fd)
-            raise ValueError(f'unsupported journal: incompatible flags 0x{flags:x}')
-        if not (flags & INCOMPATIBLE_KEYED_HASH):
-            os.close(fd)
-            raise ValueError('unsupported journal: keyed hash required')
-        if header['data_hash_table_offset'] == 0 or header['field_hash_table_offset'] == 0 or header['tail_object_offset'] == 0:
-            os.close(fd)
-            raise ValueError('invalid journal: missing hash tables')
-        compression = COMPRESSION_ZSTD if (flags & INCOMPATIBLE_COMPRESSED_ZSTD) else COMPRESSION_NONE
-        if compression == COMPRESSION_ZSTD:
-            try:
-                _ensure_zstd_available()
-            except Exception:
-                os.close(fd)
-                raise
+        try:
+            tail_size = _read_object_size_from_fd(fd, header['tail_object_offset'])
+            now_ms = _current_time_ms()
+            monotonic_base = header['tail_entry_monotonic'] // 1000 if header['tail_entry_monotonic'] > 0 else 0
 
-        tail_size = _read_object_size_from_fd(fd, header['tail_object_offset'])
-        now_ms = _current_time_ms()
-        monotonic_base = header['tail_entry_monotonic'] // 1000 if header['tail_entry_monotonic'] > 0 else 0
+            w = Writer(fd, path, lock)
+            w._header = header
+            w._append_offset = align8(header['tail_object_offset'] + tail_size)
+            w._next_seqnum = header['tail_entry_seqnum'] + 1
+            w._boot_id = header['tail_entry_boot_id']
+            if is_zero_uuid(w._boot_id):
+                w._boot_id = header['file_id']
+            w._started = now_ms - monotonic_base
+            w._compression = compression
+            w._compress_threshold = DEFAULT_COMPRESS_THRESHOLD
 
-        w = Writer(fd, path)
-        w._header = header
-        w._append_offset = align8(header['tail_object_offset'] + tail_size)
-        w._next_seqnum = header['tail_entry_seqnum'] + 1
-        w._boot_id = header['tail_entry_boot_id']
-        if is_zero_uuid(w._boot_id):
-            w._boot_id = header['file_id']
-        w._started = now_ms - monotonic_base
-        w._compression = compression
-        w._compress_threshold = DEFAULT_COMPRESS_THRESHOLD
-
-        w._header['state'] = STATE_ONLINE
-        w._write_header()
-        return w
+            w._header['state'] = STATE_ONLINE
+            w._write_header()
+            return w
+        except Exception:
+            os.close(fd)
+            lock.release()
+            raise
 
     def _initialize(self, opts):
         data_buckets = opts.get('data_hash_table_buckets', DEFAULT_DATA_HASH_BUCKETS)
@@ -542,6 +551,12 @@ class Writer:
         except Exception as e:
             if not close_err:
                 close_err = e
+        try:
+            self._lock.release()
+        except Exception as e:
+            if not close_err:
+                close_err = e
+        self._lock = None
         self._closed = True
         if close_err:
             raise close_err
@@ -565,6 +580,12 @@ class Writer:
             except Exception as e:
                 if not close_err:
                     close_err = e
+            try:
+                self._lock.release()
+            except Exception as e:
+                if not close_err:
+                    close_err = e
+            self._lock = None
             self._closed = True
             if close_err:
                 raise close_err

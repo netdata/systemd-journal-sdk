@@ -156,9 +156,10 @@ impl ActiveFile {
 
         let repository_file = chain.create_active_file()?;
 
-        let mut journal_file = self
-            .journal_file
-            .create_successor(&repository_file, max_file_size)?;
+        let mut old_journal_file = self.journal_file;
+        old_journal_file.release_writer_lock()?;
+        let mut journal_file =
+            old_journal_file.create_successor(&repository_file, max_file_size)?;
         let writer = JournalWriter::new_with_compression(
             &mut journal_file,
             head_seqnum,
