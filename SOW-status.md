@@ -20,7 +20,7 @@ Bootstrap mode: empty/new project.
 
 ## Active SOW
 
-- None. The next implementation SOW can be activated after the Node.js closeout commit.
+- `.agents/sow/current/SOW-0007-20260523-python-sdk-and-journalctl.md`
 
 ## Completed SOWs
 
@@ -37,7 +37,7 @@ Bootstrap mode: empty/new project.
 
 ## Next SOW
 
-- Candidate: `.agents/sow/pending/SOW-0007-20260523-python-sdk-and-journalctl.md`
+- Current active: `.agents/sow/current/SOW-0007-20260523-python-sdk-and-journalctl.md`
 - Rationale: the Go, Rust, and Node.js SDK/journalctl slices are complete; Python is the remaining per-language SDK/journalctl slice before full interoperability and benchmark/profiling phases.
 
 ## Guardrails
@@ -67,3 +67,4 @@ Bootstrap mode: empty/new project.
 - 2026-05-23 Node.js activation update: SOW-0006 is active after the Rust closeout commit `97506b8`. The pre-implementation gate records plain JavaScript, no native addons, Buffer/Uint8Array binary values, BigInt internal 64-bit handling, and built-in Node runtime zstd support from Node.js `v22.22.2`.
 - 2026-05-24 Node.js pre-review progress: SOW-0006 had a locally validated Node.js reader, writer, directory writer, libsystemd-style facade, journalctl command, adapter, package test runner, README, product-scope update, and livewriter command. Validation passed syntax/runtime import checks, `npm test`, adapter manifest at 13 PASS / 2 SKIP, fixture journalctl counts, directory writer rotation/retention smoke, stock-reader live concurrency, and Node-reader live polling before external closeout review.
 - 2026-05-24 Node.js closed: SOW-0006 completed the pure Node.js SDK, libsystemd-style facade, file-backed journalctl command, conformance adapter, package tests, README, directory writer rotation/retention, and livewriter harness command. Final validation passed syntax/runtime import checks, `npm test`, shared conformance at 13 PASS / 2 SKIP, stock `journalctl --directory` live/closed reads, live stock `journalctl` and libsystemd reader concurrency on systemd `260 (260.1-2-manjaro)`, cross-language reads by stock/Go/Rust readers, dependency/native marker audit, `git diff --check`, and `.agents/sow/audit.sh`. Mimo and Minimax returned `VERDICT: PRODUCTION GRADE`; Kimi and GLM ran useful checks but timed out before final verdicts.
+- 2026-05-24 Python activation update: SOW-0007 is active after the Node.js closeout commit `3dd2a58`. The pre-implementation gate records plain Python, no native journal bindings, bytes-like binary values, Python integer 64-bit handling, Python `3.14.5`, and available standard-library `compression.zstd` support.
