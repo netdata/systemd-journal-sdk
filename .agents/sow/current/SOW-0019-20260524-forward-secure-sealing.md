@@ -4,7 +4,7 @@
 
 Status: in-progress
 
-Sub-state: Phase 2B checkpoint committed; Phase 3 has not started pending compatibility-gap reconciliation with SOW-0022.
+Sub-state: active Phase 3 - file-backed journalctl verify behavior, scoped by SOW-0022 decisions.
 
 ## Requirements
 
@@ -603,6 +603,27 @@ Failure handling:
   - SOW-0022 Gap 3 remains owned by pending `SOW-0020-20260524-directory-traversal-parity.md`.
   - Compression threshold, historical header parsing, compact/compressed layout parity, and invalid monotonic writer behavior are independent compatibility gaps unless the user chooses to merge them into this SOW.
 - Phase 3 has not started. Next step is to resolve SOW-0022's open decisions before widening or narrowing SOW-0019.
+
+2026-05-25 (Phase 3 activation):
+
+- The user accepted the recommended SOW-0022 decisions:
+  - verification parity ownership Option A;
+  - directory traversal ownership Option A;
+  - compressed/compact layout parity target Option B;
+  - invalid monotonic timestamp writer behavior Option A;
+  - journalctl file-backed option scope Option A.
+- Phase 3 scope:
+  - implement file-backed `journalctl --verify` behavior in Rust, Go, Node.js, and Python rewrites using the repository verification API;
+  - implement file-backed `journalctl --verify-key` command-line behavior in Rust, Go, Node.js, and Python, including controlled behavior for unsealed files and sealed files that are still unsupported until later FSS phases;
+  - add shared tests comparing option parsing, positive verification, and negative corruption detection across all four rewrites and stock `journalctl --verify --file` where applicable.
+- Phase 3 explicit limitation:
+  - SOW-0019 Phase 3 uses the Phase 2B unsealed verification API, which is provisional and does not claim full systemd object-graph verification parity. Full unsealed verification parity remains tracked by SOW-0022.
+- Out of scope for Phase 3:
+  - full unsealed object-graph verification parity;
+  - writer sealing and TAG object writing;
+  - sealed TAG/HMAC verification beyond controlled `--verify-key` behavior;
+  - directory interleaving and `--directory` parity, which remain in SOW-0020;
+  - `--follow`, `--boot`, `--since`, and `--until`, which remain tracked by SOW-0022/follow-up SOWs.
 
 ### Gaps and Risks Discovered (Phase 1)
 

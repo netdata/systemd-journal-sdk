@@ -2,11 +2,11 @@
 
 ## Current
 
-- `SOW-0019-20260524-forward-secure-sealing.md` - in-progress. Phase 2B implementation was committed and pushed as `2e9d025`: journal verification APIs added in Rust, Go, Node.js, and Python; Rust verification now uses a strict entry/data-object path instead of the normal reader's recoverable-error tolerance; `journal-verify-corruption-detection` is wired to real behavior in all four adapters; controlled verification error types introduced. Phase 3 has not started pending compatibility-gap reconciliation with SOW-0022.
+- `SOW-0019-20260524-forward-secure-sealing.md` - in-progress. Phase 3 active: implement file-backed journalctl `--verify` / `--verify-key` behavior in Rust, Go, Node.js, and Python rewrites using the Phase 2B verification APIs. Explicit limitation: Phase 3 does not claim full systemd object-graph verification parity; that remains tracked by SOW-0022.
 
 ## Pending
 
-- `SOW-0022-20260525-compatibility-test-gap-audit.md` - open. Records compatibility test gaps and likely feature-parity gaps found during read-only review; blocked on user decisions about overlap with active FSS work and pending directory traversal parity.
+- `SOW-0022-20260525-compatibility-test-gap-audit.md` - open. Records compatibility test gaps and likely feature-parity gaps found during read-only review. User decisions recorded: full unsealed verification parity remains here later; directory traversal remains in SOW-0020; compressed/compact parity is structural unless byte identity is deterministic; invalid same-boot monotonic writer appends must be rejected; file-backed journalctl option parity remains in scope across follow-up work.
 - `SOW-0020-20260524-directory-traversal-parity.md` - open. Bring SDK directory readers and file-backed journalctl `--directory` behavior to stock parity.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - open. Final benchmark, profile, and optimize pass after SOW-0017 through SOW-0021 are complete.
 

@@ -288,7 +288,7 @@ Needed tests:
 
 ## Pre-Implementation Gate
 
-Status: needs-user-decision
+Status: decisions-recorded
 
 Problem / root-cause model:
 
@@ -342,8 +342,8 @@ Sensitive data handling plan:
 
 Implementation plan:
 
-1. Wait for user decision on ownership and sequencing against SOW-0019 and SOW-0020.
-2. Split or refine this SOW if the user wants separate implementation SOWs for verification, live feature matrices, header/compression parity, and journalctl parity.
+1. Apply the recorded user decisions below: keep SOW-0019 focused on its FSS/journalctl phase, keep directory traversal in SOW-0020, and keep this SOW as the tracker for the remaining compatibility gaps.
+2. Split or refine this SOW before implementation if the remaining compatibility gaps become too broad for one execution chunk.
 3. Add tests before implementation fixes where practical, especially for header parsing, compression thresholds, and verification corruption classes.
 4. Implement fixes exposed by those tests in all affected languages.
 5. Validate every affected language and stock systemd behavior.
@@ -393,7 +393,7 @@ Open-source reference evidence:
   - `src/libsystemd/sd-journal/sd-journal.c:1124-1173`
   - `src/libsystemd/sd-journal/test-journal.c:243-260`
 
-Open decisions:
+Recorded decisions:
 
 1. Verification parity ownership:
    - Option A: Keep shallow unsealed verification in SOW-0019 and implement full systemd verification parity in this SOW later.
@@ -407,6 +407,7 @@ Open decisions:
      - Implications: this SOW should drop or narrow Gap 2 after SOW-0019 absorbs it.
      - Risks: larger active SOW raises review and conflict risk.
    - Recommendation: Option A, but require SOW-0019 to explicitly document shallow verification as provisional and keep this SOW pending for full parity.
+   - User decision 2026-05-25: Option A.
 
 2. Directory traversal ownership:
    - Option A: Keep directory interleaving in SOW-0020.
@@ -420,6 +421,7 @@ Open decisions:
      - Implications: SOW lifecycle work would be needed to merge pending SOWs.
      - Risks: harder review and higher conflict risk.
    - Recommendation: Option A.
+   - User decision 2026-05-25: Option A.
 
 3. Compressed/compact layout parity target:
    - Option A: Require byte-for-byte identity for every deterministic compressed and compact output that systemd can generate deterministically.
@@ -433,6 +435,7 @@ Open decisions:
      - Implications: tests must inspect object order, offsets, flags, counters, hash chains, and tail metadata.
      - Risks: subtle byte-level differences can remain.
    - Recommendation: Option B by default, with byte identity required for compact uncompressed if systemd can produce an equivalent reference.
+   - User decision 2026-05-25: Option B.
 
 4. Writer behavior for invalid monotonic timestamps:
    - Option A: Reject appends that would make same-boot monotonic timestamps go backwards.
@@ -451,6 +454,7 @@ Open decisions:
      - Implications: incompatible with a strict "must not produce invalid files" policy.
      - Risks: invalid files in production.
    - Recommendation: Option A.
+   - User decision 2026-05-25: Option A.
 
 5. journalctl file-backed option scope:
    - Option A: Implement `--follow`, `--verify`, `--verify-key`, `--boot`, `--since`, and `--until` parity in follow-up SOWs.
@@ -464,10 +468,17 @@ Open decisions:
      - Implications: specs and SOW status must be updated.
      - Risks: SDK journalctl rewrites remain incomplete.
    - Recommendation: Option A.
+   - User decision 2026-05-25: Option A.
 
 ## Implications And Decisions
 
-No user decisions have been made for this SOW yet. The open decisions above must be resolved and recorded here before implementation starts.
+User decisions recorded on 2026-05-25:
+
+1. Verification parity ownership: Option A. Keep shallow unsealed verification in SOW-0019 and implement full systemd verification parity in this SOW later. SOW-0019 must explicitly document that its current unsealed verification APIs and file-backed journalctl `--verify` behavior are provisional and not full systemd object-graph verification parity.
+2. Directory traversal ownership: Option A. Keep directory interleaving and `--directory` parity in SOW-0020.
+3. Compressed/compact layout parity target: Option B. Require structural parity plus stock verification/read parity for compressed and compact output; require byte identity only where deterministic and meaningful, including compact uncompressed if systemd can generate an equivalent reference.
+4. Writer behavior for invalid monotonic timestamps: Option A. Writers must reject appends that would make same-boot monotonic timestamps go backwards.
+5. journalctl file-backed option scope: Option A. Implement file-backed `--follow`, `--verify`, `--verify-key`, `--boot`, `--since`, and `--until` parity in follow-up SOWs, not by descoping them.
 
 ## Plan
 
