@@ -2,7 +2,7 @@
 
 ## Current
 
-- `SOW-0019-20260524-forward-secure-sealing.md` - in-progress. Phase 2A checkpoint is implemented, reviewed, and ready to commit: pure FSPRG primitives and vector tests pass in Rust, Go, Node.js, and Python. Next active work is Phase 2B journal verification APIs.
+- `SOW-0019-20260524-forward-secure-sealing.md` - in-progress. Phase 2B is active: journal verification APIs and corruption-detection conformance wiring, building on the committed pure FSPRG primitives from Phase 2A.
 
 ## Pending
 

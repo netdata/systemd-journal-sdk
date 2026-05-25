@@ -4,7 +4,7 @@
 
 Status: in-progress
 
-Sub-state: active phase 2A - pure FSPRG primitives and vector tests.
+Sub-state: active phase 2B - journal verification APIs.
 
 ## Requirements
 
@@ -438,6 +438,16 @@ Failure handling:
   - Larger seek/evolve epochs and non-recommended secpar vectors would improve future coverage; current Phase 2A proves recommended systemd FSPRG vectors and records the coverage limit.
   - Micro-optimizations such as hoisting repeated `n - 1` or counter buffers are not required for Phase 2A and can be revisited during the final benchmark/profile SOW if they show up in real profiles.
 - No reviewer required code, fixture, dependency, or SOW changes before this Phase 2A checkpoint commit.
+
+2026-05-25 (Phase 2B activation):
+
+- Phase 2A was committed and pushed as `9d16ebf Add pure FSPRG primitives`.
+- Advanced the active sub-state from Phase 2A to Phase 2B.
+- Phase 2B scope:
+  - implement repository journal verification APIs that can validate unsealed journal structure/integrity and introduce controlled FSS verification result types;
+  - wire the existing conformance `journal-verify-corruption-detection` case to real SDK behavior instead of adapter skips;
+  - keep sealed FSS tag/HMAC validation and writer sealing out of scope unless the implementer can complete them with stock/systemd evidence and shared tests inside this phase.
+- Phase 2B must preserve the project boundary: no live host journal probing, no daemon-only key-management behavior, and no writes outside this repository except `/tmp`.
 
 ### Gaps and Risks Discovered (Phase 1)
 
