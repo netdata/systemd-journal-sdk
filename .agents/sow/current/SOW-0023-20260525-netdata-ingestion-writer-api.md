@@ -128,6 +128,68 @@ Sources checked:
   - The newest sampled journal files were under the machine-id child directories, not directly under the tier roots.
   - Older flat tier-root journal files also exist under `/var/cache/netdata/flows/{raw,1m,5m,1h}/`; migration must not delete or obscure them accidentally, but the SDK-compatible current write target is the machine-id child path.
 
+### Integration Analysis - 2026-05-26
+
+External source reference:
+
+- `ktsaou/netdata @ 00305266364e`
+
+Confirmed production writer consumers:
+
+- NetFlow plugin:
+  - `src/crates/netflow-plugin/Cargo.toml:27` depends on `journal-log-writer`.
+  - `src/crates/netflow-plugin/src/ingest.rs:24` imports `Config`, `EntryTimestamps`, `Log`, `RetentionPolicy`, and `RotationPolicy`.
+  - `src/crates/netflow-plugin/src/ingest/service/init.rs:30` builds one policy closure per tier.
+  - `src/crates/netflow-plugin/src/ingest/service/init.rs:103` constructs the raw writer with `Log::new(&raw_dir, ...)`.
+  - `src/crates/netflow-plugin/src/ingest/service/init.rs:124`, `:132`, and `:140` construct materialized tier writers with the same `Log::new` shape.
+  - `src/crates/netflow-plugin/src/ingest/encode.rs:25` and `:87` encode directly into a `journal_log_writer::Log`; this makes the high-level `Log` type part of the natural integration point, not an implementation detail hidden behind another NetFlow-local abstraction.
+  - `src/crates/netflow-plugin/src/ingest/service/runtime.rs:138` uses `EntryTimestamps` with source realtime and entry realtime.
+  - `src/crates/netflow-plugin/src/ingest/service/runtime.rs:153` reads the active file path immediately after append.
+  - `src/crates/netflow-plugin/src/ingest/service/runtime.rs:191` controls raw sync cadence by entry threshold and timer.
+  - `src/crates/netflow-plugin/src/ingest/service.rs:19` implements `LogLifecycleObserver` and consumes concrete rotated/deleted journal paths.
+- OTEL logs plugin:
+  - `src/crates/netdata-otel/otel-plugin/Cargo.toml:35` depends on `journal-log-writer`.
+  - `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:4` imports `Config`, `Log`, `RetentionPolicy`, and `RotationPolicy`.
+  - `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:24` builds rotation policy directly from plugin config.
+  - `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:29` builds retention policy directly from plugin config.
+  - `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:44` constructs a single `Arc<Mutex<Log>>`.
+  - `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:78` creates `Vec<Vec<u8>>` journal items from OTLP JSON.
+  - `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:155` writes a batch item with `write_entry(&entry_refs, source_timestamp_usec)`.
+  - `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:170` syncs once per exported batch.
+
+Non-consumers:
+
+- `journal-log-writer` tests and examples exercise the API but are not product integration surfaces.
+- `journal-registry`, `journal-engine`, `journal-index`, and log-viewer crates consume journal files or registry metadata, not the writer API.
+- A scoped search of existing SNMP Go collector code found no journal writer or trap writer integration yet. Existing SNMP references are polling/topology/docs, so the trap writer can be treated as a future Go consumer rather than a migration source.
+
+Design conclusion:
+
+- A separate top-level `IngestionWriter` layer would not look natural for the existing Netdata integrations. The production consumers already treat the high-level directory writer as the integration type: construction returns `Log`, encode buffers accept `Log`, lifecycle observers attach to `Log`, sync is called on `Log`, and active path is read from `Log`.
+- The natural SDK design is therefore to evolve the high-level Go `Log` API into the Netdata-compatible directory writer, while keeping the low-level single-file `Writer` unchanged as the journal-object primitive.
+- Backward compatibility can be preserved by keeping existing `NewLog(dir, LogConfig)` call sites and adding strictly additive options, builders, and methods. If a stricter constructor is needed, it should return the same `*Log` type rather than a separate wrapper type.
+- The public API should avoid Netdata-specific names. The behavior is generic directory journal writing with explicit layout, identity, lifecycle, retention, and artifact-accounting policy.
+
+Recommended Go API direction:
+
+- Keep `Log` as the high-level directory writer type.
+- Keep `Writer` as the low-level single-file primitive.
+- Extend `LogConfig` and policy builders rather than introducing a separate `IngestionWriter` type.
+- Change policy internals to represent nullable limits explicitly. The natural Go shape is pointer-backed optional fields plus helper builders, for example `WithMaxFileSize(bytes)`, `WithMaxEntries(n)`, `WithMaxDuration(d)`, `WithMaxBytes(bytes)`, `WithMaxAge(d)`, and `WithMaxFiles(n)`. Nil means disabled; enabled zero is invalid during validation.
+- Add strict/eager configuration to `LogConfig`, but return `*Log`:
+  - identity policy: strict required IDs vs host fallback vs random fallback;
+  - open mode: lazy vs eager preflight;
+  - layout: default machine-id child directory, with flat/direct only as explicit mode;
+  - naming mode: Netdata chain naming using `source@seqnum_id-head_seqnum-head_realtime.journal`, plus legacy `source.journal` active naming only as explicit compatibility mode;
+  - field-name policy: strict systemd names vs Rust-compatible remapping;
+  - lifecycle observer and callback error policy;
+  - artifact size provider.
+- Add `AppendWithTimestamps` or extend `Append` options with source realtime, entry realtime, and entry monotonic override. Preserve NetFlow's post-append active-path read by guaranteeing `ActivePath()` returns the file that received the last successful append.
+- Add a raw item append path for high-throughput encoders, because NetFlow currently writes stack-backed `KEY=value` slices directly and OTEL builds `Vec<Vec<u8>>` before writing. The low-level `Writer` can remain field-based; the high-level `Log` should support both `[]Field` and raw `KEY=value` items with the same remapping/timestamp path.
+- Make high-level `Log` safe for concurrent method calls unless implementation evidence shows the mutex materially harms the Netdata ingestion path. Existing OTEL already wraps `Log` in a mutex; a Go `Log` that serializes internally is natural for future trap receivers and avoids pushing one-writer serialization into every consumer.
+- Lifecycle callbacks should be synchronous and ordered with writer operations. The Netdata-compatible default should ignore callback errors after reporting them through an optional error hook; fail-on-callback-error can exist only as an explicit tested mode.
+- Artifact accounting should be a provider/callback tied to journal paths, not part of lifecycle callbacks. The provider should be called during scan/preflight and retention accounting. Missing artifacts should count as zero; unexpected provider errors should fail strict preflight or retention enforcement.
+
 Current state:
 
 - `SOW-status.md` lists SOW-0019 as current and SOW-0022, SOW-0020, and SOW-0009 as pending.
