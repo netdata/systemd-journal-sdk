@@ -28,6 +28,7 @@ import {
 } from '../src/lib/header.js';
 import { compressLz4DataPayload } from '../src/lib/lz4-block.js';
 import { compressXzDataPayload, decompressXzDataPayload } from '../src/lib/xz-block.js';
+import { fsprgGenMK, fsprgGenState0, fsprgEvolve, fsprgSeek, fsprgGetKey, fsprgGetEpoch } from '../src/lib/fss.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, '..');
@@ -419,6 +420,43 @@ for (const file of listJavaScriptFiles(packageRoot).sort()) {
 }
 
 run(process.execPath, ['-e', "import './node/src/index.js'"], { cwd: repoRoot });
+
+{
+  // FSPRG vector tests against committed systemd v260.1 fixture.
+  const vectorsPath = join(repoRoot, 'tests/fss/fixtures/fsprg-vectors-v01.json');
+  const vectorsData = JSON.parse(readFileSync(vectorsPath, 'utf8'));
+  const secpar = vectorsData.fsprg_params.secpar;
+  for (const vec of vectorsData.vectors) {
+    const seed = Buffer.from(vec.seed_hex, 'hex');
+    const expectedMsk = Buffer.from(vec.msk_hex, 'hex');
+    const expectedMpk = Buffer.from(vec.mpk_hex, 'hex');
+    const expectedState0 = Buffer.from(vec.state0_hex, 'hex');
+
+    const { msk, mpk } = fsprgGenMK(seed, secpar);
+    assert.deepEqual(msk, expectedMsk, `msk mismatch for ${vec.seed_desc}`);
+    assert.deepEqual(mpk, expectedMpk, `mpk mismatch for ${vec.seed_desc}`);
+
+    const state0 = fsprgGenState0(mpk, seed);
+    assert.deepEqual(state0, expectedState0, `state0 mismatch for ${vec.seed_desc}`);
+    assert.equal(fsprgGetEpoch(state0), 0n, `epoch0 mismatch for ${vec.seed_desc}`);
+
+    for (const ep of vec.epochs) {
+      let evolved = state0;
+      for (let e = 0n; e < BigInt(ep.epoch); e++) {
+        evolved = fsprgEvolve(evolved);
+      }
+      assert.deepEqual(evolved, Buffer.from(ep.state_hex, 'hex'), `evolve mismatch for ${vec.seed_desc} epoch ${ep.epoch}`);
+
+      const seeked = fsprgSeek(state0, BigInt(ep.epoch), msk, seed);
+      assert.deepEqual(seeked, Buffer.from(ep.seek_state_hex, 'hex'), `seek mismatch for ${vec.seed_desc} epoch ${ep.epoch}`);
+
+      for (const k of ep.keys) {
+        const key = fsprgGetKey(evolved, k.keylen, k.idx);
+        assert.deepEqual(key, Buffer.from(k.key_hex, 'hex'), `key mismatch for ${vec.seed_desc} epoch ${ep.epoch} idx ${k.idx}`);
+      }
+    }
+  }
+}
 
 const manifestPath = join(repoRoot, 'tests/conformance/manifests/conformance-v01.json');
 if (!existsSync(manifestPath)) {

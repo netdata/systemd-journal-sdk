@@ -133,6 +133,10 @@ clap = { version = "4", features = ["derive"] }
 rayon = "1.11.0"
 cbindgen = "0.28.0"
 
+# Cryptography (FSPRG)
+num-bigint = "0.4"
+sha2 = "0.10"
+
 # Serialization helpers
 serde_yaml = "0.9.34"
 serde_regex = "1.1.0"

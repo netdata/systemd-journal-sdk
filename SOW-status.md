@@ -2,7 +2,7 @@
 
 ## Current
 
-- `SOW-0019-20260524-forward-secure-sealing.md` - in-progress. Phase 1 is active: source-backed FSS inventory, deterministic vectors, and repo-local guardrails before verification/writer sealing.
+- `SOW-0019-20260524-forward-secure-sealing.md` - in-progress. Phase 2A checkpoint is implemented, reviewed, and ready to commit: pure FSPRG primitives and vector tests pass in Rust, Go, Node.js, and Python. Next active work is Phase 2B journal verification APIs.
 
 ## Pending
 
@@ -39,6 +39,7 @@
 - SOW-0017 completed xz/lz4 DATA writing for Rust/Go/Python and lz4 DATA writing for Node.js, with Node.js xz split to SOW-0021.
 - SOW-0021 completed Node.js xz DATA reader/writer support through `node-liblzma@5.0.1` using the WASM-only runtime path accepted by user decision option B.
 - SOW-0018 completed compact journal support. Every writer exposes explicit regular/compact output selection while regular remains the default. `run_compact_matrix.py` passes 56/56 for each compression mode (`none`, `zstd`, `xz`, `lz4`) across Go, Rust, Node.js, Python, stock journalctl, and stock libsystemd on systemd 260.1-2-manjaro.
+- SOW-0019 Phase 2A added pure FSPRG primitives and vector tests in Rust, Go, Node.js, and Python. The primitives match committed systemd v260.1 vectors; writer sealing, verification APIs, zeroization/lifecycle handling, and larger/non-recommended vector coverage remain in later SOW-0019 phases.
 - SOW-0009 is intentionally sequenced last. The user decided not to run baseline-only benchmarks now because performance work is expected to require profiling, allocation reduction, buffer reuse, and refactoring that later feature SOWs could invalidate.
 - Byte-for-byte writer identity is the target for deterministic uncompressed journals. Any feature slice that cannot be made byte-identical must return with evidence before the acceptance condition is changed.
 - The external systemd source checkout is read-only for this project. Build outputs and generated files must remain inside this repository or `/tmp`.

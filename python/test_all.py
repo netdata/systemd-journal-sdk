@@ -35,6 +35,7 @@ from journal.header import (  # noqa: E402
     write_object_header,
 )
 from journal.hash import sip_hash_24  # noqa: E402
+from journal.fss import gen_mk, gen_state0, evolve, seek, get_key, get_epoch  # noqa: E402
 
 
 def run(args, *, input_data=None, cwd=REPO_ROOT):
@@ -253,6 +254,46 @@ def test_facade_unique_binary_values():
         assert values == [('BINARY', bytes([0, 255]))]
 
 
+def test_fsprg_vectors():
+    vectors_path = REPO_ROOT / 'tests/fss/fixtures/fsprg-vectors-v01.json'
+    data = json.loads(vectors_path.read_text())
+    params = data['fsprg_params']
+    secpar = params['secpar']
+    for vec in data['vectors']:
+        seed = bytes.fromhex(vec['seed_hex'])
+        expected_msk = bytes.fromhex(vec['msk_hex'])
+        expected_mpk = bytes.fromhex(vec['mpk_hex'])
+        expected_state0 = bytes.fromhex(vec['state0_hex'])
+
+        msk, mpk = gen_mk(seed, secpar)
+        assert msk == expected_msk, f'msk mismatch for {vec["seed_desc"]}'
+        assert mpk == expected_mpk, f'mpk mismatch for {vec["seed_desc"]}'
+
+        state0 = gen_state0(mpk, seed)
+        assert state0 == expected_state0, f'state0 mismatch for {vec["seed_desc"]}'
+        assert get_epoch(state0) == 0
+
+        for epoch_vec in vec['epochs']:
+            epoch = epoch_vec['epoch']
+            evolved = state0
+            for _ in range(epoch):
+                evolved = evolve(evolved)
+            assert evolved == bytes.fromhex(epoch_vec['state_hex']), (
+                f'evolve mismatch at epoch {epoch} for {vec["seed_desc"]}'
+            )
+
+            seeked = seek(state0, epoch, msk, seed)
+            assert seeked == bytes.fromhex(epoch_vec['seek_state_hex']), (
+                f'seek mismatch at epoch {epoch} for {vec["seed_desc"]}'
+            )
+
+            for key_vec in epoch_vec['keys']:
+                key = get_key(evolved, key_vec['keylen'], key_vec['idx'])
+                assert key == bytes.fromhex(key_vec['key_hex']), (
+                    f'key mismatch idx={key_vec["idx"]} epoch={epoch} for {vec["seed_desc"]}'
+                )
+
+
 def test_conformance_manifest():
     manifest_path = REPO_ROOT / 'tests/conformance/manifests/conformance-v01.json'
     manifest = json.loads(manifest_path.read_text())
@@ -288,6 +329,7 @@ def main():
     test_xz_and_lz4_data_object_parse()
     test_directory_writer_rotation()
     test_facade_unique_binary_values()
+    test_fsprg_vectors()
     test_conformance_manifest()
     print(f'PASS python package tests ({Path(__file__).relative_to(REPO_ROOT)})')
 

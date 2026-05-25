@@ -4,7 +4,7 @@
 
 Status: in-progress
 
-Sub-state: active phase 1 - reference inventory and implementation guardrails.
+Sub-state: active phase 2A - pure FSPRG primitives and vector tests.
 
 ## Requirements
 
@@ -172,10 +172,11 @@ Open decisions:
 ## Plan
 
 1. Phase 1: finish a source-backed FSS inventory, derive deterministic FSPRG/HMAC vectors, and add repo-local guardrails that prevent unsafe live-journal validation.
-2. Phase 2: implement pure verification primitives and repository verification APIs.
-3. Phase 3: implement file-backed journalctl `--verify` / `--verify-key` behavior.
-4. Phase 4: implement writer sealing with deterministic test keys and configurable sealing intervals.
-5. Phase 5: add tamper/corruption fixtures, stock verification checks, docs/spec updates, and security review.
+2. Phase 2A: implement pure FSPRG primitives in Rust, Go, Node.js, and Python, and prove all languages match the systemd-derived vectors.
+3. Phase 2B: implement journal verification primitives and repository verification APIs.
+4. Phase 3: implement file-backed journalctl `--verify` / `--verify-key` behavior.
+5. Phase 4: implement writer sealing with deterministic test keys and configurable sealing intervals.
+6. Phase 5: add tamper/corruption fixtures, stock verification checks, docs/spec updates, and security review.
 
 ## Delegation Plan
 
@@ -309,6 +310,135 @@ Failure handling:
   - `run_vectors.sh` extracts the final `build.sh` stdout line with `tail -n 1`; this is accepted because `build.sh` intentionally prints the executable path last.
   - Shared `.local/systemd-v260.1-src` and `.local/systemd-v260.1-build` remain accepted because both helper scripts have independent Meson entry guards and mirror the existing dataset-ingester design.
 
+2026-05-25 (Phase 2A activation):
+
+- Advanced the active sub-state from Phase 1 to Phase 2A after Phase 1 was committed and pushed.
+- Phase 2A scope is deliberately narrower than all of Phase 2:
+  - implement pure FSPRG primitives in Rust, Go, Node.js, and Python;
+  - add vector tests in all four languages against `tests/fss/fixtures/fsprg-vectors-v01.json`;
+  - prove `GenMK`, `GenState0`, `Evolve`, `Seek`, and `GetKey` match systemd v260.1 vectors exactly.
+- Out of scope for Phase 2A:
+  - journal TAG object verification;
+  - HMAC byte-range verification;
+  - journalctl `--verify` behavior;
+  - writer sealing and sealing intervals.
+- Reason: FSPRG correctness is the cryptographic foundation. Implementing it first keeps later journal verification and writer sealing work from hiding primitive-level mistakes behind parser or HMAC integration code.
+
+2026-05-25 (Phase 2A implementation):
+
+- Implemented pure FSPRG primitives in Rust, Go, Node.js, and Python.
+- Added tests in all four languages that load `tests/fss/fixtures/fsprg-vectors-v01.json` and prove exact byte-for-byte matches for `GenMK`, `GenState0`, `Evolve`, `Seek`, and `GetKey`.
+- `GetEpoch` is implemented and covered by vector tests in all languages.
+- Files changed:
+  - `python/journal/fss.py` (new)
+  - `python/test_all.py` (modified: added `test_fsprg_vectors`)
+  - `go/journal/fss.go` (new)
+  - `go/journal/fss_test.go` (new)
+  - `node/src/lib/fss.js` (new)
+  - `node/test/all.js` (modified: added FSPRG vector assertions)
+  - `rust/src/crates/journal-core/src/fss.rs` (new)
+  - `rust/src/crates/journal-core/src/lib.rs` (modified: added `pub mod fss`)
+  - `rust/Cargo.toml` (modified: added `num-bigint` and `sha2` workspace deps)
+  - `rust/src/crates/journal-core/Cargo.toml` (modified: added `num-bigint`, `sha2`, `hex` deps)
+  - `rust/Cargo.lock` (modified: dependency resolution)
+- Implementation notes:
+  - All languages use deterministic Miller-Rabin with the first 12 prime bases (`2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37`).  This matches the reference primes for the two committed seeds because the candidates are actual primes.
+  - Node.js uses native `BigInt` with hand-written modular exponentiation, extended-GCD modular inverse, and CRT composition.  No native addon or non-pure dependency is introduced.
+  - Go uses `math/big` and `crypto/sha256` from the standard library only.
+  - Python uses built-in `int` and `hashlib.sha256` only.
+  - Rust uses `num-bigint::BigUint` and `sha2::Sha256` (pure Rust dependencies).
+  - The `det_randomize` SHA-256 counter-mode construction is reproduced exactly in each language by computing `SHA256(seed || idx || ctr)` for each counter block.
+  - `twopowmodphi` is implemented as `pow(2, epoch, p-1)` (Python/Go) or `BigUint::from(2u32).modpow(...)` (Rust) or `modPow(2n, epoch, phi)` (Node.js).
+  - `crt_compose` follows the exact formula from systemd `fsprg.c:189-202`.
+- Validation commands and outcomes:
+  - `./tests/fss/run_vectors.sh` — PASS (generated fixture matches committed fixture)
+  - Go targeted FSPRG vectors: `cd go && go test ./journal -run TestFSPRGVectors -v` — PASS
+  - Node: `cd node && npm test` — PASS
+  - Python full suite via repo-local venv: `. .local/phase2a-venv/bin/activate && PYTHONPYCACHEPREFIX=$PWD/.local/pycache python3 python/test_all.py` — PASS
+  - Rust: `cd rust && CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journal-core` — PASS
+  - `.agents/sow/audit.sh` — PASS
+  - `git diff --check` — PASS (no trailing whitespace errors)
+  - Grep for personal names, absolute workstation paths, secrets, and unfinished-work markers in all changed/new durable files — clean (only matches are standard "master secret key" terminology and existing `tempfile` usage in `python/test_all.py`).
+- Full Rust workspace tests were not run because the workspace is large and the compilation graph includes many unrelated crates.  The targeted `journal-core` test is sufficient to prove FSPRG correctness; full workspace tests were not required by this chunk.
+- Go full suite caveat: the live concurrency stress test `TestGoWriterLiveStockReadersStress` has shown pre-existing flakiness (stock libsystemd reader `sd_journal_get_data(LIVE_SEQ)` ENOENT around entry count ~305).  Targeted FSPRG tests pass.  This is recorded as a validation caveat and is not attributed to Phase 2A.
+- Manager rerun after cleanup: `cd go && go test ./...` — PASS, including `go/journal` in 12.153s.
+
+2026-05-25 (Phase 2A cleanup):
+
+- Renamed Node.js exported functions and tests to correct spelling in `node/src/lib/fss.js` and `node/test/all.js`.
+- Renamed Go internal constants to correct spelling in `go/journal/fss.go`.
+- Renamed Go test fixture field to correct spelling in `go/journal/fss_test.go`.
+- Removed unused Go stub from `go/journal/fss.go`.
+- Cleaned up misleading Go `detRandomize` comment to state it computes `SHA256(seed || idx || ctr)` without referencing an unreconstructed intermediate SHA256 state.
+- Exposed Rust FSPRG primitives as a public low-level `journal-core::fss` module.  This makes the primitives available to normal `journal-core` builds for Phase 2B journal verification integration.  The high-level Rust SDK public verification API is not finalized and will come in Phase 2B.
+- Unexported Go FSPRG helpers in `go/journal/fss.go` so they are package-internal.  Tests in the same `journal` package still cover them.  No exported Go symbol commits to a public Phase 2A API.
+- Validation commands and outcomes after cleanup:
+  - `./tests/fss/run_vectors.sh` — PASS
+  - Go targeted FSPRG vectors: `cd go && go test ./journal -run TestFSPRGVectors -v` — PASS
+  - Node: `cd node && npm test` — PASS
+  - Python full suite via repo-local venv — PASS
+  - Rust: `cd rust && CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journal-core` — PASS (no warnings)
+  - Go full module suite: `cd go && go test ./...` — PASS
+  - `git diff --check` — PASS
+  - `.agents/sow/audit.sh` — PASS
+
+2026-05-25 (Phase 2A cleanup — Rust module exposure fix):
+
+- Changed `rust/src/crates/journal-core/src/lib.rs` so `journal-core::fss` is available in normal builds.
+  - This makes FSPRG primitives available in normal `journal-core` builds, which Phase 2B journal verification will need.
+  - Added a comment documenting that this is a low-level `journal-core` module and the high-level Rust SDK public verification API remains for Phase 2B.
+- Updated SOW text:
+  - Changed the `GetEpoch` wording to say it is implemented and covered by vector tests in all languages, because Go helpers are package-internal.
+  - Updated changed-files line to reflect the normal-build Rust module exposure.
+  - Replaced the Phase 2A cleanup note about `#[cfg(test)]` with a note explaining the public low-level module boundary.
+- Validation commands and outcomes:
+  - `cd rust && CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journal-core` — PASS (29 tests passed, no dead_code warnings)
+  - `git diff --check` — PASS
+  - `.agents/sow/audit.sh` — PASS
+  - Marker scan for stale typo strings, unfinished-work markers, personal names, and absolute workstation paths — no unsafe durable-artifact matches; the only expected match was the generic phrase "test-only" in the sensitive-data handling plan, unrelated to module compilation.
+
+2026-05-25 (Phase 2A reviewer cleanup):
+
+- Four read-only reviewers returned `PRODUCTION GRADE` for Phase 2A.
+- The user asked not to carry technical debt, so the actionable non-blocking cleanup items were fixed now.
+- Fixed items:
+  - Rust `hex` in `rust/src/crates/journal-core/Cargo.toml` moved from `[dependencies]` to `[dev-dependencies]`; it is only used inside `#[cfg(test)]`.
+  - Go `genSquare` in `go/journal/fss.go` simplified to compute `x*x` once:
+    `result := new(big.Int).Mul(x, x); result.Mod(result, n); return result`.
+  - Python `get_key` in `python/journal/fss.py` now uses the explicit systemd-length slice `state[2:2 + 2 * secpar // 8 + 8]` instead of `state[2:]`.  Output is identical to vectors.
+  - Deterministic Miller-Rabin probable-prime check strengthened in all four language implementations:
+    - Updated all four implementations to use the first 64 prime bases and call the check with 64 rounds.
+    - First 64 prime bases: 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251, 257, 263, 269, 271, 277, 281, 283, 293, 307, 311.
+    - Documentation updated to state this is a stronger deterministic probable-prime check that reduces arbitrary-seed divergence risk versus 12 bases while preserving the committed systemd-derived vectors.  No claim is made that this exactly reproduces libgcrypt's random witness selection.
+- Remaining accepted follow-up (non-blocking, intentionally not fixed now):
+  - Memory zeroization and key-material lifecycle improvements belong to Phase 2B+ when public verification/sealing APIs handle real keys.
+- Files changed:
+  - `rust/src/crates/journal-core/Cargo.toml` (hex moved to dev-dependencies)
+  - `go/journal/fss.go` (genSquare simplification, Miller-Rabin 64 bases)
+  - `python/journal/fss.py` (get_key explicit slice, Miller-Rabin 64 bases)
+  - `rust/src/crates/journal-core/src/fss.rs` (Miller-Rabin 64 bases)
+  - `node/src/lib/fss.js` (Miller-Rabin 64 bases)
+- Validation commands and outcomes:
+  - `./tests/fss/run_vectors.sh` — PASS (generated fixture matches committed fixture, byte-identical)
+  - `cd go && go test ./...` — PASS (all packages including `go/journal` FSPRG vectors)
+  - `cd node && npm test` — PASS (FSPRG vector assertions pass)
+  - `. .local/phase2a-venv/bin/activate && PYTHONPYCACHEPREFIX=$PWD/.local/pycache python3 python/test_all.py` — PASS (FSPRG vectors pass)
+  - `cd rust && CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journal-core` — PASS (29 tests passed, `test_fsprg_vectors` ok)
+  - `git diff --check` — PASS (no trailing whitespace errors)
+  - `.agents/sow/audit.sh` — PASS (no errors, SOW status/directory consistent)
+  - Marker scan for personal names, absolute workstation paths, stale typo terms, and unfinished-work markers in changed durable files — clean.  Expected matches were standard API names (`tempfile`, `mkdtempSync`, `TemporaryDirectory`) and legitimate SOW vocabulary (`pending`, `follow-up`, `future`).
+
+2026-05-25 (Phase 2A reviewer round 2 closeout):
+
+- Second full-scope reviewer round re-reviewed the whole Phase 2A changed scope after cleanup.
+- Minimax, Mimo, Qwen, and GLM all returned `PRODUCTION GRADE`.
+- Non-blocking observations accepted and recorded:
+  - Rust and Go low-level primitives still use assertion/panic-style internal invariant checks; public error surfaces belong to Phase 2B verification/sealing APIs.
+  - Memory zeroization and key-material lifecycle handling remain Phase 2B+ work because Phase 2A uses synthetic vectors and does not expose public verification or sealing key workflows.
+  - Larger seek/evolve epochs and non-recommended secpar vectors would improve future coverage; current Phase 2A proves recommended systemd FSPRG vectors and records the coverage limit.
+  - Micro-optimizations such as hoisting repeated `n - 1` or counter buffers are not required for Phase 2A and can be revisited during the final benchmark/profile SOW if they show up in real profiles.
+- No reviewer required code, fixture, dependency, or SOW changes before this Phase 2A checkpoint commit.
+
 ### Gaps and Risks Discovered (Phase 1)
 
 1. Libgcrypt atexit segfault: the dynamic-loading path used by systemd v260.1 crashes during program exit. The `_exit` workaround is documented but means the helper cannot use normal `return from main` cleanup. This is acceptable for a test helper but would be unacceptable for production code.
@@ -382,7 +512,8 @@ Phase 2 (pure verification primitives) can now proceed with a trusted baseline.
 
 ## Followup
 
-- Phase 2: implement pure-language FSPRG primitives and journal verification APIs.
+- Phase 2A: implement pure-language FSPRG primitives and vector tests.
+- Phase 2B: implement journal verification APIs.
 - Phase 3: implement file-backed journalctl `--verify` / `--verify-key` behavior.
 - Phase 4: implement writer sealing with deterministic test keys.
 - Phase 5: add tamper/corruption fixtures, stock verification checks, docs/spec updates, and security review.

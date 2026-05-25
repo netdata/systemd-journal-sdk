@@ -54,6 +54,10 @@ notify = { workspace = true }
 tracing = { workspace = true }
 allocative = { workspace = true, optional = true }
 
+# FSPRG dependencies
+num-bigint = { workspace = true }
+sha2 = { workspace = true }
+
 tokio = { workspace = true, features = ["rt", "sync", "macros", "rt-multi-thread"] }
 
 [dev-dependencies]
@@ -61,3 +65,4 @@ tempfile = { workspace = true }
 rayon = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 tracing-subscriber = { workspace = true }
+hex = { workspace = true }

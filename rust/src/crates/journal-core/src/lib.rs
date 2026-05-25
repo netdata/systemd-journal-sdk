@@ -16,6 +16,11 @@ pub mod collections;
 // Low-level journal file format I/O
 pub mod file;
 
+// Forward Secure Sealing primitives
+// Low-level `journal-core` module for FSS integration.
+// The high-level Rust SDK public verification API is not finalized and will come in Phase 2B.
+pub mod fss;
+
 // Field name mapping for systemd compatibility
 pub mod field_map;
 
