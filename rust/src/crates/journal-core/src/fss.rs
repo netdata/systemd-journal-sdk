@@ -112,11 +112,10 @@ fn miller_rabin(n: &BigUint, rounds: usize) -> bool {
     }
 
     let bases: [u64; 64] = [
-        2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
-        59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113,
-        127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181,
-        191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251,
-        257, 263, 269, 271, 277, 281, 283, 293, 307, 311,
+        2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89,
+        97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181,
+        191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251, 257, 263, 269, 271, 277, 281,
+        283, 293, 307, 311,
     ];
     for &a in bases.iter().take(rounds) {
         let a_big = BigUint::from(a);
@@ -173,14 +172,8 @@ fn twopowmodphi(m: u64, p: &BigUint) -> BigUint {
 }
 
 fn crt_compose(xp: &BigUint, xq: &BigUint, p: &BigUint, q: &BigUint) -> BigUint {
-    let mut a = if xq >= xp {
-        xq - xp
-    } else {
-        xq + q - xp
-    };
-    let u = p
-        .modinv(q)
-        .expect("CRT: p and q must be coprime");
+    let mut a = if xq >= xp { xq - xp } else { xq + q - xp };
+    let u = p.modinv(q).expect("CRT: p and q must be coprime");
     a = (&a * &u) % q;
     let n = p * q;
     (p * &a + xp) % &n
@@ -233,7 +226,8 @@ pub fn evolve(state: &[u8]) -> Vec<u8> {
     let secpar = read_secpar(state);
     let n = mpi_import(&state[2..2 + (secpar / 8) as usize]);
     let mut x = mpi_import(&state[2 + (secpar / 8) as usize..2 + 2 * (secpar / 8) as usize]);
-    let mut epoch = uint64_import(&state[2 + 2 * (secpar / 8) as usize..2 + 2 * (secpar / 8) as usize + 8]);
+    let mut epoch =
+        uint64_import(&state[2 + 2 * (secpar / 8) as usize..2 + 2 * (secpar / 8) as usize + 8]);
     x = (&x * &x) % &n;
     epoch += 1;
     let mut new_state = state.to_vec();
@@ -321,9 +315,8 @@ mod tests {
         path.push("fss");
         path.push("fixtures");
         path.push("fsprg-vectors-v01.json");
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-            panic!("failed to read fixture at {}: {}", path.display(), e)
-        });
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read fixture at {}: {}", path.display(), e));
         serde_json::from_str(&text).expect("invalid fixture JSON")
     }
 
@@ -350,8 +343,17 @@ mod tests {
             assert_eq!(mpk, expected_mpk, "mpk mismatch for {}", vec.seed_desc);
 
             let state0 = gen_state0(&mpk, &seed);
-            assert_eq!(state0, expected_state0, "state0 mismatch for {}", vec.seed_desc);
-            assert_eq!(get_epoch(&state0), 0, "epoch0 mismatch for {}", vec.seed_desc);
+            assert_eq!(
+                state0, expected_state0,
+                "state0 mismatch for {}",
+                vec.seed_desc
+            );
+            assert_eq!(
+                get_epoch(&state0),
+                0,
+                "epoch0 mismatch for {}",
+                vec.seed_desc
+            );
 
             for ep in &vec.epochs {
                 let mut evolved = state0.clone();

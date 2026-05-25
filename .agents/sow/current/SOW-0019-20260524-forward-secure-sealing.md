@@ -449,6 +449,148 @@ Failure handling:
   - keep sealed FSS tag/HMAC validation and writer sealing out of scope unless the implementer can complete them with stock/systemd evidence and shared tests inside this phase.
 - Phase 2B must preserve the project boundary: no live host journal probing, no daemon-only key-management behavior, and no writes outside this repository except `/tmp`.
 
+2026-05-25 (Phase 2B implementation):
+
+- Implemented repository journal verification APIs in Rust, Go, Node.js, and Python.
+- Added controlled verification error types per language that can later support sealed FSS verification:
+  - Go: `journal.VerificationError` with `Reason string` (`go/journal/verify.go`)
+  - Python: `journal.VerificationError` exception (`python/journal/verify.py`)
+  - Node.js: `VerificationError` class (`node/src/lib/verify.js`)
+  - Rust: `SdkError::VerificationError(String)` variant (`rust/src/journal/src/lib.rs`)
+- Verification API names added per language:
+  - Go: `journal.VerifyFile(path string) error`
+  - Python: `journal.verify_file(path)`
+  - Node.js: `verifyFile(path)` from `../src/lib/verify.js`
+  - Rust: `journal::verify_file(path: impl AsRef<Path>) -> Result<()>`
+- Verification behavior for unsealed files:
+  - Opens the file (decompressing `.zst` if needed).
+  - Validates the header.
+  - Walks all entries through the entry array chain.
+  - For each entry, strictly parses the entry object and each referenced data object.
+  - Any parse, decompression, or structural error is wrapped as a verification error with "corrupt" in the message.
+- Wires adapters so `journal-verify-corruption-detection` is no longer skipped:
+  - Go adapter (`go/adapter/main.go`): `runCorruptionTest` calls `journal.VerifyFile` on the `corrupted_file` fixture; returns PASS when corruption is detected, FAIL when not.
+  - Python adapter (`python/adapter.py`): `run_corruption_test` calls `journal.verify_file`; same PASS/FAIL logic.
+  - Node.js adapter (`node/adapter/index.js`): `runCorruptionTest` calls `verifyFile`; same PASS/FAIL logic.
+  - Rust adapter (`rust/src/adapter/main.rs`): `test_verify_corruption` calls `verify_file`; same PASS/FAIL logic.
+- Updated adapter `list` output and `probe` capabilities to include `verification: true` for all four languages.
+- Sealed FSS tag/HMAC validation and writer sealing remain explicitly out of scope; adapters do not claim `fss: true`.
+- Files changed:
+  - New: `go/journal/verify.go`, `go/journal/verify_test.go`
+  - New: `python/journal/verify.py`
+  - New: `node/src/lib/verify.js`
+  - Modified: `go/adapter/main.go`, `go/adapter/main_test.go`
+  - Modified: `python/adapter.py`, `python/journal/__init__.py`, `python/test_all.py`
+  - Modified: `node/adapter/index.js`, `node/test/all.js`
+  - Modified: `rust/src/adapter/main.rs`, `rust/src/journal/src/lib.rs`, `rust/src/journal/src/facade.rs`
+- Validation commands and outcomes:
+  - `./tests/fss/run_vectors.sh` — PASS (Phase 2A vectors unchanged)
+  - Go verification targeted tests: `cd go && go test ./journal -run TestVerifyFile -v` — PASS (both corruption detection and valid fixture)
+  - Go full suite: `cd go && go test ./...` — PASS (adapter test updated to expect verification in supported list)
+  - Node full suite: `cd node && npm test` — PASS (verification tests + conformance matrix pass, `expectedSkips` updated)
+  - Python full suite: `. .local/phase2a-venv/bin/activate && PYTHONPATH=$PWD/python python3 python/test_all.py` — PASS
+  - Rust verification targeted tests: `cd rust && cargo test -p journal verify_file` — PASS (both corruption detection and valid fixture)
+  - Adapter direct corruption-detection tests for all four languages returned PASS with error messages containing "corrupt".
+  - `.agents/sow/audit.sh` — PASS (no errors, SOW status/directory consistent)
+  - `git diff --check` — PASS (no trailing whitespace after cleanup)
+- Risks and phase mapping:
+  - Node.js and Python readers silently swallow data-object parse errors in normal `getEntry`/`get_entry`; the verification APIs bypass this by calling `parseDataObject`/`parse_data_object` directly. This divergence is accepted for Phase 2B because the explicit verification API is the integrity surface. No separate reader robustness SOW is opened because this phase does not change the normal reader error-tolerance contract.
+  - The `zstd-truncated-frame.zst` fixture decompression behavior differs across language runtimes (Go zstd returns `unexpected EOF`, Python zstd returns "end-of-stream marker", Node zstd returns "missing field separator", Rust ruzstd returns `DecompressorError`). All are correctly detected as corruption because the verification wrapper guarantees "corrupt" in the error message.
+  - Sealed FSS tag/HMAC verification and writer sealing remain mapped to later SOW-0019 phases: Phase 3 for file-backed journalctl verify behavior and Phase 4 for writer sealing.
+
+2026-05-25 (Phase 2B integration cleanup):
+
+- Ran `gofmt` on changed Go files after implementation.
+- Ran `cargo fmt` on the Rust workspace after `cargo fmt --check` reported formatting drift in the new verification code and the Phase 2A FSPRG file.
+- Added the missing Rust `#[cfg(test)]` guard on the existing journal crate test module after validation exposed normal-library unused-code warnings.
+- Removed an unused Node.js import, simplified a redundant Go verification error string check, and kept the Rust facade error conversion aligned with the verification API's standardized "corrupt file" wording.
+- The `rust/src/crates/journal-core/src/fss.rs` change in this cleanup is formatting-only; the `#[cfg(test)]` change is warning cleanup for test-only code visibility. Both are included in the Phase 2B review scope.
+
+2026-05-25 (Phase 2B manager validation before review):
+
+- `./tests/fss/run_vectors.sh` — PASS.
+- `cd go && env GOCACHE=$PWD/../.local/go-cache GOMODCACHE=$PWD/../.local/go-mod GOPATH=$PWD/../.local/go-path go test ./...` — PASS.
+- `cd node && env npm_config_cache=$PWD/../.local/npm-cache npm test` — PASS.
+- `. .local/phase2a-venv/bin/activate && PYTHONPATH=$PWD/python PYTHONPYCACHEPREFIX=$PWD/.local/pycache python3 python/test_all.py` — PASS.
+- `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journal -p adapter -p journal-core` — PASS.
+- `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo fmt --check` — PASS.
+- `git diff --check` — PASS.
+- `.agents/sow/audit.sh` — PASS.
+- Direct adapter run of `journal-verify-corruption-detection` returned PASS in Go, Node.js, Python, and Rust using the repo-local fixture `fixtures/systemd/test-data/corrupted/zstd-truncated-frame.zst`.
+
+2026-05-25 (Phase 2B reviewer round 1 disposition):
+
+- Reviewers completed:
+  - Minimax: `PRODUCTION GRADE`, with one required cleanup and several informational notes.
+  - Mimo: `PRODUCTION GRADE`, with non-blocking cleanup recommendations.
+  - GLM: `PRODUCTION GRADE`, with one required cleanup and low-severity notes.
+  - Qwen: run started and inspected the diff, but its final output was not available after the session ended; Qwen will be rerun in the next full-scope review round.
+- Required cleanup completed:
+  - Removed stale `journal-verify-corruption-detection` from `python/test_all.py` `expected_skips`, so a regression back to SKIP is caught.
+  - Updated stale Node.js and Python verification-category skip notes to say that the category currently contains sealed FSS verification tests, not that all verification requires missing FSS work.
+  - Added a Go `supportedCategories()` comment explaining that manifest `verification` category tests are sealed FSS tests, while unsealed verification is exercised under `corruption-resilience`.
+- Accepted non-blocking notes:
+  - Python and Node.js verification use reader internals/direct parsers to bypass normal reader error-tolerance; this is intentional for the explicit verification API and is recorded in the Phase 2B implementation notes.
+  - Rust verification initially used the normal reader path and preserved some recoverable-error tolerance; round 2 elevated this to a blocker and the strict verifier fix is recorded below.
+  - Rust `fss.rs` changes are formatting-only from `cargo fmt`.
+
+2026-05-25 (Phase 2B post-review-cleanup validation):
+
+- `./tests/fss/run_vectors.sh` — PASS.
+- `cd go && env GOCACHE=$PWD/../.local/go-cache GOMODCACHE=$PWD/../.local/go-mod GOPATH=$PWD/../.local/go-path go test ./...` — PASS.
+- `cd node && env npm_config_cache=$PWD/../.local/npm-cache npm test` — PASS.
+- `. .local/phase2a-venv/bin/activate && PYTHONPATH=$PWD/python PYTHONPYCACHEPREFIX=$PWD/.local/pycache python3 python/test_all.py` — PASS.
+- `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journal -p adapter -p journal-core` — PASS.
+- `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo fmt --check` — PASS.
+- `git diff --check` — PASS.
+- `.agents/sow/audit.sh` — PASS.
+
+2026-05-25 (Phase 2B reviewer round 2 and blocker fix):
+
+- Round 2 reviewer results before the fix:
+  - Minimax: `PRODUCTION GRADE`, with informational notes about Rust normal-reader tolerance and Go verification strictness.
+  - Mimo: `PRODUCTION GRADE`, with low-severity notes about Rust normal-reader tolerance, Python/Node.js internal parser access, and Go `SeekHead()` error handling.
+  - Qwen: `NOT PRODUCTION GRADE`; blocker was that Rust `verify_file()` used the normal reader path and could skip `InvalidObjectSize(0)`, `ObjectExceedsFileBounds`, or `InvalidOffset` entry/data-object corruption that Go, Node.js, and Python verification paths reject.
+  - GLM: `PRODUCTION GRADE`, but independently confirmed the same Rust tolerance gap and recommended removing stale completed phases from Followup.
+- A focused Kimi implementer run was started for the blocker. It remained in investigation for several minutes without producing edits, so the run was stopped by targeted process ID. No files were changed by that run.
+- A scoped manager edit fixed the blocker after the user had allowed direct edits when faster:
+  - Rust `verify_file()` now opens/decompresses through `FileReader::open()` but verifies through `JournalFile::entry_offsets()` and strict `entry_data_objects()` iteration instead of `FileReader::next()` / `get_entry()`.
+  - Strict Rust verification now fails on entry-array walk errors, entry object errors, data reference errors, data object parse errors, decompression errors, unsupported DATA object flags, multiple DATA compression flags, and missing `FIELD=VALUE` separators.
+  - Normal Rust reader behavior and its recoverable-error tolerance remain unchanged.
+  - Added `verify_file_rejects_referenced_zero_sized_data_object`, which creates a temporary decompressed fixture copy, corrupts a referenced DATA object's size to zero, and verifies the strict API rejects it. This covers a path the previous tolerant verification could miss.
+  - Go `VerifyFile()` now checks `SeekHead()` errors explicitly.
+  - Node.js and Python verification modules now document why they use direct parser/internal reader state for verification.
+  - The Followup section now lists only remaining phases.
+- Targeted validation:
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo fmt` — PASS.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journal verify_file` — PASS (`verify_file_detects_corruption`, `verify_file_passes_on_valid_fixture`, and `verify_file_rejects_referenced_zero_sized_data_object`).
+- Full post-fix validation:
+  - `./tests/fss/run_vectors.sh` — PASS.
+  - `cd go && env GOCACHE=$PWD/../.local/go-cache GOMODCACHE=$PWD/../.local/go-mod GOPATH=$PWD/../.local/go-path go test ./...` — PASS.
+  - `cd node && env npm_config_cache=$PWD/../.local/npm-cache npm test` — PASS.
+  - `. .local/phase2a-venv/bin/activate && PYTHONPATH=$PWD/python PYTHONPYCACHEPREFIX=$PWD/.local/pycache python3 python/test_all.py` — PASS.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journal -p adapter -p journal-core` — PASS.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo fmt --check` — PASS.
+  - `git diff --check` — PASS.
+  - `.agents/sow/audit.sh` — PASS.
+  - Direct adapter run of `journal-verify-corruption-detection` returned PASS in Go, Node.js, Python, and Rust using `.local/phase2b-corruption-test.json` and the repo-local corrupted fixture `fixtures/systemd/test-data/corrupted/zstd-truncated-frame.zst`.
+  - Durable-artifact marker scan found no actionable matches.
+- Reviewer rerun required before checkpoint commit because Qwen's round 2 verdict was `NOT PRODUCTION GRADE` before the strict Rust fix.
+
+2026-05-25 (Phase 2B reviewer round 3 disposition):
+
+- Same-scope reviewer rerun after strict Rust fix:
+  - Minimax: `PRODUCTION GRADE`; no required fixes. Confirmed Rust `verify_file()` no longer uses `FileReader::next()` / `get_entry()`, normal reader tolerance is unchanged, the new zero-sized DATA object test is meaningful, and `verification=true` does not claim sealed FSS support.
+  - Qwen: `PRODUCTION GRADE`; no required fixes. Confirmed the round 2 Rust blocker is fixed. Recorded a caveat that Go verification can still accept some object-graph corruption classes; this is tracked by SOW-0022 and is not a Phase 2B blocker.
+  - GLM: `PRODUCTION GRADE`; no required fixes. Confirmed the Rust strict path and test. Noted Python lacks a multiple-compression-flag check and that `python/journal/__init__.py` had no trailing newline.
+  - Mimo: skipped per user because the model was out of quota. Mimo's earlier round 2 review was `PRODUCTION GRADE` before the Rust strictness improvement, but no post-fix final verdict was available.
+- Disposition:
+  - No required code fixes remained from completed post-fix reviewers.
+  - Python multiple-compression-flag parity is already within SOW-0022's broader verification/corruption-fixture gap scope.
+  - Added the missing trailing newline to `python/journal/__init__.py` because the file is already touched in this chunk.
+  - Final checkpoint validation rerun: `git diff --check` — PASS; `.agents/sow/audit.sh` — PASS; durable-artifact marker scan — clean; `python/journal/__init__.py` trailing newline confirmed.
+  - Phase 2B is reviewed, validated, and ready for checkpoint commit.
+
 ### Gaps and Risks Discovered (Phase 1)
 
 1. Libgcrypt atexit segfault: the dynamic-loading path used by systemd v260.1 crashes during program exit. The `_exit` workaround is documented but means the helper cannot use normal `return from main` cleanup. This is acceptable for a test helper but would be unacceptable for production code.
@@ -522,8 +664,6 @@ Phase 2 (pure verification primitives) can now proceed with a trusted baseline.
 
 ## Followup
 
-- Phase 2A: implement pure-language FSPRG primitives and vector tests.
-- Phase 2B: implement journal verification APIs.
 - Phase 3: implement file-backed journalctl `--verify` / `--verify-key` behavior.
 - Phase 4: implement writer sealing with deterministic test keys.
 - Phase 5: add tamper/corruption fixtures, stock verification checks, docs/spec updates, and security review.

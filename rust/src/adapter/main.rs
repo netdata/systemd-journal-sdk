@@ -4,7 +4,7 @@ use journal::{
     SdJournalAddConjunction, SdJournalAddDisjunction, SdJournalAddMatch, SdJournalEnumerateFields,
     SdJournalGetCursor, SdJournalGetEntry, SdJournalListBoots, SdJournalNext, SdJournalOpen,
     SdJournalProcessOutput, SdJournalSeekHead, SdJournalSetOutputMode, SdJournalTestCursor, Source,
-    parse_match_string,
+    parse_match_string, verify_file,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -212,7 +212,7 @@ fn cmd_probe() -> AnyResult<()> {
             "enumeration": true,
             "export_output": true,
             "json_output": true,
-            "verification": false,
+            "verification": true,
             "fss": false
         }
     });
@@ -233,12 +233,13 @@ fn run_test(tc: &TestCase) -> AdapterResult {
         }
         "journal-query-unique-fields" => test_fields(tc, start),
         "journal-cursor-test" => test_cursor(tc, start),
-        "journal-verify-sealed" | "journal-verify-corruption-detection" => AdapterResult::skip(
+        "journal-verify-sealed" => AdapterResult::skip(
             &tc.test_name,
             &tc.expected.result_format,
-            "verification/FSS is not implemented in the Rust adapter slice",
+            "sealed FSS verification is not implemented in the Rust adapter slice",
             start,
         ),
+        "journal-verify-corruption-detection" => test_verify_corruption(tc, start),
         "journal-corruption-append-resilient" => test_corruption(tc, start),
         "journal-file-header-parse" => test_file_header(tc, start),
         "journal-list-boots" => test_list_boots(tc, start),
@@ -803,6 +804,33 @@ fn test_corruption(tc: &TestCase, start: Instant) -> AdapterResult {
         start,
     )
     .with_evidence(json!({"checked": checked}))
+}
+
+fn test_verify_corruption(tc: &TestCase, start: Instant) -> AdapterResult {
+    let Some(path) = fixture_path(tc, "corrupted_file") else {
+        return AdapterResult::skip(
+            &tc.test_name,
+            &tc.expected.result_format,
+            "no corrupted_file fixture",
+            start,
+        );
+    };
+    match verify_file(&path) {
+        Ok(()) => AdapterResult::fail(
+            &tc.test_name,
+            &tc.expected.result_format,
+            serde_json::Value::Null,
+            "verification did not detect corruption in truncated zstd frame",
+            start,
+        ),
+        Err(err) => AdapterResult::pass(
+            &tc.test_name,
+            &tc.expected.result_format,
+            json!(err.to_string()),
+            start,
+        )
+        .with_evidence(json!({"error": err.to_string()})),
+    }
 }
 
 fn test_list_boots(tc: &TestCase, start: Instant) -> AdapterResult {

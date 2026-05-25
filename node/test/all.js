@@ -29,6 +29,7 @@ import {
 import { compressLz4DataPayload } from '../src/lib/lz4-block.js';
 import { compressXzDataPayload, decompressXzDataPayload } from '../src/lib/xz-block.js';
 import { fsprgGenMK, fsprgGenState0, fsprgEvolve, fsprgSeek, fsprgGetKey, fsprgGetEpoch } from '../src/lib/fss.js';
+import { verifyFile, VerificationError } from '../src/lib/verify.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, '..');
@@ -458,6 +459,23 @@ run(process.execPath, ['-e', "import './node/src/index.js'"], { cwd: repoRoot })
   }
 }
 
+// Verification tests
+{
+  const path = join(repoRoot, 'fixtures/systemd/test-data/corrupted/zstd-truncated-frame.zst');
+  try {
+    verifyFile(path);
+    throw new Error('expected VerificationError for truncated zstd frame');
+  } catch (err) {
+    if (!(err instanceof VerificationError)) throw new Error(`expected VerificationError, got ${err.constructor.name}`);
+    if (!err.message.includes('corrupt')) throw new Error(`expected error to contain 'corrupt', got: ${err.message}`);
+  }
+}
+
+{
+  const path = join(repoRoot, 'fixtures/systemd/test-data/no-rtc/system.journal.zst');
+  verifyFile(path); // should not throw
+}
+
 const manifestPath = join(repoRoot, 'tests/conformance/manifests/conformance-v01.json');
 if (!existsSync(manifestPath)) {
   throw new Error(`missing conformance manifest: ${manifestPath}`);
@@ -466,7 +484,7 @@ if (!existsSync(manifestPath)) {
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 const failures = [];
 const results = [];
-const expectedSkips = new Set(['journal-verify-sealed', 'journal-verify-corruption-detection']);
+const expectedSkips = new Set(['journal-verify-sealed']);
 
 for (const testCase of manifest.test_suite.test_cases) {
   const stdout = run(process.execPath, ['node/adapter/index.js', 'run'], {

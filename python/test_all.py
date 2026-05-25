@@ -297,7 +297,7 @@ def test_fsprg_vectors():
 def test_conformance_manifest():
     manifest_path = REPO_ROOT / 'tests/conformance/manifests/conformance-v01.json'
     manifest = json.loads(manifest_path.read_text())
-    expected_skips = {'journal-verify-sealed', 'journal-verify-corruption-detection'}
+    expected_skips = {'journal-verify-sealed'}
     failures = []
     results = []
     for test_case in manifest['test_suite']['test_cases']:
@@ -317,6 +317,23 @@ def test_conformance_manifest():
         raise AssertionError(f'conformance failures: {failures!r}')
 
 
+def test_verify_file_detects_corruption():
+    from journal.verify import verify_file, VerificationError
+    path = REPO_ROOT / 'fixtures/systemd/test-data/corrupted/zstd-truncated-frame.zst'
+    try:
+        verify_file(str(path))
+    except VerificationError as e:
+        assert 'corrupt' in str(e).lower(), f"expected 'corrupt' in error, got: {e}"
+    else:
+        raise AssertionError('expected VerificationError for truncated zstd frame')
+
+
+def test_verify_file_passes_on_valid_fixture():
+    from journal.verify import verify_file
+    path = REPO_ROOT / 'fixtures/systemd/test-data/no-rtc/system.journal.zst'
+    verify_file(str(path))  # should not raise
+
+
 def main():
     run([sys.executable, '-m', 'compileall', str(PYTHON_ROOT)])
     test_match_validation()
@@ -330,6 +347,8 @@ def main():
     test_directory_writer_rotation()
     test_facade_unique_binary_values()
     test_fsprg_vectors()
+    test_verify_file_detects_corruption()
+    test_verify_file_passes_on_valid_fixture()
     test_conformance_manifest()
     print(f'PASS python package tests ({Path(__file__).relative_to(REPO_ROOT)})')
 

@@ -126,7 +126,7 @@ func runAdapterRun(stdin io.Reader, stdout io.Writer) error {
 		result = runCorruptionTest(&tc)
 	case "verification":
 		result.Status = "SKIP"
-		result.Note = fmt.Sprintf("category %q requires features not yet implemented", tc.Category)
+		result.Note = fmt.Sprintf("category %q currently contains sealed FSS verification tests, which are not yet implemented", tc.Category)
 	default:
 		result.Status = "SKIP"
 		result.Note = fmt.Sprintf("unsupported category: %s", tc.Category)
@@ -147,14 +147,16 @@ func runAdapterRun(stdin io.Reader, stdout io.Writer) error {
 
 func supportedCategories() map[string]bool {
 	return map[string]bool{
-		"file-format":           true,
-		"entry-parse":           true,
-		"matching":              true,
-		"stream":                true,
-		"cursor-navigation":     true,
-		"enumeration":           true,
-		"import-export":         true,
-		"journalctl-cli":        true,
+		"file-format":       true,
+		"entry-parse":       true,
+		"matching":          true,
+		"stream":            true,
+		"cursor-navigation": true,
+		"enumeration":       true,
+		"import-export":     true,
+		"journalctl-cli":    true,
+		// The manifest's verification category currently contains sealed FSS tests.
+		// Unsealed structural verification is exercised under corruption-resilience.
 		"verification":          false,
 		"compression":           true,
 		"corruption-resilience": true,
@@ -179,6 +181,7 @@ func listSupportedTests(stdout io.Writer) {
 		"journalctl-cli:journal-list-boots",
 		"compression:journal-zstd-compressed-read",
 		"corruption-resilience:journal-corruption-append-resilient",
+		"corruption-resilience:journal-verify-corruption-detection",
 	}
 
 	for _, t := range categories {
@@ -209,6 +212,7 @@ func probeAdapter(stdout io.Writer) {
 			"json_output":       true,
 			"list_boots":        true,
 			"zstd_decompress":   true,
+			"verification":      true,
 		},
 	}
 	json.NewEncoder(stdout).Encode(info)
@@ -843,11 +847,25 @@ func runCompressionTest(tc *TestCase) Result {
 
 func runCorruptionTest(tc *TestCase) Result {
 	if tc.TestName == "journal-verify-corruption-detection" {
+		path := resolveFixturePath(tc, "corrupted_file")
+		if path == "" {
+			return Result{TestName: tc.TestName, ResultFormat: tc.Expected.ResultFormat, Status: "SKIP", Note: "no corrupted_file fixture"}
+		}
+		err := journal.VerifyFile(path)
+		if err != nil {
+			return Result{
+				TestName:     tc.TestName,
+				ResultFormat: tc.Expected.ResultFormat,
+				Status:       "PASS",
+				Actual:       err.Error(),
+				Error:        err.Error(),
+			}
+		}
 		return Result{
 			TestName:     tc.TestName,
 			ResultFormat: tc.Expected.ResultFormat,
-			Status:       "SKIP",
-			Note:         "full journal verification is not implemented in the Go reader",
+			Status:       "FAIL",
+			Error:        "verification did not detect corruption in truncated zstd frame",
 		}
 	}
 

@@ -44,6 +44,7 @@ pub enum SdkError {
     NoEntry,
     DecompressionFailed(String),
     Unsupported(&'static str),
+    VerificationError(String),
 }
 
 impl fmt::Display for SdkError {
@@ -55,6 +56,9 @@ impl fmt::Display for SdkError {
             Self::NoEntry => write!(f, "no entry at current position"),
             Self::DecompressionFailed(err) => write!(f, "decompression failed: {err}"),
             Self::Unsupported(op) => write!(f, "unsupported operation: {op}"),
+            Self::VerificationError(msg) => {
+                write!(f, "journal verification failed: corrupt file: {msg}")
+            }
         }
     }
 }
@@ -349,6 +353,20 @@ impl FileReader {
     }
 }
 
+/// Validate the structural integrity of a journal file.
+///
+/// Opens the file (decompressing `.zst` if needed), validates the header,
+/// and walks all entries and their referenced data objects.
+/// Any parse or decompression error is reported as an `SdkError` with
+/// a message containing "corrupt" so callers can detect verification failures.
+///
+/// For sealed journals, tag/HMAC verification is not yet implemented.
+pub fn verify_file(path: impl AsRef<Path>) -> Result<()> {
+    let reader = FileReader::open(path)
+        .map_err(|err| SdkError::VerificationError(format!("open/decompression failed: {err}")))?;
+    reader.inner.with_file(verify_journal_file_strict)
+}
+
 pub struct DirectoryReader {
     files: Vec<FileReader>,
     index: usize,
@@ -640,6 +658,73 @@ fn read_entry_at(
     })
 }
 
+fn verify_journal_file_strict(file: &JournalFile<Mmap>) -> Result<()> {
+    let mut entry_offsets = Vec::new();
+    file.entry_offsets(&mut entry_offsets)
+        .map_err(|err| SdkError::VerificationError(format!("entry array walk failed: {err}")))?;
+
+    let mut decompressed = Vec::new();
+    for entry_offset in entry_offsets {
+        verify_entry_at_strict(file, entry_offset, &mut decompressed)?;
+    }
+
+    Ok(())
+}
+
+fn verify_entry_at_strict(
+    file: &JournalFile<Mmap>,
+    entry_offset: NonZeroU64,
+    decompressed: &mut Vec<u8>,
+) -> Result<()> {
+    file.entry_ref(entry_offset).map_err(|err| {
+        SdkError::VerificationError(format!(
+            "entry object at offset {entry_offset} failed: {err}"
+        ))
+    })?;
+
+    let data_objects = file.entry_data_objects(entry_offset).map_err(|err| {
+        SdkError::VerificationError(format!(
+            "entry data list at offset {entry_offset} failed: {err}"
+        ))
+    })?;
+
+    for data in data_objects {
+        let data = data.map_err(|err| {
+            SdkError::VerificationError(format!(
+                "data object referenced by entry at offset {entry_offset} failed: {err}"
+            ))
+        })?;
+
+        let flags = data.header.object_header.flags;
+        let compression_flags = flags & 0x07;
+        if flags & !0x07 != 0 || compression_flags.count_ones() > 1 {
+            return Err(SdkError::VerificationError(format!(
+                "data object referenced by entry at offset {entry_offset} has unsupported flags 0x{flags:02x}"
+            )));
+        }
+
+        let payload = if data.is_compressed() {
+            decompressed.clear();
+            data.decompress(decompressed).map_err(|err| {
+                SdkError::VerificationError(format!(
+                    "compressed data object referenced by entry at offset {entry_offset} failed: {err}"
+                ))
+            })?;
+            decompressed.as_slice()
+        } else {
+            data.raw_payload()
+        };
+
+        if !payload.contains(&b'=') {
+            return Err(SdkError::VerificationError(format!(
+                "data object referenced by entry at offset {entry_offset} is missing field separator"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 fn recoverable_entry_error(err: &JournalError) -> bool {
     matches!(
         err,
@@ -884,6 +969,14 @@ mod tests {
     use serde_json::Value;
     use std::path::PathBuf;
 
+    struct TempPath(PathBuf);
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
     #[test]
     fn parse_match_bytes_accepts_binary_values() {
         let data = b"MESSAGE=\xff\x00binary";
@@ -977,5 +1070,62 @@ mod tests {
             .join("../../..")
             .canonicalize()
             .expect("repo root")
+    }
+
+    #[test]
+    fn verify_file_detects_corruption() {
+        let path =
+            repo_root().join("fixtures/systemd/test-data/corrupted/zstd-truncated-frame.zst");
+        let err =
+            verify_file(&path).expect_err("expected verification error for truncated zstd frame");
+        let msg = err.to_string();
+        assert!(
+            msg.to_lowercase().contains("corrupt"),
+            "expected error to contain 'corrupt', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn verify_file_passes_on_valid_fixture() {
+        let path = repo_root().join("fixtures/systemd/test-data/no-rtc/system.journal.zst");
+        verify_file(&path).expect("expected verification to pass for valid fixture");
+    }
+
+    #[test]
+    fn verify_file_rejects_referenced_zero_sized_data_object() {
+        let fixture = repo_root().join("fixtures/systemd/test-data/no-rtc/system.journal.zst");
+        let path = decompress_zst_to_temp(&fixture, "rust-sdk-verify-corrupt")
+            .expect("decompress fixture to temporary journal");
+        let _cleanup = TempPath(path.clone());
+
+        let data_offset = {
+            let reader = FileReader::open(&path).expect("open decompressed journal");
+            reader.inner.with_file(|file| {
+                let mut entry_offsets = Vec::new();
+                file.entry_offsets(&mut entry_offsets)
+                    .expect("collect entry offsets");
+                let mut data_offsets = Vec::new();
+                file.entry_data_object_offsets(entry_offsets[0], &mut data_offsets)
+                    .expect("collect data offsets");
+                data_offsets[0]
+            })
+        };
+
+        let mut bytes = std::fs::read(&path).expect("read journal bytes");
+        let size_start = data_offset.get() as usize + 8;
+        bytes[size_start..size_start + 8].copy_from_slice(&0u64.to_le_bytes());
+        std::fs::write(&path, bytes).expect("write corrupted journal bytes");
+
+        let err = verify_file(&path)
+            .expect_err("strict verification should reject referenced zero-sized data object");
+        let msg = err.to_string();
+        assert!(
+            msg.to_lowercase().contains("corrupt"),
+            "expected error to contain 'corrupt', got: {msg}"
+        );
+        assert!(
+            msg.contains("data object"),
+            "expected strict data-object error, got: {msg}"
+        );
     }
 }

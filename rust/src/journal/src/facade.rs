@@ -337,5 +337,8 @@ fn map_error(err: SdkError) -> Error {
         SdkError::DecompressionFailed(msg) => Error::Other(msg),
         SdkError::InvalidPath(msg) => Error::Other(msg),
         SdkError::Journal(err) => Error::Other(err.to_string()),
+        SdkError::VerificationError(msg) => {
+            Error::Other(format!("journal verification failed: corrupt file: {msg}"))
+        }
     }
 }

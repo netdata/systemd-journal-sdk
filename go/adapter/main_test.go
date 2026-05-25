@@ -36,13 +36,10 @@ func TestListSupportedIncludesImplementedCompressionAndCorruptionTests(t *testin
 	for _, test := range tests {
 		seen[test] = struct{}{}
 	}
-	for _, want := range []string{"journal-zstd-compressed-read", "journal-corruption-append-resilient"} {
+	for _, want := range []string{"journal-zstd-compressed-read", "journal-corruption-append-resilient", "journal-verify-corruption-detection"} {
 		if _, ok := seen[want]; !ok {
 			t.Fatalf("supported test list missing %q: %v", want, tests)
 		}
-	}
-	if _, ok := seen["journal-verify-corruption-detection"]; ok {
-		t.Fatalf("supported test list includes full verification test that the adapter intentionally skips")
 	}
 }
 

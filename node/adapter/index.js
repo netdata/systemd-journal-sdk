@@ -10,6 +10,7 @@ import { DirectoryReader } from '../src/lib/directory-reader.js';
 import { Writer } from '../src/lib/writer.js';
 import { exportEntry, jsonEntry, parseCursor } from '../src/facade.js';
 import { parseMatchString } from '../src/lib/hash.js';
+import { verifyFile } from '../src/lib/verify.js';
 import { isJournalFileName } from '../src/lib/compress.js';
 import { readUint64LE, uuidToString, randomUUID, bufEqual } from '../src/lib/binary.js';
 import { HEADER_SIZE } from '../src/lib/header.js';
@@ -71,7 +72,7 @@ function runAdapter() {
       case 'compression': result = runCompressionTest(tc); break;
       case 'corruption-resilience': result = runCorruptionTest(tc); break;
       case 'verification':
-        result = { status: 'SKIP', note: `category "${tc.category}" requires FSS features (SOW-0008)` }; break;
+        result = { status: 'SKIP', note: `category "${tc.category}" currently contains sealed FSS verification tests, which are not yet implemented` }; break;
       default:
         result = { status: 'SKIP', note: `unsupported category: ${tc.category}` };
     }
@@ -361,7 +362,14 @@ function runCompressionTest(tc) {
 
 function runCorruptionTest(tc) {
   if (tc.test_name === 'journal-verify-corruption-detection') {
-    return { status: 'SKIP', note: 'full journal verification not implemented' };
+    const path = resolveFixture(tc, 'corrupted_file');
+    if (!path) return { status: 'SKIP', note: 'no corrupted_file fixture' };
+    try {
+      verifyFile(path);
+    } catch (err) {
+      return { status: 'PASS', actual: err.message, error: err.message };
+    }
+    return { status: 'FAIL', error: 'verification did not detect corruption in truncated zstd frame' };
   }
   let checked = 0;
   let readErrors = 0;
@@ -399,6 +407,7 @@ function listTests() {
     'journal-list-boots',
     'journal-zstd-compressed-read',
     'journal-corruption-append-resilient',
+    'journal-verify-corruption-detection',
   ]) + '\n');
 }
 
@@ -415,6 +424,7 @@ function probeAdapter() {
       match_disjunction: true, unique_fields: true,
       export_output: true, json_output: true,
       list_boots: true, zstd_decompress: true,
+      verification: true,
     },
   }) + '\n');
 }

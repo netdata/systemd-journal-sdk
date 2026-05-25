@@ -79,7 +79,10 @@ def run_adapter():
         elif category == 'corruption-resilience':
             result = run_corruption_test(tc)
         elif category == 'verification':
-            result = {'status': 'SKIP', 'note': f'category "{category}" requires FSS features (SOW-0008)'}
+            result = {
+                'status': 'SKIP',
+                'note': f'category "{category}" currently contains sealed FSS verification tests, which are not yet implemented',
+            }
         else:
             result = {'status': 'SKIP', 'note': f'unsupported category: {category}'}
     except Exception as e:
@@ -414,7 +417,15 @@ def run_compression_test(tc):
 def run_corruption_test(tc):
     name = tc.get('test_name', '')
     if name == 'journal-verify-corruption-detection':
-        return {'status': 'SKIP', 'note': 'full journal verification not implemented'}
+        from journal.verify import verify_file, VerificationError
+        path = resolve_fixture(tc, 'corrupted_file')
+        if not path:
+            return {'status': 'SKIP', 'note': 'no corrupted_file fixture'}
+        try:
+            verify_file(path)
+        except VerificationError as e:
+            return {'status': 'PASS', 'actual': str(e), 'error': str(e)}
+        return {'status': 'FAIL', 'error': 'verification did not detect corruption in truncated zstd frame'}
     checked = 0
     read_errors = 0
     for key in ['corrupted_file', 'afl_corrupted_1', 'afl_corrupted_2']:
@@ -455,6 +466,7 @@ def list_tests():
         'journal-list-boots',
         'journal-zstd-compressed-read',
         'journal-corruption-append-resilient',
+        'journal-verify-corruption-detection',
     ]
     print(json.dumps(tests))
 
@@ -477,6 +489,7 @@ def probe_adapter():
             'json_output': True,
             'list_boots': True,
             'zstd_decompress': _HAS_ZSTD,
+            'verification': True,
         },
     }
     print(json.dumps(info))
