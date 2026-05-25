@@ -218,27 +218,174 @@ Failure handling:
 - Updated delegation model routing from the older Minimax implementer default to Kimi implementer plus reviewer-only pool.
 - Safety constraint for implementers and reviewers: do not run `systemd-cat`, `logger`, `journalctl --setup-keys`, live `journalctl` without `--file` or repository-local `--directory`, `systemd-journal-remote --seal` against live journal data, or anything that writes `/var/log/journal` or `/run/log/journal`.
 
+2026-05-25 (Phase 1 fix — FSPRG_Seek direct exercise):
+
+- Patched `tests/fss/fsprg_vector_generator.c` to:
+  - Fix hex buffer size calculation (was sized for max(msk,mpk) but state is larger).
+  - For each epoch, compute both an `evolved_state` (via `FSPRG_Evolve` from `state0`) and a `seek_state` (via `FSPRG_Seek` from `state0` using `msk` and `seed`).
+  - Compare the two states byte-for-byte; abort with `-EIO` if they differ.
+  - Emit `"seek_state_hex"` and `"seek_matches_evolved": true` in every epoch object.
+- Regenerated fixture with `./tests/fss/run_vectors.sh --update`.
+- Updated `tests/fss/README.md` to state that `FSPRG_Seek` is directly exercised and explain the cross-check semantics.
+- Exact commands run:
+  - `./tests/fss/run_vectors.sh --update` – built and regenerated fixture successfully
+  - `python3 -m json.tool tests/fss/fixtures/fsprg-vectors-v01.json` – valid JSON
+  - Custom Python check confirmed every epoch has `seek_state_hex`, `seek_matches_evolved: true`, and `state_hex == seek_state_hex`
+
+2026-05-25 (Phase 1 implementation):
+
+- Created `tests/fss/` directory for repo-local FSS reference/vector area.
+- Added `tests/fss/fsprg_vector_generator.c` – C helper that calls systemd internal FSPRG APIs (`FSPRG_GenMK`, `FSPRG_GenState0`, `FSPRG_Evolve`, `FSPRG_GetKey`) and emits deterministic JSON vectors. Uses `_exit(0)` after `fflush(stdout)` to avoid a libgcrypt atexit-handler crash with dynamic gcrypt loading; all output is flushed before exit.
+- Added `tests/fss/build.sh` – clones or reuses systemd v260.1 under `.local/`, copies the generator into the systemd source tree, patches `src/libsystemd/meson.build` to add a manual test target, and builds it with ninja. Modeled after `tests/datasets/ingesters/systemd/build.sh`.
+- Added `tests/fss/fixtures/fsprg-vectors-v01.json` – committed deterministic fixture covering:
+  - `FSPRG_RECOMMENDED_SECPAR = 1536`
+  - `FSPRG_RECOMMENDED_SEEDLEN = 12`
+  - Two fixed synthetic seeds: all-zeros and incremental `0x01..0x0c`
+  - Generated `msk_hex`, `mpk_hex`, `state0_hex`
+  - Epochs `0, 1, 2, 3, 17` with full state and 32-byte `FSPRG_GetKey` output for `idx = 0, 1`
+- Added `tests/fss/run_vectors.sh` – runner that builds the helper, generates vectors to a temp file under `.local/`, validates JSON, and compares to the committed fixture. Supports `--update` mode to refresh the fixture.
+- Added `tests/fss/README.md` – documents what the vectors prove, which systemd source lines define the behavior, why daemon key setup is out of scope, and a safe/unsafe command list for this repo.
+- Exact commands run during implementation:
+  - `./tests/fss/build.sh` – built `test-fss-vector-generator` inside `.local/systemd-v260.1-build/`
+  - `.local/systemd-v260.1-build/test-fss-vector-generator > tests/fss/fixtures/fsprg-vectors-v01.json` – generated fixture
+  - `./tests/fss/run_vectors.sh` – validated compare mode passes
+  - `.agents/sow/audit.sh` – passed
+- Files changed (all within repository):
+  - `tests/fss/fsprg_vector_generator.c` (new)
+  - `tests/fss/build.sh` (new)
+  - `tests/fss/run_vectors.sh` (new)
+  - `tests/fss/fixtures/fsprg-vectors-v01.json` (new)
+  - `tests/fss/README.md` (new)
+  - `.local/systemd-v260.1-src/src/libsystemd/sd-journal/test-fss-vector-generator.c` (generated copy, under `.local/`, not committed)
+  - `.local/systemd-v260.1-src/src/libsystemd/meson.build` (patched in `.local/` clone only, not committed)
+
+2026-05-25 (Phase 1 reproducibility fix — build.sh marker):
+
+- Fixed `tests/fss/build.sh` to be self-contained on a fresh systemd v260.1 clone.
+- The original script used `sd-journal/test-dataset-ingester.c` as the meson.build insertion marker, but that entry is not upstream; it is added by `tests/datasets/ingesters/systemd/build.sh`. This made the FSS build script dependent on prior local state.
+- Changed the marker to the upstream `sd-journal/test-journal-append.c` manual test entry, matching the pattern used by `tests/datasets/ingesters/systemd/build.sh` for its own insertion.
+- The script remains idempotent: the `if "sd-journal/test-fss-vector-generator.c" not in text:` guard prevents duplicate entries on repeated runs.
+- Exact commands run to validate:
+  - `./tests/fss/run_vectors.sh` – `[PASS] Generated fixture matches committed fixture.`
+  - `python3 -m json.tool tests/fss/fixtures/fsprg-vectors-v01.json` – valid JSON
+  - `.agents/sow/audit.sh` – passed with no errors
+  - `grep 'test-journal-append\|test-dataset-ingester' tests/fss/build.sh` – confirms only `test-journal-append` is referenced
+- Files changed:
+  - `tests/fss/build.sh` (modified)
+
+2026-05-25 (Reviewer round 1 disposition and cleanup):
+
+- Four read-only reviewers returned `PRODUCTION GRADE` for Phase 1.
+- A cleanup implementer retry with Kimi stalled after reading files and was terminated with targeted process cleanup; no partial changes were observed from that run.
+- Non-blocking findings were still cleaned up to avoid carrying technical debt:
+  - `tests/fss/fsprg_vector_generator.c` now checks `fflush(stdout)` before `_exit(EXIT_SUCCESS)`. Flush failure reports a stderr error, flushes stderr, and exits with `_exit(EXIT_FAILURE)`.
+  - The generator `fail:` path now flushes stderr and exits through `_exit(EXIT_FAILURE)`, avoiding the documented libgcrypt atexit path on failure too.
+  - `tests/fss/run_vectors.sh` now captures the generator path printed by `tests/fss/build.sh` instead of hardcoding `.local/systemd-v260.1-build/test-fss-vector-generator`.
+  - `tests/fss/run_vectors.sh` writes generator output to a candidate `.local/*.tmp` file, validates JSON there, and promotes it to the stable generated fixture path only after validation succeeds.
+- Reviewer findings accepted as non-blocking and intentionally not changed:
+  - Variable-length arrays in the helper are acceptable for the fixed recommended secpar vector size.
+  - Shared `.local/systemd-v260.1-src` and `.local/systemd-v260.1-build` mirrors the existing dataset-ingester pattern; Meson/Ninja regeneration handles patched `meson.build` state.
+  - Shellcheck SC2059 remains consistent with the existing visible-command helper pattern in this repository.
+
+2026-05-25 (Reviewer round 2 disposition and cleanup):
+
+- Second full-scope reviewer round returned `PRODUCTION GRADE` from Minimax, Mimo, Qwen, and GLM.
+- Qwen identified two low-severity helper-quality findings:
+  - if the second seed generation failed after the first seed printed, stdout could contain an invalid partial JSON document before the helper exited non-zero;
+  - per-epoch evolved/seeked FSPRG states used variable-length arrays.
+- Both findings were cleaned instead of carried as debt:
+  - `tests/fss/fsprg_vector_generator.c` now buffers each seed object with `open_memstream()` and prints the top-level JSON only after both seeds generate successfully;
+  - evolved and seeked states are now heap buffers allocated once per seed and reused across epochs.
+- GLM noted that `.local/fsprg-vectors-generated.json` remains after successful compare mode. This is accepted as non-blocking because the file is under gitignored `.local/`, mirrors the existing generated-artifact inspection pattern, and helps inspect drift when compare mode fails.
+- Post-cleanup `./tests/fss/run_vectors.sh` passed and confirmed the committed fixture bytes did not change.
+
+2026-05-25 (Reviewer round 3 closeout):
+
+- Third full-scope reviewer round re-reviewed the whole Phase 1 changed scope after the per-seed buffering and heap-state cleanup.
+- Minimax, Mimo, Qwen, and GLM all returned `PRODUCTION GRADE` with no required fixes before commit.
+- Non-blocking observations accepted and recorded:
+  - Shellcheck SC2059 remains an informational finding inherited from the existing visible-command helper pattern.
+  - The shell helper's first error line prints `$1`, while the immediately following `Full command` line prints `$*`; this is cosmetic and matches the existing dataset-ingester helper pattern.
+  - `run_vectors.sh` extracts the final `build.sh` stdout line with `tail -n 1`; this is accepted because `build.sh` intentionally prints the executable path last.
+  - Shared `.local/systemd-v260.1-src` and `.local/systemd-v260.1-build` remain accepted because both helper scripts have independent Meson entry guards and mirror the existing dataset-ingester design.
+
+### Gaps and Risks Discovered (Phase 1)
+
+1. Libgcrypt atexit segfault: the dynamic-loading path used by systemd v260.1 crashes during program exit. The `_exit` workaround is documented but means the helper cannot use normal `return from main` cleanup. This is acceptable for a test helper but would be unacceptable for production code.
+2. The vectors cover only the recommended secpar/seedlen. Other valid secpar values (multiples of 16 from 16 to 16384) are not vectored. Future SDK implementations must still validate `ISVALID_SECPAR` behavior independently.
+3. `FSPRG_Seek` is directly exercised for every epoch vector. The generator cross-checks evolved state against seeked state and aborts on mismatch. (Fixed 2026-05-25; see Execution Log.)
+4. HMAC tag object bytes and header authentication bytes are inventoried in the Pre-Implementation Gate but not yet represented as executable vectors. Those require journal file integration, which is intentionally deferred to Phase 2+.
+
 ## Validation
 
 Sensitive data gate:
 
-- Pending phase validation. Current durable artifacts contain only synthetic test-key policy, source paths, line references, and model-routing notes. No production FSS keys, private logs, customer identifiers, or host journal data may be written to this SOW or committed fixtures.
+- Phase 1 validated. No production keys, customer identifiers, secrets, or host journal data were written to durable artifacts. The committed fixture contains only synthetic test vectors with explicitly documented seeds (all-zeros and incremental `0x01..0x0c`). All key material is deterministic and reproducible from public parameters.
 
 Implementation validation:
 
-- Pending implementation.
+- Vector generator builds successfully from systemd v260.1 internal code and exits cleanly.
+- Generated JSON validates with `python3 -m json.tool`.
+- `./tests/fss/run_vectors.sh` (compare mode) passes: generated fixture is byte-identical to committed fixture.
+- `.agents/sow/audit.sh` passes with no errors.
+- Shellcheck run on `tests/fss/build.sh` and `tests/fss/run_vectors.sh` reports only SC2059 (info) about printf format strings, which matches the existing project pattern in `tests/datasets/ingesters/systemd/build.sh`.
+- No changes were made outside this repository. The systemd source clone and build remain under `.local/`.
+
+Seek-fix validation (2026-05-25):
+
+- `FSPRG_Seek` is called for every epoch (`0, 1, 2, 3, 17`) in both seeds.
+- The generator compares evolved state and seeked state byte-for-byte; mismatch aborts with non-zero exit.
+- Every epoch object in the fixture includes `seek_state_hex` and `seek_matches_evolved: true`.
+- A Python spot-check confirms `state_hex == seek_state_hex` for all 10 epoch entries.
+- The hex buffer size bug (original allocation used `max(msklen, mpklen)` but `statelen` is larger) was fixed by sizing against `max(msklen, mpklen, statelen)`.
+
+Reviewer-cleanup validation (2026-05-25):
+
+- `./tests/fss/run_vectors.sh` passed after the runner began capturing the generator path and promoting only JSON-valid candidate output.
+- `python3 -m json.tool tests/fss/fixtures/fsprg-vectors-v01.json` passed.
+- Python structural check confirmed all 10 epoch entries still have matching `state_hex` and `seek_state_hex`.
+- `.agents/sow/audit.sh` passed.
+- `git diff --check -- .agents/sow/current/SOW-0019-20260524-forward-secure-sealing.md tests/fss` passed.
+
+Reviewer-round-2 cleanup validation (2026-05-25):
+
+- `./tests/fss/run_vectors.sh` passed after per-seed output buffering and heap-state cleanup.
+- The generated fixture remained byte-identical to `tests/fss/fixtures/fsprg-vectors-v01.json`.
+- `python3 -m json.tool tests/fss/fixtures/fsprg-vectors-v01.json` passed.
+- Python structural check confirmed all 10 epoch entries still have matching `state_hex` and `seek_state_hex`.
+- `git diff --check -- .agents/sow/current/SOW-0019-20260524-forward-secure-sealing.md tests/fss` passed.
+- Grep for personal-name, absolute workstation path, and unfinished-work marker terms in changed durable files returned no matches.
+
+Reviewer-round-3 validation (2026-05-25):
+
+- Four read-only reviewers rechecked the full Phase 1 scope after cleanup and returned `PRODUCTION GRADE`.
+- No reviewer required additional code, fixture, documentation, or SOW changes before this Phase 1 checkpoint commit.
+- Reviewers independently confirmed the fixture remains trustworthy as a systemd v260.1 FSPRG baseline and that Phase 1 does not claim SDK verification or writer sealing support.
 
 ## Outcome
 
-Pending.
+Phase 1 completed:
+
+- A repo-local FSS reference/vector area exists under `tests/fss/`.
+- A systemd v260.1 C reference helper builds and runs deterministically under `.local/`.
+- Committed fixture `tests/fss/fixtures/fsprg-vectors-v01.json` captures FSPRG behavior for recommended parameters, two seeds, five epochs, and two key indices.
+- A runner script supports compare mode (default) and explicit update mode.
+- Documentation covers vector semantics, upstream source references, scope boundaries, and safety guardrails.
+
+Phase 2 (pure verification primitives) can now proceed with a trusted baseline.
 
 ## Lessons Extracted
 
-Pending activation.
+1. Libgcrypt dynamic loading via systemd's `dlopen_gcrypt()` path can segfault in atexit handlers when the program exits normally. Using `_exit(0)` after explicit `fflush(stdout)` is an acceptable workaround for a test helper that has no heap resources requiring cleanup beyond what glibc reclaims.
+2. Building inside the systemd meson tree is the lowest-friction way to get correct headers, defines, and linking for internal APIs like FSPRG. Copying the helper into the tree and adding a `manual` test entry matches the existing dataset-ingester pattern.
+3. Deterministic synthetic vectors should be generated once, committed, and then protected by a compare-mode runner. This prevents silent drift when build environments or library versions change.
 
 ## Followup
 
-Pending activation.
+- Phase 2: implement pure-language FSPRG primitives and journal verification APIs.
+- Phase 3: implement file-backed journalctl `--verify` / `--verify-key` behavior.
+- Phase 4: implement writer sealing with deterministic test keys.
+- Phase 5: add tamper/corruption fixtures, stock verification checks, docs/spec updates, and security review.
 
 ## Regression Log
 
