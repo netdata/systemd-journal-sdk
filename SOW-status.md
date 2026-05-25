@@ -2,7 +2,7 @@
 
 ## Current
 
-- `SOW-0019-20260524-forward-secure-sealing.md` - in-progress. Phase 2B implementation is reviewed and validated: journal verification APIs added in Rust, Go, Node.js, and Python; Rust verification now uses a strict entry/data-object path instead of the normal reader's recoverable-error tolerance; `journal-verify-corruption-detection` is wired to real behavior in all four adapters; controlled verification error types introduced. Ready for checkpoint commit before Phase 3.
+- `SOW-0019-20260524-forward-secure-sealing.md` - in-progress. Phase 2B implementation was committed and pushed as `2e9d025`: journal verification APIs added in Rust, Go, Node.js, and Python; Rust verification now uses a strict entry/data-object path instead of the normal reader's recoverable-error tolerance; `journal-verify-corruption-detection` is wired to real behavior in all four adapters; controlled verification error types introduced. Phase 3 has not started pending compatibility-gap reconciliation with SOW-0022.
 
 ## Pending
 

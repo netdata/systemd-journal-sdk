@@ -4,7 +4,7 @@
 
 Status: in-progress
 
-Sub-state: active phase 2B - journal verification APIs.
+Sub-state: Phase 2B checkpoint committed; Phase 3 has not started pending compatibility-gap reconciliation with SOW-0022.
 
 ## Requirements
 
@@ -591,6 +591,19 @@ Failure handling:
   - Final checkpoint validation rerun: `git diff --check` — PASS; `.agents/sow/audit.sh` — PASS; durable-artifact marker scan — clean; `python/journal/__init__.py` trailing newline confirmed.
   - Phase 2B is reviewed, validated, and ready for checkpoint commit.
 
+2026-05-25 (Phase 2B checkpoint and SOW-0022 reconciliation):
+
+- Phase 2B was committed and pushed as `2e9d025 Add journal verification APIs`.
+- Pending `SOW-0022-20260525-compatibility-test-gap-audit.md` was inspected before starting Phase 3.
+- Confirmed overlap with this active SOW:
+  - SOW-0022 Gap 2 overlaps SOW-0019 verification scope and records that the Phase 2B verification APIs are still not full systemd object-graph verification.
+  - SOW-0022 Gap 6 overlaps SOW-0019 Phase 3 for file-backed `journalctl --verify` / `--verify-key`.
+  - SOW-0022 FSS live-matrix coverage should wait until SOW-0019 writer sealing exists.
+- Confirmed non-overlap:
+  - SOW-0022 Gap 3 remains owned by pending `SOW-0020-20260524-directory-traversal-parity.md`.
+  - Compression threshold, historical header parsing, compact/compressed layout parity, and invalid monotonic writer behavior are independent compatibility gaps unless the user chooses to merge them into this SOW.
+- Phase 3 has not started. Next step is to resolve SOW-0022's open decisions before widening or narrowing SOW-0019.
+
 ### Gaps and Risks Discovered (Phase 1)
 
 1. Libgcrypt atexit segfault: the dynamic-loading path used by systemd v260.1 crashes during program exit. The `_exit` workaround is documented but means the helper cannot use normal `return from main` cleanup. This is acceptable for a test helper but would be unacceptable for production code.
@@ -654,7 +667,18 @@ Phase 1 completed:
 - A runner script supports compare mode (default) and explicit update mode.
 - Documentation covers vector semantics, upstream source references, scope boundaries, and safety guardrails.
 
-Phase 2 (pure verification primitives) can now proceed with a trusted baseline.
+Phase 2 is partially complete on top of the trusted FSS vector baseline.
+
+Phase 2A completed:
+
+- Pure FSPRG primitives exist in Rust, Go, Node.js, and Python.
+- All four implementations match committed systemd v260.1 vectors.
+
+Phase 2B completed:
+
+- Unsealed journal verification APIs exist in Rust, Go, Node.js, and Python.
+- The shared `journal-verify-corruption-detection` conformance case now runs real behavior in every adapter.
+- This phase does not claim sealed FSS tag/HMAC verification or full systemd object-graph verification parity.
 
 ## Lessons Extracted
 
