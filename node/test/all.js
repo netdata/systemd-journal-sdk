@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
@@ -28,12 +28,14 @@ import {
 } from '../src/lib/header.js';
 import { compressLz4DataPayload } from '../src/lib/lz4-block.js';
 import { compressXzDataPayload, decompressXzDataPayload } from '../src/lib/xz-block.js';
+import { decompressZstSync } from '../src/lib/compress.js';
 import { fsprgGenMK, fsprgGenState0, fsprgEvolve, fsprgSeek, fsprgGetKey, fsprgGetEpoch } from '../src/lib/fss.js';
 import { verifyFile, VerificationError } from '../src/lib/verify.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, '..');
 const repoRoot = resolve(packageRoot, '..');
+const validFSSVerificationKey = 'c262bd-85187f-0b1b04-877cc5/1c7af8-35a4e900';
 
 function listJavaScriptFiles(dir, out = []) {
   for (const stat of readdirSync(dir, { withFileTypes: true })) {
@@ -474,6 +476,178 @@ run(process.execPath, ['-e', "import './node/src/index.js'"], { cwd: repoRoot })
 {
   const path = join(repoRoot, 'fixtures/systemd/test-data/no-rtc/system.journal.zst');
   verifyFile(path); // should not throw
+}
+
+// journalctl command verify tests
+{
+  const validPath = join(repoRoot, 'fixtures/systemd/test-data/no-rtc/system.journal.zst');
+  const corruptPath = join(repoRoot, 'fixtures/systemd/test-data/corrupted/zstd-truncated-frame.zst');
+  const cmd = process.execPath;
+  const script = join(packageRoot, 'cmd/journalctl/index.js');
+
+  // --verify valid file
+  {
+    const result = spawnSync(cmd, [script, '--verify', '--file', validPath], { encoding: 'utf8' });
+    if (result.status !== 0) {
+      throw new Error(`--verify valid file failed: stderr=${result.stderr}`);
+    }
+    if (result.stdout !== '') {
+      throw new Error(`expected no stdout, got: ${result.stdout}`);
+    }
+    if (!result.stderr.includes('PASS:')) {
+      throw new Error(`expected PASS in stderr, got: ${result.stderr}`);
+    }
+  }
+
+  // --verify-only valid file (no normal output)
+  {
+    const result = spawnSync(cmd, [script, '--verify-only', '--file', validPath], { encoding: 'utf8' });
+    if (result.status !== 0) {
+      throw new Error(`--verify-only valid file failed: stderr=${result.stderr}`);
+    }
+    if (result.stdout !== '') {
+      throw new Error(`expected no stdout, got: ${result.stdout}`);
+    }
+    if (!result.stderr.includes('PASS:')) {
+      throw new Error(`expected PASS in stderr, got: ${result.stderr}`);
+    }
+  }
+
+  // --verify directory follows symlinked journals and skips directories
+  {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'node-verify-dir-'));
+    symlinkSync(validPath, join(tmpDir, 'linked.journal.zst'));
+    mkdirSync(join(tmpDir, 'skip.journal.zst'));
+
+    const result = spawnSync(cmd, [script, '--verify', '--directory', tmpDir], { encoding: 'utf8' });
+    rmSync(tmpDir, { recursive: true });
+    if (result.status !== 0) {
+      throw new Error(`--verify directory failed: stderr=${result.stderr}`);
+    }
+    if (result.stdout !== '') {
+      throw new Error(`expected no stdout, got: ${result.stdout}`);
+    }
+    if ((result.stderr.match(/PASS:/g) || []).length !== 1) {
+      throw new Error(`expected one PASS in stderr, got: ${result.stderr}`);
+    }
+    if (result.stderr.includes('FAIL:')) {
+      throw new Error(`expected no FAIL in stderr, got: ${result.stderr}`);
+    }
+  }
+
+  // --verify empty directory
+  {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'node-verify-empty-dir-'));
+    const result = spawnSync(cmd, [script, '--verify', '--directory', tmpDir], { encoding: 'utf8' });
+    rmSync(tmpDir, { recursive: true });
+    if (result.status === 0) {
+      throw new Error(`expected --verify empty directory to fail`);
+    }
+    if (result.stdout !== '') {
+      throw new Error(`expected no stdout, got: ${result.stdout}`);
+    }
+    if (!result.stderr.includes('verify: no journal files found')) {
+      throw new Error(`expected no journal files error in stderr, got: ${result.stderr}`);
+    }
+  }
+
+  // --verify corrupted file
+  {
+    const result = spawnSync(cmd, [script, '--verify', '--file', corruptPath], { encoding: 'utf8' });
+    if (result.status === 0) {
+      throw new Error(`expected --verify corrupted file to fail`);
+    }
+    if (!result.stderr.includes('FAIL:')) {
+      throw new Error(`expected FAIL in stderr, got: ${result.stderr}`);
+    }
+  }
+
+  // --verify-key unsealed file (valid key parsed, normal verification)
+  {
+    const result = spawnSync(cmd, [script, '--verify-key', validFSSVerificationKey, '--file', validPath], { encoding: 'utf8' });
+    if (result.status !== 0) {
+      throw new Error(`--verify-key unsealed file failed: stderr=${result.stderr}`);
+    }
+    if (result.stdout !== '') {
+      throw new Error(`expected no stdout, got: ${result.stdout}`);
+    }
+    if (!result.stderr.includes('PASS:')) {
+      throw new Error(`expected PASS in stderr, got: ${result.stderr}`);
+    }
+  }
+
+  // --verify-key invalid seed
+  {
+    const result = spawnSync(cmd, [script, '--verify-key', 'synthetic-test-key', '--file', validPath], { encoding: 'utf8' });
+    if (result.status === 0) {
+      throw new Error(`expected --verify-key invalid seed to fail`);
+    }
+    if (result.stdout !== '') {
+      throw new Error(`expected no stdout, got: ${result.stdout}`);
+    }
+    if (!result.stderr.includes('Failed to parse seed.')) {
+      throw new Error(`expected parse seed error in stderr, got: ${result.stderr}`);
+    }
+  }
+
+  // --verify-key empty seed
+  {
+    const result = spawnSync(cmd, [script, '--verify-key=', '--file', validPath], { encoding: 'utf8' });
+    if (result.status === 0) {
+      throw new Error(`expected --verify-key empty seed to fail`);
+    }
+    if (result.stdout !== '') {
+      throw new Error(`expected no stdout, got: ${result.stdout}`);
+    }
+    if (!result.stderr.includes('Failed to parse seed.')) {
+      throw new Error(`expected parse seed error in stderr, got: ${result.stderr}`);
+    }
+  }
+
+  // --verify sealed file without key (key required)
+  {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'node-verify-sealed-nokey-'));
+    const tmpPath = join(tmpDir, 'sealed.journal');
+    const src = readFileSync(validPath);
+    const decompressed = decompressZstSync(src);
+    const buf = Buffer.from(decompressed);
+    const flags = buf.readUInt32LE(8);
+    buf.writeUInt32LE(flags | 1, 8); // set COMPATIBLE_SEALED
+    writeFileSync(tmpPath, buf);
+
+    const result = spawnSync(cmd, [script, '--verify', '--file', tmpPath], { encoding: 'utf8' });
+    rmSync(tmpDir, { recursive: true });
+    if (result.status === 0) {
+      throw new Error(`expected --verify sealed file without key to fail`);
+    }
+    if (!result.stderr.includes('verification key')) {
+      throw new Error(`expected verification key message in stderr, got: ${result.stderr}`);
+    }
+    if (result.stderr.includes('PASS:')) {
+      throw new Error(`sealed file without key should not pass, got: ${result.stderr}`);
+    }
+  }
+
+  // --verify-key sealed file (unsupported)
+  {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'node-verify-sealed-'));
+    const tmpPath = join(tmpDir, 'sealed.journal');
+    const src = readFileSync(validPath);
+    const decompressed = decompressZstSync(src);
+    const buf = Buffer.from(decompressed);
+    const flags = buf.readUInt32LE(8);
+    buf.writeUInt32LE(flags | 1, 8); // set COMPATIBLE_SEALED
+    writeFileSync(tmpPath, buf);
+
+    const result = spawnSync(cmd, [script, '--verify-key', validFSSVerificationKey, '--file', tmpPath], { encoding: 'utf8' });
+    rmSync(tmpDir, { recursive: true });
+    if (result.status === 0) {
+      throw new Error(`expected --verify-key sealed file to fail`);
+    }
+    if (!result.stderr.includes('not yet implemented')) {
+      throw new Error(`expected 'not yet implemented' in stderr, got: ${result.stderr}`);
+    }
+  }
 }
 
 const manifestPath = join(repoRoot, 'tests/conformance/manifests/conformance-v01.json');

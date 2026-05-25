@@ -15,3 +15,7 @@ journal = { path = "../../journal" }
 clap = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
+
+[dev-dependencies]
+ruzstd = { workspace = true }
+tempfile = { workspace = true }

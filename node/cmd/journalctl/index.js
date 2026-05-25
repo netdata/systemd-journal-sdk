@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Pure-JavaScript journalctl for file-backed/query behavior.
 
-import { writeSync } from 'node:fs';
+import { writeSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   SdJournalOpen, SdJournalAddMatch, SdJournalAddDisjunction,
@@ -10,30 +11,43 @@ import {
   SdJournalSeekTail, SdJournalPrevious,
   OUTPUT_MODE_DEFAULT, OUTPUT_MODE_JSON, OUTPUT_MODE_EXPORT,
 } from '../../src/facade.js';
+import { verifyFile } from '../../src/lib/verify.js';
+import { FileReader } from '../../src/lib/reader.js';
+import { isJournalFileName } from '../../src/lib/compress.js';
+import { COMPATIBLE_SEALED } from '../../src/lib/header.js';
 
-const { values, positionals } = parseArgs({
-  options: {
-    file: { type: 'string', short: 'f' },
-    directory: { type: 'string', short: 'd' },
-    output: { type: 'string', default: 'default' },
-    'list-boots': { type: 'boolean', default: false },
-    fields: { type: 'boolean', default: false },
-    head: { type: 'string', default: '0' },
-    tail: { type: 'string', default: '0' },
-    follow: { type: 'boolean', default: false },
-    sync: { type: 'boolean', default: false },
-    flush: { type: 'boolean', default: false },
-    rotate: { type: 'boolean', default: false },
-    'relinquish-var': { type: 'boolean', default: false },
-    verify: { type: 'boolean', default: false },
-    'verify-only': { type: 'boolean', default: false },
-    'boot': { type: 'string' },
-    'since': { type: 'string' },
-    'until': { type: 'string' },
-    'no-tail': { type: 'boolean', default: false },
-  },
-  allowPositionals: true,
-});
+let parsed;
+try {
+  parsed = parseArgs({
+    options: {
+      file: { type: 'string', short: 'f' },
+      directory: { type: 'string', short: 'd' },
+      output: { type: 'string', default: 'default' },
+      'list-boots': { type: 'boolean', default: false },
+      fields: { type: 'boolean', default: false },
+      head: { type: 'string', default: '0' },
+      tail: { type: 'string', default: '0' },
+      follow: { type: 'boolean', default: false },
+      sync: { type: 'boolean', default: false },
+      flush: { type: 'boolean', default: false },
+      rotate: { type: 'boolean', default: false },
+      'relinquish-var': { type: 'boolean', default: false },
+      verify: { type: 'boolean', default: false },
+      'verify-only': { type: 'boolean', default: false },
+      'verify-key': { type: 'string' },
+      'boot': { type: 'string' },
+      'since': { type: 'string' },
+      'until': { type: 'string' },
+      'no-tail': { type: 'boolean', default: false },
+    },
+    allowPositionals: true,
+  });
+} catch (err) {
+  process.stderr.write(`Error: ${err.message}\n`);
+  process.exit(1);
+}
+
+const { values, positionals } = parsed;
 
 function unsupported(name) {
   process.stderr.write(`Error: --${name} is not supported in the pure-JavaScript journalctl\n`);
@@ -53,22 +67,25 @@ if (values.sync) unsupported('sync');
 if (values.flush) unsupported('flush');
 if (values.rotate) unsupported('rotate');
 if (values['relinquish-var']) unsupported('relinquish-var');
-if (values.verify) unsupported('verify');
-if (values['verify-only']) unsupported('verify-only');
 if (values.boot) unsupported('boot');
 if (values.since) unsupported('since');
 if (values.until) unsupported('until');
 
-const path = values.file || values.directory;
-if (!path) {
+const inputPath = values.file || values.directory;
+if (!inputPath) {
   process.stderr.write('Error: use --file or --directory\n');
   process.exit(1);
+}
+
+const hasVerifyKey = values['verify-key'] !== undefined;
+if (values.verify || values['verify-only'] || hasVerifyKey) {
+  process.exit(runVerify(inputPath, values['verify-key'], hasVerifyKey));
 }
 
 try {
   const headLimit = parseLimit('head', values.head);
   const tailLimit = parseLimit('tail', values.tail);
-  const journal = SdJournalOpen(path, 0);
+  const journal = SdJournalOpen(inputPath, 0);
 
   // Process positionals as match arguments
   for (const arg of positionals) {
@@ -154,4 +171,117 @@ try {
 } catch (err) {
   process.stderr.write('Error: ' + err.message + '\n');
   process.exit(1);
+}
+
+function runVerify(inputPath, verifyKey, hasVerifyKey) {
+  if (hasVerifyKey && !validVerificationKey(verifyKey)) {
+    process.stderr.write('Failed to parse seed.\n');
+    return 1;
+  }
+
+  let stats;
+  try {
+    stats = statSync(inputPath);
+  } catch (err) {
+    process.stderr.write(`Error: verify: ${err.message}\n`);
+    return 1;
+  }
+
+  let files = [];
+  if (stats.isDirectory()) {
+    for (const entry of readdirSync(inputPath)) {
+      const candidate = join(inputPath, entry);
+      let entryStats;
+      try {
+        entryStats = statSync(candidate);
+      } catch {
+        continue;
+      }
+      if (entryStats.isFile() && isJournalFileName(entry)) {
+        files.push(candidate);
+      }
+    }
+    files.sort();
+  } else {
+    files.push(inputPath);
+  }
+
+  if (files.length === 0) {
+    process.stderr.write('Error: verify: no journal files found\n');
+    return 1;
+  }
+
+  let firstErr = null;
+  for (const file of files) {
+    let sealed = false;
+    let r = null;
+    try {
+      r = FileReader.open(file);
+      sealed = (r.header.compatible_flags & COMPATIBLE_SEALED) !== 0;
+    } catch (err) {
+      process.stderr.write(`FAIL: ${file} (${err.message})\n`);
+      if (!firstErr) firstErr = err;
+      continue;
+    } finally {
+      if (r) r.close();
+    }
+
+    if (sealed && hasVerifyKey) {
+      process.stderr.write(`FAIL: ${file} (sealed FSS verification is not yet implemented)\n`);
+      if (!firstErr) firstErr = new Error('sealed FSS verification is not yet implemented');
+      continue;
+    }
+
+    if (sealed && !hasVerifyKey) {
+      process.stderr.write(`Journal file ${file} has sealing enabled but verification key has not been passed using --verify-key=.\n`);
+      process.stderr.write(`FAIL: ${file} (verification key required for sealed journal file)\n`);
+      if (!firstErr) firstErr = new Error('verification key required for sealed journal file');
+      continue;
+    }
+
+    try {
+      verifyFile(file);
+      process.stderr.write(`PASS: ${file}\n`);
+    } catch (err) {
+      process.stderr.write(`FAIL: ${file} (${err.message})\n`);
+      if (!firstErr) firstErr = err;
+    }
+  }
+
+  if (firstErr) {
+    process.stderr.write('Error: ' + firstErr.message + '\n');
+    return 1;
+  }
+  return 0;
+}
+
+function validVerificationKey(key) {
+  let i = 0;
+  for (let c = 0; c < 12; c++) {
+    while (i < key.length && key[i] === '-') i++;
+    if (i + 2 > key.length || !isHex(key[i]) || !isHex(key[i + 1])) {
+      return false;
+    }
+    i += 2;
+  }
+  if (i >= key.length || key[i] !== '/') {
+    return false;
+  }
+  i++;
+
+  const start = consumeHex(key, i);
+  if (!start.ok || start.next >= key.length || key[start.next] !== '-') {
+    return false;
+  }
+  return consumeHex(key, start.next + 1).ok;
+}
+
+function consumeHex(s, start) {
+  let i = start;
+  while (i < s.length && isHex(s[i])) i++;
+  return { next: i, ok: i > start };
+}
+
+function isHex(ch) {
+  return typeof ch === 'string' && /^[0-9a-fA-F]$/.test(ch);
 }

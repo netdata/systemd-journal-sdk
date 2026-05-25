@@ -12,6 +12,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYTHON_ROOT = REPO_ROOT / 'python'
 sys.path.insert(0, str(PYTHON_ROOT))
+VALID_FSS_VERIFICATION_KEY = 'c262bd-85187f-0b1b04-877cc5/1c7af8-35a4e900'
 
 from journal import (  # noqa: E402
     DirectoryReader,
@@ -334,6 +335,129 @@ def test_verify_file_passes_on_valid_fixture():
     verify_file(str(path))  # should not raise
 
 
+def test_journalctl_verify():
+    valid_path = REPO_ROOT / 'fixtures/systemd/test-data/no-rtc/system.journal.zst'
+    corrupt_path = REPO_ROOT / 'fixtures/systemd/test-data/corrupted/zstd-truncated-frame.zst'
+    script = PYTHON_ROOT / 'cmd/journalctl.py'
+
+    # --verify valid file
+    result = subprocess.run(
+        [sys.executable, str(script), '--verify', '--file', str(valid_path)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, f'--verify valid failed: {result.stderr}'
+    assert result.stdout == '', f"expected no stdout, got: {result.stdout}"
+    assert 'PASS:' in result.stderr, f"expected PASS in stderr, got: {result.stderr}"
+
+    # --verify-only valid file
+    result = subprocess.run(
+        [sys.executable, str(script), '--verify-only', '--file', str(valid_path)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, f'--verify-only valid failed: {result.stderr}'
+    assert result.stdout == '', f"expected no stdout, got: {result.stdout}"
+    assert 'PASS:' in result.stderr, f"expected PASS in stderr, got: {result.stderr}"
+
+    # --verify directory follows symlinked journals and skips directories
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        os.symlink(valid_path, tmp_path / 'linked.journal.zst')
+        os.mkdir(tmp_path / 'skip.journal.zst')
+        result = subprocess.run(
+            [sys.executable, str(script), '--verify', '--directory', str(tmp_path)],
+            capture_output=True, text=True,
+        )
+    assert result.returncode == 0, f'--verify directory failed: {result.stderr}'
+    assert result.stdout == '', f"expected no stdout, got: {result.stdout}"
+    assert result.stderr.count('PASS:') == 1, f"expected one PASS in stderr, got: {result.stderr}"
+    assert 'FAIL:' not in result.stderr, f"expected no FAIL in stderr, got: {result.stderr}"
+
+    # --verify empty directory
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = subprocess.run(
+            [sys.executable, str(script), '--verify', '--directory', tmpdir],
+            capture_output=True, text=True,
+        )
+    assert result.returncode != 0, 'expected --verify empty directory to fail'
+    assert result.stdout == '', f"expected no stdout, got: {result.stdout}"
+    assert 'verify: no journal files found' in result.stderr, (
+        f"expected no journal files error in stderr, got: {result.stderr}"
+    )
+
+    # --verify corrupted file
+    result = subprocess.run(
+        [sys.executable, str(script), '--verify', '--file', str(corrupt_path)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0, 'expected --verify corrupted to fail'
+    assert 'FAIL:' in result.stderr, f"expected FAIL in stderr, got: {result.stderr}"
+
+    # --verify-key unsealed file (valid key parsed, normal verification)
+    result = subprocess.run(
+        [sys.executable, str(script), '--verify-key', VALID_FSS_VERIFICATION_KEY, '--file', str(valid_path)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, f'--verify-key unsealed failed: {result.stderr}'
+    assert result.stdout == '', f"expected no stdout, got: {result.stdout}"
+    assert 'PASS:' in result.stderr, f"expected PASS in stderr, got: {result.stderr}"
+
+    # --verify-key invalid seed
+    result = subprocess.run(
+        [sys.executable, str(script), '--verify-key', 'synthetic-test-key', '--file', str(valid_path)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0, 'expected --verify-key invalid seed to fail'
+    assert result.stdout == '', f"expected no stdout, got: {result.stdout}"
+    assert 'Failed to parse seed.' in result.stderr, (
+        f"expected parse seed error in stderr, got: {result.stderr}"
+    )
+
+    # --verify-key empty seed
+    result = subprocess.run(
+        [sys.executable, str(script), '--verify-key=', '--file', str(valid_path)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0, 'expected --verify-key empty seed to fail'
+    assert result.stdout == '', f"expected no stdout, got: {result.stdout}"
+    assert 'Failed to parse seed.' in result.stderr, (
+        f"expected parse seed error in stderr, got: {result.stderr}"
+    )
+
+    # --verify sealed file without key (key required)
+    from journal.compress import decompress_zst_sync
+    from journal.header import COMPATIBLE_SEALED
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir) / 'sealed.journal'
+        with open(valid_path, 'rb') as f:
+            decompressed = decompress_zst_sync(f.read())
+        buf = bytearray(decompressed)
+        flags = int.from_bytes(buf[8:12], 'little')
+        flags |= COMPATIBLE_SEALED
+        buf[8:12] = flags.to_bytes(4, 'little')
+        tmp_path.write_bytes(buf)
+
+        result = subprocess.run(
+            [sys.executable, str(script), '--verify', '--file', str(tmp_path)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode != 0, 'expected --verify sealed without key to fail'
+        assert 'verification key' in result.stderr, (
+            f"expected verification key message in stderr, got: {result.stderr}"
+        )
+        assert 'PASS:' not in result.stderr, (
+            f"sealed file without key should not pass, got: {result.stderr}"
+        )
+
+        result = subprocess.run(
+            [sys.executable, str(script), '--verify-key', VALID_FSS_VERIFICATION_KEY, '--file', str(tmp_path)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode != 0, 'expected --verify-key sealed to fail'
+        assert 'not yet implemented' in result.stderr, (
+            f"expected 'not yet implemented' in stderr, got: {result.stderr}"
+        )
+
+
 def main():
     run([sys.executable, '-m', 'compileall', str(PYTHON_ROOT)])
     test_match_validation()
@@ -349,6 +473,7 @@ def main():
     test_fsprg_vectors()
     test_verify_file_detects_corruption()
     test_verify_file_passes_on_valid_fixture()
+    test_journalctl_verify()
     test_conformance_manifest()
     print(f'PASS python package tests ({Path(__file__).relative_to(REPO_ROOT)})')
 

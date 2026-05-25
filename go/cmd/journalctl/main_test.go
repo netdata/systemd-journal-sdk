@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/netdata/systemd-journal-sdk/go/journal"
 )
+
+const validFSSVerificationKey = "c262bd-85187f-0b1b04-877cc5/1c7af8-35a4e900"
 
 func TestRunTailReturnsLatestEntries(t *testing.T) {
 	path := writeCLIJournal(t, []cliEntry{
@@ -175,4 +178,189 @@ func decodeJSONLines(t *testing.T, raw string) []map[string]interface{} {
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+func TestRunVerifyValidFile(t *testing.T) {
+	path := writeCLIJournal(t, []cliEntry{{message: "verify-ok", priority: "6"}})
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"--verify", "--file", path}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run --verify error: %v; stderr=%s", err, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout, got: %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "PASS:") {
+		t.Fatalf("expected PASS in stderr, got: %q", stderr.String())
+	}
+}
+
+func TestRunVerifyOnlyValidFile(t *testing.T) {
+	path := writeCLIJournal(t, []cliEntry{{message: "verify-only-ok", priority: "6"}})
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"--verify-only", "--file", path}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run --verify-only error: %v; stderr=%s", err, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout, got: %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "PASS:") {
+		t.Fatalf("expected PASS in stderr, got: %q", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "verify-only-ok") {
+		t.Fatal("--verify-only emitted normal journal output")
+	}
+}
+
+func TestRunVerifyDirectoryFollowsSymlinkAndSkipsDirectories(t *testing.T) {
+	path := writeCLIJournal(t, []cliEntry{{message: "verify-dir", priority: "6"}})
+	dir := t.TempDir()
+	if err := os.Symlink(path, filepath.Join(dir, "linked.journal")); err != nil {
+		t.Fatalf("symlink journal: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "skip.journal"), 0o755); err != nil {
+		t.Fatalf("mkdir skipped journal name: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"--verify", "--directory", dir}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run --verify --directory error: %v; stderr=%s", err, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout, got: %q", stdout.String())
+	}
+	if got := strings.Count(stderr.String(), "PASS:"); got != 1 {
+		t.Fatalf("expected one PASS in stderr, got %d: %q", got, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "FAIL:") {
+		t.Fatalf("expected no FAIL in stderr, got: %q", stderr.String())
+	}
+}
+
+func TestRunVerifyDirectoryEmpty(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"--verify", "--directory", t.TempDir()}, strings.NewReader(""), &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for empty verify directory")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout, got: %q", stdout.String())
+	}
+	if !strings.Contains(err.Error(), "verify: no journal files found") {
+		t.Fatalf("expected no journal files error, got err=%v stderr=%q", err, stderr.String())
+	}
+}
+
+func TestRunVerifyCorruptedFile(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "fixtures", "systemd", "test-data", "corrupted", "zstd-truncated-frame.zst")
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"--verify", "--file", path}, strings.NewReader(""), &stdout, &stderr); err == nil {
+		t.Fatal("expected error for corrupted file")
+	}
+	if !strings.Contains(stderr.String(), "FAIL:") {
+		t.Fatalf("expected FAIL in stderr, got: %q", stderr.String())
+	}
+}
+
+func TestRunVerifyKeyUnsealedFile(t *testing.T) {
+	path := writeCLIJournal(t, []cliEntry{{message: "verify-key-unsealed", priority: "6"}})
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"--verify-key", validFSSVerificationKey, "--file", path}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run --verify-key error: %v; stderr=%s", err, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout, got: %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "PASS:") {
+		t.Fatalf("expected PASS in stderr, got: %q", stderr.String())
+	}
+}
+
+func TestRunVerifyKeyInvalidSeed(t *testing.T) {
+	path := writeCLIJournal(t, []cliEntry{{message: "verify-key-invalid", priority: "6"}})
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"--verify-key", "synthetic-test-key", "--file", path}, strings.NewReader(""), &stdout, &stderr); err == nil {
+		t.Fatal("expected error for invalid --verify-key seed")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout, got: %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "Failed to parse seed.") {
+		t.Fatalf("expected parse seed error in stderr, got: %q", stderr.String())
+	}
+}
+
+func TestRunVerifyKeyEmptySeed(t *testing.T) {
+	path := writeCLIJournal(t, []cliEntry{{message: "verify-key-empty", priority: "6"}})
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"--verify-key=", "--file", path}, strings.NewReader(""), &stdout, &stderr); err == nil {
+		t.Fatal("expected error for empty --verify-key seed")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout, got: %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "Failed to parse seed.") {
+		t.Fatalf("expected parse seed error in stderr, got: %q", stderr.String())
+	}
+}
+
+func TestRunVerifySealedWithoutKeyRequiresKey(t *testing.T) {
+	path := writeCLIJournal(t, []cliEntry{{message: "sealed-without-key", priority: "6"}})
+	patchCompatibleFlags(t, path, compatibleSealed)
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"--verify", "--file", path}, strings.NewReader(""), &stdout, &stderr); err == nil {
+		t.Fatal("expected error for sealed file without --verify-key")
+	}
+	if !strings.Contains(stderr.String(), "verification key") {
+		t.Fatalf("expected verification key message in stderr, got: %q", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "PASS:") {
+		t.Fatalf("sealed file without key should not pass, got: %q", stderr.String())
+	}
+}
+
+func TestRunVerifyKeySealedUnsupported(t *testing.T) {
+	path := writeCLIJournal(t, []cliEntry{{message: "sealed-unsupported", priority: "6"}})
+	patchCompatibleFlags(t, path, compatibleSealed)
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"--verify-key", validFSSVerificationKey, "--file", path}, strings.NewReader(""), &stdout, &stderr); err == nil {
+		t.Fatal("expected error for sealed file with --verify-key")
+	}
+	if !strings.Contains(stderr.String(), "not yet implemented") {
+		t.Fatalf("expected 'not yet implemented' in stderr, got: %q", stderr.String())
+	}
+}
+
+func patchCompatibleFlags(t *testing.T, path string, flagsToSet uint32) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open for patch: %v", err)
+	}
+	_, err = f.Seek(8, os.SEEK_SET)
+	if err != nil {
+		t.Fatalf("seek: %v", err)
+	}
+	var flags uint32
+	if err := binary.Read(f, binary.LittleEndian, &flags); err != nil {
+		t.Fatalf("read flags: %v", err)
+	}
+	flags |= flagsToSet
+	_, err = f.Seek(8, os.SEEK_SET)
+	if err != nil {
+		t.Fatalf("seek back: %v", err)
+	}
+	if err := binary.Write(f, binary.LittleEndian, flags); err != nil {
+		t.Fatalf("write flags: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close patched journal: %v", err)
+	}
 }

@@ -1323,6 +1323,8 @@ dependencies = [
  "chrono",
  "clap",
  "journal",
+ "ruzstd",
+ "tempfile",
 ]
 
 [[package]]

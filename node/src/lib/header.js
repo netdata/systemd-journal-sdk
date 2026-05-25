@@ -17,6 +17,8 @@ export const INCOMPATIBLE_KEYED_HASH = 1 << 2;
 export const INCOMPATIBLE_COMPRESSED_ZSTD = 1 << 3;
 export const INCOMPATIBLE_COMPACT = 1 << 4;
 
+// HEADER_COMPATIBLE_SEALED - set when FSS sealing is enabled
+export const COMPATIBLE_SEALED = 1 << 0;
 // HEADER_COMPATIBLE_TAIL_ENTRY_BOOT_ID - set for new files (v260+)
 export const COMPATIBLE_TAIL_ENTRY_BOOT_ID = 1 << 1;
 

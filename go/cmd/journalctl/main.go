@@ -6,12 +6,16 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/netdata/systemd-journal-sdk/go/journal"
 )
+
+// HEADER_COMPATIBLE_SEALED from systemd journal-def.h
+const compatibleSealed = 1
 
 func main() {
 	if err := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
@@ -45,8 +49,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		flushFlag      = fs.Bool("flush", false, "flush journal (unsupported)")
 		rotateFlag     = fs.Bool("rotate", false, "rotate journal (unsupported)")
 		relinquishFlag = fs.Bool("relinquish-var", false, "relinquish var (unsupported)")
-		verifyFlag     = fs.Bool("verify", false, "verify journal file (unsupported)")
-		verifyOnlyFlag = fs.Bool("verify-only", false, "verify only (unsupported)")
+		verifyFlag     = fs.Bool("verify", false, "verify journal file")
+		verifyOnlyFlag = fs.Bool("verify-only", false, "verify only")
+		verifyKeyFlag  = fs.String("verify-key", "", "FSS verification key")
 	)
 
 	fs.Usage = func() {
@@ -67,10 +72,6 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return journal.ErrUnsupported
 	}
 
-	if *verifyFlag || *verifyOnlyFlag {
-		return journal.ErrUnsupported
-	}
-
 	if *followFlag {
 		return journal.ErrUnsupported
 	}
@@ -82,6 +83,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 
 	if inputPath == "" {
 		return errors.New("no journal file or directory specified (use --file or --directory)")
+	}
+
+	hasVerifyKey := hasStringFlag(args, "verify-key")
+	if *verifyFlag || *verifyOnlyFlag || hasVerifyKey {
+		return runVerify(inputPath, *verifyKeyFlag, hasVerifyKey, stdout, stderr)
 	}
 
 	j, err := journal.SdJournalOpen(inputPath, 0)
@@ -221,4 +227,152 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		}
 		return nil
 	}
+}
+
+func runVerify(inputPath, verifyKey string, hasVerifyKey bool, stdout, stderr io.Writer) error {
+	if hasVerifyKey && !validVerificationKey(verifyKey) {
+		fmt.Fprintln(stderr, "Failed to parse seed.")
+		return errors.New("failed to parse seed")
+	}
+
+	info, err := os.Stat(inputPath)
+	if err != nil {
+		return fmt.Errorf("verify: %w", err)
+	}
+
+	var files []string
+	if info.IsDir() {
+		entries, err := os.ReadDir(inputPath)
+		if err != nil {
+			return fmt.Errorf("verify: read directory: %w", err)
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			candidate := filepath.Join(inputPath, name)
+			info, err := os.Stat(candidate)
+			if err != nil || !info.Mode().IsRegular() {
+				continue
+			}
+			if isJournalFileName(name) {
+				files = append(files, candidate)
+			}
+		}
+		sort.Strings(files)
+	} else {
+		files = append(files, inputPath)
+	}
+
+	if len(files) == 0 {
+		return errors.New("verify: no journal files found")
+	}
+
+	var firstErr error
+	for _, path := range files {
+		sealed, err := isFileSealed(path)
+		if err != nil {
+			fmt.Fprintf(stderr, "FAIL: %s (%v)\n", path, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+
+		if sealed && hasVerifyKey {
+			fmt.Fprintf(stderr, "FAIL: %s (sealed FSS verification is not yet implemented)\n", path)
+			if firstErr == nil {
+				firstErr = errors.New("sealed FSS verification is not yet implemented")
+			}
+			continue
+		}
+
+		if sealed && !hasVerifyKey {
+			fmt.Fprintf(stderr, "Journal file %s has sealing enabled but verification key has not been passed using --verify-key=.\n", path)
+			fmt.Fprintf(stderr, "FAIL: %s (verification key required for sealed journal file)\n", path)
+			if firstErr == nil {
+				firstErr = errors.New("verification key required for sealed journal file")
+			}
+			continue
+		}
+
+		if err := journal.VerifyFile(path); err != nil {
+			fmt.Fprintf(stderr, "FAIL: %s (%v)\n", path, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		fmt.Fprintf(stderr, "PASS: %s\n", path)
+	}
+
+	return firstErr
+}
+
+func isFileSealed(path string) (bool, error) {
+	r, err := journal.OpenFile(path)
+	if err != nil {
+		return false, err
+	}
+	defer r.Close()
+	return r.Header().CompatibleFlags()&compatibleSealed != 0, nil
+}
+
+func isJournalFileName(name string) bool {
+	return strings.HasSuffix(name, ".journal") ||
+		strings.HasSuffix(name, ".journal~") ||
+		strings.HasSuffix(name, ".journal.zst") ||
+		strings.HasSuffix(name, ".journal~.zst")
+}
+
+func hasStringFlag(args []string, name string) bool {
+	long := "--" + name
+	single := "-" + name
+	withEquals := long + "="
+	singleWithEquals := single + "="
+	for _, arg := range args {
+		if arg == long || arg == single || strings.HasPrefix(arg, withEquals) || strings.HasPrefix(arg, singleWithEquals) {
+			return true
+		}
+		if arg == "--" {
+			return false
+		}
+		if strings.HasPrefix(arg, "-") && arg != "-" {
+			continue
+		}
+	}
+	return false
+}
+
+func validVerificationKey(key string) bool {
+	i := 0
+	for c := 0; c < 12; c++ {
+		for i < len(key) && key[i] == '-' {
+			i++
+		}
+		if i+2 > len(key) || !isHex(key[i]) || !isHex(key[i+1]) {
+			return false
+		}
+		i += 2
+	}
+	if i >= len(key) || key[i] != '/' {
+		return false
+	}
+	i++
+	next, ok := consumeHex(key, i)
+	if !ok || next >= len(key) || key[next] != '-' {
+		return false
+	}
+	_, ok = consumeHex(key, next+1)
+	return ok
+}
+
+func consumeHex(s string, start int) (int, bool) {
+	i := start
+	for i < len(s) && isHex(s[i]) {
+		i++
+	}
+	return i, i > start
+}
+
+func isHex(b byte) bool {
+	return ('0' <= b && b <= '9') || ('a' <= b && b <= 'f') || ('A' <= b && b <= 'F')
 }

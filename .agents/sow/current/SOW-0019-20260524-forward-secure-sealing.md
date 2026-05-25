@@ -4,7 +4,7 @@
 
 Status: in-progress
 
-Sub-state: active Phase 3 - file-backed journalctl verify behavior, scoped by SOW-0022 decisions.
+Sub-state: Phase 3 checkpoint ready - file-backed journalctl verify behavior is implemented, reviewed, and validated; Phase 4 writer sealing remains.
 
 ## Requirements
 
@@ -625,6 +625,94 @@ Failure handling:
   - directory interleaving and `--directory` parity, which remain in SOW-0020;
   - `--follow`, `--boot`, `--since`, and `--until`, which remain tracked by SOW-0022/follow-up SOWs.
 
+2026-05-25 (Phase 3 implementation):
+
+- Kimi implementer run:
+  - Started with `llm-netdata-cloud/kimi-k2.6` in normal coding mode, without reviewer mode.
+  - The run read SOW-0019, SOW-0022, current journalctl rewrites, repository verification APIs, and systemd v260.1 `journalctl`/verification sources.
+  - The run hit the 30-minute timeout after partial implementation and validation. No stage, commit, push, or branch operation was performed by the implementer.
+- Manager cleanup after timeout:
+  - Corrected `PASS:` output to stderr, matching stock `journalctl --verify --file` evidence from a repo-local generated file.
+  - Corrected sealed-file behavior so sealed files without `--verify-key` fail with a controlled verification-key-required error instead of passing through the provisional unsealed verifier.
+  - Kept sealed files with `--verify-key` as a controlled unsupported FSS TAG/HMAC path: `sealed FSS verification is not yet implemented`.
+  - Avoided live host journal probing. Stock behavior checks used repository-local files only.
+- Behavior implemented:
+  - Go, Rust, Node.js, and Python journalctl rewrites now parse `--verify-key`.
+  - Go, Rust, Node.js, and Python journalctl rewrites now execute file-backed verification for `--verify`, existing `--verify-only`, and `--verify-key`.
+  - Unsealed valid files return success and print `PASS: <path>` to stderr.
+  - Corrupt files return failure and print `FAIL: <path> (...)` to stderr.
+  - `--verify-key` values are parsed with the same seed shape as systemd before verification proceeds. Evidence: `systemd/systemd @ c0a5a2516d28`, `src/libsystemd/sd-journal/journal-authenticate.c:498` parses 12 seed bytes as hex with optional hyphen separators, then `/START-INTERVAL`; `src/libsystemd/sd-journal/journal-verify.c:840` parses the key before the sealed-file branch.
+  - Unsealed files with a valid `--verify-key` verify normally; the key is parsed but not used for TAG/HMAC work because the file is unsealed.
+  - Invalid or empty `--verify-key` values fail with `Failed to parse seed.` before verification, matching stock behavior checked against a repo-local file.
+  - Sealed files without `--verify-key` fail before provisional verification and report that a verification key is required.
+  - Sealed files with `--verify-key` fail with a controlled unsupported message until later FSS TAG/HMAC verification is implemented.
+  - Directory inputs are scanned for regular journal file names and verified file-by-file; full directory ordering/interleaving remains SOW-0020.
+- Files changed:
+  - `go/cmd/journalctl/main.go`
+  - `go/cmd/journalctl/main_test.go`
+  - `rust/src/cmd/journalctl/main.rs`
+  - `rust/src/cmd/journalctl/Cargo.toml`
+  - `rust/Cargo.lock`
+  - `node/cmd/journalctl/index.js`
+  - `node/src/lib/header.js`
+  - `node/test/all.js`
+  - `python/cmd/journalctl.py`
+  - `python/journal/header.py`
+  - `python/test_all.py`
+- Validation commands and outcomes:
+  - `journalctl --verify --file .local/verify-stream-check/check.journal > .local/stock-check-stdout.txt 2> .local/stock-check-stderr.txt` after generating the file with the repo Go live writer: PASS evidence showed stock `PASS:` on stderr and empty stdout.
+  - `journalctl --verify-key=foo --file .local/verify-stream-check/check.journal` and `journalctl --verify-key= --file .local/verify-stream-check/check.journal` returned failure with `Failed to parse seed.` on stderr and empty stdout.
+  - `journalctl --verify-key=c262bd-85187f-0b1b04-877cc5/1c7af8-35a4e900 --file .local/verify-stream-check/check.journal` returned success with `PASS:` on stderr and empty stdout.
+  - `./tests/fss/run_vectors.sh` - PASS.
+  - `cd go && env GOCACHE=$PWD/../.local/go-cache GOMODCACHE=$PWD/../.local/go-mod GOPATH=$PWD/../.local/go-path go test ./...` - PASS.
+  - `cd node && env npm_config_cache=$PWD/../.local/npm-cache npm test` - PASS.
+  - `. .local/phase2a-venv/bin/activate && PYTHONPATH=$PWD/python PYTHONPYCACHEPREFIX=$PWD/.local/pycache python3 python/test_all.py` - PASS.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journalctl -p journal -p adapter -p journal-core` - PASS.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo fmt --check` - PASS.
+  - `git diff --check` - PASS.
+  - `.agents/sow/audit.sh` - PASS.
+- Reviewer findings and dispositions:
+  - Minimax reviewer round 1: `PRODUCTION GRADE`; no blocking findings.
+  - Qwen reviewer round 1: `PRODUCTION GRADE`; requested Node.js directory-file filtering and `FileReader` close cleanup. Disposition: fixed.
+  - GLM reviewer round 1: `PRODUCTION GRADE`; requested cleaner Node.js bad-path handling, Node.js/Python directory-file filtering, Python public header accessor use, and cross-language empty `--verify-key` consistency. Disposition: fixed.
+  - Same-failure search found invalid-key behavior was also inconsistent for non-empty malformed keys. Stock systemd evidence showed parse failure must happen even on unsealed files, so all four CLIs now validate the verification key before file verification.
+  - Minimax reviewer round 2: `PRODUCTION GRADE`; noted only cosmetic bad-path error wording differences.
+  - GLM reviewer round 2: `PRODUCTION GRADE`; noted trailing content after the second `--verify-key` hex group is accepted. Disposition: no change; stock `journalctl --verify-key=...EXTRA --file .local/verify-stream-check/check.journal` also returned PASS, matching systemd's `sscanf("%llx-%llx", ...)` parser behavior.
+  - Qwen reviewer round 2: `NOT PRODUCTION GRADE`; found Go directory verification did not explicitly filter regular files and no language had automated directory verification tests. Disposition: fixed in Go/Rust/Node.js/Python directory scans and tests.
+  - Stock systemd symlink evidence: `journalctl --verify --directory .local/verify-dir-stock` with a symlinked `.journal` file returned PASS and reported the real target path, so repository CLIs now follow symlinks to regular journal files while skipping directories and special files.
+  - Minimax reviewer round 3: `PRODUCTION GRADE`; noted only a cosmetic Go constant naming difference.
+  - GLM reviewer round 3: `PRODUCTION GRADE`; repeated that Go strict verification parity remains a SOW-0022 item and found no Phase 3 blocker.
+  - Qwen reviewer round 3: `NOT PRODUCTION GRADE`; found Node.js and Python verify paths relied on `runVerify`/`run_verify` exiting internally, and Node.js parse argument errors could emit a raw stack trace. Disposition: fixed by making Node.js and Python verify functions return exit codes to their callers, and by wrapping Node.js `parseArgs` with a controlled `Error:` message.
+  - Qwen reviewer round 4: `PRODUCTION GRADE`; rechecked the full Phase 3 scope after the exit-code and parse-error fixes.
+  - GLM reviewer round 4: `PRODUCTION GRADE`; rechecked the full Phase 3 scope after the exit-code and parse-error fixes.
+  - Minimax reviewer round 4: `PRODUCTION GRADE`; rechecked the full Phase 3 scope after the exit-code and parse-error fixes. Notes about Rust RAII cleanup and known verification-depth gaps were informational and not blockers.
+- Post-review cleanup validation:
+  - `cd go && env GOCACHE=$PWD/../.local/go-cache GOMODCACHE=$PWD/../.local/go-mod GOPATH=$PWD/../.local/go-path go test ./cmd/journalctl -run TestRunVerify -v` - PASS.
+  - `cd node && env npm_config_cache=$PWD/../.local/npm-cache npm test` - PASS.
+  - `. .local/phase2a-venv/bin/activate && PYTHONPATH=$PWD/python PYTHONPYCACHEPREFIX=$PWD/.local/pycache python3 python/test_all.py` - PASS.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journalctl` - PASS.
+- Directory-review cleanup validation:
+  - `cd go && env GOCACHE=$PWD/../.local/go-cache GOMODCACHE=$PWD/../.local/go-mod GOPATH=$PWD/../.local/go-path go test ./cmd/journalctl -run TestRunVerify -v` - PASS after adding symlinked-directory and empty-directory verification tests.
+  - `cd node && env npm_config_cache=$PWD/../.local/npm-cache npm test` - PASS after adding symlinked-directory and empty-directory verification tests.
+  - `. .local/phase2a-venv/bin/activate && PYTHONPATH=$PWD/python PYTHONPYCACHEPREFIX=$PWD/.local/pycache python3 python/test_all.py` - PASS after adding symlinked-directory and empty-directory verification tests.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journalctl` - PASS after adding symlinked-directory and empty-directory verification tests.
+  - `cd node && env npm_config_cache=$PWD/../.local/npm-cache npm test` - PASS after refactoring verify mode to return exit codes and wrapping parse errors.
+  - `. .local/phase2a-venv/bin/activate && PYTHONPATH=$PWD/python PYTHONPYCACHEPREFIX=$PWD/.local/pycache python3 python/test_all.py` - PASS after refactoring verify mode to return exit codes.
+  - `node node/cmd/journalctl/index.js --verify-key --file .local/verify-stream-check/check.journal` now exits 1 with a controlled `Error:` parse message and no raw stack trace.
+- Final Phase 3 checkpoint validation:
+  - `./tests/fss/run_vectors.sh` - PASS.
+  - `cd go && env GOCACHE=$PWD/../.local/go-cache GOMODCACHE=$PWD/../.local/go-mod GOPATH=$PWD/../.local/go-path go test ./...` - PASS.
+  - `cd node && env npm_config_cache=$PWD/../.local/npm-cache npm test` - PASS.
+  - `env PYTHONPATH=$PWD/python PYTHONPYCACHEPREFIX=$PWD/.local/pycache .local/phase2a-venv/bin/python python/test_all.py` - PASS.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journalctl -p journal -p adapter -p journal-core` - PASS.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo fmt --check` - PASS.
+  - `git diff --check` - PASS.
+  - `.agents/sow/audit.sh` - PASS.
+- Phase 3 limitation remains:
+  - This implementation does not provide full systemd object-graph verification parity.
+  - This implementation does not verify sealed TAG/HMAC chains.
+  - Both limitations remain tracked by SOW-0022 and later SOW-0019 phases.
+
 ### Gaps and Risks Discovered (Phase 1)
 
 1. Libgcrypt atexit segfault: the dynamic-loading path used by systemd v260.1 crashes during program exit. The `_exit` workaround is documented but means the helper cannot use normal `return from main` cleanup. This is acceptable for a test helper but would be unacceptable for production code.
@@ -701,15 +789,25 @@ Phase 2B completed:
 - The shared `journal-verify-corruption-detection` conformance case now runs real behavior in every adapter.
 - This phase does not claim sealed FSS tag/HMAC verification or full systemd object-graph verification parity.
 
+Phase 3 completed:
+
+- File-backed `journalctl --verify`, existing `--verify-only`, and `--verify-key` behavior exists in Rust, Go, Node.js, and Python.
+- Valid unsealed files print `PASS:` to stderr and exit 0; corrupt files print `FAIL:` to stderr and exit non-zero.
+- Invalid or empty `--verify-key` fails with `Failed to parse seed.` before verification, matching stock behavior checked against repo-local files.
+- Directory verification follows symlinks to regular journal files, skips directories/special files, and reports empty directories as errors.
+- Sealed files are detected and fail with controlled messages until later FSS TAG/HMAC verification is implemented.
+- This phase does not claim full systemd object-graph verification parity or sealed TAG/HMAC verification.
+
 ## Lessons Extracted
 
 1. Libgcrypt dynamic loading via systemd's `dlopen_gcrypt()` path can segfault in atexit handlers when the program exits normally. Using `_exit(0)` after explicit `fflush(stdout)` is an acceptable workaround for a test helper that has no heap resources requiring cleanup beyond what glibc reclaims.
 2. Building inside the systemd meson tree is the lowest-friction way to get correct headers, defines, and linking for internal APIs like FSPRG. Copying the helper into the tree and adding a `manual` test entry matches the existing dataset-ingester pattern.
 3. Deterministic synthetic vectors should be generated once, committed, and then protected by a compare-mode runner. This prevents silent drift when build environments or library versions change.
+4. File-backed `--verify-key` compatibility depends on parsing the key before determining whether the target file is sealed. Stock `journalctl` rejects malformed keys even for unsealed files.
+5. Directory verification tests need symlink and empty-directory cases in every language because stock `journalctl --verify --directory` follows symlinks to regular journal files.
 
 ## Followup
 
-- Phase 3: implement file-backed journalctl `--verify` / `--verify-key` behavior.
 - Phase 4: implement writer sealing with deterministic test keys.
 - Phase 5: add tamper/corruption fixtures, stock verification checks, docs/spec updates, and security review.
 
