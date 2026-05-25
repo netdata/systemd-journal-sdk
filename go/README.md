@@ -19,6 +19,9 @@ Current writer scope:
 - pure cross-SDK cooperative lockfile with stale-owner detection, plus a
   secondary advisory `flock`, to prevent multiple SDK writers from opening the
   same file;
+- Forward Secure Sealing TAG writing with `journal.SealOptions`, including
+  stock `journalctl --verify --verify-key` coverage for sealed files generated
+  by this writer;
 - native systemd writers do not participate in the SDK lock protocol and remain
   an operational exclusion;
 - live stock-reader validation for the current writer slice with `journalctl
@@ -30,10 +33,10 @@ Current writer scope:
 
 Deferred scope:
 
-- Forward Secure Sealing and TAG objects;
 - appending to arbitrary historical or systemd-created journal variants;
 - duration-based directory rotation and retention;
-- full journal verification/FSS validation.
+- full systemd object-graph verification parity beyond the current repository
+  verification API.
 
 Current reader scope:
 
@@ -51,6 +54,8 @@ Current reader scope:
   values for the same field, `AddDisjunction()` for `+`, and
   `AddConjunction()` for explicit AND groups;
 - a file-backed `journalctl` command under `cmd/journalctl`;
+- verification APIs: `journal.VerifyFile()` for structural verification and
+  `journal.VerifyFileWithKey()` for sealed TAG/HMAC verification;
 - a conformance adapter under `adapter`.
 
 Reader limitations:
@@ -59,8 +64,8 @@ Reader limitations:
   non-overlapping rotated files in this slice; realtime interleaving across
   overlapping multi-file directories is tracked with the broader
   interoperability phase;
-- full journal verification, FSS validation, and daemon-only journalctl
-  operations are not implemented.
+- full systemd object-graph verification parity is tracked separately;
+- daemon-only journalctl operations are not implemented.
 
 Basic usage:
 

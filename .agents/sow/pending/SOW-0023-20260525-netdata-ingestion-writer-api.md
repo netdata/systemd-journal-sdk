@@ -1,0 +1,516 @@
+# SOW-0023 - Netdata Ingestion Writer API
+
+## Status
+
+Status: open
+
+Sub-state: expanded from an SNMP trap integration need into a Netdata ingestion writer superset requirement; pending user prioritization and sequencing behind the active FSS SOW unless the user explicitly reorders the queue.
+
+## Requirements
+
+### Purpose
+
+Provide a stable, production-usable Go journal writer API for Netdata Agent ingestion paths that need file-backed systemd journal storage without requiring live journald. The API must be a superset of the existing Netdata Rust writer behavior used by NetFlow and OTEL logs, plus the stricter creation-time and field-shape needs of future ingestion consumers such as SNMP traps.
+
+### User Request
+
+The user said the journal SDK is being prepared in this repository and asked whether the pending SDK SOWs already cover the API needed by the Netdata SNMP trap integration. If not, create a pending SOW here for the API the integration needs.
+
+On 2026-05-25, the user clarified that this SOW must not be SNMP-traps-specific. The API and implementation must be a superset replacement for the existing Netdata journal writer behavior used by NetFlow, OTEL logs, and future ingestion consumers. It must cover time, size, count, path, retention, rotation, nullable policy values that disable individual checks, minimum-file-size and file-count edge cases, and every other behavior required to replace existing Netdata-side writer logic while satisfying all API consumers.
+
+On 2026-05-25, the user clarified the migration constraint: existing Netdata users must not lose their existing journals. After migrating Netdata plugins to this SDK, the plugins must continue writing to the same effective journal directories without requiring manual configuration changes. The SOW must explicitly distinguish whether machine-id path components are added by the SDK, supplied by the consumer, or absent, based on current Netdata behavior.
+
+### Assistant Understanding
+
+Facts:
+
+- The SDK currently has a Go single-file writer API (`Create`, `Open`, `Append`, `Sync`, `Close`) and a high-level directory writer API (`NewLog`, `Append`, `Sync`, `Close`, `ActivePath`, `JournalDirectory`).
+- `go/journal/log.go` currently stores high-level log files below `dir/<machine-id>/`.
+- `go/journal/log.go` currently supports rotation by maximum file size and entry count.
+- `go/journal/log.go` currently supports retention by maximum archived-file count and total bytes.
+- `go/journal/log.go` currently attempts to load missing machine ID and boot ID from host files, then falls through to random UUID defaults through `normalizeOptions`.
+- Existing tests prove stock `journalctl --directory` readback against the machine-id subdirectory returned by the test helper.
+- Existing pending SOWs do not define a Netdata-focused ingestion writer contract.
+
+Inferences:
+
+- Netdata ingestion plugins should not depend on package-local journal writing logic once this SDK has the needed Go API.
+- Netdata dynamic configuration needs creation-time failure detection, so writer setup must validate directory creation, permissions, active-file open/create, option validity, lock acquisition, and retention preflight before the job is accepted.
+- Existing Netdata consumers use writer-owned machine-id path handling. The SDK must preserve that as the default migration mode: consumers pass the same configured base/tier paths, and the SDK appends `<machine-id>` internally.
+- The API should expose both the configured base/tier path and the effective machine-id journal directory so Netdata can preserve existing storage and still document the correct `journalctl --directory` path.
+
+Resolved requirements:
+
+- Existing NetFlow and OTEL logs migration must keep the current `configured-dir/<machine-id>/` effective path layout. A flat/direct layout may exist only as an explicit mode for consumers that already use or intentionally request it.
+- Duration rotation and age retention are in scope for this SOW because they are part of the existing NetFlow and OTEL logs policy surface, even though the current Rust writer appears to expose duration rotation without enforcing it.
+
+Remaining unknowns:
+
+- Exact public API shape for nullable limits and strict identity mode.
+- Exact file-count semantics for enabled zero or one values; the active file must never be deleted.
+
+### Acceptance Criteria
+
+- The Go SDK exposes a documented ingestion writer contract usable by Netdata without copying SDK internals into Netdata.
+- The contract is a superset of the current NetFlow and OTEL logs writer behavior: directory-owned journal files, source/prefix selection, machine-id directory layout, size/count/time rotation, file-count/byte/age retention, binary fields, strict source validation, and stock-reader compatibility.
+- Writer creation exposes a synchronous preflight mode that fails before consumer/job acceptance when any configured creation-time check fails: invalid source/name, invalid directory path, directory creation failure, active journal create/open failure when eager open is requested, writer lock failure, invalid compression/sealing options, invalid identity options in strict mode, and retention preflight errors.
+- Lazy open remains supported only if it is explicitly documented and not used by consumers that require creation-time active-file validation.
+- The API has a strict identity mode, or equivalent validated constructor, where missing or malformed required machine ID and boot ID are returned as errors instead of becoming random IDs.
+- The API exposes all relevant paths explicitly: configured root, machine-id journal directory, active file path, archived file paths as they are created, and the exact directory that stock `journalctl --directory` should use.
+- Migration compatibility is mandatory: for every existing Netdata consumer in scope, the SDK-backed configuration must resolve to the same effective on-disk journal chain as the current implementation, including machine-id path handling, without requiring users to edit configuration.
+- The API must make machine-id ownership explicit. The default Netdata-compatible mode must match the existing Rust writer behavior: the consumer supplies the base stream/tier directory, and the SDK loads the machine ID and appends `<machine-id>` internally.
+- The API must not force existing Netdata consumers to start including `<machine-id>` in configured paths if they do not do that today.
+- The default layout preserves the systemd-compatible `configured-dir/<machine-id>/` behavior used by the existing Rust writer. Any flat/direct directory mode must be a first-class, tested compatibility mode, not an accidental side effect, and must not be used for existing Netdata consumer migration unless evidence shows that consumer already writes flat directories.
+- Writer construction or explicit open/preflight scans existing SDK-owned journal files in the effective machine-id directory and initializes chain state from disk: total retained journal bytes, tail sequence number, tail realtime timestamp, tail monotonic timestamp for the current boot, active-file identity if one exists, and the exact naming convention already present. Migration must not create a parallel `system.journal` active file when an existing Rust-format `system` + `@` + sequence metadata journal chain is the current Netdata chain.
+- Rotation supports all required limits: maximum active file size, maximum entries per file, and maximum active file duration. Each limit must be independently nullable/optional so consumers can disable individual checks without overloading zero values.
+- Retention supports all required limits: maximum archived file count, maximum total retained bytes, and maximum retained age. Each limit must be independently nullable/optional so consumers can disable individual checks without overloading zero values.
+- Retention never deletes the tracked active file, even when configured byte/count limits are lower than the active file size or count envelope. Implementations must track the active file explicitly and must not rely only on filename/status parsing, because the existing Rust writer creates active files using the `system` + `@` + sequence metadata journal-name pattern.
+- Retention deletion scope is limited to SDK-owned journal files for the configured directory/source/prefix/machine-id chain. Unrelated journal files, unrelated sources, disposed files outside the supported lifecycle, and non-journal files are preserved unless the API explicitly documents another tested mode.
+- Retention does not directly delete Netdata side artifacts such as `decoder-state.d`, `facet-state.bin`, or per-journal facet sidecars. Journal lifecycle events must give consumers the created, archived, and deleted journal paths they need to update or delete their own side artifacts.
+- Size accounting must support consumer-owned per-journal artifacts. The API must provide a hook, callback, sidecar-size provider, or equivalent accounting surface so consumers can include artifact bytes associated with each journal path in size-based decisions.
+- The artifact accounting contract must be concrete before implementation: it must define provider/registration shape, lookup key, call timing, missing-artifact behavior, error behavior, caching rules, and whether active-file artifacts are included in active rotation preflight or only retained-total enforcement.
+- Artifact-inclusive size accounting must apply to total retained byte enforcement and any API-provided rotation-size derivation or preflight budget calculation. If active-file `MaxFileSize` remains strictly journal-bytes-only by default, the API must document that default and provide a tested mode for consumers that need external artifact bytes to make rotation happen earlier.
+- Policy validation distinguishes disabled limits from invalid values. Enabled size/count/time limits must reject ambiguous or unsafe values unless the API provides an explicit named mode for that behavior.
+- Duration rotation must be real behavior, not just a configuration field. The clock model must be documented; the Netdata-compatible default measures the active file span from active file head/first-entry realtime or an equivalent persisted head timestamp, checks it before append, and rotates once the configured duration is exceeded while size and count limits are disabled. Tests must use a deterministic clock or timestamp override.
+- Retention execution timing must be explicit. If retention is coupled to rotation in the default writer path, the API must also provide an explicit `EnforceRetention`, `Tick`, or equivalent call so consumers can enforce age/size/count retention when no append-triggered rotation occurs.
+- The API can reproduce NetFlow's current policy model: per-tier retention, `10GB / 7d` defaults, `null` size or duration to disable that limit, no file-count retention by default, at least one positive limit per tier, minimum enabled size retention of `100MB`, rotation size derived as `clamp(size_of_journal_files / 20, 5MB, 200MB)`, `100MB` rotation size when size retention is disabled, and hardcoded `1h` internal duration rotation.
+- The API can reproduce OTEL logs' current policy model: one logs writer, rotation by `size_of_journal_file`, `entries_of_journal_file`, and `duration_of_journal_file`, plus retention by `number_of_journal_files`, `size_of_journal_files`, and `duration_of_journal_files`.
+- The API supports optional lifecycle hooks, callbacks, or equivalent observable results for every journal file creation, archive/rotation, and deletion so Netdata consumers that maintain auxiliary indexes, such as NetFlow facets, can update those indexes without polling. OTEL does not wire lifecycle observers today, so the observer surface must be omissible. Active-file creation events must include the new active path and creation reason. Archive/rotation events must include the previous active path, resulting archived path, and replacement active path, so both same-path and rename-based implementations are representable. Retention deletion events must include every deleted journal path, either as per-file callbacks or a batch with full paths.
+- Active-file creation events are new API capability, not current Rust writer parity. Current NetFlow infers the active path after append; the SDK still needs creation events so consumers are not forced to infer lifecycle state from append side effects.
+- Lifecycle callback error behavior must be explicit and tested. Netdata-compatible default behavior must match the current Rust observer model: lifecycle notifications are best-effort, happen after the journal operation point they describe, report/log callback failures, and do not roll back completed journal operations. A stricter fail-on-callback-error mode may exist only as an explicit tested mode.
+- The API exposes the active journal path immediately after a successful append so NetFlow-style consumers can index the record against the exact active file that received it.
+- The append API supports both current consumer paths: OTEL-style `WriteEntry(items, sourceRealtime)` and NetFlow-style `WriteEntryWithTimestamps(items, timestamps)` with source realtime, entry realtime, and optional entry monotonic overrides. Timestamp handling must preserve strict journal ordering by clamping or rejecting non-progressing values in a documented way.
+- The writer preserves append order. Entries must be written to a journal file in the order the consumer appends them; OTEL sorts entries before calling the writer and the writer must not reorder them internally.
+- The API keeps sync strategy under consumer control. Consumers must be able to call `Sync` per batch, periodically, on threshold, and during shutdown without the SDK forcing one Netdata plugin's durability cadence on another.
+- Close/drop behavior is explicit and tested, including lazy-open no-entry close, eager-open empty active file close, non-empty active file close, and best-effort shutdown behavior. The Netdata-compatible default archives and syncs any active file on close/drop instead of deleting it, matching the Rust writer's `Drop` behavior for active files. The default migration mode must not delete or hide existing journals.
+- The concurrency contract is explicit. The writer must either be safe for concurrent appends or clearly require external serialization, with tests covering the selected contract.
+- The default source/prefix for Netdata migration remains the `system` source with system-prefixed active and archived journal filenames. Configurable source support may exist only as an additive mode and must not change existing NetFlow or OTEL paths by default.
+- `Origin` or equivalent metadata must not silently override the machine-id path ownership model. If the SDK owns machine-id path expansion, consumer-provided origin metadata cannot make the writer choose a different directory unless an explicit tested mode says so.
+- Query-only plugin settings such as NetFlow `query_max_groups` are out of scope for the writer API and must not leak into retention/rotation behavior.
+- The API supports binary field values and normal string fields through the same append path.
+- The API supports large string fields needed by OTEL's optional `OTLP_JSON` field without truncation, unsafe copying, or reader incompatibility.
+- The API supports Rust-writer-compatible remapping for non-systemd-compatible field names, including OTEL dotted field names such as `log.time_unix_nano`. The writer must either emit compatible `ND_REMAPPING=1` entries and remapped `ND_*` field names, or provide a documented equivalent that preserves stock journal compatibility and SDK reader query compatibility.
+- Stock `journalctl --directory` and `journalctl --verify` validation pass against generated active and archived files, including the documented query directory.
+- Tests include synthetic NetFlow-shaped, OTEL-log-shaped, and trap-shaped fixtures with representative fields, binary payload coverage, dotted OTEL field names, and large single-field `OTLP_JSON` payload coverage without using real customer, environment, community string, endpoint, or incident data.
+- Tests cover nullable policy behavior, invalid enabled values, minimum-size and file-count edge cases, active-file survival under impossible retention limits, source/prefix retention scoping, scan-and-resume of existing Rust-format `system` + `@` + sequence metadata journal chains, prevention of parallel `system.journal` chain creation in Netdata migration mode, reopen/interruption behavior, eager preflight failures, lazy-open behavior where kept, create/archive/delete lifecycle notifications, side-artifact preservation, artifact-inclusive size accounting, append timestamp overrides, active-path exposure after append, field-name remapping, and consumer-controlled sync cadence.
+- Initial non-gating benchmark hooks or smoke benchmarks are available for this API path, while the broad benchmark/profile/optimize pass remains owned by SOW-0009.
+
+## Analysis
+
+Sources checked:
+
+- `SOW-status.md`
+- `.agents/sow/pending/SOW-0009-20260523-benchmark-profile-optimize.md`
+- `.agents/sow/pending/SOW-0020-20260524-directory-traversal-parity.md`
+- `.agents/sow/pending/SOW-0022-20260525-compatibility-test-gap-audit.md`
+- `.agents/sow/current/SOW-0019-20260524-forward-secure-sealing.md`
+- `.agents/sow/done/SOW-0013-20260523-go-directory-writer-rotation-retention.md`
+- `go/journal/log.go`
+- `go/journal/writer.go`
+- `go/journal/log_test.go`
+- `ktsaou/netdata @ 00305266364e`
+  - `src/crates/journal-log-writer/src/log/config.rs`
+  - `src/crates/journal-log-writer/src/log/mod.rs`
+  - `src/crates/journal-log-writer/src/log/chain.rs`
+  - `src/crates/journal-registry/src/repository/collection.rs`
+  - `src/crates/netflow-plugin/src/plugin_config/types/journal.rs`
+  - `src/crates/netflow-plugin/src/plugin_config/validation/journal.rs`
+  - `src/crates/netflow-plugin/src/plugin_config/defaults.rs`
+  - `src/crates/netflow-plugin/src/plugin_config/runtime.rs`
+  - `src/crates/netflow-plugin/src/ingest/service/init.rs`
+  - `src/crates/netflow-plugin/src/ingest/service.rs`
+  - `src/crates/netflow-plugin/configs/netflow.yaml`
+  - `src/crates/netdata-otel/otel-plugin/src/plugin_config/logs.rs`
+  - `src/crates/netdata-otel/otel-plugin/src/logs_service.rs`
+  - `src/crates/netdata-otel/otel-plugin/configs/otel.yaml.in`
+- Live local cache inspection on 2026-05-25:
+  - `/var/cache/netdata/flows/{raw,1m,5m,1h}/[machine-id]/` exists, where `[machine-id]` matches the host machine ID.
+  - The newest sampled journal files were under the machine-id child directories, not directly under the tier roots.
+  - Older flat tier-root journal files also exist under `/var/cache/netdata/flows/{raw,1m,5m,1h}/`; migration must not delete or obscure them accidentally, but the SDK-compatible current write target is the machine-id child path.
+
+Current state:
+
+- `SOW-status.md` lists SOW-0019 as current and SOW-0022, SOW-0020, and SOW-0009 as pending.
+- SOW-0009 is a final benchmark/profile/optimize pass after feature completeness; it is not an ingestion API SOW.
+- SOW-0020 is directory traversal parity for SDK readers and file-backed journalctl behavior; it is relevant to query behavior but does not define a Netdata writer API.
+- SOW-0022 is a compatibility-gap audit; it records gaps but does not implement the Netdata writer API.
+- SOW-0013 completed a Go high-level directory writer with rotation and retention, but it did not settle the stricter Netdata job-creation contract.
+- `go/journal/log.go` stores files below `dir/<machine-id>/` and exposes that child path via `JournalDirectory`.
+- `go/journal/log.go` supports size and entry-count rotation, but not duration rotation.
+- `go/journal/log.go` supports file-count and byte retention, but not age retention.
+- `go/journal/log.go` normalizes missing IDs from host files and then falls through to random UUID generation via `normalizeOptions`.
+- `go/journal/log_test.go` validates stock `journalctl --directory` against the machine-id subdirectory returned by the test helper.
+
+Superset consumer analysis:
+
+- Existing Netdata Rust writer policy shape:
+  - `src/crates/journal-log-writer/src/log/config.rs:4` defines rotation by size, duration, and entry count.
+  - `src/crates/journal-log-writer/src/log/config.rs:38` defines retention by file count, total size, and duration.
+  - `src/crates/journal-log-writer/src/log/mod.rs:25` creates `configured-dir/<machine-id>/` as the actual journal chain directory.
+  - `src/crates/journal-log-writer/src/log/mod.rs:25` loads the machine ID inside the writer, and `src/crates/journal-log-writer/src/log/mod.rs:39` appends that machine ID to the caller-provided path. This means the existing Rust writer, not the consumer config, owns the machine-id path component.
+  - `src/crates/journal-log-writer/src/log/chain.rs:172` applies retention by deleting oldest files.
+  - `src/crates/journal-registry/src/repository/collection.rs:62` prevents age retention from draining active files.
+- NetFlow consumer needs:
+  - `src/crates/netflow-plugin/src/plugin_config/types/journal.rs:11` defines the NetFlow journal config.
+  - `src/crates/netflow-plugin/src/plugin_config/runtime.rs:14` resolves the configured `journal_dir` relative to `NETDATA_CACHE_DIR` when applicable.
+  - `src/crates/netflow-plugin/src/plugin_config/types/journal.rs:187` appends tier names such as `raw`, `minute_1`, `minute_5`, and `hour_1` to the configured base directory.
+  - `src/crates/netflow-plugin/src/ingest/service/init.rs:103` passes the tier directory to `Log::new`. It does not append `<machine-id>` before calling the writer; the writer appends machine-id internally.
+  - `src/crates/netflow-plugin/src/plugin_config/types/journal.rs:54` defines per-tier nullable `size_of_journal_files` and `duration_of_journal_files`.
+  - `src/crates/netflow-plugin/src/plugin_config/defaults.rs:87` defines `10GB` retention size defaults and `7d` retention duration defaults.
+  - `src/crates/netflow-plugin/src/plugin_config/types/journal.rs:228` derives rotation size from the enabled retention size and falls back to `100MB` for time-only retention.
+  - `src/crates/netflow-plugin/src/plugin_config/validation/journal.rs:26` requires each tier to have at least one positive retention limit and rejects enabled sizes below `100MB`.
+  - `src/crates/netflow-plugin/src/ingest/service/init.rs:36` builds the Rust writer rotation policy per tier.
+  - `src/crates/netflow-plugin/src/ingest/service/init.rs:39` builds the Rust writer retention policy per tier.
+  - `src/crates/netflow-plugin/src/ingest/service.rs:19` observes rotation and retention deletion events for facet-runtime maintenance.
+- OTEL logs consumer needs:
+  - `src/crates/netdata-otel/otel-plugin/src/plugin_config/logs.rs:54` defines a single logs journal config with rotation size, entry count, rotation duration, retention file count, retention size, and retention duration.
+  - `src/crates/netdata-otel/otel-plugin/src/plugin_config/logs.rs:117` sets defaults of `100MB`, `50000` entries, `10` files, `1GB`, `7d`, and `2h`.
+  - `src/crates/netdata-otel/otel-plugin/configs/otel.yaml.in:36` stores logs under the packaged OTEL logs journal directory.
+  - `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:41` passes `logs_config.journal_dir` directly to `Log::new`. It does not append `<machine-id>` before calling the writer; the writer appends machine-id internally.
+  - `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:24` passes rotation size, duration, and entry count to `journal-log-writer`.
+  - `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:29` passes file count, total size, and duration retention to `journal-log-writer`.
+- Existing implementation gap to avoid copying blindly:
+  - `src/crates/journal-log-writer/src/log/config.rs:12` exposes `duration_of_journal_file`.
+  - `src/crates/journal-log-writer/src/log/mod.rs:59` tracks only size and count in `RotationState`.
+  - `src/crates/journal-log-writer/src/log/mod.rs:73` checks only size and count in `should_rotate`.
+  - Therefore SOW-0023 must implement and validate duration rotation as real behavior, not merely expose a configuration field.
+- Machine-id migration conclusion:
+  - Existing NetFlow and OTEL consumers provide base stream/tier directories. The writer appends `<machine-id>` internally.
+  - SDK migration must preserve this exact ownership model by default: callers keep the same configured paths, and the SDK writes to the same effective `configured-dir/<machine-id>/` journal chain.
+  - Any API mode where the caller supplies the already-expanded machine-id directory must be explicit and must not become the default for Netdata migrations.
+
+External reviewer gap synthesis on 2026-05-25:
+
+- Reviewers run:
+  - `llm-netdata-cloud/glm-5.1`
+  - `llm-netdata-cloud/kimi-k2.6`
+  - `llm-netdata-cloud/qwen3.6-plus`
+  - `llm-netdata-cloud/minimax-m2.7-coder`
+- Confirmed gap: duration rotation needs precise implementation and tests.
+  - Current Netdata Rust policy exposes `duration_of_journal_file` at `src/crates/journal-log-writer/src/log/config.rs:12`.
+  - Current Netdata Rust rotation state tracks only size and count at `src/crates/journal-log-writer/src/log/mod.rs:59` and checks only size/count at `src/crates/journal-log-writer/src/log/mod.rs:73`.
+  - Current Go SDK rotation policy has only `MaxFileSize` and `MaxEntries` at `go/journal/log.go:16`.
+  - SOW consequence: duration rotation must be implemented as observable behavior, using active-file head/first-entry time or an equivalent documented clock model, and validated with size/count disabled.
+- Confirmed gap: age retention needs Go API coverage.
+  - Current Netdata Rust retention policy includes `duration_of_journal_files` at `src/crates/journal-log-writer/src/log/config.rs:48`.
+  - Current Go SDK retention policy has only `MaxFiles` and `MaxBytes` at `go/journal/log.go:38`.
+  - SOW consequence: Go retention must support nullable age limits independently from count and bytes.
+- Confirmed gap: append timestamp controls are required.
+  - Current Netdata Rust writer exposes `EntryTimestamps` with source realtime, entry realtime, and entry monotonic fields at `src/crates/journal-log-writer/src/log/mod.rs:204`.
+  - Current Netdata Rust writer clamps realtime/monotonic progression in `capture_dual_timestamp` at `src/crates/journal-log-writer/src/log/mod.rs:237`.
+  - NetFlow raw writes pass both source realtime and entry realtime at `src/crates/netflow-plugin/src/ingest/service/runtime.rs:138`.
+  - NetFlow tier writes pass source realtime and entry realtime at `src/crates/netflow-plugin/src/ingest/service/tiers.rs:93`.
+  - OTEL extracts source timestamps from OTLP fields at `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:78` and passes them to `write_entry` at `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:155`.
+  - SOW consequence: SDK append must support source realtime injection and entry timestamp overrides, not only low-level writer realtime options.
+- Confirmed gap: active-file path exposure after append is required by NetFlow facets.
+  - NetFlow raw writes call `active_file()` after appending and pass the path into facet observation at `src/crates/netflow-plugin/src/ingest/service/runtime.rs:153`.
+  - NetFlow tier writes do the same at `src/crates/netflow-plugin/src/ingest/service/tiers.rs:107`.
+  - Current Rust writer exposes `active_file()` at `src/crates/journal-log-writer/src/log/mod.rs:558`.
+  - Current Go SDK exposes `ActivePath()` at `go/journal/log.go:248`, but the contract must guarantee it maps to the actual post-append file.
+  - SOW consequence: active path must be observable immediately after append and must survive rotation decisions.
+- Confirmed gap: lifecycle events must include concrete paths for side indexes.
+  - Current Rust events include rotated archived/active files and retained deleted files at `src/crates/journal-log-writer/src/log/mod.rs:189`.
+  - NetFlow consumes those paths to update facets at `src/crates/netflow-plugin/src/ingest/service.rs:19`.
+  - SOW consequence: lifecycle notifications cannot be generic counters; they must expose the actual affected journal paths.
+- Confirmed gap: NetFlow keeps archive-time per-journal-file side artifacts and the API still needs complete file lifecycle hooks.
+  - NetFlow writes facet sidecars using the journal path as the sidecar basename at `src/crates/netflow-plugin/src/facet_runtime/sidecar.rs:11` and `src/crates/netflow-plugin/src/facet_runtime/sidecar.rs:33`.
+  - NetFlow deletes those sidecars from the same journal path at `src/crates/netflow-plugin/src/facet_runtime/sidecar.rs:26`.
+  - NetFlow records active contributions in memory under the active journal path at `src/crates/netflow-plugin/src/facet_runtime.rs:279`.
+  - NetFlow writes per-file sidecars when an active contribution is promoted to an archived journal file at `src/crates/netflow-plugin/src/facet_runtime.rs:302`.
+  - NetFlow deletes sidecars for retained/deleted journal paths at `src/crates/netflow-plugin/src/facet_runtime.rs:327`.
+  - SOW consequence: NetFlow currently creates sidecar files on archive, not active-file creation. The SDK API still needs create, archive, and delete hooks with concrete paths so NetFlow can handle archive/delete exactly and future or existing consumers are not forced to infer file creation from first append or rotation side effects.
+- Confirmed gap: consumer artifacts must be available to size accounting.
+  - Current Rust chain initialization totals only journal file sizes by calling `metadata(file.path()).len()` for repository journal files at `src/crates/journal-log-writer/src/log/chain.rs:74` and `src/crates/journal-log-writer/src/log/chain.rs:83`.
+  - Current Rust total-size retention compares only that tracked journal total with `size_of_journal_files` at `src/crates/journal-log-writer/src/log/chain.rs:194`.
+  - NetFlow creates sidecar files separately from the journal file by creating a temporary sidecar and renaming it into the per-journal sidecar path at `src/crates/netflow-plugin/src/facet_runtime/sidecar.rs:104` and `src/crates/netflow-plugin/src/facet_runtime/sidecar.rs:124`.
+  - NetFlow derives tier rotation size from `size_of_journal_files / 20`, clamped to `5MB..200MB`, at `src/crates/netflow-plugin/src/plugin_config/types/journal.rs:228`.
+  - SOW consequence: size-based retention, rotation-size derivation, and any artifact-aware rotation mode need a way to account for consumer-owned bytes associated with a journal path, otherwise configured storage limits can be exceeded by sidecars even when journal files alone satisfy the limits.
+- Confirmed gap: retention must not remove adjacent Netdata state.
+  - NetFlow keeps decoder state under `decoder-state.d` at `src/crates/netflow-plugin/src/plugin_config/types/journal.rs:246` and creates/preloads it at `src/crates/netflow-plugin/src/ingest/service/init.rs:61`.
+  - NetFlow keeps facet state in `facet-state.bin` at `src/crates/netflow-plugin/src/facet_runtime.rs:37`.
+  - NetFlow sidecars are named from the journal path as `.facet.<FIELD>.fst` at `src/crates/netflow-plugin/src/facet_runtime/sidecar.rs:33`.
+  - SOW consequence: SDK retention may delete only SDK-owned journal files in scope and must report deleted journal paths so consumers can clean sidecars themselves.
+- Confirmed gap: sync cadence differs by consumer.
+  - OTEL syncs after each export batch at `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:170`.
+  - NetFlow syncs on interval/threshold/shutdown paths at `src/crates/netflow-plugin/src/ingest/service/runtime.rs:13`, `src/crates/netflow-plugin/src/ingest/service/runtime.rs:183`, and `src/crates/netflow-plugin/src/ingest/service/runtime.rs:168`.
+  - SOW consequence: sync must remain a consumer-controlled operation, not a hardcoded SDK policy.
+- Confirmed gap: close/drop behavior must be specified for migration.
+  - Current Rust `Drop` archives and best-effort syncs an existing active file at `src/crates/journal-log-writer/src/log/mod.rs:745`.
+  - Current Go `Close` deletes an empty active file at `go/journal/log.go:199`.
+  - SOW consequence: lazy-open and eager-open empty-file behavior need explicit tests so creation preflight does not introduce unexpected data loss or invisible directories.
+- Confirmed gap: source and origin semantics need narrowing.
+  - Current Rust writer loads machine-id in `create_chain` and appends it to the supplied path at `src/crates/journal-log-writer/src/log/mod.rs:25` and `src/crates/journal-log-writer/src/log/mod.rs:39`.
+  - Current Rust chain names files with a hardcoded `system` source prefix at `src/crates/journal-log-writer/src/log/chain.rs:23`.
+  - Current Rust `Config` stores `origin` at `src/crates/journal-log-writer/src/log/config.rs:75`, but no `journal-log-writer` runtime code uses `config.origin` outside construction/storage.
+  - Current Go SDK defaults empty source to `system` at `go/journal/log.go:98` and builds active/archive names from that source at `go/journal/log.go:392`.
+  - SOW consequence: Netdata migration default must remain the `system` source/prefix; any source configurability is additive and cannot change machine-id ownership by accident.
+- Confirmed gap: concurrency contract must be explicit.
+  - Current Go SDK documents `Log` as not safe for concurrent calls at `go/journal/log.go:68`.
+  - OTEL wraps `Log` in `Arc<Mutex<Log>>` at `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:15` and locks before writing at `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:156`.
+  - SOW consequence: the SDK must either provide internal serialization or clearly require callers to serialize writes.
+- Confirmed non-writer setting: NetFlow `query_max_groups` belongs to query protection, not the writer.
+  - NetFlow defines `query_max_groups` at `src/crates/netflow-plugin/src/plugin_config/types/journal.rs:42` and validates it at `src/crates/netflow-plugin/src/plugin_config/validation/journal.rs:5`.
+  - SOW consequence: this setting should be documented as out of scope for the writer API.
+- Second read-only reviewer round on 2026-05-25 found additional API requirements that were missing or under-specified:
+  - Active file naming and resume are migration-critical. Current Netdata Rust writer creates active files with the `system` + `@` + sequence metadata journal-name pattern at `src/crates/journal-log-writer/src/log/chain.rs:23` and does not rename them on `Drop` at `src/crates/journal-log-writer/src/log/mod.rs:745`. Current Go `Log` uses `system.journal` for the active file at `go/journal/log.go:392`. SOW consequence: Netdata migration mode must scan and resume the existing Rust-format chain, or use a compatible naming mode, instead of creating a parallel Go-style active file.
+  - Existing chain scanning is required for correctness. Current Rust `OwnedChain::new` scans files and tracks sizes at `src/crates/journal-log-writer/src/log/chain.rs:74`, and `Log::new` initializes tail sequence, realtime clock, and monotonic state at `src/crates/journal-log-writer/src/log/mod.rs:265`, `src/crates/journal-log-writer/src/log/mod.rs:271`, and `src/crates/journal-log-writer/src/log/mod.rs:274`. SOW consequence: startup/preflight cannot initialize a blank chain when existing files are present.
+  - OTEL writes dotted field names. OTEL emits fields directly from JSON keys such as `log.time_unix_nano` at `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:63` and builds `key=value` pairs at `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:118`. Current Rust writer remaps incompatible field names at `src/crates/journal-log-writer/src/log/mod.rs:345` and emits remapping entries at `src/crates/journal-log-writer/src/log/mod.rs:502`. Current Go field validation rejects non-uppercase/underscore names at `go/journal/writer.go:465`. SOW consequence: the SDK ingestion API must include Rust-compatible field-name remapping or an equivalent tested compatibility mechanism.
+  - NetFlow retention has no file-count setting. NetFlow retention config only exposes nullable size and duration at `src/crates/netflow-plugin/src/plugin_config/types/journal.rs:54`, and `build_journal_cfg` only sets size and duration retention at `src/crates/netflow-plugin/src/ingest/service/init.rs:40`. SOW consequence: NetFlow migration must leave file-count retention disabled by default.
+  - OTEL lifecycle observers are not wired. OTEL constructs `Log::new` without `with_lifecycle_observer` at `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:44`, while NetFlow wires the observer at `src/crates/netflow-plugin/src/ingest/service/init.rs:104`. SOW consequence: lifecycle hooks must be optional.
+  - Current Rust lifecycle events do not include creation events. `LogLifecycleEvent` contains `Rotated` and `RetainedDeleted` at `src/crates/journal-log-writer/src/log/mod.rs:190`, and initial active creation returns no event at `src/crates/journal-log-writer/src/log/mod.rs:608`. SOW consequence: create events are an additive SDK capability needed for a complete lifecycle API, not current Rust parity.
+  - Active-file retention protection must be explicit. Current Rust file-count and byte retention delete via `delete_oldest_file()` at `src/crates/journal-log-writer/src/log/chain.rs:179` and `src/crates/journal-log-writer/src/log/chain.rs:194`, which ultimately pops the front file at `src/crates/journal-log-writer/src/log/chain.rs:232`. SOW consequence: the SDK must explicitly skip the tracked active file for all retention checks, including enabled-zero edge cases.
+  - Current Rust observer callbacks are best-effort. The trait returns `()` at `src/crates/journal-log-writer/src/log/mod.rs:200`, the writer ignores callback failures by construction at `src/crates/journal-log-writer/src/log/mod.rs:583`, and NetFlow logs observer errors instead of failing the journal operation at `src/crates/netflow-plugin/src/ingest/service.rs:19`. SOW consequence: Netdata-compatible default callback semantics should be best-effort with observable errors, not rollback semantics.
+  - Close/drop migration behavior must match Rust for active files. Current Rust `Drop` archives and syncs an active file at `src/crates/journal-log-writer/src/log/mod.rs:745`; current Go `Close` deletes an empty active file at `go/journal/log.go:208`. SOW consequence: Netdata-compatible mode must not delete active files by default.
+  - Retention execution timing must be clear. Current Rust retention is invoked from `rotate()` at `src/crates/journal-log-writer/src/log/mod.rs:580`; if no append-triggered rotation occurs, age retention has no independent trigger. SOW consequence: the API must document this timing and provide an explicit enforcement call if consumers need retention without rotation.
+
+Risks:
+
+- If Netdata accepts a job before the SDK has opened or created the journal writer successfully, users will see dynamic configuration apply succeed and only later see runtime log failures.
+- If missing identity inputs silently become random UUIDs, a misconfigured Netdata job can look healthy while producing unexpected journal layout and query behavior.
+- If the SDK exposes only one path, callers may confuse the configured base/tier directory with the effective machine-id journal directory. The API must expose both names clearly.
+- If retention cannot enforce the required age or byte limits at the SDK layer, Netdata may need extra cleanup code, which defeats the purpose of sharing the writer.
+- If this SOW is implemented while SOW-0019 FSS writer changes are still active, merge conflicts or incorrect sealing option propagation are likely.
+- If nullable policy values are represented as zero-valued integers, callers cannot safely distinguish "disabled" from "enabled with zero"; this is especially dangerous for file-count retention.
+- If file-count retention can delete the active file when configured to zero or one under edge conditions, the writer violates the live one-writer/multiple-reader contract and risks data loss.
+- If NetFlow's facet lifecycle notifications are omitted, the SDK may write correct journal files while Netdata's auxiliary facet/index state becomes stale.
+
+## Pre-Implementation Gate
+
+Status: needs-user-decision
+
+Problem / root-cause model:
+
+- The SDK has generic Go writer primitives, but the Netdata integration needs a stricter ingestion writer contract. The root issue is not journal byte encoding; it is lifecycle semantics: creation-time validation, stable query directory, strict identity handling, and retention/rotation policy coverage suitable for Netdata dynamic configuration.
+
+Evidence reviewed:
+
+- `SOW-status.md`: current and pending work list shows no Netdata ingestion API SOW before this one.
+- `.agents/sow/done/SOW-0013-20260523-go-directory-writer-rotation-retention.md`: completed high-level Go directory writer baseline.
+- `go/journal/log.go`: current high-level directory writer API, directory layout, rotation, retention, and identity normalization behavior.
+- `go/journal/writer.go`: low-level writer options, field model, append API, sync, close, and random UUID fallback.
+- `go/journal/log_test.go`: stock `journalctl --directory` tests against the current machine-id directory shape.
+
+Affected contracts and surfaces:
+
+- Go public API in package `journal`.
+- Go writer lifecycle and error semantics.
+- Directory layout and the documented `journalctl --directory` path for SDK-generated logs.
+- Rotation and retention policy semantics.
+- Stock `journalctl` compatibility tests.
+- Netdata ingestion plugin dependency contract.
+- SDK SOW/spec documentation and status tracking.
+
+Existing patterns to reuse:
+
+- Keep `Writer` as the low-level file primitive.
+- Build any Netdata-focused API on top of `Log` or a small wrapper around `Log`, rather than duplicating journal object writing.
+- Reuse `Field`, `StringField`, `EntryOptions`, `RotationPolicy`, `RetentionPolicy`, `ActivePath`, and `JournalDirectory` where they already satisfy the contract.
+- Reuse existing `journalctl` test helpers and add Netdata-shaped fixtures instead of relying on real operational data.
+
+Risk and blast radius:
+
+- Medium API risk: changes should add a clearer constructor or options rather than break existing `NewLog` users.
+- Medium compatibility risk: directory layout changes can affect stock `journalctl --directory` behavior.
+- Medium operational risk: retention mistakes can delete too much or leak disk space; tests must prove active files and unrelated files are preserved.
+- Low security risk if fixtures remain synthetic; high sensitivity if real trap content or SNMP communities are copied into durable artifacts, so real data must not be used.
+- Medium performance risk: the API will be on an ingestion path, but full optimization belongs to SOW-0009 after feature completeness.
+
+Sensitive data handling plan:
+
+- Use only synthetic journal fields and synthetic trap values in tests, docs, specs, SOWs, and prompts.
+- Do not store SNMP community strings, customer trap payloads, private endpoints, non-private customer-identifying IPs, hostnames from real environments, or private operational logs in durable artifacts.
+- Use placeholders such as `[REDACTED_SECRET]`, `[PRIVATE_ENDPOINT]`, and synthetic values when examples need sensitive-shaped data.
+
+Implementation plan:
+
+1. Decide sequencing and whether this SOW interrupts or follows the active FSS SOW.
+2. Define the Go ingestion writer contract in API documentation and tests before implementation.
+3. Add a strict constructor or option set that performs all job-creation preflight synchronously.
+4. Preserve the existing migration layout: callers pass the same configured base/tier directory and the SDK appends `<machine-id>` internally by default.
+5. Implement duration rotation and age retention as first-class behavior, with tests proving active-file survival and scoped deletion.
+6. Add Netdata-shaped journalctl and verify tests with synthetic fields and binary payloads.
+7. Update specs, docs, status, and any project skills that become affected by the new durable API contract.
+
+Validation plan:
+
+- Run targeted Go tests for writer, log, retention, and new ingestion API coverage.
+- Run stock `journalctl --directory` checks against the documented Netdata query directory while the writer is active and after close/rotation.
+- Run stock `journalctl --verify` against active and archived files where stock verification supports the state being tested.
+- Add creation-time failure tests for unwritable directories, invalid source, invalid strict identity inputs, active-file open/create failure, lock conflict, and retention preflight error.
+- Add same-failure scans for ID fallback, retention deletion, directory selection, and runtime-only error paths.
+- Run read-only reviewer rounds after implementation following this repository's orchestration rules.
+
+Artifact impact plan:
+
+- AGENTS.md: likely unaffected unless this SOW discovers a general SDK process rule.
+- Runtime project skills: update `project-journal-compatibility` if the Netdata ingestion writer contract becomes a recurring compatibility rule.
+- Specs: update `.agents/sow/specs/product-scope.md` with the supported ingestion writer contract and query-directory behavior.
+- End-user/operator docs: update README or package docs if this SDK documents public usage examples.
+- End-user/operator skills: not expected to be affected because this SDK does not currently publish operator AI skills; record evidence at close.
+- SOW lifecycle: this pending SOW was created because no existing pending SOW owned the Netdata ingestion writer API; close only after implementation, validation, artifact updates, and follow-up mapping.
+- SOW-status.md: update pending list to include this SOW.
+
+Open-source reference evidence:
+
+- No external open-source repositories were checked for this SOW creation. The request was to classify the SDK's own pending SOWs and create the missing SDK SOW. Implementation should inspect systemd source/docs and relevant SDK-local evidence before code changes.
+
+Open decisions:
+
+1. Sequencing decision
+   - Option A: Finish the active FSS SOW first, then prioritize this SOW before SOW-0020 and SOW-0009.
+     - Pros: avoids conflicts with active writer/sealing changes; keeps one-SOW-at-a-time discipline.
+     - Cons: Netdata SDK-backed ingestion migrations must wait for FSS close.
+     - Risks: if FSS takes longer than expected, Netdata integration remains blocked.
+   - Option B: Pause the active FSS SOW and promote this SOW immediately.
+     - Pros: unblocks Netdata ingestion migrations faster.
+     - Cons: interrupts active cryptographic writer work and increases context-switch risk.
+     - Risks: merge conflicts and incomplete sealing state can confuse implementation and review.
+   - Recommendation: Option A unless Netdata ingestion migration is now higher priority than finishing FSS.
+
+2. Machine-id ownership and path compatibility decision
+   - Decision recorded from user clarification: existing users must not lose journals, and migrated plugins must continue writing to the same directories without manual configuration changes.
+   - Required behavior: keep the existing Netdata-compatible default where callers pass the base stream/tier directory and the SDK appends `<machine-id>` internally.
+   - Implication: `ConfiguredDirectory()` and `JournalDirectory()` or equivalent APIs must both exist; `JournalDirectory()` is the effective `journalctl --directory` path for the machine-id child chain.
+   - Risk to avoid: making callers include `<machine-id>` in configuration would create a second path and split existing journals.
+
+3. Time-based policy decision
+   - Decision recorded from user clarification: this SOW must be a superset of NetFlow, OTEL logs, and future consumers.
+   - Required behavior: add duration rotation and age retention in this SOW.
+   - Implication: existing Rust writer configuration shape is not enough evidence of working behavior; tests must prove the SDK enforces duration rotation.
+   - Risk to avoid: leaving time policies as follow-up work would fail the superset replacement requirement and keep Netdata-side cleanup logic alive.
+
+4. File-count edge-case decision
+   - Decision recorded from user clarification and second-round evidence: nullable values disable limits; enabled zero is invalid unless a separate explicit named mode is intentionally added and tested.
+   - Required behavior: the active file is always protected, file-count retention defaults to disabled for NetFlow migration, and tests cover enabled-zero rejection plus active-file survival under impossible limits.
+   - Implication: consumers that want "keep zero archived files" need an explicit named mode instead of accidentally getting that behavior from a zero value.
+   - Risk to avoid: a missing nullable wrapper or default zero value deleting every archived journal.
+
+## Implications And Decisions
+
+- 2026-05-25: User clarified that SOW-0023 is not SNMP-specific. It must define a superset Netdata ingestion writer API that can replace existing NetFlow and OTEL logs writer behavior and also satisfy future consumers.
+- 2026-05-25: User clarified that existing users must not lose existing journals. Migrated plugins must keep writing to the same effective directories without manual configuration changes.
+- 2026-05-25: Evidence shows existing NetFlow and OTEL logs consumers pass base stream/tier directories while the writer appends `<machine-id>` internally. The SDK migration default must preserve this machine-id ownership model.
+- 2026-05-25: Live local cache evidence shows current `/var/cache/netdata/flows/{raw,1m,5m,1h}/[machine-id]/` directories matching the host machine ID, with the newest sampled journal files under those machine-id children. Older flat files exist and must not be accidentally deleted or hidden by migration cleanup.
+- 2026-05-25: User clarified that if NetFlow keeps per-journal-file artifacts, the SDK API must provide hooks/callbacks on journal file creation, archive, and deletion so consumers can keep those artifacts synchronized with journal rotation. Evidence confirms NetFlow sidecar artifacts are per journal file, but NetFlow writes those sidecar files on archive, not on active-file creation.
+- 2026-05-25: User clarified that per-journal-file artifacts also affect journal size-based rotation. The SDK API must provide a way for consumer-owned artifact bytes to be included in size calculations, including total retained bytes and any rotation-size derivation or artifact-aware active rotation mode.
+
+## Plan
+
+1. Confirm prioritization against active SOW-0019 and pending SOW-0020/SOW-0009.
+2. Turn the Netdata API requirements into failing Go tests and public API documentation.
+3. Implement the smallest additive Go API surface that satisfies creation-time validation, strict identity, query-directory clarity, append, sync, close, rotation, and retention needs.
+4. Validate with stock `journalctl --directory`, stock `journalctl --verify`, targeted Go tests, and creation-failure tests.
+5. Update product scope/specs, status, and any affected project skill or public docs.
+6. Run external read-only review rounds and address findings without narrowing the review scope.
+
+## Delegation Plan
+
+Implementer:
+
+- Delegate implementation to an external implementer per repository orchestration rules. The project manager should own requirements, prompts, SOW updates, integration checks, and final status, but should not personally implement feature code for this delegated SDK SOW.
+
+Reviewers:
+
+- Use independent read-only reviewers after implementation. Do not use any reviewer that is unavailable in the current user session. Prompts must include this SOW filename and ask for whole-SOW and whole-change review, unwanted side effects, security issues, and API compatibility risks.
+
+Repository boundary block for every external-agent prompt:
+
+```text
+CRITICAL REPOSITORY BOUNDARY:
+- DO NOT MAKE CHANGES OUTSIDE THIS REPOSITORY FOR ANY REASON.
+- Repository path: current repository root.
+- You may inspect external references read-only when the task requires it.
+- Write, edit, delete, move, reset, checkout, install, generate, cache, or format nothing outside this repository.
+- The only write exception outside the repository is /tmp.
+- Prefer .local/ inside this repository for scratch work, generated temporary files, cloned references, logs, and working notes.
+```
+
+Failure handling:
+
+- If the implementer cannot complete the SOW, record the exact blocker and either reassign or return to the user with evidence.
+- If reviewers disagree, resolve by reproducing with tests or source evidence, not by majority vote.
+- If the active FSS SOW conflicts with this SOW, pause before implementation and ask the user which SOW should own the conflict.
+- If API requirements cannot be satisfied without breaking existing SDK users, return with numbered options and do not implement the breaking change without user approval.
+
+## Execution Log
+
+### 2026-05-25
+
+- Created this pending SOW after reviewing the current and pending SDK SOW queue and the current Go directory writer API.
+- Classified SOW-0009, SOW-0020, and SOW-0022 as related but insufficient for the Netdata ingestion writer API need.
+- Ran read-only external gap review against SOW-0023 and `ktsaou/netdata @ 00305266364e` using `glm`, `kimi`, `qwen`, and `minimax`. Initial sandboxed runs could not reach the model endpoint; direct approved runs completed. Confirmed findings were incorporated into the acceptance criteria and analysis.
+- Added explicit Netdata side-artifact requirements after local verification that NetFlow facet sidecars are per-journal-file artifacts written on archive and removed on journal deletion. The SOW now requires create/archive/delete lifecycle hooks and artifact-inclusive size accounting.
+- Ran a second read-only reviewer round against the full SOW and `ktsaou/netdata @ 00305266364e` to search for additional API requirements. Confirmed findings were locally verified before incorporation. One reviewer session attempted nested external reviews despite prompt instructions; its output was treated as candidate evidence only and not accepted without direct source verification.
+
+## Validation
+
+Acceptance criteria evidence:
+
+- Pending implementation.
+
+Tests or equivalent validation:
+
+- Pending implementation.
+
+Real-use evidence:
+
+- Pending implementation.
+
+Reviewer findings:
+
+- Pre-implementation SOW gap review completed with `glm`, `kimi`, `qwen`, and `minimax` on 2026-05-25. Accepted findings were incorporated under `External reviewer gap synthesis on 2026-05-25`.
+- A second pre-implementation reviewer round was run on 2026-05-25. Accepted, source-verified findings were incorporated into the acceptance criteria and second-round analysis bullets. Implementation review remains pending.
+
+Same-failure scan:
+
+- Pending implementation.
+
+Sensitive data gate:
+
+- This SOW uses only synthetic examples and does not include secrets, credentials, SNMP communities, customer names, personal data, non-private customer-identifying IPs, private endpoints, or proprietary incident details.
+
+Artifact maintenance gate:
+
+- AGENTS.md: pending close-time assessment.
+- Runtime project skills: pending close-time assessment.
+- Specs: pending close-time assessment.
+- End-user/operator docs: pending close-time assessment.
+- End-user/operator skills: pending close-time assessment.
+- SOW lifecycle: pending SOW created in `.agents/sow/pending/`; status is `open`.
+- SOW-status.md: updated in this creation step.
+
+Specs update:
+
+- Pending implementation.
+
+Project skills update:
+
+- Pending implementation.
+
+End-user/operator docs update:
+
+- Pending implementation.
+
+End-user/operator skills update:
+
+- Pending implementation.
+
+Lessons:
+
+- Pending implementation.
+
+Follow-up mapping:
+
+- Pending implementation.
+
+## Outcome
+
+Pending.
+
+## Lessons Extracted
+
+Pending.
+
+## Followup
+
+Pending.

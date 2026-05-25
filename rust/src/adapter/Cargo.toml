@@ -12,9 +12,11 @@ path = "main.rs"
 
 [dependencies]
 journal = { path = "../journal" }
+journal-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 ruzstd = { workspace = true }
 walkdir = { workspace = true }
 tempfile = { workspace = true }
+uuid = { workspace = true }

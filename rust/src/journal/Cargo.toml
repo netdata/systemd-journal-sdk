@@ -33,3 +33,10 @@ ouroboros = { workspace = true }
 
 # Compression
 ruzstd = { workspace = true }
+
+# Cryptography for sealed verification
+hmac = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

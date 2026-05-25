@@ -79,10 +79,7 @@ def run_adapter():
         elif category == 'corruption-resilience':
             result = run_corruption_test(tc)
         elif category == 'verification':
-            result = {
-                'status': 'SKIP',
-                'note': f'category "{category}" currently contains sealed FSS verification tests, which are not yet implemented',
-            }
+            result = run_verification_test(tc)
         else:
             result = {'status': 'SKIP', 'note': f'unsupported category: {category}'}
     except Exception as e:
@@ -451,6 +448,33 @@ def run_corruption_test(tc):
     return {'status': 'PASS', 'actual': True, 'evidence': {'checked': checked, 'read_errors': read_errors}}
 
 
+def run_verification_test(tc):
+    if tc.get('test_name') == 'journal-verify-sealed':
+        from journal.writer import Writer
+        from journal.seal import SealOptions
+        import tempfile
+        import shutil
+        tmp = tempfile.mkdtemp(prefix='adapter-verify-sealed-')
+        try:
+            path = os.path.join(tmp, 'sealed.journal')
+            seed = b'\x00' * 12
+            seal_opts = SealOptions(seed, interval_usec=1000000, start_usec=1000000)
+            w = Writer.create(path, opts={'seal': seal_opts})
+            w.append([{'name': 'MESSAGE', 'value': 'sealed verify'}],
+                     {'realtime_usec': 1500000})
+            w.close()
+            key = f'{seed.hex()}/{seal_opts.start_usec // seal_opts.interval_usec:x}-{seal_opts.interval_usec:x}'
+            from journal.verify import verify_file_with_key, VerificationError
+            try:
+                verify_file_with_key(path, key)
+            except VerificationError as e:
+                return {'status': 'FAIL', 'actual': False, 'error': str(e)}
+            return {'status': 'PASS', 'actual': True}
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    return {'status': 'SKIP', 'note': f'unsupported verification test: {tc.get("test_name")}'}
+
+
 def list_tests():
     tests = [
         'journal-file-parse-uid-from-filename',
@@ -465,6 +489,7 @@ def list_tests():
         'journal-export-format',
         'journal-list-boots',
         'journal-zstd-compressed-read',
+        'journal-verify-sealed',
         'journal-corruption-append-resilient',
         'journal-verify-corruption-detection',
     ]
@@ -490,6 +515,7 @@ def probe_adapter():
             'list_boots': True,
             'zstd_decompress': _HAS_ZSTD,
             'verification': True,
+            'fss': True,
         },
     }
     print(json.dumps(info))

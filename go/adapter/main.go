@@ -125,8 +125,7 @@ func runAdapterRun(stdin io.Reader, stdout io.Writer) error {
 	case "corruption-resilience":
 		result = runCorruptionTest(&tc)
 	case "verification":
-		result.Status = "SKIP"
-		result.Note = fmt.Sprintf("category %q currently contains sealed FSS verification tests, which are not yet implemented", tc.Category)
+		result = runVerificationTest(&tc)
 	default:
 		result.Status = "SKIP"
 		result.Note = fmt.Sprintf("unsupported category: %s", tc.Category)
@@ -147,17 +146,15 @@ func runAdapterRun(stdin io.Reader, stdout io.Writer) error {
 
 func supportedCategories() map[string]bool {
 	return map[string]bool{
-		"file-format":       true,
-		"entry-parse":       true,
-		"matching":          true,
-		"stream":            true,
-		"cursor-navigation": true,
-		"enumeration":       true,
-		"import-export":     true,
-		"journalctl-cli":    true,
-		// The manifest's verification category currently contains sealed FSS tests.
-		// Unsealed structural verification is exercised under corruption-resilience.
-		"verification":          false,
+		"file-format":           true,
+		"entry-parse":           true,
+		"matching":              true,
+		"stream":                true,
+		"cursor-navigation":     true,
+		"enumeration":           true,
+		"import-export":         true,
+		"journalctl-cli":        true,
+		"verification":          true,
 		"compression":           true,
 		"corruption-resilience": true,
 	}
@@ -180,6 +177,7 @@ func listSupportedTests(stdout io.Writer) {
 		"import-export:journal-export-format",
 		"journalctl-cli:journal-list-boots",
 		"compression:journal-zstd-compressed-read",
+		"verification:journal-verify-sealed",
 		"corruption-resilience:journal-corruption-append-resilient",
 		"corruption-resilience:journal-verify-corruption-detection",
 	}
@@ -213,6 +211,7 @@ func probeAdapter(stdout io.Writer) {
 			"list_boots":        true,
 			"zstd_decompress":   true,
 			"verification":      true,
+			"fss":               true,
 		},
 	}
 	json.NewEncoder(stdout).Encode(info)
@@ -908,6 +907,39 @@ func runCorruptionTest(tc *TestCase) Result {
 		Actual:       true,
 		Evidence:     map[string]int{"checked": checked, "read_errors": readErrors},
 	}
+}
+
+func runVerificationTest(tc *TestCase) Result {
+	if tc.TestName == "journal-verify-sealed" {
+		// Generate a sealed file on the fly because the manifest fixture
+		// requires daemon-level journalctl --setup-keys.
+		tmp, err := os.MkdirTemp("", "adapter-verify-sealed-*")
+		if err != nil {
+			return Result{TestName: tc.TestName, ResultFormat: tc.Expected.ResultFormat, Status: "ERROR", Error: err.Error()}
+		}
+		defer os.RemoveAll(tmp)
+		path := filepath.Join(tmp, "sealed.journal")
+		seed := make([]byte, 12)
+		opts := journal.Options{Seal: &journal.SealOptions{Seed: seed, IntervalUsec: 1000000, StartUsec: 1000000}}
+		w, err := journal.Create(path, opts)
+		if err != nil {
+			return Result{TestName: tc.TestName, ResultFormat: tc.Expected.ResultFormat, Status: "ERROR", Error: err.Error()}
+		}
+		if err := w.Append([]journal.Field{journal.StringField("MESSAGE", "sealed verify")}, journal.EntryOptions{RealtimeUsec: 1500000}); err != nil {
+			return Result{TestName: tc.TestName, ResultFormat: tc.Expected.ResultFormat, Status: "ERROR", Error: err.Error()}
+		}
+		if err := w.Close(); err != nil {
+			return Result{TestName: tc.TestName, ResultFormat: tc.Expected.ResultFormat, Status: "ERROR", Error: err.Error()}
+		}
+		key := fmt.Sprintf("%024x/%x-%x", seed, opts.Seal.StartUsec/opts.Seal.IntervalUsec, opts.Seal.IntervalUsec)
+		if err := journal.VerifyFileWithKey(path, key); err != nil {
+			return Result{TestName: tc.TestName, ResultFormat: tc.Expected.ResultFormat, Status: "FAIL", Error: err.Error()}
+		}
+		return Result{TestName: tc.TestName, ResultFormat: tc.Expected.ResultFormat, Status: "PASS", Actual: true}
+	}
+
+	// For any other verification test, skip.
+	return Result{TestName: tc.TestName, ResultFormat: tc.Expected.ResultFormat, Status: "SKIP", Note: "unsupported verification test"}
 }
 
 func runJournalctlCliTest(tc *TestCase) Result {

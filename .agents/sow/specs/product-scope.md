@@ -177,6 +177,9 @@ Current Go writer feature slice:
 - pure cross-SDK cooperative lockfile with stale-owner detection, plus a
   secondary POSIX `flock`, to protect the one-writer contract among
   cooperating SDK writers;
+- Forward Secure Sealing TAG writing with configurable deterministic test
+  options and stock `journalctl --verify --verify-key` validation for generated
+  sealed files;
 - live one-writer/multiple-reader compatibility with stock `journalctl --file` and stock libsystemd readers for the current writer slice.
 
 ## Reader Target
@@ -209,7 +212,9 @@ Current Go reader limitations:
   non-overlapping active/archive files; realtime interleaving across
   overlapping multi-file directories is tracked under the interoperability
   phase;
-- full journal verification and FSS validation are not implemented;
+- sealed TAG/HMAC verification APIs and file-backed journalctl `--verify-key`
+  are implemented for repository-generated sealed files; full systemd
+  object-graph verification parity remains tracked under SOW-0022;
 - daemon-only journalctl operations remain unsupported.
 
 Current Rust writer feature slice:
@@ -232,6 +237,9 @@ Current Rust writer feature slice:
   to satisfy retention limits;
 - pure cross-SDK cooperative lockfile with stale-owner detection to protect the
   one-writer contract among cooperating SDK writers;
+- Forward Secure Sealing TAG writing with configurable deterministic test
+  options and stock `journalctl --verify --verify-key` validation for generated
+  sealed files;
 - live one-writer/multiple-reader compatibility with stock `journalctl --file`
   and stock libsystemd readers for the current writer slice.
 
@@ -260,7 +268,9 @@ Current Rust reader limitations:
   non-overlapping active/archive files; realtime interleaving across overlapping
   multi-file directories is tracked under the interoperability phase;
 - boot listing uses file-level boot metadata in this slice;
-- full journal verification and FSS validation are not implemented;
+- sealed TAG/HMAC verification APIs and file-backed journalctl `--verify-key`
+  are implemented for repository-generated sealed files; full systemd
+  object-graph verification parity remains tracked under SOW-0022;
 - daemon-only journalctl operations remain unsupported.
 
 Current Node.js writer feature slice:
@@ -282,6 +292,9 @@ Current Node.js writer feature slice:
   to satisfy retention limits;
 - pure cross-SDK cooperative lockfile with stale-owner detection to protect the
   one-writer contract among cooperating SDK writers;
+- Forward Secure Sealing TAG writing with configurable deterministic test
+  options and stock `journalctl --verify --verify-key` validation for generated
+  sealed files;
 - live one-writer/multiple-reader compatibility with stock `journalctl --file`
   and stock libsystemd readers for the current writer slice.
 
@@ -311,7 +324,9 @@ Current Node.js reader/writer limitations:
   non-overlapping active/archive files; realtime interleaving across overlapping
   multi-file directories is tracked under the interoperability phase;
 - boot listing uses file-level boot metadata in this slice;
-- full journal verification and FSS validation are not implemented;
+- sealed TAG/HMAC verification APIs and file-backed journalctl `--verify-key`
+  are implemented for repository-generated sealed files; full systemd
+  object-graph verification parity remains tracked under SOW-0022;
 - daemon-only journalctl operations remain unsupported.
 
 Current Python writer feature slice:
@@ -334,6 +349,9 @@ Current Python writer feature slice:
 - pure cross-SDK cooperative lockfile with stale-owner detection, plus a
   secondary POSIX `flock`, to protect the one-writer contract among
   cooperating SDK writers;
+- Forward Secure Sealing TAG writing with configurable deterministic test
+  options and stock `journalctl --verify --verify-key` validation for generated
+  sealed files;
 - live one-writer/multiple-reader compatibility with stock `journalctl --file`
   and stock libsystemd readers for the current writer slice.
 
@@ -365,7 +383,9 @@ Current Python reader/writer limitations:
   non-overlapping active/archive files; realtime interleaving across overlapping
   multi-file directories is tracked under the interoperability phase;
 - boot listing uses file-level boot metadata in this slice;
-- full journal verification and FSS validation are not implemented;
+- sealed TAG/HMAC verification APIs and file-backed journalctl `--verify-key`
+  are implemented for repository-generated sealed files; full systemd
+  object-graph verification parity remains tracked under SOW-0022;
 - daemon-only journalctl operations remain unsupported.
 
 ## journalctl Target

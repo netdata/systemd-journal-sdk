@@ -4,7 +4,7 @@ use journal::{
     FacadeError, FileReader, OutputMode, SdJournal, SdJournalAddDisjunction, SdJournalAddMatch,
     SdJournalEnumerateFields, SdJournalGetEntry, SdJournalListBoots, SdJournalNext, SdJournalOpen,
     SdJournalPrevious, SdJournalProcessOutput, SdJournalSeekHead, SdJournalSeekTail,
-    SdJournalSetOutputMode, parse_match_string, verify_file,
+    SdJournalSetOutputMode, parse_match_string, verify_file, verify_file_with_key,
 };
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -162,12 +162,14 @@ fn run_verify(path: &Path, verify_key: Option<&str>) -> Result<()> {
         };
 
         if sealed && verify_key.is_some() {
-            eprintln!(
-                "FAIL: {} (sealed FSS verification is not yet implemented)",
-                file.display()
-            );
-            if first_err.is_none() {
-                first_err = Some(anyhow!("sealed FSS verification is not yet implemented"));
+            match verify_file_with_key(file, verify_key.unwrap()) {
+                Ok(()) => eprintln!("PASS: {}", file.display()),
+                Err(err) => {
+                    eprintln!("FAIL: {} ({err})", file.display());
+                    if first_err.is_none() {
+                        first_err = Some(anyhow!("{err}"));
+                    }
+                }
             }
             continue;
         }
@@ -240,8 +242,8 @@ fn valid_verification_key(key: &str) -> bool {
     if !ok || next >= bytes.len() || bytes[next] != b'-' {
         return false;
     }
-    let (_, ok) = consume_hex(bytes, next + 1);
-    ok
+    let (end, ok) = consume_hex(bytes, next + 1);
+    ok && end == bytes.len() && bytes[next + 1..end].iter().any(|b| *b != b'0')
 }
 
 fn consume_hex(bytes: &[u8], start: usize) -> (usize, bool) {
@@ -322,6 +324,10 @@ fn write_current(journal: &mut SdJournal) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use journal_core::file::{JournalFile, JournalFileOptions, JournalWriter, MmapMut};
+    use journal_core::repository::File as RepoFile;
+    use journal_core::seal::SealOptions;
+    use std::path::Path;
 
     const VALID_FSS_VERIFICATION_KEY: &str = "c262bd-85187f-0b1b04-877cc5/1c7af8-35a4e900";
 
@@ -397,35 +403,60 @@ mod tests {
         );
     }
 
-    fn sealed_fixture_copy() -> tempfile::NamedTempFile {
-        let fixture = repo_root().join("fixtures/systemd/test-data/no-rtc/system.journal.zst");
+    fn test_uuid(n: u8) -> uuid::Uuid {
+        let mut bytes = [0u8; 16];
+        bytes[15] = n;
+        uuid::Uuid::from_bytes(bytes)
+    }
 
-        // Decompress the zst fixture so we can patch the raw journal header
-        let compressed = std::fs::read(&fixture).expect("read fixture bytes");
-        let mut decoder =
-            ruzstd::decoding::StreamingDecoder::new(&compressed[..]).expect("create zstd decoder");
-        let mut bytes = Vec::new();
-        std::io::Read::read_to_end(&mut decoder, &mut bytes).expect("decompress fixture");
+    fn verification_key(opts: &SealOptions) -> String {
+        let seed_hex = opts
+            .seed
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>();
+        let start = opts.start_usec / opts.interval_usec;
+        format!(
+            "{seed_hex}/{start:x}-{interval:x}",
+            interval = opts.interval_usec
+        )
+    }
 
-        // Patch compatible_flags to set HEADER_COMPATIBLE_SEALED
-        let mut flags = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
-        flags |= COMPATIBLE_SEALED;
-        bytes[8..12].copy_from_slice(&flags.to_le_bytes());
-        let local = repo_root().join(".local/journalctl-tests");
-        std::fs::create_dir_all(&local).expect("create .local temp dir");
-        let tmp = tempfile::Builder::new()
-            .prefix("journalctl-verify-sealed-")
-            .suffix(".journal")
-            .tempfile_in(local)
-            .expect("create sealed fixture temp file");
-        std::fs::write(tmp.path(), bytes).expect("write patched journal");
-        tmp
+    fn write_sealed_file(path: &Path) -> SealOptions {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create journal parent");
+        }
+        let repo_file = RepoFile::from_path(path)
+            .unwrap_or_else(|| panic!("test journal path should parse: {}", path.display()));
+        let seal = SealOptions::new([0u8; 12], 1_000_000, 1_000_000);
+        let mut journal_file = JournalFile::<MmapMut>::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_seal(seal.clone()),
+        )
+        .expect("create sealed journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[b"MESSAGE=sealed verify".as_slice()],
+                1_500_000,
+                100,
+            )
+            .expect("write sealed entry");
+        journal_file.sync().expect("sync journal");
+        seal
     }
 
     #[test]
     fn verify_sealed_without_key_requires_key() {
-        let tmp = sealed_fixture_copy();
-        let err = run_verify(tmp.path(), None).expect_err("verify should fail");
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir
+            .path()
+            .join("00000000-0000-0000-0000-000000000001/system.journal");
+        write_sealed_file(&path);
+        let err = run_verify(&path, None).expect_err("verify should fail");
         let msg = err.to_string();
         assert!(
             msg.contains("verification key"),
@@ -434,14 +465,16 @@ mod tests {
     }
 
     #[test]
-    fn verify_key_sealed_unsupported() {
-        let tmp = sealed_fixture_copy();
-        let err = run_verify(tmp.path(), Some(VALID_FSS_VERIFICATION_KEY))
-            .expect_err("verify should fail");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("not yet implemented"),
-            "expected 'not yet implemented', got: {msg}"
-        );
+    fn verify_key_sealed_passes_and_wrong_key_fails() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir
+            .path()
+            .join("00000000-0000-0000-0000-000000000001/system.journal");
+        let seal = write_sealed_file(&path);
+        let key = verification_key(&seal);
+
+        run_verify(&path, Some(&key)).expect("sealed verify with key should pass");
+        run_verify(&path, Some("000000000000000000000001/1-f4240"))
+            .expect_err("wrong verification key should fail");
     }
 }

@@ -11,7 +11,7 @@ import {
   SdJournalSeekTail, SdJournalPrevious,
   OUTPUT_MODE_DEFAULT, OUTPUT_MODE_JSON, OUTPUT_MODE_EXPORT,
 } from '../../src/facade.js';
-import { verifyFile } from '../../src/lib/verify.js';
+import { verifyFile, verifyFileWithKey } from '../../src/lib/verify.js';
 import { FileReader } from '../../src/lib/reader.js';
 import { isJournalFileName } from '../../src/lib/compress.js';
 import { COMPATIBLE_SEALED } from '../../src/lib/header.js';
@@ -226,16 +226,21 @@ function runVerify(inputPath, verifyKey, hasVerifyKey) {
       if (r) r.close();
     }
 
-    if (sealed && hasVerifyKey) {
-      process.stderr.write(`FAIL: ${file} (sealed FSS verification is not yet implemented)\n`);
-      if (!firstErr) firstErr = new Error('sealed FSS verification is not yet implemented');
-      continue;
-    }
-
     if (sealed && !hasVerifyKey) {
       process.stderr.write(`Journal file ${file} has sealing enabled but verification key has not been passed using --verify-key=.\n`);
       process.stderr.write(`FAIL: ${file} (verification key required for sealed journal file)\n`);
       if (!firstErr) firstErr = new Error('verification key required for sealed journal file');
+      continue;
+    }
+
+    if (sealed && hasVerifyKey) {
+      try {
+        verifyFileWithKey(file, values['verify-key']);
+        process.stderr.write(`PASS: ${file}\n`);
+      } catch (err) {
+        process.stderr.write(`FAIL: ${file} (${err.message})\n`);
+        if (!firstErr) firstErr = err;
+      }
       continue;
     }
 
@@ -273,7 +278,9 @@ function validVerificationKey(key) {
   if (!start.ok || start.next >= key.length || key[start.next] !== '-') {
     return false;
   }
-  return consumeHex(key, start.next + 1).ok;
+  const interval = consumeHex(key, start.next + 1);
+  if (!interval.ok || interval.next !== key.length) return false;
+  return key.slice(start.next + 1, interval.next).split('').some((ch) => ch !== '0');
 }
 
 function consumeHex(s, start) {

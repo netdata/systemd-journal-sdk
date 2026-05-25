@@ -4,8 +4,11 @@ use journal::{
     SdJournalAddConjunction, SdJournalAddDisjunction, SdJournalAddMatch, SdJournalEnumerateFields,
     SdJournalGetCursor, SdJournalGetEntry, SdJournalListBoots, SdJournalNext, SdJournalOpen,
     SdJournalProcessOutput, SdJournalSeekHead, SdJournalSetOutputMode, SdJournalTestCursor, Source,
-    parse_match_string, verify_file,
+    parse_match_string, verify_file, verify_file_with_key,
 };
+use journal_core::file::{JournalFile, JournalFileOptions, JournalWriter, MmapMut};
+use journal_core::repository::File as RepoFile;
+use journal_core::seal::SealOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -213,7 +216,7 @@ fn cmd_probe() -> AnyResult<()> {
             "export_output": true,
             "json_output": true,
             "verification": true,
-            "fss": false
+            "fss": true
         }
     });
     serde_json::to_writer(io::stdout(), &value)?;
@@ -233,12 +236,7 @@ fn run_test(tc: &TestCase) -> AdapterResult {
         }
         "journal-query-unique-fields" => test_fields(tc, start),
         "journal-cursor-test" => test_cursor(tc, start),
-        "journal-verify-sealed" => AdapterResult::skip(
-            &tc.test_name,
-            &tc.expected.result_format,
-            "sealed FSS verification is not implemented in the Rust adapter slice",
-            start,
-        ),
+        "journal-verify-sealed" => test_verify_sealed(tc, start),
         "journal-verify-corruption-detection" => test_verify_corruption(tc, start),
         "journal-corruption-append-resilient" => test_corruption(tc, start),
         "journal-file-header-parse" => test_file_header(tc, start),
@@ -831,6 +829,124 @@ fn test_verify_corruption(tc: &TestCase, start: Instant) -> AdapterResult {
         )
         .with_evidence(json!({"error": err.to_string()})),
     }
+}
+
+fn test_verify_sealed(tc: &TestCase, start: Instant) -> AdapterResult {
+    let tmp = match tempfile::tempdir() {
+        Ok(tmp) => tmp,
+        Err(err) => {
+            return AdapterResult::error(
+                &tc.test_name,
+                &tc.expected.result_format,
+                err.to_string(),
+                start,
+            );
+        }
+    };
+
+    let path = tmp
+        .path()
+        .join("00000000-0000-0000-0000-000000000001/system.journal");
+    if let Some(parent) = path.parent() {
+        if let Err(err) = fs::create_dir_all(parent) {
+            return AdapterResult::error(
+                &tc.test_name,
+                &tc.expected.result_format,
+                err.to_string(),
+                start,
+            );
+        }
+    }
+    let seed = [0u8; 12];
+    let seal_opts = SealOptions::new(seed, 1_000_000, 1_000_000);
+
+    let repo_file = match RepoFile::from_path(&path) {
+        Some(f) => f,
+        None => {
+            return AdapterResult::error(
+                &tc.test_name,
+                &tc.expected.result_format,
+                "test journal path should parse".to_string(),
+                start,
+            );
+        }
+    };
+
+    let opts =
+        JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3)).with_seal(seal_opts);
+
+    let mut journal_file = match JournalFile::<MmapMut>::create(&repo_file, opts) {
+        Ok(jf) => jf,
+        Err(err) => {
+            return AdapterResult::error(
+                &tc.test_name,
+                &tc.expected.result_format,
+                err.to_string(),
+                start,
+            );
+        }
+    };
+
+    let mut writer = match JournalWriter::new(&mut journal_file, 1, test_uuid(4)) {
+        Ok(writer) => writer,
+        Err(err) => {
+            return AdapterResult::error(
+                &tc.test_name,
+                &tc.expected.result_format,
+                err.to_string(),
+                start,
+            );
+        }
+    };
+
+    if let Err(err) = writer.add_entry(
+        &mut journal_file,
+        &[b"MESSAGE=sealed verify".as_slice()],
+        1_500_000,
+        1,
+    ) {
+        return AdapterResult::error(
+            &tc.test_name,
+            &tc.expected.result_format,
+            err.to_string(),
+            start,
+        );
+    }
+
+    if let Err(err) = journal_file.sync() {
+        return AdapterResult::error(
+            &tc.test_name,
+            &tc.expected.result_format,
+            err.to_string(),
+            start,
+        );
+    }
+    drop(writer);
+    drop(journal_file);
+
+    let seed_hex = seed.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let key = format!("{seed_hex}/{:x}-{:x}", 1u64, 1_000_000u64);
+    match verify_file_with_key(&path, &key) {
+        Ok(()) => AdapterResult::pass(
+            &tc.test_name,
+            &tc.expected.result_format,
+            json!(true),
+            start,
+        ),
+        Err(err) => AdapterResult::fail(
+            &tc.test_name,
+            &tc.expected.result_format,
+            json!(false),
+            err.to_string(),
+            start,
+        ),
+    }
+}
+
+fn test_uuid(n: u8) -> uuid::Uuid {
+    let mut bytes = [0u8; 16];
+    bytes[15] = n;
+    uuid::Uuid::from_bytes(bytes)
 }
 
 fn test_list_boots(tc: &TestCase, start: Instant) -> AdapterResult {

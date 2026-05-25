@@ -117,7 +117,7 @@ func TestWriterSealedWrongKeyFails(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 
-	wrongKey := "000000000000000000000001/1-1000000"
+	wrongKey := "000000000000000000000001/1-f4240"
 	cmd := exec.Command("journalctl", "--verify", "--verify-key", wrongKey, "--file", path)
 	out, err := cmd.CombinedOutput()
 	if err == nil {

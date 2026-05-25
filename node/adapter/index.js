@@ -2,15 +2,16 @@
 // Node.js conformance adapter: run, list, probe.
 // All output is synchronous JSON on stdout.
 
-import { readFileSync, writeFileSync, unlinkSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync, statSync, mkdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { FileReader } from '../src/lib/reader.js';
 import { DirectoryReader } from '../src/lib/directory-reader.js';
 import { Writer } from '../src/lib/writer.js';
+import { SealOptions } from '../src/lib/seal.js';
 import { exportEntry, jsonEntry, parseCursor } from '../src/facade.js';
 import { parseMatchString } from '../src/lib/hash.js';
-import { verifyFile } from '../src/lib/verify.js';
+import { verifyFile, verifyFileWithKey } from '../src/lib/verify.js';
 import { isJournalFileName } from '../src/lib/compress.js';
 import { readUint64LE, uuidToString, randomUUID, bufEqual } from '../src/lib/binary.js';
 import { HEADER_SIZE } from '../src/lib/header.js';
@@ -72,7 +73,7 @@ function runAdapter() {
       case 'compression': result = runCompressionTest(tc); break;
       case 'corruption-resilience': result = runCorruptionTest(tc); break;
       case 'verification':
-        result = { status: 'SKIP', note: `category "${tc.category}" currently contains sealed FSS verification tests, which are not yet implemented` }; break;
+        result = runVerificationTest(tc); break;
       default:
         result = { status: 'SKIP', note: `unsupported category: ${tc.category}` };
     }
@@ -390,6 +391,35 @@ function runCorruptionTest(tc) {
   return { status: 'PASS', actual: true, evidence: { checked, read_errors: readErrors } };
 }
 
+// ---- VERIFICATION ----
+
+function runVerificationTest(tc) {
+  if (tc.test_name === 'journal-verify-sealed') {
+    const tmp = join(tmpdir(), `node-verify-sealed-${process.pid}`);
+    try {
+      mkdirSync(tmp, { recursive: true });
+    } catch { /* may already exist */ }
+    try {
+      const path = join(tmp, 'sealed.journal');
+      const seed = Buffer.alloc(12, 0);
+      const sealOpts = new SealOptions(seed, 1000000, 1000000);
+      const w = Writer.create(path, { seal: sealOpts });
+      w.append([{ name: 'MESSAGE', value: 'sealed verify' }], { realtimeUsec: 1500000n });
+      w.close();
+      const key = `${seed.toString('hex')}/1-f4240`;
+      try {
+        verifyFileWithKey(path, key);
+        return { status: 'PASS', actual: true };
+      } catch (err) {
+        return { status: 'FAIL', actual: false, error: err.message };
+      }
+    } finally {
+      try { rmSync(tmp, { recursive: true, force: true }); } catch {}
+    }
+  }
+  return { status: 'SKIP', note: `unsupported verification test: ${tc.test_name}` };
+}
+
 // ---- LIST ----
 
 function listTests() {
@@ -406,6 +436,7 @@ function listTests() {
     'journal-export-format',
     'journal-list-boots',
     'journal-zstd-compressed-read',
+    'journal-verify-sealed',
     'journal-corruption-append-resilient',
     'journal-verify-corruption-detection',
   ]) + '\n');
@@ -424,7 +455,7 @@ function probeAdapter() {
       match_disjunction: true, unique_fields: true,
       export_output: true, json_output: true,
       list_boots: true, zstd_decompress: true,
-      verification: true,
+      verification: true, fss: true,
     },
   }) + '\n');
 }

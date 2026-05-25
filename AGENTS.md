@@ -28,7 +28,7 @@ The SOW system is self-contained in this repository. Normal SOW work must not de
 - **Implementer agent responsibilities:** code, tests, documentation, benchmark/profiling work, and implementation evidence for the assigned SOW.
 - **Reviewer agent responsibilities:** independent technical review, regression search, security review, unwanted side-effect review, and production-grade readiness assessment.
 
-The project manager must not personally implement SDK feature code or perform the technical review for implementation SOWs delegated to external agents.
+The project manager must not personally perform the technical review for implementation SOWs. By default implementation can be delegated to external agents, but the current user routing decision is local implementation by the project manager with external models used as read-only reviewers only.
 
 ### Required First Checks
 
@@ -327,11 +327,10 @@ Output/reference skills:
 - Implement journalctl rewrites for file-backed/query behavior in Rust, Go, Node.js, and Python.
 - Do not implement daemon-only journalctl commands, including daemon sync, flush, rotate, and relinquish-var operations.
 - Common compression-library dependencies are allowed after dependency review. Journal parsing/writing must not depend on systemd/libjournal; CGO, native Node.js runtime addon loading/linking, and linking to system journal libraries remain disallowed unless the user explicitly changes those separate constraints. Dependency packages may ship native artifacts if the SDK runtime path is constrained and tested to use only non-native implementations (e.g. WASM) and does not load or link native code at runtime.
-- Preferred implementer agent: `llm-netdata-cloud/kimi-k2.6`.
-- Fallback implementer hierarchy: `llm-netdata-cloud/qwen3.6-plus`, then `llm-netdata-cloud/glm-5.1`, then another approved model only if the active SOW records why the first fallbacks were unavailable or unsuitable.
-- Reviewer pool: `llm-netdata-cloud/minimax-m2.7-coder`, `llm-netdata-cloud/mimo-v2.5-pro`, `llm-netdata-cloud/qwen3.6-plus`, and `llm-netdata-cloud/glm-5.1`. Minimax is reviewer-only unless the user changes this routing.
-- A phase cannot advance until the implementer has completed the active SOW and reviewer findings have been resolved or explicitly dispositioned in the SOW.
-- After each verified chunk, prefer committing the chunk before starting the next external-agent run, using explicit path staging only.
-- If `llm-netdata-cloud/kimi-k2.6` fails or is unavailable, record the failure in the active SOW and switch according to the fallback implementer hierarchy.
+- Current implementation routing: do implementation locally in this repository; do not run external implementer agents unless the user explicitly changes this decision.
+- Reviewer pool: `llm-netdata-cloud/minimax-m2.7-coder`, `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/qwen3.6-plus`, and `llm-netdata-cloud/glm-5.1`. `llm-netdata-cloud/mimo-v2.5-pro` is currently skipped because the user reported it is out of quota.
+- A phase cannot advance until the local implementation or explicitly approved implementer run has completed the active SOW and reviewer findings have been resolved or explicitly dispositioned in the SOW.
+- After each verified chunk, prefer committing the chunk before starting the next work chunk, using explicit path staging only.
+- If the user re-enables external implementers, record the routing decision in the active SOW before running them.
 - After SOW-0003 completes, SOW-0005 (Go writer first) activates before SOW-0004, SOW-0006, SOW-0007, SOW-0008, SOW-0009, or SOW-0010. After SOW-0005 completes, continue according to the active SOW dependency chain, but only one implementation SOW may be active at a time.
 - Reviewer agents may run in parallel within the active SOW; implementation SOWs must not run in parallel unless the user explicitly changes the one-SOW-at-a-time rule.

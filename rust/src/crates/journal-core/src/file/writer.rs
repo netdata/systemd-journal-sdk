@@ -1528,7 +1528,7 @@ mod tests {
             .expect("write sealed entry");
         journal_file.sync().expect("sync journal");
 
-        let wrong_key = "000000000000000000000001/1-1000000";
+        let wrong_key = "000000000000000000000001/1-f4240";
         let output = Command::new("journalctl")
             .arg("--verify")
             .arg("--verify-key")

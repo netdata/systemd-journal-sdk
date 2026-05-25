@@ -2,10 +2,11 @@
 
 ## Current
 
-- `SOW-0019-20260524-forward-secure-sealing.md` - in-progress. Phase 4 writer sealing is implemented in Rust, Go, Node.js, and Python with deterministic test keys and configurable sealing intervals. Stock `journalctl --verify --verify-key` positive, interval-crossing, multi-interval-gap, first-entry future-epoch, compact+sealed, empty sealed-file, wrong-key, tamper, unsealed-flag, and before-start rejection cases are covered by language tests where applicable. Qwen, GLM, and Minimax returned `PRODUCTION GRADE`; the final Qwen Rust `0o640` file-permission finding was fixed and covered by a Rust regression test. Manager-side validation passes across FSPRG vectors, Go, Node.js, Python, Rust, formatting, diff check, and SOW audit. Phase 4 is ready for checkpoint commit; SOW-0019 remains open for Phase 5.
+- None.
 
 ## Pending
 
+- `SOW-0023-20260525-netdata-ingestion-writer-api.md` - open. Netdata ingestion writer API superset requirement, important for unblocking the SNMP traps integration and migration of existing NetFlow/OTEL writer behavior after SOW-0019 closes.
 - `SOW-0022-20260525-compatibility-test-gap-audit.md` - open. Records compatibility test gaps and likely feature-parity gaps found during read-only review. User decisions recorded: full unsealed verification parity remains here later; directory traversal remains in SOW-0020; compressed/compact parity is structural unless byte identity is deterministic; invalid same-boot monotonic writer appends must be rejected; file-backed journalctl option parity remains in scope across follow-up work.
 - `SOW-0020-20260524-directory-traversal-parity.md` - open. Bring SDK directory readers and file-backed journalctl `--directory` behavior to stock parity.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - open. Final benchmark, profile, and optimize pass after SOW-0017 through SOW-0021 are complete.
@@ -29,6 +30,7 @@
 - `SOW-0016-20260524-byte-identical-writer-compatibility.md`
 - `SOW-0017-20260524-xz-lz4-data-writing.md`
 - `SOW-0018-20260524-compact-journal-format.md`
+- `SOW-0019-20260524-forward-secure-sealing.md`
 - `SOW-0021-20260524-nodejs-xz-data-compression.md`
 
 ## Notes
@@ -41,8 +43,10 @@
 - SOW-0021 completed Node.js xz DATA reader/writer support through `node-liblzma@5.0.1` using the WASM-only runtime path accepted by user decision option B.
 - SOW-0018 completed compact journal support. Every writer exposes explicit regular/compact output selection while regular remains the default. `run_compact_matrix.py` passes 56/56 for each compression mode (`none`, `zstd`, `xz`, `lz4`) across Go, Rust, Node.js, Python, stock journalctl, and stock libsystemd on systemd 260.1-2-manjaro.
 - SOW-0019 Phase 2A added pure FSPRG primitives and vector tests in Rust, Go, Node.js, and Python. The primitives match committed systemd v260.1 vectors.
-- SOW-0019 Phase 2B added unsealed journal verification APIs (`VerifyFile`, `verify_file`, etc.) in all four languages with controlled error types (`VerificationError`). The conformance case `journal-verify-corruption-detection` now produces real PASS/FAIL behavior instead of adapter skips. Sealed FSS tag/HMAC verification and writer sealing remain for later phases.
-- SOW-0019 Phase 3 added file-backed journalctl `--verify`, existing `--verify-only`, and `--verify-key` behavior in Rust, Go, Node.js, and Python. The rewrites parse `--verify-key` before verification, match stock invalid-key behavior on repo-local files, verify unsealed files through Phase 2B APIs, follow symlinks to regular journal files during directory verification, and fail sealed files with controlled messages until sealed TAG/HMAC verification is implemented.
+- SOW-0019 Phase 2B added unsealed journal verification APIs (`VerifyFile`, `verify_file`, etc.) in all four languages with controlled error types (`VerificationError`). The conformance case `journal-verify-corruption-detection` now produces real PASS/FAIL behavior instead of adapter skips.
+- SOW-0019 Phase 3 added file-backed journalctl `--verify`, existing `--verify-only`, and `--verify-key` behavior in Rust, Go, Node.js, and Python. The rewrites parse `--verify-key` before verification, match stock invalid-key behavior on repo-local files, verify unsealed files through Phase 2B APIs, and follow symlinks to regular journal files during directory verification.
+- SOW-0019 Phase 4 added sealed journal writers in Rust, Go, Node.js, and Python with deterministic test keys and configurable sealing intervals. Stock `journalctl --verify --verify-key` validates generated sealed files.
+- SOW-0019 Phase 5 added sealed TAG/HMAC verification APIs and file-backed journalctl `--verify-key` validation in Rust, Go, Node.js, and Python. The shared `journal-verify-sealed` adapter case now runs real behavior in every language.
 - SOW-0009 is intentionally sequenced last. The user decided not to run baseline-only benchmarks now because performance work is expected to require profiling, allocation reduction, buffer reuse, and refactoring that later feature SOWs could invalidate.
 - Byte-for-byte writer identity is the target for deterministic uncompressed journals. Any feature slice that cannot be made byte-identical must return with evidence before the acceptance condition is changed.
 - The external systemd source checkout is read-only for this project. Build outputs and generated files must remain inside this repository or `/tmp`.

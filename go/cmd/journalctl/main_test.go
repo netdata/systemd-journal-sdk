@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -325,16 +326,57 @@ func TestRunVerifySealedWithoutKeyRequiresKey(t *testing.T) {
 	}
 }
 
-func TestRunVerifyKeySealedUnsupported(t *testing.T) {
-	path := writeCLIJournal(t, []cliEntry{{message: "sealed-unsupported", priority: "6"}})
-	patchCompatibleFlags(t, path, compatibleSealed)
+func TestRunVerifyKeySealedPasses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cli-sealed.journal")
+	seed := make([]byte, 12)
+	opts := journal.Options{Seal: &journal.SealOptions{Seed: seed, IntervalUsec: 1000000, StartUsec: 1000000}}
+	w, err := journal.Create(path, opts)
+	if err != nil {
+		t.Fatalf("Create sealed error: %v", err)
+	}
+	if err := w.Append([]journal.Field{
+		journal.StringField("MESSAGE", "sealed-ok"),
+		journal.StringField("PRIORITY", "6"),
+	}, journal.EntryOptions{RealtimeUsec: 1500000}); err != nil {
+		t.Fatalf("Append error: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close error: %v", err)
+	}
+
+	key := fmt.Sprintf("%024x/%x-%x", seed, opts.Seal.StartUsec/opts.Seal.IntervalUsec, opts.Seal.IntervalUsec)
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"--verify-key", key, "--file", path}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run --verify-key sealed error: %v; stderr=%s", err, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "PASS:") {
+		t.Fatalf("expected PASS in stderr, got: %q", stderr.String())
+	}
+}
+
+func TestRunVerifyKeySealedWrongKeyFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cli-sealed-wrong.journal")
+	seed := make([]byte, 12)
+	opts := journal.Options{Seal: &journal.SealOptions{Seed: seed, IntervalUsec: 1000000, StartUsec: 1000000}}
+	w, err := journal.Create(path, opts)
+	if err != nil {
+		t.Fatalf("Create sealed error: %v", err)
+	}
+	if err := w.Append([]journal.Field{
+		journal.StringField("MESSAGE", "sealed-wrong"),
+	}, journal.EntryOptions{RealtimeUsec: 1500000}); err != nil {
+		t.Fatalf("Append error: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close error: %v", err)
+	}
 
 	var stdout, stderr bytes.Buffer
-	if err := run([]string{"--verify-key", validFSSVerificationKey, "--file", path}, strings.NewReader(""), &stdout, &stderr); err == nil {
-		t.Fatal("expected error for sealed file with --verify-key")
+	if err := run([]string{"--verify-key", "000000000000000000000001/1-f4240", "--file", path}, strings.NewReader(""), &stdout, &stderr); err == nil {
+		t.Fatal("expected error for sealed file with wrong key")
 	}
-	if !strings.Contains(stderr.String(), "not yet implemented") {
-		t.Fatalf("expected 'not yet implemented' in stderr, got: %q", stderr.String())
+	if !strings.Contains(stderr.String(), "FAIL:") {
+		t.Fatalf("expected FAIL in stderr, got: %q", stderr.String())
 	}
 }
 

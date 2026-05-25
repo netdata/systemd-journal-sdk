@@ -15,7 +15,7 @@ from .directory_reader import DirectoryReader
 from .writer import Writer
 from .directory_writer import Log
 from .hash import parse_match_string, sip_hash_24, jenkins_hash_64
-from .verify import verify_file, VerificationError
+from .verify import verify_file, verify_file_with_key, VerificationError
 
 
 __all__ = [
@@ -30,7 +30,7 @@ __all__ = [
     'export_entry', 'json_entry', 'text_entry',
     'FileReader', 'DirectoryReader', 'Writer', 'Log',
     'parse_match_string', 'sip_hash_24', 'jenkins_hash_64',
-    'verify_file', 'VerificationError',
+    'verify_file', 'verify_file_with_key', 'VerificationError',
 ]
 
 __version__ = '0.1.0'

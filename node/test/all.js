@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { zstdCompressSync } from 'node:zlib';
 import assert from 'node:assert/strict';
 import { jenkinsHash64, sipHash24 } from '../src/lib/hash.js';
 import { Writer } from '../src/lib/writer.js';
@@ -15,6 +16,7 @@ import { parseDataObject } from '../src/lib/entry.js';
 import { exportEntry, jsonEntry, SdJournalOpen, SdJournalQueryUnique } from '../src/facade.js';
 import {
   DATA_OBJECT_HEADER_SIZE,
+  COMPACT_DATA_OBJECT_HEADER_SIZE,
   HEADER_SIZE,
   INCOMPATIBLE_COMPACT,
   INCOMPATIBLE_COMPRESSED_XZ,
@@ -22,6 +24,7 @@ import {
   OBJECT_COMPRESSED_LZ4,
   OBJECT_COMPRESSED_XZ,
   OBJECT_TYPE_DATA,
+  OBJECT_TYPE_TAG,
   STATE_ARCHIVED,
   parseObjectHeader,
   writeObjectHeader,
@@ -30,7 +33,7 @@ import { compressLz4DataPayload } from '../src/lib/lz4-block.js';
 import { compressXzDataPayload, decompressXzDataPayload } from '../src/lib/xz-block.js';
 import { decompressZstSync } from '../src/lib/compress.js';
 import { fsprgGenMK, fsprgGenState0, fsprgEvolve, fsprgSeek, fsprgGetKey, fsprgGetEpoch } from '../src/lib/fss.js';
-import { verifyFile, VerificationError } from '../src/lib/verify.js';
+import { verifyFile, verifyFileWithKey, VerificationError } from '../src/lib/verify.js';
 import { SealOptions, COMPATIBLE_SEALED, COMPATIBLE_SEALED_CONTINUOUS } from '../src/lib/seal.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -629,24 +632,39 @@ run(process.execPath, ['-e', "import './node/src/index.js'"], { cwd: repoRoot })
     }
   }
 
-  // --verify-key sealed file (unsupported)
+  // --verify-key sealed file (valid)
   {
-    const tmpDir = mkdtempSync(join(tmpdir(), 'node-verify-sealed-'));
-    const tmpPath = join(tmpDir, 'sealed.journal');
-    const src = readFileSync(validPath);
-    const decompressed = decompressZstSync(src);
-    const buf = Buffer.from(decompressed);
-    const flags = buf.readUInt32LE(8);
-    buf.writeUInt32LE(flags | 1, 8); // set COMPATIBLE_SEALED
-    writeFileSync(tmpPath, buf);
+    const tmpDir = mkdtempSync(join(tmpdir(), 'node-verify-sealed-valid-'));
+    const journalPath = join(tmpDir, 'sealed.journal');
+    const writer = Writer.create(journalPath, { seal: testSealOpts() });
+    writer.append([{ name: 'MESSAGE', value: 'sealed verify' }], { realtimeUsec: 1500000n });
+    writer.close();
+    const key = testVerificationKey(testSealOpts());
+    const result = spawnSync(cmd, [script, '--verify-key', key, '--file', journalPath], { encoding: 'utf8' });
+    rmSync(tmpDir, { recursive: true });
+    if (result.status !== 0) {
+      throw new Error(`expected --verify-key sealed file to pass, got: ${result.stderr}`);
+    }
+    if (!result.stderr.includes('PASS:')) {
+      throw new Error(`expected PASS in stderr, got: ${result.stderr}`);
+    }
+  }
 
-    const result = spawnSync(cmd, [script, '--verify-key', validFSSVerificationKey, '--file', tmpPath], { encoding: 'utf8' });
+  // --verify-key sealed file wrong key
+  {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'node-verify-sealed-wrong-'));
+    const journalPath = join(tmpDir, 'sealed.journal');
+    const writer = Writer.create(journalPath, { seal: testSealOpts() });
+    writer.append([{ name: 'MESSAGE', value: 'sealed verify' }], { realtimeUsec: 1500000n });
+    writer.close();
+    const wrongKey = '000000000000000000000001/1-f4240';
+    const result = spawnSync(cmd, [script, '--verify-key', wrongKey, '--file', journalPath], { encoding: 'utf8' });
     rmSync(tmpDir, { recursive: true });
     if (result.status === 0) {
-      throw new Error(`expected --verify-key sealed file to fail`);
+      throw new Error(`expected --verify-key sealed file with wrong key to fail`);
     }
-    if (!result.stderr.includes('not yet implemented')) {
-      throw new Error(`expected 'not yet implemented' in stderr, got: ${result.stderr}`);
+    if (!result.stderr.includes('FAIL:')) {
+      throw new Error(`expected FAIL in stderr, got: ${result.stderr}`);
     }
   }
 }
@@ -659,6 +677,86 @@ function testVerificationKey(opts) {
   const seedHex = opts.seed.toString('hex').padStart(24, '0');
   const start = Math.floor(Number(opts.startUsec) / Number(opts.intervalUsec));
   return `${seedHex}/${start.toString(16)}-${opts.intervalUsec.toString(16)}`;
+}
+
+function tamperDataPayload(path, expectedPayload) {
+  const buf = Buffer.from(readFileSync(path));
+  const headerSize = Number(buf.readBigUInt64LE(88));
+  const tailObjectOffset = Number(buf.readBigUInt64LE(136));
+  const compact = (buf.readUInt32LE(12) & INCOMPATIBLE_COMPACT) !== 0;
+  let offset = headerSize;
+  let tagCount = 0;
+  let secondTagOffset = 0;
+  let targetPayloadOffset = 0;
+  let targetObjectOffset = 0;
+
+  while (offset + 16 <= buf.length) {
+    const header = parseObjectHeader(buf, offset);
+    if (!header || header.size < 16n) throw new Error(`invalid object at ${offset}`);
+    const aligned = Number(((header.size + 7n) / 8n) * 8n);
+    if (offset + aligned > buf.length) throw new Error(`object at ${offset} exceeds file`);
+
+    if (header.type === OBJECT_TYPE_TAG) {
+      tagCount += 1;
+      if (tagCount === 2) secondTagOffset = offset;
+    } else if (header.type === OBJECT_TYPE_DATA) {
+      const payloadOffset = compact ? COMPACT_DATA_OBJECT_HEADER_SIZE : DATA_OBJECT_HEADER_SIZE;
+      if (header.size > BigInt(payloadOffset)) {
+        const start = offset + payloadOffset;
+        const end = offset + Number(header.size);
+        if (buf.slice(start, end).equals(expectedPayload)) {
+          targetPayloadOffset = start;
+          targetObjectOffset = offset;
+        }
+      }
+    }
+
+    if (offset === tailObjectOffset) break;
+    offset += aligned;
+  }
+
+  if (targetPayloadOffset === 0) throw new Error(`payload not found: ${expectedPayload}`);
+  if (secondTagOffset === 0) throw new Error('second TAG not found');
+  if (targetObjectOffset >= secondTagOffset) {
+    throw new Error(`DATA object ${targetObjectOffset} is not covered by second TAG ${secondTagOffset}`);
+  }
+  buf[targetPayloadOffset] ^= 0x01;
+  writeFileSync(path, buf);
+}
+
+// Sealed verification API validates HMACs and keeps structural verification.
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-sdk-verify-sealed-'));
+  try {
+    const journalPath = join(tempDir, 'sealed.journal');
+    const writer = Writer.create(journalPath, { seal: testSealOpts() });
+    writer.append([{ name: 'MESSAGE', value: 'sealed-covered' }], { realtimeUsec: 1_500_000n });
+    writer.append([{ name: 'MESSAGE', value: 'later-entry' }], { realtimeUsec: 2_500_000n });
+    writer.close();
+
+    const key = testVerificationKey(testSealOpts());
+    verifyFileWithKey(journalPath, key);
+    const zstPath = `${journalPath}.zst`;
+    writeFileSync(zstPath, zstdCompressSync(readFileSync(journalPath)));
+    verifyFileWithKey(zstPath, key);
+    assert.throws(
+      () => verifyFileWithKey(journalPath, '000000000000000000000001/1-f4240'),
+      VerificationError,
+    );
+    assert.throws(
+      () => verifyFileWithKey(journalPath, '000000000000000000000000/10000000000000000-f4240'),
+      VerificationError,
+    );
+    assert.throws(
+      () => verifyFileWithKey(journalPath, '000000000000000000000000/1-10000000000000000'),
+      VerificationError,
+    );
+
+    tamperDataPayload(journalPath, Buffer.from('MESSAGE=sealed-covered'));
+    assert.throws(() => verifyFileWithKey(journalPath, key), VerificationError);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 // Sealed writer basic
@@ -857,7 +955,7 @@ function testVerificationKey(opts) {
     writer.append([{ name: 'MESSAGE', value: 'hello' }], { realtimeUsec: 1_500_000n });
     writer.close();
 
-    const wrongKey = '000000000000000000000001/1-1000000';
+    const wrongKey = '000000000000000000000001/1-f4240';
     const result = spawnSync('journalctl', ['--verify', '--verify-key', wrongKey, '--file', journalPath], { encoding: 'utf8' });
     if (result.status === 0) {
       throw new Error(`expected verify to fail with wrong key, got: ${result.stderr}`);
@@ -873,13 +971,11 @@ function testVerificationKey(opts) {
   try {
     const journalPath = join(tempDir, 'sealed.journal');
     const writer = Writer.create(journalPath, { seal: testSealOpts() });
-    writer.append([{ name: 'MESSAGE', value: 'hello' }], { realtimeUsec: 1_500_000n });
+    writer.append([{ name: 'MESSAGE', value: 'sealed-covered-stock' }], { realtimeUsec: 1_500_000n });
+    writer.append([{ name: 'MESSAGE', value: 'later-entry' }], { realtimeUsec: 2_500_000n });
     writer.close();
 
-    const fd = openSync(journalPath, 'r+');
-    const tamperBuf = Buffer.from([0xff]);
-    writeSync(fd, tamperBuf, 0, 1, 512);
-    closeSync(fd);
+    tamperDataPayload(journalPath, Buffer.from('MESSAGE=sealed-covered-stock'));
 
     const key = testVerificationKey(testSealOpts());
     const result = spawnSync('journalctl', ['--verify', '--verify-key', key, '--file', journalPath], { encoding: 'utf8' });
@@ -899,7 +995,7 @@ if (!existsSync(manifestPath)) {
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 const failures = [];
 const results = [];
-const expectedSkips = new Set(['journal-verify-sealed']);
+const expectedSkips = new Set();
 
 for (const testCase of manifest.test_suite.test_cases) {
   const stdout = run(process.execPath, ['node/adapter/index.js', 'run'], {

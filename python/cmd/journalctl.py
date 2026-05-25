@@ -14,7 +14,7 @@ from journal import (
     OUTPUT_MODE_DEFAULT, OUTPUT_MODE_JSON, OUTPUT_MODE_EXPORT,
 )
 from journal.reader import FileReader
-from journal.verify import verify_file
+from journal.verify import verify_file, verify_file_with_key, VerificationError
 from journal.compress import is_journal_file_name
 from journal.header import COMPATIBLE_SEALED
 
@@ -70,10 +70,13 @@ def run_verify(input_path, verify_key):
                 r.close()
 
         if sealed and has_verify_key:
-            msg = 'sealed FSS verification is not yet implemented'
-            sys.stderr.write(f'FAIL: {path} ({msg})\n')
-            if first_err is None:
-                first_err = RuntimeError(msg)
+            try:
+                verify_file_with_key(path, verify_key)
+                sys.stderr.write(f'PASS: {path}\n')
+            except VerificationError as err:
+                sys.stderr.write(f'FAIL: {path} ({err})\n')
+                if first_err is None:
+                    first_err = err
             continue
 
         if sealed and not has_verify_key:
@@ -115,8 +118,10 @@ def valid_verification_key(key):
     next_i, ok = consume_hex(key, i)
     if not ok or next_i >= len(key) or key[next_i] != '-':
         return False
-    _, ok = consume_hex(key, next_i + 1)
-    return ok
+    end_i, ok = consume_hex(key, next_i + 1)
+    if not ok or end_i != len(key):
+        return False
+    return any(ch != '0' for ch in key[next_i + 1:end_i])
 
 
 def consume_hex(value, start):

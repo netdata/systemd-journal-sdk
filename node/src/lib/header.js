@@ -19,6 +19,8 @@ export const INCOMPATIBLE_COMPACT = 1 << 4;
 
 // HEADER_COMPATIBLE_SEALED - set when FSS sealing is enabled
 export const COMPATIBLE_SEALED = 1 << 0;
+// HEADER_COMPATIBLE_SEALED_CONTINUOUS - set when FSS sealing is continuous
+export const COMPATIBLE_SEALED_CONTINUOUS = 1 << 2;
 // HEADER_COMPATIBLE_TAIL_ENTRY_BOOT_ID - set for new files (v260+)
 export const COMPATIBLE_TAIL_ENTRY_BOOT_ID = 1 << 1;
 
@@ -29,6 +31,7 @@ export const OBJECT_TYPE_ENTRY = 3;
 export const OBJECT_TYPE_DATA_HASH_TABLE = 4;
 export const OBJECT_TYPE_FIELD_HASH_TABLE = 5;
 export const OBJECT_TYPE_ENTRY_ARRAY = 6;
+export const OBJECT_TYPE_TAG = 7;
 
 // Object header: 16 bytes
 // Byte 0: type (uint8), Byte 1: flags (uint8), Bytes 2-7: reserved, Bytes 8-15: size (uint64LE)

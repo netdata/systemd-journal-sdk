@@ -29,15 +29,17 @@ from journal import (  # noqa: E402
 from journal.entry import parse_data_object  # noqa: E402
 from journal.header import (  # noqa: E402
     COMPATIBLE_SEALED,
+    COMPACT_DATA_OBJECT_HEADER_SIZE,
     DATA_OBJECT_HEADER_SIZE,
     INCOMPATIBLE_COMPACT,
     OBJECT_COMPRESSED_LZ4,
     OBJECT_COMPRESSED_XZ,
     OBJECT_COMPRESSED_ZSTD,
     OBJECT_TYPE_DATA,
+    parse_file_header,
     write_object_header,
 )
-from journal.seal import COMPATIBLE_SEALED_CONTINUOUS  # noqa: E402
+from journal.seal import COMPATIBLE_SEALED_CONTINUOUS, OBJECT_TYPE_TAG  # noqa: E402
 from journal.hash import sip_hash_24  # noqa: E402
 from journal.fss import gen_mk, gen_state0, evolve, seek, get_key, get_epoch  # noqa: E402
 
@@ -301,7 +303,7 @@ def test_fsprg_vectors():
 def test_conformance_manifest():
     manifest_path = REPO_ROOT / 'tests/conformance/manifests/conformance-v01.json'
     manifest = json.loads(manifest_path.read_text())
-    expected_skips = {'journal-verify-sealed'}
+    expected_skips = set()
     failures = []
     results = []
     for test_case in manifest['test_suite']['test_cases']:
@@ -336,6 +338,52 @@ def test_verify_file_passes_on_valid_fixture():
     from journal.verify import verify_file
     path = REPO_ROOT / 'fixtures/systemd/test-data/no-rtc/system.journal.zst'
     verify_file(str(path))  # should not raise
+
+
+def test_verify_file_with_key_sealed():
+    from journal.verify import VerificationError, verify_file_with_key
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / 'sealed.journal'
+        seal_opts = _test_seal_opts()
+        w = Writer.create(str(path), {'seal': seal_opts})
+        w.append([{'name': 'MESSAGE', 'value': 'sealed-covered'}], {'realtime_usec': 1_500_000})
+        w.append([{'name': 'MESSAGE', 'value': 'later-entry'}], {'realtime_usec': 2_500_000})
+        w.close()
+
+        key = _test_verification_key(seal_opts)
+        verify_file_with_key(str(path), key)
+
+        from compression import zstd
+        zst_path = Path(tmpdir) / 'sealed.journal.zst'
+        zst_path.write_bytes(zstd.compress(path.read_bytes()))
+        verify_file_with_key(str(zst_path), key)
+
+        try:
+            verify_file_with_key(str(path), '000000000000000000000001/1-f4240')
+        except VerificationError:
+            pass
+        else:
+            raise AssertionError('expected wrong verification key to fail')
+
+        for bad_key in (
+            '000000000000000000000000/10000000000000000-f4240',
+            '000000000000000000000000/1-10000000000000000',
+        ):
+            try:
+                verify_file_with_key(str(path), bad_key)
+            except VerificationError:
+                pass
+            else:
+                raise AssertionError('expected oversized verification key field to fail')
+
+        _tamper_data_payload(path, b'MESSAGE=sealed-covered')
+        try:
+            verify_file_with_key(str(path), key)
+        except VerificationError:
+            pass
+        else:
+            raise AssertionError('expected authenticated DATA tamper to fail')
 
 
 def test_journalctl_verify():
@@ -451,14 +499,30 @@ def test_journalctl_verify():
             f"sealed file without key should not pass, got: {result.stderr}"
         )
 
+        # --verify-key with real sealed file
+        seal_opts = _test_seal_opts()
+        from journal.writer import Writer
+        sealed_path = Path(tmpdir) / 'sealed-real.journal'
+        w = Writer.create(str(sealed_path), opts={'seal': seal_opts})
+        w.append([{'name': 'MESSAGE', 'value': b'sealed verify'}], {'realtime_usec': 1500000})
+        w.close()
+        key = _test_verification_key(seal_opts)
+
         result = subprocess.run(
-            [sys.executable, str(script), '--verify-key', VALID_FSS_VERIFICATION_KEY, '--file', str(tmp_path)],
+            [sys.executable, str(script), '--verify-key', key, '--file', str(sealed_path)],
             capture_output=True, text=True,
         )
-        assert result.returncode != 0, 'expected --verify-key sealed to fail'
-        assert 'not yet implemented' in result.stderr, (
-            f"expected 'not yet implemented' in stderr, got: {result.stderr}"
+        assert result.returncode == 0, f'expected --verify-key sealed to pass, got: {result.stderr}'
+        assert 'PASS:' in result.stderr, f"expected PASS in stderr, got: {result.stderr}"
+
+        # wrong key
+        wrong_key = '000000000000000000000001/1-f4240'
+        result = subprocess.run(
+            [sys.executable, str(script), '--verify-key', wrong_key, '--file', str(sealed_path)],
+            capture_output=True, text=True,
         )
+        assert result.returncode != 0, 'expected --verify-key with wrong key to fail'
+        assert 'FAIL:' in result.stderr, f"expected FAIL in stderr, got: {result.stderr}"
 
 
 def _test_seal_opts():
@@ -469,6 +533,55 @@ def _test_seal_opts():
 def _test_verification_key(opts):
     start = opts.start_usec // opts.interval_usec
     return f'{opts.seed.hex()}/{start:x}-{opts.interval_usec:x}'
+
+
+def _tamper_data_payload(path, expected_payload):
+    buf = bytearray(Path(path).read_bytes())
+    header = parse_file_header(buf)
+    offset = header['header_size']
+    tail_object_offset = header['tail_object_offset']
+    compact = bool(header['incompatible_flags'] & INCOMPATIBLE_COMPACT)
+    tag_count = 0
+    second_tag_offset = 0
+    target_payload_offset = 0
+    target_object_offset = 0
+
+    while offset + 16 <= len(buf):
+        typ = buf[offset]
+        size = int.from_bytes(buf[offset + 8:offset + 16], 'little')
+        if size < 16:
+            raise AssertionError(f'invalid object size {size} at {offset}')
+        aligned = (size + 7) & ~7
+        if offset + aligned > len(buf):
+            raise AssertionError(f'object at {offset} exceeds file')
+
+        if typ == OBJECT_TYPE_TAG:
+            tag_count += 1
+            if tag_count == 2:
+                second_tag_offset = offset
+        elif typ == OBJECT_TYPE_DATA:
+            payload_offset = COMPACT_DATA_OBJECT_HEADER_SIZE if compact else DATA_OBJECT_HEADER_SIZE
+            if size > payload_offset:
+                start = offset + payload_offset
+                end = offset + size
+                if bytes(buf[start:end]) == expected_payload:
+                    target_payload_offset = start
+                    target_object_offset = offset
+
+        if offset == tail_object_offset:
+            break
+        offset += aligned
+
+    if target_payload_offset == 0:
+        raise AssertionError(f'payload not found: {expected_payload!r}')
+    if second_tag_offset == 0:
+        raise AssertionError('second TAG not found')
+    if target_object_offset >= second_tag_offset:
+        raise AssertionError(
+            f'DATA object {target_object_offset} is not covered by second TAG {second_tag_offset}'
+        )
+    buf[target_payload_offset] ^= 0x01
+    Path(path).write_bytes(buf)
 
 
 def test_writer_sealed_basic():
@@ -586,7 +699,7 @@ def test_writer_sealed_wrong_key_fails():
         w = Writer.create(str(path), opts)
         w.append([{'name': 'MESSAGE', 'value': 'hello'}], {'realtime_usec': 1_500_000})
         w.close()
-        wrong_key = '000000000000000000000001/1-1000000'
+        wrong_key = '000000000000000000000001/1-f4240'
         result = subprocess.run(
             ['journalctl', '--verify', '--verify-key', wrong_key, '--file', str(path)],
             capture_output=True, text=True,
@@ -600,11 +713,10 @@ def test_writer_sealed_tampered_data_fails():
         path = Path(tmpdir) / 'test.journal'
         opts = {'seal': _test_seal_opts()}
         w = Writer.create(str(path), opts)
-        w.append([{'name': 'MESSAGE', 'value': 'tamper test'}], {'realtime_usec': 1_500_000})
+        w.append([{'name': 'MESSAGE', 'value': 'sealed-covered-stock'}], {'realtime_usec': 1_500_000})
+        w.append([{'name': 'MESSAGE', 'value': 'later-entry'}], {'realtime_usec': 2_500_000})
         w.close()
-        with open(path, 'r+b') as f:
-            f.seek(512)
-            f.write(b'\xff')
+        _tamper_data_payload(path, b'MESSAGE=sealed-covered-stock')
         key = _test_verification_key(opts['seal'])
         result = subprocess.run(
             ['journalctl', '--verify', '--verify-key', key, '--file', str(path)],
@@ -674,6 +786,7 @@ def main():
     test_fsprg_vectors()
     test_verify_file_detects_corruption()
     test_verify_file_passes_on_valid_fixture()
+    test_verify_file_with_key_sealed()
     test_journalctl_verify()
     test_writer_sealed_basic()
     test_writer_sealed_interval_crossing()

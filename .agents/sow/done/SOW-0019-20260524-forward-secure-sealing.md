@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: active Phase 4 - writer sealing with deterministic test keys and configurable sealing intervals.
+Sub-state: completed and ready for commit.
 
 ## Requirements
 
@@ -1012,6 +1012,132 @@ Failure handling:
   - The remaining low items are already mapped: key zeroization and SDK sealed verification to later SOW-0019 phases, successor/rotated sealed-writer chains to SOW-0022, and large/stress/performance coverage to SOW-0009.
   - Phase 4 remains ready for checkpoint validation and commit; SOW-0019 remains open for Phase 5.
 
+2026-05-25 (Phase 5 activation):
+
+- Phase 5 scope:
+  - implement sealed TAG/HMAC verification in Rust, Go, Node.js, and Python verification APIs;
+  - make file-backed journalctl `--verify-key` verify sealed files instead of returning the previous unsupported error;
+  - keep `--verify` without a key failing for sealed files with the existing key-required behavior;
+  - enable or replace the `journal-verify-sealed` conformance skip with real behavior in every adapter;
+  - add repository-side tests for valid sealed files, wrong key, tampered DATA, malformed TAG sequence/epoch where practical, compact+sealed files, and unsealed files with valid keys;
+  - preserve all Phase 4 stock `journalctl --verify --verify-key` writer checks.
+- Systemd verification evidence refreshed for implementer:
+  - `systemd/systemd @ c0a5a2516d28`, `src/libsystemd/sd-journal/journal-verify.c:840` parses a verification key when supplied and returns `ENOKEY` for sealed files without one.
+  - `src/libsystemd/sd-journal/journal-verify.c:990-1033` rejects entries before the first tag and entries older than the previous tag realtime.
+  - `src/libsystemd/sd-journal/journal-verify.c:1115-1148` validates TAG sequence numbers and continuous epoch progression.
+  - `src/libsystemd/sd-journal/journal-verify.c:1155-1183` checks entries are inside the TAG epoch realtime interval.
+  - `src/libsystemd/sd-journal/journal-verify.c:1185-1224` seeks the FSPRG epoch, HMACs the header for the first tag, HMACs objects from the previous tag boundary through the current tag, and compares the 32-byte stored tag.
+  - `src/libsystemd/sd-journal/journal-authenticate.c:267-327` defines object bytes included in each TAG HMAC.
+  - `src/libsystemd/sd-journal/journal-authenticate.c:329-354` defines immutable header byte ranges included in the first TAG HMAC.
+- Current code evidence:
+  - `go/journal/verify.go`, `node/src/lib/verify.js`, and `python/journal/verify.py` still state sealed FSS tag/HMAC verification is not implemented.
+  - File-backed journalctl rewrites currently return `sealed FSS verification is not yet implemented` when sealed files are checked with `--verify-key`.
+  - Adapters still skip `journal-verify-sealed`.
+- Implementation routing:
+  - Delegate implementation to `llm-netdata-cloud/kimi-k2.6`.
+  - If Kimi times out or leaves the phase failing, record the failure here and continue with the configured fallback hierarchy.
+
+2026-05-25 (Phase 5 implementation attempt 1 - Kimi):
+
+- Implementer: `llm-netdata-cloud/kimi-k2.6`.
+- Outcome:
+  - The run timed out at 30 minutes.
+  - Go sealed verification was implemented far enough for `cd go && env GOCACHE=$PWD/../.local/go-cache GOMODCACHE=$PWD/../.local/go-mod GOPATH=$PWD/../.local/go-path go test ./...` to pass.
+  - Node.js sealed verification was started but left incomplete.
+  - Python and Rust sealed verification were not implemented in this run.
+- Evidence:
+  - Go added `VerifyFileWithKey(path, verificationKey)` and changed Go journalctl `--verify-key` to verify real sealed files.
+  - Go adapter now runs `journal-verify-sealed` by generating a repo-local temporary sealed file instead of using daemon-only setup-key fixtures.
+  - Node.js package tests fail immediately with an ES module import error: `node/src/lib/verify.js` imports `COMPATIBLE_SEALED_CONTINUOUS` from `node/src/lib/header.js`, where it is not exported.
+  - Node.js partial code also needs follow-up inspection for ES module cleanup handling and header-field offset correctness before it can be trusted.
+  - A Go tamper test was renamed in spirit but still tampers a header HMAC range, not authenticated DATA. True DATA tamper coverage still needs a file with a later TAG that authenticates the DATA object.
+- Repository-boundary note:
+  - The agent followed the prompt for visible edits, but opencode stored a large tool-output artifact under its default XDG data path outside this repository. Future external-agent runs for this SOW must set `XDG_DATA_HOME` to a repository-local `.local/` path before invoking opencode.
+- Disposition:
+  - Switch implementer to fallback `llm-netdata-cloud/qwen3.6-plus`.
+  - Qwen must finish Node.js, Python, and Rust; recheck Go correctness instead of assuming the partial Go implementation is production-ready.
+
+2026-05-25 (Phase 5 routing change and local implementation):
+
+- User routing decision superseded the external implementer plan:
+  implementation should be done locally in this repository, and external models
+  should be used as read-only reviewers only.
+- Updated durable workflow artifacts to match that routing:
+  - `AGENTS.md`
+  - `.agents/skills/project-agent-orchestration/SKILL.md`
+- Completed sealed TAG/HMAC verification in Rust, Go, Node.js, and Python:
+  - Rust: `journal::verify_file_with_key`
+  - Go: `journal.VerifyFileWithKey`
+  - Node.js: `verifyFileWithKey`
+  - Python: `verify_file_with_key`
+- File-backed journalctl rewrites now call sealed verification when
+  `--verify-key` is supplied for a sealed file.
+- `--verify` without a key still fails sealed files with the key-required
+  behavior.
+- Adapters now run `journal-verify-sealed` by generating deterministic
+  repo-local temporary sealed files instead of skipping the test.
+- HMAC compatibility details implemented:
+  - first-TAG header byte ranges `[0:16]`, `[24:56]`, `[72:96]`, and
+    `[104:136]`;
+  - DATA object HMAC over object header, hash, and payload using regular and
+    compact payload offsets;
+  - FIELD object HMAC over object header, hash, and payload;
+  - ENTRY object HMAC over object header and entry body;
+  - TAG object HMAC over object header, `seqnum`, and `epoch`, excluding the
+    stored tag digest;
+  - hash-table and entry-array objects are header-only for HMAC.
+- The verification-key start component is treated as the systemd epoch index
+  (`start_usec / interval_usec`), not as a raw realtime timestamp.
+- Constant-time tag comparison is used:
+  - Rust: `Hmac::verify_slice`
+  - Go: `hmac.Equal`
+  - Node.js: `timingSafeEqual`
+  - Python: `hmac.compare_digest`
+- Added sealed verification coverage for valid sealed files, wrong keys,
+  authenticated DATA tampering, compact sealed files, empty sealed files,
+  unsealed files with valid keys, oversized key fields, whole-file zstd sealed
+  verification, and Go/Rust aligned-size overflow regressions.
+
+2026-05-25 (Phase 5 validation before final review):
+
+- `./tests/fss/run_vectors.sh` passed.
+- `cd go && env GOCACHE=$PWD/../.local/go-cache GOMODCACHE=$PWD/../.local/go-mod GOPATH=$PWD/../.local/go-path go test ./...` passed.
+- `cd node && env npm_config_cache=$PWD/../.local/npm-cache npm test` passed.
+- `env PYTHONPATH=$PWD/python PYTHONPYCACHEPREFIX=$PWD/.local/pycache .local/phase2a-venv/bin/python python/test_all.py` passed.
+- `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journal -p journalctl -p adapter` passed.
+- `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journal-core` passed.
+- `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo fmt --check` passed.
+- `git diff --check` passed.
+
+2026-05-25 (Phase 5 reviewer round 1 and cleanup):
+
+- Minimax final post-fix review returned `PRODUCTION GRADE`.
+  - It verified HMAC byte ranges against systemd v260.1
+    `journal-authenticate.c`.
+  - It verified the `SEALED_CONTINUOUS` epoch condition against systemd v260.1
+    `journal-verify.c`.
+  - It found no required fixes.
+- GLM final post-fix review returned `PRODUCTION GRADE`.
+  - It independently verified object payload offsets, header HMAC byte ranges,
+    constant-time comparison, tag realtime overflow checks, and
+    `SEALED_CONTINUOUS` parity with systemd v260.1.
+  - It found two low-severity defense-in-depth gaps in the Node.js and Python
+    inner HMAC object walks. These were safe in practice because the outer walk
+    pre-validates the same immutable object list, but they were fixed instead
+    of carried as debt.
+- Cleanup performed:
+  - Node.js inner HMAC object walk now checks object-header bounds, minimum
+    object size, alignment overflow, and aligned-size file bounds before
+    calling `hmacObject`.
+  - Python inner HMAC object walk now checks object-header bounds, minimum
+    object size, alignment overflow, and aligned-size file bounds before
+    calling `_hmac_object`.
+- Targeted cleanup validation:
+  - `cd node && env npm_config_cache=$PWD/../.local/npm-cache npm test` passed.
+  - `env PYTHONPATH=$PWD/python PYTHONPYCACHEPREFIX=$PWD/.local/pycache .local/phase2a-venv/bin/python python/test_all.py` passed.
+- A final same-scope reviewer rerun is required after this cleanup before the
+  SOW can close.
+
 ### Gaps and Risks Discovered (Phase 1)
 
 1. Libgcrypt atexit segfault: the dynamic-loading path used by systemd v260.1 crashes during program exit. The `_exit` workaround is documented but means the helper cannot use normal `return from main` cleanup. This is acceptable for a test helper but would be unacceptable for production code.
@@ -1063,6 +1189,69 @@ Reviewer-round-3 validation (2026-05-25):
 
 - Four read-only reviewers rechecked the full Phase 1 scope after cleanup and returned `PRODUCTION GRADE`.
 - No reviewer required additional code, fixture, documentation, or SOW changes before this Phase 1 checkpoint commit.
+
+Phase 5 final validation and closeout (2026-05-25):
+
+- Acceptance criteria evidence:
+  - FSS tag object layout, HMAC byte ranges, FSPRG key evolution, sealing
+    interval behavior, and verification behavior are recorded from systemd
+    v260.1 evidence in the Pre-Implementation Gate and execution log.
+  - Pure-language verification APIs now validate sealed files and return
+    controlled errors for tampering and key mismatches.
+  - Writers emit sealed journal files with deterministic test keys and
+    configurable sealing intervals.
+  - Stock `journalctl --verify --verify-key` passes generated sealed writer
+    files in the Phase 4 writer tests.
+  - Repository verification detects wrong keys, authenticated DATA tampering,
+    malformed TAG epoch, compact sealed files, empty sealed files, and
+    aligned-size overflow regressions.
+  - Daemon-only key-management commands remain out of scope and are not
+    implemented.
+- Final validation commands after the Node.js/Python low cleanup:
+  - `./tests/fss/run_vectors.sh` passed.
+  - `cd go && env GOCACHE=$PWD/../.local/go-cache GOMODCACHE=$PWD/../.local/go-mod GOPATH=$PWD/../.local/go-path go test ./...` passed.
+  - `cd node && env npm_config_cache=$PWD/../.local/npm-cache npm test` passed.
+  - `env PYTHONPATH=$PWD/python PYTHONPYCACHEPREFIX=$PWD/.local/pycache .local/phase2a-venv/bin/python python/test_all.py` passed.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journal -p journalctl -p adapter -p journal-core` passed.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo fmt --check` passed.
+  - `git diff --check` passed.
+  - `.agents/sow/audit.sh` passed after moving this SOW to `done/`.
+- Final reviewer rerun after cleanup:
+  - Minimax returned `PRODUCTION GRADE`; no required fixes.
+  - GLM returned `PRODUCTION GRADE`; no required fixes. Its only cleanup item
+    was the stale Followup section, which is fixed in this closeout.
+  - Qwen did not produce a final verdict. It repeatedly inspected the same
+    systemd header offsets without progressing, so only the exact Qwen reviewer
+    PIDs were terminated. Qwen output is not used as acceptance evidence.
+- Same-failure search:
+  - Stale "FSS not implemented" claims were searched across SDK READMEs,
+    product scope, SOW status, AGENTS, and runtime project skills. Remaining
+    matches are historical execution-log evidence, not current behavior claims.
+  - The stale Followup section was fixed to remove Phase 4 and Phase 5 as future
+    items.
+- Sensitive data gate:
+  - No production keys, customer identifiers, secrets, SNMP community strings,
+    private endpoints, or host journal data were written to durable artifacts.
+  - Test keys are deterministic synthetic values.
+- Artifact maintenance gate:
+  - `AGENTS.md` updated for the current local-implementation/external-reviewer
+    routing decision.
+  - `.agents/skills/project-agent-orchestration/SKILL.md` updated for the same
+    routing decision.
+  - `.agents/sow/specs/product-scope.md` updated to describe current FSS writer
+    and sealed verification support.
+  - `go/README.md`, `node/README.md`, `python/README.md`, and `rust/README.md`
+    updated to remove stale FSS-deferred claims and document verification APIs
+    where applicable.
+  - `SOW-status.md` updated in this closeout.
+  - No end-user/operator output skills are affected.
+- Follow-up mapping:
+  - SOW-0022 tracks full systemd object-graph verification parity and FSS live
+    matrix coverage including successor/rotated sealed-writer chains.
+  - SOW-0009 tracks large sealed stress, benchmark, profiling, and optimization
+    work.
+  - Key zeroization is not claimed by this SOW and requires a separate user
+    decision if it becomes a product requirement.
 - Reviewers independently confirmed the fixture remains trustworthy as a systemd v260.1 FSPRG baseline and that Phase 1 does not claim SDK verification or writer sealing support.
 
 ## Outcome
@@ -1075,7 +1264,7 @@ Phase 1 completed:
 - A runner script supports compare mode (default) and explicit update mode.
 - Documentation covers vector semantics, upstream source references, scope boundaries, and safety guardrails.
 
-Phase 2 is partially complete on top of the trusted FSS vector baseline.
+All planned SOW phases are complete on top of the trusted FSS vector baseline.
 
 Phase 2A completed:
 
@@ -1094,8 +1283,29 @@ Phase 3 completed:
 - Valid unsealed files print `PASS:` to stderr and exit 0; corrupt files print `FAIL:` to stderr and exit non-zero.
 - Invalid or empty `--verify-key` fails with `Failed to parse seed.` before verification, matching stock behavior checked against repo-local files.
 - Directory verification follows symlinks to regular journal files, skips directories/special files, and reports empty directories as errors.
-- Sealed files are detected and fail with controlled messages until later FSS TAG/HMAC verification is implemented.
-- This phase does not claim full systemd object-graph verification parity or sealed TAG/HMAC verification.
+- Sealed files are detected and, with `--verify-key`, proceed through the
+  later Phase 5 sealed TAG/HMAC verification path.
+- This phase does not claim full systemd object-graph verification parity.
+
+Phase 4 completed:
+
+- Writer sealing with deterministic test keys and configurable sealing intervals
+  exists in Rust, Go, Node.js, and Python.
+- Stock `journalctl --verify --verify-key` validates generated sealed files,
+  including basic, interval-crossing, multi-interval-gap, first-entry
+  future-epoch, compact+sealed, empty sealed-file, wrong-key, tamper,
+  unsealed-flag, and before-start rejection cases where applicable.
+
+Phase 5 completed:
+
+- Sealed TAG/HMAC verification APIs exist in Rust, Go, Node.js, and Python.
+- File-backed journalctl rewrites validate sealed files when `--verify-key` is
+  supplied.
+- `journal-verify-sealed` now runs real adapter behavior in all four languages.
+- Valid sealed files, wrong keys, authenticated DATA tampering, compact sealed
+  files, empty sealed files, unsealed files with keys, oversized key fields,
+  whole-file zstd sealed verification, and Go/Rust aligned-size overflow
+  regressions are covered.
 
 ## Lessons Extracted
 
@@ -1107,8 +1317,16 @@ Phase 3 completed:
 
 ## Followup
 
-- Phase 4: implement writer sealing with deterministic test keys.
-- Phase 5: add tamper/corruption fixtures, stock verification checks, docs/spec updates, and security review.
+- SOW-0022 tracks full systemd object-graph verification parity, directory
+  traversal parity ownership, and FSS live-matrix coverage including
+  successor/rotated sealed-writer chains.
+- SOW-0009 tracks large sealed stress, benchmark, profiling, and optimization
+  work after feature completeness.
+- Key zeroization is not claimed by this SOW and is not a current acceptance
+  requirement. The SDKs do not persist verification keys to durable storage, and
+  equal zeroization guarantees are not representable across Go, Rust, Node.js,
+  and Python. If a product requirement for key zeroization or key-lifecycle
+  guarantees is introduced, it needs a separate user decision and SOW.
 
 ## Regression Log
 

@@ -8,10 +8,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "journal",
+ "journal-core",
  "ruzstd",
  "serde",
  "serde_json",
  "tempfile",
+ "uuid",
  "walkdir",
 ]
 
@@ -1142,6 +1144,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "hex",
+ "hmac",
  "journal-common",
  "journal-core",
  "journal-log-writer",
@@ -1151,6 +1154,8 @@ dependencies = [
  "ruzstd",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
  "thiserror",
  "uuid",
  "walkdir",
@@ -1334,8 +1339,10 @@ dependencies = [
  "chrono",
  "clap",
  "journal",
+ "journal-core",
  "ruzstd",
  "tempfile",
+ "uuid",
 ]
 
 [[package]]

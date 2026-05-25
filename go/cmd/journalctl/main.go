@@ -277,20 +277,24 @@ func runVerify(inputPath, verifyKey string, hasVerifyKey bool, stdout, stderr io
 			continue
 		}
 
-		if sealed && hasVerifyKey {
-			fmt.Fprintf(stderr, "FAIL: %s (sealed FSS verification is not yet implemented)\n", path)
-			if firstErr == nil {
-				firstErr = errors.New("sealed FSS verification is not yet implemented")
-			}
-			continue
-		}
-
 		if sealed && !hasVerifyKey {
 			fmt.Fprintf(stderr, "Journal file %s has sealing enabled but verification key has not been passed using --verify-key=.\n", path)
 			fmt.Fprintf(stderr, "FAIL: %s (verification key required for sealed journal file)\n", path)
 			if firstErr == nil {
 				firstErr = errors.New("verification key required for sealed journal file")
 			}
+			continue
+		}
+
+		if sealed && hasVerifyKey {
+			if err := journal.VerifyFileWithKey(path, verifyKey); err != nil {
+				fmt.Fprintf(stderr, "FAIL: %s (%v)\n", path, err)
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			fmt.Fprintf(stderr, "PASS: %s\n", path)
 			continue
 		}
 
@@ -361,8 +365,16 @@ func validVerificationKey(key string) bool {
 	if !ok || next >= len(key) || key[next] != '-' {
 		return false
 	}
-	_, ok = consumeHex(key, next+1)
-	return ok
+	end, ok := consumeHex(key, next+1)
+	if !ok || end != len(key) {
+		return false
+	}
+	for _, b := range key[next+1 : end] {
+		if b != '0' {
+			return true
+		}
+	}
+	return false
 }
 
 func consumeHex(s string, start int) (int, bool) {
