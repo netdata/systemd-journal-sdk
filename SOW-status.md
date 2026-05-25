@@ -2,11 +2,10 @@
 
 ## Current
 
-- None.
+- `SOW-0023-20260525-netdata-ingestion-writer-api.md` - in-progress. Active pre-implementation design gate for the Netdata ingestion writer API superset needed by NetFlow, OTEL logs, and SNMP traps integration.
 
 ## Pending
 
-- `SOW-0023-20260525-netdata-ingestion-writer-api.md` - open. Netdata ingestion writer API superset requirement, important for unblocking the SNMP traps integration and migration of existing NetFlow/OTEL writer behavior after SOW-0019 closes.
 - `SOW-0022-20260525-compatibility-test-gap-audit.md` - open. Records compatibility test gaps and likely feature-parity gaps found during read-only review. User decisions recorded: full unsealed verification parity remains here later; directory traversal remains in SOW-0020; compressed/compact parity is structural unless byte identity is deterministic; invalid same-boot monotonic writer appends must be rejected; file-backed journalctl option parity remains in scope across follow-up work.
 - `SOW-0020-20260524-directory-traversal-parity.md` - open. Bring SDK directory readers and file-backed journalctl `--directory` behavior to stock parity.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - open. Final benchmark, profile, and optimize pass after SOW-0017 through SOW-0021 are complete.

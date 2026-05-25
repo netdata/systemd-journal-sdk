@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: open
+Status: in-progress
 
-Sub-state: expanded from an SNMP trap integration need into a Netdata ingestion writer superset requirement; pending user prioritization and sequencing behind the active FSS SOW unless the user explicitly reorders the queue.
+Sub-state: active pre-implementation design gate. SOW-0019 is completed, and the user explicitly picked up this SOW on 2026-05-26. Implementation is blocked only on the remaining public API and artifact accounting choices recorded in the gate.
 
 ## Requirements
 
@@ -323,13 +323,14 @@ Sensitive data handling plan:
 
 Implementation plan:
 
-1. Decide sequencing and whether this SOW interrupts or follows the active FSS SOW.
-2. Define the Go ingestion writer contract in API documentation and tests before implementation.
-3. Add a strict constructor or option set that performs all job-creation preflight synchronously.
-4. Preserve the existing migration layout: callers pass the same configured base/tier directory and the SDK appends `<machine-id>` internally by default.
-5. Implement duration rotation and age retention as first-class behavior, with tests proving active-file survival and scoped deletion.
-6. Add Netdata-shaped journalctl and verify tests with synthetic fields and binary payloads.
-7. Update specs, docs, status, and any project skills that become affected by the new durable API contract.
+1. Record the resolved sequencing and implementation-routing decisions.
+2. Decide the remaining public API shape and artifact accounting contract.
+3. Define the Go ingestion writer contract in API documentation and tests before implementation.
+4. Add a strict constructor or option set that performs all job-creation preflight synchronously.
+5. Preserve the existing migration layout: callers pass the same configured base/tier directory and the SDK appends `<machine-id>` internally by default.
+6. Implement duration rotation and age retention as first-class behavior, with tests proving active-file survival and scoped deletion.
+7. Add Netdata-shaped journalctl and verify tests with synthetic fields and binary payloads.
+8. Update specs, docs, status, and any project skills that become affected by the new durable API contract.
 
 Validation plan:
 
@@ -357,15 +358,8 @@ Open-source reference evidence:
 Open decisions:
 
 1. Sequencing decision
-   - Option A: Finish the active FSS SOW first, then prioritize this SOW before SOW-0020 and SOW-0009.
-     - Pros: avoids conflicts with active writer/sealing changes; keeps one-SOW-at-a-time discipline.
-     - Cons: Netdata SDK-backed ingestion migrations must wait for FSS close.
-     - Risks: if FSS takes longer than expected, Netdata integration remains blocked.
-   - Option B: Pause the active FSS SOW and promote this SOW immediately.
-     - Pros: unblocks Netdata ingestion migrations faster.
-     - Cons: interrupts active cryptographic writer work and increases context-switch risk.
-     - Risks: merge conflicts and incomplete sealing state can confuse implementation and review.
-   - Recommendation: Option A unless Netdata ingestion migration is now higher priority than finishing FSS.
+   - Decision recorded: SOW-0019 was completed first, then SOW-0023 became active on 2026-05-26.
+   - Implication: SOW-0023 can build on the completed FSS writer and verification changes without pausing or merging against an active cryptographic writer SOW.
 
 2. Machine-id ownership and path compatibility decision
    - Decision recorded from user clarification: existing users must not lose journals, and migrated plugins must continue writing to the same directories without manual configuration changes.
@@ -384,6 +378,11 @@ Open decisions:
    - Required behavior: the active file is always protected, file-count retention defaults to disabled for NetFlow migration, and tests cover enabled-zero rejection plus active-file survival under impossible limits.
    - Implication: consumers that want "keep zero archived files" need an explicit named mode instead of accidentally getting that behavior from a zero value.
    - Risk to avoid: a missing nullable wrapper or default zero value deleting every archived journal.
+
+5. Implementation routing decision
+   - Decision recorded from latest user instruction: implement locally in this repository and use external models only as read-only reviewers.
+   - Implication: no external implementer prompts will be run for this SOW unless the user explicitly changes routing again.
+   - Risk to avoid: stale delegation instructions causing a reviewer-only agent or external implementer to edit the repository.
 
 ## Implications And Decisions
 
@@ -407,7 +406,7 @@ Open decisions:
 
 Implementer:
 
-- Delegate implementation to an external implementer per repository orchestration rules. The project manager should own requirements, prompts, SOW updates, integration checks, and final status, but should not personally implement feature code for this delegated SDK SOW.
+- Implement locally in this repository per the latest user routing decision. Do not run external implementer agents for this SOW unless the user explicitly changes routing again.
 
 Reviewers:
 
@@ -441,6 +440,12 @@ Failure handling:
 - Ran read-only external gap review against SOW-0023 and `ktsaou/netdata @ 00305266364e` using `glm`, `kimi`, `qwen`, and `minimax`. Initial sandboxed runs could not reach the model endpoint; direct approved runs completed. Confirmed findings were incorporated into the acceptance criteria and analysis.
 - Added explicit Netdata side-artifact requirements after local verification that NetFlow facet sidecars are per-journal-file artifacts written on archive and removed on journal deletion. The SOW now requires create/archive/delete lifecycle hooks and artifact-inclusive size accounting.
 - Ran a second read-only reviewer round against the full SOW and `ktsaou/netdata @ 00305266364e` to search for additional API requirements. Confirmed findings were locally verified before incorporation. One reviewer session attempted nested external reviews despite prompt instructions; its output was treated as candidate evidence only and not accepted without direct source verification.
+
+### 2026-05-26
+
+- Promoted SOW-0023 from pending to current after the user explicitly asked to pick it up.
+- Recorded that SOW-0019 is complete, so this SOW no longer competes with an active FSS SOW.
+- Updated implementation routing to local implementation with external models used only as read-only reviewers.
 
 ## Validation
 
