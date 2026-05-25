@@ -21,6 +21,9 @@ pub mod file;
 // The high-level Rust SDK public verification API is not finalized and will come in Phase 2B.
 pub mod fss;
 
+// Forward Secure Sealing writer support
+pub mod seal;
+
 // Field name mapping for systemd compatibility
 pub mod field_map;
 

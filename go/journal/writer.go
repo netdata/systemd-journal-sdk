@@ -49,6 +49,9 @@ type Options struct {
 	// Compact writes the systemd compact journal object layout. Regular layout
 	// remains the default for existing deterministic fixtures.
 	Compact bool
+	// Seal enables Forward Secure Sealing with deterministic synthetic keys.
+	// When non-nil, the writer appends TAG objects and sets sealed header flags.
+	Seal *SealOptions
 }
 
 // EntryOptions controls timestamps and boot ID for one appended entry.
@@ -83,6 +86,7 @@ type Writer struct {
 	compression       int
 	compressThreshold int
 	compact           bool
+	seal              *sealState
 }
 
 // Create creates or truncates a journal file after acquiring the writer lock.
@@ -241,6 +245,10 @@ func (w *Writer) Append(fields []Field, opts EntryOptions) error {
 		opts.BootID = w.bootID
 	}
 
+	if err := w.maybeAppendTag(opts.RealtimeUsec); err != nil {
+		return err
+	}
+
 	payloads := make([][]byte, 0, len(fields))
 	for _, field := range fields {
 		if err := validateFieldName(field.Name); err != nil {
@@ -298,6 +306,10 @@ func (w *Writer) Append(fields []Field, opts EntryOptions) error {
 	// Publish object reachability only after the complete entry object exists.
 	// Entry count is committed last below so live stock readers see full rows.
 	if err := w.publishObjectMetadata(); err != nil {
+		return err
+	}
+
+	if err := w.hmacPutObject(entryOffset, objectTypeEntry); err != nil {
 		return err
 	}
 
@@ -527,9 +539,19 @@ func (w *Writer) initialize(opts Options) error {
 		incFlags |= incompatibleCompact
 	}
 
+	compatibleFlags := uint32(compatibleTailEntryBootID)
+	if opts.Seal != nil {
+		var err error
+		w.seal, err = newSealState(*opts.Seal)
+		if err != nil {
+			return err
+		}
+		compatibleFlags |= compatibleSealed | compatibleSealedContinuous
+	}
+
 	w.header = journalHeader{
 		signature:            [8]byte{'L', 'P', 'K', 'S', 'H', 'H', 'R', 'H'},
-		compatibleFlags:      compatibleTailEntryBootID,
+		compatibleFlags:      compatibleFlags,
 		incompatibleFlags:    incFlags,
 		state:                stateOnline,
 		fileID:               opts.FileID,
@@ -563,10 +585,20 @@ func (w *Writer) initialize(opts Options) error {
 	}
 
 	// Write DATA_HASH_TABLE object header at object start
-	return w.writeObjectHeader(dataObjectOffset, objectHeader{
+	if err := w.writeObjectHeader(dataObjectOffset, objectHeader{
 		typ:  objectTypeDataHashTable,
 		size: objectHeaderSize + dataSize,
-	})
+	}); err != nil {
+		return err
+	}
+
+	if w.seal != nil {
+		if err := w.appendFirstTag(); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (w *Writer) writeHeader() error {
@@ -734,6 +766,10 @@ func (w *Writer) addData(payload []byte) (uint64, uint64, error) {
 	}
 	w.header.nData++
 
+	if err := w.hmacPutObject(offset, objectTypeData); err != nil {
+		return 0, 0, err
+	}
+
 	if eq := bytes.IndexByte(payload, '='); eq > 0 {
 		fieldOffset, err := w.addField(payload[:eq])
 		if err != nil {
@@ -780,6 +816,11 @@ func (w *Writer) addField(payload []byte) (uint64, error) {
 		return 0, err
 	}
 	w.header.nFields++
+
+	if err := w.hmacPutObject(offset, objectTypeField); err != nil {
+		return 0, err
+	}
+
 	return offset, nil
 }
 
@@ -1062,6 +1103,9 @@ func (w *Writer) allocateOffsetArray(capacity uint64) (uint64, error) {
 	w.objectAdded(offset, size)
 	w.header.nEntryArrays++
 	if err := w.publishObjectMetadata(); err != nil {
+		return 0, err
+	}
+	if err := w.hmacPutObject(offset, objectTypeEntryArray); err != nil {
 		return 0, err
 	}
 	return offset, nil

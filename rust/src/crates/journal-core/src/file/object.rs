@@ -263,6 +263,7 @@ pub enum HeaderIncompatibleFlags {
 pub enum HeaderCompatibleFlags {
     Sealed = 1 << 0,
     TailEntryBootId = 1 << 1,
+    SealedContinuous = 1 << 2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

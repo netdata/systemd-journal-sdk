@@ -101,7 +101,7 @@ Needed tests:
   - regular plus zstd/xz/lz4 DATA compression;
   - compact uncompressed;
   - compact plus zstd/xz/lz4 DATA compression;
-  - FSS/sealed files after SOW-0019 implements writer sealing.
+  - FSS/sealed files after SOW-0019 implements writer sealing, including successor/rotated sealed-writer chains where the SDK API supports rotation or successor files.
 - Each live feature matrix must include stock `journalctl --file`, stock libsystemd, and every repository reader while the writer is active.
 - Final closed-file validation must include `journalctl --verify --file`.
 

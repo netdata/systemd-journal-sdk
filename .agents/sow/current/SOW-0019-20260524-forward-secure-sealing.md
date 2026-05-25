@@ -4,7 +4,7 @@
 
 Status: in-progress
 
-Sub-state: Phase 3 checkpoint ready - file-backed journalctl verify behavior is implemented, reviewed, and validated; Phase 4 writer sealing remains.
+Sub-state: active Phase 4 - writer sealing with deterministic test keys and configurable sealing intervals.
 
 ## Requirements
 
@@ -712,6 +712,305 @@ Failure handling:
   - This implementation does not provide full systemd object-graph verification parity.
   - This implementation does not verify sealed TAG/HMAC chains.
   - Both limitations remain tracked by SOW-0022 and later SOW-0019 phases.
+
+2026-05-25 (Phase 4 activation):
+
+- Phase 4 scope:
+  - implement sealed journal writing in Rust, Go, Node.js, and Python writers;
+  - expose file-backed SDK writer options for deterministic FSS test keys and configurable sealing intervals;
+  - append systemd-compatible TAG objects and set sealed compatible header flags only when a writer is actually sealing;
+  - validate generated sealed files with stock `journalctl --verify --verify-key` against repo-local files;
+  - keep all existing unsealed, compressed, compact, byte-identity, and live-reader compatibility tests passing.
+- Phase 4 systemd source evidence to refresh during implementation:
+  - `systemd/systemd @ c0a5a2516d28`, `src/libsystemd/sd-journal/journal-def.h:140-147` defines `TagObject` as object header, seqnum, epoch, and 32-byte SHA-256 HMAC.
+  - `src/libsystemd/sd-journal/journal-def.h:187-190` defines `HEADER_COMPATIBLE_SEALED` and `HEADER_COMPATIBLE_SEALED_CONTINUOUS`.
+  - `src/libsystemd/sd-journal/journal-authenticate.c:44-84` appends TAG objects, HMACs the tag header/seqnum/epoch before storing the digest, and ends the current HMAC cycle.
+  - `src/libsystemd/sd-journal/journal-authenticate.c:90-119` starts HMAC-SHA256 using a 32-byte FSPRG key at key index 0.
+  - `src/libsystemd/sd-journal/journal-authenticate.c:125-200` maps realtime timestamps to FSPRG epochs and appends intermediate tags when evolving across intervals.
+  - `src/libsystemd/sd-journal/journal-authenticate.c:241-265` appends a tag before evolving when an appended entry crosses an interval.
+  - `src/libsystemd/sd-journal/journal-authenticate.c:267-327` defines exactly which object bytes feed the HMAC for DATA, FIELD, ENTRY, hash table, entry array, and TAG objects.
+  - `src/libsystemd/sd-journal/journal-authenticate.c:329-354` defines exactly which header byte ranges feed the HMAC.
+  - `src/libsystemd/sd-journal/journal-authenticate.c:460-495` appends the first tag after field/data hash-table setup.
+  - `src/libsystemd/sd-journal/journal-authenticate.c:498-546` parses verification keys as 12 seed bytes plus `/START-INTERVAL`.
+  - `src/libsystemd/sd-journal/journal-file.c:412-425` sets sealed compatible header flags only when FSS state loads successfully.
+  - `src/libsystemd/sd-journal/journal-file.c:1768-1794`, `1888-1909`, `2380-2399`, and `2584-2588` show HMAC update order for FIELD, DATA, ENTRY, and pre-entry interval tag appending.
+- Phase 4 implementation constraints:
+  - Do not implement daemon-only FSS key-management commands or write system FSS sidecar files.
+  - Use deterministic synthetic keys only in tests and durable artifacts.
+  - Do not claim sealed-writer compatibility unless stock `journalctl --verify --verify-key` passes against generated repo-local files.
+  - If exact TAG/HMAC behavior cannot be made stock-compatible in any language, stop and record the evidence before broadening or weakening the acceptance criteria.
+- Delegation:
+  - Implementation will be delegated to `llm-netdata-cloud/kimi-k2.6`.
+  - Review will use Minimax, Qwen, and GLM; Mimo remains skipped per user direction.
+
+2026-05-25 (Phase 4 implementation attempt 1 - Kimi):
+
+- Implementer: `llm-netdata-cloud/kimi-k2.6`.
+- Outcome:
+  - The first 30-minute run timed out after implementing and stock-validating the Go sealed-writer slice, implementing and stock-validating the Python sealed-writer slice, and starting partial Node support.
+  - The second 30-minute continuation run timed out after completing Node wiring/tests and starting Rust support.
+- Verified evidence from completed slices:
+  - Go targeted sealed-writer tests passed, including stock `journalctl --verify --verify-key` PASS for basic and interval-crossing sealed files, expected wrong-key failure, and expected tamper failure.
+  - Python package tests passed with sealed-writer stock verification checks.
+  - Node package tests passed after adding sealed-writer stock verification checks.
+- Required cleanup/follow-up from the Kimi runs:
+  - Kimi accidentally removed the Python `compileall` runner call and `test_zstd_data_object_parse()` from `main()` during the first run; the second run restored both.
+  - Rust was left incomplete and does not compile. Evidence: `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo check -p journal-core` fails with a borrow error in `rust/src/crates/journal-core/src/file/writer.rs`.
+  - The partial Rust HMAC implementation also appears semantically wrong because it hashes whole headers/objects instead of the exact systemd byte ranges. This must be fixed before any Rust sealed-writer compatibility claim.
+- Disposition:
+  - Switch implementer to fallback `llm-netdata-cloud/qwen3.6-plus` for Rust repair/completion and full Phase 4 validation.
+
+2026-05-25 (Phase 4 implementation attempt 2 - Qwen fallback):
+
+- Implementer: `llm-netdata-cloud/qwen3.6-plus`.
+- Reason for fallback:
+  - Kimi timed out twice and left Rust sealing incomplete.
+- Outcome:
+  - Qwen repaired the Rust compile failure and added Rust sealed-writer tests for stock `journalctl --verify --verify-key` pass/fail behavior.
+  - The run timed out before making the Rust positive stock verification tests pass.
+- Validation evidence:
+  - Command: `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journal-core`
+  - Result: failed with 32 passed and 2 failed tests.
+  - Failing tests:
+    - `file::writer::tests::sealed_writer_basic_passes_stock_verify`
+    - `file::writer::tests::sealed_writer_interval_crossing_passes_stock_verify`
+  - Stock verification error for both positive cases: `Tag failed verification` and `FAIL: ... (Bad message)`.
+  - Negative Rust tests for wrong-key and tampered-data cases passed, but those only prove failure detection paths and do not satisfy writer compatibility.
+- Disposition:
+  - Switch implementer to fallback `llm-netdata-cloud/glm-5.1` for Rust sealed-writer repair and full Phase 4 validation.
+
+2026-05-25 (Phase 4 implementation attempt 3 - GLM fallback):
+
+- Implementer: `llm-netdata-cloud/glm-5.1`.
+- Reason for fallback:
+  - Qwen timed out with Rust positive stock verification still failing.
+- Outcome:
+  - GLM identified and partially repaired Rust HMAC incompatibilities:
+    - Rust DATA-object HMAC used an incorrect regular DATA payload offset; systemd uses `offsetof(Object, data.regular.payload)` and compact mode uses a different offset.
+    - Rust first-tag HMAC hashed data and field hash tables in the reverse order; systemd hashes field hash table before data hash table.
+  - After those repairs, the Rust basic sealed writer stock verification test passes.
+  - GLM timed out before fixing the interval-crossing sealed writer case.
+- Validation evidence:
+  - Command: `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journal-core -- sealed_writer`
+  - Result: failed with 4 passed and 1 failed test.
+  - Passing tests:
+    - `file::writer::tests::sealed_writer_basic_passes_stock_verify`
+    - `file::writer::tests::sealed_writer_wrong_key_fails_stock_verify`
+    - `file::writer::tests::sealed_writer_tampered_data_fails_stock_verify`
+    - `file::writer::tests::unsealed_writer_does_not_set_sealed_flags`
+  - Failing test:
+    - `file::writer::tests::sealed_writer_interval_crossing_passes_stock_verify`
+  - Stock verification error: `Tag failed verification` and `FAIL: ... (Bad message)`.
+- Disposition:
+  - The preferred and configured fallback implementers for this phase have all timed out or were unsuitable for completion.
+  - Use another user-approved implementer model for the narrowed Rust interval-crossing repair, preserving all repository boundary and live-journal safety rules.
+
+2026-05-25 (Phase 4 implementation attempt 4 - DeepSeek additional implementer):
+
+- Implementer: `deepseek/deepseek-v4-pro`.
+- Reason for additional implementer:
+  - Kimi, Qwen, and GLM all timed out or were unsuitable for completing the Rust interval-crossing sealed-writer repair.
+  - The user had explicitly approved testing this model through opencode.
+- Outcome:
+  - DeepSeek fixed the remaining Rust interval-crossing sealed-writer compatibility failure.
+  - Root cause:
+    - Rust used `num_written_objects == 0` to decide whether the first TAG had already been written.
+    - `entry_added()` resets `num_written_objects` after each entry, so every later entry could trigger another "first" TAG before interval handling.
+    - Those extra TAG objects corrupted the sealing chain and caused stock `journalctl --verify --verify-key` to fail on interval-crossing files.
+  - Fix:
+    - Added a dedicated `first_tag_written` state field to the Rust writer.
+    - `ensure_first_tag()` now writes the first TAG exactly once for the writer instead of depending on the per-entry object counter.
+  - Prior GLM partial repairs remain part of the same Rust slice:
+    - DATA-object HMAC payload offset now follows regular/compact systemd offsets.
+    - First-tag hash-table HMAC order now matches systemd field-hash-table before data-hash-table order.
+- Validation evidence:
+  - `./tests/fss/run_vectors.sh` passed; generated FSPRG fixture matches the committed fixture.
+  - `cd go && env GOCACHE=$PWD/../.local/go-cache GOMODCACHE=$PWD/../.local/go-mod GOPATH=$PWD/../.local/go-path go test ./...` passed.
+  - `cd node && env npm_config_cache=$PWD/../.local/npm-cache npm test` passed.
+  - `env PYTHONPATH=$PWD/python PYTHONPYCACHEPREFIX=$PWD/.local/pycache .local/phase2a-venv/bin/python python/test_all.py` passed.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journalctl -p journal -p adapter -p journal-core` passed.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo fmt --check` passed.
+  - `git diff --check` passed.
+  - `.agents/sow/audit.sh` passed.
+- Debug hygiene:
+  - Search for leftover `DBG`, `DEBUG:`, `FILE DUMP`, `dump_sealed`, `go_dump`, and `dump_test` strings in changed source and SOW/status files returned no matches.
+- Disposition:
+  - Phase 4 implementation is ready for read-only reviewer rounds.
+
+2026-05-25 (Phase 4 reviewer round 1):
+
+- Reviewers:
+  - `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`; noted low caveats including compact+sealed coverage.
+  - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`; found no blocking correctness, security, or dependency issues.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: did not provide the requested final verdict, but identified real test coverage gaps:
+    - Python lacks a sealed tamper-detection test.
+    - Python lacks an unsealed-writer sealed-flag regression test.
+    - Node.js lacks an unsealed-writer sealed-flag regression test.
+    - Compact+sealed cross-product coverage is missing.
+  - `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE` overall, with findings:
+    - Rust `n_objects` publication remains deferred until `entry_added()`, unlike systemd and the other SDK writers.
+    - Add a first-entry future-epoch sealed regression test.
+    - Remove redundant Rust `ensure_first_tag()` calls from inner helpers where practical.
+- Disposition:
+  - Fix confirmed Phase 4 test gaps before closing:
+    - Python sealed tamper detection.
+    - Python unsealed sealed-flag regression.
+    - Node.js unsealed sealed-flag regression.
+    - Compact+sealed stock verification coverage.
+    - First-entry future-epoch sealed stock verification coverage.
+  - Rust `n_objects` publication timing is broader than FSS and pre-existed this phase. Changing it can affect live-reader publication windows and byte/publication ordering, so it will not be changed inside this FSS sealing phase without a dedicated compatibility analysis. The concern is recorded here and should be considered by SOW-0022's validation-gap audit or a dedicated Rust live-publication SOW.
+
+2026-05-25 (Phase 4 reviewer round 1 cleanup):
+
+- Implementer: `deepseek/deepseek-v4-pro`, with a small project-manager correction to the Node.js unsealed-flag assertion and Python/Node.js first-entry future-epoch coverage.
+- Test coverage added:
+  - Python sealed tamper-detection stock `journalctl --verify --verify-key` failure test.
+  - Python unsealed-writer sealed-flag regression test for both `COMPATIBLE_SEALED` and `COMPATIBLE_SEALED_CONTINUOUS`.
+  - Python compact+sealed stock verification test.
+  - Python first-entry future-epoch stock verification test.
+  - Node.js unsealed-writer sealed-flag regression test for both `COMPATIBLE_SEALED` and `COMPATIBLE_SEALED_CONTINUOUS`.
+  - Node.js compact+sealed stock verification test.
+  - Node.js first-entry future-epoch stock verification test.
+  - Rust compact+sealed stock verification test.
+  - Rust first-entry future-epoch stock verification test.
+  - Go compact+sealed stock verification test.
+  - Go first-entry future-epoch stock verification test.
+- Validation evidence after cleanup:
+  - `cd go && env GOCACHE=$PWD/../.local/go-cache GOMODCACHE=$PWD/../.local/go-mod GOPATH=$PWD/../.local/go-path go test ./...` passed.
+  - `cd node && env npm_config_cache=$PWD/../.local/npm-cache npm test` passed.
+  - `env PYTHONPATH=$PWD/python PYTHONPYCACHEPREFIX=$PWD/.local/pycache .local/phase2a-venv/bin/python python/test_all.py` passed.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journalctl -p journal -p adapter -p journal-core` passed.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo fmt --check` passed.
+  - `git diff --check` passed.
+- Disposition:
+  - Reviewer round 1 test coverage gaps are fixed.
+  - Proceed to full validation rerun and read-only reviewer round 2.
+
+2026-05-25 (Phase 4 reviewer round 2 and before-start cleanup):
+
+- Reviewers:
+  - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`; non-blocking caveats were Python private seal-state access, verification-key start truncation for unaligned starts, Rust `n_objects` publication timing, and key zeroization.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: reported a missing Rust tamper test, but this was a false positive. Evidence: `rust/src/crates/journal-core/src/file/writer.rs:1535` defines `sealed_writer_tampered_data_fails_stock_verify`. Other caveats were Python file mode `0o644`, Python dead `SealState.evolve()`, and the already-tracked Rust `n_objects` timing.
+  - `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`, but identified a real cross-language error-handling inconsistency: Node.js and Python swallowed FSS epoch errors in `_maybeAppendTag()` / `_maybe_append_tag()` while Go and Rust propagated them.
+- Evidence checked before changing behavior:
+  - systemd v260.1 `journal-authenticate.c:252-253` treats negative `journal_file_fsprg_need_evolve()` results as "no tag needed" in `journal_file_maybe_append_tag()`.
+  - A manager-side stock verification experiment added "entry before sealing start" tests and showed stock `journalctl --verify --verify-key` rejects such files with `Older entry after newer tag (500000 < 1000000)`.
+- Disposition:
+  - The production-compatible behavior is to reject before-start sealed entries rather than silently producing a file stock verification rejects.
+  - Go and Rust already followed this behavior; the temporary attempt to relax them was reverted.
+  - Node.js and Python now propagate FSS epoch errors from `_maybeAppendTag()` / `_maybe_append_tag()` instead of returning silently.
+  - Added rejection tests in all four languages:
+    - Go: `go/journal/seal_test.go:244` `TestWriterSealedEntryBeforeStartRejected`.
+    - Node.js: `node/test/all.js:758` sealed before-start rejection case.
+    - Python: `python/test_all.py:530` `test_writer_sealed_entry_before_start_rejected`.
+    - Rust: `rust/src/crates/journal-core/src/file/writer.rs:1669` `sealed_writer_entry_before_start_rejected`.
+- Validation evidence after cleanup:
+  - `cd go && env GOCACHE=$PWD/../.local/go-cache GOMODCACHE=$PWD/../.local/go-mod GOPATH=$PWD/../.local/go-path go test ./...` passed.
+  - `cd node && env npm_config_cache=$PWD/../.local/npm-cache npm test` passed.
+  - `env PYTHONPATH=$PWD/python PYTHONPYCACHEPREFIX=$PWD/.local/pycache .local/phase2a-venv/bin/python python/test_all.py` passed.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journalctl -p journal -p adapter -p journal-core` passed.
+  - `./tests/fss/run_vectors.sh` passed.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo fmt --check` passed.
+  - `git diff --check` passed.
+- Remaining non-blocking items:
+  - Rust `n_objects` publication timing remains a broader live-publication concern and is not part of this FSS sealing change.
+  - Python file permissions, Python `SealState.evolve()` cleanup, verification-key unaligned-start validation, and key zeroization are cleanup/security-hardening candidates, but none invalidates Phase 4 stock verification correctness.
+- Next:
+  - Run read-only reviewer round 3 against the full Phase 4 scope plus the before-start cleanup notes.
+
+2026-05-25 (Phase 4 reviewer round 3 cleanup):
+
+- Reviewers:
+  - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+    - Low finding: Go unsealed-flag test did not assert `COMPATIBLE_SEALED_CONTINUOUS` was clear.
+    - Low gaps: no multi-interval epoch gap test, no empty sealed-file stock verification test, no large-entry-count sealed test.
+  - `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`.
+    - Low findings: unused `tagSeqnum` / `_tag_seqnum` fields in Go, Node.js, and Python; unused Python `SealState.evolve()`; Python and Node.js writers directly mutated FSPRG state; Rust `hmac_finalize()` left `hmac_running` true after taking the HMAC; Rust `msk` and `seed` fields are intentionally retained for later verification work.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: output was too noisy and did not provide a reliable concise final verdict. It was not used as a clean acceptance result for this round.
+- Cleanup performed:
+  - Go unsealed writer test now asserts both `COMPATIBLE_SEALED` and `COMPATIBLE_SEALED_CONTINUOUS` are clear.
+  - Removed unused Go, Node.js, and Python tag sequence state fields.
+  - Removed the unused Python `SealState.evolve()` method.
+  - Added `SealState.evolveState()` / `evolve_state()` in Node.js and Python and updated writers to avoid direct FSPRG-state mutation.
+  - Rust `hmac_finalize()` now clears `hmac_running` after consuming the HMAC.
+  - Python writer file creation now uses `0o640`, matching the tighter journal-file mode used by Go and Node.js.
+  - Rust HMAC header-range comments were reduced to production-oriented offset descriptions.
+  - Rust writer now appends and publishes the initial TAG when a sealed writer is created, matching systemd's newly-created sealed-file path in `journal_file_append_first_tag()`. This also makes empty sealed writer files stock-verifiable.
+  - Added multi-interval epoch gap stock verification tests in all four languages.
+  - Added empty sealed writer stock verification tests in all four languages.
+- Validation evidence after cleanup:
+  - `cd go && env GOCACHE=$PWD/../.local/go-cache GOMODCACHE=$PWD/../.local/go-mod GOPATH=$PWD/../.local/go-path go test ./journal -run 'TestWriterSealed|TestWriterUnsealed' -count=1 -v` passed.
+  - `cd node && env npm_config_cache=$PWD/../.local/npm-cache npm test` passed.
+  - `env PYTHONPATH=$PWD/python PYTHONPYCACHEPREFIX=$PWD/.local/pycache .local/phase2a-venv/bin/python python/test_all.py` passed.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journal-core sealed_writer -- --nocapture` passed.
+  - `./tests/fss/run_vectors.sh` passed.
+  - `cd go && env GOCACHE=$PWD/../.local/go-cache GOMODCACHE=$PWD/../.local/go-mod GOPATH=$PWD/../.local/go-path go test ./...` passed.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journalctl -p journal -p adapter -p journal-core` passed.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo fmt --check` passed.
+  - Search for stale `tagSeqnum`, `_tag_seqnum`, direct writer FSPRG-state mutation, and dead Go/Python seal evolve helpers found no stale matches in the writer/seal code.
+  - `git diff --check` passed.
+  - `.agents/sow/audit.sh` passed.
+- Remaining non-blocking items:
+  - Rust `n_objects` publication timing remains broader than FSS sealing and is tracked for live-publication/validation-gap work.
+  - Successor/rotated sealed-writer chain coverage maps to SOW-0022's FSS live-compatibility matrix because it is a feature-slice compatibility and rotation validation gap.
+  - Large-entry-count sealed stress coverage maps to SOW-0009's benchmark/profile/stress work and is not required to prove the Phase 4 edge cases fixed here.
+- Next:
+  - Run read-only reviewer round 4 against the full Phase 4 scope plus the round 3 cleanup notes.
+
+2026-05-25 (Phase 4 reviewer round 4 and final cleanup):
+
+- Reviewers:
+  - `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`.
+    - Low findings: Python HMAC digest copy was safe but worth noting; Node.js/Python exception propagation style differs from Go/Rust but is correct; Rust `n_objects` publication timing remains tracked; Python file mode was `0o644`; successor/rotated sealed-writer coverage should be tracked; SDK sealed verification remains skipped for later FSS verification work.
+  - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+    - Low findings: Rust `n_objects` publication timing; Rust `msk`/`seed` retained for later work; key zeroization not implemented; stale Rust HMAC header-range comments.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`.
+    - Informational items: Rust `n_objects` publication timing; large sealed stress coverage; Python file permissions; key zeroization.
+- Final cleanup performed:
+  - Python writer file creation now uses `0o640`.
+  - Added Python `test_writer_file_permissions()` to lock the mode regression.
+  - Rust HMAC header-range comments now contain concise production descriptions instead of development-stage offset notes.
+  - SOW-0022 now explicitly tracks successor/rotated sealed-writer chains inside the FSS live-compatibility matrix.
+  - Large sealed stress remains mapped to SOW-0009 benchmark/profile/stress work.
+- Final validation evidence after cleanup:
+  - `./tests/fss/run_vectors.sh` passed.
+  - `cd go && env GOCACHE=$PWD/../.local/go-cache GOMODCACHE=$PWD/../.local/go-mod GOPATH=$PWD/../.local/go-path go test ./...` passed.
+  - `cd node && env npm_config_cache=$PWD/../.local/npm-cache npm test` passed.
+  - `env PYTHONPATH=$PWD/python PYTHONPYCACHEPREFIX=$PWD/.local/pycache .local/phase2a-venv/bin/python python/test_all.py` passed.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journal-core sealed_writer -p journalctl -p journal -p adapter` passed.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo fmt --check` passed.
+  - `git diff --check` passed.
+  - `.agents/sow/audit.sh` passed.
+- Disposition:
+  - Phase 4 writer sealing is reviewer-approved and ready for checkpoint commit.
+  - SOW-0019 remains open because Phase 5 still covers sealed TAG/HMAC verification fixtures, docs/spec updates, and security review.
+
+2026-05-25 (Phase 4 final reviewer rerun and Rust permission cleanup):
+
+- Reviewers:
+  - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+    - Low findings: key zeroization, Rust `n_objects` publication timing, SDK-side sealed verification, and successor/rotated sealed-writer chains remain tracked for later phases/SOWs.
+  - `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`.
+    - Medium finding: Rust `JournalFile::create()` used default `OpenOptions` creation permissions instead of explicit `0o640`, while Go, Node.js, and Python already create journal files as `0o640`.
+    - Low findings: redundant Rust `ensure_first_tag()` call in `add_data()`, key zeroization, fixed-offset tamper tests, and sealed append/reopen coverage.
+- Cleanup performed:
+  - Rust `JournalFile::create()` now applies Unix file creation mode `0o640`.
+  - Added Rust `create_uses_journal_file_permissions()` regression coverage.
+- Validation evidence after cleanup:
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journal-core create_uses_journal_file_permissions` passed.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journal-core sealed_writer` passed.
+  - `./tests/fss/run_vectors.sh` passed.
+  - `cd go && env GOCACHE=$PWD/../.local/go-cache GOMODCACHE=$PWD/../.local/go-mod GOPATH=$PWD/../.local/go-path go test ./...` passed.
+  - `cd node && env npm_config_cache=$PWD/../.local/npm-cache npm test` passed.
+  - `env PYTHONPATH=$PWD/python PYTHONPYCACHEPREFIX=$PWD/.local/pycache .local/phase2a-venv/bin/python python/test_all.py` passed.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo test -p journalctl -p journal -p adapter -p journal-core` passed.
+  - `cd rust && env CARGO_HOME=$PWD/../.local/cargo-home CARGO_TARGET_DIR=$PWD/../.local/cargo-target cargo fmt --check` passed.
+  - `git diff --check` passed.
+  - `.agents/sow/audit.sh` passed.
+- Final disposition before checkpoint validation:
+  - The Rust permission bug was fixed before commit.
+  - The remaining low items are already mapped: key zeroization and SDK sealed verification to later SOW-0019 phases, successor/rotated sealed-writer chains to SOW-0022, and large/stress/performance coverage to SOW-0009.
+  - Phase 4 remains ready for checkpoint validation and commit; SOW-0019 remains open for Phase 5.
 
 ### Gaps and Risks Discovered (Phase 1)
 

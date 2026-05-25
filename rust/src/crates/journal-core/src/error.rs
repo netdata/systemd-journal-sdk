@@ -95,6 +95,9 @@ pub enum JournalError {
 
     #[error("invalid query configuration")]
     InvalidQueryConfiguration,
+
+    #[error("FSS verification error")]
+    FssVerificationError,
 }
 
 static_assertions::const_assert!(std::mem::size_of::<JournalError>() <= 16);

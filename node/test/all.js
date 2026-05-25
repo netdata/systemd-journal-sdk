@@ -31,6 +31,7 @@ import { compressXzDataPayload, decompressXzDataPayload } from '../src/lib/xz-bl
 import { decompressZstSync } from '../src/lib/compress.js';
 import { fsprgGenMK, fsprgGenState0, fsprgEvolve, fsprgSeek, fsprgGetKey, fsprgGetEpoch } from '../src/lib/fss.js';
 import { verifyFile, VerificationError } from '../src/lib/verify.js';
+import { SealOptions, COMPATIBLE_SEALED, COMPATIBLE_SEALED_CONTINUOUS } from '../src/lib/seal.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, '..');
@@ -647,6 +648,246 @@ run(process.execPath, ['-e', "import './node/src/index.js'"], { cwd: repoRoot })
     if (!result.stderr.includes('not yet implemented')) {
       throw new Error(`expected 'not yet implemented' in stderr, got: ${result.stderr}`);
     }
+  }
+}
+
+function testSealOpts() {
+  return new SealOptions(Buffer.alloc(12), 1_000_000, 1_000_000);
+}
+
+function testVerificationKey(opts) {
+  const seedHex = opts.seed.toString('hex').padStart(24, '0');
+  const start = Math.floor(Number(opts.startUsec) / Number(opts.intervalUsec));
+  return `${seedHex}/${start.toString(16)}-${opts.intervalUsec.toString(16)}`;
+}
+
+// Sealed writer basic
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-sealed-basic-'));
+  try {
+    const journalPath = join(tempDir, 'sealed.journal');
+    const writer = Writer.create(journalPath, { seal: testSealOpts() });
+    writer.append([{ name: 'MESSAGE', value: 'hello sealed world' }, { name: 'PRIORITY', value: '6' }], {
+      realtimeUsec: 1_500_000n,
+    });
+    writer.close();
+
+    const key = testVerificationKey(testSealOpts());
+    const result = spawnSync('journalctl', ['--verify', '--verify-key', key, '--file', journalPath], { encoding: 'utf8' });
+    if (result.status !== 0) {
+      throw new Error(`journalctl verify failed: ${result.stderr}`);
+    }
+    if (!result.stderr.includes('PASS:')) {
+      throw new Error(`expected PASS in stderr, got: ${result.stderr}`);
+    }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+// Sealed writer interval crossing
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-sealed-interval-'));
+  try {
+    const journalPath = join(tempDir, 'sealed.journal');
+    const writer = Writer.create(journalPath, { seal: testSealOpts() });
+    writer.append([{ name: 'MESSAGE', value: 'epoch0' }], { realtimeUsec: 1_000_000n });
+    writer.append([{ name: 'MESSAGE', value: 'epoch1' }], { realtimeUsec: 2_000_000n });
+    writer.append([{ name: 'MESSAGE', value: 'epoch2' }], { realtimeUsec: 3_000_000n });
+    writer.close();
+
+    const key = testVerificationKey(testSealOpts());
+    const result = spawnSync('journalctl', ['--verify', '--verify-key', key, '--file', journalPath], { encoding: 'utf8' });
+    if (result.status !== 0) {
+      throw new Error(`journalctl verify failed: ${result.stderr}`);
+    }
+    if (!result.stderr.includes('PASS:')) {
+      throw new Error(`expected PASS in stderr, got: ${result.stderr}`);
+    }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+// Unsealed writer does not set sealed flags
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-unsealed-flags-'));
+  try {
+    const journalPath = join(tempDir, 'unsealed.journal');
+    const writer = Writer.create(journalPath);
+    writer.append([{ name: 'MESSAGE', value: 'unsealed' }]);
+    writer.close();
+    const buf = readFileSync(journalPath);
+    assert.equal(buf.length >= 16, true);
+    const compatibleFlags = buf.readUInt32LE(8);
+    if (compatibleFlags & COMPATIBLE_SEALED) {
+      throw new Error('unsealed writer set COMPATIBLE_SEALED flag');
+    }
+    if (compatibleFlags & COMPATIBLE_SEALED_CONTINUOUS) {
+      throw new Error('unsealed writer set COMPATIBLE_SEALED_CONTINUOUS flag');
+    }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+// Sealed writer first entry in a future epoch
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-sealed-first-future-'));
+  try {
+    const journalPath = join(tempDir, 'sealed.journal');
+    const writer = Writer.create(journalPath, { seal: testSealOpts() });
+    writer.append([{ name: 'MESSAGE', value: 'future epoch first entry' }], {
+      realtimeUsec: 3_000_000n,
+    });
+    writer.close();
+
+    const key = testVerificationKey(testSealOpts());
+    const result = spawnSync('journalctl', ['--verify', '--verify-key', key, '--file', journalPath], { encoding: 'utf8' });
+    if (result.status !== 0) {
+      throw new Error(`journalctl verify first-entry future-epoch failed: ${result.stderr}`);
+    }
+    if (!result.stderr.includes('PASS:')) {
+      throw new Error(`expected PASS in stderr, got: ${result.stderr}`);
+    }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+// Sealed writer rejects entries before the configured sealing start
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-sealed-before-start-'));
+  let writer;
+  try {
+    const journalPath = join(tempDir, 'sealed.journal');
+    writer = Writer.create(journalPath, { seal: testSealOpts() });
+    let rejected = false;
+    try {
+      writer.append([{ name: 'MESSAGE', value: 'before sealing start' }], {
+        realtimeUsec: 500_000n,
+      });
+    } catch (_) {
+      rejected = true;
+    }
+    if (!rejected) {
+      throw new Error('expected before-start entry to be rejected');
+    }
+    writer.close();
+  } finally {
+    if (writer && !writer.closed) writer.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+// Sealed writer handles a multi-interval epoch gap
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-sealed-multi-gap-'));
+  try {
+    const journalPath = join(tempDir, 'sealed.journal');
+    const writer = Writer.create(journalPath, { seal: testSealOpts() });
+    writer.append([{ name: 'MESSAGE', value: 'epoch0' }], { realtimeUsec: 1_000_000n });
+    writer.append([{ name: 'MESSAGE', value: 'epoch5' }], { realtimeUsec: 6_000_000n });
+    writer.close();
+
+    const key = testVerificationKey(testSealOpts());
+    const result = spawnSync('journalctl', ['--verify', '--verify-key', key, '--file', journalPath], { encoding: 'utf8' });
+    if (result.status !== 0) {
+      throw new Error(`journalctl verify multi-interval gap failed: ${result.stderr}`);
+    }
+    if (!result.stderr.includes('PASS:')) {
+      throw new Error(`expected PASS in stderr, got: ${result.stderr}`);
+    }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+// Empty sealed writer produces a stock-verifiable file
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-sealed-empty-'));
+  try {
+    const journalPath = join(tempDir, 'sealed.journal');
+    const writer = Writer.create(journalPath, { seal: testSealOpts() });
+    writer.close();
+
+    const key = testVerificationKey(testSealOpts());
+    const result = spawnSync('journalctl', ['--verify', '--verify-key', key, '--file', journalPath], { encoding: 'utf8' });
+    if (result.status !== 0) {
+      throw new Error(`journalctl verify empty sealed file failed: ${result.stderr}`);
+    }
+    if (!result.stderr.includes('PASS:')) {
+      throw new Error(`expected PASS in stderr, got: ${result.stderr}`);
+    }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+// Compact sealed writer passes stock journalctl verify
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-compact-sealed-'));
+  try {
+    const journalPath = join(tempDir, 'compact-sealed.journal');
+    const writer = Writer.create(journalPath, { seal: testSealOpts(), compact: true });
+    writer.append([{ name: 'MESSAGE', value: 'compact sealed' }, { name: 'PRIORITY', value: '6' }], {
+      realtimeUsec: 1_500_000n,
+    });
+    writer.close();
+
+    const key = testVerificationKey(testSealOpts());
+    const result = spawnSync('journalctl', ['--verify', '--verify-key', key, '--file', journalPath], { encoding: 'utf8' });
+    if (result.status !== 0) {
+      throw new Error(`journalctl verify compact+sealed failed: ${result.stderr}`);
+    }
+    if (!result.stderr.includes('PASS:')) {
+      throw new Error(`expected PASS in stderr, got: ${result.stderr}`);
+    }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+// Sealed writer wrong key fails
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-sealed-wrong-key-'));
+  try {
+    const journalPath = join(tempDir, 'sealed.journal');
+    const writer = Writer.create(journalPath, { seal: testSealOpts() });
+    writer.append([{ name: 'MESSAGE', value: 'hello' }], { realtimeUsec: 1_500_000n });
+    writer.close();
+
+    const wrongKey = '000000000000000000000001/1-1000000';
+    const result = spawnSync('journalctl', ['--verify', '--verify-key', wrongKey, '--file', journalPath], { encoding: 'utf8' });
+    if (result.status === 0) {
+      throw new Error(`expected verify to fail with wrong key, got: ${result.stderr}`);
+    }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+// Sealed writer tamper fails
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-sealed-tamper-'));
+  try {
+    const journalPath = join(tempDir, 'sealed.journal');
+    const writer = Writer.create(journalPath, { seal: testSealOpts() });
+    writer.append([{ name: 'MESSAGE', value: 'hello' }], { realtimeUsec: 1_500_000n });
+    writer.close();
+
+    const fd = openSync(journalPath, 'r+');
+    const tamperBuf = Buffer.from([0xff]);
+    writeSync(fd, tamperBuf, 0, 1, 512);
+    closeSync(fd);
+
+    const key = testVerificationKey(testSealOpts());
+    const result = spawnSync('journalctl', ['--verify', '--verify-key', key, '--file', journalPath], { encoding: 'utf8' });
+    if (result.status === 0) {
+      throw new Error(`expected verify to fail with tampered data, got: ${result.stderr}`);
+    }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
   }
 }
 

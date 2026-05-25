@@ -11,6 +11,7 @@ use crate::file::{
     ObjectFlags, ObjectHeader, ObjectType, RegularEntryItem, hash::jenkins_hash64,
     journal_hash_data,
 };
+use crate::seal::TAG_LENGTH;
 use rand::{Rng, seq::IndexedRandom};
 use rustc_hash::{FxHashMap, FxHasher};
 use std::borrow::Cow;
@@ -118,6 +119,7 @@ pub struct JournalWriter {
     append_offset: NonZeroU64,
     next_seqnum: u64,
     num_written_objects: u64,
+    first_tag_written: bool,
     entry_items: Vec<EntryItem>,
     field_cache: FieldCache,
     recent_data_cache: RecentDataCache,
@@ -125,6 +127,7 @@ pub struct JournalWriter {
     boot_id: uuid::Uuid,
     compression: Compression,
     compress_threshold: usize,
+    seal: Option<crate::seal::SealState>,
 }
 
 impl JournalWriter {
@@ -194,7 +197,13 @@ impl JournalWriter {
             tail_object_offset.saturating_add(tail_object.size)
         };
 
-        Ok(Self {
+        let seal = journal_file
+            .seal_options
+            .as_ref()
+            .map(|opts| crate::seal::SealState::new(opts))
+            .transpose()?;
+
+        let mut writer = Self {
             tail_object_offset: journal_file
                 .journal_header_ref()
                 .tail_object_offset
@@ -202,6 +211,7 @@ impl JournalWriter {
             append_offset,
             next_seqnum,
             num_written_objects: 0,
+            first_tag_written: false,
             entry_items: Vec::with_capacity(128),
             field_cache: FieldCache::new(),
             recent_data_cache: RecentDataCache::new(),
@@ -209,7 +219,20 @@ impl JournalWriter {
             boot_id,
             compression,
             compress_threshold,
-        })
+            seal,
+        };
+
+        if writer.seal.is_some() && journal_file.journal_header_ref().n_tags == 0 {
+            writer.ensure_first_tag(journal_file)?;
+            {
+                let header = journal_file.journal_header_mut();
+                header.n_objects += writer.num_written_objects;
+                header.tail_object_offset = Some(writer.tail_object_offset);
+            }
+            writer.num_written_objects = 0;
+        }
+
+        Ok(writer)
     }
 
     /// Creates a successor writer for a new journal file
@@ -223,6 +246,203 @@ impl JournalWriter {
         )
     }
 
+    // ------------------------------------------------------------------
+    // Forward Secure Sealing helpers
+    // ------------------------------------------------------------------
+
+    fn ensure_first_tag(&mut self, journal_file: &mut JournalFile<MmapMut>) -> Result<()> {
+        if !self.first_tag_written && self.seal.is_some() {
+            self.append_first_tag(journal_file)?;
+            self.first_tag_written = true;
+        }
+        Ok(())
+    }
+
+    fn append_first_tag(&mut self, journal_file: &mut JournalFile<MmapMut>) -> Result<()> {
+        self.hmac_put_header(journal_file)?;
+        let object_header_size = std::mem::size_of::<ObjectHeader>() as u64;
+        let (dht_offset, fht_offset) = {
+            let header = journal_file.journal_header_ref();
+            (
+                header
+                    .data_hash_table_offset
+                    .map(|o| o.get() - object_header_size),
+                header
+                    .field_hash_table_offset
+                    .map(|o| o.get() - object_header_size),
+            )
+        };
+        // systemd journal-authenticate.c:478-487: field hash table first, then data hash table.
+        if let Some(fht_offset) = fht_offset {
+            self.hmac_put_hash_table_object(journal_file, NonZeroU64::new(fht_offset).unwrap())?;
+        }
+        if let Some(dht_offset) = dht_offset {
+            self.hmac_put_hash_table_object(journal_file, NonZeroU64::new(dht_offset).unwrap())?;
+        }
+        self.append_tag(journal_file)
+    }
+
+    fn append_tag(&mut self, journal_file: &mut JournalFile<MmapMut>) -> Result<()> {
+        let tag_offset = self.append_offset;
+
+        // Increment n_tags BEFORE computing the HMAC, matching systemd's
+        // journal_file_tag_seqnum() which increments n_tags first.
+        let seqnum = {
+            let header = journal_file.journal_header_mut();
+            header.n_tags += 1;
+            header.n_tags
+        };
+
+        let epoch = self.seal.as_ref().unwrap().epoch();
+
+        // Build the tag object in a local buffer: header + seqnum + epoch + tag
+        let object_header_size = std::mem::size_of::<ObjectHeader>() as usize;
+        let tag_meta_size = 16; // seqnum(8) + epoch(8)
+        let total_size = object_header_size + tag_meta_size + TAG_LENGTH;
+        let aligned_size = (total_size + 7) & !7;
+        let mut buf = vec![0u8; aligned_size];
+
+        // Object header
+        buf[0] = ObjectType::Tag as u8;
+        // flags, reserved remain zero
+        buf[8..16].copy_from_slice(&(total_size as u64).to_le_bytes());
+
+        // seqnum and epoch (little-endian)
+        buf[object_header_size..object_header_size + 8].copy_from_slice(&seqnum.to_le_bytes());
+        buf[object_header_size + 8..object_header_size + 16].copy_from_slice(&epoch.to_le_bytes());
+
+        if let Some(ref mut seal) = self.seal {
+            seal.hmac_put_object_bytes(&buf, ObjectType::Tag, total_size as u64, false);
+            let digest = seal.hmac_finalize();
+            buf[object_header_size + 16..object_header_size + 16 + TAG_LENGTH]
+                .copy_from_slice(&digest);
+            seal.hmac_reset();
+        }
+
+        // Write the complete tag object to the file
+        {
+            let mut tag_guard = journal_file.tag_mut(tag_offset, true)?;
+            tag_guard.header.seqnum = seqnum;
+            tag_guard.header.epoch = epoch;
+            let digest = &buf[object_header_size + 16..object_header_size + 16 + TAG_LENGTH];
+            tag_guard.header.tag.copy_from_slice(digest);
+        }
+
+        self.object_added(journal_file, tag_offset, total_size as u64);
+
+        Ok(())
+    }
+
+    fn maybe_append_tag(
+        &mut self,
+        journal_file: &mut JournalFile<MmapMut>,
+        realtime: u64,
+    ) -> Result<()> {
+        let need_evolve = if let Some(ref seal) = self.seal {
+            seal.need_evolve(realtime)?
+        } else {
+            false
+        };
+        if !need_evolve {
+            return Ok(());
+        }
+
+        // Finalize the running HMAC (accumulated from all objects since the
+        // last tag) by appending the tag for the current epoch.
+        self.append_tag(journal_file)?;
+
+        // Evolve across intervals, appending intermediate tags.
+        loop {
+            let goal = if let Some(ref seal) = self.seal {
+                seal.goal_epoch(realtime)?
+            } else {
+                break;
+            };
+            let epoch = if let Some(ref seal) = self.seal {
+                seal.epoch()
+            } else {
+                break;
+            };
+            if epoch >= goal {
+                break;
+            }
+            if let Some(ref mut seal) = self.seal {
+                seal.evolve_state();
+            }
+            let new_epoch = if let Some(ref seal) = self.seal {
+                seal.epoch()
+            } else {
+                break;
+            };
+            if new_epoch < goal {
+                self.append_tag(journal_file)?;
+            } else {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn hmac_put_header(&mut self, journal_file: &JournalFile<MmapMut>) -> Result<()> {
+        if self.seal.is_none() {
+            return Ok(());
+        }
+        // Serialize the header to on-disk bytes and HMAC the immutable ranges.
+        let header = journal_file.journal_header_ref();
+        let bytes = zerocopy::IntoBytes::as_bytes(header);
+        if let Some(ref mut seal) = self.seal {
+            seal.hmac_put_header_ranges(bytes);
+        }
+        Ok(())
+    }
+
+    fn hmac_put_hash_table_object(
+        &mut self,
+        journal_file: &mut JournalFile<MmapMut>,
+        offset: NonZeroU64,
+    ) -> Result<()> {
+        if self.seal.is_none() {
+            return Ok(());
+        }
+        // Hash table objects: only the object header is immutable.
+        // Read only the object header (16 bytes), not the entire hash table.
+        let object_header_size = std::mem::size_of::<ObjectHeader>() as u64;
+        let bytes = journal_file.read_bytes_at(offset.get(), object_header_size)?;
+        if let Some(ref mut seal) = self.seal {
+            let typ = if bytes.is_empty() {
+                ObjectType::Unused
+            } else {
+                match bytes[0] {
+                    4 => ObjectType::DataHashTable,
+                    5 => ObjectType::FieldHashTable,
+                    _ => ObjectType::Unused,
+                }
+            };
+            seal.hmac_put_object_bytes(&bytes, typ, object_header_size, false);
+        }
+        Ok(())
+    }
+
+    fn hmac_put_object(
+        &mut self,
+        journal_file: &mut JournalFile<MmapMut>,
+        offset: u64,
+        object_type: ObjectType,
+    ) -> Result<()> {
+        if self.seal.is_none() {
+            return Ok(());
+        }
+        let is_compact = Self::is_compact(journal_file);
+        let offset_nz = NonZeroU64::new(offset).unwrap();
+        let oh = journal_file.object_header_ref(offset_nz)?;
+        let size = oh.size as usize;
+        let bytes = journal_file.read_bytes_at(offset, size as u64)?;
+        if let Some(ref mut seal) = self.seal {
+            seal.hmac_put_object_bytes(&bytes, object_type, size as u64, is_compact);
+        }
+        Ok(())
+    }
+
     pub fn add_entry(
         &mut self,
         journal_file: &mut JournalFile<MmapMut>,
@@ -230,6 +450,9 @@ impl JournalWriter {
         realtime: u64,
         monotonic: u64,
     ) -> Result<()> {
+        self.ensure_first_tag(journal_file)?;
+        self.maybe_append_tag(journal_file, realtime)?;
+
         let header = journal_file.journal_header_ref();
         assert!(header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash));
 
@@ -280,6 +503,7 @@ impl JournalWriter {
 
             entry_guard.header.object_header.aligned_size()
         };
+        self.hmac_put_object(journal_file, entry_offset.get(), ObjectType::Entry)?;
         self.object_added(journal_file, entry_offset, entry_size);
 
         self.append_to_entry_array(journal_file, entry_offset)?;
@@ -299,7 +523,7 @@ impl JournalWriter {
 
     fn object_added(
         &mut self,
-        journal_file: &mut JournalFile<MmapMut>,
+        journal_file: &JournalFile<MmapMut>,
         object_offset: NonZeroU64,
         object_size: u64,
     ) {
@@ -346,6 +570,8 @@ impl JournalWriter {
         journal_file: &mut JournalFile<MmapMut>,
         payload: &[u8],
     ) -> Result<EntryItem> {
+        self.ensure_first_tag(journal_file)?;
+
         if let Some(entry_item) = self.recent_data_cache.get(payload) {
             return Ok(entry_item);
         }
@@ -381,6 +607,7 @@ impl JournalWriter {
 
                     data_guard.header.object_header.aligned_size()
                 };
+                self.hmac_put_object(journal_file, data_offset.get(), ObjectType::Data)?;
 
                 self.object_added(journal_file, data_offset, data_size);
 
@@ -459,6 +686,8 @@ impl JournalWriter {
         journal_file: &mut JournalFile<MmapMut>,
         payload: &[u8],
     ) -> Result<NonZeroU64> {
+        self.ensure_first_tag(journal_file)?;
+
         if let Some(field_offset) = self.field_cache.get(payload) {
             return Ok(field_offset);
         }
@@ -488,6 +717,7 @@ impl JournalWriter {
                     field_guard.set_payload(payload);
                     field_guard.header.object_header.aligned_size()
                 };
+                self.hmac_put_object(journal_file, field_offset.get(), ObjectType::Field)?;
                 self.object_added(journal_file, field_offset, field_size);
 
                 // Update hash table
@@ -528,6 +758,7 @@ impl JournalWriter {
 
             array_guard.header.object_header.aligned_size()
         };
+        self.hmac_put_object(journal_file, array_offset.get(), ObjectType::EntryArray)?;
         self.object_added(journal_file, array_offset, array_size);
         journal_file.journal_header_mut().n_entry_arrays += 1;
 
@@ -1103,6 +1334,532 @@ mod tests {
         assert_eq!(
             zstd_frame_with_content_size(dictionary_frame.clone(), payload.len()),
             dictionary_frame
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Sealed writer tests
+    // ------------------------------------------------------------------
+
+    use super::{JournalFile, JournalWriter};
+    use crate::file::{HeaderCompatibleFlags, JournalFileOptions, MmapMut};
+    use crate::seal::{SealOptions, TAG_LENGTH};
+    #[cfg(unix)]
+    use std::os::unix::fs::FileExt;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    fn test_uuid(n: u8) -> uuid::Uuid {
+        let mut bytes = [0u8; 16];
+        bytes[15] = n;
+        uuid::Uuid::from_bytes(bytes)
+    }
+
+    fn test_seal_opts() -> SealOptions {
+        SealOptions::new([0u8; 12], 1_000_000, 1_000_000)
+    }
+
+    fn verification_key(opts: &SealOptions) -> String {
+        let seed_hex = opts
+            .seed
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>();
+        let start = opts.start_usec / opts.interval_usec;
+        format!(
+            "{seed_hex}/{start:x}-{interval:x}",
+            interval = opts.interval_usec
+        )
+    }
+
+    fn journalctl_available() -> bool {
+        Command::new("journalctl").arg("--version").output().is_ok()
+    }
+
+    #[test]
+    fn sealed_writer_basic_passes_stock_verify() {
+        if !journalctl_available() {
+            eprintln!("journalctl not available; skipping sealed writer stock verify");
+            return;
+        }
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let seal = test_seal_opts();
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_seal(seal.clone()),
+        )
+        .expect("create sealed journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[
+                    b"MESSAGE=hello sealed world".as_slice(),
+                    b"PRIORITY=6".as_slice(),
+                ],
+                1_500_000,
+                100,
+            )
+            .expect("write sealed entry");
+        journal_file.sync().expect("sync journal");
+
+        let key = verification_key(&seal);
+        let output = Command::new("journalctl")
+            .arg("--verify")
+            .arg("--verify-key")
+            .arg(&key)
+            .arg("--file")
+            .arg(&path)
+            .output()
+            .expect("run journalctl verify");
+        assert!(
+            output.status.success(),
+            "journalctl verify failed for sealed file: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn sealed_writer_interval_crossing_passes_stock_verify() {
+        if !journalctl_available() {
+            eprintln!("journalctl not available; skipping interval crossing stock verify");
+            return;
+        }
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let seal = test_seal_opts();
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_seal(seal.clone()),
+        )
+        .expect("create sealed journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+
+        // Entry in epoch 0 (realtime == start)
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[b"MESSAGE=epoch0".as_slice()],
+                1_000_000,
+                100,
+            )
+            .expect("write epoch 0");
+        // Entry in epoch 1 (crosses interval)
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[b"MESSAGE=epoch1".as_slice()],
+                2_000_000,
+                200,
+            )
+            .expect("write epoch 1");
+        // Entry in epoch 2
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[b"MESSAGE=epoch2".as_slice()],
+                3_000_000,
+                300,
+            )
+            .expect("write epoch 2");
+        journal_file.sync().expect("sync journal");
+
+        let key = verification_key(&seal);
+        let output = Command::new("journalctl")
+            .arg("--verify")
+            .arg("--verify-key")
+            .arg(&key)
+            .arg("--file")
+            .arg(&path)
+            .output()
+            .expect("run journalctl verify");
+        assert!(
+            output.status.success(),
+            "journalctl verify failed for interval-crossing sealed file: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn sealed_writer_wrong_key_fails_stock_verify() {
+        if !journalctl_available() {
+            eprintln!("journalctl not available; skipping wrong key verify");
+            return;
+        }
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let seal = test_seal_opts();
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3)).with_seal(seal),
+        )
+        .expect("create sealed journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[b"MESSAGE=hello".as_slice()],
+                1_500_000,
+                100,
+            )
+            .expect("write sealed entry");
+        journal_file.sync().expect("sync journal");
+
+        let wrong_key = "000000000000000000000001/1-1000000";
+        let output = Command::new("journalctl")
+            .arg("--verify")
+            .arg("--verify-key")
+            .arg(wrong_key)
+            .arg("--file")
+            .arg(&path)
+            .output()
+            .expect("run journalctl verify with wrong key");
+        assert!(
+            !output.status.success(),
+            "journalctl verify should fail with wrong key, but succeeded"
+        );
+    }
+
+    #[test]
+    fn sealed_writer_tampered_data_fails_stock_verify() {
+        if !journalctl_available() {
+            eprintln!("journalctl not available; skipping tamper verify");
+            return;
+        }
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let seal = test_seal_opts();
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_seal(seal.clone()),
+        )
+        .expect("create sealed journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[b"MESSAGE=hello".as_slice()],
+                1_500_000,
+                100,
+            )
+            .expect("write sealed entry");
+        journal_file.sync().expect("sync journal");
+
+        // Tamper with a byte in the DATA object payload area
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        let f = OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open for tamper");
+        f.write_all_at(&[0xff], 512).expect("tamper write");
+        drop(f);
+
+        let key = verification_key(&seal);
+        let output = Command::new("journalctl")
+            .arg("--verify")
+            .arg("--verify-key")
+            .arg(&key)
+            .arg("--file")
+            .arg(&path)
+            .output()
+            .expect("run journalctl verify tampered");
+        assert!(
+            !output.status.success(),
+            "journalctl verify should fail with tampered data, but succeeded"
+        );
+    }
+
+    #[test]
+    fn unsealed_writer_does_not_set_sealed_flags() {
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let journal_file: JournalFile<MmapMut> = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3)),
+        )
+        .expect("create unsealed journal");
+        let header = journal_file.journal_header_ref();
+        assert!(
+            !header.has_compatible_flag(HeaderCompatibleFlags::Sealed),
+            "unsealed writer set SEALED flag"
+        );
+        assert!(
+            !header.has_compatible_flag(HeaderCompatibleFlags::SealedContinuous),
+            "unsealed writer set SEALED_CONTINUOUS flag"
+        );
+    }
+
+    #[test]
+    fn sealed_writer_first_entry_future_epoch_passes_stock_verify() {
+        if !journalctl_available() {
+            eprintln!("journalctl not available; skipping first-entry future-epoch stock verify");
+            return;
+        }
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let seal = test_seal_opts();
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_seal(seal.clone()),
+        )
+        .expect("create sealed journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+
+        // Write the first entry at epoch 2 (realtime = start + 2 * interval = 3_000_000).
+        // This exercises FSS epoch-evolution during the first-tag path.
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[b"MESSAGE=future epoch first entry".as_slice()],
+                3_000_000,
+                100,
+            )
+            .expect("write first entry at future epoch");
+        journal_file.sync().expect("sync journal");
+
+        let key = verification_key(&seal);
+        let output = Command::new("journalctl")
+            .arg("--verify")
+            .arg("--verify-key")
+            .arg(&key)
+            .arg("--file")
+            .arg(&path)
+            .output()
+            .expect("run journalctl verify");
+        assert!(
+            output.status.success(),
+            "journalctl verify failed for first-entry future-epoch sealed file: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn sealed_writer_entry_before_start_rejected() {
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let seal = test_seal_opts();
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_seal(seal.clone()),
+        )
+        .expect("create sealed journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+
+        // Stock verification rejects entries older than the first tag epoch,
+        // so writers must reject this input instead of producing an invalid file.
+        assert!(
+            writer
+                .add_entry(
+                    &mut journal_file,
+                    &[b"MESSAGE=before sealing start".as_slice()],
+                    500_000,
+                    100,
+                )
+                .is_err(),
+            "expected before-start entry to be rejected"
+        );
+    }
+
+    #[test]
+    fn sealed_writer_multi_interval_gap_passes_stock_verify() {
+        if !journalctl_available() {
+            eprintln!("journalctl not available; skipping multi-interval gap stock verify");
+            return;
+        }
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let seal = test_seal_opts();
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_seal(seal.clone()),
+        )
+        .expect("create sealed journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[b"MESSAGE=epoch0".as_slice()],
+                1_000_000,
+                100,
+            )
+            .expect("write epoch 0");
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[b"MESSAGE=epoch5".as_slice()],
+                6_000_000,
+                200,
+            )
+            .expect("write epoch 5");
+        journal_file.sync().expect("sync journal");
+
+        let key = verification_key(&seal);
+        let output = Command::new("journalctl")
+            .arg("--verify")
+            .arg("--verify-key")
+            .arg(&key)
+            .arg("--file")
+            .arg(&path)
+            .output()
+            .expect("run journalctl verify");
+        assert!(
+            output.status.success(),
+            "journalctl verify failed for multi-interval gap sealed file: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn sealed_writer_empty_file_passes_stock_verify() {
+        if !journalctl_available() {
+            eprintln!("journalctl not available; skipping empty sealed stock verify");
+            return;
+        }
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let seal = test_seal_opts();
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_seal(seal.clone()),
+        )
+        .expect("create sealed journal");
+        let _writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+        journal_file.sync().expect("sync journal");
+
+        let key = verification_key(&seal);
+        let output = Command::new("journalctl")
+            .arg("--verify")
+            .arg("--verify-key")
+            .arg(&key)
+            .arg("--file")
+            .arg(&path)
+            .output()
+            .expect("run journalctl verify");
+        assert!(
+            output.status.success(),
+            "journalctl verify failed for empty sealed file: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn compact_sealed_writer_passes_stock_verify() {
+        if !journalctl_available() {
+            eprintln!("journalctl not available; skipping compact+sealed stock verify");
+            return;
+        }
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let seal = test_seal_opts();
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_compact(true)
+                .with_seal(seal.clone()),
+        )
+        .expect("create compact sealed journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[
+                    b"MESSAGE=compact sealed entry".as_slice(),
+                    b"PRIORITY=6".as_slice(),
+                ],
+                1_500_000,
+                100,
+            )
+            .expect("write compact sealed entry");
+        journal_file.sync().expect("sync journal");
+
+        let key = verification_key(&seal);
+        let output = Command::new("journalctl")
+            .arg("--verify")
+            .arg("--verify-key")
+            .arg(&key)
+            .arg("--file")
+            .arg(&path)
+            .output()
+            .expect("run journalctl verify");
+        assert!(
+            output.status.success(),
+            "journalctl verify failed for compact+sealed file: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 }

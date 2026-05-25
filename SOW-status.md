@@ -2,7 +2,7 @@
 
 ## Current
 
-- `SOW-0019-20260524-forward-secure-sealing.md` - in-progress. Phase 3 checkpoint is implemented, reviewed, and validated: file-backed journalctl `--verify`, existing `--verify-only`, and `--verify-key` behavior are implemented in Rust, Go, Node.js, and Python rewrites using the Phase 2B verification APIs. Qwen, GLM, and Minimax final rechecks returned `PRODUCTION GRADE`. Explicit limitation: Phase 3 does not claim full systemd object-graph verification parity or sealed TAG/HMAC verification; those remain tracked by SOW-0022 and later SOW-0019 phases. Next phase in this SOW is writer sealing.
+- `SOW-0019-20260524-forward-secure-sealing.md` - in-progress. Phase 4 writer sealing is implemented in Rust, Go, Node.js, and Python with deterministic test keys and configurable sealing intervals. Stock `journalctl --verify --verify-key` positive, interval-crossing, multi-interval-gap, first-entry future-epoch, compact+sealed, empty sealed-file, wrong-key, tamper, unsealed-flag, and before-start rejection cases are covered by language tests where applicable. Qwen, GLM, and Minimax returned `PRODUCTION GRADE`; the final Qwen Rust `0o640` file-permission finding was fixed and covered by a Rust regression test. Manager-side validation passes across FSPRG vectors, Go, Node.js, Python, Rust, formatting, diff check, and SOW audit. Phase 4 is ready for checkpoint commit; SOW-0019 remains open for Phase 5.
 
 ## Pending
 

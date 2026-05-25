@@ -11,6 +11,8 @@ use crate::file::offset_array;
 use std::fs::{File, OpenOptions};
 use std::marker::PhantomData;
 use std::num::NonZeroU64;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::time::Duration;
 use zerocopy::{ByteSlice, FromBytes};
 
@@ -130,6 +132,7 @@ pub struct JournalFileOptions {
     compression: Compression,
     compress_threshold: usize,
     compact: bool,
+    pub seal: Option<crate::seal::SealOptions>,
 }
 
 impl JournalFileOptions {
@@ -147,6 +150,7 @@ impl JournalFileOptions {
             compression: Compression::None,
             compress_threshold: 64,
             compact: false,
+            seal: None,
         }
     }
 
@@ -237,6 +241,11 @@ impl JournalFileOptions {
         self
     }
 
+    pub fn with_seal(mut self, seal: crate::seal::SealOptions) -> Self {
+        self.seal = Some(seal);
+        self
+    }
+
     pub fn compression(&self) -> Compression {
         self.compression
     }
@@ -315,6 +324,9 @@ pub struct JournalFile<M: MemoryMap> {
 
     // Window manager for other objects (owns the guard flag internally)
     window_manager: GuardedCell<WindowManager<M>>,
+
+    // Forward Secure Sealing options (consumed by JournalWriter on first use)
+    pub seal_options: Option<crate::seal::SealOptions>,
 }
 
 fn map_hash_table<M: MemoryMap>(
@@ -443,6 +455,7 @@ impl<M: MemoryMap> JournalFile<M> {
             data_hash_table_map,
             field_hash_table_map,
             window_manager,
+            seal_options: None,
         })
     }
 
@@ -527,6 +540,15 @@ impl<M: MemoryMap> JournalFile<M> {
         let window_manager = self.window_manager.borrow_mut_checked()?;
         let header_slice = window_manager.get_slice(position.get(), size_needed)?;
         ObjectHeader::ref_from_bytes(header_slice).map_err(|_| JournalError::ZerocopyFailure)
+    }
+
+    /// Reads raw bytes from the file at the given offset.
+    /// Returns a copied Vec so no borrow on the window manager is held.
+    pub fn read_bytes_at(&self, offset: u64, size: u64) -> Result<Vec<u8>> {
+        validate_offset_alignment(NonZeroU64::new(offset).ok_or(JournalError::InvalidOffset)?)?;
+        let window_manager = self.window_manager.borrow_mut_checked()?;
+        let src = window_manager.get_slice(offset, size)?;
+        Ok(src.to_vec())
     }
 
     fn journal_object_ref<'a, T>(&'a self, offset: NonZeroU64) -> Result<ValueGuard<'a, T>>
@@ -860,12 +882,15 @@ impl<M: MemoryMapMut> JournalFile<M> {
 
     pub fn create(file: &crate::repository::File, options: JournalFileOptions) -> Result<Self> {
         let writer_lock = WriterLock::acquire(file.path())?;
-        let fd = OpenOptions::new()
+        let mut open_options = OpenOptions::new();
+        open_options
             .create(true)
             .truncate(true)
             .read(true)
-            .write(true)
-            .open(file.path())?;
+            .write(true);
+        #[cfg(unix)]
+        open_options.mode(0o640);
+        let fd = open_options.open(file.path())?;
 
         // Calculate hash table sizes
         let data_hash_table_size =
@@ -894,6 +919,10 @@ impl<M: MemoryMapMut> JournalFile<M> {
         header.incompatible_flags |= options.compression.as_incompatible_flag();
         if options.compact {
             header.incompatible_flags |= HeaderIncompatibleFlags::Compact as u32;
+        }
+        if options.seal.is_some() {
+            header.compatible_flags |= HeaderCompatibleFlags::Sealed as u32;
+            header.compatible_flags |= HeaderCompatibleFlags::SealedContinuous as u32;
         }
 
         // Set hash table configuration
@@ -952,6 +981,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
             data_hash_table_map,
             field_hash_table_map,
             window_manager,
+            seal_options: options.seal.clone(),
         };
 
         // write data hash table object header info
@@ -1424,6 +1454,32 @@ mod tests {
             }
             Err(err) => panic!("second JournalFile::create returned unexpected error: {err}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_uses_journal_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let _journal_file: JournalFile<crate::file::MmapMut> = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3)),
+        )
+        .expect("create journal");
+
+        let mode = std::fs::metadata(&path)
+            .expect("stat journal")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o640);
     }
 
     #[test]

@@ -30,6 +30,7 @@ from .header import (
 )
 from .hash import sip_hash_24, jenkins_hash_64
 from .compress import decompress_zst_sync, decompress_xz_sync, decompress_lz4_sync
+from .seal import SealOptions, SealState, TAG_LENGTH, OBJECT_TYPE_TAG, COMPATIBLE_SEALED, COMPATIBLE_SEALED_CONTINUOUS
 
 COMPRESSION_NONE = 0
 COMPRESSION_ZSTD = 1
@@ -52,6 +53,7 @@ class Writer:
         self._compression = COMPRESSION_NONE
         self._compress_threshold = DEFAULT_COMPRESS_THRESHOLD
         self._compact = False
+        self._seal = None
 
     @staticmethod
     def create(path, opts=None):
@@ -59,7 +61,7 @@ class Writer:
         lock = WriterLock.acquire(path)
         fd = None
         try:
-            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o640)
             _lock_fd(fd)
             os.ftruncate(fd, 0)
             w = Writer(fd, path, lock)
@@ -72,6 +74,9 @@ class Writer:
             elif w._compression == COMPRESSION_LZ4:
                 _ensure_lz4_available()
             w._compress_threshold = opts.get('compression_threshold_bytes', DEFAULT_COMPRESS_THRESHOLD)
+            seal_opts = opts.get('seal')
+            if seal_opts is not None:
+                w._seal = SealState(seal_opts)
             w._initialize(opts)
             return w
         except Exception:
@@ -177,9 +182,13 @@ class Writer:
         if self._compact:
             inc_flags |= INCOMPATIBLE_COMPACT
 
+        compatible_flags = COMPATIBLE_TAIL_ENTRY_BOOT_ID
+        if self._seal is not None:
+            compatible_flags |= COMPATIBLE_SEALED | COMPATIBLE_SEALED_CONTINUOUS
+
         self._header = {
             'signature': 'LPKSHHRH',
-            'compatible_flags': COMPATIBLE_TAIL_ENTRY_BOOT_ID,  # v260+ sets TAIL_ENTRY_BOOT_ID
+            'compatible_flags': compatible_flags,
             'incompatible_flags': inc_flags,
             'state': STATE_ONLINE,
             'file_id': file_id,
@@ -228,6 +237,9 @@ class Writer:
         write_object_header(dht_buf, 0, OBJECT_TYPE_DATA_HASH_TABLE, 0, OBJECT_HEADER_SIZE + data_size)
         os.pwrite(self._fd, dht_buf, data_obj_offset)
 
+        if self._seal is not None:
+            self._append_first_tag()
+
     def _write_header(self):
         buf = bytearray(HEADER_SIZE)
         serialize_file_header(buf, self._header)
@@ -255,6 +267,8 @@ class Writer:
             boot_id = self._boot_id
         if isinstance(boot_id, str):
             boot_id = bytes.fromhex(boot_id)
+
+        self._maybe_append_tag(realtime)
 
         payloads = []
         for field in fields:
@@ -305,6 +319,8 @@ class Writer:
                 struct.pack_into('<Q', entry_buf, off + 8, item['hash'])
         os.pwrite(self._fd, entry_buf, entry_offset)
         self._object_added(entry_offset, entry_size)
+
+        self._hmac_put_object(entry_offset, OBJECT_TYPE_ENTRY)
 
         self._publish_object_metadata()
         self._append_to_entry_array(entry_offset)
@@ -371,6 +387,8 @@ class Writer:
             OBJECT_TYPE_DATA, h, offset)
         self._header['n_data'] += 1
 
+        self._hmac_put_object(offset, OBJECT_TYPE_DATA)
+
         eq_pos = payload.find(b'=')
         if eq_pos > 0:
             field_payload = payload[:eq_pos]
@@ -403,6 +421,9 @@ class Writer:
             self._header['field_hash_table_size'],
             OBJECT_TYPE_FIELD, h, offset)
         self._header['n_fields'] += 1
+
+        self._hmac_put_object(offset, OBJECT_TYPE_FIELD)
+
         return offset
 
     def _find_data(self, h, payload):
@@ -621,6 +642,7 @@ class Writer:
         self._object_added(offset, size)
         self._header['n_entry_arrays'] += 1
         self._publish_object_metadata()
+        self._hmac_put_object(offset, OBJECT_TYPE_ENTRY_ARRAY)
         return offset
 
     def _write_array_item(self, array_offset, index, entry_offset):
@@ -763,6 +785,102 @@ class Writer:
 
     def current_size(self):
         return self._append_offset
+
+    # Sealing methods
+
+    def _append_tag(self):
+        if self._seal is None:
+            return
+        self._seal.hmac_start()
+        offset = self._append_offset
+        size = OBJECT_HEADER_SIZE + 8 + 8 + TAG_LENGTH
+        seqnum = self._header['n_tags'] + 1
+        epoch = self._seal.get_epoch()
+        buf = bytearray(align8(size))
+        write_object_header(buf, 0, OBJECT_TYPE_TAG, 0, size)
+        struct.pack_into('<Q', buf, OBJECT_HEADER_SIZE, seqnum)
+        struct.pack_into('<Q', buf, OBJECT_HEADER_SIZE + 8, epoch)
+        self._seal.hmac_write(bytes(buf[:OBJECT_HEADER_SIZE + 16]))
+        buf[OBJECT_HEADER_SIZE + 16:OBJECT_HEADER_SIZE + 16 + TAG_LENGTH] = self._seal.hmac_sum()
+        os.pwrite(self._fd, buf, offset)
+        self._object_added(offset, size)
+        self._header['n_tags'] = seqnum
+        self._seal.hmac_reset()
+
+    def _append_first_tag(self):
+        if self._seal is None:
+            return
+        self._hmac_put_header()
+        self._hmac_put_hash_table_object(self._header['field_hash_table_offset'] - OBJECT_HEADER_SIZE)
+        self._hmac_put_hash_table_object(self._header['data_hash_table_offset'] - OBJECT_HEADER_SIZE)
+        self._append_tag()
+
+    def _maybe_append_tag(self, realtime):
+        if self._seal is None:
+            return
+        need = self._seal.need_evolve(realtime)
+        if not need:
+            return
+        self._append_tag()
+        while True:
+            goal = self._seal.get_goal_epoch(realtime)
+            epoch = self._seal.get_epoch()
+            if epoch >= goal:
+                break
+            self._seal.evolve_state()
+            if self._seal.get_epoch() < goal:
+                self._append_tag()
+
+    def _hmac_put_header(self):
+        if self._seal is None:
+            return
+        self._seal.hmac_start()
+        header_buf = bytearray(HEADER_SIZE)
+        serialize_file_header(header_buf, self._header)
+        self._seal.hmac_write(bytes(header_buf[0:16]))
+        self._seal.hmac_write(bytes(header_buf[24:56]))
+        self._seal.hmac_write(bytes(header_buf[72:96]))
+        self._seal.hmac_write(bytes(header_buf[104:136]))
+
+    def _hmac_put_hash_table_object(self, object_start):
+        if self._seal is None:
+            return
+        self._seal.hmac_start()
+        buf = os.pread(self._fd, OBJECT_HEADER_SIZE, object_start)
+        self._seal.hmac_write(buf)
+
+    def _hmac_put_object(self, object_start, typ):
+        if self._seal is None:
+            return
+        self._seal.hmac_start()
+        buf = os.pread(self._fd, OBJECT_HEADER_SIZE, object_start)
+        self._seal.hmac_write(buf)
+        obj_size = struct.unpack_from('<Q', buf, 8)[0]
+        if typ == OBJECT_TYPE_DATA:
+            hash_buf = os.pread(self._fd, 8, object_start + 16)
+            self._seal.hmac_write(hash_buf)
+            payload_offset = self._data_payload_offset()
+            payload_size = obj_size - payload_offset
+            if payload_size > 0:
+                payload = os.pread(self._fd, payload_size, object_start + payload_offset)
+                self._seal.hmac_write(payload)
+        elif typ == OBJECT_TYPE_FIELD:
+            hash_buf = os.pread(self._fd, 8, object_start + 16)
+            self._seal.hmac_write(hash_buf)
+            payload_size = obj_size - FIELD_OBJECT_HEADER_SIZE
+            if payload_size > 0:
+                payload = os.pread(self._fd, payload_size, object_start + FIELD_OBJECT_HEADER_SIZE)
+                self._seal.hmac_write(payload)
+        elif typ == OBJECT_TYPE_ENTRY:
+            rest_size = obj_size - OBJECT_HEADER_SIZE
+            if rest_size > 0:
+                rest = os.pread(self._fd, rest_size, object_start + OBJECT_HEADER_SIZE)
+                self._seal.hmac_write(rest)
+        elif typ in (OBJECT_TYPE_DATA_HASH_TABLE, OBJECT_TYPE_FIELD_HASH_TABLE, OBJECT_TYPE_ENTRY_ARRAY):
+            pass
+        elif typ == OBJECT_TYPE_TAG:
+            meta = os.pread(self._fd, 16, object_start + OBJECT_HEADER_SIZE)
+            self._seal.hmac_write(meta)
 
 
 def _read_object_size_from_fd(fd, offset):

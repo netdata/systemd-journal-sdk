@@ -3,6 +3,7 @@
 
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -27,6 +28,7 @@ from journal import (  # noqa: E402
 )
 from journal.entry import parse_data_object  # noqa: E402
 from journal.header import (  # noqa: E402
+    COMPATIBLE_SEALED,
     DATA_OBJECT_HEADER_SIZE,
     INCOMPATIBLE_COMPACT,
     OBJECT_COMPRESSED_LZ4,
@@ -35,6 +37,7 @@ from journal.header import (  # noqa: E402
     OBJECT_TYPE_DATA,
     write_object_header,
 )
+from journal.seal import COMPATIBLE_SEALED_CONTINUOUS  # noqa: E402
 from journal.hash import sip_hash_24  # noqa: E402
 from journal.fss import gen_mk, gen_state0, evolve, seek, get_key, get_epoch  # noqa: E402
 
@@ -458,9 +461,207 @@ def test_journalctl_verify():
         )
 
 
+def _test_seal_opts():
+    from journal.seal import SealOptions
+    return SealOptions(seed=bytes(12), interval_usec=1_000_000, start_usec=1_000_000)
+
+
+def _test_verification_key(opts):
+    start = opts.start_usec // opts.interval_usec
+    return f'{opts.seed.hex()}/{start:x}-{opts.interval_usec:x}'
+
+
+def test_writer_sealed_basic():
+    from journal.writer import Writer
+    from journal.seal import SealOptions
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / 'test.journal'
+        opts = {'seal': _test_seal_opts()}
+        w = Writer.create(str(path), opts)
+        w.append([{'name': 'MESSAGE', 'value': 'hello sealed world'}, {'name': 'PRIORITY', 'value': '6'}],
+                 {'realtime_usec': 1_500_000})
+        w.close()
+        key = _test_verification_key(opts['seal'])
+        result = subprocess.run(
+            ['journalctl', '--verify', '--verify-key', key, '--file', str(path)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f'journalctl verify failed: {result.stderr}'
+        assert 'PASS:' in result.stderr
+
+
+def test_writer_sealed_interval_crossing():
+    from journal.writer import Writer
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / 'test.journal'
+        opts = {'seal': _test_seal_opts()}
+        w = Writer.create(str(path), opts)
+        w.append([{'name': 'MESSAGE', 'value': 'epoch0'}], {'realtime_usec': 1_000_000})
+        w.append([{'name': 'MESSAGE', 'value': 'epoch1'}], {'realtime_usec': 2_000_000})
+        w.append([{'name': 'MESSAGE', 'value': 'epoch2'}], {'realtime_usec': 3_000_000})
+        w.close()
+        key = _test_verification_key(opts['seal'])
+        result = subprocess.run(
+            ['journalctl', '--verify', '--verify-key', key, '--file', str(path)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f'journalctl verify failed: {result.stderr}'
+        assert 'PASS:' in result.stderr
+
+
+def test_writer_sealed_first_entry_future_epoch():
+    from journal.writer import Writer
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / 'test.journal'
+        opts = {'seal': _test_seal_opts()}
+        w = Writer.create(str(path), opts)
+        w.append([{'name': 'MESSAGE', 'value': 'future epoch first entry'}],
+                 {'realtime_usec': 3_000_000})
+        w.close()
+        key = _test_verification_key(opts['seal'])
+        result = subprocess.run(
+            ['journalctl', '--verify', '--verify-key', key, '--file', str(path)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f'journalctl verify first-entry future-epoch failed: {result.stderr}'
+        assert 'PASS:' in result.stderr
+
+
+def test_writer_sealed_entry_before_start_rejected():
+    from journal.writer import Writer
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / 'test.journal'
+        opts = {'seal': _test_seal_opts()}
+        w = Writer.create(str(path), opts)
+        try:
+            w.append([{'name': 'MESSAGE', 'value': 'before sealing start'}],
+                     {'realtime_usec': 500_000})
+            assert False, 'expected before-start entry to be rejected'
+        except ValueError:
+            pass
+        finally:
+            w.close()
+
+
+def test_writer_sealed_multi_interval_gap():
+    from journal.writer import Writer
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / 'test.journal'
+        opts = {'seal': _test_seal_opts()}
+        w = Writer.create(str(path), opts)
+        w.append([{'name': 'MESSAGE', 'value': 'epoch0'}], {'realtime_usec': 1_000_000})
+        w.append([{'name': 'MESSAGE', 'value': 'epoch5'}], {'realtime_usec': 6_000_000})
+        w.close()
+        key = _test_verification_key(opts['seal'])
+        result = subprocess.run(
+            ['journalctl', '--verify', '--verify-key', key, '--file', str(path)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f'journalctl verify multi-interval gap failed: {result.stderr}'
+        assert 'PASS:' in result.stderr
+
+
+def test_writer_sealed_empty_file_stock_verify():
+    from journal.writer import Writer
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / 'test.journal'
+        opts = {'seal': _test_seal_opts()}
+        w = Writer.create(str(path), opts)
+        w.close()
+        key = _test_verification_key(opts['seal'])
+        result = subprocess.run(
+            ['journalctl', '--verify', '--verify-key', key, '--file', str(path)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f'journalctl verify empty sealed file failed: {result.stderr}'
+        assert 'PASS:' in result.stderr
+
+
+def test_writer_sealed_wrong_key_fails():
+    from journal.writer import Writer
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / 'test.journal'
+        opts = {'seal': _test_seal_opts()}
+        w = Writer.create(str(path), opts)
+        w.append([{'name': 'MESSAGE', 'value': 'hello'}], {'realtime_usec': 1_500_000})
+        w.close()
+        wrong_key = '000000000000000000000001/1-1000000'
+        result = subprocess.run(
+            ['journalctl', '--verify', '--verify-key', wrong_key, '--file', str(path)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode != 0, 'expected verify to fail with wrong key'
+
+
+def test_writer_sealed_tampered_data_fails():
+    from journal.writer import Writer
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / 'test.journal'
+        opts = {'seal': _test_seal_opts()}
+        w = Writer.create(str(path), opts)
+        w.append([{'name': 'MESSAGE', 'value': 'tamper test'}], {'realtime_usec': 1_500_000})
+        w.close()
+        with open(path, 'r+b') as f:
+            f.seek(512)
+            f.write(b'\xff')
+        key = _test_verification_key(opts['seal'])
+        result = subprocess.run(
+            ['journalctl', '--verify', '--verify-key', key, '--file', str(path)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode != 0, (
+            f'expected verify to fail with tampered data, got exit {result.returncode}: {result.stderr}'
+        )
+
+
+def test_writer_unsealed_does_not_set_sealed_flags():
+    from journal.writer import Writer
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / 'test.journal'
+        w = Writer.create(str(path))
+        w.append([{'name': 'MESSAGE', 'value': 'unsealed'}])
+        w.close()
+        reader = FileReader.open(str(path))
+        header = reader.header()
+        reader.close()
+        assert not (header['compatible_flags'] & COMPATIBLE_SEALED), 'unsealed writer set SEALED flag'
+        assert not (header['compatible_flags'] & COMPATIBLE_SEALED_CONTINUOUS), (
+            'unsealed writer set SEALED_CONTINUOUS flag'
+        )
+
+
+def test_writer_file_permissions():
+    from journal.writer import Writer
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / 'test.journal'
+        w = Writer.create(str(path))
+        w.close()
+        assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+
+def test_compact_sealed_writer_stock_verify():
+    from journal.writer import Writer
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / 'test.journal'
+        opts = {'seal': _test_seal_opts(), 'compact': True}
+        w = Writer.create(str(path), opts)
+        w.append([{'name': 'MESSAGE', 'value': 'compact sealed'}, {'name': 'PRIORITY', 'value': '6'}],
+                 {'realtime_usec': 1_500_000})
+        w.close()
+        key = _test_verification_key(opts['seal'])
+        result = subprocess.run(
+            ['journalctl', '--verify', '--verify-key', key, '--file', str(path)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f'journalctl verify compact+sealed failed: {result.stderr}'
+        assert 'PASS:' in result.stderr
+
+
 def main():
     run([sys.executable, '-m', 'compileall', str(PYTHON_ROOT)])
     test_match_validation()
+    test_siphash_masks_long_message_length()
     test_lowercase_field_rejected()
     test_live_delay_parser()
     test_writer_reader_and_binary_export()
@@ -474,6 +675,17 @@ def main():
     test_verify_file_detects_corruption()
     test_verify_file_passes_on_valid_fixture()
     test_journalctl_verify()
+    test_writer_sealed_basic()
+    test_writer_sealed_interval_crossing()
+    test_writer_sealed_first_entry_future_epoch()
+    test_writer_sealed_entry_before_start_rejected()
+    test_writer_sealed_multi_interval_gap()
+    test_writer_sealed_empty_file_stock_verify()
+    test_writer_sealed_wrong_key_fails()
+    test_writer_sealed_tampered_data_fails()
+    test_writer_unsealed_does_not_set_sealed_flags()
+    test_writer_file_permissions()
+    test_compact_sealed_writer_stock_verify()
     test_conformance_manifest()
     print(f'PASS python package tests ({Path(__file__).relative_to(REPO_ROOT)})')
 

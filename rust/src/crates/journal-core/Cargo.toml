@@ -57,6 +57,7 @@ allocative = { workspace = true, optional = true }
 # FSPRG dependencies
 num-bigint = { workspace = true }
 sha2 = { workspace = true }
+hmac = { workspace = true }
 
 tokio = { workspace = true, features = ["rt", "sync", "macros", "rt-multi-thread"] }
 

@@ -24,6 +24,7 @@ import {
   FILE_SIZE_INCREASE,
   INITIAL_ENTRY_ARRAY_CAP, INITIAL_DATA_ENTRY_ARRAY_CAP,
 } from './header.js';
+import { SealOptions, SealState, TAG_LENGTH, OBJECT_TYPE_TAG, COMPATIBLE_SEALED, COMPATIBLE_SEALED_CONTINUOUS } from './seal.js';
 import { sipHash24, jenkinsHash64 } from './hash.js';
 import { compressLz4DataPayload, decompressLz4DataPayload } from './lz4-block.js';
 import { compressXzDataPayload, decompressXzDataPayload } from './xz-block.js';
@@ -48,6 +49,7 @@ export class Writer {
     this.compression = COMPRESSION_NONE;
     this.compressThreshold = DEFAULT_COMPRESS_THRESHOLD;
     this.compact = false;
+    this.seal = null;
   }
 
   // Create or truncate a journal file.
@@ -61,6 +63,9 @@ export class Writer {
       w.compression = normalizeCompression(opts.compression);
       w.compressThreshold = opts.compressionThresholdBytes ?? DEFAULT_COMPRESS_THRESHOLD;
       w.compact = opts.compact === true || opts.format === 'compact';
+      if (opts.seal) {
+        w.seal = new SealState(opts.seal);
+      }
       w._initialize(opts);
       return w;
     } catch (error) {
@@ -152,9 +157,14 @@ export class Writer {
     }
     if (this.compact) incFlags |= INCOMPATIBLE_COMPACT;
 
+    let compatibleFlags = COMPATIBLE_TAIL_ENTRY_BOOT_ID;
+    if (this.seal) {
+      compatibleFlags |= COMPATIBLE_SEALED | COMPATIBLE_SEALED_CONTINUOUS;
+    }
+
     this.header = {
       signature: 'LPKSHHRH',
-      compatible_flags: COMPATIBLE_TAIL_ENTRY_BOOT_ID,  // v260+ sets TAIL_ENTRY_BOOT_ID
+      compatible_flags: compatibleFlags,
       incompatible_flags: incFlags,
       state: STATE_ONLINE,
       file_id: fileId,
@@ -203,6 +213,10 @@ export class Writer {
     const dhtBuf = Buffer.alloc(OBJECT_HEADER_SIZE);
     writeObjectHeader(dhtBuf, 0, OBJECT_TYPE_DATA_HASH_TABLE, 0, BigInt(OBJECT_HEADER_SIZE) + dataSize);
     writeSync(this.fd, dhtBuf, 0, OBJECT_HEADER_SIZE, Number(dataObjOffset));
+
+    if (this.seal) {
+      this._appendFirstTag();
+    }
   }
 
   _writeHeader() {
@@ -236,6 +250,8 @@ export class Writer {
     const realtime = opts.realtimeUsec ? BigInt(opts.realtimeUsec) : BigInt(now * 1000);
     const monotonic = opts.monotonicUsec ? BigInt(opts.monotonicUsec) : BigInt((now - this.started) * 1000);
     const bootId = opts.bootId && !isZeroUUID(opts.bootId) ? Buffer.from(opts.bootId) : this.bootId;
+
+    this._maybeAppendTag(realtime);
 
     // Build payloads
     const payloads = [];
@@ -294,6 +310,7 @@ export class Writer {
 
     // Publish object reachability before entry count
     this._publishObjectMetadata();
+    this._hmacPutObject(entryOffset, OBJECT_TYPE_ENTRY);
 
     // Append to entry array and link data
     this._appendToEntryArray(entryOffset);
@@ -369,6 +386,7 @@ export class Writer {
     // Insert into data hash table
     this._appendHashItem(this.header.data_hash_table_offset, this.header.data_hash_table_size, OBJECT_TYPE_DATA, hash, offset);
     this.header.n_data++;
+    this._hmacPutObject(offset, OBJECT_TYPE_DATA);
 
     // Link to field
     const eqPos = payload.indexOf(0x3d);
@@ -404,6 +422,8 @@ export class Writer {
 
     this._appendHashItem(this.header.field_hash_table_offset, this.header.field_hash_table_size, OBJECT_TYPE_FIELD, hash, offset);
     this.header.n_fields++;
+    this._hmacPutObject(offset, OBJECT_TYPE_FIELD);
+
     return offset;
   }
 
@@ -653,6 +673,7 @@ export class Writer {
     this._objectAdded(offset, size);
     this.header.n_entry_arrays++;
     this._publishObjectMetadata();
+    this._hmacPutObject(offset, OBJECT_TYPE_ENTRY_ARRAY);
     return offset;
   }
 
@@ -814,6 +835,126 @@ export class Writer {
   }
 
   currentSize() { return this.appendOffset; }
+
+  // Sealing methods
+
+  _appendTag() {
+    if (!this.seal) return;
+    this.seal.hmacStart();
+    const offset = this.appendOffset;
+    const size = BigInt(OBJECT_HEADER_SIZE + 8 + 8 + TAG_LENGTH);
+    const seqnum = this.header.n_tags + 1n;
+    const epoch = this.seal.getEpoch();
+    const buf = Buffer.alloc(Number(align8(size)));
+    writeObjectHeader(buf, 0, OBJECT_TYPE_TAG, 0, size);
+    writeUint64LE(buf, OBJECT_HEADER_SIZE, seqnum);
+    writeUint64LE(buf, OBJECT_HEADER_SIZE + 8, epoch);
+    this.seal.hmacWrite(buf.slice(0, OBJECT_HEADER_SIZE + 16));
+    buf.slice(OBJECT_HEADER_SIZE + 16, OBJECT_HEADER_SIZE + 16 + TAG_LENGTH)
+      .set(this.seal.hmacSum());
+    writeSync(this.fd, buf, 0, buf.length, Number(offset));
+    this._objectAdded(offset, size);
+    this.header.n_tags = seqnum;
+    this.seal.hmacReset();
+  }
+
+  _appendFirstTag() {
+    if (!this.seal) return;
+    this._hmacPutHeader();
+    this._hmacPutHashTableObject(this.header.field_hash_table_offset - BigInt(OBJECT_HEADER_SIZE));
+    this._hmacPutHashTableObject(this.header.data_hash_table_offset - BigInt(OBJECT_HEADER_SIZE));
+    this._appendTag();
+  }
+
+  _maybeAppendTag(realtime) {
+    if (!this.seal) return;
+    const need = this.seal.needEvolve(realtime);
+    if (!need) return;
+    this._appendTag();
+    for (;;) {
+      const goal = this.seal.getGoalEpoch(realtime);
+      const epoch = this.seal.getEpoch();
+      if (epoch >= goal) break;
+      this.seal.evolveState();
+      if (this.seal.getEpoch() < goal) {
+        this._appendTag();
+      }
+    }
+  }
+
+  _hmacPutHeader() {
+    if (!this.seal) return;
+    this.seal.hmacStart();
+    const buf = Buffer.alloc(HEADER_SIZE);
+    serializeFileHeader(buf, this.header);
+    this.seal.hmacWrite(buf.slice(0, 16));
+    this.seal.hmacWrite(buf.slice(24, 56));
+    this.seal.hmacWrite(buf.slice(72, 96));
+    this.seal.hmacWrite(buf.slice(104, 136));
+  }
+
+  _hmacPutHashTableObject(objectStart) {
+    if (!this.seal) return;
+    this.seal.hmacStart();
+    const buf = Buffer.alloc(OBJECT_HEADER_SIZE);
+    readSync(this.fd, buf, 0, OBJECT_HEADER_SIZE, Number(objectStart));
+    this.seal.hmacWrite(buf);
+  }
+
+  _hmacPutObject(objectStart, typ) {
+    if (!this.seal) return;
+    this.seal.hmacStart();
+    const headerBuf = Buffer.alloc(OBJECT_HEADER_SIZE);
+    readSync(this.fd, headerBuf, 0, OBJECT_HEADER_SIZE, Number(objectStart));
+    this.seal.hmacWrite(headerBuf);
+    const objSize = readUint64LE(headerBuf, 8);
+    switch (typ) {
+      case OBJECT_TYPE_DATA: {
+        const hashBuf = Buffer.alloc(8);
+        readSync(this.fd, hashBuf, 0, 8, Number(objectStart) + 16);
+        this.seal.hmacWrite(hashBuf);
+        const payloadOffset = this._dataPayloadOffset();
+        const payloadSize = Number(objSize) - payloadOffset;
+        if (payloadSize > 0) {
+          const payload = Buffer.alloc(payloadSize);
+          readSync(this.fd, payload, 0, payloadSize, Number(objectStart) + payloadOffset);
+          this.seal.hmacWrite(payload);
+        }
+        break;
+      }
+      case OBJECT_TYPE_FIELD: {
+        const hashBuf = Buffer.alloc(8);
+        readSync(this.fd, hashBuf, 0, 8, Number(objectStart) + 16);
+        this.seal.hmacWrite(hashBuf);
+        const payloadSize = Number(objSize) - FIELD_OBJECT_HEADER_SIZE;
+        if (payloadSize > 0) {
+          const payload = Buffer.alloc(payloadSize);
+          readSync(this.fd, payload, 0, payloadSize, Number(objectStart) + FIELD_OBJECT_HEADER_SIZE);
+          this.seal.hmacWrite(payload);
+        }
+        break;
+      }
+      case OBJECT_TYPE_ENTRY: {
+        const restSize = Number(objSize) - OBJECT_HEADER_SIZE;
+        if (restSize > 0) {
+          const rest = Buffer.alloc(restSize);
+          readSync(this.fd, rest, 0, restSize, Number(objectStart) + OBJECT_HEADER_SIZE);
+          this.seal.hmacWrite(rest);
+        }
+        break;
+      }
+      case OBJECT_TYPE_DATA_HASH_TABLE:
+      case OBJECT_TYPE_FIELD_HASH_TABLE:
+      case OBJECT_TYPE_ENTRY_ARRAY:
+        break;
+      case OBJECT_TYPE_TAG: {
+        const meta = Buffer.alloc(16);
+        readSync(this.fd, meta, 0, 16, Number(objectStart) + OBJECT_HEADER_SIZE);
+        this.seal.hmacWrite(meta);
+        break;
+      }
+    }
+  }
 }
 
 // Read object size (uint64 at offset+8) from an fd.
