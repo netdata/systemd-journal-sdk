@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: open
+Status: in-progress
 
-Sub-state: pending after SOW-0008 interoperability closeout.
+Sub-state: active phase 1 - reference inventory and implementation guardrails.
 
 ## Requirements
 
@@ -78,6 +78,28 @@ Evidence reviewed:
 - Product scope lists FSS in the final writer target.
 - SOW-0008 records FSS/full verification as an open feature gap.
 - Project scope excludes daemon lifecycle commands, so FSS must be implemented as file-backed SDK behavior only.
+- `systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced`
+  `src/libsystemd/sd-journal/journal-def.h:140` defines 32-byte TAG HMAC length.
+- `systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced`
+  `src/libsystemd/sd-journal/journal-def.h:142` defines `TagObject` as object header, `seqnum`, `epoch`, and SHA-256 HMAC tag.
+- `systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced`
+  `src/libsystemd/sd-journal/journal-def.h:187` defines `HEADER_COMPATIBLE_SEALED` and `HEADER_COMPATIBLE_SEALED_CONTINUOUS`.
+- `systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced`
+  `src/libsystemd/sd-journal/journal-def.h:248` defines the FSS sidecar header signature and fields.
+- `systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced`
+  `src/libsystemd/sd-journal/journal-authenticate.c:44` appends TAG objects only for sealed journal headers.
+- `systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced`
+  `src/libsystemd/sd-journal/journal-authenticate.c:267` defines exactly which object bytes enter the HMAC.
+- `systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced`
+  `src/libsystemd/sd-journal/journal-authenticate.c:329` defines which immutable header byte ranges enter the HMAC.
+- `systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced`
+  `src/libsystemd/sd-journal/journal-verify.c:840` requires a verification key for sealed files and returns `ENOKEY` without one.
+- `systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced`
+  `src/libsystemd/sd-journal/journal-verify.c:1119` validates TAG sequence, epoch continuity, realtime boundaries, and HMAC equality.
+- `systemd/systemd @ c0a5a2516d28601fb3afc1a77d7b42fcfe38fced`
+  `src/libsystemd/sd-journal/fsprg.c:85` through `src/libsystemd/sd-journal/fsprg.c:415` defines deterministic seed expansion, prime generation, state layout, evolution, seeking, and key extraction.
+- `tests/conformance/manifests/conformance-v01.json:193` already names `journal-verify-sealed`, but adapters skip it.
+- `rust/src/adapter/main.rs:215`, `go/adapter/main.go:158`, `node/adapter/index.js:73`, and `python/adapter.py:81` show verification/FSS capability is currently disabled or skipped.
 
 Affected contracts and surfaces:
 
@@ -105,11 +127,12 @@ Sensitive data handling plan:
 Implementation plan:
 
 1. Inventory systemd FSS algorithms, tag object layout, key derivation/evolution, verification, and tests.
-2. Define file-backed SDK verification API and journalctl rewrite behavior.
-3. Implement verification on existing sealed fixtures.
-4. Implement writer sealing with deterministic test keys.
-5. Add corruption/tamper tests and stock verification checks.
-6. Update specs/docs and review with crypto/security emphasis.
+2. Add a small internal FSS reference/vector layer so every language can prove the same FSPRG and HMAC bytes before journal integration.
+3. Define file-backed SDK verification API and journalctl rewrite behavior.
+4. Implement verification on generated sealed fixtures.
+5. Implement writer sealing with deterministic test keys.
+6. Add corruption/tamper tests and stock verification checks.
+7. Update specs/docs and review with crypto/security emphasis.
 
 Validation plan:
 
@@ -148,21 +171,23 @@ Open decisions:
 
 ## Plan
 
-1. Inventory systemd FSS source and tests.
-2. Implement verification first.
-3. Implement writer sealing.
-4. Add tamper/corruption fixtures.
-5. Review security, docs, and compatibility evidence.
+1. Phase 1: finish a source-backed FSS inventory, derive deterministic FSPRG/HMAC vectors, and add repo-local guardrails that prevent unsafe live-journal validation.
+2. Phase 2: implement pure verification primitives and repository verification APIs.
+3. Phase 3: implement file-backed journalctl `--verify` / `--verify-key` behavior.
+4. Phase 4: implement writer sealing with deterministic test keys and configurable sealing intervals.
+5. Phase 5: add tamper/corruption fixtures, stock verification checks, docs/spec updates, and security review.
 
 ## Delegation Plan
 
 Implementer:
 
-- Preferred implementer is `llm-netdata-cloud/minimax-m2.7-coder`.
+- Preferred implementer is `llm-netdata-cloud/kimi-k2.6`, per the current project orchestration skill and user model routing decision.
+- Fallback implementers are `llm-netdata-cloud/qwen3.6-plus`, then `llm-netdata-cloud/glm-5.1`, with any switch recorded here before use.
 
 Reviewers:
 
-- At least two reviewers from the approved pool, with prompts explicitly requesting crypto/security review.
+- At least two reviewers from `llm-netdata-cloud/minimax-m2.7-coder`, `llm-netdata-cloud/mimo-v2.5-pro`, `llm-netdata-cloud/qwen3.6-plus`, and `llm-netdata-cloud/glm-5.1`, with prompts explicitly requesting crypto/security review.
+- Reviewer prompts must be read-only and must include the SOW filename.
 
 Repository boundary block for every external-agent prompt:
 
@@ -179,14 +204,29 @@ CRITICAL REPOSITORY BOUNDARY:
 Failure handling:
 
 - Record implementer failure, reviewer failure, audit failure, crypto uncertainty, or model unavailability before changing plan or model.
+- Record any attempted live-journal command as a blocker and revert only the specific unsafe change after user approval if it modified repository files.
 
 ## Execution Log
 
-Pending activation.
+2026-05-25:
+
+- Activated SOW-0019 after SOW-status showed no current SOW and listed this SOW as the next pending feature.
+- Verified repository was clean at `a6c1972` before activation.
+- Recorded systemd v260.1 evidence for TAG object layout, sealed header flags, FSS sidecar header, HMAC byte ranges, FSPRG state/key evolution, and verification behavior.
+- Confirmed existing conformance cases and adapter capability skips for sealed verification and corruption verification.
+- Added an explicit phase split so FSS vectors and guardrails land before high-risk writer sealing.
+- Updated delegation model routing from the older Minimax implementer default to Kimi implementer plus reviewer-only pool.
+- Safety constraint for implementers and reviewers: do not run `systemd-cat`, `logger`, `journalctl --setup-keys`, live `journalctl` without `--file` or repository-local `--directory`, `systemd-journal-remote --seal` against live journal data, or anything that writes `/var/log/journal` or `/run/log/journal`.
 
 ## Validation
 
-Pending activation and implementation.
+Sensitive data gate:
+
+- Pending phase validation. Current durable artifacts contain only synthetic test-key policy, source paths, line references, and model-routing notes. No production FSS keys, private logs, customer identifiers, or host journal data may be written to this SOW or committed fixtures.
+
+Implementation validation:
+
+- Pending implementation.
 
 ## Outcome
 

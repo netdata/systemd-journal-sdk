@@ -2,11 +2,10 @@
 
 ## Current
 
-- None.
+- `SOW-0019-20260524-forward-secure-sealing.md` - in-progress. Phase 1 is active: source-backed FSS inventory, deterministic vectors, and repo-local guardrails before verification/writer sealing.
 
 ## Pending
 
-- `SOW-0019-20260524-forward-secure-sealing.md` - open. Add FSS and full verification support without daemon-only lifecycle commands.
 - `SOW-0020-20260524-directory-traversal-parity.md` - open. Bring SDK directory readers and file-backed journalctl `--directory` behavior to stock parity.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - open. Final benchmark, profile, and optimize pass after SOW-0017 through SOW-0021 are complete.
 
