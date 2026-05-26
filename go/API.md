@@ -40,6 +40,35 @@ Breaking changes to the following public surfaces should be avoided inside the
 
 Future `v0.1.x` changes should be additive where practical.
 
+## Reader Facade Contract
+
+The public reader facade intentionally mirrors the file-backed subset of
+libsystemd/Netdata `jf` needed by Netdata readers:
+
+- `SdJournalOpen`, `SdJournalOpenFile`, `SdJournalOpenDirectory`,
+  `SdJournalOpenFiles`, and `SdJournalClose`
+- `SdJournalSeekHead`, `SdJournalSeekTail`, `SdJournalSeekRealtimeUsec`,
+  `SdJournalSeekCursor`
+- `SdJournalNext`, `SdJournalPrevious`, `SdJournalNextSkip`,
+  `SdJournalPreviousSkip`
+- `SdJournalAddMatch`, `SdJournalAddDisjunction`,
+  `SdJournalAddConjunction`, and `SdJournalFlushMatches`
+- `SdJournalGetEntry`, `SdJournalGetData`, `SdJournalRestartData`, and
+  `SdJournalEnumerateAvailableData`
+- `SdJournalEnumerateFields`, `SdJournalRestartFields`, and
+  `SdJournalEnumerateField`
+- `SdJournalQueryUnique`, `SdJournalQueryUniqueState`,
+  `SdJournalRestartUnique`, and `SdJournalEnumerateAvailableUnique`
+- `SdJournalGetRealtimeUsec`, `SdJournalGetMonotonicUsec`,
+  `SdJournalGetSeqnum`, `SdJournalGetCursor`, `SdJournalTestCursor`, and
+  `SdJournalListBoots`
+
+Stateful data and unique enumeration return full `FIELD=value` payloads and are
+binary-safe. `SdJournalGetData` returns the first value for a repeated field;
+callers that need all repeated values must use the restart/enumerate data API.
+Direct `SdJournalQueryUnique` returns `[]UniqueValue`, where `Field` is the
+field name and `Value` is the binary-safe raw field value.
+
 ## Directory Contract
 
 `NewLog` takes the configured root directory. The SDK appends the machine ID and

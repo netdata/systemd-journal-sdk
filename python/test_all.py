@@ -20,7 +20,24 @@ from journal import (  # noqa: E402
     FileReader,
     Log,
     SdJournalOpen,
+    SdJournalOpenFiles,
+    SdJournalNext,
+    SdJournalPrevious,
+    SdJournalSeekRealtimeUsec,
+    SdJournalSeekCursor,
+    SdJournalGetEntry,
+    SdJournalGetCursor,
+    SdJournalTestCursor,
+    SdJournalGetSeqnum,
+    SdJournalGetMonotonicUsec,
+    SdJournalRestartData,
+    SdJournalEnumerateAvailableData,
+    SdJournalGetData,
     SdJournalQueryUnique,
+    SdJournalQueryUniqueState,
+    SdJournalEnumerateAvailableUnique,
+    SdJournalRestartFields,
+    SdJournalEnumerateField,
     Writer,
     export_entry,
     json_entry,
@@ -70,6 +87,15 @@ def journal_files(directory):
         for name in os.listdir(directory)
         if name.endswith('.journal')
     )
+
+
+def collect_nullable(next_func):
+    values = []
+    while True:
+        value = next_func()
+        if value is None:
+            return values
+        values.append(value)
 
 
 def verify_journal_file_if_available(path):
@@ -1128,6 +1154,85 @@ def test_facade_unique_binary_values():
         assert values == [('BINARY', bytes([0, 255]))]
 
 
+def test_jf_facade_stateful_reader_operations():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'jf-facade.journal')
+        writer = Writer.create(path)
+        writer.append([
+            {'name': 'MESSAGE', 'value': 'first'},
+            {'name': 'REPEAT', 'value': 'one'},
+            {'name': 'REPEAT', 'value': 'two'},
+            {'name': 'BIN', 'value': bytes([0, 255])},
+        ], {'realtime_usec': 1000, 'monotonic_usec': 11})
+        writer.append([
+            {'name': 'MESSAGE', 'value': 'second'},
+            {'name': 'REPEAT', 'value': 'three'},
+        ], {'realtime_usec': 1001, 'monotonic_usec': 12})
+        writer.close()
+
+        journal = SdJournalOpenFiles([path], 0)
+        assert SdJournalNext(journal) == 1
+        seqnum, seqnum_id = SdJournalGetSeqnum(journal)
+        assert seqnum == 1
+        assert seqnum_id
+        monotonic, boot_id = SdJournalGetMonotonicUsec(journal)
+        assert monotonic == 11
+        assert boot_id
+
+        SdJournalRestartData(journal)
+        payloads = collect_nullable(lambda: SdJournalEnumerateAvailableData(journal))
+        assert b'REPEAT=one' in payloads
+        assert b'REPEAT=two' in payloads
+        assert b'BIN=\x00\xff' in payloads
+        assert SdJournalGetData(journal, 'REPEAT') == b'REPEAT=one'
+
+        SdJournalQueryUniqueState(journal, 'REPEAT')
+        unique = collect_nullable(lambda: SdJournalEnumerateAvailableUnique(journal))
+        assert b'REPEAT=one' in unique
+        assert b'REPEAT=two' in unique
+        assert b'REPEAT=three' in unique
+
+        SdJournalRestartFields(journal)
+        fields = set(collect_nullable(lambda: SdJournalEnumerateField(journal)))
+        assert {'MESSAGE', 'REPEAT', 'BIN'} <= fields
+
+        SdJournalSeekRealtimeUsec(journal, 1001)
+        assert SdJournalNext(journal) == 1
+        assert SdJournalGetEntry(journal)['fields']['MESSAGE'] == b'second'
+        SdJournalSeekRealtimeUsec(journal, 1001)
+        assert SdJournalPrevious(journal) == 1
+        assert SdJournalGetEntry(journal)['fields']['MESSAGE'] == b'second'
+        cursor = SdJournalGetCursor(journal)
+        assert SdJournalTestCursor(journal, cursor) is True
+        assert SdJournalTestCursor(journal, 'invalid-cursor') is False
+        SdJournalSeekRealtimeUsec(journal, 1000)
+        assert SdJournalNext(journal) == 1
+        assert SdJournalGetEntry(journal)['fields']['MESSAGE'] == b'first'
+        SdJournalSeekCursor(journal, cursor)
+        assert SdJournalGetEntry(journal)['fields']['MESSAGE'] == b'second'
+        journal.close()
+
+        path2 = os.path.join(td, 'jf-facade-second.journal')
+        writer2 = Writer.create(path2)
+        writer2.append([
+            {'name': 'MESSAGE', 'value': 'third'},
+            {'name': 'REPEAT', 'value': 'four'},
+        ], {'realtime_usec': 1002, 'monotonic_usec': 21})
+        writer2.close()
+
+        multi = SdJournalOpenFiles([path2, path], 0)
+        messages = []
+        while SdJournalNext(multi) == 1:
+            messages.append(SdJournalGetEntry(multi)['fields']['MESSAGE'])
+        assert messages == [b'first', b'second', b'third']
+        SdJournalSeekRealtimeUsec(multi, 1002)
+        assert SdJournalPrevious(multi) == 1
+        assert SdJournalGetEntry(multi)['fields']['MESSAGE'] == b'third'
+        SdJournalSeekRealtimeUsec(multi, 999)
+        assert SdJournalPrevious(multi) == 0
+        multi.close()
+
+
 def test_fsprg_vectors():
     vectors_path = REPO_ROOT / 'tests/fss/fixtures/fsprg-vectors-v01.json'
     data = json.loads(vectors_path.read_text())
@@ -1678,6 +1783,7 @@ def main():
     test_directory_writer_discards_empty_online_file_and_continues_sequence()
     test_directory_writer_zero_rotation_limits_disable_rotation()
     test_facade_unique_binary_values()
+    test_jf_facade_stateful_reader_operations()
     test_fsprg_vectors()
     test_verify_file_detects_corruption()
     test_verify_file_passes_on_valid_fixture()

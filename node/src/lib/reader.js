@@ -28,6 +28,7 @@ export class FileReader {
     this.entryIndex = -1;
     this.direction = 0;
     this.filter = null;
+    this.realtimeSeek = null;
 
     this._loadEntryArray();
   }
@@ -133,10 +134,25 @@ export class FileReader {
     return true;
   }
 
-  seekHead() { this.entryIndex = -1; this.direction = 0; }
-  seekTail() { this.entryIndex = this.entryOffsets.length; this.direction = 1; }
+  seekHead() { this.entryIndex = -1; this.direction = 0; this.realtimeSeek = null; }
+  seekTail() { this.entryIndex = this.entryOffsets.length; this.direction = 1; this.realtimeSeek = null; }
+
+  seekRealtimeUsec(usec) {
+    this.realtimeSeek = BigInt(usec);
+  }
 
   next() {
+    if (this.realtimeSeek !== null) {
+      const idx = this._firstRealtimeIndexAtOrAfter(this.realtimeSeek);
+      this.realtimeSeek = null;
+      this.direction = 0;
+      if (idx >= this.entryOffsets.length) {
+        this.entryIndex = this.entryOffsets.length;
+        return false;
+      }
+      this.entryIndex = idx;
+      return true;
+    }
     this.direction = 0;
     this.entryIndex++;
     if (this.entryIndex >= this.entryOffsets.length) {
@@ -147,6 +163,17 @@ export class FileReader {
   }
 
   previous() {
+    if (this.realtimeSeek !== null) {
+      const idx = this._lastRealtimeIndexAtOrBefore(this.realtimeSeek);
+      this.realtimeSeek = null;
+      this.direction = 1;
+      if (idx < 0) {
+        this.entryIndex = -1;
+        return false;
+      }
+      this.entryIndex = idx;
+      return true;
+    }
     this.direction = 1;
     this.entryIndex--;
     if (this.entryIndex < 0) {
@@ -154,6 +181,33 @@ export class FileReader {
       return false;
     }
     return true;
+  }
+
+  _firstRealtimeIndexAtOrAfter(usec) {
+    let lo = 0;
+    let hi = this.entryOffsets.length;
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (this._entryRealtimeAtIndex(mid) >= usec) hi = mid;
+      else lo = mid + 1;
+    }
+    return lo;
+  }
+
+  _lastRealtimeIndexAtOrBefore(usec) {
+    let lo = 0;
+    let hi = this.entryOffsets.length;
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2);
+      if (this._entryRealtimeAtIndex(mid) > usec) hi = mid;
+      else lo = mid + 1;
+    }
+    return lo - 1;
+  }
+
+  _entryRealtimeAtIndex(index) {
+    const offset = this.entryOffsets[index];
+    return readUint64LE(this.buffer, Number(offset) + OBJECT_HEADER_SIZE + 8);
   }
 
   step() {
@@ -189,12 +243,14 @@ export class FileReader {
 
     const fields = Object.create(null);
     const fieldValues = Object.create(null);
+    const payloads = [];
 
     for (const item of e.items) {
       try {
         const { name, value } = parseDataObject(this.buffer, Number(item.offset), this._isCompact());
         const nameStr = name.toString('utf8');
         const valueBuf = Buffer.from(value);
+        payloads.push(Buffer.concat([Buffer.from(name), Buffer.from('='), valueBuf]));
         if (!(nameStr in fields)) fields[nameStr] = valueBuf;
         if (!fieldValues[nameStr]) fieldValues[nameStr] = [];
         fieldValues[nameStr].push(valueBuf);
@@ -205,6 +261,7 @@ export class FileReader {
     return {
       fields,
       fieldValues,
+      payloads,
       seqnum: e.seqnum,
       realtime: e.realtime,
       monotonic: e.monotonic,

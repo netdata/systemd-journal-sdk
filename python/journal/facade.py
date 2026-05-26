@@ -101,52 +101,103 @@ class SdJournal:
     def __init__(self, reader):
         self._reader = reader
         self._output_mode = 'default'
+        self._data_items = []
+        self._data_index = 0
+        self._field_items = []
+        self._field_index = 0
+        self._unique_items = []
+        self._unique_index = 0
 
     @staticmethod
     def open(path):
         name = path.split('/')[-1] if isinstance(path, str) else str(path).split('/')[-1]
         if is_journal_file_name(name):
-            reader = FileReader.open(path)
-        else:
-            reader = DirectoryReader.open(path)
-        return SdJournal(reader)
+            return SdJournal.open_file(path)
+        return SdJournal.open_directory(path)
+
+    @staticmethod
+    def open_file(path):
+        return SdJournal(FileReader.open(path))
+
+    @staticmethod
+    def open_directory(path):
+        return SdJournal(DirectoryReader.open(path))
+
+    @staticmethod
+    def open_files(paths):
+        if len(paths) == 1:
+            return SdJournal.open_file(paths[0])
+        return SdJournal(DirectoryReader.open_files(paths))
 
     def close(self):
         self._reader.close()
+
+    def _reset_iterators(self):
+        self._data_items = []
+        self._data_index = 0
+        self._field_items = []
+        self._field_index = 0
+        self._unique_items = []
+        self._unique_index = 0
 
     def add_match(self, data):
         if isinstance(data, str):
             data = data.encode('latin1')
         match_bytes = parse_match_string(data.decode('latin1') if isinstance(data, bytes) else data)
+        self._reset_iterators()
         self._reader.add_match(match_bytes)
 
     def add_disjunction(self):
+        self._reset_iterators()
         self._reader.add_disjunction()
 
     def add_conjunction(self):
+        self._reset_iterators()
         self._reader.add_conjunction()
 
     def flush_matches(self):
+        self._reset_iterators()
         self._reader.flush_matches()
 
     def seek_head(self):
+        self._reset_iterators()
         self._reader.seek_head()
 
     def seek_tail(self):
+        self._reset_iterators()
         self._reader.seek_tail()
+
+    def seek_realtime_usec(self, usec):
+        self._reset_iterators()
+        self._reader.seek_realtime_usec(usec)
+
+    def seek_cursor(self, cursor):
+        want = _parse_cursor(cursor)
+        self.seek_realtime_usec(want['realtime'])
+        while self.next():
+            entry = self.get_entry()
+            got = _parse_cursor(entry['cursor'])
+            if got['realtime'] > want['realtime']:
+                break
+            if got == want:
+                return
+        raise ValueError('cursor not found')
 
     def set_output_mode(self, mode):
         self._output_mode = mode
 
     def next(self):
+        self._reset_iterators()
         if self._reader.step():
             return 1
         return 0
 
     def previous(self):
-        if hasattr(self._reader, 'step_back'):
-            if self._reader.step_back():
-                return 1
+        self._reset_iterators()
+        if not hasattr(self._reader, 'step_back'):
+            raise NotImplementedError('reader does not support previous()')
+        if self._reader.step_back():
+            return 1
         return 0
 
     def get_entry(self):
@@ -160,6 +211,43 @@ class SdJournal:
 
     def get_realtime_usec(self):
         return self._reader.get_realtime_usec()
+
+    def get_seqnum(self):
+        entry = self.get_entry()
+        if not entry:
+            raise ValueError('no entry at current position')
+        seqnum_id = _parse_cursor(entry['cursor'])['seqnum_id']
+        return entry['seqnum'], seqnum_id
+
+    def get_monotonic_usec(self):
+        entry = self.get_entry()
+        if not entry:
+            raise ValueError('no entry at current position')
+        return entry['monotonic'], entry['boot_id']
+
+    def get_data(self, field_name):
+        entry = self.get_entry()
+        values = entry['field_values'].get(field_name) if entry else None
+        if not values:
+            raise ValueError('data field not found')
+        return _payload_from_field_value(field_name, values[0])
+
+    def restart_data(self):
+        entry = self.get_entry()
+        if not entry:
+            raise ValueError('no entry at current position')
+        payloads = entry.get('payloads')
+        if payloads is None:
+            payloads = _payloads_from_entry(entry)
+        self._data_items = list(payloads)
+        self._data_index = 0
+
+    def enumerate_available_data(self):
+        if self._data_index >= len(self._data_items):
+            return None
+        item = self._data_items[self._data_index]
+        self._data_index += 1
+        return bytes(item)
 
     def process_output(self, entry):
         if self._output_mode == 'export':
@@ -181,9 +269,35 @@ class SdJournal:
             return sorted(fields)
         return fields
 
+    def restart_fields(self):
+        self._field_items = self.enumerate_fields()
+        self._field_index = 0
+
+    def enumerate_field(self):
+        if self._field_index >= len(self._field_items):
+            return None
+        item = self._field_items[self._field_index]
+        self._field_index += 1
+        return item
+
     def query_unique(self, field_name):
         values = self._reader.query_unique(field_name)
         return [(field_name, v) for v in values]
+
+    def query_unique_state(self, field_name):
+        values = self._reader.query_unique(field_name)
+        self._unique_items = [_payload_from_field_value(field_name, value) for value in values]
+        self._unique_index = 0
+
+    def restart_unique(self):
+        self._unique_index = 0
+
+    def enumerate_available_unique(self):
+        if self._unique_index >= len(self._unique_items):
+            return None
+        item = self._unique_items[self._unique_index]
+        self._unique_index += 1
+        return bytes(item)
 
 
 OUTPUT_MODE_DEFAULT = 'default'
@@ -197,10 +311,26 @@ def SdJournalOpen(path, flags):
     return SdJournal.open(path)
 
 
+def SdJournalOpenFile(path, flags):
+    if flags != 0:
+        raise ValueError('unsupported sd_journal_open_file flags')
+    return SdJournal.open_file(path)
+
+
 def SdJournalOpenDirectory(path, flags):
     if flags != 0:
         raise ValueError('unsupported sd_journal_open_directory flags')
-    return SdJournal.open(path)
+    return SdJournal.open_directory(path)
+
+
+def SdJournalOpenFiles(paths, flags):
+    if flags != 0:
+        raise ValueError('unsupported sd_journal_open_files flags')
+    return SdJournal.open_files(paths)
+
+
+def SdJournalClose(journal):
+    journal.close()
 
 
 def SdJournalAddMatch(journal, data):
@@ -223,8 +353,26 @@ def SdJournalNext(journal):
     return journal.next()
 
 
+def SdJournalNextSkip(journal, skip):
+    advanced = 0
+    for _ in range(skip):
+        if journal.next() == 0:
+            break
+        advanced += 1
+    return advanced
+
+
 def SdJournalPrevious(journal):
     return journal.previous()
+
+
+def SdJournalPreviousSkip(journal, skip):
+    advanced = 0
+    for _ in range(skip):
+        if journal.previous() == 0:
+            break
+        advanced += 1
+    return advanced
 
 
 def SdJournalSeekHead(journal):
@@ -235,12 +383,40 @@ def SdJournalSeekTail(journal):
     journal.seek_tail()
 
 
+def SdJournalSeekRealtimeUsec(journal, usec):
+    journal.seek_realtime_usec(usec)
+
+
+def SdJournalSeekCursor(journal, cursor):
+    journal.seek_cursor(cursor)
+
+
 def SdJournalGetEntry(journal):
     return journal.get_entry()
 
 
+def SdJournalGetData(journal, field_name):
+    return journal.get_data(field_name)
+
+
+def SdJournalRestartData(journal):
+    journal.restart_data()
+
+
+def SdJournalEnumerateAvailableData(journal):
+    return journal.enumerate_available_data()
+
+
 def SdJournalGetRealtimeUsec(journal):
     return journal.get_realtime_usec()
+
+
+def SdJournalGetSeqnum(journal):
+    return journal.get_seqnum()
+
+
+def SdJournalGetMonotonicUsec(journal):
+    return journal.get_monotonic_usec()
 
 
 def SdJournalGetCursor(journal):
@@ -255,8 +431,28 @@ def SdJournalEnumerateFields(journal):
     return journal.enumerate_fields()
 
 
+def SdJournalRestartFields(journal):
+    journal.restart_fields()
+
+
+def SdJournalEnumerateField(journal):
+    return journal.enumerate_field()
+
+
 def SdJournalQueryUnique(journal, field_name):
     return journal.query_unique(field_name)
+
+
+def SdJournalQueryUniqueState(journal, field_name):
+    journal.query_unique_state(field_name)
+
+
+def SdJournalRestartUnique(journal):
+    journal.restart_unique()
+
+
+def SdJournalEnumerateAvailableUnique(journal):
+    return journal.enumerate_available_unique()
 
 
 def SdJournalListBoots(journal):
@@ -269,3 +465,29 @@ def SdJournalSetOutputMode(journal, mode):
 
 def SdJournalProcessOutput(journal, entry):
     return journal.process_output(entry)
+
+
+def _parse_cursor(cursor):
+    parts = {}
+    for segment in cursor.split(';'):
+        key, sep, value = segment.partition('=')
+        if sep:
+            parts[key] = value
+    return {
+        'seqnum_id': parts.get('s', ''),
+        'boot_id': parts.get('j', ''),
+        'realtime': int(parts.get('c', '0'), 16),
+        'seqnum': int(parts.get('n', '0'), 10),
+    }
+
+
+def _payload_from_field_value(field_name, value):
+    return field_name.encode('utf-8') + b'=' + bytes(value)
+
+
+def _payloads_from_entry(entry):
+    payloads = []
+    for name in sorted(entry.get('field_values', {})):
+        for value in entry['field_values'][name]:
+            payloads.append(_payload_from_field_value(name, value))
+    return payloads

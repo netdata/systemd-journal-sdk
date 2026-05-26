@@ -29,6 +29,7 @@ class FileReader:
         self._entry_index = -1
         self._direction = 0
         self._filter = None
+        self._realtime_seek = None
         self._load_entry_array()
 
     @staticmethod
@@ -126,12 +127,26 @@ class FileReader:
     def seek_head(self):
         self._entry_index = -1
         self._direction = 0
+        self._realtime_seek = None
 
     def seek_tail(self):
         self._entry_index = len(self._entry_offsets)
         self._direction = 1
+        self._realtime_seek = None
+
+    def seek_realtime_usec(self, usec):
+        self._realtime_seek = int(usec)
 
     def next(self):
+        if self._realtime_seek is not None:
+            idx = self._first_realtime_index_at_or_after(self._realtime_seek)
+            self._realtime_seek = None
+            self._direction = 0
+            if idx >= len(self._entry_offsets):
+                self._entry_index = len(self._entry_offsets)
+                return False
+            self._entry_index = idx
+            return True
         self._direction = 0
         self._entry_index += 1
         if self._entry_index >= len(self._entry_offsets):
@@ -140,12 +155,47 @@ class FileReader:
         return True
 
     def previous(self):
+        if self._realtime_seek is not None:
+            idx = self._last_realtime_index_at_or_before(self._realtime_seek)
+            self._realtime_seek = None
+            self._direction = 1
+            if idx < 0:
+                self._entry_index = -1
+                return False
+            self._entry_index = idx
+            return True
         self._direction = 1
         self._entry_index -= 1
         if self._entry_index < 0:
             self._entry_index = -1
             return False
         return True
+
+    def _first_realtime_index_at_or_after(self, usec):
+        lo = 0
+        hi = len(self._entry_offsets)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if self._entry_realtime_at_index(mid) >= usec:
+                hi = mid
+            else:
+                lo = mid + 1
+        return lo
+
+    def _last_realtime_index_at_or_before(self, usec):
+        lo = 0
+        hi = len(self._entry_offsets)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if self._entry_realtime_at_index(mid) > usec:
+                hi = mid
+            else:
+                lo = mid + 1
+        return lo - 1
+
+    def _entry_realtime_at_index(self, index):
+        offset = self._entry_offsets[index]
+        return read_uint64_le(self._buffer, offset + OBJECT_HEADER_SIZE + 8)
 
     def step(self):
         while self.next():
@@ -181,11 +231,13 @@ class FileReader:
 
         fields = {}
         field_values = {}
+        payloads = []
 
         for item in e['items']:
             try:
                 do = parse_data_object(self._buffer, item['offset'], self._is_compact())
                 name_str = do['name'].decode('utf-8')
+                payloads.append(do['name'] + b'=' + do['value'])
                 if name_str not in fields:
                     fields[name_str] = do['value']
                 if name_str not in field_values:
@@ -198,6 +250,7 @@ class FileReader:
         return {
             'fields': fields,
             'field_values': field_values,
+            'payloads': payloads,
             'seqnum': e['seqnum'],
             'realtime': e['realtime'],
             'monotonic': e['monotonic'],

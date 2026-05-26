@@ -51,8 +51,14 @@ Current reader scope:
 - zstd-compressed fixture files and zstd, xz, and lz4-compressed DATA objects
   through pure-Go dependencies;
 - directory reading across active and archived files;
-- forward/backward iteration, cursors, realtime timestamps, field enumeration,
-  unique values, binary field values, and export/json/text formatting;
+- forward/backward iteration, cursors, realtime and monotonic timestamps,
+  seqnum metadata, field enumeration, unique values, binary field values,
+  repeated field values, stateful current-entry data enumeration, and
+  export/json/text formatting;
+- libsystemd-compatible facade functions for open file/directory/files, close,
+  seek head/tail/realtime/cursor, next/previous/skip, match groups,
+  current-entry data enumeration, field enumeration, unique value enumeration,
+  realtime/monotonic/seqnum/cursor metadata, and boot listing;
 - `--output=export` uses systemd's size-prefixed binary field encoding and
   blank-line entry separator; `--output=json` encodes duplicate fields as
   arrays and non-printable/non-UTF-8 values as arrays of unsigned bytes;

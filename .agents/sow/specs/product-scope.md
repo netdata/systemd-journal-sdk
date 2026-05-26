@@ -261,6 +261,31 @@ Current shared high-level directory writer API slice:
 
 Readers must support applicable historical journal files represented by the shared fixture suite, including corrupted fixture behavior where the expected result is a controlled error or partial recovery.
 
+Accepted reader API layers:
+
+- Idiomatic file and directory readers expose language-native entry objects,
+  binary field values, repeated field values, cursor/realtime metadata, field
+  enumeration, unique value enumeration, and boot listing for the accepted file
+  slice.
+- The libsystemd-compatible facade is available in Rust, Go, Node.js, and
+  Python for file-backed use. It includes open file, open directory, open files,
+  close, seek head/tail/realtime/cursor, next/previous/skip, add match,
+  add conjunction/disjunction, flush matches, get entry, get data, restart and
+  enumerate current-entry data, enumerate fields, direct unique queries as
+  language-native `(field, raw value)` pairs, stateful unique enumeration as
+  `FIELD=value` payloads, get realtime, get monotonic/boot metadata, get
+  seqnum, get cursor, test cursor, output formatting, and boot listing.
+- Current-entry data enumeration and query-unique stateful enumeration are
+  binary-safe and preserve repeated values. `GetData` returns the first value
+  for a repeated field; callers that need every repeated value use
+  restart/enumerate data.
+- Directory readers and `OpenFiles` sort accepted non-overlapping journal files
+  by file head realtime and support direction-aware realtime seek across file
+  boundaries. Realtime interleaving across overlapping journal files remains an
+  interoperability-phase target.
+- Daemon-only libsystemd/journalctl operations remain outside the SDK facade
+  target and must fail with controlled unsupported behavior when exposed.
+
 Current Go reader feature slice:
 
 - regular and compact journal files;
@@ -268,8 +293,9 @@ Current Go reader feature slice:
 - whole-file zstd fixtures and zstd, xz, and lz4-compressed DATA objects
   through pure-Go dependencies;
 - directory iteration across active and archived files;
-- forward/backward iteration, cursors, realtime timestamps, binary field
-  values, field enumeration, and unique value enumeration;
+- forward/backward iteration, cursors, realtime and monotonic timestamps,
+  seqnum metadata, binary field values, repeated field values, field
+  enumeration, current-entry data enumeration, and unique value enumeration;
 - systemd-compatible export output for binary fields using size-prefixed field
   values and blank-line entry separators;
 - systemd-compatible JSON output for duplicate fields and binary values;
@@ -332,9 +358,10 @@ Current Rust reader feature slice:
 - whole-file zstd fixtures and zstd, lz4, and xz-compressed DATA objects through
   pure-Rust dependencies;
 - directory iteration across active and archived files;
-- forward/backward iteration, cursors, realtime and monotonic timestamps, binary
-  field values, field enumeration, and systemd-compatible export/json/text
-  formatting;
+- forward/backward iteration, cursors, realtime and monotonic timestamps,
+  seqnum metadata, binary field values, repeated field values, field
+  enumeration, current-entry data enumeration, unique value enumeration, and
+  systemd-compatible export/json/text formatting;
 - libsystemd-style match tree behavior from `SdJournalAddMatch()`,
   `SdJournalAddDisjunction()`, and `SdJournalAddConjunction()`;
 - file-backed Rust journalctl behavior for `--file`, `--directory`, text/json/export
@@ -394,8 +421,10 @@ Current Node.js reader feature slice:
 - zstd, xz, and lz4-compressed DATA objects through Node.js built-in `node:zlib`,
   `node-liblzma@5.0.1` WASM path, and pure JavaScript `lz4js@0.2.0`;
 - directory iteration across active and archived files;
-- forward/backward iteration, cursors, realtime and monotonic timestamps, binary
-  field values as `Buffer`, field enumeration, and unique value enumeration;
+- forward/backward iteration, cursors, realtime and monotonic timestamps,
+  seqnum metadata, binary field values as `Buffer`, repeated field values,
+  field enumeration, current-entry data enumeration, and unique value
+  enumeration;
 - systemd-compatible export/json/text formatting for the accepted fixture set;
 - libsystemd-style match tree behavior from `SdJournalAddMatch()`,
   `SdJournalAddDisjunction()`, and `SdJournalAddConjunction()`;
@@ -459,8 +488,10 @@ Current Python reader feature slice:
   `lz4==4.4.5`;
 - directory iteration across active and archived files, including one machine-id
   subdirectory level;
-- forward/backward iteration, cursors, realtime and monotonic timestamps, binary
-  field values as `bytes`, field enumeration, and unique value enumeration;
+- forward/backward iteration, cursors, realtime and monotonic timestamps,
+  seqnum metadata, binary field values as `bytes`, repeated field values,
+  field enumeration, current-entry data enumeration, and unique value
+  enumeration;
 - systemd-compatible export/json/text formatting for the accepted fixture set;
 - libsystemd-style match tree behavior from `SdJournalAddMatch()`,
   `SdJournalAddDisjunction()`, and `SdJournalAddConjunction()`;

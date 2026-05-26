@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"sort"
 	"strings"
 )
 
@@ -16,25 +17,39 @@ var (
 	ErrStartOfEntries = errors.New("start of entries reached")
 )
 
+type sdReader interface {
+	io.Closer
+	GetRealtimeUsec() (uint64, error)
+	GetCursor() (string, error)
+	TestCursor(string) (bool, error)
+	QueryUnique(string) ([][]byte, error)
+	EnumerateFields() (map[string]struct{}, error)
+	AddMatch(data []byte)
+	AddDisjunction()
+	AddConjunction()
+	FlushMatches()
+	SeekHead() error
+	SeekTail() error
+	SeekRealtimeUsec(uint64) error
+	Step() (bool, error)
+	StepBack() (bool, error)
+	GetEntry() (*Entry, error)
+}
+
 type sdJournal struct {
-	reader interface {
-		io.Closer
-		GetRealtimeUsec() (uint64, error)
-		GetCursor() (string, error)
-		TestCursor(string) (bool, error)
-		QueryUnique(string) ([][]byte, error)
-		EnumerateFields() (map[string]struct{}, error)
-		AddMatch(data []byte)
-		AddDisjunction()
-		AddConjunction()
-		FlushMatches()
-		SeekHead() error
-		SeekTail() error
-		Step() (bool, error)
-		StepBack() (bool, error)
-		GetEntry() (*Entry, error)
-	}
-	outputMode string
+	reader      sdReader
+	outputMode  string
+	dataItems   [][]byte
+	dataIndex   int
+	fieldItems  []string
+	fieldIndex  int
+	uniqueItems [][]byte
+	uniqueIndex int
+}
+
+type UniqueValue struct {
+	Field string
+	Value []byte
 }
 
 func SdJournalOpen(path string, flags int) (*sdJournal, error) {
@@ -42,23 +57,7 @@ func SdJournalOpen(path string, flags int) (*sdJournal, error) {
 		return nil, ErrUnsupported
 	}
 
-	var r interface {
-		io.Closer
-		GetRealtimeUsec() (uint64, error)
-		GetCursor() (string, error)
-		TestCursor(string) (bool, error)
-		QueryUnique(string) ([][]byte, error)
-		EnumerateFields() (map[string]struct{}, error)
-		AddMatch(data []byte)
-		AddDisjunction()
-		AddConjunction()
-		FlushMatches()
-		SeekHead() error
-		SeekTail() error
-		Step() (bool, error)
-		StepBack() (bool, error)
-		GetEntry() (*Entry, error)
-	}
+	var r sdReader
 
 	if isJournalFileName(path) {
 		var err error
@@ -74,7 +73,47 @@ func SdJournalOpen(path string, flags int) (*sdJournal, error) {
 		}
 	}
 
-	return &sdJournal{reader: r}, nil
+	return newSdJournal(r), nil
+}
+
+func SdJournalOpenFile(path string, flags int) (*sdJournal, error) {
+	if flags != sdJournalFlag {
+		return nil, ErrUnsupported
+	}
+	r, err := OpenFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return newSdJournal(r), nil
+}
+
+func SdJournalOpenDirectory(path string, flags int) (*sdJournal, error) {
+	if flags != sdJournalFlag {
+		return nil, ErrUnsupported
+	}
+	r, err := OpenDirectory(path)
+	if err != nil {
+		return nil, err
+	}
+	return newSdJournal(r), nil
+}
+
+func SdJournalOpenFiles(paths []string, flags int) (*sdJournal, error) {
+	if flags != sdJournalFlag {
+		return nil, ErrUnsupported
+	}
+	if len(paths) == 1 {
+		return SdJournalOpenFile(paths[0], flags)
+	}
+	r, err := OpenFiles(paths)
+	if err != nil {
+		return nil, err
+	}
+	return newSdJournal(r), nil
+}
+
+func newSdJournal(r sdReader) *sdJournal {
+	return &sdJournal{reader: r}
 }
 
 const (
@@ -90,26 +129,31 @@ func SdJournalAddMatch(j *sdJournal, data []byte) error {
 	if err != nil {
 		return err
 	}
+	j.resetIterators()
 	j.reader.AddMatch(match)
 	return nil
 }
 
 func SdJournalAddDisjunction(j *sdJournal) error {
+	j.resetIterators()
 	j.reader.AddDisjunction()
 	return nil
 }
 
 func SdJournalAddConjunction(j *sdJournal) error {
+	j.resetIterators()
 	j.reader.AddConjunction()
 	return nil
 }
 
 func SdJournalFlushMatches(j *sdJournal) error {
+	j.resetIterators()
 	j.reader.FlushMatches()
 	return nil
 }
 
 func SdJournalNext(j *sdJournal) (int, error) {
+	j.resetIterators()
 	ok, err := j.reader.Step()
 	if err != nil {
 		if errors.Is(err, errEndOfEntries) {
@@ -142,6 +186,7 @@ func SdJournalNextSkip(j *sdJournal, skip uint64) (int, error) {
 }
 
 func SdJournalPrevious(j *sdJournal) (int, error) {
+	j.resetIterators()
 	ok, err := j.reader.StepBack()
 	if err != nil {
 		if errors.Is(err, errStartOfEntries) {
@@ -174,15 +219,46 @@ func SdJournalPreviousSkip(j *sdJournal, skip uint64) (int, error) {
 }
 
 func SdJournalSeekHead(j *sdJournal) error {
+	j.resetIterators()
 	return j.reader.SeekHead()
 }
 
 func SdJournalSeekTail(j *sdJournal) error {
+	j.resetIterators()
 	return j.reader.SeekTail()
+}
+
+func SdJournalSeekRealtimeUsec(j *sdJournal, usec uint64) error {
+	j.resetIterators()
+	return j.reader.SeekRealtimeUsec(usec)
 }
 
 func SdJournalGetRealtimeUsec(j *sdJournal) (uint64, error) {
 	return j.reader.GetRealtimeUsec()
+}
+
+func SdJournalGetSeqnum(j *sdJournal) (uint64, UUID, error) {
+	entry, err := j.reader.GetEntry()
+	if err != nil {
+		return 0, UUID{}, err
+	}
+	seqnumID, _, _, _, err := ParseCursor(entry.Cursor)
+	if err != nil {
+		return 0, UUID{}, ErrInvalidCursor
+	}
+	id, err := ParseUUID(seqnumID)
+	if err != nil {
+		return 0, UUID{}, ErrInvalidCursor
+	}
+	return entry.Seqnum, id, nil
+}
+
+func SdJournalGetMonotonicUsec(j *sdJournal) (uint64, UUID, error) {
+	entry, err := j.reader.GetEntry()
+	if err != nil {
+		return 0, UUID{}, err
+	}
+	return entry.Monotonic, entry.BootID, nil
 }
 
 func SdJournalGetCursor(j *sdJournal) (string, error) {
@@ -201,19 +277,36 @@ func (j *sdJournal) Close() error {
 	return j.reader.Close()
 }
 
+func SdJournalClose(j *sdJournal) error {
+	return j.Close()
+}
+
+func (j *sdJournal) resetIterators() {
+	j.dataItems = nil
+	j.dataIndex = 0
+	j.fieldItems = nil
+	j.fieldIndex = 0
+	j.uniqueItems = nil
+	j.uniqueIndex = 0
+}
+
 func (j *sdJournal) AddMatch(data []byte) {
+	j.resetIterators()
 	j.reader.AddMatch(data)
 }
 
 func (j *sdJournal) AddDisjunction() {
+	j.resetIterators()
 	j.reader.AddDisjunction()
 }
 
 func (j *sdJournal) AddConjunction() {
+	j.resetIterators()
 	j.reader.AddConjunction()
 }
 
 func (j *sdJournal) FlushMatches() {
+	j.resetIterators()
 	j.reader.FlushMatches()
 }
 
@@ -231,6 +324,10 @@ func (j *sdJournal) SeekHead() error {
 
 func (j *sdJournal) SeekTail() error {
 	return SdJournalSeekTail(j)
+}
+
+func (j *sdJournal) SeekRealtimeUsec(usec uint64) error {
+	return SdJournalSeekRealtimeUsec(j, usec)
 }
 
 func (j *sdJournal) SetOutputMode(mode string) {
@@ -253,14 +350,14 @@ func (j *sdJournal) EnumerateFields() ([]string, error) {
 	return SdJournalEnumerateFields(j)
 }
 
-func SdJournalQueryUnique(j *sdJournal, field string) ([][]string, error) {
+func SdJournalQueryUnique(j *sdJournal, field string) ([]UniqueValue, error) {
 	values, err := j.reader.QueryUnique(field)
 	if err != nil {
 		return nil, err
 	}
-	result := make([][]string, len(values))
+	result := make([]UniqueValue, len(values))
 	for i, v := range values {
-		result[i] = []string{field, string(v)}
+		result[i] = UniqueValue{Field: field, Value: append([]byte(nil), v...)}
 	}
 	return result, nil
 }
@@ -278,6 +375,7 @@ func SdJournalEnumerateFields(j *sdJournal) ([]string, error) {
 	for f := range fields {
 		result = append(result, f)
 	}
+	sort.Strings(result)
 	return result, nil
 }
 
@@ -285,9 +383,59 @@ func SdJournalGetEntry(j *sdJournal) (*Entry, error) {
 	return j.reader.GetEntry()
 }
 
+func SdJournalGetData(j *sdJournal, field string) ([]byte, error) {
+	entry, err := j.reader.GetEntry()
+	if err != nil {
+		return nil, err
+	}
+	values := entry.FieldValues[field]
+	if len(values) == 0 {
+		return nil, ErrNoEntry
+	}
+	return payloadFromFieldValue(field, values[0]), nil
+}
+
+func SdJournalRestartData(j *sdJournal) error {
+	entry, err := j.reader.GetEntry()
+	if err != nil {
+		return err
+	}
+	j.dataItems = append([][]byte(nil), entry.Payloads...)
+	j.dataIndex = 0
+	return nil
+}
+
+func SdJournalEnumerateAvailableData(j *sdJournal) ([]byte, bool, error) {
+	if j.dataIndex >= len(j.dataItems) {
+		return nil, false, nil
+	}
+	item := append([]byte(nil), j.dataItems[j.dataIndex]...)
+	j.dataIndex++
+	return item, true, nil
+}
+
+func SdJournalRestartFields(j *sdJournal) error {
+	fields, err := SdJournalEnumerateFields(j)
+	if err != nil {
+		return err
+	}
+	j.fieldItems = fields
+	j.fieldIndex = 0
+	return nil
+}
+
+func SdJournalEnumerateField(j *sdJournal) (string, bool, error) {
+	if j.fieldIndex >= len(j.fieldItems) {
+		return "", false, nil
+	}
+	item := j.fieldItems[j.fieldIndex]
+	j.fieldIndex++
+	return item, true, nil
+}
+
 func SdJournalGetEntryWithRealtime(j *sdJournal, realtime uint64) (*Entry, error) {
 	originalCursor, originalErr := j.reader.GetCursor()
-	if err := j.reader.SeekHead(); err != nil {
+	if err := j.reader.SeekRealtimeUsec(realtime); err != nil {
 		return nil, err
 	}
 	defer func() {
@@ -318,6 +466,9 @@ func SdJournalGetEntryWithRealtime(j *sdJournal, realtime uint64) (*Entry, error
 		if entry.Realtime == realtime {
 			return entry, nil
 		}
+		if entry.Realtime > realtime {
+			return nil, ErrNoEntry
+		}
 	}
 }
 
@@ -330,12 +481,13 @@ func SdJournalGetCursorWithRealtime(j *sdJournal, realtime uint64) (string, erro
 }
 
 func SdJournalSeekCursor(j *sdJournal, cursor string) error {
+	j.resetIterators()
 	wantSeqnumID, wantBootID, wantRealtime, wantSeqnum, err := ParseCursor(cursor)
 	if err != nil {
 		return ErrInvalidCursor
 	}
 
-	if err := j.reader.SeekHead(); err != nil {
+	if err := j.reader.SeekRealtimeUsec(wantRealtime); err != nil {
 		return err
 	}
 
@@ -359,6 +511,9 @@ func SdJournalSeekCursor(j *sdJournal, cursor string) error {
 		gotSeqnumID, gotBootID, gotRealtime, gotSeqnum, err := ParseCursor(entry.Cursor)
 		if err != nil {
 			return err
+		}
+		if gotRealtime > wantRealtime {
+			return ErrNoEntry
 		}
 		if gotSeqnumID == wantSeqnumID &&
 			gotBootID == wantBootID &&
@@ -404,4 +559,39 @@ func SdJournalListBoots(j *sdJournal) ([]BootInfo, error) {
 		return dr.ListBoots()
 	}
 	return nil, ErrUnsupported
+}
+
+func SdJournalQueryUniqueState(j *sdJournal, field string) error {
+	values, err := j.reader.QueryUnique(field)
+	if err != nil {
+		return err
+	}
+	j.uniqueItems = make([][]byte, 0, len(values))
+	for _, value := range values {
+		j.uniqueItems = append(j.uniqueItems, payloadFromFieldValue(field, value))
+	}
+	j.uniqueIndex = 0
+	return nil
+}
+
+func SdJournalRestartUnique(j *sdJournal) error {
+	j.uniqueIndex = 0
+	return nil
+}
+
+func SdJournalEnumerateAvailableUnique(j *sdJournal) ([]byte, bool, error) {
+	if j.uniqueIndex >= len(j.uniqueItems) {
+		return nil, false, nil
+	}
+	item := append([]byte(nil), j.uniqueItems[j.uniqueIndex]...)
+	j.uniqueIndex++
+	return item, true, nil
+}
+
+func payloadFromFieldValue(field string, value []byte) []byte {
+	payload := make([]byte, 0, len(field)+1+len(value))
+	payload = append(payload, field...)
+	payload = append(payload, '=')
+	payload = append(payload, value...)
+	return payload
 }

@@ -21,10 +21,15 @@ use std::path::{Path, PathBuf};
 pub use facade::{
     ERR_END_OF_ENTRIES, ERR_INVALID_CURSOR, ERR_NO_ENTRY, ERR_UNSUPPORTED, Error as FacadeError,
     OutputMode, SdJournal, SdJournalAddConjunction, SdJournalAddDisjunction, SdJournalAddMatch,
-    SdJournalEnumerateFields, SdJournalFlushMatches, SdJournalGetCursor, SdJournalGetEntry,
-    SdJournalGetRealtimeUsec, SdJournalListBoots, SdJournalNext, SdJournalOpen, SdJournalPrevious,
-    SdJournalProcessOutput, SdJournalQueryUnique, SdJournalSeekHead, SdJournalSeekTail,
-    SdJournalSetOutputMode, SdJournalTestCursor,
+    SdJournalClose, SdJournalEnumerateAvailableData, SdJournalEnumerateAvailableUnique,
+    SdJournalEnumerateField, SdJournalEnumerateFields, SdJournalFlushMatches, SdJournalGetCursor,
+    SdJournalGetData, SdJournalGetEntry, SdJournalGetMonotonicUsec, SdJournalGetRealtimeUsec,
+    SdJournalGetSeqnum, SdJournalListBoots, SdJournalNext, SdJournalNextSkip, SdJournalOpen,
+    SdJournalOpenDirectory, SdJournalOpenFile, SdJournalOpenFiles, SdJournalPrevious,
+    SdJournalPreviousSkip, SdJournalProcessOutput, SdJournalQueryUnique, SdJournalQueryUniqueState,
+    SdJournalRestartData, SdJournalRestartFields, SdJournalRestartUnique, SdJournalSeekCursor,
+    SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail, SdJournalSetOutputMode,
+    SdJournalTestCursor,
 };
 pub use journal_core::error::JournalError;
 pub use journal_core::file::{
@@ -114,6 +119,7 @@ impl Field {
 pub struct Entry {
     pub fields: HashMap<String, Vec<u8>>,
     pub field_values: HashMap<String, Vec<Vec<u8>>>,
+    pub payloads: Vec<Vec<u8>>,
     pub seqnum: u64,
     pub realtime: u64,
     pub monotonic: u64,
@@ -924,6 +930,7 @@ fn hmac_object(
 pub struct DirectoryReader {
     files: Vec<FileReader>,
     index: usize,
+    pending_realtime_seek: Option<u64>,
 }
 
 impl DirectoryReader {
@@ -955,11 +962,46 @@ impl DirectoryReader {
             )));
         }
 
+        Self::from_readers(files)
+    }
+
+    pub fn open_files<I, P>(paths: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        let mut files = Vec::new();
+        for path in paths {
+            let path = path.as_ref();
+            if !path.is_file() || !is_journal_file_name(path) {
+                return Err(SdkError::InvalidPath(format!(
+                    "not a journal file: {}",
+                    path.display()
+                )));
+            }
+            files.push(FileReader::open(path)?);
+        }
+
+        Self::from_readers(files)
+    }
+
+    fn from_readers(mut files: Vec<FileReader>) -> Result<Self> {
+        if files.is_empty() {
+            return Err(SdkError::InvalidPath(
+                "no readable journal files".to_string(),
+            ));
+        }
+
         files.sort_by_key(FileReader::header_realtime_start);
-        Ok(Self { files, index: 0 })
+        Ok(Self {
+            files,
+            index: 0,
+            pending_realtime_seek: None,
+        })
     }
 
     pub fn seek_head(&mut self) {
+        self.pending_realtime_seek = None;
         self.index = 0;
         if let Some(reader) = self.files.first_mut() {
             reader.seek_head();
@@ -967,13 +1009,51 @@ impl DirectoryReader {
     }
 
     pub fn seek_tail(&mut self) {
+        self.pending_realtime_seek = None;
         self.index = self.files.len().saturating_sub(1);
         if let Some(reader) = self.files.last_mut() {
             reader.seek_tail();
         }
     }
 
+    pub fn seek_realtime(&mut self, usec: u64) {
+        self.pending_realtime_seek = Some(usec);
+    }
+
+    fn apply_realtime_seek(&mut self, direction: Direction) {
+        let Some(usec) = self.pending_realtime_seek.take() else {
+            return;
+        };
+
+        match direction {
+            Direction::Forward => {
+                let idx = self
+                    .files
+                    .iter()
+                    .position(|reader| reader.header().tail_entry_realtime >= usec)
+                    .unwrap_or(self.files.len());
+                self.index = idx;
+                if let Some(reader) = self.files.get_mut(self.index) {
+                    reader.seek_realtime(usec);
+                }
+            }
+            Direction::Backward => {
+                let idx = self
+                    .files
+                    .iter()
+                    .rposition(|reader| reader.header().head_entry_realtime <= usec);
+                if let Some(idx) = idx {
+                    self.index = idx;
+                    self.files[idx].seek_realtime(usec);
+                } else {
+                    self.index = self.files.len();
+                }
+            }
+        }
+    }
+
     pub fn next(&mut self) -> Result<bool> {
+        self.apply_realtime_seek(Direction::Forward);
         while self.index < self.files.len() {
             if self.files[self.index].next()? {
                 return Ok(true);
@@ -987,6 +1067,7 @@ impl DirectoryReader {
     }
 
     pub fn previous(&mut self) -> Result<bool> {
+        self.apply_realtime_seek(Direction::Backward);
         loop {
             if self.index >= self.files.len() {
                 return Ok(false);
@@ -1031,6 +1112,7 @@ impl DirectoryReader {
     }
 
     pub fn seek_cursor(&mut self, cursor: &str) -> Result<()> {
+        self.pending_realtime_seek = None;
         for idx in 0..self.files.len() {
             if self.files[idx].seek_cursor(cursor).is_ok() {
                 self.index = idx;
@@ -1177,6 +1259,7 @@ fn read_entry_at(
 
     let mut fields = HashMap::new();
     let mut field_values: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
+    let mut payloads = Vec::new();
     let mut decompressed = Vec::new();
 
     for data in file.entry_data_objects(entry_offset)? {
@@ -1193,6 +1276,7 @@ fn read_entry_at(
             data.raw_payload()
         };
 
+        payloads.push(payload.to_vec());
         if let Some(eq) = payload.iter().position(|byte| *byte == b'=') {
             let name = String::from_utf8_lossy(&payload[..eq]).into_owned();
             let value = payload[eq + 1..].to_vec();
@@ -1204,6 +1288,7 @@ fn read_entry_at(
     Ok(Entry {
         fields,
         field_values,
+        payloads,
         seqnum,
         realtime,
         monotonic,
@@ -1524,6 +1609,7 @@ mod tests {
     use journal_core::repository::File as RepoFile;
     use journal_core::seal::SealOptions;
     use serde_json::Value;
+    use std::collections::HashSet;
     use std::path::{Path, PathBuf};
 
     struct TempPath(PathBuf);
@@ -1560,6 +1646,7 @@ mod tests {
         let entry = Entry {
             fields,
             field_values,
+            payloads: Vec::new(),
             seqnum: 7,
             realtime: 100,
             monotonic: 42,
@@ -1637,6 +1724,166 @@ mod tests {
 
     fn test_seal_opts() -> SealOptions {
         SealOptions::new([0u8; 12], 1_000_000, 1_000_000)
+    }
+
+    fn create_facade_test_writer(path: &Path) -> (JournalFile<MmapMut>, JournalWriter) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create journal parent");
+        }
+        let repo_file = RepoFile::from_path(path)
+            .unwrap_or_else(|| panic!("test journal path should parse: {}", path.display()));
+        let mut journal_file = JournalFile::<MmapMut>::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3)),
+        )
+        .expect("create journal");
+        let writer = JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+        (journal_file, writer)
+    }
+
+    fn write_facade_test_journal(path: &Path) {
+        let (mut journal_file, mut writer) = create_facade_test_writer(path);
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[
+                    b"MESSAGE=first".as_slice(),
+                    b"REPEAT=one".as_slice(),
+                    b"REPEAT=two".as_slice(),
+                    b"BIN=\x00\xff".as_slice(),
+                ],
+                1000,
+                11,
+            )
+            .expect("write first entry");
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[b"MESSAGE=second".as_slice(), b"REPEAT=three".as_slice()],
+                1001,
+                12,
+            )
+            .expect("write second entry");
+        journal_file.sync().expect("sync journal");
+    }
+
+    fn write_facade_single_message_journal(path: &Path, message: &[u8], realtime: u64) {
+        let (mut journal_file, mut writer) = create_facade_test_writer(path);
+        let payload = [b"MESSAGE=".as_slice(), message].concat();
+        writer
+            .add_entry(&mut journal_file, &[payload.as_slice()], realtime, 21)
+            .expect("write single message");
+        journal_file.sync().expect("sync journal");
+    }
+
+    #[test]
+    fn jf_facade_stateful_reader_operations() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("journals/system.journal");
+        write_facade_test_journal(&path);
+
+        let mut journal =
+            SdJournalOpenFiles(&[path.to_str().expect("utf8 path")], 0).expect("open files");
+        assert_eq!(SdJournalNext(&mut journal).expect("next"), 1);
+        let (seqnum, seqnum_id) = SdJournalGetSeqnum(&mut journal).expect("seqnum");
+        assert_eq!(seqnum, 1);
+        assert_ne!(seqnum_id, [0; 16]);
+        let (monotonic, boot_id) = SdJournalGetMonotonicUsec(&mut journal).expect("monotonic");
+        assert_eq!(monotonic, 11);
+        assert_ne!(boot_id, [0; 16]);
+
+        SdJournalRestartData(&mut journal).expect("restart data");
+        let mut payloads = Vec::new();
+        while let Some(payload) =
+            SdJournalEnumerateAvailableData(&mut journal).expect("enumerate data")
+        {
+            payloads.push(payload);
+        }
+        assert!(payloads.iter().any(|payload| payload == b"REPEAT=one"));
+        assert!(payloads.iter().any(|payload| payload == b"REPEAT=two"));
+        assert!(payloads.iter().any(|payload| payload == b"BIN=\x00\xff"));
+        assert_eq!(
+            SdJournalGetData(&mut journal, "REPEAT").expect("get data"),
+            b"REPEAT=one"
+        );
+
+        let direct_unique = SdJournalQueryUnique(&mut journal, "BIN").expect("query unique");
+        assert_eq!(direct_unique.len(), 1);
+        assert_eq!(direct_unique[0].0, "BIN");
+        assert_eq!(direct_unique[0].1, b"\x00\xff");
+
+        SdJournalQueryUniqueState(&mut journal, "REPEAT").expect("query unique state");
+        let mut unique = Vec::new();
+        while let Some(payload) =
+            SdJournalEnumerateAvailableUnique(&mut journal).expect("enumerate unique")
+        {
+            unique.push(payload);
+        }
+        assert!(unique.iter().any(|payload| payload == b"REPEAT=one"));
+        assert!(unique.iter().any(|payload| payload == b"REPEAT=two"));
+        assert!(unique.iter().any(|payload| payload == b"REPEAT=three"));
+
+        SdJournalRestartFields(&mut journal).expect("restart fields");
+        let mut fields = HashSet::new();
+        while let Some(field) = SdJournalEnumerateField(&mut journal).expect("enumerate field") {
+            fields.insert(field);
+        }
+        assert!(fields.contains("MESSAGE"));
+        assert!(fields.contains("REPEAT"));
+        assert!(fields.contains("BIN"));
+
+        SdJournalSeekRealtimeUsec(&mut journal, 1001).expect("seek realtime forward");
+        assert_eq!(SdJournalNext(&mut journal).expect("next after realtime"), 1);
+        let entry = SdJournalGetEntry(&mut journal).expect("entry after realtime");
+        assert_eq!(entry.get_str("MESSAGE"), Some("second"));
+
+        SdJournalSeekRealtimeUsec(&mut journal, 1001).expect("seek realtime backward");
+        assert_eq!(
+            SdJournalPrevious(&mut journal).expect("previous after realtime"),
+            1
+        );
+        let entry = SdJournalGetEntry(&mut journal).expect("entry after reverse realtime");
+        assert_eq!(entry.get_str("MESSAGE"), Some("second"));
+
+        let cursor = SdJournalGetCursor(&journal).expect("cursor");
+        assert!(SdJournalTestCursor(&journal, &cursor).expect("test current cursor"));
+        assert!(!SdJournalTestCursor(&journal, "invalid-cursor").expect("test invalid cursor"));
+        SdJournalSeekRealtimeUsec(&mut journal, 1000).expect("seek first by realtime");
+        assert_eq!(SdJournalNext(&mut journal).expect("next to first"), 1);
+        let entry = SdJournalGetEntry(&mut journal).expect("first entry");
+        assert_eq!(entry.get_str("MESSAGE"), Some("first"));
+        SdJournalSeekCursor(&mut journal, &cursor).expect("seek cursor back to second");
+        let entry = SdJournalGetEntry(&mut journal).expect("entry after cursor seek");
+        assert_eq!(entry.get_str("MESSAGE"), Some("second"));
+
+        let path2 = dir.path().join("journals/user.journal");
+        write_facade_single_message_journal(&path2, b"third", 1002);
+        let mut multi = SdJournalOpenFiles(
+            &[
+                path2.to_str().expect("utf8 second path"),
+                path.to_str().expect("utf8 first path"),
+            ],
+            0,
+        )
+        .expect("open multiple files");
+
+        let mut messages = Vec::new();
+        while SdJournalNext(&mut multi).expect("multi next") == 1 {
+            let entry = SdJournalGetEntry(&mut multi).expect("multi entry");
+            messages.push(entry.get_str("MESSAGE").unwrap_or("").to_string());
+        }
+        assert_eq!(messages, vec!["first", "second", "third"]);
+
+        SdJournalSeekRealtimeUsec(&mut multi, 1002).expect("multi seek realtime backward");
+        assert_eq!(SdJournalPrevious(&mut multi).expect("multi previous"), 1);
+        let entry = SdJournalGetEntry(&mut multi).expect("multi entry after seek");
+        assert_eq!(entry.get_str("MESSAGE"), Some("third"));
+
+        SdJournalSeekRealtimeUsec(&mut multi, 999).expect("multi seek before range");
+        assert_eq!(
+            SdJournalPrevious(&mut multi).expect("multi previous before range"),
+            0
+        );
     }
 
     fn verification_key(opts: &SealOptions) -> String {

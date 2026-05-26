@@ -58,7 +58,15 @@ enum ReaderKind {
 pub struct SdJournal {
     reader: ReaderKind,
     output_mode: OutputMode,
+    data_items: Vec<Vec<u8>>,
+    data_index: usize,
+    field_items: Vec<String>,
+    field_index: usize,
+    unique_items: Vec<Vec<u8>>,
+    unique_index: usize,
 }
+
+pub type UniqueValue = (String, Vec<u8>);
 
 pub fn SdJournalOpen(path: &str, flags: u32) -> std::result::Result<SdJournal, Error> {
     if flags != 0 {
@@ -72,14 +80,68 @@ pub fn SdJournalOpen(path: &str, flags: u32) -> std::result::Result<SdJournal, E
         ReaderKind::File(FileReader::open(path).map_err(map_error)?)
     };
 
-    Ok(SdJournal {
-        reader,
-        output_mode: OutputMode::Default,
-    })
+    Ok(SdJournal::new(reader))
+}
+
+pub fn SdJournalOpenFile(path: &str, flags: u32) -> std::result::Result<SdJournal, Error> {
+    if flags != 0 {
+        return Err(Error::Unsupported);
+    }
+    Ok(SdJournal::new(ReaderKind::File(
+        FileReader::open(path).map_err(map_error)?,
+    )))
+}
+
+pub fn SdJournalOpenDirectory(path: &str, flags: u32) -> std::result::Result<SdJournal, Error> {
+    if flags != 0 {
+        return Err(Error::Unsupported);
+    }
+    Ok(SdJournal::new(ReaderKind::Directory(
+        DirectoryReader::open(path).map_err(map_error)?,
+    )))
+}
+
+pub fn SdJournalOpenFiles(paths: &[&str], flags: u32) -> std::result::Result<SdJournal, Error> {
+    if flags != 0 {
+        return Err(Error::Unsupported);
+    }
+    if paths.len() == 1 {
+        return SdJournalOpenFile(paths[0], flags);
+    }
+    Ok(SdJournal::new(ReaderKind::Directory(
+        DirectoryReader::open_files(paths).map_err(map_error)?,
+    )))
+}
+
+pub fn SdJournalClose(j: SdJournal) {
+    drop(j);
 }
 
 impl SdJournal {
+    fn new(reader: ReaderKind) -> Self {
+        Self {
+            reader,
+            output_mode: OutputMode::Default,
+            data_items: Vec::new(),
+            data_index: 0,
+            field_items: Vec::new(),
+            field_index: 0,
+            unique_items: Vec::new(),
+            unique_index: 0,
+        }
+    }
+
+    fn reset_iterators(&mut self) {
+        self.data_items.clear();
+        self.data_index = 0;
+        self.field_items.clear();
+        self.field_index = 0;
+        self.unique_items.clear();
+        self.unique_index = 0;
+    }
+
     pub fn add_match(&mut self, data: &[u8]) {
+        self.reset_iterators();
         match &mut self.reader {
             ReaderKind::File(reader) => reader.add_match(data),
             ReaderKind::Directory(reader) => reader.add_match(data),
@@ -87,6 +149,7 @@ impl SdJournal {
     }
 
     pub fn add_conjunction(&mut self) -> std::result::Result<(), Error> {
+        self.reset_iterators();
         match &mut self.reader {
             ReaderKind::File(reader) => reader.add_conjunction(),
             ReaderKind::Directory(reader) => reader.add_conjunction(),
@@ -95,6 +158,7 @@ impl SdJournal {
     }
 
     pub fn add_disjunction(&mut self) -> std::result::Result<(), Error> {
+        self.reset_iterators();
         match &mut self.reader {
             ReaderKind::File(reader) => reader.add_disjunction(),
             ReaderKind::Directory(reader) => reader.add_disjunction(),
@@ -103,6 +167,7 @@ impl SdJournal {
     }
 
     pub fn flush_matches(&mut self) {
+        self.reset_iterators();
         match &mut self.reader {
             ReaderKind::File(reader) => reader.flush_matches(),
             ReaderKind::Directory(reader) => reader.flush_matches(),
@@ -110,6 +175,7 @@ impl SdJournal {
     }
 
     pub fn next(&mut self) -> std::result::Result<i32, Error> {
+        self.reset_iterators();
         let advanced = match &mut self.reader {
             ReaderKind::File(reader) => reader.next(),
             ReaderKind::Directory(reader) => reader.next(),
@@ -119,6 +185,7 @@ impl SdJournal {
     }
 
     pub fn previous(&mut self) -> std::result::Result<i32, Error> {
+        self.reset_iterators();
         let advanced = match &mut self.reader {
             ReaderKind::File(reader) => reader.previous(),
             ReaderKind::Directory(reader) => reader.previous(),
@@ -128,6 +195,7 @@ impl SdJournal {
     }
 
     pub fn seek_head(&mut self) {
+        self.reset_iterators();
         match &mut self.reader {
             ReaderKind::File(reader) => reader.seek_head(),
             ReaderKind::Directory(reader) => reader.seek_head(),
@@ -135,10 +203,28 @@ impl SdJournal {
     }
 
     pub fn seek_tail(&mut self) {
+        self.reset_iterators();
         match &mut self.reader {
             ReaderKind::File(reader) => reader.seek_tail(),
             ReaderKind::Directory(reader) => reader.seek_tail(),
         }
+    }
+
+    pub fn seek_realtime_usec(&mut self, usec: u64) {
+        self.reset_iterators();
+        match &mut self.reader {
+            ReaderKind::File(reader) => reader.seek_realtime(usec),
+            ReaderKind::Directory(reader) => reader.seek_realtime(usec),
+        }
+    }
+
+    pub fn seek_cursor(&mut self, cursor: &str) -> std::result::Result<(), Error> {
+        self.reset_iterators();
+        match &mut self.reader {
+            ReaderKind::File(reader) => reader.seek_cursor(cursor),
+            ReaderKind::Directory(reader) => reader.seek_cursor(cursor),
+        }
+        .map_err(map_error)
     }
 
     pub fn get_entry(&mut self) -> std::result::Result<Entry, Error> {
@@ -165,12 +251,39 @@ impl SdJournal {
         .map_err(map_error)
     }
 
+    pub fn get_seqnum(&mut self) -> std::result::Result<(u64, [u8; 16]), Error> {
+        let entry = self.get_entry()?;
+        let seqnum_id = parse_cursor_seqnum_id(&entry.cursor)?;
+        Ok((entry.seqnum, seqnum_id))
+    }
+
+    pub fn get_monotonic_usec(&mut self) -> std::result::Result<(u64, [u8; 16]), Error> {
+        let entry = self.get_entry()?;
+        Ok((entry.monotonic, entry.boot_id))
+    }
+
     pub fn test_cursor(&self, cursor: &str) -> std::result::Result<bool, Error> {
         match &self.reader {
             ReaderKind::File(reader) => reader.test_cursor(cursor),
             ReaderKind::Directory(reader) => reader.test_cursor(cursor),
         }
         .map_err(map_error)
+    }
+
+    pub fn restart_data(&mut self) -> std::result::Result<(), Error> {
+        let entry = self.get_entry()?;
+        self.data_items = entry.payloads;
+        self.data_index = 0;
+        Ok(())
+    }
+
+    pub fn enumerate_available_data(&mut self) -> std::result::Result<Option<Vec<u8>>, Error> {
+        if self.data_index >= self.data_items.len() {
+            return Ok(None);
+        }
+        let item = self.data_items[self.data_index].clone();
+        self.data_index += 1;
+        Ok(Some(item))
     }
 
     pub fn enumerate_fields(&mut self) -> std::result::Result<Vec<String>, Error> {
@@ -181,12 +294,58 @@ impl SdJournal {
         .map_err(map_error)
     }
 
-    pub fn query_unique(&mut self, field: &str) -> std::result::Result<Vec<Vec<u8>>, Error> {
+    pub fn restart_fields(&mut self) -> std::result::Result<(), Error> {
+        self.field_items = self.enumerate_fields()?;
+        self.field_index = 0;
+        Ok(())
+    }
+
+    pub fn enumerate_field(&mut self) -> std::result::Result<Option<String>, Error> {
+        if self.field_index >= self.field_items.len() {
+            return Ok(None);
+        }
+        let item = self.field_items[self.field_index].clone();
+        self.field_index += 1;
+        Ok(Some(item))
+    }
+
+    fn query_unique_values(&mut self, field: &str) -> std::result::Result<Vec<Vec<u8>>, Error> {
         match &mut self.reader {
             ReaderKind::File(reader) => query_file_unique(reader, field),
             ReaderKind::Directory(reader) => reader.query_unique(field),
         }
         .map_err(map_error)
+    }
+
+    pub fn query_unique(&mut self, field: &str) -> std::result::Result<Vec<UniqueValue>, Error> {
+        Ok(self
+            .query_unique_values(field)?
+            .into_iter()
+            .map(|value| (field.to_string(), value))
+            .collect())
+    }
+
+    pub fn query_unique_state(&mut self, field: &str) -> std::result::Result<(), Error> {
+        let values = self.query_unique_values(field)?;
+        self.unique_items = values
+            .into_iter()
+            .map(|value| payload_from_field_value(field, &value))
+            .collect();
+        self.unique_index = 0;
+        Ok(())
+    }
+
+    pub fn restart_unique(&mut self) {
+        self.unique_index = 0;
+    }
+
+    pub fn enumerate_available_unique(&mut self) -> std::result::Result<Option<Vec<u8>>, Error> {
+        if self.unique_index >= self.unique_items.len() {
+            return Ok(None);
+        }
+        let item = self.unique_items[self.unique_index].clone();
+        self.unique_index += 1;
+        Ok(Some(item))
     }
 
     pub fn list_boots(&self) -> Vec<BootInfo> {
@@ -245,8 +404,30 @@ pub fn SdJournalNext(j: &mut SdJournal) -> std::result::Result<i32, Error> {
     j.next()
 }
 
+pub fn SdJournalNextSkip(j: &mut SdJournal, skip: u64) -> std::result::Result<i32, Error> {
+    let mut advanced = 0;
+    for _ in 0..skip {
+        if j.next()? == 0 {
+            break;
+        }
+        advanced += 1;
+    }
+    Ok(advanced)
+}
+
 pub fn SdJournalPrevious(j: &mut SdJournal) -> std::result::Result<i32, Error> {
     j.previous()
+}
+
+pub fn SdJournalPreviousSkip(j: &mut SdJournal, skip: u64) -> std::result::Result<i32, Error> {
+    let mut advanced = 0;
+    for _ in 0..skip {
+        if j.previous()? == 0 {
+            break;
+        }
+        advanced += 1;
+    }
+    Ok(advanced)
 }
 
 pub fn SdJournalSeekHead(j: &mut SdJournal) -> std::result::Result<(), Error> {
@@ -259,8 +440,25 @@ pub fn SdJournalSeekTail(j: &mut SdJournal) -> std::result::Result<(), Error> {
     Ok(())
 }
 
+pub fn SdJournalSeekRealtimeUsec(j: &mut SdJournal, usec: u64) -> std::result::Result<(), Error> {
+    j.seek_realtime_usec(usec);
+    Ok(())
+}
+
+pub fn SdJournalSeekCursor(j: &mut SdJournal, cursor: &str) -> std::result::Result<(), Error> {
+    j.seek_cursor(cursor)
+}
+
 pub fn SdJournalGetRealtimeUsec(j: &SdJournal) -> std::result::Result<u64, Error> {
     j.get_realtime_usec()
+}
+
+pub fn SdJournalGetSeqnum(j: &mut SdJournal) -> std::result::Result<(u64, [u8; 16]), Error> {
+    j.get_seqnum()
+}
+
+pub fn SdJournalGetMonotonicUsec(j: &mut SdJournal) -> std::result::Result<(u64, [u8; 16]), Error> {
+    j.get_monotonic_usec()
 }
 
 pub fn SdJournalGetCursor(j: &SdJournal) -> std::result::Result<String, Error> {
@@ -275,8 +473,36 @@ pub fn SdJournalGetEntry(j: &mut SdJournal) -> std::result::Result<Entry, Error>
     j.get_entry()
 }
 
+pub fn SdJournalGetData(j: &mut SdJournal, field: &str) -> std::result::Result<Vec<u8>, Error> {
+    let entry = j.get_entry()?;
+    entry
+        .field_values
+        .get(field)
+        .and_then(|values| values.first())
+        .map(|value| payload_from_field_value(field, value))
+        .ok_or(Error::NoEntry)
+}
+
+pub fn SdJournalRestartData(j: &mut SdJournal) -> std::result::Result<(), Error> {
+    j.restart_data()
+}
+
+pub fn SdJournalEnumerateAvailableData(
+    j: &mut SdJournal,
+) -> std::result::Result<Option<Vec<u8>>, Error> {
+    j.enumerate_available_data()
+}
+
 pub fn SdJournalEnumerateFields(j: &mut SdJournal) -> std::result::Result<Vec<String>, Error> {
     j.enumerate_fields()
+}
+
+pub fn SdJournalRestartFields(j: &mut SdJournal) -> std::result::Result<(), Error> {
+    j.restart_fields()
+}
+
+pub fn SdJournalEnumerateField(j: &mut SdJournal) -> std::result::Result<Option<String>, Error> {
+    j.enumerate_field()
 }
 
 pub fn SdJournalListBoots(j: &mut SdJournal) -> std::result::Result<Vec<BootInfo>, Error> {
@@ -286,8 +512,23 @@ pub fn SdJournalListBoots(j: &mut SdJournal) -> std::result::Result<Vec<BootInfo
 pub fn SdJournalQueryUnique(
     j: &mut SdJournal,
     field: &str,
-) -> std::result::Result<Vec<Vec<u8>>, Error> {
+) -> std::result::Result<Vec<UniqueValue>, Error> {
     j.query_unique(field)
+}
+
+pub fn SdJournalQueryUniqueState(j: &mut SdJournal, field: &str) -> std::result::Result<(), Error> {
+    j.query_unique_state(field)
+}
+
+pub fn SdJournalRestartUnique(j: &mut SdJournal) -> std::result::Result<(), Error> {
+    j.restart_unique();
+    Ok(())
+}
+
+pub fn SdJournalEnumerateAvailableUnique(
+    j: &mut SdJournal,
+) -> std::result::Result<Option<Vec<u8>>, Error> {
+    j.enumerate_available_unique()
 }
 
 pub fn SdJournalSetOutputMode(j: &mut SdJournal, mode: OutputMode) {
@@ -326,6 +567,28 @@ fn query_file_unique(reader: &mut FileReader, field: &str) -> crate::Result<Vec<
             }
         }
     }
+    Ok(out)
+}
+
+fn payload_from_field_value(field: &str, value: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(field.len() + 1 + value.len());
+    payload.extend_from_slice(field.as_bytes());
+    payload.push(b'=');
+    payload.extend_from_slice(value);
+    payload
+}
+
+fn parse_cursor_seqnum_id(cursor: &str) -> std::result::Result<[u8; 16], Error> {
+    let seqnum_id = cursor
+        .split(';')
+        .find_map(|part| part.strip_prefix("s="))
+        .ok_or(Error::InvalidCursor)?;
+    let bytes = hex::decode(seqnum_id).map_err(|_| Error::InvalidCursor)?;
+    if bytes.len() != 16 {
+        return Err(Error::InvalidCursor);
+    }
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&bytes);
     Ok(out)
 }
 

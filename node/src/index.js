@@ -13,12 +13,18 @@ import {
   LOG_LIFECYCLE_REASON_ROTATION, LOG_LIFECYCLE_REASON_RETENTION,
 } from './lib/directory-writer.js';
 import {
-  SdJournal, SdJournalOpen, SdJournalOpenDirectory,
+  SdJournal, SdJournalOpen, SdJournalOpenFile, SdJournalOpenDirectory, SdJournalOpenFiles,
+  SdJournalClose,
   SdJournalAddMatch, SdJournalAddDisjunction, SdJournalAddConjunction,
-  SdJournalFlushMatches, SdJournalNext, SdJournalPrevious,
-  SdJournalSeekHead, SdJournalSeekTail, SdJournalGetEntry,
-  SdJournalGetRealtimeUsec, SdJournalGetCursor, SdJournalTestCursor,
-  SdJournalEnumerateFields, SdJournalQueryUnique, SdJournalListBoots,
+  SdJournalFlushMatches, SdJournalNext, SdJournalNextSkip, SdJournalPrevious,
+  SdJournalPreviousSkip,
+  SdJournalSeekHead, SdJournalSeekTail, SdJournalSeekRealtimeUsec, SdJournalSeekCursor,
+  SdJournalGetEntry, SdJournalGetData, SdJournalRestartData, SdJournalEnumerateAvailableData,
+  SdJournalGetRealtimeUsec, SdJournalGetSeqnum, SdJournalGetMonotonicUsec,
+  SdJournalGetCursor, SdJournalTestCursor,
+  SdJournalEnumerateFields, SdJournalRestartFields, SdJournalEnumerateField,
+  SdJournalQueryUnique, SdJournalQueryUniqueState, SdJournalRestartUnique,
+  SdJournalEnumerateAvailableUnique, SdJournalListBoots,
   SdJournalSetOutputMode, SdJournalProcessOutput,
   OUTPUT_MODE_DEFAULT, OUTPUT_MODE_JSON, OUTPUT_MODE_EXPORT,
 } from './facade.js';
@@ -35,12 +41,18 @@ export {
 } from './lib/directory-writer.js';
 export { FilterBuilder } from './lib/reader.js';
 export {
-  SdJournal, SdJournalOpen, SdJournalOpenDirectory,
+  SdJournal, SdJournalOpen, SdJournalOpenFile, SdJournalOpenDirectory, SdJournalOpenFiles,
+  SdJournalClose,
   SdJournalAddMatch, SdJournalAddDisjunction, SdJournalAddConjunction,
-  SdJournalFlushMatches, SdJournalNext, SdJournalPrevious,
-  SdJournalSeekHead, SdJournalSeekTail, SdJournalGetEntry,
-  SdJournalGetRealtimeUsec, SdJournalGetCursor, SdJournalTestCursor,
-  SdJournalEnumerateFields, SdJournalQueryUnique, SdJournalListBoots,
+  SdJournalFlushMatches, SdJournalNext, SdJournalNextSkip, SdJournalPrevious,
+  SdJournalPreviousSkip,
+  SdJournalSeekHead, SdJournalSeekTail, SdJournalSeekRealtimeUsec, SdJournalSeekCursor,
+  SdJournalGetEntry, SdJournalGetData, SdJournalRestartData, SdJournalEnumerateAvailableData,
+  SdJournalGetRealtimeUsec, SdJournalGetSeqnum, SdJournalGetMonotonicUsec,
+  SdJournalGetCursor, SdJournalTestCursor,
+  SdJournalEnumerateFields, SdJournalRestartFields, SdJournalEnumerateField,
+  SdJournalQueryUnique, SdJournalQueryUniqueState, SdJournalRestartUnique,
+  SdJournalEnumerateAvailableUnique, SdJournalListBoots,
   SdJournalSetOutputMode, SdJournalProcessOutput,
   OUTPUT_MODE_DEFAULT, OUTPUT_MODE_JSON, OUTPUT_MODE_EXPORT,
 } from './facade.js';

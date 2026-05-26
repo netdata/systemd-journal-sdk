@@ -10,6 +10,7 @@ class DirectoryReader:
         self._path = path
         self._readers = readers or []
         self._index = 0
+        self._realtime_seek = None
 
     @staticmethod
     def open(path):
@@ -23,23 +24,41 @@ class DirectoryReader:
             except Exception:
                 pass
 
+        return DirectoryReader.from_readers(path, readers)
+
+    @staticmethod
+    def open_files(paths):
+        readers = []
+        for path in paths:
+            if not is_journal_file_name(os.path.basename(path)):
+                raise ValueError(f'not a journal file: {path}')
+            readers.append(FileReader.open(path))
+        return DirectoryReader.from_readers('<files>', readers)
+
+    @staticmethod
+    def from_readers(path, readers):
         if not readers:
             raise ValueError(f'no readable journal files in {path}')
-
         readers.sort(key=lambda r: (r.header()['head_entry_realtime'], r.header()['head_entry_seqnum']))
         return DirectoryReader(path, readers)
 
     def seek_head(self):
+        self._realtime_seek = None
         self._index = 0
         if self._readers:
             self._readers[0].seek_head()
 
     def seek_tail(self):
+        self._realtime_seek = None
         self._index = len(self._readers) - 1
         if self._readers:
             self._readers[-1].seek_tail()
 
+    def seek_realtime_usec(self, usec):
+        self._realtime_seek = int(usec)
+
     def step(self):
+        self._apply_realtime_seek(0)
         while self._index < len(self._readers):
             if self._readers[self._index].step():
                 return True
@@ -49,6 +68,7 @@ class DirectoryReader:
         return False
 
     def step_back(self):
+        self._apply_realtime_seek(1)
         while True:
             if self._index >= len(self._readers):
                 return False
@@ -58,6 +78,37 @@ class DirectoryReader:
                 return False
             self._index -= 1
             self._readers[self._index].seek_tail()
+
+    def _apply_realtime_seek(self, direction):
+        if self._realtime_seek is None:
+            return
+        usec = self._realtime_seek
+        self._realtime_seek = None
+        if not self._readers:
+            self._index = 0
+            return
+
+        if direction == 0:
+            idx = len(self._readers)
+            for i, reader in enumerate(self._readers):
+                if reader.header()['tail_entry_realtime'] >= usec:
+                    idx = i
+                    break
+            self._index = idx
+            if idx < len(self._readers):
+                self._readers[idx].seek_realtime_usec(usec)
+            return
+
+        idx = -1
+        for i in range(len(self._readers) - 1, -1, -1):
+            if self._readers[i].header()['head_entry_realtime'] <= usec:
+                idx = i
+                break
+        if idx < 0:
+            self._index = len(self._readers)
+            return
+        self._index = idx
+        self._readers[idx].seek_realtime_usec(usec)
 
     def next(self):
         return self.step()

@@ -47,8 +47,16 @@ Current reader scope:
 - zstd-compressed fixture files;
 - zstd, lz4, and xz-compressed DATA objects through pure-Rust dependencies;
 - directory reading across active and archived files;
-- forward/backward iteration, cursors, realtime timestamps, field enumeration,
-  binary field values, and export/json/text formatting;
+- forward/backward iteration, cursors, realtime and monotonic timestamps,
+  seqnum metadata, field enumeration, binary field values, repeated field
+  values, stateful current-entry data enumeration, unique value enumeration,
+  and export/json/text formatting;
+- libsystemd-compatible facade functions for open file/directory/files, close,
+  seek head/tail/realtime/cursor, next/previous/skip, match groups,
+  current-entry data enumeration, field enumeration, unique value enumeration,
+  realtime/monotonic/seqnum/cursor metadata, and boot listing;
+- direct facade unique queries return language-native `(field, value)` pairs;
+  stateful unique enumeration returns full binary-safe `FIELD=value` payloads;
 - `--output export` uses systemd's size-prefixed binary field encoding and
   blank-line entry separator;
 - JSON output includes realtime and monotonic timestamps, preserves valid UTF-8

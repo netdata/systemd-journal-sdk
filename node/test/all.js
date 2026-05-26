@@ -15,7 +15,16 @@ import { Log } from '../src/lib/directory-writer.js';
 import { encodeRemappedFieldName } from '../src/lib/field-remap.js';
 import { FileReader } from '../src/lib/reader.js';
 import { parseDataObject } from '../src/lib/entry.js';
-import { exportEntry, jsonEntry, SdJournalOpen, SdJournalQueryUnique } from '../src/facade.js';
+import {
+  exportEntry, jsonEntry, SdJournalOpen, SdJournalOpenFiles, SdJournalQueryUnique,
+  SdJournalNext, SdJournalPrevious, SdJournalSeekRealtimeUsec,
+  SdJournalSeekCursor,
+  SdJournalGetEntry, SdJournalGetCursor, SdJournalTestCursor,
+  SdJournalGetSeqnum, SdJournalGetMonotonicUsec,
+  SdJournalRestartData, SdJournalEnumerateAvailableData, SdJournalGetData,
+  SdJournalQueryUniqueState, SdJournalEnumerateAvailableUnique,
+  SdJournalRestartFields, SdJournalEnumerateField,
+} from '../src/facade.js';
 import {
   DATA_OBJECT_HEADER_SIZE,
   COMPACT_DATA_OBJECT_HEADER_SIZE,
@@ -75,6 +84,15 @@ function journalFiles(directory) {
     .filter((name) => name.endsWith('.journal'))
     .sort()
     .map((name) => join(directory, name));
+}
+
+function collectNullable(next) {
+  const values = [];
+  for (;;) {
+    const value = next();
+    if (value === null || value === undefined) return values;
+    values.push(value);
+  }
 }
 
 function verifyJournalFileIfAvailable(path) {
@@ -160,6 +178,92 @@ for (const [input, expected] of remappedFieldVectors) {
     Buffer.from(Array.from({ length: 256 }, (_, i) => (i % 26) + 0x41)),
   ]);
   assert.equal(sipHash24(key, payload), 0xf9a795df589b5204n);
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const journalPath = join(tempDir, 'jf-facade.journal');
+    const writer = Writer.create(journalPath);
+    writer.append([
+      { name: 'MESSAGE', value: 'first' },
+      { name: 'REPEAT', value: 'one' },
+      { name: 'REPEAT', value: 'two' },
+      { name: 'BIN', value: Buffer.from([0x00, 0xff]) },
+    ], { realtimeUsec: 1000n, monotonicUsec: 11n });
+    writer.append([
+      { name: 'MESSAGE', value: 'second' },
+      { name: 'REPEAT', value: 'three' },
+    ], { realtimeUsec: 1001n, monotonicUsec: 12n });
+    writer.close();
+
+    const journal = SdJournalOpenFiles([journalPath], 0);
+    assert.equal(SdJournalNext(journal), 1);
+    const seqnum = SdJournalGetSeqnum(journal);
+    assert.equal(seqnum.seqnum, 1n);
+    assert.ok(seqnum.seqnum_id);
+    const monotonic = SdJournalGetMonotonicUsec(journal);
+    assert.equal(monotonic.monotonic, 11n);
+    assert.ok(Buffer.isBuffer(monotonic.boot_id));
+
+    SdJournalRestartData(journal);
+    const payloads = collectNullable(() => SdJournalEnumerateAvailableData(journal));
+    assert.ok(payloads.some(p => p.equals(Buffer.from('REPEAT=one'))));
+    assert.ok(payloads.some(p => p.equals(Buffer.from('REPEAT=two'))));
+    assert.ok(payloads.some(p => p.equals(Buffer.from([0x42, 0x49, 0x4e, 0x3d, 0x00, 0xff]))));
+    assert.deepEqual(SdJournalGetData(journal, 'REPEAT'), Buffer.from('REPEAT=one'));
+
+    SdJournalQueryUniqueState(journal, 'REPEAT');
+    const unique = collectNullable(() => SdJournalEnumerateAvailableUnique(journal));
+    assert.ok(unique.some(p => p.equals(Buffer.from('REPEAT=one'))));
+    assert.ok(unique.some(p => p.equals(Buffer.from('REPEAT=two'))));
+    assert.ok(unique.some(p => p.equals(Buffer.from('REPEAT=three'))));
+
+    SdJournalRestartFields(journal);
+    const fields = new Set(collectNullable(() => SdJournalEnumerateField(journal)));
+    assert.ok(fields.has('MESSAGE'));
+    assert.ok(fields.has('REPEAT'));
+    assert.ok(fields.has('BIN'));
+
+    SdJournalSeekRealtimeUsec(journal, 1001n);
+    assert.equal(SdJournalNext(journal), 1);
+    assert.equal(SdJournalGetEntry(journal).fields.MESSAGE.toString('utf8'), 'second');
+    SdJournalSeekRealtimeUsec(journal, 1001n);
+    assert.equal(SdJournalPrevious(journal), 1);
+    assert.equal(SdJournalGetEntry(journal).fields.MESSAGE.toString('utf8'), 'second');
+    const cursor = SdJournalGetCursor(journal);
+    assert.equal(SdJournalTestCursor(journal, cursor), true);
+    assert.equal(SdJournalTestCursor(journal, 'invalid-cursor'), false);
+    SdJournalSeekRealtimeUsec(journal, 1000n);
+    assert.equal(SdJournalNext(journal), 1);
+    assert.equal(SdJournalGetEntry(journal).fields.MESSAGE.toString('utf8'), 'first');
+    SdJournalSeekCursor(journal, cursor);
+    assert.equal(SdJournalGetEntry(journal).fields.MESSAGE.toString('utf8'), 'second');
+    journal.close();
+
+    const journalPath2 = join(tempDir, 'jf-facade-second.journal');
+    const writer2 = Writer.create(journalPath2);
+    writer2.append([
+      { name: 'MESSAGE', value: 'third' },
+      { name: 'REPEAT', value: 'four' },
+    ], { realtimeUsec: 1002n, monotonicUsec: 21n });
+    writer2.close();
+
+    const multi = SdJournalOpenFiles([journalPath2, journalPath], 0);
+    const messages = [];
+    while (SdJournalNext(multi) === 1) {
+      messages.push(SdJournalGetEntry(multi).fields.MESSAGE.toString('utf8'));
+    }
+    assert.deepEqual(messages, ['first', 'second', 'third']);
+    SdJournalSeekRealtimeUsec(multi, 1002n);
+    assert.equal(SdJournalPrevious(multi), 1);
+    assert.equal(SdJournalGetEntry(multi).fields.MESSAGE.toString('utf8'), 'third');
+    SdJournalSeekRealtimeUsec(multi, 999n);
+    assert.equal(SdJournalPrevious(multi), 0);
+    multi.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 {

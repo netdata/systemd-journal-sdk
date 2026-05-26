@@ -35,6 +35,7 @@ const (
 type Entry struct {
 	Fields      map[string][]byte
 	FieldValues map[string][][]byte
+	Payloads    [][]byte
 	Seqnum      uint64
 	Realtime    uint64
 	Monotonic   uint64
@@ -54,6 +55,7 @@ type Reader struct {
 
 	entryOffsets []uint64
 	entryIndex   int
+	realtimeSeek *uint64
 
 	filter *filterBuilder
 }
@@ -415,6 +417,20 @@ func (r *Reader) readOffsetArrayHeader(offset uint64) (offsetArrayHeader, uint64
 }
 
 func (r *Reader) Next() error {
+	if r.realtimeSeek != nil {
+		idx, err := r.firstRealtimeIndexAtOrAfter(*r.realtimeSeek)
+		r.realtimeSeek = nil
+		if err != nil {
+			return err
+		}
+		r.direction = DirectionForward
+		if idx >= len(r.entryOffsets) {
+			r.entryIndex = len(r.entryOffsets)
+			return errEndOfEntries
+		}
+		r.entryIndex = idx
+		return nil
+	}
 	if r.entryIndex < -1 {
 		r.entryIndex = -1
 	}
@@ -429,6 +445,20 @@ func (r *Reader) Next() error {
 }
 
 func (r *Reader) Previous() error {
+	if r.realtimeSeek != nil {
+		idx, err := r.lastRealtimeIndexAtOrBefore(*r.realtimeSeek)
+		r.realtimeSeek = nil
+		if err != nil {
+			return err
+		}
+		r.direction = DirectionBackward
+		if idx < 0 {
+			r.entryIndex = -1
+			return errStartOfEntries
+		}
+		r.entryIndex = idx
+		return nil
+	}
 	if r.entryIndex > len(r.entryOffsets) {
 		r.entryIndex = len(r.entryOffsets)
 	}
@@ -445,13 +475,52 @@ func (r *Reader) Previous() error {
 func (r *Reader) SeekHead() error {
 	r.entryIndex = -1
 	r.direction = DirectionForward
+	r.realtimeSeek = nil
 	return nil
 }
 
 func (r *Reader) SeekTail() error {
 	r.entryIndex = len(r.entryOffsets)
 	r.direction = DirectionBackward
+	r.realtimeSeek = nil
 	return nil
+}
+
+func (r *Reader) SeekRealtimeUsec(usec uint64) error {
+	value := usec
+	r.realtimeSeek = &value
+	return nil
+}
+
+func (r *Reader) firstRealtimeIndexAtOrAfter(usec uint64) (int, error) {
+	return sort.Search(len(r.entryOffsets), func(i int) bool {
+		realtime, err := r.entryRealtimeAtIndex(i)
+		return err != nil || realtime >= usec
+	}), nil
+}
+
+func (r *Reader) lastRealtimeIndexAtOrBefore(usec uint64) (int, error) {
+	idx := sort.Search(len(r.entryOffsets), func(i int) bool {
+		realtime, err := r.entryRealtimeAtIndex(i)
+		return err != nil || realtime > usec
+	}) - 1
+	return idx, nil
+}
+
+func (r *Reader) entryRealtimeAtIndex(index int) (uint64, error) {
+	if index < 0 || index >= len(r.entryOffsets) {
+		return 0, errNotFound
+	}
+	offset := r.entryOffsets[index]
+	headerBuf := make([]byte, entryObjectHeaderSize)
+	if _, err := r.file.ReadAt(headerBuf, int64(offset)); err != nil {
+		return 0, err
+	}
+	hdr, err := parseEntryHeader(headerBuf)
+	if err != nil {
+		return 0, err
+	}
+	return hdr.realtime, nil
 }
 
 func (r *Reader) GetEntry() (*Entry, error) {
@@ -517,6 +586,7 @@ func (r *Reader) readEntryAt(offset uint64) (*Entry, error) {
 
 	fields := make(map[string][]byte)
 	fieldValues := make(map[string][][]byte)
+	payloads := make([][]byte, 0, len(entries))
 	for _, dataOff := range entries {
 		payload, err := r.readDataPayload(dataOff)
 		if err != nil {
@@ -526,6 +596,7 @@ func (r *Reader) readEntryAt(offset uint64) (*Entry, error) {
 		if eq < 0 {
 			return nil, fmt.Errorf("%w: data object at offset %d has no field separator", errCorruptObject, dataOff)
 		}
+		payloads = append(payloads, append([]byte(nil), payload...))
 		name := string(payload[:eq])
 		value := payload[eq+1:]
 		copied := append([]byte(nil), value...)
@@ -540,6 +611,7 @@ func (r *Reader) readEntryAt(offset uint64) (*Entry, error) {
 	return &Entry{
 		Fields:      fields,
 		FieldValues: fieldValues,
+		Payloads:    payloads,
 		Seqnum:      entryHdr.seqnum,
 		Realtime:    entryHdr.realtime,
 		Monotonic:   entryHdr.monotonic,
@@ -747,11 +819,13 @@ func (r *Reader) QueryUnique(fieldName string) ([][]byte, error) {
 			continue
 		}
 
-		if value, ok := entry.Fields[fieldName]; ok {
-			key := string(value)
-			if _, exists := unique[key]; !exists {
-				unique[key] = struct{}{}
-				results = append(results, value)
+		if values, ok := entry.FieldValues[fieldName]; ok {
+			for _, value := range values {
+				key := string(value)
+				if _, exists := unique[key]; !exists {
+					unique[key] = struct{}{}
+					results = append(results, value)
+				}
 			}
 		}
 	}
@@ -825,9 +899,10 @@ func (r *Reader) StepBack() (bool, error) {
 }
 
 type DirectoryReader struct {
-	files  []*Reader
-	index  int
-	filter *filterBuilder
+	files        []*Reader
+	index        int
+	filter       *filterBuilder
+	realtimeSeek *uint64
 }
 
 func OpenDirectory(path string) (*DirectoryReader, error) {
@@ -853,10 +928,28 @@ func OpenDirectory(path string) (*DirectoryReader, error) {
 		readers = append(readers, r)
 	}
 
+	return newDirectoryReader(readers)
+}
+
+func OpenFiles(paths []string) (*DirectoryReader, error) {
+	readers := make([]*Reader, 0, len(paths))
+	for _, path := range paths {
+		if !isJournalFileName(path) {
+			return nil, fmt.Errorf("not a journal file: %s", path)
+		}
+		r, err := OpenFile(path)
+		if err != nil {
+			return nil, err
+		}
+		readers = append(readers, r)
+	}
+	return newDirectoryReader(readers)
+}
+
+func newDirectoryReader(readers []*Reader) (*DirectoryReader, error) {
 	if len(readers) == 0 {
 		return nil, errors.New("no journal files found")
 	}
-
 	sort.Slice(readers, func(i, j int) bool {
 		if readers[i].header.headEntryRealtime != readers[j].header.headEntryRealtime {
 			return readers[i].header.headEntryRealtime < readers[j].header.headEntryRealtime
@@ -885,6 +978,7 @@ func (dr *DirectoryReader) Close() error {
 }
 
 func (dr *DirectoryReader) Next() error {
+	dr.applyRealtimeSeek(DirectionForward)
 	for dr.index < len(dr.files) {
 		r := dr.files[dr.index]
 		if err := r.Next(); err != nil {
@@ -913,6 +1007,7 @@ func (dr *DirectoryReader) GetEntry() (*Entry, error) {
 }
 
 func (dr *DirectoryReader) Step() (bool, error) {
+	dr.applyRealtimeSeek(DirectionForward)
 	for dr.index < len(dr.files) {
 		r := dr.files[dr.index]
 		ok, err := r.Step()
@@ -943,6 +1038,7 @@ func (dr *DirectoryReader) Step() (bool, error) {
 }
 
 func (dr *DirectoryReader) StepBack() (bool, error) {
+	dr.applyRealtimeSeek(DirectionBackward)
 	for dr.index >= 0 && dr.index < len(dr.files) {
 		r := dr.files[dr.index]
 		ok, err := r.StepBack()
@@ -973,6 +1069,7 @@ func (dr *DirectoryReader) StepBack() (bool, error) {
 }
 
 func (dr *DirectoryReader) Previous() error {
+	dr.applyRealtimeSeek(DirectionBackward)
 	for dr.index >= 0 && dr.index < len(dr.files) {
 		r := dr.files[dr.index]
 		if err := r.Previous(); err != nil {
@@ -1092,6 +1189,7 @@ func (dr *DirectoryReader) EnumerateFields() (map[string]struct{}, error) {
 
 func (dr *DirectoryReader) SeekHead() error {
 	dr.index = 0
+	dr.realtimeSeek = nil
 	if len(dr.files) > 0 {
 		return dr.files[0].SeekHead()
 	}
@@ -1100,11 +1198,49 @@ func (dr *DirectoryReader) SeekHead() error {
 
 func (dr *DirectoryReader) SeekTail() error {
 	dr.index = len(dr.files) - 1
+	dr.realtimeSeek = nil
 	if len(dr.files) > 0 {
 		return dr.files[dr.index].SeekTail()
 	}
 	dr.index = 0
 	return nil
+}
+
+func (dr *DirectoryReader) SeekRealtimeUsec(usec uint64) error {
+	value := usec
+	dr.realtimeSeek = &value
+	return nil
+}
+
+func (dr *DirectoryReader) applyRealtimeSeek(direction Direction) {
+	if dr.realtimeSeek == nil {
+		return
+	}
+	usec := *dr.realtimeSeek
+	dr.realtimeSeek = nil
+	if len(dr.files) == 0 {
+		dr.index = 0
+		return
+	}
+	if direction == DirectionForward {
+		idx := sort.Search(len(dr.files), func(i int) bool {
+			return dr.files[i].header.tailEntryRealtime >= usec
+		})
+		dr.index = idx
+		if idx < len(dr.files) {
+			_ = dr.files[idx].SeekRealtimeUsec(usec)
+		}
+		return
+	}
+	idx := sort.Search(len(dr.files), func(i int) bool {
+		return dr.files[i].header.headEntryRealtime > usec
+	}) - 1
+	if idx < 0 {
+		dr.index = -1
+		return
+	}
+	dr.index = idx
+	_ = dr.files[idx].SeekRealtimeUsec(usec)
 }
 
 func (dr *DirectoryReader) ListBoots() ([]BootInfo, error) {

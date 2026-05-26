@@ -11,6 +11,7 @@ export class DirectoryReader {
     this.readers = [];
     this.index = 0;
     this.filter = null;
+    this.realtimeSeek = null;
   }
 
   static open(path) {
@@ -22,16 +23,30 @@ export class DirectoryReader {
       } catch { /* skip unreadable */ }
     }
 
-    if (dr.readers.length === 0) throw new Error('no journal files found');
+    return DirectoryReader.fromReaders(dr.readers);
+  }
 
-    // Sort by head_entry_realtime then head_entry_seqnum
+  static openFiles(paths) {
+    const readers = [];
+    for (const path of paths) {
+      if (!isJournalFileName(String(path).split('/').pop())) {
+        throw new Error(`not a journal file: ${path}`);
+      }
+      readers.push(FileReader.open(path));
+    }
+    return DirectoryReader.fromReaders(readers);
+  }
+
+  static fromReaders(readers) {
+    if (readers.length === 0) throw new Error('no journal files found');
+    const dr = new DirectoryReader();
+    dr.readers = readers;
     dr.readers.sort((a, b) => {
       const dt = a.header.head_entry_realtime - b.header.head_entry_realtime;
       if (dt !== 0n) return dt > 0n ? 1 : -1;
       const ds = a.header.head_entry_seqnum - b.header.head_entry_seqnum;
       return ds > 0n ? 1 : ds < 0n ? -1 : 0;
     });
-
     return dr;
   }
 
@@ -41,16 +56,23 @@ export class DirectoryReader {
   }
 
   seekHead() {
+    this.realtimeSeek = null;
     this.index = 0;
     if (this.readers.length > 0) this.readers[0].seekHead();
   }
 
   seekTail() {
+    this.realtimeSeek = null;
     this.index = this.readers.length - 1;
     if (this.readers.length > 0) this.readers[this.index].seekTail();
   }
 
+  seekRealtimeUsec(usec) {
+    this.realtimeSeek = BigInt(usec);
+  }
+
   step() {
+    this._applyRealtimeSeek(0);
     while (this.index < this.readers.length) {
       const r = this.readers[this.index];
       if (r.step()) {
@@ -66,6 +88,7 @@ export class DirectoryReader {
   }
 
   stepBack() {
+    this._applyRealtimeSeek(1);
     while (this.index >= 0 && this.index < this.readers.length) {
       const r = this.readers[this.index];
       if (r.stepBack()) {
@@ -78,6 +101,37 @@ export class DirectoryReader {
       if (this.index >= 0) this.readers[this.index].seekTail();
     }
     return false;
+  }
+
+  _applyRealtimeSeek(direction) {
+    if (this.realtimeSeek === null) return;
+    const usec = this.realtimeSeek;
+    this.realtimeSeek = null;
+    if (this.readers.length === 0) {
+      this.index = 0;
+      return;
+    }
+    if (direction === 0) {
+      let idx = this.readers.findIndex(r => r.header.tail_entry_realtime >= usec);
+      if (idx < 0) idx = this.readers.length;
+      this.index = idx;
+      if (idx < this.readers.length) this.readers[idx].seekRealtimeUsec(usec);
+      return;
+    }
+
+    let idx = -1;
+    for (let i = this.readers.length - 1; i >= 0; i--) {
+      if (this.readers[i].header.head_entry_realtime <= usec) {
+        idx = i;
+        break;
+      }
+    }
+    if (idx < 0) {
+      this.index = this.readers.length;
+      return;
+    }
+    this.index = idx;
+    this.readers[idx].seekRealtimeUsec(usec);
   }
 
   getEntry() {

@@ -135,38 +135,67 @@ export class SdJournal {
   constructor(reader) {
     this.reader = reader;
     this.outputMode = 'default';
+    this.dataItems = [];
+    this.dataIndex = 0;
+    this.fieldItems = [];
+    this.fieldIndex = 0;
+    this.uniqueItems = [];
+    this.uniqueIndex = 0;
   }
 
   static open(path) {
-    let reader;
     if (isJournalFileName(path.split('/').pop())) {
-      reader = FileReader.open(path);
-    } else {
-      reader = DirectoryReader.open(path);
+      return SdJournal.openFile(path);
     }
-    return new SdJournal(reader);
+    return SdJournal.openDirectory(path);
+  }
+
+  static openFile(path) {
+    return new SdJournal(FileReader.open(path));
+  }
+
+  static openDirectory(path) {
+    return new SdJournal(DirectoryReader.open(path));
+  }
+
+  static openFiles(paths) {
+    if (paths.length === 1) return SdJournal.openFile(paths[0]);
+    return new SdJournal(DirectoryReader.openFiles(paths));
   }
 
   close() { this.reader.close(); }
 
+  resetIterators() {
+    this.dataItems = [];
+    this.dataIndex = 0;
+    this.fieldItems = [];
+    this.fieldIndex = 0;
+    this.uniqueItems = [];
+    this.uniqueIndex = 0;
+  }
+
   addMatch(data) {
     const matchStr = Buffer.isBuffer(data) ? data.toString('binary') : String(data);
+    this.resetIterators();
     this.reader.addMatch(parseMatchString(matchStr));
   }
 
-  addDisjunction() { this.reader.addDisjunction(); }
-  addConjunction() { this.reader.addConjunction(); }
-  flushMatches() { this.reader.flushMatches(); }
-  seekHead() { this.reader.seekHead(); }
-  seekTail() { this.reader.seekTail(); }
+  addDisjunction() { this.resetIterators(); this.reader.addDisjunction(); }
+  addConjunction() { this.resetIterators(); this.reader.addConjunction(); }
+  flushMatches() { this.resetIterators(); this.reader.flushMatches(); }
+  seekHead() { this.resetIterators(); this.reader.seekHead(); }
+  seekTail() { this.resetIterators(); this.reader.seekTail(); }
+  seekRealtimeUsec(usec) { this.resetIterators(); this.reader.seekRealtimeUsec(usec); }
   setOutputMode(mode) { this.outputMode = mode; }
 
   next() {
+    this.resetIterators();
     if (this.reader.step()) return 1;
     return 0;
   }
 
   previous() {
+    this.resetIterators();
     if (this.reader.stepBack()) return 1;
     return 0;
   }
@@ -175,6 +204,55 @@ export class SdJournal {
   getCursor() { return this.reader.getCursor(); }
   testCursor(cursor) { return this.reader.testCursor(cursor); }
   getRealtimeUsec() { return this.reader.getRealtimeUsec(); }
+  getSeqnum() {
+    const entry = this.getEntry();
+    if (!entry) throw new Error('no entry at current position');
+    return { seqnum: entry.seqnum, seqnum_id: parseCursor(entry.cursor).seqnumId };
+  }
+  getMonotonicUsec() {
+    const entry = this.getEntry();
+    if (!entry) throw new Error('no entry at current position');
+    return { monotonic: entry.monotonic, boot_id: entry.boot_id };
+  }
+
+  seekCursor(cursor) {
+    const want = parseCursor(cursor);
+    this.seekRealtimeUsec(want.realtime);
+    while (this.next() !== 0) {
+      const entry = this.getEntry();
+      const got = parseCursor(entry.cursor);
+      if (got.realtime > want.realtime) {
+        break;
+      }
+      if (got.seqnumId === want.seqnumId &&
+          got.bootId === want.bootId &&
+          got.realtime === want.realtime &&
+          got.seqnum === want.seqnum) {
+        return;
+      }
+    }
+    throw new Error('cursor not found');
+  }
+
+  restartData() {
+    const entry = this.getEntry();
+    if (!entry) throw new Error('no entry at current position');
+    this.dataItems = [...(entry.payloads || payloadsFromEntry(entry))];
+    this.dataIndex = 0;
+  }
+
+  enumerateAvailableData() {
+    if (this.dataIndex >= this.dataItems.length) return null;
+    return Buffer.from(this.dataItems[this.dataIndex++]);
+  }
+
+  getData(fieldName) {
+    const entry = this.getEntry();
+    if (!entry || !entry.fieldValues[fieldName] || entry.fieldValues[fieldName].length === 0) {
+      throw new Error('data field not found');
+    }
+    return payloadFromFieldValue(fieldName, entry.fieldValues[fieldName][0]);
+  }
 
   processOutput(entry) {
     switch (this.outputMode) {
@@ -194,9 +272,32 @@ export class SdJournal {
     return Array.from(fields).sort();
   }
 
+  restartFields() {
+    this.fieldItems = this.enumerateFields();
+    this.fieldIndex = 0;
+  }
+
+  enumerateField() {
+    if (this.fieldIndex >= this.fieldItems.length) return null;
+    return this.fieldItems[this.fieldIndex++];
+  }
+
   queryUnique(fieldName) {
     const values = this.reader.queryUnique(fieldName);
     return values.map(v => [fieldName, Buffer.from(v)]);
+  }
+
+  queryUniqueState(fieldName) {
+    const values = this.reader.queryUnique(fieldName);
+    this.uniqueItems = values.map(v => payloadFromFieldValue(fieldName, v));
+    this.uniqueIndex = 0;
+  }
+
+  restartUnique() { this.uniqueIndex = 0; }
+
+  enumerateAvailableUnique() {
+    if (this.uniqueIndex >= this.uniqueItems.length) return null;
+    return Buffer.from(this.uniqueItems[this.uniqueIndex++]);
   }
 }
 
@@ -213,9 +314,23 @@ export function SdJournalOpen(path, flags) {
   return SdJournal.open(path);
 }
 
+export function SdJournalOpenFile(path, flags) {
+  if (flags !== 0) throw new Error('unsupported sd_journal_open_file flags');
+  return SdJournal.openFile(path);
+}
+
 export function SdJournalOpenDirectory(path, flags) {
   if (flags !== 0) throw new Error('unsupported sd_journal_open_directory flags');
-  return SdJournal.open(path);
+  return SdJournal.openDirectory(path);
+}
+
+export function SdJournalOpenFiles(paths, flags) {
+  if (flags !== 0) throw new Error('unsupported sd_journal_open_files flags');
+  return SdJournal.openFiles(paths);
+}
+
+export function SdJournalClose(journal) {
+  journal.close();
 }
 
 export function SdJournalAddMatch(journal, data) {
@@ -238,8 +353,26 @@ export function SdJournalNext(journal) {
   return journal.next();
 }
 
+export function SdJournalNextSkip(journal, skip) {
+  let advanced = 0;
+  for (let i = 0; i < skip; i++) {
+    if (journal.next() === 0) break;
+    advanced++;
+  }
+  return advanced;
+}
+
 export function SdJournalPrevious(journal) {
   return journal.previous();
+}
+
+export function SdJournalPreviousSkip(journal, skip) {
+  let advanced = 0;
+  for (let i = 0; i < skip; i++) {
+    if (journal.previous() === 0) break;
+    advanced++;
+  }
+  return advanced;
 }
 
 export function SdJournalSeekHead(journal) {
@@ -250,12 +383,40 @@ export function SdJournalSeekTail(journal) {
   journal.seekTail();
 }
 
+export function SdJournalSeekRealtimeUsec(journal, usec) {
+  journal.seekRealtimeUsec(usec);
+}
+
+export function SdJournalSeekCursor(journal, cursor) {
+  journal.seekCursor(cursor);
+}
+
 export function SdJournalGetEntry(journal) {
   return journal.getEntry();
 }
 
+export function SdJournalGetData(journal, fieldName) {
+  return journal.getData(fieldName);
+}
+
+export function SdJournalRestartData(journal) {
+  journal.restartData();
+}
+
+export function SdJournalEnumerateAvailableData(journal) {
+  return journal.enumerateAvailableData();
+}
+
 export function SdJournalGetRealtimeUsec(journal) {
   return journal.getRealtimeUsec();
+}
+
+export function SdJournalGetSeqnum(journal) {
+  return journal.getSeqnum();
+}
+
+export function SdJournalGetMonotonicUsec(journal) {
+  return journal.getMonotonicUsec();
 }
 
 export function SdJournalGetCursor(journal) {
@@ -270,8 +431,28 @@ export function SdJournalEnumerateFields(journal) {
   return journal.enumerateFields();
 }
 
+export function SdJournalRestartFields(journal) {
+  journal.restartFields();
+}
+
+export function SdJournalEnumerateField(journal) {
+  return journal.enumerateField();
+}
+
 export function SdJournalQueryUnique(journal, fieldName) {
   return journal.queryUnique(fieldName);
+}
+
+export function SdJournalQueryUniqueState(journal, fieldName) {
+  journal.queryUniqueState(fieldName);
+}
+
+export function SdJournalRestartUnique(journal) {
+  journal.restartUnique();
+}
+
+export function SdJournalEnumerateAvailableUnique(journal) {
+  return journal.enumerateAvailableUnique();
 }
 
 export function SdJournalListBoots(journal) {
@@ -284,4 +465,18 @@ export function SdJournalSetOutputMode(journal, mode) {
 
 export function SdJournalProcessOutput(journal, entry) {
   return journal.processOutput(entry);
+}
+
+function payloadFromFieldValue(fieldName, value) {
+  return Buffer.concat([Buffer.from(fieldName + '=', 'utf8'), Buffer.from(value)]);
+}
+
+function payloadsFromEntry(entry) {
+  const payloads = [];
+  for (const name of Object.keys(entry.fieldValues || {}).sort()) {
+    for (const value of entry.fieldValues[name]) {
+      payloads.push(payloadFromFieldValue(name, value));
+    }
+  }
+  return payloads;
 }

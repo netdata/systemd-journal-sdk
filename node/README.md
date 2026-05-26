@@ -200,19 +200,39 @@ node cmd/journalctl/index.js --file ./sample.journal PRIORITY=3 PRIORITY=4 + MES
 ### Reader API
 
 - `SdJournalOpen(path, flags)` - Open journal file or directory
+- `SdJournalOpenFile(path, flags)` / `SdJournalOpenDirectory(path, flags)` /
+  `SdJournalOpenFiles(paths, flags)` - Open explicit file, directory, or file set
+- `SdJournalClose(journal)` - Close the reader
 - `SdJournalNext(journal)` - Advance to next entry (returns 1 on success, 0 on EOF)
+- `SdJournalNextSkip(journal, skip)` - Advance up to `skip` matching entries
 - `SdJournalPrevious(journal)` - Go to previous entry
+- `SdJournalPreviousSkip(journal, skip)` - Move backward up to `skip` matching entries
 - `SdJournalSeekHead(journal)` - Seek to first entry
 - `SdJournalSeekTail(journal)` - Seek to last entry
+- `SdJournalSeekRealtimeUsec(journal, usec)` - Seek by realtime timestamp
+- `SdJournalSeekCursor(journal, cursor)` - Seek to an exact cursor
 - `SdJournalGetEntry(journal)` - Get current entry object
+- `SdJournalGetData(journal, fieldName)` - Get first `FIELD=value` payload for a field
+- `SdJournalRestartData(journal)` / `SdJournalEnumerateAvailableData(journal)` -
+  enumerate current-entry `FIELD=value` payloads, preserving repeated/binary values
 - `SdJournalGetCursor(journal)` - Get current cursor string
 - `SdJournalTestCursor(journal, cursor)` - Test if cursor matches current position
 - `SdJournalGetRealtimeUsec(journal)` - Get entry realtime timestamp
+- `SdJournalGetMonotonicUsec(journal)` - Get entry monotonic timestamp and boot ID
+- `SdJournalGetSeqnum(journal)` - Get entry sequence number and sequence ID
 - `SdJournalEnumerateFields(journal)` - List all field names
+- `SdJournalRestartFields(journal)` / `SdJournalEnumerateField(journal)` -
+  stateful field-name enumeration
 - `SdJournalQueryUnique(journal, fieldName)` - Get unique `[fieldName, Buffer]` values for a field
+- `SdJournalQueryUniqueState(journal, fieldName)` /
+  `SdJournalRestartUnique(journal)` /
+  `SdJournalEnumerateAvailableUnique(journal)` - stateful unique-value enumeration
+  as full `FIELD=value` payloads
 - `SdJournalListBoots(journal)` - List boot entries
 - `SdJournalAddMatch(journal, data)` - Add match filter (AND)
 - `SdJournalAddDisjunction(journal)` - Add OR group for subsequent matches
+- `SdJournalAddConjunction(journal)` - Start an explicit AND group
+- `SdJournalFlushMatches(journal)` - Clear match filters
 - `SdJournalSetOutputMode(journal, mode)` - Set output format
 - `verifyFile(path)` - Verify journal structure
 - `verifyFileWithKey(path, verificationKey)` - Verify sealed TAG/HMAC
