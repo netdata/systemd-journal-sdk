@@ -64,6 +64,39 @@ def run(args, *, input_data=None, cwd=REPO_ROOT):
     return result.stdout
 
 
+def journal_files(directory):
+    return sorted(
+        str(Path(directory) / name)
+        for name in os.listdir(directory)
+        if name.endswith('.journal')
+    )
+
+
+def verify_journal_file_if_available(path):
+    try:
+        run(['journalctl', '--version'])
+    except AssertionError:
+        return
+    run(['journalctl', '--verify', '--file', path])
+
+
+def journalctl_directory_rows_if_available(directory, *matches):
+    try:
+        run(['journalctl', '--version'])
+    except AssertionError:
+        return None
+    output = run([
+        'journalctl',
+        '--directory',
+        directory,
+        '--output=json',
+        '--no-pager',
+        *matches,
+    ])
+    text = output.decode().strip()
+    return [] if text == '' else [json.loads(line) for line in text.splitlines()]
+
+
 def test_match_validation():
     for item in ('foobar', '', '=', '=xxxxx'):
         try:
@@ -614,7 +647,7 @@ def test_directory_writer_strict_systemd_naming():
         assert names[0].startswith('system@')
 
 
-def test_directory_writer_does_not_enforce_retention_before_first_append():
+def test_directory_writer_lazy_retention_runs_on_first_open():
     with tempfile.TemporaryDirectory() as td:
         config = {
             'source': 'system',
@@ -627,13 +660,84 @@ def test_directory_writer_does_not_enforce_retention_before_first_append():
             first.append([{'name': 'MESSAGE', 'value': f'construction-retention-{i}'}])
         first.close()
         journal_dir = first.journal_directory()
-        before = sorted(name for name in os.listdir(journal_dir) if name.endswith('.journal'))
+        before = journal_files(journal_dir)
         assert len(before) == 2
 
-        second = Log(td, {**config, 'max_files': 1})
-        after = sorted(name for name in os.listdir(journal_dir) if name.endswith('.journal'))
+        events = []
+        second = Log(td, {
+            **config,
+            'max_files': 1,
+            'lifecycle': lambda event: events.append(event),
+        })
+        after = journal_files(journal_dir)
         assert after == before
+        second.append([
+            {'name': 'MESSAGE', 'value': 'construction-retention-open'},
+            {'name': 'TEST_ID', 'value': 'python-retention-on-open'},
+        ])
+        assert journal_files(journal_dir) == [second.active_file()]
+        assert any(event['type'] == 'deleted' for event in events)
+        verify_journal_file_if_available(second.active_file())
+        rows = journalctl_directory_rows_if_available(
+            journal_dir,
+            'TEST_ID=python-retention-on-open',
+        )
+        if rows is not None:
+            assert len(rows) == 1
         second.close()
+
+
+def test_directory_writer_eager_retention_runs_on_open_for_all_policies():
+    for name, retention_options, use_artifacts in (
+        ('files', {'max_files': 1}, False),
+        ('bytes', {'max_retention_bytes': 1}, True),
+        ('age', {'max_retention_age_usec': 1}, False),
+    ):
+        with tempfile.TemporaryDirectory() as td:
+            config = {
+                'source': 'system',
+                'machine_id': '00112233445566778899aabbccddeeff',
+                'max_entries': 1,
+                'max_files': 0,
+            }
+            first = Log(td, config)
+            for i in range(3):
+                first.append(
+                    [{'name': 'MESSAGE', 'value': f'open-retention-{name}-{i}'}],
+                    {
+                        'realtime_usec': 1_700_002_276_000_000 + i,
+                        'monotonic_usec': i + 1,
+                    },
+                )
+            first.close()
+            journal_dir = first.journal_directory()
+            assert len(journal_files(journal_dir)) == 3
+
+            events = []
+            artifact_calls = []
+
+            def artifact_sizer(path):
+                artifact_calls.append(path)
+                return 4096
+
+            retained = Log(td, {
+                **config,
+                'max_entries': 0,
+                'open_mode': 'eager',
+                **retention_options,
+                'lifecycle': lambda event: events.append(event),
+                'artifact_sizer': artifact_sizer if use_artifacts else None,
+            })
+            assert journal_files(journal_dir) == [retained.active_file()]
+            assert any(
+                event['type'] == 'created' and event['reason'] == 'eager_open'
+                for event in events
+            )
+            assert any(event['type'] == 'deleted' for event in events)
+            if use_artifacts:
+                assert artifact_calls
+            verify_journal_file_if_available(retained.active_file())
+            retained.close()
 
 
 def test_directory_writer_enforce_retention_deletes_files_by_age_without_append():
@@ -1558,7 +1662,8 @@ def main():
     test_directory_writer_rejects_empty_entry_without_creating_file()
     test_directory_writer_custom_source_naming()
     test_directory_writer_strict_systemd_naming()
-    test_directory_writer_does_not_enforce_retention_before_first_append()
+    test_directory_writer_lazy_retention_runs_on_first_open()
+    test_directory_writer_eager_retention_runs_on_open_for_all_policies()
     test_directory_writer_enforce_retention_deletes_files_by_age_without_append()
     test_directory_writer_enforce_retention_protects_active_file_by_age()
     test_directory_writer_keeps_chain_named_active_during_retention()

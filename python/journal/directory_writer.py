@@ -121,6 +121,7 @@ class Log:
         self._active_writer = None
         self._remaps = {}
         self._closed = False
+        self._open_retention_applied = False
         self._last_realtime = 0
         self._last_monotonic = 0
 
@@ -139,6 +140,7 @@ class Log:
                 self._attach_existing_active(chain_state['active_file'])
         if self._open_mode == LOG_OPEN_EAGER and self._active_writer is None:
             self._open_writer({'realtime_usec': int(time.time() * 1_000_000)}, LOG_LIFECYCLE_REASON_EAGER_OPEN)
+        self._apply_retention_on_open()
 
     def _open_writer(self, opts=None, reason=LOG_LIFECYCLE_REASON_APPEND):
         opts = opts or {}
@@ -226,9 +228,11 @@ class Log:
         if len(fields) == 0:
             raise ValueError('empty entry')
         opts = self._entry_options_for_append(opts)
+        self._apply_retention_on_open()
         if self._active_writer and self._should_rotate(opts['realtime_usec']):
             self._rotate(opts)
         self._open_writer(opts)
+        self._apply_retention_on_open()
         fields, mappings = remap_fields(fields, self._remaps)
         if mappings:
             self._active_writer.append(self._remapping_entry_fields(mappings), opts)
@@ -430,6 +434,12 @@ class Log:
         if self._closed:
             raise ValueError('journal log is closed')
         self._apply_retention(self._active_file)
+
+    def _apply_retention_on_open(self):
+        if self._open_retention_applied or self._active_writer is None:
+            return
+        self._apply_retention(self._active_file)
+        self._open_retention_applied = True
 
     def _entry_options_for_append(self, opts):
         effective = dict(opts or {})

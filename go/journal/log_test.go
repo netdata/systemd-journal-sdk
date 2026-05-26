@@ -969,7 +969,7 @@ func TestLogDiscardsEmptyOnlineFileAndContinuesSequence(t *testing.T) {
 	assertJSONField(t, rows[2], "MESSAGE", "empty-reopen-2")
 }
 
-func TestNewLogDoesNotEnforceRetentionBeforeFirstAppend(t *testing.T) {
+func TestNewLogLazyRetentionRunsOnFirstOpen(t *testing.T) {
 	root := t.TempDir()
 	config := LogConfig{
 		Options:        testOptions(),
@@ -1001,6 +1001,10 @@ func TestNewLogDoesNotEnforceRetentionBeforeFirstAppend(t *testing.T) {
 
 	retainedConfig := config
 	retainedConfig.RetentionPolicy = RetentionPolicy{}.WithMaxFiles(1)
+	var events []LogLifecycleEvent
+	retainedConfig.Lifecycle = LogLifecycleObserverFunc(func(event LogLifecycleEvent) {
+		events = append(events, event)
+	})
 	reopened, err := NewLog(root, retainedConfig)
 	if err != nil {
 		t.Fatalf("NewLog(second) error = %v", err)
@@ -1009,8 +1013,115 @@ func TestNewLogDoesNotEnforceRetentionBeforeFirstAppend(t *testing.T) {
 	if len(after) != 2 {
 		t.Fatalf("archive count after second NewLog = %d, want 2; files=%v", len(after), after)
 	}
+	if err := reopened.Append([]Field{
+		StringField("MESSAGE", "construction-retention-open"),
+		StringField("TEST_ID", "newlog-retention-on-open"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_275_000_010, MonotonicUsec: 10}); err != nil {
+		t.Fatalf("Append(second) error = %v", err)
+	}
+	afterAppend := journalFiles(t, dir)
+	activePath := reopened.ActivePath()
+	if len(afterAppend) != 1 || afterAppend[0] != activePath {
+		t.Fatalf("journal files after lazy open retention = %v, want only active %s", afterAppend, activePath)
+	}
+	if len(events) == 0 || events[len(events)-1].Type != LogLifecycleDeleted {
+		t.Fatalf("expected retention deletion lifecycle event, got %#v", events)
+	}
+	verifyJournalctl(t, activePath)
+	rows := runJournalctlDirectoryJSON(t, dir, "TEST_ID=newlog-retention-on-open")
+	if len(rows) != 1 {
+		t.Fatalf("retention-on-open directory row count = %d, want 1", len(rows))
+	}
 	if err := reopened.Close(); err != nil {
 		t.Fatalf("Close(second) error = %v", err)
+	}
+}
+
+func TestNewLogEagerRetentionRunsOnOpenForAllPolicies(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		retention RetentionPolicy
+		artifact  bool
+	}{
+		{
+			name:      "files",
+			retention: RetentionPolicy{}.WithMaxFiles(1),
+		},
+		{
+			name:      "bytes",
+			retention: RetentionPolicy{}.WithMaxBytes(1),
+			artifact:  true,
+		},
+		{
+			name:      "age",
+			retention: RetentionPolicy{}.WithMaxAge(time.Microsecond),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			config := LogConfig{
+				Options:        testOptions(),
+				Source:         "system",
+				RotationPolicy: RotationPolicy{}.WithMaxEntries(1),
+			}
+			first, err := NewLog(root, config)
+			if err != nil {
+				t.Fatalf("NewLog(first) error = %v", err)
+			}
+			for i := 0; i < 3; i++ {
+				if err := first.Append([]Field{
+					StringField("MESSAGE", fmt.Sprintf("open-retention-%s-%d", tc.name, i)),
+					StringField("TEST_ID", "newlog-eager-retention-on-open"),
+				}, EntryOptions{RealtimeUsec: 1_700_002_276_000_000 + uint64(i), MonotonicUsec: uint64(i + 1)}); err != nil {
+					t.Fatalf("Append(first %d) error = %v", i, err)
+				}
+			}
+			if err := first.Close(); err != nil {
+				t.Fatalf("Close(first) error = %v", err)
+			}
+
+			dir := filepath.Join(root, config.Options.MachineID.String())
+			before := journalFiles(t, dir)
+			if len(before) != 3 {
+				t.Fatalf("archive count before eager NewLog = %d, want 3; files=%v", len(before), before)
+			}
+			time.Sleep(2 * time.Millisecond)
+
+			retainedConfig := config
+			retainedConfig.RotationPolicy = RotationPolicy{}
+			retainedConfig.RetentionPolicy = tc.retention
+			retainedConfig.OpenMode = LogOpenEager
+			var events []LogLifecycleEvent
+			var artifactCalls []string
+			retainedConfig.Lifecycle = LogLifecycleObserverFunc(func(event LogLifecycleEvent) {
+				events = append(events, event)
+			})
+			if tc.artifact {
+				retainedConfig.ArtifactSizer = LogArtifactSizeFunc(func(path string) (uint64, error) {
+					artifactCalls = append(artifactCalls, path)
+					return 4096, nil
+				})
+			}
+			reopened, err := NewLog(root, retainedConfig)
+			if err != nil {
+				t.Fatalf("NewLog(eager) error = %v", err)
+			}
+			files := journalFiles(t, dir)
+			activePath := reopened.ActivePath()
+			if len(files) != 1 || files[0] != activePath {
+				t.Fatalf("journal files after eager open retention = %v, want only active %s", files, activePath)
+			}
+			if len(events) < 2 || events[0].Type != LogLifecycleCreated || events[len(events)-1].Type != LogLifecycleDeleted {
+				t.Fatalf("expected eager create and retention deletion events, got %#v", events)
+			}
+			if tc.artifact && len(artifactCalls) == 0 {
+				t.Fatalf("expected artifact sizer calls during open-time byte retention")
+			}
+			verifyJournalctl(t, activePath)
+			if err := reopened.Close(); err != nil {
+				t.Fatalf("Close(eager) error = %v", err)
+			}
+		})
 	}
 }
 

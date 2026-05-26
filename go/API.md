@@ -107,6 +107,11 @@ value makes `NewLog` fail with `ErrInvalidJournal`.
 The tracked active/current file counts toward file and byte retention envelopes
 but is never deleted to satisfy retention.
 
+Retention is also applied once when an active writer is opened or created.
+Existing-active reopen and `LogOpenEager` enforce retention during `NewLog`.
+Lazy archived-only construction remains side-effect-free until the first
+append opens the active file; retention then runs before the entry is written.
+
 ## Lifecycle And Artifact Accounting
 
 `LogConfig.Lifecycle` receives synchronous created, rotated, and retention

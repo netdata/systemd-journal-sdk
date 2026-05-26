@@ -218,6 +218,12 @@ Current shared high-level directory writer API slice:
 
 - Rust, Go, Node.js, and Python expose lazy open by default and an eager open
   mode that creates or opens the active journal file during construction.
+- Rust, Go, Node.js, and Python apply configured retention once when an active
+  writer is opened or created. Existing-active reopen and eager open enforce
+  retention during construction; lazy archived-only construction remains
+  side-effect-free until the first append opens the active file, then retention
+  runs before the first entry is written. The active/current file is protected
+  and normal retention deletion lifecycle events are reused.
 - Rust, Go, Node.js, and Python strict systemd naming mode archives any stale
   Netdata chain-named `ONLINE` active file before creating `<source>.journal`,
   preserving sequence continuity without leaving parallel active files in the

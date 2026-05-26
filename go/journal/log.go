@@ -195,6 +195,7 @@ type Log struct {
 	writer        *Writer
 	entriesInFile int
 	closed        bool
+	openRetention bool
 	lastRealtime  uint64
 	lastMonotonic uint64
 }
@@ -351,6 +352,9 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 			return nil, err
 		}
 	}
+	if err := l.enforceRetentionOnOpen(); err != nil {
+		return nil, err
+	}
 
 	return l, nil
 }
@@ -403,12 +407,18 @@ func (l *Log) Append(fields []Field, opts EntryOptions) error {
 		return err
 	}
 	opts = l.entryOptionsForAppend(opts)
+	if err := l.enforceRetentionOnOpen(); err != nil {
+		return err
+	}
 	if l.writer != nil && l.shouldRotate(opts.RealtimeUsec) {
 		if err := l.rotate(opts); err != nil {
 			return err
 		}
 	}
 	if err := l.ensureWriter(opts, LogLifecycleReasonAppend); err != nil {
+		return err
+	}
+	if err := l.enforceRetentionOnOpen(); err != nil {
 		return err
 	}
 	fields, mappings := remapLogFields(fields, l.remaps)
@@ -470,6 +480,17 @@ func (l *Log) EnforceRetention() error {
 		return errWriterClosed
 	}
 	return l.enforceRetention(l.activePath())
+}
+
+func (l *Log) enforceRetentionOnOpen() error {
+	if l.openRetention || l.writer == nil {
+		return nil
+	}
+	if err := l.enforceRetention(l.activePath()); err != nil {
+		return err
+	}
+	l.openRetention = true
+	return nil
 }
 
 // Close archives the active file and applies retention.

@@ -70,6 +70,25 @@ function run(cmd, args, options = {}) {
   return result.stdout;
 }
 
+function journalFiles(directory) {
+  return readdirSync(directory)
+    .filter((name) => name.endsWith('.journal'))
+    .sort()
+    .map((name) => join(directory, name));
+}
+
+function verifyJournalFileIfAvailable(path) {
+  const journalctl = spawnSync('journalctl', ['--version'], { encoding: 'utf8' });
+  if (journalctl.status === 0) run('journalctl', ['--verify', '--file', path]);
+}
+
+function journalctlDirectoryRowsIfAvailable(directory, ...matches) {
+  const journalctl = spawnSync('journalctl', ['--version'], { encoding: 'utf8' });
+  if (journalctl.status !== 0) return null;
+  const output = run('journalctl', ['--directory', directory, '--output=json', '--no-pager', ...matches]);
+  return output.trim() === '' ? [] : output.trim().split('\n').map((line) => JSON.parse(line));
+}
+
 function journalHasDataObjectFlag(path, flag) {
   const buf = readFileSync(path);
   let offset = HEADER_SIZE;
@@ -834,13 +853,75 @@ for (const [input, expected] of remappedFieldVectors) {
     }
     first.close();
     const journalDir = first.journalDirectory();
-    const before = readdirSync(journalDir).filter((name) => name.endsWith('.journal')).sort();
+    const before = journalFiles(journalDir);
     assert.equal(before.length, 2);
 
-    const second = new Log(tempDir, { ...config, maxFiles: 1 });
-    const after = readdirSync(journalDir).filter((name) => name.endsWith('.journal')).sort();
+    const events = [];
+    const second = new Log(tempDir, { ...config, maxFiles: 1, lifecycle: (event) => events.push(event) });
+    const after = journalFiles(journalDir);
     assert.deepEqual(after, before);
+    second.append([
+      { name: 'MESSAGE', value: 'construction-retention-open' },
+      { name: 'TEST_ID', value: 'node-retention-on-open' },
+    ]);
+    const afterAppend = journalFiles(journalDir);
+    assert.deepEqual(afterAppend, [second.activeFile()]);
+    assert.ok(events.some((event) => event.type === 'deleted'));
+    verifyJournalFileIfAvailable(second.activeFile());
+    const rows = journalctlDirectoryRowsIfAvailable(journalDir, 'TEST_ID=node-retention-on-open');
+    if (rows !== null) assert.equal(rows.length, 1);
     second.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+for (const retentionCase of [
+  { name: 'files', options: { maxFiles: 1 } },
+  { name: 'bytes', options: { maxRetentionBytes: 1 }, artifact: true },
+  { name: 'age', options: { maxRetentionAgeUsec: 1n } },
+]) {
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const config = {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      maxEntries: 1,
+      maxFiles: 0,
+    };
+    const first = new Log(tempDir, config);
+    for (let i = 0; i < 3; i++) {
+      first.append(
+        [{ name: 'MESSAGE', value: `open-retention-${retentionCase.name}-${i}` }],
+        { realtimeUsec: BigInt(1_700_002_276_000_000 + i), monotonicUsec: BigInt(i + 1) },
+      );
+    }
+    first.close();
+    const journalDir = first.journalDirectory();
+    assert.equal(journalFiles(journalDir).length, 3);
+
+    const events = [];
+    const artifactCalls = [];
+    const retained = new Log(tempDir, {
+      ...config,
+      maxEntries: 0,
+      openMode: 'eager',
+      ...retentionCase.options,
+      lifecycle: (event) => events.push(event),
+      artifactSizer: retentionCase.artifact
+        ? (path) => {
+          artifactCalls.push(path);
+          return 4096;
+        }
+        : undefined,
+    });
+    const files = journalFiles(journalDir);
+    assert.deepEqual(files, [retained.activeFile()]);
+    assert.ok(events.some((event) => event.type === 'created' && event.reason === 'eager_open'));
+    assert.ok(events.some((event) => event.type === 'deleted'));
+    if (retentionCase.artifact) assert.ok(artifactCalls.length > 0);
+    verifyJournalFileIfAvailable(retained.activeFile());
+    retained.close();
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }

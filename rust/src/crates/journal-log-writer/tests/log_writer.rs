@@ -121,6 +121,57 @@ fn read_journal_json(path: &Path) -> Vec<serde_json::Value> {
         .collect()
 }
 
+fn verify_journalctl_file(path: &Path) {
+    if !journalctl_available() {
+        eprintln!("journalctl not available; skipping journalctl verify assertion");
+        return;
+    }
+
+    let output = Command::new("journalctl")
+        .arg("--verify")
+        .arg("--file")
+        .arg(path)
+        .output()
+        .expect("failed to run journalctl --verify");
+    assert!(
+        output.status.success(),
+        "journalctl --verify should succeed for {}:\n{}",
+        path.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn read_journal_directory_json(
+    directory: &Path,
+    matches: &[&str],
+) -> Option<Vec<serde_json::Value>> {
+    if !journalctl_available() {
+        eprintln!("journalctl not available; skipping journalctl directory assertion");
+        return None;
+    }
+
+    let output = Command::new("journalctl")
+        .arg("--directory")
+        .arg(directory)
+        .arg("--output=json")
+        .arg("--no-pager")
+        .args(matches)
+        .output()
+        .expect("failed to run journalctl --directory");
+    assert!(
+        output.status.success(),
+        "journalctl --directory should succeed for {}:\n{}",
+        directory.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect();
+    Some(rows)
+}
+
 fn journalctl_available() -> bool {
     static AVAILABLE: OnceLock<bool> = OnceLock::new();
     *AVAILABLE.get_or_init(|| {
@@ -1098,6 +1149,146 @@ fn test_enforce_retention_deletes_files_by_age_without_append() {
         0,
         "explicit age retention should delete expired archived files"
     );
+}
+
+#[test]
+fn test_lazy_retention_runs_on_first_open() {
+    let dir = TempDir::new().unwrap();
+    let config =
+        test_config().with_rotation_policy(RotationPolicy::default().with_number_of_entries(1));
+
+    let mut first = Log::new(dir.path(), config).unwrap();
+    first
+        .write_entry(&[b"MESSAGE=construction retention 0"], None)
+        .unwrap();
+    first
+        .write_entry(&[b"MESSAGE=construction retention 1"], None)
+        .unwrap();
+    first.close().unwrap();
+    let before = journal_file_paths(&dir);
+    assert_eq!(before.len(), 2);
+
+    let observer = Arc::new(RecordingObserver::default());
+    let retained_config = test_config()
+        .with_retention_policy(RetentionPolicy::default().with_number_of_journal_files(1));
+    let mut retained =
+        Log::new_with_lifecycle_observer(dir.path(), retained_config, observer.clone()).unwrap();
+    assert_eq!(
+        journal_file_paths(&dir),
+        before,
+        "lazy construction must not enforce retention before the writer opens"
+    );
+
+    retained
+        .write_entry(
+            &[
+                b"MESSAGE=construction retention open",
+                b"TEST_ID=rust-retention-on-open",
+            ],
+            None,
+        )
+        .unwrap();
+    let active_path = PathBuf::from(retained.active_file().expect("active after append").path());
+    assert_eq!(
+        journal_file_paths(&dir),
+        vec![active_path.clone()],
+        "first lazy open should enforce retention and keep only the active file"
+    );
+    verify_journalctl_file(&active_path);
+    if let Some(rows) = read_journal_directory_json(
+        retained.journal_directory(),
+        &["TEST_ID=rust-retention-on-open"],
+    ) {
+        assert_eq!(rows.len(), 1);
+    }
+    let events = observer.events.lock().expect("lock observer events");
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, LogLifecycleEvent::RetainedDeleted { .. })),
+        "first lazy open should report retention deletion"
+    );
+}
+
+#[test]
+fn test_eager_retention_runs_on_open_for_all_policies() {
+    for (name, retention, use_artifacts) in [
+        (
+            "files",
+            RetentionPolicy::default().with_number_of_journal_files(1),
+            false,
+        ),
+        (
+            "bytes",
+            RetentionPolicy::default().with_size_of_journal_files(1),
+            true,
+        ),
+        (
+            "age",
+            RetentionPolicy::default()
+                .with_duration_of_journal_files(std::time::Duration::from_micros(1)),
+            false,
+        ),
+    ] {
+        let dir = TempDir::new().unwrap();
+        let config =
+            test_config().with_rotation_policy(RotationPolicy::default().with_number_of_entries(1));
+
+        let mut first = Log::new(dir.path(), config).unwrap();
+        for i in 0..3 {
+            let message = format!("MESSAGE=open retention {name} {i}");
+            first.write_entry(&[message.as_bytes()], None).unwrap();
+        }
+        first.close().unwrap();
+        assert_eq!(count_journal_files(&dir), 3);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        let observer = Arc::new(RecordingObserver::default());
+        let retained_config = test_config()
+            .with_open_mode(LogOpenMode::Eager)
+            .with_retention_policy(retention);
+        let sizer = Arc::new(FixedArtifactSizer::default());
+        let retained = if use_artifacts {
+            Log::new_with_hooks(
+                dir.path(),
+                retained_config,
+                Some(observer.clone()),
+                Some(sizer.clone()),
+            )
+        } else {
+            Log::new_with_lifecycle_observer(dir.path(), retained_config, observer.clone())
+        }
+        .unwrap();
+        let active_path = retained
+            .active_path()
+            .expect("eager active path after construction")
+            .to_path_buf();
+        assert_eq!(
+            journal_file_paths(&dir),
+            vec![active_path.clone()],
+            "eager open retention should keep only the active file for {name}"
+        );
+        verify_journalctl_file(&active_path);
+        let events = observer.events.lock().expect("lock observer events");
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, LogLifecycleEvent::Created { reason, .. } if *reason == LogLifecycleReason::EagerOpen)),
+            "eager open should report active creation for {name}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, LogLifecycleEvent::RetainedDeleted { .. })),
+            "eager open should report retention deletion for {name}"
+        );
+        if use_artifacts {
+            assert!(
+                !sizer.calls.lock().expect("lock artifact calls").is_empty(),
+                "artifact sizer should be called during open-time byte retention"
+            );
+        }
+    }
 }
 
 #[test]

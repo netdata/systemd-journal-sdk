@@ -123,6 +123,10 @@ Call `Log::enforce_retention()` to apply age/count/byte retention without
 waiting for another append-triggered rotation or close. Call `Log::close()` to
 archive the current file and enforce retention; `Drop` only performs best-effort
 state persistence.
+Retention also runs once when a writer opens or creates the active file:
+existing-active reopen and `LogOpenMode::Eager` enforce it during construction,
+while lazy archived-only construction defers enforcement until the first append
+opens the active file, before the first entry is written.
 Use `Config::with_open_mode(LogOpenMode::Eager)` to create/open the active file
 during construction, and `Config::with_identity_mode(LogIdentityMode::Strict)`
 plus `Origin.machine_id` and `Config::with_boot_id()` to require explicit

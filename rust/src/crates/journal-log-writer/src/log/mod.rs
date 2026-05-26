@@ -314,6 +314,7 @@ pub struct Log {
     last_monotonic_usec: u64,
     lifecycle_observer: Option<Arc<dyn LogLifecycleObserver>>,
     artifact_sizer: Option<Arc<dyn LogArtifactSizer>>,
+    retention_on_open_applied: bool,
     boot_id_field: Vec<u8>,
     source_realtime_field: Vec<u8>,
 }
@@ -431,6 +432,15 @@ impl Log {
             return Err(error);
         }
 
+        Ok(())
+    }
+
+    fn apply_retention_on_open(&mut self) -> Result<()> {
+        if self.retention_on_open_applied || self.active_file.is_none() {
+            return Ok(());
+        }
+        self.enforce_retention()?;
+        self.retention_on_open_applied = true;
         Ok(())
     }
 
@@ -582,13 +592,16 @@ impl Log {
             last_monotonic_usec,
             lifecycle_observer,
             artifact_sizer,
+            retention_on_open_applied: false,
             boot_id_field: format!("_BOOT_ID={}", boot_id.as_simple()).into_bytes(),
             source_realtime_field: Vec::with_capacity(SOURCE_REALTIME_PREFIX.len() + 20),
         };
         if log.config.open_mode == LogOpenMode::Eager && log.active_file.is_none() {
             let realtime = log.peek_entry_realtime(&EntryTimestamps::default());
             log.rotate(realtime, LogLifecycleReason::EagerOpen)?;
+            log.retention_on_open_applied = true;
         }
+        log.apply_retention_on_open()?;
         Ok(log)
     }
 
@@ -636,6 +649,8 @@ impl Log {
         }
 
         let entry_realtime = self.peek_entry_realtime(&timestamps);
+        self.apply_retention_on_open()?;
+        let opened_first_active = self.active_file.is_none();
         if self.should_rotate_for_realtime(entry_realtime) {
             let reason = if self.active_file.is_none() {
                 LogLifecycleReason::Append
@@ -643,8 +658,12 @@ impl Log {
                 LogLifecycleReason::Rotation
             };
             self.rotate(entry_realtime, reason)?;
+            if opened_first_active {
+                self.retention_on_open_applied = true;
+            }
             self.remapping_registry.clear();
         }
+        self.apply_retention_on_open()?;
 
         // Collect new incompatible field names that need remapping and track whether
         // the current entry needs any field-name transformation at all.

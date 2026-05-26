@@ -148,6 +148,10 @@ by the configured source; the tracked active/current file is never deleted to
 satisfy a retention limit. Call `journal.enforce_retention()` to apply
 age/count/byte retention without waiting for another append-triggered rotation
 or close.
+Retention also runs once when a writer opens or creates the active file:
+existing-active reopen and `'open_mode': 'eager'` enforce it during
+construction, while lazy archived-only construction defers enforcement until
+the first append opens the active file, before the first entry is written.
 Use `'open_mode': 'eager'` to create/open the active file during construction,
 and `'identity_mode': 'strict'` with `'machine_id'` and `'boot_id'` when callers
 must reject missing identity instead of using host/random fallback.

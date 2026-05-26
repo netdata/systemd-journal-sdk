@@ -74,6 +74,7 @@ export class Log {
     this.writer = null;
     this.remaps = new Map();
     this.closed = false;
+    this.openRetentionApplied = false;
     this._pathCounter = 0;
     this.lastRealtime = 0n;
     this.lastMonotonic = 0n;
@@ -110,6 +111,7 @@ export class Log {
     if (this.openMode === LOG_OPEN_EAGER && !this.writer) {
       this._openWriter({ realtimeUsec: nowUsec() }, LOG_LIFECYCLE_REASON_EAGER_OPEN);
     }
+    this._applyRetentionOnOpen();
   }
 
   _ensureDirectory() {
@@ -124,12 +126,14 @@ export class Log {
     if (this.closed) throw new Error('journal log is closed');
     if (fields.length === 0) throw new Error('empty entry');
     let appendOptions = this._entryOptionsForAppend(options);
+    this._applyRetentionOnOpen();
     if (this.writer && this._shouldRotate(appendOptions.realtimeUsec)) {
       this._rotate(appendOptions);
     }
     if (!this.writer) {
       this._openWriter(appendOptions, LOG_LIFECYCLE_REASON_APPEND);
     }
+    this._applyRetentionOnOpen();
 
     const remapped = remapFields(fields, this.remaps);
     fields = remapped.fields;
@@ -414,6 +418,12 @@ export class Log {
   enforceRetention() {
     if (this.closed) throw new Error('journal log is closed');
     this._applyRetention(this.activePath);
+  }
+
+  _applyRetentionOnOpen() {
+    if (this.openRetentionApplied || !this.writer) return;
+    this._applyRetention(this.activePath);
+    this.openRetentionApplied = true;
   }
 
   _entryOptionsForAppend(options) {

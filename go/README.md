@@ -167,6 +167,10 @@ unprotected files owned by the configured `Source`; the tracked active/current
 file is never deleted to satisfy a retention limit. Call
 `log.EnforceRetention()` to apply age/count/byte retention without waiting for
 another append-triggered rotation or close.
+Retention also runs once when a writer opens or creates the active file:
+existing-active reopen and `LogOpenEager` enforce it during `NewLog()`, while
+lazy archived-only construction defers enforcement until the first append opens
+the active file, before the first entry is written.
 
 `EntryOptions.SourceRealtimeUsec` injects `_SOURCE_REALTIME_TIMESTAMP` when the
 source timestamp differs from the journal entry timestamp. `Log.Append` clamps
