@@ -4,7 +4,7 @@
 
 Status: open
 
-Sub-state: Split from SOW-0022 Gap 5. Needs user decision before implementation because changing defaults is a public behavior change.
+Sub-state: Split from SOW-0022 Gap 5. User decision recorded: follow systemd threshold behavior.
 
 ## Requirements
 
@@ -31,7 +31,7 @@ Inferences:
 
 Unknowns:
 
-- Whether the user wants SDK default thresholds changed to systemd's default of 512, or wants the existing SDK default kept and explicitly documented.
+- None. The user selected systemd behavior.
 
 ### Acceptance Criteria
 
@@ -67,7 +67,7 @@ Risks:
 
 ## Pre-Implementation Gate
 
-Status: needs-user-decision
+Status: ready
 
 Problem / root-cause model:
 
@@ -149,7 +149,14 @@ Open decisions:
 
 ## Implications And Decisions
 
-- Pending user decision.
+- User decision on 2026-05-26: "do whatever systemd does."
+- Accepted policy:
+  - Default compression threshold: `512` bytes.
+  - Minimum configured compression threshold: `8` bytes.
+  - Configured thresholds below `8` must be clamped to `8`.
+- Implications:
+  - This intentionally changes the SDK default from the current `64` bytes to systemd parity.
+  - Compression-path tests must keep explicit low-threshold settings where needed so coverage remains high.
 
 ## Plan
 

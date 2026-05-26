@@ -4,7 +4,7 @@
 
 Status: open
 
-Sub-state: Split from SOW-0022 Gap 8. Needs user decision before implementation because SOW-0022's reject decision conflicts with the current high-level writer clamp contract.
+Sub-state: Split from SOW-0022 Gap 8. User decision recorded: follow Netdata vendored behavior.
 
 ## Requirements
 
@@ -31,7 +31,7 @@ Inferences:
 
 Unknowns:
 
-- Whether the user wants all writer APIs to reject backward explicit monotonic timestamps, or wants high-level `Log` writers to keep clamp behavior while low-level raw writers reject invalid input.
+- None. The user selected Netdata vendored behavior.
 
 ### Acceptance Criteria
 
@@ -70,7 +70,7 @@ Risks:
 
 ## Pre-Implementation Gate
 
-Status: needs-user-decision
+Status: ready
 
 Problem / root-cause model:
 
@@ -100,6 +100,7 @@ Affected contracts and surfaces:
 Existing patterns to reuse:
 
 - Current high-level clamping behavior and tests.
+- Netdata vendored low-level raw writer behavior.
 - Current verification monotonic-regression checks.
 - Stock `journalctl --verify --file` oracle.
 
@@ -159,7 +160,19 @@ Open decisions:
 
 ## Implications And Decisions
 
-- Pending user decision.
+- User decision on 2026-05-26: "do whatever netdata does."
+- Accepted policy:
+  - High-level `Log` / directory writer APIs clamp non-progressing entry realtime and entry monotonic timestamps forward to preserve strict progression.
+  - Low-level raw single-file writer APIs accept caller-provided `realtime` and `monotonic` values without rejecting or clamping.
+- Evidence from Netdata vendored Rust:
+  - High-level clamp: `src/crates/journal-log-writer/src/log/mod.rs:246-256`.
+  - Cross-restart high-level seed from same-boot tail monotonic: `src/crates/journal-log-writer/src/log/mod.rs:269-271` and `src/crates/journal-log-writer/src/log/chain.rs:122-141`.
+  - High-level clamp tests: `src/crates/journal-log-writer/tests/log_writer.rs:480-521` and `src/crates/journal-log-writer/tests/log_writer.rs:555-614`.
+  - Low-level raw pass-through: `src/crates/journal-core/src/file/writer.rs:182-220` and tail publication in `src/crates/journal-core/src/file/writer.rs:260-279`.
+- Implications:
+  - This is intentionally different from the previous SOW-0022 strict-reject wording.
+  - Low-level raw writers remain capable of producing files that stock systemd verification can reject if callers supply backward same-boot monotonic timestamps.
+  - High-level ingestion APIs stay Netdata-compatible and must continue producing stock-verifiable files by clamping unsafe overrides.
 
 ## Plan
 

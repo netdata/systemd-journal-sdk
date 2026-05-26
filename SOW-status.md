@@ -6,8 +6,8 @@
 
 ## Pending
 
-- `SOW-0029-20260526-compression-threshold-parity.md` - open, needs user decision before implementation. Split from SOW-0022 Gap 5. Decide and implement cross-language compression threshold default/minimum behavior; current SDK defaults are 64 bytes while systemd defaults to 512 with an 8-byte minimum.
-- `SOW-0030-20260526-monotonic-writer-validity.md` - open, needs user decision before implementation. Split from SOW-0022 Gap 8. Resolve low-level reject versus high-level clamp behavior for same-boot backward monotonic timestamps, then enforce the same policy across all four languages.
+- `SOW-0029-20260526-compression-threshold-parity.md` - open. Split from SOW-0022 Gap 5. User decision: follow systemd compression threshold behavior, with 512-byte default and 8-byte minimum clamp across all four languages.
+- `SOW-0030-20260526-monotonic-writer-validity.md` - open. Split from SOW-0022 Gap 8. User decision: follow Netdata vendored behavior, with high-level writer clamping and low-level raw writer pass-through.
 - `SOW-0031-20260526-compressed-compact-structural-parity.md` - open. Split from SOW-0022 Gap 7. Add structural parity validation for compressed and compact writer outputs, with byte identity only where deterministic and meaningful.
 - `SOW-0032-20260526-live-feature-compatibility-matrix.md` - open. Split from SOW-0022 Gap 1. Extend live concurrency validation to compression, compact layout, compact plus compression, and FSS/sealed writer slices with stock journalctl, stock libsystemd, and repository readers.
 - `SOW-0033-20260526-full-verification-parity.md` - open. Split from SOW-0022 Gap 2. Add practical systemd-like object-graph verification corruption fixtures and make all four language verification APIs reject the same classes as stock `journalctl --verify --file`.
