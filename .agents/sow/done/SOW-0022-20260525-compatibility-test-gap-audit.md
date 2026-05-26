@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: open
+Status: completed
 
-Sub-state: Evidence captured for user discussion. Implementation is blocked until the user decides scope, sequencing, and overlap with active FSS work.
+Sub-state: Audit and split completed. Stale gaps were closed by later SOWs, and remaining compatibility work is now tracked by smaller pending SOWs.
 
 ## Requirements
 
@@ -528,28 +528,50 @@ Failure handling:
 - No implementation files were intentionally changed.
 - User requested SOW creation so the findings can be discussed with the assistant currently implementing FSS.
 
+### 2026-05-26
+
+- Moved this SOW through current as a planning/triage SOW after the user asked to proceed.
+- Rechecked current status and code against `SOW-status.md`, `product-scope.md`, and current journalctl/header/writer sources.
+- Closed stale ownership items:
+  - Gap 3 directory traversal parity was completed by `SOW-0020-20260524-directory-traversal-parity.md`.
+  - Mixed-format directory reader coverage was completed by `SOW-0024-20260526-mixed-format-directory-readers.md`.
+  - File-backed `--verify` / `--verify-key` support was completed by `SOW-0019-20260524-forward-secure-sealing.md`; full object-graph verification parity remains separate.
+- Split the remaining compatibility work into focused pending SOWs:
+  - `SOW-0028-20260526-historical-header-parsing-parity.md`
+  - `SOW-0029-20260526-compression-threshold-parity.md`
+  - `SOW-0030-20260526-monotonic-writer-validity.md`
+  - `SOW-0031-20260526-compressed-compact-structural-parity.md`
+  - `SOW-0032-20260526-live-feature-compatibility-matrix.md`
+  - `SOW-0033-20260526-full-verification-parity.md`
+  - `SOW-0034-20260526-file-backed-journalctl-query-parity.md`
+- No implementation code was changed in this SOW.
+
 ## Validation
 
 Acceptance criteria evidence:
 
-- Pending until the user decides whether this SOW remains an audit/planning SOW or becomes an implementation SOW.
+- The SOW records every identified compatibility gap with evidence in the gap sections above.
+- Already-tracked and completed gaps are now separated in the 2026-05-26 execution log.
+- Remaining gaps are mapped to concrete pending SOWs in the follow-up mapping below.
+- No implementation files were changed by this SOW.
 
 Tests or equivalent validation:
 
-- No test suite was run during SOW creation.
+- Ran `SOW_AUDIT_SENSITIVE_CHANGED=1 .agents/sow/audit.sh`; verdict: `SOW initialization complete and clean`.
+- Ran a targeted sensitive-string scan across the changed SOW/status files; no matches were found.
 - Evidence was gathered through static inspection of repository files and the local read-only systemd v260.1 source checkout.
 
 Real-use evidence:
 
-- Not applicable to SOW creation.
+- Not applicable. This SOW produced planning and lifecycle artifacts only.
 
 Reviewer findings:
 
-- Pending. No external reviewers were run because the user requested SOW creation, not review execution.
+- No external reviewers were run because this SOW changed only SOW lifecycle/planning artifacts and no implementation behavior. Implementation SOWs will use read-only reviewers after code changes.
 
 Same-failure scan:
 
-- Initial same-failure scan is recorded in the gap sections. A full implementation-phase scan must be repeated before code changes.
+- Rechecked current journalctl, header parsing, compression threshold, and writer timestamp behavior before splitting. Each child SOW records the relevant same-failure surface to repeat before implementation.
 
 Sensitive data gate:
 
@@ -560,15 +582,15 @@ Artifact maintenance gate:
 
 - AGENTS.md: no update needed for SOW creation; project rules already cover the workflow.
 - Runtime project skills: no update yet; update `project-journal-compatibility` only after user decisions create new mandatory gates.
-- Specs: no update yet; update `product-scope.md` only after user decisions change scope or current reality.
+- Specs: no update needed in this SOW because product behavior did not change; child implementation SOWs must update `product-scope.md` when behavior changes.
 - End-user/operator docs: no update needed for SOW creation.
 - End-user/operator skills: no update needed for SOW creation.
-- SOW lifecycle: created as `Status: open` in `.agents/sow/pending/`.
-- SOW-status.md: updated to list this SOW under Pending.
+- SOW lifecycle: moved from `.agents/sow/pending/` to `.agents/sow/current/` for triage, marked `Status: completed`, and moved to `.agents/sow/done/` with the new pending child SOWs.
+- SOW-status.md: updated to remove this SOW from Pending, add it to Done, and list the new child SOWs under Pending.
 
 Specs update:
 
-- No spec update was made because this SOW records gaps and decisions, not completed product behavior.
+- No spec update was made because this SOW records and splits gaps; it does not change current product behavior.
 
 Project skills update:
 
@@ -584,25 +606,30 @@ End-user/operator skills update:
 
 Lessons:
 
-- None yet. Lessons should be extracted after implementation/review.
+- Compatibility umbrella SOWs become hard to execute once later SOWs close parts of their scope. Future compatibility audits should close quickly as planning artifacts and create small implementation SOWs immediately.
 
 Follow-up mapping:
 
-- Directory traversal parity is tracked by `SOW-0020-20260524-directory-traversal-parity.md`.
-- FSS sealing and sealed verification overlap active `SOW-0019-20260524-forward-secure-sealing.md`.
-- All other gaps are tracked here until the user chooses to split, merge, reject, or implement them.
+- Gap 1 live feature compatibility is tracked by `SOW-0032-20260526-live-feature-compatibility-matrix.md`.
+- Gap 2 full verification parity is tracked by `SOW-0033-20260526-full-verification-parity.md`.
+- Gap 3 directory traversal parity was completed by `SOW-0020-20260524-directory-traversal-parity.md`.
+- Gap 4 historical header parsing is tracked by `SOW-0028-20260526-historical-header-parsing-parity.md`.
+- Gap 5 compression threshold parity is tracked by `SOW-0029-20260526-compression-threshold-parity.md`.
+- Gap 6 remaining file-backed journalctl query/follow parity is tracked by `SOW-0034-20260526-file-backed-journalctl-query-parity.md`.
+- Gap 7 compressed/compact structural parity is tracked by `SOW-0031-20260526-compressed-compact-structural-parity.md`.
+- Gap 8 same-boot monotonic writer validity is tracked by `SOW-0030-20260526-monotonic-writer-validity.md`.
 
 ## Outcome
 
-Pending.
+Completed as a planning/triage SOW. No implementation code was changed.
 
 ## Lessons Extracted
 
-Pending.
+- Keep compatibility SOWs executable by splitting test gaps, writer behavior gaps, reader behavior gaps, verification gaps, and CLI parity gaps into separate SOWs before implementation starts.
 
 ## Followup
 
-None yet.
+- Execute the new child SOWs before SOW-0009 performance work and before SOW-0026 Netdata integration, unless the user explicitly changes sequencing.
 
 ## Regression Log
 
