@@ -17,7 +17,7 @@ function parseArgs(argv) {
     lz4Fixture: false,
     xzFixture: false,
     compression: 'none',
-    compressionThresholdBytes: 64,
+    compressionThresholdBytes: 512,
     compact: false,
   };
 

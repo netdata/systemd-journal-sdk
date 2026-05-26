@@ -29,7 +29,7 @@ def parse_args(argv):
         '--compress-threshold',
         dest='compression_threshold_bytes',
         type=parse_positive_int,
-        default=64,
+        default=512,
     )
     return parser.parse_args(argv)
 

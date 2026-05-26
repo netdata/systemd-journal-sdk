@@ -10,7 +10,7 @@ import { zstdCompressSync } from 'node:zlib';
 import assert from 'node:assert/strict';
 import { jenkinsHash64, sipHash24 } from '../src/lib/hash.js';
 import { uuidToString } from '../src/lib/binary.js';
-import { Writer } from '../src/lib/writer.js';
+import { DEFAULT_COMPRESS_THRESHOLD, MIN_COMPRESS_THRESHOLD, Writer } from '../src/lib/writer.js';
 import { Log } from '../src/lib/directory-writer.js';
 import { encodeRemappedFieldName } from '../src/lib/field-remap.js';
 import { FileReader } from '../src/lib/reader.js';
@@ -34,6 +34,7 @@ import {
   INCOMPATIBLE_KEYED_HASH,
   OBJECT_COMPRESSED_LZ4,
   OBJECT_COMPRESSED_XZ,
+  OBJECT_COMPRESSED_ZSTD,
   OBJECT_TYPE_DATA,
   OBJECT_TYPE_TAG,
   STATE_ARCHIVED,
@@ -658,6 +659,57 @@ for (const [input, expected] of remappedFieldVectors) {
     reader.close();
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  // Compression threshold policy follows systemd: default 512 bytes, minimum 8 bytes.
+  for (const testCase of [
+    {
+      name: 'default below threshold',
+      options: {},
+      payloadLength: DEFAULT_COMPRESS_THRESHOLD - 1,
+      wantThreshold: DEFAULT_COMPRESS_THRESHOLD,
+      wantCompressed: false,
+    },
+    {
+      name: 'default exact threshold',
+      options: {},
+      payloadLength: DEFAULT_COMPRESS_THRESHOLD,
+      wantThreshold: DEFAULT_COMPRESS_THRESHOLD,
+      wantCompressed: true,
+    },
+    {
+      name: 'minimum clamp',
+      options: { compressionThresholdBytes: 1 },
+      payloadLength: MIN_COMPRESS_THRESHOLD - 1,
+      wantThreshold: MIN_COMPRESS_THRESHOLD,
+      wantCompressed: false,
+    },
+    {
+      name: 'minimum clamp eligible payload',
+      options: { compressionThresholdBytes: 1 },
+      payloadLength: DEFAULT_COMPRESS_THRESHOLD,
+      wantThreshold: MIN_COMPRESS_THRESHOLD,
+      wantCompressed: true,
+    },
+  ]) {
+    const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+    try {
+      const journalPath = join(tempDir, `zstd-threshold-${testCase.name.replaceAll(' ', '-')}.journal`);
+      const writer = Writer.create(journalPath, { compression: 'zstd', ...testCase.options });
+      assert.equal(writer.compressThreshold, testCase.wantThreshold);
+      writer.append([{ name: 'F', value: Buffer.alloc(testCase.payloadLength - 2, 0x41) }]);
+      writer.close();
+      assert.equal(
+        journalHasDataObjectFlag(journalPath, OBJECT_COMPRESSED_ZSTD),
+        testCase.wantCompressed,
+        testCase.name,
+      );
+      verifyJournalFileIfAvailable(journalPath);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   }
 }
 

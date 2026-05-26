@@ -14,7 +14,10 @@ mod value_guard;
 pub mod writer;
 
 // Core functionality
-pub use file::{BucketUtilization, Compression, JournalFile, JournalFileOptions};
+pub use file::{
+    BucketUtilization, Compression, DEFAULT_COMPRESS_THRESHOLD, JournalFile, JournalFileOptions,
+    MIN_COMPRESS_THRESHOLD, normalize_compress_threshold,
+};
 pub use reader::JournalReader;
 pub use writer::JournalWriter;
 

@@ -7,8 +7,8 @@
 
 use journal_common::{Microseconds, load_boot_id, load_machine_id, monotonic_now};
 use journal_core::file::{
-    HeaderIncompatibleFlags, JournalFile, JournalFileOptions, JournalState, JournalWriter, Mmap,
-    MmapMut,
+    DEFAULT_COMPRESS_THRESHOLD, HeaderIncompatibleFlags, JournalFile, JournalFileOptions,
+    JournalState, JournalWriter, MIN_COMPRESS_THRESHOLD, Mmap, MmapMut,
 };
 use journal_log_writer::{
     Config, EntryTimestamps, Log, LogArtifactSizer, LogIdentityMode, LogLifecycleEvent,
@@ -35,6 +35,15 @@ fn test_config() -> Config {
         RotationPolicy::default(),
         RetentionPolicy::default(),
     )
+}
+
+#[test]
+fn config_uses_systemd_compression_threshold_policy() {
+    let config = test_config();
+    assert_eq!(config.compression_threshold, DEFAULT_COMPRESS_THRESHOLD);
+
+    let clamped = test_config().with_compression_threshold(1);
+    assert_eq!(clamped.compression_threshold, MIN_COMPRESS_THRESHOLD);
 }
 
 /// Helper to count journal files in a directory

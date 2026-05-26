@@ -36,7 +36,8 @@ COMPRESSION_NONE = 0
 COMPRESSION_ZSTD = 1
 COMPRESSION_XZ = 2
 COMPRESSION_LZ4 = 3
-DEFAULT_COMPRESS_THRESHOLD = 64
+DEFAULT_COMPRESS_THRESHOLD = 512
+MIN_COMPRESS_THRESHOLD = 8
 
 
 class Writer:
@@ -73,7 +74,7 @@ class Writer:
                 _ensure_xz_available()
             elif w._compression == COMPRESSION_LZ4:
                 _ensure_lz4_available()
-            w._compress_threshold = opts.get('compression_threshold_bytes', DEFAULT_COMPRESS_THRESHOLD)
+            w._compress_threshold = _normalize_compress_threshold(opts.get('compression_threshold_bytes'))
             seal_opts = opts.get('seal')
             if seal_opts is not None:
                 w._seal = SealState(seal_opts)
@@ -956,6 +957,13 @@ def _normalize_compression(value):
     if value == COMPRESSION_LZ4 or value == 'lz4':
         return COMPRESSION_LZ4
     raise ValueError(f'unsupported compression: {value}')
+
+
+def _normalize_compress_threshold(value):
+    if value is None:
+        return DEFAULT_COMPRESS_THRESHOLD
+    threshold = int(value)
+    return max(MIN_COMPRESS_THRESHOLD, threshold)
 
 
 def _zstd_compress(payload):

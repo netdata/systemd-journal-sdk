@@ -161,6 +161,12 @@ Current shared writer layout contract:
   `tests/interoperability/run_compact_matrix.py`, which checks compact layout,
   stock `journalctl --verify --file`, stock journalctl reads, stock libsystemd
   reads, and every repository reader against every repository writer.
+- DATA compression threshold policy follows systemd v260.1: default threshold
+  is 512 bytes, configured thresholds below 8 bytes are clamped to 8 bytes, and
+  compression is attempted for payloads whose uncompressed DATA payload length
+  is greater than or equal to the threshold. The Go zero-value options struct
+  treats `CompressThresholdBytes == 0` as unset so `Options{}` still uses the
+  systemd default.
 
 Current Go writer feature slice:
 
@@ -168,7 +174,7 @@ Current Go writer feature slice:
   `Options.Compact` is enabled;
 - uncompressed DATA objects by default;
 - optional zstd, xz, and lz4-compressed DATA object writing with configurable
-  compression threshold;
+  compression threshold using the shared systemd threshold policy;
 - keyed hash tables using the journal file ID;
 - byte-safe DATA field values through `Field.Value []byte`;
 - high-level directory writing with Netdata-compatible chain active naming by
@@ -347,7 +353,8 @@ Current Rust writer feature slice:
 - uncompressed DATA objects by default;
 - optional zstd, xz, and lz4-compressed DATA object writing with configurable
   compression threshold, including Rust zstd frame content-size metadata
-  required by stock systemd verification;
+  required by stock systemd verification, using the shared systemd threshold
+  policy;
 - keyed hash tables using the journal file ID;
 - deterministic file ID selection through `JournalFileOptions::with_file_id()`
   for reference fixture generation and conformance checks;
@@ -409,7 +416,8 @@ Current Node.js writer feature slice:
 - uncompressed DATA objects by default;
 - optional zstd, xz, and lz4-compressed DATA object writing with configurable
   compression threshold through Node.js built-in `node:zlib`, pure
-  JavaScript `lz4js@0.2.0`, and `node-liblzma@5.0.1` WASM path;
+  JavaScript `lz4js@0.2.0`, and `node-liblzma@5.0.1` WASM path, using the
+  shared systemd threshold policy;
 - keyed hash tables using the journal file ID;
 - byte-safe field values through `Buffer`, `Uint8Array`, and string-compatible
   field values;
@@ -472,7 +480,7 @@ Current Python writer feature slice:
 - uncompressed DATA objects by default;
 - optional zstd, xz, and lz4-compressed DATA object writing with configurable
   compression threshold through Python `compression.zstd`, standard-library
-  `lzma`, and `lz4==4.4.5`;
+  `lzma`, and `lz4==4.4.5`, using the shared systemd threshold policy;
 - keyed hash tables using the journal file ID;
 - byte-safe field values through `bytes`, `bytearray`, `memoryview`, and
   string-compatible field values;

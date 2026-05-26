@@ -2,7 +2,8 @@ use anyhow::{Context, Result, anyhow};
 use base64::Engine;
 use clap::Parser;
 use journal_core::file::{
-    Compression, JournalFile, JournalFileOptions, JournalState, JournalWriter, MmapMut,
+    Compression, DEFAULT_COMPRESS_THRESHOLD, JournalFile, JournalFileOptions, JournalState,
+    JournalWriter, MmapMut,
 };
 use journal_registry::repository::File as RepositoryFile;
 use serde::Deserialize;
@@ -112,11 +113,16 @@ fn create_writer(path: &Path, compact: bool) -> Result<(JournalFile<MmapMut>, Jo
         .with_window_size(8 * 1024 * 1024)
         .with_keyed_hash(true)
         .with_compression(Compression::None)
-        .with_compress_threshold(64)
+        .with_compress_threshold(DEFAULT_COMPRESS_THRESHOLD)
         .with_compact(compact);
     let mut journal_file = JournalFile::<MmapMut>::create(&repo_file, options)?;
-    let writer =
-        JournalWriter::new_with_compression(&mut journal_file, 1, boot_id, Compression::None, 64)?;
+    let writer = JournalWriter::new_with_compression(
+        &mut journal_file,
+        1,
+        boot_id,
+        Compression::None,
+        DEFAULT_COMPRESS_THRESHOLD,
+    )?;
     Ok((journal_file, writer))
 }
 

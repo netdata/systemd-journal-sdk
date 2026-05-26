@@ -4,12 +4,12 @@ use super::mmap::MemoryMapMut;
 use super::mmap::MmapMut;
 use crate::error::{JournalError, Result};
 use crate::file::{
-    CompactDataFields, CompactEntryItem, Compression, DataHashTable, DataObject, DataObjectHeader,
-    DataPayloadType, EntryObject, EntryObjectHeader, FieldHashTable, FieldObject,
-    FieldObjectHeader, HashItem, HashTable, HashTableMut, HashableObject, HashableObjectMut,
-    HeaderIncompatibleFlags, JournalFile, JournalFileOptions, JournalHeader, JournalState,
-    ObjectFlags, ObjectHeader, ObjectType, RegularEntryItem, hash::jenkins_hash64,
-    journal_hash_data,
+    CompactDataFields, CompactEntryItem, Compression, DEFAULT_COMPRESS_THRESHOLD, DataHashTable,
+    DataObject, DataObjectHeader, DataPayloadType, EntryObject, EntryObjectHeader, FieldHashTable,
+    FieldObject, FieldObjectHeader, HashItem, HashTable, HashTableMut, HashableObject,
+    HashableObjectMut, HeaderIncompatibleFlags, JournalFile, JournalFileOptions, JournalHeader,
+    JournalState, ObjectFlags, ObjectHeader, ObjectType, RegularEntryItem, hash::jenkins_hash64,
+    journal_hash_data, normalize_compress_threshold,
 };
 use crate::seal::TAG_LENGTH;
 use rand::{Rng, seq::IndexedRandom};
@@ -23,7 +23,6 @@ use zerocopy::{FromBytes, IntoBytes};
 
 const OBJECT_ALIGNMENT: u64 = 8;
 const JOURNAL_COMPACT_SIZE_MAX: u64 = u32::MAX as u64;
-const DEFAULT_COMPRESS_THRESHOLD: usize = 64;
 const FIELD_CACHE_MAX_ENTRIES: usize = 1024;
 const FIELD_CACHE_MAX_PAYLOAD_LEN: usize = 128;
 const RECENT_DATA_CACHE_SLOTS: usize = 4096;
@@ -218,7 +217,7 @@ impl JournalWriter {
             first_entry_monotonic: None,
             boot_id,
             compression,
-            compress_threshold,
+            compress_threshold: normalize_compress_threshold(compress_threshold),
             seal,
         };
 
@@ -1342,7 +1341,10 @@ mod tests {
     // ------------------------------------------------------------------
 
     use super::{JournalFile, JournalWriter};
-    use crate::file::{HeaderCompatibleFlags, JournalFileOptions, MmapMut};
+    use crate::file::{
+        Compression, DEFAULT_COMPRESS_THRESHOLD, HeaderCompatibleFlags, JournalFileOptions,
+        MIN_COMPRESS_THRESHOLD, MmapMut, ObjectFlags, normalize_compress_threshold,
+    };
     use crate::seal::{SealOptions, TAG_LENGTH};
     #[cfg(unix)]
     use std::os::unix::fs::FileExt;
@@ -1357,6 +1359,74 @@ mod tests {
 
     fn test_seal_opts() -> SealOptions {
         SealOptions::new([0u8; 12], 1_000_000, 1_000_000)
+    }
+
+    fn zstd_writer(threshold: usize) -> JournalWriter {
+        JournalWriter {
+            tail_object_offset: NonZeroU64::new(8).unwrap(),
+            append_offset: NonZeroU64::new(16).unwrap(),
+            next_seqnum: 1,
+            num_written_objects: 0,
+            first_tag_written: false,
+            entry_items: Vec::new(),
+            field_cache: FieldCache::new(),
+            recent_data_cache: RecentDataCache::new(),
+            first_entry_monotonic: None,
+            boot_id: test_uuid(4),
+            compression: Compression::Zstd,
+            compress_threshold: normalize_compress_threshold(threshold),
+            seal: None,
+        }
+    }
+
+    fn payload_with_total_len(len: usize) -> Vec<u8> {
+        let mut payload = b"F=".to_vec();
+        payload.resize(len, b'A');
+        payload
+    }
+
+    #[test]
+    fn compression_threshold_matches_systemd_default_boundary() {
+        let writer = zstd_writer(DEFAULT_COMPRESS_THRESHOLD);
+        let below = payload_with_total_len(DEFAULT_COMPRESS_THRESHOLD - 1);
+        let exact = payload_with_total_len(DEFAULT_COMPRESS_THRESHOLD);
+
+        let (_, below_flags) = writer.stored_data_payload(&below);
+        let (stored_exact, exact_flags) = writer.stored_data_payload(&exact);
+
+        assert_eq!(below_flags, 0);
+        assert_eq!(exact_flags, ObjectFlags::CompressedZstd as u8);
+        assert!(stored_exact.len() < exact.len());
+    }
+
+    #[test]
+    fn compression_threshold_clamps_to_systemd_minimum() {
+        assert_eq!(
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3)).compress_threshold(),
+            DEFAULT_COMPRESS_THRESHOLD
+        );
+        assert_eq!(normalize_compress_threshold(0), MIN_COMPRESS_THRESHOLD);
+        assert_eq!(normalize_compress_threshold(1), MIN_COMPRESS_THRESHOLD);
+        assert_eq!(
+            normalize_compress_threshold(MIN_COMPRESS_THRESHOLD),
+            MIN_COMPRESS_THRESHOLD
+        );
+        assert_eq!(zstd_writer(1).compress_threshold, MIN_COMPRESS_THRESHOLD);
+        assert_eq!(
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_compress_threshold(1)
+                .compress_threshold(),
+            MIN_COMPRESS_THRESHOLD
+        );
+
+        let writer = zstd_writer(1);
+        let small = payload_with_total_len(MIN_COMPRESS_THRESHOLD - 1);
+        let (_, small_flags) = writer.stored_data_payload(&small);
+        assert_eq!(small_flags, 0);
+
+        let payload = payload_with_total_len(DEFAULT_COMPRESS_THRESHOLD);
+        let (_, flags) = writer.stored_data_payload(&payload);
+        assert_eq!(flags, ObjectFlags::CompressedZstd as u8);
     }
 
     fn verification_key(opts: &SealOptions) -> String {

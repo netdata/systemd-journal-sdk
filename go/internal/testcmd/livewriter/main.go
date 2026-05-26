@@ -32,7 +32,7 @@ func main() {
 	flag.IntVar(&crashAfter, "crash-after", 0, "exit with status 17 after N entries without closing")
 	flag.BoolVar(&binaryFixture, "binary-fixture", false, "write binary fields in the first entry")
 	flag.StringVar(&compressionStr, "compression", "none", "compression: none, xz, lz4, zstd")
-	flag.IntVar(&compressThreshold, "compress-threshold", 64, "minimum payload size for compression")
+	flag.IntVar(&compressThreshold, "compress-threshold", 512, "minimum payload size for compression")
 	flag.BoolVar(&zstdFixture, "zstd-fixture", false, "write zstd-compressed fields in the first entry")
 	flag.BoolVar(&xzFixture, "xz-fixture", false, "write xz-compressed fields in the first entry")
 	flag.BoolVar(&lz4Fixture, "lz4-fixture", false, "write lz4-compressed fields in the first entry")

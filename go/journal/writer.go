@@ -44,7 +44,9 @@ type Options struct {
 	// Defaults to CompressionNone.
 	Compression int
 	// CompressThresholdBytes is the minimum uncompressed payload size in bytes
-	// required before compression is attempted. Defaults to 64.
+	// required before compression is attempted. Defaults to systemd's 512-byte
+	// threshold. A zero value uses the default; non-zero values below 8 bytes
+	// are clamped to 8.
 	CompressThresholdBytes int
 	// Compact writes the systemd compact journal object layout. Regular layout
 	// remains the default for existing deterministic fixtures.
@@ -441,6 +443,8 @@ func normalizeOptions(opts Options) Options {
 	}
 	if opts.CompressThresholdBytes == 0 {
 		opts.CompressThresholdBytes = defaultCompressThreshold
+	} else if opts.CompressThresholdBytes < minCompressThreshold {
+		opts.CompressThresholdBytes = minCompressThreshold
 	}
 	return opts
 }

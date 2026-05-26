@@ -63,7 +63,7 @@ function makeWriter(path, compact) {
     fileId: FILE_ID,
     headSeqnum: 1,
     compression: 'none',
-    compressionThresholdBytes: 64,
+    compressionThresholdBytes: 512,
     compact,
   });
 }

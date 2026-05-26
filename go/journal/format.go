@@ -78,7 +78,10 @@ const (
 	CompressionLZ4  = 3
 )
 
-const defaultCompressThreshold = 64
+const (
+	defaultCompressThreshold = 512
+	minCompressThreshold     = 8
+)
 
 var (
 	errInvalidJournal     = errors.New("invalid journal file")

@@ -150,7 +150,7 @@ func makeWriter(path string, compact bool) (*journal.Writer, error) {
 		FileID:                 fileID,
 		HeadSeqnum:             1,
 		Compression:            journal.CompressionNone,
-		CompressThresholdBytes: 64,
+		CompressThresholdBytes: 512,
 		Compact:                compact,
 	})
 }

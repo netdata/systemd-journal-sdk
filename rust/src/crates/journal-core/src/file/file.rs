@@ -21,6 +21,12 @@ use crate::file::value_guard::ValueGuard;
 
 // Size to pad objects to (8 bytes)
 const OBJECT_ALIGNMENT: u64 = 8;
+pub const DEFAULT_COMPRESS_THRESHOLD: usize = 512;
+pub const MIN_COMPRESS_THRESHOLD: usize = 8;
+
+pub fn normalize_compress_threshold(threshold: usize) -> usize {
+    threshold.max(MIN_COMPRESS_THRESHOLD)
+}
 
 /// Validates that an offset is properly aligned for journal objects.
 /// Journal objects must be 8-byte aligned.
@@ -149,7 +155,7 @@ impl JournalFileOptions {
             field_hash_table_buckets: 1_023,
             enable_keyed_hash: true,
             compression: Compression::None,
-            compress_threshold: 64,
+            compress_threshold: DEFAULT_COMPRESS_THRESHOLD,
             compact: false,
             seal: None,
         }
@@ -233,7 +239,7 @@ impl JournalFileOptions {
     }
 
     pub fn with_compress_threshold(mut self, threshold: usize) -> Self {
-        self.compress_threshold = threshold;
+        self.compress_threshold = normalize_compress_threshold(threshold);
         self
     }
 

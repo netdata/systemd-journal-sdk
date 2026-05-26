@@ -15,7 +15,8 @@ Current writer scope:
   `journal.Options{Compact: true}`;
 - uncompressed DATA objects by default;
 - optional zstd, xz, and lz4-compressed DATA object writing with
-  `journal.Options`;
+  `journal.Options`, using systemd's 512-byte default threshold and an 8-byte
+  minimum clamp for positive configured thresholds;
 - keyed hash tables using the journal file ID;
 - byte-safe field values through `journal.Field{Name, Value []byte}`;
 - create, online close, explicit offline close, archive close, and

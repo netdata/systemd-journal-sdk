@@ -1,7 +1,10 @@
 use anyhow::{Result, anyhow};
 use clap::Parser;
 use journal::{Config, EntryTimestamps, Log, Origin, RetentionPolicy, RotationPolicy, Source};
-use journal_core::file::{Compression, JournalFile, JournalFileOptions, JournalWriter, MmapMut};
+use journal_core::file::{
+    Compression, DEFAULT_COMPRESS_THRESHOLD, JournalFile, JournalFileOptions, JournalWriter,
+    MmapMut,
+};
 use journal_core::repository::File as RepositoryFile;
 use std::fs;
 use std::path::PathBuf;
@@ -36,7 +39,7 @@ struct Args {
     #[arg(
         long = "compression-threshold-bytes",
         alias = "compress-threshold",
-        default_value_t = 64
+        default_value_t = DEFAULT_COMPRESS_THRESHOLD
     )]
     compression_threshold: usize,
     #[arg(long = "compact", default_value_t = false)]

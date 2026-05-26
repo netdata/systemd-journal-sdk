@@ -57,6 +57,7 @@ from journal.header import (  # noqa: E402
     OBJECT_TYPE_DATA,
     STATE_ARCHIVED,
     parse_file_header,
+    parse_object_header,
     write_object_header,
 )
 from journal.seal import COMPATIBLE_SEALED_CONTINUOUS, OBJECT_TYPE_TAG  # noqa: E402
@@ -123,6 +124,19 @@ def journalctl_directory_rows_if_available(directory, *matches):
     ])
     text = output.decode().strip()
     return [] if text == '' else [json.loads(line) for line in text.splitlines()]
+
+
+def journal_has_data_object_flag(path, flag):
+    data = Path(path).read_bytes()
+    offset = HEADER_SIZE
+    while offset + 16 <= len(data):
+        obj = parse_object_header(data, offset)
+        if obj is None or obj['type'] == 0 or obj['size'] == 0:
+            return False
+        if obj['type'] == OBJECT_TYPE_DATA and obj['flags'] & flag:
+            return True
+        offset = ((offset + obj['size'] + 7) // 8) * 8
+    return False
 
 
 def test_match_validation():
@@ -275,6 +289,50 @@ def test_writer_head_seqnum_zero_defaults_to_one():
         assert reader.step()
         assert reader.get_entry()['seqnum'] == 1
         reader.close()
+
+
+def test_compression_threshold_systemd_policy():
+    from journal.writer import DEFAULT_COMPRESS_THRESHOLD, MIN_COMPRESS_THRESHOLD
+
+    cases = [
+        {
+            'name': 'default below threshold',
+            'options': {},
+            'payload_len': DEFAULT_COMPRESS_THRESHOLD - 1,
+            'want_threshold': DEFAULT_COMPRESS_THRESHOLD,
+            'want_compressed': False,
+        },
+        {
+            'name': 'default exact threshold',
+            'options': {},
+            'payload_len': DEFAULT_COMPRESS_THRESHOLD,
+            'want_threshold': DEFAULT_COMPRESS_THRESHOLD,
+            'want_compressed': True,
+        },
+        {
+            'name': 'minimum clamp',
+            'options': {'compression_threshold_bytes': 1},
+            'payload_len': MIN_COMPRESS_THRESHOLD - 1,
+            'want_threshold': MIN_COMPRESS_THRESHOLD,
+            'want_compressed': False,
+        },
+        {
+            'name': 'minimum clamp eligible payload',
+            'options': {'compression_threshold_bytes': 1},
+            'payload_len': DEFAULT_COMPRESS_THRESHOLD,
+            'want_threshold': MIN_COMPRESS_THRESHOLD,
+            'want_compressed': True,
+        },
+    ]
+    with tempfile.TemporaryDirectory() as td:
+        for case in cases:
+            path = os.path.join(td, case['name'].replace(' ', '-') + '.journal')
+            writer = Writer.create(path, {'compression': 'zstd', **case['options']})
+            assert writer._compress_threshold == case['want_threshold']
+            writer.append([{'name': 'F', 'value': b'A' * (case['payload_len'] - 2)}])
+            writer.close()
+            assert journal_has_data_object_flag(path, OBJECT_COMPRESSED_ZSTD) is case['want_compressed']
+            verify_journal_file_if_available(path)
 
 
 def test_compact_writer_reader_and_stock_verify():
@@ -1814,6 +1872,7 @@ def main():
     test_parse_file_header_historical_field_boundaries()
     test_writer_reader_and_binary_export()
     test_writer_head_seqnum_zero_defaults_to_one()
+    test_compression_threshold_systemd_policy()
     test_compact_writer_reader_and_stock_verify()
     test_writer_exclusive_lock()
     test_zstd_data_object_parse()

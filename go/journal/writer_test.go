@@ -183,6 +183,78 @@ func TestCreateAndOpenCompressedDataAlgorithms(t *testing.T) {
 	}
 }
 
+func TestCompressionThresholdSystemdPolicy(t *testing.T) {
+	tests := []struct {
+		name              string
+		configured        int
+		payloadLen        int
+		wantThreshold     int
+		wantCompressedObj bool
+	}{
+		{
+			name:              "default leaves byte below systemd threshold uncompressed",
+			payloadLen:        defaultCompressThreshold - 1,
+			wantThreshold:     defaultCompressThreshold,
+			wantCompressedObj: false,
+		},
+		{
+			name:              "default compresses at exact systemd threshold",
+			payloadLen:        defaultCompressThreshold,
+			wantThreshold:     defaultCompressThreshold,
+			wantCompressedObj: true,
+		},
+		{
+			name:              "positive configured threshold below systemd minimum clamps",
+			configured:        1,
+			payloadLen:        minCompressThreshold - 1,
+			wantThreshold:     minCompressThreshold,
+			wantCompressedObj: false,
+		},
+		{
+			name:              "clamped systemd minimum still compresses eligible payload",
+			configured:        1,
+			payloadLen:        defaultCompressThreshold,
+			wantThreshold:     minCompressThreshold,
+			wantCompressedObj: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "threshold.journal")
+			opts := testOptions()
+			opts.Compression = CompressionZSTD
+			opts.CompressThresholdBytes = tc.configured
+
+			w, err := Create(path, opts)
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			if w.compressThreshold != tc.wantThreshold {
+				t.Fatalf("compressThreshold = %d, want %d", w.compressThreshold, tc.wantThreshold)
+			}
+			if err := w.Append([]Field{fieldWithTotalPayloadLen(t, "F", tc.payloadLen)}, EntryOptions{
+				RealtimeUsec:  1_700_000_000_000_010,
+				MonotonicUsec: 110,
+			}); err != nil {
+				t.Fatalf("Append() error = %v", err)
+			}
+			if err := w.Close(); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+
+			snapshot := readJournalSnapshot(t, path)
+			gotCompressedObj := snapshotHasDataObjectFlag(snapshot, objectCompressedZSTD)
+			if gotCompressedObj != tc.wantCompressedObj {
+				t.Fatalf("zstd-compressed DATA object presence = %v, want %v", gotCompressedObj, tc.wantCompressedObj)
+			}
+			if _, err := exec.LookPath("journalctl"); err == nil {
+				verifyJournalctl(t, path)
+			}
+		})
+	}
+}
+
 func TestCreateRejectsUnsupportedCompression(t *testing.T) {
 	opts := testOptions()
 	opts.Compression = 99
@@ -611,6 +683,25 @@ func testOptions() Options {
 		DataHashTableBuckets:  64,
 		FieldHashTableBuckets: 16,
 	}
+}
+
+func fieldWithTotalPayloadLen(t *testing.T, name string, payloadLen int) Field {
+	t.Helper()
+
+	prefixLen := len(name) + 1
+	if payloadLen < prefixLen {
+		t.Fatalf("payload length %d is shorter than %q prefix", payloadLen, name+"=")
+	}
+	return Field{Name: name, Value: bytes.Repeat([]byte("A"), payloadLen-prefixLen)}
+}
+
+func snapshotHasDataObjectFlag(snapshot journalSnapshot, flag uint8) bool {
+	for _, data := range snapshot.dataByPayload {
+		if data.header.object.flag&flag != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func readJournalSnapshot(t *testing.T, path string) journalSnapshot {

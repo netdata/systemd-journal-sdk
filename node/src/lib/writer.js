@@ -33,7 +33,8 @@ export const COMPRESSION_NONE = 0;
 export const COMPRESSION_ZSTD = 1;
 export const COMPRESSION_XZ = 2;
 export const COMPRESSION_LZ4 = 3;
-export const DEFAULT_COMPRESS_THRESHOLD = 64;
+export const DEFAULT_COMPRESS_THRESHOLD = 512;
+export const MIN_COMPRESS_THRESHOLD = 8;
 
 export class Writer {
   constructor(fd, path, lock) {
@@ -61,7 +62,7 @@ export class Writer {
       ftruncateSync(fd, 0);
       const w = new Writer(fd, path, lock);
       w.compression = normalizeCompression(opts.compression);
-      w.compressThreshold = opts.compressionThresholdBytes ?? DEFAULT_COMPRESS_THRESHOLD;
+      w.compressThreshold = normalizeCompressThreshold(opts.compressionThresholdBytes);
       w.compact = opts.compact === true || opts.format === 'compact';
       if (opts.seal) {
         w.seal = new SealState(opts.seal);
@@ -1003,6 +1004,14 @@ function normalizeCompression(value) {
     return COMPRESSION_LZ4;
   }
   throw new Error(`unsupported compression: ${value}`);
+}
+
+function normalizeCompressThreshold(value) {
+  if (value === undefined || value === null) return DEFAULT_COMPRESS_THRESHOLD;
+  if (!Number.isSafeInteger(value)) {
+    throw new Error(`invalid compression threshold: ${value}`);
+  }
+  return Math.max(MIN_COMPRESS_THRESHOLD, value);
 }
 
 function _validateFieldName(name) {

@@ -1,4 +1,4 @@
-use journal_core::file::Compression;
+use journal_core::file::{Compression, DEFAULT_COMPRESS_THRESHOLD, normalize_compress_threshold};
 use journal_registry::Origin;
 use std::time::Duration;
 use uuid::Uuid;
@@ -134,7 +134,7 @@ impl Config {
             rotation_policy,
             retention_policy,
             compression: Compression::None,
-            compression_threshold: 64,
+            compression_threshold: DEFAULT_COMPRESS_THRESHOLD,
             compact: false,
             open_mode: LogOpenMode::Lazy,
             identity_mode: LogIdentityMode::Auto,
@@ -161,7 +161,7 @@ impl Config {
     }
 
     pub fn with_compression_threshold(mut self, threshold: usize) -> Self {
-        self.compression_threshold = threshold;
+        self.compression_threshold = normalize_compress_threshold(threshold);
         self
     }
 

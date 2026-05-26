@@ -611,7 +611,8 @@ def main() -> int:
     parser.add_argument("--readers", nargs="*", choices=sorted(READERS))
     parser.add_argument("--entries", type=int, default=10)
     parser.add_argument("--compression", choices=("none", "zstd", "xz", "lz4"), default="none")
-    parser.add_argument("--compression-threshold-bytes", type=int, default=64)
+    # Intentionally below the SDK default of 512 to exercise compression with small compact fixtures.
+    parser.add_argument("--compression-threshold-bytes", type=int, default=16)
     parser.add_argument("--keep-files", action="store_true")
     args = parser.parse_args()
 

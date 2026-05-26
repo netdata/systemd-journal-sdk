@@ -6,7 +6,6 @@
 
 ## Pending
 
-- `SOW-0029-20260526-compression-threshold-parity.md` - open. Split from SOW-0022 Gap 5. User decision: follow systemd compression threshold behavior, with 512-byte default and 8-byte minimum clamp across all four languages.
 - `SOW-0030-20260526-monotonic-writer-validity.md` - open. Split from SOW-0022 Gap 8. User decision: follow Netdata vendored behavior, with high-level writer clamping and low-level raw writer pass-through.
 - `SOW-0031-20260526-compressed-compact-structural-parity.md` - open. Split from SOW-0022 Gap 7. Add structural parity validation for compressed and compact writer outputs, with byte identity only where deterministic and meaningful.
 - `SOW-0032-20260526-live-feature-compatibility-matrix.md` - open. Split from SOW-0022 Gap 1. Extend live concurrency validation to compression, compact layout, compact plus compression, and FSS/sealed writer slices with stock journalctl, stock libsystemd, and repository readers.
@@ -17,6 +16,7 @@
 
 ## Done
 
+- `SOW-0029-20260526-compression-threshold-parity.md`
 - `SOW-0001-20260523-project-bootstrap-and-orchestration.md`
 - `SOW-0002-20260523-repo-scaffold-and-rust-source-import.md`
 - `SOW-0003-20260523-systemd-test-inventory-and-shared-harness.md`

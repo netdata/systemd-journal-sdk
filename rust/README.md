@@ -10,7 +10,8 @@ Current writer scope:
   `JournalFileOptions::with_compact(true)` or `Config::with_compact(true)`;
 - uncompressed DATA objects by default;
 - optional zstd, xz, and lz4-compressed DATA object writing through
-  `JournalFileOptions` and `journal::Config`;
+  `JournalFileOptions` and `journal::Config`, using systemd's 512-byte default
+  threshold and 8-byte minimum clamp;
 - keyed hash tables using the journal file ID;
 - byte-safe field values through `&[u8]` field payloads;
 - direct-file writing through `journal_core`;

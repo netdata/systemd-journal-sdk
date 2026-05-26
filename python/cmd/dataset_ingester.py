@@ -78,7 +78,7 @@ def make_writer(path: Path, compact: bool) -> Writer:
             "file_id": FILE_ID,
             "head_seqnum": 1,
             "compression": "none",
-            "compression_threshold_bytes": 64,
+            "compression_threshold_bytes": 512,
             "compact": compact,
         },
     )

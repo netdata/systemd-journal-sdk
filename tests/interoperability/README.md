@@ -265,7 +265,7 @@ Useful options:
 ```bash
 python3 tests/interoperability/run_compact_matrix.py --writers go python
 python3 tests/interoperability/run_compact_matrix.py --readers stock rust python
-python3 tests/interoperability/run_compact_matrix.py --compression zstd --compression-threshold-bytes 1
+python3 tests/interoperability/run_compact_matrix.py --compression zstd --compression-threshold-bytes 8
 ```
 
 Each writer fixture enables explicit compact output while keeping the binary
