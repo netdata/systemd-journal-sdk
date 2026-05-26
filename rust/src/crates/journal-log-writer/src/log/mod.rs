@@ -56,7 +56,7 @@ fn create_chain(path: &Path, source: journal_registry::Source) -> Result<OwnedCh
     OwnedChain::new(path, machine_id, source)
 }
 
-/// Tracks rotation state for size and count limits
+/// Tracks rotation state for size and count limits.
 struct RotationState {
     size: Option<(u64, u64)>,      // (max, current)
     count: Option<(usize, usize)>, // (max, current)
@@ -291,6 +291,58 @@ impl EntryTimestamps {
 }
 
 impl Log {
+    fn duration_to_micros(duration: std::time::Duration) -> u64 {
+        duration.as_micros().try_into().unwrap_or(u64::MAX)
+    }
+
+    fn peek_entry_realtime(&self, timestamps: &EntryTimestamps) -> u64 {
+        let candidate = timestamps
+            .entry_realtime_usec
+            .unwrap_or_else(|| Microseconds::now().get());
+        let last_seen = self.clock.last_seen().get();
+        if candidate > last_seen {
+            candidate
+        } else {
+            last_seen.saturating_add(1)
+        }
+    }
+
+    fn should_rotate_for_realtime(&self, realtime: u64) -> bool {
+        let Some(active_file) = &self.active_file else {
+            return true;
+        };
+        if self.rotation_state.should_rotate() {
+            return true;
+        }
+        let Some(max_duration) = self.config.rotation_policy.duration_of_journal_file else {
+            return false;
+        };
+        let header = active_file.journal_file.journal_header_ref();
+        header.n_entries > 0
+            && header.head_entry_realtime > 0
+            && realtime.saturating_sub(header.head_entry_realtime)
+                >= Self::duration_to_micros(max_duration)
+    }
+
+    fn apply_retention(&mut self, protected_file: Option<&repository::File>) -> Result<()> {
+        let retention = self
+            .chain
+            .retain(&self.config.retention_policy, protected_file);
+        let deleted_files = retention.deleted_files;
+        if !deleted_files.is_empty()
+            && let Some(observer) = &self.lifecycle_observer
+        {
+            observer.on_event(&LogLifecycleEvent::RetainedDeleted {
+                files: deleted_files,
+            });
+        }
+        if let Some(error) = retention.error {
+            return Err(error);
+        }
+
+        Ok(())
+    }
+
     /// Captures both realtime and monotonic timestamps, similar to systemd's dual_timestamp_now().
     ///
     /// Returns (realtime_usec, monotonic_usec) where:
@@ -430,8 +482,9 @@ impl Log {
             return Err(WriterError::EmptyEntry);
         }
 
-        if self.should_rotate() {
-            self.rotate()?;
+        let entry_realtime = self.peek_entry_realtime(&timestamps);
+        if self.should_rotate_for_realtime(entry_realtime) {
+            self.rotate(entry_realtime)?;
             self.remapping_registry.clear();
         }
 
@@ -698,20 +751,7 @@ impl Log {
         };
         active_file.journal_file.release_writer_lock()?;
 
-        let retention = self
-            .chain
-            .retain(&self.config.retention_policy, Some(&protected_file));
-        let deleted_files = retention.deleted_files;
-        if !deleted_files.is_empty()
-            && let Some(observer) = &self.lifecycle_observer
-        {
-            observer.on_event(&LogLifecycleEvent::RetainedDeleted {
-                files: deleted_files,
-            });
-        }
-        if let Some(error) = retention.error {
-            return Err(error);
-        }
+        self.apply_retention(Some(&protected_file))?;
 
         Ok(())
     }
@@ -722,12 +762,24 @@ impl Log {
             .map(|active_file| &active_file.repository_file)
     }
 
-    fn should_rotate(&self) -> bool {
-        self.active_file.is_none() || self.rotation_state.should_rotate()
+    /// Applies the configured retention policy without requiring a rotation or
+    /// close. The current active file is counted in retention envelopes and is
+    /// protected from deletion.
+    pub fn enforce_retention(&mut self) -> Result<()> {
+        let protected_file = if let Some(active_file) = &self.active_file {
+            self.chain.update_file_size(
+                &active_file.repository_file,
+                active_file.current_file_size(),
+            );
+            Some(active_file.repository_file.clone())
+        } else {
+            None
+        };
+        self.apply_retention(protected_file.as_ref())
     }
 
     #[tracing::instrument(skip_all, fields(active_file))]
-    fn rotate(&mut self) -> Result<()> {
+    fn rotate(&mut self, head_realtime: u64) -> Result<()> {
         use journal_core::file::JournalState;
 
         // Update chain with current file size before rotating
@@ -742,7 +794,6 @@ impl Log {
 
         // Create new file (either initial or rotated)
         let max_file_size = self.config.rotation_policy.size_of_journal_file;
-        let head_realtime = self.clock.now().get();
         let (new_file, rotation_event) = if let Some(mut old_file) = self.active_file.take() {
             // Set the old file's state to ARCHIVED before creating successor
             old_file.journal_file.journal_header_mut().state = JournalState::Archived as u8;
@@ -811,20 +862,8 @@ impl Log {
             .active_file
             .as_ref()
             .map(|active_file| &active_file.repository_file);
-        let retention = self
-            .chain
-            .retain(&self.config.retention_policy, protected_file);
-        let deleted_files = retention.deleted_files;
-        if !deleted_files.is_empty()
-            && let Some(observer) = &self.lifecycle_observer
-        {
-            observer.on_event(&LogLifecycleEvent::RetainedDeleted {
-                files: deleted_files,
-            });
-        }
-        if let Some(error) = retention.error {
-            return Err(error);
-        }
+        let protected_file = protected_file.cloned();
+        self.apply_retention(protected_file.as_ref())?;
 
         Ok(())
     }

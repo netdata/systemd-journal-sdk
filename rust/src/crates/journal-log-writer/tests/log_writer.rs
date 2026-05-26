@@ -303,10 +303,8 @@ fn test_default_chain_discards_empty_online_file_and_continues_sequence() {
     let dir = TempDir::new().unwrap();
     {
         let mut log = Log::new(dir.path(), test_config()).unwrap();
-        log.write_entry(&[b"MESSAGE=empty reopen 0"], None)
-            .unwrap();
-        log.write_entry(&[b"MESSAGE=empty reopen 1"], None)
-            .unwrap();
+        log.write_entry(&[b"MESSAGE=empty reopen 0"], None).unwrap();
+        log.write_entry(&[b"MESSAGE=empty reopen 1"], None).unwrap();
         log.close().unwrap();
     }
 
@@ -336,8 +334,7 @@ fn test_default_chain_discards_empty_online_file_and_continues_sequence() {
 
     {
         let mut log = Log::new(dir.path(), test_config()).unwrap();
-        log.write_entry(&[b"MESSAGE=empty reopen 2"], None)
-            .unwrap();
+        log.write_entry(&[b"MESSAGE=empty reopen 2"], None).unwrap();
         log.close().unwrap();
     }
 
@@ -647,6 +644,47 @@ fn test_rotation_by_file_size() {
 }
 
 #[test]
+fn test_rotation_by_duration() {
+    let dir = TempDir::new().unwrap();
+    let base = 1_900_000_000_000_000_u64;
+    let rotation =
+        RotationPolicy::default().with_duration_of_journal_file(std::time::Duration::from_secs(10));
+    let config = test_config().with_rotation_policy(rotation);
+
+    let mut log = Log::new(dir.path(), config).unwrap();
+    for (index, realtime) in [base, base + 9_999_999, base + 10_000_000]
+        .into_iter()
+        .enumerate()
+    {
+        let message = format!("MESSAGE=duration rotation {index}");
+        log.write_entry_with_timestamps(
+            &[message.as_bytes()],
+            EntryTimestamps::default()
+                .with_entry_realtime_usec(realtime)
+                .with_entry_monotonic_usec(index as u64 + 1),
+        )
+        .unwrap();
+    }
+    log.close().unwrap();
+
+    let files = journal_file_paths(&dir);
+    assert_eq!(
+        files.len(),
+        2,
+        "duration rotation should split entries across two files"
+    );
+    let entry_counts: Vec<u64> = files
+        .iter()
+        .map(|path| {
+            let file = File::from_path(path).expect("duration rotation path should parse");
+            let journal = JournalFile::<Mmap>::open(&file, 4096).expect("open duration journal");
+            journal.journal_header_ref().n_entries
+        })
+        .collect();
+    assert_eq!(entry_counts, vec![2, 1]);
+}
+
+#[test]
 fn test_compact_rotation_preserves_compact_format() {
     let dir = TempDir::new().unwrap();
 
@@ -844,6 +882,87 @@ fn test_retention_by_total_size() {
         "Size-based retention should limit files, got {}",
         file_count
     );
+}
+
+#[test]
+fn test_enforce_retention_deletes_files_by_age_without_append() {
+    let dir = TempDir::new().unwrap();
+    let config =
+        test_config().with_rotation_policy(RotationPolicy::default().with_number_of_entries(1));
+
+    let mut first = Log::new(dir.path(), config).unwrap();
+    first
+        .write_entry(&[b"MESSAGE=age retention 0"], None)
+        .unwrap();
+    first
+        .write_entry(&[b"MESSAGE=age retention 1"], None)
+        .unwrap();
+    first
+        .write_entry(&[b"MESSAGE=age retention 2"], None)
+        .unwrap();
+    first.close().unwrap();
+    assert_eq!(count_journal_files(&dir), 3);
+    std::thread::sleep(std::time::Duration::from_millis(2));
+
+    let retained_config = test_config().with_retention_policy(
+        RetentionPolicy::default()
+            .with_duration_of_journal_files(std::time::Duration::from_micros(1)),
+    );
+    let mut retained = Log::new(dir.path(), retained_config).unwrap();
+    assert_eq!(
+        count_journal_files(&dir),
+        3,
+        "construction must not enforce age retention"
+    );
+    retained.enforce_retention().unwrap();
+    assert_eq!(
+        count_journal_files(&dir),
+        0,
+        "explicit age retention should delete expired archived files"
+    );
+}
+
+#[test]
+fn test_enforce_retention_protects_active_file_by_age() {
+    let dir = TempDir::new().unwrap();
+    let config =
+        test_config().with_rotation_policy(RotationPolicy::default().with_number_of_entries(1));
+
+    let mut first = Log::new(dir.path(), config).unwrap();
+    first
+        .write_entry(&[b"MESSAGE=age active retention 0"], None)
+        .unwrap();
+    first
+        .write_entry(&[b"MESSAGE=age active retention 1"], None)
+        .unwrap();
+    first.close().unwrap();
+    assert_eq!(count_journal_files(&dir), 2);
+    std::thread::sleep(std::time::Duration::from_millis(2));
+
+    let retained_config = test_config().with_retention_policy(
+        RetentionPolicy::default()
+            .with_duration_of_journal_files(std::time::Duration::from_micros(1)),
+    );
+    let mut retained = Log::new(dir.path(), retained_config).unwrap();
+    retained
+        .write_entry(&[b"MESSAGE=age protected active"], None)
+        .unwrap();
+    let active_path = retained
+        .active_file()
+        .expect("active file after append")
+        .path();
+    let active_path = PathBuf::from(active_path);
+    std::thread::sleep(std::time::Duration::from_millis(2));
+
+    retained.enforce_retention().unwrap();
+    let paths = journal_file_paths(&dir);
+    assert_eq!(
+        paths,
+        vec![active_path.clone()],
+        "age retention must delete expired archives but keep the active file"
+    );
+    assert!(active_path.exists());
+    retained.close().unwrap();
 }
 
 #[test]

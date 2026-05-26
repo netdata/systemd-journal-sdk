@@ -18,8 +18,8 @@ Current writer scope:
 - Netdata-compatible chain active naming by default, with
   `Config::with_strict_systemd_naming(true)` available for strict systemd
   `<source>.journal` active naming;
-- entry-count and file-size rotation;
-- tracked journal-file-count and byte-size retention;
+- entry-count, file-size, and duration rotation;
+- tracked journal-file-count, byte-size, and age retention;
 - pure cross-SDK cooperative lockfile with stale-owner detection to prevent
   multiple SDK writers from opening the same file;
 - Forward Secure Sealing TAG writing through `SealOptions`, including stock
@@ -34,7 +34,6 @@ Current writer scope:
 Deferred scope:
 
 - appending to arbitrary historical or systemd-created journal variants;
-- duration-based directory rotation and retention;
 - full systemd object-graph verification parity beyond the current repository
   verification API.
 
@@ -81,8 +80,12 @@ let origin = Origin {
 };
 let config = Config::new(
     origin,
-    RotationPolicy::default(),
-    RetentionPolicy::default(),
+    RotationPolicy::default()
+        .with_number_of_entries(100000)
+        .with_duration_of_journal_file(std::time::Duration::from_secs(3600)),
+    RetentionPolicy::default()
+        .with_number_of_journal_files(10)
+        .with_duration_of_journal_files(std::time::Duration::from_secs(7 * 24 * 3600)),
 );
 let mut log = Log::new("/var/log/journal-sdk", config)?;
 
@@ -107,9 +110,13 @@ active file.
 Unset rotation and retention limits are disabled. Retention counts the tracked
 active/current file in file-count and committed-byte limits, but deletion only
 selects older unprotected files owned by the configured source; the tracked
-active/current file is never deleted to satisfy a retention limit.
-Call `Log::close()` to archive the current file and enforce retention; `Drop`
-only performs best-effort state persistence.
+active/current file is never deleted to satisfy a retention limit. Duration
+rotation is checked before append using the incoming entry realtime and the
+active file head realtime.
+Call `Log::enforce_retention()` to apply age/count/byte retention without
+waiting for another append-triggered rotation or close. Call `Log::close()` to
+archive the current file and enforce retention; `Drop` only performs best-effort
+state persistence.
 
 Binary-safe values:
 

@@ -18,6 +18,7 @@ var syncJournalDirectory = syncParentDir
 type RotationPolicy struct {
 	MaxFileSize uint64
 	MaxEntries  int
+	MaxDuration time.Duration
 }
 
 // WithMaxFileSize returns a policy that rotates after the active file reaches
@@ -36,10 +37,19 @@ func (p RotationPolicy) WithMaxEntries(n int) RotationPolicy {
 	return p
 }
 
+// WithMaxDuration returns a policy that rotates before appending an entry whose
+// realtime timestamp is at least d after the active file head timestamp. Values
+// at or below zero disable duration rotation.
+func (p RotationPolicy) WithMaxDuration(d time.Duration) RotationPolicy {
+	p.MaxDuration = d
+	return p
+}
+
 // RetentionPolicy controls deletion of old archived files owned by a Log.
 type RetentionPolicy struct {
 	MaxFiles int
 	MaxBytes uint64
+	MaxAge   time.Duration
 }
 
 // WithMaxFiles returns a policy that keeps at most n tracked journal files. The
@@ -55,6 +65,14 @@ func (p RetentionPolicy) WithMaxFiles(n int) RetentionPolicy {
 // limit.
 func (p RetentionPolicy) WithMaxBytes(size uint64) RetentionPolicy {
 	p.MaxBytes = size
+	return p
+}
+
+// WithMaxAge returns a policy that deletes archived files whose head realtime
+// timestamp is older than d. The active/current file is counted but is never
+// deleted to satisfy this limit.
+func (p RetentionPolicy) WithMaxAge(d time.Duration) RetentionPolicy {
+	p.MaxAge = d
 	return p
 }
 
@@ -233,7 +251,8 @@ func (l *Log) Append(fields []Field, opts EntryOptions) error {
 	if err := validateEntryFields(fields); err != nil {
 		return err
 	}
-	if l.writer != nil && l.shouldRotate() {
+	opts = l.entryOptionsForAppend(opts)
+	if l.writer != nil && l.shouldRotate(opts.RealtimeUsec) {
 		if err := l.rotate(opts); err != nil {
 			return err
 		}
@@ -272,6 +291,16 @@ func (l *Log) Sync() error {
 		return nil
 	}
 	return l.writer.Sync()
+}
+
+// EnforceRetention applies the configured retention policy without requiring a
+// rotation or close. The current active file is counted in retention envelopes
+// and protected from deletion.
+func (l *Log) EnforceRetention() error {
+	if l.closed {
+		return errWriterClosed
+	}
+	return l.enforceRetention(l.activePath())
 }
 
 // Close archives the active file and applies retention.
@@ -365,16 +394,24 @@ func (l *Log) ensureWriter(entryOpts EntryOptions) error {
 	return nil
 }
 
-func (l *Log) shouldRotate() bool {
+func (l *Log) shouldRotate(nextRealtimeUsec uint64) bool {
 	if l.writer == nil {
 		return false
 	}
 	if l.rotation.MaxEntries > 0 && l.entriesInFile >= l.rotation.MaxEntries {
 		return true
 	}
-	return l.writer.header.nEntries > 0 &&
+	if l.writer.header.nEntries > 0 &&
 		l.rotation.MaxFileSize > 0 &&
-		l.writer.CurrentSize() >= l.rotation.MaxFileSize
+		l.writer.CurrentSize() >= l.rotation.MaxFileSize {
+		return true
+	}
+	if l.writer.header.nEntries == 0 || l.rotation.MaxDuration <= 0 {
+		return false
+	}
+	maxDurationUsec := durationUsec(l.rotation.MaxDuration)
+	return nextRealtimeUsec >= l.writer.header.headEntryRealtime &&
+		nextRealtimeUsec-l.writer.header.headEntryRealtime >= maxDurationUsec
 }
 
 func (l *Log) rotate(entryOpts EntryOptions) error {
@@ -400,14 +437,23 @@ func (l *Log) archiveActive() error {
 	if l.writer == nil {
 		return nil
 	}
+	nextSeqnum := l.writer.nextSeqnum
+	seqnumID := l.writer.header.seqnumID
+	bootID := l.writer.bootID
 	archivePath := l.activePath()
 	if l.strict {
 		archivePath = l.archivePathFor(l.writer.header)
 	}
 	if err := l.writer.archiveTo(archivePath); err != nil {
 		if l.writer.closed {
+			l.options.SeqnumID = seqnumID
+			l.options.BootID = bootID
+			l.options.HeadSeqnum = nextSeqnum
 			l.writer = nil
 			l.entriesInFile = 0
+			if !l.strict {
+				l.active = ""
+			}
 		}
 		return err
 	}
@@ -497,7 +543,55 @@ func (l *Log) enforceRetention(protectedPath string) error {
 		total = saturatingSub(total, deleted.size)
 		files = append(files[:deleteIndex], files[deleteIndex+1:]...)
 	}
+	if l.retention.MaxAge > 0 {
+		cutoff := uint64(time.Now().UnixMicro())
+		maxAgeUsec := durationUsec(l.retention.MaxAge)
+		if cutoff >= maxAgeUsec {
+			cutoff -= maxAgeUsec
+		} else {
+			cutoff = 0
+		}
+		for len(files) > 0 {
+			deleteIndex := -1
+			for i, file := range files {
+				if file.headRealtime > cutoff {
+					break
+				}
+				if activePath == "" || file.path != activePath {
+					deleteIndex = i
+					break
+				}
+			}
+			if deleteIndex == -1 {
+				break
+			}
+			deleted := files[deleteIndex]
+			if err := os.Remove(deleted.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+			total = saturatingSub(total, deleted.size)
+			files = append(files[:deleteIndex], files[deleteIndex+1:]...)
+		}
+	}
 	return syncJournalDirectory(l.machineDir)
+}
+
+func (l *Log) entryOptionsForAppend(opts EntryOptions) EntryOptions {
+	if opts.RealtimeUsec == 0 {
+		opts.RealtimeUsec = uint64(time.Now().UnixMicro())
+	}
+	return opts
+}
+
+func durationUsec(d time.Duration) uint64 {
+	if d <= 0 {
+		return 0
+	}
+	usec := d / time.Microsecond
+	if usec <= 0 {
+		return 1
+	}
+	return uint64(usec)
 }
 
 func (l *Log) archivedFiles() ([]archivedJournalFile, uint64, error) {

@@ -28,13 +28,13 @@ Current writer scope:
   --file`, `journalctl --file --follow --no-tail --boot=all`, and libsystemd
   reader APIs, including live sequence-order checks;
 - high-level directory writing with Netdata-compatible chain active naming by
-  default, opt-in strict systemd active naming, entry-count and file-size
-  rotation, and tracked journal-file-count and byte-size retention.
+  default, opt-in strict systemd active naming, entry-count, file-size, and
+  duration rotation, plus tracked journal-file-count, byte-size, and age
+  retention.
 
 Deferred scope:
 
 - appending to arbitrary historical or systemd-created journal variants;
-- duration-based directory rotation and retention;
 - full systemd object-graph verification parity beyond the current repository
   verification API.
 
@@ -107,10 +107,12 @@ log, err := journal.NewLog("/var/log/journal-sdk", journal.LogConfig{
     Source: "netdata-plugin",
     RotationPolicy: journal.RotationPolicy{}.
         WithMaxEntries(100000).
-        WithMaxFileSize(128 * 1024 * 1024),
+        WithMaxFileSize(128 * 1024 * 1024).
+        WithMaxDuration(time.Hour),
     RetentionPolicy: journal.RetentionPolicy{}.
         WithMaxFiles(8).
-        WithMaxBytes(1024 * 1024 * 1024),
+        WithMaxBytes(1024 * 1024 * 1024).
+        WithMaxAge(7 * 24 * time.Hour),
 })
 if err != nil {
     return err
@@ -128,10 +130,13 @@ current active file and opens a new active file. By default the active file uses
 the Netdata Rust writer chain filename form
 `<source>@<seqnum-id>-<head-seqnum>-<head-realtime>.journal`; set
 `StrictSystemdNaming: true` to use `<source>.journal` as the active file.
-Zero-valued rotation and retention limits are disabled. Retention counts the
-tracked active/current file in file-count and committed-byte limits, but
-deletion only selects older unprotected files owned by the configured `Source`;
-the tracked active/current file is never deleted to satisfy a retention limit.
+Zero-valued rotation and retention limits are disabled. Duration rotation is
+checked before append using the incoming entry realtime and the active file head
+realtime. Retention counts the tracked active/current file in file-count and
+committed-byte limits, but deletion only selects older unprotected files owned
+by the configured `Source`; the tracked active/current file is never deleted to
+satisfy a retention limit. Call `log.EnforceRetention()` to apply age/count/byte
+retention without waiting for another append-triggered rotation or close.
 
 Basic reader usage:
 

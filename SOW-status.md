@@ -2,7 +2,7 @@
 
 ## Current
 
-- `SOW-0023-20260525-netdata-ingestion-writer-api.md` - in-progress. Implementing the cross-language Netdata ingestion writer API superset needed by NetFlow, OTEL logs, and SNMP traps integration. Current verified slice aligns high-level writer naming, chain resume identity, strict naming sequence continuity, committed-byte retention accounting, active/current retention protection, empty-active crash recovery, and rotation/archive retry cleanup across Rust, Go, Node.js, and Python.
+- `SOW-0023-20260525-netdata-ingestion-writer-api.md` - in-progress. Implementing the cross-language Netdata ingestion writer API superset needed by NetFlow, OTEL logs, and SNMP traps integration. Current verified slice aligns high-level writer naming, chain resume identity, strict naming sequence continuity, committed-byte retention accounting, duration rotation, age retention, explicit retention enforcement, active/current retention protection, empty-active crash recovery, and rotation/archive retry cleanup across Rust, Go, Node.js, and Python.
 
 ## Pending
 

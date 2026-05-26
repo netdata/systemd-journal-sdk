@@ -31,7 +31,8 @@ no system journal library linkage.
   this writer
 - Append entries with BigInt timestamps and sequence numbers
 - Directory writer with Netdata chain active naming by default, opt-in strict
-  systemd active naming, rotation, and retention
+  systemd active naming, entry-count/file-size/duration rotation, and
+  file-count/byte/age retention
 - Pure cross-SDK cooperative lockfile with stale-owner detection to prevent multiple SDK writers from opening the same file
 - Native systemd writers do not participate in the SDK lock protocol and remain an operational exclusion
 
@@ -125,8 +126,10 @@ const journal = new Log('/path/to/journal-dir', {
   source: 'system',
   maxEntries: 100000,
   maxBytes: 128 * 1024 * 1024,
+  maxDurationUsec: 3_600_000_000n,
   maxFiles: 10,
   maxRetentionBytes: 1024 * 1024 * 1024,
+  maxRetentionAgeUsec: 7n * 24n * 3_600_000_000n,
 });
 
 journal.append([
@@ -142,10 +145,14 @@ Netdata Rust writer chain filename form for the active file:
 `<source>@<seqnum-id>-<head-seqnum>-<head-realtime>.journal`. Set
 `strictSystemdNaming: true` to use `<source>.journal` as the active file.
 Rotation and retention limits are disabled when omitted or set to `0`; the
-example above opts into explicit limits. Retention counts the tracked
-active/current file in file-count and committed-byte limits, but deletion only
-selects older unprotected files owned by the configured source; the tracked
-active/current file is never deleted to satisfy a retention limit.
+example above opts into explicit limits. Duration rotation is checked before
+append using the incoming entry realtime and the active file head realtime.
+Retention counts the tracked active/current file in file-count and
+committed-byte limits, but deletion only selects older unprotected files owned
+by the configured source; the tracked active/current file is never deleted to
+satisfy a retention limit. Call `journal.enforceRetention()` to apply
+age/count/byte retention without waiting for another append-triggered rotation
+or close.
 
 ## journalctl CLI
 
@@ -191,6 +198,7 @@ node cmd/journalctl/index.js --file ./sample.journal PRIORITY=3 PRIORITY=4 + MES
 - `new Log(directory, options)` - Create a high-level directory writer
 - `log.append(fields, options)` - Append through the directory writer
 - `log.sync()` - Sync the active journal file
+- `log.enforceRetention()` - Apply retention without rotating or closing
 - `log.close()` - Archive the active file and apply retention
 - `log.activeFile()` - Return the current active file path
 - `log.journalDirectory()` - Return the machine-id journal directory

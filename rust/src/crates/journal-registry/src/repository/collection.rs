@@ -63,13 +63,25 @@ impl Chain {
     ///
     /// Active files are never drained.
     pub fn drain(&mut self, cutoff_time: u64) -> impl Iterator<Item = File> + '_ {
-        let pos = self.files.partition_point(|file| match file.status() {
-            Status::Active => false,
-            Status::Archived { head_realtime, .. } => *head_realtime <= cutoff_time,
-            Status::Disposed { timestamp, .. } => *timestamp <= cutoff_time,
-        });
+        let mut drained = Vec::new();
+        let mut retained = VecDeque::new();
 
-        self.files.drain(..pos)
+        while let Some(file) = self.files.pop_front() {
+            let should_drain = match file.status() {
+                Status::Active => false,
+                Status::Archived { head_realtime, .. } => *head_realtime <= cutoff_time,
+                Status::Disposed { timestamp, .. } => *timestamp <= cutoff_time,
+            };
+
+            if should_drain {
+                drained.push(file);
+            } else {
+                retained.push_back(file);
+            }
+        }
+
+        self.files = retained;
+        drained.into_iter()
     }
 
     /// Find files that overlap with the time range [start, end)

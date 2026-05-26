@@ -176,10 +176,13 @@ Current Go writer feature slice:
   explicit strict systemd active naming option (`<source>.journal`);
 - zero-entry crash-created active files are discarded on reopen before append so
   sequence numbers continue from the existing chain tail;
-- rotation by entry count and active file size;
-- tracked journal-file-count and committed-byte-size retention. The tracked
-  active/current file counts toward retention envelopes but is never selected
-  for deletion to satisfy retention limits. Zero-valued limits are disabled;
+- rotation by entry count, active file size, and active file duration measured
+  from the active file head realtime to the incoming entry realtime;
+- tracked journal-file-count, committed-byte-size, and archive-head-age
+  retention. The tracked active/current file counts toward retention envelopes
+  but is never selected for deletion to satisfy retention limits. Zero-valued
+  limits are disabled. `EnforceRetention()` applies retention without requiring
+  a rotation or close;
 - pure cross-SDK cooperative lockfile with stale-owner detection, plus a
   secondary POSIX `flock`, to protect the one-writer contract among
   cooperating SDK writers;
@@ -241,11 +244,13 @@ Current Rust writer feature slice:
   default and an explicit strict systemd active naming option;
 - zero-entry crash-created active files are discarded on reopen before append so
   sequence numbers continue from the existing chain tail;
-- entry-count and file-size rotation;
-- tracked journal-file-count and committed-byte-size retention. The tracked
-  active/current file counts toward retention envelopes but is never selected
-  for deletion to satisfy retention limits. Omitted or zero-valued limits are
-  disabled in Go, Node.js, and Python; Rust uses `None` to disable each limit;
+- entry-count, file-size, and active-file-duration rotation. Duration rotation
+  uses active file head realtime and the incoming entry realtime;
+- tracked journal-file-count, committed-byte-size, and archive-head-age
+  retention. The tracked active/current file counts toward retention envelopes
+  but is never selected for deletion to satisfy retention limits. Rust uses
+  `None` to disable each limit. `Log::enforce_retention()` applies retention
+  without requiring a rotation or close;
 - pure cross-SDK cooperative lockfile with stale-owner detection to protect the
   one-writer contract among cooperating SDK writers;
 - Forward Secure Sealing TAG writing with configurable deterministic test
@@ -300,11 +305,13 @@ Current Node.js writer feature slice:
   active naming by default and an explicit strict systemd active naming option;
 - zero-entry crash-created active files are discarded on reopen before append so
   sequence numbers continue from the existing chain tail;
-- entry-count and file-size rotation;
-- tracked journal-file-count and committed-byte-size retention. The tracked
-  active/current file counts toward retention envelopes but is never selected
-  for deletion to satisfy retention limits. Omitted or zero-valued limits are
-  disabled;
+- entry-count, file-size, and active-file-duration rotation. Duration rotation
+  uses active file head realtime and the incoming entry realtime;
+- tracked journal-file-count, committed-byte-size, and archive-head-age
+  retention. The tracked active/current file counts toward retention envelopes
+  but is never selected for deletion to satisfy retention limits. Omitted or
+  zero-valued limits are disabled. `log.enforceRetention()` applies retention
+  without requiring a rotation or close;
 - pure cross-SDK cooperative lockfile with stale-owner detection to protect the
   one-writer contract among cooperating SDK writers;
 - Forward Secure Sealing TAG writing with configurable deterministic test
@@ -360,11 +367,13 @@ Current Python writer feature slice:
   active naming by default and an explicit strict systemd active naming option;
 - zero-entry crash-created active files are discarded on reopen before append so
   sequence numbers continue from the existing chain tail;
-- entry-count and file-size rotation;
-- tracked journal-file-count and committed-byte-size retention. The tracked
-  active/current file counts toward retention envelopes but is never selected
-  for deletion to satisfy retention limits. Omitted or zero-valued limits are
-  disabled;
+- entry-count, file-size, and active-file-duration rotation. Duration rotation
+  uses active file head realtime and the incoming entry realtime;
+- tracked journal-file-count, committed-byte-size, and archive-head-age
+  retention. The tracked active/current file counts toward retention envelopes
+  but is never selected for deletion to satisfy retention limits. Omitted or
+  zero-valued limits are disabled. `log.enforce_retention()` applies retention
+  without requiring a rotation or close;
 - pure cross-SDK cooperative lockfile with stale-owner detection, plus a
   secondary POSIX `flock`, to protect the one-writer contract among
   cooperating SDK writers;

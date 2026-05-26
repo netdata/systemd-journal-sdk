@@ -4,7 +4,7 @@
 
 Status: in-progress
 
-Sub-state: active implementation. SOW-0019 is completed, and the user explicitly picked up this SOW on 2026-05-26. The first implementation slice is the shared high-level writer naming contract across Rust, Go, Node.js, and Python.
+Sub-state: active implementation. SOW-0019 is completed, and the user explicitly picked up this SOW on 2026-05-26. The current verified slice covers shared high-level naming, chain resume, rotation/retention hardening, duration rotation, age retention, and explicit retention enforcement across Rust, Go, Node.js, and Python.
 
 ## Requirements
 
@@ -583,13 +583,17 @@ Acceptance criteria evidence:
   - `go/journal/log.go`, `node/src/lib/directory-writer.js`, `python/journal/directory_writer.py`, and `rust/src/crates/journal-log-writer/src/log/chain.rs`: retention counts the protected active/current file in the retention envelope and skips it as a deletion candidate.
   - `rust/src/crates/journal-log-writer/src/log/mod.rs`, `go/journal/log.go`, `node/src/lib/directory-writer.js`, and `python/journal/directory_writer.py`: rotation creates/opens the post-rotation current file before retention enforcement, so `max_files=1` keeps exactly the current file instead of leaking `max_files + 1`.
   - `rust/src/crates/journal-log-writer/src/log/chain.rs`, `go/journal/log.go`, `node/src/lib/directory-writer.js`, and `python/journal/directory_writer.py`: byte retention accounting uses committed journal size from the header tail object instead of sparse preallocation length where the file can be inspected.
+  - `rust/src/crates/journal-log-writer/src/log/mod.rs`, `go/journal/log.go`, `node/src/lib/directory-writer.js`, and `python/journal/directory_writer.py`: duration rotation is enforced before append using the incoming entry realtime and active file head realtime.
+  - `rust/src/crates/journal-log-writer/src/log/mod.rs`, `go/journal/log.go`, `node/src/lib/directory-writer.js`, and `python/journal/directory_writer.py`: age/count/byte retention can be applied explicitly without an append-triggered rotation or close.
+  - `.agents/sow/specs/product-scope.md`, `rust/README.md`, `go/README.md`, `node/README.md`, and `python/README.md`: public documentation records duration rotation, age retention, and explicit retention enforcement APIs for the high-level writer.
 
 Tests or equivalent validation:
 
 - `go test ./...` from `go/`: passed.
-- `cargo test -p journal-log-writer --test log_writer -- --nocapture` from `rust/`: passed, 28 tests after empty-active crash recovery coverage.
-- `node --check node/src/lib/directory-writer.js && node --check node/src/lib/writer.js && node --check node/test/all.js && node node/test/all.js`: passed.
-- `python3 -m py_compile python/journal/directory_writer.py python/journal/writer.py python/test_all.py && PYTHONPATH=.local/python-deps:python python3 python/test_all.py`: passed. The `lz4` test dependency was installed under `.local/python-deps` inside this repository; no system Python or home cache dependency was required for the run.
+- `cargo test -p journal-registry` from `rust/`: passed, 10 unit tests plus 1 doc test after robust mixed disposed/archived drain coverage.
+- `cargo test -p journal-log-writer --test log_writer -- --nocapture` from `rust/`: passed, 31 tests after duration-rotation, explicit-age-retention, and active-age-protection coverage.
+- `node --check node/src/lib/directory-writer.js && node --check node/test/all.js && node node/test/all.js`: passed.
+- `python3 -m py_compile python/journal/directory_writer.py python/test_all.py && PYTHONPATH=.local/python-deps:python python3 python/test_all.py`: passed. The `lz4` test dependency remains under `.local/python-deps` inside this repository; no system Python or home cache dependency was required for the run.
 
 Real-use evidence:
 
@@ -598,7 +602,7 @@ Real-use evidence:
 Reviewer findings:
 
 - Pre-implementation SOW gap review completed with `glm`, `kimi`, `qwen`, and `minimax` on 2026-05-25. Accepted findings were incorporated under `External reviewer gap synthesis on 2026-05-25`.
-- A second pre-implementation reviewer round was run on 2026-05-25. Accepted, source-verified findings were incorporated into the acceptance criteria and second-round analysis bullets. Implementation review remains pending.
+- A second pre-implementation reviewer round was run on 2026-05-25. Accepted, source-verified findings were incorporated into the acceptance criteria and second-round analysis bullets. Implementation review rounds for the committed slice are recorded below.
 - First naming-slice implementation review completed with `glm`, `kimi`, `qwen`, and `minimax`.
   - Accepted and fixed: Rust source prefix hardcoding in strict/default naming paths.
   - Accepted and fixed: Node.js `||` option defaults hiding explicit zero limits.
@@ -649,9 +653,21 @@ Reviewer findings:
   - Rust, Go, Node.js, and Python now discard zero-entry crash-created `ONLINE` active files before append and continue sequence numbers from the existing chain tail; all four languages have regression coverage for this case.
   - Go, Node.js, and Python reopened nil-tail-boot-id fallback now prefers the host boot ID before falling back to file ID, matching Rust.
   - Node.js and Python rotation paths now clean up closed low-level writer references after a post-archive rotation error, allowing a caller retry to create a fresh active file instead of looping on a closed writer.
-- Latest read-only reviewer disposition:
-  - `glm` found no blocking issues after the final fixes. It recorded a strict/default cross-mode migration edge case as medium but non-blocking for this slice because it belongs to broader SOW-0023 migration/final API polish.
-  - `kimi` reran the four validation paths successfully and identified Node.js/Python rotation error cleanup before the final local fix. The concrete finding was fixed with tests. Its last output was overly verbose and did not provide a concise clean verdict, so the accepted actionable findings are recorded here with direct test evidence rather than treated as an unresolved production gate.
+- Continued with the duration-rotation and age-retention slice:
+  - Rust high-level `Log` now enforces `RotationPolicy::duration_of_journal_file` before append using the incoming entry realtime and active file head realtime, and exposes `Log::enforce_retention()` for explicit retention without rotation or close.
+  - Go high-level `Log` now exposes `RotationPolicy.WithMaxDuration`, `RetentionPolicy.WithMaxAge`, and `Log.EnforceRetention()`.
+  - Node.js high-level `Log` now supports `maxDurationUsec` / `max_duration_usec`, `maxRetentionAgeUsec` / `max_retention_age_usec`, and `log.enforceRetention()`.
+  - Python high-level `Log` now supports `max_duration_usec` / `maxDurationUsec`, `max_retention_age_usec` / `maxRetentionAgeUsec`, and `log.enforce_retention()`.
+  - All four implementations preserve the active/current-file protection rule for the age-retention path.
+  - Rust, Go, Node.js, and Python tests now prove age retention deletes expired archives while preserving an expired active/current file.
+  - Rust age-retention-without-append coverage uses a positive `1us` limit after a deterministic sleep instead of relying only on a zero-duration edge case.
+  - Python's manual package test runner now invokes the existing construction-time retention safety test, so the test is no longer just a dormant function.
+- Duration-rotation and age-retention read-only review round completed with `glm`, `kimi`, and `minimax`.
+  - All three reviewers reported no blocking issues and production-grade readiness for the slice.
+  - Accepted and fixed low-risk findings: missing explicit active/current age-retention protection tests across languages, Rust age-retention coverage relying on `Duration::ZERO`, and the dormant Python construction-time retention safety test not being called by the manual runner.
+  - Accepted and fixed final low-risk findings: Go/Node.js/Python age-retention loops now subtract deleted file sizes from the running retention total, and Rust `Chain::drain()` no longer relies on `partition_point` monotonicity when disposed and archived timestamps are interleaved.
+  - Accepted and fixed final Go retry-safety finding: after a post-archive cleanup error during rotation, Go now preserves the successor sequence identity, clears the default-mode active path, and retries into the next chain file without sequence reuse; `TestLogRotationRetriesAfterArchiveCleanupFailure` covers this path.
+  - Dispositioned as non-blocking for this slice: Go, Node.js, and Python treat entry realtime `0` as unset/default-now, which matches their existing timestamp override convention and is broader API polish if callers need literal epoch-zero writes; Go sub-microsecond `time.Duration` retention/rotation rounds up to `1us`, which is the smallest representable on-disk journal time unit; Node.js/Python strict empty-close retention behavior remains an internal/unobservable public path because public empty appends are rejected before active file creation.
 
 Same-failure scan:
 
@@ -665,6 +681,14 @@ Same-failure scan:
   - Empty-active crash recovery was checked and fixed in Rust, Go, Node.js, and Python.
   - Reopened nil-tail-boot-id fallback was checked and aligned in Go, Node.js, and Python to Rust's host-boot fallback.
   - Rotation/archive error cleanup was checked in Node.js and Python and fixed for the closed-writer-after-archive case.
+- Completed for the duration-rotation and age-retention slice:
+  - Duration rotation is tested in Rust, Go, Node.js, and Python with size/count rotation disabled and timestamp overrides straddling the duration boundary.
+  - Age retention without append-triggered rotation is tested in Rust, Go, Node.js, and Python.
+  - Active/current protection for age retention is tested in Rust, Go, Node.js, and Python with expired archives and an expired active/current file.
+  - Rust no longer relies only on a zero-duration age-retention edge case; the explicit no-append retention test uses a positive `1us` limit.
+  - Go, Node.js, and Python age-retention deletion accounting was checked and hardened to keep the retained-byte total accurate after age deletes, even though byte retention currently runs before age retention.
+  - Rust registry age-drain behavior was checked and hardened for mixed disposed/archived chains; the regression test proves an old archived file is drained even when a newer disposed file sorts before it.
+  - Go post-archive cleanup failure handling was checked against the existing Node.js/Python retry-cleanup pattern and fixed so a rotation retry continues with the successor sequence instead of reusing stale state.
 
 Sensitive data gate:
 
@@ -674,15 +698,15 @@ Artifact maintenance gate:
 
 - AGENTS.md: no project-wide workflow or responsibility changes in this slice.
 - Runtime project skills: no workflow changes needed; existing orchestration and compatibility skills covered the fourth-round retention failure mode.
-- Specs: updated `.agents/sow/specs/product-scope.md` for default chain naming, strict naming option, current-file retention protection, committed-byte retention accounting, and disabled limit semantics.
-- End-user/operator docs: updated Rust, Go, Node.js, and Python READMEs for default naming, strict naming, disabled limits, and current-file committed-byte retention.
+- Specs: updated `.agents/sow/specs/product-scope.md` for default chain naming, strict naming option, current-file retention protection, committed-byte retention accounting, disabled limit semantics, duration rotation, age retention, and explicit retention enforcement.
+- End-user/operator docs: updated Rust, Go, Node.js, and Python READMEs for duration rotation, age retention, and explicit retention enforcement.
 - End-user/operator skills: none exist for this repository.
 - SOW lifecycle: remains `in-progress` in `.agents/sow/current/`; this commit is a verified slice, not SOW completion.
 - SOW-status.md: updated for the current slice status.
 
 Specs update:
 
-- Updated `.agents/sow/specs/product-scope.md` to record Netdata chain active naming as the default high-level writer behavior, strict systemd active naming as an explicit option, current-file retention protection, committed-byte retention accounting, and disabled limit semantics.
+- Updated `.agents/sow/specs/product-scope.md` to record Netdata chain active naming as the default high-level writer behavior, strict systemd active naming as an explicit option, current-file retention protection, committed-byte retention accounting, disabled limit semantics, duration rotation, age retention, and explicit retention enforcement.
 
 Project skills update:
 
@@ -690,7 +714,7 @@ Project skills update:
 
 End-user/operator docs update:
 
-- Updated `rust/README.md`, `go/README.md`, `node/README.md`, and `python/README.md` to document default Netdata chain active naming, the strict systemd active naming option, disabled limit semantics, and current-file committed-byte retention protection.
+- Updated `rust/README.md`, `go/README.md`, `node/README.md`, and `python/README.md` to document duration rotation, age retention, and explicit retention enforcement in the high-level writer.
 
 End-user/operator skills update:
 
@@ -702,14 +726,14 @@ Lessons:
 
 Follow-up mapping:
 
-- Remaining broader SOW-0023 items continue in this SOW: duration rotation, age retention, creation-time/eager preflight, strict identity validation, artifact accounting, and final API polish.
+- Remaining broader SOW-0023 items continue in this SOW: creation-time/eager preflight, strict identity validation, artifact accounting, and final API polish.
 - Strict/default cross-mode migration when a chain-named `ONLINE` active file exists and a caller switches to strict systemd naming remains broader SOW-0023 migration/final API polish scope. The current verified slice guarantees default Netdata-compatible behavior and strict-mode sequence continuation within each mode.
 - Rust `open_for_append` incompatible-flag validation parity remains tracked for a later compatibility hardening slice.
 - Rust `Drop` remains documented best-effort behavior; production callers must use explicit `Log::close()` for archive rename and retention.
 
 ## Outcome
 
-First naming/resume/retention implementation slice is ready to commit as a rollback point. SOW-0023 remains in-progress for the remaining broader API items.
+Naming/resume/retention, duration-rotation, age-retention, and explicit-retention-enforcement slices are ready to commit as a rollback point. SOW-0023 remains in-progress for the remaining broader API items.
 
 ## Lessons Extracted
 
@@ -719,4 +743,4 @@ First naming/resume/retention implementation slice is ready to commit as a rollb
 
 ## Followup
 
-- Continue SOW-0023 with duration rotation, age retention, creation-time/eager preflight, strict identity validation, artifact accounting, strict/default migration polish, and final API polish.
+- Continue SOW-0023 with creation-time/eager preflight, strict identity validation, artifact accounting, strict/default migration polish, and final API polish.

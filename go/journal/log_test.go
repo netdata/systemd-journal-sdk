@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLogRotatesByEntryCountAndJournalctlDirectory(t *testing.T) {
@@ -299,6 +300,39 @@ func TestLogRotatesByFileSize(t *testing.T) {
 	}
 }
 
+func TestLogRotatesByDuration(t *testing.T) {
+	log, dir := newTestLog(t, LogConfig{
+		Options:        testOptions(),
+		Source:         "system",
+		RotationPolicy: RotationPolicy{}.WithMaxDuration(10 * time.Second),
+	})
+
+	base := uint64(1_700_002_090_000_000)
+	for i, realtime := range []uint64{base, base + 9_999_999, base + 10_000_000} {
+		if err := log.Append([]Field{
+			StringField("MESSAGE", fmt.Sprintf("duration-rotation-%d", i)),
+			StringField("TEST_ID", "directory-duration-rotation"),
+		}, EntryOptions{RealtimeUsec: realtime, MonotonicUsec: uint64(i + 1)}); err != nil {
+			t.Fatalf("Append(%d) error = %v", i, err)
+		}
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	files := journalFiles(t, dir)
+	if len(files) != 2 {
+		t.Fatalf("journal file count after duration rotation = %d, want 2; files=%v", len(files), files)
+	}
+	counts := make([]uint64, 0, len(files))
+	for _, file := range files {
+		counts = append(counts, readJournalSnapshot(t, file).header.nEntries)
+	}
+	if got, want := counts, []uint64{2, 1}; !equalUint64s(got, want) {
+		t.Fatalf("duration rotation entry counts = %v, want %v", got, want)
+	}
+}
+
 func TestLogRetainsByFileCount(t *testing.T) {
 	requireJournalctl(t)
 
@@ -397,6 +431,110 @@ func TestLogRetainsByTotalBytes(t *testing.T) {
 	files := journalFiles(t, dir)
 	if len(files) != 1 {
 		t.Fatalf("journal files after byte retention = %d, want 1 protected final file; files=%v", len(files), files)
+	}
+}
+
+func TestLogEnforceRetentionDeletesFilesByAgeWithoutAppend(t *testing.T) {
+	root := t.TempDir()
+	config := LogConfig{
+		Options:        testOptions(),
+		Source:         "system",
+		RotationPolicy: RotationPolicy{}.WithMaxEntries(1),
+	}
+	first, err := NewLog(root, config)
+	if err != nil {
+		t.Fatalf("NewLog(first) error = %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := first.Append([]Field{
+			StringField("MESSAGE", fmt.Sprintf("age-retention-%d", i)),
+		}, EntryOptions{RealtimeUsec: uint64(1_000_000 + i), MonotonicUsec: uint64(i + 1)}); err != nil {
+			t.Fatalf("Append(%d) error = %v", i, err)
+		}
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close(first) error = %v", err)
+	}
+
+	dir := filepath.Join(root, config.Options.MachineID.String())
+	if files := journalFiles(t, dir); len(files) != 3 {
+		t.Fatalf("initial journal file count = %d, want 3; files=%v", len(files), files)
+	}
+
+	retainedConfig := config
+	retainedConfig.RotationPolicy = RotationPolicy{}
+	retainedConfig.RetentionPolicy = RetentionPolicy{}.WithMaxAge(time.Second)
+	retained, err := NewLog(root, retainedConfig)
+	if err != nil {
+		t.Fatalf("NewLog(retained) error = %v", err)
+	}
+	if files := journalFiles(t, dir); len(files) != 3 {
+		t.Fatalf("construction enforced age retention; files=%v", files)
+	}
+	if err := retained.EnforceRetention(); err != nil {
+		t.Fatalf("EnforceRetention() error = %v", err)
+	}
+	if files := journalFiles(t, dir); len(files) != 0 {
+		t.Fatalf("journal file count after age retention = %d, want 0; files=%v", len(files), files)
+	}
+	if err := retained.Close(); err != nil {
+		t.Fatalf("Close(retained) error = %v", err)
+	}
+}
+
+func TestLogEnforceRetentionProtectsActiveFileByAge(t *testing.T) {
+	root := t.TempDir()
+	config := LogConfig{
+		Options:        testOptions(),
+		Source:         "system",
+		RotationPolicy: RotationPolicy{}.WithMaxEntries(1),
+	}
+	first, err := NewLog(root, config)
+	if err != nil {
+		t.Fatalf("NewLog(first) error = %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := first.Append([]Field{
+			StringField("MESSAGE", fmt.Sprintf("age-active-retention-%d", i)),
+		}, EntryOptions{RealtimeUsec: uint64(1_000_000 + i), MonotonicUsec: uint64(i + 1)}); err != nil {
+			t.Fatalf("Append(first %d) error = %v", i, err)
+		}
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close(first) error = %v", err)
+	}
+
+	dir := filepath.Join(root, config.Options.MachineID.String())
+	if files := journalFiles(t, dir); len(files) != 2 {
+		t.Fatalf("initial journal file count = %d, want 2; files=%v", len(files), files)
+	}
+
+	retainedConfig := config
+	retainedConfig.RotationPolicy = RotationPolicy{}
+	retainedConfig.RetentionPolicy = RetentionPolicy{}.WithMaxAge(time.Second)
+	retained, err := NewLog(root, retainedConfig)
+	if err != nil {
+		t.Fatalf("NewLog(retained) error = %v", err)
+	}
+	if err := retained.Append([]Field{
+		StringField("MESSAGE", "age-protected-active"),
+	}, EntryOptions{RealtimeUsec: 1_000_100, MonotonicUsec: 10}); err != nil {
+		t.Fatalf("Append(active) error = %v", err)
+	}
+	activePath := retained.ActivePath()
+	if err := retained.EnforceRetention(); err != nil {
+		t.Fatalf("EnforceRetention() error = %v", err)
+	}
+	files := journalFiles(t, dir)
+	if len(files) != 1 || files[0] != activePath {
+		t.Fatalf("journal files after active age retention = %v, want only active %s", files, activePath)
+	}
+	snapshot := readJournalSnapshot(t, activePath)
+	if snapshot.header.state != stateOnline {
+		t.Fatalf("active state = %d, want online", snapshot.header.state)
+	}
+	if err := retained.Close(); err != nil {
+		t.Fatalf("Close(retained) error = %v", err)
 	}
 }
 
@@ -887,6 +1025,59 @@ func TestLogCloseIsIdempotentAfterArchiveCleanupFailure(t *testing.T) {
 	}
 }
 
+func TestLogRotationRetriesAfterArchiveCleanupFailure(t *testing.T) {
+	log, dir := newTestLog(t, LogConfig{
+		Options:        testOptions(),
+		Source:         "system",
+		RotationPolicy: RotationPolicy{}.WithMaxEntries(1),
+	})
+	if err := log.Append([]Field{
+		StringField("MESSAGE", "rotation cleanup failure 0"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_700_000_000, MonotonicUsec: 1}); err != nil {
+		t.Fatalf("Append(first) error = %v", err)
+	}
+
+	syntheticErr := errors.New("synthetic rotation archive sync failure")
+	oldSync := syncJournalDirectory
+	syncCalls := 0
+	syncJournalDirectory = func(string) error {
+		syncCalls++
+		if syncCalls == 1 {
+			return syntheticErr
+		}
+		return nil
+	}
+	err := log.Append([]Field{
+		StringField("MESSAGE", "rotation cleanup failure 1"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_700_000_001, MonotonicUsec: 2})
+	syncJournalDirectory = oldSync
+	if !errors.Is(err, syntheticErr) {
+		t.Fatalf("Append(rotation failure) error = %v, want %v", err, syntheticErr)
+	}
+
+	if err := log.Append([]Field{
+		StringField("MESSAGE", "rotation cleanup retry"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_700_000_002, MonotonicUsec: 3}); err != nil {
+		t.Fatalf("Append(retry) error = %v", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close(after retry) error = %v", err)
+	}
+
+	files := journalFiles(t, dir)
+	if len(files) != 2 {
+		t.Fatalf("journal files after retry = %d, want 2; files=%v", len(files), files)
+	}
+	first := readJournalSnapshot(t, files[0]).header
+	second := readJournalSnapshot(t, files[1]).header
+	if first.headEntrySeqnum != 1 || first.tailEntrySeqnum != 1 {
+		t.Fatalf("first file seqnum range = [%d,%d], want [1,1]", first.headEntrySeqnum, first.tailEntrySeqnum)
+	}
+	if second.headEntrySeqnum != 2 || second.tailEntrySeqnum != 2 {
+		t.Fatalf("second file seqnum range = [%d,%d], want [2,2]", second.headEntrySeqnum, second.tailEntrySeqnum)
+	}
+}
+
 func newTestLog(t *testing.T, config LogConfig) (*Log, string) {
 	t.Helper()
 
@@ -914,6 +1105,18 @@ func journalFiles(t *testing.T, dir string) []string {
 	}
 	sort.Strings(files)
 	return files
+}
+
+func equalUint64s(a, b []uint64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func requireJournalctl(t *testing.T) {

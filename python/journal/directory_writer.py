@@ -11,8 +11,10 @@ from .writer import Writer
 
 DEFAULT_MAX_ENTRIES = 0
 DEFAULT_MAX_BYTES = 0
+DEFAULT_MAX_DURATION_USEC = 0
 DEFAULT_MAX_FILES = 0
 DEFAULT_RETENTION_BYTES = 0
+DEFAULT_RETENTION_AGE_USEC = 0
 
 
 class Log:
@@ -30,8 +32,17 @@ class Log:
 
         self._max_entries = config.get('max_entries', DEFAULT_MAX_ENTRIES)
         self._max_bytes = config.get('max_bytes', DEFAULT_MAX_BYTES)
+        self._max_duration_usec = int(
+            config.get('max_duration_usec', config.get('maxDurationUsec', DEFAULT_MAX_DURATION_USEC))
+        )
         self._max_files = config.get('max_files', DEFAULT_MAX_FILES)
         self._max_retention_bytes = config.get('max_retention_bytes', DEFAULT_RETENTION_BYTES)
+        self._max_retention_age_usec = int(
+            config.get(
+                'max_retention_age_usec',
+                config.get('maxRetentionAgeUsec', DEFAULT_RETENTION_AGE_USEC),
+            )
+        )
 
         self._next_seqnum = int(config.get('head_seqnum', 1))
         self._seqnum_id = _uuid_from_config(config.get('seqnum_id')) or random_uuid()
@@ -112,18 +123,26 @@ class Log:
             raise ValueError('journal log is closed')
         if len(fields) == 0:
             raise ValueError('empty entry')
-        if self._active_writer and self._should_rotate():
+        opts = self._entry_options_for_append(opts)
+        if self._active_writer and self._should_rotate(opts['realtime_usec']):
             self._rotate(opts)
         self._open_writer(opts)
         result = self._active_writer.append(fields, opts)
         self._capture_writer_identity()
         return result
 
-    def _should_rotate(self):
+    def _should_rotate(self, next_realtime_usec):
         h = self._active_writer._header
         return (
             (self._max_entries > 0 and h['n_entries'] >= self._max_entries) or
-            (self._max_bytes > 0 and self._active_writer.current_size() >= self._max_bytes)
+            (self._max_bytes > 0 and self._active_writer.current_size() >= self._max_bytes) or
+            (
+                self._max_duration_usec > 0 and
+                h['n_entries'] > 0 and
+                h['head_entry_realtime'] > 0 and
+                next_realtime_usec >= h['head_entry_realtime'] and
+                next_realtime_usec - h['head_entry_realtime'] >= self._max_duration_usec
+            )
         )
 
     def _rotate(self, opts=None):
@@ -257,7 +276,35 @@ class Log:
             except FileNotFoundError:
                 pass
 
+        if self._max_retention_age_usec > 0:
+            cutoff = max(0, int(time.time() * 1_000_000) - self._max_retention_age_usec)
+            while archives:
+                delete_index = next((idx for idx, file in enumerate(archives)
+                                     if file['head_realtime'] <= cutoff and
+                                     (not active_file or file['path'] != active_file)), None)
+                if delete_index is None:
+                    break
+                oldest = archives.pop(delete_index)
+                try:
+                    os.unlink(oldest['path'])
+                    total_bytes = max(0, total_bytes - oldest['size'])
+                except FileNotFoundError:
+                    pass
+
         _sync_directory(self._journal_dir)
+
+    def enforce_retention(self):
+        if self._closed:
+            raise ValueError('journal log is closed')
+        self._apply_retention(self._active_file)
+
+    def _entry_options_for_append(self, opts):
+        effective = dict(opts or {})
+        if 'realtimeUsec' in effective and 'realtime_usec' not in effective:
+            effective['realtime_usec'] = effective['realtimeUsec']
+        if not effective.get('realtime_usec'):
+            effective['realtime_usec'] = int(time.time() * 1_000_000)
+        return effective
 
     def sync(self):
         if self._closed:

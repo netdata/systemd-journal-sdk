@@ -517,6 +517,41 @@ for (const [length, expected] of sipVectors) {
       machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
       maxEntries: 0,
       maxBytes: 0,
+      maxDurationUsec: 10_000_000n,
+      maxFiles: 10,
+    });
+    const base = 1_700_002_090_000_000n;
+    for (const [i, realtime] of [base, base + 9_999_999n, base + 10_000_000n].entries()) {
+      log.append(
+        [{ name: 'MESSAGE', value: `duration-rotation-${i}` }],
+        { realtimeUsec: realtime, monotonicUsec: BigInt(i + 1) },
+      );
+    }
+    log.close();
+    const files = readdirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal')).sort();
+    assert.equal(files.length, 2);
+    const counts = files.map((name) => {
+      const reader = FileReader.open(join(log.journalDirectory(), name));
+      try {
+        return reader.header.n_entries;
+      } finally {
+        reader.close();
+      }
+    });
+    assert.deepEqual(counts, [2n, 1n]);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const log = new Log(tempDir, {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      maxEntries: 0,
+      maxBytes: 0,
       maxFiles: 10,
     });
     log.append([{ name: 'MESSAGE', value: 'default system naming' }]);
@@ -524,6 +559,75 @@ for (const [length, expected] of sipVectors) {
     assert.match(log.activeFile().split('/').pop(), /^system@[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{16}\.journal$/);
     assert.equal(existsSync(join(log.journalDirectory(), 'system.journal')), false);
     log.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const baseOptions = {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      maxEntries: 1,
+      maxFiles: 0,
+    };
+    const first = new Log(tempDir, baseOptions);
+    for (let i = 0; i < 3; i++) {
+      first.append(
+        [{ name: 'MESSAGE', value: `age-retention-${i}` }],
+        { realtimeUsec: BigInt(1_000_000 + i), monotonicUsec: BigInt(i + 1) },
+      );
+    }
+    first.close();
+    const journalDir = first.journalDirectory();
+    assert.equal(readdirSync(journalDir).filter((name) => name.endsWith('.journal')).length, 3);
+
+    const retained = new Log(tempDir, { ...baseOptions, maxEntries: 0, maxRetentionAgeUsec: 1_000_000n });
+    assert.equal(readdirSync(journalDir).filter((name) => name.endsWith('.journal')).length, 3);
+    retained.enforceRetention();
+    assert.equal(readdirSync(journalDir).filter((name) => name.endsWith('.journal')).length, 0);
+    retained.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const baseOptions = {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      maxEntries: 1,
+      maxFiles: 0,
+    };
+    const first = new Log(tempDir, baseOptions);
+    for (let i = 0; i < 2; i++) {
+      first.append(
+        [{ name: 'MESSAGE', value: `age-active-retention-${i}` }],
+        { realtimeUsec: BigInt(1_000_000 + i), monotonicUsec: BigInt(i + 1) },
+      );
+    }
+    first.close();
+    const journalDir = first.journalDirectory();
+    assert.equal(readdirSync(journalDir).filter((name) => name.endsWith('.journal')).length, 2);
+
+    const retained = new Log(tempDir, { ...baseOptions, maxEntries: 0, maxRetentionAgeUsec: 1_000_000n });
+    retained.append(
+      [{ name: 'MESSAGE', value: 'age-protected-active' }],
+      { realtimeUsec: 1_000_100n, monotonicUsec: 10n },
+    );
+    const activePath = retained.activeFile();
+    retained.enforceRetention();
+    const files = readdirSync(journalDir).filter((name) => name.endsWith('.journal')).sort();
+    assert.deepEqual(files.map((name) => join(journalDir, name)), [activePath]);
+    const reader = FileReader.open(activePath);
+    assert.equal(reader.step(), true);
+    assert.equal(reader.getEntry().fields.MESSAGE.toString('utf8'), 'age-protected-active');
+    reader.close();
+    retained.close();
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }

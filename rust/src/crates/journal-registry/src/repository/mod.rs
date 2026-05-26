@@ -318,6 +318,31 @@ mod tests {
     }
 
     #[test]
+    fn test_drain_handles_mixed_disposed_and_archived_timestamps() {
+        let origin = create_test_origin();
+        let mut chain = Chain {
+            files: VecDeque::new(),
+        };
+
+        let disposed_new = create_disposed_file(&origin, 200 * USEC_PER_SEC, 1);
+        let archived_old = create_archived_file(&origin, 50 * USEC_PER_SEC);
+        let archived_new = create_archived_file(&origin, 300 * USEC_PER_SEC);
+        let active = create_active_file(&origin);
+
+        chain.insert_file(disposed_new.clone());
+        chain.insert_file(archived_old.clone());
+        chain.insert_file(archived_new.clone());
+        chain.insert_file(active.clone());
+
+        let drained: Vec<_> = chain.drain(100 * USEC_PER_SEC).collect();
+        assert_eq!(drained, vec![archived_old]);
+        assert_eq!(
+            chain.files.into_iter().collect::<Vec<_>>(),
+            vec![disposed_new, archived_new, active]
+        );
+    }
+
+    #[test]
     fn test_find_files_in_range_edge_cases() {
         let origin = create_test_origin();
         let mut chain = Chain {

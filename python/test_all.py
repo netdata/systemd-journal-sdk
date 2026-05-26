@@ -262,6 +262,35 @@ def test_directory_writer_rotation():
         assert len([line for line in stock.splitlines() if line.strip()]) == 5
 
 
+def test_directory_writer_duration_rotation():
+    with tempfile.TemporaryDirectory() as td:
+        log = Log(td, {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'max_entries': 0,
+            'max_bytes': 0,
+            'max_duration_usec': 10_000_000,
+            'max_files': 10,
+        })
+        base = 1_700_002_090_000_000
+        for i, realtime in enumerate((base, base + 9_999_999, base + 10_000_000)):
+            log.append(
+                [{'name': 'MESSAGE', 'value': f'duration-rotation-{i}'}],
+                {'realtime_usec': realtime, 'monotonic_usec': i + 1},
+            )
+        journal_dir = log.journal_directory()
+        log.close()
+
+        names = sorted(name for name in os.listdir(journal_dir) if name.endswith('.journal'))
+        assert len(names) == 2
+        counts = []
+        for name in names:
+            reader = FileReader.open(os.path.join(journal_dir, name))
+            counts.append(reader.header()['n_entries'])
+            reader.close()
+        assert counts == [2, 1]
+
+
 def test_directory_writer_default_system_chain_naming():
     with tempfile.TemporaryDirectory() as td:
         log = Log(td, {
@@ -373,6 +402,69 @@ def test_directory_writer_does_not_enforce_retention_before_first_append():
         after = sorted(name for name in os.listdir(journal_dir) if name.endswith('.journal'))
         assert after == before
         second.close()
+
+
+def test_directory_writer_enforce_retention_deletes_files_by_age_without_append():
+    with tempfile.TemporaryDirectory() as td:
+        config = {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'max_entries': 1,
+            'max_files': 0,
+        }
+        first = Log(td, config)
+        for i in range(3):
+            first.append(
+                [{'name': 'MESSAGE', 'value': f'age-retention-{i}'}],
+                {'realtime_usec': 1_000_000 + i, 'monotonic_usec': i + 1},
+            )
+        first.close()
+        journal_dir = first.journal_directory()
+        assert len([name for name in os.listdir(journal_dir) if name.endswith('.journal')]) == 3
+
+        retained = Log(td, {**config, 'max_entries': 0, 'max_retention_age_usec': 1_000_000})
+        assert len([name for name in os.listdir(journal_dir) if name.endswith('.journal')]) == 3
+        retained.enforce_retention()
+        assert [name for name in os.listdir(journal_dir) if name.endswith('.journal')] == []
+        retained.close()
+
+
+def test_directory_writer_enforce_retention_protects_active_file_by_age():
+    with tempfile.TemporaryDirectory() as td:
+        config = {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'max_entries': 1,
+            'max_files': 0,
+        }
+        first = Log(td, config)
+        for i in range(2):
+            first.append(
+                [{'name': 'MESSAGE', 'value': f'age-active-retention-{i}'}],
+                {'realtime_usec': 1_000_000 + i, 'monotonic_usec': i + 1},
+            )
+        first.close()
+        journal_dir = first.journal_directory()
+        assert len([name for name in os.listdir(journal_dir) if name.endswith('.journal')]) == 2
+
+        retained = Log(td, {**config, 'max_entries': 0, 'max_retention_age_usec': 1_000_000})
+        retained.append(
+            [{'name': 'MESSAGE', 'value': 'age-protected-active'}],
+            {'realtime_usec': 1_000_100, 'monotonic_usec': 10},
+        )
+        active_path = retained.active_file()
+        retained.enforce_retention()
+        paths = sorted(
+            os.path.join(journal_dir, name)
+            for name in os.listdir(journal_dir)
+            if name.endswith('.journal')
+        )
+        assert paths == [active_path]
+        reader = FileReader.open(active_path)
+        assert reader.step() is True
+        assert reader.get_entry()['fields']['MESSAGE'] == b'age-protected-active'
+        reader.close()
+        retained.close()
 
 
 def test_directory_writer_keeps_chain_named_active_during_retention():
@@ -1170,10 +1262,14 @@ def main():
     test_zstd_data_object_parse()
     test_xz_and_lz4_data_object_parse()
     test_directory_writer_rotation()
+    test_directory_writer_duration_rotation()
     test_directory_writer_default_system_chain_naming()
     test_directory_writer_rejects_empty_entry_without_creating_file()
     test_directory_writer_custom_source_naming()
     test_directory_writer_strict_systemd_naming()
+    test_directory_writer_does_not_enforce_retention_before_first_append()
+    test_directory_writer_enforce_retention_deletes_files_by_age_without_append()
+    test_directory_writer_enforce_retention_protects_active_file_by_age()
     test_directory_writer_keeps_chain_named_active_during_retention()
     test_directory_writer_strict_close_protects_current_archive_from_byte_retention()
     test_directory_writer_close_cleans_up_after_archive_error()

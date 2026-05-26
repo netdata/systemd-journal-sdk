@@ -8,8 +8,10 @@ import { HEADER_SIZE, STATE_ONLINE, parseFileHeader, parseObjectHeader } from '.
 
 const DEFAULT_MAX_ENTRIES = 0;
 const DEFAULT_MAX_BYTES = 0;
+const DEFAULT_MAX_DURATION_USEC = 0n;
 const DEFAULT_MAX_FILES = 0;
 const DEFAULT_RETENTION_BYTES = 0;
+const DEFAULT_RETENTION_AGE_USEC = 0n;
 
 export class Log {
   constructor(directory, options = {}) {
@@ -22,10 +24,18 @@ export class Log {
     // Rotation policy
     this.maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
     this.maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
+    this.maxDurationUsec = optionUsec(
+      options.maxDurationUsec ?? options.max_duration_usec,
+      DEFAULT_MAX_DURATION_USEC,
+    );
 
     // Retention policy
     this.maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
     this.maxRetentionBytes = options.maxRetentionBytes ?? DEFAULT_RETENTION_BYTES;
+    this.maxRetentionAgeUsec = optionUsec(
+      options.maxRetentionAgeUsec ?? options.max_retention_age_usec,
+      DEFAULT_RETENTION_AGE_USEC,
+    );
 
     this.activePath = null;
     this.writer = null;
@@ -61,24 +71,32 @@ export class Log {
   append(fields, options = {}) {
     if (this.closed) throw new Error('journal log is closed');
     if (fields.length === 0) throw new Error('empty entry');
-    if (this.writer && this._shouldRotate()) {
-      this._rotate(options);
+    const appendOptions = this._entryOptionsForAppend(options);
+    if (this.writer && this._shouldRotate(appendOptions.realtimeUsec)) {
+      this._rotate(appendOptions);
     }
     if (!this.writer) {
-      this._openWriter(options);
+      this._openWriter(appendOptions);
     }
 
-    const result = this.writer.append(fields, options);
+    const result = this.writer.append(fields, appendOptions);
     this._captureWriterIdentity();
     return result;
   }
 
-  _shouldRotate() {
+  _shouldRotate(nextRealtimeUsec) {
     if (!this.writer) return false;
     const entryCount = Number(this.writer.header.n_entries);
     const fileSize = Number(this.writer.appendOffset);
     return (this.maxEntries > 0 && entryCount >= this.maxEntries) ||
-      (this.maxBytes > 0 && fileSize >= this.maxBytes);
+      (this.maxBytes > 0 && fileSize >= this.maxBytes) ||
+      (
+        this.maxDurationUsec > 0n &&
+        this.writer.header.n_entries > 0n &&
+        this.writer.header.head_entry_realtime > 0n &&
+        BigInt(nextRealtimeUsec) >= this.writer.header.head_entry_realtime &&
+        BigInt(nextRealtimeUsec) - this.writer.header.head_entry_realtime >= this.maxDurationUsec
+      );
   }
 
   _rotate(options = {}) {
@@ -105,7 +123,7 @@ export class Log {
 
   _openWriter(options = {}) {
     if (!this.activePath) {
-      const headRealtime = BigInt(options.realtimeUsec ?? options.realtime_usec ?? Date.now() * 1000);
+      const headRealtime = optionUsec(options.realtimeUsec ?? options.realtime_usec, nowUsec());
       this.activePath = this._chainPathFor(this.seqnumId, this.nextSeqnum, headRealtime);
     }
     if (existsSync(this.activePath)) {
@@ -113,7 +131,7 @@ export class Log {
       if (this.writer.header.n_entries === 0n) {
         this._discardEmptyOpenedWriter();
         if (!this.activePath) {
-          const headRealtime = BigInt(options.realtimeUsec ?? options.realtime_usec ?? Date.now() * 1000);
+          const headRealtime = optionUsec(options.realtimeUsec ?? options.realtime_usec, nowUsec());
           this.activePath = this._chainPathFor(this.seqnumId, this.nextSeqnum, headRealtime);
         }
       } else {
@@ -260,7 +278,36 @@ export class Log {
       totalBytes = Math.max(0, totalBytes - oldest.size);
       unlinkIfExists(oldest.path);
     }
+    if (this.maxRetentionAgeUsec > 0n) {
+      const cutoff = saturatingSubBigInt(nowUsec(), this.maxRetentionAgeUsec);
+      while (archives.length > 0) {
+        const oldestIndex = archives.findIndex((archive) => {
+          if (archive.headRealtime > cutoff) return false;
+          return !activePath || archive.path !== activePath;
+        });
+        if (oldestIndex === -1) break;
+        const [oldest] = archives.splice(oldestIndex, 1);
+        unlinkIfExists(oldest.path);
+        totalBytes = Math.max(0, totalBytes - oldest.size);
+      }
+    }
     syncDirectory(this.directory);
+  }
+
+  enforceRetention() {
+    if (this.closed) throw new Error('journal log is closed');
+    this._applyRetention(this.activePath);
+  }
+
+  _entryOptionsForAppend(options) {
+    const appendOptions = { ...options };
+    if (appendOptions.realtimeUsec === undefined && appendOptions.realtime_usec !== undefined) {
+      appendOptions.realtimeUsec = appendOptions.realtime_usec;
+    }
+    if (appendOptions.realtimeUsec === undefined || appendOptions.realtimeUsec === 0 || appendOptions.realtimeUsec === 0n) {
+      appendOptions.realtimeUsec = nowUsec();
+    }
+    return appendOptions;
   }
 
   sync() {
@@ -400,6 +447,19 @@ function parseArchivedJournalName(name, source) {
 
 function hex64(value) {
   return BigInt(value).toString(16).padStart(16, '0');
+}
+
+function nowUsec() {
+  return BigInt(Date.now()) * 1000n;
+}
+
+function optionUsec(value, fallback) {
+  if (value === undefined || value === null) return BigInt(fallback);
+  return BigInt(value);
+}
+
+function saturatingSubBigInt(value, amount) {
+  return value >= amount ? value - amount : 0n;
 }
 
 function syncDirectory(path) {
