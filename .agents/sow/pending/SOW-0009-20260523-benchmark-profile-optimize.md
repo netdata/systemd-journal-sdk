@@ -4,10 +4,12 @@
 
 Status: open
 
-Sub-state: critical Netdata integration gate, sequenced after feature
-completion. Finish SOW-0023 and the remaining feature SOWs that affect writer
-or reader hot paths before optimizing, so performance work is not invalidated by
-later feature/API changes.
+Sub-state: critical Netdata integration gate, sequenced after remaining
+compatibility feature/gap SOWs and before SOW-0026 Netdata integration. Finish
+SOW-0020, SOW-0024, and SOW-0022 before optimizing, then run this SOW before
+actual Netdata integration, so performance work is not invalidated by later
+compatibility/API changes and Netdata does not replace faster vendored
+libraries prematurely.
 
 ## Requirements
 
@@ -45,6 +47,7 @@ Facts:
 - The user decided on 2026-05-24 to push this SOW to the end, after remaining feature-completeness SOWs, because benchmarking is expected to reveal discrepancies that require profiling, allocation reduction, buffer reuse, and refactoring.
 - The user updated the priority on 2026-05-26 after SNMP traps integration work reported about 5k logs/s from the current Go SDK writer. This datapoint is user-reported and must be reproduced under controlled benchmark conditions before it is treated as a measured project result.
 - The user clarified on 2026-05-26 that feature development must finish before optimization. Performance must not preempt SOW-0023 or other feature work, because optimizing before the feature surface is complete will let performance slip repeatedly as later features change the hot paths.
+- The user clarified on 2026-05-26 after SOW-0027 completed that actual Netdata integration should happen last because the SDK does not yet perform well enough to replace the older vendored libraries. The remaining compatibility feature/gap SOWs should complete first, then this performance SOW, then SOW-0026 integration.
 - Netdata replacement is not production-ready if the SDK writer or reader hot paths are materially slower than the current vendored Rust implementation without a measured explanation and a user-approved exception.
 - Optimizations must be measurement-driven and must not weaken conformance.
 - The user knows the Rust implementation can commit around 30k rows per second on one core for about 32 mixed-cardinality fields, and this is useful context but not a formal pass/fail threshold until measured on the project benchmark environment.
@@ -92,8 +95,9 @@ Current state:
 - Correctness, deterministic ingestion, and byte-level compatibility evidence are complete through SOW-0016.
 - SOW-0017, SOW-0018, SOW-0019, and SOW-0021 are complete. SOW-0020 directory traversal parity remains pending.
 - User decision on 2026-05-24 kept this SOW blocked until later feature work. The 2026-05-26 SNMP traps performance report changes this from final polish into a Netdata integration blocker, but the same-day sequencing clarification keeps feature completion first.
-- SOW-0023 is stabilizing the high-level writer API used by Netdata writer integrations.
-- SOW-0027 is planned to define reader-side SDK and `jf` facade behavior needed for Netdata reader integrations.
+- SOW-0023 completed the high-level writer API used by Netdata writer integrations.
+- SOW-0027 completed the reader-side SDK and `jf` facade behavior needed for Netdata reader integrations.
+- SOW-0020, SOW-0024, and SOW-0022 remain before this SOW in the active sequencing.
 
 Risks:
 

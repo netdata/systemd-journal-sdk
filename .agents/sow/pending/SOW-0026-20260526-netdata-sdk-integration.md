@@ -4,7 +4,7 @@
 
 Status: open
 
-Sub-state: Created from user request on 2026-05-26. Implementation is blocked until the user authorizes the exact Netdata repository work target, because this SDK repository forbids changes outside this repository by default.
+Sub-state: Created from user request on 2026-05-26. This is the last pending integration SOW. Implementation is blocked until SOW-0009 proves acceptable performance or the user explicitly accepts a staged exception, and until the user authorizes the exact Netdata repository work target because this SDK repository forbids changes outside this repository by default.
 
 ## Requirements
 
@@ -26,6 +26,7 @@ Facts:
 - OTEL logs currently use `journal-log-writer` for writer paths.
 - Netdata log-viewer crates include `otel-signal-viewer-plugin` and journal-facing reader/query crates.
 - The user requires writers to default to compact format for the Netdata integration.
+- The user clarified on 2026-05-26 that actual Netdata integration should happen last because the SDK does not yet perform well enough to replace Netdata's faster older vendored libraries. Remaining compatibility feature/gap SOWs should complete first, then SOW-0009 performance work, then this SOW.
 
 Inferences:
 
@@ -33,7 +34,7 @@ Inferences:
 - Netdata reader integration depends on SOW-0027 reader API and `jf` facade parity, because Netdata's `jf` crate provides the existing libsystemd-like compatibility layer used by static builds.
 - Compact-by-default Netdata writers depend on SOW-0024 mixed-directory reader coverage so existing regular files and new compact files can coexist safely.
 - Restart disk-budget behavior depends on SOW-0025 retention-on-open if Netdata configuration changes should apply immediately after plugin restart.
-- Production replacement depends on SOW-0009 benchmark/profile/optimize evidence. On 2026-05-26 the user reported the Go SDK writer at about 5k logs/s in the SNMP traps ingestion worker, compared with about 25k logs/s for Netdata NetFlow with the vendored Rust implementation. This is user-reported until reproduced by SOW-0009, but it is large enough to make performance a production gate.
+- Production replacement depends on SOW-0009 benchmark/profile/optimize evidence. On 2026-05-26 the user reported the Go SDK writer at about 5k logs/s in the SNMP traps ingestion worker, compared with about 25k logs/s for Netdata NetFlow with the vendored Rust implementation. This is user-reported until reproduced by SOW-0009, but it is large enough to make performance a production gate. This SOW must remain after SOW-0009 unless the user explicitly accepts a staged exception.
 - The integration should not change user configuration paths or lose existing journals.
 
 Unknowns:
@@ -44,6 +45,7 @@ Unknowns:
 
 ### Acceptance Criteria
 
+- SOW-0009 shows acceptable writer/reader performance for the relevant Netdata hot paths before implementation starts, or the user explicitly accepts a staged performance exception.
 - The user authorizes the exact Netdata repository path/branch/worktree before implementation starts, or the SOW is split into SDK-side packaging work and a separate Netdata-side integration SOW.
 - NetFlow writer paths use this SDK high-level writer API, default to compact output, preserve existing effective directories and machine-id layout, preserve lifecycle events needed by facet side artifacts, preserve sync cadence, and continue reading old files.
 - NetFlow reader/query/rebuild/facet paths use this SDK reader/index/query APIs or an approved SDK facade, and no NetFlow path keeps a plugin-local journal parser when an SDK API exists.
@@ -89,7 +91,7 @@ Risks:
 
 ## Pre-Implementation Gate
 
-Status: needs-user-decision
+Status: blocked until SOW-0009 performance gate and Netdata repository decision
 
 Problem / root-cause model:
 
