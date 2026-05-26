@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: open
+Status: completed
 
-Sub-state: Created from user request on 2026-05-26. Pending activation after the current SOW completes.
+Sub-state: Completed on 2026-05-26 after local implementation, validation, and two read-only reviewer rounds.
 
 ## Requirements
 
@@ -187,22 +187,70 @@ Failure handling:
 ### 2026-05-26
 
 - Created SOW from user request while SOW-0023 review was running.
+- Activated after SOW-0020 completed, committed, and pushed.
+- Added `tests/interoperability/run_mixed_directory_matrix.py`.
+  - Generates a stock-supported mixed directory with regular and compact files, uncompressed and zstd/xz/lz4 DATA-compressed files, sealed and unsealed files, active `.journal` and archived `.journal~` names, deterministic IDs, deterministic timestamps, and a shared deterministic verification key.
+  - Generates an unsealed-only mixed directory to prove directory verification succeeds without a key.
+  - Generates a repository-extension mixed directory with active and archived whole-file `.journal.zst` / `.journal~.zst` files, including sealed whole-file zstd verification with and without `--verify-key`; stock journalctl is intentionally excluded from this extension check because systemd v260.1 directory enumeration accepts `.journal` and `.journal~` names only.
+  - Validates generated fixture flags before running readers: keyed hash, compact flag, DATA compression header/object flags, sealed flag, and whole-file zstd decompression.
+  - Compares stock journalctl, Go, Rust, Node.js, and Python file-backed `journalctl --directory` behavior for JSON, export, text, fields, boot listing, repeated same-field OR, cross-field AND, `+` disjunction, missing-key sealed verification failure, correct-key verification success, wrong-key failure, and unsealed no-key verification success.
+- No reader implementation changes were required. The existing per-file open/decode/verify behavior already handles the mixed-directory cases once covered by the shared matrix.
+- Updated durable artifacts:
+  - `.agents/sow/specs/product-scope.md` now records the mixed-directory guarantee and removes SOW-0024 as a current reader limitation.
+  - `tests/interoperability/README.md` documents `run_mixed_directory_matrix.py` and marks mixed-format directory readers complete.
+  - `go/README.md`, `rust/README.md`, `node/README.md`, and `python/README.md` now describe mixed regular/compact, compressed/uncompressed, sealed/unsealed directory support.
+  - `.agents/skills/project-journal-compatibility/SKILL.md` now requires the mixed-directory matrix for future mixed directory feature changes.
 
 ## Validation
 
-Pending activation and implementation.
+Local validation completed and read-only external review passed.
+
+- `PYTHON=.local/python-venv/bin/python .local/python-venv/bin/python tests/interoperability/run_mixed_directory_matrix.py --keep-files` - PASS after reviewer hygiene fixes.
+  - Stock version recorded by the runner: `systemd 260 (260.1-2-manjaro)`.
+  - Summary: 72 total checks, 72 passed, 0 failed.
+  - Readers: stock, Go, Rust, Node.js, Python.
+  - Covered stock-supported mixed directory reads and verification plus repository whole-file `.journal.zst` extension reads and verification.
+- `PYTHON=.local/python-venv/bin/python .local/python-venv/bin/python tests/interoperability/run_directory_matrix.py --keep-files` - PASS.
+- `GOMODCACHE=.local/go/pkg/mod GOCACHE=.local/go-build GOPATH=.local/go go test ./journal ./cmd/journalctl` in `go/` - PASS.
+- `CARGO_HOME=.local/cargo-home CARGO_TARGET_DIR=.local/cargo-target cargo test -p journal -p journalctl` in `rust/` - PASS.
+- `node --check cmd/journalctl/index.js && node --check src/lib/directory-reader.js && node --check src/lib/reader.js && npm test -- --runInBand` in `node/` - PASS.
+- `python3 -m py_compile python/cmd/journalctl.py python/journal/directory_reader.py python/journal/reader.py tests/interoperability/run_directory_matrix.py tests/interoperability/run_mixed_directory_matrix.py && .local/python-venv/bin/python python/test_all.py` - PASS.
+
+Reviewer gate:
+
+- Initial batched read-only external review returned production-grade from minimax, kimi, qwen, and glm with non-blocking findings only.
+- Addressed valid hygiene findings before close: removed unused fixture metadata, added archived `.journal~.zst` coverage, added zst no-key verification failure coverage, added per-entry `_BOOT_ID`/`_MACHINE_ID` validation, added an upfront `zstd` dependency check, fixed fixture cleanup when `--keep-files` is absent, and corrected fixture-tree wording.
+- Follow-up read-only review after fixes returned production-grade from minimax, kimi, qwen, and glm with only close-gate/doc housekeeping findings.
+- Same-failure search: checked `tests/interoperability/` and this SOW for the reviewer finding classes (`stock_supported`, zst no-key verification, `_BOOT_ID`, `_MACHINE_ID`, `shutil.which("zstd")`, cleanup semantics, `68/68`, and one-directory wording). No additional same-failure implementation instances remain.
+
+Sensitive data gate:
+
+- Durable artifacts contain only synthetic fixture IDs, deterministic test keys, and repo-local paths. No raw secrets, credentials, bearer tokens, SNMP communities, customer identifiers, personal data, private endpoints, or proprietary incident details were added.
+
+Artifact maintenance gate:
+
+- `AGENTS.md`: no update needed; project-wide workflow and repository boundary rules were unchanged.
+- Runtime project skills: `.agents/skills/project-journal-compatibility/SKILL.md` now requires the mixed-directory matrix for mixed directory feature changes.
+- Specs: `.agents/sow/specs/product-scope.md` now records the mixed-directory guarantee and removes SOW-0024 from current reader limitations.
+- End-user/operator docs: Go, Rust, Node.js, Python, and interoperability READMEs were updated for the mixed-directory guarantee and matrix.
+- End-user/operator skills: none affected; no output/reference skills exist for this project.
+- SOW lifecycle: SOW-0024 moved from `pending/` to `current/` on activation and is moved to `done/` at close.
+- `SOW-status.md`: updated for activation and close.
+- Follow-up mapping: no new SOW is needed. SOW-0022 still tracks broader compatibility gaps; SOW-0009 still tracks benchmark/profile/optimization; SOW-0026 still tracks Netdata integration after performance is acceptable.
 
 ## Outcome
 
-Pending.
+Completed. The mixed-format directory matrix now validates stock-supported mixed directories and repository whole-file zstd extension directories across stock journalctl plus Rust, Go, Node.js, and Python rewrites. The final matrix passes 72/72 checks on systemd 260.1-2-manjaro. No reader implementation changes were required because existing readers already detect compact layout, compression, sealing, and zstd wrapping per file/object.
 
 ## Lessons Extracted
 
-Pending.
+- Mixed-directory confidence should be tested directly. File-level compact, compression, and FSS matrices were necessary but did not prove that directory readers avoided directory-wide feature assumptions.
+- The existing per-file open/decode/verify model was the right design. The SOW mainly added proof, not reader changes.
+- Repository-only whole-file `.journal.zst` behavior needs explicit stock-exclusion notes because stock systemd v260.1 directory enumeration does not accept that extension.
 
 ## Followup
 
-None yet.
+No new follow-up. Remaining broader verification parity, performance optimization, and Netdata integration work remains in SOW-0022, SOW-0009, and SOW-0026 respectively.
 
 ## Regression Log
 

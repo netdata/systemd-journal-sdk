@@ -298,6 +298,14 @@ Accepted reader API layers:
 - File-backed `journalctl --verify --directory` uses the same traversal and
   skips files that cannot be opened by the directory reader. Explicit
   `--verify --file` still reports corruption for the named file.
+- Directory readers and file-backed `journalctl --directory` support mixed
+  per-file feature sets in one directory: regular and compact files,
+  uncompressed and zstd/xz/lz4 DATA-compressed files, sealed and unsealed files,
+  active and archived names, and repository whole-file `.journal.zst` files.
+  Normal reads do not require a verification key for sealed files. Directory
+  verification without a key succeeds for unsealed-only directories and fails
+  for sealed files; the correct `--verify-key` validates mixed sealed/unsealed
+  directories, and a wrong key fails.
 - Daemon-only libsystemd/journalctl operations remain outside the SDK facade
   target and must fail with controlled unsupported behavior when exposed.
 
@@ -326,8 +334,6 @@ Current Go reader feature slice:
 
 Current Go reader limitations:
 
-- mixed-format directories combining compact/regular, compression variants,
-  and sealed/unsealed files remain tracked by SOW-0024;
 - sealed TAG/HMAC verification APIs and file-backed journalctl `--verify-key`
   are implemented for repository-generated sealed files; full systemd
   object-graph verification parity remains tracked under SOW-0022;
@@ -390,8 +396,6 @@ Current Rust reader feature slice:
 
 Current Rust reader limitations:
 
-- mixed-format directories combining compact/regular, compression variants,
-  and sealed/unsealed files remain tracked by SOW-0024;
 - boot listing uses file-level boot metadata in this slice;
 - sealed TAG/HMAC verification APIs and file-backed journalctl `--verify-key`
   are implemented for repository-generated sealed files; full systemd
@@ -455,8 +459,6 @@ Current Node.js reader feature slice:
 
 Current Node.js reader/writer limitations:
 
-- mixed-format directories combining compact/regular, compression variants,
-  and sealed/unsealed files remain tracked by SOW-0024;
 - boot listing uses file-level boot metadata in this slice;
 - sealed TAG/HMAC verification APIs and file-backed journalctl `--verify-key`
   are implemented for repository-generated sealed files; full systemd
@@ -522,8 +524,6 @@ Current Python reader feature slice:
 
 Current Python reader/writer limitations:
 
-- mixed-format directories combining compact/regular, compression variants,
-  and sealed/unsealed files remain tracked by SOW-0024;
 - boot listing uses file-level boot metadata in this slice;
 - sealed TAG/HMAC verification APIs and file-backed journalctl `--verify-key`
   are implemented for repository-generated sealed files; full systemd

@@ -284,6 +284,31 @@ compact matrix validates:
 The `--compression` option can be used to validate compact journals whose DATA
 objects are compressed with `zstd`, `xz`, or `lz4`.
 
+## Mixed Directory Matrix (`run_mixed_directory_matrix.py`)
+
+Generates a synthetic fixture tree containing mixed per-file journal feature
+sets, then compares file-backed `journalctl --directory` behavior across stock
+journalctl and all repository rewrites.
+
+```bash
+python3 tests/interoperability/run_mixed_directory_matrix.py
+```
+
+The stock-supported directory covers:
+
+- regular and compact files;
+- uncompressed, zstd, xz, and lz4 DATA-object compression;
+- sealed and unsealed files sharing one verification key;
+- active `.journal` and archived `.journal~` names;
+- JSON, export, text, field listing, boot listing, repeated-match OR,
+  cross-field AND, and `+` disjunction;
+- directory verification success for unsealed-only directories, missing-key
+  failure for sealed files, correct-key success, and wrong-key failure.
+
+The runner also validates the repository extension for mixed active and archived
+whole-file `.journal.zst` / `.journal~.zst` directory discovery, including
+sealed whole-file zstd verification with and without `--verify-key`.
+
 ## Writer Lock Matrix (`run_lock_matrix.py`)
 
 Starts one SDK writer as the active lock holder, then starts every SDK writer as
@@ -321,3 +346,4 @@ completion unless `--keep-files` is passed.
 | Cross-language binary stress | Complete | `run_binary_matrix.py` passes 52/52 across all writer/reader pairs plus stock libsystemd | Closed |
 | Writer locking parity | Complete | `run_lock_matrix.py` passes 8/8; all SDK writer pairs reject concurrent writers and stale locks left by crashed writers are cleaned | Closed |
 | Directory reader subdirectory traversal | Complete | `run_directory_matrix.py` passes across stock journalctl plus Rust, Go, Node.js, and Python rewrites | Closed in SOW-0020 |
+| Mixed-format directory readers | Complete | `run_mixed_directory_matrix.py` passes 72/72 across stock journalctl plus Rust, Go, Node.js, and Python rewrites | Closed in SOW-0024 |

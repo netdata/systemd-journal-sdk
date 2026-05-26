@@ -18,7 +18,8 @@ no system journal library linkage.
 - Export, JSON, and text output formatting
 - libsystemd-compatible `SdJournal` facade
 - Directory iteration across root journal files plus one machine-id
-  subdirectory level, with interleaved multi-file ordering
+  subdirectory level, with interleaved multi-file ordering, including mixed
+  regular/compact, compressed/uncompressed, and sealed/unsealed files
 
 ### Writer
 
@@ -53,7 +54,9 @@ no system journal library linkage.
 
 Directory mode follows stock file-backed traversal for `.journal` and
 `.journal~` files, skips namespace-suffix subdirectories by default, and also
-accepts whole-file `.journal.zst` / `.journal~.zst` as an SDK extension.
+accepts whole-file `.journal.zst` / `.journal~.zst` as an SDK extension. Mixed
+directories may contain regular, compact, DATA-compressed, sealed, and unsealed
+files together.
 
 ## Requirements
 

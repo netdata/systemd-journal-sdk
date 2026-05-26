@@ -71,6 +71,12 @@ Do not use this skill for:
   journalctl plus Rust, Go, Node.js, and Python rewrites to agree on traversal,
   ordering, filtering, boot listing, corrupt-file skipping, empty directories,
   and repository `.journal.zst` directory discovery.
+- For mixed directory feature changes, run
+  `tests/interoperability/run_mixed_directory_matrix.py` and require stock
+  journalctl plus Rust, Go, Node.js, and Python rewrites to agree on mixed
+  regular/compact files, uncompressed and zstd/xz/lz4 DATA-compressed files,
+  sealed/unsealed reads, directory verification with and without keys, and the
+  repository whole-file `.journal.zst` directory extension.
 - Separate reader support for existing historical files from writer feature milestones.
 - Record excluded upstream tests with a reason and extract file-level behavior where practical.
 

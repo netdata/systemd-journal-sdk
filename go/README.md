@@ -52,7 +52,8 @@ Current reader scope:
   through pure-Go dependencies;
 - directory reading across active and archived files with stock-compatible
   root plus one machine-id subdirectory traversal and interleaved multi-file
-  ordering;
+  ordering, including mixed regular/compact, compressed/uncompressed,
+  sealed/unsealed, and whole-file `.journal.zst` files in one directory;
 - forward/backward iteration, cursors, realtime and monotonic timestamps,
   seqnum metadata, field enumeration, unique values, binary field values,
   repeated field values, stateful current-entry data enumeration, and
@@ -74,8 +75,6 @@ Current reader scope:
 
 Reader limitations:
 
-- mixed-format directory validation across compact/regular, compression
-  variants, and sealed/unsealed files is tracked separately;
 - full systemd object-graph verification parity is tracked separately;
 - daemon-only journalctl operations are not implemented.
 
