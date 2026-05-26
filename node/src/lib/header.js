@@ -139,21 +139,44 @@ export function parseFileHeader(buf) {
     tail_entry_array_n_entries: 0,
     tail_entry_offset: 0n,
   };
-  if (header.header_size >= BigInt(HEADER_SIZE)) {
-    if (buf.length < HEADER_SIZE) {
-      throw new Error(`header buffer too small: ${buf.length} < ${HEADER_SIZE}`);
-    }
+  const requiredHeaderSize = Number(
+    header.header_size < BigInt(HEADER_SIZE) ? header.header_size : BigInt(HEADER_SIZE),
+  );
+  if (buf.length < requiredHeaderSize) {
+    throw new Error(`header buffer too small: ${buf.length} < ${requiredHeaderSize}`);
+  }
+  if (headerContainsField(buf, header.header_size, 216)) {
     header.n_data = readUint64LE(buf, 208);
+  }
+  if (headerContainsField(buf, header.header_size, 224)) {
     header.n_fields = readUint64LE(buf, 216);
+  }
+  if (headerContainsField(buf, header.header_size, 232)) {
     header.n_tags = readUint64LE(buf, 224);
+  }
+  if (headerContainsField(buf, header.header_size, 240)) {
     header.n_entry_arrays = readUint64LE(buf, 232);
+  }
+  if (headerContainsField(buf, header.header_size, 248)) {
     header.data_hash_chain_depth = readUint64LE(buf, 240);
+  }
+  if (headerContainsField(buf, header.header_size, 256)) {
     header.field_hash_chain_depth = readUint64LE(buf, 248);
+  }
+  if (headerContainsField(buf, header.header_size, 260)) {
     header.tail_entry_array_offset = buf.readUInt32LE(256);
+  }
+  if (headerContainsField(buf, header.header_size, 264)) {
     header.tail_entry_array_n_entries = buf.readUInt32LE(260);
+  }
+  if (headerContainsField(buf, header.header_size, 272)) {
     header.tail_entry_offset = readUint64LE(buf, 264);
   }
   return header;
+}
+
+function headerContainsField(buf, headerSize, end) {
+  return headerSize >= BigInt(end) && buf.length >= end;
 }
 
 // Serialize a header object into a v260 272-byte buffer.

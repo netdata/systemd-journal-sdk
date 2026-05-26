@@ -37,6 +37,7 @@ import {
   OBJECT_TYPE_DATA,
   OBJECT_TYPE_TAG,
   STATE_ARCHIVED,
+  parseFileHeader,
   parseObjectHeader,
   writeObjectHeader,
 } from '../src/lib/header.js';
@@ -123,6 +124,59 @@ function journalHasDataObjectFlag(path, flag) {
 
   return false;
 }
+
+function makeHistoricalHeaderFixture(headerSize) {
+  const buf = Buffer.alloc(Math.max(HEADER_SIZE, headerSize));
+  buf.write('LPKSHHRH', 0, 8, 'latin1');
+  buf.writeUInt32LE(INCOMPATIBLE_KEYED_HASH, 12);
+  buf.writeBigUInt64LE(BigInt(headerSize), 88);
+  buf.writeBigUInt64LE(11n, 208);
+  buf.writeBigUInt64LE(22n, 216);
+  buf.writeBigUInt64LE(33n, 224);
+  buf.writeBigUInt64LE(44n, 232);
+  buf.writeBigUInt64LE(55n, 240);
+  buf.writeBigUInt64LE(66n, 248);
+  buf.writeUInt32LE(77, 256);
+  buf.writeUInt32LE(88, 260);
+  buf.writeBigUInt64LE(99n, 264);
+  return headerSize < HEADER_SIZE ? buf.subarray(0, headerSize) : buf;
+}
+
+const historicalHeaderCases = [
+  { headerSize: 208 },
+  { headerSize: 216, n_data: 11n },
+  { headerSize: 220, n_data: 11n },
+  { headerSize: 224, n_data: 11n, n_fields: 22n },
+  { headerSize: 232, n_data: 11n, n_fields: 22n, n_tags: 33n },
+  { headerSize: 240, n_data: 11n, n_fields: 22n, n_tags: 33n, n_entry_arrays: 44n },
+  { headerSize: 248, n_data: 11n, n_fields: 22n, n_tags: 33n, n_entry_arrays: 44n, data_hash_chain_depth: 55n },
+  { headerSize: 250, n_data: 11n, n_fields: 22n, n_tags: 33n, n_entry_arrays: 44n, data_hash_chain_depth: 55n },
+  { headerSize: 256, n_data: 11n, n_fields: 22n, n_tags: 33n, n_entry_arrays: 44n, data_hash_chain_depth: 55n, field_hash_chain_depth: 66n },
+  { headerSize: 260, n_data: 11n, n_fields: 22n, n_tags: 33n, n_entry_arrays: 44n, data_hash_chain_depth: 55n, field_hash_chain_depth: 66n, tail_entry_array_offset: 77 },
+  { headerSize: 264, n_data: 11n, n_fields: 22n, n_tags: 33n, n_entry_arrays: 44n, data_hash_chain_depth: 55n, field_hash_chain_depth: 66n, tail_entry_array_offset: 77, tail_entry_array_n_entries: 88 },
+  { headerSize: 268, n_data: 11n, n_fields: 22n, n_tags: 33n, n_entry_arrays: 44n, data_hash_chain_depth: 55n, field_hash_chain_depth: 66n, tail_entry_array_offset: 77, tail_entry_array_n_entries: 88 },
+  { headerSize: 272, n_data: 11n, n_fields: 22n, n_tags: 33n, n_entry_arrays: 44n, data_hash_chain_depth: 55n, field_hash_chain_depth: 66n, tail_entry_array_offset: 77, tail_entry_array_n_entries: 88, tail_entry_offset: 99n },
+  { headerSize: 300, n_data: 11n, n_fields: 22n, n_tags: 33n, n_entry_arrays: 44n, data_hash_chain_depth: 55n, field_hash_chain_depth: 66n, tail_entry_array_offset: 77, tail_entry_array_n_entries: 88, tail_entry_offset: 99n },
+];
+
+for (const expected of historicalHeaderCases) {
+  const header = parseFileHeader(makeHistoricalHeaderFixture(expected.headerSize));
+  assert.equal(header.n_data, expected.n_data ?? 0n, `n_data header_size=${expected.headerSize}`);
+  assert.equal(header.n_fields, expected.n_fields ?? 0n, `n_fields header_size=${expected.headerSize}`);
+  assert.equal(header.n_tags, expected.n_tags ?? 0n, `n_tags header_size=${expected.headerSize}`);
+  assert.equal(header.n_entry_arrays, expected.n_entry_arrays ?? 0n, `n_entry_arrays header_size=${expected.headerSize}`);
+  assert.equal(header.data_hash_chain_depth, expected.data_hash_chain_depth ?? 0n, `data_hash_chain_depth header_size=${expected.headerSize}`);
+  assert.equal(header.field_hash_chain_depth, expected.field_hash_chain_depth ?? 0n, `field_hash_chain_depth header_size=${expected.headerSize}`);
+  assert.equal(header.tail_entry_array_offset, expected.tail_entry_array_offset ?? 0, `tail_entry_array_offset header_size=${expected.headerSize}`);
+  assert.equal(header.tail_entry_array_n_entries, expected.tail_entry_array_n_entries ?? 0, `tail_entry_array_n_entries header_size=${expected.headerSize}`);
+  assert.equal(header.tail_entry_offset, expected.tail_entry_offset ?? 0n, `tail_entry_offset header_size=${expected.headerSize}`);
+}
+
+assert.throws(
+  () => parseFileHeader(makeHistoricalHeaderFixture(300).subarray(0, 208)),
+  /header buffer too small/,
+  'future header with truncated known prefix should be rejected',
+);
 
 const jenkinsVectors = [
   ['', 0xdeadbeefdeadbeefn],

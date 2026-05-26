@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: open
+Status: completed
 
-Sub-state: Split from SOW-0022 Gap 4. Ready for implementation after activation.
+Sub-state: Completed after local implementation, read-only reviewer batch, hardening follow-up, and cross-language validation.
 
 ## Requirements
 
@@ -159,23 +159,76 @@ Failure handling:
 
 ## Execution Log
 
-Pending.
+- Activated this SOW from pending to current and updated `SOW-status.md`.
+- Implemented per-field historical header exposure in:
+  - `go/journal/format.go`
+  - `node/src/lib/header.js`
+  - `python/journal/header.py`
+- Added or expanded shared boundary tests in:
+  - `go/journal/format_test.go`
+  - `node/test/all.js`
+  - `python/test_all.py`
+  - `rust/src/crates/journal-core/src/file/file.rs`
+  - `rust/src/crates/jf/journal_file/src/file.rs`
+- Hardened future-header parsing after reviewer feedback:
+  - Go now requires the buffer to contain `min(on_disk_header_size, current_known_header_size)`.
+  - Node.js and Python now pass the source buffer to per-field containment helpers and require `len >= field_end` before reading.
+  - Go, Node.js, and Python now test a `header_size=300` future header and reject a truncated 208-byte known-prefix buffer.
+- Ran formatter commands:
+  - `gofmt -w go/journal/format.go go/journal/format_test.go`
+  - `cargo fmt`
 
 ## Validation
 
-Pending.
+- Acceptance criteria:
+  - Boundary coverage includes `208`, `216`, `224`, `232`, `240`, `248`, `256`, `260`, `264`, and `272` in all four languages.
+  - Additional defense-in-depth cases cover intermediate sizes `220`, `250`, `268`, future size `300`, and truncated future known-prefix rejection for Go, Node.js, and Python.
+  - Rust `journal-core` and vendored-compatible `jf/journal_file` both cover the same sanitize boundary matrix.
+- Test evidence:
+  - `go test ./...` from `go/`: passed.
+  - `cargo test` from `rust/`: passed.
+  - `node test/all.js` from `node/`: passed.
+  - `.local/python-venv/bin/python python/test_all.py` from repo root: passed.
+  - `python3 python/test_all.py` from repo root: failed because the base interpreter lacks `lz4.block`; repository venv validation above is the valid Python test path for this environment.
+- Reviewer evidence:
+  - `llm-netdata-cloud/minimax-m2.7-coder`: PASS, no blocking findings.
+  - `llm-netdata-cloud/kimi-k2.6`: PASS, recommended Node.js/Python buffer-length hardening and `jf` test expansion.
+  - `llm-netdata-cloud/qwen3.6-plus`: reported Node.js/Python buffer-length handling as blocking. The exact `header_size=272, len=200` example was already rejected by the existing guard, but the broader future-header truncated-prefix concern was valid and fixed.
+  - `llm-netdata-cloud/glm-5.1`: PASS, recommended the same Node.js/Python future-header hardening.
+- Reviewer disposition:
+  - All repeated or actionable reviewer findings were implemented in this SOW.
+  - The Qwen overstatement about current-size truncation was rejected with code evidence, while the underlying future-header safety issue was fixed.
+  - Second full-scope review pass after fixes returned PASS / PRODUCTION GRADE from minimax, kimi, qwen, and glm with no blocking findings.
+- Same-failure search:
+  - `rg -n "header_size.*>=.*HEADER_SIZE|headerSize.*>=.*headerSize|if h\\.headerSize >= headerSize|if header\\['header_size'\\] >= HEADER_SIZE|if \\(header\\.header_size >= BigInt\\(HEADER_SIZE\\)\\)|headerContainsField\\(header\\.header_size|header_contains_field\\(header\\['header_size'\\]" go node python rust`
+  - Result: no remaining all-or-nothing current-header-size guards or stale helper call sites.
+- Sensitive data gate:
+  - Only synthetic header fixtures and public source references were used.
+  - No live journal contents, host logs, credentials, customer data, or private identifiers were copied into durable artifacts.
+- Artifact maintenance gate:
+  - `AGENTS.md`: no update required; workflow and guardrails unchanged.
+  - Runtime project skills: no update required; compatibility process already requires cross-language reader/writer validation.
+  - Specs: no update required; `.agents/sow/specs/product-scope.md` already states that header parsing must respect on-disk `header_size` and zero/default absent fields.
+  - End-user/operator docs: no update required; this is internal parser compatibility behavior with no public API change.
+  - End-user/operator skills: no update required; no published operator workflow changed.
+  - SOW lifecycle: this SOW moved from pending to current, then to done with this implementation commit.
+  - `SOW-status.md`: updated for activation and will be updated for completion.
+- SOW audit:
+  - `SOW_AUDIT_SENSITIVE_CHANGED=1 .agents/sow/audit.sh`: passed after moving this SOW to `done/`.
 
 ## Outcome
 
-Pending.
+Rust, Go, Node.js, and Python now expose historical journal header extension fields per field, based on the on-disk `header_size`, instead of using a current-size all-or-nothing gate. Future header sizes preserve all known fields, truncated known-prefix buffers are rejected consistently, and both Rust reader crates carry the same boundary coverage.
 
 ## Lessons Extracted
 
-Pending.
+- Historical journal compatibility needs per-field tests, not only version-boundary tests. Intermediate sizes caught the intended containment semantics more directly.
+- Rust `journal-core` and `jf/journal_file` should stay aligned for compatibility-critical reader behavior because Netdata compatibility depends on the `jf` facade path too.
+- Reviewer findings can be partially wrong but still useful; the current-size truncation example was already handled, while the future-header short-prefix variant exposed a real hardening gap.
 
 ## Followup
 
-None yet.
+None for this SOW. Remaining compatibility and performance work is already tracked by pending SOWs.
 
 ## Regression Log
 

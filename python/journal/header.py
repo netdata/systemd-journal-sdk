@@ -115,19 +115,32 @@ def parse_file_header(buf):
         'tail_entry_array_n_entries': 0,
         'tail_entry_offset': 0,
     }
-    if header['header_size'] >= HEADER_SIZE:
-        if len(buf) < HEADER_SIZE:
-            raise ValueError(f'header buffer too small: {len(buf)} < {HEADER_SIZE}')
+    required_header_size = min(header['header_size'], HEADER_SIZE)
+    if len(buf) < required_header_size:
+        raise ValueError(f'header buffer too small: {len(buf)} < {required_header_size}')
+    if header_contains_field(buf, header['header_size'], 216):
         header['n_data'] = read_uint64_le(buf, 208)
+    if header_contains_field(buf, header['header_size'], 224):
         header['n_fields'] = read_uint64_le(buf, 216)
+    if header_contains_field(buf, header['header_size'], 232):
         header['n_tags'] = read_uint64_le(buf, 224)
+    if header_contains_field(buf, header['header_size'], 240):
         header['n_entry_arrays'] = read_uint64_le(buf, 232)
+    if header_contains_field(buf, header['header_size'], 248):
         header['data_hash_chain_depth'] = read_uint64_le(buf, 240)
+    if header_contains_field(buf, header['header_size'], 256):
         header['field_hash_chain_depth'] = read_uint64_le(buf, 248)
+    if header_contains_field(buf, header['header_size'], 260):
         header['tail_entry_array_offset'] = int.from_bytes(buf[256:260], 'little')
+    if header_contains_field(buf, header['header_size'], 264):
         header['tail_entry_array_n_entries'] = int.from_bytes(buf[260:264], 'little')
+    if header_contains_field(buf, header['header_size'], 272):
         header['tail_entry_offset'] = read_uint64_le(buf, 264)
     return header
+
+
+def header_contains_field(buf, header_size, end):
+    return header_size >= end and len(buf) >= end
 
 
 def serialize_file_header(buf, h):

@@ -1479,24 +1479,235 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_header_for_historical_size_clears_absent_v260_tail_fields() {
-        let header = JournalHeader {
-            header_size: 256,
-            data_hash_chain_depth: 7,
-            field_hash_chain_depth: 8,
-            tail_entry_array_offset: 1,
-            tail_entry_array_n_entries: 2,
-            tail_entry_offset: 3,
-            ..JournalHeader::default()
-        };
+    fn sanitize_header_for_historical_size_matches_per_field_boundaries() {
+        #[derive(Debug)]
+        struct Expected {
+            header_size: u64,
+            n_data: u64,
+            n_fields: u64,
+            n_tags: u64,
+            n_entry_arrays: u64,
+            data_hash_chain_depth: u64,
+            field_hash_chain_depth: u64,
+            tail_entry_array_offset: u32,
+            tail_entry_array_n_entries: u32,
+            tail_entry_offset: u64,
+        }
 
-        let sanitized = sanitize_header_for_size(header);
+        let cases = [
+            Expected {
+                header_size: 208,
+                n_data: 0,
+                n_fields: 0,
+                n_tags: 0,
+                n_entry_arrays: 0,
+                data_hash_chain_depth: 0,
+                field_hash_chain_depth: 0,
+                tail_entry_array_offset: 0,
+                tail_entry_array_n_entries: 0,
+                tail_entry_offset: 0,
+            },
+            Expected {
+                header_size: 216,
+                n_data: 11,
+                n_fields: 0,
+                n_tags: 0,
+                n_entry_arrays: 0,
+                data_hash_chain_depth: 0,
+                field_hash_chain_depth: 0,
+                tail_entry_array_offset: 0,
+                tail_entry_array_n_entries: 0,
+                tail_entry_offset: 0,
+            },
+            Expected {
+                header_size: 220,
+                n_data: 11,
+                n_fields: 0,
+                n_tags: 0,
+                n_entry_arrays: 0,
+                data_hash_chain_depth: 0,
+                field_hash_chain_depth: 0,
+                tail_entry_array_offset: 0,
+                tail_entry_array_n_entries: 0,
+                tail_entry_offset: 0,
+            },
+            Expected {
+                header_size: 224,
+                n_data: 11,
+                n_fields: 22,
+                n_tags: 0,
+                n_entry_arrays: 0,
+                data_hash_chain_depth: 0,
+                field_hash_chain_depth: 0,
+                tail_entry_array_offset: 0,
+                tail_entry_array_n_entries: 0,
+                tail_entry_offset: 0,
+            },
+            Expected {
+                header_size: 232,
+                n_data: 11,
+                n_fields: 22,
+                n_tags: 33,
+                n_entry_arrays: 0,
+                data_hash_chain_depth: 0,
+                field_hash_chain_depth: 0,
+                tail_entry_array_offset: 0,
+                tail_entry_array_n_entries: 0,
+                tail_entry_offset: 0,
+            },
+            Expected {
+                header_size: 240,
+                n_data: 11,
+                n_fields: 22,
+                n_tags: 33,
+                n_entry_arrays: 44,
+                data_hash_chain_depth: 0,
+                field_hash_chain_depth: 0,
+                tail_entry_array_offset: 0,
+                tail_entry_array_n_entries: 0,
+                tail_entry_offset: 0,
+            },
+            Expected {
+                header_size: 248,
+                n_data: 11,
+                n_fields: 22,
+                n_tags: 33,
+                n_entry_arrays: 44,
+                data_hash_chain_depth: 55,
+                field_hash_chain_depth: 0,
+                tail_entry_array_offset: 0,
+                tail_entry_array_n_entries: 0,
+                tail_entry_offset: 0,
+            },
+            Expected {
+                header_size: 250,
+                n_data: 11,
+                n_fields: 22,
+                n_tags: 33,
+                n_entry_arrays: 44,
+                data_hash_chain_depth: 55,
+                field_hash_chain_depth: 0,
+                tail_entry_array_offset: 0,
+                tail_entry_array_n_entries: 0,
+                tail_entry_offset: 0,
+            },
+            Expected {
+                header_size: 256,
+                n_data: 11,
+                n_fields: 22,
+                n_tags: 33,
+                n_entry_arrays: 44,
+                data_hash_chain_depth: 55,
+                field_hash_chain_depth: 66,
+                tail_entry_array_offset: 0,
+                tail_entry_array_n_entries: 0,
+                tail_entry_offset: 0,
+            },
+            Expected {
+                header_size: 260,
+                n_data: 11,
+                n_fields: 22,
+                n_tags: 33,
+                n_entry_arrays: 44,
+                data_hash_chain_depth: 55,
+                field_hash_chain_depth: 66,
+                tail_entry_array_offset: 77,
+                tail_entry_array_n_entries: 0,
+                tail_entry_offset: 0,
+            },
+            Expected {
+                header_size: 264,
+                n_data: 11,
+                n_fields: 22,
+                n_tags: 33,
+                n_entry_arrays: 44,
+                data_hash_chain_depth: 55,
+                field_hash_chain_depth: 66,
+                tail_entry_array_offset: 77,
+                tail_entry_array_n_entries: 88,
+                tail_entry_offset: 0,
+            },
+            Expected {
+                header_size: 268,
+                n_data: 11,
+                n_fields: 22,
+                n_tags: 33,
+                n_entry_arrays: 44,
+                data_hash_chain_depth: 55,
+                field_hash_chain_depth: 66,
+                tail_entry_array_offset: 77,
+                tail_entry_array_n_entries: 88,
+                tail_entry_offset: 0,
+            },
+            Expected {
+                header_size: 272,
+                n_data: 11,
+                n_fields: 22,
+                n_tags: 33,
+                n_entry_arrays: 44,
+                data_hash_chain_depth: 55,
+                field_hash_chain_depth: 66,
+                tail_entry_array_offset: 77,
+                tail_entry_array_n_entries: 88,
+                tail_entry_offset: 99,
+            },
+            Expected {
+                header_size: 300,
+                n_data: 11,
+                n_fields: 22,
+                n_tags: 33,
+                n_entry_arrays: 44,
+                data_hash_chain_depth: 55,
+                field_hash_chain_depth: 66,
+                tail_entry_array_offset: 77,
+                tail_entry_array_n_entries: 88,
+                tail_entry_offset: 99,
+            },
+        ];
 
-        assert_eq!(sanitized.data_hash_chain_depth, 7);
-        assert_eq!(sanitized.field_hash_chain_depth, 8);
-        assert_eq!(sanitized.tail_entry_array_offset, 0);
-        assert_eq!(sanitized.tail_entry_array_n_entries, 0);
-        assert_eq!(sanitized.tail_entry_offset, 0);
+        for expected in cases {
+            let sanitized = sanitize_header_for_size(JournalHeader {
+                header_size: expected.header_size,
+                n_data: 11,
+                n_fields: 22,
+                n_tags: 33,
+                n_entry_arrays: 44,
+                data_hash_chain_depth: 55,
+                field_hash_chain_depth: 66,
+                tail_entry_array_offset: 77,
+                tail_entry_array_n_entries: 88,
+                tail_entry_offset: 99,
+                ..JournalHeader::default()
+            });
+
+            assert_eq!(sanitized.n_data, expected.n_data, "{expected:?}");
+            assert_eq!(sanitized.n_fields, expected.n_fields, "{expected:?}");
+            assert_eq!(sanitized.n_tags, expected.n_tags, "{expected:?}");
+            assert_eq!(
+                sanitized.n_entry_arrays, expected.n_entry_arrays,
+                "{expected:?}"
+            );
+            assert_eq!(
+                sanitized.data_hash_chain_depth, expected.data_hash_chain_depth,
+                "{expected:?}"
+            );
+            assert_eq!(
+                sanitized.field_hash_chain_depth, expected.field_hash_chain_depth,
+                "{expected:?}"
+            );
+            assert_eq!(
+                sanitized.tail_entry_array_offset, expected.tail_entry_array_offset,
+                "{expected:?}"
+            );
+            assert_eq!(
+                sanitized.tail_entry_array_n_entries, expected.tail_entry_array_n_entries,
+                "{expected:?}"
+            );
+            assert_eq!(
+                sanitized.tail_entry_offset, expected.tail_entry_offset,
+                "{expected:?}"
+            );
+        }
     }
 
     #[test]

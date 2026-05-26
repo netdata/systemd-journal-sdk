@@ -48,7 +48,9 @@ from journal.header import (  # noqa: E402
     COMPATIBLE_SEALED,
     COMPACT_DATA_OBJECT_HEADER_SIZE,
     DATA_OBJECT_HEADER_SIZE,
+    HEADER_SIZE,
     INCOMPATIBLE_COMPACT,
+    INCOMPATIBLE_KEYED_HASH,
     OBJECT_COMPRESSED_LZ4,
     OBJECT_COMPRESSED_XZ,
     OBJECT_COMPRESSED_ZSTD,
@@ -173,6 +175,68 @@ def test_live_delay_parser():
     assert abs(module.parse_delay_seconds('10us') - 10e-6) < 1e-12
     assert abs(module.parse_delay_seconds('10ms') - 0.01) < 1e-12
     assert abs(module.parse_delay_seconds('2s') - 2.0) < 1e-12
+
+
+def test_parse_file_header_historical_field_boundaries():
+    cases = [
+        {'header_size': 208},
+        {'header_size': 216, 'n_data': 11},
+        {'header_size': 220, 'n_data': 11},
+        {'header_size': 224, 'n_data': 11, 'n_fields': 22},
+        {'header_size': 232, 'n_data': 11, 'n_fields': 22, 'n_tags': 33},
+        {'header_size': 240, 'n_data': 11, 'n_fields': 22, 'n_tags': 33, 'n_entry_arrays': 44},
+        {'header_size': 248, 'n_data': 11, 'n_fields': 22, 'n_tags': 33, 'n_entry_arrays': 44, 'data_hash_chain_depth': 55},
+        {'header_size': 250, 'n_data': 11, 'n_fields': 22, 'n_tags': 33, 'n_entry_arrays': 44, 'data_hash_chain_depth': 55},
+        {'header_size': 256, 'n_data': 11, 'n_fields': 22, 'n_tags': 33, 'n_entry_arrays': 44, 'data_hash_chain_depth': 55, 'field_hash_chain_depth': 66},
+        {'header_size': 260, 'n_data': 11, 'n_fields': 22, 'n_tags': 33, 'n_entry_arrays': 44, 'data_hash_chain_depth': 55, 'field_hash_chain_depth': 66, 'tail_entry_array_offset': 77},
+        {'header_size': 264, 'n_data': 11, 'n_fields': 22, 'n_tags': 33, 'n_entry_arrays': 44, 'data_hash_chain_depth': 55, 'field_hash_chain_depth': 66, 'tail_entry_array_offset': 77, 'tail_entry_array_n_entries': 88},
+        {'header_size': 268, 'n_data': 11, 'n_fields': 22, 'n_tags': 33, 'n_entry_arrays': 44, 'data_hash_chain_depth': 55, 'field_hash_chain_depth': 66, 'tail_entry_array_offset': 77, 'tail_entry_array_n_entries': 88},
+        {'header_size': 272, 'n_data': 11, 'n_fields': 22, 'n_tags': 33, 'n_entry_arrays': 44, 'data_hash_chain_depth': 55, 'field_hash_chain_depth': 66, 'tail_entry_array_offset': 77, 'tail_entry_array_n_entries': 88, 'tail_entry_offset': 99},
+        {'header_size': 300, 'n_data': 11, 'n_fields': 22, 'n_tags': 33, 'n_entry_arrays': 44, 'data_hash_chain_depth': 55, 'field_hash_chain_depth': 66, 'tail_entry_array_offset': 77, 'tail_entry_array_n_entries': 88, 'tail_entry_offset': 99},
+    ]
+    fields = [
+        'n_data',
+        'n_fields',
+        'n_tags',
+        'n_entry_arrays',
+        'data_hash_chain_depth',
+        'field_hash_chain_depth',
+        'tail_entry_array_offset',
+        'tail_entry_array_n_entries',
+        'tail_entry_offset',
+    ]
+    for expected in cases:
+        header = parse_file_header(_historical_header_fixture(expected['header_size']))
+        for field in fields:
+            assert header[field] == expected.get(field, 0), (
+                f'{field} for header_size={expected["header_size"]}: '
+                f'{header[field]} != {expected.get(field, 0)}'
+            )
+    try:
+        parse_file_header(_historical_header_fixture(300)[:208])
+    except ValueError as err:
+        assert 'header buffer too small' in str(err)
+    else:
+        raise AssertionError('future header with truncated known prefix should be rejected')
+
+
+def _historical_header_fixture(header_size):
+    buf = bytearray(max(HEADER_SIZE, header_size))
+    buf[0:8] = b'LPKSHHRH'
+    buf[12:16] = INCOMPATIBLE_KEYED_HASH.to_bytes(4, 'little')
+    buf[88:96] = header_size.to_bytes(8, 'little')
+    buf[208:216] = (11).to_bytes(8, 'little')
+    buf[216:224] = (22).to_bytes(8, 'little')
+    buf[224:232] = (33).to_bytes(8, 'little')
+    buf[232:240] = (44).to_bytes(8, 'little')
+    buf[240:248] = (55).to_bytes(8, 'little')
+    buf[248:256] = (66).to_bytes(8, 'little')
+    buf[256:260] = (77).to_bytes(4, 'little')
+    buf[260:264] = (88).to_bytes(4, 'little')
+    buf[264:272] = (99).to_bytes(8, 'little')
+    if header_size < HEADER_SIZE:
+        return bytes(buf[:header_size])
+    return bytes(buf)
 
 
 def test_writer_reader_and_binary_export():
@@ -1747,6 +1811,7 @@ def main():
     test_siphash_masks_long_message_length()
     test_lowercase_field_rejected()
     test_live_delay_parser()
+    test_parse_file_header_historical_field_boundaries()
     test_writer_reader_and_binary_export()
     test_writer_head_seqnum_zero_defaults_to_one()
     test_compact_writer_reader_and_stock_verify()

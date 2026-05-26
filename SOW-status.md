@@ -6,7 +6,6 @@
 
 ## Pending
 
-- `SOW-0028-20260526-historical-header-parsing-parity.md` - open. Split from SOW-0022 Gap 4. Fix historical header field parsing so Rust, Go, Node.js, and Python expose present/absent fields according to the on-disk `header_size`.
 - `SOW-0029-20260526-compression-threshold-parity.md` - open, needs user decision before implementation. Split from SOW-0022 Gap 5. Decide and implement cross-language compression threshold default/minimum behavior; current SDK defaults are 64 bytes while systemd defaults to 512 with an 8-byte minimum.
 - `SOW-0030-20260526-monotonic-writer-validity.md` - open, needs user decision before implementation. Split from SOW-0022 Gap 8. Resolve low-level reject versus high-level clamp behavior for same-boot backward monotonic timestamps, then enforce the same policy across all four languages.
 - `SOW-0031-20260526-compressed-compact-structural-parity.md` - open. Split from SOW-0022 Gap 7. Add structural parity validation for compressed and compact writer outputs, with byte identity only where deterministic and meaningful.
@@ -43,6 +42,7 @@
 - `SOW-0024-20260526-mixed-format-directory-readers.md`
 - `SOW-0025-20260526-retention-enforcement-on-open.md`
 - `SOW-0027-20260526-netdata-reader-api-and-jf-facade.md`
+- `SOW-0028-20260526-historical-header-parsing-parity.md`
 
 ## Notes
 
@@ -64,5 +64,6 @@
 - SOW-0020 completed directory traversal parity for SDK readers and file-backed `journalctl --directory` across Rust, Go, Node.js, and Python. `run_directory_matrix.py` passes against stock `journalctl` from systemd 260.1 and all repository rewrites for root files, one machine-id subdirectory level, interleaved ordering, matching, fields, boots, corrupt-skip, verify-skip, empty directories, and the repository `.journal.zst` directory extension.
 - SOW-0024 completed mixed-format directory reader validation across stock journalctl plus Rust, Go, Node.js, and Python file-backed rewrites. `run_mixed_directory_matrix.py` passes 72/72 for mixed regular/compact files, uncompressed and zstd/xz/lz4 DATA-compressed files, sealed/unsealed files, active/archive names, directory verification key behavior, and repository whole-file `.journal.zst` / `.journal~.zst` extension discovery. No reader implementation changes were required.
 - SOW-0022 was completed as a compatibility planning/triage SOW on 2026-05-26. Its stale gaps were closed by SOW-0019, SOW-0020, and SOW-0024 where applicable; the remaining executable work was split into SOW-0028 through SOW-0034.
+- SOW-0028 completed historical header parsing parity. Rust, Go, Node.js, and Python now expose historical extension fields according to each field's on-disk `header_size` containment boundary, with added intermediate/future/truncated-prefix validation and matching Rust coverage in both `journal-core` and `jf/journal_file`.
 - Byte-for-byte writer identity is the target for deterministic uncompressed journals. Any feature slice that cannot be made byte-identical must return with evidence before the acceptance condition is changed.
 - The external systemd source checkout is read-only for this project. Build outputs and generated files must remain inside this repository or `/tmp`.

@@ -253,6 +253,13 @@ func parseHeader(src []byte) (journalHeader, error) {
 	copy(h.tailEntryBootID[:], src[56:72])
 	copy(h.seqnumID[:], src[72:88])
 	h.headerSize = binary.LittleEndian.Uint64(src[88:96])
+	requiredHeaderSize := h.headerSize
+	if requiredHeaderSize > headerSize {
+		requiredHeaderSize = headerSize
+	}
+	if len(src) < int(requiredHeaderSize) {
+		return journalHeader{}, errInvalidJournal
+	}
 	h.arenaSize = binary.LittleEndian.Uint64(src[96:104])
 	h.dataHashTableOffset = binary.LittleEndian.Uint64(src[104:112])
 	h.dataHashTableSize = binary.LittleEndian.Uint64(src[112:120])
@@ -267,23 +274,33 @@ func parseHeader(src []byte) (journalHeader, error) {
 	h.headEntryRealtime = binary.LittleEndian.Uint64(src[184:192])
 	h.tailEntryRealtime = binary.LittleEndian.Uint64(src[192:200])
 	h.tailEntryMonotonic = binary.LittleEndian.Uint64(src[200:208])
-	if h.headerSize >= headerSize {
-		if len(src) < headerSize {
-			return journalHeader{}, errInvalidJournal
-		}
-		// Added in 187
+	// Historical journal headers grew one field at a time. Only expose fields
+	// that are contained by the on-disk header_size.
+	if headerContainsField(src, h.headerSize, 216) {
 		h.nData = binary.LittleEndian.Uint64(src[208:216])
+	}
+	if headerContainsField(src, h.headerSize, 224) {
 		h.nFields = binary.LittleEndian.Uint64(src[216:224])
-		// Added in 189
+	}
+	if headerContainsField(src, h.headerSize, 232) {
 		h.nTags = binary.LittleEndian.Uint64(src[224:232])
+	}
+	if headerContainsField(src, h.headerSize, 240) {
 		h.nEntryArrays = binary.LittleEndian.Uint64(src[232:240])
-		// Added in 246
+	}
+	if headerContainsField(src, h.headerSize, 248) {
 		h.dataHashChainDepth = binary.LittleEndian.Uint64(src[240:248])
+	}
+	if headerContainsField(src, h.headerSize, 256) {
 		h.fieldHashChainDepth = binary.LittleEndian.Uint64(src[248:256])
-		// Added in 252
+	}
+	if headerContainsField(src, h.headerSize, 260) {
 		h.tailEntryArrayOffset = binary.LittleEndian.Uint32(src[256:260])
+	}
+	if headerContainsField(src, h.headerSize, 264) {
 		h.tailEntryArrayNEntries = binary.LittleEndian.Uint32(src[260:264])
-		// Added in 254
+	}
+	if headerContainsField(src, h.headerSize, 272) {
 		h.tailEntryOffset = binary.LittleEndian.Uint64(src[264:272])
 	}
 
@@ -294,6 +311,10 @@ func parseHeader(src []byte) (journalHeader, error) {
 		return journalHeader{}, errUnsupportedJournal
 	}
 	return h, nil
+}
+
+func headerContainsField(src []byte, headerSize uint64, end int) bool {
+	return headerSize >= uint64(end) && len(src) >= end
 }
 
 func putObjectHeader(dst []byte, h objectHeader) {
