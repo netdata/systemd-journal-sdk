@@ -1474,7 +1474,29 @@ fn verify_journal_file_strict(file: &JournalFile<Mmap>) -> Result<()> {
         .map_err(|err| SdkError::VerificationError(format!("entry array walk failed: {err}")))?;
 
     let mut decompressed = Vec::new();
+    let mut last_monotonic = 0_u64;
+    let mut last_boot_id = [0_u8; 16];
+    let mut monotonic_set = false;
     for entry_offset in entry_offsets {
+        let entry = file.entry_ref(entry_offset).map_err(|err| {
+            SdkError::VerificationError(format!(
+                "entry object at offset {entry_offset} failed: {err}"
+            ))
+        })?;
+        if monotonic_set
+            && entry.header.boot_id == last_boot_id
+            && last_monotonic > entry.header.monotonic
+        {
+            return Err(SdkError::VerificationError(format!(
+                "entry monotonic out of sync ({} > {})",
+                last_monotonic, entry.header.monotonic
+            )));
+        }
+        last_monotonic = entry.header.monotonic;
+        last_boot_id = entry.header.boot_id;
+        monotonic_set = true;
+        drop(entry);
+
         verify_entry_at_strict(file, entry_offset, &mut decompressed)?;
     }
 
@@ -2038,6 +2060,95 @@ mod tests {
             .add_entry(&mut journal_file, &[payload.as_slice()], realtime, 21)
             .expect("write single message");
         journal_file.sync().expect("sync journal");
+    }
+
+    fn journalctl_verify_fails_if_available(path: &Path, expected_text: &str) {
+        let available = std::process::Command::new("journalctl")
+            .arg("--version")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+        if !available {
+            return;
+        }
+
+        let output = std::process::Command::new("journalctl")
+            .arg("--verify")
+            .arg("--file")
+            .arg(path)
+            .output()
+            .expect("run journalctl --verify");
+        assert!(
+            !output.status.success(),
+            "journalctl --verify unexpectedly passed for {}",
+            path.display()
+        );
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .to_lowercase();
+        assert!(
+            combined.contains(&expected_text.to_lowercase()),
+            "journalctl --verify output missing {expected_text:?}: {combined}"
+        );
+    }
+
+    #[test]
+    fn raw_writer_backward_monotonic_pass_through_fails_verification() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("journals/raw-backward-monotonic.journal");
+        let (mut journal_file, mut writer) = create_facade_test_writer(&path);
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[b"MESSAGE=raw monotonic first".as_slice()],
+                1_700_003_000_000_000,
+                10,
+            )
+            .expect("write first entry");
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[b"MESSAGE=raw monotonic second".as_slice()],
+                1_700_003_000_000_001,
+                5,
+            )
+            .expect("write second entry");
+        journal_file.sync().expect("sync journal");
+
+        let err = verify_file(&path)
+            .expect_err("expected same-boot backward monotonic timestamps to fail verification");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("monotonic"),
+            "expected monotonic verification failure, got: {err}"
+        );
+        journalctl_verify_fails_if_available(&path, "timestamp out of synchronization");
+    }
+
+    #[test]
+    fn raw_writer_explicit_zero_monotonic_pass_through() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("journals/raw-zero-monotonic.journal");
+        let (mut journal_file, mut writer) = create_facade_test_writer(&path);
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[b"MESSAGE=raw zero monotonic".as_slice()],
+                1_700_003_000_100_000,
+                0,
+            )
+            .expect("write entry");
+        journal_file.sync().expect("sync journal");
+        verify_file(&path).expect("zero monotonic first entry should verify");
+
+        let mut journal =
+            SdJournalOpenFiles(&[path.to_str().expect("utf8 path")], 0).expect("open files");
+        assert_eq!(SdJournalNext(&mut journal).expect("next"), 1);
+        let (monotonic, _boot_id) = SdJournalGetMonotonicUsec(&mut journal).expect("monotonic");
+        assert_eq!(monotonic, 0);
     }
 
     #[test]

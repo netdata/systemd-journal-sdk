@@ -6,7 +6,6 @@
 
 ## Pending
 
-- `SOW-0030-20260526-monotonic-writer-validity.md` - open. Split from SOW-0022 Gap 8. User decision: follow Netdata vendored behavior, with high-level writer clamping and low-level raw writer pass-through.
 - `SOW-0031-20260526-compressed-compact-structural-parity.md` - open. Split from SOW-0022 Gap 7. Add structural parity validation for compressed and compact writer outputs, with byte identity only where deterministic and meaningful.
 - `SOW-0032-20260526-live-feature-compatibility-matrix.md` - open. Split from SOW-0022 Gap 1. Extend live concurrency validation to compression, compact layout, compact plus compression, and FSS/sealed writer slices with stock journalctl, stock libsystemd, and repository readers.
 - `SOW-0033-20260526-full-verification-parity.md` - open. Split from SOW-0022 Gap 2. Add practical systemd-like object-graph verification corruption fixtures and make all four language verification APIs reject the same classes as stock `journalctl --verify --file`.
@@ -16,6 +15,7 @@
 
 ## Done
 
+- `SOW-0030-20260526-monotonic-writer-validity.md`
 - `SOW-0029-20260526-compression-threshold-parity.md`
 - `SOW-0001-20260523-project-bootstrap-and-orchestration.md`
 - `SOW-0002-20260523-repo-scaffold-and-rust-source-import.md`

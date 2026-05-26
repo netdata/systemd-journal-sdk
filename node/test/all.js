@@ -102,6 +102,15 @@ function verifyJournalFileIfAvailable(path) {
   if (journalctl.status === 0) run('journalctl', ['--verify', '--file', path]);
 }
 
+function verifyJournalFileFailsIfAvailable(path, expectedText) {
+  const journalctl = spawnSync('journalctl', ['--version'], { encoding: 'utf8' });
+  if (journalctl.status !== 0) return;
+  const result = spawnSync('journalctl', ['--verify', '--file', path], { encoding: 'utf8' });
+  assert.notEqual(result.status, 0, `journalctl --verify unexpectedly passed for ${path}`);
+  const output = `${result.stdout}${result.stderr}`.toLowerCase();
+  assert.ok(output.includes(expectedText.toLowerCase()), `journalctl --verify output missing ${expectedText}: ${output}`);
+}
+
 function journalctlDirectoryRowsIfAvailable(directory, ...matches) {
   const journalctl = spawnSync('journalctl', ['--version'], { encoding: 'utf8' });
   if (journalctl.status !== 0) return null;
@@ -316,6 +325,102 @@ for (const [input, expected] of remappedFieldVectors) {
     SdJournalSeekRealtimeUsec(multi, 999n);
     assert.equal(SdJournalPrevious(multi), 0);
     multi.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const machineId = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const bootA = Buffer.from('aa000000000000000000000000000001', 'hex');
+    const bootB = Buffer.from('bb000000000000000000000000000002', 'hex');
+    const first = new Log(tempDir, {
+      source: 'system',
+      identityMode: 'strict',
+      machineId,
+      bootId: bootA,
+    });
+    first.append(
+      [{ name: 'MESSAGE', value: 'cross boot first' }, { name: 'TEST_ID', value: 'cross-boot-monotonic' }],
+      { realtimeUsec: 1_700_003_100_000_000n, monotonicUsec: 100n },
+    );
+    first.close();
+
+    const second = new Log(tempDir, {
+      source: 'system',
+      identityMode: 'strict',
+      machineId,
+      bootId: bootB,
+    });
+    second.append(
+      [{ name: 'MESSAGE', value: 'cross boot second' }, { name: 'TEST_ID', value: 'cross-boot-monotonic' }],
+      { realtimeUsec: 1_700_003_100_000_001n, monotonicUsec: 1n },
+    );
+    second.close();
+
+    const entries = [];
+    for (const path of journalFiles(join(tempDir, uuidToString(machineId)))) {
+      verifyJournalFileIfAvailable(path);
+      const reader = FileReader.open(path);
+      while (reader.step()) {
+        const entry = reader.getEntry();
+        if (entry.fields.TEST_ID?.toString('utf8') === 'cross-boot-monotonic') entries.push(entry);
+      }
+      reader.close();
+    }
+    entries.sort((a, b) => (a.realtime < b.realtime ? -1 : a.realtime > b.realtime ? 1 : 0));
+    assert.equal(entries.length, 2);
+    assert.deepEqual(entries.map((entry) => entry.monotonic), [100n, 1n]);
+    assert.deepEqual(
+      entries.map((entry) => uuidToString(entry.boot_id)),
+      [uuidToString(bootA), uuidToString(bootB)],
+    );
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const journalPath = join(tempDir, 'raw-zero-monotonic.journal');
+    const writer = Writer.create(journalPath);
+    writer.append([{ name: 'MESSAGE', value: 'raw zero monotonic' }], {
+      realtimeUsec: 1_700_003_000_100_000n,
+      monotonicUsec: 0n,
+    });
+    writer.close();
+    verifyJournalFileIfAvailable(journalPath);
+
+    const reader = FileReader.open(journalPath);
+    assert.equal(reader.step(), true);
+    const entry = reader.getEntry();
+    reader.close();
+    assert.equal(entry.monotonic, 0n);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const journalPath = join(tempDir, 'raw-backward-monotonic.journal');
+    const writer = Writer.create(journalPath);
+    writer.append([{ name: 'MESSAGE', value: 'raw monotonic first' }], {
+      realtimeUsec: 1_700_003_000_000_000n,
+      monotonicUsec: 10n,
+    });
+    writer.append([{ name: 'MESSAGE', value: 'raw monotonic second' }], {
+      realtimeUsec: 1_700_003_000_000_001n,
+      monotonicUsec: 5n,
+    });
+    writer.close();
+
+    assert.throws(() => verifyFile(journalPath), /monotonic/);
+    verifyJournalFileFailsIfAvailable(journalPath, 'timestamp out of synchronization');
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -1231,19 +1336,33 @@ for (const retentionCase of [
       [{ name: 'MESSAGE', value: 'timestamp-1' }],
       { realtimeUsec: 1_700_000_100_000_000n, monotonicUsec: 10n, sourceRealtimeUsec: 1000n },
     );
+    log.append(
+      [{ name: 'MESSAGE', value: 'timestamp-2' }],
+      { realtimeUsec: 1_700_000_100_000_000n, monotonicUsec: 0n, sourceRealtimeUsec: 1001n },
+    );
+    log.append(
+      [{ name: 'MESSAGE', value: 'timestamp-3' }],
+      { realtimeUsec: 0n, monotonicUsec: 13n, sourceRealtimeUsec: 1002n },
+    );
     const path = log.activeFilePath();
     log.close();
+    verifyJournalFileIfAvailable(path);
 
     const reader = FileReader.open(path);
     const entries = [];
     while (reader.step()) entries.push(reader.getEntry());
     reader.close();
-    assert.equal(entries.length, 2);
-    assert.deepEqual(entries.map((entry) => entry.realtime), [1_700_000_100_000_000n, 1_700_000_100_000_001n]);
-    assert.deepEqual(entries.map((entry) => entry.monotonic), [10n, 11n]);
+    assert.equal(entries.length, 4);
+    assert.deepEqual(entries.map((entry) => entry.realtime), [
+      1_700_000_100_000_000n,
+      1_700_000_100_000_001n,
+      1_700_000_100_000_002n,
+      1_700_000_100_000_003n,
+    ]);
+    assert.deepEqual(entries.map((entry) => entry.monotonic), [10n, 11n, 12n, 13n]);
     assert.deepEqual(
       entries.map((entry) => entry.fields._SOURCE_REALTIME_TIMESTAMP.toString('utf8')),
-      ['999', '1000'],
+      ['999', '1000', '1001', '1002'],
     );
   } finally {
     rmSync(tempDir, { recursive: true, force: true });

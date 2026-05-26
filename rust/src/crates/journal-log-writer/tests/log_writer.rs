@@ -1495,11 +1495,13 @@ fn test_entry_realtime_override_is_clamped_monotonic() {
     log.write_entry(&first_entry, None).unwrap();
 
     let second_entry = [b"MESSAGE=second" as &[u8], b"PRIORITY=6"];
-    let ts = EntryTimestamps::default().with_entry_realtime_usec(1);
+    let ts = EntryTimestamps::default().with_entry_realtime_usec(0);
     log.write_entry_with_timestamps(&second_entry, ts).unwrap();
     log.sync().unwrap();
 
-    let rows = read_journal_json(&journal_file_path(&dir));
+    let path = journal_file_path(&dir);
+    verify_journalctl_file(&path);
+    let rows = read_journal_json(&path);
 
     let mut first_rt = None;
     let mut second_rt = None;
@@ -1513,11 +1515,10 @@ fn test_entry_realtime_override_is_clamped_monotonic() {
 
     let first_rt = first_rt.expect("missing first entry realtime timestamp");
     let second_rt = second_rt.expect("missing second entry realtime timestamp");
-    assert!(
-        second_rt > first_rt,
-        "second realtime timestamp must be strictly greater ({} !> {})",
+    assert_eq!(
         second_rt,
-        first_rt
+        first_rt + 1,
+        "second realtime timestamp must be clamped to first + 1"
     );
 }
 
@@ -1538,11 +1539,13 @@ fn test_entry_monotonic_override_is_clamped_monotonic() {
     log.write_entry(&first_entry, None).unwrap();
 
     let second_entry = [b"MESSAGE=mono-second" as &[u8], b"PRIORITY=6"];
-    let ts = EntryTimestamps::default().with_entry_monotonic_usec(1);
+    let ts = EntryTimestamps::default().with_entry_monotonic_usec(0);
     log.write_entry_with_timestamps(&second_entry, ts).unwrap();
     log.sync().unwrap();
 
-    let rows = read_journal_json(&journal_file_path(&dir));
+    let path = journal_file_path(&dir);
+    verify_journalctl_file(&path);
+    let rows = read_journal_json(&path);
 
     let mut first_mono = None;
     let mut second_mono = None;
@@ -1556,11 +1559,10 @@ fn test_entry_monotonic_override_is_clamped_monotonic() {
 
     let first_mono = first_mono.expect("missing first entry monotonic timestamp");
     let second_mono = second_mono.expect("missing second entry monotonic timestamp");
-    assert!(
-        second_mono > first_mono,
-        "second monotonic timestamp must be strictly greater ({} !> {})",
+    assert_eq!(
         second_mono,
-        first_mono
+        first_mono + 1,
+        "second monotonic timestamp must be clamped to first + 1"
     );
 }
 
@@ -1633,7 +1635,11 @@ fn test_monotonic_override_remains_strict_after_restart() {
     let mut first_seen = None;
     let mut second_seen = None;
 
-    for file in journal_file_paths(&dir) {
+    let paths = journal_file_paths(&dir);
+    for file in &paths {
+        verify_journalctl_file(file);
+    }
+    for file in paths {
         for row in read_journal_json(&file) {
             match row.get("MESSAGE").and_then(|v| v.as_str()) {
                 Some("restart-first") => {
@@ -1654,6 +1660,114 @@ fn test_monotonic_override_remains_strict_after_restart() {
         "second monotonic timestamp must be strictly greater after restart ({} !> {})",
         second_seen,
         first_seen
+    );
+}
+
+#[test]
+fn test_different_boot_does_not_seed_monotonic_clamp_from_previous_tail() {
+    if !journalctl_available() {
+        eprintln!(
+            "journalctl not available; skipping test_different_boot_does_not_seed_monotonic_clamp_from_previous_tail"
+        );
+        return;
+    }
+
+    let dir = TempDir::new().unwrap();
+    let machine_id = uuid::Uuid::parse_str("00112233445566778899aabbccddeeff").unwrap();
+    let boot_a = uuid::Uuid::parse_str("aa000000000000000000000000000001").unwrap();
+    let boot_b = uuid::Uuid::parse_str("bb000000000000000000000000000002").unwrap();
+    let origin = Origin {
+        machine_id: Some(machine_id),
+        namespace: None,
+        source: journal_registry::Source::System,
+    };
+
+    {
+        let config = Config::new(
+            origin.clone(),
+            RotationPolicy::default(),
+            RetentionPolicy::default(),
+        )
+        .with_identity_mode(LogIdentityMode::Strict)
+        .with_boot_id(boot_a);
+        let mut log = Log::new(dir.path(), config).unwrap();
+        let first = [
+            b"MESSAGE=cross boot first" as &[u8],
+            b"TEST_ID=cross-boot-monotonic",
+        ];
+        let ts = EntryTimestamps::default()
+            .with_entry_realtime_usec(1_700_003_100_000_000)
+            .with_entry_monotonic_usec(100);
+        log.write_entry_with_timestamps(&first, ts).unwrap();
+        log.sync().unwrap();
+    }
+
+    {
+        let config = Config::new(
+            origin.clone(),
+            RotationPolicy::default(),
+            RetentionPolicy::default(),
+        )
+        .with_identity_mode(LogIdentityMode::Strict)
+        .with_boot_id(boot_b);
+        let mut log = Log::new(dir.path(), config).unwrap();
+        let second = [
+            b"MESSAGE=cross boot second" as &[u8],
+            b"TEST_ID=cross-boot-monotonic",
+        ];
+        let ts = EntryTimestamps::default()
+            .with_entry_realtime_usec(1_700_003_100_000_001)
+            .with_entry_monotonic_usec(1);
+        log.write_entry_with_timestamps(&second, ts).unwrap();
+        log.sync().unwrap();
+    }
+
+    let journal_dir = dir.path().join(machine_id.as_simple().to_string());
+    let mut paths: Vec<_> = fs::read_dir(&journal_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s == "journal")
+                .unwrap_or(false)
+        })
+        .map(|e| e.path())
+        .collect();
+    paths.sort();
+
+    let mut rows = Vec::new();
+    for path in &paths {
+        verify_journalctl_file(path);
+        rows.extend(read_journal_json(path).into_iter().filter(|row| {
+            row.get("TEST_ID").and_then(|v| v.as_str()) == Some("cross-boot-monotonic")
+        }));
+    }
+    rows.sort_by_key(|row| parse_u64_field(row, "__REALTIME_TIMESTAMP").unwrap_or(0));
+    assert_eq!(rows.len(), 2, "expected two cross-boot rows");
+
+    let monotonics: Vec<_> = rows
+        .iter()
+        .map(|row| parse_u64_field(row, "__MONOTONIC_TIMESTAMP").unwrap())
+        .collect();
+    assert_eq!(monotonics, vec![100, 1]);
+
+    let boot_ids: Vec<_> = rows
+        .iter()
+        .map(|row| {
+            row.get("_BOOT_ID")
+                .and_then(|v| v.as_str())
+                .expect("missing _BOOT_ID")
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        boot_ids,
+        vec![
+            boot_a.as_simple().to_string(),
+            boot_b.as_simple().to_string()
+        ]
     );
 }
 

@@ -58,9 +58,13 @@ type Options struct {
 
 // EntryOptions controls timestamps and boot ID for one appended entry.
 type EntryOptions struct {
-	RealtimeUsec  uint64
-	MonotonicUsec uint64
-	BootID        UUID
+	RealtimeUsec uint64
+	// RealtimeUsecSet marks RealtimeUsec as caller-provided even when it is zero.
+	RealtimeUsecSet bool
+	MonotonicUsec   uint64
+	// MonotonicUsecSet marks MonotonicUsec as caller-provided even when it is zero.
+	MonotonicUsecSet bool
+	BootID           UUID
 	// SourceRealtimeUsec is consumed by the high-level Log writer, which injects
 	// _SOURCE_REALTIME_TIMESTAMP. The low-level Writer accepts prebuilt fields
 	// and does not inject this field.
@@ -245,10 +249,10 @@ func (w *Writer) Append(fields []Field, opts EntryOptions) error {
 	}
 
 	now := time.Now()
-	if opts.RealtimeUsec == 0 {
+	if opts.RealtimeUsec == 0 && !opts.RealtimeUsecSet {
 		opts.RealtimeUsec = uint64(now.UnixMicro())
 	}
-	if opts.MonotonicUsec == 0 {
+	if opts.MonotonicUsec == 0 && !opts.MonotonicUsecSet {
 		opts.MonotonicUsec = uint64(now.Sub(w.started) / time.Microsecond)
 	}
 	if isZeroUUID(opts.BootID) {

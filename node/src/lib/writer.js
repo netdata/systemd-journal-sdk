@@ -248,8 +248,10 @@ export class Writer {
     if (fields.length === 0) throw new Error('empty entry');
 
     const now = Date.now();
-    const realtime = opts.realtimeUsec ? BigInt(opts.realtimeUsec) : BigInt(now * 1000);
-    const monotonic = opts.monotonicUsec ? BigInt(opts.monotonicUsec) : BigInt((now - this.started) * 1000);
+    const hasRealtime = Object.prototype.hasOwnProperty.call(opts, 'realtimeUsec');
+    const hasMonotonic = Object.prototype.hasOwnProperty.call(opts, 'monotonicUsec');
+    const realtime = hasRealtime ? BigInt(opts.realtimeUsec) : BigInt(now * 1000);
+    const monotonic = hasMonotonic ? BigInt(opts.monotonicUsec) : BigInt((now - this.started) * 1000);
     const bootId = opts.bootId && !isZeroUUID(opts.bootId) ? Buffer.from(opts.bootId) : this.bootId;
 
     this._maybeAppendTag(realtime);

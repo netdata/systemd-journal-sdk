@@ -261,8 +261,8 @@ class Writer:
             raise ValueError('empty entry')
 
         now_ms = _current_time_ms()
-        realtime = opts.get('realtime_usec', now_ms * 1000)
-        monotonic = opts.get('monotonic_usec', (now_ms - self._started) * 1000)
+        realtime = opts['realtime_usec'] if 'realtime_usec' in opts else now_ms * 1000
+        monotonic = opts['monotonic_usec'] if 'monotonic_usec' in opts else (now_ms - self._started) * 1000
         boot_id = opts.get('boot_id')
         if boot_id is None or is_zero_uuid(boot_id):
             boot_id = self._boot_id

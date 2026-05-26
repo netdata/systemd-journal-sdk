@@ -54,6 +54,9 @@ export function verifyFile(path) {
     // instead of being skipped by the normal reader tolerance path.
     const buf = r.buffer;
     const compact = (r.header.incompatible_flags & INCOMPATIBLE_COMPACT) !== 0;
+    let entryMonotonic = 0n;
+    let entryMonotonicSet = false;
+    let entryBootID = Buffer.alloc(16);
 
     for (const offset of r.entryOffsets) {
       // Parse entry object strictly
@@ -65,6 +68,15 @@ export function verifyFile(path) {
           `journal verification failed: corrupt entry object at offset ${offset}: ${err.message}`
         );
       }
+
+      if (entryMonotonicSet && e.boot_id.equals(entryBootID) && entryMonotonic > e.monotonic) {
+        throw new VerificationError(
+          `journal verification failed: entry monotonic out of sync (${entryMonotonic} > ${e.monotonic})`
+        );
+      }
+      entryMonotonic = e.monotonic;
+      entryBootID = e.boot_id;
+      entryMonotonicSet = true;
 
       // Parse each referenced data object strictly
       for (const item of e.items) {

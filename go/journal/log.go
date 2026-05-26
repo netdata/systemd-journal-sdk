@@ -216,6 +216,7 @@ type chainState struct {
 	activeHeadRealtime uint64
 	tailRealtime       uint64
 	tailMonotonic      uint64
+	tailBootID         UUID
 }
 
 // NewLog creates a high-level directory writer. Files are stored below
@@ -293,7 +294,9 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 				l.options.SeqnumID = state.seqnumID
 			}
 			l.lastRealtime = state.tailRealtime
-			l.lastMonotonic = state.tailMonotonic
+			if state.tailBootID == l.options.BootID {
+				l.lastMonotonic = state.tailMonotonic
+			}
 		}
 		if state.activePath != "" {
 			if err := l.archiveOnlineChainActive(state.activePath); err != nil {
@@ -330,7 +333,9 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 				l.options.SeqnumID = state.seqnumID
 			}
 			l.lastRealtime = state.tailRealtime
-			l.lastMonotonic = state.tailMonotonic
+			if state.tailBootID == l.options.BootID {
+				l.lastMonotonic = state.tailMonotonic
+			}
 		}
 		if state.activePath != "" {
 			l.active = state.activePath
@@ -832,14 +837,17 @@ func (l *Log) enforceRetention(protectedPath string) error {
 }
 
 func (l *Log) entryOptionsForAppend(opts EntryOptions) EntryOptions {
-	if opts.RealtimeUsec == 0 {
+	realtimeSet := opts.RealtimeUsecSet || opts.RealtimeUsec != 0
+	if !realtimeSet {
 		opts.RealtimeUsec = uint64(time.Now().UnixMicro())
 	}
 	if opts.RealtimeUsec <= l.lastRealtime {
 		opts.RealtimeUsec = l.lastRealtime + 1
 	}
-	if opts.MonotonicUsec != 0 && opts.MonotonicUsec <= l.lastMonotonic {
+	monotonicSet := opts.MonotonicUsecSet || opts.MonotonicUsec != 0
+	if monotonicSet && opts.MonotonicUsec <= l.lastMonotonic {
 		opts.MonotonicUsec = l.lastMonotonic + 1
+		opts.MonotonicUsecSet = true
 	}
 	return opts
 }
@@ -944,6 +952,7 @@ func (l *Log) scanChainState() (chainState, error) {
 			state.seqnumID = header.seqnumID
 			state.tailRealtime = header.tailEntryRealtime
 			state.tailMonotonic = header.tailEntryMonotonic
+			state.tailBootID = header.tailEntryBootID
 		}
 		if header.state == stateOnline &&
 			(state.activePath == "" ||

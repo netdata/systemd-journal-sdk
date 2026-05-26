@@ -57,6 +57,9 @@ def verify_file(path, verify_key=None):
         # instead of being skipped by the normal reader tolerance path.
         buf = r._buffer
         compact = (r._header['incompatible_flags'] & INCOMPATIBLE_COMPACT) != 0
+        entry_monotonic = 0
+        entry_monotonic_set = False
+        entry_boot_id = b'\x00' * 16
 
         for offset in r._entry_offsets:
             # Parse entry object strictly
@@ -66,6 +69,19 @@ def verify_file(path, verify_key=None):
                 raise VerificationError(
                     f"journal verification failed: corrupt entry object at offset {offset}: {err}"
                 ) from err
+
+            if (
+                entry_monotonic_set and
+                e['boot_id'] == entry_boot_id and
+                entry_monotonic > e['monotonic']
+            ):
+                raise VerificationError(
+                    f"journal verification failed: entry monotonic out of sync "
+                    f"({entry_monotonic} > {e['monotonic']})"
+                )
+            entry_monotonic = e['monotonic']
+            entry_boot_id = e['boot_id']
+            entry_monotonic_set = True
 
             # Parse each referenced data object strictly
             for item in e['items']:

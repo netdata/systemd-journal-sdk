@@ -132,7 +132,8 @@ class Log:
         if seqnum_id_option is None and chain_state['seqnum_id'] is not None:
             self._seqnum_id = chain_state['seqnum_id']
         self._last_realtime = chain_state['tail_realtime']
-        self._last_monotonic = chain_state['tail_monotonic']
+        if chain_state['tail_boot_id'] == self._boot_id:
+            self._last_monotonic = chain_state['tail_monotonic']
         if self._strict_systemd_naming and chain_state['active_file'] is not None:
             self._archive_online_chain_active(chain_state['active_file'])
         if not self._strict_systemd_naming:
@@ -311,6 +312,7 @@ class Log:
             'active_head_realtime': 0,
             'tail_realtime': 0,
             'tail_monotonic': 0,
+            'tail_boot_id': None,
         }
         for name in os.listdir(self._journal_dir):
             if _parse_archive_name(name, self._source) is None:
@@ -326,6 +328,7 @@ class Log:
                 state['seqnum_id'] = header['seqnum_id']
                 state['tail_realtime'] = int(header['tail_entry_realtime'])
                 state['tail_monotonic'] = int(header['tail_entry_monotonic'])
+                state['tail_boot_id'] = header['tail_entry_boot_id']
             if (
                 header['state'] == STATE_ONLINE and
                 (
@@ -449,12 +452,12 @@ class Log:
             effective['monotonic_usec'] = effective['monotonicUsec']
         if 'sourceRealtimeUsec' in effective and 'source_realtime_usec' not in effective:
             effective['source_realtime_usec'] = effective['sourceRealtimeUsec']
-        if not effective.get('realtime_usec'):
+        if 'realtime_usec' not in effective:
             effective['realtime_usec'] = int(time.time() * 1_000_000)
         effective['realtime_usec'] = int(effective['realtime_usec'])
         if effective['realtime_usec'] <= self._last_realtime:
             effective['realtime_usec'] = self._last_realtime + 1
-        if effective.get('monotonic_usec'):
+        if 'monotonic_usec' in effective:
             effective['monotonic_usec'] = int(effective['monotonic_usec'])
             if effective['monotonic_usec'] <= self._last_monotonic:
                 effective['monotonic_usec'] = self._last_monotonic + 1

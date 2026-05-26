@@ -146,6 +146,12 @@ Lifecycle observers receive `Created`, `Rotated`, and `RetainedDeleted` events;
 decisions. `write_entry_with_timestamps()` accepts
 `EntryTimestamps::source_realtime_usec` for `_SOURCE_REALTIME_TIMESTAMP`
 injection and clamps non-progressing realtime and monotonic overrides forward.
+The low-level `JournalWriter::add_entry()` path preserves explicit
+caller-provided realtime and monotonic timestamps without clamping or rejecting
+them; callers using that raw API are responsible for not producing same-boot
+backward monotonic entries unless they are intentionally creating invalid
+fixtures. On reopen, `Log` seeds the monotonic clamp floor from a persisted
+chain tail only when the tail entry boot ID matches the current writer boot ID.
 `Log` is a single-writer object; callers must serialize method calls on one
 instance. The SDK writer lock prevents another cooperating SDK writer from
 owning the same file, but it is not a per-append Rust mutex.

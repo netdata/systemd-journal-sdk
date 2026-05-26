@@ -180,8 +180,16 @@ the active file, before the first entry is written.
 
 `EntryOptions.SourceRealtimeUsec` injects `_SOURCE_REALTIME_TIMESTAMP` when the
 source timestamp differs from the journal entry timestamp. `Log.Append` clamps
-non-progressing realtime and non-zero monotonic overrides forward to preserve
-strict ordering in the chain.
+non-progressing realtime and monotonic overrides forward to preserve strict
+ordering in the chain. `EntryOptions.MonotonicUsecSet` and
+`EntryOptions.RealtimeUsecSet` allow explicit zero timestamp overrides; without
+those flags, zero-value timestamp fields keep the default timestamp behavior.
+The low-level `Writer.Append` path preserves explicit caller-provided realtime
+and monotonic timestamps without clamping or rejecting them; callers using that
+raw API are responsible for not producing same-boot backward monotonic entries
+unless they are intentionally creating invalid fixtures. On reopen, `Log`
+seeds the monotonic clamp floor from a persisted chain tail only when the tail
+entry boot ID matches the current writer boot ID.
 
 For Netdata-style side indexes, `LogConfig.Lifecycle` reports created, rotated,
 and retention-deleted journal paths, and `LogConfig.ArtifactSizer` includes

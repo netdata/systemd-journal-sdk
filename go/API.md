@@ -158,8 +158,10 @@ should return `0, nil`; unexpected errors abort retention/preflight.
 `EntryOptions.SourceRealtimeUsec`, when non-zero, injects
 `_SOURCE_REALTIME_TIMESTAMP`.
 
-High-level `Log.Append` clamps non-progressing realtime and non-zero monotonic
-overrides forward to preserve strict journal ordering in the generated chain.
+High-level `Log.Append` clamps non-progressing realtime and monotonic overrides
+forward to preserve strict journal ordering in the generated chain.
+`EntryOptions.RealtimeUsecSet` and `EntryOptions.MonotonicUsecSet` distinguish
+explicit zero timestamp overrides from omitted zero-value struct fields.
 
 ## Field Names
 

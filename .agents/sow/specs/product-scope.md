@@ -167,6 +167,16 @@ Current shared writer layout contract:
   is greater than or equal to the threshold. The Go zero-value options struct
   treats `CompressThresholdBytes == 0` as unset so `Options{}` still uses the
   systemd default.
+- Timestamp policy follows the Netdata vendored writer split. Low-level
+  single-file writers preserve explicit caller-provided realtime and monotonic
+  timestamps without rejecting or clamping, so callers can deliberately create
+  byte-exact or corrupt-test files and are responsible for same-boot monotonic
+  validity. High-level Rust, Go, Node.js, and Python `Log` writers clamp
+  non-progressing entry realtime and same-boot monotonic overrides, including
+  explicit zero monotonic overrides, forward so ingestion outputs remain
+  stock-verifiable. On reopen, high-level writers seed the monotonic clamp
+  floor from the persisted chain tail only when the tail entry boot ID matches
+  the current writer boot ID.
 
 Current Go writer feature slice:
 
@@ -203,8 +213,10 @@ Current Go writer feature slice:
   retention-deleted journal paths; artifact-size callbacks include
   consumer-owned sidecar bytes in size-based retention decisions;
 - high-level Go `EntryOptions.SourceRealtimeUsec` injects
-  `_SOURCE_REALTIME_TIMESTAMP`, and non-progressing realtime / non-zero
-  monotonic overrides are clamped forward for strict chain ordering;
+  `_SOURCE_REALTIME_TIMESTAMP`, and non-progressing realtime / monotonic
+  overrides are clamped forward for strict chain ordering. `RealtimeUsecSet`
+  and `MonotonicUsecSet` distinguish explicit zero timestamp overrides from
+  omitted zero-value struct fields;
 - high-level Rust, Go, Node.js, and Python `Log` writers accept Netdata/OTEL
   field names and automatically remap non-systemd-compatible names before
   writing. Each active journal file emits `ND_REMAPPING=1` metadata rows for new
@@ -256,8 +268,8 @@ Current shared high-level directory writer API slice:
   provider errors abort retention where the API can surface the error.
 - Rust, Go, Node.js, and Python high-level append paths support source realtime
   injection through `_SOURCE_REALTIME_TIMESTAMP` and clamp non-progressing
-  realtime / non-zero monotonic overrides forward to preserve strict journal
-  ordering.
+  realtime / monotonic overrides forward to preserve strict journal ordering,
+  including explicit zero monotonic overrides.
 - Rust, Go, Node.js, and Python reject explicitly enabled zero policy limits in
   the newer optional-policy API surface. Existing Node.js and Python legacy
   numeric `max* = 0` options remain accepted as disabled-limit compatibility

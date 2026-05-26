@@ -100,7 +100,9 @@ export class Log {
     if (headSeqnumOption === undefined && chainState.tailSeqnum > 0n) this.nextSeqnum = chainState.tailSeqnum + 1n;
     if (seqnumIdOption === undefined && chainState.seqnumId) this.seqnumId = Buffer.from(chainState.seqnumId);
     this.lastRealtime = chainState.tailRealtime;
-    this.lastMonotonic = chainState.tailMonotonic;
+    if (chainState.tailBootId && chainState.tailBootId.equals(this.bootId)) {
+      this.lastMonotonic = chainState.tailMonotonic;
+    }
     if (this.strictSystemdNaming && chainState.activePath) {
       this._archiveOnlineChainActive(chainState.activePath);
     }
@@ -298,6 +300,7 @@ export class Log {
       activeHeadRealtime: 0n,
       tailRealtime: 0n,
       tailMonotonic: 0n,
+      tailBootId: null,
     };
     for (const name of readdirSync(this.directory)) {
       if (!parseArchivedJournalName(name, this.source)) continue;
@@ -309,6 +312,7 @@ export class Log {
           state.seqnumId = Buffer.from(header.seqnum_id);
           state.tailRealtime = header.tail_entry_realtime;
           state.tailMonotonic = header.tail_entry_monotonic;
+          state.tailBootId = Buffer.from(header.tail_entry_boot_id);
         }
         if (
           header.state === STATE_ONLINE &&
@@ -437,14 +441,14 @@ export class Log {
     if (appendOptions.sourceRealtimeUsec === undefined && appendOptions.source_realtime_usec !== undefined) {
       appendOptions.sourceRealtimeUsec = appendOptions.source_realtime_usec;
     }
-    if (appendOptions.realtimeUsec === undefined || appendOptions.realtimeUsec === 0 || appendOptions.realtimeUsec === 0n) {
+    if (appendOptions.realtimeUsec === undefined) {
       appendOptions.realtimeUsec = nowUsec();
     }
     appendOptions.realtimeUsec = BigInt(appendOptions.realtimeUsec);
     if (appendOptions.realtimeUsec <= this.lastRealtime) {
       appendOptions.realtimeUsec = this.lastRealtime + 1n;
     }
-    if (appendOptions.monotonicUsec !== undefined && appendOptions.monotonicUsec !== 0 && appendOptions.monotonicUsec !== 0n) {
+    if (appendOptions.monotonicUsec !== undefined) {
       appendOptions.monotonicUsec = BigInt(appendOptions.monotonicUsec);
       if (appendOptions.monotonicUsec <= this.lastMonotonic) {
         appendOptions.monotonicUsec = this.lastMonotonic + 1n;

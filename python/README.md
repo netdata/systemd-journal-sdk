@@ -170,7 +170,15 @@ effective `journalctl --directory` path, active path, and identity.
 `lifecycle` callbacks receive `created`, `rotated`, and `deleted` events;
 `artifact_sizer` includes consumer-owned sidecar bytes in size-based retention.
 `append()` accepts `source_realtime_usec` / `sourceRealtimeUsec` and clamps
-non-progressing realtime and non-zero monotonic overrides forward.
+non-progressing realtime and monotonic overrides forward, including explicit
+zero monotonic overrides.
+The low-level `Writer.append()` path preserves explicit caller-provided
+realtime and monotonic timestamps without clamping or rejecting them; callers
+using that raw API are responsible for not producing same-boot backward
+monotonic entries unless they are intentionally creating invalid fixtures.
+Timestamp option key presence distinguishes explicit zero from an omitted
+default. On reopen, `Log` seeds the monotonic clamp floor from a persisted chain
+tail only when the tail entry boot ID matches the current writer boot ID.
 `Log` is a single-writer object; callers must serialize method calls on one
 instance. The SDK writer lock prevents another cooperating SDK writer from
 owning the same file, but it is not a per-append Python mutex.

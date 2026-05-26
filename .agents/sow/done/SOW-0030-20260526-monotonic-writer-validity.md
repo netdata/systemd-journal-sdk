@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: open
+Status: completed
 
-Sub-state: Split from SOW-0022 Gap 8. User decision recorded: follow Netdata vendored behavior.
+Sub-state: Implemented, validated, reviewed, and ready to commit. Split from SOW-0022 Gap 8. User decision recorded: follow Netdata vendored behavior.
 
 ## Requirements
 
@@ -22,7 +22,7 @@ Facts:
 
 - systemd verification rejects decreasing monotonic timestamps for entries with the same boot ID.
 - Low-level single-file writers currently accept explicit caller monotonic timestamps and update tail metadata without rejecting same-boot regressions.
-- Current high-level `Log` writers clamp non-progressing realtime and non-zero monotonic overrides forward; `product-scope.md` documents that behavior.
+- Current high-level `Log` writers clamp non-progressing realtime and monotonic overrides forward; `product-scope.md` documents that behavior.
 - SOW-0022 recorded a user decision that writers must reject appends that make same-boot monotonic timestamps go backwards.
 
 Inferences:
@@ -197,23 +197,117 @@ Failure handling:
 
 ## Execution Log
 
-Pending.
+- 2026-05-26: Activated SOW after user approved proceeding. Current policy target is the recorded Netdata behavior: high-level `Log` / directory writer clamp; low-level raw writer pass-through.
+- 2026-05-26: Added strict verification checks so Rust, Go, Node.js, and Python reject same-boot backward monotonic entry ordering during repository verification.
+- 2026-05-26: Added raw low-level writer tests proving explicit zero monotonic pass-through and intentionally backward same-boot monotonic fixture rejection by repository verification and stock `journalctl --verify --file`.
+- 2026-05-26: Updated high-level directory writers so Go, Node.js, and Python seed the monotonic clamp floor from a persisted chain tail only when the tail boot ID matches the current writer boot ID. Rust already had the required `tail_monotonic_for_boot` behavior.
+- 2026-05-26: Aligned explicit zero semantics across languages:
+  - Rust high-level APIs use `Option<u64>` where `Some(0)` is explicit.
+  - Go added `RealtimeUsecSet` and `MonotonicUsecSet` to distinguish explicit zero from omitted zero-value struct fields.
+  - Node.js and Python use timestamp option key presence to distinguish explicit zero from omitted defaults.
+- 2026-05-26: Added high-level tests for explicit zero monotonic clamping, explicit zero realtime clamping, and cross-boot monotonic clamp non-seeding.
+- 2026-05-26: Updated `product-scope.md`, `go/API.md`, and Rust, Go, Node.js, and Python READMEs with the accepted timestamp policy.
+- 2026-05-26: Ran full validation and two external read-only review rounds. Final reviewer consensus: `PRODUCTION GRADE`.
 
 ## Validation
 
-Pending.
+Acceptance criteria evidence:
+
+- User decision recorded in `## Implications And Decisions`: follow Netdata vendored behavior.
+- All four languages now preserve explicit caller timestamps in low-level raw writers while high-level directory writers clamp unsafe ingestion timestamps.
+- Negative tests create intentional same-boot backward monotonic raw files and require repository verification failure plus stock `journalctl --verify --file` failure when stock tooling is available.
+- Positive high-level writer tests call stock `journalctl --verify --file` on generated files where the test environment has journalctl.
+
+Commands run after implementation:
+
+- `journalctl --version | head -n 1`
+  - Result: `systemd 260 (260.1-2-manjaro)`.
+- `gofmt -w go/journal/log_test.go`
+  - Result: success.
+- `cargo fmt --all` from `rust/`
+  - Result: success.
+- `go test ./...` from `go/`
+  - Result: pass.
+- `cargo test` from `rust/`
+  - Result: pass.
+- `node test/all.js` from `node/`
+  - Result: pass.
+- `.local/python-venv/bin/python python/test_all.py`
+  - Result: pass.
+
+Reviewer findings and dispositions:
+
+- Round 1 reviewers: minimax, glm, kimi, and qwen all reached `PRODUCTION GRADE`; kimi found a real cross-language explicit-zero monotonic drift and missing Rust cross-boot test.
+  - Disposition: fixed explicit-zero monotonic behavior and test coverage across Rust, Go, Node.js, and Python; added Rust cross-boot high-level test.
+- Round 1 non-blocking Rust strict verifier double-parse observation.
+  - Disposition: accepted as a low-risk verification-only inefficiency; not tracked as a separate follow-up because SOW-0009 covers performance work and this path is not ingestion hot-path code.
+- Round 2 reviewers: minimax, qwen, glm, and kimi all reached `PRODUCTION GRADE`.
+  - Disposition: qwen reported a missing Rust explicit-zero-realtime test, but local evidence showed `test_entry_realtime_override_is_clamped_monotonic` now uses `with_entry_realtime_usec(0)` and asserts `first + 1`; treated as false positive.
+  - Disposition: kimi noted Python explicit `None` now fails fast under key-presence semantics; accepted because `None` is not documented as an omitted timestamp marker and the new contract intentionally uses key presence.
+  - Disposition: glm and kimi noted Rust verification double-parses entries; accepted as above.
+  - Disposition: kimi noted Go `EntryOptions` field insertion and compound `Set || value != 0` logic; accepted because all in-repo uses are named-field initializers and the logic preserves backward-compatible non-zero timestamp behavior.
+
+Same-failure search:
+
+- Searched for stale `non-zero monotonic` wording and updated the remaining API/documentation hit in `go/API.md`.
+- Reviewers checked all four raw writer paths, high-level writer paths, verification paths, and cross-boot tail boot-ID seeding paths.
+
+Sensitive data gate:
+
+- Test values use synthetic UUIDs, timestamps, and field values only.
+- No secrets, customer data, personal data, or production identifiers were added.
+
+Artifact maintenance gate:
+
+- `AGENTS.md`: no update needed; workflow and guardrails did not change.
+- Runtime project skills: no update needed; this SOW shipped product behavior and tests, not a new work procedure.
+- Specs: `product-scope.md` updated with current timestamp policy.
+- End-user/operator docs: `go/API.md` and all four language READMEs updated.
+- End-user/operator skills: none exist for this project surface.
+- SOW lifecycle: this SOW is marked `completed` and moved to `done/` as part of the closing commit.
+- `SOW-status.md`: updated to remove SOW-0030 from current work and list it as done.
+- SOW audit: `.agents/sow/audit.sh` passed after the SOW move and status update.
+
+Spec update:
+
+- `product-scope.md` now records low-level raw pass-through, high-level clamp behavior, explicit zero handling, and same-boot tail seeding policy.
+
+Project skill update:
+
+- No skill update needed. The compatibility rule already requires stock verification and cross-language consistency; this SOW implements a product policy under those existing rules.
+
+End-user/operator docs update:
+
+- `go/API.md`, `go/README.md`, `rust/README.md`, `node/README.md`, and `python/README.md` updated.
+
+Follow-up mapping:
+
+- No new follow-up SOW is required.
+- SOW-0009 remains the existing benchmark/profile/optimization SOW and covers any later performance investigation if verification overhead becomes relevant.
 
 ## Outcome
 
-Pending.
+Completed.
+
+Rust, Go, Node.js, and Python now share the same writer timestamp policy:
+
+- Low-level raw writers preserve explicit caller-provided realtime and monotonic timestamps, including explicit zero monotonic.
+- High-level directory `Log` writers clamp non-progressing realtime and same-boot monotonic overrides forward, including explicit zero realtime and explicit zero monotonic.
+- High-level writers seed the monotonic clamp floor from the persisted chain tail only when the tail entry boot ID matches the current writer boot ID.
+- Repository verification APIs reject same-boot backward monotonic entries consistently across all four languages.
+- Stock `journalctl --verify --file` is used as the external oracle for positive generated files and intentional negative raw fixtures.
 
 ## Lessons Extracted
 
-Pending.
+Lessons:
+
+- The raw-writer and high-level-writer API layers must remain explicitly documented as different contracts: raw APIs preserve caller data for fixture and low-level use, while ingestion APIs normalize timestamps for valid output.
+- Go zero-value structs need explicit `Set` flags for zero timestamp overrides; dynamic-language APIs can use option key presence; Rust can use `Option<u64>`.
+- Reviewer rounds are useful for cross-language semantic drift. The first review round found the explicit-zero monotonic divergence before closure.
 
 ## Followup
 
-None yet.
+No follow-up SOWs created from this work.
 
 ## Regression Log
 

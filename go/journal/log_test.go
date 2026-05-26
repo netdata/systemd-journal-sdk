@@ -1253,6 +1253,7 @@ func TestLogAppendAddsSourceRealtimeAndClampsEntryRealtime(t *testing.T) {
 	if err := log.Sync(); err != nil {
 		t.Fatalf("Sync() error = %v", err)
 	}
+	verifyJournalctl(t, log.ActivePath())
 
 	rows := runJournalctlDirectoryJSON(t, dir, "TEST_ID=source-realtime-clamp")
 	if len(rows) != 2 {
@@ -1269,6 +1270,123 @@ func TestLogAppendAddsSourceRealtimeAndClampsEntryRealtime(t *testing.T) {
 	if err := log.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
+}
+
+func TestLogExplicitZeroMonotonicOverrideIsClamped(t *testing.T) {
+	requireJournalctl(t)
+
+	log, dir := newTestLog(t, LogConfig{
+		Options: testOptions(),
+		Source:  "system",
+	})
+	if err := log.Append([]Field{
+		StringField("MESSAGE", "zero monotonic one"),
+		StringField("TEST_ID", "zero-monotonic-clamp"),
+	}, EntryOptions{RealtimeUsec: 1_700_003_050_000_000, MonotonicUsec: 10}); err != nil {
+		t.Fatalf("Append(first) error = %v", err)
+	}
+	if err := log.Append([]Field{
+		StringField("MESSAGE", "zero monotonic two"),
+		StringField("TEST_ID", "zero-monotonic-clamp"),
+	}, EntryOptions{
+		RealtimeUsec:       1_700_003_050_000_001,
+		MonotonicUsec:      0,
+		MonotonicUsecSet:   true,
+		SourceRealtimeUsec: 1_600_000_000_000_010,
+	}); err != nil {
+		t.Fatalf("Append(second) error = %v", err)
+	}
+	if err := log.Append([]Field{
+		StringField("MESSAGE", "zero realtime three"),
+		StringField("TEST_ID", "zero-monotonic-clamp"),
+	}, EntryOptions{
+		RealtimeUsec:       0,
+		RealtimeUsecSet:    true,
+		MonotonicUsec:      12,
+		SourceRealtimeUsec: 1_600_000_000_000_011,
+	}); err != nil {
+		t.Fatalf("Append(third) error = %v", err)
+	}
+	if err := log.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	verifyJournalctl(t, log.ActivePath())
+
+	rows := runJournalctlDirectoryJSON(t, dir, "TEST_ID=zero-monotonic-clamp")
+	if len(rows) != 3 {
+		t.Fatalf("row count = %d, want 3", len(rows))
+	}
+	if got := parseU64JSONField(t, rows[1], "__MONOTONIC_TIMESTAMP"); got != 11 {
+		t.Fatalf("second monotonic = %d, want explicit zero clamped to 11", got)
+	}
+	if got := parseU64JSONField(t, rows[2], "__REALTIME_TIMESTAMP"); got != 1_700_003_050_000_002 {
+		t.Fatalf("third realtime = %d, want explicit zero clamped to 1700003050000002", got)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestLogDifferentBootDoesNotSeedMonotonicClampFromPreviousTail(t *testing.T) {
+	requireJournalctl(t)
+
+	root := t.TempDir()
+	bootA := UUID{0xaa, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}
+	bootB := UUID{0xbb, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2}
+	machineID := testMachineID
+
+	first, err := NewLog(root, LogConfig{
+		Options:      Options{MachineID: machineID, BootID: bootA},
+		Source:       "system",
+		IdentityMode: LogIdentityStrict,
+	})
+	if err != nil {
+		t.Fatalf("NewLog(first) error = %v", err)
+	}
+	if err := first.Append([]Field{
+		StringField("MESSAGE", "cross boot first"),
+		StringField("TEST_ID", "cross-boot-monotonic"),
+	}, EntryOptions{RealtimeUsec: 1_700_003_100_000_000, MonotonicUsec: 100}); err != nil {
+		t.Fatalf("Append(first) error = %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close(first) error = %v", err)
+	}
+
+	second, err := NewLog(root, LogConfig{
+		Options:      Options{MachineID: machineID, BootID: bootB},
+		Source:       "system",
+		IdentityMode: LogIdentityStrict,
+	})
+	if err != nil {
+		t.Fatalf("NewLog(second) error = %v", err)
+	}
+	if err := second.Append([]Field{
+		StringField("MESSAGE", "cross boot second"),
+		StringField("TEST_ID", "cross-boot-monotonic"),
+	}, EntryOptions{RealtimeUsec: 1_700_003_100_000_001, MonotonicUsec: 1}); err != nil {
+		t.Fatalf("Append(second) error = %v", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatalf("Close(second) error = %v", err)
+	}
+
+	dir := filepath.Join(root, machineID.String())
+	for _, path := range journalFiles(t, dir) {
+		verifyJournalctl(t, path)
+	}
+	rows := runJournalctlDirectoryJSON(t, dir, "TEST_ID=cross-boot-monotonic")
+	if len(rows) != 2 {
+		t.Fatalf("row count = %d, want 2", len(rows))
+	}
+	if got := parseU64JSONField(t, rows[0], "__MONOTONIC_TIMESTAMP"); got != 100 {
+		t.Fatalf("first monotonic = %d, want 100", got)
+	}
+	if got := parseU64JSONField(t, rows[1], "__MONOTONIC_TIMESTAMP"); got != 1 {
+		t.Fatalf("second monotonic = %d, want unseeded cross-boot value 1", got)
+	}
+	assertJSONField(t, rows[0], "_BOOT_ID", bootA.String())
+	assertJSONField(t, rows[1], "_BOOT_ID", bootB.String())
 }
 
 func TestLogAppendMapWithOptionsAddsSourceRealtime(t *testing.T) {

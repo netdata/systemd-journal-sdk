@@ -460,6 +460,77 @@ func TestOpenAppendDefaultMonotonicPreservesJournalctlVerify(t *testing.T) {
 	}
 }
 
+func TestWriterRawBackwardMonotonicPassThroughFailsVerification(t *testing.T) {
+	requireJournalctl(t)
+
+	path := filepath.Join(t.TempDir(), "raw-backward-monotonic.journal")
+	w, err := Create(path, testOptions())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := w.Append([]Field{
+		StringField("MESSAGE", "raw monotonic first"),
+	}, EntryOptions{RealtimeUsec: 1_700_003_000_000_000, MonotonicUsec: 10}); err != nil {
+		t.Fatalf("Append(first) error = %v", err)
+	}
+	if err := w.Append([]Field{
+		StringField("MESSAGE", "raw monotonic second"),
+	}, EntryOptions{RealtimeUsec: 1_700_003_000_000_001, MonotonicUsec: 5}); err != nil {
+		t.Fatalf("Append(second) error = %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	err = VerifyFile(path)
+	if err == nil {
+		t.Fatal("VerifyFile() unexpectedly passed for same-boot backward monotonic timestamps")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "monotonic") {
+		t.Fatalf("VerifyFile() error = %v, want monotonic failure", err)
+	}
+	verifyJournalctlFails(t, path, "timestamp out of synchronization")
+}
+
+func TestWriterRawExplicitZeroMonotonicPassThrough(t *testing.T) {
+	requireJournalctl(t)
+
+	path := filepath.Join(t.TempDir(), "raw-zero-monotonic.journal")
+	w, err := Create(path, testOptions())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := w.Append([]Field{
+		StringField("MESSAGE", "raw zero monotonic"),
+	}, EntryOptions{
+		RealtimeUsec:     1_700_003_000_100_000,
+		MonotonicUsec:    0,
+		MonotonicUsecSet: true,
+	}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	verifyJournalctl(t, path)
+
+	r, err := OpenFile(path)
+	if err != nil {
+		t.Fatalf("OpenFile() error = %v", err)
+	}
+	defer r.Close()
+	if err := r.Next(); err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	entry, err := r.GetEntry()
+	if err != nil {
+		t.Fatalf("GetEntry() error = %v", err)
+	}
+	if entry.Monotonic != 0 {
+		t.Fatalf("entry monotonic = %d, want raw explicit zero", entry.Monotonic)
+	}
+}
+
 func TestEntryArrayGrowthAndJournalctlReadback(t *testing.T) {
 	if _, err := exec.LookPath("journalctl"); err != nil {
 		t.Skip("journalctl is not installed")
@@ -946,6 +1017,19 @@ func verifyJournalctl(t *testing.T, path string) {
 	verify := exec.Command("journalctl", "--verify", "--file", path)
 	if output, err := verify.CombinedOutput(); err != nil {
 		t.Fatalf("journalctl --verify failed: %v\n%s", err, output)
+	}
+}
+
+func verifyJournalctlFails(t *testing.T, path string, want string) {
+	t.Helper()
+
+	verify := exec.Command("journalctl", "--verify", "--file", path)
+	output, err := verify.CombinedOutput()
+	if err == nil {
+		t.Fatalf("journalctl --verify unexpectedly passed for %s\n%s", path, output)
+	}
+	if want != "" && !strings.Contains(strings.ToLower(string(output)), strings.ToLower(want)) {
+		t.Fatalf("journalctl --verify output = %q, want substring %q", output, want)
 	}
 }
 

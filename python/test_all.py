@@ -109,6 +109,27 @@ def verify_journal_file_if_available(path):
     run(['journalctl', '--verify', '--file', path])
 
 
+def verify_journal_file_fails_if_available(path, expected_text):
+    try:
+        run(['journalctl', '--version'])
+    except AssertionError:
+        return
+    result = subprocess.run(
+        ['journalctl', '--verify', '--file', path],
+        cwd=REPO_ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode == 0:
+        raise AssertionError(f'journalctl --verify unexpectedly passed for {path}')
+    output = (result.stdout + result.stderr).decode(errors='replace').lower()
+    if expected_text.lower() not in output:
+        raise AssertionError(
+            f'journalctl --verify output missing {expected_text!r}: {output}'
+        )
+
+
 def journalctl_directory_rows_if_available(directory, *matches):
     try:
         run(['journalctl', '--version'])
@@ -289,6 +310,49 @@ def test_writer_head_seqnum_zero_defaults_to_one():
         assert reader.step()
         assert reader.get_entry()['seqnum'] == 1
         reader.close()
+
+
+def test_writer_raw_backward_monotonic_pass_through_fails_verification():
+    from journal import VerificationError, verify_file
+
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'raw-backward-monotonic.journal')
+        writer = Writer.create(path)
+        writer.append(
+            [{'name': 'MESSAGE', 'value': 'raw monotonic first'}],
+            {'realtime_usec': 1_700_003_000_000_000, 'monotonic_usec': 10},
+        )
+        writer.append(
+            [{'name': 'MESSAGE', 'value': 'raw monotonic second'}],
+            {'realtime_usec': 1_700_003_000_000_001, 'monotonic_usec': 5},
+        )
+        writer.close()
+
+        try:
+            verify_file(path)
+        except VerificationError as err:
+            assert 'monotonic' in str(err).lower()
+        else:
+            raise AssertionError('expected VerificationError for same-boot backward monotonic timestamps')
+        verify_journal_file_fails_if_available(path, 'timestamp out of synchronization')
+
+
+def test_writer_raw_explicit_zero_monotonic_pass_through():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'raw-zero-monotonic.journal')
+        writer = Writer.create(path)
+        writer.append(
+            [{'name': 'MESSAGE', 'value': 'raw zero monotonic'}],
+            {'realtime_usec': 1_700_003_000_100_000, 'monotonic_usec': 0},
+        )
+        writer.close()
+        verify_journal_file_if_available(path)
+
+        reader = FileReader.open(path)
+        assert reader.step()
+        entry = reader.get_entry()
+        reader.close()
+        assert entry['monotonic'] == 0
 
 
 def test_compression_threshold_systemd_policy():
@@ -657,24 +721,83 @@ def test_directory_writer_open_identity_lifecycle_source_timestamp():
             [{'name': 'MESSAGE', 'value': 'timestamp-1'}],
             {'realtime_usec': 1_700_000_100_000_000, 'monotonic_usec': 10, 'source_realtime_usec': 1000},
         )
+        log.append(
+            [{'name': 'MESSAGE', 'value': 'timestamp-2'}],
+            {'realtime_usec': 1_700_000_100_000_000, 'monotonic_usec': 0, 'source_realtime_usec': 1001},
+        )
+        log.append(
+            [{'name': 'MESSAGE', 'value': 'timestamp-3'}],
+            {'realtime_usec': 0, 'monotonic_usec': 13, 'source_realtime_usec': 1002},
+        )
         path = log.active_file_path()
         log.close()
+        verify_journal_file_if_available(path)
 
         reader = FileReader.open(path)
         entries = []
         while reader.step():
             entries.append(reader.get_entry())
         reader.close()
-        assert len(entries) == 2
+        assert len(entries) == 4
         assert [entry['realtime'] for entry in entries] == [
             1_700_000_100_000_000,
             1_700_000_100_000_001,
+            1_700_000_100_000_002,
+            1_700_000_100_000_003,
         ]
-        assert [entry['monotonic'] for entry in entries] == [10, 11]
+        assert [entry['monotonic'] for entry in entries] == [10, 11, 12, 13]
         assert [
             entry['fields']['_SOURCE_REALTIME_TIMESTAMP'].decode()
             for entry in entries
-        ] == ['999', '1000']
+        ] == ['999', '1000', '1001', '1002']
+
+
+def test_directory_writer_different_boot_does_not_seed_monotonic_clamp_from_previous_tail():
+    with tempfile.TemporaryDirectory() as td:
+        machine_id = bytes.fromhex('00112233445566778899aabbccddeeff')
+        boot_a = bytes.fromhex('aa000000000000000000000000000001')
+        boot_b = bytes.fromhex('bb000000000000000000000000000002')
+
+        first = Log(td, {
+            'source': 'system',
+            'identity_mode': 'strict',
+            'machine_id': machine_id,
+            'boot_id': boot_a,
+        })
+        first.append(
+            [{'name': 'MESSAGE', 'value': 'cross boot first'}, {'name': 'TEST_ID', 'value': 'cross-boot-monotonic'}],
+            {'realtime_usec': 1_700_003_100_000_000, 'monotonic_usec': 100},
+        )
+        first.close()
+
+        second = Log(td, {
+            'source': 'system',
+            'identity_mode': 'strict',
+            'machine_id': machine_id,
+            'boot_id': boot_b,
+        })
+        second.append(
+            [{'name': 'MESSAGE', 'value': 'cross boot second'}, {'name': 'TEST_ID', 'value': 'cross-boot-monotonic'}],
+            {'realtime_usec': 1_700_003_100_000_001, 'monotonic_usec': 1},
+        )
+        second.close()
+
+        entries = []
+        for path in journal_files(os.path.join(td, machine_id.hex())):
+            verify_journal_file_if_available(path)
+            reader = FileReader.open(path)
+            while reader.step():
+                entry = reader.get_entry()
+                if entry['fields'].get('TEST_ID') == b'cross-boot-monotonic':
+                    entries.append(entry)
+            reader.close()
+        entries.sort(key=lambda entry: entry['realtime'])
+        assert len(entries) == 2
+        assert [entry['monotonic'] for entry in entries] == [100, 1]
+        assert [
+            entry['boot_id'].hex()
+            for entry in entries
+        ] == [boot_a.hex(), boot_b.hex()]
 
 
 def test_directory_writer_explicit_policy_validation():
@@ -1872,6 +1995,8 @@ def main():
     test_parse_file_header_historical_field_boundaries()
     test_writer_reader_and_binary_export()
     test_writer_head_seqnum_zero_defaults_to_one()
+    test_writer_raw_backward_monotonic_pass_through_fails_verification()
+    test_writer_raw_explicit_zero_monotonic_pass_through()
     test_compression_threshold_systemd_policy()
     test_compact_writer_reader_and_stock_verify()
     test_writer_exclusive_lock()
@@ -1884,6 +2009,7 @@ def main():
     test_directory_writer_duration_rotation()
     test_directory_writer_default_system_chain_naming()
     test_directory_writer_open_identity_lifecycle_source_timestamp()
+    test_directory_writer_different_boot_does_not_seed_monotonic_clamp_from_previous_tail()
     test_directory_writer_explicit_policy_validation()
     test_directory_writer_lifecycle_delete_and_artifact_size()
     test_directory_writer_rejects_empty_entry_without_creating_file()

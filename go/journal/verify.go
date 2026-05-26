@@ -42,6 +42,9 @@ func VerifyFile(path string) error {
 		}
 	}
 
+	var lastMonotonic uint64
+	var lastBootID UUID
+	entryMonotonicSet := false
 	for {
 		ok, err := r.Step()
 		if err != nil {
@@ -52,11 +55,20 @@ func VerifyFile(path string) error {
 		if !ok {
 			break
 		}
-		if _, err := r.GetEntry(); err != nil {
+		entry, err := r.GetEntry()
+		if err != nil {
 			return &VerificationError{
 				Reason: fmt.Sprintf("journal verification failed: corrupt entry data: %v", err),
 			}
 		}
+		if entryMonotonicSet && entry.BootID == lastBootID && lastMonotonic > entry.Monotonic {
+			return &VerificationError{
+				Reason: fmt.Sprintf("journal verification failed: entry monotonic out of sync (%d > %d)", lastMonotonic, entry.Monotonic),
+			}
+		}
+		lastMonotonic = entry.Monotonic
+		lastBootID = entry.BootID
+		entryMonotonicSet = true
 	}
 	return nil
 }
