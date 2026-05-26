@@ -59,6 +59,16 @@ Use:
 
 In lazy mode, `ActivePath()` is empty before a journal file exists.
 
+By default, the active file uses the Netdata Rust-compatible chain filename.
+`StrictSystemdNaming` uses `<source>.journal` as the active file. When strict
+naming finds a stale chain-named `ONLINE` active file, `NewLog()` archives it
+before creating `<source>.journal`, preserving sequence continuity and avoiding
+parallel active files.
+
+`Log` is a single-writer object. Callers must serialize method calls on one
+instance; the SDK writer lock prevents a second cooperating SDK writer from
+owning the same file, but it is not a per-append goroutine mutex.
+
 ## Open And Identity Modes
 
 `LogOpenLazy` is the default. It validates the configured directory and existing
@@ -119,10 +129,14 @@ overrides forward to preserve strict journal ordering in the generated chain.
 
 ## Field Names
 
-The `go/v0.1.0` writer accepts systemd-compatible field names only: uppercase
-ASCII letters, digits, and underscores, with the first byte an uppercase ASCII
-letter and a maximum length of 64 bytes.
+The low-level `Writer` accepts systemd-compatible field names only: names must
+start with an uppercase ASCII letter, contain only uppercase ASCII letters,
+digits, and underscores, and be at most 64 bytes.
 
-Automatic Netdata/OTEL field-name remapping is not part of the initial
-`go/v0.1.0` SNMP traps integration surface. It remains planned as an additive
-high-level writer feature for OTEL-style dotted or lowercase field names.
+The high-level `Log` writer accepts Netdata/OTEL-style field names and remaps
+non-systemd-compatible names before writing. The remapping format matches the
+Rust writer contract: each journal file gets `ND_REMAPPING=1` metadata rows for
+new mappings, and data rows use stock-compatible `ND_*` field names.
+User-supplied protected names beginning with `_` are remapped; SDK-owned
+protected fields such as `_BOOT_ID` and `_SOURCE_REALTIME_TIMESTAMP` are
+injected internally.

@@ -36,11 +36,13 @@ from journal.header import (  # noqa: E402
     OBJECT_COMPRESSED_XZ,
     OBJECT_COMPRESSED_ZSTD,
     OBJECT_TYPE_DATA,
+    STATE_ARCHIVED,
     parse_file_header,
     write_object_header,
 )
 from journal.seal import COMPATIBLE_SEALED_CONTINUOUS, OBJECT_TYPE_TAG  # noqa: E402
 from journal.hash import sip_hash_24  # noqa: E402
+from journal.field_remap import encode_remapped_field_name  # noqa: E402
 from journal.fss import gen_mk, gen_state0, evolve, seek, get_key, get_epoch  # noqa: E402
 
 
@@ -260,6 +262,129 @@ def test_directory_writer_rotation():
 
         stock = run(['journalctl', '--directory', td, '--output=json', '--no-pager'])
         assert len([line for line in stock.splitlines() if line.strip()]) == 5
+
+
+def test_remapped_field_name_vectors():
+    vectors = [
+        ('hello', 'NDE_HELLO'),
+        ('foo.bar', 'NDAE_FOO_BAR'),
+        ('fooBar', 'NDA3J_FOOBAR'),
+        ('log.body.HostName', 'ND83AAO_LB_HOSTNAME'),
+        ('OAuth2Token', 'NDZ9SNSO_OAUTH2TOKEN'),
+        ('HTTPSConnection', 'NDNSSO_HTTPSCONNECTION'),
+        ('hello-world', 'NDCE_HELLO_WORLD'),
+        ('resource.attributes.host.name', 'ND3AE_RA_HOST_NAME'),
+        ('_CUSTOM_FIELD', 'NDVQT__CUSTOM_FIELD'),
+        ('field name', 'ND_BFAAD773361A781112FB325B433D54F7'),
+        (b'\xff\xfe invalid', 'ND_33493B98B07A586AA08BE7C2E7D90C3A'),
+    ]
+    for source, expected in vectors:
+        assert encode_remapped_field_name(source) == expected
+
+
+def test_directory_writer_remaps_incompatible_field_names():
+    with tempfile.TemporaryDirectory() as td:
+        log = Log(td, {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+        })
+        log.append([
+            {'name': 'MESSAGE', 'value': 'remapped fields'},
+            {'name': 'foo.bar', 'value': 'dot'},
+            {'name': 'log.body.HostName', 'value': 'camel'},
+            {'name': '_CUSTOM_FIELD', 'value': 'protected'},
+            {'name': 'field name', 'value': 'md5'},
+        ], {'realtime_usec': 1_700_002_401_000_000, 'monotonic_usec': 10})
+        log.sync()
+
+        reader = FileReader.open(log.active_file_path())
+        entries = []
+        try:
+            while reader.step():
+                entries.append(reader.get_entry())
+        finally:
+            reader.close()
+        assert len(entries) == 2
+        remap_row = next(e for e in entries if e['fields'].get('ND_REMAPPING') == b'1')
+        data_row = next(e for e in entries if e['fields'].get('MESSAGE') == b'remapped fields')
+
+        assert remap_row['fields']['NDAE_FOO_BAR'] == b'foo.bar'
+        assert remap_row['fields']['ND83AAO_LB_HOSTNAME'] == b'log.body.HostName'
+        assert remap_row['fields']['NDVQT__CUSTOM_FIELD'] == b'_CUSTOM_FIELD'
+        assert remap_row['fields']['ND_BFAAD773361A781112FB325B433D54F7'] == b'field name'
+        assert data_row['fields']['NDAE_FOO_BAR'] == b'dot'
+        assert data_row['fields']['ND83AAO_LB_HOSTNAME'] == b'camel'
+        assert data_row['fields']['NDVQT__CUSTOM_FIELD'] == b'protected'
+        assert data_row['fields']['ND_BFAAD773361A781112FB325B433D54F7'] == b'md5'
+        assert data_row['realtime'] == remap_row['realtime'] + 1
+        assert data_row['monotonic'] == remap_row['monotonic'] + 1
+
+        stock_rows = [
+            json.loads(line)
+            for line in run([
+                'journalctl',
+                '--directory',
+                log.journal_directory(),
+                '--output=json',
+                '--no-pager',
+            ]).splitlines()
+            if line.strip()
+        ]
+        assert len(stock_rows) == 2
+        assert any(row.get('ND_REMAPPING') == '1' for row in stock_rows)
+        assert any(
+            row.get('MESSAGE') == 'remapped fields' and
+            row.get('NDAE_FOO_BAR') == 'dot' and
+            row.get('ND83AAO_LB_HOSTNAME') == 'camel' and
+            row.get('NDVQT__CUSTOM_FIELD') == 'protected' and
+            row.get('ND_BFAAD773361A781112FB325B433D54F7') == 'md5'
+            for row in stock_rows
+        )
+        log.close()
+        for name in os.listdir(log.journal_directory()):
+            if name.endswith('.journal'):
+                run(['journalctl', '--verify', '--file', os.path.join(log.journal_directory(), name)])
+
+
+def test_directory_writer_reemits_remapping_after_rotation():
+    with tempfile.TemporaryDirectory() as td:
+        log = Log(td, {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'max_entries': 2,
+            'max_files': 10,
+        })
+        for i in range(2):
+            log.append([
+                {'name': 'MESSAGE', 'value': f'remap-rotate-{i}'},
+                {'name': 'log.body.HostName', 'value': f'host-{i}'},
+            ], {
+                'realtime_usec': 1_700_002_402_000_000 + i,
+                'monotonic_usec': 20 + i,
+            })
+        journal_dir = log.journal_directory()
+        log.close()
+
+        names = sorted(name for name in os.listdir(journal_dir) if name.endswith('.journal'))
+        assert len(names) == 2
+        for name in names:
+            path = os.path.join(journal_dir, name)
+            run(['journalctl', '--verify', '--file', path])
+            reader = FileReader.open(path)
+            entries = []
+            try:
+                while reader.step():
+                    entries.append(reader.get_entry())
+            finally:
+                reader.close()
+            assert len(entries) == 2
+            remap_row = next(e for e in entries if e['fields'].get('ND_REMAPPING') == b'1')
+            data_row = next(
+                e for e in entries
+                if e['fields'].get('MESSAGE', b'').startswith(b'remap-rotate-')
+            )
+            assert remap_row['fields']['ND83AAO_LB_HOSTNAME'] == b'log.body.HostName'
+            assert data_row['fields']['ND83AAO_LB_HOSTNAME'].startswith(b'host-')
 
 
 def test_directory_writer_duration_rotation():
@@ -750,6 +875,8 @@ def test_directory_writer_chain_reopens_online_file():
 
         second = Log(td, {**config, 'head_seqnum': 99})
         assert second.active_file() == active_path
+        assert second._active_writer is not None
+        assert second._next_seqnum == 3
         second.append([{'name': 'MESSAGE', 'value': 'chain-online-reopen-2'}])
         second.close()
 
@@ -759,6 +886,57 @@ def test_directory_writer_chain_reopens_online_file():
             seqnums.append(reader.get_entry()['seqnum'])
         reader.close()
         assert seqnums == [1, 2, 3]
+
+
+def test_directory_writer_auto_identity_has_boot_id_before_lazy_open():
+    with tempfile.TemporaryDirectory() as td:
+        log = Log(td, {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+        })
+        assert isinstance(log.boot_id(), bytes)
+        assert len(log.boot_id()) == 16
+        log.close()
+
+
+def test_directory_writer_strict_archives_online_chain_active():
+    with tempfile.TemporaryDirectory() as td:
+        config = {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'max_entries': 0,
+            'max_bytes': 0,
+            'max_files': 10,
+        }
+        first = Log(td, config)
+        first.append(
+            [{'name': 'MESSAGE', 'value': 'strict-migrate-0'}],
+            {'realtime_usec': 1_700_002_271_000_000, 'monotonic_usec': 1},
+        )
+        first.append(
+            [{'name': 'MESSAGE', 'value': 'strict-migrate-1'}],
+            {'realtime_usec': 1_700_002_271_000_001, 'monotonic_usec': 2},
+        )
+        chain_path = first.active_file()
+        first._active_writer.close()
+        first._active_writer = None
+        first._closed = True
+
+        strict = Log(td, {**config, 'strict_systemd_naming': True})
+        chain_reader = FileReader.open(chain_path)
+        assert chain_reader.header()['state'] == STATE_ARCHIVED
+        chain_reader.close()
+
+        strict.append(
+            [{'name': 'MESSAGE', 'value': 'strict-migrate-2'}],
+            {'realtime_usec': 1_700_002_271_000_002, 'monotonic_usec': 3},
+        )
+        assert Path(strict.active_file()).name == 'system.journal'
+        active_reader = FileReader.open(strict.active_file())
+        assert active_reader.header()['head_entry_seqnum'] == 3
+        assert active_reader.header()['tail_entry_seqnum'] == 3
+        active_reader.close()
+        strict.close()
 
 
 def test_directory_writer_discards_empty_online_file_and_continues_sequence():
@@ -1369,6 +1547,9 @@ def main():
     test_zstd_data_object_parse()
     test_xz_and_lz4_data_object_parse()
     test_directory_writer_rotation()
+    test_remapped_field_name_vectors()
+    test_directory_writer_remaps_incompatible_field_names()
+    test_directory_writer_reemits_remapping_after_rotation()
     test_directory_writer_duration_rotation()
     test_directory_writer_default_system_chain_naming()
     test_directory_writer_open_identity_lifecycle_source_timestamp()
@@ -1387,6 +1568,8 @@ def main():
     test_directory_writer_strict_reopen_continues_sequence()
     test_directory_writer_chain_reopen_continues_sequence()
     test_directory_writer_chain_reopens_online_file()
+    test_directory_writer_auto_identity_has_boot_id_before_lazy_open()
+    test_directory_writer_strict_archives_online_chain_active()
     test_directory_writer_discards_empty_online_file_and_continues_sequence()
     test_directory_writer_zero_rotation_limits_disable_rotation()
     test_facade_unique_binary_values()

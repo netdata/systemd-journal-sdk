@@ -142,6 +142,9 @@ current active file and opens a new active file. By default the active file uses
 the Netdata Rust writer chain filename form
 `<source>@<seqnum-id>-<head-seqnum>-<head-realtime>.journal`; set
 `StrictSystemdNaming: true` to use `<source>.journal` as the active file.
+If strict naming opens a directory with a stale chain-named `ONLINE` active
+file, it archives that file before creating `<source>.journal`, so the directory
+does not keep parallel active files.
 Unset rotation and retention limits are disabled; enabling a limit with zero or
 a negative value makes `NewLog()` fail. `LogOpenEager` creates or opens the
 active file during construction so callers can reject a job before accepting
@@ -153,6 +156,9 @@ falling back to host files or generated IDs.
 to pass to stock `journalctl --directory`. `ActivePath()` returns the exact
 active journal path after eager open or a successful append; it is empty before
 lazy-open creation.
+`Log` is a single-writer object; callers must serialize method calls on one
+instance. The SDK writer lock prevents another cooperating SDK writer from
+owning the same file, but it is not a per-append goroutine mutex.
 
 Duration rotation is checked before append using the incoming entry realtime and
 the active file head realtime. Retention counts the tracked active/current file
@@ -172,11 +178,12 @@ and retention-deleted journal paths, and `LogConfig.ArtifactSizer` includes
 consumer-owned sidecar bytes in size-based retention. See `go/API.md` for the
 versioned public API contract.
 
-The initial Go API accepts systemd-compatible field names: uppercase ASCII
-letters, digits, and underscores, with the first byte an uppercase ASCII letter
-and a maximum length of 64 bytes. Automatic Netdata/OTEL field-name remapping is
-planned as an additive high-level writer feature after the first SNMP traps
-integration tag.
+The low-level Go `Writer` accepts systemd-compatible field names only. The
+high-level `Log` writer remaps Netdata/OTEL-style dotted, lowercase, or
+otherwise incompatible field names into stock-compatible `ND_*` names and emits
+`ND_REMAPPING=1` metadata rows that preserve the original names. User-supplied
+protected names beginning with `_` are remapped; SDK-owned protected fields such
+as `_BOOT_ID` and `_SOURCE_REALTIME_TIMESTAMP` are injected internally.
 
 Basic reader usage:
 

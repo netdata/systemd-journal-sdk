@@ -500,6 +500,28 @@ impl Log {
         let (mut seqnum_id, mut current_seqnum) =
             tail_identity.unwrap_or_else(|| (uuid::Uuid::new_v4(), 0));
         let mut active_file = None;
+        if config.strict_systemd_naming
+            && let Some(repository_file) = chain.online_chain_file()?
+        {
+            use journal_core::file::JournalState;
+
+            let mut opened = ActiveFile::open(repository_file.clone(), boot_id)?;
+            let n_entries = opened.journal_file.journal_header_ref().n_entries;
+            if n_entries == 0 {
+                opened.journal_file.release_writer_lock()?;
+                match std::fs::remove_file(repository_file.path()) {
+                    Ok(()) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => return Err(err.into()),
+                }
+                chain.remove_tracked_file(&repository_file);
+            } else {
+                chain.update_file_size(&repository_file, opened.current_file_size());
+                opened.journal_file.journal_header_mut().state = JournalState::Archived as u8;
+                opened.journal_file.sync()?;
+                opened.journal_file.release_writer_lock()?;
+            }
+        }
         let existing_active_file = if config.strict_systemd_naming {
             chain.existing_active_file()
         } else {
@@ -675,7 +697,6 @@ impl Log {
                 timestamps.source_realtime_usec,
                 realtime,
                 monotonic,
-                remapped_item_count,
             )?;
         }
 
@@ -740,7 +761,6 @@ impl Log {
         source_realtime_usec: Option<u64>,
         realtime: u64,
         monotonic: u64,
-        _remapped_item_count: usize,
     ) -> Result<()> {
         let mut transformed_items: Vec<Vec<u8>> =
             Vec::with_capacity(items.len() + 1 + usize::from(source_realtime_usec.is_some()));

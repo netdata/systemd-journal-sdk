@@ -190,6 +190,7 @@ type Log struct {
 	strict    bool
 	lifecycle LogLifecycleObserver
 	artifacts LogArtifactSizer
+	remaps    map[string]string
 
 	writer        *Writer
 	entriesInFile int
@@ -274,6 +275,7 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 		strict:        config.StrictSystemdNaming,
 		lifecycle:     config.Lifecycle,
 		artifacts:     config.ArtifactSizer,
+		remaps:        make(map[string]string),
 		entriesInFile: 0,
 	}
 
@@ -291,6 +293,11 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 			}
 			l.lastRealtime = state.tailRealtime
 			l.lastMonotonic = state.tailMonotonic
+		}
+		if state.activePath != "" {
+			if err := l.archiveOnlineChainActive(state.activePath); err != nil {
+				return nil, err
+			}
 		}
 		activePath := l.systemdActivePath()
 		if _, err := os.Stat(activePath); err == nil {
@@ -348,6 +355,22 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 	return l, nil
 }
 
+func (l *Log) archiveOnlineChainActive(path string) error {
+	w, err := Open(path)
+	if err != nil {
+		return err
+	}
+	if w.header.nEntries == 0 {
+		closeErr := w.Close()
+		removeErr := os.Remove(path)
+		if errors.Is(removeErr, os.ErrNotExist) {
+			removeErr = nil
+		}
+		return errors.Join(closeErr, removeErr)
+	}
+	return w.archiveTo(path)
+}
+
 func (l *Log) attachOpenedWriter(w *Writer) {
 	l.writer = w
 	l.options.SeqnumID = w.header.seqnumID
@@ -388,13 +411,22 @@ func (l *Log) Append(fields []Field, opts EntryOptions) error {
 	if err := l.ensureWriter(opts, LogLifecycleReasonAppend); err != nil {
 		return err
 	}
+	fields, mappings := remapLogFields(fields, l.remaps)
+	if len(mappings) > 0 {
+		if err := l.writer.Append(l.remappingEntryFields(mappings), opts); err != nil {
+			return err
+		}
+		for _, mapping := range mappings {
+			l.remaps[mapping.original] = mapping.mapped
+		}
+		l.captureAppendState()
+		opts = l.entryOptionsForAppend(opts)
+	}
 	fields = appendSourceRealtimeField(fields, opts.SourceRealtimeUsec)
 	if err := l.writer.Append(fields, opts); err != nil {
 		return err
 	}
-	l.entriesInFile++
-	l.lastRealtime = l.writer.header.tailEntryRealtime
-	l.lastMonotonic = l.writer.header.tailEntryMonotonic
+	l.captureAppendState()
 	return nil
 }
 
@@ -456,6 +488,7 @@ func (l *Log) Close() error {
 			err2 = nil
 		}
 		l.writer = nil
+		l.active = ""
 		if err := errors.Join(err1, err2); err != nil {
 			l.closed = true
 			return err
@@ -484,11 +517,6 @@ func (l *Log) Close() error {
 func validateEntryFields(fields []Field) error {
 	if len(fields) == 0 {
 		return errEntryEmpty
-	}
-	for _, field := range fields {
-		if err := validateFieldName(field.Name); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -598,6 +626,7 @@ func (l *Log) rotate(entryOpts EntryOptions) error {
 	if err := l.ensureWriter(entryOpts, LogLifecycleReasonRotation); err != nil {
 		return err
 	}
+	l.remaps = make(map[string]string)
 	l.emitLifecycle(LogLifecycleEvent{
 		Type:         LogLifecycleRotated,
 		Reason:       LogLifecycleReasonRotation,
@@ -605,6 +634,23 @@ func (l *Log) rotate(entryOpts EntryOptions) error {
 		ActivePath:   l.activePath(),
 	})
 	return l.enforceRetention(l.activePath())
+}
+
+func (l *Log) captureAppendState() {
+	l.options.HeadSeqnum = l.writer.nextSeqnum
+	l.entriesInFile = int(l.writer.header.nEntries)
+	l.lastRealtime = l.writer.header.tailEntryRealtime
+	l.lastMonotonic = l.writer.header.tailEntryMonotonic
+}
+
+func (l *Log) remappingEntryFields(mappings []remappedFieldMapping) []Field {
+	fields := make([]Field, 0, len(mappings)+2)
+	fields = append(fields, StringField("_BOOT_ID", l.options.BootID.String()))
+	fields = append(fields, StringField(remappingMarker, "1"))
+	for _, mapping := range mappings {
+		fields = append(fields, Field{Name: mapping.mapped, Value: []byte(mapping.original)})
+	}
+	return fields
 }
 
 func (l *Log) archiveActive() (string, error) {

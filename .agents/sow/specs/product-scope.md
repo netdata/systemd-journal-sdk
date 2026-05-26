@@ -199,9 +199,13 @@ Current Go writer feature slice:
 - high-level Go `EntryOptions.SourceRealtimeUsec` injects
   `_SOURCE_REALTIME_TIMESTAMP`, and non-progressing realtime / non-zero
   monotonic overrides are clamped forward for strict chain ordering;
-- initial high-level Go `v0.1.0` writer accepts systemd-compatible field names
-  only. Automatic Netdata/OTEL field-name remapping for dotted or lowercase
-  fields remains an additive follow-up before OTEL migration;
+- high-level Rust, Go, Node.js, and Python `Log` writers accept Netdata/OTEL
+  field names and automatically remap non-systemd-compatible names before
+  writing. Each active journal file emits `ND_REMAPPING=1` metadata rows for new
+  mappings, and data rows use stock-compatible `ND_*` field names. User-supplied
+  protected names that begin with `_` are remapped; SDK-owned protected fields
+  such as `_BOOT_ID` and `_SOURCE_REALTIME_TIMESTAMP` are injected internally.
+  Low-level single-file writers remain strict and reject invalid field names;
 - pure cross-SDK cooperative lockfile with stale-owner detection, plus a
   secondary POSIX `flock`, to protect the one-writer contract among
   cooperating SDK writers;
@@ -214,6 +218,10 @@ Current shared high-level directory writer API slice:
 
 - Rust, Go, Node.js, and Python expose lazy open by default and an eager open
   mode that creates or opens the active journal file during construction.
+- Rust, Go, Node.js, and Python strict systemd naming mode archives any stale
+  Netdata chain-named `ONLINE` active file before creating `<source>.journal`,
+  preserving sequence continuity without leaving parallel active files in the
+  same journal directory.
 - Rust, Go, Node.js, and Python expose a strict identity mode requiring
   explicit machine ID and boot ID; default identity mode uses explicit IDs when
   provided, otherwise host/random fallback where the language implementation
@@ -225,6 +233,11 @@ Current shared high-level directory writer API slice:
   file creation, archive/rotation, and retention deletion with concrete journal
   paths. Callback failures are best-effort and do not roll back completed
   journal operations by default.
+- Rust, Go, Node.js, and Python high-level `Log` instances are single-writer
+  mutable objects. Callers must serialize method calls on one instance; the SDK
+  writer lock protects the one-writer file contract across cooperating SDK
+  instances and processes, but it does not add hidden per-append mutex cost
+  inside a single `Log`.
 - Rust, Go, Node.js, and Python support artifact-size providers/callbacks so
   consumer-owned per-journal sidecar bytes are included in size-based retention
   decisions. Missing artifacts should be reported by returning zero; unexpected

@@ -2,13 +2,17 @@
 
 ## Current
 
-- `SOW-0023-20260525-netdata-ingestion-writer-api.md` - in-progress. Implementing the cross-language Netdata ingestion writer API superset needed by NetFlow, OTEL logs, and SNMP traps integration. Verified slices align high-level writer naming, chain resume identity, strict naming sequence continuity, committed-byte retention accounting, duration rotation, age retention, explicit retention enforcement, active/current retention protection, empty-active crash recovery, rotation/archive retry cleanup, and the tagged Go `go/v0.1.0` API contract across Rust, Go, Node.js, and Python. Remaining work is strict/default migration polish, automatic Netdata/OTEL field-name remapping, and final cross-language API polish.
+- None.
 
 ## Pending
 
+- `SOW-0027-20260526-netdata-reader-api-and-jf-facade.md` - open. Inventory Netdata `jf` and reader consumers, define one reader-side SDK contract, and port/complete the libsystemd-compatible reader facade across Rust, Go, Node.js, and Python before Netdata reader integration.
+- `SOW-0026-20260526-netdata-sdk-integration.md` - open. Integrate the SDK into Netdata NetFlow reader/writer paths, OTEL writer path, OTEL signal viewer reader path, and no-libsystemd systemd-journal reader mode. Blocked until the user authorizes the Netdata repository work target and dependency strategy. Netdata writers must default to compact format after integration. Production replacement is gated by SOW-0009 performance evidence or an explicit user-approved exception.
+- `SOW-0025-20260526-retention-enforcement-on-open.md` - open. Enforce smaller retention policies when high-level writers open existing directories, before first append or new-file creation, while preserving active/current files and scoped deletion behavior.
+- `SOW-0024-20260526-mixed-format-directory-readers.md` - open. Prove and fix directory readers and file-backed journalctl rewrites for mixed regular/compact, compressed/uncompressed, multiple compression algorithms, sealed/unsealed, and related per-file feature combinations in one directory.
 - `SOW-0022-20260525-compatibility-test-gap-audit.md` - open. Records compatibility test gaps and likely feature-parity gaps found during read-only review. User decisions recorded: full unsealed verification parity remains here later; directory traversal remains in SOW-0020; compressed/compact parity is structural unless byte identity is deterministic; invalid same-boot monotonic writer appends must be rejected; file-backed journalctl option parity remains in scope across follow-up work.
 - `SOW-0020-20260524-directory-traversal-parity.md` - open. Bring SDK directory readers and file-backed journalctl `--directory` behavior to stock parity.
-- `SOW-0009-20260523-benchmark-profile-optimize.md` - open. Final benchmark, profile, and optimize pass after SOW-0017 through SOW-0021 are complete.
+- `SOW-0009-20260523-benchmark-profile-optimize.md` - open, critical, sequenced after feature completion. Benchmark, profile, and optimize writers/readers before Netdata production replacement. Updated on 2026-05-26 after the user reported the Go SDK writer at about 5k logs/s in the SNMP traps ingestion worker versus about 25k logs/s for Netdata NetFlow with the vendored Rust implementation; later clarified that SOW-0023 and remaining feature work should finish before optimization.
 
 ## Done
 
@@ -31,6 +35,7 @@
 - `SOW-0018-20260524-compact-journal-format.md`
 - `SOW-0019-20260524-forward-secure-sealing.md`
 - `SOW-0021-20260524-nodejs-xz-data-compression.md`
+- `SOW-0023-20260525-netdata-ingestion-writer-api.md`
 
 ## Notes
 
@@ -46,6 +51,6 @@
 - SOW-0019 Phase 3 added file-backed journalctl `--verify`, existing `--verify-only`, and `--verify-key` behavior in Rust, Go, Node.js, and Python. The rewrites parse `--verify-key` before verification, match stock invalid-key behavior on repo-local files, verify unsealed files through Phase 2B APIs, and follow symlinks to regular journal files during directory verification.
 - SOW-0019 Phase 4 added sealed journal writers in Rust, Go, Node.js, and Python with deterministic test keys and configurable sealing intervals. Stock `journalctl --verify --verify-key` validates generated sealed files.
 - SOW-0019 Phase 5 added sealed TAG/HMAC verification APIs and file-backed journalctl `--verify-key` validation in Rust, Go, Node.js, and Python. The shared `journal-verify-sealed` adapter case now runs real behavior in every language.
-- SOW-0009 is intentionally sequenced last. The user decided not to run baseline-only benchmarks now because performance work is expected to require profiling, allocation reduction, buffer reuse, and refactoring that later feature SOWs could invalidate.
+- SOW-0009 was originally sequenced last. The 2026-05-26 SNMP traps performance report makes it a critical Netdata integration gate, but it remains sequenced after feature completion. It should run after SOW-0023 and remaining hot-path feature work, and before SOW-0026 claims production replacement of NetFlow/OTEL vendored journal logic or the no-libsystemd `systemd-journal.plugin` reader path.
 - Byte-for-byte writer identity is the target for deterministic uncompressed journals. Any feature slice that cannot be made byte-identical must return with evidence before the acceptance condition is changed.
 - The external systemd source checkout is read-only for this project. Build outputs and generated files must remain inside this repository or `/tmp`.

@@ -12,6 +12,7 @@ import { jenkinsHash64, sipHash24 } from '../src/lib/hash.js';
 import { uuidToString } from '../src/lib/binary.js';
 import { Writer } from '../src/lib/writer.js';
 import { Log } from '../src/lib/directory-writer.js';
+import { encodeRemappedFieldName } from '../src/lib/field-remap.js';
 import { FileReader } from '../src/lib/reader.js';
 import { parseDataObject } from '../src/lib/entry.js';
 import { exportEntry, jsonEntry, SdJournalOpen, SdJournalQueryUnique } from '../src/facade.js';
@@ -115,6 +116,24 @@ for (const [length, expected] of sipVectors) {
   assert.equal(sipHash24(sipKey, sipMessage.subarray(0, length)), expected, `sipHash24(length=${length})`);
 }
 
+const remappedFieldVectors = [
+  ['hello', 'NDE_HELLO'],
+  ['foo.bar', 'NDAE_FOO_BAR'],
+  ['fooBar', 'NDA3J_FOOBAR'],
+  ['log.body.HostName', 'ND83AAO_LB_HOSTNAME'],
+  ['OAuth2Token', 'NDZ9SNSO_OAUTH2TOKEN'],
+  ['HTTPSConnection', 'NDNSSO_HTTPSCONNECTION'],
+  ['hello-world', 'NDCE_HELLO_WORLD'],
+  ['resource.attributes.host.name', 'ND3AE_RA_HOST_NAME'],
+  ['_CUSTOM_FIELD', 'NDVQT__CUSTOM_FIELD'],
+  ['field name', 'ND_BFAAD773361A781112FB325B433D54F7'],
+  [Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(' invalid')]), 'ND_33493B98B07A586AA08BE7C2E7D90C3A'],
+];
+
+for (const [input, expected] of remappedFieldVectors) {
+  assert.equal(encodeRemappedFieldName(input), expected, `encodeRemappedFieldName(${String(input)})`);
+}
+
 {
   const key = Buffer.from('de5f2812d87b89e81af97cfe8e1423e9', 'hex');
   const payload = Buffer.concat([
@@ -200,6 +219,8 @@ for (const [length, expected] of sipVectors) {
 
     const second = new Log(tempDir, { ...options, headSeqnum: 99 });
     assert.equal(second.activeFile(), activePath);
+    assert.notEqual(second.writer, null);
+    assert.equal(second.nextSeqnum, 3n);
     second.append([{ name: 'MESSAGE', value: 'chain-online-reopen-2' }]);
     second.close();
 
@@ -208,6 +229,41 @@ for (const [length, expected] of sipVectors) {
     while (reader.step()) seqnums.push(reader.getEntry().seqnum);
     reader.close();
     assert.deepEqual(seqnums, [1n, 2n, 3n]);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const options = {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      maxEntries: 0,
+      maxBytes: 0,
+      maxFiles: 10,
+    };
+    const first = new Log(tempDir, options);
+    first.append([{ name: 'MESSAGE', value: 'strict-migrate-0' }], { realtimeUsec: 1700002271000000n, monotonicUsec: 1n });
+    first.append([{ name: 'MESSAGE', value: 'strict-migrate-1' }], { realtimeUsec: 1700002271000001n, monotonicUsec: 2n });
+    const chainPath = first.activeFile();
+    first.writer.close();
+    first.writer = null;
+    first.closed = true;
+
+    const strict = new Log(tempDir, { ...options, strictSystemdNaming: true });
+    const chainReader = FileReader.open(chainPath);
+    assert.equal(chainReader.header.state, STATE_ARCHIVED);
+    chainReader.close();
+
+    strict.append([{ name: 'MESSAGE', value: 'strict-migrate-2' }], { realtimeUsec: 1700002271000002n, monotonicUsec: 3n });
+    assert.equal(strict.activeFile(), join(strict.journalDirectory(), 'system.journal'));
+    const activeReader = FileReader.open(strict.activeFile());
+    assert.equal(activeReader.header.head_entry_seqnum, 3n);
+    assert.equal(activeReader.header.tail_entry_seqnum, 3n);
+    activeReader.close();
+    strict.close();
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -515,6 +571,117 @@ for (const [length, expected] of sipVectors) {
     const log = new Log(tempDir, {
       source: 'system',
       machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+    });
+    log.append([
+      { name: 'MESSAGE', value: 'remapped fields' },
+      { name: 'foo.bar', value: 'dot' },
+      { name: 'log.body.HostName', value: 'camel' },
+      { name: '_CUSTOM_FIELD', value: 'protected' },
+      { name: 'field name', value: 'md5' },
+    ], { realtimeUsec: 1_700_002_401_000_000n, monotonicUsec: 10n });
+    log.sync();
+
+    const reader = FileReader.open(log.activeFilePath());
+    const entries = [];
+    try {
+      while (reader.step()) entries.push(reader.getEntry());
+    } finally {
+      reader.close();
+    }
+    assert.equal(entries.length, 2);
+    const remapRow = entries.find((entry) => entry.fields.ND_REMAPPING?.toString('utf8') === '1');
+    const dataRow = entries.find((entry) => entry.fields.MESSAGE?.toString('utf8') === 'remapped fields');
+    assert.ok(remapRow);
+    assert.ok(dataRow);
+    assert.equal(remapRow.fields.NDAE_FOO_BAR.toString('utf8'), 'foo.bar');
+    assert.equal(remapRow.fields.ND83AAO_LB_HOSTNAME.toString('utf8'), 'log.body.HostName');
+    assert.equal(remapRow.fields.NDVQT__CUSTOM_FIELD.toString('utf8'), '_CUSTOM_FIELD');
+    assert.equal(remapRow.fields.ND_BFAAD773361A781112FB325B433D54F7.toString('utf8'), 'field name');
+    assert.equal(dataRow.fields.NDAE_FOO_BAR.toString('utf8'), 'dot');
+    assert.equal(dataRow.fields.ND83AAO_LB_HOSTNAME.toString('utf8'), 'camel');
+    assert.equal(dataRow.fields.NDVQT__CUSTOM_FIELD.toString('utf8'), 'protected');
+    assert.equal(dataRow.fields.ND_BFAAD773361A781112FB325B433D54F7.toString('utf8'), 'md5');
+    assert.equal(dataRow.realtime, remapRow.realtime + 1n);
+    assert.equal(dataRow.monotonic, remapRow.monotonic + 1n);
+
+    const journalctl = spawnSync('journalctl', ['--version'], { encoding: 'utf8' });
+    if (journalctl.status === 0) {
+      const stockRows = run('journalctl', ['--directory', log.journalDirectory(), '--output=json', '--no-pager'])
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+      assert.equal(stockRows.length, 2);
+      assert.ok(stockRows.some((row) => row.ND_REMAPPING === '1'));
+      assert.ok(stockRows.some((row) =>
+        row.MESSAGE === 'remapped fields' &&
+        row.NDAE_FOO_BAR === 'dot' &&
+        row.ND83AAO_LB_HOSTNAME === 'camel' &&
+        row.NDVQT__CUSTOM_FIELD === 'protected' &&
+        row.ND_BFAAD773361A781112FB325B433D54F7 === 'md5'));
+    }
+    log.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const log = new Log(tempDir, {
+      source: 'system',
+      maxEntries: 2,
+      maxFiles: 10,
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+    });
+    for (let i = 0; i < 2; i++) {
+      log.append([
+        { name: 'MESSAGE', value: `remap-rotate-${i}` },
+        { name: 'log.body.HostName', value: `host-${i}` },
+      ], {
+        realtimeUsec: 1_700_002_402_000_000n + BigInt(i),
+        monotonicUsec: 20n + BigInt(i),
+      });
+    }
+    const journalDir = log.journalDirectory();
+    log.close();
+
+    const files = readdirSync(journalDir).filter((name) => name.endsWith('.journal')).sort();
+    assert.equal(files.length, 2);
+    const journalctl = spawnSync('journalctl', ['--version'], { encoding: 'utf8' });
+    for (const name of files) {
+      const path = join(journalDir, name);
+      if (journalctl.status === 0) {
+        run('journalctl', ['--verify', '--file', path]);
+      }
+
+      const reader = FileReader.open(path);
+      const entries = [];
+      try {
+        while (reader.step()) entries.push(reader.getEntry());
+      } finally {
+        reader.close();
+      }
+      assert.equal(entries.length, 2);
+      const remapRow = entries.find((entry) => entry.fields.ND_REMAPPING?.toString('utf8') === '1');
+      const dataRow = entries.find((entry) => entry.fields.MESSAGE?.toString('utf8').startsWith('remap-rotate-'));
+      assert.ok(remapRow);
+      assert.ok(dataRow);
+      assert.equal(remapRow.fields.ND83AAO_LB_HOSTNAME.toString('utf8'), 'log.body.HostName');
+      assert.match(dataRow.fields.ND83AAO_LB_HOSTNAME.toString('utf8'), /^host-/);
+    }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const log = new Log(tempDir, {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
       maxEntries: 0,
       maxBytes: 0,
       maxDurationUsec: 10_000_000n,
@@ -715,6 +882,20 @@ for (const [length, expected] of sipVectors) {
     }
     const files = readdirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal')).sort();
     assert.equal(files.length, 1);
+    log.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const log = new Log(tempDir, {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+    });
+    assert.equal(log.bootID().length, 16);
     log.close();
   } finally {
     rmSync(tempDir, { recursive: true, force: true });

@@ -7,7 +7,8 @@
 
 use journal_common::{Microseconds, load_boot_id, load_machine_id, monotonic_now};
 use journal_core::file::{
-    HeaderIncompatibleFlags, JournalFile, JournalFileOptions, JournalWriter, Mmap, MmapMut,
+    HeaderIncompatibleFlags, JournalFile, JournalFileOptions, JournalState, JournalWriter, Mmap,
+    MmapMut,
 };
 use journal_log_writer::{
     Config, EntryTimestamps, Log, LogArtifactSizer, LogIdentityMode, LogLifecycleEvent,
@@ -229,7 +230,9 @@ fn test_open_identity_accessors_and_created_lifecycle_event() {
     assert_eq!(log.configured_directory(), dir.path());
     assert_eq!(
         log.journal_directory(),
-        dir.path().join(machine_id.as_simple().to_string()).as_path()
+        dir.path()
+            .join(machine_id.as_simple().to_string())
+            .as_path()
     );
     assert_eq!(log.machine_id(), machine_id);
     assert_eq!(log.boot_id(), boot_id);
@@ -539,6 +542,68 @@ fn test_strict_systemd_naming_reopens_existing_system_journal() {
     let header = journal.journal_header_ref();
     assert_eq!(header.seqnum_id, seqnum_id.as_bytes().to_owned());
     assert_eq!(header.tail_entry_seqnum, 2);
+}
+
+#[test]
+fn test_strict_systemd_naming_archives_online_chain_active() {
+    let dir = TempDir::new().unwrap();
+    let machine_id = load_machine_id().unwrap();
+    let journal_dir = dir.path().join(machine_id.as_simple().to_string());
+    fs::create_dir_all(&journal_dir).unwrap();
+
+    let boot_id = uuid::Uuid::from_u128(0x1112131415161718191a1b1c1d1e1f21);
+    let seqnum_id = uuid::Uuid::from_u128(0x2122232425262728292a2b2c2d2e2f31);
+    let head_realtime = 1_700_025_000_000_000_u64;
+    let chain_path = journal_dir.join(format!(
+        "system@{}-{:016x}-{:016x}.journal",
+        seqnum_id.simple(),
+        1,
+        head_realtime
+    ));
+    let chain_file = File::from_path(&chain_path).expect("chain path should parse");
+    let options = JournalFileOptions::new(machine_id, boot_id, seqnum_id).with_keyed_hash(true);
+    let mut journal = JournalFile::<MmapMut>::create(&chain_file, options).unwrap();
+    let mut writer = JournalWriter::new(&mut journal, 1, boot_id).unwrap();
+    for seqnum in 1..=2 {
+        let message = format!("MESSAGE=strict migrate {seqnum}");
+        writer
+            .add_entry(
+                &mut journal,
+                &[message.as_bytes()],
+                head_realtime + seqnum,
+                seqnum,
+            )
+            .unwrap();
+    }
+    journal.sync().unwrap();
+    journal.release_writer_lock().unwrap();
+    drop(journal);
+
+    let mut log = Log::new(dir.path(), test_config().with_strict_systemd_naming(true)).unwrap();
+    let reopened = JournalFile::<Mmap>::open(&chain_file, 4096).expect("open archived chain");
+    assert_eq!(
+        reopened.journal_header_ref().state,
+        JournalState::Archived as u8,
+        "strict mode must not leave the chain-named file ONLINE"
+    );
+
+    log.write_entry_with_timestamps(
+        &[b"MESSAGE=strict migrate 3"],
+        EntryTimestamps::default()
+            .with_entry_realtime_usec(head_realtime + 3)
+            .with_entry_monotonic_usec(3),
+    )
+    .unwrap();
+    let active = log.active_file().expect("strict active after append");
+    let active_name = Path::new(active.path())
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap();
+    assert_eq!(active_name, "system.journal");
+    let active_journal = JournalFile::<Mmap>::open(active, 4096).expect("open strict active");
+    let active_header = active_journal.journal_header_ref();
+    assert_eq!(active_header.head_entry_seqnum, 3);
+    assert_eq!(active_header.tail_entry_seqnum, 3);
 }
 
 #[test]
@@ -1409,6 +1474,9 @@ fn test_data_entry_preserves_timestamp_overrides_when_remapping_is_emitted() {
         b"MESSAGE=remap-ts" as &[u8],
         b"PRIORITY=6",
         b"foo.bar=value",
+        b"log.body.HostName=camel",
+        b"_CUSTOM_FIELD=protected",
+        b"field name=md5",
     ];
     let realtime_override = Microseconds::now().get().saturating_add(1_000_000);
     let monotonic_override = monotonic_now()
@@ -1439,10 +1507,106 @@ fn test_data_entry_preserves_timestamp_overrides_when_remapping_is_emitted() {
     let data_mono =
         parse_u64_field(data_row, "__MONOTONIC_TIMESTAMP").expect("missing data monotonic");
 
+    assert_eq!(
+        remap_row
+            .get("ND83AAO_LB_HOSTNAME")
+            .and_then(|v| v.as_str()),
+        Some("log.body.HostName")
+    );
+    assert_eq!(
+        remap_row
+            .get("NDVQT__CUSTOM_FIELD")
+            .and_then(|v| v.as_str()),
+        Some("_CUSTOM_FIELD")
+    );
+    assert_eq!(
+        data_row.get("ND83AAO_LB_HOSTNAME").and_then(|v| v.as_str()),
+        Some("camel")
+    );
+    assert_eq!(
+        data_row.get("NDVQT__CUSTOM_FIELD").and_then(|v| v.as_str()),
+        Some("protected")
+    );
+    assert_eq!(
+        remap_row
+            .get("ND_BFAAD773361A781112FB325B433D54F7")
+            .and_then(|v| v.as_str()),
+        Some("field name")
+    );
+    assert_eq!(
+        data_row
+            .get("ND_BFAAD773361A781112FB325B433D54F7")
+            .and_then(|v| v.as_str()),
+        Some("md5")
+    );
     assert_eq!(remap_rt, realtime_override);
     assert_eq!(data_rt, realtime_override.saturating_add(1));
     assert_eq!(remap_mono, monotonic_override);
     assert_eq!(data_mono, monotonic_override.saturating_add(1));
+}
+
+#[test]
+fn test_remapping_registry_reemits_after_rotation() {
+    if !journalctl_available() {
+        eprintln!(
+            "journalctl not available; skipping test_remapping_registry_reemits_after_rotation"
+        );
+        return;
+    }
+
+    let dir = TempDir::new().unwrap();
+    let config =
+        test_config().with_rotation_policy(RotationPolicy::default().with_number_of_entries(2));
+    let mut log = Log::new(dir.path(), config).unwrap();
+
+    for i in 0..2 {
+        let message = format!("MESSAGE=remap-rotate-{}", i);
+        let host = format!("log.body.HostName=host-{}", i);
+        let entry = [message.as_bytes(), host.as_bytes()];
+        let ts = EntryTimestamps::default()
+            .with_entry_realtime_usec(1_700_002_402_000_000 + i)
+            .with_entry_monotonic_usec(20 + i);
+        log.write_entry_with_timestamps(&entry, ts).unwrap();
+    }
+    log.sync().unwrap();
+    drop(log);
+
+    let paths = journal_file_paths(&dir);
+    assert_eq!(paths.len(), 2, "expected remap entries in two files");
+
+    for path in paths {
+        let rows = read_journal_json(&path);
+        assert_eq!(rows.len(), 2, "unexpected row count in {:?}", path);
+
+        let remap_row = rows
+            .iter()
+            .find(|row| row.get("ND_REMAPPING").and_then(|v| v.as_str()) == Some("1"))
+            .expect("missing remapping row after rotation");
+        let data_row = rows
+            .iter()
+            .find(|row| {
+                row.get("MESSAGE")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|message| message.starts_with("remap-rotate-"))
+            })
+            .expect("missing data row after rotation");
+
+        assert_eq!(
+            remap_row
+                .get("ND83AAO_LB_HOSTNAME")
+                .and_then(|v| v.as_str()),
+            Some("log.body.HostName")
+        );
+        assert!(
+            data_row
+                .get("ND83AAO_LB_HOSTNAME")
+                .and_then(|v| v.as_str())
+                .is_some_and(|host| host.starts_with("host-")),
+            "missing remapped HostName value in {:?}: {:?}",
+            path,
+            data_row
+        );
+    }
 }
 
 #[test]

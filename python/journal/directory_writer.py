@@ -5,6 +5,7 @@ import re
 import time
 
 from .binary import random_uuid, uuid_to_string
+from .field_remap import REMAPPING_MARKER, remap_fields
 from .header import HEADER_SIZE, OBJECT_HEADER_SIZE, STATE_ONLINE, parse_file_header, parse_object_header
 from .writer import Writer
 
@@ -110,7 +111,7 @@ class Log:
                 raise ValueError('strict identity requires boot id')
         self._next_seqnum = int(head_seqnum_option or 1)
         self._seqnum_id = _uuid_from_config(seqnum_id_option) or random_uuid()
-        self._boot_id = _uuid_from_config(boot_id_option)
+        self._boot_id = _uuid_from_config(boot_id_option) or _read_boot_id() or random_uuid()
         self._machine_id = _uuid_from_config(machine_id_option) or _read_machine_id() or random_uuid()
         self._compression = config.get('compression', 'none')
         self._compression_threshold_bytes = config.get('compression_threshold_bytes')
@@ -118,6 +119,7 @@ class Log:
         self._journal_dir = os.path.join(self._root_path, uuid_to_string(self._machine_id))
         self._active_file = self._systemd_active_path() if self._strict_systemd_naming else None
         self._active_writer = None
+        self._remaps = {}
         self._closed = False
         self._last_realtime = 0
         self._last_monotonic = 0
@@ -130,9 +132,11 @@ class Log:
             self._seqnum_id = chain_state['seqnum_id']
         self._last_realtime = chain_state['tail_realtime']
         self._last_monotonic = chain_state['tail_monotonic']
+        if self._strict_systemd_naming and chain_state['active_file'] is not None:
+            self._archive_online_chain_active(chain_state['active_file'])
         if not self._strict_systemd_naming:
             if chain_state['active_file'] is not None:
-                self._active_file = chain_state['active_file']
+                self._attach_existing_active(chain_state['active_file'])
         if self._open_mode == LOG_OPEN_EAGER and self._active_writer is None:
             self._open_writer({'realtime_usec': int(time.time() * 1_000_000)}, LOG_LIFECYCLE_REASON_EAGER_OPEN)
 
@@ -188,6 +192,25 @@ class Log:
         if not self._strict_systemd_naming:
             self._active_file = None
 
+    def _attach_existing_active(self, path):
+        self._active_file = path
+        self._active_writer = Writer.open(path)
+        if self._active_writer._header['n_entries'] == 0:
+            self._discard_empty_opened_writer()
+            return
+        self._capture_writer_identity()
+
+    def _archive_online_chain_active(self, path):
+        writer = Writer.open(path)
+        if writer._header['n_entries'] == 0:
+            writer.close()
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+            return
+        writer.archive_to(path)
+
     def _capture_writer_identity(self):
         h = self._active_writer._header
         self._next_seqnum = self._active_writer._next_seqnum
@@ -206,6 +229,13 @@ class Log:
         if self._active_writer and self._should_rotate(opts['realtime_usec']):
             self._rotate(opts)
         self._open_writer(opts)
+        fields, mappings = remap_fields(fields, self._remaps)
+        if mappings:
+            self._active_writer.append(self._remapping_entry_fields(mappings), opts)
+            for mapping in mappings:
+                self._remaps[mapping['original']] = mapping['mapped']
+            self._capture_writer_identity()
+            opts = self._entry_options_for_append(opts)
         result = self._active_writer.append(self._fields_for_append(fields, opts), opts)
         self._capture_writer_identity()
         return result
@@ -240,6 +270,7 @@ class Log:
         self._active_writer = None
         self._active_file = self._systemd_active_path() if self._strict_systemd_naming else None
         self._open_writer(opts, LOG_LIFECYCLE_REASON_ROTATION)
+        self._remaps = {}
         self._emit_lifecycle({
             'type': LOG_LIFECYCLE_ROTATED,
             'reason': LOG_LIFECYCLE_REASON_ROTATION,
@@ -428,6 +459,15 @@ class Log:
             'value': str(int(source_realtime)),
         }]
 
+    def _remapping_entry_fields(self, mappings):
+        return [
+            {'name': '_BOOT_ID', 'value': uuid_to_string(self._boot_id)},
+            {'name': REMAPPING_MARKER, 'value': '1'},
+        ] + [
+            {'name': mapping['mapped'], 'value': mapping['original']}
+            for mapping in mappings
+        ]
+
     def _retained_size(self, path, fallback):
         size = _committed_journal_size(path, fallback)
         if self._artifact_sizer is None:
@@ -608,6 +648,17 @@ def _read_machine_id():
     try:
         with open('/etc/machine-id', 'r', encoding='utf-8') as f:
             text = f.read().strip()
+    except OSError:
+        return None
+    if re.fullmatch(r'[0-9a-fA-F]{32}', text):
+        return bytes.fromhex(text)
+    return None
+
+
+def _read_boot_id():
+    try:
+        with open('/proc/sys/kernel/random/boot_id', 'r', encoding='ascii') as f:
+            text = f.read().strip().replace('-', '')
     except OSError:
         return None
     if re.fullmatch(r'[0-9a-fA-F]{32}', text):

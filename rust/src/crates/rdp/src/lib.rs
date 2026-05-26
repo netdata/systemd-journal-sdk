@@ -456,11 +456,10 @@ impl FieldSeparatorPair {
 }
 
 fn compute_checksum(s: &str) -> String {
-    use std::hash::{DefaultHasher, Hash, Hasher};
-
-    let mut hasher = DefaultHasher::new();
-    s.hash(&mut hasher);
-    let hash = hasher.finish();
+    let mut message = Vec::with_capacity(s.len() + 1);
+    message.extend_from_slice(s.as_bytes());
+    message.push(0xff);
+    let hash = sip_hash13_zero(&message);
 
     // Two character checksum for 36^2 = 1,296 possible values
     let first_idx = ((hash / 36) % 36) as usize;
@@ -479,6 +478,53 @@ fn compute_checksum(s: &str) -> String {
     };
 
     format!("{}{}", first_char, second_char)
+}
+
+fn sip_hash13_zero(message: &[u8]) -> u64 {
+    let mut v0 = 0x736f6d6570736575_u64;
+    let mut v1 = 0x646f72616e646f6d_u64;
+    let mut v2 = 0x6c7967656e657261_u64;
+    let mut v3 = 0x7465646279746573_u64;
+
+    let mut chunks = message.chunks_exact(8);
+    for chunk in &mut chunks {
+        let m = u64::from_le_bytes(chunk.try_into().expect("chunk has eight bytes"));
+        v3 ^= m;
+        sip_hash13_round(&mut v0, &mut v1, &mut v2, &mut v3);
+        v0 ^= m;
+    }
+
+    let mut b = (message.len() as u64) << 56;
+    for (i, byte) in chunks.remainder().iter().enumerate() {
+        b |= (*byte as u64) << (8 * i);
+    }
+
+    v3 ^= b;
+    sip_hash13_round(&mut v0, &mut v1, &mut v2, &mut v3);
+    v0 ^= b;
+    v2 ^= 0xff;
+    for _ in 0..3 {
+        sip_hash13_round(&mut v0, &mut v1, &mut v2, &mut v3);
+    }
+
+    v0 ^ v1 ^ v2 ^ v3
+}
+
+fn sip_hash13_round(v0: &mut u64, v1: &mut u64, v2: &mut u64, v3: &mut u64) {
+    *v0 = (*v0).wrapping_add(*v1);
+    *v1 = v1.rotate_left(13);
+    *v1 ^= *v0;
+    *v0 = v0.rotate_left(32);
+    *v2 = (*v2).wrapping_add(*v3);
+    *v3 = v3.rotate_left(16);
+    *v3 ^= *v2;
+    *v0 = (*v0).wrapping_add(*v3);
+    *v3 = v3.rotate_left(21);
+    *v3 ^= *v0;
+    *v2 = (*v2).wrapping_add(*v1);
+    *v1 = v1.rotate_left(17);
+    *v1 ^= *v2;
+    *v2 = v2.rotate_left(32);
 }
 
 /// Returns true if the encoded string contains a checksum prefix.
@@ -756,24 +802,24 @@ fn compress_runs(s: &str) -> String {
 /// use rdp::encode_full;
 ///
 /// // Simple lowercase field
-/// assert_eq!(encode_full(b"hello"), "HELLO_NDE");
+/// assert_eq!(encode_full(b"hello"), "NDE_HELLO");
 ///
 /// // With dot separators - no compression (only 2 consecutive a's)
-/// assert_eq!(encode_full(b"log.body.hostname"), "LB_HOSTNAME_NDAAE");
+/// assert_eq!(encode_full(b"log.body.hostname"), "NDAAE_LB_HOSTNAME");
 ///
 /// // Many nested levels - structure compression (10 a's → 9a + a)
-/// assert_eq!(encode_full(b"my.very.deeply.nested.field.that.ends.in.the.abyss"), "MY_VERY_DEEPLY_NESTED_FIELD_THAT_ENDS_IN_THE_ABYSS_ND9AE");
+/// assert_eq!(encode_full(b"my.very.deeply.nested.field.that.ends.in.the.abyss"), "ND9AE_MY_VERY_DEEPLY_NESTED_FIELD_THAT_ENDS_IN_THE_ABYSS");
 ///
 /// // With camel case (includes checksum - not compressed)
 /// let full = encode_full(b"log.body.HostName");
-/// assert!(full.starts_with("LB_HOSTNAME_ND")); // prefix + normalized + ND + checksum
-/// assert!(full.ends_with("83AAO")); // 2-char checksum + structure (2 a's not compressed)
+/// assert!(full.starts_with("ND83AAO_")); // ND + 2-char checksum + structure + normalized
+/// assert!(full.ends_with("LB_HOSTNAME"));
 ///
 /// // With hyphens
-/// assert_eq!(encode_full(b"hello-world"), "HELLO_WORLD_NDCE");
+/// assert_eq!(encode_full(b"hello-world"), "NDCE_HELLO_WORLD");
 ///
 /// // With resource.attributes prefix - compression (3 a's → 3a)
-/// assert_eq!(encode_full(b"resource.attributes.host.name"), "RA_HOST_NAME_ND3AE");
+/// assert_eq!(encode_full(b"resource.attributes.host.name"), "ND3AE_RA_HOST_NAME");
 ///
 /// // With invalid characters (space) - falls back to MD5
 /// let md5_result = encode_full(b"field name");
@@ -794,6 +840,9 @@ fn compress_runs(s: &str) -> String {
 /// ```
 pub fn encode_full(field_name: &[u8]) -> String {
     let encoded = encode(field_name);
+    if encoded.starts_with(REMAPPED_PREFIX) {
+        return encoded;
+    }
 
     // Compress runs in the structure encoding (but not the checksum)
     let compressed = if has_checksum(&encoded) {
@@ -827,4 +876,33 @@ pub fn encode_full(field_name: &[u8]) -> String {
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_full;
+
+    #[test]
+    fn encode_full_matches_current_vectors() {
+        assert_eq!(encode_full(b"hello"), "NDE_HELLO");
+        assert_eq!(encode_full(b"foo.bar"), "NDAE_FOO_BAR");
+        assert_eq!(encode_full(b"fooBar"), "NDA3J_FOOBAR");
+        assert_eq!(encode_full(b"log.body.HostName"), "ND83AAO_LB_HOSTNAME");
+        assert_eq!(encode_full(b"OAuth2Token"), "NDZ9SNSO_OAUTH2TOKEN");
+        assert_eq!(encode_full(b"HTTPSConnection"), "NDNSSO_HTTPSCONNECTION");
+        assert_eq!(encode_full(b"hello-world"), "NDCE_HELLO_WORLD");
+        assert_eq!(
+            encode_full(b"resource.attributes.host.name"),
+            "ND3AE_RA_HOST_NAME"
+        );
+        assert_eq!(encode_full(b"_CUSTOM_FIELD"), "NDVQT__CUSTOM_FIELD");
+        assert_eq!(
+            encode_full(b"field name"),
+            "ND_BFAAD773361A781112FB325B433D54F7"
+        );
+        assert_eq!(
+            encode_full(b"\xff\xfe invalid"),
+            "ND_33493B98B07A586AA08BE7C2E7D90C3A"
+        );
+    }
 }

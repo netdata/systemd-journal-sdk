@@ -2,11 +2,11 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: active implementation. SOW-0019 is completed, and the user explicitly picked up this SOW on 2026-05-26. The current verified slice covers shared high-level naming, chain resume, rotation/retention hardening, duration rotation, age retention, and explicit retention enforcement across Rust, Go, Node.js, and Python.
+Sub-state: completed and ready for rollback-point commit. SOW-0019 is completed, and the user explicitly picked up this SOW on 2026-05-26. The verified implementation covers shared high-level naming, chain resume, rotation/retention hardening, duration rotation, age retention, explicit retention enforcement, field-name remapping, strict/default migration polish, single-writer API policy, and the Go `go/v0.1.0` integration contract across Rust, Go, Node.js, and Python.
 
-Current slice on 2026-05-26: align Rust, Node.js, and Python high-level writer APIs with the Go `go/v0.1.0` integration contract that was tagged for Netdata go.d.plugin SNMP trap backend integration. This slice keeps the Go public surface stable and adds the same open mode, strict identity mode, path accessors, lifecycle events, artifact-size retention accounting, source realtime injection, and timestamp-ordering behavior where each language does not already provide it.
+Current slice on 2026-05-26: completed SOW-0023 close-out. Field-name remapping and strict/default cross-mode migration are implemented consistently across Rust, Go, Node.js, and Python. Performance optimization remains explicitly sequenced to SOW-0009 after feature completion.
 
 ## Requirements
 
@@ -52,10 +52,11 @@ Resolved requirements:
 - Strict systemd active naming must be opt-in only: `strict_systemd_naming=false` or unset means Netdata chain naming; `strict_systemd_naming=true` means `<source>.journal` active naming and archive-on-rotation naming.
 - Duration rotation and age retention are in scope for this SOW because they are part of the existing NetFlow and OTEL logs policy surface, even though the current Rust writer appears to expose duration rotation without enforcing it.
 
-Remaining broader items:
+Resolved final items:
 
-- Strict/default cross-mode migration when an existing default chain active file exists and the caller switches to strict systemd naming still needs final polish.
-- Automatic Netdata/OTEL field-name remapping remains additive follow-up work before OTEL migration; the current public writer API accepts systemd-compatible field names.
+- Automatic Netdata/OTEL field-name remapping is now implemented in the high-level Rust, Go, Node.js, and Python `Log` writers. Low-level single-file writers remain strict.
+- Strict/default cross-mode migration is implemented in Rust, Go, Node.js, and Python: when strict systemd naming opens a directory containing a stale chain-named `ONLINE` active file, the writer archives that chain file before creating `<source>.journal`, preserving sequence continuity and avoiding parallel active files.
+- High-level `Log` instances are documented as single-writer mutable objects. Callers must serialize method calls on one instance; SDK lockfiles protect the one-writer file contract across cooperating SDK instances/processes without adding hidden per-append mutex cost.
 
 ### Acceptance Criteria
 
@@ -609,10 +610,23 @@ Tests or equivalent validation:
   - `node --check node/src/lib/directory-writer.js && node --check node/src/index.js && node --check node/test/all.js && node node/test/all.js`: passed after the Node.js API-parity changes.
   - `python3 -m py_compile python/journal/directory_writer.py python/journal/__init__.py python/test_all.py && PYTHONPATH=.local/python-deps:python python3 python/test_all.py`: passed after the Python API-parity changes.
   - `git diff --check && .agents/sow/audit.sh`: passed before final SOW close-out edits; final audit rerun is required before the rollback-point commit.
+- Final field-remapping and strict/default migration close-out:
+  - `go test -count=1 ./journal -run 'TestLogStrictEmptyCloseClearsActivePath|TestLogStrictSystemdNamingArchivesOnlineChainActive|TestLogDefaultChainReopensOnlineFile|TestLogStrictReopenContinuesSequence'` from `go/`: passed.
+  - `go test -count=1 ./...` from `go/`: passed.
+  - `cargo fmt --manifest-path rust/src/crates/journal-log-writer/Cargo.toml`: passed.
+  - `cargo test --manifest-path rust/src/crates/journal-log-writer/Cargo.toml test_strict_systemd_naming_archives_online_chain_active`: passed.
+  - `cargo test --manifest-path rust/src/crates/journal-log-writer/Cargo.toml`: passed.
+  - `cargo test --manifest-path rust/src/crates/rdp/Cargo.toml`: passed.
+  - `node --check node/src/lib/directory-writer.js && node --check node/test/all.js`: passed.
+  - `node node/test/all.js`: passed.
+  - `python3 -m py_compile python/journal/directory_writer.py python/test_all.py`: passed.
+  - `PYTHONPATH=.local/python-deps python3 python/test_all.py`: passed.
+  - `git diff --check`: passed.
+  - `.agents/sow/audit.sh`: passed after marking the SOW completed, moving it to `.agents/sow/done/`, and updating `SOW-status.md`.
 
 Real-use evidence:
 
-- Stock `journalctl --directory` and `journalctl --file` checks are included in the Rust and Go validation tests where available, and Node.js/Python reader tests verify the generated strict/default files after the retention changes. This slice still does not claim full live stock-reader compatibility; that remains governed by the project compatibility SOWs.
+- Stock `journalctl --directory` and `journalctl --file` checks are included in the Rust and Go validation tests where available, including the final Go strict/default migration test that reads the archived default-chain file and new strict active file through stock `journalctl --directory`. Node.js/Python reader tests verify the generated strict/default files and header states after the final migration changes. This SOW does not replace the broader live stock-reader compatibility gates, which remain governed by the project compatibility SOWs.
 
 Reviewer findings:
 
@@ -725,6 +739,17 @@ Reviewer findings:
   - Accepted and fixed `glm` documentation findings: `rust/README.md` now documents source realtime injection and timestamp clamping; `node/README.md` and `python/README.md` now document structured rotation/retention policy zero-validation semantics.
   - `qwen` did not produce usable findings for this slice and was terminated by exact PID after no progress; its partial output was not used as a clean review gate.
   - Follow-up `glm` and `minimax` re-review processes for the same fixed scope were verified as current-repository SOW-0023 runs, remained silent after reading/exploration without final findings, and were terminated by exact PIDs. The prior `glm` production-grade review plus fixed non-blocking documentation findings is the clean review evidence for this slice.
+- Final field-remapping and strict/default migration close-out:
+  - Rust, Go, Node.js, and Python high-level `Log` writers now remap Netdata/OTEL-style dotted, lowercase, invalid, or protected user field names into stock-compatible `ND_*` field names and emit `ND_REMAPPING=1` metadata rows once per new mapping per active journal file. Low-level single-file writers remain strict.
+  - Rust RDP field-name encoding now matches current vectors, including MD5 fallback and explicit zero-key SipHash-1-3 checksum behavior.
+  - Rust, Go, Node.js, and Python strict systemd naming mode now archives a stale default chain-named `ONLINE` active file before creating `<source>.journal`, preserving sequence continuity and preventing parallel active files in the same directory.
+  - Rust, Go, Node.js, Python READMEs, `go/API.md`, and `.agents/sow/specs/product-scope.md` document field remapping, strict/default migration behavior, and the externally serialized single-writer method-call policy.
+  - Initial final read-only review found a real Go strict empty-close stale `ActivePath()` bug; fixed in `go/journal/log.go` and covered by `TestLogStrictEmptyCloseClearsActivePath`.
+  - Initial final read-only review found Node.js/Python boot-ID auto-identity and default active attach inconsistencies; fixed by adding boot-ID auto initialization and constructor-time default active attach in Node.js and Python, with tests asserting non-null boot ID and pre-append writer/sequence capture.
+  - Accepted maintainability finding: removed Rust's unused private remapped-item-count parameter.
+  - Dispositioned as false positive: Rust `write_structured` already returns `WriterError::Serialization` for non-object JSON values.
+  - Dispositioned as non-blocking maintainability: cross-language field-remap vectors are duplicated but identical in Rust, Go, Node.js, and Python; shared fixture centralization remains compatibility-test hygiene under SOW-0022 if it becomes worthwhile.
+  - Final `glm` and `minimax` read-only re-reviews both reported production-grade readiness. `qwen` and `kimi` SOW-0023 reviewer processes repeatedly stalled or became stale and were terminated by exact PIDs; their partial outputs were not used as clean review gates.
 
 Same-failure scan:
 
@@ -759,6 +784,10 @@ Same-failure scan:
   - Rust, Node.js, and Python were checked for the same open/identity/accessor/lifecycle/artifact/source-timestamp/policy-validation concepts added to the stabilized Go API.
   - Rust, Node.js, and Python now have tests for eager open, strict identity, source realtime injection, timestamp clamping, lifecycle events, artifact-size retention accounting, and explicit structured zero rejection.
   - Node.js and Python preserve legacy flat numeric zero-disable aliases while structured policy objects reject explicit zero, avoiding a breaking change for existing callers while matching the Go pointer-backed policy contract for new structured APIs.
+- Completed for the final field-remapping and strict/default migration close-out:
+  - Field-name remapping vectors and high-level writer behavior were checked in Rust, Go, Node.js, and Python, including dotted names, lowercase/camel-case names, user-supplied protected names beginning with `_`, invalid names that require MD5 fallback, remapping metadata rows, and remap re-emission after rotation.
+  - Strict/default migration behavior was checked in Rust, Go, Node.js, and Python with stale chain-named `ONLINE` active files. The tests verify that strict mode archives the old chain active file, creates `<source>.journal`, and continues the sequence from the chain tail.
+  - Method-call concurrency policy was checked across public docs/specs. The final contract is caller-side serialization on a single high-level `Log` instance, with SDK writer locks enforcing one-writer ownership across cooperating SDK instances/processes.
 
 Sensitive data gate:
 
@@ -771,8 +800,8 @@ Artifact maintenance gate:
 - Specs: updated `.agents/sow/specs/product-scope.md` for default chain naming, strict naming option, current-file retention protection, committed-byte retention accounting, disabled limit semantics, duration rotation, age retention, explicit retention enforcement, the Go `v0.1.0` integration API contract, and the shared Rust/Go/Node.js/Python high-level directory writer API surface.
 - End-user/operator docs: updated Rust, Go, Node.js, and Python READMEs for duration rotation, age retention, explicit retention enforcement, and the shared open/identity/accessor/lifecycle/artifact/source-timestamp policy surface; updated Go README and added `go/API.md` for the public Go integration contract.
 - End-user/operator skills: none exist for this repository.
-- SOW lifecycle: remains `in-progress` in `.agents/sow/current/`; this commit is a verified slice, not SOW completion.
-- SOW-status.md: updated for the current slice status.
+- SOW lifecycle: marked `completed` and moved from `.agents/sow/current/` to `.agents/sow/done/` with this close-out commit.
+- SOW-status.md: updated to remove SOW-0023 from current work and list it as completed.
 
 Specs update:
 
@@ -796,14 +825,16 @@ Lessons:
 
 Follow-up mapping:
 
-- Remaining broader SOW-0023 items continue in this SOW: strict/default migration polish, automatic Netdata/OTEL field-name remapping, and final cross-language API polish.
-- Strict/default cross-mode migration when a chain-named `ONLINE` active file exists and a caller switches to strict systemd naming remains broader SOW-0023 migration/final API polish scope. The current verified slice guarantees default Netdata-compatible behavior and strict-mode sequence continuation within each mode.
-- Rust `open_for_append` incompatible-flag validation parity remains tracked for a later compatibility hardening slice.
+- Strict/default migration polish and field-name remapping were completed in this SOW.
+- Raw-item/high-throughput append fast paths are not required to stabilize the public SOW-0023 API because current Rust already accepts raw `KEY=value` items and Go/Node.js/Python expose binary-safe field APIs. If profiling proves field construction is a hot-path problem, additive fast-path APIs are tracked by SOW-0009 benchmark/profile/optimize.
+- Rust `open_for_append` incompatible-flag validation parity remains tracked by SOW-0022 compatibility test gap audit.
+- Shared cross-language field-remap vector fixture centralization is test-maintenance hygiene. Current vectors are duplicated but identical and passing in all four language suites; any future centralization belongs in SOW-0022 rather than blocking this production API SOW.
+- Mixed-format directory reading, retention enforcement on writer open, reader facade work, and Netdata integration are tracked by SOW-0024, SOW-0025, SOW-0027, and SOW-0026 respectively.
 - Rust `Drop` remains documented best-effort behavior; production callers must use explicit `Log::close()` for archive rename and retention.
 
 ## Outcome
 
-Naming/resume/retention, duration-rotation, age-retention, explicit-retention-enforcement, Go `v0.1.0` API-stabilization, and Rust/Node.js/Python Go `v0.1.0` API-parity slices are ready to commit as a rollback point. SOW-0023 remains in-progress for the remaining broader API polish items.
+Naming/resume/retention, duration-rotation, age-retention, explicit-retention-enforcement, Go `v0.1.0` API-stabilization, Rust/Node.js/Python Go `v0.1.0` API parity, field-name remapping, strict/default migration polish, and single-writer API documentation are implemented, locally validated, reviewed, and completed. Final read-only reviewers reported production-grade readiness, and remaining non-blocking observations are mapped to existing follow-up SOWs.
 
 ## Lessons Extracted
 
@@ -813,4 +844,4 @@ Naming/resume/retention, duration-rotation, age-retention, explicit-retention-en
 
 ## Followup
 
-- Continue SOW-0023 with strict/default migration polish, automatic Netdata/OTEL field-name remapping, and final cross-language API polish.
+- No remaining feature work is intentionally left inside SOW-0023. Next work should pick one pending SOW at a time; performance optimization remains sequenced after feature SOWs.

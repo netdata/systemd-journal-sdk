@@ -622,6 +622,33 @@ func TestLogStrictReopenContinuesSequenceAfterClose(t *testing.T) {
 	}
 }
 
+func TestLogStrictEmptyCloseClearsActivePath(t *testing.T) {
+	root := t.TempDir()
+	config := LogConfig{
+		Options:             testOptions(),
+		Source:              "system",
+		StrictSystemdNaming: true,
+		OpenMode:            LogOpenEager,
+	}
+	log, err := NewLog(root, config)
+	if err != nil {
+		t.Fatalf("NewLog(strict eager) error = %v", err)
+	}
+	activePath := log.ActivePath()
+	if activePath == "" {
+		t.Fatalf("ActivePath before empty close is empty")
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close(empty strict) error = %v", err)
+	}
+	if got := log.ActivePath(); got != "" {
+		t.Fatalf("ActivePath after empty strict close = %q, want empty", got)
+	}
+	if _, err := os.Stat(activePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("empty strict active stat error = %v, want not exist", err)
+	}
+}
+
 func TestLogReopensActiveFileAndContinuesSequence(t *testing.T) {
 	requireJournalctl(t)
 
@@ -808,6 +835,68 @@ func TestLogDefaultChainReopensOnlineFile(t *testing.T) {
 	snapshot := readJournalSnapshot(t, activePath)
 	if snapshot.header.tailEntrySeqnum != 3 {
 		t.Fatalf("tail seqnum after online reopen = %d, want 3", snapshot.header.tailEntrySeqnum)
+	}
+}
+
+func TestLogStrictSystemdNamingArchivesOnlineChainActive(t *testing.T) {
+	requireJournalctl(t)
+
+	root := t.TempDir()
+	config := LogConfig{
+		Options:        testOptions(),
+		Source:         "system",
+		RotationPolicy: RotationPolicy{}.WithMaxEntries(10),
+	}
+	first, err := NewLog(root, config)
+	if err != nil {
+		t.Fatalf("NewLog(first) error = %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := first.Append([]Field{
+			StringField("MESSAGE", fmt.Sprintf("strict-migrate-%d", i)),
+			StringField("TEST_ID", "directory-strict-migrate-online-chain"),
+		}, EntryOptions{RealtimeUsec: 1_700_002_271_000_000 + uint64(i), MonotonicUsec: uint64(i + 1)}); err != nil {
+			t.Fatalf("Append(first %d) error = %v", i, err)
+		}
+	}
+	if err := first.Sync(); err != nil {
+		t.Fatalf("Sync(first) error = %v", err)
+	}
+	chainPath := first.ActivePath()
+	if err := first.writer.Close(); err != nil {
+		t.Fatalf("writer.Close(first active) error = %v", err)
+	}
+	first.writer = nil
+	first.closed = true
+
+	strictConfig := config
+	strictConfig.StrictSystemdNaming = true
+	strict, err := NewLog(root, strictConfig)
+	if err != nil {
+		t.Fatalf("NewLog(strict) error = %v", err)
+	}
+	if snapshot := readJournalSnapshot(t, chainPath); snapshot.header.state != stateArchived {
+		t.Fatalf("chain active state after strict open = %d, want archived", snapshot.header.state)
+	}
+	if err := strict.Append([]Field{
+		StringField("MESSAGE", "strict-migrate-2"),
+		StringField("TEST_ID", "directory-strict-migrate-online-chain"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_271_000_002, MonotonicUsec: 3}); err != nil {
+		t.Fatalf("Append(strict) error = %v", err)
+	}
+	if base := filepath.Base(strict.ActivePath()); base != "system.journal" {
+		t.Fatalf("strict active filename = %q, want system.journal", base)
+	}
+	if snapshot := readJournalSnapshot(t, strict.ActivePath()); snapshot.header.headEntrySeqnum != 3 || snapshot.header.tailEntrySeqnum != 3 {
+		t.Fatalf("strict active seqnum range = [%d,%d], want [3,3]", snapshot.header.headEntrySeqnum, snapshot.header.tailEntrySeqnum)
+	}
+	dir := filepath.Join(root, config.Options.MachineID.String())
+	rows := runJournalctlDirectoryJSON(t, dir, "TEST_ID=directory-strict-migrate-online-chain")
+	if len(rows) != 3 {
+		t.Fatalf("strict migration row count = %d, want 3", len(rows))
+	}
+	if err := strict.Close(); err != nil {
+		t.Fatalf("Close(strict) error = %v", err)
 	}
 }
 
@@ -1098,6 +1187,129 @@ func TestLogAppendMapWithOptionsAddsSourceRealtime(t *testing.T) {
 	assertJSONField(t, rows[0], "_SOURCE_REALTIME_TIMESTAMP", "1600000100000000")
 	if err := log.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestLogRemapsIncompatibleFieldNames(t *testing.T) {
+	requireJournalctl(t)
+
+	log, dir := newTestLog(t, LogConfig{
+		Options: testOptions(),
+		Source:  "system",
+	})
+	if err := log.Append([]Field{
+		StringField("MESSAGE", "remapped fields"),
+		StringField("foo.bar", "dot"),
+		StringField("log.body.HostName", "camel"),
+		StringField("_CUSTOM_FIELD", "protected"),
+		StringField("field name", "md5"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_401_000_000, MonotonicUsec: 10}); err != nil {
+		t.Fatalf("Append(remapped fields) error = %v", err)
+	}
+	if err := log.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+
+	rows := runJournalctlDirectoryJSON(t, dir)
+	if len(rows) != 2 {
+		t.Fatalf("row count = %d, want 2; rows=%v", len(rows), rows)
+	}
+	var remapRow, dataRow map[string]any
+	for _, row := range rows {
+		if row["ND_REMAPPING"] == "1" {
+			remapRow = row
+		}
+		if row["MESSAGE"] == "remapped fields" {
+			dataRow = row
+		}
+	}
+	if remapRow == nil {
+		t.Fatalf("missing remapping row: %v", rows)
+	}
+	if dataRow == nil {
+		t.Fatalf("missing data row: %v", rows)
+	}
+
+	assertJSONField(t, remapRow, "NDAE_FOO_BAR", "foo.bar")
+	assertJSONField(t, remapRow, "ND83AAO_LB_HOSTNAME", "log.body.HostName")
+	assertJSONField(t, remapRow, "NDVQT__CUSTOM_FIELD", "_CUSTOM_FIELD")
+	assertJSONField(t, remapRow, "ND_BFAAD773361A781112FB325B433D54F7", "field name")
+	assertJSONField(t, dataRow, "NDAE_FOO_BAR", "dot")
+	assertJSONField(t, dataRow, "ND83AAO_LB_HOSTNAME", "camel")
+	assertJSONField(t, dataRow, "NDVQT__CUSTOM_FIELD", "protected")
+	assertJSONField(t, dataRow, "ND_BFAAD773361A781112FB325B433D54F7", "md5")
+
+	remapRealtime := parseU64JSONField(t, remapRow, "__REALTIME_TIMESTAMP")
+	dataRealtime := parseU64JSONField(t, dataRow, "__REALTIME_TIMESTAMP")
+	if dataRealtime != remapRealtime+1 {
+		t.Fatalf("data realtime = %d, want remap realtime + 1 (%d)", dataRealtime, remapRealtime+1)
+	}
+	remapMonotonic := parseU64JSONField(t, remapRow, "__MONOTONIC_TIMESTAMP")
+	dataMonotonic := parseU64JSONField(t, dataRow, "__MONOTONIC_TIMESTAMP")
+	if dataMonotonic != remapMonotonic+1 {
+		t.Fatalf("data monotonic = %d, want remap monotonic + 1 (%d)", dataMonotonic, remapMonotonic+1)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	for _, path := range journalFiles(t, dir) {
+		verifyJournalctl(t, path)
+	}
+}
+
+func TestLogRemapRegistryReemitsAfterRotation(t *testing.T) {
+	requireJournalctl(t)
+
+	log, dir := newTestLog(t, LogConfig{
+		Options:        testOptions(),
+		Source:         "system",
+		RotationPolicy: RotationPolicy{}.WithMaxEntries(2),
+	})
+	for i := 0; i < 2; i++ {
+		if err := log.Append([]Field{
+			StringField("MESSAGE", fmt.Sprintf("remap-rotate-%d", i)),
+			StringField("log.body.HostName", fmt.Sprintf("host-%d", i)),
+		}, EntryOptions{
+			RealtimeUsec:  1_700_002_402_000_000 + uint64(i),
+			MonotonicUsec: 20 + uint64(i),
+		}); err != nil {
+			t.Fatalf("Append(remap rotate %d) error = %v", i, err)
+		}
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	files := journalFiles(t, dir)
+	if len(files) != 2 {
+		t.Fatalf("journal file count = %d, want 2; files=%v", len(files), files)
+	}
+	for _, path := range files {
+		verifyJournalctl(t, path)
+		rows := runJournalctlJSON(t, path)
+		if len(rows) != 2 {
+			t.Fatalf("%s row count = %d, want 2; rows=%v", path, len(rows), rows)
+		}
+		var remapRow, dataRow map[string]any
+		for _, row := range rows {
+			if row["ND_REMAPPING"] == "1" {
+				remapRow = row
+			}
+			if message, ok := row["MESSAGE"].(string); ok && strings.HasPrefix(message, "remap-rotate-") {
+				dataRow = row
+			}
+		}
+		if remapRow == nil {
+			t.Fatalf("%s missing remapping row: %v", path, rows)
+		}
+		if dataRow == nil {
+			t.Fatalf("%s missing data row: %v", path, rows)
+		}
+		assertJSONField(t, remapRow, "ND83AAO_LB_HOSTNAME", "log.body.HostName")
+		host, ok := dataRow["ND83AAO_LB_HOSTNAME"].(string)
+		if !ok || !strings.HasPrefix(host, "host-") {
+			t.Fatalf("%s remapped host = %v, want host-*", path, dataRow["ND83AAO_LB_HOSTNAME"])
+		}
 	}
 }
 

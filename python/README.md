@@ -33,6 +33,9 @@ no system journal library linkage.
 - Directory writer with Netdata chain active naming by default, opt-in strict
   systemd active naming, entry-count/file-size/duration rotation, and
   file-count/byte/age retention
+- High-level `Log` field-name remapping for Netdata/OTEL-style dotted,
+  lowercase, or otherwise incompatible field names through `ND_REMAPPING=1`
+  metadata rows and stock-compatible `ND_*` data fields
 - Pure cross-SDK cooperative lockfile with stale-owner detection, plus a secondary advisory `flock`, to prevent multiple SDK writers from opening the same file
 - Native systemd writers do not participate in the SDK lock protocol and remain an operational exclusion
 
@@ -133,6 +136,9 @@ journal.close()
 Netdata Rust writer chain filename form for the active file:
 `<source>@<seqnum-id>-<head-seqnum>-<head-realtime>.journal`. Set
 `'strict_systemd_naming': True` to use `<source>.journal` as the active file.
+If strict naming opens a directory with a stale chain-named `ONLINE` active
+file, it archives that file before creating `<source>.journal`, so the directory
+does not keep parallel active files.
 Rotation and retention limits are disabled when omitted or set to `0`; the
 example above opts into explicit limits. Duration rotation is checked before
 append using the incoming entry realtime and the active file head realtime.
@@ -152,6 +158,14 @@ effective `journalctl --directory` path, active path, and identity.
 `artifact_sizer` includes consumer-owned sidecar bytes in size-based retention.
 `append()` accepts `source_realtime_usec` / `sourceRealtimeUsec` and clamps
 non-progressing realtime and non-zero monotonic overrides forward.
+`Log` is a single-writer object; callers must serialize method calls on one
+instance. The SDK writer lock prevents another cooperating SDK writer from
+owning the same file, but it is not a per-append Python mutex.
+`append()` also remaps non-systemd-compatible field names, such as OTEL dotted
+or lowercase names, into `ND_*` data fields and emits `ND_REMAPPING=1` metadata
+rows once per new mapping in each active journal file. User-supplied protected
+names beginning with `_` are remapped; SDK-owned protected fields such as
+`_BOOT_ID` and `_SOURCE_REALTIME_TIMESTAMP` are injected internally.
 Structured `'rotation_policy'` / `'rotationPolicy'` and `'retention_policy'` /
 `'retentionPolicy'` option dictionaries are also accepted for the Go-style
 optional policy contract. Omitted policy fields are disabled; explicitly

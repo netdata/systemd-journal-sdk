@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { randomUUID, stringToUUID, uuidToString } from './binary.js';
 import { Writer } from './writer.js';
 import { HEADER_SIZE, STATE_ONLINE, parseFileHeader, parseObjectHeader } from './header.js';
+import { REMAPPING_MARKER, remapFields } from './field-remap.js';
 
 const DEFAULT_MAX_ENTRIES = 0;
 const DEFAULT_MAX_BYTES = 0;
@@ -71,6 +72,7 @@ export class Log {
 
     this.activePath = null;
     this.writer = null;
+    this.remaps = new Map();
     this.closed = false;
     this._pathCounter = 0;
     this.lastRealtime = 0n;
@@ -85,7 +87,7 @@ export class Log {
       if (bootIdOption === undefined || bootIdOption === null) throw new Error('strict identity requires boot id');
     }
     this.seqnumId = uuidOption(seqnumIdOption, 'seqnum id') || randomUUID();
-    this.bootId = uuidOption(bootIdOption, 'boot id');
+    this.bootId = uuidOption(bootIdOption, 'boot id') || readBootId() || randomUUID();
     this.machineId = uuidOption(machineIdOption, 'machine id') || readMachineId() || randomUUID();
     this.compression = options.compression ?? 'none';
     this.compressionThresholdBytes = options.compressionThresholdBytes;
@@ -98,8 +100,11 @@ export class Log {
     if (seqnumIdOption === undefined && chainState.seqnumId) this.seqnumId = Buffer.from(chainState.seqnumId);
     this.lastRealtime = chainState.tailRealtime;
     this.lastMonotonic = chainState.tailMonotonic;
+    if (this.strictSystemdNaming && chainState.activePath) {
+      this._archiveOnlineChainActive(chainState.activePath);
+    }
     if (!this.strictSystemdNaming) {
-      if (chainState.activePath) this.activePath = chainState.activePath;
+      if (chainState.activePath) this._attachExistingActive(chainState.activePath);
     }
     this._findOrCreateActiveFile();
     if (this.openMode === LOG_OPEN_EAGER && !this.writer) {
@@ -118,12 +123,23 @@ export class Log {
   append(fields, options = {}) {
     if (this.closed) throw new Error('journal log is closed');
     if (fields.length === 0) throw new Error('empty entry');
-    const appendOptions = this._entryOptionsForAppend(options);
+    let appendOptions = this._entryOptionsForAppend(options);
     if (this.writer && this._shouldRotate(appendOptions.realtimeUsec)) {
       this._rotate(appendOptions);
     }
     if (!this.writer) {
       this._openWriter(appendOptions, LOG_LIFECYCLE_REASON_APPEND);
+    }
+
+    const remapped = remapFields(fields, this.remaps);
+    fields = remapped.fields;
+    if (remapped.mappings.length > 0) {
+      this.writer.append(this._remappingEntryFields(remapped.mappings), appendOptions);
+      for (const mapping of remapped.mappings) {
+        this.remaps.set(mapping.original, mapping.mapped);
+      }
+      this._captureWriterIdentity();
+      appendOptions = this._entryOptionsForAppend(appendOptions);
     }
 
     const result = this.writer.append(this._fieldsForAppend(fields, appendOptions), appendOptions);
@@ -165,6 +181,7 @@ export class Log {
 
     this.activePath = this.strictSystemdNaming ? this._systemdActivePath() : null;
     this._openWriter(options, LOG_LIFECYCLE_REASON_ROTATION);
+    this.remaps = new Map();
     this._emitLifecycle({
       type: LOG_LIFECYCLE_ROTATED,
       reason: LOG_LIFECYCLE_REASON_ROTATION,
@@ -222,6 +239,26 @@ export class Log {
     unlinkIfExists(this.activePath);
     this.writer = null;
     if (!this.strictSystemdNaming) this.activePath = null;
+  }
+
+  _attachExistingActive(path) {
+    this.activePath = path;
+    this.writer = Writer.open(path);
+    if (this.writer.header.n_entries === 0n) {
+      this._discardEmptyOpenedWriter();
+      return;
+    }
+    this._captureWriterIdentity();
+  }
+
+  _archiveOnlineChainActive(path) {
+    const writer = Writer.open(path);
+    if (writer.header.n_entries === 0n) {
+      writer.close();
+      unlinkIfExists(path);
+      return;
+    }
+    writer.archiveTo(path);
   }
 
   _captureWriterIdentity() {
@@ -417,6 +454,17 @@ export class Log {
     ];
   }
 
+  _remappingEntryFields(mappings) {
+    return [
+      { name: '_BOOT_ID', value: Buffer.from(uuidToString(this.bootId), 'utf8') },
+      { name: REMAPPING_MARKER, value: Buffer.from('1', 'utf8') },
+      ...mappings.map((mapping) => ({
+        name: mapping.mapped,
+        value: Buffer.from(mapping.original, 'utf8'),
+      })),
+    ];
+  }
+
   _retainedSize(path, fallback) {
     const journalSize = committedJournalSize(path, fallback);
     if (!this.artifactSizer) return journalSize;
@@ -530,6 +578,14 @@ function validateJournalSource(source) {
 function readMachineId() {
   try {
     const text = readFileSync('/etc/machine-id', 'utf8').trim();
+    if (/^[0-9a-fA-F]{32}$/.test(text)) return stringToUUID(text);
+  } catch {}
+  return null;
+}
+
+function readBootId() {
+  try {
+    const text = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim().replaceAll('-', '');
     if (/^[0-9a-fA-F]{32}$/.test(text)) return stringToUUID(text);
   } catch {}
   return null;

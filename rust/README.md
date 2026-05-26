@@ -18,6 +18,9 @@ Current writer scope:
 - Netdata-compatible chain active naming by default, with
   `Config::with_strict_systemd_naming(true)` available for strict systemd
   `<source>.journal` active naming;
+- high-level `Log` field-name remapping for Netdata/OTEL-style dotted,
+  lowercase, or otherwise incompatible field names through `ND_REMAPPING=1`
+  metadata rows and stock-compatible `ND_*` data fields;
 - entry-count, file-size, and duration rotation;
 - tracked journal-file-count, byte-size, and age retention;
 - pure cross-SDK cooperative lockfile with stale-owner detection to prevent
@@ -107,6 +110,9 @@ uses the Netdata Rust writer chain filename form
 `<source>@<seqnum-id>-<head-seqnum>-<head-realtime>.journal`; call
 `Config::with_strict_systemd_naming(true)` to use `<source>.journal` as the
 active file.
+If strict naming opens a directory with a stale chain-named `ONLINE` active
+file, it archives that file before creating `<source>.journal`, so the directory
+does not keep parallel active files.
 Unset rotation and retention limits are disabled. Retention counts the tracked
 active/current file in file-count and committed-byte limits, but deletion only
 selects older unprotected files owned by the configured source; the tracked
@@ -128,6 +134,15 @@ Lifecycle observers receive `Created`, `Rotated`, and `RetainedDeleted` events;
 decisions. `write_entry_with_timestamps()` accepts
 `EntryTimestamps::source_realtime_usec` for `_SOURCE_REALTIME_TIMESTAMP`
 injection and clamps non-progressing realtime and monotonic overrides forward.
+`Log` is a single-writer object; callers must serialize method calls on one
+instance. The SDK writer lock prevents another cooperating SDK writer from
+owning the same file, but it is not a per-append Rust mutex.
+`write_entry()` and `write_entry_with_timestamps()` remap non-systemd-compatible
+field names, such as OTEL dotted or lowercase names, into `ND_*` data fields
+and emit `ND_REMAPPING=1` metadata rows once per new mapping in each active
+journal file. User-supplied protected names beginning with `_` are remapped;
+SDK-owned protected fields such as `_BOOT_ID` and `_SOURCE_REALTIME_TIMESTAMP`
+are injected internally.
 
 Binary-safe values:
 
