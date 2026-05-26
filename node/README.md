@@ -153,6 +153,19 @@ by the configured source; the tracked active/current file is never deleted to
 satisfy a retention limit. Call `journal.enforceRetention()` to apply
 age/count/byte retention without waiting for another append-triggered rotation
 or close.
+Use `openMode: 'eager'` to create/open the active file during construction, and
+`identityMode: 'strict'` with `machineId` and `bootId` when callers must reject
+missing identity instead of using host/random fallback. `configuredDirectory()`,
+`journalDirectory()`, `activeFilePath()`, `machineID()`, `bootID()`, and
+`sourceName()` expose the configured root, effective `journalctl --directory`
+path, active path, and identity. `lifecycle` callbacks receive `created`,
+`rotated`, and `deleted` events; `artifactSizer` includes consumer-owned
+sidecar bytes in size-based retention. `append()` accepts
+`sourceRealtimeUsec` / `source_realtime_usec` and clamps non-progressing
+realtime and non-zero monotonic overrides forward.
+Structured `rotationPolicy` and `retentionPolicy` option objects are also
+accepted for the Go-style optional policy contract. Omitted policy fields are
+disabled; explicitly setting a structured policy field to `0` is rejected.
 
 ## journalctl CLI
 
@@ -201,7 +214,13 @@ node cmd/journalctl/index.js --file ./sample.journal PRIORITY=3 PRIORITY=4 + MES
 - `log.enforceRetention()` - Apply retention without rotating or closing
 - `log.close()` - Archive the active file and apply retention
 - `log.activeFile()` - Return the current active file path
+- `log.activeFilePath()` - Return the created/opened active file path, or `''`
+  before lazy creation
+- `log.configuredDirectory()` - Return the configured root before machine-id
+  expansion
 - `log.journalDirectory()` - Return the machine-id journal directory
+- `log.machineID()`, `log.bootID()`, `log.sourceName()` - Return the writer
+  identity and source prefix
 
 ## Limitations
 

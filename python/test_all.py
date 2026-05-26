@@ -309,6 +309,113 @@ def test_directory_writer_default_system_chain_naming():
         log.close()
 
 
+def test_directory_writer_open_identity_lifecycle_source_timestamp():
+    with tempfile.TemporaryDirectory() as td:
+        machine_id = bytes.fromhex('00112233445566778899aabbccddeeff')
+        boot_id = bytes.fromhex('ffeeddccbbaa99887766554433221100')
+        try:
+            Log(td, {
+                'identity_mode': 'strict',
+                'machine_id': machine_id,
+            })
+        except ValueError as err:
+            assert 'strict identity requires boot id' in str(err)
+        else:
+            raise AssertionError('expected strict identity rejection without boot id')
+
+        events = []
+        log = Log(td, {
+            'source': 'system',
+            'open_mode': 'eager',
+            'identity_mode': 'strict',
+            'machine_id': machine_id,
+            'boot_id': boot_id,
+            'lifecycle': lambda event: events.append(event),
+        })
+        assert log.configured_directory() == td
+        assert log.journal_directory() == os.path.join(td, '00112233445566778899aabbccddeeff')
+        assert log.machine_id() == machine_id
+        assert log.boot_id() == boot_id
+        assert log.source_name() == 'system'
+        assert log.active_file_path() != ''
+        assert len(events) == 1
+        assert events[0]['type'] == 'created'
+        assert events[0]['reason'] == 'eager_open'
+        assert events[0]['active_path'] == log.active_file_path()
+
+        log.append(
+            [{'name': 'MESSAGE', 'value': 'timestamp-0'}],
+            {'realtime_usec': 1_700_000_100_000_000, 'monotonic_usec': 10, 'source_realtime_usec': 999},
+        )
+        log.append(
+            [{'name': 'MESSAGE', 'value': 'timestamp-1'}],
+            {'realtime_usec': 1_700_000_100_000_000, 'monotonic_usec': 10, 'source_realtime_usec': 1000},
+        )
+        path = log.active_file_path()
+        log.close()
+
+        reader = FileReader.open(path)
+        entries = []
+        while reader.step():
+            entries.append(reader.get_entry())
+        reader.close()
+        assert len(entries) == 2
+        assert [entry['realtime'] for entry in entries] == [
+            1_700_000_100_000_000,
+            1_700_000_100_000_001,
+        ]
+        assert [entry['monotonic'] for entry in entries] == [10, 11]
+        assert [
+            entry['fields']['_SOURCE_REALTIME_TIMESTAMP'].decode()
+            for entry in entries
+        ] == ['999', '1000']
+
+
+def test_directory_writer_explicit_policy_validation():
+    with tempfile.TemporaryDirectory() as td:
+        try:
+            Log(td, {'rotation_policy': {'max_entries': 0}})
+        except ValueError as err:
+            assert 'rotation max entries' in str(err)
+        else:
+            raise AssertionError('expected rotation policy validation failure')
+        try:
+            Log(td, {'retention_policy': {'max_files': 0}})
+        except ValueError as err:
+            assert 'retention max files' in str(err)
+        else:
+            raise AssertionError('expected retention policy validation failure')
+
+
+def test_directory_writer_lifecycle_delete_and_artifact_size():
+    with tempfile.TemporaryDirectory() as td:
+        events = []
+        artifact_calls = []
+
+        def artifact_sizer(path):
+            artifact_calls.append(path)
+            return 4096
+
+        log = Log(td, {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'max_entries': 1,
+            'retention_policy': {'max_bytes': 1},
+            'lifecycle': lambda event: events.append(event),
+            'artifact_sizer': artifact_sizer,
+        })
+        log.append([{'name': 'MESSAGE', 'value': 'artifact-retention-0'}])
+        log.append([{'name': 'MESSAGE', 'value': 'artifact-retention-1'}])
+        assert artifact_calls
+        assert any(event['type'] == 'created' and event['reason'] == 'append' for event in events)
+        assert any(event['type'] == 'rotated' for event in events)
+        deleted = next(event for event in events if event['type'] == 'deleted')
+        assert len(deleted['deleted_paths']) == 1
+        names = [name for name in os.listdir(log.journal_directory()) if name.endswith('.journal')]
+        assert len(names) == 1
+        log.close()
+
+
 def test_directory_writer_rejects_empty_entry_without_creating_file():
     with tempfile.TemporaryDirectory() as td:
         log = Log(td, {
@@ -1264,6 +1371,9 @@ def main():
     test_directory_writer_rotation()
     test_directory_writer_duration_rotation()
     test_directory_writer_default_system_chain_naming()
+    test_directory_writer_open_identity_lifecycle_source_timestamp()
+    test_directory_writer_explicit_policy_validation()
+    test_directory_writer_lifecycle_delete_and_artifact_size()
     test_directory_writer_rejects_empty_entry_without_creating_file()
     test_directory_writer_custom_source_naming()
     test_directory_writer_strict_systemd_naming()

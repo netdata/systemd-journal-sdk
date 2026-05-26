@@ -142,6 +142,20 @@ by the configured source; the tracked active/current file is never deleted to
 satisfy a retention limit. Call `journal.enforce_retention()` to apply
 age/count/byte retention without waiting for another append-triggered rotation
 or close.
+Use `'open_mode': 'eager'` to create/open the active file during construction,
+and `'identity_mode': 'strict'` with `'machine_id'` and `'boot_id'` when callers
+must reject missing identity instead of using host/random fallback.
+`configured_directory()`, `journal_directory()`, `active_file_path()`,
+`machine_id()`, `boot_id()`, and `source_name()` expose the configured root,
+effective `journalctl --directory` path, active path, and identity.
+`lifecycle` callbacks receive `created`, `rotated`, and `deleted` events;
+`artifact_sizer` includes consumer-owned sidecar bytes in size-based retention.
+`append()` accepts `source_realtime_usec` / `sourceRealtimeUsec` and clamps
+non-progressing realtime and non-zero monotonic overrides forward.
+Structured `'rotation_policy'` / `'rotationPolicy'` and `'retention_policy'` /
+`'retentionPolicy'` option dictionaries are also accepted for the Go-style
+optional policy contract. Omitted policy fields are disabled; explicitly
+setting a structured policy field to `0` is rejected.
 
 ## journalctl CLI
 
@@ -190,7 +204,13 @@ python3 cmd/journalctl.py --file ./sample.journal PRIORITY=3 PRIORITY=4 + MESSAG
 - `log.enforce_retention()` - Apply retention without rotating or closing
 - `log.close()` - Archive the active file and apply retention
 - `log.active_file()` - Return the current active file path
+- `log.active_file_path()` - Return the created/opened active file path, or `''`
+  before lazy creation
+- `log.configured_directory()` - Return the configured root before machine-id
+  expansion
 - `log.journal_directory()` - Return the machine-id journal directory
+- `log.machine_id()`, `log.boot_id()`, `log.source_name()` - Return the writer
+  identity and source prefix
 
 ## Limitations
 

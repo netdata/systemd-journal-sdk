@@ -2,7 +2,7 @@ mod chain;
 use chain::OwnedChain;
 
 mod config;
-pub use config::{Config, RetentionPolicy, RotationPolicy};
+pub use config::{Config, LogIdentityMode, LogOpenMode, RetentionPolicy, RotationPolicy};
 
 use crate::{Result, WriterError};
 use itoa::Buffer as ItoaBuffer;
@@ -22,10 +22,11 @@ use tracing::{debug, error, info, instrument, span, warn};
 const STACK_ENTRY_REF_LIMIT: usize = 128;
 const SOURCE_REALTIME_PREFIX: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP=";
 
-fn create_chain(path: &Path, source: journal_registry::Source) -> Result<OwnedChain> {
-    let machine_id = load_machine_id()
-        .map_err(|e| WriterError::MachineId(format!("failed to load machine ID: {}", e)))?;
-
+fn create_chain(
+    path: &Path,
+    source: journal_registry::Source,
+    machine_id: uuid::Uuid,
+) -> Result<OwnedChain> {
     if path.exists() && !path.is_dir() {
         return Err(WriterError::NotADirectory(path.display().to_string()));
     }
@@ -54,6 +55,73 @@ fn create_chain(path: &Path, source: journal_registry::Source) -> Result<OwnedCh
     }
 
     OwnedChain::new(path, machine_id, source)
+}
+
+fn resolve_machine_id(config: &Config) -> Result<uuid::Uuid> {
+    match config.identity_mode {
+        LogIdentityMode::Strict => config.origin.machine_id.ok_or_else(|| {
+            WriterError::MachineId("strict identity requires machine id".to_string())
+        }),
+        LogIdentityMode::Auto => Ok(config
+            .origin
+            .machine_id
+            .or_else(|| load_machine_id().ok())
+            .unwrap_or_else(uuid::Uuid::new_v4)),
+    }
+}
+
+fn resolve_boot_id(config: &Config) -> Result<uuid::Uuid> {
+    match config.identity_mode {
+        LogIdentityMode::Strict => config
+            .boot_id
+            .ok_or_else(|| WriterError::MachineId("strict identity requires boot id".to_string())),
+        LogIdentityMode::Auto => Ok(config
+            .boot_id
+            .or_else(|| load_boot_id().ok())
+            .unwrap_or_else(uuid::Uuid::new_v4)),
+    }
+}
+
+fn validate_config(config: &Config) -> Result<()> {
+    if config.rotation_policy.size_of_journal_file == Some(0) {
+        return Err(WriterError::InvalidConfig(
+            "rotation max file size must be greater than 0".to_string(),
+        ));
+    }
+    if config.rotation_policy.number_of_entries == Some(0) {
+        return Err(WriterError::InvalidConfig(
+            "rotation max entries must be greater than 0".to_string(),
+        ));
+    }
+    if config
+        .rotation_policy
+        .duration_of_journal_file
+        .is_some_and(|duration| duration.is_zero())
+    {
+        return Err(WriterError::InvalidConfig(
+            "rotation max duration must be greater than 0".to_string(),
+        ));
+    }
+    if config.retention_policy.number_of_journal_files == Some(0) {
+        return Err(WriterError::InvalidConfig(
+            "retention max files must be greater than 0".to_string(),
+        ));
+    }
+    if config.retention_policy.size_of_journal_files == Some(0) {
+        return Err(WriterError::InvalidConfig(
+            "retention max bytes must be greater than 0".to_string(),
+        ));
+    }
+    if config
+        .retention_policy
+        .duration_of_journal_files
+        .is_some_and(|duration| duration.is_zero())
+    {
+        return Err(WriterError::InvalidConfig(
+            "retention max age must be greater than 0".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Tracks rotation state for size and count limits.
@@ -233,6 +301,7 @@ impl ActiveFile {
 }
 
 pub struct Log {
+    configured_dir: PathBuf,
     chain: OwnedChain,
     config: Config,
     active_file: Option<ActiveFile>,
@@ -244,12 +313,25 @@ pub struct Log {
     clock: RealtimeClock,
     last_monotonic_usec: u64,
     lifecycle_observer: Option<Arc<dyn LogLifecycleObserver>>,
+    artifact_sizer: Option<Arc<dyn LogArtifactSizer>>,
     boot_id_field: Vec<u8>,
     source_realtime_field: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogLifecycleReason {
+    Append,
+    EagerOpen,
+    Rotation,
+    Retention,
+}
+
 #[derive(Debug, Clone)]
 pub enum LogLifecycleEvent {
+    Created {
+        active: repository::File,
+        reason: LogLifecycleReason,
+    },
     Rotated {
         archived: repository::File,
         active: repository::File,
@@ -261,6 +343,10 @@ pub enum LogLifecycleEvent {
 
 pub trait LogLifecycleObserver: Send + Sync {
     fn on_event(&self, event: &LogLifecycleEvent);
+}
+
+pub trait LogArtifactSizer: Send + Sync {
+    fn journal_artifact_size(&self, journal_path: &Path) -> Result<u64>;
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -325,6 +411,11 @@ impl Log {
     }
 
     fn apply_retention(&mut self, protected_file: Option<&repository::File>) -> Result<()> {
+        if let Some(sizer) = &self.artifact_sizer {
+            self.chain.refresh_retained_sizes(|file| {
+                sizer.journal_artifact_size(Path::new(file.path()))
+            })?;
+        }
         let retention = self
             .chain
             .retain(&self.config.retention_policy, protected_file);
@@ -374,10 +465,38 @@ impl Log {
 
     /// Creates a new journal log.
     pub fn new(path: &Path, config: Config) -> Result<Self> {
-        let mut chain = create_chain(path, config.origin.source.clone())?;
+        Self::new_inner(path, config, None, None)
+    }
+
+    pub fn new_with_lifecycle_observer(
+        path: &Path,
+        config: Config,
+        observer: Arc<dyn LogLifecycleObserver>,
+    ) -> Result<Self> {
+        Self::new_inner(path, config, Some(observer), None)
+    }
+
+    pub fn new_with_hooks(
+        path: &Path,
+        config: Config,
+        observer: Option<Arc<dyn LogLifecycleObserver>>,
+        artifact_sizer: Option<Arc<dyn LogArtifactSizer>>,
+    ) -> Result<Self> {
+        Self::new_inner(path, config, observer, artifact_sizer)
+    }
+
+    fn new_inner(
+        path: &Path,
+        config: Config,
+        lifecycle_observer: Option<Arc<dyn LogLifecycleObserver>>,
+        artifact_sizer: Option<Arc<dyn LogArtifactSizer>>,
+    ) -> Result<Self> {
+        validate_config(&config)?;
+        let machine_id = resolve_machine_id(&config)?;
+        let mut chain = create_chain(path, config.origin.source.clone(), machine_id)?;
 
         let tail_identity = chain.tail_identity(config.strict_systemd_naming)?;
-        let mut boot_id = load_boot_id()?;
+        let mut boot_id = resolve_boot_id(&config)?;
         let (mut seqnum_id, mut current_seqnum) =
             tail_identity.unwrap_or_else(|| (uuid::Uuid::new_v4(), 0));
         let mut active_file = None;
@@ -427,7 +546,8 @@ impl Log {
                 RealtimeClock::new()
             };
 
-        Ok(Log {
+        let mut log = Log {
+            configured_dir: path.to_path_buf(),
             chain,
             config,
             active_file,
@@ -438,14 +558,25 @@ impl Log {
             remapping_registry: FieldMap::new(),
             clock,
             last_monotonic_usec,
-            lifecycle_observer: None,
+            lifecycle_observer,
+            artifact_sizer,
             boot_id_field: format!("_BOOT_ID={}", boot_id.as_simple()).into_bytes(),
             source_realtime_field: Vec::with_capacity(SOURCE_REALTIME_PREFIX.len() + 20),
-        })
+        };
+        if log.config.open_mode == LogOpenMode::Eager && log.active_file.is_none() {
+            let realtime = log.peek_entry_realtime(&EntryTimestamps::default());
+            log.rotate(realtime, LogLifecycleReason::EagerOpen)?;
+        }
+        Ok(log)
     }
 
     pub fn with_lifecycle_observer(mut self, observer: Arc<dyn LogLifecycleObserver>) -> Self {
         self.lifecycle_observer = Some(observer);
+        self
+    }
+
+    pub fn with_artifact_sizer(mut self, sizer: Arc<dyn LogArtifactSizer>) -> Self {
+        self.artifact_sizer = Some(sizer);
         self
     }
 
@@ -484,7 +615,12 @@ impl Log {
 
         let entry_realtime = self.peek_entry_realtime(&timestamps);
         if self.should_rotate_for_realtime(entry_realtime) {
-            self.rotate(entry_realtime)?;
+            let reason = if self.active_file.is_none() {
+                LogLifecycleReason::Append
+            } else {
+                LogLifecycleReason::Rotation
+            };
+            self.rotate(entry_realtime, reason)?;
             self.remapping_registry.clear();
         }
 
@@ -762,6 +898,32 @@ impl Log {
             .map(|active_file| &active_file.repository_file)
     }
 
+    pub fn active_path(&self) -> Option<&Path> {
+        self.active_file
+            .as_ref()
+            .map(|active_file| Path::new(active_file.repository_file.path()))
+    }
+
+    pub fn configured_directory(&self) -> &Path {
+        &self.configured_dir
+    }
+
+    pub fn journal_directory(&self) -> &Path {
+        &self.chain.path
+    }
+
+    pub fn machine_id(&self) -> uuid::Uuid {
+        self.chain.machine_id
+    }
+
+    pub fn boot_id(&self) -> uuid::Uuid {
+        self.boot_id
+    }
+
+    pub fn source(&self) -> &journal_registry::Source {
+        &self.chain.source
+    }
+
     /// Applies the configured retention policy without requiring a rotation or
     /// close. The current active file is counted in retention envelopes and is
     /// protected from deletion.
@@ -779,7 +941,7 @@ impl Log {
     }
 
     #[tracing::instrument(skip_all, fields(active_file))]
-    fn rotate(&mut self, head_realtime: u64) -> Result<()> {
+    fn rotate(&mut self, head_realtime: u64, reason: LogLifecycleReason) -> Result<()> {
         use journal_core::file::JournalState;
 
         // Update chain with current file size before rotating
@@ -794,7 +956,7 @@ impl Log {
 
         // Create new file (either initial or rotated)
         let max_file_size = self.config.rotation_policy.size_of_journal_file;
-        let (new_file, rotation_event) = if let Some(mut old_file) = self.active_file.take() {
+        let (new_file, lifecycle_event) = if let Some(mut old_file) = self.active_file.take() {
             // Set the old file's state to ARCHIVED before creating successor
             old_file.journal_file.journal_header_mut().state = JournalState::Archived as u8;
             old_file.journal_file.sync()?;
@@ -823,20 +985,22 @@ impl Log {
                 Some(LogLifecycleEvent::Rotated { archived, active }),
             )
         } else {
+            let new_file = ActiveFile::create(
+                &mut self.chain,
+                self.seqnum_id,
+                self.boot_id,
+                self.current_seqnum + 1,
+                max_file_size,
+                head_realtime,
+                self.config.compression,
+                self.config.compression_threshold,
+                self.config.compact,
+                self.config.strict_systemd_naming,
+            )?;
+            let active = new_file.repository_file.clone();
             (
-                ActiveFile::create(
-                    &mut self.chain,
-                    self.seqnum_id,
-                    self.boot_id,
-                    self.current_seqnum + 1,
-                    max_file_size,
-                    head_realtime,
-                    self.config.compression,
-                    self.config.compression_threshold,
-                    self.config.compact,
-                    self.config.strict_systemd_naming,
-                )?,
-                None,
+                new_file,
+                Some(LogLifecycleEvent::Created { active, reason }),
             )
         };
 
@@ -850,7 +1014,7 @@ impl Log {
                 active_file.current_file_size(),
             );
         }
-        if let Some(event) = rotation_event
+        if let Some(event) = lifecycle_event
             && let Some(observer) = &self.lifecycle_observer
         {
             observer.on_event(&event);

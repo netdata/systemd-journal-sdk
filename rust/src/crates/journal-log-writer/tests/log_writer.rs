@@ -10,8 +10,9 @@ use journal_core::file::{
     HeaderIncompatibleFlags, JournalFile, JournalFileOptions, JournalWriter, Mmap, MmapMut,
 };
 use journal_log_writer::{
-    Config, EntryTimestamps, Log, LogLifecycleEvent, LogLifecycleObserver, RetentionPolicy,
-    RotationPolicy,
+    Config, EntryTimestamps, Log, LogArtifactSizer, LogIdentityMode, LogLifecycleEvent,
+    LogLifecycleObserver, LogLifecycleReason, LogOpenMode, RetentionPolicy, RotationPolicy,
+    WriterError,
 };
 use journal_registry::{Origin, repository::File};
 use std::fs;
@@ -144,6 +145,21 @@ impl LogLifecycleObserver for RecordingObserver {
     }
 }
 
+#[derive(Default)]
+struct FixedArtifactSizer {
+    calls: Mutex<Vec<PathBuf>>,
+}
+
+impl LogArtifactSizer for FixedArtifactSizer {
+    fn journal_artifact_size(&self, journal_path: &Path) -> journal_log_writer::Result<u64> {
+        self.calls
+            .lock()
+            .expect("lock artifact calls")
+            .push(journal_path.to_path_buf());
+        Ok(4096)
+    }
+}
+
 #[test]
 fn test_default_active_filename_uses_netdata_chain_naming() {
     let dir = TempDir::new().unwrap();
@@ -171,6 +187,103 @@ fn test_default_active_filename_uses_netdata_chain_naming() {
         !strict_path.exists(),
         "default naming must not create system.journal"
     );
+}
+
+#[test]
+fn test_open_identity_accessors_and_created_lifecycle_event() {
+    let dir = TempDir::new().unwrap();
+    let machine_id = uuid::Uuid::parse_str("00112233445566778899aabbccddeeff").unwrap();
+    let boot_id = uuid::Uuid::parse_str("ffeeddccbbaa99887766554433221100").unwrap();
+
+    let strict_missing_boot = Config::new(
+        Origin {
+            machine_id: Some(machine_id),
+            namespace: None,
+            source: journal_registry::Source::System,
+        },
+        RotationPolicy::default(),
+        RetentionPolicy::default(),
+    )
+    .with_identity_mode(LogIdentityMode::Strict);
+    let err = match Log::new(dir.path(), strict_missing_boot) {
+        Ok(_) => panic!("expected strict identity failure without boot id"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, WriterError::MachineId(_)));
+
+    let observer = Arc::new(RecordingObserver::default());
+    let config = Config::new(
+        Origin {
+            machine_id: Some(machine_id),
+            namespace: None,
+            source: journal_registry::Source::System,
+        },
+        RotationPolicy::default(),
+        RetentionPolicy::default(),
+    )
+    .with_identity_mode(LogIdentityMode::Strict)
+    .with_boot_id(boot_id)
+    .with_open_mode(LogOpenMode::Eager);
+    let log = Log::new_with_lifecycle_observer(dir.path(), config, observer.clone()).unwrap();
+
+    assert_eq!(log.configured_directory(), dir.path());
+    assert_eq!(
+        log.journal_directory(),
+        dir.path().join(machine_id.as_simple().to_string()).as_path()
+    );
+    assert_eq!(log.machine_id(), machine_id);
+    assert_eq!(log.boot_id(), boot_id);
+    assert!(matches!(log.source(), journal_registry::Source::System));
+    assert!(log.active_path().is_some());
+
+    let events = observer.events.lock().expect("lock observer events");
+    let created = events
+        .iter()
+        .find_map(|event| match event {
+            LogLifecycleEvent::Created { active, reason } => Some((active, reason)),
+            _ => None,
+        })
+        .expect("expected eager creation event");
+    assert_eq!(*created.1, LogLifecycleReason::EagerOpen);
+    assert_eq!(Some(Path::new(created.0.path())), log.active_path());
+}
+
+#[test]
+fn test_explicit_policy_zero_values_are_rejected() {
+    let dir = TempDir::new().unwrap();
+    let err = match Log::new(
+        dir.path(),
+        Config::new(
+            Origin {
+                machine_id: None,
+                namespace: None,
+                source: journal_registry::Source::System,
+            },
+            RotationPolicy::default().with_number_of_entries(0),
+            RetentionPolicy::default(),
+        ),
+    ) {
+        Ok(_) => panic!("expected rotation policy validation failure"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, WriterError::InvalidConfig(_)));
+
+    let err = match Log::new(
+        dir.path(),
+        Config::new(
+            Origin {
+                machine_id: None,
+                namespace: None,
+                source: journal_registry::Source::System,
+            },
+            RotationPolicy::default(),
+            RetentionPolicy::default().with_number_of_journal_files(0),
+        ),
+    ) {
+        Ok(_) => panic!("expected retention policy validation failure"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, WriterError::InvalidConfig(_)));
 }
 
 #[test]
@@ -1383,6 +1496,57 @@ fn test_lifecycle_observer_reports_rotation_and_retention_deletion() {
         "retained file should be gone from disk: {}",
         deleted_files[0].path()
     );
+}
+
+#[test]
+fn test_artifact_sizer_contributes_to_retention_bytes() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let config = Config::new(
+        Origin {
+            machine_id: None,
+            namespace: None,
+            source: journal_registry::Source::System,
+        },
+        RotationPolicy::default().with_number_of_entries(1),
+        RetentionPolicy::default().with_size_of_journal_files(1),
+    );
+    let observer = Arc::new(RecordingObserver::default());
+    let sizer = Arc::new(FixedArtifactSizer::default());
+    let mut log = Log::new(dir.path(), config)
+        .expect("create log")
+        .with_lifecycle_observer(observer.clone())
+        .with_artifact_sizer(sizer.clone());
+
+    log.write_entry(&[b"MESSAGE=artifact-retention-0"], None)
+        .expect("write first entry");
+    log.write_entry(&[b"MESSAGE=artifact-retention-1"], None)
+        .expect("write second entry");
+
+    assert!(
+        !sizer.calls.lock().expect("lock artifact calls").is_empty(),
+        "artifact sizer should be consulted during retention"
+    );
+    let events = observer.events.lock().expect("lock observer events");
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, LogLifecycleEvent::Created { .. })),
+        "first append should report active creation"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, LogLifecycleEvent::Rotated { .. })),
+        "second append should rotate"
+    );
+    let deleted = events
+        .iter()
+        .find_map(|event| match event {
+            LogLifecycleEvent::RetainedDeleted { files } => Some(files),
+            _ => None,
+        })
+        .expect("artifact-inclusive retention should delete old archive");
+    assert_eq!(deleted.len(), 1);
 }
 
 #[test]

@@ -13,6 +13,18 @@ const DEFAULT_MAX_FILES = 0;
 const DEFAULT_RETENTION_BYTES = 0;
 const DEFAULT_RETENTION_AGE_USEC = 0n;
 
+export const LOG_OPEN_LAZY = 'lazy';
+export const LOG_OPEN_EAGER = 'eager';
+export const LOG_IDENTITY_AUTO = 'auto';
+export const LOG_IDENTITY_STRICT = 'strict';
+export const LOG_LIFECYCLE_CREATED = 'created';
+export const LOG_LIFECYCLE_ROTATED = 'rotated';
+export const LOG_LIFECYCLE_DELETED = 'deleted';
+export const LOG_LIFECYCLE_REASON_APPEND = 'append';
+export const LOG_LIFECYCLE_REASON_EAGER_OPEN = 'eager_open';
+export const LOG_LIFECYCLE_REASON_ROTATION = 'rotation';
+export const LOG_LIFECYCLE_REASON_RETENTION = 'retention';
+
 export class Log {
   constructor(directory, options = {}) {
     if (!directory) throw new Error('invalid journal directory');
@@ -20,31 +32,61 @@ export class Log {
     this.source = options.source || 'system';
     validateJournalSource(this.source);
     this.strictSystemdNaming = options.strictSystemdNaming === true || options.strict_systemd_naming === true;
+    this.openMode = normalizeOpenMode(options);
+    this.identityMode = normalizeIdentityMode(options);
+    this.lifecycle = normalizeLifecycle(optionValue(options, 'lifecycle', 'lifecycleObserver', 'lifecycle_observer'));
+    this.lifecycleErrorHandler = optionValue(options, 'lifecycleErrorHandler', 'lifecycle_error_handler');
+    this.artifactSizer = normalizeArtifactSizer(optionValue(options, 'artifactSizer', 'artifact_sizer'));
+
+    const rotationPolicy = optionValue(options, 'rotationPolicy', 'rotation_policy');
+    const retentionPolicy = optionValue(options, 'retentionPolicy', 'retention_policy');
 
     // Rotation policy
-    this.maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
-    this.maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
-    this.maxDurationUsec = optionUsec(
-      options.maxDurationUsec ?? options.max_duration_usec,
-      DEFAULT_MAX_DURATION_USEC,
-    );
+    this.maxEntries = rotationPolicy
+      ? positiveOptionalNumber(optionValue(rotationPolicy, 'maxEntries', 'max_entries'), 'rotation max entries', DEFAULT_MAX_ENTRIES)
+      : options.maxEntries ?? options.max_entries ?? DEFAULT_MAX_ENTRIES;
+    this.maxBytes = rotationPolicy
+      ? positiveOptionalNumber(optionValue(rotationPolicy, 'maxBytes', 'maxFileSize', 'max_file_size', 'max_bytes'), 'rotation max file size', DEFAULT_MAX_BYTES)
+      : options.maxBytes ?? options.max_bytes ?? DEFAULT_MAX_BYTES;
+    this.maxDurationUsec = rotationPolicy
+      ? positiveOptionalUsec(optionValue(rotationPolicy, 'maxDurationUsec', 'maxDuration', 'max_duration_usec', 'max_duration'), 'rotation max duration', DEFAULT_MAX_DURATION_USEC)
+      : optionUsec(
+        options.maxDurationUsec ?? options.max_duration_usec,
+        DEFAULT_MAX_DURATION_USEC,
+      );
 
     // Retention policy
-    this.maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
-    this.maxRetentionBytes = options.maxRetentionBytes ?? DEFAULT_RETENTION_BYTES;
-    this.maxRetentionAgeUsec = optionUsec(
-      options.maxRetentionAgeUsec ?? options.max_retention_age_usec,
-      DEFAULT_RETENTION_AGE_USEC,
-    );
+    this.maxFiles = retentionPolicy
+      ? positiveOptionalNumber(optionValue(retentionPolicy, 'maxFiles', 'max_files'), 'retention max files', DEFAULT_MAX_FILES)
+      : options.maxFiles ?? options.max_files ?? DEFAULT_MAX_FILES;
+    this.maxRetentionBytes = retentionPolicy
+      ? positiveOptionalNumber(optionValue(retentionPolicy, 'maxBytes', 'maxRetentionBytes', 'max_bytes', 'max_retention_bytes'), 'retention max bytes', DEFAULT_RETENTION_BYTES)
+      : options.maxRetentionBytes ?? options.max_retention_bytes ?? DEFAULT_RETENTION_BYTES;
+    this.maxRetentionAgeUsec = retentionPolicy
+      ? positiveOptionalUsec(optionValue(retentionPolicy, 'maxAgeUsec', 'maxRetentionAgeUsec', 'maxAge', 'max_age_usec', 'max_retention_age_usec', 'max_age'), 'retention max age', DEFAULT_RETENTION_AGE_USEC)
+      : optionUsec(
+        options.maxRetentionAgeUsec ?? options.max_retention_age_usec,
+        DEFAULT_RETENTION_AGE_USEC,
+      );
 
     this.activePath = null;
     this.writer = null;
     this.closed = false;
     this._pathCounter = 0;
-    this.nextSeqnum = options.headSeqnum ? BigInt(options.headSeqnum) : 1n;
-    this.seqnumId = options.seqnumId ? Buffer.from(options.seqnumId) : randomUUID();
-    this.bootId = options.bootId ? Buffer.from(options.bootId) : null;
-    this.machineId = options.machineId ? Buffer.from(options.machineId) : readMachineId() || randomUUID();
+    this.lastRealtime = 0n;
+    this.lastMonotonic = 0n;
+    const headSeqnumOption = optionValue(options, 'headSeqnum', 'head_seqnum');
+    this.nextSeqnum = headSeqnumOption ? BigInt(headSeqnumOption) : 1n;
+    const seqnumIdOption = optionValue(options, 'seqnumId', 'seqnum_id');
+    const bootIdOption = optionValue(options, 'bootId', 'boot_id');
+    const machineIdOption = optionValue(options, 'machineId', 'machine_id');
+    if (this.identityMode === LOG_IDENTITY_STRICT) {
+      if (machineIdOption === undefined || machineIdOption === null) throw new Error('strict identity requires machine id');
+      if (bootIdOption === undefined || bootIdOption === null) throw new Error('strict identity requires boot id');
+    }
+    this.seqnumId = uuidOption(seqnumIdOption, 'seqnum id') || randomUUID();
+    this.bootId = uuidOption(bootIdOption, 'boot id');
+    this.machineId = uuidOption(machineIdOption, 'machine id') || readMachineId() || randomUUID();
     this.compression = options.compression ?? 'none';
     this.compressionThresholdBytes = options.compressionThresholdBytes;
     this.compact = options.compact === true || options.format === 'compact';
@@ -52,12 +94,17 @@ export class Log {
 
     this._ensureDirectory();
     const chainState = this._scanChainState();
-    if (options.headSeqnum === undefined && chainState.tailSeqnum > 0n) this.nextSeqnum = chainState.tailSeqnum + 1n;
-    if (!options.seqnumId && chainState.seqnumId) this.seqnumId = Buffer.from(chainState.seqnumId);
+    if (headSeqnumOption === undefined && chainState.tailSeqnum > 0n) this.nextSeqnum = chainState.tailSeqnum + 1n;
+    if (seqnumIdOption === undefined && chainState.seqnumId) this.seqnumId = Buffer.from(chainState.seqnumId);
+    this.lastRealtime = chainState.tailRealtime;
+    this.lastMonotonic = chainState.tailMonotonic;
     if (!this.strictSystemdNaming) {
       if (chainState.activePath) this.activePath = chainState.activePath;
     }
     this._findOrCreateActiveFile();
+    if (this.openMode === LOG_OPEN_EAGER && !this.writer) {
+      this._openWriter({ realtimeUsec: nowUsec() }, LOG_LIFECYCLE_REASON_EAGER_OPEN);
+    }
   }
 
   _ensureDirectory() {
@@ -76,10 +123,10 @@ export class Log {
       this._rotate(appendOptions);
     }
     if (!this.writer) {
-      this._openWriter(appendOptions);
+      this._openWriter(appendOptions, LOG_LIFECYCLE_REASON_APPEND);
     }
 
-    const result = this.writer.append(fields, appendOptions);
+    const result = this.writer.append(this._fieldsForAppend(fields, appendOptions), appendOptions);
     this._captureWriterIdentity();
     return result;
   }
@@ -117,11 +164,17 @@ export class Log {
     this.writer = null;
 
     this.activePath = this.strictSystemdNaming ? this._systemdActivePath() : null;
-    this._openWriter(options);
+    this._openWriter(options, LOG_LIFECYCLE_REASON_ROTATION);
+    this._emitLifecycle({
+      type: LOG_LIFECYCLE_ROTATED,
+      reason: LOG_LIFECYCLE_REASON_ROTATION,
+      archivedPath,
+      activePath: this.activePath,
+    });
     this._applyRetention(this.activePath);
   }
 
-  _openWriter(options = {}) {
+  _openWriter(options = {}, reason = LOG_LIFECYCLE_REASON_APPEND) {
     if (!this.activePath) {
       const headRealtime = optionUsec(options.realtimeUsec ?? options.realtime_usec, nowUsec());
       this.activePath = this._chainPathFor(this.seqnumId, this.nextSeqnum, headRealtime);
@@ -155,6 +208,13 @@ export class Log {
     if (this.machineId) opts.machineId = this.machineId;
     this.writer = Writer.create(this.activePath, opts);
     this._captureWriterIdentity();
+    if (reason !== LOG_LIFECYCLE_REASON_ROTATION) {
+      this._emitLifecycle({
+        type: LOG_LIFECYCLE_CREATED,
+        reason,
+        activePath: this.activePath,
+      });
+    }
   }
 
   _discardEmptyOpenedWriter() {
@@ -169,6 +229,8 @@ export class Log {
     this.bootId = Buffer.from(this.writer.bootId);
     this.machineId = Buffer.from(this.writer.header.machine_id);
     this.nextSeqnum = this.writer.nextSeqnum;
+    this.lastRealtime = this.writer.header.tail_entry_realtime;
+    this.lastMonotonic = this.writer.header.tail_entry_monotonic;
   }
 
   _systemdActivePath() {
@@ -193,6 +255,8 @@ export class Log {
       activePath: null,
       activeTailSeqnum: 0n,
       activeHeadRealtime: 0n,
+      tailRealtime: 0n,
+      tailMonotonic: 0n,
     };
     for (const name of readdirSync(this.directory)) {
       if (!parseArchivedJournalName(name, this.source)) continue;
@@ -202,6 +266,8 @@ export class Log {
         if (header.tail_entry_seqnum > state.tailSeqnum) {
           state.tailSeqnum = header.tail_entry_seqnum;
           state.seqnumId = Buffer.from(header.seqnum_id);
+          state.tailRealtime = header.tail_entry_realtime;
+          state.tailMonotonic = header.tail_entry_monotonic;
         }
         if (
           header.state === STATE_ONLINE &&
@@ -231,7 +297,7 @@ export class Log {
         archives.push({
           name: parsed.name,
           path: fullPath,
-          size: committedJournalSize(fullPath, stat.size),
+          size: this._retainedSize(fullPath, stat.size),
           headSeqnum: parsed.headSeqnum,
           headRealtime: parsed.headRealtime,
         });
@@ -254,20 +320,23 @@ export class Log {
     try {
       if (activePath && !activeInArchives) {
         const stat = statSync(activePath);
-        totalBytes += committedJournalSize(activePath, stat.size);
+        totalBytes += this._retainedSize(activePath, stat.size);
         activeExtraFile = true;
       }
     } catch {}
 
     // Remove excess files beyond maxFiles
     let fileCount = archives.length + (activeExtraFile ? 1 : 0);
+    const deletedPaths = [];
     while (this.maxFiles > 0 && fileCount > this.maxFiles) {
       const oldestIndex = archives.findIndex((archive) => !activePath || archive.path !== activePath);
       if (oldestIndex === -1) break;
       const [oldest] = archives.splice(oldestIndex, 1);
-      unlinkIfExists(oldest.path);
-      totalBytes = Math.max(0, totalBytes - oldest.size);
-      fileCount--;
+      if (unlinkIfExists(oldest.path)) {
+        totalBytes = Math.max(0, totalBytes - oldest.size);
+        fileCount--;
+        deletedPaths.push(oldest.path);
+      }
     }
 
     // Check active plus archived size and remove oldest archives if over maxRetentionBytes.
@@ -275,8 +344,10 @@ export class Log {
       const oldestIndex = archives.findIndex((archive) => !activePath || archive.path !== activePath);
       if (oldestIndex === -1) break;
       const [oldest] = archives.splice(oldestIndex, 1);
-      totalBytes = Math.max(0, totalBytes - oldest.size);
-      unlinkIfExists(oldest.path);
+      if (unlinkIfExists(oldest.path)) {
+        totalBytes = Math.max(0, totalBytes - oldest.size);
+        deletedPaths.push(oldest.path);
+      }
     }
     if (this.maxRetentionAgeUsec > 0n) {
       const cutoff = saturatingSubBigInt(nowUsec(), this.maxRetentionAgeUsec);
@@ -287,11 +358,20 @@ export class Log {
         });
         if (oldestIndex === -1) break;
         const [oldest] = archives.splice(oldestIndex, 1);
-        unlinkIfExists(oldest.path);
-        totalBytes = Math.max(0, totalBytes - oldest.size);
+        if (unlinkIfExists(oldest.path)) {
+          totalBytes = Math.max(0, totalBytes - oldest.size);
+          deletedPaths.push(oldest.path);
+        }
       }
     }
     syncDirectory(this.directory);
+    if (deletedPaths.length > 0) {
+      this._emitLifecycle({
+        type: LOG_LIFECYCLE_DELETED,
+        reason: LOG_LIFECYCLE_REASON_RETENTION,
+        deletedPaths,
+      });
+    }
   }
 
   enforceRetention() {
@@ -304,10 +384,58 @@ export class Log {
     if (appendOptions.realtimeUsec === undefined && appendOptions.realtime_usec !== undefined) {
       appendOptions.realtimeUsec = appendOptions.realtime_usec;
     }
+    if (appendOptions.monotonicUsec === undefined && appendOptions.monotonic_usec !== undefined) {
+      appendOptions.monotonicUsec = appendOptions.monotonic_usec;
+    }
+    if (appendOptions.sourceRealtimeUsec === undefined && appendOptions.source_realtime_usec !== undefined) {
+      appendOptions.sourceRealtimeUsec = appendOptions.source_realtime_usec;
+    }
     if (appendOptions.realtimeUsec === undefined || appendOptions.realtimeUsec === 0 || appendOptions.realtimeUsec === 0n) {
       appendOptions.realtimeUsec = nowUsec();
     }
+    appendOptions.realtimeUsec = BigInt(appendOptions.realtimeUsec);
+    if (appendOptions.realtimeUsec <= this.lastRealtime) {
+      appendOptions.realtimeUsec = this.lastRealtime + 1n;
+    }
+    if (appendOptions.monotonicUsec !== undefined && appendOptions.monotonicUsec !== 0 && appendOptions.monotonicUsec !== 0n) {
+      appendOptions.monotonicUsec = BigInt(appendOptions.monotonicUsec);
+      if (appendOptions.monotonicUsec <= this.lastMonotonic) {
+        appendOptions.monotonicUsec = this.lastMonotonic + 1n;
+      }
+    }
     return appendOptions;
+  }
+
+  _fieldsForAppend(fields, options) {
+    const sourceRealtime = options.sourceRealtimeUsec;
+    if (sourceRealtime === undefined || sourceRealtime === null || sourceRealtime === 0 || sourceRealtime === 0n) {
+      return fields;
+    }
+    return [
+      ...fields,
+      { name: '_SOURCE_REALTIME_TIMESTAMP', value: Buffer.from(String(BigInt(sourceRealtime)), 'utf8') },
+    ];
+  }
+
+  _retainedSize(path, fallback) {
+    const journalSize = committedJournalSize(path, fallback);
+    if (!this.artifactSizer) return journalSize;
+    const artifactSize = this.artifactSizer(path);
+    if (artifactSize === undefined || artifactSize === null) return journalSize;
+    const value = Number(artifactSize);
+    if (!Number.isFinite(value) || value < 0) throw new Error('artifact size must be a non-negative finite number');
+    return journalSize + value;
+  }
+
+  _emitLifecycle(event) {
+    if (!this.lifecycle) return;
+    try {
+      this.lifecycle(event);
+    } catch (error) {
+      if (typeof this.lifecycleErrorHandler === 'function') {
+        this.lifecycleErrorHandler(error, event);
+      }
+    }
   }
 
   sync() {
@@ -358,8 +486,32 @@ export class Log {
     return this.activePath || this._chainPathFor(this.seqnumId, this.nextSeqnum, 0n);
   }
 
+  activeFilePath() {
+    return this.activePath || '';
+  }
+
+  activeJournalPath() {
+    return this.activeFilePath();
+  }
+
   journalDirectory() {
     return this.directory;
+  }
+
+  configuredDirectory() {
+    return this.rootDirectory;
+  }
+
+  machineID() {
+    return Buffer.from(this.machineId);
+  }
+
+  bootID() {
+    return this.bootId ? Buffer.from(this.bootId) : null;
+  }
+
+  sourceName() {
+    return this.source;
   }
 }
 
@@ -424,8 +576,10 @@ function align8BigInt(value) {
 function unlinkIfExists(path) {
   try {
     unlinkSync(path);
+    return true;
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error;
+    return false;
   }
 }
 
@@ -456,6 +610,74 @@ function nowUsec() {
 function optionUsec(value, fallback) {
   if (value === undefined || value === null) return BigInt(fallback);
   return BigInt(value);
+}
+
+function optionValue(object, ...names) {
+  for (const name of names) {
+    if (Object.prototype.hasOwnProperty.call(object, name)) return object[name];
+  }
+  return undefined;
+}
+
+function normalizeOpenMode(options) {
+  let value = optionValue(options, 'openMode', 'open_mode');
+  if (value === undefined && (options.eagerOpen === true || options.eager_open === true)) value = LOG_OPEN_EAGER;
+  if (value === undefined || value === null || value === '') return LOG_OPEN_LAZY;
+  value = String(value).toLowerCase();
+  if (value === LOG_OPEN_LAZY || value === LOG_OPEN_EAGER) return value;
+  throw new Error(`unsupported log open mode: ${value}`);
+}
+
+function normalizeIdentityMode(options) {
+  let value = optionValue(options, 'identityMode', 'identity_mode');
+  if (value === undefined || value === null || value === '') return LOG_IDENTITY_AUTO;
+  value = String(value).toLowerCase();
+  if (value === LOG_IDENTITY_AUTO || value === LOG_IDENTITY_STRICT) return value;
+  throw new Error(`unsupported log identity mode: ${value}`);
+}
+
+function uuidOption(value, label) {
+  if (value === undefined || value === null) return null;
+  let out;
+  if (typeof value === 'string') {
+    const clean = value.trim().replaceAll('-', '');
+    if (!/^[0-9a-fA-F]{32}$/.test(clean)) throw new Error(`${label} must be 16 bytes or 32 hex characters`);
+    out = stringToUUID(clean);
+  } else {
+    out = Buffer.from(value);
+  }
+  if (out.length !== 16) throw new Error(`${label} must be 16 bytes or 32 hex characters`);
+  return out;
+}
+
+function positiveOptionalNumber(value, label, fallback) {
+  if (value === undefined || value === null) return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) throw new Error(`${label} must be greater than 0`);
+  return number;
+}
+
+function positiveOptionalUsec(value, label, fallback) {
+  if (value === undefined || value === null) return BigInt(fallback);
+  const usec = BigInt(value);
+  if (usec <= 0n) throw new Error(`${label} must be greater than 0`);
+  return usec;
+}
+
+function normalizeLifecycle(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'function') return value;
+  if (typeof value.onLogLifecycleEvent === 'function') return (event) => value.onLogLifecycleEvent(event);
+  if (typeof value.onLifecycleEvent === 'function') return (event) => value.onLifecycleEvent(event);
+  throw new Error('lifecycle must be a function or observer object');
+}
+
+function normalizeArtifactSizer(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'function') return value;
+  if (typeof value.journalArtifactSize === 'function') return (path) => value.journalArtifactSize(path);
+  if (typeof value.JournalArtifactSize === 'function') return (path) => value.JournalArtifactSize(path);
+  throw new Error('artifact sizer must be a function or provider object');
 }
 
 function saturatingSubBigInt(value, amount) {

@@ -210,6 +210,34 @@ Current Go writer feature slice:
   sealed files;
 - live one-writer/multiple-reader compatibility with stock `journalctl --file` and stock libsystemd readers for the current writer slice.
 
+Current shared high-level directory writer API slice:
+
+- Rust, Go, Node.js, and Python expose lazy open by default and an eager open
+  mode that creates or opens the active journal file during construction.
+- Rust, Go, Node.js, and Python expose a strict identity mode requiring
+  explicit machine ID and boot ID; default identity mode uses explicit IDs when
+  provided, otherwise host/random fallback where the language implementation
+  can do so without linking to journald.
+- Rust, Go, Node.js, and Python expose configured-root, effective machine-id
+  journal directory, active path, machine ID, boot ID, and source-prefix
+  accessors on the high-level directory writer.
+- Rust, Go, Node.js, and Python lifecycle observers/callbacks report active
+  file creation, archive/rotation, and retention deletion with concrete journal
+  paths. Callback failures are best-effort and do not roll back completed
+  journal operations by default.
+- Rust, Go, Node.js, and Python support artifact-size providers/callbacks so
+  consumer-owned per-journal sidecar bytes are included in size-based retention
+  decisions. Missing artifacts should be reported by returning zero; unexpected
+  provider errors abort retention where the API can surface the error.
+- Rust, Go, Node.js, and Python high-level append paths support source realtime
+  injection through `_SOURCE_REALTIME_TIMESTAMP` and clamp non-progressing
+  realtime / non-zero monotonic overrides forward to preserve strict journal
+  ordering.
+- Rust, Go, Node.js, and Python reject explicitly enabled zero policy limits in
+  the newer optional-policy API surface. Existing Node.js and Python legacy
+  numeric `max* = 0` options remain accepted as disabled-limit compatibility
+  aliases until their public package stability policy is finalized.
+
 ## Reader Target
 
 Readers must support applicable historical journal files represented by the shared fixture suite, including corrupted fixture behavior where the expected result is a controlled error or partial recovery.

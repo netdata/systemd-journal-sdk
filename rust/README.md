@@ -117,6 +117,17 @@ Call `Log::enforce_retention()` to apply age/count/byte retention without
 waiting for another append-triggered rotation or close. Call `Log::close()` to
 archive the current file and enforce retention; `Drop` only performs best-effort
 state persistence.
+Use `Config::with_open_mode(LogOpenMode::Eager)` to create/open the active file
+during construction, and `Config::with_identity_mode(LogIdentityMode::Strict)`
+plus `Origin.machine_id` and `Config::with_boot_id()` to require explicit
+identity. `Log::configured_directory()`, `Log::journal_directory()`,
+`Log::active_path()`, `Log::machine_id()`, `Log::boot_id()`, and
+`Log::source()` expose the same directory/identity contract as the other SDKs.
+Lifecycle observers receive `Created`, `Rotated`, and `RetainedDeleted` events;
+`Log::with_artifact_sizer()` includes per-journal sidecar bytes in retained-size
+decisions. `write_entry_with_timestamps()` accepts
+`EntryTimestamps::source_realtime_usec` for `_SOURCE_REALTIME_TIMESTAMP`
+injection and clamps non-progressing realtime and monotonic overrides forward.
 
 Binary-safe values:
 

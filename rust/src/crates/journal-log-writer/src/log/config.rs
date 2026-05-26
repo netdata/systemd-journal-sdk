@@ -1,6 +1,30 @@
 use journal_core::file::Compression;
 use journal_registry::Origin;
 use std::time::Duration;
+use uuid::Uuid;
+
+/// Controls whether [`Log`](crate::Log) creates or opens the active file at
+/// construction time or waits for the first append.
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+pub enum LogOpenMode {
+    /// Validate and scan the directory during construction, then create the
+    /// active journal file on the first append.
+    #[default]
+    Lazy,
+    /// Create or open the active journal file during construction.
+    Eager,
+}
+
+/// Controls how missing machine and boot identities are handled.
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+pub enum LogIdentityMode {
+    /// Use explicit IDs when provided, otherwise load host IDs and generate
+    /// missing IDs as a final fallback.
+    #[default]
+    Auto,
+    /// Require explicit machine ID and boot ID in the config.
+    Strict,
+}
 
 /// Controls when journal files should be rotated
 ///
@@ -84,6 +108,12 @@ pub struct Config {
     pub compression_threshold: usize,
     /// Use the systemd compact journal on-disk layout.
     pub compact: bool,
+    /// Active-file creation mode.
+    pub open_mode: LogOpenMode,
+    /// Missing identity handling mode.
+    pub identity_mode: LogIdentityMode,
+    /// Optional boot ID override for new files and strict identity mode.
+    pub boot_id: Option<Uuid>,
     /// Use systemd's `<source>.journal` active filename policy.
     ///
     /// The default is false so the high-level writer matches the Netdata
@@ -106,6 +136,9 @@ impl Config {
             compression: Compression::None,
             compression_threshold: 64,
             compact: false,
+            open_mode: LogOpenMode::Lazy,
+            identity_mode: LogIdentityMode::Auto,
+            boot_id: None,
             strict_systemd_naming: false,
         }
     }
@@ -134,6 +167,21 @@ impl Config {
 
     pub fn with_compact(mut self, compact: bool) -> Self {
         self.compact = compact;
+        self
+    }
+
+    pub fn with_open_mode(mut self, open_mode: LogOpenMode) -> Self {
+        self.open_mode = open_mode;
+        self
+    }
+
+    pub fn with_identity_mode(mut self, identity_mode: LogIdentityMode) -> Self {
+        self.identity_mode = identity_mode;
+        self
+    }
+
+    pub fn with_boot_id(mut self, boot_id: Uuid) -> Self {
+        self.boot_id = Some(boot_id);
         self
     }
 

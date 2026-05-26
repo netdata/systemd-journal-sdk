@@ -4,7 +4,14 @@
 import { FileReader } from './lib/reader.js';
 import { DirectoryReader } from './lib/directory-reader.js';
 import { Writer } from './lib/writer.js';
-import { Log } from './lib/directory-writer.js';
+import {
+  Log,
+  LOG_OPEN_LAZY, LOG_OPEN_EAGER,
+  LOG_IDENTITY_AUTO, LOG_IDENTITY_STRICT,
+  LOG_LIFECYCLE_CREATED, LOG_LIFECYCLE_ROTATED, LOG_LIFECYCLE_DELETED,
+  LOG_LIFECYCLE_REASON_APPEND, LOG_LIFECYCLE_REASON_EAGER_OPEN,
+  LOG_LIFECYCLE_REASON_ROTATION, LOG_LIFECYCLE_REASON_RETENTION,
+} from './lib/directory-writer.js';
 import {
   SdJournal, SdJournalOpen, SdJournalOpenDirectory,
   SdJournalAddMatch, SdJournalAddDisjunction, SdJournalAddConjunction,
@@ -19,6 +26,13 @@ import { parseMatchString } from './lib/hash.js';
 
 // Re-export everything
 export { FileReader, DirectoryReader, Writer, Log };
+export {
+  LOG_OPEN_LAZY, LOG_OPEN_EAGER,
+  LOG_IDENTITY_AUTO, LOG_IDENTITY_STRICT,
+  LOG_LIFECYCLE_CREATED, LOG_LIFECYCLE_ROTATED, LOG_LIFECYCLE_DELETED,
+  LOG_LIFECYCLE_REASON_APPEND, LOG_LIFECYCLE_REASON_EAGER_OPEN,
+  LOG_LIFECYCLE_REASON_ROTATION, LOG_LIFECYCLE_REASON_RETENTION,
+} from './lib/directory-writer.js';
 export { FilterBuilder } from './lib/reader.js';
 export {
   SdJournal, SdJournalOpen, SdJournalOpenDirectory,
@@ -66,4 +80,9 @@ export default {
   FileReader, DirectoryReader, Writer, Log,
   SdJournal, SdJournalOpen, SdJournalOpenDirectory,
   openJournal, createJournal, stringField, binaryField,
+  LOG_OPEN_LAZY, LOG_OPEN_EAGER,
+  LOG_IDENTITY_AUTO, LOG_IDENTITY_STRICT,
+  LOG_LIFECYCLE_CREATED, LOG_LIFECYCLE_ROTATED, LOG_LIFECYCLE_DELETED,
+  LOG_LIFECYCLE_REASON_APPEND, LOG_LIFECYCLE_REASON_EAGER_OPEN,
+  LOG_LIFECYCLE_REASON_ROTATION, LOG_LIFECYCLE_REASON_RETENTION,
 };

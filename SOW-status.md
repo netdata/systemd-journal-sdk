@@ -2,7 +2,7 @@
 
 ## Current
 
-- `SOW-0023-20260525-netdata-ingestion-writer-api.md` - in-progress. Implementing the cross-language Netdata ingestion writer API superset needed by NetFlow, OTEL logs, and SNMP traps integration. Current verified slice aligns high-level writer naming, chain resume identity, strict naming sequence continuity, committed-byte retention accounting, duration rotation, age retention, explicit retention enforcement, active/current retention protection, empty-active crash recovery, and rotation/archive retry cleanup across Rust, Go, Node.js, and Python. Active slice is Go API stabilization for external Netdata integration: eager open, strict identity, public path accessors, lifecycle callbacks, artifact-size retention accounting, source realtime injection, optional policy semantics, and a `go/v0.1.0` API contract.
+- `SOW-0023-20260525-netdata-ingestion-writer-api.md` - in-progress. Implementing the cross-language Netdata ingestion writer API superset needed by NetFlow, OTEL logs, and SNMP traps integration. Verified slices align high-level writer naming, chain resume identity, strict naming sequence continuity, committed-byte retention accounting, duration rotation, age retention, explicit retention enforcement, active/current retention protection, empty-active crash recovery, rotation/archive retry cleanup, and the tagged Go `go/v0.1.0` API contract across Rust, Go, Node.js, and Python. Remaining work is strict/default migration polish, automatic Netdata/OTEL field-name remapping, and final cross-language API polish.
 
 ## Pending
 

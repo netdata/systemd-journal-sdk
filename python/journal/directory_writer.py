@@ -16,6 +16,18 @@ DEFAULT_MAX_FILES = 0
 DEFAULT_RETENTION_BYTES = 0
 DEFAULT_RETENTION_AGE_USEC = 0
 
+LOG_OPEN_LAZY = 'lazy'
+LOG_OPEN_EAGER = 'eager'
+LOG_IDENTITY_AUTO = 'auto'
+LOG_IDENTITY_STRICT = 'strict'
+LOG_LIFECYCLE_CREATED = 'created'
+LOG_LIFECYCLE_ROTATED = 'rotated'
+LOG_LIFECYCLE_DELETED = 'deleted'
+LOG_LIFECYCLE_REASON_APPEND = 'append'
+LOG_LIFECYCLE_REASON_EAGER_OPEN = 'eager_open'
+LOG_LIFECYCLE_REASON_ROTATION = 'rotation'
+LOG_LIFECYCLE_REASON_RETENTION = 'retention'
+
 
 class Log:
     def __init__(self, path, config=None):
@@ -29,25 +41,77 @@ class Log:
             config.get('strict_systemd_naming') is True or
             config.get('strictSystemdNaming') is True
         )
+        self._open_mode = _normalize_open_mode(config)
+        self._identity_mode = _normalize_identity_mode(config)
+        self._lifecycle = _normalize_lifecycle(_option(config, 'lifecycle', 'lifecycle_observer', 'lifecycleObserver'))
+        self._lifecycle_error_handler = _option(config, 'lifecycle_error_handler', 'lifecycleErrorHandler')
+        self._artifact_sizer = _normalize_artifact_sizer(_option(config, 'artifact_sizer', 'artifactSizer'))
 
-        self._max_entries = config.get('max_entries', DEFAULT_MAX_ENTRIES)
-        self._max_bytes = config.get('max_bytes', DEFAULT_MAX_BYTES)
-        self._max_duration_usec = int(
-            config.get('max_duration_usec', config.get('maxDurationUsec', DEFAULT_MAX_DURATION_USEC))
-        )
-        self._max_files = config.get('max_files', DEFAULT_MAX_FILES)
-        self._max_retention_bytes = config.get('max_retention_bytes', DEFAULT_RETENTION_BYTES)
-        self._max_retention_age_usec = int(
-            config.get(
-                'max_retention_age_usec',
-                config.get('maxRetentionAgeUsec', DEFAULT_RETENTION_AGE_USEC),
+        rotation_policy = _option(config, 'rotation_policy', 'rotationPolicy')
+        retention_policy = _option(config, 'retention_policy', 'retentionPolicy')
+
+        if rotation_policy is not None:
+            self._max_entries = _positive_optional_number(
+                _option(rotation_policy, 'max_entries', 'maxEntries'),
+                'rotation max entries',
+                DEFAULT_MAX_ENTRIES,
             )
-        )
+            self._max_bytes = _positive_optional_number(
+                _option(rotation_policy, 'max_bytes', 'maxBytes', 'max_file_size', 'maxFileSize'),
+                'rotation max file size',
+                DEFAULT_MAX_BYTES,
+            )
+            self._max_duration_usec = _positive_optional_number(
+                _option(rotation_policy, 'max_duration_usec', 'maxDurationUsec', 'max_duration', 'maxDuration'),
+                'rotation max duration',
+                DEFAULT_MAX_DURATION_USEC,
+            )
+        else:
+            self._max_entries = config.get('max_entries', config.get('maxEntries', DEFAULT_MAX_ENTRIES))
+            self._max_bytes = config.get('max_bytes', config.get('maxBytes', DEFAULT_MAX_BYTES))
+            self._max_duration_usec = int(
+                config.get('max_duration_usec', config.get('maxDurationUsec', DEFAULT_MAX_DURATION_USEC))
+            )
 
-        self._next_seqnum = int(config.get('head_seqnum', 1))
-        self._seqnum_id = _uuid_from_config(config.get('seqnum_id')) or random_uuid()
-        self._boot_id = _uuid_from_config(config.get('boot_id'))
-        self._machine_id = _uuid_from_config(config.get('machine_id')) or _read_machine_id() or random_uuid()
+        if retention_policy is not None:
+            self._max_files = _positive_optional_number(
+                _option(retention_policy, 'max_files', 'maxFiles'),
+                'retention max files',
+                DEFAULT_MAX_FILES,
+            )
+            self._max_retention_bytes = _positive_optional_number(
+                _option(retention_policy, 'max_bytes', 'maxBytes', 'max_retention_bytes', 'maxRetentionBytes'),
+                'retention max bytes',
+                DEFAULT_RETENTION_BYTES,
+            )
+            self._max_retention_age_usec = _positive_optional_number(
+                _option(retention_policy, 'max_age_usec', 'maxAgeUsec', 'max_retention_age_usec', 'maxRetentionAgeUsec', 'max_age', 'maxAge'),
+                'retention max age',
+                DEFAULT_RETENTION_AGE_USEC,
+            )
+        else:
+            self._max_files = config.get('max_files', config.get('maxFiles', DEFAULT_MAX_FILES))
+            self._max_retention_bytes = config.get('max_retention_bytes', config.get('maxRetentionBytes', DEFAULT_RETENTION_BYTES))
+            self._max_retention_age_usec = int(
+                config.get(
+                    'max_retention_age_usec',
+                    config.get('maxRetentionAgeUsec', DEFAULT_RETENTION_AGE_USEC),
+                )
+            )
+
+        head_seqnum_option = _option(config, 'head_seqnum', 'headSeqnum')
+        seqnum_id_option = _option(config, 'seqnum_id', 'seqnumId')
+        boot_id_option = _option(config, 'boot_id', 'bootId')
+        machine_id_option = _option(config, 'machine_id', 'machineId')
+        if self._identity_mode == LOG_IDENTITY_STRICT:
+            if machine_id_option is None:
+                raise ValueError('strict identity requires machine id')
+            if boot_id_option is None:
+                raise ValueError('strict identity requires boot id')
+        self._next_seqnum = int(head_seqnum_option or 1)
+        self._seqnum_id = _uuid_from_config(seqnum_id_option) or random_uuid()
+        self._boot_id = _uuid_from_config(boot_id_option)
+        self._machine_id = _uuid_from_config(machine_id_option) or _read_machine_id() or random_uuid()
         self._compression = config.get('compression', 'none')
         self._compression_threshold_bytes = config.get('compression_threshold_bytes')
         self._compact = config.get('compact') is True or config.get('format') == 'compact'
@@ -55,18 +119,24 @@ class Log:
         self._active_file = self._systemd_active_path() if self._strict_systemd_naming else None
         self._active_writer = None
         self._closed = False
+        self._last_realtime = 0
+        self._last_monotonic = 0
 
         os.makedirs(self._journal_dir, exist_ok=True)
         chain_state = self._scan_chain_state()
-        if 'head_seqnum' not in config and chain_state['tail_seqnum'] > 0:
+        if head_seqnum_option is None and chain_state['tail_seqnum'] > 0:
             self._next_seqnum = chain_state['tail_seqnum'] + 1
-        if 'seqnum_id' not in config and chain_state['seqnum_id'] is not None:
+        if seqnum_id_option is None and chain_state['seqnum_id'] is not None:
             self._seqnum_id = chain_state['seqnum_id']
+        self._last_realtime = chain_state['tail_realtime']
+        self._last_monotonic = chain_state['tail_monotonic']
         if not self._strict_systemd_naming:
             if chain_state['active_file'] is not None:
                 self._active_file = chain_state['active_file']
+        if self._open_mode == LOG_OPEN_EAGER and self._active_writer is None:
+            self._open_writer({'realtime_usec': int(time.time() * 1_000_000)}, LOG_LIFECYCLE_REASON_EAGER_OPEN)
 
-    def _open_writer(self, opts=None):
+    def _open_writer(self, opts=None, reason=LOG_LIFECYCLE_REASON_APPEND):
         opts = opts or {}
         if self._active_writer:
             return
@@ -100,6 +170,13 @@ class Log:
                 opts['boot_id'] = self._boot_id
             self._active_writer = Writer.create(self._active_file, opts)
         self._capture_writer_identity()
+        if reason != LOG_LIFECYCLE_REASON_ROTATION:
+            self._emit_lifecycle({
+                'type': LOG_LIFECYCLE_CREATED,
+                'reason': reason,
+                'active_path': self._active_file,
+                'activePath': self._active_file,
+            })
 
     def _discard_empty_opened_writer(self):
         self._active_writer.close()
@@ -117,6 +194,8 @@ class Log:
         self._seqnum_id = h['seqnum_id']
         self._boot_id = self._active_writer._boot_id
         self._machine_id = h['machine_id']
+        self._last_realtime = h['tail_entry_realtime']
+        self._last_monotonic = h['tail_entry_monotonic']
 
     def append(self, fields, opts=None):
         if self._closed:
@@ -127,7 +206,7 @@ class Log:
         if self._active_writer and self._should_rotate(opts['realtime_usec']):
             self._rotate(opts)
         self._open_writer(opts)
-        result = self._active_writer.append(fields, opts)
+        result = self._active_writer.append(self._fields_for_append(fields, opts), opts)
         self._capture_writer_identity()
         return result
 
@@ -160,7 +239,15 @@ class Log:
             raise
         self._active_writer = None
         self._active_file = self._systemd_active_path() if self._strict_systemd_naming else None
-        self._open_writer(opts)
+        self._open_writer(opts, LOG_LIFECYCLE_REASON_ROTATION)
+        self._emit_lifecycle({
+            'type': LOG_LIFECYCLE_ROTATED,
+            'reason': LOG_LIFECYCLE_REASON_ROTATION,
+            'archived_path': archive_path,
+            'archivedPath': archive_path,
+            'active_path': self._active_file,
+            'activePath': self._active_file,
+        })
         self._apply_retention(self._active_file)
 
     def _archive_path_for(self, header):
@@ -187,6 +274,8 @@ class Log:
             'active_file': None,
             'active_tail_seqnum': 0,
             'active_head_realtime': 0,
+            'tail_realtime': 0,
+            'tail_monotonic': 0,
         }
         for name in os.listdir(self._journal_dir):
             if _parse_archive_name(name, self._source) is None:
@@ -200,6 +289,8 @@ class Log:
             if int(header['tail_entry_seqnum']) > state['tail_seqnum']:
                 state['tail_seqnum'] = int(header['tail_entry_seqnum'])
                 state['seqnum_id'] = header['seqnum_id']
+                state['tail_realtime'] = int(header['tail_entry_realtime'])
+                state['tail_monotonic'] = int(header['tail_entry_monotonic'])
             if (
                 header['state'] == STATE_ONLINE and
                 (
@@ -229,7 +320,7 @@ class Log:
                 continue
             archives.append({
                 'path': path,
-                'size': _committed_journal_size(path, stat.st_size),
+                'size': self._retained_size(path, stat.st_size),
                 'head_seqnum': parsed['head_seqnum'],
                 'head_realtime': parsed['head_realtime'],
             })
@@ -245,12 +336,13 @@ class Log:
         active_extra_file = False
         try:
             if active_file and not active_in_archives:
-                total_bytes += _committed_journal_size(active_file, os.stat(active_file).st_size)
+                total_bytes += self._retained_size(active_file, os.stat(active_file).st_size)
                 active_extra_file = True
         except FileNotFoundError:
             pass
 
         file_count = len(archives) + (1 if active_extra_file else 0)
+        deleted_paths = []
         while self._max_files > 0 and file_count > self._max_files:
             delete_index = next((idx for idx, file in enumerate(archives)
                                  if not active_file or file['path'] != active_file), None)
@@ -259,6 +351,7 @@ class Log:
             oldest = archives.pop(delete_index)
             try:
                 os.unlink(oldest['path'])
+                deleted_paths.append(oldest['path'])
                 total_bytes = max(0, total_bytes - oldest['size'])
                 file_count -= 1
             except FileNotFoundError:
@@ -272,6 +365,7 @@ class Log:
             oldest = archives.pop(delete_index)
             try:
                 os.unlink(oldest['path'])
+                deleted_paths.append(oldest['path'])
                 total_bytes = max(0, total_bytes - oldest['size'])
             except FileNotFoundError:
                 pass
@@ -287,11 +381,19 @@ class Log:
                 oldest = archives.pop(delete_index)
                 try:
                     os.unlink(oldest['path'])
+                    deleted_paths.append(oldest['path'])
                     total_bytes = max(0, total_bytes - oldest['size'])
                 except FileNotFoundError:
                     pass
 
         _sync_directory(self._journal_dir)
+        if deleted_paths:
+            self._emit_lifecycle({
+                'type': LOG_LIFECYCLE_DELETED,
+                'reason': LOG_LIFECYCLE_REASON_RETENTION,
+                'deleted_paths': deleted_paths,
+                'deletedPaths': deleted_paths,
+            })
 
     def enforce_retention(self):
         if self._closed:
@@ -302,9 +404,50 @@ class Log:
         effective = dict(opts or {})
         if 'realtimeUsec' in effective and 'realtime_usec' not in effective:
             effective['realtime_usec'] = effective['realtimeUsec']
+        if 'monotonicUsec' in effective and 'monotonic_usec' not in effective:
+            effective['monotonic_usec'] = effective['monotonicUsec']
+        if 'sourceRealtimeUsec' in effective and 'source_realtime_usec' not in effective:
+            effective['source_realtime_usec'] = effective['sourceRealtimeUsec']
         if not effective.get('realtime_usec'):
             effective['realtime_usec'] = int(time.time() * 1_000_000)
+        effective['realtime_usec'] = int(effective['realtime_usec'])
+        if effective['realtime_usec'] <= self._last_realtime:
+            effective['realtime_usec'] = self._last_realtime + 1
+        if effective.get('monotonic_usec'):
+            effective['monotonic_usec'] = int(effective['monotonic_usec'])
+            if effective['monotonic_usec'] <= self._last_monotonic:
+                effective['monotonic_usec'] = self._last_monotonic + 1
         return effective
+
+    def _fields_for_append(self, fields, opts):
+        source_realtime = opts.get('source_realtime_usec')
+        if not source_realtime:
+            return fields
+        return list(fields) + [{
+            'name': '_SOURCE_REALTIME_TIMESTAMP',
+            'value': str(int(source_realtime)),
+        }]
+
+    def _retained_size(self, path, fallback):
+        size = _committed_journal_size(path, fallback)
+        if self._artifact_sizer is None:
+            return size
+        artifact_size = self._artifact_sizer(path)
+        if artifact_size is None:
+            return size
+        artifact_size = int(artifact_size)
+        if artifact_size < 0:
+            raise ValueError('artifact size must be non-negative')
+        return size + artifact_size
+
+    def _emit_lifecycle(self, event):
+        if self._lifecycle is None:
+            return
+        try:
+            self._lifecycle(event)
+        except Exception as error:
+            if callable(self._lifecycle_error_handler):
+                self._lifecycle_error_handler(error, event)
 
     def sync(self):
         if self._closed:
@@ -353,8 +496,26 @@ class Log:
     def active_file(self):
         return self._active_file or self._chain_path_for(self._seqnum_id, self._next_seqnum, 0)
 
+    def active_file_path(self):
+        return self._active_file or ''
+
+    def active_journal_path(self):
+        return self.active_file_path()
+
     def journal_directory(self):
         return self._journal_dir
+
+    def configured_directory(self):
+        return self._root_path
+
+    def machine_id(self):
+        return self._machine_id
+
+    def boot_id(self):
+        return self._boot_id
+
+    def source_name(self):
+        return self._source
 
 
 def _validate_journal_source(source):
@@ -363,6 +524,72 @@ def _validate_journal_source(source):
     for ch in source:
         if not (ch.isascii() and (ch.isalnum() or ch in '_.-')):
             raise ValueError('invalid journal source')
+
+
+def _option(mapping, *names):
+    for name in names:
+        if name in mapping:
+            return mapping[name]
+    return None
+
+
+def _normalize_open_mode(config):
+    value = _option(config, 'open_mode', 'openMode')
+    if value is None and (config.get('eager_open') is True or config.get('eagerOpen') is True):
+        value = LOG_OPEN_EAGER
+    if value in (None, ''):
+        return LOG_OPEN_LAZY
+    value = str(value).lower()
+    if value in (LOG_OPEN_LAZY, LOG_OPEN_EAGER):
+        return value
+    raise ValueError(f'unsupported log open mode: {value}')
+
+
+def _normalize_identity_mode(config):
+    value = _option(config, 'identity_mode', 'identityMode')
+    if value in (None, ''):
+        return LOG_IDENTITY_AUTO
+    value = str(value).lower()
+    if value in (LOG_IDENTITY_AUTO, LOG_IDENTITY_STRICT):
+        return value
+    raise ValueError(f'unsupported log identity mode: {value}')
+
+
+def _positive_optional_number(value, label, fallback):
+    if value is None:
+        return fallback
+    value = int(value)
+    if value <= 0:
+        raise ValueError(f'{label} must be greater than 0')
+    return value
+
+
+def _normalize_lifecycle(value):
+    if value is None:
+        return None
+    if callable(value):
+        return value
+    callback = getattr(value, 'on_log_lifecycle_event', None)
+    if callable(callback):
+        return callback
+    callback = getattr(value, 'on_lifecycle_event', None)
+    if callable(callback):
+        return callback
+    raise ValueError('lifecycle must be callable or observer object')
+
+
+def _normalize_artifact_sizer(value):
+    if value is None:
+        return None
+    if callable(value):
+        return value
+    callback = getattr(value, 'journal_artifact_size', None)
+    if callable(callback):
+        return callback
+    callback = getattr(value, 'JournalArtifactSize', None)
+    if callable(callback):
+        return callback
+    raise ValueError('artifact sizer must be callable or provider object')
 
 
 def _uuid_from_config(value):

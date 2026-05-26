@@ -724,6 +724,105 @@ for (const [length, expected] of sipVectors) {
 {
   const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
   try {
+    const machineId = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+    const bootId = Buffer.from('ffeeddccbbaa99887766554433221100', 'hex');
+    assert.throws(
+      () => new Log(tempDir, { identityMode: 'strict', machineId }),
+      /strict identity requires boot id/,
+    );
+
+    const events = [];
+    const log = new Log(tempDir, {
+      source: 'system',
+      openMode: 'eager',
+      identityMode: 'strict',
+      machineId,
+      bootId,
+      lifecycle: (event) => events.push(event),
+    });
+    assert.equal(log.configuredDirectory(), tempDir);
+    assert.equal(log.journalDirectory(), join(tempDir, '00112233445566778899aabbccddeeff'));
+    assert.equal(log.machineID().toString('hex'), machineId.toString('hex'));
+    assert.equal(log.bootID().toString('hex'), bootId.toString('hex'));
+    assert.equal(log.sourceName(), 'system');
+    assert.notEqual(log.activeFilePath(), '');
+    assert.equal(events.length, 1);
+    assert.equal(events[0].type, 'created');
+    assert.equal(events[0].reason, 'eager_open');
+    assert.equal(events[0].activePath, log.activeFilePath());
+
+    log.append(
+      [{ name: 'MESSAGE', value: 'timestamp-0' }],
+      { realtimeUsec: 1_700_000_100_000_000n, monotonicUsec: 10n, sourceRealtimeUsec: 999n },
+    );
+    log.append(
+      [{ name: 'MESSAGE', value: 'timestamp-1' }],
+      { realtimeUsec: 1_700_000_100_000_000n, monotonicUsec: 10n, sourceRealtimeUsec: 1000n },
+    );
+    const path = log.activeFilePath();
+    log.close();
+
+    const reader = FileReader.open(path);
+    const entries = [];
+    while (reader.step()) entries.push(reader.getEntry());
+    reader.close();
+    assert.equal(entries.length, 2);
+    assert.deepEqual(entries.map((entry) => entry.realtime), [1_700_000_100_000_000n, 1_700_000_100_000_001n]);
+    assert.deepEqual(entries.map((entry) => entry.monotonic), [10n, 11n]);
+    assert.deepEqual(
+      entries.map((entry) => entry.fields._SOURCE_REALTIME_TIMESTAMP.toString('utf8')),
+      ['999', '1000'],
+    );
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    assert.throws(() => new Log(tempDir, { rotationPolicy: { maxEntries: 0 } }), /rotation max entries/);
+    assert.throws(() => new Log(tempDir, { retentionPolicy: { maxFiles: 0 } }), /retention max files/);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const events = [];
+    const artifactCalls = [];
+    const log = new Log(tempDir, {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      maxEntries: 1,
+      retentionPolicy: { maxBytes: 1 },
+      lifecycle: (event) => events.push(event),
+      artifactSizer: (path) => {
+        artifactCalls.push(path);
+        return 4096;
+      },
+    });
+    log.append([{ name: 'MESSAGE', value: 'artifact-retention-0' }]);
+    log.append([{ name: 'MESSAGE', value: 'artifact-retention-1' }]);
+    assert.ok(artifactCalls.length > 0);
+    assert.ok(events.some((event) => event.type === 'created' && event.reason === 'append'));
+    assert.ok(events.some((event) => event.type === 'rotated'));
+    const deleted = events.find((event) => event.type === 'deleted');
+    assert.ok(deleted);
+    assert.equal(deleted.deletedPaths.length, 1);
+    const files = readdirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal'));
+    assert.equal(files.length, 1);
+    log.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
     const log = new Log(tempDir, {
       source: 'system',
       strictSystemdNaming: true,

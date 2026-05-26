@@ -6,7 +6,7 @@ Status: in-progress
 
 Sub-state: active implementation. SOW-0019 is completed, and the user explicitly picked up this SOW on 2026-05-26. The current verified slice covers shared high-level naming, chain resume, rotation/retention hardening, duration rotation, age retention, and explicit retention enforcement across Rust, Go, Node.js, and Python.
 
-Current slice on 2026-05-26: stabilize the Go high-level writer API enough for Netdata go.d.plugin SNMP trap backend integration through a versioned GitHub module tag. The Go API may advance first to unblock Netdata integration, but the exposed contract must be suitable for later Rust, Node.js, and Python parity without breaking the Go `v0.1.x` surface.
+Current slice on 2026-05-26: align Rust, Node.js, and Python high-level writer APIs with the Go `go/v0.1.0` integration contract that was tagged for Netdata go.d.plugin SNMP trap backend integration. This slice keeps the Go public surface stable and adds the same open mode, strict identity mode, path accessors, lifecycle events, artifact-size retention accounting, source realtime injection, and timestamp-ordering behavior where each language does not already provide it.
 
 ## Requirements
 
@@ -52,10 +52,10 @@ Resolved requirements:
 - Strict systemd active naming must be opt-in only: `strict_systemd_naming=false` or unset means Netdata chain naming; `strict_systemd_naming=true` means `<source>.journal` active naming and archive-on-rotation naming.
 - Duration rotation and age retention are in scope for this SOW because they are part of the existing NetFlow and OTEL logs policy surface, even though the current Rust writer appears to expose duration rotation without enforcing it.
 
-Remaining unknowns:
+Remaining broader items:
 
-- Exact public API shape for nullable limits and strict identity mode remains open for later SOW-0023 slices, but the high-level naming contract is decided.
-- Exact file-count semantics for enabled zero or one values; the active file must never be deleted.
+- Strict/default cross-mode migration when an existing default chain active file exists and the caller switches to strict systemd naming still needs final polish.
+- Automatic Netdata/OTEL field-name remapping remains additive follow-up work before OTEL migration; the current public writer API accepts systemd-compatible field names.
 
 ### Acceptance Criteria
 
@@ -588,6 +588,12 @@ Acceptance criteria evidence:
   - `rust/src/crates/journal-log-writer/src/log/mod.rs`, `go/journal/log.go`, `node/src/lib/directory-writer.js`, and `python/journal/directory_writer.py`: duration rotation is enforced before append using the incoming entry realtime and active file head realtime.
   - `rust/src/crates/journal-log-writer/src/log/mod.rs`, `go/journal/log.go`, `node/src/lib/directory-writer.js`, and `python/journal/directory_writer.py`: age/count/byte retention can be applied explicitly without an append-triggered rotation or close.
   - `.agents/sow/specs/product-scope.md`, `rust/README.md`, `go/README.md`, `node/README.md`, and `python/README.md`: public documentation records duration rotation, age retention, and explicit retention enforcement APIs for the high-level writer.
+- Cross-language Go `v0.1.0` API parity implemented. Evidence:
+  - `rust/src/crates/journal-log-writer/src/log/config.rs`, `rust/src/crates/journal-log-writer/src/log/mod.rs`, `rust/src/crates/journal-log-writer/src/log/chain.rs`, and `rust/src/crates/journal-log-writer/src/error.rs`: Rust now exposes open/identity modes, explicit boot ID, creation lifecycle events, construction hooks, artifact sizers, source realtime injection, timestamp clamping, and path/identity/source accessors.
+  - `node/src/lib/directory-writer.js` and `node/src/index.js`: Node.js now exports the same high-level API concepts and keeps legacy numeric zero-disable aliases while rejecting explicit zero in structured policy objects.
+  - `python/journal/directory_writer.py` and `python/journal/__init__.py`: Python now exports the same high-level API concepts and keeps legacy numeric zero-disable aliases while rejecting explicit zero in structured policy objects.
+  - `node/test/all.js`, `python/test_all.py`, and `rust/src/crates/journal-log-writer/tests/log_writer.rs`: tests cover eager open, strict identity, source realtime injection, timestamp clamping, lifecycle creation/deletion, artifact-size retention accounting, accessors, and explicit structured zero rejection.
+  - `.agents/sow/specs/product-scope.md`, `rust/README.md`, `node/README.md`, and `python/README.md`: public contracts and docs record the shared API surface.
 
 Tests or equivalent validation:
 
@@ -596,6 +602,13 @@ Tests or equivalent validation:
 - `cargo test -p journal-log-writer --test log_writer -- --nocapture` from `rust/`: passed, 31 tests after duration-rotation, explicit-age-retention, and active-age-protection coverage.
 - `node --check node/src/lib/directory-writer.js && node --check node/test/all.js && node node/test/all.js`: passed.
 - `python3 -m py_compile python/journal/directory_writer.py python/test_all.py && PYTHONPATH=.local/python-deps:python python3 python/test_all.py`: passed. The `lz4` test dependency remains under `.local/python-deps` inside this repository; no system Python or home cache dependency was required for the run.
+- Cross-language API-parity slice:
+  - `go test -count=1 ./...` from `go/`: passed, proving the previously tagged Go API remains source-compatible with this slice.
+  - `cargo test -p journal-log-writer`: passed after the Rust API-parity changes.
+  - `cargo test` from `rust/`: passed for the full Rust workspace after the Rust API-parity changes.
+  - `node --check node/src/lib/directory-writer.js && node --check node/src/index.js && node --check node/test/all.js && node node/test/all.js`: passed after the Node.js API-parity changes.
+  - `python3 -m py_compile python/journal/directory_writer.py python/journal/__init__.py python/test_all.py && PYTHONPATH=.local/python-deps:python python3 python/test_all.py`: passed after the Python API-parity changes.
+  - `git diff --check && .agents/sow/audit.sh`: passed before final SOW close-out edits; final audit rerun is required before the rollback-point commit.
 
 Real-use evidence:
 
@@ -686,6 +699,32 @@ Reviewer findings:
   - `kimi` and `minimax` focused review sessions stalled without final findings and were terminated by exact PID after no progress; their output was not used as a clean review gate.
   - Focused `glm` re-review reported production-grade readiness for the initial Go `v0.1.0` SNMP traps integration API.
   - Focused `qwen` re-review reported no blocking bugs. Its medium `Close()` archive-failure concern was dispositioned as incorrect because `Writer.archiveTo()` renames before closing and restores `ONLINE` on rename failure, leaving the log retryable. Accepted low-risk findings were fixed: strict `ActivePath()` is cleared after close, the duration underflow guard is documented, and `go/API.md` lists enum-like constants in the stability contract.
+- Continued with the cross-language Go `v0.1.0` API-parity slice:
+  - Evidence checked before code changes:
+    - `go/API.md` defines the stabilized Go `v0.1.x` contract for open mode, identity mode, path accessors, lifecycle callbacks, artifact-size callbacks, source realtime injection, timestamp clamping, and optional policy validation.
+    - `node/src/lib/directory-writer.js` currently has default Netdata chain naming, duration rotation, age retention, and explicit retention enforcement, but lacks explicit open mode, strict identity mode, lifecycle callbacks, artifact-size retention accounting, configured-directory/source/identity accessors, source realtime injection, and timestamp clamping.
+    - `python/journal/directory_writer.py` has the same parity gaps as Node.js.
+    - `rust/src/crates/journal-log-writer/src/log/config.rs` and `rust/src/crates/journal-log-writer/src/log/mod.rs` already provide Rust-style `EntryTimestamps` and rotated/deleted lifecycle observer support, but still need comparison against the Go API for open mode, strict identity mode, creation lifecycle events, path accessors, and artifact-size retention accounting.
+  - Implementation routing remains local implementation with external models used only as read-only reviewers.
+  - Design constraint for this slice: keep Go `go/v0.1.0` source-compatible. Rust/Node.js/Python may add idiomatic aliases, but defaults and behavior must match the Go contract where the same concept exists.
+- Implemented the cross-language Go `v0.1.0` API-parity slice:
+  - Rust `journal-log-writer` now exposes lazy/eager open mode, auto/strict identity mode, explicit boot ID configuration, creation lifecycle events, lifecycle hooks at construction, artifact-size retention accounting, path/identity/source accessors, structured invalid-config errors, source realtime injection, and timestamp clamping.
+  - Node.js `Log` now exposes the same API concepts through camelCase and snake_case options/constants, including lifecycle callbacks, artifact sizers, source realtime injection, timestamp clamping, strict identity validation, eager open, structured policy validation, and path/identity/source accessors.
+  - Python `Log` now exposes the same API concepts through Pythonic and camelCase aliases, including lifecycle callbacks, artifact sizers, source realtime injection, timestamp clamping, strict identity validation, eager open, structured policy validation, and path/identity/source accessors.
+  - Go `go/v0.1.x` public API was not changed in this slice.
+  - Updated `.agents/sow/specs/product-scope.md`, `rust/README.md`, `node/README.md`, and `python/README.md` to record the shared high-level directory writer API surface.
+- Cross-language API-parity validation:
+  - `go test -count=1 ./...` from `go/`: passed.
+  - `cargo test -p journal-log-writer`: passed.
+  - `cargo test` from `rust/`: passed.
+  - `node --check node/src/lib/directory-writer.js && node --check node/src/index.js && node --check node/test/all.js && node node/test/all.js`: passed.
+  - `python3 -m py_compile python/journal/directory_writer.py python/journal/__init__.py python/test_all.py && PYTHONPATH=.local/python-deps:python python3 python/test_all.py`: passed.
+  - `git diff --check && .agents/sow/audit.sh`: passed before final SOW close-out edits; final audit rerun is required before this slice commit.
+- Cross-language API-parity review:
+  - Initial `glm` read-only review reported production-grade readiness with non-blocking documentation findings only.
+  - Accepted and fixed `glm` documentation findings: `rust/README.md` now documents source realtime injection and timestamp clamping; `node/README.md` and `python/README.md` now document structured rotation/retention policy zero-validation semantics.
+  - `qwen` did not produce usable findings for this slice and was terminated by exact PID after no progress; its partial output was not used as a clean review gate.
+  - Follow-up `glm` and `minimax` re-review processes for the same fixed scope were verified as current-repository SOW-0023 runs, remained silent after reading/exploration without final findings, and were terminated by exact PIDs. The prior `glm` production-grade review plus fixed non-blocking documentation findings is the clean review evidence for this slice.
 
 Same-failure scan:
 
@@ -716,6 +755,10 @@ Same-failure scan:
   - Lifecycle events are tested for created, rotated, and retention-deleted paths.
   - Artifact-size retention accounting is tested with synthetic sidecar byte pressure.
   - Strict close now clears `ActivePath()` after archive, with regression coverage.
+- Completed for the cross-language Go `v0.1.0` API-parity slice:
+  - Rust, Node.js, and Python were checked for the same open/identity/accessor/lifecycle/artifact/source-timestamp/policy-validation concepts added to the stabilized Go API.
+  - Rust, Node.js, and Python now have tests for eager open, strict identity, source realtime injection, timestamp clamping, lifecycle events, artifact-size retention accounting, and explicit structured zero rejection.
+  - Node.js and Python preserve legacy flat numeric zero-disable aliases while structured policy objects reject explicit zero, avoiding a breaking change for existing callers while matching the Go pointer-backed policy contract for new structured APIs.
 
 Sensitive data gate:
 
@@ -725,15 +768,15 @@ Artifact maintenance gate:
 
 - AGENTS.md: no project-wide workflow or responsibility changes in this slice.
 - Runtime project skills: no workflow changes needed; existing orchestration and compatibility skills covered the fourth-round retention failure mode.
-- Specs: updated `.agents/sow/specs/product-scope.md` for default chain naming, strict naming option, current-file retention protection, committed-byte retention accounting, disabled limit semantics, duration rotation, age retention, explicit retention enforcement, and the Go `v0.1.0` integration API contract.
-- End-user/operator docs: updated Rust, Go, Node.js, and Python READMEs for duration rotation, age retention, and explicit retention enforcement; updated Go README and added `go/API.md` for the public Go integration contract.
+- Specs: updated `.agents/sow/specs/product-scope.md` for default chain naming, strict naming option, current-file retention protection, committed-byte retention accounting, disabled limit semantics, duration rotation, age retention, explicit retention enforcement, the Go `v0.1.0` integration API contract, and the shared Rust/Go/Node.js/Python high-level directory writer API surface.
+- End-user/operator docs: updated Rust, Go, Node.js, and Python READMEs for duration rotation, age retention, explicit retention enforcement, and the shared open/identity/accessor/lifecycle/artifact/source-timestamp policy surface; updated Go README and added `go/API.md` for the public Go integration contract.
 - End-user/operator skills: none exist for this repository.
 - SOW lifecycle: remains `in-progress` in `.agents/sow/current/`; this commit is a verified slice, not SOW completion.
 - SOW-status.md: updated for the current slice status.
 
 Specs update:
 
-- Updated `.agents/sow/specs/product-scope.md` to record Netdata chain active naming as the default high-level writer behavior, strict systemd active naming as an explicit option, current-file retention protection, committed-byte retention accounting, disabled limit semantics, duration rotation, age retention, explicit retention enforcement, and the Go `v0.1.0` SNMP traps integration API surface.
+- Updated `.agents/sow/specs/product-scope.md` to record Netdata chain active naming as the default high-level writer behavior, strict systemd active naming as an explicit option, current-file retention protection, committed-byte retention accounting, disabled limit semantics, duration rotation, age retention, explicit retention enforcement, the Go `v0.1.0` SNMP traps integration API surface, and the shared cross-language high-level directory writer API surface.
 
 Project skills update:
 
@@ -741,7 +784,7 @@ Project skills update:
 
 End-user/operator docs update:
 
-- Updated `rust/README.md`, `go/README.md`, `node/README.md`, and `python/README.md` to document duration rotation, age retention, and explicit retention enforcement in the high-level writer. Added `go/API.md` and updated `go/README.md` for Go import path, open/identity modes, path accessors, lifecycle/artifact callbacks, source realtime injection, policy semantics, field-name limitation, and `go/v0.1.0` contract.
+- Updated `rust/README.md`, `go/README.md`, `node/README.md`, and `python/README.md` to document duration rotation, age retention, explicit retention enforcement, open/identity modes, path accessors, lifecycle/artifact callbacks, source realtime injection, timestamp clamping, and policy semantics in the high-level writer. Added `go/API.md` and updated `go/README.md` for Go import path, field-name limitation, and the `go/v0.1.0` contract.
 
 End-user/operator skills update:
 
@@ -753,14 +796,14 @@ Lessons:
 
 Follow-up mapping:
 
-- Remaining broader SOW-0023 items continue in this SOW: creation-time/eager preflight, strict identity validation, artifact accounting, and final API polish.
+- Remaining broader SOW-0023 items continue in this SOW: strict/default migration polish, automatic Netdata/OTEL field-name remapping, and final cross-language API polish.
 - Strict/default cross-mode migration when a chain-named `ONLINE` active file exists and a caller switches to strict systemd naming remains broader SOW-0023 migration/final API polish scope. The current verified slice guarantees default Netdata-compatible behavior and strict-mode sequence continuation within each mode.
 - Rust `open_for_append` incompatible-flag validation parity remains tracked for a later compatibility hardening slice.
 - Rust `Drop` remains documented best-effort behavior; production callers must use explicit `Log::close()` for archive rename and retention.
 
 ## Outcome
 
-Naming/resume/retention, duration-rotation, age-retention, explicit-retention-enforcement, and Go `v0.1.0` API-stabilization slices are ready to commit as a rollback point. SOW-0023 remains in-progress for the remaining broader cross-language API parity items.
+Naming/resume/retention, duration-rotation, age-retention, explicit-retention-enforcement, Go `v0.1.0` API-stabilization, and Rust/Node.js/Python Go `v0.1.0` API-parity slices are ready to commit as a rollback point. SOW-0023 remains in-progress for the remaining broader API polish items.
 
 ## Lessons Extracted
 
@@ -770,4 +813,4 @@ Naming/resume/retention, duration-rotation, age-retention, explicit-retention-en
 
 ## Followup
 
-- Continue SOW-0023 with Rust/Node.js/Python parity for the finalized Go open/identity/path/lifecycle/artifact API, strict/default migration polish, automatic Netdata/OTEL field-name remapping, and final cross-language API polish.
+- Continue SOW-0023 with strict/default migration polish, automatic Netdata/OTEL field-name remapping, and final cross-language API polish.

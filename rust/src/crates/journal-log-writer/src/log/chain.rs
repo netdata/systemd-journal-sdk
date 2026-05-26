@@ -363,6 +363,24 @@ impl OwnedChain {
             .saturating_add(new_size);
     }
 
+    pub(super) fn refresh_retained_sizes<F>(&mut self, mut artifact_size: F) -> Result<()>
+    where
+        F: FnMut(&File) -> Result<u64>,
+    {
+        let files: Vec<_> = self.file_sizes.keys().cloned().collect();
+        let mut total_size = 0u64;
+        for file in files {
+            let journal_size = committed_journal_size(&file)
+                .or_else(|| std::fs::metadata(file.path()).map(|m| m.len()).ok())
+                .unwrap_or(0);
+            let size = journal_size.saturating_add(artifact_size(&file)?);
+            self.file_sizes.insert(file, size);
+            total_size = total_size.saturating_add(size);
+        }
+        self.total_size = total_size;
+        Ok(())
+    }
+
     /// Retains the files that satisfy retention policy limits.
     #[tracing::instrument(skip_all, fields(reason))]
     pub(super) fn retain(

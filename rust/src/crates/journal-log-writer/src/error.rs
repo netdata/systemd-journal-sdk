@@ -27,6 +27,10 @@ pub enum WriterError {
     #[error("machine ID error: {0}")]
     MachineId(String),
 
+    /// Invalid high-level log writer configuration
+    #[error("invalid config: {0}")]
+    InvalidConfig(String),
+
     /// I/O error when interacting with filesystem
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
