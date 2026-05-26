@@ -131,20 +131,17 @@ fn run_verify(path: &Path, verify_key: Option<&str>) -> Result<()> {
     }
 
     let mut files = Vec::new();
-    if path.is_dir() {
-        let mut entries: Vec<_> = std::fs::read_dir(path)?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().is_file())
-            .filter(|e| is_journal_file_name(&e.path()))
-            .map(|e| e.path())
-            .collect();
-        entries.sort();
-        files = entries;
+    let directory_input = path.is_dir();
+    if directory_input {
+        files = collect_journal_files_for_verify(path)?;
     } else {
         files.push(path.to_path_buf());
     }
 
     if files.is_empty() {
+        if directory_input {
+            return Ok(());
+        }
         return Err(anyhow!("verify: no journal files found"));
     }
 
@@ -153,6 +150,9 @@ fn run_verify(path: &Path, verify_key: Option<&str>) -> Result<()> {
         let sealed = match is_file_sealed(file) {
             Ok(v) => v,
             Err(err) => {
+                if directory_input {
+                    continue;
+                }
                 eprintln!("FAIL: {} ({err})", file.display());
                 if first_err.is_none() {
                     first_err = Some(err);
@@ -219,6 +219,64 @@ fn is_journal_file_name(path: &Path) -> bool {
                 || name.ends_with(".journal.zst")
                 || name.ends_with(".journal~.zst")
         })
+}
+
+fn collect_journal_files_for_verify(path: &Path) -> Result<Vec<PathBuf>> {
+    let entries: Vec<_> = std::fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
+    let mut files = Vec::new();
+
+    for entry in &entries {
+        let file_path = entry.path();
+        if file_path.is_file() && is_journal_file_name(&file_path) {
+            files.push(file_path);
+        }
+    }
+
+    for entry in &entries {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !is_journal_subdir_name(&name) {
+            continue;
+        }
+        let child_path = entry.path();
+        if !child_path.is_dir() {
+            continue;
+        }
+        let Ok(children) = std::fs::read_dir(&child_path) else {
+            continue;
+        };
+        for child in children.flatten() {
+            let file_path = child.path();
+            if file_path.is_file() && is_journal_file_name(&file_path) {
+                files.push(file_path);
+            }
+        }
+    }
+
+    files.sort();
+    Ok(files)
+}
+
+fn is_journal_subdir_name(name: &str) -> bool {
+    if name.contains('.') {
+        return false;
+    }
+    id128_string_valid(name)
+}
+
+fn id128_string_valid(s: &str) -> bool {
+    match s.len() {
+        32 => s.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        36 => s.bytes().enumerate().all(|(idx, byte)| {
+            if matches!(idx, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        }),
+        _ => false,
+    }
 }
 
 fn valid_verification_key(key: &str) -> bool {
@@ -396,11 +454,7 @@ mod tests {
     #[test]
     fn verify_directory_empty() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let err = run_verify(dir.path(), None).expect_err("verify should fail");
-        assert!(
-            err.to_string().contains("no journal files found"),
-            "expected no journal files error, got: {err}"
-        );
+        run_verify(dir.path(), None).expect("empty directory verification should pass");
     }
 
     fn test_uuid(n: u8) -> uuid::Uuid {

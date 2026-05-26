@@ -66,6 +66,11 @@ Do not use this skill for:
   and require all SDK writer pairs to reject a second active writer before the
   contender publishes a ready file, plus stale-lock cleanup after crashed
   writers.
+- For directory reader or file-backed `journalctl --directory` changes, run
+  `tests/interoperability/run_directory_matrix.py` and require stock
+  journalctl plus Rust, Go, Node.js, and Python rewrites to agree on traversal,
+  ordering, filtering, boot listing, corrupt-file skipping, empty directories,
+  and repository `.journal.zst` directory discovery.
 - Separate reader support for existing historical files from writer feature milestones.
 - Record excluded upstream tests with a reason and extract file-level behavior where practical.
 

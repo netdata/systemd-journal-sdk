@@ -9,8 +9,13 @@ class DirectoryReader:
     def __init__(self, path, readers=None):
         self._path = path
         self._readers = readers or []
-        self._index = 0
+        self._index = -1
         self._realtime_seek = None
+        self._realtime_seek_bound = None
+        self._candidates = [None] * len(self._readers)
+        self._current_key = None
+        self._direction = None
+        self._boot_newest = _build_boot_newest(self._readers)
 
     @staticmethod
     def open(path):
@@ -24,7 +29,7 @@ class DirectoryReader:
             except Exception:
                 pass
 
-        return DirectoryReader.from_readers(path, readers)
+        return DirectoryReader.from_readers(path, readers, allow_empty=True)
 
     @staticmethod
     def open_files(paths):
@@ -33,82 +38,169 @@ class DirectoryReader:
             if not is_journal_file_name(os.path.basename(path)):
                 raise ValueError(f'not a journal file: {path}')
             readers.append(FileReader.open(path))
-        return DirectoryReader.from_readers('<files>', readers)
+        return DirectoryReader.from_readers('<files>', readers, allow_empty=False)
 
     @staticmethod
-    def from_readers(path, readers):
-        if not readers:
+    def from_readers(path, readers, allow_empty=False):
+        if not readers and not allow_empty:
             raise ValueError(f'no readable journal files in {path}')
         readers.sort(key=lambda r: (r.header()['head_entry_realtime'], r.header()['head_entry_seqnum']))
         return DirectoryReader(path, readers)
 
     def seek_head(self):
         self._realtime_seek = None
-        self._index = 0
-        if self._readers:
-            self._readers[0].seek_head()
+        self._realtime_seek_bound = None
+        self._index = -1
+        self._current_key = None
+        self._direction = None
+        self._reset_candidates()
+        for reader in self._readers:
+            reader.seek_head()
 
     def seek_tail(self):
         self._realtime_seek = None
-        self._index = len(self._readers) - 1
-        if self._readers:
-            self._readers[-1].seek_tail()
+        self._realtime_seek_bound = None
+        self._index = -1
+        self._current_key = None
+        self._direction = None
+        self._reset_candidates()
+        for reader in self._readers:
+            reader.seek_tail()
 
     def seek_realtime_usec(self, usec):
         self._realtime_seek = int(usec)
+        self._realtime_seek_bound = None
+        self._index = -1
+        self._current_key = None
+        self._direction = None
+        self._reset_candidates()
 
     def step(self):
-        self._apply_realtime_seek(0)
-        while self._index < len(self._readers):
-            if self._readers[self._index].step():
-                return True
-            self._index += 1
-            if self._index < len(self._readers):
-                self._readers[self._index].seek_head()
-        return False
+        return self._step_merged(0)
 
     def step_back(self):
-        self._apply_realtime_seek(1)
+        return self._step_merged(1)
+
+    def _step_merged(self, direction):
+        self._prepare_merge_direction(direction)
+
+        best = None
+        for idx in range(len(self._readers)):
+            self._fill_candidate(idx, direction)
+            candidate = self._candidates[idx]
+            if candidate is None:
+                continue
+            if best is None:
+                best = candidate
+                continue
+            cmp = self._compare_entry_keys(candidate['key'], best['key'])
+            if (direction == 0 and cmp < 0) or (direction == 1 and cmp > 0):
+                best = candidate
+
+        if best is None:
+            self._index = -1
+            self._realtime_seek_bound = None
+            return False
+
+        self._index = best['reader_index']
+        self._current_key = best['key']
+        self._candidates[best['reader_index']] = None
+        self._realtime_seek_bound = None
+        return True
+
+    def _prepare_merge_direction(self, direction):
+        if self._realtime_seek is not None:
+            usec = self._realtime_seek
+            self._realtime_seek = None
+            for reader in self._readers:
+                reader.seek_realtime_usec(usec)
+            self._reset_candidates()
+            self._realtime_seek_bound = (usec, direction)
+            self._direction = direction
+            return
+
+        if self._direction == direction:
+            return
+
+        if self._current_key is not None:
+            for reader in self._readers:
+                reader.seek_realtime_usec(self._current_key['realtime'])
+        elif direction == 0:
+            for reader in self._readers:
+                reader.seek_head()
+        else:
+            for reader in self._readers:
+                reader.seek_tail()
+
+        self._reset_candidates()
+        self._direction = direction
+
+    def _fill_candidate(self, reader_index, direction):
+        if self._candidates[reader_index] is not None:
+            return
+        reader = self._readers[reader_index]
+
         while True:
-            if self._index >= len(self._readers):
-                return False
-            if self._readers[self._index].step_back():
-                return True
-            if self._index == 0:
-                return False
-            self._index -= 1
-            self._readers[self._index].seek_tail()
+            ok = reader.step() if direction == 0 else reader.step_back()
+            if not ok:
+                return
+            entry = reader.get_entry()
+            if not entry:
+                continue
+            key = _entry_key(reader, entry)
+            if self._realtime_seek_bound is not None:
+                usec, seek_direction = self._realtime_seek_bound
+                if (seek_direction == 0 and key['realtime'] < usec) or (
+                    seek_direction == 1 and key['realtime'] > usec
+                ):
+                    continue
+            if self._current_key is not None:
+                cmp = self._compare_entry_keys(key, self._current_key)
+                if (direction == 0 and cmp <= 0) or (direction == 1 and cmp >= 0):
+                    continue
 
-    def _apply_realtime_seek(self, direction):
-        if self._realtime_seek is None:
-            return
-        usec = self._realtime_seek
-        self._realtime_seek = None
-        if not self._readers:
-            self._index = 0
-            return
-
-        if direction == 0:
-            idx = len(self._readers)
-            for i, reader in enumerate(self._readers):
-                if reader.header()['tail_entry_realtime'] >= usec:
-                    idx = i
-                    break
-            self._index = idx
-            if idx < len(self._readers):
-                self._readers[idx].seek_realtime_usec(usec)
+            self._candidates[reader_index] = {'reader_index': reader_index, 'key': key}
             return
 
-        idx = -1
-        for i in range(len(self._readers) - 1, -1, -1):
-            if self._readers[i].header()['head_entry_realtime'] <= usec:
-                idx = i
-                break
-        if idx < 0:
-            self._index = len(self._readers)
-            return
-        self._index = idx
-        self._readers[idx].seek_realtime_usec(usec)
+    def _compare_entry_keys(self, a, b):
+        if (
+            a['boot_id'] == b['boot_id'] and
+            a['monotonic'] == b['monotonic'] and
+            a['realtime'] == b['realtime'] and
+            a['xor_hash'] == b['xor_hash'] and
+            a['seqnum_id'] == b['seqnum_id'] and
+            a['seqnum'] == b['seqnum']
+        ):
+            return 0
+
+        if a['seqnum_id'] == b['seqnum_id']:
+            cmp = _cmp_int(a['seqnum'], b['seqnum'])
+            if cmp != 0:
+                return cmp
+
+        if a['boot_id'] == b['boot_id']:
+            cmp = _cmp_int(a['monotonic'], b['monotonic'])
+            if cmp != 0:
+                return cmp
+        else:
+            cmp = self._compare_boot_ids(a['boot_id'], b['boot_id'])
+            if cmp != 0:
+                return cmp
+
+        cmp = _cmp_int(a['realtime'], b['realtime'])
+        if cmp != 0:
+            return cmp
+        return _cmp_int(a['xor_hash'], b['xor_hash'])
+
+    def _compare_boot_ids(self, a, b):
+        a_newest = self._boot_newest.get(a)
+        b_newest = self._boot_newest.get(b)
+        if a_newest is None or b_newest is None or a_newest['machine_id'] != b_newest['machine_id']:
+            return 0
+        return _cmp_int(a_newest['realtime'], b_newest['realtime'])
+
+    def _reset_candidates(self):
+        self._candidates = [None] * len(self._readers)
 
     def next(self):
         return self.step()
@@ -139,18 +231,22 @@ class DirectoryReader:
     def add_match(self, data):
         for r in self._readers:
             r.add_match(data)
+        self._reset_merge_state()
 
     def add_disjunction(self):
         for r in self._readers:
             r.add_disjunction()
+        self._reset_merge_state()
 
     def add_conjunction(self):
         for r in self._readers:
             r.add_conjunction()
+        self._reset_merge_state()
 
     def flush_matches(self):
         for r in self._readers:
             r.flush_matches()
+        self._reset_merge_state()
 
     def enumerate_fields(self):
         fields = set()
@@ -207,17 +303,95 @@ class DirectoryReader:
         for r in self._readers:
             r.close()
 
+    def _reset_merge_state(self):
+        self._index = -1
+        self._current_key = None
+        self._direction = None
+        self._realtime_seek_bound = None
+        self._reset_candidates()
+
 
 def _collect_journal_files(path):
     files = []
-    entries = list(os.scandir(path))
+    with os.scandir(path) as scan:
+        entries = list(scan)
     for entry in entries:
-        if entry.is_file() and is_journal_file_name(os.path.basename(entry.name)):
+        if _entry_is_file(entry) and is_journal_file_name(os.path.basename(entry.name)):
             files.append(entry.path)
     for entry in entries:
-        if not entry.is_dir():
+        if not _is_journal_subdir_name(entry.name) or not _entry_is_dir(entry):
             continue
-        for child in os.scandir(entry.path):
-            if child.is_file() and is_journal_file_name(os.path.basename(child.name)):
-                files.append(child.path)
-    return files
+        try:
+            with os.scandir(entry.path) as children:
+                for child in children:
+                    if _entry_is_file(child) and is_journal_file_name(os.path.basename(child.name)):
+                        files.append(child.path)
+        except OSError:
+            continue
+    return sorted(files)
+
+
+def _entry_is_file(entry):
+    try:
+        return entry.is_file()
+    except OSError:
+        return False
+
+
+def _entry_is_dir(entry):
+    try:
+        return entry.is_dir()
+    except OSError:
+        return False
+
+
+def _is_journal_subdir_name(name):
+    if '.' in name:
+        return False
+    return _id128_string_valid(name)
+
+
+def _id128_string_valid(value):
+    if len(value) == 32:
+        return all(ch in '0123456789abcdefABCDEF' for ch in value)
+    if len(value) == 36:
+        for idx, ch in enumerate(value):
+            if idx in (8, 13, 18, 23):
+                if ch != '-':
+                    return False
+            elif ch not in '0123456789abcdefABCDEF':
+                return False
+        return True
+    return False
+
+
+def _entry_key(reader, entry):
+    return {
+        'seqnum_id': reader.header()['seqnum_id'],
+        'seqnum': entry['seqnum'],
+        'boot_id': entry['boot_id'],
+        'monotonic': entry['monotonic'],
+        'realtime': entry['realtime'],
+        'xor_hash': entry['xor_hash'],
+    }
+
+
+def _build_boot_newest(readers):
+    newest = {}
+    for reader in readers:
+        header = reader.header()
+        boot_id = header['tail_entry_boot_id']
+        if boot_id == b'\x00' * 16:
+            continue
+        current = newest.get(boot_id)
+        if current is None or header['tail_entry_monotonic'] > current['monotonic']:
+            newest[boot_id] = {
+                'machine_id': header['machine_id'],
+                'monotonic': header['tail_entry_monotonic'],
+                'realtime': header['tail_entry_realtime'],
+            }
+    return newest
+
+
+def _cmp_int(a, b):
+    return (a > b) - (a < b)

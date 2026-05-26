@@ -1402,11 +1402,9 @@ def test_journalctl_verify():
             [sys.executable, str(script), '--verify', '--directory', tmpdir],
             capture_output=True, text=True,
         )
-    assert result.returncode != 0, 'expected --verify empty directory to fail'
+    assert result.returncode == 0, f'expected --verify empty directory to succeed: {result.stderr}'
     assert result.stdout == '', f"expected no stdout, got: {result.stdout}"
-    assert 'verify: no journal files found' in result.stderr, (
-        f"expected no journal files error in stderr, got: {result.stderr}"
-    )
+    assert result.stderr == '', f"expected no stderr, got: {result.stderr}"
 
     # --verify corrupted file
     result = subprocess.run(

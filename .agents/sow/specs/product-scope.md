@@ -279,10 +279,25 @@ Accepted reader API layers:
   binary-safe and preserve repeated values. `GetData` returns the first value
   for a repeated field; callers that need every repeated value use
   restart/enumerate data.
-- Directory readers and `OpenFiles` sort accepted non-overlapping journal files
-  by file head realtime and support direction-aware realtime seek across file
-  boundaries. Realtime interleaving across overlapping journal files remains an
-  interoperability-phase target.
+- Directory readers and `OpenFiles` merge candidate entries across all opened
+  files using systemd-compatible ordering, including overlapping realtime
+  ranges. Same seqnum-source entries compare by seqnum; same boot entries
+  compare by monotonic time; otherwise comparable boot order, realtime, and
+  entry xor hash are used.
+- `OpenDirectory` and file-backed `journalctl --directory` traverse the root
+  directory plus one immediate 128-bit machine-id subdirectory level. Accepted
+  subdirectory names are 32 hex digits or dashed UUID form; namespace-suffix
+  directories are skipped by default because stock file-backed
+  `journalctl --directory` does not opt into namespace discovery.
+- Directory traversal follows symlinks to regular files, accepts `.journal` and
+  `.journal~` names, and additionally accepts whole-file `.journal.zst` and
+  `.journal~.zst` as a repository extension. It does not recurse below the one
+  accepted subdirectory level.
+- Empty directories open successfully and produce no entries. Directory readers
+  skip files that cannot be opened as journals, matching stock read behavior.
+- File-backed `journalctl --verify --directory` uses the same traversal and
+  skips files that cannot be opened by the directory reader. Explicit
+  `--verify --file` still reports corruption for the named file.
 - Daemon-only libsystemd/journalctl operations remain outside the SDK facade
   target and must fail with controlled unsupported behavior when exposed.
 
@@ -292,7 +307,9 @@ Current Go reader feature slice:
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
 - whole-file zstd fixtures and zstd, xz, and lz4-compressed DATA objects
   through pure-Go dependencies;
-- directory iteration across active and archived files;
+- directory iteration across active and archived files with stock-compatible
+  root plus one machine-id subdirectory traversal and interleaved multi-file
+  ordering;
 - forward/backward iteration, cursors, realtime and monotonic timestamps,
   seqnum metadata, binary field values, repeated field values, field
   enumeration, current-entry data enumeration, and unique value enumeration;
@@ -309,10 +326,8 @@ Current Go reader feature slice:
 
 Current Go reader limitations:
 
-- directory iteration is sequential by journal file and validated for
-  non-overlapping active/archive files; realtime interleaving across
-  overlapping multi-file directories is tracked under the interoperability
-  phase;
+- mixed-format directories combining compact/regular, compression variants,
+  and sealed/unsealed files remain tracked by SOW-0024;
 - sealed TAG/HMAC verification APIs and file-backed journalctl `--verify-key`
   are implemented for repository-generated sealed files; full systemd
   object-graph verification parity remains tracked under SOW-0022;
@@ -357,7 +372,9 @@ Current Rust reader feature slice:
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
 - whole-file zstd fixtures and zstd, lz4, and xz-compressed DATA objects through
   pure-Rust dependencies;
-- directory iteration across active and archived files;
+- directory iteration across active and archived files with stock-compatible
+  root plus one machine-id subdirectory traversal and interleaved multi-file
+  ordering;
 - forward/backward iteration, cursors, realtime and monotonic timestamps,
   seqnum metadata, binary field values, repeated field values, field
   enumeration, current-entry data enumeration, unique value enumeration, and
@@ -373,9 +390,8 @@ Current Rust reader feature slice:
 
 Current Rust reader limitations:
 
-- directory iteration is sequential by journal file and validated for
-  non-overlapping active/archive files; realtime interleaving across overlapping
-  multi-file directories is tracked under the interoperability phase;
+- mixed-format directories combining compact/regular, compression variants,
+  and sealed/unsealed files remain tracked by SOW-0024;
 - boot listing uses file-level boot metadata in this slice;
 - sealed TAG/HMAC verification APIs and file-backed journalctl `--verify-key`
   are implemented for repository-generated sealed files; full systemd
@@ -420,7 +436,9 @@ Current Node.js reader feature slice:
 - whole-file zstd fixtures through Node.js built-in `node:zlib`;
 - zstd, xz, and lz4-compressed DATA objects through Node.js built-in `node:zlib`,
   `node-liblzma@5.0.1` WASM path, and pure JavaScript `lz4js@0.2.0`;
-- directory iteration across active and archived files;
+- directory iteration across active and archived files with stock-compatible
+  root plus one machine-id subdirectory traversal and interleaved multi-file
+  ordering;
 - forward/backward iteration, cursors, realtime and monotonic timestamps,
   seqnum metadata, binary field values as `Buffer`, repeated field values,
   field enumeration, current-entry data enumeration, and unique value
@@ -437,9 +455,8 @@ Current Node.js reader feature slice:
 
 Current Node.js reader/writer limitations:
 
-- directory iteration is sequential by journal file and validated for
-  non-overlapping active/archive files; realtime interleaving across overlapping
-  multi-file directories is tracked under the interoperability phase;
+- mixed-format directories combining compact/regular, compression variants,
+  and sealed/unsealed files remain tracked by SOW-0024;
 - boot listing uses file-level boot metadata in this slice;
 - sealed TAG/HMAC verification APIs and file-backed journalctl `--verify-key`
   are implemented for repository-generated sealed files; full systemd
@@ -486,8 +503,9 @@ Current Python reader feature slice:
   `compression.zstd` where the optional standard-library module is available;
 - xz and lz4-compressed DATA objects through standard-library `lzma` and
   `lz4==4.4.5`;
-- directory iteration across active and archived files, including one machine-id
-  subdirectory level;
+- directory iteration across active and archived files with stock-compatible
+  root plus one machine-id subdirectory traversal and interleaved multi-file
+  ordering;
 - forward/backward iteration, cursors, realtime and monotonic timestamps,
   seqnum metadata, binary field values as `bytes`, repeated field values,
   field enumeration, current-entry data enumeration, and unique value
@@ -504,9 +522,8 @@ Current Python reader feature slice:
 
 Current Python reader/writer limitations:
 
-- directory iteration is sequential by journal file and validated for
-  non-overlapping active/archive files; realtime interleaving across overlapping
-  multi-file directories is tracked under the interoperability phase;
+- mixed-format directories combining compact/regular, compression variants,
+  and sealed/unsealed files remain tracked by SOW-0024;
 - boot listing uses file-level boot metadata in this slice;
 - sealed TAG/HMAC verification APIs and file-backed journalctl `--verify-key`
   are implemented for repository-generated sealed files; full systemd

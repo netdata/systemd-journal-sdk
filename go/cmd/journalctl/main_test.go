@@ -241,15 +241,14 @@ func TestRunVerifyDirectoryFollowsSymlinkAndSkipsDirectories(t *testing.T) {
 
 func TestRunVerifyDirectoryEmpty(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	err := run([]string{"--verify", "--directory", t.TempDir()}, strings.NewReader(""), &stdout, &stderr)
-	if err == nil {
-		t.Fatal("expected error for empty verify directory")
+	if err := run([]string{"--verify", "--directory", t.TempDir()}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("expected empty verify directory to succeed: %v; stderr=%q", err, stderr.String())
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("expected no stdout, got: %q", stdout.String())
 	}
-	if !strings.Contains(err.Error(), "verify: no journal files found") {
-		t.Fatalf("expected no journal files error, got err=%v stderr=%q", err, stderr.String())
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr, got: %q", stderr.String())
 	}
 }
 

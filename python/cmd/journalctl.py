@@ -14,6 +14,7 @@ from journal import (
     OUTPUT_MODE_DEFAULT, OUTPUT_MODE_JSON, OUTPUT_MODE_EXPORT,
 )
 from journal.reader import FileReader
+from journal.directory_reader import _collect_journal_files
 from journal.verify import verify_file, verify_file_with_key, VerificationError
 from journal.compress import is_journal_file_name
 from journal.header import COMPATIBLE_SEALED
@@ -41,16 +42,15 @@ def run_verify(input_path, verify_key):
         sys.stderr.write('Failed to parse seed.\n')
         return 1
 
-    if os.path.isdir(input_path):
-        files = sorted(
-            os.path.join(input_path, name)
-            for name in os.listdir(input_path)
-            if is_journal_file_name(name) and os.path.isfile(os.path.join(input_path, name))
-        )
+    directory_input = os.path.isdir(input_path)
+    if directory_input:
+        files = _collect_journal_files(input_path)
     else:
         files = [input_path]
 
     if not files:
+        if directory_input:
+            return 0
         sys.stderr.write('Error: verify: no journal files found\n')
         return 1
 
@@ -61,6 +61,8 @@ def run_verify(input_path, verify_key):
             r = FileReader.open(path)
             sealed = (r.header()['compatible_flags'] & COMPATIBLE_SEALED) != 0
         except Exception as err:
+            if directory_input:
+                continue
             sys.stderr.write(f'FAIL: {path} ({err})\n')
             if first_err is None:
                 first_err = err

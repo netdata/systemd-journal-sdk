@@ -266,6 +266,7 @@ export class FileReader {
       realtime: e.realtime,
       monotonic: e.monotonic,
       boot_id: e.boot_id,
+      xor_hash: e.xor_hash,
       cursor,
     };
   }

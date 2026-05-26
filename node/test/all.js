@@ -1475,14 +1475,14 @@ run(process.execPath, ['-e', "import './node/src/index.js'"], { cwd: repoRoot })
     const tmpDir = mkdtempSync(join(tmpdir(), 'node-verify-empty-dir-'));
     const result = spawnSync(cmd, [script, '--verify', '--directory', tmpDir], { encoding: 'utf8' });
     rmSync(tmpDir, { recursive: true });
-    if (result.status === 0) {
-      throw new Error(`expected --verify empty directory to fail`);
+    if (result.status !== 0) {
+      throw new Error(`expected --verify empty directory to succeed: ${result.stderr}`);
     }
     if (result.stdout !== '') {
       throw new Error(`expected no stdout, got: ${result.stdout}`);
     }
-    if (!result.stderr.includes('verify: no journal files found')) {
-      throw new Error(`expected no journal files error in stderr, got: ${result.stderr}`);
+    if (result.stderr !== '') {
+      throw new Error(`expected no stderr, got: ${result.stderr}`);
     }
   }
 

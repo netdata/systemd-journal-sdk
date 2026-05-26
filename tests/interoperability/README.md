@@ -104,10 +104,9 @@ For each writer language, the matrix proves all of the following:
   polled via file-backed `--file --output=json` queries. This is intentional
   per SOW-0008 requirements.
 
-- **Directory traversal parity**: for directory-mode writers, the live matrix
-  validates the active `.journal` file after discovering it under the generated
-  directory. It does not prove every repository `--directory` implementation can
-  traverse every directory layout; that remains tracked separately.
+- **Directory traversal parity**: directory traversal is covered by
+  `run_directory_matrix.py`. The live matrix only proves active-file
+  compatibility for the file discovered under a generated directory.
 
 - **Compression, compact journal, or FSS**: these are out of scope for the live
   matrix. Binary stress fixtures are covered by `run_binary_matrix.py`; DATA
@@ -135,6 +134,33 @@ The live matrix reports:
 A `status` of `PASS` means: writer exited cleanly, every polling reader saw
 entries while the writer was active, and all final reads observed the complete
 ordered sequence.
+
+## Directory Matrix (`run_directory_matrix.py`)
+
+Generates synthetic directory layouts and compares file-backed
+`journalctl --directory` behavior across stock journalctl and all repository
+rewrites.
+
+```bash
+python3 tests/interoperability/run_directory_matrix.py
+```
+
+The stock-parity fixture covers:
+
+- root `.journal` and `.journal~` files;
+- one immediate 128-bit machine-id subdirectory level, including dashed UUID
+  form;
+- invalid, nested, and namespace-suffix subdirectories that must be skipped by
+  default;
+- overlapping realtime ranges that require interleaved multi-file ordering;
+- repeated same-field OR matches, cross-field AND matches, and `+`
+  disjunction;
+- JSON, export, text, field listing, boot listing, empty-directory reads, and
+  directory verify behavior.
+
+The runner also validates a corrupt/unreadable-file directory where stock and
+repository readers skip files they cannot open, and validates the repository
+extension for whole-file `.journal.zst` directory discovery.
 
 ## Binary Matrix (`run_binary_matrix.py`)
 
@@ -291,7 +317,7 @@ completion unless `--keep-files` is passed.
 | xz compressed DATA object writing | Complete | Rust, Go, Node.js, and Python write/read xz; stock journalctl, stock libsystemd, and all repository readers pass | Closed in SOW-0021 |
 | lz4 compressed DATA object writing | Complete | Rust, Go, Node.js, and Python write/read lz4 when Python `lz4==4.4.5` is installed; stock journalctl, stock libsystemd, and all repository readers pass | Closed in SOW-0017 |
 | Compact journal format | Complete | `run_compact_matrix.py` validates compact layout plus stock/repository reads across all writers | Closed in SOW-0018 |
-| Forward Secure Sealing / verification | Not implemented | Verification/FSS tests skipped in earlier SOWs | Tracked by SOW-0019 |
+| Forward Secure Sealing / verification | Complete | Sealed writers and `--verify-key` APIs/CLIs pass stock and repository validation for generated sealed files | Closed in SOW-0019 |
 | Cross-language binary stress | Complete | `run_binary_matrix.py` passes 52/52 across all writer/reader pairs plus stock libsystemd | Closed |
 | Writer locking parity | Complete | `run_lock_matrix.py` passes 8/8; all SDK writer pairs reject concurrent writers and stale locks left by crashed writers are cleaned | Closed |
-| Directory reader subdirectory traversal | Partial | Live matrix validates discovered files; full `--directory` traversal parity remains separate | Tracked by SOW-0020 |
+| Directory reader subdirectory traversal | Complete | `run_directory_matrix.py` passes across stock journalctl plus Rust, Go, Node.js, and Python rewrites | Closed in SOW-0020 |

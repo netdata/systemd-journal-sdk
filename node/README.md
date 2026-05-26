@@ -17,7 +17,8 @@ no system journal library linkage.
 - Field enumeration and unique value queries
 - Export, JSON, and text output formatting
 - libsystemd-compatible `SdJournal` facade
-- Directory iteration across multiple files
+- Directory iteration across root journal files plus one machine-id
+  subdirectory level, with interleaved multi-file ordering
 
 ### Writer
 
@@ -49,6 +50,10 @@ no system journal library linkage.
   verification
 - Repeated same-field OR matching and `+` disjunction
 - Daemon-only commands (sync, flush, rotate) return errors
+
+Directory mode follows stock file-backed traversal for `.journal` and
+`.journal~` files, skips namespace-suffix subdirectories by default, and also
+accepts whole-file `.journal.zst` / `.journal~.zst` as an SDK extension.
 
 ## Installation
 

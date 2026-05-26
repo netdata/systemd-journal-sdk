@@ -241,28 +241,20 @@ func runVerify(inputPath, verifyKey string, hasVerifyKey bool, stdout, stderr io
 	}
 
 	var files []string
-	if info.IsDir() {
-		entries, err := os.ReadDir(inputPath)
+	directoryInput := info.IsDir()
+	if directoryInput {
+		files, err = collectJournalFilesForVerify(inputPath)
 		if err != nil {
 			return fmt.Errorf("verify: read directory: %w", err)
 		}
-		for _, entry := range entries {
-			name := entry.Name()
-			candidate := filepath.Join(inputPath, name)
-			info, err := os.Stat(candidate)
-			if err != nil || !info.Mode().IsRegular() {
-				continue
-			}
-			if isJournalFileName(name) {
-				files = append(files, candidate)
-			}
-		}
-		sort.Strings(files)
 	} else {
 		files = append(files, inputPath)
 	}
 
 	if len(files) == 0 {
+		if directoryInput {
+			return nil
+		}
 		return errors.New("verify: no journal files found")
 	}
 
@@ -270,6 +262,9 @@ func runVerify(inputPath, verifyKey string, hasVerifyKey bool, stdout, stderr io
 	for _, path := range files {
 		sealed, err := isFileSealed(path)
 		if err != nil {
+			if directoryInput {
+				continue
+			}
 			fmt.Fprintf(stderr, "FAIL: %s (%v)\n", path, err)
 			if firstErr == nil {
 				firstErr = err
@@ -325,6 +320,91 @@ func isJournalFileName(name string) bool {
 		strings.HasSuffix(name, ".journal~") ||
 		strings.HasSuffix(name, ".journal.zst") ||
 		strings.HasSuffix(name, ".journal~.zst")
+}
+
+func collectJournalFilesForVerify(path string) ([]string, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var files []string
+	for _, entry := range entries {
+		candidate := filepath.Join(path, entry.Name())
+		if isRegularFile(candidate) && isJournalFileName(entry.Name()) {
+			files = append(files, candidate)
+		}
+	}
+
+	for _, entry := range entries {
+		if !isJournalSubdirName(entry.Name()) {
+			continue
+		}
+		childPath := filepath.Join(path, entry.Name())
+		if !isDirectory(childPath) {
+			continue
+		}
+		children, err := os.ReadDir(childPath)
+		if err != nil {
+			continue
+		}
+		for _, child := range children {
+			candidate := filepath.Join(childPath, child.Name())
+			if isRegularFile(candidate) && isJournalFileName(child.Name()) {
+				files = append(files, candidate)
+			}
+		}
+	}
+
+	sort.Strings(files)
+	return files, nil
+}
+
+func isRegularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
+func isDirectory(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func isJournalSubdirName(name string) bool {
+	if strings.Contains(name, ".") {
+		return false
+	}
+	return id128StringValid(name)
+}
+
+func id128StringValid(s string) bool {
+	if len(s) == 32 {
+		for _, ch := range s {
+			if !isASCIIHex(ch) {
+				return false
+			}
+		}
+		return true
+	}
+	if len(s) == 36 {
+		for i, ch := range s {
+			if i == 8 || i == 13 || i == 18 || i == 23 {
+				if ch != '-' {
+					return false
+				}
+				continue
+			}
+			if !isASCIIHex(ch) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func isASCIIHex(ch rune) bool {
+	return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
 }
 
 func hasStringFlag(args []string, name string) bool {

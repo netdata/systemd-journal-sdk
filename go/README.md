@@ -50,7 +50,9 @@ Current reader scope:
 - `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst` files;
 - zstd-compressed fixture files and zstd, xz, and lz4-compressed DATA objects
   through pure-Go dependencies;
-- directory reading across active and archived files;
+- directory reading across active and archived files with stock-compatible
+  root plus one machine-id subdirectory traversal and interleaved multi-file
+  ordering;
 - forward/backward iteration, cursors, realtime and monotonic timestamps,
   seqnum metadata, field enumeration, unique values, binary field values,
   repeated field values, stateful current-entry data enumeration, and
@@ -72,10 +74,8 @@ Current reader scope:
 
 Reader limitations:
 
-- directory iteration is sequential by journal file and intended for
-  non-overlapping rotated files in this slice; realtime interleaving across
-  overlapping multi-file directories is tracked with the broader
-  interoperability phase;
+- mixed-format directory validation across compact/regular, compression
+  variants, and sealed/unsealed files is tracked separately;
 - full systemd object-graph verification parity is tracked separately;
 - daemon-only journalctl operations are not implemented.
 

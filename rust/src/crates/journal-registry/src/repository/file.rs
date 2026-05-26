@@ -234,6 +234,31 @@ impl File {
         Self::from_str(path.to_str()?)
     }
 
+    pub fn from_raw_path(path: &Path) -> Option<Self> {
+        let path = path.to_str()?;
+        if !path.starts_with('/') {
+            return None;
+        }
+
+        let inner = Arc::new(FileInner {
+            path: path.to_string(),
+            origin: Origin {
+                machine_id: None,
+                namespace: None,
+                source: Source::Unknown(
+                    Path::new(path)
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .unwrap_or("journal")
+                        .to_string(),
+                ),
+            },
+            status: Status::Active,
+        });
+
+        Some(File { inner })
+    }
+
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(path: &str) -> Option<Self> {
         // We only accept absolute paths

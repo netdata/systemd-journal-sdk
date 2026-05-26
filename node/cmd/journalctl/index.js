@@ -188,25 +188,15 @@ function runVerify(inputPath, verifyKey, hasVerifyKey) {
   }
 
   let files = [];
-  if (stats.isDirectory()) {
-    for (const entry of readdirSync(inputPath)) {
-      const candidate = join(inputPath, entry);
-      let entryStats;
-      try {
-        entryStats = statSync(candidate);
-      } catch {
-        continue;
-      }
-      if (entryStats.isFile() && isJournalFileName(entry)) {
-        files.push(candidate);
-      }
-    }
-    files.sort();
+  const directoryInput = stats.isDirectory();
+  if (directoryInput) {
+    files = collectJournalFilesForVerify(inputPath);
   } else {
     files.push(inputPath);
   }
 
   if (files.length === 0) {
+    if (directoryInput) return 0;
     process.stderr.write('Error: verify: no journal files found\n');
     return 1;
   }
@@ -219,6 +209,7 @@ function runVerify(inputPath, verifyKey, hasVerifyKey) {
       r = FileReader.open(file);
       sealed = (r.header.compatible_flags & COMPATIBLE_SEALED) !== 0;
     } catch (err) {
+      if (directoryInput) continue;
       process.stderr.write(`FAIL: ${file} (${err.message})\n`);
       if (!firstErr) firstErr = err;
       continue;
@@ -235,7 +226,7 @@ function runVerify(inputPath, verifyKey, hasVerifyKey) {
 
     if (sealed && hasVerifyKey) {
       try {
-        verifyFileWithKey(file, values['verify-key']);
+        verifyFileWithKey(file, verifyKey);
         process.stderr.write(`PASS: ${file}\n`);
       } catch (err) {
         process.stderr.write(`FAIL: ${file} (${err.message})\n`);
@@ -291,4 +282,58 @@ function consumeHex(s, start) {
 
 function isHex(ch) {
   return typeof ch === 'string' && /^[0-9a-fA-F]$/.test(ch);
+}
+
+function collectJournalFilesForVerify(path) {
+  const files = [];
+  const entries = readdirSync(path, { withFileTypes: true });
+  for (const entry of entries) {
+    const candidate = join(path, entry.name);
+    if (isRegularFile(candidate) && isJournalFileName(entry.name)) files.push(candidate);
+  }
+  for (const entry of entries) {
+    if (!isJournalSubdirName(entry.name)) continue;
+    const childPath = join(path, entry.name);
+    if (!isDirectory(childPath)) continue;
+    for (const child of readDirEntries(childPath)) {
+      const candidate = join(childPath, child.name);
+      if (isRegularFile(candidate) && isJournalFileName(child.name)) files.push(candidate);
+    }
+  }
+  return files.sort();
+}
+
+function isRegularFile(path) {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function isDirectory(path) {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function readDirEntries(path) {
+  try {
+    return readdirSync(path, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+}
+
+function isJournalSubdirName(name) {
+  if (name.includes('.')) return false;
+  return id128StringValid(name);
+}
+
+function id128StringValid(s) {
+  if (s.length === 32) return /^[0-9a-fA-F]{32}$/.test(s);
+  if (s.length === 36) return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(s);
+  return false;
 }

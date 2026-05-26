@@ -364,7 +364,8 @@ func TestSdJournalJfFacadeStatefulReaderOperations(t *testing.T) {
 		}
 		messages = append(messages, string(entry.Fields["MESSAGE"]))
 	}
-	wantMessages := []string{"first", "second", "third"}
+	// systemd compares same-source seqnums before realtime when interleaving files.
+	wantMessages := []string{"first", "third", "second"}
 	if len(messages) != len(wantMessages) {
 		t.Fatalf("multi messages = %v, want %v", messages, wantMessages)
 	}
@@ -384,7 +385,7 @@ func TestSdJournalJfFacadeStatefulReaderOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("multi get entry after backward seek error: %v", err)
 	}
-	if got := string(entry.Fields["MESSAGE"]); got != "third" {
+	if got := string(entry.Fields["MESSAGE"]); got != "second" {
 		t.Fatalf("multi backward seek landed on %q", got)
 	}
 

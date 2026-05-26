@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -899,36 +900,34 @@ func (r *Reader) StepBack() (bool, error) {
 }
 
 type DirectoryReader struct {
-	files        []*Reader
-	index        int
-	filter       *filterBuilder
-	realtimeSeek *uint64
+	files             []*Reader
+	index             int
+	filter            *filterBuilder
+	realtimeSeek      *uint64
+	realtimeSeekBound *directoryRealtimeSeekBound
+	candidates        []*directoryCandidate
+	currentKey        *directoryEntryKey
+	direction         Direction
+	hasDirection      bool
+	bootNewest        map[UUID]directoryBootNewest
 }
 
 func OpenDirectory(path string) (*DirectoryReader, error) {
-	entries, err := os.ReadDir(path)
+	paths, err := collectJournalFiles(path)
 	if err != nil {
 		return nil, err
 	}
 
 	var readers []*Reader
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if !isJournalFileName(name) {
-			continue
-		}
-		fullPath := path + "/" + name
-		r, err := OpenFile(fullPath)
+	for _, filePath := range paths {
+		r, err := OpenFile(filePath)
 		if err != nil {
 			continue
 		}
 		readers = append(readers, r)
 	}
 
-	return newDirectoryReader(readers)
+	return newDirectoryReader(readers, true)
 }
 
 func OpenFiles(paths []string) (*DirectoryReader, error) {
@@ -943,11 +942,11 @@ func OpenFiles(paths []string) (*DirectoryReader, error) {
 		}
 		readers = append(readers, r)
 	}
-	return newDirectoryReader(readers)
+	return newDirectoryReader(readers, false)
 }
 
-func newDirectoryReader(readers []*Reader) (*DirectoryReader, error) {
-	if len(readers) == 0 {
+func newDirectoryReader(readers []*Reader, allowEmpty bool) (*DirectoryReader, error) {
+	if len(readers) == 0 && !allowEmpty {
 		return nil, errors.New("no journal files found")
 	}
 	sort.Slice(readers, func(i, j int) bool {
@@ -957,7 +956,37 @@ func newDirectoryReader(readers []*Reader) (*DirectoryReader, error) {
 		return readers[i].header.headEntrySeqnum < readers[j].header.headEntrySeqnum
 	})
 
-	return &DirectoryReader{files: readers, index: 0}, nil
+	return &DirectoryReader{
+		files:      readers,
+		index:      -1,
+		candidates: make([]*directoryCandidate, len(readers)),
+		bootNewest: buildDirectoryBootNewest(readers),
+	}, nil
+}
+
+type directoryCandidate struct {
+	readerIndex int
+	key         directoryEntryKey
+}
+
+type directoryRealtimeSeekBound struct {
+	usec      uint64
+	direction Direction
+}
+
+type directoryEntryKey struct {
+	seqnumID  UUID
+	seqnum    uint64
+	bootID    UUID
+	monotonic uint64
+	realtime  uint64
+	xorHash   uint64
+}
+
+type directoryBootNewest struct {
+	machineID UUID
+	monotonic uint64
+	realtime  uint64
 }
 
 func isJournalFileName(name string) bool {
@@ -965,6 +994,114 @@ func isJournalFileName(name string) bool {
 		strings.HasSuffix(name, ".journal~") ||
 		strings.HasSuffix(name, ".journal.zst") ||
 		strings.HasSuffix(name, ".journal~.zst")
+}
+
+func collectJournalFiles(path string) ([]string, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var files []string
+	for _, entry := range entries {
+		fullPath := filepath.Join(path, entry.Name())
+		if directoryEntryIsRegularFile(fullPath) && isJournalFileName(entry.Name()) {
+			files = append(files, fullPath)
+		}
+	}
+
+	for _, entry := range entries {
+		if !isJournalSubdirName(entry.Name()) {
+			continue
+		}
+		childPath := filepath.Join(path, entry.Name())
+		if !directoryEntryIsDirectory(childPath) {
+			continue
+		}
+		children, err := os.ReadDir(childPath)
+		if err != nil {
+			continue
+		}
+		for _, child := range children {
+			fullPath := filepath.Join(childPath, child.Name())
+			if directoryEntryIsRegularFile(fullPath) && isJournalFileName(child.Name()) {
+				files = append(files, fullPath)
+			}
+		}
+	}
+
+	sort.Strings(files)
+	return files, nil
+}
+
+func directoryEntryIsRegularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
+func directoryEntryIsDirectory(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func isJournalSubdirName(name string) bool {
+	if strings.Contains(name, ".") {
+		return false
+	}
+	return id128StringValid(name)
+}
+
+func id128StringValid(s string) bool {
+	if len(s) == 32 {
+		for _, ch := range s {
+			if !isASCIIHex(ch) {
+				return false
+			}
+		}
+		return true
+	}
+	if len(s) == 36 {
+		for i, ch := range s {
+			if i == 8 || i == 13 || i == 18 || i == 23 {
+				if ch != '-' {
+					return false
+				}
+				continue
+			}
+			if !isASCIIHex(ch) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func isASCIIHex(ch rune) bool {
+	return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
+}
+
+func buildDirectoryBootNewest(readers []*Reader) map[UUID]directoryBootNewest {
+	boots := make(map[UUID]directoryBootNewest)
+	for _, r := range readers {
+		bootID := r.header.tailEntryBootID
+		if uuidIsZero(bootID) {
+			continue
+		}
+		current, ok := boots[bootID]
+		if !ok || r.header.tailEntryMonotonic > current.monotonic {
+			boots[bootID] = directoryBootNewest{
+				machineID: r.header.machineID,
+				monotonic: r.header.tailEntryMonotonic,
+				realtime:  r.header.tailEntryRealtime,
+			}
+		}
+	}
+	return boots
+}
+
+func uuidIsZero(id UUID) bool {
+	return id == (UUID{})
 }
 
 func (dr *DirectoryReader) Close() error {
@@ -978,25 +1115,14 @@ func (dr *DirectoryReader) Close() error {
 }
 
 func (dr *DirectoryReader) Next() error {
-	dr.applyRealtimeSeek(DirectionForward)
-	for dr.index < len(dr.files) {
-		r := dr.files[dr.index]
-		if err := r.Next(); err != nil {
-			if errors.Is(err, errEndOfEntries) {
-				dr.index++
-				if dr.index < len(dr.files) {
-					if err := dr.files[dr.index].SeekHead(); err != nil {
-						return err
-					}
-					continue
-				}
-				return errEndOfEntries
-			}
-			return err
-		}
-		return nil
+	ok, err := dr.stepMerged(DirectionForward, false)
+	if err != nil {
+		return err
 	}
-	return errEndOfEntries
+	if !ok {
+		return errEndOfEntries
+	}
+	return nil
 }
 
 func (dr *DirectoryReader) GetEntry() (*Entry, error) {
@@ -1007,91 +1133,22 @@ func (dr *DirectoryReader) GetEntry() (*Entry, error) {
 }
 
 func (dr *DirectoryReader) Step() (bool, error) {
-	dr.applyRealtimeSeek(DirectionForward)
-	for dr.index < len(dr.files) {
-		r := dr.files[dr.index]
-		ok, err := r.Step()
-		if err != nil {
-			return false, err
-		}
-		if !ok {
-			dr.index++
-			if dr.index < len(dr.files) {
-				if err := dr.files[dr.index].SeekHead(); err != nil {
-					return false, err
-				}
-			}
-			continue
-		}
-		if dr.filter == nil {
-			return true, nil
-		}
-		entry, err := r.GetEntry()
-		if err != nil {
-			return false, err
-		}
-		if dr.filter.matches(entry) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return dr.stepMerged(DirectionForward, true)
 }
 
 func (dr *DirectoryReader) StepBack() (bool, error) {
-	dr.applyRealtimeSeek(DirectionBackward)
-	for dr.index >= 0 && dr.index < len(dr.files) {
-		r := dr.files[dr.index]
-		ok, err := r.StepBack()
-		if err != nil {
-			return false, err
-		}
-		if !ok {
-			dr.index--
-			if dr.index >= 0 {
-				if err := dr.files[dr.index].SeekTail(); err != nil {
-					return false, err
-				}
-			}
-			continue
-		}
-		if dr.filter == nil {
-			return true, nil
-		}
-		entry, err := r.GetEntry()
-		if err != nil {
-			return false, err
-		}
-		if dr.filter.matches(entry) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return dr.stepMerged(DirectionBackward, true)
 }
 
 func (dr *DirectoryReader) Previous() error {
-	dr.applyRealtimeSeek(DirectionBackward)
-	for dr.index >= 0 && dr.index < len(dr.files) {
-		r := dr.files[dr.index]
-		if err := r.Previous(); err != nil {
-			if errors.Is(err, errStartOfEntries) {
-				dr.index--
-				if dr.index >= 0 {
-					if err := dr.files[dr.index].SeekTail(); err != nil {
-						return err
-					}
-					continue
-				}
-				return errStartOfEntries
-			}
-			return err
-		}
-		return nil
+	ok, err := dr.stepMerged(DirectionBackward, false)
+	if err != nil {
+		return err
 	}
-	if dr.index >= len(dr.files) && len(dr.files) > 0 {
-		dr.index = len(dr.files) - 1
-		return dr.files[dr.index].Previous()
+	if !ok {
+		return errStartOfEntries
 	}
-	return errStartOfEntries
+	return nil
 }
 
 func (dr *DirectoryReader) currentReader() (*Reader, error) {
@@ -1106,6 +1163,7 @@ func (dr *DirectoryReader) AddMatch(data []byte) {
 		dr.filter = &filterBuilder{}
 	}
 	dr.filter.addMatch(data)
+	dr.resetMergeState()
 }
 
 func (dr *DirectoryReader) AddDisjunction() {
@@ -1113,6 +1171,7 @@ func (dr *DirectoryReader) AddDisjunction() {
 		dr.filter = &filterBuilder{}
 	}
 	dr.filter.addDisjunction()
+	dr.resetMergeState()
 }
 
 func (dr *DirectoryReader) AddConjunction() {
@@ -1120,10 +1179,12 @@ func (dr *DirectoryReader) AddConjunction() {
 		dr.filter = &filterBuilder{}
 	}
 	dr.filter.addConjunction()
+	dr.resetMergeState()
 }
 
 func (dr *DirectoryReader) FlushMatches() {
 	dr.filter = nil
+	dr.resetMergeState()
 }
 
 func (dr *DirectoryReader) GetRealtimeUsec() (uint64, error) {
@@ -1188,59 +1249,290 @@ func (dr *DirectoryReader) EnumerateFields() (map[string]struct{}, error) {
 }
 
 func (dr *DirectoryReader) SeekHead() error {
-	dr.index = 0
+	dr.index = -1
 	dr.realtimeSeek = nil
-	if len(dr.files) > 0 {
-		return dr.files[0].SeekHead()
+	dr.realtimeSeekBound = nil
+	dr.currentKey = nil
+	dr.hasDirection = false
+	dr.resetCandidates()
+	for _, r := range dr.files {
+		if err := r.SeekHead(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
 func (dr *DirectoryReader) SeekTail() error {
-	dr.index = len(dr.files) - 1
+	dr.index = -1
 	dr.realtimeSeek = nil
-	if len(dr.files) > 0 {
-		return dr.files[dr.index].SeekTail()
+	dr.realtimeSeekBound = nil
+	dr.currentKey = nil
+	dr.hasDirection = false
+	dr.resetCandidates()
+	for _, r := range dr.files {
+		if err := r.SeekTail(); err != nil {
+			return err
+		}
 	}
-	dr.index = 0
 	return nil
 }
 
 func (dr *DirectoryReader) SeekRealtimeUsec(usec uint64) error {
 	value := usec
 	dr.realtimeSeek = &value
+	dr.realtimeSeekBound = nil
+	dr.currentKey = nil
+	dr.hasDirection = false
+	dr.resetCandidates()
 	return nil
 }
 
-func (dr *DirectoryReader) applyRealtimeSeek(direction Direction) {
-	if dr.realtimeSeek == nil {
-		return
+func (dr *DirectoryReader) stepMerged(direction Direction, applyFilter bool) (bool, error) {
+	if err := dr.prepareMergeDirection(direction); err != nil {
+		return false, err
 	}
-	usec := *dr.realtimeSeek
-	dr.realtimeSeek = nil
-	if len(dr.files) == 0 {
-		dr.index = 0
-		return
-	}
-	if direction == DirectionForward {
-		idx := sort.Search(len(dr.files), func(i int) bool {
-			return dr.files[i].header.tailEntryRealtime >= usec
-		})
-		dr.index = idx
-		if idx < len(dr.files) {
-			_ = dr.files[idx].SeekRealtimeUsec(usec)
+
+	var best *directoryCandidate
+	for i := range dr.files {
+		if err := dr.fillCandidate(i, direction, applyFilter); err != nil {
+			return false, err
 		}
-		return
+		candidate := dr.candidates[i]
+		if candidate == nil {
+			continue
+		}
+		if best == nil {
+			best = candidate
+			continue
+		}
+		cmp := dr.compareEntryKeys(candidate.key, best.key)
+		if (direction == DirectionForward && cmp < 0) || (direction == DirectionBackward && cmp > 0) {
+			best = candidate
+		}
 	}
-	idx := sort.Search(len(dr.files), func(i int) bool {
-		return dr.files[i].header.headEntryRealtime > usec
-	}) - 1
-	if idx < 0 {
+
+	if best == nil {
 		dr.index = -1
+		dr.realtimeSeekBound = nil
+		return false, nil
+	}
+
+	dr.index = best.readerIndex
+	key := best.key
+	dr.currentKey = &key
+	dr.candidates[best.readerIndex] = nil
+	dr.realtimeSeekBound = nil
+	return true, nil
+}
+
+func (dr *DirectoryReader) prepareMergeDirection(direction Direction) error {
+	if len(dr.files) == 0 {
+		return nil
+	}
+
+	if dr.realtimeSeek != nil {
+		usec := *dr.realtimeSeek
+		dr.realtimeSeek = nil
+		for _, r := range dr.files {
+			if err := r.SeekRealtimeUsec(usec); err != nil {
+				return err
+			}
+		}
+		dr.resetCandidates()
+		dr.realtimeSeekBound = &directoryRealtimeSeekBound{usec: usec, direction: direction}
+		dr.direction = direction
+		dr.hasDirection = true
+		return nil
+	}
+
+	if dr.hasDirection && dr.direction == direction {
+		return nil
+	}
+
+	if dr.currentKey != nil {
+		for _, r := range dr.files {
+			if err := r.SeekRealtimeUsec(dr.currentKey.realtime); err != nil {
+				return err
+			}
+		}
+	} else if direction == DirectionForward {
+		for _, r := range dr.files {
+			if err := r.SeekHead(); err != nil {
+				return err
+			}
+		}
+	} else {
+		for _, r := range dr.files {
+			if err := r.SeekTail(); err != nil {
+				return err
+			}
+		}
+	}
+
+	dr.resetCandidates()
+	dr.direction = direction
+	dr.hasDirection = true
+	return nil
+}
+
+func (dr *DirectoryReader) fillCandidate(readerIndex int, direction Direction, applyFilter bool) error {
+	if dr.candidates[readerIndex] != nil {
+		return nil
+	}
+
+	r := dr.files[readerIndex]
+	for {
+		ok, err := stepReaderRaw(r, direction)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+
+		if applyFilter && dr.filter != nil {
+			entry, err := r.GetEntry()
+			if err != nil {
+				return err
+			}
+			if !dr.filter.matches(entry) {
+				continue
+			}
+		}
+
+		key, err := r.currentDirectoryEntryKey()
+		if err != nil {
+			return err
+		}
+		if dr.realtimeSeekBound != nil {
+			bound := dr.realtimeSeekBound
+			if (bound.direction == DirectionForward && key.realtime < bound.usec) ||
+				(bound.direction == DirectionBackward && key.realtime > bound.usec) {
+				continue
+			}
+		}
+		if dr.currentKey != nil {
+			cmp := dr.compareEntryKeys(key, *dr.currentKey)
+			if (direction == DirectionForward && cmp <= 0) || (direction == DirectionBackward && cmp >= 0) {
+				continue
+			}
+		}
+
+		dr.candidates[readerIndex] = &directoryCandidate{
+			readerIndex: readerIndex,
+			key:         key,
+		}
+		return nil
+	}
+}
+
+func stepReaderRaw(r *Reader, direction Direction) (bool, error) {
+	if direction == DirectionForward {
+		err := r.Next()
+		if errors.Is(err, errEndOfEntries) {
+			return false, nil
+		}
+		return err == nil, err
+	}
+
+	err := r.Previous()
+	if errors.Is(err, errStartOfEntries) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (r *Reader) currentDirectoryEntryKey() (directoryEntryKey, error) {
+	if r.entryIndex < 0 || r.entryIndex >= len(r.entryOffsets) {
+		return directoryEntryKey{}, errEndOfEntries
+	}
+
+	offset := r.entryOffsets[r.entryIndex]
+	entryBuf := make([]byte, entryObjectHeaderSize)
+	if _, err := r.file.ReadAt(entryBuf, int64(offset)); err != nil {
+		return directoryEntryKey{}, err
+	}
+	hdr, err := parseEntryHeader(entryBuf)
+	if err != nil {
+		return directoryEntryKey{}, err
+	}
+
+	return directoryEntryKey{
+		seqnumID:  r.header.seqnumID,
+		seqnum:    hdr.seqnum,
+		bootID:    hdr.bootID,
+		monotonic: hdr.monotonic,
+		realtime:  hdr.realtime,
+		xorHash:   hdr.xorHash,
+	}, nil
+}
+
+func (dr *DirectoryReader) compareEntryKeys(a, b directoryEntryKey) int {
+	if a.bootID == b.bootID &&
+		a.monotonic == b.monotonic &&
+		a.realtime == b.realtime &&
+		a.xorHash == b.xorHash &&
+		a.seqnumID == b.seqnumID &&
+		a.seqnum == b.seqnum {
+		return 0
+	}
+
+	if a.seqnumID == b.seqnumID {
+		if cmp := cmpUint64(a.seqnum, b.seqnum); cmp != 0 {
+			return cmp
+		}
+	}
+
+	if a.bootID == b.bootID {
+		if cmp := cmpUint64(a.monotonic, b.monotonic); cmp != 0 {
+			return cmp
+		}
+	} else if cmp := dr.compareBootIDs(a.bootID, b.bootID); cmp != 0 {
+		return cmp
+	}
+
+	if cmp := cmpUint64(a.realtime, b.realtime); cmp != 0 {
+		return cmp
+	}
+	return cmpUint64(a.xorHash, b.xorHash)
+}
+
+func (dr *DirectoryReader) compareBootIDs(a, b UUID) int {
+	aNewest, okA := dr.bootNewest[a]
+	bNewest, okB := dr.bootNewest[b]
+	if !okA || !okB || aNewest.machineID != bNewest.machineID {
+		return 0
+	}
+	return cmpUint64(aNewest.realtime, bNewest.realtime)
+}
+
+func cmpUint64(a, b uint64) int {
+	if a < b {
+		return -1
+	}
+	if a > b {
+		return 1
+	}
+	return 0
+}
+
+func (dr *DirectoryReader) resetMergeState() {
+	dr.currentKey = nil
+	dr.hasDirection = false
+	dr.index = -1
+	dr.realtimeSeekBound = nil
+	dr.resetCandidates()
+}
+
+func (dr *DirectoryReader) resetCandidates() {
+	if len(dr.candidates) != len(dr.files) {
+		dr.candidates = make([]*directoryCandidate, len(dr.files))
 		return
 	}
-	dr.index = idx
-	_ = dr.files[idx].SeekRealtimeUsec(usec)
+	for i := range dr.candidates {
+		dr.candidates[i] = nil
+	}
 }
 
 func (dr *DirectoryReader) ListBoots() ([]BootInfo, error) {

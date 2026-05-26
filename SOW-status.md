@@ -6,7 +6,6 @@
 
 ## Pending
 
-- `SOW-0020-20260524-directory-traversal-parity.md` - open. Bring SDK directory readers and file-backed journalctl `--directory` behavior to stock parity.
 - `SOW-0024-20260526-mixed-format-directory-readers.md` - open. Prove and fix directory readers and file-backed journalctl rewrites for mixed regular/compact, compressed/uncompressed, multiple compression algorithms, sealed/unsealed, and related per-file feature combinations in one directory.
 - `SOW-0022-20260525-compatibility-test-gap-audit.md` - open. Records compatibility test gaps and likely feature-parity gaps found during read-only review. User decisions recorded: full unsealed verification parity remains here later; directory traversal remains in SOW-0020; compressed/compact parity is structural unless byte identity is deterministic; invalid same-boot monotonic writer appends must be rejected; file-backed journalctl option parity remains in scope across follow-up work.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - open, critical, sequenced after remaining compatibility feature/gap SOWs and before Netdata integration. Benchmark, profile, and optimize writers/readers before Netdata production replacement. Updated on 2026-05-26 after the user reported the Go SDK writer at about 5k logs/s in the SNMP traps ingestion worker versus about 25k logs/s for Netdata NetFlow with the vendored Rust implementation; later clarified that actual Netdata integration must happen last because the SDK does not yet perform well enough to replace the older vendored libraries.
@@ -32,6 +31,7 @@
 - `SOW-0017-20260524-xz-lz4-data-writing.md`
 - `SOW-0018-20260524-compact-journal-format.md`
 - `SOW-0019-20260524-forward-secure-sealing.md`
+- `SOW-0020-20260524-directory-traversal-parity.md`
 - `SOW-0021-20260524-nodejs-xz-data-compression.md`
 - `SOW-0023-20260525-netdata-ingestion-writer-api.md`
 - `SOW-0025-20260526-retention-enforcement-on-open.md`
@@ -54,5 +54,6 @@
 - SOW-0009 was originally sequenced last. The 2026-05-26 SNMP traps performance report makes it a critical Netdata integration gate. User scheduling decision on 2026-05-26: finish remaining compatibility feature/gap SOWs first, then run SOW-0009, then do SOW-0026 last because the SDK does not yet perform well enough to replace the faster vendored libraries.
 - SOW-0025 completed open-time retention enforcement for Rust, Go, Node.js, and Python high-level directory writers. Eager/existing-active open enforces during construction; lazy archived-only construction remains side-effect-free until first append opens the active file, then retention runs before the first entry is written.
 - SOW-0027 completed the accepted file-backed Netdata `jf`/libsystemd-like reader facade across Rust, Go, Node.js, and Python, including open file/directory/files, close, seek head/tail/realtime/cursor, next/previous/skip, match groups, current-entry data enumeration, field enumeration, unique enumeration, realtime/monotonic/seqnum/cursor metadata, boot listing, and binary/repeated value support. Netdata integration remains tracked by SOW-0026; broader mixed-format and compatibility gap validation remains tracked by SOW-0024 and SOW-0022.
+- SOW-0020 completed directory traversal parity for SDK readers and file-backed `journalctl --directory` across Rust, Go, Node.js, and Python. `run_directory_matrix.py` passes against stock `journalctl` from systemd 260.1 and all repository rewrites for root files, one machine-id subdirectory level, interleaved ordering, matching, fields, boots, corrupt-skip, verify-skip, empty directories, and the repository `.journal.zst` directory extension.
 - Byte-for-byte writer identity is the target for deterministic uncompressed journals. Any feature slice that cannot be made byte-identical must return with evidence before the acceptance condition is changed.
 - The external systemd source checkout is read-only for this project. Build outputs and generated files must remain inside this repository or `/tmp`.
