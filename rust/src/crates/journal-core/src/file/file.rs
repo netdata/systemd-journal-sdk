@@ -826,6 +826,53 @@ impl<M: MemoryMap> JournalFile<M> {
     }
 }
 
+impl JournalFile<super::mmap::MmapMut> {
+    pub fn open_for_append(file: &crate::repository::File, window_size: u64) -> Result<Self> {
+        debug_assert_eq!(window_size % OBJECT_ALIGNMENT, 0);
+
+        let writer_lock = WriterLock::acquire(file.path())?;
+        let fd = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(file.path())?;
+
+        let header_size = std::mem::size_of::<JournalHeader>() as u64;
+        let header_map = super::mmap::MmapMut::create(&fd, 0, header_size)?;
+        let header = JournalHeader::ref_from_prefix(&header_map).unwrap().0;
+        if header.signature != *b"LPKSHHRH" {
+            return Err(JournalError::InvalidMagicNumber);
+        }
+        let sanitized_header =
+            (header.header_size < header_size).then(|| sanitize_header_for_size(*header));
+
+        let data_hash_table_map = map_hash_table(
+            &fd,
+            header.header_size,
+            header.data_hash_table_offset,
+            header.data_hash_table_size,
+        )?;
+        let field_hash_table_map = map_hash_table(
+            &fd,
+            header.header_size,
+            header.field_hash_table_offset,
+            header.field_hash_table_size,
+        )?;
+
+        let window_manager = GuardedCell::new(WindowManager::new(fd, window_size, 32)?);
+
+        Ok(JournalFile {
+            file: file.clone(),
+            writer_lock: Some(writer_lock),
+            header_map,
+            sanitized_header,
+            data_hash_table_map,
+            field_hash_table_map,
+            window_manager,
+            seal_options: None,
+        })
+    }
+}
+
 impl<M: MemoryMapMut> JournalFile<M> {
     /// Syncs all file data to disk, ensuring all changes are persisted
     ///

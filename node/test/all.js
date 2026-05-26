@@ -9,6 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { zstdCompressSync } from 'node:zlib';
 import assert from 'node:assert/strict';
 import { jenkinsHash64, sipHash24 } from '../src/lib/hash.js';
+import { uuidToString } from '../src/lib/binary.js';
 import { Writer } from '../src/lib/writer.js';
 import { Log } from '../src/lib/directory-writer.js';
 import { FileReader } from '../src/lib/reader.js';
@@ -174,6 +175,90 @@ for (const [length, expected] of sipVectors) {
       const output = run('journalctl', ['--file', journalPath, '--output=json', '--no-pager', 'TEST_ID=node-compact']);
       assert.equal(output.trim().split('\n').filter(Boolean).length, 3);
     }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const options = {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      maxEntries: 0,
+      maxBytes: 0,
+      maxFiles: 10,
+    };
+    const first = new Log(tempDir, options);
+    first.append([{ name: 'MESSAGE', value: 'chain-online-reopen-0' }]);
+    first.append([{ name: 'MESSAGE', value: 'chain-online-reopen-1' }]);
+    const activePath = first.activeFile();
+    first.writer.close();
+    first.writer = null;
+    first.closed = true;
+
+    const second = new Log(tempDir, { ...options, headSeqnum: 99 });
+    assert.equal(second.activeFile(), activePath);
+    second.append([{ name: 'MESSAGE', value: 'chain-online-reopen-2' }]);
+    second.close();
+
+    const reader = FileReader.open(activePath);
+    const seqnums = [];
+    while (reader.step()) seqnums.push(reader.getEntry().seqnum);
+    reader.close();
+    assert.deepEqual(seqnums, [1n, 2n, 3n]);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const options = {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      maxEntries: 0,
+      maxBytes: 0,
+      maxFiles: 10,
+    };
+    const first = new Log(tempDir, options);
+    first.append([{ name: 'MESSAGE', value: 'empty-reopen-0' }, { name: 'TEST_ID', value: 'node-empty-online-reopen' }]);
+    first.append([{ name: 'MESSAGE', value: 'empty-reopen-1' }, { name: 'TEST_ID', value: 'node-empty-online-reopen' }]);
+    first.close();
+
+    const journalDir = first.journalDirectory();
+    const names = readdirSync(journalDir).filter((name) => name.endsWith('.journal')).sort();
+    assert.equal(names.length, 1);
+    const reader = FileReader.open(join(journalDir, names[0]));
+    const seqnumId = Buffer.from(reader.header.seqnum_id);
+    const nextSeqnum = reader.header.tail_entry_seqnum + 1n;
+    reader.close();
+
+    const emptyPath = join(
+      journalDir,
+      `system@${uuidToString(seqnumId)}-${nextSeqnum.toString(16).padStart(16, '0')}-00060a24181e040a.journal`,
+    );
+    const empty = Writer.create(emptyPath, {
+      machineId: options.machineId,
+      seqnumId,
+      headSeqnum: nextSeqnum,
+    });
+    empty.close();
+
+    const second = new Log(tempDir, options);
+    second.append([{ name: 'MESSAGE', value: 'empty-reopen-2' }, { name: 'TEST_ID', value: 'node-empty-online-reopen' }]);
+    second.close();
+    assert.equal(existsSync(emptyPath), false);
+
+    const seqnums = [];
+    for (const name of readdirSync(journalDir).filter((name) => name.endsWith('.journal')).sort()) {
+      const fileReader = FileReader.open(join(journalDir, name));
+      while (fileReader.step()) seqnums.push(fileReader.getEntry().seqnum);
+      fileReader.close();
+    }
+    assert.deepEqual(seqnums, [1n, 2n, 3n]);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -394,6 +479,10 @@ for (const [length, expected] of sipVectors) {
     });
     for (let i = 0; i < 5; i++) {
       log.append([{ name: 'MESSAGE', value: `entry-${i}` }]);
+      if (i === 0) {
+        assert.match(log.activeFile().split('/').pop(), /^custom-source@[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{16}\.journal$/);
+        assert.equal(existsSync(join(log.journalDirectory(), 'custom-source.journal')), false);
+      }
     }
     log.close();
     assert.throws(() => log.append([{ name: 'MESSAGE', value: 'after-close' }]), /journal log is closed/);
@@ -415,6 +504,279 @@ for (const [length, expected] of sipVectors) {
       reader.close();
     }
     assert.deepEqual(seqnums, [1n, 2n, 3n, 4n, 5n]);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const log = new Log(tempDir, {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      maxEntries: 0,
+      maxBytes: 0,
+      maxFiles: 10,
+    });
+    log.append([{ name: 'MESSAGE', value: 'default system naming' }]);
+    assert.equal(log.nextSeqnum, 2n);
+    assert.match(log.activeFile().split('/').pop(), /^system@[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{16}\.journal$/);
+    assert.equal(existsSync(join(log.journalDirectory(), 'system.journal')), false);
+    log.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const log = new Log(tempDir, {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      maxEntries: 0,
+      maxBytes: 0,
+      maxFiles: 10,
+    });
+    assert.throws(() => log.append([]), /empty entry/);
+    const files = readdirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal'));
+    assert.equal(files.length, 0);
+    log.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const config = {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      maxEntries: 1,
+      maxFiles: 0,
+    };
+    const first = new Log(tempDir, config);
+    for (let i = 0; i < 2; i++) {
+      first.append([{ name: 'MESSAGE', value: `construction-retention-${i}` }]);
+    }
+    first.close();
+    const journalDir = first.journalDirectory();
+    const before = readdirSync(journalDir).filter((name) => name.endsWith('.journal')).sort();
+    assert.equal(before.length, 2);
+
+    const second = new Log(tempDir, { ...config, maxFiles: 1 });
+    const after = readdirSync(journalDir).filter((name) => name.endsWith('.journal')).sort();
+    assert.deepEqual(after, before);
+    second.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const log = new Log(tempDir, {
+      source: 'system',
+      strictSystemdNaming: true,
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      maxEntries: 100,
+      maxFiles: 10,
+    });
+    log.append([{ name: 'MESSAGE', value: 'strict naming' }]);
+    assert.equal(log.activeFile(), join(log.journalDirectory(), 'system.journal'));
+    log.close();
+    const files = readdirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal')).sort();
+    assert.equal(files.length, 1);
+    assert.match(files[0], /^system@[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{16}\.journal$/);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const log = new Log(tempDir, {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      maxEntries: 1,
+      maxFiles: 1,
+      maxRetentionBytes: 1024 * 1024 * 1024,
+    });
+    for (let i = 0; i < 3; i++) {
+      log.append([{ name: 'MESSAGE', value: `retention-active-${i}` }]);
+    }
+    const files = readdirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal')).sort();
+    assert.equal(files.length, 1);
+    log.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const log = new Log(tempDir, {
+      source: 'system',
+      strictSystemdNaming: true,
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      maxEntries: 100,
+      maxFiles: 10,
+      maxRetentionBytes: 1,
+    });
+    log.append([
+      { name: 'MESSAGE', value: 'strict byte retained' },
+      { name: 'TEST_ID', value: 'node-strict-byte-retention' },
+    ]);
+    log.close();
+    const files = readdirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal')).sort();
+    assert.equal(files.length, 1);
+    const reader = FileReader.open(join(log.journalDirectory(), files[0]));
+    assert.equal(reader.step(), true);
+    assert.equal(reader.getEntry().fields.MESSAGE.toString('utf8'), 'strict byte retained');
+    reader.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const log = new Log(tempDir, {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      maxEntries: 100,
+      maxFiles: 10,
+    });
+    log.append([{ name: 'MESSAGE', value: 'archive failure cleanup' }]);
+    const originalArchiveTo = log.writer.archiveTo.bind(log.writer);
+    log.writer.archiveTo = (path) => {
+      originalArchiveTo(path);
+      throw new Error('synthetic post-archive failure');
+    };
+    assert.throws(() => log.close(), /synthetic post-archive failure/);
+    assert.equal(log.closed, true);
+    assert.equal(log.writer, null);
+    assert.doesNotThrow(() => log.close());
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const log = new Log(tempDir, {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      maxEntries: 1,
+      maxFiles: 10,
+    });
+    log.append([{ name: 'MESSAGE', value: 'rotation failure first' }]);
+    const originalArchiveTo = log.writer.archiveTo.bind(log.writer);
+    log.writer.archiveTo = (path) => {
+      originalArchiveTo(path);
+      throw new Error('synthetic post-rotation failure');
+    };
+    assert.throws(
+      () => log.append([{ name: 'MESSAGE', value: 'rotation failure second' }]),
+      /synthetic post-rotation failure/,
+    );
+    assert.equal(log.closed, false);
+    assert.equal(log.writer, null);
+    log.append([{ name: 'MESSAGE', value: 'rotation failure second' }]);
+    log.close();
+
+    const seqnums = [];
+    for (const name of readdirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal')).sort()) {
+      const reader = FileReader.open(join(log.journalDirectory(), name));
+      while (reader.step()) seqnums.push(reader.getEntry().seqnum);
+      reader.close();
+    }
+    assert.deepEqual(seqnums, [1n, 2n]);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const options = {
+      source: 'system',
+      strictSystemdNaming: true,
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      maxEntries: 100,
+      maxFiles: 10,
+    };
+    const first = new Log(tempDir, options);
+    first.append([{ name: 'MESSAGE', value: 'strict-reopen-0' }]);
+    first.close();
+    const second = new Log(tempDir, options);
+    second.append([{ name: 'MESSAGE', value: 'strict-reopen-1' }]);
+    second.close();
+    const seqnums = [];
+    for (const name of readdirSync(second.journalDirectory()).filter((name) => name.endsWith('.journal')).sort()) {
+      const reader = FileReader.open(join(second.journalDirectory(), name));
+      while (reader.step()) seqnums.push(reader.getEntry().seqnum);
+      reader.close();
+    }
+    assert.deepEqual(seqnums, [1n, 2n]);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const options = {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      maxEntries: 0,
+      maxBytes: 0,
+      maxFiles: 10,
+    };
+    const first = new Log(tempDir, options);
+    first.append([{ name: 'MESSAGE', value: 'chain-reopen-0' }]);
+    first.append([{ name: 'MESSAGE', value: 'chain-reopen-1' }]);
+    first.close();
+
+    const second = new Log(tempDir, options);
+    second.append([{ name: 'MESSAGE', value: 'chain-reopen-2' }]);
+    second.close();
+
+    const seqnums = [];
+    for (const name of readdirSync(second.journalDirectory()).filter((name) => name.endsWith('.journal')).sort()) {
+      const reader = FileReader.open(join(second.journalDirectory(), name));
+      while (reader.step()) seqnums.push(reader.getEntry().seqnum);
+      reader.close();
+    }
+    assert.deepEqual(seqnums, [1n, 2n, 3n]);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const log = new Log(tempDir, {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      maxEntries: 0,
+      maxBytes: 0,
+      maxFiles: 10,
+    });
+    for (let i = 0; i < 3; i++) log.append([{ name: 'MESSAGE', value: `no-rotation-${i}` }]);
+    log.close();
+    const files = readdirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal'));
+    assert.equal(files.length, 1);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }

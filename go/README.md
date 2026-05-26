@@ -27,9 +27,9 @@ Current writer scope:
 - live stock-reader validation for the current writer slice with `journalctl
   --file`, `journalctl --file --follow --no-tail --boot=all`, and libsystemd
   reader APIs, including live sequence-order checks;
-- high-level directory writing with systemd-compatible active/archive file
-  naming, entry-count and file-size rotation, and file-count and byte-size
-  retention.
+- high-level directory writing with Netdata-compatible chain active naming by
+  default, opt-in strict systemd active naming, entry-count and file-size
+  rotation, and tracked journal-file-count and byte-size retention.
 
 Deferred scope:
 
@@ -124,9 +124,14 @@ return log.Append([]journal.Field{
 ```
 
 `NewLog()` stores files below `<directory>/<machine-id>/`. Rotation archives the
-current active file and opens a new active file. Retention deletes only archived
-files owned by the configured `Source`; the active file is never deleted to
-satisfy a retention limit.
+current active file and opens a new active file. By default the active file uses
+the Netdata Rust writer chain filename form
+`<source>@<seqnum-id>-<head-seqnum>-<head-realtime>.journal`; set
+`StrictSystemdNaming: true` to use `<source>.journal` as the active file.
+Zero-valued rotation and retention limits are disabled. Retention counts the
+tracked active/current file in file-count and committed-byte limits, but
+deletion only selects older unprotected files owned by the configured `Source`;
+the tracked active/current file is never deleted to satisfy a retention limit.
 
 Basic reader usage:
 

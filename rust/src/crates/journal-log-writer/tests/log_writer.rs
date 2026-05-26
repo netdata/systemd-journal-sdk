@@ -5,8 +5,10 @@
 //! - File rotation (size-based, count-based)
 //! - Retention policies
 
-use journal_common::{Microseconds, load_machine_id, monotonic_now};
-use journal_core::file::{HeaderIncompatibleFlags, JournalFile, Mmap};
+use journal_common::{Microseconds, load_boot_id, load_machine_id, monotonic_now};
+use journal_core::file::{
+    HeaderIncompatibleFlags, JournalFile, JournalFileOptions, JournalWriter, Mmap, MmapMut,
+};
 use journal_log_writer::{
     Config, EntryTimestamps, Log, LogLifecycleEvent, LogLifecycleObserver, RetentionPolicy,
     RotationPolicy,
@@ -140,6 +142,419 @@ impl LogLifecycleObserver for RecordingObserver {
             .expect("lock observer events")
             .push(event.clone());
     }
+}
+
+#[test]
+fn test_default_active_filename_uses_netdata_chain_naming() {
+    let dir = TempDir::new().unwrap();
+    let mut log = Log::new(dir.path(), test_config()).unwrap();
+
+    log.write_entry(&[b"MESSAGE=default chain naming"], None)
+        .unwrap();
+
+    let active = log.active_file().expect("active file after write");
+    let name = Path::new(active.path())
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap();
+    assert!(
+        name.starts_with("system@") && name.ends_with(".journal"),
+        "active filename should use Netdata chain naming, got {name}"
+    );
+
+    let machine_id = load_machine_id().unwrap();
+    let strict_path = dir
+        .path()
+        .join(machine_id.as_simple().to_string())
+        .join("system.journal");
+    assert!(
+        !strict_path.exists(),
+        "default naming must not create system.journal"
+    );
+}
+
+#[test]
+fn test_default_chain_reopen_preserves_sequence_identity() {
+    let dir = TempDir::new().unwrap();
+    {
+        let mut log = Log::new(dir.path(), test_config()).unwrap();
+        log.write_entry(&[b"MESSAGE=chain reopen 0"], None).unwrap();
+        log.write_entry(&[b"MESSAGE=chain reopen 1"], None).unwrap();
+        log.sync().unwrap();
+    }
+    {
+        let mut log = Log::new(dir.path(), test_config()).unwrap();
+        log.write_entry(&[b"MESSAGE=chain reopen 2"], None).unwrap();
+        log.sync().unwrap();
+    }
+
+    let paths = journal_file_paths(&dir);
+    assert_eq!(paths.len(), 2, "expected one reopened successor file");
+
+    let mut seqnum_id = None;
+    let expected_heads = [1, 3];
+    for (idx, path) in paths.iter().enumerate() {
+        let file = File::from_path(path).expect("journal path should parse");
+        let journal = JournalFile::<Mmap>::open(&file, 4096).expect("open journal");
+        let header = journal.journal_header_ref();
+        if let Some(seqnum_id) = seqnum_id {
+            assert_eq!(header.seqnum_id, seqnum_id, "seqnum id should resume");
+        } else {
+            seqnum_id = Some(header.seqnum_id);
+        }
+        assert_eq!(
+            header.head_entry_seqnum, expected_heads[idx],
+            "head sequence should continue across reopen"
+        );
+    }
+}
+
+#[test]
+fn test_default_chain_reopens_online_file() {
+    let dir = TempDir::new().unwrap();
+    let machine_id = load_machine_id().unwrap();
+    let journal_dir = dir.path().join(machine_id.as_simple().to_string());
+    fs::create_dir_all(&journal_dir).unwrap();
+
+    let boot_id = uuid::Uuid::from_u128(0x101112131415161718191a1b1c1d1e1f);
+    let seqnum_id = uuid::Uuid::from_u128(0x303132333435363738393a3b3c3d3e3f);
+    let head_realtime = 1_700_010_000_000_000_u64;
+    let path = journal_dir.join(format!(
+        "system@{}-{:016x}-{:016x}.journal",
+        seqnum_id.simple(),
+        1,
+        head_realtime
+    ));
+    let file = File::from_path(&path).expect("journal path should parse");
+    let options = JournalFileOptions::new(machine_id, boot_id, seqnum_id).with_keyed_hash(true);
+    let mut journal = JournalFile::<MmapMut>::create(&file, options).unwrap();
+    let mut writer = JournalWriter::new(&mut journal, 1, boot_id).unwrap();
+    writer
+        .add_entry(
+            &mut journal,
+            &[b"MESSAGE=online reopen 0"],
+            head_realtime,
+            1,
+        )
+        .unwrap();
+    writer
+        .add_entry(
+            &mut journal,
+            &[b"MESSAGE=online reopen 1"],
+            head_realtime + 1,
+            2,
+        )
+        .unwrap();
+    journal.sync().unwrap();
+    journal.release_writer_lock().unwrap();
+    drop(journal);
+
+    let corrupt_path = journal_dir.join(format!(
+        "system@{}-{:016x}-{:016x}.journal",
+        uuid::Uuid::from_u128(0x202122232425262728292a2b2c2d2e2f).simple(),
+        0,
+        0
+    ));
+    fs::write(&corrupt_path, b"not a journal").unwrap();
+
+    let config =
+        test_config().with_rotation_policy(RotationPolicy::default().with_number_of_entries(3));
+    let mut log = Log::new(dir.path(), config).unwrap();
+    let active = log.active_file().expect("active file after reopen");
+    assert_eq!(active.path(), path.to_str().unwrap());
+
+    log.write_entry_with_timestamps(
+        &[b"MESSAGE=online reopen 2"],
+        EntryTimestamps::default()
+            .with_entry_realtime_usec(head_realtime + 2)
+            .with_entry_monotonic_usec(3),
+    )
+    .unwrap();
+    log.write_entry_with_timestamps(
+        &[b"MESSAGE=online reopen 3"],
+        EntryTimestamps::default()
+            .with_entry_realtime_usec(head_realtime + 3)
+            .with_entry_monotonic_usec(4),
+    )
+    .unwrap();
+    log.sync().unwrap();
+
+    let paths = journal_file_paths(&dir);
+    let valid_paths: Vec<_> = paths
+        .into_iter()
+        .filter(|path| path != &corrupt_path)
+        .collect();
+    assert_eq!(
+        valid_paths.len(),
+        2,
+        "reopened file should rotate at count limit"
+    );
+    let first_file = File::from_path(&valid_paths[0]).expect("journal path should parse");
+    let first_journal = JournalFile::<Mmap>::open(&first_file, 4096).expect("open first journal");
+    assert_eq!(first_journal.journal_header_ref().tail_entry_seqnum, 3);
+    let second_file = File::from_path(&valid_paths[1]).expect("journal path should parse");
+    let second_journal =
+        JournalFile::<Mmap>::open(&second_file, 4096).expect("open second journal");
+    assert_eq!(second_journal.journal_header_ref().head_entry_seqnum, 4);
+}
+
+#[test]
+fn test_default_chain_discards_empty_online_file_and_continues_sequence() {
+    let dir = TempDir::new().unwrap();
+    {
+        let mut log = Log::new(dir.path(), test_config()).unwrap();
+        log.write_entry(&[b"MESSAGE=empty reopen 0"], None)
+            .unwrap();
+        log.write_entry(&[b"MESSAGE=empty reopen 1"], None)
+            .unwrap();
+        log.close().unwrap();
+    }
+
+    let machine_id = load_machine_id().unwrap();
+    let journal_dir = dir.path().join(machine_id.as_simple().to_string());
+    let paths = journal_file_paths(&dir);
+    assert_eq!(paths.len(), 1, "expected one initial archive");
+    let first_file = File::from_path(&paths[0]).expect("journal path should parse");
+    let first_journal = JournalFile::<Mmap>::open(&first_file, 4096).expect("open first journal");
+    let first_header = first_journal.journal_header_ref();
+    let seqnum_id = uuid::Uuid::from_bytes(first_header.seqnum_id);
+    let next_seqnum = first_header.tail_entry_seqnum + 1;
+    drop(first_journal);
+
+    let empty_path = journal_dir.join(format!(
+        "system@{}-{:016x}-{:016x}.journal",
+        seqnum_id.simple(),
+        next_seqnum,
+        1_700_010_000_000_010_u64
+    ));
+    let empty_file = File::from_path(&empty_path).expect("empty journal path should parse");
+    let boot_id = load_boot_id().unwrap();
+    let options = JournalFileOptions::new(machine_id, boot_id, seqnum_id).with_keyed_hash(true);
+    let mut empty_journal = JournalFile::<MmapMut>::create(&empty_file, options).unwrap();
+    empty_journal.release_writer_lock().unwrap();
+    drop(empty_journal);
+
+    {
+        let mut log = Log::new(dir.path(), test_config()).unwrap();
+        log.write_entry(&[b"MESSAGE=empty reopen 2"], None)
+            .unwrap();
+        log.close().unwrap();
+    }
+
+    assert!(
+        !empty_path.exists(),
+        "empty online file should be discarded before append"
+    );
+    let paths = journal_file_paths(&dir);
+    assert_eq!(paths.len(), 2, "expected original and successor archives");
+    let expected_heads = [1, 3];
+    let expected_tails = [2, 3];
+    for (idx, path) in paths.iter().enumerate() {
+        let file = File::from_path(path).expect("journal path should parse");
+        let journal = JournalFile::<Mmap>::open(&file, 4096).expect("open journal");
+        let header = journal.journal_header_ref();
+        assert_eq!(header.head_entry_seqnum, expected_heads[idx]);
+        assert_eq!(header.tail_entry_seqnum, expected_tails[idx]);
+    }
+}
+
+#[test]
+fn test_strict_systemd_naming_uses_system_journal_active() {
+    let dir = TempDir::new().unwrap();
+    let config = test_config().with_strict_systemd_naming(true);
+    let mut log = Log::new(dir.path(), config).unwrap();
+
+    log.write_entry(&[b"MESSAGE=strict systemd naming"], None)
+        .unwrap();
+
+    let active = log.active_file().expect("active file after write");
+    let name = Path::new(active.path())
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap();
+    assert_eq!(name, "system.journal");
+}
+
+#[test]
+fn test_strict_systemd_naming_reopens_existing_system_journal() {
+    let dir = TempDir::new().unwrap();
+    let machine_id = load_machine_id().unwrap();
+    let journal_dir = dir.path().join(machine_id.as_simple().to_string());
+    fs::create_dir_all(&journal_dir).unwrap();
+
+    let boot_id = uuid::Uuid::from_u128(0x1112131415161718191a1b1c1d1e1f20);
+    let seqnum_id = uuid::Uuid::from_u128(0x2122232425262728292a2b2c2d2e2f30);
+    let head_realtime = 1_700_020_000_000_000_u64;
+    let path = journal_dir.join("system.journal");
+    let file = File::from_path(&path).expect("system journal path should parse");
+    let options = JournalFileOptions::new(machine_id, boot_id, seqnum_id).with_keyed_hash(true);
+    let mut journal = JournalFile::<MmapMut>::create(&file, options).unwrap();
+    let mut writer = JournalWriter::new(&mut journal, 1, boot_id).unwrap();
+    writer
+        .add_entry(
+            &mut journal,
+            &[b"MESSAGE=strict stale reopen 0"],
+            head_realtime,
+            1,
+        )
+        .unwrap();
+    journal.sync().unwrap();
+    journal.release_writer_lock().unwrap();
+    drop(journal);
+
+    let config = test_config().with_strict_systemd_naming(true);
+    let mut log = Log::new(dir.path(), config).unwrap();
+    assert_eq!(
+        log.active_file().expect("strict stale active file").path(),
+        path.to_str().unwrap()
+    );
+
+    log.write_entry_with_timestamps(
+        &[b"MESSAGE=strict stale reopen 1"],
+        EntryTimestamps::default()
+            .with_entry_realtime_usec(head_realtime + 1)
+            .with_entry_monotonic_usec(2),
+    )
+    .unwrap();
+    log.close().unwrap();
+
+    let paths = journal_file_paths(&dir);
+    assert_eq!(
+        paths.len(),
+        1,
+        "strict close should archive the reopened file"
+    );
+    let archived = File::from_path(&paths[0]).expect("archived journal path should parse");
+    let journal = JournalFile::<Mmap>::open(&archived, 4096).expect("open archived journal");
+    let header = journal.journal_header_ref();
+    assert_eq!(header.seqnum_id, seqnum_id.as_bytes().to_owned());
+    assert_eq!(header.tail_entry_seqnum, 2);
+}
+
+#[test]
+fn test_default_chain_tail_ignores_lower_strict_system_journal() {
+    let dir = TempDir::new().unwrap();
+    let machine_id = load_machine_id().unwrap();
+    let journal_dir = dir.path().join(machine_id.as_simple().to_string());
+    fs::create_dir_all(&journal_dir).unwrap();
+
+    let chain_boot_id = uuid::Uuid::from_u128(0x3132333435363738393a3b3c3d3e3f40);
+    let chain_seqnum_id = uuid::Uuid::from_u128(0x4142434445464748494a4b4c4d4e4f50);
+    let chain_head_realtime = 1_700_030_000_000_000_u64;
+    let chain_path = journal_dir.join(format!(
+        "system@{}-{:016x}-{:016x}.journal",
+        chain_seqnum_id.simple(),
+        1,
+        chain_head_realtime
+    ));
+    let chain_file = File::from_path(&chain_path).expect("chain path should parse");
+    let chain_options =
+        JournalFileOptions::new(machine_id, chain_boot_id, chain_seqnum_id).with_keyed_hash(true);
+    let mut chain_journal = JournalFile::<MmapMut>::create(&chain_file, chain_options).unwrap();
+    let mut chain_writer = JournalWriter::new(&mut chain_journal, 1, chain_boot_id).unwrap();
+    for seqnum in 1..=5 {
+        let message = format!("MESSAGE=chain tail {seqnum}");
+        chain_writer
+            .add_entry(
+                &mut chain_journal,
+                &[message.as_bytes()],
+                chain_head_realtime + seqnum,
+                seqnum,
+            )
+            .unwrap();
+    }
+    chain_journal.sync().unwrap();
+    chain_journal.release_writer_lock().unwrap();
+    drop(chain_journal);
+
+    let strict_boot_id = uuid::Uuid::from_u128(0x5152535455565758595a5b5c5d5e5f60);
+    let strict_seqnum_id = uuid::Uuid::from_u128(0x6162636465666768696a6b6c6d6e6f70);
+    let strict_path = journal_dir.join("system.journal");
+    let strict_file = File::from_path(&strict_path).expect("strict path should parse");
+    let strict_options =
+        JournalFileOptions::new(machine_id, strict_boot_id, strict_seqnum_id).with_keyed_hash(true);
+    let mut strict_journal = JournalFile::<MmapMut>::create(&strict_file, strict_options).unwrap();
+    let mut strict_writer = JournalWriter::new(&mut strict_journal, 1, strict_boot_id).unwrap();
+    for seqnum in 1..=2 {
+        let message = format!("MESSAGE=strict tail {seqnum}");
+        strict_writer
+            .add_entry(
+                &mut strict_journal,
+                &[message.as_bytes()],
+                chain_head_realtime + seqnum,
+                seqnum,
+            )
+            .unwrap();
+    }
+    strict_journal.sync().unwrap();
+    strict_journal.release_writer_lock().unwrap();
+    drop(strict_journal);
+
+    let mut log = Log::new(dir.path(), test_config()).unwrap();
+    log.write_entry_with_timestamps(
+        &[b"MESSAGE=default chain continues"],
+        EntryTimestamps::default()
+            .with_entry_realtime_usec(chain_head_realtime + 6)
+            .with_entry_monotonic_usec(6),
+    )
+    .unwrap();
+    log.sync().unwrap();
+
+    let reopened = JournalFile::<Mmap>::open(&chain_file, 4096).expect("open chain journal");
+    let header = reopened.journal_header_ref();
+    assert_eq!(header.seqnum_id, chain_seqnum_id.as_bytes().to_owned());
+    assert_eq!(header.tail_entry_seqnum, 6);
+}
+
+#[test]
+fn test_custom_source_naming_is_honored_in_default_and_strict_modes() {
+    let dir = TempDir::new().unwrap();
+    let origin = Origin {
+        machine_id: None,
+        namespace: None,
+        source: journal_registry::Source::Unknown("custom-source".to_string()),
+    };
+    let mut log = Log::new(
+        dir.path(),
+        Config::new(
+            origin.clone(),
+            RotationPolicy::default(),
+            RetentionPolicy::default(),
+        ),
+    )
+    .unwrap();
+    log.write_entry(&[b"MESSAGE=custom default source"], None)
+        .unwrap();
+    let active = log.active_file().expect("active default file");
+    let name = Path::new(active.path())
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap();
+    assert!(
+        name.starts_with("custom-source@"),
+        "default custom source filename should use custom-source@, got {name}"
+    );
+
+    let strict_dir = TempDir::new().unwrap();
+    let mut strict_log = Log::new(
+        strict_dir.path(),
+        Config::new(
+            origin,
+            RotationPolicy::default(),
+            RetentionPolicy::default(),
+        )
+        .with_strict_systemd_naming(true),
+    )
+    .unwrap();
+    strict_log
+        .write_entry(&[b"MESSAGE=custom strict source"], None)
+        .unwrap();
+    let active = strict_log.active_file().expect("active strict file");
+    let name = Path::new(active.path())
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap();
+    assert_eq!(name, "custom-source.journal");
 }
 
 fn parse_u64_field(row: &serde_json::Value, key: &str) -> Option<u64> {
@@ -290,14 +705,106 @@ fn test_retention_by_file_count() {
 
     log.sync().unwrap();
 
-    // Retention is enforced during rotation, so there might be 1 extra file
-    // (the active file + retention limit). Check that we're at or near the limit.
     let file_count = count_journal_files(&dir);
-    assert!(
-        file_count <= 3,
-        "Should have at most 3 files (active + retention limit), got {}",
-        file_count
+    assert_eq!(file_count, 2, "retention should include the current file");
+}
+
+#[test]
+fn test_retention_by_file_count_counts_current_file() {
+    let dir = TempDir::new().unwrap();
+
+    let config = test_config()
+        .with_rotation_policy(RotationPolicy::default().with_number_of_entries(1))
+        .with_retention_policy(RetentionPolicy::default().with_number_of_journal_files(1));
+
+    let mut log = Log::new(dir.path(), config).unwrap();
+    for i in 0..3 {
+        let message = format!("MESSAGE=current retention {i}");
+        log.write_entry(&[message.as_bytes()], None).unwrap();
+    }
+    log.sync().unwrap();
+
+    assert_eq!(
+        count_journal_files(&dir),
+        1,
+        "retention must keep only the tracked current file when max_files=1"
     );
+}
+
+#[test]
+fn test_strict_systemd_retention_protects_current_file_by_size() {
+    let dir = TempDir::new().unwrap();
+
+    let config = test_config()
+        .with_strict_systemd_naming(true)
+        .with_rotation_policy(RotationPolicy::default().with_number_of_entries(1))
+        .with_retention_policy(RetentionPolicy::default().with_size_of_journal_files(1));
+
+    let mut log = Log::new(dir.path(), config).unwrap();
+    log.write_entry(&[b"MESSAGE=strict retention 0"], None)
+        .unwrap();
+    log.write_entry(&[b"MESSAGE=strict retention 1"], None)
+        .unwrap();
+    log.sync().unwrap();
+
+    let paths = journal_file_paths(&dir);
+    assert_eq!(
+        paths.len(),
+        1,
+        "strict retention must protect the post-rotation current file"
+    );
+    assert_eq!(paths[0].file_name().unwrap(), "system.journal");
+}
+
+#[test]
+fn test_strict_systemd_close_renames_and_reopen_continues_sequence() {
+    let dir = TempDir::new().unwrap();
+    let config = test_config().with_strict_systemd_naming(true);
+
+    let mut first = Log::new(dir.path(), config.clone()).unwrap();
+    first
+        .write_entry_with_timestamps(
+            &[b"MESSAGE=strict close 0"],
+            EntryTimestamps::default()
+                .with_entry_realtime_usec(1_700_020_000_000_000)
+                .with_entry_monotonic_usec(1),
+        )
+        .unwrap();
+    first.close().unwrap();
+
+    let paths = journal_file_paths(&dir);
+    assert_eq!(paths.len(), 1);
+    assert!(
+        paths[0]
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("system@"),
+        "strict close should archive-rename system.journal"
+    );
+
+    let mut second = Log::new(dir.path(), config).unwrap();
+    second
+        .write_entry_with_timestamps(
+            &[b"MESSAGE=strict close 1"],
+            EntryTimestamps::default()
+                .with_entry_realtime_usec(1_700_020_000_000_001)
+                .with_entry_monotonic_usec(2),
+        )
+        .unwrap();
+    second.close().unwrap();
+
+    let paths = journal_file_paths(&dir);
+    let mut seqnums = Vec::new();
+    for path in paths {
+        let file = File::from_path(&path).expect("journal path should parse");
+        let journal = JournalFile::<Mmap>::open(&file, 4096).expect("open journal");
+        let header = journal.journal_header_ref();
+        if header.n_entries > 0 {
+            seqnums.push(header.tail_entry_seqnum);
+        }
+    }
+    assert_eq!(seqnums, vec![1, 2]);
 }
 
 #[test]
@@ -346,11 +853,13 @@ fn test_empty_entry() {
 
     let mut log = Log::new(dir.path(), config).unwrap();
 
-    // Write empty entry (should be no-op)
     let entry: [&[u8]; 0] = [];
-    log.write_entry(&entry, None).unwrap();
+    let err = log.write_entry(&entry, None).unwrap_err();
+    assert!(
+        err.to_string().contains("journal entry has no fields"),
+        "unexpected empty entry error: {err}"
+    );
 
-    // Should not create any files (no rotation triggered)
     assert_eq!(count_journal_files(&dir), 0);
 }
 

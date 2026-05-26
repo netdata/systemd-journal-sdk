@@ -171,9 +171,15 @@ Current Go writer feature slice:
   compression threshold;
 - keyed hash tables using the journal file ID;
 - byte-safe DATA field values through `Field.Value []byte`;
-- high-level directory writing with systemd-compatible active/archive naming;
+- high-level directory writing with Netdata-compatible chain active naming by
+  default (`<source>@<seqnum-id>-<head-seqnum>-<head-realtime>.journal`) and an
+  explicit strict systemd active naming option (`<source>.journal`);
+- zero-entry crash-created active files are discarded on reopen before append so
+  sequence numbers continue from the existing chain tail;
 - rotation by entry count and active file size;
-- retention by archived file count and total byte size, scoped to the configured source/prefix and never deleting the active file;
+- tracked journal-file-count and committed-byte-size retention. The tracked
+  active/current file counts toward retention envelopes but is never selected
+  for deletion to satisfy retention limits. Zero-valued limits are disabled;
 - pure cross-SDK cooperative lockfile with stale-owner detection, plus a
   secondary POSIX `flock`, to protect the one-writer contract among
   cooperating SDK writers;
@@ -231,10 +237,15 @@ Current Rust writer feature slice:
   for reference fixture generation and conformance checks;
 - byte-safe field values through `&[u8]` field payloads;
 - direct-file writing through `journal_core`;
-- high-level directory writing with systemd-compatible active/archive naming;
+- high-level directory writing with Netdata-compatible chain active naming by
+  default and an explicit strict systemd active naming option;
+- zero-entry crash-created active files are discarded on reopen before append so
+  sequence numbers continue from the existing chain tail;
 - entry-count and file-size rotation;
-- archived file-count and byte-size retention, without deleting the active file
-  to satisfy retention limits;
+- tracked journal-file-count and committed-byte-size retention. The tracked
+  active/current file counts toward retention envelopes but is never selected
+  for deletion to satisfy retention limits. Omitted or zero-valued limits are
+  disabled in Go, Node.js, and Python; Rust uses `None` to disable each limit;
 - pure cross-SDK cooperative lockfile with stale-owner detection to protect the
   one-writer contract among cooperating SDK writers;
 - Forward Secure Sealing TAG writing with configurable deterministic test
@@ -285,11 +296,15 @@ Current Node.js writer feature slice:
 - byte-safe field values through `Buffer`, `Uint8Array`, and string-compatible
   field values;
 - direct-file writing through `Writer`;
-- high-level directory writing through `Log` with systemd-compatible
-  active/archive naming;
+- high-level directory writing through `Log` with Netdata-compatible chain
+  active naming by default and an explicit strict systemd active naming option;
+- zero-entry crash-created active files are discarded on reopen before append so
+  sequence numbers continue from the existing chain tail;
 - entry-count and file-size rotation;
-- archived file-count and byte-size retention, without deleting the active file
-  to satisfy retention limits;
+- tracked journal-file-count and committed-byte-size retention. The tracked
+  active/current file counts toward retention envelopes but is never selected
+  for deletion to satisfy retention limits. Omitted or zero-valued limits are
+  disabled;
 - pure cross-SDK cooperative lockfile with stale-owner detection to protect the
   one-writer contract among cooperating SDK writers;
 - Forward Secure Sealing TAG writing with configurable deterministic test
@@ -341,11 +356,15 @@ Current Python writer feature slice:
 - byte-safe field values through `bytes`, `bytearray`, `memoryview`, and
   string-compatible field values;
 - direct-file writing through `Writer`;
-- high-level directory writing through `Log` with systemd-compatible
-  active/archive naming;
+- high-level directory writing through `Log` with Netdata-compatible chain
+  active naming by default and an explicit strict systemd active naming option;
+- zero-entry crash-created active files are discarded on reopen before append so
+  sequence numbers continue from the existing chain tail;
 - entry-count and file-size rotation;
-- archived file-count and byte-size retention, without deleting the active file
-  to satisfy retention limits;
+- tracked journal-file-count and committed-byte-size retention. The tracked
+  active/current file counts toward retention envelopes but is never selected
+  for deletion to satisfy retention limits. Omitted or zero-valued limits are
+  disabled;
 - pure cross-SDK cooperative lockfile with stale-owner detection, plus a
   secondary POSIX `flock`, to protect the one-writer contract among
   cooperating SDK writers;

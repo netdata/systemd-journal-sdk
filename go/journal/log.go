@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var syncJournalDirectory = syncParentDir
@@ -41,8 +42,8 @@ type RetentionPolicy struct {
 	MaxBytes uint64
 }
 
-// WithMaxFiles returns a policy that keeps at most n archived files. The active
-// file is not counted and is never deleted to satisfy this limit.
+// WithMaxFiles returns a policy that keeps at most n tracked journal files. The
+// active/current file is counted but is never deleted to satisfy this limit.
 func (p RetentionPolicy) WithMaxFiles(n int) RetentionPolicy {
 	p.MaxFiles = n
 	return p
@@ -63,6 +64,11 @@ type LogConfig struct {
 	Source          string
 	RotationPolicy  RotationPolicy
 	RetentionPolicy RetentionPolicy
+	// StrictSystemdNaming uses <source>.journal as the active filename.
+	// The default false value matches the Netdata Rust writer and uses
+	// <source>@<seqnum-id>-<head-seqnum>-<head-realtime>.journal for the
+	// active file.
+	StrictSystemdNaming bool
 }
 
 // Log writes journal entries to a systemd-compatible journal directory. Log is
@@ -71,10 +77,12 @@ type LogConfig struct {
 type Log struct {
 	machineDir string
 	source     string
+	active     string
 
 	options   Options
 	rotation  RotationPolicy
 	retention RetentionPolicy
+	strict    bool
 
 	writer        *Writer
 	entriesInFile int
@@ -88,8 +96,18 @@ type archivedJournalFile struct {
 	size         uint64
 }
 
+type chainState struct {
+	tailSeqnum         uint64
+	seqnumID           UUID
+	hasTail            bool
+	activePath         string
+	activeTailSeqnum   uint64
+	activeHeadRealtime uint64
+}
+
 // NewLog creates a high-level directory writer. Files are stored below
-// dir/<machine-id>/ using systemd journal naming.
+// dir/<machine-id>/ using Netdata-compatible chain naming by default, with
+// opt-in strict systemd active naming through StrictSystemdNaming.
 func NewLog(dir string, config LogConfig) (*Log, error) {
 	if dir == "" {
 		return nil, errInvalidJournal
@@ -103,6 +121,8 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 		return nil, err
 	}
 
+	explicitHeadSeqnum := config.Options.HeadSeqnum != 0
+	explicitSeqnumID := !isZeroUUID(config.Options.SeqnumID)
 	opts, err := normalizeLogOptions(config.Options)
 	if err != nil {
 		return nil, err
@@ -119,31 +139,89 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 		options:       opts,
 		rotation:      config.RotationPolicy,
 		retention:     config.RetentionPolicy,
+		strict:        config.StrictSystemdNaming,
 		entriesInFile: 0,
 	}
 
-	activePath := l.activePath()
-	if _, err := os.Stat(activePath); err == nil {
-		w, err := Open(activePath)
+	if l.strict {
+		state, err := l.scanChainState()
 		if err != nil {
 			return nil, err
 		}
-		l.writer = w
-		l.options.SeqnumID = w.header.seqnumID
-		l.options.BootID = w.bootID
-		l.entriesInFile = int(w.header.nEntries)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+		if state.hasTail {
+			if !explicitHeadSeqnum {
+				l.options.HeadSeqnum = state.tailSeqnum + 1
+			}
+			if !explicitSeqnumID {
+				l.options.SeqnumID = state.seqnumID
+			}
+		}
+		l.active = l.systemdActivePath()
+		if _, err := os.Stat(l.active); err == nil {
+			w, err := Open(l.active)
+			if err != nil {
+				return nil, err
+			}
+			if w.header.nEntries == 0 {
+				if err := l.discardEmptyOpenedWriter(w); err != nil {
+					return nil, err
+				}
+			} else {
+				l.attachOpenedWriter(w)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	} else {
+		state, err := l.scanChainState()
+		if err != nil {
+			return nil, err
+		}
+		if state.hasTail {
+			if !explicitHeadSeqnum {
+				l.options.HeadSeqnum = state.tailSeqnum + 1
+			}
+			if !explicitSeqnumID {
+				l.options.SeqnumID = state.seqnumID
+			}
+		}
+		if state.activePath != "" {
+			l.active = state.activePath
+			w, err := Open(l.active)
+			if err != nil {
+				return nil, err
+			}
+			if w.header.nEntries == 0 {
+				if err := l.discardEmptyOpenedWriter(w); err != nil {
+					return nil, err
+				}
+			} else {
+				l.attachOpenedWriter(w)
+			}
+		}
 	}
 
-	if err := l.enforceRetention(); err != nil {
-		if l.writer != nil {
-			_ = l.writer.Close()
-			l.writer = nil
-		}
-		return nil, err
-	}
 	return l, nil
+}
+
+func (l *Log) attachOpenedWriter(w *Writer) {
+	l.writer = w
+	l.options.SeqnumID = w.header.seqnumID
+	l.options.BootID = w.bootID
+	l.options.HeadSeqnum = w.nextSeqnum
+	l.entriesInFile = int(w.header.nEntries)
+}
+
+func (l *Log) discardEmptyOpenedWriter(w *Writer) error {
+	closeErr := w.Close()
+	removeErr := os.Remove(l.active)
+	if errors.Is(removeErr, os.ErrNotExist) {
+		removeErr = nil
+	}
+	if !l.strict {
+		l.active = ""
+	}
+	return errors.Join(closeErr, removeErr)
 }
 
 // Append appends one entry, rotating first if the current active file already
@@ -155,13 +233,13 @@ func (l *Log) Append(fields []Field, opts EntryOptions) error {
 	if err := validateEntryFields(fields); err != nil {
 		return err
 	}
-	if err := l.ensureWriter(); err != nil {
-		return err
-	}
-	if l.shouldRotate() {
-		if err := l.rotate(); err != nil {
+	if l.writer != nil && l.shouldRotate() {
+		if err := l.rotate(opts); err != nil {
 			return err
 		}
+	}
+	if err := l.ensureWriter(opts); err != nil {
+		return err
 	}
 	if err := l.writer.Append(fields, opts); err != nil {
 		return err
@@ -205,7 +283,7 @@ func (l *Log) Close() error {
 		l.closed = true
 		return nil
 	}
-	if l.writer.header.nEntries == 0 {
+	if l.writer.header.nEntries == 0 && l.strict {
 		err1 := l.writer.Close()
 		err2 := os.Remove(l.activePath())
 		if errors.Is(err2, os.ErrNotExist) {
@@ -219,13 +297,17 @@ func (l *Log) Close() error {
 		l.closed = true
 		return nil
 	}
+	protectedPath := l.activePath()
+	if l.strict {
+		protectedPath = l.archivePathFor(l.writer.header)
+	}
 	if err := l.archiveActive(); err != nil {
 		if l.writer == nil {
 			l.closed = true
 		}
 		return err
 	}
-	if err := l.enforceRetention(); err != nil {
+	if err := l.enforceRetention(protectedPath); err != nil {
 		l.closed = true
 		return err
 	}
@@ -256,7 +338,7 @@ func (l *Log) JournalDirectory() string {
 	return l.machineDir
 }
 
-func (l *Log) ensureWriter() error {
+func (l *Log) ensureWriter(entryOpts EntryOptions) error {
 	if l.writer != nil {
 		return nil
 	}
@@ -264,6 +346,15 @@ func (l *Log) ensureWriter() error {
 	opts.FileID = UUID{}
 	if opts.HeadSeqnum == 0 {
 		opts.HeadSeqnum = 1
+	}
+	if l.strict {
+		l.active = l.systemdActivePath()
+	} else {
+		headRealtime := entryOpts.RealtimeUsec
+		if headRealtime == 0 {
+			headRealtime = uint64(time.Now().UnixMicro())
+		}
+		l.active = l.chainPathFor(opts.SeqnumID, opts.HeadSeqnum, headRealtime)
 	}
 	w, err := Create(l.activePath(), opts)
 	if err != nil {
@@ -286,9 +377,9 @@ func (l *Log) shouldRotate() bool {
 		l.writer.CurrentSize() >= l.rotation.MaxFileSize
 }
 
-func (l *Log) rotate() error {
+func (l *Log) rotate(entryOpts EntryOptions) error {
 	if l.writer == nil {
-		return l.ensureWriter()
+		return l.ensureWriter(entryOpts)
 	}
 	nextSeqnum := l.writer.nextSeqnum
 	seqnumID := l.writer.header.seqnumID
@@ -299,17 +390,20 @@ func (l *Log) rotate() error {
 	l.options.SeqnumID = seqnumID
 	l.options.BootID = bootID
 	l.options.HeadSeqnum = nextSeqnum
-	if err := l.enforceRetention(); err != nil {
+	if err := l.ensureWriter(entryOpts); err != nil {
 		return err
 	}
-	return l.ensureWriter()
+	return l.enforceRetention(l.activePath())
 }
 
 func (l *Log) archiveActive() error {
 	if l.writer == nil {
 		return nil
 	}
-	archivePath := l.archivePathFor(l.writer.header)
+	archivePath := l.activePath()
+	if l.strict {
+		archivePath = l.archivePathFor(l.writer.header)
+	}
 	if err := l.writer.archiveTo(archivePath); err != nil {
 		if l.writer.closed {
 			l.writer = nil
@@ -319,18 +413,37 @@ func (l *Log) archiveActive() error {
 	}
 	l.writer = nil
 	l.entriesInFile = 0
+	if !l.strict {
+		l.active = ""
+	}
 	return nil
 }
 
-func (l *Log) enforceRetention() error {
-	files, total, err := l.archivedFiles()
+func (l *Log) enforceRetention(protectedPath string) error {
+	files, _, err := l.archivedFiles()
 	if err != nil {
 		return err
 	}
-	if activeInfo, err := os.Stat(l.activePath()); err == nil {
-		total += uint64(activeInfo.Size())
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
+	activePath := protectedPath
+	if activePath == "" {
+		activePath = l.activePath()
+	}
+	var total uint64
+	activeInFiles := false
+	for _, file := range files {
+		if activePath != "" && file.path == activePath {
+			activeInFiles = true
+		}
+		total += file.size
+	}
+	activeExtraFile := false
+	if activePath != "" && !activeInFiles {
+		if activeInfo, err := os.Stat(activePath); err == nil {
+			activeExtraFile = true
+			total += committedJournalSize(activePath, uint64(activeInfo.Size()))
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
 
 	sort.Slice(files, func(i, j int) bool {
@@ -343,21 +456,46 @@ func (l *Log) enforceRetention() error {
 		return files[i].path < files[j].path
 	})
 
-	for l.retention.MaxFiles > 0 && len(files) > l.retention.MaxFiles {
-		deleted := files[0]
+	fileCount := len(files)
+	if activeExtraFile {
+		fileCount++
+	}
+	for l.retention.MaxFiles > 0 && fileCount > l.retention.MaxFiles {
+		deleteIndex := -1
+		for i, file := range files {
+			if activePath == "" || file.path != activePath {
+				deleteIndex = i
+				break
+			}
+		}
+		if deleteIndex == -1 {
+			break
+		}
+		deleted := files[deleteIndex]
 		if err := os.Remove(deleted.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		total = saturatingSub(total, deleted.size)
-		files = files[1:]
+		files = append(files[:deleteIndex], files[deleteIndex+1:]...)
+		fileCount--
 	}
 	for l.retention.MaxBytes > 0 && total > l.retention.MaxBytes && len(files) > 0 {
-		deleted := files[0]
+		deleteIndex := -1
+		for i, file := range files {
+			if activePath == "" || file.path != activePath {
+				deleteIndex = i
+				break
+			}
+		}
+		if deleteIndex == -1 {
+			break
+		}
+		deleted := files[deleteIndex]
 		if err := os.Remove(deleted.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
 		total = saturatingSub(total, deleted.size)
-		files = files[1:]
+		files = append(files[:deleteIndex], files[deleteIndex+1:]...)
 	}
 	return syncJournalDirectory(l.machineDir)
 }
@@ -378,11 +516,14 @@ func (l *Log) archivedFiles() ([]archivedJournalFile, uint64, error) {
 			continue
 		}
 		info, err := entry.Info()
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
 		if err != nil {
 			return nil, 0, err
 		}
 		archived.path = filepath.Join(l.machineDir, entry.Name())
-		archived.size = uint64(info.Size())
+		archived.size = committedJournalSize(archived.path, uint64(info.Size()))
 		files = append(files, archived)
 		total += archived.size
 	}
@@ -390,16 +531,104 @@ func (l *Log) archivedFiles() ([]archivedJournalFile, uint64, error) {
 }
 
 func (l *Log) activePath() string {
+	if l.active != "" {
+		return l.active
+	}
+	if l.strict {
+		return l.systemdActivePath()
+	}
+	return l.chainPathFor(l.options.SeqnumID, l.options.HeadSeqnum, 0)
+}
+
+func (l *Log) systemdActivePath() string {
 	return filepath.Join(l.machineDir, l.source+".journal")
 }
 
-func (l *Log) archivePathFor(header journalHeader) string {
+func (l *Log) chainPathFor(seqnumID UUID, headSeqnum, headRealtime uint64) string {
 	name := fmt.Sprintf("%s@%s-%016x-%016x.journal",
 		l.source,
-		header.seqnumID.String(),
-		header.headEntrySeqnum,
-		header.headEntryRealtime)
+		seqnumID.String(),
+		headSeqnum,
+		headRealtime)
 	return filepath.Join(l.machineDir, name)
+}
+
+func (l *Log) archivePathFor(header journalHeader) string {
+	return l.chainPathFor(header.seqnumID, header.headEntrySeqnum, header.headEntryRealtime)
+}
+
+func (l *Log) scanChainState() (chainState, error) {
+	files, _, err := l.archivedFiles()
+	if err != nil {
+		return chainState{}, err
+	}
+	var state chainState
+	for _, file := range files {
+		header, err := readJournalHeader(file.path)
+		if err != nil {
+			continue
+		}
+		if !state.hasTail || header.tailEntrySeqnum > state.tailSeqnum {
+			state.hasTail = true
+			state.tailSeqnum = header.tailEntrySeqnum
+			state.seqnumID = header.seqnumID
+		}
+		if header.state == stateOnline &&
+			(state.activePath == "" ||
+				header.tailEntrySeqnum > state.activeTailSeqnum ||
+				(header.tailEntrySeqnum == state.activeTailSeqnum &&
+					header.headEntryRealtime > state.activeHeadRealtime)) {
+			state.activePath = file.path
+			state.activeTailSeqnum = header.tailEntrySeqnum
+			state.activeHeadRealtime = header.headEntryRealtime
+		}
+	}
+	return state, nil
+}
+
+func readJournalHeader(path string) (journalHeader, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return journalHeader{}, err
+	}
+	defer f.Close()
+	buf := make([]byte, headerSize)
+	if _, err := f.ReadAt(buf, 0); err != nil {
+		return journalHeader{}, err
+	}
+	return parseHeader(buf)
+}
+
+func committedJournalSize(path string, fallback uint64) uint64 {
+	f, err := os.Open(path)
+	if err != nil {
+		return fallback
+	}
+	defer f.Close()
+
+	buf := make([]byte, headerSize)
+	if _, err := f.ReadAt(buf, 0); err != nil {
+		return fallback
+	}
+	header, err := parseHeader(buf)
+	if err != nil || header.tailObjectOffset == 0 {
+		return fallback
+	}
+	tail, err := readObjectHeaderAt(f, header.tailObjectOffset)
+	if err != nil {
+		return fallback
+	}
+	if tail.size > ^uint64(0)-header.tailObjectOffset {
+		return align8Saturating(^uint64(0))
+	}
+	return align8Saturating(header.tailObjectOffset + tail.size)
+}
+
+func align8Saturating(v uint64) uint64 {
+	if v > ^uint64(0)-(objectAlignment-1) {
+		return ^uint64(0) &^ (objectAlignment - 1)
+	}
+	return align8(v)
 }
 
 func normalizeLogOptions(opts Options) (Options, error) {

@@ -139,6 +139,19 @@ def test_writer_reader_and_binary_export():
         assert len([line for line in stock_count.splitlines() if line.strip()]) == 1
 
 
+def test_writer_head_seqnum_zero_defaults_to_one():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'head-zero.journal')
+        writer = Writer.create(path, {'head_seqnum': 0})
+        writer.append([{'name': 'MESSAGE', 'value': 'head zero'}])
+        writer.close()
+
+        reader = FileReader.open(path)
+        assert reader.step()
+        assert reader.get_entry()['seqnum'] == 1
+        reader.close()
+
+
 def test_compact_writer_reader_and_stock_verify():
     with tempfile.TemporaryDirectory() as td:
         path = os.path.join(td, 'compact.journal')
@@ -228,7 +241,8 @@ def test_directory_writer_rotation():
                 {'name': 'LIVE_SEQ', 'value': f'{i:06d}'},
                 {'name': 'PRIORITY', 'value': '6'},
             ])
-        assert log.active_file().endswith('/netdata-test.journal')
+        assert Path(log.active_file()).name.startswith('netdata-test@')
+        assert not os.path.exists(os.path.join(log.journal_directory(), 'netdata-test.journal'))
         journal_dir = log.journal_directory()
         log.close()
 
@@ -246,6 +260,379 @@ def test_directory_writer_rotation():
 
         stock = run(['journalctl', '--directory', td, '--output=json', '--no-pager'])
         assert len([line for line in stock.splitlines() if line.strip()]) == 5
+
+
+def test_directory_writer_default_system_chain_naming():
+    with tempfile.TemporaryDirectory() as td:
+        log = Log(td, {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'max_entries': 0,
+            'max_bytes': 0,
+            'max_files': 10,
+        })
+        log.append([
+            {'name': 'MESSAGE', 'value': 'default system naming'},
+        ])
+        assert log._next_seqnum == 2
+        assert Path(log.active_file()).name.startswith('system@')
+        assert not os.path.exists(os.path.join(log.journal_directory(), 'system.journal'))
+        log.close()
+
+
+def test_directory_writer_rejects_empty_entry_without_creating_file():
+    with tempfile.TemporaryDirectory() as td:
+        log = Log(td, {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'max_entries': 0,
+            'max_bytes': 0,
+            'max_files': 10,
+        })
+        try:
+            log.append([])
+        except ValueError as err:
+            assert 'empty entry' in str(err)
+        else:
+            raise AssertionError('expected empty entry rejection')
+        names = [name for name in os.listdir(log.journal_directory()) if name.endswith('.journal')]
+        assert names == []
+        log.close()
+
+
+def test_directory_writer_custom_source_naming():
+    with tempfile.TemporaryDirectory() as td:
+        log = Log(td, {
+            'source': 'custom-source',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'max_entries': 0,
+            'max_bytes': 0,
+            'max_files': 10,
+        })
+        log.append([{'name': 'MESSAGE', 'value': 'custom default source'}])
+        assert Path(log.active_file()).name.startswith('custom-source@')
+        assert not os.path.exists(os.path.join(log.journal_directory(), 'custom-source.journal'))
+        log.close()
+
+    with tempfile.TemporaryDirectory() as td:
+        strict = Log(td, {
+            'source': 'custom-source',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'strict_systemd_naming': True,
+            'max_entries': 100,
+            'max_files': 10,
+        })
+        strict.append([{'name': 'MESSAGE', 'value': 'custom strict source'}])
+        assert Path(strict.active_file()).name == 'custom-source.journal'
+        journal_dir = strict.journal_directory()
+        strict.close()
+        names = sorted(name for name in os.listdir(journal_dir) if name.endswith('.journal'))
+        assert len(names) == 1
+        assert names[0].startswith('custom-source@')
+
+
+def test_directory_writer_strict_systemd_naming():
+    with tempfile.TemporaryDirectory() as td:
+        log = Log(td, {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'strict_systemd_naming': True,
+            'max_entries': 100,
+            'max_files': 10,
+        })
+        log.append([
+            {'name': 'MESSAGE', 'value': 'strict naming'},
+            {'name': 'LIVE_SEQ', 'value': '000001'},
+        ])
+        assert Path(log.active_file()).name == 'system.journal'
+        journal_dir = log.journal_directory()
+        log.close()
+
+        names = sorted(name for name in os.listdir(journal_dir) if name.endswith('.journal'))
+        assert len(names) == 1
+        assert names[0].startswith('system@')
+
+
+def test_directory_writer_does_not_enforce_retention_before_first_append():
+    with tempfile.TemporaryDirectory() as td:
+        config = {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'max_entries': 1,
+            'max_files': 0,
+        }
+        first = Log(td, config)
+        for i in range(2):
+            first.append([{'name': 'MESSAGE', 'value': f'construction-retention-{i}'}])
+        first.close()
+        journal_dir = first.journal_directory()
+        before = sorted(name for name in os.listdir(journal_dir) if name.endswith('.journal'))
+        assert len(before) == 2
+
+        second = Log(td, {**config, 'max_files': 1})
+        after = sorted(name for name in os.listdir(journal_dir) if name.endswith('.journal'))
+        assert after == before
+        second.close()
+
+
+def test_directory_writer_keeps_chain_named_active_during_retention():
+    with tempfile.TemporaryDirectory() as td:
+        log = Log(td, {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'max_entries': 1,
+            'max_files': 1,
+            'max_retention_bytes': 1024 * 1024 * 1024,
+        })
+        for i in range(3):
+            log.append([
+                {'name': 'MESSAGE', 'value': f'retention-active-{i}'},
+            ])
+        names = sorted(name for name in os.listdir(log.journal_directory()) if name.endswith('.journal'))
+        assert len(names) == 1
+        log.close()
+
+
+def test_directory_writer_strict_close_protects_current_archive_from_byte_retention():
+    with tempfile.TemporaryDirectory() as td:
+        log = Log(td, {
+            'source': 'system',
+            'strict_systemd_naming': True,
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'max_entries': 100,
+            'max_files': 10,
+            'max_retention_bytes': 1,
+        })
+        log.append([
+            {'name': 'MESSAGE', 'value': 'strict byte retained'},
+            {'name': 'TEST_ID', 'value': 'python-strict-byte-retention'},
+        ])
+        log.close()
+        names = sorted(name for name in os.listdir(log.journal_directory()) if name.endswith('.journal'))
+        assert len(names) == 1
+        reader = FileReader.open(os.path.join(log.journal_directory(), names[0]))
+        assert reader.step() is True
+        assert reader.get_entry()['fields']['MESSAGE'] == b'strict byte retained'
+        reader.close()
+
+
+def test_directory_writer_close_cleans_up_after_archive_error():
+    with tempfile.TemporaryDirectory() as td:
+        log = Log(td, {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'max_entries': 100,
+            'max_files': 10,
+        })
+        log.append([{'name': 'MESSAGE', 'value': 'archive failure cleanup'}])
+        original_archive_to = log._active_writer.archive_to
+
+        def failing_archive_to(path):
+            original_archive_to(path)
+            raise RuntimeError('synthetic post-archive failure')
+
+        log._active_writer.archive_to = failing_archive_to
+        try:
+            log.close()
+        except RuntimeError as err:
+            assert 'synthetic post-archive failure' in str(err)
+        else:
+            raise AssertionError('expected synthetic archive failure')
+
+        assert log._closed is True
+        assert log._active_writer is None
+        log.close()
+
+
+def test_directory_writer_rotation_cleans_up_after_archive_error():
+    with tempfile.TemporaryDirectory() as td:
+        log = Log(td, {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'max_entries': 1,
+            'max_files': 10,
+        })
+        log.append([{'name': 'MESSAGE', 'value': 'rotation failure first'}])
+        original_archive_to = log._active_writer.archive_to
+
+        def failing_archive_to(path):
+            original_archive_to(path)
+            raise RuntimeError('synthetic post-rotation failure')
+
+        log._active_writer.archive_to = failing_archive_to
+        try:
+            log.append([{'name': 'MESSAGE', 'value': 'rotation failure second'}])
+        except RuntimeError as err:
+            assert 'synthetic post-rotation failure' in str(err)
+        else:
+            raise AssertionError('expected synthetic rotation failure')
+
+        assert log._closed is False
+        assert log._active_writer is None
+        log.append([{'name': 'MESSAGE', 'value': 'rotation failure second'}])
+        log.close()
+
+        seqnums = []
+        for name in sorted(name for name in os.listdir(log.journal_directory()) if name.endswith('.journal')):
+            reader = FileReader.open(os.path.join(log.journal_directory(), name))
+            while reader.step():
+                seqnums.append(reader.get_entry()['seqnum'])
+            reader.close()
+        assert seqnums == [1, 2]
+
+
+def test_directory_writer_strict_reopen_continues_sequence():
+    with tempfile.TemporaryDirectory() as td:
+        config = {
+            'source': 'system',
+            'strict_systemd_naming': True,
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'max_entries': 100,
+            'max_files': 10,
+        }
+        first = Log(td, config)
+        first.append([{'name': 'MESSAGE', 'value': 'strict-reopen-0'}])
+        first.close()
+        second = Log(td, config)
+        second.append([{'name': 'MESSAGE', 'value': 'strict-reopen-1'}])
+        second.close()
+        seqnums = []
+        for name in sorted(name for name in os.listdir(second.journal_directory()) if name.endswith('.journal')):
+            reader = FileReader.open(os.path.join(second.journal_directory(), name))
+            while reader.step():
+                seqnums.append(reader.get_entry()['seqnum'])
+            reader.close()
+        assert seqnums == [1, 2]
+
+
+def test_directory_writer_chain_reopen_continues_sequence():
+    with tempfile.TemporaryDirectory() as td:
+        config = {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'max_entries': 0,
+            'max_bytes': 0,
+            'max_files': 10,
+        }
+        first = Log(td, config)
+        first.append([{'name': 'MESSAGE', 'value': 'chain-reopen-0'}])
+        first.append([{'name': 'MESSAGE', 'value': 'chain-reopen-1'}])
+        first.close()
+
+        second = Log(td, config)
+        second.append([{'name': 'MESSAGE', 'value': 'chain-reopen-2'}])
+        second.close()
+
+        seqnums = []
+        for name in sorted(name for name in os.listdir(second.journal_directory()) if name.endswith('.journal')):
+            reader = FileReader.open(os.path.join(second.journal_directory(), name))
+            while reader.step():
+                seqnums.append(reader.get_entry()['seqnum'])
+            reader.close()
+        assert seqnums == [1, 2, 3]
+
+
+def test_directory_writer_chain_reopens_online_file():
+    with tempfile.TemporaryDirectory() as td:
+        config = {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'max_entries': 0,
+            'max_bytes': 0,
+            'max_files': 10,
+        }
+        first = Log(td, config)
+        first.append([{'name': 'MESSAGE', 'value': 'chain-online-reopen-0'}])
+        first.append([{'name': 'MESSAGE', 'value': 'chain-online-reopen-1'}])
+        active_path = first.active_file()
+        first._active_writer.close()
+        first._active_writer = None
+        first._closed = True
+
+        second = Log(td, {**config, 'head_seqnum': 99})
+        assert second.active_file() == active_path
+        second.append([{'name': 'MESSAGE', 'value': 'chain-online-reopen-2'}])
+        second.close()
+
+        reader = FileReader.open(active_path)
+        seqnums = []
+        while reader.step():
+            seqnums.append(reader.get_entry()['seqnum'])
+        reader.close()
+        assert seqnums == [1, 2, 3]
+
+
+def test_directory_writer_discards_empty_online_file_and_continues_sequence():
+    with tempfile.TemporaryDirectory() as td:
+        config = {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'max_entries': 0,
+            'max_bytes': 0,
+            'max_files': 10,
+        }
+        first = Log(td, config)
+        first.append([
+            {'name': 'MESSAGE', 'value': 'empty-reopen-0'},
+            {'name': 'TEST_ID', 'value': 'python-empty-online-reopen'},
+        ])
+        first.append([
+            {'name': 'MESSAGE', 'value': 'empty-reopen-1'},
+            {'name': 'TEST_ID', 'value': 'python-empty-online-reopen'},
+        ])
+        first.close()
+
+        journal_dir = first.journal_directory()
+        names = sorted(name for name in os.listdir(journal_dir) if name.endswith('.journal'))
+        assert len(names) == 1
+        reader = FileReader.open(os.path.join(journal_dir, names[0]))
+        header = reader.header()
+        next_seqnum = int(header['tail_entry_seqnum']) + 1
+        seqnum_id = header['seqnum_id']
+        reader.close()
+
+        empty_path = os.path.join(
+            journal_dir,
+            f'system@{seqnum_id.hex()}-{next_seqnum:016x}-00060a24181e040a.journal',
+        )
+        empty = Writer.create(empty_path, {
+            'machine_id': bytes.fromhex(config['machine_id']),
+            'seqnum_id': seqnum_id,
+            'head_seqnum': next_seqnum,
+        })
+        empty.close()
+
+        second = Log(td, config)
+        second.append([
+            {'name': 'MESSAGE', 'value': 'empty-reopen-2'},
+            {'name': 'TEST_ID', 'value': 'python-empty-online-reopen'},
+        ])
+        second.close()
+        assert not os.path.exists(empty_path)
+
+        seqnums = []
+        for name in sorted(name for name in os.listdir(journal_dir) if name.endswith('.journal')):
+            file_reader = FileReader.open(os.path.join(journal_dir, name))
+            while file_reader.step():
+                seqnums.append(file_reader.get_entry()['seqnum'])
+            file_reader.close()
+        assert seqnums == [1, 2, 3]
+
+
+def test_directory_writer_zero_rotation_limits_disable_rotation():
+    with tempfile.TemporaryDirectory() as td:
+        log = Log(td, {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'max_entries': 0,
+            'max_bytes': 0,
+            'max_files': 10,
+        })
+        for i in range(3):
+            log.append([{'name': 'MESSAGE', 'value': f'no-rotation-{i}'}])
+        log.close()
+        names = [name for name in os.listdir(log.journal_directory()) if name.endswith('.journal')]
+        assert len(names) == 1
 
 
 def test_facade_unique_binary_values():
@@ -777,11 +1164,25 @@ def main():
     test_lowercase_field_rejected()
     test_live_delay_parser()
     test_writer_reader_and_binary_export()
+    test_writer_head_seqnum_zero_defaults_to_one()
     test_compact_writer_reader_and_stock_verify()
     test_writer_exclusive_lock()
     test_zstd_data_object_parse()
     test_xz_and_lz4_data_object_parse()
     test_directory_writer_rotation()
+    test_directory_writer_default_system_chain_naming()
+    test_directory_writer_rejects_empty_entry_without_creating_file()
+    test_directory_writer_custom_source_naming()
+    test_directory_writer_strict_systemd_naming()
+    test_directory_writer_keeps_chain_named_active_during_retention()
+    test_directory_writer_strict_close_protects_current_archive_from_byte_retention()
+    test_directory_writer_close_cleans_up_after_archive_error()
+    test_directory_writer_rotation_cleans_up_after_archive_error()
+    test_directory_writer_strict_reopen_continues_sequence()
+    test_directory_writer_chain_reopen_continues_sequence()
+    test_directory_writer_chain_reopens_online_file()
+    test_directory_writer_discards_empty_online_file_and_continues_sequence()
+    test_directory_writer_zero_rotation_limits_disable_rotation()
     test_facade_unique_binary_values()
     test_fsprg_vectors()
     test_verify_file_detects_corruption()

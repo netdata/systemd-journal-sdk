@@ -3,29 +3,43 @@ use crate::log::RetentionPolicy;
 use journal_common::Microseconds;
 use journal_core::JournalFile;
 use journal_core::collections::HashMap;
-use journal_core::file::Mmap;
+use journal_core::file::{JournalState, Mmap};
 use journal_registry::repository;
-use journal_registry::repository::File;
+use journal_registry::repository::{File, Source};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 #[allow(unused_imports)]
 use tracing::{error, info, instrument};
 
-fn create_active_chain_file(path: &PathBuf) -> Option<repository::File> {
-    repository::File::from_path(&path.join("system.journal"))
+fn source_basename(source: &Source) -> String {
+    match source {
+        Source::System => "system".to_string(),
+        Source::User(uid) => format!("user-{uid}"),
+        Source::Remote(host) => format!("remote-{host}"),
+        Source::Unknown(name) => name.clone(),
+    }
+}
+
+fn create_strict_systemd_active_file(
+    path: &PathBuf,
+    source_name: &str,
+) -> Option<repository::File> {
+    repository::File::from_path(&path.join(format!("{source_name}.journal")))
 }
 
 // Helper function to create a File with archived status
-fn create_archived_chain_file(
+fn create_chain_file(
     path: &PathBuf,
+    source_name: &str,
     seqnum_id: Uuid,
     head_seqnum: u64,
     head_realtime: u64,
 ) -> Option<repository::File> {
     // Format the path using the same logic as journal_registry
     let filename = format!(
-        "system@{}-{:016x}-{:016x}.journal",
+        "{}@{}-{:016x}-{:016x}.journal",
+        source_name,
         seqnum_id.simple(),
         head_seqnum,
         head_realtime
@@ -42,6 +56,8 @@ fn create_archived_chain_file(
 pub(super) struct OwnedChain {
     pub(super) path: PathBuf,
     pub(super) machine_id: Uuid,
+    pub(super) source: Source,
+    pub(super) source_name: String,
 
     pub(super) inner: repository::Chain,
     pub(super) file_sizes: HashMap<File, u64>,
@@ -53,8 +69,17 @@ pub(super) struct RetentionOutcome {
     pub(super) error: Option<WriterError>,
 }
 
+struct TailState {
+    seqnum_id: Uuid,
+    tail_seqnum: u64,
+    tail_realtime: u64,
+    tail_boot_id: Uuid,
+    tail_monotonic: u64,
+    head_realtime: u64,
+}
+
 impl OwnedChain {
-    pub(super) fn new(path: PathBuf, machine_id: Uuid) -> Result<Self> {
+    pub(super) fn new(path: PathBuf, machine_id: Uuid, source: Source) -> Result<Self> {
         #[cfg(debug_assertions)]
         {
             use std::os::unix::ffi::OsStrExt;
@@ -65,9 +90,12 @@ impl OwnedChain {
             debug_assert_eq!(Ok(machine_id), Uuid::try_parse_ascii(filename));
         }
 
+        let source_name = source_basename(&source);
         let mut chain = Self {
             path,
             machine_id,
+            source,
+            source_name,
             inner: repository::Chain::default(),
             file_sizes: HashMap::default(),
             total_size: 0,
@@ -81,8 +109,13 @@ impl OwnedChain {
             let Some(file) = repository::File::from_path(&file_path) else {
                 continue;
             };
+            if file.origin().source != chain.source {
+                continue;
+            }
 
-            let Ok(size) = std::fs::metadata(file.path()).map(|m| m.len()) else {
+            let Some(size) = committed_journal_size(&file)
+                .or_else(|| std::fs::metadata(file.path()).map(|m| m.len()).ok())
+            else {
                 continue;
             };
 
@@ -94,26 +127,55 @@ impl OwnedChain {
         Ok(chain)
     }
 
-    pub(super) fn tail_seqnum(&self) -> Result<u64> {
-        let Some(file) = self.inner.back() else {
-            return Ok(0);
-        };
-
-        let window_size = 4096;
-        let jf = JournalFile::<Mmap>::open(file, window_size)?;
-
-        Ok(jf.journal_header_ref().tail_entry_seqnum)
+    pub(super) fn tail_identity(&self, include_active: bool) -> Result<Option<(Uuid, u64)>> {
+        Ok(self
+            .tail_state(include_active)?
+            .map(|tail| (tail.seqnum_id, tail.tail_seqnum)))
     }
 
-    pub(super) fn tail_realtime(&self) -> Result<Option<Microseconds>> {
-        let Some(file) = self.inner.back() else {
+    pub(super) fn online_chain_file(&self) -> Result<Option<repository::File>> {
+        let mut selected: Option<(repository::File, u64, u64)> = None;
+        for entry in std::fs::read_dir(&self.path)? {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let file_path = entry.path();
+            let Some(file) = repository::File::from_path(&file_path) else {
+                continue;
+            };
+            if file.origin().source != self.source || !file.is_archived() {
+                continue;
+            }
+
+            let window_size = 4096;
+            let Ok(jf) = JournalFile::<Mmap>::open(&file, window_size) else {
+                continue;
+            };
+            let header = jf.journal_header_ref();
+            if header.state != JournalState::Online as u8 {
+                continue;
+            }
+
+            let replace = selected
+                .as_ref()
+                .is_none_or(|(_, tail_seqnum, head_realtime)| {
+                    header.tail_entry_seqnum > *tail_seqnum
+                        || (header.tail_entry_seqnum == *tail_seqnum
+                            && header.head_entry_realtime > *head_realtime)
+                });
+            if replace {
+                selected = Some((file, header.tail_entry_seqnum, header.head_entry_realtime));
+            }
+        }
+
+        Ok(selected.map(|(file, _, _)| file))
+    }
+
+    pub(super) fn tail_realtime(&self, include_active: bool) -> Result<Option<Microseconds>> {
+        let Some(tail) = self.tail_state(include_active)? else {
             return Ok(None);
         };
-
-        let window_size = 4096;
-        let jf = JournalFile::<Mmap>::open(file, window_size)?;
-
-        let realtime = jf.journal_header_ref().tail_entry_realtime;
+        let realtime = tail.tail_realtime;
         if realtime == 0 {
             Ok(None)
         } else {
@@ -121,21 +183,20 @@ impl OwnedChain {
         }
     }
 
-    pub(super) fn tail_monotonic_for_boot(&self, boot_id: Uuid) -> Result<Option<u64>> {
-        let Some(file) = self.inner.back() else {
+    pub(super) fn tail_monotonic_for_boot(
+        &self,
+        boot_id: Uuid,
+        include_active: bool,
+    ) -> Result<Option<u64>> {
+        let Some(tail) = self.tail_state(include_active)? else {
             return Ok(None);
         };
 
-        let window_size = 4096;
-        let jf = JournalFile::<Mmap>::open(file, window_size)?;
-        let header = jf.journal_header_ref();
-
-        let tail_boot_id = Uuid::from_bytes(header.tail_entry_boot_id);
-        if tail_boot_id != boot_id {
+        if tail.tail_boot_id != boot_id {
             return Ok(None);
         }
 
-        let monotonic = header.tail_entry_monotonic;
+        let monotonic = tail.tail_monotonic;
         if monotonic == 0 {
             Ok(None)
         } else {
@@ -143,9 +204,82 @@ impl OwnedChain {
         }
     }
 
+    fn tail_state(&self, include_active: bool) -> Result<Option<TailState>> {
+        let mut selected = None;
+        for entry in std::fs::read_dir(&self.path)? {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let file_path = entry.path();
+            let Some(file) = repository::File::from_path(&file_path) else {
+                continue;
+            };
+            if file.origin().source != self.source || (!include_active && !file.is_archived()) {
+                continue;
+            }
+
+            let window_size = 4096;
+            let Ok(jf) = JournalFile::<Mmap>::open(&file, window_size) else {
+                continue;
+            };
+            let header = jf.journal_header_ref();
+            let candidate = TailState {
+                seqnum_id: Uuid::from_bytes(header.seqnum_id),
+                tail_seqnum: header.tail_entry_seqnum,
+                tail_realtime: header.tail_entry_realtime,
+                tail_boot_id: Uuid::from_bytes(header.tail_entry_boot_id),
+                tail_monotonic: header.tail_entry_monotonic,
+                head_realtime: header.head_entry_realtime,
+            };
+            let replace = selected.as_ref().is_none_or(|current: &TailState| {
+                candidate.tail_seqnum > current.tail_seqnum
+                    || (candidate.tail_seqnum == current.tail_seqnum
+                        && candidate.head_realtime > current.head_realtime)
+            });
+            if replace {
+                selected = Some(candidate);
+            }
+        }
+        Ok(selected)
+    }
+
     /// Registers a new journal file with the directory.
     pub(super) fn create_active_file(&mut self) -> Result<repository::File> {
-        let Some(file) = create_active_chain_file(&self.path) else {
+        let Some(file) = create_strict_systemd_active_file(&self.path, &self.source_name) else {
+            return Err(WriterError::FileCreation(format!(
+                "failed to create journal file in {}",
+                self.path.display()
+            )));
+        };
+        self.inner.insert_file(file.clone());
+        Ok(file)
+    }
+
+    pub(super) fn existing_active_file(&self) -> Option<repository::File> {
+        let file = create_strict_systemd_active_file(&self.path, &self.source_name)?;
+        Path::new(file.path()).exists().then_some(file)
+    }
+
+    pub(super) fn remove_tracked_file(&mut self, file: &repository::File) {
+        if let Some(size) = self.file_sizes.remove(file) {
+            self.total_size = self.total_size.saturating_sub(size);
+        }
+        self.inner.remove_file(file);
+    }
+
+    pub(super) fn create_chain_file(
+        &mut self,
+        seqnum_id: Uuid,
+        head_seqnum: u64,
+        head_realtime: u64,
+    ) -> Result<repository::File> {
+        let Some(file) = create_chain_file(
+            &self.path,
+            &self.source_name,
+            seqnum_id,
+            head_seqnum,
+            head_realtime,
+        ) else {
             return Err(WriterError::FileCreation(format!(
                 "failed to create journal file in {}",
                 self.path.display()
@@ -166,7 +300,7 @@ impl OwnedChain {
             return Ok(None);
         }
 
-        let (seqnum_id, head_seqnum, head_realtime) = {
+        let (seqnum_id, head_seqnum, head_realtime, n_entries) = {
             let window_size = 4096;
             let jf = JournalFile::<Mmap>::open(&file, window_size)?;
             let header = jf.journal_header_ref();
@@ -174,10 +308,11 @@ impl OwnedChain {
                 Uuid::from_bytes(header.seqnum_id),
                 header.head_entry_seqnum,
                 header.head_entry_realtime,
+                header.n_entries,
             )
         };
 
-        if head_seqnum == 0 || head_realtime == 0 {
+        if n_entries == 0 {
             return Ok(None);
         }
 
@@ -192,17 +327,23 @@ impl OwnedChain {
         head_seqnum: u64,
         head_realtime: u64,
     ) -> Result<repository::File> {
-        let Some(archived) =
-            create_archived_chain_file(&self.path, seqnum_id, head_seqnum, head_realtime)
-        else {
+        let Some(archived) = create_chain_file(
+            &self.path,
+            &self.source_name,
+            seqnum_id,
+            head_seqnum,
+            head_realtime,
+        ) else {
             return Err(WriterError::FileCreation(format!(
                 "failed to create archived journal file name in {}",
                 self.path.display()
             )));
         };
 
-        if file.path() != archived.path() && std::path::Path::new(file.path()).exists() {
+        let renamed = file.path() != archived.path() && std::path::Path::new(file.path()).exists();
+        if renamed {
             std::fs::rename(file.path(), archived.path())?;
+            std::fs::File::open(&self.path)?.sync_all()?;
         }
 
         let size = self.file_sizes.remove(file).unwrap_or(0);
@@ -224,7 +365,11 @@ impl OwnedChain {
 
     /// Retains the files that satisfy retention policy limits.
     #[tracing::instrument(skip_all, fields(reason))]
-    pub(super) fn retain(&mut self, retention_policy: &RetentionPolicy) -> RetentionOutcome {
+    pub(super) fn retain(
+        &mut self,
+        retention_policy: &RetentionPolicy,
+        protected_file: Option<&repository::File>,
+    ) -> RetentionOutcome {
         let mut deleted_files = Vec::new();
         let mut error = None;
 
@@ -233,7 +378,7 @@ impl OwnedChain {
             while self.inner.len() > max_files {
                 let reason = format!("num_files({}) > max_files({})", self.inner.len(), max_files);
                 tracing::Span::current().record("reason", reason);
-                match self.delete_oldest_file() {
+                match self.delete_oldest_file(protected_file) {
                     Ok(Some(file)) => deleted_files.push(file),
                     Ok(None) => break,
                     Err(err) => {
@@ -254,7 +399,7 @@ impl OwnedChain {
                     self.total_size, max_total_size
                 );
                 tracing::Span::current().record("reason", reason);
-                match self.delete_oldest_file() {
+                match self.delete_oldest_file(protected_file) {
                     Ok(Some(file)) => deleted_files.push(file),
                     Ok(None) => break,
                     Err(err) => {
@@ -269,9 +414,16 @@ impl OwnedChain {
         if error.is_none()
             && let Some(max_entry_age) = retention_policy.duration_of_journal_files
         {
-            let age_retention = self.delete_files_older_than(max_entry_age);
+            let age_retention = self.delete_files_older_than(max_entry_age, protected_file);
             deleted_files.extend(age_retention.deleted_files);
             error = age_retention.error;
+        }
+
+        if error.is_none()
+            && !deleted_files.is_empty()
+            && let Err(err) = std::fs::File::open(&self.path).and_then(|file| file.sync_all())
+        {
+            error = Some(err.into());
         }
 
         RetentionOutcome {
@@ -282,10 +434,28 @@ impl OwnedChain {
 
     /// Remove the oldest file
     #[tracing::instrument(skip_all)]
-    fn delete_oldest_file(&mut self) -> Result<Option<repository::File>> {
-        let Some(file) = self.inner.pop_front() else {
-            return Ok(None);
+    fn delete_oldest_file(
+        &mut self,
+        protected_file: Option<&repository::File>,
+    ) -> Result<Option<repository::File>> {
+        let mut skipped = Vec::new();
+        let file = loop {
+            let Some(file) = self.inner.pop_front() else {
+                for file in skipped {
+                    self.inner.insert_file(file);
+                }
+                return Ok(None);
+            };
+            if protected_file.is_some_and(|protected| protected == &file) {
+                skipped.push(file);
+                continue;
+            }
+            break file;
         };
+
+        for file in skipped {
+            self.inner.insert_file(file);
+        }
 
         info!("deleting {}", file.path());
 
@@ -311,7 +481,11 @@ impl OwnedChain {
 
     /// Remove files older than the specified cutoff time
     #[tracing::instrument(skip(self))]
-    fn delete_files_older_than(&mut self, max_entry_age: std::time::Duration) -> RetentionOutcome {
+    fn delete_files_older_than(
+        &mut self,
+        max_entry_age: std::time::Duration,
+        protected_file: Option<&repository::File>,
+    ) -> RetentionOutcome {
         let cutoff_time = Microseconds::now()
             .get()
             .saturating_sub(max_entry_age.as_micros() as u64);
@@ -319,7 +493,12 @@ impl OwnedChain {
         let mut failed_files = Vec::new();
         let mut first_error = None;
 
+        let mut protected_files = Vec::new();
         for file in self.inner.drain(cutoff_time) {
+            if protected_file.is_some_and(|protected| protected == &file) {
+                protected_files.push(file);
+                continue;
+            }
             info!("deleting {}", file.path());
             let file_size = self.file_sizes.get(&file).copied().unwrap_or(0);
 
@@ -348,12 +527,30 @@ impl OwnedChain {
         for file in failed_files {
             self.inner.insert_file(file);
         }
+        for file in protected_files {
+            self.inner.insert_file(file);
+        }
 
         RetentionOutcome {
             deleted_files,
             error: first_error,
         }
     }
+}
+
+fn committed_journal_size(file: &repository::File) -> Option<u64> {
+    let window_size = 4096;
+    let jf = JournalFile::<Mmap>::open(file, window_size).ok()?;
+    let header = jf.journal_header_ref();
+    let tail_object_offset = header.tail_object_offset?;
+    let tail_object = jf.object_header_ref(tail_object_offset).ok()?;
+    Some(align8(
+        tail_object_offset.get().saturating_add(tail_object.size),
+    ))
+}
+
+fn align8(value: u64) -> u64 {
+    value.saturating_add(7) & !7
 }
 
 #[cfg(test)]
@@ -371,8 +568,9 @@ mod tests {
         let path = tmp.path().join(machine_id.to_string());
         fs::create_dir(&path).expect("create machine-id dir");
 
-        let mut chain = OwnedChain::new(path.clone(), machine_id).expect("create chain");
-        let file = create_archived_chain_file(&path, machine_id, 1, 1).expect("create chain file");
+        let mut chain =
+            OwnedChain::new(path.clone(), machine_id, Source::System).expect("create chain");
+        let file = create_chain_file(&path, "system", machine_id, 1, 1).expect("create chain file");
         fs::write(file.path(), b"journal").expect("write journal file");
 
         let file_size = fs::metadata(file.path()).expect("stat journal file").len();
@@ -383,7 +581,7 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o555))
             .expect("make directory read-only");
 
-        let delete_result = chain.delete_oldest_file();
+        let delete_result = chain.delete_oldest_file(None);
 
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
             .expect("restore directory permissions");
@@ -408,11 +606,12 @@ mod tests {
         let path = tmp.path().join(machine_id.to_string());
         fs::create_dir(&path).expect("create machine-id dir");
 
-        let mut chain = OwnedChain::new(path.clone(), machine_id).expect("create chain");
-        let deletable_file = create_archived_chain_file(&path, machine_id, 1, 1)
+        let mut chain =
+            OwnedChain::new(path.clone(), machine_id, Source::System).expect("create chain");
+        let deletable_file = create_chain_file(&path, "system", machine_id, 1, 1)
             .expect("create deletable chain file");
         let failed_file =
-            create_archived_chain_file(&path, machine_id, 2, 2).expect("create failed chain file");
+            create_chain_file(&path, "system", machine_id, 2, 2).expect("create failed chain file");
 
         fs::write(deletable_file.path(), b"journal").expect("write deletable journal file");
         fs::create_dir(failed_file.path()).expect("create directory at failed journal path");
@@ -431,7 +630,7 @@ mod tests {
         chain.file_sizes.insert(failed_file.clone(), failed_size);
         chain.total_size = deletable_size + failed_size;
 
-        let retention = chain.delete_files_older_than(std::time::Duration::from_secs(1));
+        let retention = chain.delete_files_older_than(std::time::Duration::from_secs(1), None);
 
         assert_eq!(retention.deleted_files, vec![deletable_file.clone()]);
         match retention.error {

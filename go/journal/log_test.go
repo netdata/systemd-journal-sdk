@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -107,13 +108,37 @@ func TestLogCloseWithoutAppendDoesNotCreateFile(t *testing.T) {
 	}
 }
 
-func TestLogCloseRemovesEmptyActiveFile(t *testing.T) {
-	log, _ := newTestLog(t, LogConfig{
+func TestLogAppendRejectsEmptyEntryWithoutCreatingFile(t *testing.T) {
+	log, dir := newTestLog(t, LogConfig{
 		Options: testOptions(),
 		Source:  "system",
 	})
+
+	if err := log.Append(nil, EntryOptions{}); !errors.Is(err, errEntryEmpty) {
+		t.Fatalf("Append(nil) error = %v, want errEntryEmpty", err)
+	}
+	if files := journalFiles(t, dir); len(files) != 0 {
+		t.Fatalf("journal files after empty append = %d, want 0; files=%v", len(files), files)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestAlign8SaturatingDoesNotWrap(t *testing.T) {
+	if got, want := align8Saturating(^uint64(0)), ^uint64(0)&^uint64(7); got != want {
+		t.Fatalf("align8Saturating(max) = %d, want %d", got, want)
+	}
+}
+
+func TestLogCloseRemovesEmptyActiveFile(t *testing.T) {
+	log, _ := newTestLog(t, LogConfig{
+		Options:             testOptions(),
+		Source:              "system",
+		StrictSystemdNaming: true,
+	})
 	activePath := log.ActivePath()
-	if err := log.ensureWriter(); err != nil {
+	if err := log.ensureWriter(EntryOptions{}); err != nil {
 		t.Fatalf("ensureWriter() error = %v", err)
 	}
 	if _, err := os.Stat(activePath); err != nil {
@@ -128,6 +153,118 @@ func TestLogCloseRemovesEmptyActiveFile(t *testing.T) {
 	}
 	if err := log.Close(); err != nil {
 		t.Fatalf("Close(second) error = %v, want nil", err)
+	}
+}
+
+func TestLogDefaultUsesNetdataChainActiveNaming(t *testing.T) {
+	requireJournalctl(t)
+
+	log, dir := newTestLog(t, LogConfig{
+		Options: testOptions(),
+		Source:  "system",
+	})
+	if err := log.Append([]Field{
+		StringField("MESSAGE", "default chain naming"),
+		StringField("TEST_ID", "directory-default-chain-naming"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_060_000_000, MonotonicUsec: 1}); err != nil {
+		t.Fatalf("Append(default chain) error = %v", err)
+	}
+	if err := log.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+
+	activeBase := filepath.Base(log.ActivePath())
+	if !strings.HasPrefix(activeBase, "system@") || !strings.HasSuffix(activeBase, ".journal") {
+		t.Fatalf("active filename = %q, want Netdata chain naming", activeBase)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "system.journal")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("system.journal stat error = %v, want not exist in default naming mode", err)
+	}
+
+	rows := runJournalctlDirectoryJSON(t, dir, "TEST_ID=directory-default-chain-naming")
+	if len(rows) != 1 {
+		t.Fatalf("default chain row count = %d, want 1", len(rows))
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestLogStrictSystemdNamingUsesSourceJournalActive(t *testing.T) {
+	requireJournalctl(t)
+
+	log, dir := newTestLog(t, LogConfig{
+		Options:             testOptions(),
+		Source:              "system",
+		StrictSystemdNaming: true,
+	})
+	if err := log.Append([]Field{
+		StringField("MESSAGE", "strict active naming"),
+		StringField("TEST_ID", "directory-strict-systemd-naming"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_065_000_000, MonotonicUsec: 1}); err != nil {
+		t.Fatalf("Append(strict naming) error = %v", err)
+	}
+	if err := log.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	if base := filepath.Base(log.ActivePath()); base != "system.journal" {
+		t.Fatalf("active filename = %q, want system.journal", base)
+	}
+	rows := runJournalctlDirectoryJSON(t, dir, "TEST_ID=directory-strict-systemd-naming")
+	if len(rows) != 1 {
+		t.Fatalf("strict naming row count = %d, want 1", len(rows))
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	files := journalFiles(t, dir)
+	if len(files) != 1 {
+		t.Fatalf("journal file count after strict close = %d, want 1; files=%v", len(files), files)
+	}
+	if base := filepath.Base(files[0]); !strings.HasPrefix(base, "system@") {
+		t.Fatalf("archived filename = %q, want system@*.journal", base)
+	}
+}
+
+func TestLogCustomSourceNaming(t *testing.T) {
+	log, dir := newTestLog(t, LogConfig{
+		Options: testOptions(),
+		Source:  "custom-source",
+	})
+	if err := log.Append([]Field{
+		StringField("MESSAGE", "custom default source"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_066_000_000, MonotonicUsec: 1}); err != nil {
+		t.Fatalf("Append(custom default) error = %v", err)
+	}
+	if base := filepath.Base(log.ActivePath()); !strings.HasPrefix(base, "custom-source@") {
+		t.Fatalf("active filename = %q, want custom-source@*.journal", base)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "custom-source.journal")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("custom-source.journal stat error = %v, want not exist in default mode", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close(custom default) error = %v", err)
+	}
+
+	strict, strictDir := newTestLog(t, LogConfig{
+		Options:             testOptions(),
+		Source:              "custom-source",
+		StrictSystemdNaming: true,
+	})
+	if err := strict.Append([]Field{
+		StringField("MESSAGE", "custom strict source"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_066_000_001, MonotonicUsec: 1}); err != nil {
+		t.Fatalf("Append(custom strict) error = %v", err)
+	}
+	if base := filepath.Base(strict.ActivePath()); base != "custom-source.journal" {
+		t.Fatalf("strict active filename = %q, want custom-source.journal", base)
+	}
+	if err := strict.Close(); err != nil {
+		t.Fatalf("Close(custom strict) error = %v", err)
+	}
+	files := journalFiles(t, strictDir)
+	if len(files) != 1 || !strings.HasPrefix(filepath.Base(files[0]), "custom-source@") {
+		t.Fatalf("strict archived files = %v, want custom-source@*.journal", files)
 	}
 }
 
@@ -219,19 +356,18 @@ func TestLogRetainsArchivedFilesWhileActiveFileSurvives(t *testing.T) {
 	}
 
 	files := journalFiles(t, dir)
-	if len(files) != 2 {
-		t.Fatalf("journal file count before close = %d, want 2; files=%v", len(files), files)
+	if len(files) != 1 {
+		t.Fatalf("journal file count before close = %d, want 1 current file; files=%v", len(files), files)
 	}
 	snapshot := readJournalSnapshot(t, log.ActivePath())
 	if snapshot.header.state != stateOnline {
 		t.Fatalf("active state = %d, want online", snapshot.header.state)
 	}
 	rows := runJournalctlDirectoryJSON(t, dir, "TEST_ID=directory-active-retention")
-	if len(rows) != 2 {
-		t.Fatalf("active-retention row count = %d, want 2", len(rows))
+	if len(rows) != 1 {
+		t.Fatalf("active-retention row count = %d, want 1", len(rows))
 	}
-	assertJSONField(t, rows[0], "MESSAGE", "active-retained-1")
-	assertJSONField(t, rows[1], "MESSAGE", "active-retained-2")
+	assertJSONField(t, rows[0], "MESSAGE", "active-retained-2")
 
 	if err := log.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
@@ -259,8 +395,88 @@ func TestLogRetainsByTotalBytes(t *testing.T) {
 	}
 
 	files := journalFiles(t, dir)
-	if len(files) != 0 {
-		t.Fatalf("journal files after byte retention = %d, want 0; files=%v", len(files), files)
+	if len(files) != 1 {
+		t.Fatalf("journal files after byte retention = %d, want 1 protected final file; files=%v", len(files), files)
+	}
+}
+
+func TestLogStrictCloseProtectsCurrentArchiveFromByteRetention(t *testing.T) {
+	requireJournalctl(t)
+
+	log, dir := newTestLog(t, LogConfig{
+		Options:             testOptions(),
+		Source:              "system",
+		StrictSystemdNaming: true,
+		RetentionPolicy:     RetentionPolicy{}.WithMaxBytes(1),
+	})
+	if err := log.Append([]Field{
+		StringField("MESSAGE", "strict-byte-retained"),
+		StringField("TEST_ID", "directory-strict-byte-retention"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_230_000_000, MonotonicUsec: 1}); err != nil {
+		t.Fatalf("Append(strict byte retention) error = %v", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close(strict byte retention) error = %v", err)
+	}
+
+	files := journalFiles(t, dir)
+	if len(files) != 1 {
+		t.Fatalf("journal files after strict byte retention = %d, want 1 protected current archive; files=%v", len(files), files)
+	}
+	rows := runJournalctlDirectoryJSON(t, dir, "TEST_ID=directory-strict-byte-retention")
+	if len(rows) != 1 {
+		t.Fatalf("strict byte retention row count = %d, want 1", len(rows))
+	}
+	assertJSONField(t, rows[0], "MESSAGE", "strict-byte-retained")
+}
+
+func TestLogStrictReopenContinuesSequenceAfterClose(t *testing.T) {
+	requireJournalctl(t)
+
+	root := t.TempDir()
+	config := LogConfig{
+		Options:             testOptions(),
+		Source:              "system",
+		StrictSystemdNaming: true,
+	}
+	first, err := NewLog(root, config)
+	if err != nil {
+		t.Fatalf("NewLog(first strict) error = %v", err)
+	}
+	if err := first.Append([]Field{
+		StringField("MESSAGE", "strict-reopen-0"),
+		StringField("TEST_ID", "directory-strict-reopen"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_240_000_000, MonotonicUsec: 1}); err != nil {
+		t.Fatalf("Append(first strict) error = %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close(first strict) error = %v", err)
+	}
+
+	second, err := NewLog(root, config)
+	if err != nil {
+		t.Fatalf("NewLog(second strict) error = %v", err)
+	}
+	if err := second.Append([]Field{
+		StringField("MESSAGE", "strict-reopen-1"),
+		StringField("TEST_ID", "directory-strict-reopen"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_240_000_001, MonotonicUsec: 2}); err != nil {
+		t.Fatalf("Append(second strict) error = %v", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatalf("Close(second strict) error = %v", err)
+	}
+
+	dir := filepath.Join(root, config.Options.MachineID.String())
+	rows := runJournalctlDirectoryJSON(t, dir, "TEST_ID=directory-strict-reopen")
+	if len(rows) != 2 {
+		t.Fatalf("strict reopen row count = %d, want 2", len(rows))
+	}
+	if got := rows[0]["__SEQNUM"].(string); got != "1" {
+		t.Fatalf("first strict seqnum = %s, want 1", got)
+	}
+	if got := rows[1]["__SEQNUM"].(string); got != "2" {
+		t.Fatalf("second strict seqnum = %s, want 2", got)
 	}
 }
 
@@ -269,9 +485,10 @@ func TestLogReopensActiveFileAndContinuesSequence(t *testing.T) {
 
 	root := t.TempDir()
 	config := LogConfig{
-		Options:        testOptions(),
-		Source:         "system",
-		RotationPolicy: RotationPolicy{}.WithMaxEntries(3),
+		Options:             testOptions(),
+		Source:              "system",
+		RotationPolicy:      RotationPolicy{}.WithMaxEntries(3),
+		StrictSystemdNaming: true,
 	}
 	log, err := NewLog(root, config)
 	if err != nil {
@@ -336,49 +553,233 @@ func TestLogReopensActiveFileAndContinuesSequence(t *testing.T) {
 	}
 }
 
-func TestNewLogClosesReopenedWriterOnRetentionFailure(t *testing.T) {
+func TestLogDefaultChainReopenContinuesSequence(t *testing.T) {
+	requireJournalctl(t)
+
+	root := t.TempDir()
+	config := LogConfig{
+		Options:        testOptions(),
+		Source:         "system",
+		RotationPolicy: RotationPolicy{}.WithMaxEntries(10),
+	}
+	first, err := NewLog(root, config)
+	if err != nil {
+		t.Fatalf("NewLog(first) error = %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := first.Append([]Field{
+			StringField("MESSAGE", fmt.Sprintf("chain-reopen-%d", i)),
+			StringField("TEST_ID", "directory-chain-reopen"),
+		}, EntryOptions{RealtimeUsec: 1_700_002_260_000_000 + uint64(i), MonotonicUsec: uint64(i + 1)}); err != nil {
+			t.Fatalf("Append(first %d) error = %v", i, err)
+		}
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close(first) error = %v", err)
+	}
+
+	second, err := NewLog(root, config)
+	if err != nil {
+		t.Fatalf("NewLog(second) error = %v", err)
+	}
+	if err := second.Append([]Field{
+		StringField("MESSAGE", "chain-reopen-2"),
+		StringField("TEST_ID", "directory-chain-reopen"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_260_000_002, MonotonicUsec: 3}); err != nil {
+		t.Fatalf("Append(second) error = %v", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatalf("Close(second) error = %v", err)
+	}
+
+	dir := filepath.Join(root, config.Options.MachineID.String())
+	files := journalFiles(t, dir)
+	if len(files) != 2 {
+		t.Fatalf("journal file count after chain reopen = %d, want 2; files=%v", len(files), files)
+	}
+	wantHeads := []uint64{1, 3}
+	var seqnumID UUID
+	for i, path := range files {
+		snapshot := readJournalSnapshot(t, path)
+		if i == 0 {
+			seqnumID = snapshot.header.seqnumID
+		} else if snapshot.header.seqnumID != seqnumID {
+			t.Fatalf("%s seqnum id = %s, want resumed chain id %s", path, snapshot.header.seqnumID, seqnumID)
+		}
+		if snapshot.header.headEntrySeqnum != wantHeads[i] {
+			t.Fatalf("%s head seqnum = %d, want %d", path, snapshot.header.headEntrySeqnum, wantHeads[i])
+		}
+	}
+	rows := runJournalctlDirectoryJSON(t, dir, "TEST_ID=directory-chain-reopen")
+	if len(rows) != 3 {
+		t.Fatalf("chain reopen row count = %d, want 3", len(rows))
+	}
+}
+
+func TestLogDefaultChainReopensOnlineFile(t *testing.T) {
+	requireJournalctl(t)
+
+	root := t.TempDir()
+	config := LogConfig{
+		Options:        testOptions(),
+		Source:         "system",
+		RotationPolicy: RotationPolicy{}.WithMaxEntries(10),
+	}
+	first, err := NewLog(root, config)
+	if err != nil {
+		t.Fatalf("NewLog(first) error = %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := first.Append([]Field{
+			StringField("MESSAGE", fmt.Sprintf("chain-online-reopen-%d", i)),
+			StringField("TEST_ID", "directory-chain-online-reopen"),
+		}, EntryOptions{RealtimeUsec: 1_700_002_270_000_000 + uint64(i), MonotonicUsec: uint64(i + 1)}); err != nil {
+			t.Fatalf("Append(first %d) error = %v", i, err)
+		}
+	}
+	if err := first.Sync(); err != nil {
+		t.Fatalf("Sync(first) error = %v", err)
+	}
+	activePath := first.ActivePath()
+	if err := first.writer.Close(); err != nil {
+		t.Fatalf("writer.Close(first active) error = %v", err)
+	}
+	first.writer = nil
+	first.closed = true
+
+	second, err := NewLog(root, config)
+	if err != nil {
+		t.Fatalf("NewLog(second) error = %v", err)
+	}
+	if second.ActivePath() != activePath {
+		t.Fatalf("ActivePath after default reopen = %q, want %q", second.ActivePath(), activePath)
+	}
+	if err := second.Append([]Field{
+		StringField("MESSAGE", "chain-online-reopen-2"),
+		StringField("TEST_ID", "directory-chain-online-reopen"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_270_000_002, MonotonicUsec: 3}); err != nil {
+		t.Fatalf("Append(second) error = %v", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatalf("Close(second) error = %v", err)
+	}
+	snapshot := readJournalSnapshot(t, activePath)
+	if snapshot.header.tailEntrySeqnum != 3 {
+		t.Fatalf("tail seqnum after online reopen = %d, want 3", snapshot.header.tailEntrySeqnum)
+	}
+}
+
+func TestLogDiscardsEmptyOnlineFileAndContinuesSequence(t *testing.T) {
 	root := t.TempDir()
 	config := LogConfig{
 		Options: testOptions(),
 		Source:  "system",
+	}
+	first, err := NewLog(root, config)
+	if err != nil {
+		t.Fatalf("NewLog(first) error = %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := first.Append([]Field{
+			StringField("MESSAGE", fmt.Sprintf("empty-reopen-%d", i)),
+			StringField("TEST_ID", "directory-empty-online-reopen"),
+		}, EntryOptions{RealtimeUsec: 1_700_002_272_000_000 + uint64(i), MonotonicUsec: uint64(i + 1)}); err != nil {
+			t.Fatalf("Append(first %d) error = %v", i, err)
+		}
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close(first) error = %v", err)
+	}
+
+	dir := filepath.Join(root, config.Options.MachineID.String())
+	files := journalFiles(t, dir)
+	if len(files) != 1 {
+		t.Fatalf("file count after first close = %d, want 1; files=%v", len(files), files)
+	}
+	snapshot := readJournalSnapshot(t, files[0])
+	nextSeqnum := snapshot.header.tailEntrySeqnum + 1
+	emptyPath := filepath.Join(
+		dir,
+		fmt.Sprintf("system@%s-%016x-%016x.journal", snapshot.header.seqnumID.String(), nextSeqnum, 1_700_002_272_000_010),
+	)
+	empty, err := Create(emptyPath, Options{
+		MachineID:  config.Options.MachineID,
+		BootID:     config.Options.BootID,
+		SeqnumID:   snapshot.header.seqnumID,
+		HeadSeqnum: nextSeqnum,
+	})
+	if err != nil {
+		t.Fatalf("Create(empty active) error = %v", err)
+	}
+	if err := empty.Close(); err != nil {
+		t.Fatalf("Close(empty active) error = %v", err)
+	}
+
+	second, err := NewLog(root, config)
+	if err != nil {
+		t.Fatalf("NewLog(second) error = %v", err)
+	}
+	if err := second.Append([]Field{
+		StringField("MESSAGE", "empty-reopen-2"),
+		StringField("TEST_ID", "directory-empty-online-reopen"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_272_000_002, MonotonicUsec: 3}); err != nil {
+		t.Fatalf("Append(second) error = %v", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatalf("Close(second) error = %v", err)
+	}
+	if _, err := os.Stat(emptyPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("empty active stat error = %v, want not exist", err)
+	}
+	rows := runJournalctlDirectoryJSON(t, dir, "TEST_ID=directory-empty-online-reopen")
+	if len(rows) != 3 {
+		t.Fatalf("empty-online row count = %d, want 3", len(rows))
+	}
+	assertJSONField(t, rows[2], "MESSAGE", "empty-reopen-2")
+}
+
+func TestNewLogDoesNotEnforceRetentionBeforeFirstAppend(t *testing.T) {
+	root := t.TempDir()
+	config := LogConfig{
+		Options:        testOptions(),
+		Source:         "system",
+		RotationPolicy: RotationPolicy{}.WithMaxEntries(1),
 	}
 
 	log, err := NewLog(root, config)
 	if err != nil {
 		t.Fatalf("NewLog(first) error = %v", err)
 	}
-	if err := log.Append([]Field{
-		StringField("MESSAGE", "reopen cleanup"),
-		StringField("TEST_ID", "newlog-retention-failure"),
-	}, EntryOptions{RealtimeUsec: 1_700_002_275_000_000, MonotonicUsec: 1}); err != nil {
-		t.Fatalf("Append(first) error = %v", err)
+	for i := 0; i < 2; i++ {
+		if err := log.Append([]Field{
+			StringField("MESSAGE", fmt.Sprintf("construction-retention-%d", i)),
+			StringField("TEST_ID", "newlog-no-construction-retention"),
+		}, EntryOptions{RealtimeUsec: 1_700_002_275_000_000 + uint64(i), MonotonicUsec: uint64(i + 1)}); err != nil {
+			t.Fatalf("Append(first %d) error = %v", i, err)
+		}
 	}
-	if err := log.Sync(); err != nil {
-		t.Fatalf("Sync(first) error = %v", err)
-	}
-	if err := log.writer.Close(); err != nil {
-		t.Fatalf("writer.Close(first active) error = %v", err)
-	}
-	log.writer = nil
-	log.closed = true
-
-	syntheticErr := errors.New("synthetic directory sync failure")
-	oldSync := syncJournalDirectory
-	syncJournalDirectory = func(string) error {
-		return syntheticErr
-	}
-	_, err = NewLog(root, config)
-	syncJournalDirectory = oldSync
-	if !errors.Is(err, syntheticErr) {
-		t.Fatalf("NewLog(reopen with retention failure) error = %v, want %v", err, syntheticErr)
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close(first) error = %v", err)
 	}
 
-	reopened, err := NewLog(root, config)
+	dir := filepath.Join(root, config.Options.MachineID.String())
+	before := journalFiles(t, dir)
+	if len(before) != 2 {
+		t.Fatalf("archive count before second NewLog = %d, want 2; files=%v", len(before), before)
+	}
+
+	retainedConfig := config
+	retainedConfig.RetentionPolicy = RetentionPolicy{}.WithMaxFiles(1)
+	reopened, err := NewLog(root, retainedConfig)
 	if err != nil {
-		t.Fatalf("NewLog(after failed reopen) error = %v", err)
+		t.Fatalf("NewLog(second) error = %v", err)
+	}
+	after := journalFiles(t, dir)
+	if len(after) != 2 {
+		t.Fatalf("archive count after second NewLog = %d, want 2; files=%v", len(after), after)
 	}
 	if err := reopened.Close(); err != nil {
-		t.Fatalf("Close(after failed reopen) error = %v", err)
+		t.Fatalf("Close(second) error = %v", err)
 	}
 }
 
@@ -511,6 +912,7 @@ func journalFiles(t *testing.T, dir string) []string {
 		}
 		files = append(files, filepath.Join(dir, entry.Name()))
 	}
+	sort.Strings(files)
 	return files
 }
 

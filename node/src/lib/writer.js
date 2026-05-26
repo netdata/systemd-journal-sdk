@@ -1,7 +1,7 @@
 // Journal file writer. Creates regular-by-default keyed-hash journal files.
 // Compatible with stock journalctl readers during live append.
 
-import { openSync, writeSync, readSync, closeSync, ftruncateSync, fsyncSync, renameSync } from 'node:fs';
+import { openSync, writeSync, readSync, closeSync, ftruncateSync, fsyncSync, renameSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import { readUint64LE, writeUint64LE, writeUint32LE, writeUint8, align8, randomUUID, isZeroUUID, bufEqual } from './binary.js';
@@ -108,7 +108,7 @@ export class Writer {
       w.appendOffset = align8(header.tail_object_offset + tailSize);
       w.nextSeqnum = header.tail_entry_seqnum + 1n;
       w.bootId = Buffer.from(header.tail_entry_boot_id);
-      if (isZeroUUID(w.bootId)) w.bootId = Buffer.from(header.file_id);
+      if (isZeroUUID(w.bootId)) w.bootId = readBootId() || Buffer.from(header.file_id);
       w.started = now - monotonicBase;
       w.compression = (header.incompatible_flags & INCOMPATIBLE_COMPRESSED_XZ) !== 0
         ? COMPRESSION_XZ
@@ -804,7 +804,9 @@ export class Writer {
     this._writeHeader();
     fsyncSync(this.fd);
     try {
-      renameSync(this.path, path);
+      if (this.path !== path) {
+        renameSync(this.path, path);
+      }
       this.path = path;
       let closeError = null;
       try {
@@ -814,6 +816,7 @@ export class Writer {
       }
       try {
         closeSync(this.fd);
+        this.closed = true;
       } catch (error) {
         if (!closeError) closeError = error;
       }
@@ -823,7 +826,6 @@ export class Writer {
         if (!closeError) closeError = error;
       }
       this.lock = null;
-      this.closed = true;
       if (closeError) throw closeError;
     } catch (error) {
       if (this.closed) throw error;
@@ -954,6 +956,14 @@ export class Writer {
         break;
       }
     }
+  }
+}
+
+function readBootId() {
+  try {
+    return Buffer.from(readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim().replaceAll('-', ''), 'hex');
+  } catch {
+    return null;
   }
 }
 

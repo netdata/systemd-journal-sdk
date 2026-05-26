@@ -7,6 +7,10 @@ pub enum WriterError {
     #[error("serialization error: {0}")]
     Serialization(String),
 
+    /// Attempted to write a journal entry without fields
+    #[error("journal entry has no fields")]
+    EmptyEntry,
+
     /// Invalid path for journal directory
     #[error("invalid path: {0}")]
     InvalidPath(String),

@@ -200,7 +200,11 @@ func Open(path string) (*Writer, error) {
 		compact:           header.isCompact(),
 	}
 	if isZeroUUID(w.bootID) {
-		w.bootID = header.fileID
+		if bootID, err := readUUIDFile("/proc/sys/kernel/random/boot_id"); err == nil {
+			w.bootID = bootID
+		} else {
+			w.bootID = header.fileID
+		}
 	}
 	if err := w.writeHeader(); err != nil {
 		_ = unlockAndClose(f)
@@ -383,11 +387,13 @@ func (w *Writer) archiveTo(path string) error {
 	if err := w.file.Sync(); err != nil {
 		return err
 	}
-	if err := os.Rename(w.path, path); err != nil {
-		w.header.state = stateOnline
-		restoreErr := w.writeHeader()
-		syncErr := w.file.Sync()
-		return errors.Join(err, restoreErr, syncErr)
+	if w.path != path {
+		if err := os.Rename(w.path, path); err != nil {
+			w.header.state = stateOnline
+			restoreErr := w.writeHeader()
+			syncErr := w.file.Sync()
+			return errors.Join(err, restoreErr, syncErr)
+		}
 	}
 	w.path = path
 	dirErr := syncJournalDirectory(path)

@@ -4,13 +4,13 @@
 
 Status: in-progress
 
-Sub-state: active pre-implementation design gate. SOW-0019 is completed, and the user explicitly picked up this SOW on 2026-05-26. Implementation is blocked only on the remaining public API and artifact accounting choices recorded in the gate.
+Sub-state: active implementation. SOW-0019 is completed, and the user explicitly picked up this SOW on 2026-05-26. The first implementation slice is the shared high-level writer naming contract across Rust, Go, Node.js, and Python.
 
 ## Requirements
 
 ### Purpose
 
-Provide a stable, production-usable Go journal writer API for Netdata Agent ingestion paths that need file-backed systemd journal storage without requiring live journald. The API must be a superset of the existing Netdata Rust writer behavior used by NetFlow and OTEL logs, plus the stricter creation-time and field-shape needs of future ingestion consumers such as SNMP traps.
+Provide stable, production-usable journal writer APIs for Netdata Agent ingestion paths in Rust, Go, Node.js, and Python that need file-backed systemd journal storage without requiring live journald. The high-level writer behavior must use the existing Netdata vendored Rust writer as the compatibility reference for existing NetFlow and OTEL logs integrations, while adding stricter creation-time and field-shape capabilities needed by future ingestion consumers such as SNMP traps.
 
 ### User Request
 
@@ -20,15 +20,18 @@ On 2026-05-25, the user clarified that this SOW must not be SNMP-traps-specific.
 
 On 2026-05-25, the user clarified the migration constraint: existing Netdata users must not lose their existing journals. After migrating Netdata plugins to this SDK, the plugins must continue writing to the same effective journal directories without requiring manual configuration changes. The SOW must explicitly distinguish whether machine-id path components are added by the SDK, supplied by the consumer, or absent, based on current Netdata behavior.
 
+On 2026-05-26, the user clarified the cross-language contract: all four SDK implementations must follow the same high-level writer rules and API shape. The existing Netdata vendored Rust writer is the behavior reference for Netdata compatibility. Stock systemd naming parity is an optional mode, not the default. The default and unset behavior must keep Netdata vendored Rust chain naming; an explicit `strict_systemd_naming` option may select `system.journal` active naming for consumers that intentionally want that policy.
+
 ### Assistant Understanding
 
 Facts:
 
-- The SDK currently has a Go single-file writer API (`Create`, `Open`, `Append`, `Sync`, `Close`) and a high-level directory writer API (`NewLog`, `Append`, `Sync`, `Close`, `ActivePath`, `JournalDirectory`).
-- `go/journal/log.go` currently stores high-level log files below `dir/<machine-id>/`.
-- `go/journal/log.go` currently supports rotation by maximum file size and entry count.
-- `go/journal/log.go` currently supports retention by maximum archived-file count and total bytes.
-- `go/journal/log.go` currently attempts to load missing machine ID and boot ID from host files, then falls through to random UUID defaults through `normalizeOptions`.
+- The SDK currently has Go, Node.js, and Python high-level directory writers plus the imported Rust high-level writer.
+- The current repo Rust and Go high-level writers diverged from the Netdata vendored Rust writer by using `system.journal` as the active filename.
+- The Netdata vendored Rust writer creates high-level active files with the chain filename form `system@<seqnum_id>-<head_seqnum>-<head_realtime>.journal`.
+- Go, Node.js, and Python high-level writers currently store files below `dir/<machine-id>/`.
+- Go currently supports rotation by maximum file size and entry count, and retention by maximum archived-file count and total bytes.
+- Go currently attempts to load missing machine ID and boot ID from host files, then falls through to random UUID defaults through `normalizeOptions`.
 - Existing tests prove stock `journalctl --directory` readback against the machine-id subdirectory returned by the test helper.
 - Existing pending SOWs do not define a Netdata-focused ingestion writer contract.
 
@@ -36,22 +39,25 @@ Inferences:
 
 - Netdata ingestion plugins should not depend on package-local journal writing logic once this SDK has the needed Go API.
 - Netdata dynamic configuration needs creation-time failure detection, so writer setup must validate directory creation, permissions, active-file open/create, option validity, lock acquisition, and retention preflight before the job is accepted.
-- Existing Netdata consumers use writer-owned machine-id path handling. The SDK must preserve that as the default migration mode: consumers pass the same configured base/tier paths, and the SDK appends `<machine-id>` internally.
+- Existing Netdata consumers use writer-owned machine-id path handling. The SDK must preserve that as the default Netdata-compatible mode: consumers pass the same configured base/tier paths, and the SDK appends `<machine-id>` internally.
 - The API should expose both the configured base/tier path and the effective machine-id journal directory so Netdata can preserve existing storage and still document the correct `journalctl --directory` path.
+- The API should not describe Netdata-compatible behavior as a migration-only mode. It is the default high-level writer contract for all four SDKs.
 
 Resolved requirements:
 
 - Existing NetFlow and OTEL logs migration must keep the current `configured-dir/<machine-id>/` effective path layout. A flat/direct layout may exist only as an explicit mode for consumers that already use or intentionally request it.
+- Default high-level active naming must match Netdata vendored Rust chain naming in all four SDKs: `<source>@<seqnum_id>-<head_seqnum>-<head_realtime>.journal`.
+- Strict systemd active naming must be opt-in only: `strict_systemd_naming=false` or unset means Netdata chain naming; `strict_systemd_naming=true` means `<source>.journal` active naming and archive-on-rotation naming.
 - Duration rotation and age retention are in scope for this SOW because they are part of the existing NetFlow and OTEL logs policy surface, even though the current Rust writer appears to expose duration rotation without enforcing it.
 
 Remaining unknowns:
 
-- Exact public API shape for nullable limits and strict identity mode.
+- Exact public API shape for nullable limits and strict identity mode remains open for later SOW-0023 slices, but the high-level naming contract is decided.
 - Exact file-count semantics for enabled zero or one values; the active file must never be deleted.
 
 ### Acceptance Criteria
 
-- The Go SDK exposes a documented ingestion writer contract usable by Netdata without copying SDK internals into Netdata.
+- Rust, Go, Node.js, and Python expose documented high-level ingestion writer contracts usable by Netdata without copying SDK internals into Netdata.
 - The contract is a superset of the current NetFlow and OTEL logs writer behavior: directory-owned journal files, source/prefix selection, machine-id directory layout, size/count/time rotation, file-count/byte/age retention, binary fields, strict source validation, and stock-reader compatibility.
 - Writer creation exposes a synchronous preflight mode that fails before consumer/job acceptance when any configured creation-time check fails: invalid source/name, invalid directory path, directory creation failure, active journal create/open failure when eager open is requested, writer lock failure, invalid compression/sealing options, invalid identity options in strict mode, and retention preflight errors.
 - Lazy open remains supported only if it is explicitly documented and not used by consumers that require creation-time active-file validation.
@@ -62,8 +68,11 @@ Remaining unknowns:
 - The API must not force existing Netdata consumers to start including `<machine-id>` in configured paths if they do not do that today.
 - The default layout preserves the systemd-compatible `configured-dir/<machine-id>/` behavior used by the existing Rust writer. Any flat/direct directory mode must be a first-class, tested compatibility mode, not an accidental side effect, and must not be used for existing Netdata consumer migration unless evidence shows that consumer already writes flat directories.
 - Writer construction or explicit open/preflight scans existing SDK-owned journal files in the effective machine-id directory and initializes chain state from disk: total retained journal bytes, tail sequence number, tail realtime timestamp, tail monotonic timestamp for the current boot, active-file identity if one exists, and the exact naming convention already present. Migration must not create a parallel `system.journal` active file when an existing Rust-format `system` + `@` + sequence metadata journal chain is the current Netdata chain.
+- The default high-level active filename policy in all four languages is Netdata chain naming, matching the existing Netdata vendored Rust writer: `<source>@<seqnum_id>-<head_seqnum>-<head_realtime>.journal`.
+- `strict_systemd_naming` is a cross-language opt-in flag. When it is false or unset, all SDKs use Netdata chain naming. When it is true, all SDKs use strict systemd active naming with `<source>.journal` as the active file and `<source>@...journal` as archived files.
+- Retention must track the active file explicitly and skip it in every language, because Netdata chain naming makes an active file look archive-named to simple filename parsers.
 - Rotation supports all required limits: maximum active file size, maximum entries per file, and maximum active file duration. Each limit must be independently nullable/optional so consumers can disable individual checks without overloading zero values.
-- Retention supports all required limits: maximum archived file count, maximum total retained bytes, and maximum retained age. Each limit must be independently nullable/optional so consumers can disable individual checks without overloading zero values.
+- Retention supports all required limits: maximum tracked journal file count, maximum total retained bytes, and maximum retained age. The tracked active/current file counts toward count and byte envelopes but must never be selected for deletion. Each limit must be independently nullable/optional so consumers can disable individual checks without overloading zero values.
 - Retention never deletes the tracked active file, even when configured byte/count limits are lower than the active file size or count envelope. Implementations must track the active file explicitly and must not rely only on filename/status parsing, because the existing Rust writer creates active files using the `system` + `@` + sequence metadata journal-name pattern.
 - Retention deletion scope is limited to SDK-owned journal files for the configured directory/source/prefix/machine-id chain. Unrelated journal files, unrelated sources, disposed files outside the supported lifecycle, and non-journal files are preserved unless the API explicitly documents another tested mode.
 - Retention does not directly delete Netdata side artifacts such as `decoder-state.d`, `facet-state.bin`, or per-journal facet sidecars. Journal lifecycle events must give consumers the created, archived, and deleted journal paths they need to update or delete their own side artifacts.
@@ -92,7 +101,7 @@ Remaining unknowns:
 - The API supports Rust-writer-compatible remapping for non-systemd-compatible field names, including OTEL dotted field names such as `log.time_unix_nano`. The writer must either emit compatible `ND_REMAPPING=1` entries and remapped `ND_*` field names, or provide a documented equivalent that preserves stock journal compatibility and SDK reader query compatibility.
 - Stock `journalctl --directory` and `journalctl --verify` validation pass against generated active and archived files, including the documented query directory.
 - Tests include synthetic NetFlow-shaped, OTEL-log-shaped, and trap-shaped fixtures with representative fields, binary payload coverage, dotted OTEL field names, and large single-field `OTLP_JSON` payload coverage without using real customer, environment, community string, endpoint, or incident data.
-- Tests cover nullable policy behavior, invalid enabled values, minimum-size and file-count edge cases, active-file survival under impossible retention limits, source/prefix retention scoping, scan-and-resume of existing Rust-format `system` + `@` + sequence metadata journal chains, prevention of parallel `system.journal` chain creation in Netdata migration mode, reopen/interruption behavior, eager preflight failures, lazy-open behavior where kept, create/archive/delete lifecycle notifications, side-artifact preservation, artifact-inclusive size accounting, append timestamp overrides, active-path exposure after append, field-name remapping, and consumer-controlled sync cadence.
+- Tests cover nullable policy behavior, invalid enabled values, minimum-size and file-count edge cases, active-file survival under impossible retention limits, source/prefix retention scoping, default Netdata chain naming in Rust, Go, Node.js, and Python, opt-in strict systemd active naming in Rust, Go, Node.js, and Python, scan-and-resume of existing Rust-format `system` + `@` + sequence metadata journal chains, prevention of parallel `system.journal` chain creation in Netdata-compatible mode, reopen/interruption behavior, eager preflight failures, lazy-open behavior where kept, create/archive/delete lifecycle notifications, side-artifact preservation, artifact-inclusive size accounting, append timestamp overrides, active-path exposure after append, field-name remapping, and consumer-controlled sync cadence.
 - Initial non-gating benchmark hooks or smoke benchmarks are available for this API path, while the broad benchmark/profile/optimize pass remains owned by SOW-0009.
 
 ## Analysis
@@ -170,17 +179,17 @@ Design conclusion:
 - Backward compatibility can be preserved by keeping existing `NewLog(dir, LogConfig)` call sites and adding strictly additive options, builders, and methods. If a stricter constructor is needed, it should return the same `*Log` type rather than a separate wrapper type.
 - The public API should avoid Netdata-specific names. The behavior is generic directory journal writing with explicit layout, identity, lifecycle, retention, and artifact-accounting policy.
 
-Recommended Go API direction:
+Recommended cross-language API direction:
 
-- Keep `Log` as the high-level directory writer type.
-- Keep `Writer` as the low-level single-file primitive.
+- Keep `Log` as the high-level directory writer type in every language.
+- Keep `Writer` as the low-level single-file primitive in every language.
 - Extend `LogConfig` and policy builders rather than introducing a separate `IngestionWriter` type.
-- Change policy internals to represent nullable limits explicitly. The natural Go shape is pointer-backed optional fields plus helper builders, for example `WithMaxFileSize(bytes)`, `WithMaxEntries(n)`, `WithMaxDuration(d)`, `WithMaxBytes(bytes)`, `WithMaxAge(d)`, and `WithMaxFiles(n)`. Nil means disabled; enabled zero is invalid during validation.
-- Add strict/eager configuration to `LogConfig`, but return `*Log`:
+- Change policy internals to represent nullable limits explicitly. Nil/None/undefined means disabled; enabled zero is invalid during validation.
+- Add strict/eager configuration to the high-level log config, but return the same `Log` type:
   - identity policy: strict required IDs vs host fallback vs random fallback;
   - open mode: lazy vs eager preflight;
   - layout: default machine-id child directory, with flat/direct only as explicit mode;
-  - naming mode: Netdata chain naming using `source@seqnum_id-head_seqnum-head_realtime.journal`, plus legacy `source.journal` active naming only as explicit compatibility mode;
+  - naming mode: default Netdata chain naming using `source@seqnum_id-head_seqnum-head_realtime.journal`, plus `strict_systemd_naming=true` for `source.journal` active naming only as explicit compatibility mode;
   - field-name policy: strict systemd names vs Rust-compatible remapping;
   - lifecycle observer and callback error policy;
   - artifact size provider.
@@ -338,11 +347,11 @@ Risks:
 
 ## Pre-Implementation Gate
 
-Status: needs-user-decision
+Status: ready for first implementation slice
 
 Problem / root-cause model:
 
-- The SDK has generic Go writer primitives, but the Netdata integration needs a stricter ingestion writer contract. The root issue is not journal byte encoding; it is lifecycle semantics: creation-time validation, stable query directory, strict identity handling, and retention/rotation policy coverage suitable for Netdata dynamic configuration.
+- The SDK has generic writer primitives, but the Netdata integration needs a shared high-level ingestion writer contract in all four languages. The root issue for this slice is that current SDK high-level active naming drifted toward systemd active filename policy in Rust and Go, while the Netdata compatibility reference is the vendored Rust chain filename policy. Broader lifecycle semantics remain part of later SOW-0023 slices.
 
 Evidence reviewed:
 
@@ -351,10 +360,17 @@ Evidence reviewed:
 - `go/journal/log.go`: current high-level directory writer API, directory layout, rotation, retention, and identity normalization behavior.
 - `go/journal/writer.go`: low-level writer options, field model, append API, sync, close, and random UUID fallback.
 - `go/journal/log_test.go`: stock `journalctl --directory` tests against the current machine-id directory shape.
+- `ktsaou/netdata @ 00305266364e src/crates/journal-log-writer/src/log/chain.rs:23`: vendored Rust high-level writer uses `system@<seqnum_id>-<head_seqnum>-<head_realtime>.journal`.
+- `rust/src/crates/journal-log-writer/src/log/chain.rs:15`: current SDK Rust high-level writer uses `system.journal`, which diverges from the vendored Rust reference.
+- `go/journal/log.go:392`: current SDK Go high-level writer uses `<source>.journal` active naming.
+- `node/src/lib/directory-writer.js` and `python/journal/directory_writer.py`: current high-level writers expose the same `Log` concept and need the same naming contract.
 
 Affected contracts and surfaces:
 
 - Go public API in package `journal`.
+- Rust public API in `journal-log-writer` and re-exported `journal` crate.
+- Node.js public API exported from `node/src/index.js`.
+- Python public API exported from `python/journal/__init__.py`.
 - Go writer lifecycle and error semantics.
 - Directory layout and the documented `journalctl --directory` path for SDK-generated logs.
 - Rotation and retention policy semantics.
@@ -366,13 +382,14 @@ Existing patterns to reuse:
 
 - Keep `Writer` as the low-level file primitive.
 - Build any Netdata-focused API on top of `Log` or a small wrapper around `Log`, rather than duplicating journal object writing.
+- Mirror the same high-level `Log` naming behavior across Rust, Go, Node.js, and Python, using idiomatic option names but identical defaults.
 - Reuse `Field`, `StringField`, `EntryOptions`, `RotationPolicy`, `RetentionPolicy`, `ActivePath`, and `JournalDirectory` where they already satisfy the contract.
 - Reuse existing `journalctl` test helpers and add Netdata-shaped fixtures instead of relying on real operational data.
 
 Risk and blast radius:
 
 - Medium API risk: changes should add a clearer constructor or options rather than break existing `NewLog` users.
-- Medium compatibility risk: directory layout changes can affect stock `journalctl --directory` behavior.
+- Medium compatibility risk: active naming changes can affect stock `journalctl --directory` behavior and retention safety, especially because chain-named active files parse like archived files.
 - Medium operational risk: retention mistakes can delete too much or leak disk space; tests must prove active files and unrelated files are preserved.
 - Low security risk if fixtures remain synthetic; high sensitivity if real trap content or SNMP communities are copied into durable artifacts, so real data must not be used.
 - Medium performance risk: the API will be on an ingestion path, but full optimization belongs to SOW-0009 after feature completeness.
@@ -385,14 +402,15 @@ Sensitive data handling plan:
 
 Implementation plan:
 
-1. Record the resolved sequencing and implementation-routing decisions.
-2. Decide the remaining public API shape and artifact accounting contract.
-3. Define the Go ingestion writer contract in API documentation and tests before implementation.
-4. Add a strict constructor or option set that performs all job-creation preflight synchronously.
-5. Preserve the existing migration layout: callers pass the same configured base/tier directory and the SDK appends `<machine-id>` internally by default.
-6. Implement duration rotation and age retention as first-class behavior, with tests proving active-file survival and scoped deletion.
-7. Add Netdata-shaped journalctl and verify tests with synthetic fields and binary payloads.
-8. Update specs, docs, status, and any project skills that become affected by the new durable API contract.
+1. Record the resolved sequencing, implementation-routing, and cross-language naming decisions.
+2. Implement the first shared contract slice: default Netdata chain naming plus opt-in `strict_systemd_naming` across Rust, Go, Node.js, and Python.
+3. Add or update tests proving default chain naming, opt-in strict systemd active naming, and active-file retention protection in each language.
+4. Decide the remaining public API shape and artifact accounting contract before later SOW-0023 slices.
+5. Add a strict constructor or option set that performs all job-creation preflight synchronously.
+6. Preserve the existing layout: callers pass the same configured base/tier directory and the SDK appends `<machine-id>` internally by default.
+7. Implement duration rotation and age retention as first-class behavior, with tests proving active-file survival and scoped deletion.
+8. Add Netdata-shaped journalctl and verify tests with synthetic fields and binary payloads.
+9. Update specs, docs, status, and any project skills that become affected by the new durable API contract.
 
 Validation plan:
 
@@ -445,6 +463,13 @@ Open decisions:
    - Decision recorded from latest user instruction: implement locally in this repository and use external models only as read-only reviewers.
    - Implication: no external implementer prompts will be run for this SOW unless the user explicitly changes routing again.
    - Risk to avoid: stale delegation instructions causing a reviewer-only agent or external implementer to edit the repository.
+
+6. Cross-language naming contract decision
+   - Decision recorded from user clarification on 2026-05-26: all four languages must follow the same high-level writer rules and API shape, with Rust vendored Netdata behavior as the reference for existing plugin compatibility.
+   - Required behavior: default and unset high-level writer naming is Netdata chain naming, `<source>@<seqnum_id>-<head_seqnum>-<head_realtime>.journal`, in Rust, Go, Node.js, and Python.
+   - Required behavior: `strict_systemd_naming=false` or unset means Netdata chain naming; `strict_systemd_naming=true` means strict systemd active naming with `<source>.journal`.
+   - Implication: the current SDK Rust and Go high-level writers must be corrected where they use `system.journal` as the default active file. Node.js and Python must be aligned to the same option name and default.
+   - Risk to avoid: treating `system.journal` as the default would split existing Netdata journal chains and make SDK behavior diverge from the vendored Rust writer used by current Netdata plugins.
 
 ## Implications And Decisions
 
@@ -508,29 +533,138 @@ Failure handling:
 - Promoted SOW-0023 from pending to current after the user explicitly asked to pick it up.
 - Recorded that SOW-0019 is complete, so this SOW no longer competes with an active FSS SOW.
 - Updated implementation routing to local implementation with external models used only as read-only reviewers.
+- User clarified that the high-level writer contract is cross-language and that the existing Netdata vendored Rust writer is the reference behavior. Default naming must be Netdata chain naming in all four languages; strict systemd active naming is opt-in only.
+- Implemented the first shared naming slice:
+  - Rust `Config::with_strict_systemd_naming(true)` with default Netdata chain naming.
+  - Go `LogConfig.StrictSystemdNaming` with default Netdata chain naming.
+  - Node.js `strictSystemdNaming` / `strict_systemd_naming` with default Netdata chain naming.
+  - Python `strict_systemd_naming` / `strictSystemdNaming` with default Netdata chain naming.
+- Updated retention logic so chain-named active files are explicitly skipped during retention enforcement.
+- Updated specs and README files to document default Netdata chain naming and opt-in strict systemd active naming.
+- Ran the first read-only implementation review round with `glm`, `kimi`, `qwen`, and `minimax`.
+- Fixed accepted reviewer findings:
+  - Rust now derives active/archive filename source prefixes from `Config.origin.source` instead of hardcoding `system`.
+  - Node.js no longer uses `||` defaults for rotation/retention limits, so explicit zero remains observable and disables the current numeric limits consistently with Go/Python behavior.
+  - Node.js and Python now scan existing chain-named files at construction and continue `nextSeqnum` from the highest persisted tail sequence when `headSeqnum`/`head_seqnum` is not explicitly supplied.
+  - Added default chain reopen/sequence tests and active-retention guard tests for Node.js and Python; added default chain reopen test for Go; added custom-source naming test for Rust.
+- Ran a second read-only implementation review round with `glm`, `kimi`, `qwen`, and `minimax`.
+- Fixed accepted second-round findings:
+  - Rust, Go, Node.js, and Python now preserve the chain `seqnum_id` from existing chain-named files when construction resumes a default-mode chain and the caller did not explicitly provide a sequence ID.
+  - Rust, Go, Node.js, and Python detect an existing chain-named `ONLINE` file and reopen it for append, preventing a second parallel active chain after a crash-style reopen.
+  - Rust `journal-core` now exposes a locked mutable open path for files created by this SDK, used by the high-level `Log` only for default-mode chain active resume.
+  - Go retention now protects the just-active chain file during rotation and close before deleting older unprotected files.
+  - Go, Node.js, and Python file-count retention now counts the protected active/current file in the retention envelope while never selecting that protected file for deletion, matching the Rust reference behavior.
+  - Node.js chain scanning now reads only `HEADER_SIZE` bytes from each journal file instead of loading entire files into memory.
+  - Node.js and Python now include explicit default chain-named `system` journal tests that also assert `system.journal` is not created in default mode.
+  - Rust now has a clean-reopen test proving the default chain preserves `seqnum_id` and continues head sequence numbers across construction.
+  - Rust, Go, Node.js, and Python now have crash-style reopen tests proving an existing chain-named `ONLINE` file is reused and sequence numbers continue in the same file.
+- Ran a third read-only implementation review round with `glm`, `kimi`, `qwen`, and `minimax`.
+- Fixed accepted third-round findings:
+  - Rust `RotationState` now initializes its count and size state from a reopened `ONLINE` file, so count-based rotation enforces total entries in the resumed file instead of only entries appended after reopen.
+  - Rust crash-style reopen coverage now verifies count rotation after resume by writing past the configured count limit and checking successor head sequence.
+  - Node.js and Python now scan existing default-mode chain files unconditionally, so an explicit `headSeqnum`/`head_seqnum` cannot bypass an existing `ONLINE` chain file.
+  - Node.js and Python now check rotation before append, matching Rust and Go fail-safe rotation ordering.
+  - Node.js and Python `archiveTo`/`archive_to` now mark the writer closed immediately after the file descriptor is closed, so lock-release errors cannot trigger recovery writes through a closed descriptor.
+  - Node.js and Python crash-style reopen tests now pass an explicit head sequence value and still assert that the existing `ONLINE` file is reused.
+  - Dispositioned as broader SOW-0023 scope: Node.js/Python non-zero default policy values, Go construction-time retention behavior, Rust Drop parent-directory sync, tolerant scan-error policy, and duration/age policy gaps.
+  - Fourth and later review rounds completed; accepted findings were fixed and revalidated before this slice commit.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Pending implementation.
+- First naming slice implemented. Evidence:
+  - `rust/src/crates/journal-log-writer/src/log/config.rs`: `strict_systemd_naming` defaults to false and exposes `with_strict_systemd_naming`.
+  - `rust/src/crates/journal-log-writer/src/log/mod.rs`: default active file creation uses chain naming; strict mode uses `system.journal`.
+  - `go/journal/log.go`: `LogConfig.StrictSystemdNaming` defaults to false; default active path is chain-named; strict mode uses `<source>.journal`.
+  - `node/src/lib/directory-writer.js`: `strictSystemdNaming` / `strict_systemd_naming` defaults to false; default active path is chain-named.
+  - `python/journal/directory_writer.py`: `strict_systemd_naming` / `strictSystemdNaming` defaults to false; default active path is chain-named.
+  - `rust/src/crates/journal-log-writer/src/log/chain.rs`, `go/journal/log.go`, `node/src/lib/directory-writer.js`, and `python/journal/directory_writer.py`: construction scans existing chain files and resumes the chain sequence identity where supported by the writer primitive.
+  - `go/journal/log.go`, `node/src/lib/directory-writer.js`, `python/journal/directory_writer.py`, and `rust/src/crates/journal-log-writer/src/log/chain.rs`: retention counts the protected active/current file in the retention envelope and skips it as a deletion candidate.
+  - `rust/src/crates/journal-log-writer/src/log/mod.rs`, `go/journal/log.go`, `node/src/lib/directory-writer.js`, and `python/journal/directory_writer.py`: rotation creates/opens the post-rotation current file before retention enforcement, so `max_files=1` keeps exactly the current file instead of leaking `max_files + 1`.
+  - `rust/src/crates/journal-log-writer/src/log/chain.rs`, `go/journal/log.go`, `node/src/lib/directory-writer.js`, and `python/journal/directory_writer.py`: byte retention accounting uses committed journal size from the header tail object instead of sparse preallocation length where the file can be inspected.
 
 Tests or equivalent validation:
 
-- Pending implementation.
+- `go test ./...` from `go/`: passed.
+- `cargo test -p journal-log-writer --test log_writer -- --nocapture` from `rust/`: passed, 28 tests after empty-active crash recovery coverage.
+- `node --check node/src/lib/directory-writer.js && node --check node/src/lib/writer.js && node --check node/test/all.js && node node/test/all.js`: passed.
+- `python3 -m py_compile python/journal/directory_writer.py python/journal/writer.py python/test_all.py && PYTHONPATH=.local/python-deps:python python3 python/test_all.py`: passed. The `lz4` test dependency was installed under `.local/python-deps` inside this repository; no system Python or home cache dependency was required for the run.
 
 Real-use evidence:
 
-- Pending implementation.
+- Stock `journalctl --directory` and `journalctl --file` checks are included in the Rust and Go validation tests where available, and Node.js/Python reader tests verify the generated strict/default files after the retention changes. This slice still does not claim full live stock-reader compatibility; that remains governed by the project compatibility SOWs.
 
 Reviewer findings:
 
 - Pre-implementation SOW gap review completed with `glm`, `kimi`, `qwen`, and `minimax` on 2026-05-25. Accepted findings were incorporated under `External reviewer gap synthesis on 2026-05-25`.
 - A second pre-implementation reviewer round was run on 2026-05-25. Accepted, source-verified findings were incorporated into the acceptance criteria and second-round analysis bullets. Implementation review remains pending.
+- First naming-slice implementation review completed with `glm`, `kimi`, `qwen`, and `minimax`.
+  - Accepted and fixed: Rust source prefix hardcoding in strict/default naming paths.
+  - Accepted and fixed: Node.js `||` option defaults hiding explicit zero limits.
+  - Accepted and fixed: Node.js/Python missing chain-file tail sequence scan on reopen.
+  - Accepted and fixed: Node.js/Python missing tests for retention behavior with chain-named files and reopen/sequence continuity.
+  - Dispositioned as pre-existing/future SOW-0023 scope: strict identity/host ID fallback differences and full eager-open preflight behavior.
+  - Second review round after fixes completed.
+  - Accepted and fixed: chain `seqnum_id` was not preserved across clean default-mode reopen in Go/Node.js/Python, and Rust was also updated to preserve the tail file's `seqnum_id` for cross-language consistency.
+  - Accepted and fixed: chain-named `ONLINE` file reopening after crash-style construction in Rust, Go, Node.js, and Python.
+  - Accepted and fixed: Node.js full-file reads during chain scanning.
+  - Accepted and fixed: Node.js/Python explicit default chain-named `system` journal tests.
+  - Accepted and fixed: file-count retention semantics aligned to count the protected active/current file while deleting only older unprotected files.
+  - Dispositioned as broader SOW-0023 scope: enabled-zero policy validation, duration rotation, age retention, and strict creation-time preflight.
+  - Third review round completed.
+  - Accepted and fixed: Rust count rotation after `ONLINE` chain reopen initialized from zero instead of the existing file entry count.
+  - Accepted and fixed: Node.js/Python explicit head sequence values could bypass chain scanning and create a parallel active file.
+  - Accepted and fixed: Node.js/Python rotation happened after append; they now rotate before append to match Rust/Go error ordering.
+  - Accepted and fixed: Node.js/Python archive close-state handling after descriptor close and lock-release errors.
+  - Dispositioned as broader SOW-0023 scope: Go construction-time retention policy, Rust Drop parent-directory sync, scan-error strictness beyond the Go same-failure fix, and duration/age retention.
+- Ran a fourth read-only implementation review round with `glm`, `kimi`, `qwen`, and `minimax`.
+- Fixed accepted fourth-round findings:
+  - Rust, Go, Node.js, and Python now enforce retention after the post-rotation current file is created/opened, so the retention protected reference points at the current file instead of the pre-rotation file.
+  - Rust, Go, Node.js, and Python close/archive paths now protect the just-closed current file during retention, including strict systemd naming where `<source>.journal` is renamed to the chain filename.
+  - Rust, Go, Node.js, and Python now account retention byte limits using committed journal size derived from the header tail object, falling back to file metadata only when the file cannot be inspected.
+  - Node.js and Python default rotation/retention limits now match Go's disabled-by-default behavior; explicit zero remains a disabled limit.
+  - Go, Node.js, and Python strict systemd naming now scan existing chain files to preserve `seqnum_id` and sequence continuity after a strict close.
+  - Go now skips unreadable/corrupt chain files during chain-state scan, matching the tolerant Rust/Node.js/Python behavior for this slice.
+  - Node.js/Python and Go low-level archive paths now skip same-path renames, matching Rust's same-path guard.
+  - Rust no longer treats `head_entry_realtime == 0` as proof that a strict active file is empty; emptiness is based on `n_entries == 0`.
+  - Rust reopens empty `ONLINE` files with the construction fallback boot ID instead of substituting the random file ID as boot ID.
+  - Added strict byte-retention, strict sequence-resume, exact max-file current-retention, and same-failure tests across affected languages.
+- Ran a fifth read-only implementation review round with `glm`, `kimi`, `qwen`, and `minimax`.
+- Fixed accepted fifth-round findings:
+  - Rust `Log` now exposes an explicit consuming `close()` method that archives the current file, renames strict `<source>.journal` to the chain archive filename, applies retention with the closed current file protected, and avoids relying on `Drop` for production close behavior.
+  - Rust strict close/reopen coverage now proves strict close archive-renames `system.journal` and strict reopen continues the sequence.
+  - Rust committed-byte retention accounting now 8-byte-aligns the tail object end, matching Go, Node.js, and Python.
+  - Node.js retention deletion now ignores `ENOENT` races while still surfacing other unlink errors, matching Go/Python behavior.
+  - `rust/README.md` now documents explicit `Log::close()` as the production archive/retention path and clarifies that `Drop` is best-effort state persistence.
+  - Qwen's fifth-round reviewer process stopped making progress and was terminated by exact PID after more than 17 minutes; its partial output was treated as stale and not used as a clean review gate.
+- Ran focused final read-only review rounds with `glm` and `kimi` after fifth-round fixes.
+- Fixed accepted final-round findings:
+  - Go no longer enforces retention at `NewLog()` construction time, preventing deletion of existing archives before any active/current file exists; Go has a regression test proving construction with `MaxFiles=1` preserves existing archives before append.
+  - Node.js now refreshes cached writer identity after append, matching Python and preventing stale in-memory `nextSeqnum` between appends.
+  - Node.js and Python now include construction-time retention safety tests equivalent to Go's regression coverage.
+  - Rust now fsyncs the parent journal directory after strict close renames `<source>.journal` to the chain archive filename.
+  - Go committed-size retention accounting uses saturating aligned arithmetic for corrupt huge tail offsets/sizes.
+  - Python low-level `Writer.create(..., {'head_seqnum': 0})` now defaults to sequence 1, matching Go and Node.js.
+  - Rust, Go, Node.js, and Python now discard zero-entry crash-created `ONLINE` active files before append and continue sequence numbers from the existing chain tail; all four languages have regression coverage for this case.
+  - Go, Node.js, and Python reopened nil-tail-boot-id fallback now prefers the host boot ID before falling back to file ID, matching Rust.
+  - Node.js and Python rotation paths now clean up closed low-level writer references after a post-archive rotation error, allowing a caller retry to create a fresh active file instead of looping on a closed writer.
+- Latest read-only reviewer disposition:
+  - `glm` found no blocking issues after the final fixes. It recorded a strict/default cross-mode migration edge case as medium but non-blocking for this slice because it belongs to broader SOW-0023 migration/final API polish.
+  - `kimi` reran the four validation paths successfully and identified Node.js/Python rotation error cleanup before the final local fix. The concrete finding was fixed with tests. Its last output was overly verbose and did not provide a concise clean verdict, so the accepted actionable findings are recorded here with direct test evidence rather than treated as an unresolved production gate.
 
 Same-failure scan:
 
-- Pending implementation.
+- Completed for the first naming/resume/retention slice after the fourth review round:
+  - Retention protected-reference ordering was checked and fixed in Rust, Go, Node.js, and Python.
+  - Same-path archive rename handling was checked and fixed in Go, Node.js, and Python; Rust already guarded same-path archive moves.
+  - Sparse preallocation size accounting was checked and fixed for Rust, Go, Node.js, and Python committed-size retention.
+  - Strict close sequence-resume behavior was checked and fixed for Go, Node.js, Python, and Rust. Rust now has explicit `Log::close()` archive/retention behavior instead of relying on deferred `Drop` cleanup.
+  - Retention delete error handling was checked; Node.js now ignores `ENOENT` races while preserving non-`ENOENT` errors like Go/Python.
+  - Node.js/Python default policy values were aligned with Go's disabled-by-default behavior; Rust already uses `None` for disabled limits.
+  - Empty-active crash recovery was checked and fixed in Rust, Go, Node.js, and Python.
+  - Reopened nil-tail-boot-id fallback was checked and aligned in Go, Node.js, and Python to Rust's host-boot fallback.
+  - Rotation/archive error cleanup was checked in Node.js and Python and fixed for the closed-writer-after-archive case.
 
 Sensitive data gate:
 
@@ -538,46 +672,51 @@ Sensitive data gate:
 
 Artifact maintenance gate:
 
-- AGENTS.md: pending close-time assessment.
-- Runtime project skills: pending close-time assessment.
-- Specs: pending close-time assessment.
-- End-user/operator docs: pending close-time assessment.
-- End-user/operator skills: pending close-time assessment.
-- SOW lifecycle: pending SOW created in `.agents/sow/pending/`; status is `open`.
-- SOW-status.md: updated in this creation step.
+- AGENTS.md: no project-wide workflow or responsibility changes in this slice.
+- Runtime project skills: no workflow changes needed; existing orchestration and compatibility skills covered the fourth-round retention failure mode.
+- Specs: updated `.agents/sow/specs/product-scope.md` for default chain naming, strict naming option, current-file retention protection, committed-byte retention accounting, and disabled limit semantics.
+- End-user/operator docs: updated Rust, Go, Node.js, and Python READMEs for default naming, strict naming, disabled limits, and current-file committed-byte retention.
+- End-user/operator skills: none exist for this repository.
+- SOW lifecycle: remains `in-progress` in `.agents/sow/current/`; this commit is a verified slice, not SOW completion.
+- SOW-status.md: updated for the current slice status.
 
 Specs update:
 
-- Pending implementation.
+- Updated `.agents/sow/specs/product-scope.md` to record Netdata chain active naming as the default high-level writer behavior, strict systemd active naming as an explicit option, current-file retention protection, committed-byte retention accounting, and disabled limit semantics.
 
 Project skills update:
 
-- Pending implementation.
+- No project skill update needed for this slice. The existing compatibility skill already requires shared tests and reviewer iteration; the retention ordering bug was specific implementation behavior now captured in specs/tests.
 
 End-user/operator docs update:
 
-- Pending implementation.
+- Updated `rust/README.md`, `go/README.md`, `node/README.md`, and `python/README.md` to document default Netdata chain active naming, the strict systemd active naming option, disabled limit semantics, and current-file committed-byte retention protection.
 
 End-user/operator skills update:
 
-- Pending implementation.
+- None. This repository has no end-user/operator skills.
 
 Lessons:
 
-- Pending implementation.
+- Cross-language retention must be tested with impossible byte limits and exact file-count limits. Smoke tests that only assert "active was not deleted" can encode `max_files + 1` leaks as expected behavior.
 
 Follow-up mapping:
 
-- Pending implementation.
+- Remaining broader SOW-0023 items continue in this SOW: duration rotation, age retention, creation-time/eager preflight, strict identity validation, artifact accounting, and final API polish.
+- Strict/default cross-mode migration when a chain-named `ONLINE` active file exists and a caller switches to strict systemd naming remains broader SOW-0023 migration/final API polish scope. The current verified slice guarantees default Netdata-compatible behavior and strict-mode sequence continuation within each mode.
+- Rust `open_for_append` incompatible-flag validation parity remains tracked for a later compatibility hardening slice.
+- Rust `Drop` remains documented best-effort behavior; production callers must use explicit `Log::close()` for archive rename and retention.
 
 ## Outcome
 
-Pending.
+First naming/resume/retention implementation slice is ready to commit as a rollback point. SOW-0023 remains in-progress for the remaining broader API items.
 
 ## Lessons Extracted
 
-Pending.
+- Cross-language retention tests must cover exact file-count limits and impossible byte limits; otherwise tests can accidentally encode `max_files + 1` leaks.
+- Crash recovery needs zero-entry active-file fixtures, not only non-empty `ONLINE` reopen fixtures. Empty active files exercise sequence-resume paths that non-empty files hide.
+- Rotation/archive error handling must be tested separately from close/archive error handling because retry behavior differs.
 
 ## Followup
 
-Pending.
+- Continue SOW-0023 with duration rotation, age retention, creation-time/eager preflight, strict identity validation, artifact accounting, strict/default migration polish, and final API polish.

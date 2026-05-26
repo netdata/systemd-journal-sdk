@@ -139,7 +139,7 @@ class Writer:
             w._next_seqnum = header['tail_entry_seqnum'] + 1
             w._boot_id = header['tail_entry_boot_id']
             if is_zero_uuid(w._boot_id):
-                w._boot_id = header['file_id']
+                w._boot_id = _read_boot_id() or header['file_id']
             w._started = now_ms - monotonic_base
             w._compression = compression
             w._compress_threshold = DEFAULT_COMPRESS_THRESHOLD
@@ -223,7 +223,7 @@ class Writer:
 
         self._boot_id = boot_id
         self._append_offset = append_offset
-        self._next_seqnum = opts.get('head_seqnum', 1)
+        self._next_seqnum = opts.get('head_seqnum', 1) or 1
 
         os.ftruncate(self._fd, file_size)
         self._write_header()
@@ -754,7 +754,8 @@ class Writer:
         self._write_header()
         os.fsync(self._fd)
         try:
-            os.rename(self._path, path)
+            if self._path != path:
+                os.rename(self._path, path)
             self._path = path
             close_err = None
             try:
@@ -763,6 +764,7 @@ class Writer:
                 close_err = e
             try:
                 os.close(self._fd)
+                self._closed = True
             except Exception as e:
                 if not close_err:
                     close_err = e
@@ -772,7 +774,6 @@ class Writer:
                 if not close_err:
                     close_err = e
             self._lock = None
-            self._closed = True
             if close_err:
                 raise close_err
         except Exception:
@@ -934,6 +935,15 @@ def _uuid_option(value, fallback):
     if not isinstance(value, bytes) or len(value) != 16:
         raise ValueError('uuid options must be 16 bytes or 32 hex characters')
     return value
+
+
+def _read_boot_id():
+    try:
+        with open('/proc/sys/kernel/random/boot_id', 'r', encoding='ascii') as f:
+            text = f.read().strip().replace('-', '')
+        return bytes.fromhex(text) if len(text) == 32 else None
+    except (OSError, ValueError):
+        return None
 
 
 def _normalize_compression(value):

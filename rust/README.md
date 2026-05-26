@@ -15,9 +15,11 @@ Current writer scope:
 - byte-safe field values through `&[u8]` field payloads;
 - direct-file writing through `journal_core`;
 - high-level directory writing through `journal::Log`;
-- systemd-compatible active/archive file naming;
+- Netdata-compatible chain active naming by default, with
+  `Config::with_strict_systemd_naming(true)` available for strict systemd
+  `<source>.journal` active naming;
 - entry-count and file-size rotation;
-- archived file-count and byte-size retention;
+- tracked journal-file-count and byte-size retention;
 - pure cross-SDK cooperative lockfile with stale-owner detection to prevent
   multiple SDK writers from opening the same file;
 - Forward Secure Sealing TAG writing through `SealOptions`, including stock
@@ -93,8 +95,21 @@ log.write_entry(
     None,
 )?;
 log.sync()?;
+log.close()?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
+
+`Log` stores files below `<directory>/<machine-id>/`. By default the active file
+uses the Netdata Rust writer chain filename form
+`<source>@<seqnum-id>-<head-seqnum>-<head-realtime>.journal`; call
+`Config::with_strict_systemd_naming(true)` to use `<source>.journal` as the
+active file.
+Unset rotation and retention limits are disabled. Retention counts the tracked
+active/current file in file-count and committed-byte limits, but deletion only
+selects older unprotected files owned by the configured source; the tracked
+active/current file is never deleted to satisfy a retention limit.
+Call `Log::close()` to archive the current file and enforce retention; `Drop`
+only performs best-effort state persistence.
 
 Binary-safe values:
 

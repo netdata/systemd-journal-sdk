@@ -84,6 +84,12 @@ pub struct Config {
     pub compression_threshold: usize,
     /// Use the systemd compact journal on-disk layout.
     pub compact: bool,
+    /// Use systemd's `<source>.journal` active filename policy.
+    ///
+    /// The default is false so the high-level writer matches the Netdata
+    /// vendored Rust writer: active files use the chain filename form
+    /// `<source>@<seqnum_id>-<head_seqnum>-<head_realtime>.journal`.
+    pub strict_systemd_naming: bool,
 }
 
 impl Config {
@@ -100,6 +106,7 @@ impl Config {
             compression: Compression::None,
             compression_threshold: 64,
             compact: false,
+            strict_systemd_naming: false,
         }
     }
 
@@ -127,6 +134,11 @@ impl Config {
 
     pub fn with_compact(mut self, compact: bool) -> Self {
         self.compact = compact;
+        self
+    }
+
+    pub fn with_strict_systemd_naming(mut self, strict_systemd_naming: bool) -> Self {
+        self.strict_systemd_naming = strict_systemd_naming;
         self
     }
 }
