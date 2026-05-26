@@ -16,64 +16,146 @@ var syncJournalDirectory = syncParentDir
 
 // RotationPolicy controls when a directory writer starts a new journal file.
 type RotationPolicy struct {
-	MaxFileSize uint64
-	MaxEntries  int
-	MaxDuration time.Duration
+	MaxFileSize *uint64
+	MaxEntries  *int
+	MaxDuration *time.Duration
 }
 
 // WithMaxFileSize returns a policy that rotates after the active file reaches
 // size bytes. The entry that crosses the limit remains in the current file; the
-// next append rotates first. Values smaller than the journal header and hash
-// table overhead rotate after every non-empty append.
+// next append rotates first. Zero is rejected by NewLog. Values smaller than the
+// journal header and hash table overhead rotate after every non-empty append.
 func (p RotationPolicy) WithMaxFileSize(size uint64) RotationPolicy {
-	p.MaxFileSize = size
+	p.MaxFileSize = &size
 	return p
 }
 
 // WithMaxEntries returns a policy that rotates after n entries in the active
-// file. The next append creates the successor file.
+// file. The next append creates the successor file. Values at or below zero are
+// rejected by NewLog.
 func (p RotationPolicy) WithMaxEntries(n int) RotationPolicy {
-	p.MaxEntries = n
+	p.MaxEntries = &n
 	return p
 }
 
 // WithMaxDuration returns a policy that rotates before appending an entry whose
 // realtime timestamp is at least d after the active file head timestamp. Values
-// at or below zero disable duration rotation.
+// at or below zero are rejected by NewLog.
 func (p RotationPolicy) WithMaxDuration(d time.Duration) RotationPolicy {
-	p.MaxDuration = d
+	p.MaxDuration = &d
 	return p
 }
 
 // RetentionPolicy controls deletion of old archived files owned by a Log.
 type RetentionPolicy struct {
-	MaxFiles int
-	MaxBytes uint64
-	MaxAge   time.Duration
+	MaxFiles *int
+	MaxBytes *uint64
+	MaxAge   *time.Duration
 }
 
 // WithMaxFiles returns a policy that keeps at most n tracked journal files. The
 // active/current file is counted but is never deleted to satisfy this limit.
+// Values at or below zero are rejected by NewLog.
 func (p RetentionPolicy) WithMaxFiles(n int) RetentionPolicy {
-	p.MaxFiles = n
+	p.MaxFiles = &n
 	return p
 }
 
 // WithMaxBytes returns a policy that deletes oldest archived files until the
 // active plus archived files fit within size bytes, or no archived files remain.
 // The active file is counted in the total but is never deleted to satisfy this
-// limit.
+// limit. Zero is rejected by NewLog.
 func (p RetentionPolicy) WithMaxBytes(size uint64) RetentionPolicy {
-	p.MaxBytes = size
+	p.MaxBytes = &size
 	return p
 }
 
 // WithMaxAge returns a policy that deletes archived files whose head realtime
 // timestamp is older than d. The active/current file is counted but is never
-// deleted to satisfy this limit.
+// deleted to satisfy this limit. Values at or below zero are rejected by
+// NewLog.
 func (p RetentionPolicy) WithMaxAge(d time.Duration) RetentionPolicy {
-	p.MaxAge = d
+	p.MaxAge = &d
 	return p
+}
+
+// LogOpenMode controls whether NewLog creates/opens the active file
+// immediately or waits until the first append.
+type LogOpenMode int
+
+const (
+	// LogOpenLazy validates the directory and existing chain state at NewLog()
+	// time, but creates a new active file only when the first entry is appended.
+	LogOpenLazy LogOpenMode = iota
+	// LogOpenEager creates or opens the active file during NewLog(), proving
+	// file creation/open, writer lock acquisition, and configured writer
+	// options before the caller accepts work.
+	LogOpenEager
+)
+
+// LogIdentityMode controls how missing machine and boot IDs are handled.
+type LogIdentityMode int
+
+const (
+	// LogIdentityAuto loads host IDs when available and generates missing IDs.
+	LogIdentityAuto LogIdentityMode = iota
+	// LogIdentityStrict requires Options.MachineID and Options.BootID to be
+	// provided explicitly.
+	LogIdentityStrict
+)
+
+// LogLifecycleEventType identifies a high-level journal file lifecycle event.
+type LogLifecycleEventType string
+
+const (
+	LogLifecycleCreated LogLifecycleEventType = "created"
+	LogLifecycleRotated LogLifecycleEventType = "rotated"
+	LogLifecycleDeleted LogLifecycleEventType = "deleted"
+)
+
+// LogLifecycleReason identifies why a lifecycle event happened.
+type LogLifecycleReason string
+
+const (
+	LogLifecycleReasonAppend    LogLifecycleReason = "append"
+	LogLifecycleReasonEagerOpen LogLifecycleReason = "eager_open"
+	LogLifecycleReasonRotation  LogLifecycleReason = "rotation"
+	LogLifecycleReasonRetention LogLifecycleReason = "retention"
+)
+
+// LogLifecycleEvent describes a journal file lifecycle change.
+type LogLifecycleEvent struct {
+	Type         LogLifecycleEventType
+	Reason       LogLifecycleReason
+	ActivePath   string
+	ArchivedPath string
+	DeletedPaths []string
+}
+
+// LogLifecycleObserver receives synchronous journal lifecycle notifications.
+type LogLifecycleObserver interface {
+	OnLogLifecycleEvent(LogLifecycleEvent)
+}
+
+// LogLifecycleObserverFunc adapts a function to LogLifecycleObserver.
+type LogLifecycleObserverFunc func(LogLifecycleEvent)
+
+// OnLogLifecycleEvent implements LogLifecycleObserver.
+func (f LogLifecycleObserverFunc) OnLogLifecycleEvent(event LogLifecycleEvent) {
+	f(event)
+}
+
+// LogArtifactSizer returns consumer-owned bytes associated with a journal file.
+type LogArtifactSizer interface {
+	JournalArtifactSize(journalPath string) (uint64, error)
+}
+
+// LogArtifactSizeFunc adapts a function to LogArtifactSizer.
+type LogArtifactSizeFunc func(journalPath string) (uint64, error)
+
+// JournalArtifactSize implements LogArtifactSizer.
+func (f LogArtifactSizeFunc) JournalArtifactSize(journalPath string) (uint64, error) {
+	return f(journalPath)
 }
 
 // LogConfig configures a high-level directory journal writer.
@@ -82,6 +164,10 @@ type LogConfig struct {
 	Source          string
 	RotationPolicy  RotationPolicy
 	RetentionPolicy RetentionPolicy
+	OpenMode        LogOpenMode
+	IdentityMode    LogIdentityMode
+	Lifecycle       LogLifecycleObserver
+	ArtifactSizer   LogArtifactSizer
 	// StrictSystemdNaming uses <source>.journal as the active filename.
 	// The default false value matches the Netdata Rust writer and uses
 	// <source>@<seqnum-id>-<head-seqnum>-<head-realtime>.journal for the
@@ -93,18 +179,23 @@ type LogConfig struct {
 // not safe for concurrent method calls; callers must serialize writes to the
 // single writer instance.
 type Log struct {
-	machineDir string
-	source     string
-	active     string
+	configuredDir string
+	machineDir    string
+	source        string
+	active        string
 
 	options   Options
 	rotation  RotationPolicy
 	retention RetentionPolicy
 	strict    bool
+	lifecycle LogLifecycleObserver
+	artifacts LogArtifactSizer
 
 	writer        *Writer
 	entriesInFile int
 	closed        bool
+	lastRealtime  uint64
+	lastMonotonic uint64
 }
 
 type archivedJournalFile struct {
@@ -121,6 +212,8 @@ type chainState struct {
 	activePath         string
 	activeTailSeqnum   uint64
 	activeHeadRealtime uint64
+	tailRealtime       uint64
+	tailMonotonic      uint64
 }
 
 // NewLog creates a high-level directory writer. Files are stored below
@@ -130,6 +223,12 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 	if dir == "" {
 		return nil, errInvalidJournal
 	}
+	if config.OpenMode != LogOpenLazy && config.OpenMode != LogOpenEager {
+		return nil, fmt.Errorf("%w: unsupported log open mode %d", errInvalidJournal, config.OpenMode)
+	}
+	if config.IdentityMode != LogIdentityAuto && config.IdentityMode != LogIdentityStrict {
+		return nil, fmt.Errorf("%w: unsupported log identity mode %d", errInvalidJournal, config.IdentityMode)
+	}
 
 	source := config.Source
 	if source == "" {
@@ -138,10 +237,24 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 	if err := validateJournalSource(source); err != nil {
 		return nil, err
 	}
+	if err := validateRotationPolicy(config.RotationPolicy); err != nil {
+		return nil, err
+	}
+	if err := validateRetentionPolicy(config.RetentionPolicy); err != nil {
+		return nil, err
+	}
+	if config.IdentityMode == LogIdentityStrict {
+		if isZeroUUID(config.Options.MachineID) {
+			return nil, fmt.Errorf("%w: strict identity requires machine id", errInvalidJournal)
+		}
+		if isZeroUUID(config.Options.BootID) {
+			return nil, fmt.Errorf("%w: strict identity requires boot id", errInvalidJournal)
+		}
+	}
 
 	explicitHeadSeqnum := config.Options.HeadSeqnum != 0
 	explicitSeqnumID := !isZeroUUID(config.Options.SeqnumID)
-	opts, err := normalizeLogOptions(config.Options)
+	opts, err := normalizeLogOptions(config.Options, config.IdentityMode)
 	if err != nil {
 		return nil, err
 	}
@@ -152,12 +265,15 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 	}
 
 	l := &Log{
+		configuredDir: dir,
 		machineDir:    machineDir,
 		source:        source,
 		options:       opts,
 		rotation:      config.RotationPolicy,
 		retention:     config.RetentionPolicy,
 		strict:        config.StrictSystemdNaming,
+		lifecycle:     config.Lifecycle,
+		artifacts:     config.ArtifactSizer,
 		entriesInFile: 0,
 	}
 
@@ -173,10 +289,13 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 			if !explicitSeqnumID {
 				l.options.SeqnumID = state.seqnumID
 			}
+			l.lastRealtime = state.tailRealtime
+			l.lastMonotonic = state.tailMonotonic
 		}
-		l.active = l.systemdActivePath()
-		if _, err := os.Stat(l.active); err == nil {
-			w, err := Open(l.active)
+		activePath := l.systemdActivePath()
+		if _, err := os.Stat(activePath); err == nil {
+			l.active = activePath
+			w, err := Open(activePath)
 			if err != nil {
 				return nil, err
 			}
@@ -202,6 +321,8 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 			if !explicitSeqnumID {
 				l.options.SeqnumID = state.seqnumID
 			}
+			l.lastRealtime = state.tailRealtime
+			l.lastMonotonic = state.tailMonotonic
 		}
 		if state.activePath != "" {
 			l.active = state.activePath
@@ -218,6 +339,11 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 			}
 		}
 	}
+	if config.OpenMode == LogOpenEager && l.writer == nil {
+		if err := l.ensureWriter(l.entryOptionsForAppend(EntryOptions{}), LogLifecycleReasonEagerOpen); err != nil {
+			return nil, err
+		}
+	}
 
 	return l, nil
 }
@@ -228,6 +354,8 @@ func (l *Log) attachOpenedWriter(w *Writer) {
 	l.options.BootID = w.bootID
 	l.options.HeadSeqnum = w.nextSeqnum
 	l.entriesInFile = int(w.header.nEntries)
+	l.lastRealtime = w.header.tailEntryRealtime
+	l.lastMonotonic = w.header.tailEntryMonotonic
 }
 
 func (l *Log) discardEmptyOpenedWriter(w *Writer) error {
@@ -257,18 +385,27 @@ func (l *Log) Append(fields []Field, opts EntryOptions) error {
 			return err
 		}
 	}
-	if err := l.ensureWriter(opts); err != nil {
+	if err := l.ensureWriter(opts, LogLifecycleReasonAppend); err != nil {
 		return err
 	}
+	fields = appendSourceRealtimeField(fields, opts.SourceRealtimeUsec)
 	if err := l.writer.Append(fields, opts); err != nil {
 		return err
 	}
 	l.entriesInFile++
+	l.lastRealtime = l.writer.header.tailEntryRealtime
+	l.lastMonotonic = l.writer.header.tailEntryMonotonic
 	return nil
 }
 
 // AppendMap appends a string-valued entry through the directory writer.
 func (l *Log) AppendMap(fields map[string]string) error {
+	return l.AppendMapWithOptions(fields, EntryOptions{})
+}
+
+// AppendMapWithOptions appends a string-valued entry through the directory
+// writer with timestamp and boot ID options.
+func (l *Log) AppendMapWithOptions(fields map[string]string, opts EntryOptions) error {
 	keys := make([]string, 0, len(fields))
 	for k := range fields {
 		keys = append(keys, k)
@@ -279,7 +416,7 @@ func (l *Log) AppendMap(fields map[string]string) error {
 	for _, k := range keys {
 		entry = append(entry, StringField(k, fields[k]))
 	}
-	return l.Append(entry, EntryOptions{})
+	return l.Append(entry, opts)
 }
 
 // Sync flushes the active journal file.
@@ -330,7 +467,7 @@ func (l *Log) Close() error {
 	if l.strict {
 		protectedPath = l.archivePathFor(l.writer.header)
 	}
-	if err := l.archiveActive(); err != nil {
+	if _, err := l.archiveActive(); err != nil {
 		if l.writer == nil {
 			l.closed = true
 		}
@@ -358,7 +495,7 @@ func validateEntryFields(fields []Field) error {
 
 // ActivePath returns the active journal path for this log directory.
 func (l *Log) ActivePath() string {
-	return l.activePath()
+	return l.active
 }
 
 // JournalDirectory returns the machine-id directory containing this log's
@@ -367,7 +504,28 @@ func (l *Log) JournalDirectory() string {
 	return l.machineDir
 }
 
-func (l *Log) ensureWriter(entryOpts EntryOptions) error {
+// ConfiguredDirectory returns the directory passed to NewLog before the
+// machine-id child path is appended.
+func (l *Log) ConfiguredDirectory() string {
+	return l.configuredDir
+}
+
+// MachineID returns the machine ID used for the journal directory and files.
+func (l *Log) MachineID() UUID {
+	return l.options.MachineID
+}
+
+// BootID returns the boot ID used for entries that do not override it.
+func (l *Log) BootID() UUID {
+	return l.options.BootID
+}
+
+// Source returns the journal source filename prefix.
+func (l *Log) Source() string {
+	return l.source
+}
+
+func (l *Log) ensureWriter(entryOpts EntryOptions, reason LogLifecycleReason) error {
 	if l.writer != nil {
 		return nil
 	}
@@ -391,6 +549,13 @@ func (l *Log) ensureWriter(entryOpts EntryOptions) error {
 	}
 	l.writer = w
 	l.entriesInFile = 0
+	if reason != LogLifecycleReasonRotation {
+		l.emitLifecycle(LogLifecycleEvent{
+			Type:       LogLifecycleCreated,
+			Reason:     reason,
+			ActivePath: l.activePath(),
+		})
+	}
 	return nil
 }
 
@@ -398,44 +563,53 @@ func (l *Log) shouldRotate(nextRealtimeUsec uint64) bool {
 	if l.writer == nil {
 		return false
 	}
-	if l.rotation.MaxEntries > 0 && l.entriesInFile >= l.rotation.MaxEntries {
+	if l.rotation.MaxEntries != nil && l.entriesInFile >= *l.rotation.MaxEntries {
 		return true
 	}
 	if l.writer.header.nEntries > 0 &&
-		l.rotation.MaxFileSize > 0 &&
-		l.writer.CurrentSize() >= l.rotation.MaxFileSize {
+		l.rotation.MaxFileSize != nil &&
+		l.writer.CurrentSize() >= *l.rotation.MaxFileSize {
 		return true
 	}
-	if l.writer.header.nEntries == 0 || l.rotation.MaxDuration <= 0 {
+	if l.writer.header.nEntries == 0 || l.rotation.MaxDuration == nil {
 		return false
 	}
-	maxDurationUsec := durationUsec(l.rotation.MaxDuration)
+	maxDurationUsec := durationUsec(*l.rotation.MaxDuration)
+	// Keep the explicit comparison before subtraction to avoid uint64
+	// underflow if a caller supplies a timestamp older than the active head.
 	return nextRealtimeUsec >= l.writer.header.headEntryRealtime &&
 		nextRealtimeUsec-l.writer.header.headEntryRealtime >= maxDurationUsec
 }
 
 func (l *Log) rotate(entryOpts EntryOptions) error {
 	if l.writer == nil {
-		return l.ensureWriter(entryOpts)
+		return l.ensureWriter(entryOpts, LogLifecycleReasonAppend)
 	}
 	nextSeqnum := l.writer.nextSeqnum
 	seqnumID := l.writer.header.seqnumID
 	bootID := l.writer.bootID
-	if err := l.archiveActive(); err != nil {
+	archivedPath, err := l.archiveActive()
+	if err != nil {
 		return err
 	}
 	l.options.SeqnumID = seqnumID
 	l.options.BootID = bootID
 	l.options.HeadSeqnum = nextSeqnum
-	if err := l.ensureWriter(entryOpts); err != nil {
+	if err := l.ensureWriter(entryOpts, LogLifecycleReasonRotation); err != nil {
 		return err
 	}
+	l.emitLifecycle(LogLifecycleEvent{
+		Type:         LogLifecycleRotated,
+		Reason:       LogLifecycleReasonRotation,
+		ArchivedPath: archivedPath,
+		ActivePath:   l.activePath(),
+	})
 	return l.enforceRetention(l.activePath())
 }
 
-func (l *Log) archiveActive() error {
+func (l *Log) archiveActive() (string, error) {
 	if l.writer == nil {
-		return nil
+		return "", nil
 	}
 	nextSeqnum := l.writer.nextSeqnum
 	seqnumID := l.writer.header.seqnumID
@@ -451,18 +625,14 @@ func (l *Log) archiveActive() error {
 			l.options.HeadSeqnum = nextSeqnum
 			l.writer = nil
 			l.entriesInFile = 0
-			if !l.strict {
-				l.active = ""
-			}
+			l.active = ""
 		}
-		return err
+		return archivePath, err
 	}
 	l.writer = nil
 	l.entriesInFile = 0
-	if !l.strict {
-		l.active = ""
-	}
-	return nil
+	l.active = ""
+	return archivePath, nil
 }
 
 func (l *Log) enforceRetention(protectedPath string) error {
@@ -480,13 +650,17 @@ func (l *Log) enforceRetention(protectedPath string) error {
 		if activePath != "" && file.path == activePath {
 			activeInFiles = true
 		}
-		total += file.size
+		total = saturatingAdd(total, file.size)
 	}
 	activeExtraFile := false
 	if activePath != "" && !activeInFiles {
 		if activeInfo, err := os.Stat(activePath); err == nil {
 			activeExtraFile = true
-			total += committedJournalSize(activePath, uint64(activeInfo.Size()))
+			activeSize, err := l.retainedSize(activePath, uint64(activeInfo.Size()))
+			if err != nil {
+				return err
+			}
+			total = saturatingAdd(total, activeSize)
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
@@ -506,7 +680,8 @@ func (l *Log) enforceRetention(protectedPath string) error {
 	if activeExtraFile {
 		fileCount++
 	}
-	for l.retention.MaxFiles > 0 && fileCount > l.retention.MaxFiles {
+	var deletedPaths []string
+	for l.retention.MaxFiles != nil && fileCount > *l.retention.MaxFiles {
 		deleteIndex := -1
 		for i, file := range files {
 			if activePath == "" || file.path != activePath {
@@ -521,11 +696,12 @@ func (l *Log) enforceRetention(protectedPath string) error {
 		if err := os.Remove(deleted.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		deletedPaths = append(deletedPaths, deleted.path)
 		total = saturatingSub(total, deleted.size)
 		files = append(files[:deleteIndex], files[deleteIndex+1:]...)
 		fileCount--
 	}
-	for l.retention.MaxBytes > 0 && total > l.retention.MaxBytes && len(files) > 0 {
+	for l.retention.MaxBytes != nil && total > *l.retention.MaxBytes && len(files) > 0 {
 		deleteIndex := -1
 		for i, file := range files {
 			if activePath == "" || file.path != activePath {
@@ -540,12 +716,13 @@ func (l *Log) enforceRetention(protectedPath string) error {
 		if err := os.Remove(deleted.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		deletedPaths = append(deletedPaths, deleted.path)
 		total = saturatingSub(total, deleted.size)
 		files = append(files[:deleteIndex], files[deleteIndex+1:]...)
 	}
-	if l.retention.MaxAge > 0 {
+	if l.retention.MaxAge != nil {
 		cutoff := uint64(time.Now().UnixMicro())
-		maxAgeUsec := durationUsec(l.retention.MaxAge)
+		maxAgeUsec := durationUsec(*l.retention.MaxAge)
 		if cutoff >= maxAgeUsec {
 			cutoff -= maxAgeUsec
 		} else {
@@ -569,16 +746,33 @@ func (l *Log) enforceRetention(protectedPath string) error {
 			if err := os.Remove(deleted.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return err
 			}
+			deletedPaths = append(deletedPaths, deleted.path)
 			total = saturatingSub(total, deleted.size)
 			files = append(files[:deleteIndex], files[deleteIndex+1:]...)
 		}
 	}
-	return syncJournalDirectory(l.machineDir)
+	if err := syncJournalDirectory(l.machineDir); err != nil {
+		return err
+	}
+	if len(deletedPaths) > 0 {
+		l.emitLifecycle(LogLifecycleEvent{
+			Type:         LogLifecycleDeleted,
+			Reason:       LogLifecycleReasonRetention,
+			DeletedPaths: deletedPaths,
+		})
+	}
+	return nil
 }
 
 func (l *Log) entryOptionsForAppend(opts EntryOptions) EntryOptions {
 	if opts.RealtimeUsec == 0 {
 		opts.RealtimeUsec = uint64(time.Now().UnixMicro())
+	}
+	if opts.RealtimeUsec <= l.lastRealtime {
+		opts.RealtimeUsec = l.lastRealtime + 1
+	}
+	if opts.MonotonicUsec != 0 && opts.MonotonicUsec <= l.lastMonotonic {
+		opts.MonotonicUsec = l.lastMonotonic + 1
 	}
 	return opts
 }
@@ -617,11 +811,26 @@ func (l *Log) archivedFiles() ([]archivedJournalFile, uint64, error) {
 			return nil, 0, err
 		}
 		archived.path = filepath.Join(l.machineDir, entry.Name())
-		archived.size = committedJournalSize(archived.path, uint64(info.Size()))
+		archived.size, err = l.retainedSize(archived.path, uint64(info.Size()))
+		if err != nil {
+			return nil, 0, err
+		}
 		files = append(files, archived)
-		total += archived.size
+		total = saturatingAdd(total, archived.size)
 	}
 	return files, total, nil
+}
+
+func (l *Log) retainedSize(path string, fallback uint64) (uint64, error) {
+	size := committedJournalSize(path, fallback)
+	if l.artifacts == nil {
+		return size, nil
+	}
+	artifactSize, err := l.artifacts.JournalArtifactSize(path)
+	if err != nil {
+		return 0, err
+	}
+	return saturatingAdd(size, artifactSize), nil
 }
 
 func (l *Log) activePath() string {
@@ -666,6 +875,8 @@ func (l *Log) scanChainState() (chainState, error) {
 			state.hasTail = true
 			state.tailSeqnum = header.tailEntrySeqnum
 			state.seqnumID = header.seqnumID
+			state.tailRealtime = header.tailEntryRealtime
+			state.tailMonotonic = header.tailEntryMonotonic
 		}
 		if header.state == stateOnline &&
 			(state.activePath == "" ||
@@ -725,7 +936,10 @@ func align8Saturating(v uint64) uint64 {
 	return align8(v)
 }
 
-func normalizeLogOptions(opts Options) (Options, error) {
+func normalizeLogOptions(opts Options, mode LogIdentityMode) (Options, error) {
+	if mode == LogIdentityStrict {
+		return normalizeOptions(opts), nil
+	}
 	if isZeroUUID(opts.MachineID) {
 		if machineID, err := readUUIDFile("/etc/machine-id"); err == nil {
 			opts.MachineID = machineID
@@ -737,6 +951,48 @@ func normalizeLogOptions(opts Options) (Options, error) {
 		}
 	}
 	return normalizeOptions(opts), nil
+}
+
+func validateRotationPolicy(policy RotationPolicy) error {
+	if policy.MaxFileSize != nil && *policy.MaxFileSize == 0 {
+		return fmt.Errorf("%w: rotation max file size must be greater than 0", errInvalidJournal)
+	}
+	if policy.MaxEntries != nil && *policy.MaxEntries <= 0 {
+		return fmt.Errorf("%w: rotation max entries must be greater than 0", errInvalidJournal)
+	}
+	if policy.MaxDuration != nil && *policy.MaxDuration <= 0 {
+		return fmt.Errorf("%w: rotation max duration must be greater than 0", errInvalidJournal)
+	}
+	return nil
+}
+
+func validateRetentionPolicy(policy RetentionPolicy) error {
+	if policy.MaxFiles != nil && *policy.MaxFiles <= 0 {
+		return fmt.Errorf("%w: retention max files must be greater than 0", errInvalidJournal)
+	}
+	if policy.MaxBytes != nil && *policy.MaxBytes == 0 {
+		return fmt.Errorf("%w: retention max bytes must be greater than 0", errInvalidJournal)
+	}
+	if policy.MaxAge != nil && *policy.MaxAge <= 0 {
+		return fmt.Errorf("%w: retention max age must be greater than 0", errInvalidJournal)
+	}
+	return nil
+}
+
+func appendSourceRealtimeField(fields []Field, sourceRealtimeUsec uint64) []Field {
+	if sourceRealtimeUsec == 0 {
+		return fields
+	}
+	withSource := make([]Field, 0, len(fields)+1)
+	withSource = append(withSource, fields...)
+	withSource = append(withSource, StringField("_SOURCE_REALTIME_TIMESTAMP", strconv.FormatUint(sourceRealtimeUsec, 10)))
+	return withSource
+}
+
+func (l *Log) emitLifecycle(event LogLifecycleEvent) {
+	if l.lifecycle != nil {
+		l.lifecycle.OnLogLifecycleEvent(event)
+	}
 }
 
 func readUUIDFile(path string) (UUID, error) {
@@ -823,4 +1079,11 @@ func saturatingSub(value, other uint64) uint64 {
 		return 0
 	}
 	return value - other
+}
+
+func saturatingAdd(value, other uint64) uint64 {
+	if other > ^uint64(0)-value {
+		return ^uint64(0)
+	}
+	return value + other
 }

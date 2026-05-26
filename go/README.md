@@ -3,6 +3,12 @@
 This module contains pure-Go systemd journal reader and writer components. It
 does not use CGO, native addons, or libsystemd linkage.
 
+Import path:
+
+```go
+import "github.com/netdata/systemd-journal-sdk/go/journal"
+```
+
 Current writer scope:
 
 - regular journal files by default and compact journal files with
@@ -104,7 +110,13 @@ Directory writer with rotation and retention:
 
 ```go
 log, err := journal.NewLog("/var/log/journal-sdk", journal.LogConfig{
-    Source: "netdata-plugin",
+    Source:       "netdata-plugin",
+    OpenMode:     journal.LogOpenEager,
+    IdentityMode: journal.LogIdentityStrict,
+    Options: journal.Options{
+        MachineID: machineID,
+        BootID:    bootID,
+    },
     RotationPolicy: journal.RotationPolicy{}.
         WithMaxEntries(100000).
         WithMaxFileSize(128 * 1024 * 1024).
@@ -130,13 +142,41 @@ current active file and opens a new active file. By default the active file uses
 the Netdata Rust writer chain filename form
 `<source>@<seqnum-id>-<head-seqnum>-<head-realtime>.journal`; set
 `StrictSystemdNaming: true` to use `<source>.journal` as the active file.
-Zero-valued rotation and retention limits are disabled. Duration rotation is
-checked before append using the incoming entry realtime and the active file head
-realtime. Retention counts the tracked active/current file in file-count and
-committed-byte limits, but deletion only selects older unprotected files owned
-by the configured `Source`; the tracked active/current file is never deleted to
-satisfy a retention limit. Call `log.EnforceRetention()` to apply age/count/byte
-retention without waiting for another append-triggered rotation or close.
+Unset rotation and retention limits are disabled; enabling a limit with zero or
+a negative value makes `NewLog()` fail. `LogOpenEager` creates or opens the
+active file during construction so callers can reject a job before accepting
+input. `LogIdentityStrict` requires explicit machine and boot IDs instead of
+falling back to host files or generated IDs.
+
+`ConfiguredDirectory()` returns the root passed to `NewLog()`.
+`JournalDirectory()` returns the effective `<directory>/<machine-id>` directory
+to pass to stock `journalctl --directory`. `ActivePath()` returns the exact
+active journal path after eager open or a successful append; it is empty before
+lazy-open creation.
+
+Duration rotation is checked before append using the incoming entry realtime and
+the active file head realtime. Retention counts the tracked active/current file
+in file-count and committed-byte limits, but deletion only selects older
+unprotected files owned by the configured `Source`; the tracked active/current
+file is never deleted to satisfy a retention limit. Call
+`log.EnforceRetention()` to apply age/count/byte retention without waiting for
+another append-triggered rotation or close.
+
+`EntryOptions.SourceRealtimeUsec` injects `_SOURCE_REALTIME_TIMESTAMP` when the
+source timestamp differs from the journal entry timestamp. `Log.Append` clamps
+non-progressing realtime and non-zero monotonic overrides forward to preserve
+strict ordering in the chain.
+
+For Netdata-style side indexes, `LogConfig.Lifecycle` reports created, rotated,
+and retention-deleted journal paths, and `LogConfig.ArtifactSizer` includes
+consumer-owned sidecar bytes in size-based retention. See `go/API.md` for the
+versioned public API contract.
+
+The initial Go API accepts systemd-compatible field names: uppercase ASCII
+letters, digits, and underscores, with the first byte an uppercase ASCII letter
+and a maximum length of 64 bytes. Automatic Netdata/OTEL field-name remapping is
+planned as an additive high-level writer feature after the first SNMP traps
+integration tag.
 
 Basic reader usage:
 

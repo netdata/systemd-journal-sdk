@@ -180,9 +180,28 @@ Current Go writer feature slice:
   from the active file head realtime to the incoming entry realtime;
 - tracked journal-file-count, committed-byte-size, and archive-head-age
   retention. The tracked active/current file counts toward retention envelopes
-  but is never selected for deletion to satisfy retention limits. Zero-valued
-  limits are disabled. `EnforceRetention()` applies retention without requiring
-  a rotation or close;
+  but is never selected for deletion to satisfy retention limits. Unset limits
+  are disabled; explicitly enabled zero or negative limits fail construction.
+  `EnforceRetention()` applies retention without requiring a rotation or close;
+- high-level Go directory writer construction supports lazy open by default and
+  eager active-file open through `LogOpenEager`, so integrations can validate
+  file creation/open, writer lock acquisition, and writer options before
+  accepting work;
+- high-level Go identity handling supports host/random fallback by default and
+  `LogIdentityStrict` for integrations that require explicit machine and boot
+  IDs;
+- high-level Go path accessors expose the configured root, effective
+  machine-id journal directory, exact active path after file creation, machine
+  ID, boot ID, and source prefix;
+- high-level Go lifecycle callbacks report created, rotated, and
+  retention-deleted journal paths; artifact-size callbacks include
+  consumer-owned sidecar bytes in size-based retention decisions;
+- high-level Go `EntryOptions.SourceRealtimeUsec` injects
+  `_SOURCE_REALTIME_TIMESTAMP`, and non-progressing realtime / non-zero
+  monotonic overrides are clamped forward for strict chain ordering;
+- initial high-level Go `v0.1.0` writer accepts systemd-compatible field names
+  only. Automatic Netdata/OTEL field-name remapping for dotted or lowercase
+  fields remains an additive follow-up before OTEL migration;
 - pure cross-SDK cooperative lockfile with stale-owner detection, plus a
   secondary POSIX `flock`, to protect the one-writer contract among
   cooperating SDK writers;

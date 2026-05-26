@@ -1,0 +1,128 @@
+# Go API Stability
+
+This module is imported as:
+
+```go
+import "github.com/netdata/systemd-journal-sdk/go/journal"
+```
+
+The first consumable tag for this subdirectory module is expected to be
+`go/v0.1.0`.
+
+## Stability Contract
+
+The `v0.1.x` Go API is intended to be stable enough for Netdata integration.
+Breaking changes to the following public surfaces should be avoided inside the
+`v0.1.x` line:
+
+- `journal.NewLog(directory, journal.LogConfig)`
+- `journal.LogConfig`
+- `journal.LogOpenLazy` and `journal.LogOpenEager`
+- `journal.LogIdentityAuto` and `journal.LogIdentityStrict`
+- `journal.RotationPolicy` and `journal.RetentionPolicy` builder methods
+- `journal.EntryOptions`
+- `journal.Field` and `journal.StringField`
+- `(*journal.Log).Append`
+- `(*journal.Log).AppendMap`
+- `(*journal.Log).AppendMapWithOptions`
+- `(*journal.Log).Sync`
+- `(*journal.Log).Close`
+- `(*journal.Log).EnforceRetention`
+- `(*journal.Log).ConfiguredDirectory`
+- `(*journal.Log).JournalDirectory`
+- `(*journal.Log).ActivePath`
+- `(*journal.Log).MachineID`
+- `(*journal.Log).BootID`
+- `(*journal.Log).Source`
+- lifecycle and artifact-size callback interfaces
+- lifecycle event type and reason constants
+- exported sentinel errors
+
+Future `v0.1.x` changes should be additive where practical.
+
+## Directory Contract
+
+`NewLog` takes the configured root directory. The SDK appends the machine ID and
+writes journal files below:
+
+```text
+<configured-directory>/<machine-id>/
+```
+
+Use:
+
+- `ConfiguredDirectory()` for the original root passed to `NewLog`.
+- `JournalDirectory()` for the effective directory to pass to
+  `journalctl --directory`.
+- `ActivePath()` after a successful append or eager open for the exact active
+  journal file path.
+
+In lazy mode, `ActivePath()` is empty before a journal file exists.
+
+## Open And Identity Modes
+
+`LogOpenLazy` is the default. It validates the configured directory and existing
+chain state, but creates a new active file on first append.
+
+`LogOpenEager` creates or opens the active journal file during `NewLog`, proving
+file creation, writer lock acquisition, and writer options before callers accept
+work.
+
+`LogIdentityAuto` is the default. It loads host machine/boot IDs when available
+and generates missing IDs.
+
+`LogIdentityStrict` requires `Options.MachineID` and `Options.BootID` to be
+provided explicitly.
+
+## Rotation And Retention
+
+Rotation and retention limits are optional. Use builder methods to enable a
+limit:
+
+```go
+journal.RotationPolicy{}.
+    WithMaxEntries(100000).
+    WithMaxFileSize(128 * 1024 * 1024).
+    WithMaxDuration(time.Hour)
+
+journal.RetentionPolicy{}.
+    WithMaxFiles(8).
+    WithMaxBytes(1024 * 1024 * 1024).
+    WithMaxAge(7 * 24 * time.Hour)
+```
+
+Leaving a limit unset disables it. Calling a builder with zero or a negative
+value makes `NewLog` fail with `ErrInvalidJournal`.
+
+The tracked active/current file counts toward file and byte retention envelopes
+but is never deleted to satisfy retention.
+
+## Lifecycle And Artifact Accounting
+
+`LogConfig.Lifecycle` receives synchronous created, rotated, and retention
+deleted events. These events expose concrete journal file paths so consumers can
+maintain side indexes or sidecars without polling.
+
+`LogConfig.ArtifactSizer` lets consumers include sidecar bytes in size-based
+retention decisions. It is called with the journal file path. Missing sidecars
+should return `0, nil`; unexpected errors abort retention/preflight.
+
+## Timestamp Contract
+
+`EntryOptions.RealtimeUsec` controls the journal entry realtime timestamp.
+`EntryOptions.MonotonicUsec` controls the journal entry monotonic timestamp.
+`EntryOptions.SourceRealtimeUsec`, when non-zero, injects
+`_SOURCE_REALTIME_TIMESTAMP`.
+
+High-level `Log.Append` clamps non-progressing realtime and non-zero monotonic
+overrides forward to preserve strict journal ordering in the generated chain.
+
+## Field Names
+
+The `go/v0.1.0` writer accepts systemd-compatible field names only: uppercase
+ASCII letters, digits, and underscores, with the first byte an uppercase ASCII
+letter and a maximum length of 64 bytes.
+
+Automatic Netdata/OTEL field-name remapping is not part of the initial
+`go/v0.1.0` SNMP traps integration surface. It remains planned as an additive
+high-level writer feature for OTEL-style dotted or lowercase field names.

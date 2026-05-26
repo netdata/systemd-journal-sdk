@@ -88,6 +88,21 @@ var (
 	errEntryEmpty         = errors.New("journal entry has no fields")
 )
 
+var (
+	// ErrInvalidJournal reports invalid journal files or invalid high-level log
+	// configuration.
+	ErrInvalidJournal = errInvalidJournal
+	// ErrUnsupportedJournal reports a journal feature outside this SDK's pure-Go
+	// support.
+	ErrUnsupportedJournal = errUnsupportedJournal
+	// ErrWriterClosed reports writes or syncs attempted after Close.
+	ErrWriterClosed = errWriterClosed
+	// ErrFieldName reports an invalid journal field name.
+	ErrFieldName = errFieldName
+	// ErrEntryEmpty reports append attempts without fields.
+	ErrEntryEmpty = errEntryEmpty
+)
+
 type journalHeader struct {
 	signature            [8]byte
 	compatibleFlags      uint32

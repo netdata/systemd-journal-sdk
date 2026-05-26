@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -138,10 +139,10 @@ func TestLogCloseRemovesEmptyActiveFile(t *testing.T) {
 		Source:              "system",
 		StrictSystemdNaming: true,
 	})
-	activePath := log.ActivePath()
-	if err := log.ensureWriter(EntryOptions{}); err != nil {
+	if err := log.ensureWriter(EntryOptions{}, LogLifecycleReasonEagerOpen); err != nil {
 		t.Fatalf("ensureWriter() error = %v", err)
 	}
+	activePath := log.ActivePath()
 	if _, err := os.Stat(activePath); err != nil {
 		t.Fatalf("active file stat error = %v", err)
 	}
@@ -590,6 +591,9 @@ func TestLogStrictReopenContinuesSequenceAfterClose(t *testing.T) {
 	if err := first.Close(); err != nil {
 		t.Fatalf("Close(first strict) error = %v", err)
 	}
+	if got := first.ActivePath(); got != "" {
+		t.Fatalf("ActivePath after strict close = %q, want empty", got)
+	}
 
 	second, err := NewLog(root, config)
 	if err != nil {
@@ -921,6 +925,273 @@ func TestNewLogDoesNotEnforceRetentionBeforeFirstAppend(t *testing.T) {
 	}
 }
 
+func TestLogAPIExposesConfiguredAndJournalDirectories(t *testing.T) {
+	root := t.TempDir()
+	config := LogConfig{
+		Options: testOptions(),
+		Source:  "system",
+	}
+	log, err := NewLog(root, config)
+	if err != nil {
+		t.Fatalf("NewLog() error = %v", err)
+	}
+	if got := log.ConfiguredDirectory(); got != root {
+		t.Fatalf("ConfiguredDirectory() = %q, want %q", got, root)
+	}
+	wantDir := filepath.Join(root, config.Options.MachineID.String())
+	if got := log.JournalDirectory(); got != wantDir {
+		t.Fatalf("JournalDirectory() = %q, want %q", got, wantDir)
+	}
+	if got := log.MachineID(); got != config.Options.MachineID {
+		t.Fatalf("MachineID() = %s, want %s", got.String(), config.Options.MachineID.String())
+	}
+	if got := log.BootID(); got != config.Options.BootID {
+		t.Fatalf("BootID() = %s, want %s", got.String(), config.Options.BootID.String())
+	}
+	if got := log.Source(); got != "system" {
+		t.Fatalf("Source() = %q, want system", got)
+	}
+	if got := log.ActivePath(); got != "" {
+		t.Fatalf("ActivePath() before lazy append = %q, want empty", got)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestNewLogEagerOpenCreatesActiveAndReportsLifecycle(t *testing.T) {
+	root := t.TempDir()
+	var events []LogLifecycleEvent
+	log, err := NewLog(root, LogConfig{
+		Options:   testOptions(),
+		Source:    "system",
+		OpenMode:  LogOpenEager,
+		Lifecycle: LogLifecycleObserverFunc(func(event LogLifecycleEvent) { events = append(events, event) }),
+	})
+	if err != nil {
+		t.Fatalf("NewLog() error = %v", err)
+	}
+	activePath := log.ActivePath()
+	if activePath == "" {
+		t.Fatalf("ActivePath() after eager open is empty")
+	}
+	if _, err := os.Stat(activePath); err != nil {
+		t.Fatalf("active stat error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("event count after eager open = %d, want 1: %#v", len(events), events)
+	}
+	if events[0].Type != LogLifecycleCreated || events[0].Reason != LogLifecycleReasonEagerOpen || events[0].ActivePath != activePath {
+		t.Fatalf("eager event = %#v, want created/eager_open for %s", events[0], activePath)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestNewLogStrictIdentityRequiresMachineAndBootID(t *testing.T) {
+	_, err := NewLog(t.TempDir(), LogConfig{IdentityMode: LogIdentityStrict})
+	if !errors.Is(err, ErrInvalidJournal) {
+		t.Fatalf("NewLog(strict identity without IDs) error = %v, want ErrInvalidJournal", err)
+	}
+
+	options := testOptions()
+	log, err := NewLog(t.TempDir(), LogConfig{
+		Options:      options,
+		IdentityMode: LogIdentityStrict,
+	})
+	if err != nil {
+		t.Fatalf("NewLog(strict identity with IDs) error = %v", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestNewLogRejectsExplicitZeroPolicyLimits(t *testing.T) {
+	if _, err := NewLog(t.TempDir(), LogConfig{
+		Options:        testOptions(),
+		RotationPolicy: RotationPolicy{}.WithMaxEntries(0),
+	}); !errors.Is(err, ErrInvalidJournal) {
+		t.Fatalf("NewLog(zero max entries) error = %v, want ErrInvalidJournal", err)
+	}
+	if _, err := NewLog(t.TempDir(), LogConfig{
+		Options:         testOptions(),
+		RetentionPolicy: RetentionPolicy{}.WithMaxBytes(0),
+	}); !errors.Is(err, ErrInvalidJournal) {
+		t.Fatalf("NewLog(zero max bytes) error = %v, want ErrInvalidJournal", err)
+	}
+}
+
+func TestLogAppendAddsSourceRealtimeAndClampsEntryRealtime(t *testing.T) {
+	requireJournalctl(t)
+
+	log, dir := newTestLog(t, LogConfig{
+		Options: testOptions(),
+		Source:  "system",
+	})
+	if err := log.Append([]Field{
+		StringField("MESSAGE", "source realtime one"),
+		StringField("TEST_ID", "source-realtime-clamp"),
+	}, EntryOptions{
+		RealtimeUsec:       1_700_002_800_000_000,
+		MonotonicUsec:      10,
+		SourceRealtimeUsec: 1_600_000_000_000_000,
+	}); err != nil {
+		t.Fatalf("Append(first) error = %v", err)
+	}
+	if err := log.Append([]Field{
+		StringField("MESSAGE", "source realtime two"),
+		StringField("TEST_ID", "source-realtime-clamp"),
+	}, EntryOptions{
+		RealtimeUsec:       1_700_002_799_999_000,
+		MonotonicUsec:      5,
+		SourceRealtimeUsec: 1_600_000_000_000_001,
+	}); err != nil {
+		t.Fatalf("Append(second) error = %v", err)
+	}
+	if err := log.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+
+	rows := runJournalctlDirectoryJSON(t, dir, "TEST_ID=source-realtime-clamp")
+	if len(rows) != 2 {
+		t.Fatalf("row count = %d, want 2", len(rows))
+	}
+	assertJSONField(t, rows[0], "_SOURCE_REALTIME_TIMESTAMP", "1600000000000000")
+	assertJSONField(t, rows[1], "_SOURCE_REALTIME_TIMESTAMP", "1600000000000001")
+	if got := parseU64JSONField(t, rows[1], "__REALTIME_TIMESTAMP"); got != 1_700_002_800_000_001 {
+		t.Fatalf("second realtime = %d, want clamped 1700002800000001", got)
+	}
+	if got := parseU64JSONField(t, rows[1], "__MONOTONIC_TIMESTAMP"); got != 11 {
+		t.Fatalf("second monotonic = %d, want clamped 11", got)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestLogAppendMapWithOptionsAddsSourceRealtime(t *testing.T) {
+	requireJournalctl(t)
+
+	log, dir := newTestLog(t, LogConfig{
+		Options: testOptions(),
+		Source:  "system",
+	})
+	if err := log.AppendMapWithOptions(map[string]string{
+		"MESSAGE": "map source realtime",
+		"TEST_ID": "map-source-realtime",
+	}, EntryOptions{
+		RealtimeUsec:       1_700_002_850_000_000,
+		MonotonicUsec:      1,
+		SourceRealtimeUsec: 1_600_000_100_000_000,
+	}); err != nil {
+		t.Fatalf("AppendMapWithOptions() error = %v", err)
+	}
+	if err := log.Sync(); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	rows := runJournalctlDirectoryJSON(t, dir, "TEST_ID=map-source-realtime")
+	if len(rows) != 1 {
+		t.Fatalf("row count = %d, want 1", len(rows))
+	}
+	assertJSONField(t, rows[0], "_SOURCE_REALTIME_TIMESTAMP", "1600000100000000")
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestLogLifecycleReportsRotationAndRetentionDelete(t *testing.T) {
+	root := t.TempDir()
+	var events []LogLifecycleEvent
+	log, err := NewLog(root, LogConfig{
+		Options:         testOptions(),
+		Source:          "system",
+		RotationPolicy:  RotationPolicy{}.WithMaxEntries(1),
+		RetentionPolicy: RetentionPolicy{}.WithMaxFiles(2),
+		Lifecycle:       LogLifecycleObserverFunc(func(event LogLifecycleEvent) { events = append(events, event) }),
+	})
+	if err != nil {
+		t.Fatalf("NewLog() error = %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := log.Append([]Field{
+			StringField("MESSAGE", fmt.Sprintf("lifecycle-%d", i)),
+			StringField("TEST_ID", "lifecycle-events"),
+		}, EntryOptions{RealtimeUsec: 1_700_002_900_000_000 + uint64(i), MonotonicUsec: uint64(i + 1)}); err != nil {
+			t.Fatalf("Append(%d) error = %v", i, err)
+		}
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	var created, rotated, deleted bool
+	for _, event := range events {
+		switch event.Type {
+		case LogLifecycleCreated:
+			created = event.ActivePath != ""
+		case LogLifecycleRotated:
+			rotated = event.ArchivedPath != "" && event.ActivePath != ""
+		case LogLifecycleDeleted:
+			deleted = len(event.DeletedPaths) == 1 && event.DeletedPaths[0] != ""
+		}
+	}
+	if !created || !rotated || !deleted {
+		t.Fatalf("events did not include created=%v rotated=%v deleted=%v: %#v", created, rotated, deleted, events)
+	}
+}
+
+func TestLogRetentionUsesArtifactSizer(t *testing.T) {
+	root := t.TempDir()
+	config := LogConfig{
+		Options:        testOptions(),
+		Source:         "system",
+		RotationPolicy: RotationPolicy{}.WithMaxEntries(1),
+	}
+	log, err := NewLog(root, config)
+	if err != nil {
+		t.Fatalf("NewLog(first) error = %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := log.Append([]Field{
+			StringField("MESSAGE", fmt.Sprintf("artifact-size-%d", i)),
+			StringField("TEST_ID", "artifact-size-retention"),
+		}, EntryOptions{RealtimeUsec: 1_700_003_000_000_000 + uint64(i), MonotonicUsec: uint64(i + 1)}); err != nil {
+			t.Fatalf("Append(%d) error = %v", i, err)
+		}
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close(first) error = %v", err)
+	}
+
+	dir := filepath.Join(root, config.Options.MachineID.String())
+	before := journalFiles(t, dir)
+	if len(before) != 3 {
+		t.Fatalf("archive count before artifact retention = %d, want 3; files=%v", len(before), before)
+	}
+
+	retainedConfig := config
+	retainedConfig.RetentionPolicy = RetentionPolicy{}.WithMaxBytes(^uint64(0) - 1)
+	retainedConfig.ArtifactSizer = LogArtifactSizeFunc(func(string) (uint64, error) {
+		return ^uint64(0) / 2, nil
+	})
+	retained, err := NewLog(root, retainedConfig)
+	if err != nil {
+		t.Fatalf("NewLog(retained) error = %v", err)
+	}
+	if err := retained.EnforceRetention(); err != nil {
+		t.Fatalf("EnforceRetention() error = %v", err)
+	}
+	after := journalFiles(t, dir)
+	if len(after) >= len(before) {
+		t.Fatalf("archive count after artifact retention = %d, want less than %d; files=%v", len(after), len(before), after)
+	}
+	if err := retained.Close(); err != nil {
+		t.Fatalf("Close(retained) error = %v", err)
+	}
+}
+
 func TestLogBinaryFieldCompatibility(t *testing.T) {
 	requireJournalctl(t)
 
@@ -1150,4 +1421,18 @@ func runJournalctlDirectoryJSON(t *testing.T, dir string, matches ...string) []m
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+func parseU64JSONField(t *testing.T, row map[string]any, key string) uint64 {
+	t.Helper()
+
+	raw, ok := row[key]
+	if !ok {
+		t.Fatalf("field %s missing from row %v", key, row)
+	}
+	value, err := strconv.ParseUint(fmt.Sprint(raw), 10, 64)
+	if err != nil {
+		t.Fatalf("field %s value %v parse error = %v", key, raw, err)
+	}
+	return value
 }

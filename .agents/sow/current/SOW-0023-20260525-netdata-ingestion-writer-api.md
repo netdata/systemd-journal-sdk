@@ -6,6 +6,8 @@ Status: in-progress
 
 Sub-state: active implementation. SOW-0019 is completed, and the user explicitly picked up this SOW on 2026-05-26. The current verified slice covers shared high-level naming, chain resume, rotation/retention hardening, duration rotation, age retention, and explicit retention enforcement across Rust, Go, Node.js, and Python.
 
+Current slice on 2026-05-26: stabilize the Go high-level writer API enough for Netdata go.d.plugin SNMP trap backend integration through a versioned GitHub module tag. The Go API may advance first to unblock Netdata integration, but the exposed contract must be suitable for later Rust, Node.js, and Python parity without breaking the Go `v0.1.x` surface.
+
 ## Requirements
 
 ### Purpose
@@ -668,6 +670,22 @@ Reviewer findings:
   - Accepted and fixed final low-risk findings: Go/Node.js/Python age-retention loops now subtract deleted file sizes from the running retention total, and Rust `Chain::drain()` no longer relies on `partition_point` monotonicity when disposed and archived timestamps are interleaved.
   - Accepted and fixed final Go retry-safety finding: after a post-archive cleanup error during rotation, Go now preserves the successor sequence identity, clears the default-mode active path, and retries into the next chain file without sequence reuse; `TestLogRotationRetriesAfterArchiveCleanupFailure` covers this path.
   - Dispositioned as non-blocking for this slice: Go, Node.js, and Python treat entry realtime `0` as unset/default-now, which matches their existing timestamp override convention and is broader API polish if callers need literal epoch-zero writes; Go sub-microsecond `time.Duration` retention/rotation rounds up to `1us`, which is the smallest representable on-disk journal time unit; Node.js/Python strict empty-close retention behavior remains an internal/unobservable public path because public empty appends are rejected before active file creation.
+- Continued with the Go `v0.1.0` API-stabilization slice needed by the Netdata go.d.plugin SNMP traps backend:
+  - Go `LogConfig` now exposes `LogOpenLazy` / `LogOpenEager`, `LogIdentityAuto` / `LogIdentityStrict`, lifecycle callbacks, and artifact-size callbacks.
+  - Go rotation and retention policies now use pointer-backed optional limits. Unset limits are disabled; explicitly enabled zero or negative limits fail `NewLog()` with `ErrInvalidJournal`.
+  - Go high-level `Log` now exposes `ConfiguredDirectory()`, `JournalDirectory()`, `ActivePath()`, `MachineID()`, `BootID()`, and `Source()`.
+  - Go high-level `EntryOptions.SourceRealtimeUsec` injects `_SOURCE_REALTIME_TIMESTAMP` on `Log.Append` and `Log.AppendMapWithOptions`.
+  - Go high-level append clamps non-progressing realtime and non-zero monotonic overrides forward to preserve strict chain ordering.
+  - Added `go/API.md` with the initial public Go API contract and import/tag guidance for `go/v0.1.0`.
+  - Documented that initial `go/v0.1.0` accepts systemd-compatible field names only. Automatic Netdata/OTEL field-name remapping remains an additive follow-up before OTEL migration, not a blocker for the SNMP traps integration surface.
+- Go API stabilization validation:
+  - `go test -count=1 ./...` from `go/`: passed after the API-stabilization changes and after accepted review fixes.
+  - `git diff --check`: passed.
+- Go API stabilization review:
+  - Initial `glm` review found `AppendMap` lacked an options variant and field-name remapping was not in the initial API. `AppendMapWithOptions` was added and tested. Field-name remapping was documented and explicitly deferred as an additive OTEL-migration follow-up because the immediate SNMP traps integration uses systemd-compatible field names.
+  - `kimi` and `minimax` focused review sessions stalled without final findings and were terminated by exact PID after no progress; their output was not used as a clean review gate.
+  - Focused `glm` re-review reported production-grade readiness for the initial Go `v0.1.0` SNMP traps integration API.
+  - Focused `qwen` re-review reported no blocking bugs. Its medium `Close()` archive-failure concern was dispositioned as incorrect because `Writer.archiveTo()` renames before closing and restores `ONLINE` on rename failure, leaving the log retryable. Accepted low-risk findings were fixed: strict `ActivePath()` is cleared after close, the duration underflow guard is documented, and `go/API.md` lists enum-like constants in the stability contract.
 
 Same-failure scan:
 
@@ -689,6 +707,15 @@ Same-failure scan:
   - Go, Node.js, and Python age-retention deletion accounting was checked and hardened to keep the retained-byte total accurate after age deletes, even though byte retention currently runs before age retention.
   - Rust registry age-drain behavior was checked and hardened for mixed disposed/archived chains; the regression test proves an old archived file is drained even when a newer disposed file sorts before it.
   - Go post-archive cleanup failure handling was checked against the existing Node.js/Python retry-cleanup pattern and fixed so a rotation retry continues with the successor sequence instead of reusing stale state.
+- Completed for the Go `v0.1.0` API-stabilization slice:
+  - Eager open is tested to create an active file during `NewLog()` and emit a created lifecycle event.
+  - Strict identity is tested to reject missing machine and boot IDs and accept explicit IDs.
+  - Optional policy validation is tested to reject explicitly enabled zero limits.
+  - Path accessors are tested for configured root, effective machine-id journal directory, machine ID, boot ID, source, and lazy empty `ActivePath()`.
+  - Source realtime injection and timestamp clamping are tested through both `Append` and `AppendMapWithOptions`.
+  - Lifecycle events are tested for created, rotated, and retention-deleted paths.
+  - Artifact-size retention accounting is tested with synthetic sidecar byte pressure.
+  - Strict close now clears `ActivePath()` after archive, with regression coverage.
 
 Sensitive data gate:
 
@@ -698,15 +725,15 @@ Artifact maintenance gate:
 
 - AGENTS.md: no project-wide workflow or responsibility changes in this slice.
 - Runtime project skills: no workflow changes needed; existing orchestration and compatibility skills covered the fourth-round retention failure mode.
-- Specs: updated `.agents/sow/specs/product-scope.md` for default chain naming, strict naming option, current-file retention protection, committed-byte retention accounting, disabled limit semantics, duration rotation, age retention, and explicit retention enforcement.
-- End-user/operator docs: updated Rust, Go, Node.js, and Python READMEs for duration rotation, age retention, and explicit retention enforcement.
+- Specs: updated `.agents/sow/specs/product-scope.md` for default chain naming, strict naming option, current-file retention protection, committed-byte retention accounting, disabled limit semantics, duration rotation, age retention, explicit retention enforcement, and the Go `v0.1.0` integration API contract.
+- End-user/operator docs: updated Rust, Go, Node.js, and Python READMEs for duration rotation, age retention, and explicit retention enforcement; updated Go README and added `go/API.md` for the public Go integration contract.
 - End-user/operator skills: none exist for this repository.
 - SOW lifecycle: remains `in-progress` in `.agents/sow/current/`; this commit is a verified slice, not SOW completion.
 - SOW-status.md: updated for the current slice status.
 
 Specs update:
 
-- Updated `.agents/sow/specs/product-scope.md` to record Netdata chain active naming as the default high-level writer behavior, strict systemd active naming as an explicit option, current-file retention protection, committed-byte retention accounting, disabled limit semantics, duration rotation, age retention, and explicit retention enforcement.
+- Updated `.agents/sow/specs/product-scope.md` to record Netdata chain active naming as the default high-level writer behavior, strict systemd active naming as an explicit option, current-file retention protection, committed-byte retention accounting, disabled limit semantics, duration rotation, age retention, explicit retention enforcement, and the Go `v0.1.0` SNMP traps integration API surface.
 
 Project skills update:
 
@@ -714,7 +741,7 @@ Project skills update:
 
 End-user/operator docs update:
 
-- Updated `rust/README.md`, `go/README.md`, `node/README.md`, and `python/README.md` to document duration rotation, age retention, and explicit retention enforcement in the high-level writer.
+- Updated `rust/README.md`, `go/README.md`, `node/README.md`, and `python/README.md` to document duration rotation, age retention, and explicit retention enforcement in the high-level writer. Added `go/API.md` and updated `go/README.md` for Go import path, open/identity modes, path accessors, lifecycle/artifact callbacks, source realtime injection, policy semantics, field-name limitation, and `go/v0.1.0` contract.
 
 End-user/operator skills update:
 
@@ -733,7 +760,7 @@ Follow-up mapping:
 
 ## Outcome
 
-Naming/resume/retention, duration-rotation, age-retention, and explicit-retention-enforcement slices are ready to commit as a rollback point. SOW-0023 remains in-progress for the remaining broader API items.
+Naming/resume/retention, duration-rotation, age-retention, explicit-retention-enforcement, and Go `v0.1.0` API-stabilization slices are ready to commit as a rollback point. SOW-0023 remains in-progress for the remaining broader cross-language API parity items.
 
 ## Lessons Extracted
 
@@ -743,4 +770,4 @@ Naming/resume/retention, duration-rotation, age-retention, and explicit-retentio
 
 ## Followup
 
-- Continue SOW-0023 with creation-time/eager preflight, strict identity validation, artifact accounting, strict/default migration polish, and final API polish.
+- Continue SOW-0023 with Rust/Node.js/Python parity for the finalized Go open/identity/path/lifecycle/artifact API, strict/default migration polish, automatic Netdata/OTEL field-name remapping, and final cross-language API polish.

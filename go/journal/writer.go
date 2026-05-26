@@ -59,6 +59,10 @@ type EntryOptions struct {
 	RealtimeUsec  uint64
 	MonotonicUsec uint64
 	BootID        UUID
+	// SourceRealtimeUsec is consumed by the high-level Log writer, which injects
+	// _SOURCE_REALTIME_TIMESTAMP. The low-level Writer accepts prebuilt fields
+	// and does not inject this field.
+	SourceRealtimeUsec uint64
 }
 
 // Field is one FIELD=value item in a journal entry.
