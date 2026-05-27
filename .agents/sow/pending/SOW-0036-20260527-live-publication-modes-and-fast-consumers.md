@@ -13,15 +13,20 @@ Sub-state: pending analysis and user decisions; no implementation started.
 Give SDK consumers explicit control over the compatibility/performance tradeoff
 for live-reader publication, while preserving systemd-compatible behavior by
 default. The design must also identify similar configurable opportunities where
-some consumers need stock external reader compatibility and others, such as
-same-process Netdata ingestion paths, only need SDK-controlled readers.
+some consumers need stock external follow-reader compatibility and others, such
+as poll/snapshot-based Netdata UI paths, do not need true real-time visibility
+of appended events during a read session.
 
 ### User Request
 
 The user asked to create a SOW, not implement now, for making the new
-post-change live-reader notification configurable. The user also asked whether
-same-process reader/writer consumers, such as NetFlow, change the tradeoff, and
-asked to identify similar optimization opportunities before implementation.
+post-change live-reader notification configurable. The user clarified that the
+main distinction is not same-process versus cross-process, but whether the
+consumer needs true real-time visibility of appended log events. Netdata UI is
+poll based; if a file changes while a reader session is scanning, it is
+acceptable for that reader session not to observe the newly appended lines. The
+user asked to identify further optimization opportunities for same-process,
+poll/snapshot, or latency-tolerant consumers.
 
 ### Assistant Understanding
 
@@ -38,10 +43,13 @@ Facts:
   appended through mmap.
 - The notification is not needed for closed-file byte identity, closed-file
   verification, or final reads after sync/close.
-- Same-process consumers can use an SDK-controlled wake path instead of kernel
-  file-change notification, provided no stock external reader compatibility is
-  claimed for that mode.
-- NetFlow is user-described as a same-process reader/writer consumer.
+- Poll/snapshot consumers do not need kernel wakeups for every append. They can
+  discover new data on the next poll or explicit refresh.
+- Same-process consumers are a subset of latency-tolerant consumers, but the
+  stronger distinction is whether readers require live follow semantics or
+  snapshot-at-open/session semantics.
+- Netdata UI is user-described as poll based, and it is acceptable if an active
+  reader session does not observe lines appended after that session began.
 - The current performance evidence shows the Rust/systemd ratio dropped from
   about `1.56x` in the prior fixed-128 MiB run to about `1.50x` after adding
   Rust post-change notification. The post-change syscall has real overhead, but
@@ -53,12 +61,18 @@ Inferences:
   policy is likely cleaner because systemd has immediate and coalesced
   notification behavior, while Netdata same-process paths may prefer disabled
   or manual notification.
-- Same-process consumers still need a visibility/wakeup contract. Disabling
-  stock notification is safe only if the reader is driven by the writer through
-  an in-process signal, queue, cursor handoff, or explicit polling strategy.
+- Poll/snapshot consumers still need a visibility contract, but not necessarily
+  per-entry visibility. Disabling stock notification is safe if the consumer
+  accepts refresh/poll latency and readers snapshot file/header state at the
+  start of each read session.
 - The option must be explicit in benchmark output and in live-compatibility
   claims. A disabled notification mode must not be reported as stock
   `journalctl --follow` compatible.
+- There are at least two separate optimization levers:
+  - wakeup notification: the same-size truncate that wakes inotify/follow
+    readers;
+  - visibility publication: how often header/tail counters and indexes are made
+    visible to newly opened snapshot readers.
 
 Unknowns:
 
@@ -66,20 +80,22 @@ Unknowns:
   richer policy with immediate, coalesced, manual, and disabled modes.
 - Whether the high-level directory writer should default differently from the
   low-level file writer for Netdata-specific constructors.
-- Whether same-process reader/writer optimizations should add a shared
-  in-process notification primitive to the SDKs or remain a consumer-owned
-  responsibility.
+- Whether poll/snapshot modes should only disable wakeup notification or also
+  allow batched visibility publication.
+- Whether same-process reader/writer optimizations should add shared in-process
+  indexes/cursors or remain a consumer-owned responsibility.
 - Which additional compatibility/performance knobs are worth exposing as public
   API and which should remain internal benchmark-only controls.
 
 ### Acceptance Criteria
 
-- Analyze live publication requirements for external stock readers, SDK
-  cross-process readers, SDK same-process readers, and closed-file readers.
+- Analyze live publication requirements for external stock follow readers,
+  poll/snapshot readers, SDK same-process readers, SDK cross-process readers,
+  and closed-file readers.
 - Decide the public cross-language API shape for live publication policy.
 - Decide defaults for low-level file writers and high-level directory writers.
-- Decide what same-process consumers may disable without losing their claimed
-  compatibility contract.
+- Decide what poll/snapshot consumers may disable or batch without losing their
+  claimed compatibility contract.
 - Identify similar configurable compatibility/performance opportunities and
   classify each as public option, internal optimization, or rejected unsafe knob.
 - Implement the selected policy consistently in Rust, Go, Node.js, and Python
@@ -132,13 +148,14 @@ Risks:
   to work.
 - A boolean may be too vague: `false` could mean disabled, manually flushed, or
   coalesced elsewhere.
-- A same-process reader optimization can accidentally become a hidden global
-  behavior change if it is placed in generic constructors instead of
-  Netdata-specific or explicit options.
+- A poll/snapshot optimization can accidentally become a hidden global behavior
+  change if it is placed in generic constructors instead of explicit options.
 - Coalescing improves throughput but changes maximum reader wake latency.
 - Disabling notification improves writer throughput but external stock follow
   readers may lag until another file metadata event, explicit sync/close, or
   process exit.
+- Batching visibility publication can improve throughput but newly opened poll
+  readers may see data only up to the last publication boundary.
 - Overexposing unsafe knobs can make SDK compatibility claims impossible to
   reason about.
 
@@ -149,16 +166,16 @@ Status: needs-user-decision
 Problem / root-cause model:
 
 - The SDK now has at least two valid consumer classes:
-  stock-compatible live file producers and same-process SDK-controlled
-  producers. The first needs systemd-style notification after mmap append. The
-  second may not need kernel file-change notification and can avoid the
-  per-entry syscall.
+  stock-compatible live file producers and poll/snapshot producers. The first
+  needs systemd-style notification after mmap append. The second does not need
+  kernel file-change notification and can avoid the per-entry syscall if it
+  accepts refresh latency.
 - The current low-level Rust and Go behavior optimizes for stock live-reader
   compatibility by default. This is the safest default but not always the best
-  performance choice for same-process consumers.
+  performance choice for Netdata poll/snapshot consumers.
 - Similar opportunities probably exist wherever compatibility work is only
-  needed for external tooling, while an SDK-controlled consumer can use a
-  narrower contract.
+  needed for external follow tooling, while an SDK-controlled or poll/snapshot
+  consumer can use a narrower contract.
 
 Evidence reviewed:
 
@@ -172,6 +189,10 @@ Evidence reviewed:
   currently mandatory for production-compatible writers.
 - `tests/conformance/live/README.md`: stock `journalctl --file --follow` and
   stock libsystemd readers are part of the live compatibility evidence.
+- `go/journal/writer.go`: Go currently publishes object metadata, entry
+  metadata, and post-change notification on every append.
+- `rust/src/crates/journal-core/src/file/writer.rs`: Rust currently updates
+  header/tail metadata on every append and calls post-change on every append.
 
 Affected contracts and surfaces:
 
@@ -198,8 +219,8 @@ Risk and blast radius:
 - Public API change across four languages.
 - Benchmark comparability risk if publication modes are not included in output.
 - Live compatibility regression risk if default behavior changes.
-- Netdata integration risk if fast same-process mode is selected for a path
-  that later needs stock external follow readers.
+- Netdata integration risk if a poll/snapshot mode is selected for a path that
+  later needs stock external follow readers.
 - Documentation risk if disabled notification is described as generally safe
   instead of safe only for narrower consumer contracts.
 
@@ -213,12 +234,13 @@ Sensitive data handling plan:
 Implementation plan:
 
 1. Analyze and document the consumer classes and compatibility claims:
-   stock external follow readers, SDK external readers, SDK same-process
-   readers, and closed-file readers.
+   stock external follow readers, poll/snapshot readers, SDK external readers,
+   SDK same-process readers, and closed-file readers.
 2. Inventory writer hot-path knobs that are candidates for public options:
-   live publication notification, coalescing, sync/durability cadence, lock
-   enforcement, validation/readback, metadata publication batching, and
-   reader-wakeup strategy.
+   live wakeup notification, visibility publication cadence, reader snapshot
+   mode, coalescing, sync/durability cadence, lock enforcement,
+   validation/readback, metadata publication batching, hash-depth maintenance,
+   raw/prepared field APIs, and reader-wakeup strategy.
 3. Present user decisions with concrete options and recommendation.
 4. After decisions, update product-scope specs and per-language API docs.
 5. Implement the selected live publication policy in Rust, Go, Node.js, and
@@ -237,6 +259,9 @@ Validation plan:
 - Disabled/manual mode tests proving closed-file verify/read after sync/close.
 - Same-process SDK reader/writer test if an SDK-provided same-process wake
   primitive is selected.
+- Poll/snapshot reader tests proving an active reader session can ignore
+  appends after its snapshot boundary while the next session sees data at the
+  selected publication boundary.
 - Benchmark JSON schema check to require publication policy.
 - External reviewer pass before close.
 - `.agents/sow/audit.sh` before close.
@@ -282,27 +307,43 @@ Open decisions:
      by default, while Netdata hot paths can opt into narrower contracts.
 
 3. Same-process reader/writer contract.
-   - Option A: consumer-owned signaling; SDK only disables stock notification.
+   - Option A: treat same-process as a special case of poll/snapshot mode;
+     consumer-owned signaling or polling decides when to refresh.
    - Option B: SDK-provided same-process notification primitive, such as a
      callback/channel/event counter, so readers can avoid filesystem wakeups.
-   - Option C: no special same-process support; use coalesced notification only.
-   - Recommendation: start with Option A unless NetFlow integration proves a
-     reusable SDK primitive is needed. This keeps the SDK simpler and avoids
-     designing a cross-language event abstraction prematurely.
+   - Option C: no special same-process support; use coalesced stock
+     notification only.
+   - Recommendation: Option A. The user's clarification means the real contract
+     is snapshot/poll tolerance, not process locality. Same-process primitives
+     can be revisited only if NetFlow integration proves they remove a measured
+     bottleneck.
 
 4. Similar opportunities to expose.
    - Option A: only live publication notification in this SOW.
-   - Option B: analyze all candidates but implement only live publication.
+   - Option B: analyze all candidates but implement only the safest
+     publication-mode controls first.
    - Option C: implement several knobs together.
    - Recommendation: Option B. The user explicitly asked to know if similar
      opportunities exist before implementation; broad analysis should happen,
      but implementation should stay focused unless a second knob is clearly
      valuable and safe.
 
+5. Snapshot/poll visibility policy.
+   - Option A: disable wakeup notification only; keep per-entry header/index
+     publication.
+   - Option B: disable wakeup notification and allow batched visibility
+     publication by time, entry count, or explicit flush.
+   - Option C: defer all visibility until sync/close.
+   - Recommendation: start with Option A for the first implementation because
+     it is low risk and preserves next-poll visibility. Analyze Option B with
+     benchmarks because it may provide larger gains for Node.js/Python and some
+     Go paths. Option C is only safe for consumers that do not expect active
+     files to be readable during writing.
+
 ## Implications And Decisions
 
 Pending user decisions. No implementation may begin until the user selects the
-policy shape, defaults, same-process contract, and candidate scope.
+policy shape, defaults, poll/snapshot contract, and candidate scope.
 
 ## Plan
 
@@ -349,10 +390,11 @@ Failure handling:
 
 - Created this pending SOW at the user's request.
 - Recorded that no implementation should happen yet.
-- Recorded the same-process consumer implication: same-process SDK-controlled
-  readers can avoid stock kernel wakeups if they use an explicit in-process
-  wake/poll contract, but they must not claim stock external follow-reader
-  compatibility in that mode.
+- Recorded the initial same-process consumer implication.
+- Updated the SOW after the user clarified that the primary distinction is
+  poll/snapshot tolerance, not process locality. Netdata UI polling does not
+  need kernel wakeups, and an active reader session may ignore appends that
+  happen after the session starts.
 
 ## Validation
 
@@ -412,7 +454,7 @@ End-user/operator skills update:
 
 Lessons:
 
-- Same-process consumers can legitimately use a narrower contract than stock
+- Poll/snapshot consumers can legitimately use a narrower contract than stock
   external follow-reader compatibility, but that contract must be explicit in
   API names, benchmark output, and tests.
 
