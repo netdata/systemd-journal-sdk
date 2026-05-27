@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -90,6 +91,7 @@ type Writer struct {
 	file              *os.File
 	path              string
 	lock              *writerLock
+	arena             *mappedArena
 	header            journalHeader
 	appendOffset      uint64
 	nextSeqnum        uint64
@@ -100,6 +102,12 @@ type Writer struct {
 	compressThreshold int
 	compact           bool
 	seal              *sealState
+	fieldCache        fieldCache
+	dataCache         recentDataCache
+	payloadScratch    []byte
+	entryItemsScratch []entryItem
+	// Full memory-ordering point before same-size ftruncate wakes stock follow readers.
+	postChangeFence atomic.Uint64
 }
 
 // Create creates or truncates a journal file after acquiring the writer lock.
@@ -134,6 +142,7 @@ func Create(path string, opts Options) (*Writer, error) {
 		compression: opts.Compression, compressThreshold: opts.CompressThresholdBytes, compact: opts.Compact,
 	}
 	if err := w.initialize(opts); err != nil {
+		_ = w.closeArena()
 		_ = unlockAndClose(f)
 		_ = lock.release()
 		return nil, err
@@ -212,6 +221,17 @@ func Open(path string) (*Writer, error) {
 		compressThreshold: defaultCompressThreshold,
 		compact:           header.isCompact(),
 	}
+	fileSize, ok := checkedAdd(header.headerSize, header.arenaSize)
+	if !ok {
+		_ = unlockAndClose(f)
+		_ = lock.release()
+		return nil, errInvalidJournal
+	}
+	if err := w.mapArena(fileSize); err != nil {
+		_ = unlockAndClose(f)
+		_ = lock.release()
+		return nil, err
+	}
 	if isZeroUUID(w.bootID) {
 		if bootID, err := readUUIDFile("/proc/sys/kernel/random/boot_id"); err == nil {
 			w.bootID = bootID
@@ -220,6 +240,7 @@ func Open(path string) (*Writer, error) {
 		}
 	}
 	if err := w.writeHeader(); err != nil {
+		_ = w.closeArena()
 		_ = unlockAndClose(f)
 		_ = lock.release()
 		return nil, err
@@ -266,21 +287,28 @@ func (w *Writer) Append(fields []Field, opts EntryOptions) error {
 		return err
 	}
 
-	payloads := make([][]byte, 0, len(fields))
 	for _, field := range fields {
 		if err := validateFieldName(field.Name); err != nil {
 			return err
 		}
-		payload := make([]byte, 0, len(field.Name)+1+len(field.Value))
-		payload = append(payload, field.Name...)
-		payload = append(payload, '=')
-		payload = append(payload, field.Value...)
-		payloads = append(payloads, payload)
 	}
 
-	items := make([]entryItem, 0, len(payloads))
+	items := w.entryItemsScratch[:0]
+	if cap(items) < len(fields) {
+		items = make([]entryItem, 0, len(fields))
+	}
+	defer func() {
+		w.entryItemsScratch = items[:0]
+		if cap(w.payloadScratch) > payloadScratchMaxRetain {
+			w.payloadScratch = nil
+		}
+	}()
 	xorHash := uint64(0)
-	for _, payload := range payloads {
+	for _, field := range fields {
+		w.payloadScratch = append(w.payloadScratch[:0], field.Name...)
+		w.payloadScratch = append(w.payloadScratch, '=')
+		w.payloadScratch = append(w.payloadScratch, field.Value...)
+		payload := w.payloadScratch
 		offset, hash, err := w.addData(payload)
 		if err != nil {
 			return err
@@ -341,7 +369,10 @@ func (w *Writer) Append(fields []Field, opts EntryOptions) error {
 		}
 	}
 	w.entryAdded(entryOffset, opts.RealtimeUsec, opts.MonotonicUsec, opts.BootID)
-	return w.publishEntryMetadata()
+	if err := w.publishEntryMetadata(); err != nil {
+		return err
+	}
+	return w.postChange()
 }
 
 // Sync flushes file data and metadata to disk.
@@ -352,7 +383,7 @@ func (w *Writer) Sync() error {
 	if err := w.writeHeader(); err != nil {
 		return err
 	}
-	return w.file.Sync()
+	return w.syncArena()
 }
 
 func (w *Writer) Close() error {
@@ -371,13 +402,14 @@ func (w *Writer) closeWithState(state uint8) error {
 	}
 	w.header.state = state
 	err1 := w.writeHeader()
-	err2 := w.file.Sync()
-	err3 := syscall.Flock(int(w.file.Fd()), syscall.LOCK_UN)
-	err4 := w.file.Close()
-	err5 := w.lock.release()
+	err2 := w.syncArena()
+	err3 := w.closeArena()
+	err4 := syscall.Flock(int(w.file.Fd()), syscall.LOCK_UN)
+	err5 := w.file.Close()
+	err6 := w.lock.release()
 	w.lock = nil
 	w.closed = true
-	return errors.Join(err1, err2, err3, err4, err5)
+	return errors.Join(err1, err2, err3, err4, err5, err6)
 }
 
 // CurrentSize returns the current committed journal file size in bytes.
@@ -399,25 +431,26 @@ func (w *Writer) archiveTo(path string) error {
 	if err := w.writeHeader(); err != nil {
 		return err
 	}
-	if err := w.file.Sync(); err != nil {
+	if err := w.syncArena(); err != nil {
 		return err
 	}
 	if w.path != path {
 		if err := os.Rename(w.path, path); err != nil {
 			w.header.state = stateOnline
 			restoreErr := w.writeHeader()
-			syncErr := w.file.Sync()
+			syncErr := w.syncArena()
 			return errors.Join(err, restoreErr, syncErr)
 		}
 	}
 	w.path = path
 	dirErr := syncJournalDirectory(path)
+	arenaErr := w.closeArena()
 	unlockErr := syscall.Flock(int(w.file.Fd()), syscall.LOCK_UN)
 	closeErr := w.file.Close()
 	lockErr := w.lock.release()
 	w.lock = nil
 	w.closed = true
-	if err := errors.Join(dirErr, unlockErr, closeErr, lockErr); err != nil {
+	if err := errors.Join(dirErr, arenaErr, unlockErr, closeErr, lockErr); err != nil {
 		return err
 	}
 	return nil
@@ -426,6 +459,80 @@ func (w *Writer) archiveTo(path string) error {
 type entryItem struct {
 	offset uint64
 	hash   uint64
+}
+
+const (
+	fieldCacheSlots              = 1024
+	fieldCacheMaxPayloadLen      = 128
+	recentDataCacheSlots         = 65536
+	recentDataCacheMaxPayloadLen = 256
+	payloadScratchMaxRetain      = 1 << 20
+)
+
+type fieldCacheEntry struct {
+	payload        []byte
+	offset         uint64
+	headDataOffset uint64
+}
+
+type fieldCache struct {
+	entries []fieldCacheEntry
+}
+
+func (c *fieldCache) get(hash uint64, payload []byte) (uint64, uint64, bool) {
+	if len(payload) > fieldCacheMaxPayloadLen || len(c.entries) == 0 {
+		return 0, 0, false
+	}
+	entry := c.entries[int(hash)&(fieldCacheSlots-1)]
+	if entry.offset == 0 || !bytes.Equal(entry.payload, payload) {
+		return 0, 0, false
+	}
+	return entry.offset, entry.headDataOffset, true
+}
+
+func (c *fieldCache) insert(hash uint64, payload []byte, offset, headDataOffset uint64) {
+	if len(payload) > fieldCacheMaxPayloadLen {
+		return
+	}
+	if len(c.entries) == 0 {
+		c.entries = make([]fieldCacheEntry, fieldCacheSlots)
+	}
+	entry := &c.entries[int(hash)&(fieldCacheSlots-1)]
+	entry.payload = append(entry.payload[:0], payload...)
+	entry.offset = offset
+	entry.headDataOffset = headDataOffset
+}
+
+type recentDataCacheEntry struct {
+	payload []byte
+	item    entryItem
+}
+
+type recentDataCache struct {
+	entries []recentDataCacheEntry
+}
+
+func (c *recentDataCache) get(hash uint64, payload []byte) (entryItem, bool) {
+	if len(payload) > recentDataCacheMaxPayloadLen || len(c.entries) == 0 {
+		return entryItem{}, false
+	}
+	entry := c.entries[int(hash)&(recentDataCacheSlots-1)]
+	if entry.item.offset == 0 || !bytes.Equal(entry.payload, payload) {
+		return entryItem{}, false
+	}
+	return entry.item, true
+}
+
+func (c *recentDataCache) insert(hash uint64, payload []byte, item entryItem) {
+	if len(payload) > recentDataCacheMaxPayloadLen {
+		return
+	}
+	if len(c.entries) == 0 {
+		c.entries = make([]recentDataCacheEntry, recentDataCacheSlots)
+	}
+	entry := &c.entries[int(hash)&(recentDataCacheSlots-1)]
+	entry.payload = append(entry.payload[:0], payload...)
+	entry.item = item
 }
 
 func normalizeOptions(opts Options) Options {
@@ -601,9 +708,15 @@ func (w *Writer) initialize(opts Options) error {
 	w.appendOffset = appendOffset
 	w.nextSeqnum = opts.HeadSeqnum
 
-	if err := w.file.Truncate(int64(fileSize)); err != nil {
+	if err := w.mapArena(fileSize); err != nil {
 		return err
 	}
+	arenaMapped := true
+	defer func() {
+		if arenaMapped {
+			_ = w.closeArena()
+		}
+	}()
 	if err := w.writeHeader(); err != nil {
 		return err
 	}
@@ -630,14 +743,64 @@ func (w *Writer) initialize(opts Options) error {
 		}
 	}
 
+	arenaMapped = false
 	return nil
+}
+
+func (w *Writer) mapArena(size uint64) error {
+	arena, err := newMappedArena(w.file, size)
+	if err != nil {
+		return err
+	}
+	w.arena = arena
+	return nil
+}
+
+func (w *Writer) closeArena() error {
+	if w.arena == nil {
+		return nil
+	}
+	err := w.arena.close()
+	w.arena = nil
+	return err
+}
+
+func (w *Writer) syncArena() error {
+	if w.arena != nil {
+		return w.arena.sync()
+	}
+	return w.file.Sync()
+}
+
+func (w *Writer) postChange() error {
+	w.postChangeFence.Add(1)
+	size, ok := checkedAdd(w.header.headerSize, w.header.arenaSize)
+	if !ok || size > uint64(int64(^uint64(0)>>1)) {
+		return fmt.Errorf("%w: journal file too large", errInvalidJournal)
+	}
+	return w.file.Truncate(int64(size))
+}
+
+func (w *Writer) readAt(dst []byte, offset uint64) error {
+	if w.arena != nil {
+		return w.arena.readAt(dst, offset)
+	}
+	_, err := w.file.ReadAt(dst, int64(offset))
+	return err
+}
+
+func (w *Writer) writeAt(offset uint64, src []byte) error {
+	if w.arena != nil {
+		return w.arena.writeAt(offset, src)
+	}
+	_, err := w.file.WriteAt(src, int64(offset))
+	return err
 }
 
 func (w *Writer) writeHeader() error {
 	buf := make([]byte, headerSize)
 	putHeader(buf, w.header)
-	_, err := w.file.WriteAt(buf, 0)
-	return err
+	return w.writeAt(0, buf)
 }
 
 func (w *Writer) publishObjectMetadata() error {
@@ -702,13 +865,18 @@ func (w *Writer) publishEntryMetadata() error {
 func (w *Writer) writeObjectHeader(offset uint64, header objectHeader) error {
 	buf := make([]byte, objectHeaderSize)
 	putObjectHeader(buf, header)
-	_, err := w.file.WriteAt(buf, int64(offset))
-	return err
+	return w.writeAt(offset, buf)
 }
 
 func (w *Writer) writeObject(offset uint64, buf []byte) error {
-	_, err := w.file.WriteAt(buf, int64(offset))
-	return err
+	end, ok := checkedAdd(offset, uint64(len(buf)))
+	if !ok {
+		return fmt.Errorf("%w: object exceeds file bounds", errInvalidJournal)
+	}
+	if err := w.ensureArenaSize(end); err != nil {
+		return err
+	}
+	return w.writeAt(offset, buf)
 }
 
 func readObjectHeaderAt(f *os.File, offset uint64) (objectHeader, error) {
@@ -745,8 +913,15 @@ func (w *Writer) ensureArenaSize(requiredSize uint64) error {
 	if w.compact && newSize > journalCompactSizeMax {
 		return fmt.Errorf("%w: compact journal cannot exceed 4 GiB", errInvalidJournal)
 	}
+	if w.arena != nil {
+		if err := w.arena.remap(newSize); err != nil {
+			return err
+		}
+	} else if err := w.file.Truncate(int64(newSize)); err != nil {
+		return err
+	}
 	w.header.arenaSize = newSize - headerSize
-	return w.file.Truncate(int64(newSize))
+	return nil
 }
 
 func (w *Writer) entryAdded(entryOffset, realtime, monotonic uint64, bootID UUID) {
@@ -767,7 +942,13 @@ func (w *Writer) entryAdded(entryOffset, realtime, monotonic uint64, bootID UUID
 
 func (w *Writer) addData(payload []byte) (uint64, uint64, error) {
 	hash := w.hash(payload)
+	if item, ok := w.dataCache.get(hash, payload); ok {
+		return item.offset, item.hash, nil
+	}
 	if offset, ok, err := w.findData(hash, payload); err != nil || ok {
+		if ok {
+			w.dataCache.insert(hash, payload, entryItem{offset: offset, hash: hash})
+		}
 		return offset, hash, err
 	}
 
@@ -825,35 +1006,46 @@ func (w *Writer) addData(payload []byte) (uint64, uint64, error) {
 	}
 
 	if eq := bytes.IndexByte(payload, '='); eq > 0 {
-		fieldOffset, err := w.addField(payload[:eq])
+		fieldPayload := payload[:eq]
+		fieldHash := w.hash(fieldPayload)
+		fieldOffset, fieldHeadDataOffset, err := w.addField(fieldHash, fieldPayload)
 		if err != nil {
 			return 0, 0, err
 		}
-		field, err := w.readFieldHeader(fieldOffset)
-		if err != nil {
-			return 0, 0, err
-		}
-		if err := w.writeUint64At(offset+32, field.headDataOffset); err != nil {
+		if err := w.writeUint64At(offset+32, fieldHeadDataOffset); err != nil {
 			return 0, 0, err
 		}
 		if err := w.writeUint64At(fieldOffset+32, offset); err != nil {
 			return 0, 0, err
 		}
+		w.fieldCache.insert(fieldHash, fieldPayload, fieldOffset, offset)
 	}
 
+	w.dataCache.insert(hash, payload, entryItem{offset: offset, hash: hash})
 	return offset, hash, nil
 }
 
-func (w *Writer) addField(payload []byte) (uint64, error) {
-	hash := w.hash(payload)
-	if offset, ok, err := w.findField(hash, payload); err != nil || ok {
-		return offset, err
+func (w *Writer) addField(hash uint64, payload []byte) (uint64, uint64, error) {
+	if offset, headDataOffset, ok := w.fieldCache.get(hash, payload); ok {
+		return offset, headDataOffset, nil
+	}
+	offset, ok, err := w.findField(hash, payload)
+	if err != nil {
+		return 0, 0, err
+	}
+	if ok {
+		field, err := w.readFieldHeader(offset)
+		if err != nil {
+			return 0, 0, err
+		}
+		w.fieldCache.insert(hash, payload, offset, field.headDataOffset)
+		return offset, field.headDataOffset, nil
 	}
 
-	offset := w.appendOffset
+	offset = w.appendOffset
 	size := uint64(fieldObjectHeaderSize + len(payload))
 	if err := w.ensureCompactObjectFits(offset, size); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	buf := make([]byte, align8(size))
 	putFieldHeader(buf[:fieldObjectHeaderSize], fieldHeader{
@@ -862,22 +1054,23 @@ func (w *Writer) addField(payload []byte) (uint64, error) {
 	})
 	copy(buf[fieldObjectHeaderSize:], payload)
 	if err := w.writeObject(offset, buf); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if err := w.objectAdded(offset, size); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	if err := w.appendHashItem(w.header.fieldHashTableOffset, w.header.fieldHashTableSize, objectTypeField, hash, offset); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	w.header.nFields++
 
 	if err := w.hmacPutObject(offset, objectTypeField); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
-	return offset, nil
+	w.fieldCache.insert(hash, payload, offset, 0)
+	return offset, 0, nil
 }
 
 func (w *Writer) appendHashItem(tableOffset, tableSize uint64, typ uint8, hash, objectOffset uint64) error {
@@ -897,7 +1090,7 @@ func (w *Writer) appendHashItem(tableOffset, tableSize uint64, typ uint8, hash, 
 
 	// Sanity check the previous tail type if this bucket was non-empty.
 	if item.head != objectOffset {
-		oh, err := readObjectHeaderAt(w.file, item.head)
+		oh, err := w.readObjectHeader(item.head)
 		if err != nil {
 			return err
 		}
@@ -905,7 +1098,51 @@ func (w *Writer) appendHashItem(tableOffset, tableSize uint64, typ uint8, hash, 
 			return errInvalidJournal
 		}
 	}
-	return w.writeHashItem(bucketOffset, item)
+	if err := w.writeHashItem(bucketOffset, item); err != nil {
+		return err
+	}
+	if item.head != objectOffset {
+		return w.updateHashChainDepth(typ, item.head)
+	}
+	return nil
+}
+
+func (w *Writer) updateHashChainDepth(typ uint8, head uint64) error {
+	var depth uint64
+	for offset := head; offset != 0; {
+		var next uint64
+		switch typ {
+		case objectTypeData:
+			header, err := w.readDataHeader(offset)
+			if err != nil {
+				return err
+			}
+			next = header.nextHashOffset
+		case objectTypeField:
+			header, err := w.readFieldHeader(offset)
+			if err != nil {
+				return err
+			}
+			next = header.nextHashOffset
+		default:
+			return errInvalidJournal
+		}
+		if next != 0 {
+			depth++
+		}
+		offset = next
+	}
+	switch typ {
+	case objectTypeData:
+		if depth > w.header.dataHashChainDepth {
+			w.header.dataHashChainDepth = depth
+		}
+	case objectTypeField:
+		if depth > w.header.fieldHashChainDepth {
+			w.header.fieldHashChainDepth = depth
+		}
+	}
+	return nil
 }
 
 func (w *Writer) findData(hash uint64, payload []byte) (uint64, bool, error) {
@@ -964,7 +1201,7 @@ func (w *Writer) findField(hash uint64, payload []byte) (uint64, bool, error) {
 
 func (w *Writer) readHashItem(offset uint64) (hashItem, error) {
 	buf := make([]byte, hashItemSize)
-	if _, err := w.file.ReadAt(buf, int64(offset)); err != nil {
+	if err := w.readAt(buf, offset); err != nil {
 		return hashItem{}, err
 	}
 	return parseHashItem(buf), nil
@@ -973,8 +1210,7 @@ func (w *Writer) readHashItem(offset uint64) (hashItem, error) {
 func (w *Writer) writeHashItem(offset uint64, item hashItem) error {
 	buf := make([]byte, hashItemSize)
 	putHashItem(buf, item)
-	_, err := w.file.WriteAt(buf, int64(offset))
-	return err
+	return w.writeAt(offset, buf)
 }
 
 func (w *Writer) readDataObject(offset uint64) (dataHeader, []byte, error) {
@@ -987,7 +1223,7 @@ func (w *Writer) readDataObject(offset uint64) (dataHeader, []byte, error) {
 		return dataHeader{}, nil, errInvalidJournal
 	}
 	payload := make([]byte, header.object.size-payloadOffset)
-	if _, err := w.file.ReadAt(payload, int64(offset+payloadOffset)); err != nil {
+	if err := w.readAt(payload, offset+payloadOffset); err != nil {
 		return dataHeader{}, nil, err
 	}
 	if header.object.flag&objectCompressedZSTD != 0 {
@@ -1021,15 +1257,23 @@ func (w *Writer) readFieldObject(offset uint64) (fieldHeader, []byte, error) {
 		return fieldHeader{}, nil, errInvalidJournal
 	}
 	payload := make([]byte, header.object.size-fieldObjectHeaderSize)
-	if _, err := w.file.ReadAt(payload, int64(offset+fieldObjectHeaderSize)); err != nil {
+	if err := w.readAt(payload, offset+fieldObjectHeaderSize); err != nil {
 		return fieldHeader{}, nil, err
 	}
 	return header, payload, nil
 }
 
+func (w *Writer) readObjectHeader(offset uint64) (objectHeader, error) {
+	buf := make([]byte, objectHeaderSize)
+	if err := w.readAt(buf, offset); err != nil {
+		return objectHeader{}, err
+	}
+	return parseObjectHeader(buf)
+}
+
 func (w *Writer) readDataHeader(offset uint64) (dataHeader, error) {
 	buf := make([]byte, dataObjectHeaderSize)
-	if _, err := w.file.ReadAt(buf, int64(offset)); err != nil {
+	if err := w.readAt(buf, offset); err != nil {
 		return dataHeader{}, err
 	}
 	return parseDataHeader(buf)
@@ -1037,7 +1281,7 @@ func (w *Writer) readDataHeader(offset uint64) (dataHeader, error) {
 
 func (w *Writer) readFieldHeader(offset uint64) (fieldHeader, error) {
 	buf := make([]byte, fieldObjectHeaderSize)
-	if _, err := w.file.ReadAt(buf, int64(offset)); err != nil {
+	if err := w.readAt(buf, offset); err != nil {
 		return fieldHeader{}, err
 	}
 	return parseFieldHeader(buf)
@@ -1046,20 +1290,17 @@ func (w *Writer) readFieldHeader(offset uint64) (fieldHeader, error) {
 func (w *Writer) writeUint64At(offset, value uint64) error {
 	buf := make([]byte, 8)
 	binary.LittleEndian.PutUint64(buf, value)
-	_, err := w.file.WriteAt(buf, int64(offset))
-	return err
+	return w.writeAt(offset, buf)
 }
 
 func (w *Writer) writeUint32At(offset uint64, value uint32) error {
 	buf := make([]byte, 4)
 	binary.LittleEndian.PutUint32(buf, value)
-	_, err := w.file.WriteAt(buf, int64(offset))
-	return err
+	return w.writeAt(offset, buf)
 }
 
 func (w *Writer) writeUUIDAt(offset uint64, value UUID) error {
-	_, err := w.file.WriteAt(value[:], int64(offset))
-	return err
+	return w.writeAt(offset, value[:])
 }
 
 func nextEntryArrayCapacity(index, previousCapacity uint64) uint64 {
@@ -1171,7 +1412,7 @@ func (w *Writer) allocateOffsetArray(capacity uint64) (uint64, error) {
 
 func (w *Writer) readOffsetArrayHeader(offset uint64) (offsetArrayHeader, uint64, error) {
 	buf := make([]byte, offsetArrayObjectHeaderSize)
-	if _, err := w.file.ReadAt(buf, int64(offset)); err != nil {
+	if err := w.readAt(buf, offset); err != nil {
 		return offsetArrayHeader{}, 0, err
 	}
 	header, err := parseOffsetArrayHeader(buf)

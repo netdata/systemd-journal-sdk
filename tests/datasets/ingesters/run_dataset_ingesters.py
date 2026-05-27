@@ -20,6 +20,7 @@ BIN = OUT / "bin"
 
 LANGUAGES = ("systemd", "rust", "go", "node", "python")
 SEQNUM_ID = "22222222222222222222222222222222"
+DEFAULT_MAX_SIZE_BYTES = 64 * 1024 * 1024
 
 
 def run(cmd: list[str], *, cwd: Path = ROOT, env: dict[str, str] | None = None) -> dict:
@@ -103,6 +104,7 @@ def ingester_command(
     output: Path,
     rejection: bool,
     final_state: str,
+    max_size_bytes: int | None,
 ) -> list[str]:
     if language in {"python", "node"}:
         cmd = [str(binary), metadata["script"]]
@@ -112,6 +114,8 @@ def ingester_command(
     if rejection:
         cmd.append("--rejection-mode")
     cmd += ["--final-state", final_state]
+    if max_size_bytes is not None:
+        cmd += ["--max-size-bytes", str(max_size_bytes)]
     return cmd
 
 
@@ -121,7 +125,7 @@ def verify_journal(path: Path) -> dict:
     return run(["journalctl", "--verify", "--file", str(path)])
 
 
-def run_language(language: str, both: bool, final_state: str) -> dict:
+def run_language(language: str, both: bool, final_state: str, max_size_bytes: int | None) -> dict:
     binary, metadata = ensure_bins(language)
     lang_out = OUT / language if final_state == "online" else OUT / final_state / language
     lang_out.mkdir(parents=True, exist_ok=True)
@@ -131,7 +135,18 @@ def run_language(language: str, both: bool, final_state: str) -> dict:
     actual_output = final_journal_path(accepted_output, final_state, CORRECTNESS)
     for path in {accepted_output, actual_output}:
         path.unlink(missing_ok=True)
-    accepted = run(ingester_command(language, binary, metadata, CORRECTNESS, accepted_output, False, final_state))
+    accepted = run(
+        ingester_command(
+            language,
+            binary,
+            metadata,
+            CORRECTNESS,
+            accepted_output,
+            False,
+            final_state,
+            max_size_bytes,
+        )
+    )
     result["accepted"] = accepted
     if accepted["returncode"] == 0:
         result["verify"] = verify_journal(actual_output)
@@ -140,7 +155,18 @@ def run_language(language: str, both: bool, final_state: str) -> dict:
     if both:
         rejection_output = lang_out / "rejections.journal"
         rejection_output.unlink(missing_ok=True)
-        result["rejections"] = run(ingester_command(language, binary, metadata, REJECTIONS, rejection_output, True, "online"))
+        result["rejections"] = run(
+            ingester_command(
+                language,
+                binary,
+                metadata,
+                REJECTIONS,
+                rejection_output,
+                True,
+                "online",
+                max_size_bytes,
+            )
+        )
     return result
 
 
@@ -149,6 +175,12 @@ def main() -> int:
     parser.add_argument("--language", choices=LANGUAGES)
     parser.add_argument("--both", action="store_true", help="run accepted and rejection corpora")
     parser.add_argument("--final-state", choices=("online", "offline", "archived"), default="online")
+    parser.add_argument(
+        "--max-size-bytes",
+        type=int,
+        default=DEFAULT_MAX_SIZE_BYTES,
+        help="systemd max-size value used for hash table sizing across all ingesters",
+    )
     args = parser.parse_args()
 
     languages = [args.language] if args.language else list(LANGUAGES)
@@ -162,7 +194,7 @@ def main() -> int:
 
     for language in languages:
         try:
-            language_result = run_language(language, args.both, args.final_state)
+            language_result = run_language(language, args.both, args.final_state, args.max_size_bytes)
         except Exception as err:
             language_result = {"exception": str(err)}
             failed = True

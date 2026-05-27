@@ -886,7 +886,8 @@ impl JournalFile<super::mmap::MmapMut> {
             header.field_hash_table_size,
         )?;
 
-        let window_manager = GuardedCell::new(WindowManager::new(fd, window_size, 32)?);
+        let window_manager =
+            GuardedCell::new(WindowManager::new_writer_owned(fd, window_size, 32)?);
 
         Ok(JournalFile {
             file: file.clone(),
@@ -1051,7 +1052,11 @@ impl<M: MemoryMapMut> JournalFile<M> {
         }
 
         // Create window manager for the rest of the objects
-        let window_manager = GuardedCell::new(WindowManager::new(fd, options.window_size, 32)?);
+        let window_manager = GuardedCell::new(WindowManager::new_writer_owned(
+            fd,
+            options.window_size,
+            32,
+        )?);
 
         let mut jf = JournalFile {
             file: file.clone(),

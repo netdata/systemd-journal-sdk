@@ -67,21 +67,21 @@ def valid_field_name(name: str) -> bool:
     return all(ch == "_" or "A" <= ch <= "Z" or "0" <= ch <= "9" for ch in name)
 
 
-def make_writer(path: Path, compact: bool) -> Writer:
+def make_writer(path: Path, compact: bool, max_size_bytes: int | None) -> Writer:
     path.parent.mkdir(parents=True, exist_ok=True)
-    return Writer.create(
-        str(path),
-        {
-            "boot_id": BOOT_ID,
-            "machine_id": MACHINE_ID,
-            "seqnum_id": SEQNUM_ID,
-            "file_id": FILE_ID,
-            "head_seqnum": 1,
-            "compression": "none",
-            "compression_threshold_bytes": 512,
-            "compact": compact,
-        },
-    )
+    options = {
+        "boot_id": BOOT_ID,
+        "machine_id": MACHINE_ID,
+        "seqnum_id": SEQNUM_ID,
+        "file_id": FILE_ID,
+        "head_seqnum": 1,
+        "compression": "none",
+        "compression_threshold_bytes": 512,
+        "compact": compact,
+    }
+    if max_size_bytes is not None:
+        options["max_file_size"] = max_size_bytes
+    return Writer.create(str(path), options)
 
 
 def archive_path_for(output: Path, head_realtime: int) -> Path:
@@ -103,8 +103,14 @@ def finalize_writer(writer: Writer, output: Path, final_state: str, head_realtim
         raise ValueError(f"invalid final state: {final_state}")
 
 
-def ingest_accepted(dataset: Path, output: Path, final_state: str, compact: bool) -> dict:
-    writer = make_writer(output, compact)
+def ingest_accepted(
+    dataset: Path,
+    output: Path,
+    final_state: str,
+    compact: bool,
+    max_size_bytes: int | None,
+) -> dict:
+    writer = make_writer(output, compact, max_size_bytes)
     written = 0
     head_realtime = 0
     errors: list[str] = []
@@ -141,7 +147,13 @@ def ingest_accepted(dataset: Path, output: Path, final_state: str, compact: bool
     return {"records": written, "errors": errors}
 
 
-def ingest_rejections(dataset: Path, output: Path, final_state: str, compact: bool) -> dict:
+def ingest_rejections(
+    dataset: Path,
+    output: Path,
+    final_state: str,
+    compact: bool,
+    max_size_bytes: int | None,
+) -> dict:
     writer: Writer | None = None
     handled = 0
     errors: list[str] = []
@@ -165,7 +177,7 @@ def ingest_rejections(dataset: Path, output: Path, final_state: str, compact: bo
                 continue
 
             if writer is None:
-                writer = make_writer(output, compact)
+                writer = make_writer(output, compact, max_size_bytes)
             name = input_data["field_name"]
             value = materialize_value(input_data["value"])
             try:
@@ -189,12 +201,13 @@ def main() -> int:
     parser.add_argument("--rejection-mode", action="store_true")
     parser.add_argument("--final-state", choices=("online", "offline", "archived"), default="online")
     parser.add_argument("--compact", action="store_true")
+    parser.add_argument("--max-size-bytes", type=int)
     args = parser.parse_args()
 
     result = (
-        ingest_rejections(args.dataset, args.output, args.final_state, args.compact)
+        ingest_rejections(args.dataset, args.output, args.final_state, args.compact, args.max_size_bytes)
         if args.rejection_mode
-        else ingest_accepted(args.dataset, args.output, args.final_state, args.compact)
+        else ingest_accepted(args.dataset, args.output, args.final_state, args.compact, args.max_size_bytes)
     )
     print(json.dumps(result, sort_keys=True))
     return 0 if not result["errors"] else 1

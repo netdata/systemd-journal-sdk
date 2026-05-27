@@ -139,7 +139,7 @@ func expectedRejection(input map[string]interface{}) string {
 	return ""
 }
 
-func makeWriter(path string, compact bool) (*journal.Writer, error) {
+func makeWriter(path string, compact bool, maxSizeBytes uint64) (*journal.Writer, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
@@ -149,6 +149,7 @@ func makeWriter(path string, compact bool) (*journal.Writer, error) {
 		SeqnumID:               seqnumID,
 		FileID:                 fileID,
 		HeadSeqnum:             1,
+		MaxFileSize:            maxSizeBytes,
 		Compression:            journal.CompressionNone,
 		CompressThresholdBytes: 512,
 		Compact:                compact,
@@ -175,8 +176,8 @@ func finalizeWriter(w *journal.Writer, output string, finalState string, headRea
 	}
 }
 
-func ingestAccepted(dataset, output string, finalState string, compact bool) result {
-	w, err := makeWriter(output, compact)
+func ingestAccepted(dataset, output string, finalState string, compact bool, maxSizeBytes uint64) result {
+	w, err := makeWriter(output, compact, maxSizeBytes)
 	if err != nil {
 		return result{Errors: []string{err.Error()}}
 	}
@@ -253,7 +254,7 @@ func ingestAccepted(dataset, output string, finalState string, compact bool) res
 	return res
 }
 
-func ingestRejections(dataset, output string, finalState string, compact bool) result {
+func ingestRejections(dataset, output string, finalState string, compact bool, maxSizeBytes uint64) result {
 	file, err := os.Open(dataset)
 	if err != nil {
 		return result{Errors: []string{err.Error()}}
@@ -290,7 +291,7 @@ func ingestRejections(dataset, output string, finalState string, compact bool) r
 		}
 
 		if w == nil {
-			w, err = makeWriter(output, compact)
+			w, err = makeWriter(output, compact, maxSizeBytes)
 			if err != nil {
 				res.Errors = append(res.Errors, err.Error())
 				break
@@ -335,17 +336,18 @@ func main() {
 	rejectionMode := flag.Bool("rejection-mode", false, "process rejection corpus")
 	finalState := flag.String("final-state", "online", "final journal state: online, offline, archived")
 	compact := flag.Bool("compact", false, "write the systemd compact journal format")
+	maxSizeBytes := flag.Uint64("max-size-bytes", 0, "systemd max-size value used for hash table sizing; zero uses the SDK default")
 	flag.Parse()
 	if *dataset == "" || *output == "" {
-		fmt.Fprintln(os.Stderr, "usage: dataset_ingester --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived] [--compact]")
+		fmt.Fprintln(os.Stderr, "usage: dataset_ingester --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived] [--compact] [--max-size-bytes BYTES]")
 		os.Exit(2)
 	}
 
 	var res result
 	if *rejectionMode {
-		res = ingestRejections(*dataset, *output, *finalState, *compact)
+		res = ingestRejections(*dataset, *output, *finalState, *compact, *maxSizeBytes)
 	} else {
-		res = ingestAccepted(*dataset, *output, *finalState, *compact)
+		res = ingestAccepted(*dataset, *output, *finalState, *compact, *maxSizeBytes)
 	}
 	encoded, _ := json.Marshal(res)
 	fmt.Println(string(encoded))

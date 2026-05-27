@@ -17,6 +17,7 @@ LANGUAGES = ("systemd", "rust", "go", "node", "python")
 REFERENCE = "systemd"
 INGESTER_TIMEOUT_SECONDS = 300
 SEQNUM_ID = "22222222222222222222222222222222"
+BYTE_IDENTITY_MAX_SIZE_BYTES = 64 * 1024 * 1024
 EXPECTED_DATA_HASH_CHAIN_DEPTH = 3
 
 HEADER_FIELDS = (
@@ -347,7 +348,15 @@ def main() -> int:
     for final_state in states:
         state_summary: dict[str, object] = {}
         if not args.skip_run:
-            ingest = run([sys.executable, str(INGESTER_RUNNER), "--both", "--final-state", final_state])
+            ingest = run([
+                sys.executable,
+                str(INGESTER_RUNNER),
+                "--both",
+                "--final-state",
+                final_state,
+                "--max-size-bytes",
+                str(BYTE_IDENTITY_MAX_SIZE_BYTES),
+            ])
             state_summary["ingesters"] = ingest
             if ingest["returncode"] != 0:
                 state_summaries[final_state] = state_summary
@@ -379,6 +388,7 @@ def main() -> int:
                 summary["all_equal"] = False
                 print(json.dumps(summary, indent=2, sort_keys=True))
                 return 1
+        state_summary["max_size_bytes"] = BYTE_IDENTITY_MAX_SIZE_BYTES
         state_summary["chain_depths"] = {k: v["chain_depth"] for k, v in chain_depths.items()}
 
         comparisons = [

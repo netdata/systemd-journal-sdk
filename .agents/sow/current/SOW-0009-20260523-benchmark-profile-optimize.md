@@ -456,6 +456,152 @@ Open decisions:
   - Go needs a fast caller-owned-data API plus mmap-backed or equivalently mapped writer core; the existing field API remains as a compatibility wrapper.
   - Node.js and Python need allocation/syscall/readback reductions, but this SOW must record whether pure-runtime constraints make them non-hot-path SDKs.
   - The correct publication model is systemd's actual model: target objects before references, entry reachability after object/index publication, and explicit ordering before live-reader-visible entry links.
+- Repaired the Rust writer-owned mmap hot path enough to remove per-access
+  file-size metadata calls from the writer path:
+  - `rust/src/crates/journal-core/src/file/mmap.rs` now separates live-reader
+    bounds from writer-owned bounds. Writer-owned windows cache file size and
+    extend only when a requested writer window exceeds the cached size.
+  - `rust/src/crates/journal-core/src/file/file.rs` now opens writer paths with
+    `WindowManager::new_writer_owned`.
+  - Validation: `cargo test -p journal-core` passed with 44 unit tests and 4
+    doctests, including mmap consistency, compact writer growth, large hash
+    table sizing, compression, and sealed writer stock-verify tests.
+- Repaired the Go writer hot path around a mapped arena and bounded writer-owned
+  caches:
+  - Added `go/journal/mmap_unix.go` for a MAP_SHARED writer arena and
+    `go/journal/mmap_other.go` as a non-Unix file-backed fallback for the arena
+    abstraction.
+  - `go/journal/writer.go` now routes writer-owned reads/writes through the
+    mapped arena, reuses entry and payload scratch buffers, caches recent DATA
+    and FIELD lookups, and avoids the prior small `pread`/`pwrite` writer-core
+    path.
+  - `go/journal/seal.go` now reads seal HMAC material through the writer arena
+    abstraction instead of direct file reads.
+  - Added the systemd-compatible post-change notification after entry
+    publication by issuing same-size `ftruncate`. This is required because
+    MAP_SHARED memory writes do not notify stock follow readers on their own.
+    Validation caught the failure before this fix: stock follow readers saw
+    only partial live output while poll/libsystemd readers completed.
+  - Added hash-chain-depth update when appending to a non-empty hash bucket.
+    This repaired the Go header regression where cached lookups could leave
+    `data_hash_chain_depth` stale.
+- Go writer-core fixed-128 MiB compact/no-compression/no-FSS benchmark after
+  optimization:
+  - Command: `timeout 1800 python3 tests/benchmarks/run_writer_core_benchmarks.py --languages systemd go --rows 100000 --repetitions 3 --warmups 1 --format compact --final-state online --keep-journals`.
+  - Report: `.local/benchmarks/writer-core/compact-none-fss-off-20260527T173925Z/report.json`.
+  - systemd C median append rate: `27947.902006207` rows/sec.
+  - Go median append rate: `40738.31131758062` rows/sec.
+  - Go/systemd median append ratio: `1.457651859110318`.
+  - Both drivers used `134217728` max-size bytes, `233016` data buckets,
+    `1023` field buckets, compact format, no compression, no FSS, and
+    134217728-byte journals.
+  - Environment limitation: the workstation CPU governor was still `powersave`,
+    so the absolute rate is directional. The same aligned benchmark earlier in
+    this chunk also measured Go around `49818.39208331786` rows/sec versus
+    systemd around `36203.094714318` rows/sec. Ratios stayed above systemd in
+    both runs.
+- Rust/Go writer-core fixed-128 MiB compact/no-compression/no-FSS benchmark
+  after the Rust writer-owned mmap repair and the Go mapped-arena repair:
+  - Command: `timeout 1800 python3 tests/benchmarks/run_writer_core_benchmarks.py --languages systemd rust go --rows 100000 --repetitions 3 --warmups 1 --format compact --final-state online --keep-journals`.
+  - Report: `.local/benchmarks/writer-core/compact-none-fss-off-20260527T180437Z/report.json`.
+  - systemd C median append rate: `36058.362815549` rows/sec.
+  - Rust median append rate: `56225.90863893713` rows/sec.
+  - Go median append rate: `47773.01926391824` rows/sec.
+  - Rust/systemd median append ratio: `1.5593028703646947`.
+  - Go/systemd median append ratio: `1.3248804308807298`.
+  - All three drivers used `134217728` max-size bytes, `233016` data buckets,
+    `1023` field buckets, compact format, no compression, no FSS, and
+    stock `journalctl --verify --file` passed.
+  - Interpretation: the first Rust/Go writer-core optimization chunk changed
+    both Rust and Go from materially slower than systemd to faster than systemd
+    on the fixed-128 MiB single-file compact baseline. This does not close the
+    SOW because Netdata-shaped writer benchmarks, remaining language writer
+    profiling, and reader benchmarks are still required.
+- Go syscall profile after mmap optimization:
+  - Command: `timeout 1800 strace -f -c .local/benchmarks/bin/go-writer-core-bench --rows 1000 --output .local/benchmarks/profiles/go-strace-after-mmap.journal --format compact --final-state online --max-size-bytes 134217728`.
+  - Result: no `pread64` or `pwrite64` calls remained in the 1000-row writer
+    run. The profile showed `1002` `ftruncate` calls, one `msync`, two `fsync`,
+    and stock `journalctl --verify --file` passed for the generated journal.
+  - Interpretation: the previous read/write syscall flood is removed. The
+    remaining per-entry syscall is the intentional stock follow-reader
+    notification.
+- Go writer compatibility matrices after mmap optimization:
+  - `tests/interoperability/run_live_matrix.py --writers go --entries 30 --writer-delay-ms 20 --poll-readers 2 --libsystemd-readers 1 --keep-files` passed `9/9` feature variants. Result file: `.local/interoperability/live-feature-matrix-results-20260527-204101.json`.
+  - `tests/interoperability/run_compression_matrix.py --writers go --compression zstd xz lz4 --keep-files` passed `54/54`. Result file: `.local/interoperability/compression-matrix-results-20260527-204109.json`.
+  - `tests/interoperability/run_compact_matrix.py --writers go --compression none --keep-files` passed `14/14`. Result file: `.local/interoperability/compact-matrix-none-results-20260527-204121.json`.
+  - `tests/interoperability/run_compact_matrix.py --writers go --compression zstd --keep-files` passed `14/14`. Result file: `.local/interoperability/compact-matrix-zstd-results-20260527-204122.json`.
+  - `tests/interoperability/run_compact_matrix.py --writers go --compression xz --keep-files` passed `14/14`. Result file: `.local/interoperability/compact-matrix-xz-results-20260527-204123.json`.
+  - `tests/interoperability/run_compact_matrix.py --writers go --compression lz4 --keep-files` passed `14/14`. Result file: `.local/interoperability/compact-matrix-lz4-results-20260527-204124.json`.
+- Repaired a validation-harness regression exposed by byte-identity:
+  - Root cause: the systemd deterministic ingester defaulted to 64 MiB
+    `--max-size-bytes`, while SDK ingesters defaulted to the production 128 MiB
+    value from SOW-0035. This changed the number of DATA hash buckets and split
+    the deliberate collision corpus, so some SDK outputs had
+    `data_hash_chain_depth=1` instead of the expected `3`.
+  - Fix: dataset ingesters for Rust, Go, Node.js, and Python now accept
+    `--max-size-bytes`; the shared ingester runner passes an explicit 64 MiB
+    default for deterministic byte-identity; `run_byte_identity.py` records that
+    explicit value.
+  - This does not change the SDK production default or the writer-core
+    benchmark default, both of which remain 128 MiB unless explicitly
+    overridden.
+  - Validation: `timeout 1800 python3 tests/interoperability/run_byte_identity.py --final-state all` passed with `all_equal: true` for online, offline, and archived states. All languages and systemd reported `data_hash_chain_depth=3`.
+- Fixed the compression and compact matrix runners to include
+  `.local/python-deps` on `PYTHONPATH` for all subprocesses. This repaired a
+  false Python LZ4 reader failure in the matrix harness without changing SDK
+  runtime behavior.
+- Broadened compatibility validation after the Rust and Go writer changes:
+  - `timeout 1800 python3 tests/interoperability/run_live_matrix.py --writers rust go node python --entries 30 --writer-delay-ms 20 --poll-readers 2 --libsystemd-readers 1 --keep-files` passed `36/36` feature variants. Result file: `.local/interoperability/live-feature-matrix-results-20260527-210650.json`.
+  - `timeout 1800 python3 tests/interoperability/run_compression_matrix.py --writers rust go node python --compression zstd xz lz4 --keep-files` passed `216/216`. Result file: `.local/interoperability/compression-matrix-results-20260527-210753.json`.
+  - `timeout 1800 python3 tests/interoperability/run_compact_matrix.py --writers rust go node python --compression none --keep-files` passed `56/56`. Result file: `.local/interoperability/compact-matrix-none-results-20260527-210749.json`.
+  - `timeout 1800 python3 tests/interoperability/run_compact_matrix.py --writers rust go node python --compression zstd --keep-files` passed `56/56`. Result file: `.local/interoperability/compact-matrix-zstd-results-20260527-210751.json`.
+  - `timeout 1800 python3 tests/interoperability/run_compact_matrix.py --writers rust go node python --compression xz --keep-files` passed `56/56`. Result file: `.local/interoperability/compact-matrix-xz-results-20260527-210753.json`.
+  - `timeout 1800 python3 tests/interoperability/run_compact_matrix.py --writers rust go node python --compression lz4 --keep-files` passed `56/56`. Result file: `.local/interoperability/compact-matrix-lz4-results-20260527-210754.json`.
+- First reviewer pass for the Rust/Go writer optimization and harness repair
+  chunk:
+  - `llm-netdata-cloud/glm-5.1`: production-grade. Non-blocking note: the Go
+    `postChangeFence` looked like dead code without a documented publication
+    purpose.
+  - `llm-netdata-cloud/kimi-k2.6`: production-grade. Non-blocking concern:
+    the Go same-size `ftruncate` notification path depends on syscall ordering
+    and should be documented/validated on weakly ordered platforms when such a
+    runtime environment is available.
+  - `llm-netdata-cloud/qwen3.6-plus`: production-grade. Non-blocking note:
+    Rust `WindowManager::sync` had a redundant second `set_len` after clearing
+    windows.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: production-grade with no blocking
+    findings.
+  - Disposition: added an explicit comment to the Go post-change fence, removed
+    the redundant Rust `set_len`, and ran a Go linux/arm64 build-only check.
+    No ARM64 runtime live-matrix validation is available on this workstation;
+    this remains a validation limitation for future hardware, not a blocker for
+    the current x86_64 chunk because reviewers still marked the chunk
+    production-grade.
+- Repeat reviewer pass after the non-blocking fixes:
+  - `llm-netdata-cloud/glm-5.1`: production-grade. Non-blocking notes:
+    redundant initial Go truncate before mapping, O(chain_length) Go
+    hash-depth recalculation for non-empty buckets, `int(hash)` cache slot
+    truncation only on hypothetical 32-bit targets, non-Unix fallback
+    performance, and the ARM64 live-runtime validation gap.
+  - `llm-netdata-cloud/kimi-k2.6`: production-grade. Non-blocking notes:
+    Go `updateHashChainDepth` is O(chain_length), `mmap_other.go` could mirror
+    the Unix same-size `remap` short-circuit, and same-size `ftruncate`
+    notification is a Linux/filesystem assumption to keep documented.
+  - `llm-netdata-cloud/qwen3.6-plus`: production-grade. Non-blocking notes:
+    per-append `ftruncate` is the remaining notification syscall, small buffer
+    allocations remain in helper paths, header metadata writes could be
+    batched, `updateHashChainDepth` is O(chain_length), `postChangeFence` is
+    write-only by design, and bounds checks are deliberately defensive.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: production-grade. Non-blocking
+    notes: `postChangeFence` is write-only and ARM64 runtime validation remains
+    unavailable.
+  - Disposition: no blocking findings. The Go post-change atomic is retained
+    for this chunk because Go has no standalone public fence operation; the
+    sequentially consistent atomic RMW is the explicit compiler/CPU ordering
+    point before the same-size `ftruncate` notification syscall. The
+    hash-depth walk, helper allocation cleanup, metadata batching, and
+    non-Unix fallback refinements remain valid future profiling/cleanup targets
+    inside SOW-0009, but they are not blockers for this intermediate commit.
 
 ## Validation
 
@@ -478,10 +624,40 @@ Current chunk validation:
   run was rejected as an invalid baseline because stock systemd correctly
   stopped at the configured max-size before 200000 rows.
 - `.agents/sow/audit.sh` passed.
+- `GOCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-cache GOMODCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-mod-cache go test ./... -count=1` passed after the Go mmap optimization and dataset ingester max-size plumbing.
+- `CARGO_HOME=/home/costa/Documents/systemd-journal-sdk/.local/cargo-home CARGO_TARGET_DIR=/home/costa/Documents/systemd-journal-sdk/.local/cargo-target cargo check -p dataset_ingester` passed.
+- `CARGO_HOME=/home/costa/Documents/systemd-journal-sdk/.local/cargo-home CARGO_TARGET_DIR=/home/costa/Documents/systemd-journal-sdk/.local/cargo-target cargo test -p journal-core` passed.
+- `node --check node/cmd/dataset_ingester.js` passed.
+- `node node/test/all.js` passed.
+- `PYTHONPATH=/home/costa/Documents/systemd-journal-sdk/.local/python-deps:/home/costa/Documents/systemd-journal-sdk/python python3 python/test_all.py` passed.
+- `python3 -m py_compile python/cmd/dataset_ingester.py tests/datasets/ingesters/run_dataset_ingesters.py tests/interoperability/run_byte_identity.py tests/interoperability/run_compact_matrix.py tests/interoperability/run_compression_matrix.py` passed.
+- `timeout 1800 python3 tests/datasets/ingesters/run_dataset_ingesters.py --language go --both --final-state online` passed: 349 accepted records, 9 rejection records, and stock `journalctl --verify --file` passed.
+- `timeout 1800 python3 tests/interoperability/run_byte_identity.py --final-state all` passed with byte-for-byte equality across systemd, Rust, Go, Node.js, and Python for online, offline, and archived states.
+- `timeout 1800 python3 tests/interoperability/run_live_matrix.py --writers go --entries 30 --writer-delay-ms 20 --poll-readers 2 --libsystemd-readers 1 --keep-files` passed `9/9`.
+- `timeout 1800 python3 tests/interoperability/run_compression_matrix.py --writers go --compression zstd xz lz4 --keep-files` passed `54/54`.
+- `timeout 1800 python3 tests/interoperability/run_compact_matrix.py --writers go --compression none --keep-files` passed `14/14`.
+- `timeout 1800 python3 tests/interoperability/run_compact_matrix.py --writers go --compression zstd --keep-files` passed `14/14`.
+- `timeout 1800 python3 tests/interoperability/run_compact_matrix.py --writers go --compression xz --keep-files` passed `14/14`.
+- `timeout 1800 python3 tests/interoperability/run_compact_matrix.py --writers go --compression lz4 --keep-files` passed `14/14`.
+- `timeout 1800 strace -f -c .local/benchmarks/bin/go-writer-core-bench --rows 1000 --output .local/benchmarks/profiles/go-strace-after-mmap.journal --format compact --final-state online --max-size-bytes 134217728` completed and showed no `pread64`/`pwrite64` calls in the Go writer-core path; stock `journalctl --verify --file` passed on the generated journal.
+- `GOCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-cache GOMODCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-mod-cache GOOS=linux GOARCH=arm64 go test -c ./journal -o /tmp/systemd-journal-sdk-go-journal-arm64.test` passed as a build-only ARM64 check for the Go journal package.
+- `timeout 1800 python3 tests/benchmarks/run_writer_core_benchmarks.py --languages systemd rust go --rows 100000 --repetitions 3 --warmups 1 --format compact --final-state online --keep-journals` passed and produced `.local/benchmarks/writer-core/compact-none-fss-off-20260527T180437Z/report.json`; systemd median append rate was `36058.362815549` rows/sec, Rust was `56225.90863893713` rows/sec, and Go was `47773.01926391824` rows/sec.
+- `timeout 1800 python3 tests/interoperability/run_live_matrix.py --writers rust go node python --entries 30 --writer-delay-ms 20 --poll-readers 2 --libsystemd-readers 1 --keep-files` passed `36/36`.
+- `timeout 1800 python3 tests/interoperability/run_compression_matrix.py --writers rust go node python --compression zstd xz lz4 --keep-files` passed `216/216`.
+- `timeout 1800 python3 tests/interoperability/run_compact_matrix.py --writers rust go node python --compression none --keep-files` passed `56/56`.
+- `timeout 1800 python3 tests/interoperability/run_compact_matrix.py --writers rust go node python --compression zstd --keep-files` passed `56/56`.
+- `timeout 1800 python3 tests/interoperability/run_compact_matrix.py --writers rust go node python --compression xz --keep-files` passed `56/56`.
+- `timeout 1800 python3 tests/interoperability/run_compact_matrix.py --writers rust go node python --compression lz4 --keep-files` passed `56/56`.
+- Repeat external reviewer pass for this chunk returned production-grade from
+  `llm-netdata-cloud/glm-5.1`, `llm-netdata-cloud/kimi-k2.6`,
+  `llm-netdata-cloud/qwen3.6-plus`, and
+  `llm-netdata-cloud/minimax-m2.7-coder`; only non-blocking optimization and
+  portability watch-points were reported.
+- `git diff --check` passed.
+- `.agents/sow/audit.sh` passed after the validation evidence update.
 
 Pending validation before this SOW can close:
 
-- Reviewer pass for the benchmark harness chunk.
 - Full benchmark/profiling iterations for the slow writer paths.
 - Reader benchmark harness and baselines for single-file and ordered multi-file/directory readers.
 - Post-optimization conformance, interoperability, live compatibility, and byte-compatibility reruns.

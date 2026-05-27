@@ -79,6 +79,12 @@ def build_env() -> dict[str, str]:
     env.setdefault("CARGO_TARGET_DIR", str(local / "cargo-target"))
     env.setdefault("npm_config_cache", str(local / "npm-cache"))
     env.setdefault("PIP_CACHE_DIR", str(local / "pip-cache"))
+    python_deps = local / "python-deps"
+    env["PYTHONPATH"] = (
+        f"{python_deps}{os.pathsep}{env['PYTHONPATH']}"
+        if env.get("PYTHONPATH")
+        else str(python_deps)
+    )
     return env
 
 
@@ -90,6 +96,8 @@ def run(
     binary: bool = False,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
+    if env is None:
+        env = build_env()
     return subprocess.run(
         cmd,
         cwd=str(cwd),

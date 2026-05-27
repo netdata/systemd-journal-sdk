@@ -222,7 +222,7 @@ func (w *Writer) hmacPutHashTableObject(objectStart uint64) error {
 	}
 	w.seal.hmacStart()
 	buf := make([]byte, objectHeaderSize)
-	if _, err := w.file.ReadAt(buf, int64(objectStart)); err != nil {
+	if err := w.readAt(buf, objectStart); err != nil {
 		return err
 	}
 	// Hash table objects: only object header is immutable
@@ -240,7 +240,7 @@ func (w *Writer) hmacPutObject(objectStart uint64, typ uint8) error {
 
 	// Object header (up to payload) is always HMAC'd
 	buf := make([]byte, objectHeaderSize)
-	if _, err := w.file.ReadAt(buf, int64(objectStart)); err != nil {
+	if err := w.readAt(buf, objectStart); err != nil {
 		return err
 	}
 	w.seal.hmacWrite(buf)
@@ -249,7 +249,7 @@ func (w *Writer) hmacPutObject(objectStart uint64, typ uint8) error {
 	case objectTypeData:
 		// hash (8 bytes) + payload
 		hashBuf := make([]byte, 8)
-		if _, err := w.file.ReadAt(hashBuf, int64(objectStart+16)); err != nil {
+		if err := w.readAt(hashBuf, objectStart+16); err != nil {
 			return err
 		}
 		w.seal.hmacWrite(hashBuf)
@@ -257,7 +257,7 @@ func (w *Writer) hmacPutObject(objectStart uint64, typ uint8) error {
 		payloadSize := binary.LittleEndian.Uint64(buf[8:16]) - payloadOffset
 		if payloadSize > 0 {
 			payload := make([]byte, payloadSize)
-			if _, err := w.file.ReadAt(payload, int64(objectStart+payloadOffset)); err != nil {
+			if err := w.readAt(payload, objectStart+payloadOffset); err != nil {
 				return err
 			}
 			w.seal.hmacWrite(payload)
@@ -265,14 +265,14 @@ func (w *Writer) hmacPutObject(objectStart uint64, typ uint8) error {
 	case objectTypeField:
 		// hash (8 bytes) + payload
 		hashBuf := make([]byte, 8)
-		if _, err := w.file.ReadAt(hashBuf, int64(objectStart+16)); err != nil {
+		if err := w.readAt(hashBuf, objectStart+16); err != nil {
 			return err
 		}
 		w.seal.hmacWrite(hashBuf)
 		payloadSize := binary.LittleEndian.Uint64(buf[8:16]) - uint64(fieldObjectHeaderSize)
 		if payloadSize > 0 {
 			payload := make([]byte, payloadSize)
-			if _, err := w.file.ReadAt(payload, int64(objectStart+fieldObjectHeaderSize)); err != nil {
+			if err := w.readAt(payload, objectStart+fieldObjectHeaderSize); err != nil {
 				return err
 			}
 			w.seal.hmacWrite(payload)
@@ -282,7 +282,7 @@ func (w *Writer) hmacPutObject(objectStart uint64, typ uint8) error {
 		entrySize := binary.LittleEndian.Uint64(buf[8:16])
 		if entrySize > uint64(objectHeaderSize) {
 			rest := make([]byte, entrySize-uint64(objectHeaderSize))
-			if _, err := w.file.ReadAt(rest, int64(objectStart+objectHeaderSize)); err != nil {
+			if err := w.readAt(rest, objectStart+objectHeaderSize); err != nil {
 				return err
 			}
 			w.seal.hmacWrite(rest)
@@ -292,7 +292,7 @@ func (w *Writer) hmacPutObject(objectStart uint64, typ uint8) error {
 	case objectTypeTag:
 		// seqnum + epoch
 		tagMeta := make([]byte, 16)
-		if _, err := w.file.ReadAt(tagMeta, int64(objectStart+objectHeaderSize)); err != nil {
+		if err := w.readAt(tagMeta, objectStart+objectHeaderSize); err != nil {
 			return err
 		}
 		w.seal.hmacWrite(tagMeta)

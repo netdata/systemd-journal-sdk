@@ -54,9 +54,9 @@ function expectedRejection(input) {
   return null;
 }
 
-function makeWriter(path, compact) {
+function makeWriter(path, compact, maxSizeBytes) {
   mkdirSync(dirname(path), { recursive: true });
-  return Writer.create(path, {
+  const options = {
     bootId: BOOT_ID,
     machineId: MACHINE_ID,
     seqnumId: SEQNUM_ID,
@@ -65,7 +65,9 @@ function makeWriter(path, compact) {
     compression: 'none',
     compressionThresholdBytes: 512,
     compact,
-  });
+  };
+  if (maxSizeBytes !== undefined) options.maxFileSize = maxSizeBytes;
+  return Writer.create(path, options);
 }
 
 function archivePathFor(output, headRealtime) {
@@ -91,8 +93,8 @@ function records(path) {
     .map(line => JSON.parse(line));
 }
 
-function ingestAccepted(dataset, output, finalState, compact) {
-  const writer = makeWriter(output, compact);
+function ingestAccepted(dataset, output, finalState, compact, maxSizeBytes) {
+  const writer = makeWriter(output, compact, maxSizeBytes);
   let written = 0;
   let headRealtime = 0n;
   const errors = [];
@@ -122,7 +124,7 @@ function ingestAccepted(dataset, output, finalState, compact) {
   return { records: written, errors };
 }
 
-function ingestRejections(dataset, output, finalState, compact) {
+function ingestRejections(dataset, output, finalState, compact, maxSizeBytes) {
   let writer = null;
   let handled = 0;
   const errors = [];
@@ -136,7 +138,7 @@ function ingestRejections(dataset, output, finalState, compact) {
       continue;
     }
 
-    writer ||= makeWriter(output, compact);
+    writer ||= makeWriter(output, compact, maxSizeBytes);
     try {
       writer.append(
         [{ name: record.input.field_name, value: materializeValue(record.input.value) }],
@@ -161,18 +163,20 @@ function parseArgs(argv) {
     else if (arg === '--final-state') args.finalState = argv[++i];
     else if (arg === '--dataset') args.dataset = argv[++i];
     else if (arg === '--output') args.output = argv[++i];
+    else if (arg === '--max-size-bytes') args.maxSizeBytes = Number(argv[++i]);
     else throw new Error(`unknown argument: ${arg}`);
   }
   if (!['online', 'offline', 'archived'].includes(args.finalState)) throw new Error(`invalid final state: ${args.finalState}`);
-  if (!args.dataset || !args.output) throw new Error('usage: dataset_ingester --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived] [--compact]');
+  if (args.maxSizeBytes !== undefined && (!Number.isSafeInteger(args.maxSizeBytes) || args.maxSizeBytes <= 0)) throw new Error('invalid --max-size-bytes');
+  if (!args.dataset || !args.output) throw new Error('usage: dataset_ingester --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived] [--compact] [--max-size-bytes BYTES]');
   return args;
 }
 
 try {
   const args = parseArgs(process.argv);
   const result = args.rejectionMode
-    ? ingestRejections(args.dataset, args.output, args.finalState, args.compact)
-    : ingestAccepted(args.dataset, args.output, args.finalState, args.compact);
+    ? ingestRejections(args.dataset, args.output, args.finalState, args.compact, args.maxSizeBytes)
+    : ingestAccepted(args.dataset, args.output, args.finalState, args.compact, args.maxSizeBytes);
   console.log(JSON.stringify(result, Object.keys(result).sort()));
   process.exit(result.errors.length === 0 ? 0 : 1);
 } catch (error) {

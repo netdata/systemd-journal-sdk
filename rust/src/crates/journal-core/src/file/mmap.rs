@@ -15,6 +15,14 @@ pub trait MemoryMap: Deref<Target = [u8]> {
     fn create(file: &File, offset: u64, size: u64) -> Result<Self>
     where
         Self: Sized;
+
+    fn create_checked(file: &File, offset: u64, size: u64, file_size: u64) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        let _ = file_size;
+        Self::create(file, offset, size)
+    }
 }
 
 pub trait MemoryMapMut: MemoryMap + DerefMut {
@@ -27,7 +35,18 @@ impl MemoryMap for Mmap {
         let end = offset
             .checked_add(size)
             .ok_or(JournalError::ObjectExceedsFileBounds)?;
-        if end > file.metadata()?.len() {
+        let file_size = file.metadata()?.len();
+        if end > file_size {
+            return Err(JournalError::ObjectExceedsFileBounds);
+        }
+        Self::create_checked(file, offset, size, file_size)
+    }
+
+    fn create_checked(file: &File, offset: u64, size: u64, file_size: u64) -> Result<Self> {
+        let end = offset
+            .checked_add(size)
+            .ok_or(JournalError::ObjectExceedsFileBounds)?;
+        if end > file_size {
             return Err(JournalError::ObjectExceedsFileBounds);
         }
         let mmap = unsafe {
@@ -47,8 +66,20 @@ impl MemoryMap for MmapMut {
             .checked_add(size)
             .ok_or(JournalError::ObjectExceedsFileBounds)?;
 
-        if required_size > file.metadata()?.len() {
+        let mut file_size = file.metadata()?.len();
+        if required_size > file_size {
             file.set_len(required_size)?;
+            file_size = required_size;
+        }
+        Self::create_checked(file, offset, size, file_size)
+    }
+
+    fn create_checked(file: &File, offset: u64, size: u64, file_size: u64) -> Result<Self> {
+        let required_size = offset
+            .checked_add(size)
+            .ok_or(JournalError::ObjectExceedsFileBounds)?;
+        if required_size > file_size {
+            return Err(JournalError::ObjectExceedsFileBounds);
         }
 
         let mmap = unsafe {
@@ -121,28 +152,56 @@ impl<M: MemoryMapMut> Window<M> {
 
 pub struct WindowManager<M: MemoryMap> {
     file: File,
-    _file_size: u64,
+    file_size: u64,
+    bounds_mode: BoundsMode,
     chunk_size: u64,
     active_window_idx: Option<usize>,
     max_windows: usize,
     windows: Vec<Window<M>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BoundsMode {
+    LiveFile,
+    WriterOwned,
+}
+
 impl<M: MemoryMap> WindowManager<M> {
     pub fn new(file: File, chunk_size: u64, max_windows: usize) -> Result<Self> {
+        Self::new_with_bounds_mode(file, chunk_size, max_windows, BoundsMode::LiveFile)
+    }
+
+    pub fn new_writer_owned(file: File, chunk_size: u64, max_windows: usize) -> Result<Self> {
+        Self::new_with_bounds_mode(file, chunk_size, max_windows, BoundsMode::WriterOwned)
+    }
+
+    fn new_with_bounds_mode(
+        file: File,
+        chunk_size: u64,
+        max_windows: usize,
+        bounds_mode: BoundsMode,
+    ) -> Result<Self> {
         debug_assert!(chunk_size != 0 && is_multiple_of(chunk_size, PAGE_SIZE));
         debug_assert!(max_windows != 0);
 
-        let _file_size = file.metadata()?.len();
+        let file_size = file.metadata()?.len();
 
         Ok(WindowManager {
             file,
-            _file_size,
+            file_size,
+            bounds_mode,
             chunk_size,
             max_windows,
             windows: Vec::new(),
             active_window_idx: None,
         })
+    }
+
+    fn current_file_size(&mut self) -> Result<u64> {
+        if self.bounds_mode == BoundsMode::LiveFile {
+            self.file_size = self.file.metadata()?.len();
+        }
+        Ok(self.file_size)
     }
 
     fn get_chunk_aligned_start(&self, position: u64) -> u64 {
@@ -156,27 +215,42 @@ impl<M: MemoryMap> WindowManager<M> {
             .ok_or(JournalError::ObjectExceedsFileBounds)
     }
 
-    fn create_window(&self, window_start: u64, chunk_count: u64) -> Result<Window<M>> {
+    fn create_window(&mut self, window_start: u64, chunk_count: u64) -> Result<Window<M>> {
         debug_assert_ne!(chunk_count, 0);
 
         let requested_size = chunk_count
             .checked_mul(self.chunk_size)
             .ok_or(JournalError::ObjectExceedsFileBounds)?;
-        let file_size = self.file.metadata()?.len();
-        if window_start >= file_size {
-            return Err(JournalError::ObjectExceedsFileBounds);
-        }
-        let size = requested_size.min(file_size - window_start);
-        let mmap = M::create(&self.file, window_start, size).map_err(|e| {
-            error!(
-                window_start,
-                size,
-                chunk_count,
-                chunk_size = self.chunk_size,
-                "mmap failed: {e}"
-            );
-            e
-        })?;
+        let requested_end = window_start
+            .checked_add(requested_size)
+            .ok_or(JournalError::ObjectExceedsFileBounds)?;
+        let size = match self.bounds_mode {
+            BoundsMode::LiveFile => {
+                let file_size = self.current_file_size()?;
+                if window_start >= file_size {
+                    return Err(JournalError::ObjectExceedsFileBounds);
+                }
+                requested_size.min(file_size - window_start)
+            }
+            BoundsMode::WriterOwned => {
+                if requested_end > self.file_size {
+                    self.file.set_len(requested_end)?;
+                    self.file_size = requested_end;
+                }
+                requested_size
+            }
+        };
+        let mmap =
+            M::create_checked(&self.file, window_start, size, self.file_size).map_err(|e| {
+                error!(
+                    window_start,
+                    size,
+                    chunk_count,
+                    chunk_size = self.chunk_size,
+                    "mmap failed: {e}"
+                );
+                e
+            })?;
         Ok(Window {
             offset: window_start,
             size,
@@ -285,7 +359,7 @@ impl<M: MemoryMap> WindowManager<M> {
         let end = position
             .checked_add(size)
             .ok_or(JournalError::ObjectExceedsFileBounds)?;
-        if end > self.file.metadata()?.len() {
+        if end > self.current_file_size()? {
             return Err(JournalError::ObjectExceedsFileBounds);
         }
         let window = self.get_window(position, size)?;
@@ -295,21 +369,20 @@ impl<M: MemoryMap> WindowManager<M> {
 
 impl<M: MemoryMapMut> WindowManager<M> {
     pub fn get_slice_mut(&mut self, position: u64, size: u64) -> Result<&mut [u8]> {
-        let required_size = position
+        position
             .checked_add(size)
             .ok_or(JournalError::ObjectExceedsFileBounds)?;
-        if required_size > self.file.metadata()?.len() {
-            self.file.set_len(required_size)?;
-        }
         let window = self.get_window(position, size)?;
         Ok(window.get_mut_slice(position, size))
     }
 
     /// Syncs all file data to disk
-    pub fn sync(&self, logical_size: u64, header_bytes: &[u8]) -> Result<()> {
+    pub fn sync(&mut self, logical_size: u64, header_bytes: &[u8]) -> Result<()> {
         for window in &self.windows {
             window.mmap.flush()?;
         }
+        self.windows.clear();
+        self.active_window_idx = None;
         self.file.set_len(logical_size)?;
         #[cfg(unix)]
         {
@@ -319,9 +392,9 @@ impl<M: MemoryMapMut> WindowManager<M> {
                     .file
                     .write_at(&header_bytes[written..], written as u64)?;
             }
-            self.file.set_len(logical_size)?;
         }
         self.file.sync_data()?;
+        self.file_size = logical_size;
         Ok(())
     }
 }
