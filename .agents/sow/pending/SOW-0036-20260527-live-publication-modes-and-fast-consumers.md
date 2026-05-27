@@ -56,6 +56,10 @@ Facts:
   reader/writer object access, while the Go writer currently mmaps the whole
   allocated journal file on Unix and remaps it when the file allocation grows.
 - The Go reader currently uses `ReadAt()` into allocated buffers instead of mmap.
+- systemd and Rust reader paths use mmap windows for journal object access. The
+  Go reader's current `ReadAt()` design is a likely reader-throughput bottleneck
+  for full scans, filtered scans, and directory reads, but the size of the
+  impact must be measured.
 - The current performance evidence shows the Rust/systemd ratio dropped from
   about `1.56x` in the prior fixed-128 MiB run to about `1.50x` after adding
   Rust post-change notification. The post-change syscall has real overhead, but
@@ -99,6 +103,9 @@ Unknowns:
   writer paths to justify an explicit memory-for-throughput option. It will
   increase virtual memory pressure; the open question is whether it produces a
   material throughput win in Netdata-shaped workloads.
+- Whether the Go reader should switch from `ReadAt()` buffers to mmap-backed
+  reads, and if so whether the implementation should use systemd/Rust-style
+  bounded windows or whole-file mapping for selected high-throughput modes.
 - What "material benefit" threshold should justify a public option. Until the
   user decides otherwise, the recommended default is to require a measurable
   benefit large enough to matter to Netdata hot paths, not a micro-optimization
@@ -122,6 +129,10 @@ Unknowns:
 - For writer mmap strategy candidates, also record mapped virtual size,
   resident memory behavior where practical, remap frequency, page faults, and
   throughput on fixed-128 MiB compact/no-compression/no-FSS writer workloads.
+- For reader mmap strategy candidates, measure single-file full scan,
+  single-file filtered scan, projected/export output, and ordered directory
+  scans. Record rows/sec, bytes/sec, CPU, syscalls, allocations, mapped virtual
+  size, resident memory behavior where practical, and page faults.
 - Reject or keep internal any candidate whose measured benefit is too small for
   the added API/semantic complexity.
 - Implement the selected policy consistently in Rust, Go, Node.js, and Python
@@ -185,6 +196,10 @@ Risks:
 - Whole allocated-file mmap can reduce hot-path bounds/window lookup work and
   may improve maximum writer throughput, but it increases virtual address space
   usage and remaps the whole allocation on growth.
+- mmap-backed readers can reduce read syscalls and allocations, but unsafe or
+  overly broad mappings can make truncation/corruption handling harder. Go
+  reader mmap work must prove it does not crash the process on truncated,
+  rotated, or corrupt files covered by the project's reader contracts.
 - Overexposing unsafe knobs can make SDK compatibility claims impossible to
   reason about.
 - Prematurely committing public API options before measuring their benefit can
@@ -211,6 +226,9 @@ Problem / root-cause model:
   systemd/Rust-style windowed mmap minimizes mapped virtual memory, while Go's
   current whole allocated-file mmap may trade virtual memory pressure for fewer
   window lookups and faster direct writes.
+- Reader mmap strategy is another separate axis. The current Go reader pays
+  `ReadAt()` syscall and buffer-allocation costs through hot read paths, unlike
+  systemd/Rust windowed mmap readers.
 - The next step is not public API design; it is a measurement spike. Only
   options with material measured benefit and clear contracts should graduate to
   public API.
@@ -238,6 +256,8 @@ Evidence reviewed:
   maps for header and hash tables.
 - `go/journal/reader.go`: Go reader uses `ReadAt()` into buffers for headers,
   entry arrays, entries, and data payloads.
+- `go/journal/reader.go`: hot reader paths allocate buffers before `ReadAt()`
+  for entry arrays, entry headers/items, data headers, and data payloads.
 - `rust/src/crates/journal-core/src/file/writer.rs`: Rust currently updates
   header/tail metadata on every append and calls post-change on every append.
 
@@ -275,6 +295,9 @@ Risk and blast radius:
 - Memory-behavior risk if a whole-file mmap option is generalized without clear
   workload guidance; it may be appropriate for maximum-throughput Netdata paths
   but inappropriate for constrained systems or many simultaneously open files.
+- Reader-safety risk if Go mmap reading is implemented without systemd-like
+  bounds discipline. The reader must preserve corrupt-file rejection, mixed
+  directory behavior, and active-writer snapshot/live contracts.
 
 Sensitive data handling plan:
 
@@ -292,8 +315,9 @@ Implementation plan:
    live wakeup notification, visibility publication cadence, reader snapshot
    mode, coalescing, sync/durability cadence, lock enforcement,
    validation/readback, metadata publication batching, hash-depth maintenance,
-   raw/prepared field APIs, reader-wakeup strategy, and writer mmap strategy
-   (`windowed` versus `whole allocated file`).
+   raw/prepared field APIs, reader-wakeup strategy, writer mmap strategy
+   (`windowed` versus `whole allocated file`), and reader mmap strategy
+   (`ReadAt` buffers versus mmap-backed access).
 3. Add benchmark-only/internal experimental switches for the smallest set of
    candidate modes needed to measure benefit. These switches must not be
    documented as public API.
@@ -321,6 +345,13 @@ Validation plan:
   mmap, starting with compact/no-compression/no-FSS fixed-128 MiB writer
   workloads. The result must include throughput and memory behavior, not only
   rows/sec.
+- Reader strategy profile comparing current Go `ReadAt()` buffers against an
+  experimental mmap-backed reader. The comparison must cover both single-file
+  and directory readers, because directory ordering and multi-file scans are
+  required SDK behavior.
+- Reader mmap safety validation must include truncated/corrupt fixture cases
+  and active-writer snapshot/live cases before any mmap reader mode is accepted
+  as production-grade.
 - Live matrix proving immediate/coalesced modes wake stock readers according to
   their contract.
 - Disabled/manual mode tests proving closed-file verify/read after sync/close.
@@ -428,6 +459,19 @@ Open decisions:
      buys meaningful throughput. The SOW must measure the benefit before
      deciding whether this becomes public API.
 
+8. Reader mmap strategy candidate.
+   - Option A: keep Go reader `ReadAt()` buffers and optimize allocations
+     locally.
+   - Option B: benchmark an experimental Go mmap-backed reader against the
+     current `ReadAt()` reader, then decide if mmap should become the default
+     or an optional high-throughput mode.
+   - Option C: immediately rewrite the Go reader to mmap-backed access.
+   - Recommendation: Option B. The current Go reader is very likely slower than
+     an mmap-backed design for scan-heavy workloads, but the project needs
+     measured throughput, allocation, syscall, and safety evidence before
+     changing a reader contract used by conformance, journalctl, and Netdata
+     integrations.
+
 ## Implications And Decisions
 
 Pending user decisions. No implementation may begin until the user selects the
@@ -493,6 +537,8 @@ Failure handling:
 - Recorded writer mmap strategy as a concrete benchmark candidate after
   verifying that Rust/systemd use windowed mappings while the Go writer maps
   the whole allocated file on Unix.
+- Recorded Go reader mmap strategy as a concrete benchmark candidate after the
+  user challenged the asymmetry between Go's mmap writer and non-mmap reader.
 
 ## Validation
 
@@ -560,6 +606,8 @@ Lessons:
 - Whole allocated-file mmap is a legitimate memory-for-throughput hypothesis,
   not a default policy. It needs direct benchmark and memory-behavior evidence
   before it can become an SDK option.
+- The Go reader's `ReadAt()` implementation is a likely performance issue for
+  scan-heavy workloads, but mmap reader work must prove both speed and safety.
 
 Follow-up mapping:
 
