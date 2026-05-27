@@ -52,6 +52,10 @@ Facts:
   reader session does not observe lines appended after that session began.
 - The user agrees with the poll/snapshot direction but requires measuring the
   benefits before committing to any public API or production behavior.
+- systemd v260.1 and the Rust SDK use windowed journal file mappings for normal
+  reader/writer object access, while the Go writer currently mmaps the whole
+  allocated journal file on Unix and remaps it when the file allocation grows.
+- The Go reader currently uses `ReadAt()` into allocated buffers instead of mmap.
 - The current performance evidence shows the Rust/systemd ratio dropped from
   about `1.56x` in the prior fixed-128 MiB run to about `1.50x` after adding
   Rust post-change notification. The post-change syscall has real overhead, but
@@ -91,6 +95,10 @@ Unknowns:
   indexes/cursors or remain a consumer-owned responsibility.
 - Which additional compatibility/performance knobs are worth exposing as public
   API and which should remain internal benchmark-only controls.
+- Whether whole allocated-file mmap is faster enough than windowed mmap in hot
+  writer paths to justify an explicit memory-for-throughput option. It will
+  increase virtual memory pressure; the open question is whether it produces a
+  material throughput win in Netdata-shaped workloads.
 - What "material benefit" threshold should justify a public option. Until the
   user decides otherwise, the recommended default is to require a measurable
   benefit large enough to matter to Netdata hot paths, not a micro-optimization
@@ -111,6 +119,9 @@ Unknowns:
   before committing to a public API, documented default, or production contract.
 - Record rows/sec, bytes/sec, CPU time, syscall counts, allocation behavior, and
   reader-visible semantics for each candidate mode.
+- For writer mmap strategy candidates, also record mapped virtual size,
+  resident memory behavior where practical, remap frequency, page faults, and
+  throughput on fixed-128 MiB compact/no-compression/no-FSS writer workloads.
 - Reject or keep internal any candidate whose measured benefit is too small for
   the added API/semantic complexity.
 - Implement the selected policy consistently in Rust, Go, Node.js, and Python
@@ -171,6 +182,9 @@ Risks:
   process exit.
 - Batching visibility publication can improve throughput but newly opened poll
   readers may see data only up to the last publication boundary.
+- Whole allocated-file mmap can reduce hot-path bounds/window lookup work and
+  may improve maximum writer throughput, but it increases virtual address space
+  usage and remaps the whole allocation on growth.
 - Overexposing unsafe knobs can make SDK compatibility claims impossible to
   reason about.
 - Prematurely committing public API options before measuring their benefit can
@@ -193,6 +207,10 @@ Problem / root-cause model:
 - Similar opportunities probably exist wherever compatibility work is only
   needed for external follow tooling, while an SDK-controlled or poll/snapshot
   consumer can use a narrower contract.
+- Writer mmap strategy is a separate performance axis from live notification:
+  systemd/Rust-style windowed mmap minimizes mapped virtual memory, while Go's
+  current whole allocated-file mmap may trade virtual memory pressure for fewer
+  window lookups and faster direct writes.
 - The next step is not public API design; it is a measurement spike. Only
   options with material measured benefit and clear contracts should graduate to
   public API.
@@ -211,6 +229,15 @@ Evidence reviewed:
   stock libsystemd readers are part of the live compatibility evidence.
 - `go/journal/writer.go`: Go currently publishes object metadata, entry
   metadata, and post-change notification on every append.
+- `go/journal/mmap_unix.go`: Go writer maps offset `0` for the full allocated
+  arena size and remaps after growth.
+- `rust/src/crates/journal-core/src/file/mmap.rs`: Rust uses a `WindowManager`
+  with bounded windows and maps requested offset ranges.
+- `rust/src/crates/journal-core/src/file/file.rs`: Rust high-level journal file
+  code documents the windowed mapping strategy and keeps separate persistent
+  maps for header and hash tables.
+- `go/journal/reader.go`: Go reader uses `ReadAt()` into buffers for headers,
+  entry arrays, entries, and data payloads.
 - `rust/src/crates/journal-core/src/file/writer.rs`: Rust currently updates
   header/tail metadata on every append and calls post-change on every append.
 
@@ -245,6 +272,9 @@ Risk and blast radius:
   instead of safe only for narrower consumer contracts.
 - API debt risk if options are added because they seem plausible but deliver
   negligible throughput or latency improvements in controlled benchmarks.
+- Memory-behavior risk if a whole-file mmap option is generalized without clear
+  workload guidance; it may be appropriate for maximum-throughput Netdata paths
+  but inappropriate for constrained systems or many simultaneously open files.
 
 Sensitive data handling plan:
 
@@ -262,7 +292,8 @@ Implementation plan:
    live wakeup notification, visibility publication cadence, reader snapshot
    mode, coalescing, sync/durability cadence, lock enforcement,
    validation/readback, metadata publication batching, hash-depth maintenance,
-   raw/prepared field APIs, and reader-wakeup strategy.
+   raw/prepared field APIs, reader-wakeup strategy, and writer mmap strategy
+   (`windowed` versus `whole allocated file`).
 3. Add benchmark-only/internal experimental switches for the smallest set of
    candidate modes needed to measure benefit. These switches must not be
    documented as public API.
@@ -286,6 +317,10 @@ Validation plan:
 - Syscall and allocation profiles for each candidate mode, including at least
   wakeup notification disabled, snapshot reader mode, and any batched
   visibility publication prototype that is simple enough to measure safely.
+- Writer mmap strategy profile comparing windowed mmap and whole allocated-file
+  mmap, starting with compact/no-compression/no-FSS fixed-128 MiB writer
+  workloads. The result must include throughput and memory behavior, not only
+  rows/sec.
 - Live matrix proving immediate/coalesced modes wake stock readers according to
   their contract.
 - Disabled/manual mode tests proving closed-file verify/read after sync/close.
@@ -382,6 +417,17 @@ Open decisions:
      stable public API until benchmark evidence and semantic tradeoffs are
      recorded.
 
+7. Writer mmap strategy candidate.
+   - Option A: keep systemd/Rust-style windowed mmap only.
+   - Option B: benchmark both windowed mmap and whole allocated-file mmap, then
+     expose an option only if whole-file mmap proves materially faster for
+     maximum-throughput writer workloads.
+   - Option C: make whole allocated-file mmap the default writer strategy.
+   - Recommendation: Option B. Whole-file mmap clearly costs more virtual memory
+     pressure, but Netdata paths such as NetFlow may accept that cost if it
+     buys meaningful throughput. The SOW must measure the benefit before
+     deciding whether this becomes public API.
+
 ## Implications And Decisions
 
 Pending user decisions. No implementation may begin until the user selects the
@@ -444,6 +490,9 @@ Failure handling:
   happen after the session starts.
 - Recorded the user's requirement that candidate controls must be measured
   before committing to them as public API or production behavior.
+- Recorded writer mmap strategy as a concrete benchmark candidate after
+  verifying that Rust/systemd use windowed mappings while the Go writer maps
+  the whole allocated file on Unix.
 
 ## Validation
 
@@ -508,6 +557,9 @@ Lessons:
   API names, benchmark output, and tests.
 - Plausible optimization knobs are not automatically worth public API. They
   must first prove a material benefit in controlled benchmarks.
+- Whole allocated-file mmap is a legitimate memory-for-throughput hypothesis,
+  not a default policy. It needs direct benchmark and memory-behavior evidence
+  before it can become an SDK option.
 
 Follow-up mapping:
 

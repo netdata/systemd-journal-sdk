@@ -14,7 +14,8 @@ Last updated: 2026-05-27
   performance gates are acceptable for Netdata hot paths.
 - SOW-0036 - Live Publication Modes And Fast Consumers: open. Analyze and
   decide configurable live publication modes and related compatibility/
-  performance opportunities before implementation.
+  performance opportunities before implementation, including measured
+  windowed-versus-whole-file mmap writer strategy tradeoffs.
 
 ## Recently Completed
 
