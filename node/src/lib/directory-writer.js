@@ -4,7 +4,7 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readSync, readdi
 import { join } from 'node:path';
 import { randomUUID, stringToUUID, uuidToString } from './binary.js';
 import { Writer } from './writer.js';
-import { HEADER_SIZE, STATE_ONLINE, parseFileHeader, parseObjectHeader } from './header.js';
+import { HEADER_SIZE, STATE_ONLINE, parseFileHeader, parseObjectHeader, normalizeJournalMaxFileSize } from './header.js';
 import { REMAPPING_MARKER, remapFields } from './field-remap.js';
 
 const DEFAULT_MAX_ENTRIES = 0;
@@ -13,6 +13,7 @@ const DEFAULT_MAX_DURATION_USEC = 0n;
 const DEFAULT_MAX_FILES = 0;
 const DEFAULT_RETENTION_BYTES = 0;
 const DEFAULT_RETENTION_AGE_USEC = 0n;
+const DERIVED_ROTATION_FRACTION = 20;
 
 export const LOG_OPEN_LAZY = 'lazy';
 export const LOG_OPEN_EAGER = 'eager';
@@ -38,6 +39,9 @@ export class Log {
     this.lifecycle = normalizeLifecycle(optionValue(options, 'lifecycle', 'lifecycleObserver', 'lifecycle_observer'));
     this.lifecycleErrorHandler = optionValue(options, 'lifecycleErrorHandler', 'lifecycle_error_handler');
     this.artifactSizer = normalizeArtifactSizer(optionValue(options, 'artifactSizer', 'artifact_sizer'));
+    this.compression = options.compression ?? 'none';
+    this.compressionThresholdBytes = options.compressionThresholdBytes;
+    this.compact = options.compact === true || options.format === 'compact';
 
     const rotationPolicy = optionValue(options, 'rotationPolicy', 'rotation_policy');
     const retentionPolicy = optionValue(options, 'retentionPolicy', 'retention_policy');
@@ -68,7 +72,15 @@ export class Log {
       : optionUsec(
         options.maxRetentionAgeUsec ?? options.max_retention_age_usec,
         DEFAULT_RETENTION_AGE_USEC,
-      );
+    );
+    if (this.maxBytes === DEFAULT_MAX_BYTES && this.maxRetentionBytes > 0) {
+      this.maxBytes = normalizeJournalMaxFileSize(Math.max(1, Math.floor(this.maxRetentionBytes / DERIVED_ROTATION_FRACTION)), this.compact);
+    }
+    if (this.maxDurationUsec === DEFAULT_MAX_DURATION_USEC && this.maxRetentionAgeUsec > 0n) {
+      const fraction = BigInt(DERIVED_ROTATION_FRACTION);
+      this.maxDurationUsec = (this.maxRetentionAgeUsec + fraction - 1n) / fraction;
+      if (this.maxDurationUsec <= 0n) this.maxDurationUsec = 1n;
+    }
 
     this.activePath = null;
     this.writer = null;
@@ -90,9 +102,6 @@ export class Log {
     this.seqnumId = uuidOption(seqnumIdOption, 'seqnum id') || randomUUID();
     this.bootId = uuidOption(bootIdOption, 'boot id') || readBootId() || randomUUID();
     this.machineId = uuidOption(machineIdOption, 'machine id') || readMachineId() || randomUUID();
-    this.compression = options.compression ?? 'none';
-    this.compressionThresholdBytes = options.compressionThresholdBytes;
-    this.compact = options.compact === true || options.format === 'compact';
     this.directory = join(this.rootDirectory, uuidToString(this.machineId));
 
     this._ensureDirectory();
@@ -223,6 +232,7 @@ export class Log {
     }
 
     const opts = { headSeqnum: this.nextSeqnum, compression: this.compression, compact: this.compact };
+    if (this.maxBytes > 0) opts.maxFileSize = this.maxBytes;
     if (this.compressionThresholdBytes !== undefined) {
       opts.compressionThresholdBytes = this.compressionThresholdBytes;
     }

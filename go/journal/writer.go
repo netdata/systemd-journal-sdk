@@ -37,7 +37,10 @@ type Options struct {
 	// HeadSeqnum is the sequence number assigned to the first entry in a newly
 	// created file. It defaults to 1. Directory writers use it to continue
 	// sequence numbers across rotated files.
-	HeadSeqnum            uint64
+	HeadSeqnum uint64
+	// MaxFileSize controls systemd-compatible hash-table sizing for newly
+	// created files. A zero value uses the SDK default 128 MiB sizing.
+	MaxFileSize           uint64
 	DataHashTableBuckets  int
 	FieldHashTableBuckets int
 	// Compression specifies the compression algorithm for DATA objects.
@@ -316,7 +319,9 @@ func (w *Writer) Append(fields []Field, opts EntryOptions) error {
 	if err := w.writeObject(entryOffset, buf); err != nil {
 		return err
 	}
-	w.objectAdded(entryOffset, entrySize)
+	if err := w.objectAdded(entryOffset, entrySize); err != nil {
+		return err
+	}
 	// Publish object reachability only after the complete entry object exists.
 	// Entry count is committed last below so live stock readers see full rows.
 	if err := w.publishObjectMetadata(); err != nil {
@@ -439,8 +444,12 @@ func normalizeOptions(opts Options) Options {
 	if opts.HeadSeqnum == 0 {
 		opts.HeadSeqnum = 1
 	}
+	maxFileSize := normalizeJournalMaxFileSize(opts.MaxFileSize, opts.Compact)
+	if opts.MaxFileSize == 0 {
+		opts.MaxFileSize = maxFileSize
+	}
 	if opts.DataHashTableBuckets == 0 {
-		opts.DataHashTableBuckets = defaultDataHashBuckets
+		opts.DataHashTableBuckets = dataHashBucketsForMaxFileSize(maxFileSize)
 	}
 	if opts.FieldHashTableBuckets == 0 {
 		opts.FieldHashTableBuckets = defaultFieldHashBuckets
@@ -542,8 +551,13 @@ func (w *Writer) initialize(opts Options) error {
 	// Append area starts after the data hash table object
 	appendOffset := align8(dataObjectOffset + objectHeaderSize + dataSize)
 
-	// Preallocate file to 8 MiB (systemd FILE_SIZE_INCREASE)
-	fileSize := uint64(8 * 1024 * 1024)
+	fileSize, ok := roundUpToFileSizeIncrease(appendOffset)
+	if !ok {
+		return fmt.Errorf("journal initial arena too large")
+	}
+	if opts.Compact && fileSize > journalCompactSizeMax {
+		return fmt.Errorf("compact journal cannot exceed 4 GiB")
+	}
 
 	incFlags := uint32(incompatibleKeyedHash)
 	if opts.Compression == CompressionZSTD {
@@ -709,10 +723,30 @@ func (w *Writer) hash(payload []byte) uint64 {
 	return sipHash24(w.header.fileID, payload)
 }
 
-func (w *Writer) objectAdded(offset, size uint64) {
+func (w *Writer) objectAdded(offset, size uint64) error {
+	if offset > ^uint64(0)-size {
+		return fmt.Errorf("%w: object exceeds file bounds", errInvalidJournal)
+	}
 	w.header.tailObjectOffset = offset
 	w.appendOffset = align8(offset + size)
 	w.header.nObjects++
+	return w.ensureArenaSize(w.appendOffset)
+}
+
+func (w *Writer) ensureArenaSize(requiredSize uint64) error {
+	oldSize := headerSize + w.header.arenaSize
+	if requiredSize <= oldSize {
+		return nil
+	}
+	newSize, ok := roundUpToFileSizeIncrease(requiredSize)
+	if !ok {
+		return fmt.Errorf("%w: object exceeds file bounds", errInvalidJournal)
+	}
+	if w.compact && newSize > journalCompactSizeMax {
+		return fmt.Errorf("%w: compact journal cannot exceed 4 GiB", errInvalidJournal)
+	}
+	w.header.arenaSize = newSize - headerSize
+	return w.file.Truncate(int64(newSize))
 }
 
 func (w *Writer) entryAdded(entryOffset, realtime, monotonic uint64, bootID UUID) {
@@ -777,7 +811,9 @@ func (w *Writer) addData(payload []byte) (uint64, uint64, error) {
 	if err := w.writeObject(offset, buf); err != nil {
 		return 0, 0, err
 	}
-	w.objectAdded(offset, size)
+	if err := w.objectAdded(offset, size); err != nil {
+		return 0, 0, err
+	}
 
 	if err := w.appendHashItem(w.header.dataHashTableOffset, w.header.dataHashTableSize, objectTypeData, hash, offset); err != nil {
 		return 0, 0, err
@@ -828,7 +864,9 @@ func (w *Writer) addField(payload []byte) (uint64, error) {
 	if err := w.writeObject(offset, buf); err != nil {
 		return 0, err
 	}
-	w.objectAdded(offset, size)
+	if err := w.objectAdded(offset, size); err != nil {
+		return 0, err
+	}
 
 	if err := w.appendHashItem(w.header.fieldHashTableOffset, w.header.fieldHashTableSize, objectTypeField, hash, offset); err != nil {
 		return 0, err
@@ -1118,7 +1156,9 @@ func (w *Writer) allocateOffsetArray(capacity uint64) (uint64, error) {
 	if err := w.writeObject(offset, buf); err != nil {
 		return 0, err
 	}
-	w.objectAdded(offset, size)
+	if err := w.objectAdded(offset, size); err != nil {
+		return 0, err
+	}
 	w.header.nEntryArrays++
 	if err := w.publishObjectMetadata(); err != nil {
 		return 0, err

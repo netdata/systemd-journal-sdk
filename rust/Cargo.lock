@@ -3026,6 +3026,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "writer_core_bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "journal-core",
+ "journal-registry",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "yansi"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

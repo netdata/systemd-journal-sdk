@@ -21,6 +21,7 @@ import {
   COMPACT_DATA_OBJECT_HEADER_SIZE, COMPACT_DATA_TAIL_OFFSET_OFFSET,
   COMPACT_DATA_TAIL_ENTRIES_OFFSET, JOURNAL_COMPACT_SIZE_MAX,
   DEFAULT_DATA_HASH_BUCKETS, DEFAULT_FIELD_HASH_BUCKETS,
+  normalizeJournalMaxFileSize, dataHashBucketsForMaxFileSize,
   FILE_SIZE_INCREASE,
   INITIAL_ENTRY_ARRAY_CAP, INITIAL_DATA_ENTRY_ARRAY_CAP,
 } from './header.js';
@@ -131,8 +132,9 @@ export class Writer {
   }
 
   _initialize(opts) {
-    const dataBuckets = opts.dataHashTableBuckets || DEFAULT_DATA_HASH_BUCKETS;
-    const fieldBuckets = opts.fieldHashTableBuckets || DEFAULT_FIELD_HASH_BUCKETS;
+    const maxFileSize = normalizeJournalMaxFileSize(opts.maxFileSize ?? opts.max_file_size, this.compact);
+    const dataBuckets = opts.dataHashTableBuckets || opts.data_hash_table_buckets || dataHashBucketsForMaxFileSize(maxFileSize);
+    const fieldBuckets = opts.fieldHashTableBuckets || opts.field_hash_table_buckets || DEFAULT_FIELD_HASH_BUCKETS;
 
     const dataSize = BigInt(dataBuckets * HASH_ITEM_SIZE);
     const fieldSize = BigInt(fieldBuckets * HASH_ITEM_SIZE);
@@ -142,7 +144,14 @@ export class Writer {
     const dataObjOffset = align8(fieldOffset + fieldSize);
     const dataOffset = dataObjOffset + BigInt(OBJECT_HEADER_SIZE);
     const appendOffset = align8(dataOffset + dataSize);
-    const fileSize = BigInt(FILE_SIZE_INCREASE);
+    const increment = BigInt(FILE_SIZE_INCREASE);
+    const fileSize = ((appendOffset + increment - 1n) / increment) * increment;
+    if (this.compact && fileSize > JOURNAL_COMPACT_SIZE_MAX) {
+      throw new Error('compact journal cannot exceed 4 GiB');
+    }
+    if (fileSize > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error('journal file offset exceeds JavaScript safe integer range');
+    }
 
     const fileId = opts.fileId || randomUUID();
     const machineId = opts.machineId || randomUUID();
@@ -555,6 +564,22 @@ export class Writer {
     this.header.tail_object_offset = offset;
     this.appendOffset = align8(offset + size);
     this.header.n_objects++;
+    this._ensureArenaSize(this.appendOffset);
+  }
+
+  _ensureArenaSize(requiredSize) {
+    const currentSize = BigInt(HEADER_SIZE) + this.header.arena_size;
+    if (requiredSize <= currentSize) return;
+    const increment = BigInt(FILE_SIZE_INCREASE);
+    const newSize = ((requiredSize + increment - 1n) / increment) * increment;
+    if (this.compact && newSize > JOURNAL_COMPACT_SIZE_MAX) {
+      throw new Error('compact journal cannot exceed 4 GiB');
+    }
+    if (newSize > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error('journal file offset exceeds JavaScript safe integer range');
+    }
+    this.header.arena_size = newSize - BigInt(HEADER_SIZE);
+    ftruncateSync(this.fd, Number(newSize));
   }
 
   _entryAdded(entryOffset, realtime, monotonic, bootId) {

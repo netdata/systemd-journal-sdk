@@ -7,6 +7,7 @@ import time
 from .binary import random_uuid, uuid_to_string
 from .field_remap import REMAPPING_MARKER, remap_fields
 from .header import HEADER_SIZE, OBJECT_HEADER_SIZE, STATE_ONLINE, parse_file_header, parse_object_header
+from .header import normalize_journal_max_file_size
 from .writer import Writer
 
 
@@ -16,6 +17,7 @@ DEFAULT_MAX_DURATION_USEC = 0
 DEFAULT_MAX_FILES = 0
 DEFAULT_RETENTION_BYTES = 0
 DEFAULT_RETENTION_AGE_USEC = 0
+DERIVED_ROTATION_FRACTION = 20
 
 LOG_OPEN_LAZY = 'lazy'
 LOG_OPEN_EAGER = 'eager'
@@ -47,6 +49,9 @@ class Log:
         self._lifecycle = _normalize_lifecycle(_option(config, 'lifecycle', 'lifecycle_observer', 'lifecycleObserver'))
         self._lifecycle_error_handler = _option(config, 'lifecycle_error_handler', 'lifecycleErrorHandler')
         self._artifact_sizer = _normalize_artifact_sizer(_option(config, 'artifact_sizer', 'artifactSizer'))
+        self._compression = config.get('compression', 'none')
+        self._compression_threshold_bytes = config.get('compression_threshold_bytes')
+        self._compact = config.get('compact') is True or config.get('format') == 'compact'
 
         rotation_policy = _option(config, 'rotation_policy', 'rotationPolicy')
         retention_policy = _option(config, 'retention_policy', 'retentionPolicy')
@@ -99,6 +104,16 @@ class Log:
                     config.get('maxRetentionAgeUsec', DEFAULT_RETENTION_AGE_USEC),
                 )
             )
+        if self._max_bytes == DEFAULT_MAX_BYTES and self._max_retention_bytes > 0:
+            self._max_bytes = normalize_journal_max_file_size(
+                max(1, self._max_retention_bytes // DERIVED_ROTATION_FRACTION),
+                self._compact,
+            )
+        if self._max_duration_usec == DEFAULT_MAX_DURATION_USEC and self._max_retention_age_usec > 0:
+            self._max_duration_usec = max(
+                1,
+                (self._max_retention_age_usec + DERIVED_ROTATION_FRACTION - 1) // DERIVED_ROTATION_FRACTION,
+            )
 
         head_seqnum_option = _option(config, 'head_seqnum', 'headSeqnum')
         seqnum_id_option = _option(config, 'seqnum_id', 'seqnumId')
@@ -113,9 +128,6 @@ class Log:
         self._seqnum_id = _uuid_from_config(seqnum_id_option) or random_uuid()
         self._boot_id = _uuid_from_config(boot_id_option) or _read_boot_id() or random_uuid()
         self._machine_id = _uuid_from_config(machine_id_option) or _read_machine_id() or random_uuid()
-        self._compression = config.get('compression', 'none')
-        self._compression_threshold_bytes = config.get('compression_threshold_bytes')
-        self._compact = config.get('compact') is True or config.get('format') == 'compact'
         self._journal_dir = os.path.join(self._root_path, uuid_to_string(self._machine_id))
         self._active_file = self._systemd_active_path() if self._strict_systemd_naming else None
         self._active_writer = None
@@ -169,6 +181,8 @@ class Log:
                 'compression': self._compression,
                 'compact': self._compact,
             }
+            if self._max_bytes > 0:
+                opts['max_file_size'] = self._max_bytes
             if self._compression_threshold_bytes is not None:
                 opts['compression_threshold_bytes'] = self._compression_threshold_bytes
             if self._seqnum_id:

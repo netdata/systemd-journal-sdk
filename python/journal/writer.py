@@ -26,6 +26,7 @@ from .header import (
     COMPACT_DATA_OBJECT_HEADER_SIZE, COMPACT_DATA_TAIL_OFFSET_OFFSET,
     COMPACT_DATA_TAIL_ENTRIES_OFFSET, JOURNAL_COMPACT_SIZE_MAX,
     DEFAULT_DATA_HASH_BUCKETS, DEFAULT_FIELD_HASH_BUCKETS, FILE_SIZE_INCREASE,
+    normalize_journal_max_file_size, data_hash_buckets_for_max_file_size,
     INITIAL_ENTRY_ARRAY_CAP, INITIAL_DATA_ENTRY_ARRAY_CAP,
 )
 from .hash import sip_hash_24, jenkins_hash_64
@@ -155,8 +156,18 @@ class Writer:
             raise
 
     def _initialize(self, opts):
-        data_buckets = opts.get('data_hash_table_buckets', DEFAULT_DATA_HASH_BUCKETS)
-        field_buckets = opts.get('field_hash_table_buckets', DEFAULT_FIELD_HASH_BUCKETS)
+        max_file_size = normalize_journal_max_file_size(
+            opts.get('max_file_size', opts.get('maxFileSize')),
+            self._compact,
+        )
+        data_buckets = opts.get(
+            'data_hash_table_buckets',
+            opts.get('dataHashTableBuckets', data_hash_buckets_for_max_file_size(max_file_size)),
+        )
+        field_buckets = opts.get(
+            'field_hash_table_buckets',
+            opts.get('fieldHashTableBuckets', DEFAULT_FIELD_HASH_BUCKETS),
+        )
 
         data_size = data_buckets * HASH_ITEM_SIZE
         field_size = field_buckets * HASH_ITEM_SIZE
@@ -166,7 +177,9 @@ class Writer:
         data_obj_offset = align8(field_offset + field_size)
         data_offset = data_obj_offset + OBJECT_HEADER_SIZE
         append_offset = align8(data_offset + data_size)
-        file_size = FILE_SIZE_INCREASE
+        file_size = ((append_offset + FILE_SIZE_INCREASE - 1) // FILE_SIZE_INCREASE) * FILE_SIZE_INCREASE
+        if self._compact and file_size > JOURNAL_COMPACT_SIZE_MAX:
+            raise ValueError('compact journal cannot exceed 4 GiB')
 
         file_id = _uuid_option(opts.get('file_id'), random_uuid())
         machine_id = _uuid_option(opts.get('machine_id'), random_uuid())
@@ -533,6 +546,17 @@ class Writer:
         self._header['tail_object_offset'] = offset
         self._append_offset = align8(offset + size)
         self._header['n_objects'] += 1
+        self._ensure_arena_size(self._append_offset)
+
+    def _ensure_arena_size(self, required_size):
+        current_size = HEADER_SIZE + self._header['arena_size']
+        if required_size <= current_size:
+            return
+        new_size = ((required_size + FILE_SIZE_INCREASE - 1) // FILE_SIZE_INCREASE) * FILE_SIZE_INCREASE
+        if self._compact and new_size > JOURNAL_COMPACT_SIZE_MAX:
+            raise ValueError('compact journal cannot exceed 4 GiB')
+        self._header['arena_size'] = new_size - HEADER_SIZE
+        os.ftruncate(self._fd, new_size)
 
     def _entry_added(self, entry_offset, realtime, monotonic, boot_id):
         self._header['n_entries'] += 1

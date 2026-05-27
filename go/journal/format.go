@@ -23,16 +23,19 @@ const (
 	compactOffsetArrayItemSize   = 4
 	objectAlignment              = 8
 
-	// systemd v260.1 defaults for 64 MiB max_size:
-	// data: MAX(64*1024*1024*4/768/3, 2047) = 116508
+	// systemd v260.1 defaults for 128 MiB max_size:
+	// data: MAX(128*1024*1024*4/768/3, 2047) = 233016
 	// field: DEFAULT_FIELD_HASH_TABLE_SIZE = 1023
-	defaultDataHashBuckets   = 116508
-	defaultFieldHashBuckets  = 1023
-	initialEntryArrayCap     = 4096
-	initialDataEntryArrayCap = 64
+	defaultDataHashBuckets    = 233016
+	defaultFieldHashBuckets   = 1023
+	defaultMinDataHashBuckets = 2047
+	initialEntryArrayCap      = 4096
+	initialDataEntryArrayCap  = 64
 
-	// systemd default max file size for hash table sizing
-	defaultMaxFileSize = 64 * 1024 * 1024 // 64 MiB
+	// systemd's usual automatic per-file cap for hash table sizing.
+	defaultMaxFileSize = 128 * 1024 * 1024 // 128 MiB
+	journalFileSizeMin = 512 * 1024
+	pageSize           = 4096
 	// systemd FILE_SIZE_INCREASE for preallocation rounding
 	fileSizeIncrease = 8 * 1024 * 1024 // 8 MiB
 	// systemd's DATA object decompression limit is 768 MiB.
@@ -40,6 +43,32 @@ const (
 	// Compact journals store object offsets in 32-bit fields.
 	journalCompactSizeMax = uint64(1<<32 - 1)
 )
+
+func normalizeJournalMaxFileSize(size uint64, compact bool) uint64 {
+	if size == 0 {
+		size = defaultMaxFileSize
+	} else {
+		size = alignTo(size, pageSize)
+	}
+	if compact && size > journalCompactSizeMax {
+		size = journalCompactSizeMax
+	}
+	if size < journalFileSizeMin {
+		size = journalFileSizeMin
+	}
+	return size
+}
+
+func dataHashBucketsForMaxFileSize(maxFileSize uint64) int {
+	buckets := maxFileSize / 576 // systemd: max_size * 4 / 768 / 3
+	if buckets < defaultMinDataHashBuckets {
+		buckets = defaultMinDataHashBuckets
+	}
+	if buckets > uint64(int(^uint(0)>>1)) {
+		return int(^uint(0) >> 1)
+	}
+	return int(buckets)
+}
 
 const (
 	objectTypeData           = 1
@@ -195,6 +224,20 @@ func (h journalHeader) isCompact() bool {
 
 func align8(v uint64) uint64 {
 	return (v + objectAlignment - 1) &^ (objectAlignment - 1)
+}
+
+func alignTo(v, alignment uint64) uint64 {
+	if alignment == 0 {
+		return v
+	}
+	return (v + alignment - 1) &^ (alignment - 1)
+}
+
+func roundUpToFileSizeIncrease(v uint64) (uint64, bool) {
+	if v > ^uint64(0)-(fileSizeIncrease-1) {
+		return 0, false
+	}
+	return (v + fileSizeIncrease - 1) &^ (fileSizeIncrease - 1), true
 }
 
 func putHeader(dst []byte, h journalHeader) {

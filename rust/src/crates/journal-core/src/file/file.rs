@@ -21,11 +21,38 @@ use crate::file::value_guard::ValueGuard;
 
 // Size to pad objects to (8 bytes)
 const OBJECT_ALIGNMENT: u64 = 8;
+const FILE_SIZE_INCREASE: u64 = 8 * 1024 * 1024;
+const JOURNAL_COMPACT_SIZE_MAX: u64 = u32::MAX as u64;
+const DEFAULT_MAX_FILE_SIZE: u64 = 128 * 1024 * 1024;
+const JOURNAL_FILE_SIZE_MIN: u64 = 512 * 1024;
+const PAGE_SIZE: u64 = 4096;
+const DEFAULT_DATA_HASH_TABLE_SIZE: usize = 2047;
+const DEFAULT_FIELD_HASH_TABLE_SIZE: usize = 1023;
 pub const DEFAULT_COMPRESS_THRESHOLD: usize = 512;
 pub const MIN_COMPRESS_THRESHOLD: usize = 8;
 
 pub fn normalize_compress_threshold(threshold: usize) -> usize {
     threshold.max(MIN_COMPRESS_THRESHOLD)
+}
+
+fn align_to(value: u64, alignment: u64) -> u64 {
+    value.saturating_add(alignment.saturating_sub(1)) & !(alignment.saturating_sub(1))
+}
+
+fn normalize_journal_max_file_size(max_file_size: Option<u64>, compact: bool) -> u64 {
+    let mut size = match max_file_size {
+        Some(0) | None => DEFAULT_MAX_FILE_SIZE,
+        Some(size) => align_to(size, PAGE_SIZE),
+    };
+    if compact && size > JOURNAL_COMPACT_SIZE_MAX {
+        size = JOURNAL_COMPACT_SIZE_MAX;
+    }
+    size.max(JOURNAL_FILE_SIZE_MIN)
+}
+
+fn data_hash_buckets_for_max_file_size(max_file_size: u64) -> usize {
+    let buckets = (max_file_size / 576).max(DEFAULT_DATA_HASH_TABLE_SIZE as u64);
+    buckets.min(usize::MAX as u64) as usize
 }
 
 /// Validates that an offset is properly aligned for journal objects.
@@ -35,6 +62,13 @@ fn validate_offset_alignment(offset: NonZeroU64) -> Result<()> {
         return Err(JournalError::MisalignedOffset(offset.get()));
     }
     Ok(())
+}
+
+fn round_up_to_file_size_increment(value: u64) -> Result<u64> {
+    value
+        .checked_add(FILE_SIZE_INCREASE - 1)
+        .map(|v| v & !(FILE_SIZE_INCREASE - 1))
+        .ok_or(JournalError::ObjectExceedsFileBounds)
 }
 
 pub trait BucketVisitor<'a> {
@@ -151,8 +185,8 @@ impl JournalFileOptions {
             seqnum_id,
             file_id,
             window_size: 64 * 1024,
-            data_hash_table_buckets: 116_508,
-            field_hash_table_buckets: 1_023,
+            data_hash_table_buckets: 233_016,
+            field_hash_table_buckets: DEFAULT_FIELD_HASH_TABLE_SIZE,
             enable_keyed_hash: true,
             compression: Compression::None,
             compress_threshold: DEFAULT_COMPRESS_THRESHOLD,
@@ -167,40 +201,11 @@ impl JournalFileOptions {
         previous_utilization: Option<BucketUtilization>,
         max_file_size: Option<u64>,
     ) -> Self {
-        let (data_buckets, field_buckets) = if let Some(utilization) = previous_utilization {
-            let data_utilization = utilization.data_utilization();
-            let field_utilization = utilization.field_utilization();
+        let _ = previous_utilization;
+        let max_file_size = normalize_journal_max_file_size(max_file_size, self.compact);
 
-            let data_buckets = if data_utilization > 0.75 {
-                (utilization.data_total * 2).next_power_of_two()
-            } else if data_utilization < 0.25 && utilization.data_total > 4096 {
-                (utilization.data_total / 2).next_power_of_two()
-            } else {
-                utilization.data_total
-            };
-
-            let field_buckets = if field_utilization > 0.75 {
-                (utilization.field_total * 2).next_power_of_two()
-            } else if field_utilization < 0.25 && utilization.field_total > 512 {
-                (utilization.field_total / 2).next_power_of_two()
-            } else {
-                utilization.field_total
-            };
-
-            (data_buckets, field_buckets)
-        } else {
-            // Initial sizing based on rotation policy max file size
-            let max_file_size = max_file_size.unwrap_or(8 * 1024 * 1024);
-
-            // 16 MiB -> 4096 data buckets
-            let data_buckets = (max_file_size / 4096).max(1024).next_power_of_two() as usize;
-            let field_buckets = 128; // Assume ~8:1 data:field ratio
-
-            (data_buckets, field_buckets)
-        };
-
-        self.data_hash_table_buckets = data_buckets;
-        self.field_hash_table_buckets = field_buckets;
+        self.data_hash_table_buckets = data_hash_buckets_for_max_file_size(max_file_size);
+        self.field_hash_table_buckets = DEFAULT_FIELD_HASH_TABLE_SIZE;
         self
     }
 
@@ -933,9 +938,9 @@ impl<M: MemoryMapMut> JournalFile<M> {
             uuid::Uuid::from_bytes(header.seqnum_id),
         )
         .with_window_size(8 * 1024 * 1024)
-        .with_optimized_buckets(bucket_utilization, max_file_size)
         .with_keyed_hash(header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash))
-        .with_compact(header.has_incompatible_flag(HeaderIncompatibleFlags::Compact));
+        .with_compact(header.has_incompatible_flag(HeaderIncompatibleFlags::Compact))
+        .with_optimized_buckets(bucket_utilization, max_file_size);
 
         let options = if header.has_incompatible_flag(HeaderIncompatibleFlags::CompressedZstd) {
             options.with_compression(Compression::Zstd)
@@ -1001,13 +1006,18 @@ impl<M: MemoryMapMut> JournalFile<M> {
         header.field_hash_table_offset = NonZeroU64::new(field_hash_table_offset);
         header.field_hash_table_size = NonZeroU64::new(field_hash_table_size as u64);
 
-        // Set other header fields
-        // tail_object_offset points to the last object written (data hash table)
-        header.tail_object_offset =
-            NonZeroU64::new(data_hash_table_offset - std::mem::size_of::<ObjectHeader>() as u64);
+        // Set other header fields. tail_object_offset points to the last
+        // object written (data hash table).
+        let data_hash_table_object_offset =
+            data_hash_table_offset - std::mem::size_of::<ObjectHeader>() as u64;
+        let append_offset = data_hash_table_offset + data_hash_table_size as u64;
+        header.tail_object_offset = NonZeroU64::new(data_hash_table_object_offset);
         header.header_size = std::mem::size_of::<JournalHeader>() as u64;
         header.n_objects = 2;
-        let file_size = 8 * 1024 * 1024;
+        let file_size = round_up_to_file_size_increment(append_offset)?;
+        if options.compact && file_size > JOURNAL_COMPACT_SIZE_MAX {
+            return Err(JournalError::ObjectExceedsFileBounds);
+        }
         fd.set_len(file_size)?;
         header.arena_size = file_size - header.header_size;
 

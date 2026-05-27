@@ -21,6 +21,10 @@ use tracing::{debug, error, info, instrument, span, warn};
 
 const STACK_ENTRY_REF_LIMIT: usize = 128;
 const SOURCE_REALTIME_PREFIX: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP=";
+const DERIVED_ROTATION_FRACTION: u64 = 20;
+const JOURNAL_FILE_SIZE_MIN: u64 = 512 * 1024;
+const PAGE_SIZE: u64 = 4096;
+const JOURNAL_COMPACT_SIZE_MAX: u64 = u32::MAX as u64;
 
 fn create_chain(
     path: &Path,
@@ -124,6 +128,42 @@ fn validate_config(config: &Config) -> Result<()> {
     Ok(())
 }
 
+fn align_to(value: u64, alignment: u64) -> u64 {
+    value.saturating_add(alignment.saturating_sub(1)) & !(alignment.saturating_sub(1))
+}
+
+fn normalize_derived_max_file_size(size: u64, compact: bool) -> u64 {
+    let mut size = align_to(size.max(1), PAGE_SIZE);
+    if compact && size > JOURNAL_COMPACT_SIZE_MAX {
+        size = JOURNAL_COMPACT_SIZE_MAX;
+    }
+    size.max(JOURNAL_FILE_SIZE_MIN)
+}
+
+fn derive_rotation_policy(config: &Config) -> RotationPolicy {
+    let mut rotation = config.rotation_policy;
+    if rotation.size_of_journal_file.is_none()
+        && let Some(retention_size) = config.retention_policy.size_of_journal_files
+    {
+        rotation.size_of_journal_file = Some(normalize_derived_max_file_size(
+            retention_size / DERIVED_ROTATION_FRACTION,
+            config.compact,
+        ));
+    }
+    if rotation.duration_of_journal_file.is_none()
+        && let Some(retention_duration) = config.retention_policy.duration_of_journal_files
+    {
+        let fraction = u128::from(DERIVED_ROTATION_FRACTION);
+        let micros = retention_duration
+            .as_micros()
+            .saturating_add(fraction.saturating_sub(1))
+            / fraction;
+        let micros = micros.max(1).min(u128::from(u64::MAX)) as u64;
+        rotation.duration_of_journal_file = Some(std::time::Duration::from_micros(micros));
+    }
+    rotation
+}
+
 /// Tracks rotation state for size and count limits.
 struct RotationState {
     size: Option<(u64, u64)>,      // (max, current)
@@ -224,11 +264,11 @@ impl ActiveFile {
 
         let options = JournalFileOptions::new(chain.machine_id, boot_id, seqnum_id)
             .with_window_size(8 * 1024 * 1024)
+            .with_compact(compact)
             .with_optimized_buckets(None, max_file_size)
             .with_keyed_hash(true)
             .with_compression(compression)
-            .with_compress_threshold(compression_threshold)
-            .with_compact(compact);
+            .with_compress_threshold(compression_threshold);
 
         let mut journal_file = JournalFile::create(&repository_file, options)?;
         let writer = JournalWriter::new_with_compression(
@@ -497,11 +537,12 @@ impl Log {
 
     fn new_inner(
         path: &Path,
-        config: Config,
+        mut config: Config,
         lifecycle_observer: Option<Arc<dyn LogLifecycleObserver>>,
         artifact_sizer: Option<Arc<dyn LogArtifactSizer>>,
     ) -> Result<Self> {
         validate_config(&config)?;
+        config.rotation_policy = derive_rotation_policy(&config);
         let machine_id = resolve_machine_id(&config)?;
         let mut chain = create_chain(path, config.origin.source.clone(), machine_id)?;
 

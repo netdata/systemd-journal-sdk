@@ -419,6 +419,67 @@ func TestCompactWriterReaderAndJournalctl(t *testing.T) {
 	}
 }
 
+func TestCompactWriterGrowsArenaPastInitialAllocation(t *testing.T) {
+	if _, err := exec.LookPath("journalctl"); err != nil {
+		t.Skip("journalctl is not installed")
+	}
+
+	path := filepath.Join(t.TempDir(), "compact-grown.journal")
+	opts := testOptions()
+	opts.Compact = true
+	w, err := Create(path, opts)
+	if err != nil {
+		t.Fatalf("Create(compact) error = %v", err)
+	}
+	for i := 0; i < 10; i++ {
+		payload := bytes.Repeat([]byte{byte(i)}, 1024*1024)
+		if err := w.Append([]Field{
+			{Name: "BLOB", Value: payload},
+		}, EntryOptions{RealtimeUsec: 1_700_000_050_000_000 + uint64(i), MonotonicUsec: uint64(i + 1)}); err != nil {
+			t.Fatalf("Append(%d) error = %v", i, err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	snapshot := readJournalSnapshot(t, path)
+	if snapshot.header.arenaSize+headerSize <= fileSizeIncrease {
+		t.Fatalf("arena size did not grow: arena=%d header=%d", snapshot.header.arenaSize, headerSize)
+	}
+	verifyJournalctl(t, path)
+}
+
+func TestWriterInitialArenaCoversLargeHashTables(t *testing.T) {
+	if _, err := exec.LookPath("journalctl"); err != nil {
+		t.Skip("journalctl is not installed")
+	}
+
+	path := filepath.Join(t.TempDir(), "large-hash-table.journal")
+	opts := testOptions()
+	opts.Compact = true
+	opts.DataHashTableBuckets = 600_000
+	opts.FieldHashTableBuckets = defaultFieldHashBuckets
+	w, err := Create(path, opts)
+	if err != nil {
+		t.Fatalf("Create(large hash tables) error = %v", err)
+	}
+	if err := w.Append([]Field{
+		StringField("MESSAGE", "large hash table"),
+	}, EntryOptions{RealtimeUsec: 1_700_000_060_000_000, MonotonicUsec: 1}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	snapshot := readJournalSnapshot(t, path)
+	if snapshot.header.arenaSize+headerSize <= fileSizeIncrease {
+		t.Fatalf("initial arena did not cover hash tables: arena=%d header=%d", snapshot.header.arenaSize, headerSize)
+	}
+	verifyJournalctl(t, path)
+}
+
 func TestOpenAppendDefaultMonotonicPreservesJournalctlVerify(t *testing.T) {
 	if _, err := exec.LookPath("journalctl"); err != nil {
 		t.Skip("journalctl is not installed")

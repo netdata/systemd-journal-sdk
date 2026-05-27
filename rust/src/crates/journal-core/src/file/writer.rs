@@ -23,10 +23,18 @@ use zerocopy::{FromBytes, IntoBytes};
 
 const OBJECT_ALIGNMENT: u64 = 8;
 const JOURNAL_COMPACT_SIZE_MAX: u64 = u32::MAX as u64;
+const FILE_SIZE_INCREASE: u64 = 8 * 1024 * 1024;
 const FIELD_CACHE_MAX_ENTRIES: usize = 1024;
 const FIELD_CACHE_MAX_PAYLOAD_LEN: usize = 128;
 const RECENT_DATA_CACHE_SLOTS: usize = 4096;
 const RECENT_DATA_CACHE_MAX_PAYLOAD_LEN: usize = 256;
+
+fn round_up_to_file_size_increment(value: u64) -> Result<u64> {
+    value
+        .checked_add(FILE_SIZE_INCREASE - 1)
+        .map(|v| v & !(FILE_SIZE_INCREASE - 1))
+        .ok_or(JournalError::ObjectExceedsFileBounds)
+}
 
 #[derive(Debug, Clone, Copy)]
 struct EntryItem {
@@ -327,7 +335,7 @@ impl JournalWriter {
             tag_guard.header.tag.copy_from_slice(digest);
         }
 
-        self.object_added(journal_file, tag_offset, total_size as u64);
+        self.object_added(journal_file, tag_offset, total_size as u64)?;
 
         Ok(())
     }
@@ -503,7 +511,7 @@ impl JournalWriter {
             entry_guard.header.object_header.aligned_size()
         };
         self.hmac_put_object(journal_file, entry_offset.get(), ObjectType::Entry)?;
-        self.object_added(journal_file, entry_offset, entry_size);
+        self.object_added(journal_file, entry_offset, entry_size)?;
 
         self.append_to_entry_array(journal_file, entry_offset)?;
         for entry_item_index in 0..self.entry_items.len() {
@@ -522,15 +530,29 @@ impl JournalWriter {
 
     fn object_added(
         &mut self,
-        journal_file: &JournalFile<MmapMut>,
+        journal_file: &mut JournalFile<MmapMut>,
         object_offset: NonZeroU64,
         object_size: u64,
-    ) {
+    ) -> Result<()> {
         self.tail_object_offset = object_offset;
-        self.append_offset = object_offset.saturating_add(object_size);
+        self.append_offset = object_offset
+            .checked_add(object_size)
+            .ok_or(JournalError::ObjectExceedsFileBounds)?;
         self.num_written_objects += 1;
 
-        let _ = journal_file;
+        let header = journal_file.journal_header_mut();
+        let old_size = header
+            .header_size
+            .checked_add(header.arena_size)
+            .ok_or(JournalError::ObjectExceedsFileBounds)?;
+        if self.append_offset.get() > old_size {
+            let new_size = round_up_to_file_size_increment(self.append_offset.get())?;
+            header.arena_size = new_size
+                .checked_sub(header.header_size)
+                .ok_or(JournalError::ObjectExceedsFileBounds)?;
+        }
+
+        Ok(())
     }
 
     fn entry_added(
@@ -608,7 +630,7 @@ impl JournalWriter {
                 };
                 self.hmac_put_object(journal_file, data_offset.get(), ObjectType::Data)?;
 
-                self.object_added(journal_file, data_offset, data_size);
+                self.object_added(journal_file, data_offset, data_size)?;
 
                 journal_file.data_hash_table_set_tail_offset(hash, data_offset)?;
                 Self::update_data_hash_chain_depth(journal_file, hash)?;
@@ -717,7 +739,7 @@ impl JournalWriter {
                     field_guard.header.object_header.aligned_size()
                 };
                 self.hmac_put_object(journal_file, field_offset.get(), ObjectType::Field)?;
-                self.object_added(journal_file, field_offset, field_size);
+                self.object_added(journal_file, field_offset, field_size)?;
 
                 // Update hash table
                 journal_file.field_hash_table_set_tail_offset(hash, field_offset)?;
@@ -758,7 +780,7 @@ impl JournalWriter {
             array_guard.header.object_header.aligned_size()
         };
         self.hmac_put_object(journal_file, array_offset.get(), ObjectType::EntryArray)?;
-        self.object_added(journal_file, array_offset, array_size);
+        self.object_added(journal_file, array_offset, array_size)?;
         journal_file.journal_header_mut().n_entry_arrays += 1;
 
         Ok(array_offset)
@@ -1928,6 +1950,114 @@ mod tests {
         assert!(
             output.status.success(),
             "journalctl verify failed for compact+sealed file: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn compact_writer_grows_arena_past_initial_allocation() {
+        if !journalctl_available() {
+            eprintln!("journalctl not available; skipping compact arena growth stock verify");
+            return;
+        }
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3)).with_compact(true),
+        )
+        .expect("create compact journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+
+        for index in 0..10u8 {
+            let mut payload = b"BLOB=".to_vec();
+            payload.resize(payload.len() + 1024 * 1024, index);
+            writer
+                .add_entry(
+                    &mut journal_file,
+                    &[payload.as_slice()],
+                    2_000_000 + u64::from(index),
+                    100 + u64::from(index),
+                )
+                .expect("write large compact entry");
+        }
+        journal_file.sync().expect("sync compact journal");
+
+        let header = journal_file.journal_header_ref();
+        assert!(
+            header.header_size + header.arena_size > super::FILE_SIZE_INCREASE,
+            "arena size did not grow past the initial allocation"
+        );
+
+        let output = Command::new("journalctl")
+            .arg("--verify")
+            .arg("--file")
+            .arg(&path)
+            .output()
+            .expect("run journalctl verify");
+        assert!(
+            output.status.success(),
+            "journalctl verify failed for grown compact file: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn writer_initial_arena_covers_large_hash_tables() {
+        if !journalctl_available() {
+            eprintln!("journalctl not available; skipping large hash table stock verify");
+            return;
+        }
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_compact(true)
+                .with_data_hash_table_buckets(600_000)
+                .with_field_hash_table_buckets(1_023),
+        )
+        .expect("create journal with large hash tables");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[b"MESSAGE=large hash table".as_slice()],
+                1_700_000_060_000_000,
+                1,
+            )
+            .expect("write entry after large hash table initialization");
+        journal_file.sync().expect("sync journal");
+
+        let header = journal_file.journal_header_ref();
+        assert!(
+            header.header_size + header.arena_size > super::FILE_SIZE_INCREASE,
+            "initial arena did not cover large hash tables"
+        );
+
+        let output = Command::new("journalctl")
+            .arg("--verify")
+            .arg("--file")
+            .arg(&path)
+            .output()
+            .expect("run journalctl verify");
+        assert!(
+            output.status.success(),
+            "journalctl verify failed for large-hash-table file: stdout={} stderr={}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );

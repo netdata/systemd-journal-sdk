@@ -25,6 +25,8 @@
 static const char *arg_dataset = NULL;
 static const char *arg_output = NULL;
 static bool arg_rejection_mode = false;
+static bool arg_compact = false;
+static uint64_t arg_max_size = 64ULL * 1024ULL * 1024ULL;
 static enum {
         FINAL_STATE_ONLINE,
         FINAL_STATE_OFFLINE,
@@ -53,14 +55,28 @@ static int parse_args(int argc, char **argv) {
                                 return -EINVAL;
                         }
                 }
+                else if (streq(argv[i], "--compact"))
+                        arg_compact = true;
+                else if (streq(argv[i], "--max-size-bytes") && i + 1 < argc) {
+                        char *end = NULL;
+                        unsigned long long v;
+
+                        errno = 0;
+                        v = strtoull(argv[++i], &end, 10);
+                        if (errno != 0 || !end || *end != '\0' || v == 0) {
+                                fprintf(stderr, "invalid max size: %s\n", argv[i]);
+                                return -EINVAL;
+                        }
+                        arg_max_size = (uint64_t) v;
+                }
                 else {
-                        fprintf(stderr, "usage: %s --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived]\n", argv[0]);
+                        fprintf(stderr, "usage: %s --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived] [--compact] [--max-size-bytes BYTES]\n", argv[0]);
                         return -EINVAL;
                 }
         }
 
         if (!arg_dataset || !arg_output) {
-                fprintf(stderr, "usage: %s --dataset PATH --output PATH [--rejection-mode]\n", argv[0]);
+                fprintf(stderr, "usage: %s --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived] [--compact] [--max-size-bytes BYTES]\n", argv[0]);
                 return -EINVAL;
         }
 
@@ -110,7 +126,7 @@ static int open_journal(const char *path, uint64_t max_size, MMapCache **ret_cac
         assert(ret_file);
 
         (void) setenv("SYSTEMD_JOURNAL_COMPRESS", "0", 1);
-        (void) setenv("SYSTEMD_JOURNAL_COMPACT", "0", 1);
+        (void) setenv("SYSTEMD_JOURNAL_COMPACT", arg_compact ? "1" : "0", 1);
         (void) setenv("SYSTEMD_JOURNAL_KEYED_HASH", "1", 1);
 
         cache = mmap_cache_new();
@@ -414,7 +430,7 @@ static int run_accepted(void) {
         sd_id128_t seqnum_id = SD_ID128_NULL;
         int r;
 
-        r = open_journal(arg_output, 64ULL * 1024ULL * 1024ULL, &cache, &file);
+        r = open_journal(arg_output, arg_max_size, &cache, &file);
         if (r < 0) {
                 fprintf(stderr, "open journal failed: %s\n", strerror(-r));
                 return r;

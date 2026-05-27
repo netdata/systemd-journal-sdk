@@ -71,11 +71,30 @@ export const COMPACT_DATA_TAIL_ENTRIES_OFFSET = BigInt(DATA_OBJECT_HEADER_SIZE +
 export const JOURNAL_COMPACT_SIZE_MAX = 0xffffffffn;
 
 // Default sizes for writer
-export const DEFAULT_DATA_HASH_BUCKETS = 116508;
+export const DEFAULT_DATA_HASH_BUCKETS = 233016;
 export const DEFAULT_FIELD_HASH_BUCKETS = 1023;
+export const DEFAULT_MIN_DATA_HASH_BUCKETS = 2047;
+export const DEFAULT_MAX_FILE_SIZE = 128 * 1024 * 1024;
+export const JOURNAL_FILE_SIZE_MIN = 512 * 1024;
+export const PAGE_SIZE = 4096;
 export const FILE_SIZE_INCREASE = 8 * 1024 * 1024;
 export const INITIAL_ENTRY_ARRAY_CAP = 4096;
 export const INITIAL_DATA_ENTRY_ARRAY_CAP = 64;
+
+export function normalizeJournalMaxFileSize(size, compact = false) {
+  let normalized = Number(size || DEFAULT_MAX_FILE_SIZE);
+  if (normalized !== DEFAULT_MAX_FILE_SIZE || size) {
+    normalized = Math.ceil(Math.max(1, normalized) / PAGE_SIZE) * PAGE_SIZE;
+  }
+  if (compact && normalized > Number(JOURNAL_COMPACT_SIZE_MAX)) {
+    normalized = Number(JOURNAL_COMPACT_SIZE_MAX);
+  }
+  return Math.max(normalized, JOURNAL_FILE_SIZE_MIN);
+}
+
+export function dataHashBucketsForMaxFileSize(maxFileSize) {
+  return Math.max(Math.floor(Number(maxFileSize) / 576), DEFAULT_MIN_DATA_HASH_BUCKETS);
+}
 
 // Parse an object header from a buffer at the given offset.
 export function parseObjectHeader(buf, offset = 0) {

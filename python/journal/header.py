@@ -52,11 +52,29 @@ COMPACT_DATA_TAIL_OFFSET_OFFSET = DATA_OBJECT_HEADER_SIZE
 COMPACT_DATA_TAIL_ENTRIES_OFFSET = DATA_OBJECT_HEADER_SIZE + 4
 JOURNAL_COMPACT_SIZE_MAX = (1 << 32) - 1
 
-DEFAULT_DATA_HASH_BUCKETS = 116508
+DEFAULT_DATA_HASH_BUCKETS = 233016
 DEFAULT_FIELD_HASH_BUCKETS = 1023
+DEFAULT_MIN_DATA_HASH_BUCKETS = 2047
+DEFAULT_MAX_FILE_SIZE = 128 * 1024 * 1024
+JOURNAL_FILE_SIZE_MIN = 512 * 1024
+PAGE_SIZE = 4096
 FILE_SIZE_INCREASE = 8 * 1024 * 1024
 INITIAL_ENTRY_ARRAY_CAP = 4096
 INITIAL_DATA_ENTRY_ARRAY_CAP = 64
+
+
+def normalize_journal_max_file_size(size=None, compact=False):
+    if size is None or int(size) == 0:
+        normalized = DEFAULT_MAX_FILE_SIZE
+    else:
+        normalized = ((max(1, int(size)) + PAGE_SIZE - 1) // PAGE_SIZE) * PAGE_SIZE
+    if compact and normalized > JOURNAL_COMPACT_SIZE_MAX:
+        normalized = JOURNAL_COMPACT_SIZE_MAX
+    return max(normalized, JOURNAL_FILE_SIZE_MIN)
+
+
+def data_hash_buckets_for_max_file_size(max_file_size):
+    return max(int(max_file_size) // 576, DEFAULT_MIN_DATA_HASH_BUCKETS)
 
 
 def parse_object_header(buf, offset=0):

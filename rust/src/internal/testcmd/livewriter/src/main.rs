@@ -1,9 +1,9 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use clap::Parser;
 use journal::{Config, EntryTimestamps, Log, Origin, RetentionPolicy, RotationPolicy, Source};
 use journal_core::file::{
-    Compression, JournalFile, JournalFileOptions, JournalWriter, MmapMut,
-    DEFAULT_COMPRESS_THRESHOLD,
+    Compression, DEFAULT_COMPRESS_THRESHOLD, JournalFile, JournalFileOptions, JournalWriter,
+    MmapMut,
 };
 use journal_core::repository::File as RepositoryFile;
 use journal_core::seal::SealOptions;

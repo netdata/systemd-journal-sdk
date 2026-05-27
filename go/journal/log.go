@@ -14,6 +14,8 @@ import (
 
 var syncJournalDirectory = syncParentDir
 
+const derivedRotationFraction = 20
+
 // RotationPolicy controls when a directory writer starts a new journal file.
 type RotationPolicy struct {
 	MaxFileSize *uint64
@@ -257,7 +259,12 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 
 	explicitHeadSeqnum := config.Options.HeadSeqnum != 0
 	explicitSeqnumID := !isZeroUUID(config.Options.SeqnumID)
-	opts, err := normalizeLogOptions(config.Options, config.IdentityMode)
+	rotation := deriveRotationPolicy(config.RotationPolicy, config.RetentionPolicy, config.Options.Compact)
+	options := config.Options
+	if options.MaxFileSize == 0 && rotation.MaxFileSize != nil {
+		options.MaxFileSize = *rotation.MaxFileSize
+	}
+	opts, err := normalizeLogOptions(options, config.IdentityMode)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +279,7 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 		machineDir:    machineDir,
 		source:        source,
 		options:       opts,
-		rotation:      config.RotationPolicy,
+		rotation:      rotation,
 		retention:     config.RetentionPolicy,
 		strict:        config.StrictSystemdNaming,
 		lifecycle:     config.Lifecycle,
@@ -1040,6 +1047,28 @@ func validateRotationPolicy(policy RotationPolicy) error {
 		return fmt.Errorf("%w: rotation max duration must be greater than 0", errInvalidJournal)
 	}
 	return nil
+}
+
+func deriveRotationPolicy(rotation RotationPolicy, retention RetentionPolicy, compact bool) RotationPolicy {
+	resolved := rotation
+	if resolved.MaxFileSize == nil && retention.MaxBytes != nil {
+		size := *retention.MaxBytes / derivedRotationFraction
+		if size == 0 {
+			size = 1
+		}
+		size = normalizeJournalMaxFileSize(size, compact)
+		resolved.MaxFileSize = &size
+	}
+	if resolved.MaxDuration == nil && retention.MaxAge != nil {
+		micros := durationUsec(*retention.MaxAge)
+		derivedMicros := (micros + derivedRotationFraction - 1) / derivedRotationFraction
+		if derivedMicros == 0 {
+			derivedMicros = 1
+		}
+		duration := time.Duration(derivedMicros) * time.Microsecond
+		resolved.MaxDuration = &duration
+	}
+	return resolved
 }
 
 func validateRetentionPolicy(policy RetentionPolicy) error {

@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -48,14 +49,18 @@ from journal.header import (  # noqa: E402
     COMPATIBLE_SEALED,
     COMPACT_DATA_OBJECT_HEADER_SIZE,
     DATA_OBJECT_HEADER_SIZE,
+    FILE_SIZE_INCREASE,
     HEADER_SIZE,
     INCOMPATIBLE_COMPACT,
     INCOMPATIBLE_KEYED_HASH,
+    JOURNAL_COMPACT_SIZE_MAX,
     OBJECT_COMPRESSED_LZ4,
     OBJECT_COMPRESSED_XZ,
     OBJECT_COMPRESSED_ZSTD,
     OBJECT_TYPE_DATA,
     STATE_ARCHIVED,
+    DEFAULT_FIELD_HASH_BUCKETS,
+    data_hash_buckets_for_max_file_size,
     parse_file_header,
     parse_object_header,
     write_object_header,
@@ -429,6 +434,43 @@ def test_compact_writer_reader_and_stock_verify():
         run(['journalctl', '--verify', '--file', path, '--no-pager'])
 
 
+def test_compact_writer_grows_arena_past_initial_allocation():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'compact-grown.journal')
+        writer = Writer.create(path, {'compact': True})
+        for i in range(10):
+            writer.append(
+                [{'name': 'BLOB', 'value': bytes([i]) * (1024 * 1024)}],
+                {'realtime_usec': 1_700_000_050_000_000 + i, 'monotonic_usec': i + 1},
+            )
+        writer.close()
+
+        with open(path, 'rb') as f:
+            header = parse_file_header(f.read(HEADER_SIZE))
+        assert header['arena_size'] + HEADER_SIZE > FILE_SIZE_INCREASE
+        run(['journalctl', '--verify', '--file', path, '--no-pager'])
+
+
+def test_writer_initial_arena_covers_large_hash_tables():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'large-hash-table.journal')
+        writer = Writer.create(path, {
+            'compact': True,
+            'data_hash_table_buckets': 600_000,
+            'field_hash_table_buckets': 1023,
+        })
+        writer.append(
+            [{'name': 'MESSAGE', 'value': b'large hash table'}],
+            {'realtime_usec': 1_700_000_060_000_000, 'monotonic_usec': 1},
+        )
+        writer.close()
+
+        with open(path, 'rb') as f:
+            header = parse_file_header(f.read(HEADER_SIZE))
+        assert header['arena_size'] + HEADER_SIZE > FILE_SIZE_INCREASE
+        run(['journalctl', '--verify', '--file', path, '--no-pager'])
+
+
 def test_writer_exclusive_lock():
     with tempfile.TemporaryDirectory() as td:
         path = os.path.join(td, 'test.journal')
@@ -659,6 +701,135 @@ def test_directory_writer_duration_rotation():
             counts.append(reader.header()['n_entries'])
             reader.close()
         assert counts == [2, 1]
+
+
+def test_directory_writer_derives_rotation_defaults_from_retention():
+    with tempfile.TemporaryDirectory() as td:
+        max_size = 128 * 1024 * 1024
+        log = Log(td, {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'retention_policy': {'max_bytes': max_size * 20, 'max_age_usec': 20_000_001},
+        })
+        assert log._max_bytes == max_size
+        assert log._max_duration_usec == 1_000_001
+        log.append(
+            [{'name': 'MESSAGE', 'value': 'derived rotation defaults'}],
+            {'realtime_usec': 1_700_002_091_000_000, 'monotonic_usec': 1},
+        )
+        journal_dir = log.journal_directory()
+        log.close()
+        names = sorted(name for name in os.listdir(journal_dir) if name.endswith('.journal'))
+        assert len(names) == 1
+        reader = FileReader.open(os.path.join(journal_dir, names[0]))
+        try:
+            header = reader.header()
+            assert header['data_hash_table_size'] // 16 == data_hash_buckets_for_max_file_size(max_size)
+            assert header['field_hash_table_size'] // 16 == DEFAULT_FIELD_HASH_BUCKETS
+        finally:
+            reader.close()
+
+
+def test_directory_writer_derived_size_rotates_from_retention():
+    with tempfile.TemporaryDirectory() as td:
+        max_size = 16 * 1024 * 1024
+        log = Log(td, {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'retention_policy': {'max_bytes': max_size * 20},
+        })
+        assert log._max_bytes == max_size
+        for i in range(12):
+            log.append([
+                {'name': 'MESSAGE', 'value': f'derived-size-rotation-{i}'},
+                {'name': 'PAYLOAD', 'value': f'{i:05d}-' + ('x' * (2 * 1024 * 1024))},
+                {'name': 'TEST_ID', 'value': 'derived-size-rotation'},
+            ], {
+                'realtime_usec': 1_700_002_092_000_000 + i,
+                'monotonic_usec': i + 1,
+            })
+        journal_dir = log.journal_directory()
+        log.close()
+
+        names = sorted(name for name in os.listdir(journal_dir) if name.endswith('.journal'))
+        assert len(names) >= 2
+        entries = 0
+        for name in names:
+            reader = FileReader.open(os.path.join(journal_dir, name))
+            try:
+                header = reader.header()
+                assert header['data_hash_table_size'] // 16 == data_hash_buckets_for_max_file_size(max_size)
+                entries += header['n_entries']
+            finally:
+                reader.close()
+        assert entries == 12
+
+
+def test_directory_writer_derived_duration_rotates_from_retention():
+    with tempfile.TemporaryDirectory() as td:
+        log = Log(td, {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'retention_policy': {'max_age_usec': 20_000_001},
+        })
+        base = int(time.time() * 1_000_000)
+        for i, realtime in enumerate((base, base + 1_000_000, base + 1_000_001)):
+            log.append([
+                {'name': 'MESSAGE', 'value': f'derived-duration-rotation-{i}'},
+                {'name': 'TEST_ID', 'value': 'derived-duration-rotation'},
+            ], {
+                'realtime_usec': realtime,
+                'monotonic_usec': i + 1,
+            })
+        journal_dir = log.journal_directory()
+        log.close()
+
+        names = sorted(name for name in os.listdir(journal_dir) if name.endswith('.journal'))
+        assert len(names) == 2
+        counts = []
+        for name in names:
+            reader = FileReader.open(os.path.join(journal_dir, name))
+            try:
+                counts.append(reader.header()['n_entries'])
+            finally:
+                reader.close()
+        assert counts == [2, 1]
+
+
+def test_directory_writer_derived_rotation_small_retention_clamps_to_minimum():
+    with tempfile.TemporaryDirectory() as td:
+        log = Log(td, {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'retention_policy': {'max_bytes': 1_000_000},
+        })
+        assert log._max_bytes == 512 * 1024
+        log.close()
+
+
+def test_directory_writer_derived_rotation_compact_max_file_size_clamp():
+    with tempfile.TemporaryDirectory() as td:
+        log = Log(td, {
+            'source': 'system',
+            'compact': True,
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'retention_policy': {'max_bytes': (JOURNAL_COMPACT_SIZE_MAX + 4096) * 20},
+        })
+        assert log._max_bytes == JOURNAL_COMPACT_SIZE_MAX
+        log.close()
+
+
+def test_directory_writer_explicit_rotation_overrides_retention_defaults():
+    with tempfile.TemporaryDirectory() as td:
+        log = Log(td, {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'rotation_policy': {'max_bytes': 64 * 1024 * 1024, 'max_duration_usec': 2_000_000},
+            'retention_policy': {'max_bytes': 128 * 1024 * 1024 * 20, 'max_age_usec': 20_000_000},
+        })
+        assert log._max_bytes == 64 * 1024 * 1024
+        assert log._max_duration_usec == 2_000_000
+        log.close()
 
 
 def test_directory_writer_default_system_chain_naming():
@@ -1999,6 +2170,8 @@ def main():
     test_writer_raw_explicit_zero_monotonic_pass_through()
     test_compression_threshold_systemd_policy()
     test_compact_writer_reader_and_stock_verify()
+    test_compact_writer_grows_arena_past_initial_allocation()
+    test_writer_initial_arena_covers_large_hash_tables()
     test_writer_exclusive_lock()
     test_zstd_data_object_parse()
     test_xz_and_lz4_data_object_parse()
@@ -2007,6 +2180,12 @@ def main():
     test_directory_writer_remaps_incompatible_field_names()
     test_directory_writer_reemits_remapping_after_rotation()
     test_directory_writer_duration_rotation()
+    test_directory_writer_derives_rotation_defaults_from_retention()
+    test_directory_writer_derived_size_rotates_from_retention()
+    test_directory_writer_derived_duration_rotates_from_retention()
+    test_directory_writer_derived_rotation_small_retention_clamps_to_minimum()
+    test_directory_writer_derived_rotation_compact_max_file_size_clamp()
+    test_directory_writer_explicit_rotation_overrides_retention_defaults()
     test_directory_writer_default_system_chain_naming()
     test_directory_writer_open_identity_lifecycle_source_timestamp()
     test_directory_writer_different_boot_does_not_seed_monotonic_clamp_from_previous_tail()

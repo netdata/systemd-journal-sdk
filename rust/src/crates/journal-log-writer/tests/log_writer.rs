@@ -923,6 +923,222 @@ fn test_rotation_by_duration() {
 }
 
 #[test]
+fn test_rotation_defaults_derive_from_retention_policy() {
+    let dir = TempDir::new().unwrap();
+    let max_size = 128 * 1024 * 1024_u64;
+    let retention = RetentionPolicy::default()
+        .with_size_of_journal_files(max_size * 20)
+        .with_duration_of_journal_files(std::time::Duration::from_secs(20));
+    let config = test_config().with_retention_policy(retention);
+
+    let mut log = Log::new(dir.path(), config).unwrap();
+    let base = 1_900_000_100_000_000_u64;
+    for (index, realtime) in [base, base + 999_999, base + 1_000_000]
+        .into_iter()
+        .enumerate()
+    {
+        let message = format!("MESSAGE=derived rotation defaults {index}");
+        log.write_entry_with_timestamps(
+            &[message.as_bytes()],
+            EntryTimestamps::default()
+                .with_entry_realtime_usec(realtime)
+                .with_entry_monotonic_usec(index as u64 + 1),
+        )
+        .unwrap();
+    }
+    log.close().unwrap();
+
+    let files = journal_file_paths(&dir);
+    assert_eq!(files.len(), 2, "derived duration should rotate at 1s");
+    let file = File::from_path(&files[0]).expect("derived rotation path should parse");
+    let journal = JournalFile::<Mmap>::open(&file, 4096).expect("open derived rotation journal");
+    let header = journal.journal_header_ref();
+    assert_eq!(
+        header.data_hash_table_size.expect("data hash table").get() / 16,
+        max_size / 576
+    );
+    assert_eq!(
+        header
+            .field_hash_table_size
+            .expect("field hash table")
+            .get()
+            / 16,
+        1023
+    );
+}
+
+#[test]
+fn test_derived_duration_rounds_up_to_microsecond() {
+    let dir = TempDir::new().unwrap();
+    let base = 1_900_000_110_000_000_u64;
+    let retention = RetentionPolicy::default()
+        .with_duration_of_journal_files(std::time::Duration::from_micros(20_000_001));
+    let config = test_config().with_retention_policy(retention);
+
+    let mut log = Log::new(dir.path(), config).unwrap();
+    for (index, realtime) in [base, base + 1_000_000, base + 1_000_001]
+        .into_iter()
+        .enumerate()
+    {
+        let message = format!("MESSAGE=derived duration ceiling {index}");
+        log.write_entry_with_timestamps(
+            &[message.as_bytes()],
+            EntryTimestamps::default()
+                .with_entry_realtime_usec(realtime)
+                .with_entry_monotonic_usec(index as u64 + 1),
+        )
+        .unwrap();
+    }
+    log.close().unwrap();
+
+    let files = journal_file_paths(&dir);
+    assert_eq!(
+        files.len(),
+        2,
+        "ceil-derived duration should rotate on third entry"
+    );
+    let entry_counts: Vec<u64> = files
+        .iter()
+        .map(|path| {
+            let file = File::from_path(path).expect("derived duration path should parse");
+            let journal =
+                JournalFile::<Mmap>::open(&file, 4096).expect("open derived duration journal");
+            journal.journal_header_ref().n_entries
+        })
+        .collect();
+    assert_eq!(entry_counts, vec![2, 1]);
+}
+
+#[test]
+fn test_derived_size_rotation_from_retention_policy() {
+    let dir = TempDir::new().unwrap();
+    let max_size = 16 * 1024 * 1024_u64;
+    let retention = RetentionPolicy::default().with_size_of_journal_files(max_size * 20);
+    let config = test_config().with_retention_policy(retention);
+
+    let mut log = Log::new(dir.path(), config).unwrap();
+    for index in 0..12 {
+        let message = format!("MESSAGE=derived size rotation {index}");
+        let payload = format!("PAYLOAD={index:05}-{}", "x".repeat(2 * 1024 * 1024));
+        log.write_entry_with_timestamps(
+            &[
+                message.as_bytes(),
+                payload.as_bytes(),
+                b"TEST_ID=derived-size-rotation",
+            ],
+            EntryTimestamps::default()
+                .with_entry_realtime_usec(1_900_000_120_000_000 + index)
+                .with_entry_monotonic_usec(index + 1),
+        )
+        .unwrap();
+    }
+    log.close().unwrap();
+
+    let files = journal_file_paths(&dir);
+    assert!(
+        files.len() >= 2,
+        "derived size should rotate; files={files:?}"
+    );
+    let mut entries = 0;
+    for path in files {
+        let file = File::from_path(&path).expect("derived size path should parse");
+        let journal = JournalFile::<Mmap>::open(&file, 4096).expect("open derived size journal");
+        let header = journal.journal_header_ref();
+        entries += header.n_entries;
+        assert_eq!(
+            header.data_hash_table_size.expect("data hash table").get() / 16,
+            max_size / 576
+        );
+    }
+    assert_eq!(entries, 12);
+}
+
+#[test]
+fn test_derived_rotation_small_retention_clamps_to_minimum() {
+    let dir = TempDir::new().unwrap();
+    let retention = RetentionPolicy::default().with_size_of_journal_files(1_000_000);
+    let config = test_config().with_retention_policy(retention);
+
+    let mut log = Log::new(dir.path(), config).unwrap();
+    log.write_entry(&[b"MESSAGE=small retention clamp"], None)
+        .unwrap();
+    log.close().unwrap();
+
+    let path = journal_file_path(&dir);
+    let file = File::from_path(&path).expect("small retention clamp path should parse");
+    let journal =
+        JournalFile::<Mmap>::open(&file, 4096).expect("open small retention clamp journal");
+    let header = journal.journal_header_ref();
+    assert_eq!(
+        header.data_hash_table_size.expect("data hash table").get() / 16,
+        2047
+    );
+}
+
+#[test]
+fn test_derived_rotation_compact_max_file_size_clamp() {
+    let dir = TempDir::new().unwrap();
+    let compact_max = u32::MAX as u64;
+    let retention = RetentionPolicy::default()
+        .with_size_of_journal_files(compact_max.saturating_add(4096) * 20);
+    let config = test_config()
+        .with_retention_policy(retention)
+        .with_compact(true);
+
+    let mut log = Log::new(dir.path(), config).unwrap();
+    log.write_entry(&[b"MESSAGE=compact derived clamp"], None)
+        .unwrap();
+    log.close().unwrap();
+
+    let path = journal_file_path(&dir);
+    let file = File::from_path(&path).expect("compact derived clamp path should parse");
+    let journal =
+        JournalFile::<Mmap>::open(&file, 4096).expect("open compact derived clamp journal");
+    let header = journal.journal_header_ref();
+    assert_eq!(
+        header.data_hash_table_size.expect("data hash table").get() / 16,
+        compact_max / 576
+    );
+}
+
+#[test]
+fn test_explicit_rotation_overrides_retention_defaults() {
+    let dir = TempDir::new().unwrap();
+    let explicit_size = 64 * 1024 * 1024_u64;
+    let rotation = RotationPolicy::default()
+        .with_size_of_journal_file(explicit_size)
+        .with_duration_of_journal_file(std::time::Duration::from_secs(2));
+    let retention = RetentionPolicy::default()
+        .with_size_of_journal_files(128 * 1024 * 1024_u64 * 20)
+        .with_duration_of_journal_files(std::time::Duration::from_secs(20));
+    let config = test_config()
+        .with_rotation_policy(rotation)
+        .with_retention_policy(retention);
+
+    let mut log = Log::new(dir.path(), config).unwrap();
+    log.write_entry(&[b"MESSAGE=explicit rotation override"], None)
+        .unwrap();
+    log.close().unwrap();
+
+    let path = journal_file_path(&dir);
+    let file = File::from_path(&path).expect("explicit rotation path should parse");
+    let journal = JournalFile::<Mmap>::open(&file, 4096).expect("open explicit rotation journal");
+    let header = journal.journal_header_ref();
+    assert_eq!(
+        header.data_hash_table_size.expect("data hash table").get() / 16,
+        explicit_size / 576
+    );
+    assert_eq!(
+        header
+            .field_hash_table_size
+            .expect("field hash table")
+            .get()
+            / 16,
+        1023
+    );
+}
+
+#[test]
 fn test_compact_rotation_preserves_compact_format() {
     let dir = TempDir::new().unwrap();
 

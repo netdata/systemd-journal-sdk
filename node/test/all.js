@@ -37,7 +37,11 @@ import {
   OBJECT_COMPRESSED_ZSTD,
   OBJECT_TYPE_DATA,
   OBJECT_TYPE_TAG,
+  FILE_SIZE_INCREASE,
+  JOURNAL_COMPACT_SIZE_MAX,
   STATE_ARCHIVED,
+  DEFAULT_FIELD_HASH_BUCKETS,
+  dataHashBucketsForMaxFileSize,
   parseFileHeader,
   parseObjectHeader,
   writeObjectHeader,
@@ -333,6 +337,158 @@ for (const [input, expected] of remappedFieldVectors) {
 {
   const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
   try {
+    const log = new Log(tempDir, {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      retentionPolicy: { maxAgeUsec: 20_000_001n },
+    });
+    const base = BigInt(Date.now()) * 1000n;
+    for (const [i, realtime] of [base, base + 1_000_000n, base + 1_000_001n].entries()) {
+      log.append([
+        { name: 'MESSAGE', value: `derived-duration-rotation-${i}` },
+        { name: 'TEST_ID', value: 'derived-duration-rotation' },
+      ], {
+        realtimeUsec: realtime,
+        monotonicUsec: BigInt(i + 1),
+      });
+    }
+    log.close();
+    const files = journalFiles(log.journalDirectory());
+    assert.equal(files.length, 2);
+    const counts = files.map((path) => {
+      const reader = FileReader.open(path);
+      try {
+        return reader.header.n_entries;
+      } finally {
+        reader.close();
+      }
+    });
+    assert.deepEqual(counts, [2n, 1n]);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const log = new Log(tempDir, {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      retentionPolicy: { maxBytes: 1_000_000 },
+    });
+    assert.equal(log.maxBytes, 512 * 1024);
+    log.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const maxSize = 128 * 1024 * 1024;
+    const log = new Log(tempDir, {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      retentionPolicy: { maxBytes: maxSize * 20, maxAgeUsec: 20_000_001n },
+    });
+    assert.equal(log.maxBytes, maxSize);
+    assert.equal(log.maxDurationUsec, 1_000_001n);
+    log.append([{ name: 'MESSAGE', value: 'derived rotation defaults' }], {
+      realtimeUsec: 1_700_002_091_000_000n,
+      monotonicUsec: 1n,
+    });
+    log.close();
+    const files = journalFiles(log.journalDirectory());
+    assert.equal(files.length, 1);
+    const reader = FileReader.open(files[0]);
+    try {
+      assert.equal(Number(reader.header.data_hash_table_size / 16n), dataHashBucketsForMaxFileSize(maxSize));
+      assert.equal(Number(reader.header.field_hash_table_size / 16n), DEFAULT_FIELD_HASH_BUCKETS);
+    } finally {
+      reader.close();
+    }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const maxSize = 16 * 1024 * 1024;
+    const log = new Log(tempDir, {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      retentionPolicy: { maxBytes: maxSize * 20 },
+    });
+    assert.equal(log.maxBytes, maxSize);
+    for (let i = 0; i < 12; i++) {
+      log.append([
+        { name: 'MESSAGE', value: `derived-size-rotation-${i}` },
+        { name: 'PAYLOAD', value: `${String(i).padStart(5, '0')}-${'x'.repeat(2 * 1024 * 1024)}` },
+        { name: 'TEST_ID', value: 'derived-size-rotation' },
+      ], {
+        realtimeUsec: 1_700_002_092_000_000n + BigInt(i),
+        monotonicUsec: BigInt(i + 1),
+      });
+    }
+    log.close();
+    const files = journalFiles(log.journalDirectory());
+    assert.ok(files.length >= 2);
+    let entries = 0n;
+    for (const path of files) {
+      const reader = FileReader.open(path);
+      try {
+        assert.equal(Number(reader.header.data_hash_table_size / 16n), dataHashBucketsForMaxFileSize(maxSize));
+        entries += reader.header.n_entries;
+      } finally {
+        reader.close();
+      }
+    }
+    assert.equal(entries, 12n);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const log = new Log(tempDir, {
+      source: 'system',
+      compact: true,
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      retentionPolicy: { maxBytes: (Number(JOURNAL_COMPACT_SIZE_MAX) + 4096) * 20 },
+    });
+    assert.equal(log.maxBytes, Number(JOURNAL_COMPACT_SIZE_MAX));
+    log.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const explicitSize = 64 * 1024 * 1024;
+    const log = new Log(tempDir, {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      rotationPolicy: { maxBytes: explicitSize, maxDurationUsec: 2_000_000n },
+      retentionPolicy: { maxBytes: 128 * 1024 * 1024 * 20, maxAgeUsec: 20_000_000n },
+    });
+    assert.equal(log.maxBytes, explicitSize);
+    assert.equal(log.maxDurationUsec, 2_000_000n);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
     const machineId = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
     const bootA = Buffer.from('aa000000000000000000000000000001', 'hex');
     const bootB = Buffer.from('bb000000000000000000000000000002', 'hex');
@@ -477,6 +633,62 @@ for (const [input, expected] of remappedFieldVectors) {
       const output = run('journalctl', ['--file', journalPath, '--output=json', '--no-pager', 'TEST_ID=node-compact']);
       assert.equal(output.trim().split('\n').filter(Boolean).length, 3);
     }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const journalPath = join(tempDir, 'compact-grown.journal');
+    const writer = Writer.create(journalPath, { compact: true });
+    for (let i = 0; i < 10; i++) {
+      writer.append([
+        { name: 'BLOB', value: Buffer.alloc(1024 * 1024, i) },
+      ], {
+        realtimeUsec: 1_700_000_050_000_000n + BigInt(i),
+        monotonicUsec: BigInt(i + 1),
+      });
+    }
+    writer.close();
+
+    const header = parseFileHeader(readFileSync(journalPath).subarray(0, HEADER_SIZE));
+    assert.ok(
+      header.arena_size + BigInt(HEADER_SIZE) > BigInt(FILE_SIZE_INCREASE),
+      'arena size must grow past initial allocation',
+    );
+    const journalctl = spawnSync('journalctl', ['--version'], { encoding: 'utf8' });
+    if (journalctl.status === 0) run('journalctl', ['--verify', '--file', journalPath]);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const journalPath = join(tempDir, 'large-hash-table.journal');
+    const writer = Writer.create(journalPath, {
+      compact: true,
+      dataHashTableBuckets: 600000,
+      fieldHashTableBuckets: 1023,
+    });
+    writer.append([
+      { name: 'MESSAGE', value: Buffer.from('large hash table') },
+    ], {
+      realtimeUsec: 1_700_000_060_000_000n,
+      monotonicUsec: 1n,
+    });
+    writer.close();
+
+    const header = parseFileHeader(readFileSync(journalPath).subarray(0, HEADER_SIZE));
+    assert.ok(
+      header.arena_size + BigInt(HEADER_SIZE) > BigInt(FILE_SIZE_INCREASE),
+      'initial arena must cover large hash tables',
+    );
+    const journalctl = spawnSync('journalctl', ['--version'], { encoding: 'utf8' });
+    if (journalctl.status === 0) run('journalctl', ['--verify', '--file', journalPath]);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }

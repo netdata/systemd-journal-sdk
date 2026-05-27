@@ -256,6 +256,21 @@ Current shared high-level directory writer API slice:
   side-effect-free until the first append opens the active file, then retention
   runs before the first entry is written. The active/current file is protected
   and normal retention deletion lifecycle events are reused.
+- Rust, Go, Node.js, and Python derive default active-file rotation thresholds
+  from retention when explicit rotation thresholds are omitted. If size
+  retention is configured and rotation max file size is unset, the effective
+  active-file max size is `retention_max_bytes / 20`, normalized with
+  systemd-compatible minimum/alignment and compact-size guardrails. If age
+  retention is configured and rotation max duration is unset, the effective
+  active-file max duration is `retention_max_age / 20`, rounded up to the
+  implementation's smallest supported positive interval. Explicit rotation max
+  file size and max duration override these derived defaults. This contract
+  makes default retention operate in 5% chunks by size, by time, or by both
+  dimensions when both retention limits are configured.
+- Rust, Go, Node.js, and Python direct-file and high-level writers use the
+  effective max file size to choose systemd-compatible hash-table sizing:
+  data buckets are `max(max_file_size * 4 / 768 / 3, 2047)` and field buckets
+  are `1023`, unless the direct-file caller explicitly overrides bucket counts.
 - Rust, Go, Node.js, and Python strict systemd naming mode archives any stale
   Netdata chain-named `ONLINE` active file before creating `<source>.journal`,
   preserving sequence continuity without leaving parallel active files in the
