@@ -53,8 +53,14 @@ Do not use this skill for:
 - Prove cross-language interoperability with files written by each implementation and read by every implementation.
 - Prove stock-reader interoperability while repository writers are actively appending, not only after close.
 - For compressed-DATA writer changes, run `tests/interoperability/run_compression_matrix.py`
-  and require header/object flag inspection plus stock journalctl, stock
-  libsystemd, and all repository reader checks.
+  and require the structural oracle to validate object order, offsets, flags,
+  counters, hash-chain consistency, tail metadata, references, and compression
+  flags plus stock journalctl, stock libsystemd, and all repository reader
+  checks.
+- For compact writer changes, run `tests/interoperability/run_compact_matrix.py`
+  and require the structural oracle to validate compact object layout,
+  32-bit compact offset constraints, optional compression flags, stock
+  journalctl, stock libsystemd, and all repository reader checks.
 - For deterministic writer layout changes, run
   `tests/interoperability/run_byte_identity.py --final-state all` and require
   `all_equal: true` for the accepted uncompressed corpus unless the active SOW

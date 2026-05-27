@@ -158,9 +158,16 @@ Current shared writer layout contract:
   4 GiB offset ceiling. Regular output remains the default. Writer APIs and
   test ingesters expose an explicit compact option.
 - Compact interoperability is validated by
-  `tests/interoperability/run_compact_matrix.py`, which checks compact layout,
+  `tests/interoperability/run_compact_matrix.py`, which checks structural
+  layout invariants, compact offset constraints, optional compression flags,
   stock `journalctl --verify --file`, stock journalctl reads, stock libsystemd
   reads, and every repository reader against every repository writer.
+- Compressed writer output is structurally validated by
+  `tests/interoperability/run_compression_matrix.py`. Compression tests require
+  the expected header flag, at least one DATA object with the expected
+  compression flag, valid object order and offsets, counter/tail metadata
+  parity, hash-chain consistency, stock `journalctl --verify --file`, stock
+  journalctl reads, stock libsystemd reads, and every repository reader.
 - DATA compression threshold policy follows systemd v260.1: default threshold
   is 512 bytes, configured thresholds below 8 bytes are clamped to 8 bytes, and
   compression is attempted for payloads whose uncompressed DATA payload length

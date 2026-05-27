@@ -241,6 +241,8 @@ includes:
 
 For each generated writer file, the compression matrix validates:
 
+- the structural oracle passes for object order, offsets, counters, hash chains,
+  tail metadata, and compression flags;
 - journal header has the expected compression incompatible flag;
 - at least one DATA object has the expected compression object flag;
 - stock `journalctl --verify --file` succeeds;
@@ -269,13 +271,17 @@ python3 tests/interoperability/run_compact_matrix.py --compression zstd --compre
 ```
 
 Each writer fixture enables explicit compact output while keeping the binary
-fixture fields used by the binary matrix. For each generated writer file, the
-compact matrix validates:
+fixture fields used by the binary matrix. The fixture also includes a
+deterministic compressible field so `--compression zstd`, `--compression xz`,
+and `--compression lz4` prove at least one compact DATA object is actually
+compressed. For each generated writer file, the compact matrix validates:
 
+- the structural oracle passes for object order, offsets, counters, hash chains,
+  tail metadata, compact offset constraints, and optional compression flags;
 - `HEADER_INCOMPATIBLE_COMPACT` is set;
 - ENTRY items are 4-byte compact offsets;
 - DATA payloads begin after the compact DATA tail fields;
-- compact ENTRY_ARRAY layout is present;
+- compact ENTRY_ARRAY layout is present and linked;
 - stock `journalctl --verify --file` succeeds;
 - stock journalctl and stock libsystemd read binary fields;
 - Go, Rust, Node.js, and Python journalctl rewrites return matching JSON and
@@ -338,10 +344,10 @@ completion unless `--keep-files` is passed.
 | Gap | Status | Evidence | Follow-up |
 |-----|--------|----------|-----------|
 | Deterministic uncompressed byte identity | Complete for accepted corpus | `run_byte_identity.py` compares systemd, Rust, Go, Node.js, and Python byte-for-byte | Closed in SOW-0016 |
-| zstd compressed DATA object writing | Complete | `run_compression_matrix.py` validates zstd header/object flags plus stock/repository reads | Closed in SOW-0008 |
+| zstd compressed DATA object writing | Complete | `run_compression_matrix.py` validates structural layout, zstd header/object flags, stock reads, libsystemd reads, and repository reads | Closed in SOW-0008 |
 | xz compressed DATA object writing | Complete | Rust, Go, Node.js, and Python write/read xz; stock journalctl, stock libsystemd, and all repository readers pass | Closed in SOW-0021 |
 | lz4 compressed DATA object writing | Complete | Rust, Go, Node.js, and Python write/read lz4 when Python `lz4==4.4.5` is installed; stock journalctl, stock libsystemd, and all repository readers pass | Closed in SOW-0017 |
-| Compact journal format | Complete | `run_compact_matrix.py` validates compact layout plus stock/repository reads across all writers | Closed in SOW-0018 |
+| Compact journal format | Complete | `run_compact_matrix.py` validates compact structural layout plus stock/repository reads across all writers and compression modes | Closed in SOW-0018 |
 | Forward Secure Sealing / verification | Complete | Sealed writers and `--verify-key` APIs/CLIs pass stock and repository validation for generated sealed files | Closed in SOW-0019 |
 | Cross-language binary stress | Complete | `run_binary_matrix.py` passes 52/52 across all writer/reader pairs plus stock libsystemd | Closed |
 | Writer locking parity | Complete | `run_lock_matrix.py` passes 8/8; all SDK writer pairs reject concurrent writers and stale locks left by crashed writers are cleaned | Closed |

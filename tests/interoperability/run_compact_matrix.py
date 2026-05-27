@@ -30,25 +30,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
+from journal_structure import inspect_journal_structure
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_DIR = REPO_ROOT / ".local" / "interoperability"
 BIN_DIR = LOCAL_DIR / "bin"
 FIXTURE_DIR = LOCAL_DIR / "compact"
-
-HEADER_MIN_SIZE = 208
-HEADER_SIZE_OFFSET = 88
-HEADER_SIZE_FIELD_SIZE = 8
-INCOMPATIBLE_COMPACT = 1 << 4
-OBJECT_TYPE_DATA = 1
-OBJECT_TYPE_ENTRY = 3
-OBJECT_TYPE_ENTRY_ARRAY = 6
-OBJECT_HEADER_SIZE = 16
-ENTRY_OBJECT_HEADER_SIZE = 64
-DATA_OBJECT_HEADER_SIZE = 64
-COMPACT_DATA_OBJECT_HEADER_SIZE = 72
-OFFSET_ARRAY_OBJECT_HEADER_SIZE = 24
-COMPACT_ENTRY_ARRAY_SIZE_CAP4 = OFFSET_ARRAY_OBJECT_HEADER_SIZE + 4 * 4
 
 BINARY_PAYLOAD = bytes([0x00, 0x01, 0x02, 0x41, 0x0A, 0x7F, 0x80, 0xFF])
 BINARY_MATCH = bytes([0x61, 0x62, 0x63, 0x07, 0x64, 0x65, 0x66])
@@ -289,72 +277,13 @@ def generate_journal(
     }
 
 
-def inspect_compact(journal_path: str) -> dict:
-    data = Path(journal_path).read_bytes()
-    if len(data) < HEADER_MIN_SIZE:
-        return {"test": "compact-layout", "status": "FAIL", "error": "journal smaller than header"}
-
-    incompatible_flags = int.from_bytes(data[12:16], "little")
-    header_size = int.from_bytes(
-        data[HEADER_SIZE_OFFSET:HEADER_SIZE_OFFSET + HEADER_SIZE_FIELD_SIZE],
-        "little",
+def inspect_compact(journal_path: str, compression: str) -> dict:
+    return inspect_journal_structure(
+        journal_path,
+        expected_compact=True,
+        expected_compression=compression,
+        test_name="compact-structure",
     )
-
-    data_objects = 0
-    entry_objects = 0
-    compact_entry_arrays = 0
-    compact_data_payloads = 0
-    entry_item_errors = 0
-    offset = header_size
-    file_len = len(data)
-
-    while offset + OBJECT_HEADER_SIZE <= file_len:
-        obj_type = data[offset]
-        obj_size = int.from_bytes(data[offset + 8:offset + 16], "little")
-        if obj_size < OBJECT_HEADER_SIZE or offset + obj_size > file_len:
-            break
-
-        if obj_type == OBJECT_TYPE_DATA:
-            data_objects += 1
-            if obj_size >= COMPACT_DATA_OBJECT_HEADER_SIZE:
-                payload = data[offset + COMPACT_DATA_OBJECT_HEADER_SIZE:offset + obj_size]
-                if b"=" in payload:
-                    compact_data_payloads += 1
-        elif obj_type == OBJECT_TYPE_ENTRY:
-            entry_objects += 1
-            payload_size = obj_size - ENTRY_OBJECT_HEADER_SIZE
-            if payload_size < 0 or payload_size % 4 != 0:
-                entry_item_errors += 1
-        elif obj_type == OBJECT_TYPE_ENTRY_ARRAY and obj_size == COMPACT_ENTRY_ARRAY_SIZE_CAP4:
-            compact_entry_arrays += 1
-
-        offset = (offset + obj_size + 7) & ~7
-
-    errors = []
-    if not (incompatible_flags & INCOMPATIBLE_COMPACT):
-        errors.append("HEADER_INCOMPATIBLE_COMPACT not set")
-    if entry_objects == 0:
-        errors.append("no ENTRY objects found")
-    if entry_item_errors:
-        errors.append(f"{entry_item_errors} ENTRY objects not aligned to compact 4-byte items")
-    if data_objects == 0:
-        errors.append("no DATA objects found")
-    if compact_data_payloads == 0:
-        errors.append("no DATA payload appears at compact offset 72")
-    if compact_entry_arrays == 0:
-        errors.append("no compact initial ENTRY_ARRAY object size 40 found")
-
-    return {
-        "test": "compact-layout",
-        "status": "FAIL" if errors else "PASS",
-        "header_size": header_size,
-        "incompatible_flags": incompatible_flags,
-        "data_objects": data_objects,
-        "entry_objects": entry_objects,
-        "compact_entry_arrays": compact_entry_arrays,
-        "compact_data_payloads": compact_data_payloads,
-        "error": "; ".join(errors),
-    }
 
 
 def wait_for_file(path: Path, label: str, timeout: float = 10.0) -> None:
@@ -649,7 +578,7 @@ def main() -> int:
         print(f"  journal: {journal_path}", flush=True)
 
         checks = [
-            inspect_compact(journal_path),
+            inspect_compact(journal_path, args.compression),
             check_stock_verify(journal_path),
             check_stock_json(journal_path),
             check_stock_export(journal_path),

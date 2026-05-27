@@ -89,6 +89,7 @@ def main():
                     {'name': 'BINARY_PAYLOAD', 'value': bytes([0x00, 0x01, 0x02, 0x41, 0x0a, 0x7f, 0x80, 0xff])},
                     {'name': 'BINARY_MATCH', 'value': bytes([0x61, 0x62, 0x63, 0x07, 0x64, 0x65, 0x66])},
                     {'name': 'BINARY_EMPTY', 'value': b''},
+                    {'name': 'BINARY_COMPRESSIBLE', 'value': b'A' * 256},
                 ]
             elif args.zstd_fixture and seq == 0:
                 large_payload = bytes([(i % 26) + 0x41 for i in range(256)])

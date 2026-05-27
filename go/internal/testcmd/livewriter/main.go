@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"os"
@@ -88,6 +89,7 @@ func main() {
 				{Name: "BINARY_PAYLOAD", Value: []byte{0x00, 0x01, 0x02, 'A', '\n', 0x7f, 0x80, 0xff}},
 				{Name: "BINARY_MATCH", Value: []byte{'a', 'b', 'c', 0x07, 'd', 'e', 'f'}},
 				{Name: "BINARY_EMPTY", Value: []byte{}},
+				{Name: "BINARY_COMPRESSIBLE", Value: bytes.Repeat([]byte("A"), 256)},
 			}
 		} else if zstdFixture && i == 0 {
 			largePayload := make([]byte, 256)

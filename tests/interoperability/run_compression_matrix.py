@@ -29,22 +29,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
+from journal_structure import inspect_journal_structure
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_DIR = REPO_ROOT / ".local" / "interoperability"
 BIN_DIR = LOCAL_DIR / "bin"
 FIXTURE_DIR = LOCAL_DIR / "compression"
-
-HEADER_MIN_SIZE = 208
-HEADER_SIZE_OFFSET = 88
-HEADER_SIZE_FIELD_SIZE = 8
-OBJECT_TYPE_DATA = 1
-OBJECT_COMPRESSED_XZ = 1 << 0
-OBJECT_COMPRESSED_LZ4 = 1 << 1
-OBJECT_COMPRESSED_ZSTD = 1 << 2
-INCOMPATIBLE_COMPRESSED_XZ = 1 << 0
-INCOMPATIBLE_COMPRESSED_LZ4 = 1 << 1
-INCOMPATIBLE_COMPRESSED_ZSTD = 1 << 3
 
 COMPRESSED_PAYLOAD = bytes((i % 26) + 0x41 for i in range(256))
 COMPRESSED_MATCH = COMPRESSED_PAYLOAD[:32]
@@ -124,6 +115,8 @@ def build_env() -> dict[str, str]:
     env.setdefault("GOPATH", str(local / "go"))
     env.setdefault("CARGO_HOME", str(local / "cargo-home"))
     env.setdefault("CARGO_TARGET_DIR", str(local / "cargo-target"))
+    env.setdefault("npm_config_cache", str(local / "npm-cache"))
+    env.setdefault("PIP_CACHE_DIR", str(local / "pip-cache"))
     return env
 
 
@@ -261,77 +254,12 @@ def wait_for_file(path: Path, label: str, timeout: float = 10.0) -> None:
 
 
 def inspect_compression(journal_path: str, compression: str) -> dict:
-    path = Path(journal_path)
-    data = path.read_bytes()
-    if len(data) < HEADER_MIN_SIZE:
-        return {"test": "compression-flags", "status": "FAIL", "error": "journal smaller than header"}
-
-    incompatible_flags = int.from_bytes(data[12:16], "little")
-    header_size = int.from_bytes(
-        data[HEADER_SIZE_OFFSET:HEADER_SIZE_OFFSET + HEADER_SIZE_FIELD_SIZE],
-        "little",
+    return inspect_journal_structure(
+        journal_path,
+        expected_compact=False,
+        expected_compression=compression,
+        test_name="compression-structure",
     )
-    if header_size < HEADER_MIN_SIZE:
-        return {
-            "test": "compression-flags",
-            "status": "FAIL",
-            "error": f"invalid journal header size: {header_size}",
-        }
-    if header_size > len(data):
-        return {
-            "test": "compression-flags",
-            "status": "FAIL",
-            "error": f"journal header size exceeds file size: {header_size}",
-        }
-
-    if compression == "xz":
-        obj_flag = OBJECT_COMPRESSED_XZ
-        incompat_flag = INCOMPATIBLE_COMPRESSED_XZ
-        flag_name = "OBJECT_COMPRESSED_XZ"
-        incompat_name = "HEADER_INCOMPATIBLE_COMPRESSED_XZ"
-    elif compression == "lz4":
-        obj_flag = OBJECT_COMPRESSED_LZ4
-        incompat_flag = INCOMPATIBLE_COMPRESSED_LZ4
-        flag_name = "OBJECT_COMPRESSED_LZ4"
-        incompat_name = "HEADER_INCOMPATIBLE_COMPRESSED_LZ4"
-    else:
-        obj_flag = OBJECT_COMPRESSED_ZSTD
-        incompat_flag = INCOMPATIBLE_COMPRESSED_ZSTD
-        flag_name = "OBJECT_COMPRESSED_ZSTD"
-        incompat_name = "HEADER_INCOMPATIBLE_COMPRESSED_ZSTD"
-
-    data_objects = 0
-    compressed_data_objects = 0
-    offset = header_size
-    file_len = len(data)
-
-    while offset + 16 <= file_len:
-        obj_type = data[offset]
-        obj_flags = data[offset + 1]
-        obj_size = int.from_bytes(data[offset + 8:offset + 16], "little")
-        if obj_size < 16 or offset + obj_size > file_len:
-            break
-        if obj_type == OBJECT_TYPE_DATA:
-            data_objects += 1
-            if obj_flags & obj_flag:
-                compressed_data_objects += 1
-        offset = (offset + obj_size + 7) & ~7
-
-    errors = []
-    if not (incompatible_flags & incompat_flag):
-        errors.append(f"{incompat_name} not set")
-    if compressed_data_objects == 0:
-        errors.append(f"no DATA object has {flag_name}")
-
-    return {
-        "test": "compression-flags",
-        "status": "FAIL" if errors else "PASS",
-        "data_objects": data_objects,
-        "compressed_data_objects": compressed_data_objects,
-        "header_size": header_size,
-        "incompatible_flags": incompatible_flags,
-        "error": "; ".join(errors),
-    }
 
 
 def shell_join(cmd: Iterable[str]) -> str:

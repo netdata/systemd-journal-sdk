@@ -142,6 +142,7 @@ async function main() {
           { name: 'BINARY_PAYLOAD', value: Buffer.from([0x00, 0x01, 0x02, 0x41, 0x0a, 0x7f, 0x80, 0xff]) },
           { name: 'BINARY_MATCH', value: Buffer.from([0x61, 0x62, 0x63, 0x07, 0x64, 0x65, 0x66]) },
           { name: 'BINARY_EMPTY', value: Buffer.from([]) },
+          { name: 'BINARY_COMPRESSIBLE', value: Buffer.alloc(256, 0x41) },
         ];
       } else if (args.zstdFixture && i === 0) {
         const largePayload = Buffer.alloc(256);

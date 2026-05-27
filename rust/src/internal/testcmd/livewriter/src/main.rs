@@ -211,6 +211,11 @@ fn fields_for_entry(
             b"BINARY_PAYLOAD=\x00\x01\x02A\n\x7f\x80\xff".to_vec(),
             b"BINARY_MATCH=abc\x07def".to_vec(),
             b"BINARY_EMPTY=".to_vec(),
+            {
+                let mut field = b"BINARY_COMPRESSIBLE=".to_vec();
+                field.extend(std::iter::repeat(b'A').take(256));
+                field
+            },
         ];
     }
 
