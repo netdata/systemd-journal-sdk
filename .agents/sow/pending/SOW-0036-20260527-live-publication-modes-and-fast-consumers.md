@@ -50,6 +50,8 @@ Facts:
   snapshot-at-open/session semantics.
 - Netdata UI is user-described as poll based, and it is acceptable if an active
   reader session does not observe lines appended after that session began.
+- The user agrees with the poll/snapshot direction but requires measuring the
+  benefits before committing to any public API or production behavior.
 - The current performance evidence shows the Rust/systemd ratio dropped from
   about `1.56x` in the prior fixed-128 MiB run to about `1.50x` after adding
   Rust post-change notification. The post-change syscall has real overhead, but
@@ -73,6 +75,9 @@ Inferences:
     readers;
   - visibility publication: how often header/tail counters and indexes are made
     visible to newly opened snapshot readers.
+- Public API should not be committed before measurement proves material benefit
+  and compatibility risk is understood. Prototype controls should be
+  benchmark-only or clearly experimental until then.
 
 Unknowns:
 
@@ -86,6 +91,10 @@ Unknowns:
   indexes/cursors or remain a consumer-owned responsibility.
 - Which additional compatibility/performance knobs are worth exposing as public
   API and which should remain internal benchmark-only controls.
+- What "material benefit" threshold should justify a public option. Until the
+  user decides otherwise, the recommended default is to require a measurable
+  benefit large enough to matter to Netdata hot paths, not a micro-optimization
+  that complicates the API.
 
 ### Acceptance Criteria
 
@@ -98,6 +107,12 @@ Unknowns:
   claimed compatibility contract.
 - Identify similar configurable compatibility/performance opportunities and
   classify each as public option, internal optimization, or rejected unsafe knob.
+- Measure each candidate opportunity with benchmark-only/internal switches
+  before committing to a public API, documented default, or production contract.
+- Record rows/sec, bytes/sec, CPU time, syscall counts, allocation behavior, and
+  reader-visible semantics for each candidate mode.
+- Reject or keep internal any candidate whose measured benefit is too small for
+  the added API/semantic complexity.
 - Implement the selected policy consistently in Rust, Go, Node.js, and Python
   only after user decisions are recorded.
 - Ensure benchmark output records publication policy and does not compare modes
@@ -158,6 +173,8 @@ Risks:
   readers may see data only up to the last publication boundary.
 - Overexposing unsafe knobs can make SDK compatibility claims impossible to
   reason about.
+- Prematurely committing public API options before measuring their benefit can
+  leave permanent complexity that users gain little from.
 
 ## Pre-Implementation Gate
 
@@ -176,6 +193,9 @@ Problem / root-cause model:
 - Similar opportunities probably exist wherever compatibility work is only
   needed for external follow tooling, while an SDK-controlled or poll/snapshot
   consumer can use a narrower contract.
+- The next step is not public API design; it is a measurement spike. Only
+  options with material measured benefit and clear contracts should graduate to
+  public API.
 
 Evidence reviewed:
 
@@ -223,6 +243,8 @@ Risk and blast radius:
   later needs stock external follow readers.
 - Documentation risk if disabled notification is described as generally safe
   instead of safe only for narrower consumer contracts.
+- API debt risk if options are added because they seem plausible but deliver
+  negligible throughput or latency improvements in controlled benchmarks.
 
 Sensitive data handling plan:
 
@@ -241,19 +263,29 @@ Implementation plan:
    mode, coalescing, sync/durability cadence, lock enforcement,
    validation/readback, metadata publication batching, hash-depth maintenance,
    raw/prepared field APIs, and reader-wakeup strategy.
-3. Present user decisions with concrete options and recommendation.
-4. After decisions, update product-scope specs and per-language API docs.
-5. Implement the selected live publication policy in Rust, Go, Node.js, and
+3. Add benchmark-only/internal experimental switches for the smallest set of
+   candidate modes needed to measure benefit. These switches must not be
+   documented as public API.
+4. Measure each candidate against the stock-compatible baseline and record the
+   semantic contract each candidate preserves or drops.
+5. Present evidence-backed user decisions with benchmark numbers and risk
+   analysis.
+6. After decisions, update product-scope specs and per-language API docs.
+7. Implement the selected public policy consistently in Rust, Go, Node.js, and
    Python with default stock-compatible behavior.
-6. Update benchmark output and tests so every result records publication policy.
-7. Add or update live tests to prove stock follow compatibility only for modes
+8. Update benchmark output and tests so every result records publication policy.
+9. Add or update live tests to prove stock follow compatibility only for modes
    that claim it, and closed-file compatibility for disabled/manual modes.
-8. Run reviewers and validation before closing.
+10. Run reviewers and validation before closing.
 
 Validation plan:
 
 - Unit tests for option parsing/defaults in every language.
-- Writer-core benchmark in each selected publication mode.
+- Writer-core benchmark in each experimental candidate mode before any public
+  API commitment.
+- Syscall and allocation profiles for each candidate mode, including at least
+  wakeup notification disabled, snapshot reader mode, and any batched
+  visibility publication prototype that is simple enough to measure safely.
 - Live matrix proving immediate/coalesced modes wake stock readers according to
   their contract.
 - Disabled/manual mode tests proving closed-file verify/read after sync/close.
@@ -340,19 +372,34 @@ Open decisions:
      Go paths. Option C is only safe for consumers that do not expect active
      files to be readable during writing.
 
+6. Measurement-before-commitment gate.
+   - Option A: decide API first, then benchmark implementation details.
+   - Option B: benchmark with internal/experimental switches first, then decide
+     which modes deserve public API.
+   - Option C: do not add any public controls; keep all optimizations internal.
+   - Decision: Option B. The user explicitly requires measuring the benefits
+     before committing to the options. This SOW must not graduate any mode to
+     stable public API until benchmark evidence and semantic tradeoffs are
+     recorded.
+
 ## Implications And Decisions
 
 Pending user decisions. No implementation may begin until the user selects the
-policy shape, defaults, poll/snapshot contract, and candidate scope.
+policy shape, defaults, poll/snapshot contract, candidate scope, and measured
+benefit threshold. Benchmark-only/internal experiments are allowed only after
+this SOW is activated and must not be documented as public API.
 
 ## Plan
 
-1. Complete compatibility/performance option inventory and classify public vs
-   internal knobs.
-2. Present evidence-backed user decisions.
-3. Implement only after decisions are recorded.
-4. Validate across all languages and compatibility modes.
-5. Update specs/docs and close with reviewer approval.
+1. Complete compatibility/performance option inventory and classify candidate
+   knobs for measurement.
+2. Add benchmark-only/internal experimental controls for the candidates selected
+   for measurement.
+3. Measure benefit and semantic loss for each candidate.
+4. Present evidence-backed user decisions.
+5. Implement public API only after decisions are recorded.
+6. Validate across all languages and compatibility modes.
+7. Update specs/docs and close with reviewer approval.
 
 ## Delegation Plan
 
@@ -395,6 +442,8 @@ Failure handling:
   poll/snapshot tolerance, not process locality. Netdata UI polling does not
   need kernel wakeups, and an active reader session may ignore appends that
   happen after the session starts.
+- Recorded the user's requirement that candidate controls must be measured
+  before committing to them as public API or production behavior.
 
 ## Validation
 
@@ -457,6 +506,8 @@ Lessons:
 - Poll/snapshot consumers can legitimately use a narrower contract than stock
   external follow-reader compatibility, but that contract must be explicit in
   API names, benchmark output, and tests.
+- Plausible optimization knobs are not automatically worth public API. They
+  must first prove a material benefit in controlled benchmarks.
 
 Follow-up mapping:
 
