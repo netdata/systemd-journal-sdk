@@ -13,7 +13,10 @@ This project produces pure SDKs and file-backed journalctl-compatible tools for 
 
 ## Delivery Priority
 
-- The Go writer is the first implementation deliverable after the shared test harness is accepted.
+- Current exception: Rust writer parity/API work in SOW-0037 is allowed before
+  more Go work so Rust can be the audited project reference for the other
+  implementations.
+- The Go writer is the first implementation deliverable after the shared test harness is accepted and the SOW-0037 Rust reference slice is stable.
 - The Go writer is prioritized because the user needs a pure-Go journal writer for a Netdata plugin integration.
 - The Go writer must support binary field values before later SDK phases continue, because the Netdata plugin integration requires byte-safe payloads.
 - Rust, Go reader/journalctl completion, Node.js, Python, full interoperability, benchmarks, and optimization remain required, but they must not be started ahead of the Go writer unless the user changes this priority.
@@ -133,6 +136,32 @@ Final writer target:
 - Forward Secure Sealing where systemd journal files define it.
 
 Delivery may be phased. Earlier phases may write a smaller feature subset if the SOW records the gap, shared readers/tests support the compatibility envelope, and follow-up SOWs track the remaining writer features.
+
+Writer API hierarchy:
+
+- Every language must expose a systemd-compatible raw full-field payload writer
+  layer where each field is already encoded as `KEY=value` bytes. This mirrors
+  systemd v260.1 `sd_journal_sendv()` / `journal_file_append_entry()` behavior
+  and is the low-level compatibility layer.
+- Every language must expose a structured binary-safe writer layer where each
+  field is represented as `{name, value}` / `Field{Name, Value}` without
+  requiring callers to concatenate and then re-parse `KEY=value` bytes. This is
+  the canonical SDK hot path for Netdata-style producers that already hold
+  structured values.
+- Structured field names follow the same low-level field-name validity rules as
+  raw payload prefixes unless the high-level `Log` writer remapping layer is in
+  use. Structured values are arbitrary bytes and may contain `=`, NUL, and other
+  binary data.
+- Low-level writers keep systemd-style ENTRY item normalization by default:
+  DATA object references are sorted by on-disk DATA object offset and duplicate
+  DATA references in one entry are removed.
+- A trusted unique-payload option may skip duplicate DATA reference elimination
+  only when the caller guarantees that one entry contains no duplicate full
+  `KEY=value` payloads. This option must not skip offset sorting unless a later
+  SOW records measured evidence, compatibility validation, and a user decision
+  for a non-byte-identity performance mode.
+- Jenkins lookup3 hashing follows systemd `jenkins_hashlittle2()` exactly,
+  including the empty payload value `0xdeadbeefdeadbeef`.
 
 Current shared writer layout contract:
 
@@ -406,10 +435,18 @@ Current Rust writer feature slice:
 - keyed hash tables using the journal file ID;
 - deterministic file ID selection through `JournalFileOptions::with_file_id()`
   for reference fixture generation and conformance checks;
-- byte-safe field values through `&[u8]` field payloads;
-- direct-file writing through `journal_core`;
+- byte-safe raw full `KEY=value` field payloads through `&[u8]`;
+- byte-safe structured fields through `StructuredField { name, value }` and
+  `EntryField`, with structured values written without requiring a contiguous
+  `KEY=value` allocation unless compression needs a contiguous buffer;
+- direct-file writing through `journal_core`, including raw full-payload append,
+  structured append, mixed `EntryField` append, and trusted unique-payload
+  options;
 - high-level directory writing with Netdata-compatible chain active naming by
   default and an explicit strict systemd active naming option;
+- high-level Rust `Log` structured write methods that preserve the existing
+  rotation, retention, timestamp, and remapping behavior while avoiding raw
+  `KEY=value` construction in the non-remapped hot path;
 - zero-entry crash-created active files are discarded on reopen before append so
   sequence numbers continue from the existing chain tail;
 - entry-count, file-size, and active-file-duration rotation. Duration rotation

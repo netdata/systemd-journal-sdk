@@ -10,6 +10,7 @@ append timer, then reports append rows/sec from the timed append loop only.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -127,11 +128,14 @@ def build_tool(language: str, env: dict[str, str]) -> tuple[list[str], dict[str,
 def bench_command(
     base: list[str],
     *,
+    language: str,
     output: Path,
     rows: int,
     journal_format: str,
     final_state: str,
     max_size_bytes: int,
+    rust_api_mode: str,
+    rust_trusted_unique_payloads: bool,
 ) -> list[str]:
     cmd = [
         *base,
@@ -146,6 +150,10 @@ def bench_command(
         "--max-size-bytes",
         str(max_size_bytes),
     ]
+    if language == "rust":
+        cmd.extend(["--api-mode", rust_api_mode])
+        if rust_trusted_unique_payloads:
+            cmd.append("--trusted-unique-payloads")
     return cmd
 
 
@@ -227,6 +235,118 @@ def quick_header_check(path: Path, *, compact: bool) -> dict[str, Any]:
         return {"status": "FAIL", "error": str(err)}
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def rust_api_mode_byte_identity(
+    base: list[str],
+    *,
+    output_dir: Path,
+    rows: int,
+    journal_format: str,
+    final_state: str,
+    max_size_bytes: int,
+    rust_trusted_unique_payloads: bool,
+    env: dict[str, str],
+    keep_journals: bool,
+    verify: bool,
+) -> dict[str, Any]:
+    compare_dir = output_dir / "rust-api-mode-byte-identity"
+    compare_dir.mkdir(parents=True, exist_ok=True)
+    measurements: list[dict[str, Any]] = []
+
+    for mode in ("raw-payload", "structured-field"):
+        output = compare_dir / f"{mode}.journal"
+        output.unlink(missing_ok=True)
+        cmd = bench_command(
+            base,
+            language="rust",
+            output=output,
+            rows=rows,
+            journal_format=journal_format,
+            final_state=final_state,
+            max_size_bytes=max_size_bytes,
+            rust_api_mode=mode,
+            rust_trusted_unique_payloads=rust_trusted_unique_payloads,
+        )
+        result = run(cmd, env=env, timeout=1800)
+        driver = parse_driver_result(result.stdout)
+        journal_path = Path(driver.get("journal_path") or output)
+        exists = journal_path.exists()
+        structure = (
+            quick_header_check(journal_path, compact=journal_format == "compact")
+            if exists
+            else {"status": "FAIL", "error": "journal file missing"}
+        )
+        verification = verify_journal(journal_path) if verify and exists else None
+        records = int(driver.get("records", 0) or 0)
+        errors = list(driver.get("errors", []) or [])
+        status = (
+            "PASS"
+            if result.returncode == 0
+            and records == rows
+            and not errors
+            and structure["status"] == "PASS"
+            and (verification is None or verification["returncode"] == 0)
+            else "FAIL"
+        )
+        measurements.append(
+            {
+                "api_mode": mode,
+                "command": cmd,
+                "returncode": result.returncode,
+                "stdout_tail": result.stdout[-1000:],
+                "stderr_tail": result.stderr[-1000:],
+                "driver": driver,
+                "records": records,
+                "expected_records": rows,
+                "journal_path": str(journal_path) if keep_journals else None,
+                "journal_size_bytes": journal_path.stat().st_size if exists else 0,
+                "sha256": sha256_file(journal_path) if exists else None,
+                "structure": structure,
+                "verify": verification,
+                "status": status,
+            }
+        )
+
+    raw = next(item for item in measurements if item["api_mode"] == "raw-payload")
+    structured = next(item for item in measurements if item["api_mode"] == "structured-field")
+    status = "PASS"
+    errors: list[str] = []
+    if any(item["status"] != "PASS" for item in measurements):
+        status = "FAIL"
+        errors.append("one or more Rust API mode comparison runs failed")
+    if raw["journal_size_bytes"] != structured["journal_size_bytes"]:
+        status = "FAIL"
+        errors.append("raw-payload and structured-field output sizes differ")
+    if raw["sha256"] != structured["sha256"]:
+        status = "FAIL"
+        errors.append("raw-payload and structured-field output hashes differ")
+
+    if not keep_journals:
+        for item in measurements:
+            path = Path(item["driver"].get("journal_path") or compare_dir / f"{item['api_mode']}.journal")
+            path.unlink(missing_ok=True)
+
+    return {
+        "kind": "rust-api-mode-byte-identity",
+        "status": status,
+        "rows": rows,
+        "fields_per_row": 32,
+        "format": journal_format,
+        "final_state": final_state,
+        "max_size_bytes": max_size_bytes,
+        "trusted_unique_payloads": rust_trusted_unique_payloads,
+        "measurements": measurements,
+        "errors": errors,
+    }
+
+
 def one_measurement(
     language: str,
     base: list[str],
@@ -238,6 +358,8 @@ def one_measurement(
     journal_format: str,
     final_state: str,
     max_size_bytes: int,
+    rust_api_mode: str,
+    rust_trusted_unique_payloads: bool,
     env: dict[str, str],
     verify: bool,
     keep_journals: bool,
@@ -250,11 +372,14 @@ def one_measurement(
 
     cmd = bench_command(
         base,
+        language=language,
         output=output,
         rows=rows,
         journal_format=journal_format,
         final_state=final_state,
         max_size_bytes=max_size_bytes,
+        rust_api_mode=rust_api_mode,
+        rust_trusted_unique_payloads=rust_trusted_unique_payloads,
     )
     stats_path = run_dir / "time.json"
     result = timed_run(cmd, stats_path, env)
@@ -435,11 +560,27 @@ def main() -> int:
     parser.add_argument("--skip-verify", action="store_true")
     parser.add_argument("--keep-journals", action="store_true")
     parser.add_argument("--max-size-bytes", type=int, default=128 * 1024 * 1024)
+    parser.add_argument(
+        "--rust-api-mode",
+        choices=("raw-payload", "structured-field"),
+        default="raw-payload",
+    )
+    parser.add_argument("--rust-trusted-unique-payloads", action="store_true")
+    parser.add_argument(
+        "--rust-compare-api-modes",
+        action="store_true",
+        help="After benchmark runs, write the same Rust corpus through raw and structured APIs and require byte identity.",
+    )
     args = parser.parse_args()
 
     env = build_env()
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    profile = f"{args.format}-none-fss-off"
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    profile_parts = [f"{args.format}-none-fss-off"]
+    if "rust" in args.languages:
+        profile_parts.append(f"rust-{args.rust_api_mode}")
+        if args.rust_trusted_unique_payloads:
+            profile_parts.append("trusted-unique")
+    profile = "-".join(profile_parts)
     out = args.output_dir / f"{profile}-{run_id}"
     out.mkdir(parents=True, exist_ok=True)
 
@@ -463,6 +604,8 @@ def main() -> int:
                     journal_format=args.format,
                     final_state=args.final_state,
                     max_size_bytes=args.max_size_bytes,
+                    rust_api_mode=args.rust_api_mode,
+                    rust_trusted_unique_payloads=args.rust_trusted_unique_payloads,
                     env=env,
                     verify=False,
                     keep_journals=False,
@@ -480,10 +623,34 @@ def main() -> int:
                     journal_format=args.format,
                     final_state=args.final_state,
                     max_size_bytes=args.max_size_bytes,
+                    rust_api_mode=args.rust_api_mode,
+                    rust_trusted_unique_payloads=args.rust_trusted_unique_payloads,
                     env=env,
                     verify=not args.skip_verify,
                     keep_journals=args.keep_journals,
                 )
+            )
+
+    rust_api_mode_compare = None
+    if args.rust_compare_api_modes:
+        if "rust" not in args.languages:
+            rust_api_mode_compare = {
+                "kind": "rust-api-mode-byte-identity",
+                "status": "FAIL",
+                "errors": ["--rust-compare-api-modes requires --languages to include rust"],
+            }
+        else:
+            rust_api_mode_compare = rust_api_mode_byte_identity(
+                tools["rust"]["command"],
+                output_dir=out,
+                rows=args.rows,
+                journal_format=args.format,
+                final_state=args.final_state,
+                max_size_bytes=args.max_size_bytes,
+                rust_trusted_unique_payloads=args.rust_trusted_unique_payloads,
+                env=env,
+                keep_journals=args.keep_journals,
+                verify=not args.skip_verify,
             )
 
     report = {
@@ -501,6 +668,9 @@ def main() -> int:
             "languages": args.languages,
             "keep_journals": args.keep_journals,
             "max_size_bytes": args.max_size_bytes,
+            "rust_api_mode": args.rust_api_mode,
+            "rust_trusted_unique_payloads": args.rust_trusted_unique_payloads,
+            "rust_compare_api_modes": args.rust_compare_api_modes,
             "hash_table_sizing": "systemd v260.1 formula: data=max(max_size*4/768/3,2047), field=1023",
             "append_timer_excludes": [
                 "row generation",
@@ -512,13 +682,19 @@ def main() -> int:
         "environment": environment_report(env, out),
         "tools": tools,
         "results": results,
+        "rust_api_mode_byte_identity": rust_api_mode_compare,
         "summary": summarize(results),
     }
     measurement_failures = [
         r for r in results if r["kind"] == "measurement" and r["status"] != "PASS"
     ]
     consistency_failures = driver_consistency_failures(results)
-    failures = [*measurement_failures, *consistency_failures]
+    compare_failures = (
+        [rust_api_mode_compare]
+        if rust_api_mode_compare is not None and rust_api_mode_compare["status"] != "PASS"
+        else []
+    )
+    failures = [*measurement_failures, *consistency_failures, *compare_failures]
     report["status"] = "PASS" if not failures else "FAIL"
     report["failures"] = failures
 

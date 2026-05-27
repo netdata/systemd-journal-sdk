@@ -2,13 +2,14 @@
 
 ## Status
 
-Status: in-progress
+Status: paused
 
-Sub-state: resumed after SOW-0035 defined and implemented the production
-rotation/max-size contract. Existing benchmark results that used a 2 GiB
-default max-size are retained as invalidated evidence and must not be used as
-production baseline evidence. Next work is writer profiling and optimization
-from the fixed-128 MiB compact/no-compression/no-FSS baseline.
+Sub-state: paused by user decision on 2026-05-27. The next active work is
+SOW-0037: make Rust the systemd-compatible reference first, define the
+dual-layer raw-payload/structured writer API, and then rerun Rust performance
+apples-to-apples before continuing Go/Node.js/Python optimization. Existing
+benchmark results that used a 2 GiB default max-size are retained as
+invalidated evidence and must not be used as production baseline evidence.
 
 ## Requirements
 

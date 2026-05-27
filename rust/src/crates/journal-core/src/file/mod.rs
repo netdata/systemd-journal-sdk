@@ -16,10 +16,10 @@ pub mod writer;
 // Core functionality
 pub use file::{
     BucketUtilization, Compression, DEFAULT_COMPRESS_THRESHOLD, JournalFile, JournalFileOptions,
-    MIN_COMPRESS_THRESHOLD, normalize_compress_threshold,
+    MIN_COMPRESS_THRESHOLD, PayloadParts, normalize_compress_threshold,
 };
 pub use reader::JournalReader;
-pub use writer::JournalWriter;
+pub use writer::{EntryField, EntryWriteOptions, JournalWriter, StructuredField};
 
 // Essential types for working with readers
 pub use cursor::Location;

@@ -80,15 +80,93 @@ pub trait BucketVisitor<'a> {
     fn visit(&mut self, object: &ValueGuard<'a, Self::Object>) -> Result<Option<Self::Output>>;
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PayloadParts<'a> {
+    parts: [&'a [u8]; 3],
+    len: usize,
+    count: usize,
+}
+
+impl<'a> PayloadParts<'a> {
+    pub fn raw(payload: &'a [u8]) -> Self {
+        Self {
+            parts: [payload, &[], &[]],
+            len: payload.len(),
+            count: 1,
+        }
+    }
+
+    pub fn structured(name: &'a [u8], value: &'a [u8]) -> Self {
+        Self {
+            parts: [name, b"=", value],
+            len: name.len() + 1 + value.len(),
+            count: 3,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn iter(&self) -> std::iter::Copied<std::slice::Iter<'_, &'a [u8]>> {
+        self.parts[..self.count].iter().copied()
+    }
+
+    pub fn as_single_slice(&self) -> Option<&'a [u8]> {
+        (self.count == 1).then_some(self.parts[0])
+    }
+
+    pub fn equals_slice(&self, other: &[u8]) -> bool {
+        if other.len() != self.len {
+            return false;
+        }
+
+        let mut remaining = other;
+        for part in self.iter() {
+            let Some((head, tail)) = remaining.split_at_checked(part.len()) else {
+                return false;
+            };
+            if head != part {
+                return false;
+            }
+            remaining = tail;
+        }
+
+        remaining.is_empty()
+    }
+
+    pub fn copy_to_slice(&self, dst: &mut [u8]) {
+        assert_eq!(dst.len(), self.len);
+        let mut offset = 0usize;
+        for part in self.iter() {
+            let end = offset + part.len();
+            dst[offset..end].copy_from_slice(part);
+            offset = end;
+        }
+    }
+
+    pub fn to_vec(&self) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(self.len);
+        for part in self.iter() {
+            payload.extend_from_slice(part);
+        }
+        payload
+    }
+}
+
 struct PayloadMatcher<'data, T> {
-    payload: &'data [u8],
+    payload: PayloadParts<'data>,
     hash: u64,
     decompression_buffer: Vec<u8>,
     _phantom: PhantomData<T>,
 }
 
 impl<'data, B: ByteSlice> PayloadMatcher<'data, DataObject<B>> {
-    fn data_matcher(payload: &'data [u8], hash: u64) -> Self {
+    fn data_parts_matcher(payload: PayloadParts<'data>, hash: u64) -> Self {
         Self {
             payload,
             hash,
@@ -101,7 +179,7 @@ impl<'data, B: ByteSlice> PayloadMatcher<'data, DataObject<B>> {
 impl<'data, B: ByteSlice> PayloadMatcher<'data, FieldObject<B>> {
     fn field_matcher(payload: &'data [u8], hash: u64) -> Self {
         Self {
-            payload,
+            payload: PayloadParts::raw(payload),
             hash,
             decompression_buffer: Vec::new(),
             _phantom: PhantomData::<FieldObject<B>>,
@@ -123,9 +201,9 @@ where
 
         let matches = if object.is_compressed() {
             let len = object.decompress(&mut self.decompression_buffer)?;
-            self.decompression_buffer[..len] == *self.payload
+            self.payload.equals_slice(&self.decompression_buffer[..len])
         } else {
-            object.raw_payload() == self.payload
+            self.payload.equals_slice(object.raw_payload())
         };
 
         if matches {
@@ -492,12 +570,16 @@ impl<M: MemoryMap> JournalFile<M> {
     }
 
     pub fn hash(&self, data: &[u8]) -> u64 {
+        self.hash_parts(PayloadParts::raw(data))
+    }
+
+    pub fn hash_parts(&self, payload: PayloadParts<'_>) -> u64 {
         let is_keyed_hash = self
             .journal_header_ref()
             .has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash);
 
-        hash::journal_hash_data(
-            data,
+        hash::journal_hash_data_parts(
+            payload.iter(),
             is_keyed_hash,
             if is_keyed_hash {
                 Some(&self.journal_header_ref().file_id)
@@ -648,7 +730,15 @@ impl<M: MemoryMap> JournalFile<M> {
     }
 
     pub fn find_data_offset(&self, hash: u64, payload: &[u8]) -> Result<Option<NonZeroU64>> {
-        let visitor = PayloadMatcher::data_matcher(payload, hash);
+        self.find_data_offset_parts(hash, PayloadParts::raw(payload))
+    }
+
+    pub fn find_data_offset_parts(
+        &self,
+        hash: u64,
+        payload: PayloadParts<'_>,
+    ) -> Result<Option<NonZeroU64>> {
+        let visitor = PayloadMatcher::data_parts_matcher(payload, hash);
         self.visit_bucket(self.data_hash_table_ref(), hash, visitor)
     }
 
@@ -1506,6 +1596,15 @@ mod tests {
 
     fn test_uuid(seed: u8) -> uuid::Uuid {
         uuid::Uuid::from_bytes([seed; 16])
+    }
+
+    #[test]
+    fn payload_parts_structured_equals_contiguous_payload() {
+        let parts = PayloadParts::structured(b"NAME", b"\x00=VALUE");
+
+        assert!(parts.equals_slice(b"NAME=\x00=VALUE"));
+        assert!(!parts.equals_slice(b"NAME=VALUE"));
+        assert!(!parts.equals_slice(b"OTHER=\x00=VALUE"));
     }
 
     #[test]

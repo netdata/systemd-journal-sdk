@@ -1,8 +1,8 @@
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use journal_core::file::{
-    Compression, DEFAULT_COMPRESS_THRESHOLD, JournalFile, JournalFileOptions, JournalState,
-    JournalWriter, MmapMut,
+    Compression, DEFAULT_COMPRESS_THRESHOLD, EntryField, EntryWriteOptions, JournalFile,
+    JournalFileOptions, JournalState, JournalWriter, MmapMut, StructuredField,
 };
 use journal_registry::repository::File as RepositoryFile;
 use serde_json::json;
@@ -32,6 +32,10 @@ struct Args {
     final_state: String,
     #[arg(long, default_value_t = DEFAULT_MAX_SIZE_BYTES)]
     max_size_bytes: u64,
+    #[arg(long, default_value = "raw-payload")]
+    api_mode: String,
+    #[arg(long, default_value_t = false)]
+    trusted_unique_payloads: bool,
 }
 
 fn uuid(hex: &str) -> Result<uuid::Uuid> {
@@ -46,26 +50,55 @@ fn absolute_path(path: &Path) -> Result<PathBuf> {
     }
 }
 
-fn make_rows(rows: usize) -> Vec<Vec<Vec<u8>>> {
-    let fixed: Vec<Vec<u8>> = vec![
-        b"TEST_ID=deterministic-ingestion-performance".to_vec(),
-        b"PERF_PROFILE=mixed-cardinality-32-fields".to_vec(),
-        b"HOST_CLASS=synthetic-edge".to_vec(),
-        b"SOURCE_KIND=journal-sdk-benchmark".to_vec(),
+#[derive(Clone)]
+struct BenchField {
+    raw: Vec<u8>,
+    name: Vec<u8>,
+    value: Vec<u8>,
+}
+
+impl BenchField {
+    fn new(name: impl Into<Vec<u8>>, value: impl Into<Vec<u8>>) -> Self {
+        let name = name.into();
+        let value = value.into();
+        let mut raw = Vec::with_capacity(name.len() + 1 + value.len());
+        raw.extend_from_slice(&name);
+        raw.push(b'=');
+        raw.extend_from_slice(&value);
+        Self { raw, name, value }
+    }
+
+    fn structured(&self) -> StructuredField<'_> {
+        StructuredField::new(&self.name, &self.value)
+    }
+}
+
+fn make_rows(rows: usize) -> Vec<Vec<BenchField>> {
+    let fixed: Vec<BenchField> = vec![
+        BenchField::new("TEST_ID", "deterministic-ingestion-performance"),
+        BenchField::new("PERF_PROFILE", "mixed-cardinality-32-fields"),
+        BenchField::new("HOST_CLASS", "synthetic-edge"),
+        BenchField::new("SOURCE_KIND", "journal-sdk-benchmark"),
     ];
-    let mut low_values: Vec<Vec<Vec<u8>>> = Vec::with_capacity(12);
+    let mut low_values: Vec<Vec<BenchField>> = Vec::with_capacity(12);
     for offset in 0..12 {
         let mut values = Vec::with_capacity(16);
         for value in 0..16 {
-            values.push(format!("LOW_CARD_{offset:02}=low-{offset:02}-{value:02}").into_bytes());
+            values.push(BenchField::new(
+                format!("LOW_CARD_{offset:02}"),
+                format!("low-{offset:02}-{value:02}"),
+            ));
         }
         low_values.push(values);
     }
-    let mut medium_values: Vec<Vec<Vec<u8>>> = Vec::with_capacity(8);
+    let mut medium_values: Vec<Vec<BenchField>> = Vec::with_capacity(8);
     for offset in 0..8 {
         let mut values = Vec::with_capacity(2048);
         for value in 0..2048 {
-            values.push(format!("MED_CARD_{offset:02}=medium-{offset:02}-{value:04}").into_bytes());
+            values.push(BenchField::new(
+                format!("MED_CARD_{offset:02}"),
+                format!("medium-{offset:02}-{value:04}"),
+            ));
         }
         medium_values.push(values);
     }
@@ -81,7 +114,10 @@ fn make_rows(rows: usize) -> Vec<Vec<Vec<u8>>> {
             fields.push(medium_values[offset][row % 2048].clone());
         }
         for offset in 0..8 {
-            fields.push(format!("HIGH_CARD_{offset:02}=high-{offset:02}-{row:06}").into_bytes());
+            fields.push(BenchField::new(
+                format!("HIGH_CARD_{offset:02}"),
+                format!("high-{offset:02}-{row:06}"),
+            ));
         }
         all.push(fields);
     }
@@ -181,6 +217,11 @@ fn main() -> Result<()> {
         "regular" => false,
         other => return Err(anyhow!("invalid --format: {other}")),
     };
+    let structured = match args.api_mode.as_str() {
+        "raw-payload" => false,
+        "structured-field" => true,
+        other => return Err(anyhow!("invalid --api-mode: {other}")),
+    };
     let output = absolute_path(&args.output)?;
     let _ = fs::remove_file(&output);
 
@@ -191,18 +232,38 @@ fn main() -> Result<()> {
     let (mut journal_file, mut writer, data_hash_buckets) =
         create_writer(&output, compact, args.max_size_bytes)?;
     let mut records = 0usize;
-    let mut refs: Vec<&[u8]> = Vec::with_capacity(FIELDS_PER_ROW);
+    let mut entry_fields: Vec<EntryField<'_>> = Vec::with_capacity(FIELDS_PER_ROW);
+    let mut structured_refs: Vec<StructuredField<'_>> = Vec::with_capacity(FIELDS_PER_ROW);
+    let write_options =
+        EntryWriteOptions::default().trusted_unique_payloads(args.trusted_unique_payloads);
 
     let append_start = Instant::now();
     for (index, fields) in rows.iter().enumerate() {
-        refs.clear();
-        refs.extend(fields.iter().map(Vec::as_slice));
-        writer.add_entry(
-            &mut journal_file,
-            &refs,
-            BASE_REALTIME_USEC + index as u64 * 500,
-            BASE_MONOTONIC_USEC + index as u64 * 50,
-        )?;
+        if structured {
+            structured_refs.clear();
+            structured_refs.extend(fields.iter().map(BenchField::structured));
+            writer.add_entry_structured_with_options(
+                &mut journal_file,
+                &structured_refs,
+                BASE_REALTIME_USEC + index as u64 * 500,
+                BASE_MONOTONIC_USEC + index as u64 * 50,
+                write_options,
+            )?;
+        } else {
+            entry_fields.clear();
+            entry_fields.extend(
+                fields
+                    .iter()
+                    .map(|field| EntryField::raw(field.raw.as_slice())),
+            );
+            writer.add_entry_fields_with_options(
+                &mut journal_file,
+                entry_fields.iter().copied(),
+                BASE_REALTIME_USEC + index as u64 * 500,
+                BASE_MONOTONIC_USEC + index as u64 * 50,
+                write_options,
+            )?;
+        }
         records += 1;
     }
     let append_seconds = append_start.elapsed().as_secs_f64();
@@ -227,7 +288,8 @@ fn main() -> Result<()> {
             "format": args.format,
             "compression": "none",
             "fss": false,
-            "api_mode": "raw-payload",
+            "api_mode": args.api_mode,
+            "trusted_unique_payloads": args.trusted_unique_payloads,
             "data_hash_table_buckets": data_hash_buckets,
             "field_hash_table_buckets": FIELD_HASH_BUCKETS,
             "max_size_bytes": args.max_size_bytes,

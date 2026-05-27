@@ -4,9 +4,12 @@ Last updated: 2026-05-27
 
 ## Current
 
-- SOW-0009 - Benchmark Profile Optimize: in-progress. Active performance work
-  remains open for reader benchmarks, Netdata-shaped workloads, and remaining
-  optimization decisions.
+- SOW-0009 - Benchmark Profile Optimize: paused. Broad performance work waits
+  for SOW-0037 to establish Rust as the systemd-compatible reference and to
+  measure Rust raw-payload versus structured writer APIs apples-to-apples.
+- SOW-0037 - Reference Drift Audit: in-progress. Rust parity with systemd,
+  Rust dual-layer raw/structured writer API, and Rust writer performance retest
+  are now the active priority before more Go/Node.js/Python optimization.
 
 ## Pending
 
@@ -17,12 +20,6 @@ Last updated: 2026-05-27
   performance opportunities before implementation, including measured
   windowed-versus-whole-file mmap writer strategy tradeoffs and Go reader
   `ReadAt`-versus-mmap strategy tradeoffs.
-- SOW-0037 - Reference Drift Audit: open. Audit Rust against systemd first,
-  then Go against Rust, so implementation differences are classified as
-  intentional, performance-motivated, language-specific, unsupported, or
-  accidental drift to fix. The audit also covers public writer API parity:
-  systemd-compatible raw full-field payloads and structured binary-safe field
-  APIs must be separated into an explicit cross-language API hierarchy.
 
 ## Recently Completed
 

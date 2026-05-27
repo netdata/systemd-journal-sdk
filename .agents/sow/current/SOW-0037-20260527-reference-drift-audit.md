@@ -2,9 +2,11 @@
 
 ## Status
 
-Status: open
+Status: in-progress
 
-Sub-state: pending analysis; no implementation started.
+Sub-state: activated by user decision on 2026-05-27. SOW-0009 broad
+benchmarking is paused until Rust parity, Rust writer API hierarchy, and Rust
+raw-vs-structured writer performance are established.
 
 ## Requirements
 
@@ -434,11 +436,21 @@ Open decisions:
 ## Implications And Decisions
 
 - Decision 1: Option B. Audit Rust against systemd first, then Go against Rust.
-- Decision 2: pending if implementation is started. Recommendation is Option B.
-- Decision 3: pending after systemd API evidence. Recommendation is now the
-  dual-layer Option B.
-- Decision 4: pending. Recommendation is trusted unique-fields first, with
-  preserve-input-order measured separately before public commitment.
+- Decision 2: Option B. Fix accidental drift discovered in Rust or Go when the
+  fix is small, local, and does not need a new product decision; otherwise
+  create follow-up SOWs.
+- Decision 3: Option B. Expose a dual-layer writer API in Rust first:
+  systemd-compatible raw full-field `KEY=value` payloads as the low-level fast
+  path, plus structured binary-safe `{name, value}` fields as the higher-level
+  SDK hot path.
+- Decision 4: Option B for the first implementation pass. Add or measure a
+  trusted unique-fields structured mode that can skip duplicate DATA
+  elimination when the caller guarantees no duplicate full payloads, while
+  preserving systemd-style offset sorting unless a later measured decision
+  chooses a non-byte-identity preserve-input-order mode.
+- Sequencing decision: SOW-0009 broad performance work is paused. Complete Rust
+  parity/API/benchmark work first, then use Rust as the reference for Go and the
+  other languages.
 
 ## Plan
 
@@ -506,28 +518,214 @@ Failure handling:
 - Recorded the trusted structured fast-path idea, including the important
   distinction between skipping duplicate DATA elimination and skipping
   systemd-style offset sorting.
+- Activated this SOW after the user agreed to pause broad benchmarking and make
+  Rust the reference first. Recorded the accepted sequence: Rust parity with
+  systemd, Rust dual-layer raw/structured writer API, Rust raw-vs-structured
+  performance retest, then Go and other languages.
+- Implemented the first Rust reference slice:
+  - Added `PayloadParts` so the writer can address raw payloads and structured
+    `{name, value}` payloads without forcing a contiguous `KEY=value` buffer in
+    the uncompressed hot path.
+  - Added Rust low-level writer APIs for raw full-payload fields, structured
+    fields, mixed `EntryField` iterators, and `EntryWriteOptions`.
+  - Preserved systemd-style DATA offset sorting by default and made
+    trusted unique-payload mode skip only duplicate DATA reference elimination.
+  - Added high-level Rust `Log` structured write methods that preserve existing
+    rotation, retention, timestamp, and remapping behavior.
+  - Updated the Rust writer-core benchmark driver and Python benchmark harness
+    to record and select Rust `raw-payload` versus `structured-field` API
+    modes.
+- Addressed first-round reviewer findings for the Rust slice:
+  - Added public Rust API documentation for `EntryWriteOptions` and the
+    `trusted_unique_payloads` caller invariant.
+  - Added direct structured `PayloadParts::equals_slice` coverage.
+  - Added mixed raw-plus-structured `EntryField` byte-identity coverage.
+  - Added structured duplicate DATA reference coverage proving default
+    deduplication and documenting trusted-mode duplicate preservation when the
+    caller violates the uniqueness contract.
+  - Added a 512-row Rust unit corpus proving raw-payload and structured-field
+    writer paths produce byte-identical files.
+  - Added an optional 100,000-row benchmark-harness API-mode byte-identity
+    check for Rust.
+- Addressed second/final review cleanup:
+  - Removed module-wide unused/dead-code suppression from the Rust writer and
+    cleaned the resulting unused imports/dead helper warnings.
+  - Added public documentation for high-level Rust `Log::write_fields*`
+    methods.
+  - Clarified that `trusted_unique_payloads` never skips DATA-offset sorting.
+  - Replaced the safe-but-brittle raw remapping `unwrap()` with slicing from the
+    already-validated field-name length.
+  - Documented that internal remapping metadata entries use normalized default
+    write options while caller fast-path options apply to the user entry.
+  - Removed the unused tracing import suppression from the high-level Rust log
+    writer.
+- Fixed an accidental Rust/systemd drift in `journal-core` Jenkins lookup3
+  hashing: empty payloads now return `0xdeadbeefdeadbeef`, matching systemd
+  `jenkins_hashlittle2()` and the Netdata vendored `jf` behavior.
+- Replaced the temporary multipart Jenkins allocation workaround with an
+  allocation-free multipart lookup3 implementation that matches all tested
+  contiguous payload splits.
+- Updated durable product scope and the journal compatibility project skill
+  with the dual-layer writer API hierarchy, trusted unique-payload invariant,
+  and Jenkins empty-hash rule.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Pending.
+- Rust/systemd API evidence recorded:
+  - `systemd/systemd @ c0a5a2516d28`
+    `src/libsystemd/sd-journal/journal-file.c:2527`: internal append API takes
+    `const struct iovec iovec[]`.
+  - `systemd/systemd @ c0a5a2516d28`
+    `src/libsystemd/sd-journal/journal-file.c:2604`: each iovec is used as a
+    full DATA payload.
+  - `systemd/systemd @ c0a5a2516d28`
+    `src/libsystemd/sd-journal/journal-file.c:2630`: ENTRY DATA references are
+    sorted by DATA object offset.
+  - `systemd/systemd @ c0a5a2516d28`
+    `src/libsystemd/sd-journal/journal-file.c:2631`: duplicate ENTRY DATA
+    references are removed.
+- Rust dual-layer writer API is implemented in:
+  - `rust/src/crates/journal-core/src/file/writer.rs`
+  - `rust/src/crates/journal-log-writer/src/log/mod.rs`
+  - `rust/src/internal/testcmd/writer_core_bench/src/main.rs`
+- Structured writer compatibility evidence:
+  - Rust test `structured_writer_matches_raw_payload_writer_bytes` proves raw
+    and structured append paths produce byte-identical uncompressed files for
+    the same entry when header identity is fixed.
+  - Rust test `mixed_entry_fields_match_raw_payload_writer_bytes` proves the
+    public mixed raw-plus-structured `EntryField` API produces byte-identical
+    output to the equivalent all-raw append path.
+  - Rust test `structured_writer_preserves_binary_field_values` proves
+    structured values preserve binary bytes including NUL and `=`.
+  - Rust test `structured_writer_deduplicates_duplicate_payloads_by_default`
+    proves structured entries remove duplicate DATA references by default and
+    preserve duplicates only when `trusted_unique_payloads=true`, documenting
+    the caller-contract violation case.
+  - Rust test `trusted_unique_payloads_keeps_unique_entry_output_identical`
+    proves trusted unique-payload mode does not change output when the caller's
+    uniqueness contract is met.
+  - Rust test
+    `structured_writer_matches_raw_payload_writer_bytes_across_deterministic_corpus`
+    proves raw and structured append paths produce byte-identical output across
+    512 deterministic rows with fixed, low-cardinality, medium-cardinality,
+    high-cardinality, empty, and binary values.
+  - Rust test `payload_parts_structured_equals_contiguous_payload` proves
+    structured multi-part payload comparison matches the equivalent contiguous
+    `KEY=value` bytes, including binary values containing `=`.
+- Jenkins drift evidence:
+  - `rust/src/crates/jf/journal_file/src/hash.rs` already treated empty
+    Jenkins lookup3 as `0xdeadbeefdeadbeef`.
+  - `systemd/systemd @ c0a5a2516d28`
+    `src/libsystemd/sd-journal/lookup3.h:14` and
+    `src/libsystemd/sd-journal/lookup3.c:470`: `jenkins_hashlittle2()` starts
+    both returned halves from `0xdeadbeef` for zero-length input.
 
 Tests or equivalent validation:
 
-- Pending.
+- `cargo test --manifest-path rust/Cargo.toml -p journal-core`
+  - Result after final cleanup: pass. 55 unit tests passed; 1 doc test passed;
+    3 doc tests ignored. No warnings in output.
+- `cargo test --manifest-path rust/Cargo.toml -p journal-log-writer`
+  - Result after final cleanup: pass. 48 tests passed; 1 doc test passed.
+- `cargo check --manifest-path rust/Cargo.toml -p writer_core_bench`
+  - Result after final cleanup: pass.
+- `cargo check --manifest-path rust/Cargo.toml -p journal-core`
+  - Result after final cleanup: pass. No warnings in output.
+- `cargo fmt --all --check`
+  - Result after final cleanup: pass.
+- `python3 -m py_compile tests/benchmarks/run_writer_core_benchmarks.py`
+  - Result: pass.
+- `git diff --check`
+  - Result after final cleanup: pass.
+- `.agents/sow/audit.sh`
+  - Result after final cleanup: pass.
+- Writer benchmark smoke, 1,000 rows, compact, no compression, no FSS,
+  `final_state=online`, fixed `max_size_bytes=134217728`:
+  - Rust raw-payload: pass, stock `journalctl --verify --file` pass, median
+    append rate 68.6k rows/s for one measured repetition.
+  - Rust structured-field with trusted unique-payloads: pass, stock
+    `journalctl --verify --file` pass, median append rate 63.5k rows/s for one
+    measured repetition.
+- Writer benchmark after Jenkins correction, 100,000 rows, 1 warmup, 3
+  measured repetitions, compact, no compression, no FSS, `final_state=online`,
+  fixed `max_size_bytes=134217728`, data buckets 233016, field buckets 1023:
+  - systemd raw-payload median append rate: 35.1k rows/s.
+  - Rust raw-payload median append rate: 45.6k rows/s, 1.30x systemd median.
+  - systemd raw-payload median append rate in the structured comparison run:
+    32.8k rows/s.
+  - Rust structured-field with trusted unique-payloads median append rate:
+    45.1k rows/s, 1.38x that run's systemd median.
+  - Rust structured-field is effectively at Rust raw-payload speed for this
+    dataset after removing the multipart Jenkins allocation workaround.
+- Rust API-mode byte-identity validation after first-round reviewer fixes,
+  100,000 rows, compact, no compression, no FSS, `final_state=online`,
+  fixed `max_size_bytes=134217728`, trusted unique-payloads enabled:
+  - Report:
+    `.local/benchmarks/writer-core/compact-none-fss-off-rust-structured-field-trusted-unique-20260527T213216369369Z/report.json`.
+  - Result: pass.
+  - Raw-payload append rate in the comparison run: 46.7k rows/s.
+  - Structured-field append rate in the comparison run: 47.2k rows/s.
+  - Raw-payload and structured-field output size: 134217728 bytes.
+  - Raw-payload and structured-field SHA-256:
+    `34af8ed46128b8089b6f8d070c53983ca8c593dad7d568be8317cc32348deeac`.
+  - Stock `journalctl --verify --file` passed for both comparison outputs.
 
 Real-use evidence:
 
-- Pending.
+- Stock `journalctl --verify --file` was run by the benchmark harness for each
+  measured Rust and systemd output file in the 1,000-row and 100,000-row runs.
+  All measured runs passed verification.
 
 Reviewer findings:
 
-- Pending.
+- First review round:
+  - GLM: production-grade, no blocking findings. Disposition: recorded
+    non-blocking observations about sortedness scan cost, bounded cache
+    allocations, and keyed-hash fallback as SOW-0009/SOW-0036 follow-up context.
+  - Qwen: production-grade, no blocking findings. Disposition: recorded
+    remapping allocation and field-cache clear behavior as non-blocking.
+  - Minimax: production-grade after adding public documentation for
+    `EntryWriteOptions::trusted_unique_payloads`. Disposition: API docs added.
+  - Kimi: not production-grade before adding structured duplicate coverage,
+    mixed `EntryField` coverage, and raw-versus-structured corpus byte-identity
+    validation. Disposition: all three coverage gaps were implemented; live
+    reader stress remains explicitly tracked by SOW-0036/SOW-0009, not closed
+    by this Rust API slice.
+- Second review round:
+  - GLM: production-grade; no blocking findings. Disposition: accepted
+    non-blocking observations as SOW-0009/SOW-0036 follow-up context.
+  - Qwen: production-grade; no blocking findings. Disposition: accepted
+    remapping-path allocation and cache observations as performance follow-up
+    context.
+  - Minimax: production-grade; requested clarifying that
+    `trusted_unique_payloads` preserves offset sorting. Disposition:
+    documentation updated.
+  - Kimi: production-grade; requested high-level structured API docs and
+    removing the brittle raw-remapping `unwrap()`. Disposition: both fixed.
+- Final review round after cleanup:
+  - Minimax: production-grade; one low documentation clarification requested.
+    Disposition: `trusted_unique_payloads` docs now explicitly state offset
+    sorting is always performed.
+  - Qwen: production-grade; non-blocking performance observations only.
+    Disposition: tracked as SOW-0009/SOW-0036 performance context.
+  - GLM: production-grade; only low cleanup observations. Disposition: removed
+    unused tracing import suppression; remaining cache/FIXME performance or
+    unreachable-path observations stay follow-up context.
+  - Kimi final rerun stalled after reading files for about ten minutes. The
+    exact `timeout`/`opencode` PIDs for that stalled reviewer were terminated;
+    Kimi's prior completed round after the substantive fixes was
+    production-grade, and all other final reviewers were production-grade.
 
 Same-failure scan:
 
-- Pending.
+- Rust writer API call sites were searched for `add_entry`, `StructuredField`,
+  `trusted_unique`, recent data cache, field cache, and benchmark API mode
+  usage before adding the Rust API tests and benchmark mode.
+- Jenkins hashing was searched across `journal-core`, the Netdata vendored
+  `jf` crate, and systemd v260.1. The empty-hash drift was fixed in
+  `journal-core` and covered by new expected-value tests.
 
 Sensitive data gate:
 
@@ -538,27 +736,31 @@ Sensitive data gate:
 
 Artifact maintenance gate:
 
-- AGENTS.md: no update needed for SOW creation.
-- Runtime project skills: likely future update when reference hierarchy is
-  formalized after audit.
-- Specs: likely future update when reference hierarchy and accepted differences
-  are formalized after audit.
-- End-user/operator docs: no update yet; no behavior changed.
+- AGENTS.md: no update needed for this Rust slice; existing project rules
+  already cover the workflow.
+- Runtime project skills:
+  `.agents/skills/project-journal-compatibility/SKILL.md` updated with the
+  dual-layer writer API hierarchy, trusted unique-payload invariant, and
+  Jenkins empty-hash rule.
+- Specs: `.agents/sow/specs/product-scope.md` updated with the same durable
+  writer API and hashing contracts plus the current Rust writer slice.
+- End-user/operator docs: pending before SOW close. Public Rust API docs may
+  need examples after reviewer pass and before release tagging.
 - End-user/operator skills: no update needed.
-- SOW lifecycle: pending SOW created with `Status: open`.
-- SOW-status.md: updated to record this pending SOW.
+- SOW lifecycle: SOW-0037 moved to current/in-progress and SOW-0009 paused.
+- SOW-status.md: updated to record SOW-0037 in progress and SOW-0009 paused.
 
 Specs update:
 
-- Pending future audit outcome.
+- Updated for the Rust dual-layer writer API and Jenkins hashing contract.
 
 Project skills update:
 
-- Pending future audit outcome.
+- Updated for future journal compatibility work.
 
 End-user/operator docs update:
 
-- Pending future implementation if public behavior changes.
+- Pending before this SOW closes.
 
 End-user/operator skills update:
 
@@ -574,7 +776,11 @@ Lessons:
 
 Follow-up mapping:
 
-- Pending audit.
+- Go must be audited and adjusted against the Rust reference after the Rust
+  review cycle completes.
+- Node.js and Python API parity remain part of later alignment work after Rust
+  and Go are classified.
+- SOW-0036 continues to track measured publication/mmap mode candidates.
 
 ## Outcome
 

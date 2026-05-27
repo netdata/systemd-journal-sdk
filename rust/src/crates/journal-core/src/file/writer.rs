@@ -1,25 +1,17 @@
-#![allow(unused_imports, dead_code)]
-
-use super::mmap::MemoryMapMut;
 use super::mmap::MmapMut;
 use crate::error::{JournalError, Result};
 use crate::file::{
-    CompactDataFields, CompactEntryItem, Compression, DEFAULT_COMPRESS_THRESHOLD, DataHashTable,
-    DataObject, DataObjectHeader, DataPayloadType, EntryObject, EntryObjectHeader, FieldHashTable,
-    FieldObject, FieldObjectHeader, HashItem, HashTable, HashTableMut, HashableObject,
-    HashableObjectMut, HeaderIncompatibleFlags, JournalFile, JournalFileOptions, JournalHeader,
-    JournalState, ObjectFlags, ObjectHeader, ObjectType, RegularEntryItem, hash::jenkins_hash64,
-    journal_hash_data, normalize_compress_threshold,
+    CompactDataFields, CompactEntryItem, Compression, DEFAULT_COMPRESS_THRESHOLD, DataObject,
+    DataObjectHeader, DataPayloadType, EntryObjectHeader, FieldObjectHeader, HashTable,
+    HashableObjectMut, HeaderIncompatibleFlags, JournalFile, JournalHeader, ObjectFlags,
+    ObjectHeader, ObjectType, PayloadParts, RegularEntryItem, hash::jenkins_hash64_parts,
+    normalize_compress_threshold,
 };
 use crate::seal::TAG_LENGTH;
-use rand::{Rng, seq::IndexedRandom};
 use rustc_hash::{FxHashMap, FxHasher};
-use std::borrow::Cow;
 use std::hash::Hasher;
 use std::io::Cursor;
-use std::num::{NonZeroU64, NonZeroUsize};
-use std::path::Path;
-use zerocopy::{FromBytes, IntoBytes};
+use std::num::NonZeroU64;
 
 const OBJECT_ALIGNMENT: u64 = 8;
 const JOURNAL_COMPACT_SIZE_MAX: u64 = u32::MAX as u64;
@@ -40,6 +32,95 @@ fn round_up_to_file_size_increment(value: u64) -> Result<u64> {
 struct EntryItem {
     offset: NonZeroU64,
     hash: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct StructuredField<'a> {
+    /// Field name without the `=` separator.
+    pub name: &'a [u8],
+    /// Field value bytes. Values may contain NUL bytes and `=` bytes.
+    pub value: &'a [u8],
+}
+
+impl<'a> StructuredField<'a> {
+    /// Creates a structured journal field from a name and binary-safe value.
+    pub fn new(name: &'a [u8], value: &'a [u8]) -> Self {
+        Self { name, value }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum EntryField<'a> {
+    /// Full `KEY=value` payload, matching systemd's low-level writer shape.
+    Raw(&'a [u8]),
+    /// Split field name and value, avoiding `KEY=value` reconstruction for
+    /// already-structured producers.
+    Structured(StructuredField<'a>),
+}
+
+impl<'a> EntryField<'a> {
+    /// Creates a raw full-field entry item from a `KEY=value` byte payload.
+    pub fn raw(payload: &'a [u8]) -> Self {
+        Self::Raw(payload)
+    }
+
+    /// Creates a structured entry item from a name and binary-safe value.
+    pub fn structured(name: &'a [u8], value: &'a [u8]) -> Self {
+        Self::Structured(StructuredField::new(name, value))
+    }
+
+    fn payload_parts(self) -> PayloadParts<'a> {
+        match self {
+            Self::Raw(payload) => PayloadParts::raw(payload),
+            Self::Structured(field) => PayloadParts::structured(field.name, field.value),
+        }
+    }
+
+    fn field_name(self) -> Option<&'a [u8]> {
+        match self {
+            Self::Raw(payload) => payload
+                .iter()
+                .position(|&b| b == b'=')
+                .map(|pos| &payload[..pos]),
+            Self::Structured(field) => Some(field.name),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EntryWriteOptions {
+    /// Skips duplicate DATA reference elimination for this ENTRY.
+    ///
+    /// Set this only when the caller guarantees that the entry contains no
+    /// duplicate full `KEY=value` payloads after any field-name remapping.
+    /// Offset sorting by DATA object offset is always performed regardless of
+    /// this flag.
+    /// Misuse can write duplicate DATA offsets into one ENTRY object. Keep the
+    /// default `false` unless the producer owns and enforces that invariant.
+    pub trusted_unique_payloads: bool,
+}
+
+impl EntryWriteOptions {
+    /// Enables or disables the trusted unique-payload fast path.
+    ///
+    /// See [`EntryWriteOptions::trusted_unique_payloads`] for the caller
+    /// invariant required before enabling this option.
+    pub fn trusted_unique_payloads(mut self, enabled: bool) -> Self {
+        self.trusted_unique_payloads = enabled;
+        self
+    }
+}
+
+fn is_journal_field_name_valid(field_name: &[u8]) -> bool {
+    if field_name.is_empty() || field_name.len() > 64 {
+        return false;
+    }
+    if field_name[0].is_ascii_digit() {
+        return false;
+    }
+    field_name
+        .iter()
+        .all(|&b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
 }
 
 #[derive(Debug)]
@@ -98,26 +179,69 @@ impl RecentDataCache {
         Self { entries }
     }
 
+    #[cfg(test)]
     fn get(&self, payload: &[u8]) -> Option<EntryItem> {
-        let entry = self.entries[self.slot(payload)].as_ref()?;
-        (entry.payload.as_ref() == payload).then_some(entry.item)
+        self.get_parts(PayloadParts::raw(payload))
     }
 
+    fn get_parts(&self, payload: PayloadParts<'_>) -> Option<EntryItem> {
+        let entry = self.entries[self.slot_parts(payload)].as_ref()?;
+        payload.equals_slice(&entry.payload).then_some(entry.item)
+    }
+
+    #[cfg(test)]
     fn insert(&mut self, payload: &[u8], item: EntryItem) {
+        self.insert_parts(PayloadParts::raw(payload), item);
+    }
+
+    fn insert_parts(&mut self, payload: PayloadParts<'_>, item: EntryItem) {
         if payload.len() > RECENT_DATA_CACHE_MAX_PAYLOAD_LEN {
             return;
         }
 
-        self.entries[self.slot(payload)] = Some(RecentDataCacheEntry {
+        self.entries[self.slot_parts(payload)] = Some(RecentDataCacheEntry {
             payload: payload.to_vec().into_boxed_slice(),
             item,
         });
     }
 
-    fn slot(&self, payload: &[u8]) -> usize {
+    fn slot_parts(&self, payload: PayloadParts<'_>) -> usize {
         let mut hasher = FxHasher::default();
-        hasher.write(payload);
+        for part in payload.iter() {
+            hasher.write(part);
+        }
         (hasher.finish() as usize) & (self.entries.len() - 1)
+    }
+}
+
+enum StoredDataPayload<'a> {
+    Uncompressed(PayloadParts<'a>),
+    Compressed(Vec<u8>, u8),
+}
+
+impl StoredDataPayload<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Uncompressed(payload) => payload.len(),
+            Self::Compressed(payload, _) => payload.len(),
+        }
+    }
+
+    fn object_flags(&self) -> u8 {
+        match self {
+            Self::Uncompressed(_) => 0,
+            Self::Compressed(_, flags) => *flags,
+        }
+    }
+
+    fn copy_to_data_object(&self, data: &mut DataObject<&mut [u8]>) {
+        match self {
+            Self::Uncompressed(payload) => match &mut data.payload {
+                DataPayloadType::Regular(dst) => payload.copy_to_slice(dst),
+                DataPayloadType::Compact { payload: dst, .. } => payload.copy_to_slice(dst),
+            },
+            Self::Compressed(payload, _) => data.set_payload(payload),
+        }
     }
 }
 
@@ -457,6 +581,72 @@ impl JournalWriter {
         realtime: u64,
         monotonic: u64,
     ) -> Result<()> {
+        self.add_entry_fields_with_options(
+            journal_file,
+            items.iter().copied().map(EntryField::raw),
+            realtime,
+            monotonic,
+            EntryWriteOptions::default(),
+        )
+    }
+
+    pub fn add_entry_structured(
+        &mut self,
+        journal_file: &mut JournalFile<MmapMut>,
+        fields: &[StructuredField<'_>],
+        realtime: u64,
+        monotonic: u64,
+    ) -> Result<()> {
+        self.add_entry_fields_with_options(
+            journal_file,
+            fields.iter().copied().map(EntryField::Structured),
+            realtime,
+            monotonic,
+            EntryWriteOptions::default(),
+        )
+    }
+
+    pub fn add_entry_structured_with_options(
+        &mut self,
+        journal_file: &mut JournalFile<MmapMut>,
+        fields: &[StructuredField<'_>],
+        realtime: u64,
+        monotonic: u64,
+        options: EntryWriteOptions,
+    ) -> Result<()> {
+        self.add_entry_fields_with_options(
+            journal_file,
+            fields.iter().copied().map(EntryField::Structured),
+            realtime,
+            monotonic,
+            options,
+        )
+    }
+
+    pub fn add_entry_fields<'a>(
+        &mut self,
+        journal_file: &mut JournalFile<MmapMut>,
+        fields: impl IntoIterator<Item = EntryField<'a>>,
+        realtime: u64,
+        monotonic: u64,
+    ) -> Result<()> {
+        self.add_entry_fields_with_options(
+            journal_file,
+            fields,
+            realtime,
+            monotonic,
+            EntryWriteOptions::default(),
+        )
+    }
+
+    pub fn add_entry_fields_with_options<'a>(
+        &mut self,
+        journal_file: &mut JournalFile<MmapMut>,
+        fields: impl IntoIterator<Item = EntryField<'a>>,
+        realtime: u64,
+        monotonic: u64,
+        options: EntryWriteOptions,
+    ) -> Result<()> {
         self.ensure_first_tag(journal_file)?;
         self.maybe_append_tag(journal_file, realtime)?;
 
@@ -468,18 +658,26 @@ impl JournalWriter {
         let mut xor_hash = 0;
         {
             self.entry_items.clear();
-            for payload in items {
-                let entry_item = self.add_data(journal_file, payload)?;
+            for field in fields {
+                let entry_item = self.add_data(journal_file, field)?;
                 self.entry_items.push(entry_item);
 
                 // Per journal file format spec: xor_hash always uses Jenkins lookup3,
                 // even for files with HEADER_INCOMPATIBLE_KEYED_HASH flag set
-                xor_hash ^= jenkins_hash64(payload);
+                xor_hash ^= jenkins_hash64_parts(field.payload_parts().iter());
             }
 
-            self.entry_items
-                .sort_unstable_by(|a, b| a.offset.cmp(&b.offset));
-            self.entry_items.dedup_by(|a, b| a.offset == b.offset);
+            if !self
+                .entry_items
+                .windows(2)
+                .all(|items| items[0].offset <= items[1].offset)
+            {
+                self.entry_items
+                    .sort_unstable_by(|a, b| a.offset.cmp(&b.offset));
+            }
+            if !options.trusted_unique_payloads {
+                self.entry_items.dedup_by(|a, b| a.offset == b.offset);
+            }
         }
 
         // write the entry itself
@@ -590,29 +788,35 @@ impl JournalWriter {
     fn add_data(
         &mut self,
         journal_file: &mut JournalFile<MmapMut>,
-        payload: &[u8],
+        field: EntryField<'_>,
     ) -> Result<EntryItem> {
         self.ensure_first_tag(journal_file)?;
 
-        if let Some(entry_item) = self.recent_data_cache.get(payload) {
+        let payload = field.payload_parts();
+        let field_name = field.field_name().ok_or(JournalError::InvalidField)?;
+        if !is_journal_field_name_valid(field_name) {
+            return Err(JournalError::InvalidField);
+        }
+
+        if let Some(entry_item) = self.recent_data_cache.get_parts(payload) {
             return Ok(entry_item);
         }
 
-        let hash = journal_file.hash(payload);
+        let hash = journal_file.hash_parts(payload);
 
-        match journal_file.find_data_offset(hash, payload)? {
+        match journal_file.find_data_offset_parts(hash, payload)? {
             Some(data_offset) => {
                 Self::update_data_hash_chain_depth(journal_file, hash)?;
                 let entry_item = EntryItem {
                     offset: data_offset,
                     hash,
                 };
-                self.recent_data_cache.insert(payload, entry_item);
+                self.recent_data_cache.insert_parts(payload, entry_item);
                 Ok(entry_item)
             }
             None => {
                 let data_offset = self.append_offset;
-                let (stored_payload, object_flags) = self.stored_data_payload(payload);
+                let stored_payload = self.stored_data_payload(payload);
                 let is_compact = Self::is_compact(journal_file);
                 Self::ensure_compact_object_fits(
                     is_compact,
@@ -624,8 +828,8 @@ impl JournalWriter {
                         journal_file.data_mut(data_offset, Some(stored_payload.len() as u64))?;
 
                     data_guard.header.hash = hash;
-                    data_guard.set_payload(&stored_payload);
-                    data_guard.header.object_header.flags = object_flags;
+                    stored_payload.copy_to_data_object(&mut data_guard);
+                    data_guard.header.object_header.flags = stored_payload.object_flags();
 
                     data_guard.header.object_header.aligned_size()
                 };
@@ -637,8 +841,8 @@ impl JournalWriter {
                 Self::update_data_hash_chain_depth(journal_file, hash)?;
                 journal_file.journal_header_mut().n_data += 1;
 
-                if let Some(equals_pos) = payload.iter().position(|&b| b == b'=') {
-                    let field_offset = self.add_field(journal_file, &payload[..equals_pos])?;
+                {
+                    let field_offset = self.add_field(journal_file, field_name)?;
 
                     {
                         let head_data_offset = {
@@ -660,39 +864,57 @@ impl JournalWriter {
                     offset: data_offset,
                     hash,
                 };
-                self.recent_data_cache.insert(payload, entry_item);
+                self.recent_data_cache.insert_parts(payload, entry_item);
                 Ok(entry_item)
             }
         }
     }
 
-    fn stored_data_payload<'a>(&self, payload: &'a [u8]) -> (Cow<'a, [u8]>, u8) {
+    fn stored_data_payload<'a>(&self, payload: PayloadParts<'a>) -> StoredDataPayload<'a> {
         if payload.len() >= self.compress_threshold {
+            let full_payload;
+            let payload_bytes = if let Some(raw) = payload.as_single_slice() {
+                raw
+            } else {
+                // Structured payloads need a contiguous buffer only when compression is
+                // enabled and the payload is large enough to attempt compression.
+                full_payload = payload.to_vec();
+                full_payload.as_slice()
+            };
             match self.compression {
                 Compression::Zstd => {
                     let compressed = ruzstd::encoding::compress_to_vec(
-                        Cursor::new(payload),
+                        Cursor::new(payload_bytes),
                         ruzstd::encoding::CompressionLevel::Fastest,
                     );
-                    let compressed = zstd_frame_with_content_size(compressed, payload.len());
-                    if compressed.len() < payload.len() {
-                        return (Cow::Owned(compressed), ObjectFlags::CompressedZstd as u8);
+                    let compressed = zstd_frame_with_content_size(compressed, payload_bytes.len());
+                    if compressed.len() < payload_bytes.len() {
+                        return StoredDataPayload::Compressed(
+                            compressed,
+                            ObjectFlags::CompressedZstd as u8,
+                        );
                     }
                 }
                 Compression::Xz => {
-                    if payload.len() >= 80 {
-                        if let Ok(compressed) = xz_compress(payload) {
-                            if compressed.len() < payload.len() {
-                                return (Cow::Owned(compressed), ObjectFlags::CompressedXz as u8);
+                    if payload_bytes.len() >= 80 {
+                        if let Ok(compressed) = xz_compress(payload_bytes) {
+                            if compressed.len() < payload_bytes.len() {
+                                return StoredDataPayload::Compressed(
+                                    compressed,
+                                    ObjectFlags::CompressedXz as u8,
+                                );
                             }
                         }
                     }
                 }
                 Compression::Lz4 => {
-                    if payload.len() >= 9 {
-                        let compressed = lz4_compress(payload);
-                        if compressed.len() < payload.len() {
-                            return (Cow::Owned(compressed), ObjectFlags::CompressedLz4 as u8);
+                    if payload_bytes.len() >= 9 {
+                        let compressed = lz4_compress(payload_bytes);
+                        if compressed.len() < payload_bytes.len() {
+                            return StoredDataPayload::Compressed(
+                                compressed,
+                                ObjectFlags::CompressedLz4 as u8,
+                            );
                         }
                     }
                 }
@@ -700,7 +922,7 @@ impl JournalWriter {
             }
         }
 
-        (Cow::Borrowed(payload), 0)
+        StoredDataPayload::Uncompressed(payload)
     }
 
     fn add_field(
@@ -1225,7 +1447,7 @@ fn lz4_compress(payload: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        EntryItem, FIELD_CACHE_MAX_ENTRIES, FIELD_CACHE_MAX_PAYLOAD_LEN, FieldCache,
+        EntryItem, FIELD_CACHE_MAX_ENTRIES, FIELD_CACHE_MAX_PAYLOAD_LEN, FieldCache, PayloadParts,
         RECENT_DATA_CACHE_MAX_PAYLOAD_LEN, RecentDataCache, zstd_frame_with_content_size,
     };
     use std::io::{Cursor, Read};
@@ -1363,14 +1585,15 @@ mod tests {
     // Sealed writer tests
     // ------------------------------------------------------------------
 
-    use super::{JournalFile, JournalWriter};
+    use super::{EntryField, EntryWriteOptions, JournalFile, JournalWriter, StructuredField};
     use crate::file::{
         Compression, DEFAULT_COMPRESS_THRESHOLD, HeaderCompatibleFlags, JournalFileOptions,
         MIN_COMPRESS_THRESHOLD, MmapMut, ObjectFlags, normalize_compress_threshold,
     };
-    use crate::seal::{SealOptions, TAG_LENGTH};
+    use crate::seal::SealOptions;
     #[cfg(unix)]
     use std::os::unix::fs::FileExt;
+    use std::path::Path;
     use std::process::Command;
     use tempfile::TempDir;
 
@@ -1414,11 +1637,14 @@ mod tests {
         let below = payload_with_total_len(DEFAULT_COMPRESS_THRESHOLD - 1);
         let exact = payload_with_total_len(DEFAULT_COMPRESS_THRESHOLD);
 
-        let (_, below_flags) = writer.stored_data_payload(&below);
-        let (stored_exact, exact_flags) = writer.stored_data_payload(&exact);
+        let below_payload = writer.stored_data_payload(PayloadParts::raw(&below));
+        let stored_exact = writer.stored_data_payload(PayloadParts::raw(&exact));
 
-        assert_eq!(below_flags, 0);
-        assert_eq!(exact_flags, ObjectFlags::CompressedZstd as u8);
+        assert_eq!(below_payload.object_flags(), 0);
+        assert_eq!(
+            stored_exact.object_flags(),
+            ObjectFlags::CompressedZstd as u8
+        );
         assert!(stored_exact.len() < exact.len());
     }
 
@@ -1444,12 +1670,15 @@ mod tests {
 
         let writer = zstd_writer(1);
         let small = payload_with_total_len(MIN_COMPRESS_THRESHOLD - 1);
-        let (_, small_flags) = writer.stored_data_payload(&small);
-        assert_eq!(small_flags, 0);
+        let small_payload = writer.stored_data_payload(PayloadParts::raw(&small));
+        assert_eq!(small_payload.object_flags(), 0);
 
         let payload = payload_with_total_len(DEFAULT_COMPRESS_THRESHOLD);
-        let (_, flags) = writer.stored_data_payload(&payload);
-        assert_eq!(flags, ObjectFlags::CompressedZstd as u8);
+        let stored_payload = writer.stored_data_payload(PayloadParts::raw(&payload));
+        assert_eq!(
+            stored_payload.object_flags(),
+            ObjectFlags::CompressedZstd as u8
+        );
     }
 
     fn verification_key(opts: &SealOptions) -> String {
@@ -1467,6 +1696,465 @@ mod tests {
 
     fn journalctl_available() -> bool {
         Command::new("journalctl").arg("--version").output().is_ok()
+    }
+
+    fn write_raw_test_journal(path: &Path, fields: &[&[u8]]) -> Vec<u8> {
+        let repo_file =
+            crate::repository::File::from_path(path).expect("test journal path should parse");
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_file_id(test_uuid(5)),
+        )
+        .expect("create raw journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+        writer
+            .add_entry(&mut journal_file, fields, 1_700_000_060_000_000, 100)
+            .expect("write raw entry");
+        journal_file.sync().expect("sync raw journal");
+        drop(journal_file);
+        std::fs::read(path).expect("read raw journal")
+    }
+
+    fn write_structured_test_journal(
+        path: &Path,
+        fields: &[StructuredField<'_>],
+        options: EntryWriteOptions,
+    ) -> Vec<u8> {
+        let repo_file =
+            crate::repository::File::from_path(path).expect("test journal path should parse");
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_file_id(test_uuid(5)),
+        )
+        .expect("create structured journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+        writer
+            .add_entry_structured_with_options(
+                &mut journal_file,
+                fields,
+                1_700_000_060_000_000,
+                100,
+                options,
+            )
+            .expect("write structured entry");
+        journal_file.sync().expect("sync structured journal");
+        drop(journal_file);
+        std::fs::read(path).expect("read structured journal")
+    }
+
+    fn write_entry_fields_test_journal(
+        path: &Path,
+        fields: &[EntryField<'_>],
+        options: EntryWriteOptions,
+    ) -> (Vec<u8>, usize, Vec<Vec<u8>>) {
+        let repo_file =
+            crate::repository::File::from_path(path).expect("test journal path should parse");
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_file_id(test_uuid(5)),
+        )
+        .expect("create entry-fields journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+        writer
+            .add_entry_fields_with_options(
+                &mut journal_file,
+                fields.iter().copied(),
+                1_700_000_060_000_000,
+                100,
+                options,
+            )
+            .expect("write entry fields");
+
+        let mut entry_offsets = Vec::new();
+        journal_file
+            .entry_offsets(&mut entry_offsets)
+            .expect("collect entry offsets");
+        let entry_offset = entry_offsets[0];
+        let entry_item_count = {
+            let entry = journal_file.entry_ref(entry_offset).expect("entry ref");
+            entry.items.len()
+        };
+        let payloads = journal_file
+            .entry_data_objects(entry_offset)
+            .expect("entry data iterator")
+            .map(|item| item.map(|object| object.raw_payload().to_vec()))
+            .collect::<crate::error::Result<Vec<_>>>()
+            .expect("read payloads");
+
+        journal_file.sync().expect("sync entry-fields journal");
+        drop(journal_file);
+        (
+            std::fs::read(path).expect("read entry-fields journal"),
+            entry_item_count,
+            payloads,
+        )
+    }
+
+    #[derive(Clone)]
+    struct TestField {
+        raw: Vec<u8>,
+        name: Vec<u8>,
+        value: Vec<u8>,
+    }
+
+    impl TestField {
+        fn new(name: Vec<u8>, value: Vec<u8>) -> Self {
+            let mut raw = Vec::with_capacity(name.len() + 1 + value.len());
+            raw.extend_from_slice(&name);
+            raw.push(b'=');
+            raw.extend_from_slice(&value);
+            Self { raw, name, value }
+        }
+
+        fn from_str(name: &str, value: impl AsRef<[u8]>) -> Self {
+            Self::new(name.as_bytes().to_vec(), value.as_ref().to_vec())
+        }
+
+        fn structured(&self) -> StructuredField<'_> {
+            StructuredField::new(&self.name, &self.value)
+        }
+    }
+
+    fn make_raw_structured_identity_rows(rows: usize) -> Vec<Vec<TestField>> {
+        let mut all = Vec::with_capacity(rows);
+        for row in 0..rows {
+            let mut fields = Vec::with_capacity(18);
+            fields.push(TestField::from_str("TEST_ID", "raw-structured-identity"));
+            fields.push(TestField::from_str("PERF_PROFILE", "mixed-cardinality"));
+            fields.push(TestField::from_str("EMPTY_VALUE", b""));
+            fields.push(TestField::from_str(
+                "BINARY_VALUE",
+                [0, b'=', (row & 0xff) as u8, 0xff],
+            ));
+
+            for offset in 0..6 {
+                fields.push(TestField::from_str(
+                    &format!("LOW_CARD_{offset:02}"),
+                    format!("low-{offset:02}-{:02}", row % 16),
+                ));
+            }
+            for offset in 0..4 {
+                fields.push(TestField::from_str(
+                    &format!("MED_CARD_{offset:02}"),
+                    format!("medium-{offset:02}-{:04}", row % 257),
+                ));
+            }
+            for offset in 0..4 {
+                fields.push(TestField::from_str(
+                    &format!("HIGH_CARD_{offset:02}"),
+                    format!("high-{offset:02}-{row:06}"),
+                ));
+            }
+            all.push(fields);
+        }
+        all
+    }
+
+    fn write_rows_raw_test_journal(
+        path: &Path,
+        rows: &[Vec<TestField>],
+        options: EntryWriteOptions,
+    ) -> Vec<u8> {
+        let repo_file =
+            crate::repository::File::from_path(path).expect("test journal path should parse");
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_file_id(test_uuid(5)),
+        )
+        .expect("create raw corpus journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+        let mut entry_fields = Vec::with_capacity(32);
+        for (index, row) in rows.iter().enumerate() {
+            entry_fields.clear();
+            entry_fields.extend(
+                row.iter()
+                    .map(|field| EntryField::raw(field.raw.as_slice())),
+            );
+            writer
+                .add_entry_fields_with_options(
+                    &mut journal_file,
+                    entry_fields.iter().copied(),
+                    1_700_000_060_000_000 + index as u64 * 500,
+                    100 + index as u64 * 50,
+                    options,
+                )
+                .expect("write raw corpus entry");
+        }
+        journal_file.sync().expect("sync raw corpus journal");
+        drop(journal_file);
+        std::fs::read(path).expect("read raw corpus journal")
+    }
+
+    fn write_rows_structured_test_journal(
+        path: &Path,
+        rows: &[Vec<TestField>],
+        options: EntryWriteOptions,
+    ) -> Vec<u8> {
+        let repo_file =
+            crate::repository::File::from_path(path).expect("test journal path should parse");
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_file_id(test_uuid(5)),
+        )
+        .expect("create structured corpus journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+        let mut structured_fields = Vec::with_capacity(32);
+        for (index, row) in rows.iter().enumerate() {
+            structured_fields.clear();
+            structured_fields.extend(row.iter().map(TestField::structured));
+            writer
+                .add_entry_structured_with_options(
+                    &mut journal_file,
+                    &structured_fields,
+                    1_700_000_060_000_000 + index as u64 * 500,
+                    100 + index as u64 * 50,
+                    options,
+                )
+                .expect("write structured corpus entry");
+        }
+        journal_file.sync().expect("sync structured corpus journal");
+        drop(journal_file);
+        std::fs::read(path).expect("read structured corpus journal")
+    }
+
+    #[test]
+    fn structured_writer_matches_raw_payload_writer_bytes() {
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let raw_path = journal_dir.join("raw.journal");
+        let structured_path = journal_dir.join("structured.journal");
+
+        let raw_fields = [
+            b"MESSAGE=structured parity".as_slice(),
+            b"PRIORITY=6".as_slice(),
+            b"BINARY=\x00=\x01\xfe\xff".as_slice(),
+        ];
+        let structured_fields = [
+            StructuredField::new(b"MESSAGE", b"structured parity"),
+            StructuredField::new(b"PRIORITY", b"6"),
+            StructuredField::new(b"BINARY", b"\x00=\x01\xfe\xff"),
+        ];
+
+        let raw_bytes = write_raw_test_journal(&raw_path, &raw_fields);
+        let structured_bytes = write_structured_test_journal(
+            &structured_path,
+            &structured_fields,
+            EntryWriteOptions::default(),
+        );
+
+        assert_eq!(structured_bytes, raw_bytes);
+
+        if !journalctl_available() {
+            eprintln!("journalctl not available; skipping structured stock verify");
+            return;
+        }
+        let output = Command::new("journalctl")
+            .arg("--verify")
+            .arg("--file")
+            .arg(&structured_path)
+            .output()
+            .expect("run journalctl verify");
+        assert!(
+            output.status.success(),
+            "journalctl verify failed for structured file: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn mixed_entry_fields_match_raw_payload_writer_bytes() {
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let raw_path = journal_dir.join("raw.journal");
+        let mixed_path = journal_dir.join("mixed.journal");
+
+        let raw_fields = [
+            EntryField::raw(b"MESSAGE=mixed entry"),
+            EntryField::raw(b"PRIORITY=6"),
+            EntryField::raw(b"BINARY=\x00=\x01\xfe\xff"),
+        ];
+        let mixed_fields = [
+            EntryField::raw(b"MESSAGE=mixed entry"),
+            EntryField::structured(b"PRIORITY", b"6"),
+            EntryField::structured(b"BINARY", b"\x00=\x01\xfe\xff"),
+        ];
+
+        let (raw_bytes, _, _) =
+            write_entry_fields_test_journal(&raw_path, &raw_fields, EntryWriteOptions::default());
+        let (mixed_bytes, _, _) = write_entry_fields_test_journal(
+            &mixed_path,
+            &mixed_fields,
+            EntryWriteOptions::default(),
+        );
+
+        assert_eq!(mixed_bytes, raw_bytes);
+    }
+
+    #[test]
+    fn structured_writer_preserves_binary_field_values() {
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3)),
+        )
+        .expect("create journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+        writer
+            .add_entry_structured(
+                &mut journal_file,
+                &[
+                    StructuredField::new(b"MESSAGE", b"binary structured"),
+                    StructuredField::new(b"BINARY", b"\x00=\x01\xfe\xff"),
+                ],
+                1_700_000_060_000_000,
+                100,
+            )
+            .expect("write structured binary entry");
+        journal_file.sync().expect("sync journal");
+
+        let mut entry_offsets = Vec::new();
+        journal_file
+            .entry_offsets(&mut entry_offsets)
+            .expect("collect entry offsets");
+        let payloads = journal_file
+            .entry_data_objects(entry_offsets[0])
+            .expect("entry data iterator")
+            .map(|item| item.map(|object| object.raw_payload().to_vec()))
+            .collect::<crate::error::Result<Vec<_>>>()
+            .expect("read payloads");
+
+        assert!(payloads.iter().any(|p| p == b"MESSAGE=binary structured"));
+        assert!(payloads.iter().any(|p| p == b"BINARY=\x00=\x01\xfe\xff"));
+    }
+
+    #[test]
+    fn structured_writer_rejects_invalid_field_names_before_writing() {
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3)),
+        )
+        .expect("create journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+
+        assert!(
+            writer
+                .add_entry_structured(
+                    &mut journal_file,
+                    &[StructuredField::new(b"not-valid", b"value")],
+                    1_700_000_060_000_000,
+                    100,
+                )
+                .is_err()
+        );
+        assert_eq!(journal_file.journal_header_ref().n_entries, 0);
+    }
+
+    #[test]
+    fn trusted_unique_payloads_keeps_unique_entry_output_identical() {
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let default_path = journal_dir.join("default.journal");
+        let trusted_path = journal_dir.join("trusted.journal");
+
+        let fields = [
+            StructuredField::new(b"MESSAGE", b"trusted unique"),
+            StructuredField::new(b"PRIORITY", b"6"),
+            StructuredField::new(b"SYSLOG_IDENTIFIER", b"journal-core-test"),
+        ];
+        let default_bytes =
+            write_structured_test_journal(&default_path, &fields, EntryWriteOptions::default());
+        let trusted_bytes = write_structured_test_journal(
+            &trusted_path,
+            &fields,
+            EntryWriteOptions::default().trusted_unique_payloads(true),
+        );
+
+        assert_eq!(trusted_bytes, default_bytes);
+    }
+
+    #[test]
+    fn structured_writer_deduplicates_duplicate_payloads_by_default() {
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let default_path = journal_dir.join("default.journal");
+        let trusted_path = journal_dir.join("trusted.journal");
+
+        let fields = [
+            EntryField::structured(b"MESSAGE", b"duplicate"),
+            EntryField::structured(b"MESSAGE", b"duplicate"),
+            EntryField::structured(b"PRIORITY", b"6"),
+        ];
+
+        let (_, default_count, default_payloads) =
+            write_entry_fields_test_journal(&default_path, &fields, EntryWriteOptions::default());
+        assert_eq!(default_count, 2);
+        assert_eq!(
+            default_payloads
+                .iter()
+                .filter(|payload| payload.as_slice() == b"MESSAGE=duplicate")
+                .count(),
+            1
+        );
+
+        let (_, trusted_count, trusted_payloads) = write_entry_fields_test_journal(
+            &trusted_path,
+            &fields,
+            EntryWriteOptions::default().trusted_unique_payloads(true),
+        );
+        assert_eq!(trusted_count, 3);
+        assert_eq!(
+            trusted_payloads
+                .iter()
+                .filter(|payload| payload.as_slice() == b"MESSAGE=duplicate")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn structured_writer_matches_raw_payload_writer_bytes_across_deterministic_corpus() {
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let raw_path = journal_dir.join("raw.journal");
+        let structured_path = journal_dir.join("structured.journal");
+        let rows = make_raw_structured_identity_rows(512);
+        let options = EntryWriteOptions::default().trusted_unique_payloads(true);
+
+        let raw_bytes = write_rows_raw_test_journal(&raw_path, &rows, options);
+        let structured_bytes = write_rows_structured_test_journal(&structured_path, &rows, options);
+
+        assert_eq!(structured_bytes, raw_bytes);
     }
 
     #[test]
@@ -1670,7 +2358,6 @@ mod tests {
 
         // Tamper with a byte in the DATA object payload area
         use std::fs::OpenOptions;
-        use std::io::Write;
         let f = OpenOptions::new()
             .write(true)
             .open(&path)
