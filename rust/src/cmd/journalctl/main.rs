@@ -1,14 +1,18 @@
 use anyhow::{Result, anyhow};
+use chrono::{Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
 use clap::{Parser, ValueEnum};
 use journal::{
-    FacadeError, FileReader, OutputMode, SdJournal, SdJournalAddDisjunction, SdJournalAddMatch,
-    SdJournalEnumerateFields, SdJournalGetEntry, SdJournalListBoots, SdJournalNext, SdJournalOpen,
-    SdJournalPrevious, SdJournalProcessOutput, SdJournalSeekHead, SdJournalSeekTail,
-    SdJournalSetOutputMode, parse_match_string, verify_file, verify_file_with_key,
+    Entry, FacadeError, FileReader, OutputMode, SdJournal, SdJournalAddConjunction,
+    SdJournalAddDisjunction, SdJournalAddMatch, SdJournalEnumerateFields, SdJournalGetEntry,
+    SdJournalListBoots, SdJournalNext, SdJournalOpen, SdJournalProcessOutput, SdJournalSeekHead,
+    SdJournalSeekRealtimeUsec, SdJournalSetOutputMode, parse_match_string, verify_file,
+    verify_file_with_key,
 };
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::exit;
+use std::thread;
+use std::time::Duration;
 
 // HEADER_COMPATIBLE_SEALED from systemd journal-def.h
 const COMPATIBLE_SEALED: u32 = 1;
@@ -33,6 +37,14 @@ struct Args {
     tail: Option<usize>,
     #[arg(long = "follow")]
     follow: bool,
+    #[arg(long = "no-tail")]
+    no_tail: bool,
+    #[arg(short = 'b', long = "boot", num_args = 0..=1, default_missing_value = "")]
+    boot: Option<String>,
+    #[arg(short = 'S', long = "since")]
+    since: Option<String>,
+    #[arg(short = 'U', long = "until")]
+    until: Option<String>,
     #[arg(long = "sync")]
     sync: bool,
     #[arg(long = "flush")]
@@ -77,8 +89,8 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let args = Args::parse();
-    if args.follow || args.sync || args.flush || args.rotate || args.relinquish_var {
+    let args = Args::parse_from(preprocess_optional_boot_args(std::env::args()));
+    if args.sync || args.flush || args.rotate || args.relinquish_var {
         return Err(anyhow!("{}", FacadeError::Unsupported));
     }
 
@@ -92,10 +104,20 @@ fn run() -> Result<()> {
         return run_verify(path, args.verify_key.as_deref());
     }
 
-    let mut journal =
-        SdJournalOpen(&path.to_string_lossy(), 0).map_err(|err| anyhow!("open: {err}"))?;
-    apply_matches(&mut journal, &args.matches)?;
-    SdJournalSetOutputMode(&mut journal, args.output.into());
+    let since_usec = parse_optional_timestamp(args.since.as_deref())?;
+    let until_usec = parse_optional_timestamp(args.until.as_deref())?;
+    if let (Some(since), Some(until)) = (since_usec, until_usec) {
+        if since > until {
+            return Err(anyhow!("--since= must be before --until=."));
+        }
+    }
+
+    if args.follow {
+        let tail = args.tail.unwrap_or(10);
+        return run_follow(path, &args, since_usec, until_usec, tail);
+    }
+
+    let mut journal = open_filtered_journal(path, &args)?;
 
     if args.list_boots {
         for boot in SdJournalListBoots(&mut journal).map_err(|err| anyhow!("list boots: {err}"))? {
@@ -118,10 +140,70 @@ fn run() -> Result<()> {
     }
 
     if let Some(n) = args.tail {
-        show_tail(&mut journal, n)
+        show_tail(&mut journal, n, since_usec, until_usec)
     } else {
-        show_head_or_all(&mut journal, args.head)
+        show_head_or_all(&mut journal, args.head, since_usec, until_usec)
     }
+}
+
+fn preprocess_optional_boot_args<I>(args: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut input = args.into_iter().peekable();
+    let mut out = Vec::new();
+    while let Some(arg) = input.next() {
+        if arg == "--boot" || arg == "-b" {
+            if let Some(next) = input.peek() {
+                if looks_like_boot_descriptor(next) {
+                    let next = input.next().unwrap();
+                    out.push(format!("{arg}={next}"));
+                    continue;
+                }
+            }
+            out.push(format!("{arg}="));
+            continue;
+        }
+        out.push(arg);
+    }
+    out
+}
+
+fn looks_like_boot_descriptor(value: &str) -> bool {
+    value == "all"
+        || value.parse::<isize>().is_ok()
+        || parse_boot_id_prefix(value)
+            .map(|id| {
+                let consumed = if value.as_bytes().get(8) == Some(&b'-') {
+                    36
+                } else {
+                    32
+                };
+                let rest = &value[consumed..];
+                !id.is_empty() && (rest.is_empty() || rest.parse::<isize>().is_ok())
+            })
+            .unwrap_or(false)
+}
+
+fn open_filtered_journal(path: &Path, args: &Args) -> Result<SdJournal> {
+    let mut journal =
+        SdJournalOpen(&path.to_string_lossy(), 0).map_err(|err| anyhow!("open: {err}"))?;
+    if let Some(boot) = args.boot.as_deref() {
+        if boot.trim() != "all" {
+            let boot_id = resolve_boot_id(&mut journal, boot.trim())?;
+            if !boot_id.is_empty() {
+                let data = parse_match_string(&format!("_BOOT_ID={boot_id}"))
+                    .map_err(|err| anyhow!("invalid boot match: {err}"))?;
+                SdJournalAddMatch(&mut journal, &data)
+                    .map_err(|err| anyhow!("add boot match: {err}"))?;
+                SdJournalAddConjunction(&mut journal)
+                    .map_err(|err| anyhow!("add boot conjunction: {err}"))?;
+            }
+        }
+    }
+    apply_matches(&mut journal, &args.matches)?;
+    SdJournalSetOutputMode(&mut journal, args.output.clone().into());
+    Ok(journal)
 }
 
 fn run_verify(path: &Path, verify_key: Option<&str>) -> Result<()> {
@@ -329,54 +411,395 @@ fn apply_matches(journal: &mut SdJournal, matches: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn show_head_or_all(journal: &mut SdJournal, limit: Option<usize>) -> Result<()> {
-    SdJournalSeekHead(journal).map_err(|err| anyhow!("seek head: {err}"))?;
+fn show_head_or_all(
+    journal: &mut SdJournal,
+    limit: Option<usize>,
+    since_usec: Option<u64>,
+    until_usec: Option<u64>,
+) -> Result<()> {
     let mut shown = 0usize;
-    loop {
+    for entry in matching_entries(journal, since_usec, until_usec)? {
         if limit.is_some_and(|limit| shown >= limit) {
-            return Ok(());
-        }
-        match SdJournalNext(journal).map_err(|err| anyhow!("next: {err}"))? {
-            0 => return Ok(()),
-            _ => {
-                write_current(journal)?;
-                shown += 1;
-            }
-        }
-    }
-}
-
-fn show_tail(journal: &mut SdJournal, limit: usize) -> Result<()> {
-    SdJournalSeekTail(journal).map_err(|err| anyhow!("seek tail: {err}"))?;
-    let mut entries = Vec::new();
-    loop {
-        if entries.len() >= limit {
             break;
         }
-        match SdJournalPrevious(journal).map_err(|err| anyhow!("previous: {err}"))? {
-            0 => break,
-            _ => {
-                let entry =
-                    SdJournalGetEntry(journal).map_err(|err| anyhow!("get entry: {err}"))?;
-                let output = SdJournalProcessOutput(journal, &entry)
-                    .map_err(|err| anyhow!("output: {err}"))?;
-                entries.push(output);
-            }
-        }
+        write_entry(journal, &entry)?;
+        shown += 1;
     }
+    Ok(())
+}
 
+fn show_tail(
+    journal: &mut SdJournal,
+    limit: usize,
+    since_usec: Option<u64>,
+    until_usec: Option<u64>,
+) -> Result<()> {
+    let entries = matching_entries(journal, since_usec, until_usec)?;
+    let outputs = entries
+        .iter()
+        .map(|entry| SdJournalProcessOutput(journal, entry).map_err(|err| anyhow!("output: {err}")))
+        .collect::<Result<Vec<_>>>()?;
+    let start = outputs.len().saturating_sub(limit);
     let mut stdout = std::io::stdout().lock();
-    for entry in entries.iter().rev() {
+    for entry in &outputs[start..] {
         stdout.write_all(entry)?;
     }
     Ok(())
 }
 
-fn write_current(journal: &mut SdJournal) -> Result<()> {
-    let entry = SdJournalGetEntry(journal).map_err(|err| anyhow!("get entry: {err}"))?;
-    let output = SdJournalProcessOutput(journal, &entry).map_err(|err| anyhow!("output: {err}"))?;
+fn write_entry(journal: &mut SdJournal, entry: &Entry) -> Result<()> {
+    let output = SdJournalProcessOutput(journal, entry).map_err(|err| anyhow!("output: {err}"))?;
     std::io::stdout().lock().write_all(&output)?;
     Ok(())
+}
+
+fn matching_entries(
+    journal: &mut SdJournal,
+    since_usec: Option<u64>,
+    until_usec: Option<u64>,
+) -> Result<Vec<Entry>> {
+    if let Some(since) = since_usec {
+        SdJournalSeekRealtimeUsec(journal, since).map_err(|err| anyhow!("seek realtime: {err}"))?;
+    } else {
+        SdJournalSeekHead(journal).map_err(|err| anyhow!("seek head: {err}"))?;
+    }
+    let mut out = Vec::new();
+    loop {
+        match SdJournalNext(journal).map_err(|err| anyhow!("next: {err}"))? {
+            0 => break,
+            _ => {
+                let entry =
+                    SdJournalGetEntry(journal).map_err(|err| anyhow!("get entry: {err}"))?;
+                if until_usec.is_some_and(|until| entry.realtime > until) {
+                    break;
+                }
+                if since_usec.is_none_or(|since| entry.realtime >= since)
+                    && until_usec.is_none_or(|until| entry.realtime <= until)
+                {
+                    out.push(entry);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Clone)]
+struct BootEntry {
+    boot_id: String,
+    first_entry: u64,
+    last_entry: u64,
+}
+
+fn collect_boots(journal: &mut SdJournal) -> Result<Vec<BootEntry>> {
+    use std::collections::HashMap;
+
+    SdJournalSeekHead(journal).map_err(|err| anyhow!("seek head: {err}"))?;
+    let mut boots: HashMap<String, BootEntry> = HashMap::new();
+    loop {
+        match SdJournalNext(journal).map_err(|err| anyhow!("next: {err}"))? {
+            0 => break,
+            _ => {
+                let entry =
+                    SdJournalGetEntry(journal).map_err(|err| anyhow!("get entry: {err}"))?;
+                let boot_id = hex::encode(entry.boot_id);
+                if boot_id.chars().all(|ch| ch == '0') {
+                    continue;
+                }
+                boots
+                    .entry(boot_id.clone())
+                    .and_modify(|boot| {
+                        boot.first_entry = boot.first_entry.min(entry.realtime);
+                        boot.last_entry = boot.last_entry.max(entry.realtime);
+                    })
+                    .or_insert(BootEntry {
+                        boot_id,
+                        first_entry: entry.realtime,
+                        last_entry: entry.realtime,
+                    });
+            }
+        }
+    }
+    let mut out: Vec<_> = boots.into_values().collect();
+    out.sort_by(|a, b| {
+        a.first_entry
+            .cmp(&b.first_entry)
+            .then_with(|| a.boot_id.cmp(&b.boot_id))
+    });
+    Ok(out)
+}
+
+fn resolve_boot_id(journal: &mut SdJournal, descriptor: &str) -> Result<String> {
+    if descriptor == "all" {
+        return Ok(String::new());
+    }
+    let (boot_id, offset) = parse_boot_descriptor(descriptor)?;
+    let boots = collect_boots(journal)?;
+    if boots.is_empty() {
+        return Err(anyhow!(
+            "no journal boot entry found for the specified boot"
+        ));
+    }
+    let target = if !boot_id.is_empty() {
+        let base = boots
+            .iter()
+            .position(|boot| boot.boot_id == boot_id)
+            .ok_or_else(|| {
+                anyhow!(
+                    "no journal boot entry found for the specified boot ({}{offset:+})",
+                    boot_id
+                )
+            })?;
+        base as isize + offset
+    } else if offset > 0 {
+        offset - 1
+    } else {
+        boots.len() as isize - 1 + offset
+    };
+    if target < 0 || target as usize >= boots.len() {
+        return Err(anyhow!(
+            "no journal boot entry found for the specified boot ({}{offset:+})",
+            boot_id
+        ));
+    }
+    Ok(boots[target as usize].boot_id.clone())
+}
+
+fn parse_boot_descriptor(descriptor: &str) -> Result<(String, isize)> {
+    if descriptor.is_empty() {
+        return Ok((String::new(), 0));
+    }
+    let (boot_id, rest) = if let Some(id) = parse_boot_id_prefix(descriptor) {
+        let consumed = if descriptor.as_bytes().get(8) == Some(&b'-') {
+            36
+        } else {
+            32
+        };
+        (id, &descriptor[consumed..])
+    } else {
+        (String::new(), descriptor)
+    };
+    let offset = if rest.is_empty() {
+        0
+    } else {
+        rest.parse::<isize>()
+            .map_err(|_| anyhow!("failed to parse boot descriptor: {descriptor}"))?
+    };
+    Ok((boot_id, offset))
+}
+
+fn parse_boot_id_prefix(value: &str) -> Option<String> {
+    if value.len() >= 32 && value[..32].bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Some(value[..32].to_ascii_lowercase());
+    }
+    if value.len() >= 36 {
+        let candidate = &value[..36];
+        let valid = candidate.bytes().enumerate().all(|(idx, b)| {
+            if matches!(idx, 8 | 13 | 18 | 23) {
+                b == b'-'
+            } else {
+                b.is_ascii_hexdigit()
+            }
+        });
+        if valid {
+            return Some(candidate.replace('-', "").to_ascii_lowercase());
+        }
+    }
+    None
+}
+
+fn parse_optional_timestamp(value: Option<&str>) -> Result<Option<u64>> {
+    value
+        .filter(|v| !v.trim().is_empty())
+        .map(parse_timestamp_usec)
+        .transpose()
+}
+
+fn parse_timestamp_usec(value: &str) -> Result<u64> {
+    let value = value.trim();
+    match value {
+        "now" => return Ok(Local::now().timestamp_micros() as u64),
+        "today" | "yesterday" | "tomorrow" => {
+            let today = Local::now().date_naive();
+            let date = match value {
+                "yesterday" => today.pred_opt().ok_or_else(|| anyhow!("date underflow"))?,
+                "tomorrow" => today.succ_opt().ok_or_else(|| anyhow!("date overflow"))?,
+                _ => today,
+            };
+            return local_datetime_to_usec(date.and_hms_opt(0, 0, 0).unwrap());
+        }
+        _ => {}
+    }
+    if let Some(epoch) = value.strip_prefix('@') {
+        return parse_epoch_timestamp_usec(epoch);
+    }
+    if matches!(value.as_bytes().first(), Some(b'+' | b'-'))
+        && !value
+            .get(1..5)
+            .is_some_and(|year| year.bytes().all(|b| b.is_ascii_digit()))
+    {
+        let delta = parse_duration_usec(&value[1..])? as i64;
+        let now = Local::now().timestamp_micros();
+        return Ok(if value.starts_with('+') {
+            now + delta
+        } else {
+            now - delta
+        } as u64);
+    }
+    parse_local_timestamp_usec(value)
+}
+
+fn parse_epoch_timestamp_usec(value: &str) -> Result<u64> {
+    let (whole, frac) = value.split_once('.').unwrap_or((value, ""));
+    if whole.is_empty()
+        || !whole.bytes().all(|b| b.is_ascii_digit())
+        || !frac.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(anyhow!("failed to parse timestamp: @{value}"));
+    }
+    let seconds = whole.parse::<u64>()?;
+    let mut frac_padded = frac.to_string();
+    frac_padded.push_str("000000");
+    let usec = frac_padded[..6].parse::<u64>()?;
+    Ok(seconds * 1_000_000 + usec)
+}
+
+fn parse_local_timestamp_usec(value: &str) -> Result<u64> {
+    for fmt in [
+        "%Y-%m-%d %H:%M:%S%.f",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+    ] {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(value, fmt) {
+            return local_datetime_to_usec(dt);
+        }
+    }
+    if let Ok(date) = NaiveDate::parse_from_str(value, "%Y-%m-%d") {
+        return local_datetime_to_usec(date.and_hms_opt(0, 0, 0).unwrap());
+    }
+    for fmt in ["%H:%M:%S%.f", "%H:%M:%S", "%H:%M"] {
+        if let Ok(time) = NaiveTime::parse_from_str(value, fmt) {
+            let date = Local::now().date_naive();
+            return local_datetime_to_usec(date.and_time(time));
+        }
+    }
+    Err(anyhow!("failed to parse timestamp: {value}"))
+}
+
+fn local_datetime_to_usec(dt: NaiveDateTime) -> Result<u64> {
+    let local = Local
+        .from_local_datetime(&dt)
+        .earliest()
+        .ok_or_else(|| anyhow!("failed to parse local timestamp"))?;
+    Ok(local.timestamp_micros() as u64)
+}
+
+fn parse_duration_usec(value: &str) -> Result<u64> {
+    let mut total = 0_f64;
+    let bytes = value.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let start = i;
+        while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+            i += 1;
+        }
+        if start == i {
+            return Err(anyhow!("failed to parse duration: {value}"));
+        }
+        let number = value[start..i].parse::<f64>()?;
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let unit_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+            i += 1;
+        }
+        let unit = if unit_start == i {
+            "s"
+        } else {
+            &value[unit_start..i]
+        };
+        total += number * duration_unit_multiplier(unit)?;
+    }
+    if total == 0_f64 {
+        return Err(anyhow!("failed to parse duration: {value}"));
+    }
+    Ok(total as u64)
+}
+
+fn duration_unit_multiplier(unit: &str) -> Result<f64> {
+    match unit.to_ascii_lowercase().as_str() {
+        "us" | "usec" | "usecs" => Ok(1_f64),
+        "ms" | "msec" | "msecs" => Ok(1_000_f64),
+        "s" | "sec" | "secs" | "second" | "seconds" => Ok(1_000_000_f64),
+        "m" | "min" | "mins" | "minute" | "minutes" => Ok(60_000_000_f64),
+        "h" | "hr" | "hour" | "hours" => Ok(3_600_000_000_f64),
+        "d" | "day" | "days" => Ok(86_400_000_000_f64),
+        "w" | "week" | "weeks" => Ok(604_800_000_000_f64),
+        _ => Err(anyhow!("failed to parse duration unit: {unit}")),
+    }
+}
+
+fn scan_follow_snapshot(
+    path: &Path,
+    args: &Args,
+    since_usec: Option<u64>,
+    until_usec: Option<u64>,
+) -> Vec<(String, Vec<u8>)> {
+    let Ok(mut journal) = open_filtered_journal(path, args) else {
+        return Vec::new();
+    };
+    let Ok(entries) = matching_entries(&mut journal, since_usec, until_usec) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let output = SdJournalProcessOutput(&mut journal, entry).ok()?;
+            Some((entry.cursor.clone(), output))
+        })
+        .collect()
+}
+
+fn run_follow(
+    path: &Path,
+    args: &Args,
+    since_usec: Option<u64>,
+    until_usec: Option<u64>,
+    tail: usize,
+) -> Result<()> {
+    use std::collections::HashSet;
+
+    let mut seen = HashSet::new();
+    let initial = scan_follow_snapshot(path, args, since_usec, until_usec);
+    for (cursor, _) in &initial {
+        seen.insert(cursor.clone());
+    }
+    let start = if args.no_tail || since_usec.is_some() {
+        0
+    } else {
+        initial.len().saturating_sub(tail)
+    };
+    {
+        let mut stdout = std::io::stdout().lock();
+        for (_, output) in &initial[start..] {
+            stdout.write_all(output)?;
+        }
+    }
+
+    loop {
+        thread::sleep(Duration::from_millis(100));
+        let snapshot = scan_follow_snapshot(path, args, since_usec, until_usec);
+        let mut stdout = std::io::stdout().lock();
+        for (cursor, output) in snapshot {
+            if seen.insert(cursor) {
+                stdout.write_all(&output)?;
+            }
+        }
+    }
 }
 
 #[cfg(test)]

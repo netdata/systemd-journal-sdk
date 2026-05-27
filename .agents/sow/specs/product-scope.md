@@ -367,9 +367,10 @@ Current Go reader feature slice:
 - systemd-compatible JSON output for duplicate fields and binary values;
 - libsystemd-style match tree behavior from `sd_journal_add_match()`,
   `sd_journal_add_disjunction()`, and `sd_journal_add_conjunction()`;
-- file-backed Go journalctl behavior for `--file`, `--directory`, text/json/export
-  output, field listing, boot listing, repeated same-field OR matches, and `+`
-  disjunction;
+- file-backed Go journalctl behavior for `--file`, `--directory`,
+  text/json/export output, field listing, boot listing, realtime range
+  filtering with `--since`/`--until`, boot filtering with `--boot`, follow mode
+  with `--follow`, repeated same-field OR matches, and `+` disjunction;
 - Go conformance adapter support for reader, matching, importer, compression,
   cursor, enumeration, stream, export, and file-backed journalctl cases.
 
@@ -428,16 +429,18 @@ Current Rust reader feature slice:
   systemd-compatible export/json/text formatting;
 - libsystemd-style match tree behavior from `SdJournalAddMatch()`,
   `SdJournalAddDisjunction()`, and `SdJournalAddConjunction()`;
-- file-backed Rust journalctl behavior for `--file`, `--directory`, text/json/export
-  output, field listing, boot listing, repeated same-field OR matches, and `+`
-  disjunction;
+- file-backed Rust journalctl behavior for `--file`, `--directory`,
+  text/json/export output, field listing, boot listing, realtime range
+  filtering with `--since`/`--until`, boot filtering with `--boot`, follow mode
+  with `--follow`, repeated same-field OR matches, and `+` disjunction;
 - Rust conformance adapter support for reader, matching, importer, compression,
   cursor, enumeration, stream, export, header parsing, and file-backed
   journalctl cases.
 
 Current Rust reader limitations:
 
-- boot listing uses file-level boot metadata in this slice;
+- boot listing APIs use file-level boot metadata in this slice; file-backed
+  `--boot` filtering scans entry `_BOOT_ID` values;
 - daemon-only journalctl operations remain unsupported.
 
 Current Node.js writer feature slice:
@@ -492,15 +495,17 @@ Current Node.js reader feature slice:
 - libsystemd-style match tree behavior from `SdJournalAddMatch()`,
   `SdJournalAddDisjunction()`, and `SdJournalAddConjunction()`;
 - file-backed Node.js journalctl behavior for `--file`, `--directory`,
-  text/json/export output, field listing, boot listing, repeated same-field OR
-  matches, and `+` disjunction;
+  text/json/export output, field listing, boot listing, realtime range
+  filtering with `--since`/`--until`, boot filtering with `--boot`, follow mode
+  with `--follow`, repeated same-field OR matches, and `+` disjunction;
 - Node.js conformance adapter support for reader, matching, importer,
   compression, cursor, enumeration, stream, export, header parsing, and
   file-backed journalctl cases.
 
 Current Node.js reader/writer limitations:
 
-- boot listing uses file-level boot metadata in this slice;
+- boot listing APIs use file-level boot metadata in this slice; file-backed
+  `--boot` filtering scans entry `_BOOT_ID` values;
 - daemon-only journalctl operations remain unsupported.
 
 Current Python writer feature slice:
@@ -556,15 +561,17 @@ Current Python reader feature slice:
 - libsystemd-style match tree behavior from `SdJournalAddMatch()`,
   `SdJournalAddDisjunction()`, and `SdJournalAddConjunction()`;
 - file-backed Python journalctl behavior for `--file`, `--directory`,
-  text/json/export output, field listing, boot listing, repeated same-field OR
-  matches, and `+` disjunction;
+  text/json/export output, field listing, boot listing, realtime range
+  filtering with `--since`/`--until`, boot filtering with `--boot`, follow mode
+  with `--follow`, repeated same-field OR matches, and `+` disjunction;
 - Python conformance adapter support for reader, matching, importer,
   compression, cursor, enumeration, stream, export, header parsing, and
   file-backed journalctl cases.
 
 Current Python reader/writer limitations:
 
-- boot listing uses file-level boot metadata in this slice;
+- boot listing APIs use file-level boot metadata in this slice; file-backed
+  `--boot` filtering scans entry `_BOOT_ID` values;
 - daemon-only journalctl operations remain unsupported.
 
 ## journalctl Target
@@ -577,6 +584,17 @@ Matching semantics:
 - Repeated matches for the same field are OR alternatives.
 - The `+` separator creates explicit disjunction groups and must be replicated for file-backed journalctl behavior.
 - No new `KEY in [values]` syntax is required.
+
+File-backed query semantics:
+
+- `--since` and `--until` apply inclusive realtime timestamp boundaries.
+- `--boot` supports `all`, the latest boot by default, numeric offsets, boot
+  UUIDs, and boot UUID plus signed offsets for files and directories whose
+  entries contain `_BOOT_ID`.
+- `--follow` follows repository-supported file and directory inputs by polling
+  file-backed readers and emitting newly appended entries in cursor order.
+- The long `--follow` option is supported. Existing short `-f` file aliases are
+  preserved in languages that already used `-f` for `--file`.
 
 Daemon-only commands are not implemented in this project. They must return documented unsupported behavior rather than silently pretending to perform daemon operations.
 

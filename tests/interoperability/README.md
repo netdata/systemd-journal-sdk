@@ -1,7 +1,8 @@
 # Interoperability Matrix
 
 This directory contains repo-local matrix runners for writer, reader,
-live-concurrency, compression, lock, and byte-identity validation.
+live-concurrency, compression, lock, file-backed query, and byte-identity
+validation.
 
 ## Byte-Identity Matrix (`run_byte_identity.py`)
 
@@ -109,10 +110,9 @@ For each writer language, the matrix proves all of the following:
 
 ### What the live matrix does NOT prove
 
-- **Daemon-only behavior**: the live matrix does not require `--follow` for any
-  reader. Repository readers that do not implement follow mode (Go, Rust) are
-  polled via file-backed `--file --output=json` queries. This is intentional
-  per SOW-0008 requirements.
+- **Follow-mode CLI behavior**: the live matrix polls file-backed readers using
+  closed snapshots. Dedicated `journalctl --follow` parity is covered by
+  `run_journalctl_query_matrix.py`.
 
 - **Directory traversal parity**: directory traversal is covered by
   `run_directory_matrix.py`. The live matrix only proves active-file
@@ -344,6 +344,27 @@ For each holder/contender pair, the lock matrix validates:
 - stock `journalctl --verify --file` passes after contention;
 - stale lock files left by crashed writers are cleaned by the next SDK writer.
 
+## Journalctl Query Matrix (`run_journalctl_query_matrix.py`)
+
+Generates deterministic file and directory fixtures with multiple boot IDs and
+realtime ranges, then compares stock journalctl with the Rust, Go, Node.js, and
+Python file-backed rewrites.
+
+```bash
+python3 tests/interoperability/run_journalctl_query_matrix.py
+```
+
+The matrix validates:
+
+- `--since` and `--until` inclusive realtime range filtering;
+- `--boot=all`, implicit latest boot, numeric boot offsets, explicit boot UUIDs,
+  and boot UUID plus signed offsets;
+- combined `--boot`, `--since`, and `--until` filtering;
+- the same boot and realtime behavior for both `--file` and `--directory`;
+- live file and directory `--follow --no-tail --boot=all`, default-tail
+  `--follow`, and `--follow --no-tail --boot=0 --since ...` output while a
+  repository writer appends entries to an active file.
+
 ## Shared Conventions
 
 All runtime artifacts (generated journals, binaries, result JSON files) live
@@ -364,3 +385,4 @@ completion unless `--keep-files` is passed.
 | Writer locking parity | Complete | `run_lock_matrix.py` passes 8/8; all SDK writer pairs reject concurrent writers and stale locks left by crashed writers are cleaned | Closed |
 | Directory reader subdirectory traversal | Complete | `run_directory_matrix.py` passes across stock journalctl plus Rust, Go, Node.js, and Python rewrites | Closed in SOW-0020 |
 | Mixed-format directory readers | Complete | `run_mixed_directory_matrix.py` passes 72/72 across stock journalctl plus Rust, Go, Node.js, and Python rewrites | Closed in SOW-0024 |
+| File-backed journalctl query/follow parity | Complete | `run_journalctl_query_matrix.py` compares stock journalctl with Rust, Go, Node.js, and Python for `--since`, `--until`, `--boot`, and live file/directory `--follow` cases | Closed in SOW-0034 |

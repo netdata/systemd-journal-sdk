@@ -47,6 +47,8 @@ no system journal library linkage.
 - `--file` and `--directory` options
 - `--output=default|json|export`
 - `--list-boots` and `--fields`
+- `--since`, `--until`, `--boot`, and `--follow` for file-backed query/follow
+  behavior
 - `--head` and `--tail`
 - `--verify` and `--verify-key` for file-backed structural and sealed TAG/HMAC
   verification
@@ -210,6 +212,10 @@ node cmd/journalctl/index.js --file fixtures/systemd/test-data/no-rtc/system.jou
 node cmd/journalctl/index.js --directory /var/log/journal --list-boots
 
 node cmd/journalctl/index.js --file ./sample.journal PRIORITY=3 PRIORITY=4 + MESSAGE=boot
+
+node cmd/journalctl/index.js --directory ./journals --boot=all --since @1700000000 --until @1700003600
+
+node cmd/journalctl/index.js --file ./active.journal --follow --no-tail --boot=all
 ```
 
 ## API
@@ -280,7 +286,6 @@ node cmd/journalctl/index.js --file ./sample.journal PRIORITY=3 PRIORITY=4 + MES
 ## Limitations
 
 - Full systemd object-graph verification parity is tracked separately
-- `--follow` not supported (event-loop blocking concern)
 - Daemon-only operations not supported
 
 ## Dependencies

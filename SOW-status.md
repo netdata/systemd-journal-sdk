@@ -6,12 +6,12 @@
 
 ## Pending
 
-- `SOW-0034-20260526-file-backed-journalctl-query-parity.md` - open. Split from SOW-0022 Gap 6. Complete remaining file-backed journalctl query/follow behavior: `--follow`, `--boot`, `--since`, and `--until`; daemon-only operations remain unsupported.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - open, critical, sequenced after remaining compatibility feature/gap SOWs and before Netdata integration. Benchmark, profile, and optimize writers/readers before Netdata production replacement. Updated on 2026-05-26 after the user reported the Go SDK writer at about 5k logs/s in the SNMP traps ingestion worker versus about 25k logs/s for Netdata NetFlow with the vendored Rust implementation; later clarified that actual Netdata integration must happen last because the SDK does not yet perform well enough to replace the older vendored libraries.
 - `SOW-0026-20260526-netdata-sdk-integration.md` - open, last pending integration SOW. Integrate the SDK into Netdata NetFlow reader/writer paths, OTEL writer path, OTEL signal viewer reader path, and no-libsystemd systemd-journal reader mode. Blocked until SOW-0009 shows acceptable performance or the user explicitly accepts a staged exception, and until the user authorizes the Netdata repository work target and dependency strategy. Netdata writers must default to compact format after integration.
 
 ## Done
 
+- `SOW-0034-20260526-file-backed-journalctl-query-parity.md`
 - `SOW-0033-20260526-full-verification-parity.md`
 - `SOW-0032-20260526-live-feature-compatibility-matrix.md`
 - `SOW-0031-20260526-compressed-compact-structural-parity.md`

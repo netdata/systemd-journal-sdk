@@ -47,6 +47,8 @@ no system journal library linkage.
 - `--file` and `--directory` options
 - `--output=default|json|export`
 - `--list-boots` and `--fields`
+- `--since`, `--until`, `--boot`, and `--follow` for file-backed query/follow
+  behavior
 - `--head` and `--tail`
 - `--verify` and `--verify-key` for file-backed structural and sealed TAG/HMAC
   verification
@@ -200,6 +202,10 @@ python3 cmd/journalctl.py --file fixtures/systemd/test-data/no-rtc/system.journa
 python3 cmd/journalctl.py --directory /var/log/journal --list-boots
 
 python3 cmd/journalctl.py --file ./sample.journal PRIORITY=3 PRIORITY=4 + MESSAGE=boot
+
+python3 cmd/journalctl.py --directory ./journals --boot=all --since @1700000000 --until @1700003600
+
+python3 cmd/journalctl.py --file ./active.journal --follow --no-tail --boot=all
 ```
 
 ## API
@@ -270,7 +276,6 @@ python3 cmd/journalctl.py --file ./sample.journal PRIORITY=3 PRIORITY=4 + MESSAG
 ## Limitations
 
 - Full systemd object-graph verification parity is tracked separately
-- `--follow` not supported (would block the process)
 - Daemon-only operations not supported
 
 ## Dependencies

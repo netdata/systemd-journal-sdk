@@ -15,6 +15,7 @@ journal = { path = "../../journal" }
 clap = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 journal-core = { workspace = true }

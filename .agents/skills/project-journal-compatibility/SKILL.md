@@ -89,6 +89,12 @@ Do not use this skill for:
   regular/compact files, uncompressed and zstd/xz/lz4 DATA-compressed files,
   sealed/unsealed reads, directory verification with and without keys, and the
   repository whole-file `.journal.zst` directory extension.
+- For file-backed journalctl query or follow changes, run
+  `tests/interoperability/run_journalctl_query_matrix.py` and require stock
+  journalctl plus Rust, Go, Node.js, and Python rewrites to agree on
+  `--since`/`--until` realtime ranges, `--boot` descriptors, and live
+  `--follow` reads from actively appended file and directory inputs, including
+  no-tail, default-tail, and boot-plus-since cases.
 - For verifier changes, run `tests/interoperability/run_verify_matrix.py` and
   require stock `journalctl --verify --file` plus Rust, Go, Node.js, and Python
   verification paths to agree on positive regular, zstd/xz/lz4 DATA-compressed,

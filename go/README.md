@@ -69,7 +69,9 @@ Current reader scope:
 - libsystemd-style match behavior: AND between different fields, OR between
   values for the same field, `AddDisjunction()` for `+`, and
   `AddConjunction()` for explicit AND groups;
-- a file-backed `journalctl` command under `cmd/journalctl`;
+- a file-backed `journalctl` command under `cmd/journalctl` with
+  `--since`, `--until`, `--boot`, and `--follow` support for repository-backed
+  files and directories;
 - verification APIs: `journal.VerifyFile()` for structural verification and
   `journal.VerifyFileWithKey()` for sealed TAG/HMAC verification;
 - a conformance adapter under `adapter`.
@@ -237,4 +239,12 @@ fields are ANDed. A separate `+` argument creates an explicit disjunction:
 
 ```sh
 go run ./cmd/journalctl --file ./sample.journal PRIORITY=3 PRIORITY=4 + MESSAGE=boot
+```
+
+Realtime ranges, boot filters, and follow mode are supported for file-backed
+inputs:
+
+```sh
+go run ./cmd/journalctl --directory ./journals --boot=all --since @1700000000 --until @1700003600
+go run ./cmd/journalctl --file ./active.journal --follow --no-tail --boot=all
 ```

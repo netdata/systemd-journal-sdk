@@ -1340,6 +1340,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "hex",
  "journal",
  "journal-core",
  "ruzstd",

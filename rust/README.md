@@ -68,7 +68,9 @@ Current reader scope:
 - libsystemd-style match behavior: AND between different fields, OR between
   values for the same field, `SdJournalAddDisjunction()` for `+`, and
   `SdJournalAddConjunction()` for explicit AND groups;
-- a file-backed `journalctl` command under `src/cmd/journalctl`;
+- a file-backed `journalctl` command under `src/cmd/journalctl` with
+  `--since`, `--until`, `--boot`, and `--follow` support for repository-backed
+  files and directories;
 - verification APIs: `journal::verify_file()` for structural verification and
   `journal::verify_file_with_key()` for sealed TAG/HMAC verification;
 - a conformance adapter under `src/adapter`.
@@ -208,4 +210,14 @@ fields are ANDed. A separate `+` argument creates an explicit disjunction:
 cargo run --manifest-path rust/Cargo.toml -p journalctl -- \
   --file ./sample.journal \
   PRIORITY=3 PRIORITY=4 + MESSAGE=boot
+```
+
+Realtime ranges, boot filters, and follow mode are supported for file-backed
+inputs:
+
+```sh
+cargo run --manifest-path rust/Cargo.toml -p journalctl -- \
+  --directory ./journals --boot=all --since @1700000000 --until @1700003600
+cargo run --manifest-path rust/Cargo.toml -p journalctl -- \
+  --file ./active.journal --follow --no-tail --boot=all
 ```

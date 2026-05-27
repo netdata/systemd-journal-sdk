@@ -1,0 +1,484 @@
+#!/usr/bin/env python3
+"""File-backed journalctl query parity matrix.
+
+Generates repo-local fixtures and compares stock journalctl with the Rust, Go,
+Node.js, and Python journalctl rewrites for --since, --until, --boot, and
+--follow behavior. Runtime artifacts stay under .local/interoperability/.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+LOCAL_DIR = REPO_ROOT / ".local" / "interoperability"
+BIN_DIR = LOCAL_DIR / "bin"
+FIXTURE_DIR = LOCAL_DIR / "journalctl-query"
+PYTHON = os.environ.get("PYTHON", "python3")
+
+MACHINE_ID = "00112233445566778899aabbccddeeff"
+BOOT_A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+BOOT_B = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+BOOT_C = "cccccccccccccccccccccccccccccccc"
+
+
+@dataclass(frozen=True)
+class ReaderSpec:
+    name: str
+
+
+@dataclass(frozen=True)
+class Row:
+    path: str
+    boot_id: str
+    message: str
+    realtime: int
+
+
+READERS = {
+    "stock": ReaderSpec("stock"),
+    "go": ReaderSpec("go"),
+    "rust": ReaderSpec("rust"),
+    "node": ReaderSpec("node"),
+    "python": ReaderSpec("python"),
+}
+
+
+STATIC_ROWS = [
+    Row("a.journal", BOOT_A, "query-a", 1_700_004_000_000_000),
+    Row("b.journal", BOOT_B, "query-b", 1_700_004_000_001_000),
+    Row("c.journal", BOOT_C, "query-c", 1_700_004_000_002_000),
+]
+
+FILE_ROWS = [
+    Row("multi-boot-file.journal", BOOT_A, "file-a", 1_700_004_100_000_000),
+    Row("multi-boot-file.journal", BOOT_B, "file-b", 1_700_004_100_001_000),
+    Row("multi-boot-file.journal", BOOT_C, "file-c", 1_700_004_100_002_000),
+]
+
+
+def local_timestamp(usec: int) -> str:
+    return datetime.fromtimestamp(usec / 1_000_000).strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
+def run(
+    cmd: list[str],
+    *,
+    cwd: Path = REPO_ROOT,
+    timeout: int = 120,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd,
+        cwd=str(cwd),
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def require_ok(result: subprocess.CompletedProcess[str], label: str) -> None:
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"{label} failed with exit {result.returncode}\n"
+            f"stdout:\n{result.stdout[-2000:]}\n"
+            f"stderr:\n{result.stderr[-2000:]}"
+        )
+
+
+def build_env() -> dict[str, str]:
+    env = os.environ.copy()
+    local = REPO_ROOT / ".local"
+    env.setdefault("GOMODCACHE", str(local / "go" / "pkg" / "mod"))
+    env.setdefault("GOCACHE", str(local / "go-build"))
+    env.setdefault("GOPATH", str(local / "go"))
+    env.setdefault("CARGO_HOME", str(local / "cargo-home"))
+    env.setdefault("CARGO_TARGET_DIR", str(local / "cargo-target"))
+    env.setdefault("npm_config_cache", str(local / "npm-cache"))
+    env.setdefault("PIP_CACHE_DIR", str(local / "pip-cache"))
+    return env
+
+
+def build_tools() -> dict[str, str]:
+    BIN_DIR.mkdir(parents=True, exist_ok=True)
+    env = build_env()
+
+    go_journalctl = BIN_DIR / "go-journalctl"
+    require_ok(
+        run(["go", "build", "-o", str(go_journalctl), "./cmd/journalctl"], cwd=REPO_ROOT / "go", env=env),
+        "build go journalctl",
+    )
+    require_ok(
+        run(
+            ["cargo", "build", "--manifest-path", str(REPO_ROOT / "rust/Cargo.toml"), "-p", "journalctl"],
+            timeout=180,
+            env=env,
+        ),
+        "build rust journalctl",
+    )
+
+    rust_src = Path(env["CARGO_TARGET_DIR"]) / "debug" / "journalctl"
+    rust_journalctl = BIN_DIR / "rust-journalctl"
+    if rust_src.exists():
+        shutil.copy2(rust_src, rust_journalctl)
+
+    for path in (go_journalctl, rust_journalctl):
+        if not path.exists():
+            raise RuntimeError(f"expected binary not found: {path}")
+
+    return {
+        "go_journalctl": str(go_journalctl),
+        "rust_journalctl": str(rust_journalctl),
+    }
+
+
+def systemd_version() -> str:
+    result = run(["journalctl", "--version"], timeout=10)
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.splitlines()[0]
+    return "unavailable"
+
+
+def make_fixtures() -> dict[str, Path]:
+    if FIXTURE_DIR.exists():
+        shutil.rmtree(FIXTURE_DIR)
+    directory = FIXTURE_DIR / "directory"
+    single_file = FIXTURE_DIR / "multi-boot-file.journal"
+    follow = FIXTURE_DIR / "follow"
+    directory.mkdir(parents=True)
+    follow.mkdir(parents=True)
+
+    for row in STATIC_ROWS:
+        write_journal(directory / row.path, [row])
+    write_journal(single_file, FILE_ROWS)
+    return {"directory": directory, "file": single_file, "follow": follow}
+
+
+def write_journal(path: Path, rows: list[Row]) -> None:
+    sys.path.insert(0, str(REPO_ROOT / "python"))
+    from journal import Writer
+
+    first = rows[0]
+    writer = Writer.create(
+        str(path),
+        {
+            "machine_id": MACHINE_ID,
+            "boot_id": first.boot_id,
+            "seqnum_id": "12121212121212121212121212121212",
+        },
+    )
+    try:
+        for i, row in enumerate(rows, start=1):
+            writer.append(
+                [
+                    {"name": "MESSAGE", "value": row.message},
+                    {"name": "TEST_ID", "value": "journalctl-query"},
+                    {"name": "_BOOT_ID", "value": row.boot_id},
+                    {"name": "_MACHINE_ID", "value": MACHINE_ID},
+                ],
+                {
+                    "realtime_usec": row.realtime,
+                    "monotonic_usec": i,
+                    "boot_id": row.boot_id,
+                },
+            )
+        writer.close()
+    except Exception:
+        writer.close()
+        raise
+
+
+def reader_command(reader: str, tools: dict[str, str], mode: str, path: Path, args: list[str]) -> list[str]:
+    if reader == "stock":
+        base = ["journalctl", f"--{mode}", str(path), "--output=json", "--no-pager", "--quiet"]
+    elif reader == "go":
+        base = [tools["go_journalctl"], f"--{mode}", str(path), "--output=json"]
+    elif reader == "rust":
+        base = [tools["rust_journalctl"], f"--{mode}", str(path), "--output=json"]
+    elif reader == "node":
+        base = ["node", str(REPO_ROOT / "node/cmd/journalctl/index.js"), f"--{mode}", str(path), "--output=json"]
+    elif reader == "python":
+        base = [PYTHON, str(REPO_ROOT / "python/cmd/journalctl.py"), f"--{mode}", str(path), "--output=json"]
+    else:
+        raise ValueError(reader)
+    return [*base, *args]
+
+
+def parse_messages(output: str) -> list[str]:
+    messages = []
+    for line in output.splitlines():
+        if not line.startswith("{"):
+            continue
+        obj = json.loads(line)
+        message = obj.get("MESSAGE")
+        if isinstance(message, list):
+            messages.extend(str(v) for v in message)
+        elif message is not None:
+            messages.append(str(message))
+    return messages
+
+
+def run_static_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[dict[str, object]]:
+    cases = [
+        ("directory-all", "directory", fixtures["directory"], ["TEST_ID=journalctl-query"]),
+        ("directory-since", "directory", fixtures["directory"], ["--since", "@1700004000.000001", "TEST_ID=journalctl-query"]),
+        (
+            "directory-since-local-fraction",
+            "directory",
+            fixtures["directory"],
+            ["--since", local_timestamp(1_700_004_000_000_001), "TEST_ID=journalctl-query"],
+        ),
+        ("directory-until", "directory", fixtures["directory"], ["--until", "@1700004000.001", "TEST_ID=journalctl-query"]),
+        (
+            "directory-since-until",
+            "directory",
+            fixtures["directory"],
+            ["--since", "@1700004000.000001", "--until", "@1700004000.001", "TEST_ID=journalctl-query"],
+        ),
+        ("directory-boot-all", "directory", fixtures["directory"], ["--boot=all", "TEST_ID=journalctl-query"]),
+        ("directory-boot-implicit-latest", "directory", fixtures["directory"], ["--boot", "TEST_ID=journalctl-query"]),
+        ("directory-boot-latest", "directory", fixtures["directory"], ["--boot=0", "TEST_ID=journalctl-query"]),
+        ("directory-boot-previous", "directory", fixtures["directory"], ["--boot=-1", "TEST_ID=journalctl-query"]),
+        ("directory-boot-first", "directory", fixtures["directory"], ["--boot=1", "TEST_ID=journalctl-query"]),
+        ("directory-boot-id", "directory", fixtures["directory"], [f"--boot={BOOT_A}", "TEST_ID=journalctl-query"]),
+        ("directory-boot-id-offset", "directory", fixtures["directory"], [f"--boot={BOOT_B}+1", "TEST_ID=journalctl-query"]),
+        (
+            "directory-boot-since-until",
+            "directory",
+            fixtures["directory"],
+            ["--boot=-1", "--since", "@1700004000.000001", "--until", "@1700004000.001", "TEST_ID=journalctl-query"],
+        ),
+        ("file-all", "file", fixtures["file"], ["TEST_ID=journalctl-query"]),
+        ("file-boot-latest", "file", fixtures["file"], ["--boot=0", "TEST_ID=journalctl-query"]),
+        ("file-boot-first", "file", fixtures["file"], ["--boot=1", "TEST_ID=journalctl-query"]),
+        (
+            "file-since-until",
+            "file",
+            fixtures["file"],
+            ["--since", "@1700004100.000001", "--until", "@1700004100.001", "TEST_ID=journalctl-query"],
+        ),
+    ]
+
+    results: list[dict[str, object]] = []
+    for case_name, mode, path, args in cases:
+        stock = run(reader_command("stock", tools, mode, path, args), timeout=30)
+        require_ok(stock, f"stock {case_name}")
+        expected = parse_messages(stock.stdout)
+        for reader in READERS:
+            cmd = reader_command(reader, tools, mode, path, args)
+            result = run(cmd, timeout=30)
+            actual = parse_messages(result.stdout)
+            ok = result.returncode == 0 and actual == expected
+            results.append(
+                {
+                    "test": case_name,
+                    "reader": reader,
+                    "status": "PASS" if ok else "FAIL",
+                    "command": " ".join(cmd),
+                    "expected": expected,
+                    "actual": actual,
+                    "returncode": result.returncode,
+                    "stderr": result.stderr[-1000:],
+                }
+            )
+    return results
+
+
+def run_follow_cases(tools: dict[str, str], fixtures: dict[str, Path]) -> list[dict[str, object]]:
+    results = []
+    cases = [
+        {
+            "name": "follow-live-append-no-tail",
+            "test_id": "journalctl-follow",
+            "args": ["--follow", "--no-tail", "--boot=all"],
+            "initial": [],
+            "appends": [(f"follow-{i}", 1_700_004_200_000_000 + i) for i in range(3)],
+            "expected": ["follow-0", "follow-1", "follow-2"],
+        },
+        {
+            "name": "follow-default-tail",
+            "test_id": "journalctl-follow-tail",
+            "args": ["--follow", "--boot=all"],
+            "initial": [(f"tail-initial-{i:02d}", 1_700_004_300_000_000 + i) for i in range(12)],
+            "appends": [(f"tail-new-{i}", 1_700_004_300_001_000 + i) for i in range(2)],
+            "expected": [f"tail-initial-{i:02d}" for i in range(2, 12)] + ["tail-new-0", "tail-new-1"],
+        },
+        {
+            "name": "follow-since-boot-latest",
+            "test_id": "journalctl-follow-since",
+            "args": ["--follow", "--no-tail", "--boot=0", "--since", "@1700004200.000001"],
+            "initial": [("since-before", 1_700_004_200_000_000)],
+            "appends": [("since-after-0", 1_700_004_200_000_001), ("since-after-1", 1_700_004_200_000_002)],
+            "expected": ["since-after-0", "since-after-1"],
+        },
+        {
+            "name": "follow-directory-no-tail",
+            "mode": "directory",
+            "test_id": "journalctl-follow-directory",
+            "args": ["--follow", "--no-tail", "--boot=all"],
+            "initial": [],
+            "appends": [(f"dir-follow-{i}", 1_700_004_400_000_000 + i) for i in range(2)],
+            "expected": ["dir-follow-0", "dir-follow-1"],
+        },
+    ]
+    for case in cases:
+        mode = str(case.get("mode", "file"))
+        for reader in READERS:
+            case_root = fixtures["follow"] / case["name"] / reader
+            if mode == "directory":
+                read_path = case_root
+                write_path = case_root / "active.journal"
+            else:
+                read_path = fixtures["follow"] / case["name"] / f"{reader}.journal"
+                write_path = read_path
+            actual, returncode, stderr, cmd = run_follow_reader(reader, tools, mode, read_path, write_path, case)
+            expected = case["expected"]
+            ok = returncode == 0 and actual == expected
+            results.append(
+                {
+                    "test": case["name"],
+                    "reader": reader,
+                    "status": "PASS" if ok else "FAIL",
+                    "command": " ".join(cmd),
+                    "expected": expected,
+                    "actual": actual,
+                    "returncode": returncode,
+                    "stderr": stderr[-1000:],
+                }
+            )
+    return results
+
+
+def run_follow_reader(
+    reader: str,
+    tools: dict[str, str],
+    mode: str,
+    read_path: Path,
+    write_path: Path,
+    case: dict[str, object],
+) -> tuple[list[str], int, str, list[str]]:
+    sys.path.insert(0, str(REPO_ROOT / "python"))
+    from journal import Writer
+
+    if mode == "directory":
+        read_path.mkdir(parents=True, exist_ok=True)
+    write_path.parent.mkdir(parents=True, exist_ok=True)
+    writer = Writer.create(
+        str(write_path),
+        {
+            "machine_id": MACHINE_ID,
+            "boot_id": BOOT_A,
+            "seqnum_id": "34343434343434343434343434343434",
+        },
+    )
+    seq = 1
+    for message, realtime in case["initial"]:
+        writer.append(
+            [
+                {"name": "MESSAGE", "value": message},
+                {"name": "TEST_ID", "value": case["test_id"]},
+                {"name": "_BOOT_ID", "value": BOOT_A},
+                {"name": "_MACHINE_ID", "value": MACHINE_ID},
+            ],
+            {
+                "realtime_usec": realtime,
+                "monotonic_usec": seq,
+                "boot_id": BOOT_A,
+            },
+        )
+        seq += 1
+    writer.sync()
+    cmd = reader_command(
+        reader,
+        tools,
+        mode,
+        read_path,
+        [*case["args"], f"TEST_ID={case['test_id']}"],
+    )
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(REPO_ROOT),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        time.sleep(0.25)
+        for message, realtime in case["appends"]:
+            writer.append(
+                [
+                    {"name": "MESSAGE", "value": message},
+                    {"name": "TEST_ID", "value": case["test_id"]},
+                    {"name": "_BOOT_ID", "value": BOOT_A},
+                    {"name": "_MACHINE_ID", "value": MACHINE_ID},
+                ],
+                {
+                    "realtime_usec": realtime,
+                    "monotonic_usec": seq,
+                    "boot_id": BOOT_A,
+                },
+            )
+            seq += 1
+            writer.sync()
+            time.sleep(0.15)
+
+        time.sleep(0.7)
+        proc.terminate()
+        try:
+            stdout, stderr = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr = proc.communicate(timeout=5)
+    finally:
+        writer.close()
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate(timeout=2)
+
+    actual = parse_messages(stdout)
+    expected = case["expected"]
+    return actual, 0 if actual == expected else proc.returncode or 1, stderr, cmd
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--skip-follow", action="store_true", help="skip live follow checks")
+    args = parser.parse_args()
+
+    tools = build_tools()
+    fixtures = make_fixtures()
+    results = run_static_cases(tools, fixtures)
+    if not args.skip_follow:
+        results.extend(run_follow_cases(tools, fixtures))
+
+    failures = [r for r in results if r["status"] != "PASS"]
+    report = {
+        "status": "PASS" if not failures else "FAIL",
+        "systemd": systemd_version(),
+        "fixture_dir": str(FIXTURE_DIR),
+        "results": results,
+        "failures": failures,
+    }
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if not failures else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
