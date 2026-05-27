@@ -17,6 +17,10 @@ Last updated: 2026-05-27
   performance opportunities before implementation, including measured
   windowed-versus-whole-file mmap writer strategy tradeoffs and Go reader
   `ReadAt`-versus-mmap strategy tradeoffs.
+- SOW-0037 - Reference Drift Audit: open. Audit Rust against systemd first,
+  then Go against Rust, so implementation differences are classified as
+  intentional, performance-motivated, language-specific, unsupported, or
+  accidental drift to fix.
 
 ## Recently Completed
 
