@@ -5,10 +5,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
 
+export const MAX_UNCOMPRESSED_DATA_OBJECT_SIZE = 768 * 1024 * 1024;
+
 // Decompress zstd bytes or file path to a Buffer.
 export function decompressZstSync(input) {
   const src = Buffer.isBuffer(input) ? input : readFileSync(input);
   return zstdDecompressSync(src);
+}
+
+export function decompressZstdDataPayload(payload) {
+  const src = Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
+  return zstdDecompressSync(src, { maxOutputLength: MAX_UNCOMPRESSED_DATA_OBJECT_SIZE });
 }
 
 // Decompress a zstd file to a temp file and return the path.

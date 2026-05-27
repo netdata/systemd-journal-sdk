@@ -119,8 +119,8 @@ func TestVerifyFileWithKeySealedTamperedDataFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected VerifyFileWithKey to fail with tampered data")
 	}
-	if !strings.Contains(err.Error(), "tag failed verification") {
-		t.Fatalf("expected 'tag failed verification', got: %v", err)
+	if !strings.Contains(err.Error(), "DATA hash mismatch") {
+		t.Fatalf("expected DATA hash verification failure, got: %v", err)
 	}
 }
 

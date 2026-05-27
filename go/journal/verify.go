@@ -28,6 +28,14 @@ func (e *VerificationError) Error() string {
 // For sealed journals, this validates structure only; use VerifyFileWithKey
 // when TAG/HMAC verification is required.
 func VerifyFile(path string) error {
+	data, err := readJournalFileBytes(path)
+	if err != nil {
+		return &VerificationError{Reason: fmt.Sprintf("journal verification failed: corrupt or unreadable file: %v", err)}
+	}
+	if err := verifyObjectGraph(data); err != nil {
+		return &VerificationError{Reason: fmt.Sprintf("journal verification failed: corrupt object graph: %v", err)}
+	}
+
 	r, err := OpenFile(path)
 	if err != nil {
 		// Any open or decompression failure is a verification failure.
@@ -77,19 +85,16 @@ func VerifyFile(path string) error {
 // For sealed files, it parses the verification key and validates TAG/HMAC chains.
 // For unsealed files, it behaves like VerifyFile.
 func VerifyFileWithKey(path string, verificationKey string) error {
-	f, cleanupPath, err := openJournalFile(path)
+	data, err := readJournalFileBytes(path)
 	if err != nil {
 		return &VerificationError{Reason: fmt.Sprintf("journal verification failed: corrupt or unreadable file: %v", err)}
-	}
-	defer closeJournalFile(f, cleanupPath)
-
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return &VerificationError{Reason: fmt.Sprintf("journal verification failed: read error: %v", err)}
 	}
 
 	if len(data) < headerMinSize {
 		return &VerificationError{Reason: "journal verification failed: file too small"}
+	}
+	if err := verifyObjectGraph(data); err != nil {
+		return &VerificationError{Reason: fmt.Sprintf("journal verification failed: corrupt object graph: %v", err)}
 	}
 
 	headerBytes := data
@@ -115,6 +120,16 @@ func VerifyFileWithKey(path string, verificationKey string) error {
 		return err
 	}
 	return VerifyFile(path)
+}
+
+func readJournalFileBytes(path string) ([]byte, error) {
+	f, cleanupPath, err := openJournalFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer closeJournalFile(f, cleanupPath)
+
+	return io.ReadAll(f)
 }
 
 // parseVerificationKey parses a systemd-style verification key.
@@ -276,6 +291,9 @@ func verifySealed(data []byte, header journalHeader, seed [12]byte, startEpoch, 
 		}
 		if flags&^(objectCompressedXZ|objectCompressedLZ4|objectCompressedZSTD) != 0 {
 			return &VerificationError{Reason: fmt.Sprintf("unknown object flags 0x%x at offset %d", flags, p)}
+		}
+		if typ != objectTypeData && flags != 0 {
+			return &VerificationError{Reason: fmt.Sprintf("object type %d at offset %d has compression flags", typ, p)}
 		}
 
 		nObjects++

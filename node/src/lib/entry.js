@@ -7,7 +7,7 @@ import {
   OBJECT_COMPRESSED_ZSTD, OBJECT_COMPRESSED_XZ, OBJECT_COMPRESSED_LZ4,
   COMPACT_ENTRY_ITEM_SIZE, COMPACT_DATA_OBJECT_HEADER_SIZE,
 } from './header.js';
-import { zstdDecompressSync } from 'node:zlib';
+import { decompressZstdDataPayload } from './compress.js';
 import { decompressLz4DataPayload } from './lz4-block.js';
 import { decompressXzDataPayload } from './xz-block.js';
 
@@ -81,7 +81,7 @@ export function parseDataObject(buf, offset, compact = false) {
   if (objFlags & OBJECT_COMPRESSED_LZ4) {
     payload = decompressLz4DataPayload(payload);
   } else if (objFlags & OBJECT_COMPRESSED_ZSTD) {
-    payload = zstdDecompressSync(payload);
+    payload = decompressZstdDataPayload(payload);
   } else if (objFlags & OBJECT_COMPRESSED_XZ) {
     payload = decompressXzDataPayload(payload);
   }

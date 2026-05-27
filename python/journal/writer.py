@@ -29,7 +29,7 @@ from .header import (
     INITIAL_ENTRY_ARRAY_CAP, INITIAL_DATA_ENTRY_ARRAY_CAP,
 )
 from .hash import sip_hash_24, jenkins_hash_64
-from .compress import decompress_zst_sync, decompress_xz_sync, decompress_lz4_sync
+from .compress import MAX_UNCOMPRESSED_SIZE, decompress_zst_sync, decompress_xz_sync, decompress_lz4_sync
 from .seal import SealOptions, SealState, TAG_LENGTH, OBJECT_TYPE_TAG, COMPATIBLE_SEALED, COMPATIBLE_SEALED_CONTINUOUS
 
 COMPRESSION_NONE = 0
@@ -488,9 +488,9 @@ class Writer:
         buf = os.pread(self._fd, payload_len, offset + payload_offset)
         flags = obj_header['flags']
         if flags & OBJECT_COMPRESSED_ZSTD:
-            return decompress_zst_sync(buf)
+            return decompress_zst_sync(buf, max_output_size=MAX_UNCOMPRESSED_SIZE)
         if flags & OBJECT_COMPRESSED_XZ:
-            return decompress_xz_sync(buf)
+            return decompress_xz_sync(buf, max_output_size=MAX_UNCOMPRESSED_SIZE)
         if flags & OBJECT_COMPRESSED_LZ4:
             return decompress_lz4_sync(buf)
         return buf

@@ -21,6 +21,7 @@ from .header import (
 from .compress import is_zst_file, decompress_zst_to_temp
 from .fss import gen_mk, gen_state0, seek, get_key, RECOMMENDED_SECPAR
 from .seal import TAG_LENGTH, OBJECT_TYPE_TAG
+from .verify_graph import ObjectGraphVerificationError, verify_object_graph
 
 MAX_U64 = (1 << 64) - 1
 
@@ -43,6 +44,15 @@ def verify_file(path, verify_key=None):
     """
     if verify_key is not None:
         return verify_file_with_key(path, verify_key)
+
+    try:
+        verify_object_graph(_read_journal_file_bytes(path))
+    except ObjectGraphVerificationError as err:
+        raise VerificationError(f'journal verification failed: corrupt object graph: {err}') from err
+    except Exception as err:
+        raise VerificationError(
+            f"journal verification failed: corrupt or unreadable file: {err}"
+        ) from err
 
     r = None
     try:
@@ -103,30 +113,20 @@ def verify_file_with_key(path, verification_key):
     For sealed files, parses the key and validates TAG/HMAC chains.
     For unsealed files, behaves like verify_file.
     """
-    data = None
-    cleanup_path = None
     try:
-        if is_zst_file(path):
-            cleanup_path = decompress_zst_to_temp(path, 'python-sdk-verify')
-            with open(cleanup_path, 'rb') as f:
-                data = f.read()
-        else:
-            with open(path, 'rb') as f:
-                data = f.read()
+        data = _read_journal_file_bytes(path)
     except Exception as err:
         raise VerificationError(
             f"journal verification failed: corrupt or unreadable file: {err}"
         ) from err
-    finally:
-        if cleanup_path:
-            try:
-                os.unlink(cleanup_path)
-                os.rmdir(os.path.dirname(cleanup_path))
-            except OSError:
-                pass
 
     if len(data) < HEADER_MIN_SIZE:
         raise VerificationError('journal verification failed: file too small')
+
+    try:
+        verify_object_graph(data)
+    except ObjectGraphVerificationError as err:
+        raise VerificationError(f'journal verification failed: corrupt object graph: {err}') from err
 
     try:
         header = parse_file_header(data)
@@ -140,6 +140,24 @@ def verify_file_with_key(path, verification_key):
     seed, start_epoch, interval_usec = _parse_verification_key(verification_key)
     _verify_sealed(data, header, seed, start_epoch, interval_usec)
     return verify_file(path)
+
+
+def _read_journal_file_bytes(path):
+    cleanup_path = None
+    try:
+        if is_zst_file(path):
+            cleanup_path = decompress_zst_to_temp(path, 'python-sdk-verify')
+            with open(cleanup_path, 'rb') as f:
+                return f.read()
+        with open(path, 'rb') as f:
+            return f.read()
+    finally:
+        if cleanup_path:
+            try:
+                os.unlink(cleanup_path)
+                os.rmdir(os.path.dirname(cleanup_path))
+            except OSError:
+                pass
 
 
 def _parse_verification_key(key):
@@ -286,6 +304,8 @@ def _verify_sealed(data, header, seed, start_epoch, interval_usec):
             raise VerificationError(f'ZSTD object in file without ZSTD support at offset {p}')
         if flags & ~(OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4 | OBJECT_COMPRESSED_ZSTD):
             raise VerificationError(f'unknown object flags 0x{flags:x} at offset {p}')
+        if typ != OBJECT_TYPE_DATA and flags:
+            raise VerificationError(f'object type {typ} at offset {p} has compression flags')
 
         n_objects += 1
 

@@ -6,13 +6,13 @@
 
 ## Pending
 
-- `SOW-0033-20260526-full-verification-parity.md` - open. Split from SOW-0022 Gap 2. Add practical systemd-like object-graph verification corruption fixtures and make all four language verification APIs reject the same classes as stock `journalctl --verify --file`.
 - `SOW-0034-20260526-file-backed-journalctl-query-parity.md` - open. Split from SOW-0022 Gap 6. Complete remaining file-backed journalctl query/follow behavior: `--follow`, `--boot`, `--since`, and `--until`; daemon-only operations remain unsupported.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - open, critical, sequenced after remaining compatibility feature/gap SOWs and before Netdata integration. Benchmark, profile, and optimize writers/readers before Netdata production replacement. Updated on 2026-05-26 after the user reported the Go SDK writer at about 5k logs/s in the SNMP traps ingestion worker versus about 25k logs/s for Netdata NetFlow with the vendored Rust implementation; later clarified that actual Netdata integration must happen last because the SDK does not yet perform well enough to replace the older vendored libraries.
 - `SOW-0026-20260526-netdata-sdk-integration.md` - open, last pending integration SOW. Integrate the SDK into Netdata NetFlow reader/writer paths, OTEL writer path, OTEL signal viewer reader path, and no-libsystemd systemd-journal reader mode. Blocked until SOW-0009 shows acceptable performance or the user explicitly accepts a staged exception, and until the user authorizes the Netdata repository work target and dependency strategy. Netdata writers must default to compact format after integration.
 
 ## Done
 
+- `SOW-0033-20260526-full-verification-parity.md`
 - `SOW-0032-20260526-live-feature-compatibility-matrix.md`
 - `SOW-0031-20260526-compressed-compact-structural-parity.md`
 - `SOW-0030-20260526-monotonic-writer-validity.md`
@@ -66,5 +66,6 @@
 - SOW-0022 was completed as a compatibility planning/triage SOW on 2026-05-26. Its stale gaps were closed by SOW-0019, SOW-0020, and SOW-0024 where applicable; the remaining executable work was split into SOW-0028 through SOW-0034.
 - SOW-0028 completed historical header parsing parity. Rust, Go, Node.js, and Python now expose historical extension fields according to each field's on-disk `header_size` containment boundary, with added intermediate/future/truncated-prefix validation and matching Rust coverage in both `journal-core` and `jf/journal_file`.
 - SOW-0032 completed live feature compatibility validation. `run_live_matrix.py` now validates regular, zstd/xz/lz4 DATA-compressed, compact, compact plus DATA-compressed, and sealed/FSS active journal files across Go, Rust, Node.js, and Python writers; stock `journalctl --file`; stock libsystemd; Go/Rust/Node.js/Python readers; final `journalctl --verify --file`; sealed `--verify-key`; and structural feature checks. The default run passed 36/36 on `systemd 260 (260.1-2-manjaro)`.
+- SOW-0033 completed full verification parity for the supported fixture envelope. `run_verify_matrix.py` passes against stock `journalctl --verify --file` and Rust, Go, Node.js, and Python verification paths for 9 positive files and 12 negative corruption classes on `systemd 260 (260.1-2-manjaro)`.
 - Byte-for-byte writer identity is the target for deterministic uncompressed journals. Any feature slice that cannot be made byte-identical must return with evidence before the acceptance condition is changed.
 - The external systemd source checkout is read-only for this project. Build outputs and generated files must remain inside this repository or `/tmp`.

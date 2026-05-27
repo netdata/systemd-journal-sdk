@@ -3,7 +3,7 @@
 
 import { openSync, writeSync, readSync, closeSync, ftruncateSync, fsyncSync, renameSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
+import { zstdCompressSync } from 'node:zlib';
 import { readUint64LE, writeUint64LE, writeUint32LE, writeUint8, align8, randomUUID, isZeroUUID, bufEqual } from './binary.js';
 import { WriterLock } from './lock.js';
 import {
@@ -26,6 +26,7 @@ import {
 } from './header.js';
 import { SealOptions, SealState, TAG_LENGTH, OBJECT_TYPE_TAG, COMPATIBLE_SEALED, COMPATIBLE_SEALED_CONTINUOUS } from './seal.js';
 import { sipHash24, jenkinsHash64 } from './hash.js';
+import { decompressZstdDataPayload } from './compress.js';
 import { compressLz4DataPayload, decompressLz4DataPayload } from './lz4-block.js';
 import { compressXzDataPayload, decompressXzDataPayload } from './xz-block.js';
 
@@ -501,7 +502,7 @@ export class Writer {
     const buf = Buffer.alloc(payloadLen);
     readSync(this.fd, buf, 0, payloadLen, Number(offset) + payloadOffset);
     if ((objHeader.flags & OBJECT_COMPRESSED_ZSTD) !== 0) {
-      return zstdDecompressSync(buf);
+      return decompressZstdDataPayload(buf);
     }
     if ((objHeader.flags & OBJECT_COMPRESSED_LZ4) !== 0) {
       return decompressLz4DataPayload(buf);

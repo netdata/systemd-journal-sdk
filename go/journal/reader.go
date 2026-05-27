@@ -654,12 +654,7 @@ func (r *Reader) readDataPayload(offset uint64) ([]byte, error) {
 		return nil, err
 	}
 	if dataHdr.object.flag&objectCompressedZSTD != 0 {
-		decoder, err := zstd.NewReader(nil)
-		if err != nil {
-			return nil, err
-		}
-		defer decoder.Close()
-		decoded, err := decoder.DecodeAll(payload, nil)
+		decoded, err := zstdDecompress(payload)
 		if err != nil {
 			return nil, err
 		}

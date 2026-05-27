@@ -33,6 +33,8 @@ ouroboros = { workspace = true }
 
 # Compression
 ruzstd = { workspace = true }
+lz4_flex = { workspace = true }
+lzma-rust2 = { workspace = true }
 
 # Cryptography for sealed verification
 hmac = { workspace = true }

@@ -19,6 +19,7 @@ import {
 import { isZstFile, decompressZstToTemp } from './compress.js';
 import { fsprgGenMK, fsprgGenState0, fsprgSeek, fsprgGetKey, RECOMMENDED_SECPAR } from './fss.js';
 import { TAG_LENGTH } from './seal.js';
+import { ObjectGraphVerificationError, verifyObjectGraph } from './verify-graph.js';
 
 const MAX_U64 = (1n << 64n) - 1n;
 
@@ -40,6 +41,17 @@ export class VerificationError extends Error {
  * when TAG/HMAC verification is required.
  */
 export function verifyFile(path) {
+  try {
+    verifyObjectGraph(readJournalFileForVerify(path));
+  } catch (err) {
+    if (err instanceof ObjectGraphVerificationError) {
+      throw new VerificationError(`journal verification failed: corrupt object graph: ${err.message}`);
+    }
+    throw new VerificationError(
+      `journal verification failed: corrupt or unreadable file: ${err.message}`
+    );
+  }
+
   let r;
   try {
     r = FileReader.open(path);
@@ -102,28 +114,25 @@ export function verifyFile(path) {
  * For unsealed files, behaves like verifyFile.
  */
 export function verifyFileWithKey(path, verificationKey) {
-  let data;
-  let cleanupPath = null;
   try {
-    if (isZstFile(path)) {
-      cleanupPath = decompressZstToTemp(path, 'node-sdk-verify');
-      data = readFileSync(cleanupPath);
-    } else {
-      data = readFileSync(path);
-    }
+    var data = readJournalFileForVerify(path);
   } catch (err) {
     throw new VerificationError(
       `journal verification failed: corrupt or unreadable file: ${err.message}`
     );
-  } finally {
-    if (cleanupPath) {
-      try { unlinkSync(cleanupPath); } catch {}
-      try { rmdirSync(dirname(cleanupPath)); } catch {}
-    }
   }
 
   if (data.length < HEADER_MIN_SIZE) {
     throw new VerificationError('journal verification failed: file too small');
+  }
+
+  try {
+    verifyObjectGraph(data);
+  } catch (err) {
+    if (err instanceof ObjectGraphVerificationError) {
+      throw new VerificationError(`journal verification failed: corrupt object graph: ${err.message}`);
+    }
+    throw err;
   }
 
   const header = parseFileHeader(data);
@@ -136,6 +145,22 @@ export function verifyFileWithKey(path, verificationKey) {
   const { seed, startEpoch, intervalUsec } = parseVerificationKey(verificationKey);
   verifySealed(data, header, seed, startEpoch, intervalUsec);
   return verifyFile(path);
+}
+
+function readJournalFileForVerify(path) {
+  let cleanupPath = null;
+  try {
+    if (isZstFile(path)) {
+      cleanupPath = decompressZstToTemp(path, 'node-sdk-verify');
+      return readFileSync(cleanupPath);
+    }
+    return readFileSync(path);
+  } finally {
+    if (cleanupPath) {
+      try { unlinkSync(cleanupPath); } catch {}
+      try { rmdirSync(dirname(cleanupPath)); } catch {}
+    }
+  }
 }
 
 function parseVerificationKey(key) {
@@ -274,6 +299,9 @@ function verifySealed(data, header, seed, startEpoch, intervalUsec) {
     }
     if (flags & ~(OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4 | OBJECT_COMPRESSED_ZSTD)) {
       throw new VerificationError(`unknown object flags 0x${flags.toString(16)} at offset ${p}`);
+    }
+    if (typ !== OBJECT_TYPE_DATA && flags !== 0) {
+      throw new VerificationError(`object type ${typ} at offset ${p} has compression flags`);
     }
 
     nObjects++;

@@ -1302,7 +1302,7 @@ func zstdCompress(payload []byte) ([]byte, error) {
 }
 
 func zstdDecompress(payload []byte) ([]byte, error) {
-	decoder, err := zstd.NewReader(nil)
+	decoder, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(uint64(maxUncompressedDataObjectSize)))
 	if err != nil {
 		return nil, err
 	}

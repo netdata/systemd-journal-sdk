@@ -338,6 +338,15 @@ Accepted reader API layers:
   verification without a key succeeds for unsealed-only directories and fails
   for sealed files; the correct `--verify-key` validates mixed sealed/unsealed
   directories, and a wrong key fails.
+- Rust, Go, Node.js, and Python verification APIs and file-backed
+  `journalctl --verify` perform raw object-graph verification for the supported
+  feature slices before normal reader traversal. The shared parity matrix
+  `tests/interoperability/run_verify_matrix.py` validates stock systemd and all
+  repository verifiers against positive regular, zstd/xz/lz4 DATA-compressed,
+  compact, compact plus DATA-compressed, and sealed files, plus negative object
+  type, object size, DATA/FIELD payload hash, DATA hash-table membership,
+  entry-array ordering, header counter, missing main entry-array, entry seqnum,
+  tail seqnum, tail monotonic, and TAG/FSS HMAC corruption classes.
 - Daemon-only libsystemd/journalctl operations remain outside the SDK facade
   target and must fail with controlled unsupported behavior when exposed.
 
@@ -366,9 +375,6 @@ Current Go reader feature slice:
 
 Current Go reader limitations:
 
-- sealed TAG/HMAC verification APIs and file-backed journalctl `--verify-key`
-  are implemented for repository-generated sealed files; full systemd
-  object-graph verification parity remains tracked under SOW-0022;
 - daemon-only journalctl operations remain unsupported.
 
 Current Rust writer feature slice:
@@ -432,9 +438,6 @@ Current Rust reader feature slice:
 Current Rust reader limitations:
 
 - boot listing uses file-level boot metadata in this slice;
-- sealed TAG/HMAC verification APIs and file-backed journalctl `--verify-key`
-  are implemented for repository-generated sealed files; full systemd
-  object-graph verification parity remains tracked under SOW-0022;
 - daemon-only journalctl operations remain unsupported.
 
 Current Node.js writer feature slice:
@@ -498,9 +501,6 @@ Current Node.js reader feature slice:
 Current Node.js reader/writer limitations:
 
 - boot listing uses file-level boot metadata in this slice;
-- sealed TAG/HMAC verification APIs and file-backed journalctl `--verify-key`
-  are implemented for repository-generated sealed files; full systemd
-  object-graph verification parity remains tracked under SOW-0022;
 - daemon-only journalctl operations remain unsupported.
 
 Current Python writer feature slice:
@@ -565,9 +565,6 @@ Current Python reader feature slice:
 Current Python reader/writer limitations:
 
 - boot listing uses file-level boot metadata in this slice;
-- sealed TAG/HMAC verification APIs and file-backed journalctl `--verify-key`
-  are implemented for repository-generated sealed files; full systemd
-  object-graph verification parity remains tracked under SOW-0022;
 - daemon-only journalctl operations remain unsupported.
 
 ## journalctl Target
