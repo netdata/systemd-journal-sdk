@@ -24,6 +24,9 @@ func main() {
 	var xzFixture bool
 	var lz4Fixture bool
 	var compact bool
+	var seal bool
+	var sealIntervalUsec uint64
+	var sealStartUsec uint64
 
 	flag.StringVar(&path, "path", "", "journal path to create")
 	flag.StringVar(&readyFile, "ready-file", "", "path to create after the first entry is committed")
@@ -38,6 +41,9 @@ func main() {
 	flag.BoolVar(&xzFixture, "xz-fixture", false, "write xz-compressed fields in the first entry")
 	flag.BoolVar(&lz4Fixture, "lz4-fixture", false, "write lz4-compressed fields in the first entry")
 	flag.BoolVar(&compact, "compact", false, "write the systemd compact journal format")
+	flag.BoolVar(&seal, "seal", false, "enable Forward Secure Sealing with a deterministic zero seed")
+	flag.Uint64Var(&sealIntervalUsec, "seal-interval-usec", 1_000_000, "FSS interval in microseconds")
+	flag.Uint64Var(&sealStartUsec, "seal-start-usec", 1_700_001_000_000_000, "FSS start time in microseconds")
 	flag.Parse()
 
 	if path == "" || readyFile == "" || entries <= 0 {
@@ -66,6 +72,17 @@ func main() {
 	}
 
 	opts := journal.Options{Compression: compression, CompressThresholdBytes: compressThreshold, Compact: compact}
+	if seal {
+		if sealIntervalUsec == 0 || sealStartUsec == 0 {
+			fmt.Fprintln(os.Stderr, "seal interval and start must be positive")
+			os.Exit(2)
+		}
+		opts.Seal = &journal.SealOptions{
+			Seed:         make([]byte, 12),
+			IntervalUsec: sealIntervalUsec,
+			StartUsec:    sealStartUsec,
+		}
+	}
 	w, err := journal.Create(path, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create journal: %v\n", err)

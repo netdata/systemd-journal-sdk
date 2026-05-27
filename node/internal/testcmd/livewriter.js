@@ -2,6 +2,7 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { SealOptions } from '../../src/lib/seal.js';
 import { Writer } from '../../src/lib/writer.js';
 
 function parseArgs(argv) {
@@ -19,6 +20,9 @@ function parseArgs(argv) {
     compression: 'none',
     compressionThresholdBytes: 512,
     compact: false,
+    seal: false,
+    sealIntervalUsec: 1_000_000,
+    sealStartUsec: 1_700_001_000_000_000,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -67,6 +71,15 @@ function parseArgs(argv) {
         break;
       case '--compact':
         args.compact = true;
+        break;
+      case '--seal':
+        args.seal = true;
+        break;
+      case '--seal-interval-usec':
+        args.sealIntervalUsec = parsePositiveInt(next(), '--seal-interval-usec');
+        break;
+      case '--seal-start-usec':
+        args.sealStartUsec = parsePositiveInt(next(), '--seal-start-usec');
         break;
       default:
         throw new Error(`unknown argument: ${arg}`);
@@ -123,11 +136,19 @@ async function main() {
   mkdirSync(dirname(args.path), { recursive: true });
   mkdirSync(dirname(args.readyFile), { recursive: true });
 
-  const writer = Writer.create(args.path, {
+  const writerOptions = {
     compression: args.compression,
     compressionThresholdBytes: args.compressionThresholdBytes,
     compact: args.compact,
-  });
+  };
+  if (args.seal) {
+    writerOptions.seal = new SealOptions(
+      Buffer.alloc(12),
+      args.sealIntervalUsec,
+      args.sealStartUsec,
+    );
+  }
+  const writer = Writer.create(args.path, writerOptions);
   const realtimeBase = 1_700_001_000_000_000n;
 
   try {

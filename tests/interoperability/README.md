@@ -90,12 +90,22 @@ For each writer language, the matrix proves all of the following:
    observed the complete set of expected entries in the correct order.
 
 3. **File integrity**: `journalctl --verify --file` passes for each generated
-   journal file. For the Rust directory writer, the runner discovers the active
-   `.journal` file and verifies that file directly.
+   journal file. Sealed/FSS files are verified with the deterministic test
+   `--verify-key`. For the Rust directory writer, the runner discovers the
+   active `.journal` file and verifies that file directly.
 
 4. **Cross-language live compatibility**: Go, Rust, Node.js, and Python
    repository readers plus stock journalctl all succeed against Go, Rust,
    Node.js, and Python writers while each writer is active.
+
+5. **Stock libsystemd live compatibility**: the C helper built from
+   `tests/conformance/live/libsystemd_live_reader.c` opens the active file with
+   `sd_journal_open_files()`, waits with `sd_journal_wait()`, and proves ordered
+   `LIVE_SEQ` visibility while the writer is still active.
+
+6. **Feature slices**: the default matrix covers regular files, zstd/xz/lz4
+   DATA compression, compact files, compact plus DATA compression, and sealed
+   files. Use `--features` to run a subset.
 
 ### What the live matrix does NOT prove
 
@@ -108,11 +118,6 @@ For each writer language, the matrix proves all of the following:
   `run_directory_matrix.py`. The live matrix only proves active-file
   compatibility for the file discovered under a generated directory.
 
-- **Compression, compact journal, or FSS**: these are out of scope for the live
-  matrix. Binary stress fixtures are covered by `run_binary_matrix.py`; DATA
-  object compression is covered by `run_compression_matrix.py`; compact object
-  layout is covered by `run_compact_matrix.py`.
-
 - **Multi-writer scenarios**: the live matrix tests one writer at a time with
   multiple concurrent readers, not multiple concurrent writers.
 
@@ -121,13 +126,19 @@ For each writer language, the matrix proves all of the following:
 The live matrix reports:
 
 - `systemd_version` — stock journalctl version used as reference reader
+- `features` — regular, compressed, compact, compact+compressed, or sealed
+  slices selected for the run
 - `writer` — language name
 - `journal_mode` — `file` or `directory`
 - `entries` — number of entries written
 - `exit_code` — writer process exit code
+- `writer_command` — exact writer command used for the slice
 - `active_polls` — observations made while writer was still running
+- `libsystemd_live` — stock libsystemd C helper results
 - `final_reads` — complete snapshots after writer exited
 - `verify` — stock journalctl --verify result for the generated journal file
+- `structure` — structural oracle result for compression and compact flags
+- `verify_key` — deterministic sealed-file verification key when applicable
 - `writer_stderr` — writer stderr tail for failure diagnostics
 - `writer_delay_ms` — configured delay between writer appends
 

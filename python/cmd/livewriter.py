@@ -8,6 +8,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from journal import Writer
+from journal.seal import SealOptions
 
 
 def parse_args(argv):
@@ -24,6 +25,9 @@ def parse_args(argv):
     parser.add_argument('--lz4-fixture', action='store_true')
     parser.add_argument('--compression', default='none', choices=['none', 'zstd', 'xz', 'lz4'])
     parser.add_argument('--compact', action='store_true')
+    parser.add_argument('--seal', action='store_true')
+    parser.add_argument('--seal-interval-usec', type=parse_positive_int, default=1_000_000)
+    parser.add_argument('--seal-start-usec', type=parse_positive_int, default=1_700_001_000_000_000)
     parser.add_argument(
         '--compression-threshold-bytes',
         '--compress-threshold',
@@ -72,11 +76,19 @@ def main():
     os.makedirs(os.path.dirname(args.path), exist_ok=True)
     os.makedirs(os.path.dirname(args.ready_file), exist_ok=True)
 
-    writer = Writer.create(args.path, {
+    writer_options = {
         'compression': args.compression,
         'compression_threshold_bytes': args.compression_threshold_bytes,
         'compact': args.compact,
-    })
+    }
+    if args.seal:
+        writer_options['seal'] = SealOptions(
+            seed=bytes(12),
+            interval_usec=args.seal_interval_usec,
+            start_usec=args.seal_start_usec,
+        )
+
+    writer = Writer.create(args.path, writer_options)
     try:
         realtime_base = 1_700_001_000_000_000
         for seq in range(args.entries):

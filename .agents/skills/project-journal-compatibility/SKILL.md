@@ -52,6 +52,12 @@ Do not use this skill for:
 - Add shared live-concurrency tests before accepting a writer or reader as production-compatible.
 - Prove cross-language interoperability with files written by each implementation and read by every implementation.
 - Prove stock-reader interoperability while repository writers are actively appending, not only after close.
+- For live writer/reader compatibility changes, run
+  `tests/interoperability/run_live_matrix.py` and require the feature matrix to
+  cover regular, zstd/xz/lz4 DATA compression, compact, compact plus DATA
+  compression, and sealed/FSS files. The matrix must include stock
+  `journalctl --file`, stock libsystemd, all repository readers, final
+  `journalctl --verify --file`, and `--verify-key` for sealed files.
 - For compressed-DATA writer changes, run `tests/interoperability/run_compression_matrix.py`
   and require the structural oracle to validate object order, offsets, flags,
   counters, hash-chain consistency, tail metadata, references, and compression

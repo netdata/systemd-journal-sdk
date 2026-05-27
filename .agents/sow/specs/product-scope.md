@@ -57,6 +57,10 @@ Required validation evidence:
 - The shared live-concurrency harness lives under `tests/conformance/live/` and uses a configurable monotonically increasing sequence field, defaulting to `LIVE_SEQ`, so stock readers prove ordered complete visibility.
 - Stock reader adapters may retry transient active-writer `ENODATA` open/read failures or partial snapshots only while the writer is active; after the writer exits, final ordered reads and `journalctl --verify --file` must pass without masking incompatibility.
 - A committed live-concurrency harness must exercise each repository reader against live files produced by each repository writer.
+- The live feature matrix must cover regular files, zstd/xz/lz4 DATA-compressed
+  files, compact files, compact plus DATA-compressed files, and sealed files.
+  For sealed files, final stock verification must pass with the deterministic
+  test `--verify-key`.
 - Where a stock systemd writer can be exercised without violating repository-boundary rules, each repository reader must be tested against it. If the environment cannot provide a stock writer safely, the SOW must record the missing evidence and cannot claim full reader compatibility.
 - Compatibility claims must record exact stock systemd version, commands/helpers used, stress duration, entry counts, reader counts, and failure criteria.
 - Smoke tests are not sufficient for production compatibility; stress tests and race-window tests are required.
@@ -237,7 +241,10 @@ Current Go writer feature slice:
 - Forward Secure Sealing TAG writing with configurable deterministic test
   options and stock `journalctl --verify --verify-key` validation for generated
   sealed files;
-- live one-writer/multiple-reader compatibility with stock `journalctl --file` and stock libsystemd readers for the current writer slice.
+- live one-writer/multiple-reader compatibility with stock `journalctl --file`,
+  stock libsystemd readers, and all repository readers for regular,
+  zstd/xz/lz4-compressed DATA, compact, compact plus compressed DATA, and
+  sealed writer slices.
 
 Current shared high-level directory writer API slice:
 
@@ -395,8 +402,10 @@ Current Rust writer feature slice:
 - Forward Secure Sealing TAG writing with configurable deterministic test
   options and stock `journalctl --verify --verify-key` validation for generated
   sealed files;
-- live one-writer/multiple-reader compatibility with stock `journalctl --file`
-  and stock libsystemd readers for the current writer slice.
+- live one-writer/multiple-reader compatibility with stock `journalctl --file`,
+  stock libsystemd readers, and all repository readers for regular,
+  zstd/xz/lz4-compressed DATA, compact, compact plus compressed DATA, and
+  sealed writer slices.
 
 Current Rust reader feature slice:
 
@@ -457,8 +466,10 @@ Current Node.js writer feature slice:
 - Forward Secure Sealing TAG writing with configurable deterministic test
   options and stock `journalctl --verify --verify-key` validation for generated
   sealed files;
-- live one-writer/multiple-reader compatibility with stock `journalctl --file`
-  and stock libsystemd readers for the current writer slice.
+- live one-writer/multiple-reader compatibility with stock `journalctl --file`,
+  stock libsystemd readers, and all repository readers for regular,
+  zstd/xz/lz4-compressed DATA, compact, compact plus compressed DATA, and
+  sealed writer slices.
 
 Current Node.js reader feature slice:
 
@@ -521,8 +532,10 @@ Current Python writer feature slice:
 - Forward Secure Sealing TAG writing with configurable deterministic test
   options and stock `journalctl --verify --verify-key` validation for generated
   sealed files;
-- live one-writer/multiple-reader compatibility with stock `journalctl --file`
-  and stock libsystemd readers for the current writer slice.
+- live one-writer/multiple-reader compatibility with stock `journalctl --file`,
+  stock libsystemd readers, and all repository readers for regular,
+  zstd/xz/lz4-compressed DATA, compact, compact plus compressed DATA, and
+  sealed writer slices.
 
 Current Python reader feature slice:
 

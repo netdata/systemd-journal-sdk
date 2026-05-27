@@ -1,11 +1,12 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use clap::Parser;
 use journal::{Config, EntryTimestamps, Log, Origin, RetentionPolicy, RotationPolicy, Source};
 use journal_core::file::{
-    Compression, DEFAULT_COMPRESS_THRESHOLD, JournalFile, JournalFileOptions, JournalWriter,
-    MmapMut,
+    Compression, JournalFile, JournalFileOptions, JournalWriter, MmapMut,
+    DEFAULT_COMPRESS_THRESHOLD,
 };
 use journal_core::repository::File as RepositoryFile;
+use journal_core::seal::SealOptions;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -44,6 +45,12 @@ struct Args {
     compression_threshold: usize,
     #[arg(long = "compact", default_value_t = false)]
     compact: bool,
+    #[arg(long = "seal", default_value_t = false)]
+    seal: bool,
+    #[arg(long = "seal-interval-usec", default_value_t = 1_000_000)]
+    seal_interval_usec: u64,
+    #[arg(long = "seal-start-usec", default_value_t = 1_700_001_000_000_000)]
+    seal_start_usec: u64,
 }
 
 fn main() {
@@ -73,6 +80,9 @@ fn run() -> Result<()> {
     let Some(dir) = &args.dir else {
         return Err(anyhow!("either --path or --dir is required"));
     };
+    if args.seal {
+        return Err(anyhow!("--seal requires --path in livewriter"));
+    }
     let origin = Origin {
         machine_id: None,
         namespace: None,
@@ -143,12 +153,22 @@ fn run_file_writer(
     let machine_id = uuid::Uuid::new_v4();
     let boot_id = uuid::Uuid::new_v4();
     let seqnum_id = uuid::Uuid::new_v4();
-    let options = JournalFileOptions::new(machine_id, boot_id, seqnum_id)
+    let mut options = JournalFileOptions::new(machine_id, boot_id, seqnum_id)
         .with_window_size(8 * 1024 * 1024)
         .with_keyed_hash(true)
         .with_compression(compression)
         .with_compress_threshold(args.compression_threshold)
         .with_compact(args.compact);
+    if args.seal {
+        if args.seal_interval_usec == 0 || args.seal_start_usec == 0 {
+            return Err(anyhow!("seal interval and start must be positive"));
+        }
+        options = options.with_seal(SealOptions::new(
+            [0u8; 12],
+            args.seal_interval_usec,
+            args.seal_start_usec,
+        ));
+    }
     let mut journal_file = JournalFile::<MmapMut>::create(&repo_file, options)?;
     let mut writer = JournalWriter::new_with_compression(
         &mut journal_file,
