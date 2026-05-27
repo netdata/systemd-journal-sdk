@@ -61,6 +61,11 @@ Facts:
 - The user clarified on 2026-05-27 that production writers must be designed around exclusive writer ownership of the journal file: no hot-path allocations where caller-owned data can be used for the duration of append, no hot-path file-state syscalls except extension and explicit sync/close, careful publication ordering for one writer with multiple lockless readers, careful write planning to avoid I/O amplification, and rare flushes.
 - The Rust SDK has a concrete hot-path regression versus the vendored Rust source: `rust/src/crates/journal-core/src/file/mmap.rs` calls `file.metadata()?.len()` in `create_window`, `get_slice`, and `get_slice_mut`. Commit `6368d5f` introduced these checks after the initial Rust import. The Netdata vendored Rust source at `ktsaou/netdata @ 00305266364e`, `src/crates/journal-core/src/file/mmap.rs`, does not do per-access metadata checks in `get_slice` or `get_slice_mut`.
 - systemd's writer publication model is not "all header fields last". In `systemd/systemd @ c0a5a2516d28`, `src/libsystemd/sd-journal/journal-file.c`, systemd updates object and data/field counters during object linking, but it writes target objects before publishing references and uses an explicit atomic fence before entry reachability in `journal_file_link_entry`. The SDK optimization target must mirror this real publication model instead of inventing a stricter but incompatible one.
+- systemd's documented send API and internal journal-file writer API use full
+  `KEY=value` field payloads, represented as `struct iovec` arrays, not
+  separate key/value structs. The current Rust writer-core benchmark is closer
+  to that systemd low-level API shape than the current Go benchmark, which uses
+  structured `Field{Name, Value}` values.
 
 Inferences:
 
@@ -69,6 +74,19 @@ Inferences:
 - systemd should be the reference baseline, with Rust also tracked as a known high-performance implementation.
 - Netdata's vendored Rust writer and reader/index/query paths must be measured as practical replacement baselines, not only stock systemd.
 - The benchmark plan needs both microbenchmarks and end-to-end Netdata-shaped paths. The Go writer result reported by the user may include SDK overhead, SNMP traps worker overhead, sync cadence, compact/compression choices, field remapping, locking, retention, or dataset/cardinality effects; these must be separated by profiling.
+- A split structured-field SDK API may still be useful and may be optimizable
+  by hashing/copying from multiple slices and avoiding delimiter scans, but this
+  is an SDK design/performance hypothesis, not the systemd lower-level API
+  model. SOW-0009 must measure full `KEY=value` payload mode and structured
+  field mode separately before making public performance claims.
+- A trusted structured append path may also avoid some entry-item
+  normalization work when the caller can guarantee invariants. This is not
+  automatic from "structured" alone: systemd sorts entry DATA references by
+  on-disk object offset and deduplicates repeated DATA object references inside
+  one entry. A fast path may skip duplicate elimination only when the caller or
+  writer proves no duplicate full `KEY=value` payloads are present; it may skip
+  sort only when preserving input order is an accepted compatibility/performance
+  tradeoff or when the writer proves the resulting offsets are already sorted.
 
 Unknowns:
 
@@ -93,6 +111,18 @@ Unknowns:
 - Optimizations are driven by measurements and do not weaken conformance. Profiling must specifically account for allocations, buffer reuse, hashing, object lookup, data/field deduplication, compression, sealing, remapping, lock handling, append publication, reader decompression, query filtering, and directory traversal.
 - Writer optimization must explicitly report per-language hot-path allocation behavior, file/syscall behavior, mmap or pwrite strategy, publish ordering, write amplification, and flush policy.
 - Rust and Go optimized writer paths must target production hot-path use. For compact/no-compression/no-FSS append, the target design is no per-field heap allocation, no per-object file metadata syscall, bounded scratch/state allocation after warmup, and no readback of writer-owned state.
+- Writer API benchmarks must compare like with like. The systemd-compatible
+  low-level benchmark mode is full `KEY=value` payloads, iovec-style. The SDK
+  structured field API mode is a separate public convenience/performance mode.
+  Reports must group by `api_mode` and must not mix raw-payload and
+  structured-field ratios.
+- Rust writer benchmarks already cover the systemd-compatible raw-payload mode.
+  Structured-field Rust benchmarks are still needed if the SDK exposes or
+  documents structured fields as a public writer API.
+- Trusted structured fast-path benchmarks must report their normalization
+  contract explicitly: whether duplicate DATA entries are checked, whether
+  entry items are sorted by data-object offset, whether input order is
+  preserved, and whether byte identity with systemd is still claimed.
 - Node.js and Python optimizations must still reduce allocation/syscall/readback overhead, but this SOW must record whether pure-runtime constraints prevent them from being production hot-path replacements.
 - Performance results are documented with reproducible commands.
 - The SOW cannot close with a material Go writer or reader performance deficit against the selected Netdata baseline unless the user explicitly accepts the residual gap after seeing profiling evidence and options.
@@ -365,6 +395,80 @@ Open decisions:
    - Requirement: repair Rust to publish the same post-change notification after entry visibility, then rerun syscall evidence and fixed-128 MiB writer-core benchmarks. If Rust remains faster, the performance is stronger evidence; if it drops to systemd class or below, the prior Rust result was a benchmark artifact.
    - Risk: per-append same-size truncate is intentionally a syscall. Removing or coalescing it may be valid only behind an explicit API/configuration contract with live-reader implications; the default writer path must preserve stock reader follow compatibility.
 
+16. 2026-05-27 API-mode benchmark fairness correction
+   - Evidence: `systemd/systemd @ c0a5a2516d28`,
+     `man/sd_journal_print.xml:145` documents `sd_journal_send()` as accepting
+     fields in `VARIABLE=value` format; `man/sd_journal_print.xml:156`
+     documents `sd_journal_sendv()` as an array of `struct iovec`, where each
+     structure references one field.
+   - Evidence: `systemd/systemd @ c0a5a2516d28`,
+     `src/libsystemd/sd-journal/journal-file.c:2527` defines
+     `journal_file_append_entry()` with `const struct iovec iovec[]`; line
+     `2604` passes each iovec as a full DATA payload to
+     `journal_file_append_data()`.
+   - Evidence: `systemd/systemd @ c0a5a2516d28`,
+     `src/libsystemd/sd-journal/journal-file.c:1873` scans the full DATA
+     payload for `=` before creating/linking the FIELD object at line `1912`.
+   - Evidence: `rust/src/internal/testcmd/writer_core_bench/src/main.rs:49`
+     precomputes raw `KEY=value` byte payloads, and
+     `rust/src/internal/testcmd/writer_core_bench/src/main.rs:200` calls
+     `writer.add_entry()` with those payloads. The result JSON reports
+     `"api_mode": "raw-payload"` at
+     `rust/src/internal/testcmd/writer_core_bench/src/main.rs:230`.
+   - Evidence: `rust/src/crates/journal-core/src/file/writer.rs:640` scans
+     newly inserted DATA payloads for `=` before adding/linking FIELD objects.
+   - Evidence: `go/internal/testcmd/writer_core_bench/main.go:81` precomputes
+     structured `journal.Field` values, `go/internal/testcmd/writer_core_bench/main.go:170`
+     reports `"field-api"`, and `go/internal/testcmd/writer_core_bench/main.go:220`
+     calls `w.Append(fields, ...)`.
+   - Fact: systemd's low-level file writer API is iovec-based but semantically
+     still full `KEY=value` field payloads, not separate key/value structs.
+   - Fact: the current Rust and Go writer-core results are not measuring the
+     same API shape. Rust is measuring the systemd-like raw-payload shape; Go is
+     measuring the SDK structured-field shape.
+   - Finding: the current Rust raw-payload number is the right comparison shape
+     for systemd low-level writer behavior. It is not enough to characterize a
+     structured SDK API, if that API remains public, because a structured path
+     has different construction, hashing, delimiter-scan, and copying costs.
+   - Decision: SOW-0009 benchmark reports must group comparisons by
+     `api_mode`. The systemd baseline belongs to raw full-payload mode.
+     Structured-field SDK measurements are separate and must be compared only
+     against the same mode in other SDKs.
+   - Requirement: add Go/Node.js/Python raw-payload benchmark modes if their
+     low-level SDKs expose or should expose a systemd-compatible fast path. Add
+     a Rust structured-field benchmark path only if structured fields remain a
+     public SDK writer API after SOW-0037 resolves the API hierarchy.
+
+17. 2026-05-27 trusted structured fast-path candidate
+   - Evidence: `systemd/systemd @ c0a5a2516d28`,
+     `src/libsystemd/sd-journal/journal-file.c:2630` sorts entry items by data
+     object offset and line `2631` removes duplicate entry items before writing
+     the ENTRY object.
+   - Evidence: `rust/src/crates/journal-core/src/file/writer.rs:480` sorts
+     `entry_items` by offset and `rust/src/crates/journal-core/src/file/writer.rs:482`
+     deduplicates equal offsets.
+   - Fact: entry-item sorting/deduplication is not field-name sorting. Two
+     values for the same field are valid and must remain distinct when their
+     full `KEY=value` payloads differ. Only exact duplicate DATA references in
+     one entry are removed.
+   - Finding: structured callers such as NetFlow, SNMP traps, and OTEL often
+     already know their fields and can guarantee there are no duplicate full
+     payloads in an entry. That can justify a trusted no-duplicate fast path.
+   - Constraint: callers generally cannot know on-disk DATA object offsets, so
+     they cannot by themselves guarantee systemd's offset-sorted entry-item
+     order. The writer can either cheaply detect already-sorted offsets after
+     lookup, sort only when needed, or expose a deliberate "preserve input order"
+     fast path that gives up byte identity with systemd while preserving reader
+     compatibility if validation proves it.
+   - Requirement: profile sort/dedup cost separately before adding public flags.
+     If added, the flags must be explicit and named around the actual contract,
+     for example "trusted unique fields" and "preserve input order", not vague
+     "fast" behavior.
+   - Validation: any skipped-normalization mode must pass stock reader,
+     cross-language reader, verifier, live-concurrency, and query tests. It must
+     be excluded from byte-for-byte systemd identity claims unless the writer
+     still proves offset ordering and duplicate elimination are equivalent.
+
 ## Plan
 
 1. Implement and run writer compact/no-compression/no-FSS baseline harness.
@@ -618,6 +722,21 @@ Open decisions:
   - Confirmed that systemd's `journal_file_append_entry()` calls
     `journal_file_post_change()` after each append when no coalescing timer is
     installed.
+- Recorded the API-mode benchmark fairness correction:
+  - systemd's lower-level writer API uses iovec arrays whose payloads are full
+    `KEY=value` fields; it is not a separate key/value struct API.
+  - Rust writer-core currently measures the systemd-like raw prebuilt
+    `KEY=value` payload mode, and the raw Rust writer still scans newly inserted
+    DATA payloads for `=`.
+  - Go writer-core currently measures structured fields.
+  - Final benchmark reporting must compare raw-payload mode and
+    structured-field mode separately.
+- Recorded the trusted structured fast-path candidate:
+  - structured callers may avoid `KEY=value` build-then-parse overhead and may
+    skip duplicate DATA elimination when they can guarantee unique full
+    payloads.
+  - skipping offset sorting is a separate compatibility/performance decision
+    because systemd sorts entry items by DATA object offset.
   - Confirmed that the Go writer publishes entry metadata and then issues the
     same-size truncate notification on each append.
   - Confirmed that the Rust low-level writer updates entry metadata and returns

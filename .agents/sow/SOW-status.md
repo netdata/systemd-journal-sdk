@@ -20,7 +20,9 @@ Last updated: 2026-05-27
 - SOW-0037 - Reference Drift Audit: open. Audit Rust against systemd first,
   then Go against Rust, so implementation differences are classified as
   intentional, performance-motivated, language-specific, unsupported, or
-  accidental drift to fix.
+  accidental drift to fix. The audit also covers public writer API parity:
+  systemd-compatible raw full-field payloads and structured binary-safe field
+  APIs must be separated into an explicit cross-language API hierarchy.
 
 ## Recently Completed
 
