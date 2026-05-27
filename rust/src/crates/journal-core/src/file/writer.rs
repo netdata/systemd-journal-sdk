@@ -524,6 +524,7 @@ impl JournalWriter {
             realtime,
             monotonic,
         );
+        journal_file.post_change()?;
 
         Ok(())
     }

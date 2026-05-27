@@ -4,6 +4,7 @@ use std::fs::File;
 use std::ops::{Deref, DerefMut};
 #[cfg(unix)]
 use std::os::unix::fs::FileExt;
+use std::sync::atomic::{Ordering, fence};
 use tracing::error;
 
 // Re-export memmap2 types for other crates and import for internal use
@@ -394,6 +395,15 @@ impl<M: MemoryMapMut> WindowManager<M> {
             }
         }
         self.file.sync_data()?;
+        self.file_size = logical_size;
+        Ok(())
+    }
+
+    /// Publish mmap writes to stock follow readers by triggering an inotify
+    /// event with the same-size truncate used by systemd.
+    pub fn post_change(&mut self, logical_size: u64) -> Result<()> {
+        fence(Ordering::SeqCst);
+        self.file.set_len(logical_size)?;
         self.file_size = logical_size;
         Ok(())
     }

@@ -924,6 +924,15 @@ impl<M: MemoryMapMut> JournalFile<M> {
         Ok(())
     }
 
+    /// Trigger a stock-reader-visible post-change notification after mmap append.
+    pub fn post_change(&mut self) -> Result<()> {
+        let logical_size = {
+            let header = self.journal_header_ref();
+            header.header_size + header.arena_size
+        };
+        self.window_manager.get_mut().post_change(logical_size)
+    }
+
     /// Creates a successor journal file with optimized bucket sizes based on this file's utilization
     pub fn create_successor(
         &self,

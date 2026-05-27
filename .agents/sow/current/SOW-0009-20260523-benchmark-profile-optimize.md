@@ -355,6 +355,16 @@ Open decisions:
    - Risk of Option A: Node.js/Python users may see lower throughput than Rust/Go and need documentation.
    - Risk of Option B: significant effort may be spent chasing runtime ceilings that still cannot reach the Rust/Go/systemd class without violating pure-runtime constraints.
 
+15. 2026-05-27 adversarial Rust/Go writer benchmark review
+   - Decision: before treating the Rust/Go writer-core speedup as real, run the opposite hypothesis: the benchmark is wrong, or it hides an uncontrolled compatibility risk versus systemd.
+   - Evidence: `systemd/systemd @ c0a5a2516d28`, `src/libsystemd/sd-journal/journal-file.c:2414` implements `journal_file_post_change()` with a sequentially consistent fence and same-size `ftruncate`; `src/libsystemd/sd-journal/journal-file.c:2654` calls it after each `journal_file_append_entry()` when no coalescing timer is installed.
+   - Evidence: `go/journal/writer.go:371` publishes entry metadata and `go/journal/writer.go:375` calls `postChange()`; `go/journal/writer.go:775` implements same-size truncate with an explicit sequentially consistent atomic operation before the syscall.
+   - Finding: the Go writer-core benchmark uses the public field API and pays the systemd-style post-change notification, so those two facts do not explain away Go being faster than systemd.
+   - Evidence: `rust/src/crates/journal-core/src/file/writer.rs:521` updates entry metadata and returns without a post-change notification; `rust/src/internal/testcmd/writer_core_bench/src/main.rs:200` calls `writer.add_entry()` in the timed loop and only syncs at close/finalize.
+   - Finding: the Rust writer-core benchmark is not apples-to-apples with systemd for live stock-reader publication because it skips the per-append post-change notification. This is an uncontrolled compatibility/performance risk, not a proven performance result.
+   - Requirement: repair Rust to publish the same post-change notification after entry visibility, then rerun syscall evidence and fixed-128 MiB writer-core benchmarks. If Rust remains faster, the performance is stronger evidence; if it drops to systemd class or below, the prior Rust result was a benchmark artifact.
+   - Risk: per-append same-size truncate is intentionally a syscall. Removing or coalescing it may be valid only behind an explicit API/configuration contract with live-reader implications; the default writer path must preserve stock reader follow compatibility.
+
 ## Plan
 
 1. Implement and run writer compact/no-compression/no-FSS baseline harness.
@@ -602,6 +612,71 @@ Open decisions:
     hash-depth walk, helper allocation cleanup, metadata batching, and
     non-Unix fallback refinements remain valid future profiling/cleanup targets
     inside SOW-0009, but they are not blockers for this intermediate commit.
+- Started the adversarial Rust/Go writer benchmark review requested by the
+  user before any v0.2.0 tag or Netdata integration handoff:
+  - Compared the systemd, Go, and Rust writer-core publication paths.
+  - Confirmed that systemd's `journal_file_append_entry()` calls
+    `journal_file_post_change()` after each append when no coalescing timer is
+    installed.
+  - Confirmed that the Go writer publishes entry metadata and then issues the
+    same-size truncate notification on each append.
+  - Confirmed that the Rust low-level writer updates entry metadata and returns
+    without a post-change notification; the benchmark driver syncs only at
+    close/finalize.
+  - Ran 1000-row syscall profiles. Systemd performed `1000` `ftruncate` calls,
+    Go performed `1002` `ftruncate` calls, and Rust performed only `3`
+    `ftruncate` calls. This falsifies the prior Rust writer-core comparison as
+    a live-publication apples-to-apples benchmark. It does not falsify the Go
+    result because Go still paid the per-entry notification syscall and used a
+    higher-level field API in the timed append loop.
+- Repaired the Rust low-level writer's live-publication path:
+  - Added `JournalFile::post_change()` and `WindowManager::post_change()` for
+    a sequentially consistent fence plus same-size truncate notification after
+    mmap writes.
+  - `JournalWriter::add_entry()` now calls this notification after entry
+    metadata is published, matching systemd's default no-coalescing-timer
+    `journal_file_append_entry()` behavior.
+  - Post-repair syscall evidence for 1000 rows showed Rust now performs `1003`
+    `ftruncate` calls, so the benchmark now includes the same publication
+    syscall class as systemd and Go.
+- Re-ran the fixed-128 MiB compact/no-compression/no-FSS writer-core benchmark
+  after the Rust publication repair:
+  - Command: `timeout 1800 python3 tests/benchmarks/run_writer_core_benchmarks.py --languages systemd rust go --rows 100000 --repetitions 3 --warmups 1 --format compact --final-state online --keep-journals`.
+  - Report: `.local/benchmarks/writer-core/compact-none-fss-off-20260527T184523Z/report.json`.
+  - systemd C median append rate: `34139.15491318` rows/sec.
+  - Rust median append rate: `51345.54578958881` rows/sec.
+  - Go median append rate: `49645.35512904224` rows/sec.
+  - Rust/systemd median append ratio: `1.504007522159431`.
+  - Go/systemd median append ratio: `1.454205742798742`.
+  - Interpretation: the adversarial review did find a real Rust benchmark
+    fairness bug, but after repairing it Rust and Go still remain materially
+    faster than systemd on this controlled writer-core baseline. This supports
+    the performance result for this slice; it does not close the broader
+    SOW-0009 reader/Netdata-shaped benchmark work.
+- External reviewer pass for the adversarial Rust/Go writer benchmark review
+  and Rust post-change repair:
+  - `llm-netdata-cloud/glm-5.1`: production-grade. Non-blocking notes:
+    cached `get_slice` bounds checks remain in Rust read-path calls, Rust/Go
+    do not yet expose systemd-style post-change coalescing timers, API modes
+    differ by language and remain explicitly reported, ARM64 runtime validation
+    remains a portability gap, and Go's `postChangeFence` intentionally uses a
+    sequentially consistent RMW as a fence proxy.
+  - `llm-netdata-cloud/qwen3.6-plus`: production-grade. Non-blocking notes:
+    same-size truncate failure can leave Rust cached `file_size` stale on an
+    already-failing path, ARM64 live validation remains unavailable, and
+    `post_change` intentionally requires mutable writer-owned state.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: production-grade. Non-blocking
+    notes: no coalescing timer option, API-mode difference is documented, ARM64
+    runtime validation remains pending, and extra non-entry `ftruncate` calls
+    are negligible setup/finalization overhead.
+  - `llm-netdata-cloud/kimi-k2.6`: production-grade. Non-blocking notes:
+    benchmark environment variance from `powersave` governor remains, API modes
+    are not a pure language-runtime comparison, Go's RMW fence comment should
+    stay present, ARM64 runtime validation remains pending, and the extra
+    Rust/Go `ftruncate` calls are not material to the per-entry comparison.
+  - Disposition: no blocking findings. Existing SOW-0009 scope already keeps
+    benchmark-environment controls, API-mode reporting, ARM64 runtime
+    validation, coalescing decisions, and later Netdata-shaped workloads open.
 
 ## Validation
 
@@ -655,6 +730,23 @@ Current chunk validation:
   portability watch-points were reported.
 - `git diff --check` passed.
 - `.agents/sow/audit.sh` passed after the validation evidence update.
+- Adversarial review evidence before Rust repair:
+  - `timeout 1800 strace -f -c .local/systemd-v260.1-build/test-writer-core-bench --rows 1000 --output .local/benchmarks/profiles/adversarial/systemd-1000.journal --format compact --final-state online --max-size-bytes 134217728` completed and showed `1000` `ftruncate` calls.
+  - `timeout 1800 strace -f -c .local/cargo-target/release/writer_core_bench --rows 1000 --output .local/benchmarks/profiles/adversarial/rust-1000.journal --format compact --final-state online --max-size-bytes 134217728` completed and showed only `3` `ftruncate` calls.
+  - `timeout 1800 strace -f -c .local/benchmarks/bin/go-writer-core-bench --rows 1000 --output .local/benchmarks/profiles/adversarial/go-1000.journal --format compact --final-state online --max-size-bytes 134217728` completed and showed `1002` `ftruncate` calls.
+- Rust publication repair validation:
+  - `CARGO_HOME=/home/costa/Documents/systemd-journal-sdk/.local/cargo-home CARGO_TARGET_DIR=/home/costa/Documents/systemd-journal-sdk/.local/cargo-target cargo test --manifest-path rust/Cargo.toml -p journal-core` passed: 44 unit tests and 4 doctests.
+  - `CARGO_HOME=/home/costa/Documents/systemd-journal-sdk/.local/cargo-home CARGO_TARGET_DIR=/home/costa/Documents/systemd-journal-sdk/.local/cargo-target cargo build --manifest-path rust/Cargo.toml -p writer_core_bench --release` passed.
+  - `timeout 1800 strace -f -c .local/cargo-target/release/writer_core_bench --rows 1000 --output .local/benchmarks/profiles/adversarial/rust-1000-after-post-change.journal --format compact --final-state online --max-size-bytes 134217728` completed and showed `1003` `ftruncate` calls.
+  - `timeout 1800 python3 tests/benchmarks/run_writer_core_benchmarks.py --languages systemd rust go --rows 100000 --repetitions 3 --warmups 1 --format compact --final-state online --keep-journals` passed and produced `.local/benchmarks/writer-core/compact-none-fss-off-20260527T184523Z/report.json`; systemd median append rate was `34139.15491318` rows/sec, Rust was `51345.54578958881` rows/sec, and Go was `49645.35512904224` rows/sec.
+  - `timeout 1800 python3 tests/interoperability/run_live_matrix.py --writers rust --entries 30 --writer-delay-ms 20 --poll-readers 2 --libsystemd-readers 1 --keep-files` passed `9/9`; result file `.local/interoperability/live-feature-matrix-results-20260527-214704.json`.
+  - `timeout 1800 python3 tests/interoperability/run_byte_identity.py --final-state all` passed with `all_equal: true`.
+  - `timeout 1800 python3 tests/interoperability/run_compression_matrix.py --writers rust --compression zstd xz lz4 --keep-files` first failed when run in parallel with another Rust livewriter build/use due `[Errno 26] Text file busy`; rerunning it serially passed `54/54`; result file `.local/interoperability/compression-matrix-results-20260527-214815.json`.
+  - `timeout 1800 python3 tests/interoperability/run_compact_matrix.py --writers rust --compression none --keep-files` passed `14/14`; result file `.local/interoperability/compact-matrix-none-results-20260527-214654.json`.
+  - `timeout 1800 python3 tests/interoperability/run_compact_matrix.py --writers rust --compression zstd --keep-files` passed `14/14`; result file `.local/interoperability/compact-matrix-zstd-results-20260527-214822.json`.
+  - `timeout 1800 python3 tests/interoperability/run_compact_matrix.py --writers rust --compression xz --keep-files` passed `14/14`; result file `.local/interoperability/compact-matrix-xz-results-20260527-214826.json`.
+  - `timeout 1800 python3 tests/interoperability/run_compact_matrix.py --writers rust --compression lz4 --keep-files` passed `14/14`; result file `.local/interoperability/compact-matrix-lz4-results-20260527-214829.json`.
+  - External reviewers `llm-netdata-cloud/glm-5.1`, `llm-netdata-cloud/qwen3.6-plus`, `llm-netdata-cloud/minimax-m2.7-coder`, and `llm-netdata-cloud/kimi-k2.6` all returned `PRODUCTION GRADE` for the adversarial Rust/Go writer benchmark review and Rust post-change repair; no blocking findings were reported.
 
 Pending validation before this SOW can close:
 
