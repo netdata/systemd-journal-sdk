@@ -26,16 +26,17 @@ pub use facade::{
     SdJournalEnumerateField, SdJournalEnumerateFields, SdJournalFlushMatches, SdJournalGetCursor,
     SdJournalGetData, SdJournalGetEntry, SdJournalGetMonotonicUsec, SdJournalGetRealtimeUsec,
     SdJournalGetSeqnum, SdJournalListBoots, SdJournalNext, SdJournalNextSkip, SdJournalOpen,
-    SdJournalOpenDirectory, SdJournalOpenFile, SdJournalOpenFiles, SdJournalPrevious,
-    SdJournalPreviousSkip, SdJournalProcessOutput, SdJournalQueryUnique, SdJournalQueryUniqueState,
-    SdJournalRestartData, SdJournalRestartFields, SdJournalRestartUnique, SdJournalSeekCursor,
-    SdJournalSeekHead, SdJournalSeekRealtimeUsec, SdJournalSeekTail, SdJournalSetOutputMode,
-    SdJournalTestCursor,
+    SdJournalOpenDirectory, SdJournalOpenDirectoryWithOptions, SdJournalOpenFile,
+    SdJournalOpenFileWithOptions, SdJournalOpenFiles, SdJournalOpenFilesWithOptions,
+    SdJournalPrevious, SdJournalPreviousSkip, SdJournalProcessOutput, SdJournalQueryUnique,
+    SdJournalQueryUniqueState, SdJournalRestartData, SdJournalRestartFields,
+    SdJournalRestartUnique, SdJournalSeekCursor, SdJournalSeekHead, SdJournalSeekRealtimeUsec,
+    SdJournalSeekTail, SdJournalSetOutputMode, SdJournalTestCursor,
 };
 pub use journal_core::error::JournalError;
 pub use journal_core::file::{
-    BucketUtilization, Compression, Direction, FieldNamePolicy, HashableObject, JournalFile,
-    JournalReader, Location, Mmap,
+    BucketUtilization, Compression, Direction, EntryItemsType, ExperimentalMmapStrategy,
+    FieldNamePolicy, HashableObject, JournalFile, JournalReader, Location, Mmap,
 };
 pub use journal_log_writer::{
     Config, EntryTimestamps, Log, LogLifecycleEvent, LogLifecycleObserver, RetentionPolicy,
@@ -113,6 +114,58 @@ impl Field {
         payload.push(b'=');
         payload.extend_from_slice(&self.value);
         payload
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReaderBounds {
+    Live,
+    Snapshot,
+}
+
+impl Default for ReaderBounds {
+    fn default() -> Self {
+        Self::Live
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReaderOptions {
+    pub window_size: u64,
+    pub bounds: ReaderBounds,
+    pub mmap_strategy: ExperimentalMmapStrategy,
+}
+
+impl Default for ReaderOptions {
+    fn default() -> Self {
+        Self {
+            window_size: 4096,
+            bounds: ReaderBounds::Live,
+            mmap_strategy: ExperimentalMmapStrategy::Windowed,
+        }
+    }
+}
+
+impl ReaderOptions {
+    pub fn live() -> Self {
+        Self::default()
+    }
+
+    pub fn snapshot() -> Self {
+        Self {
+            bounds: ReaderBounds::Snapshot,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_window_size(mut self, window_size: u64) -> Self {
+        self.window_size = window_size;
+        self
+    }
+
+    pub fn with_mmap_strategy(mut self, strategy: ExperimentalMmapStrategy) -> Self {
+        self.mmap_strategy = strategy;
+        self
     }
 }
 
@@ -224,6 +277,8 @@ struct ReaderCell {
 pub struct FileReader {
     inner: ReaderCell,
     temp_path: Option<PathBuf>,
+    data_offsets: Vec<NonZeroU64>,
+    decompressed: Vec<u8>,
 }
 
 enum StepStatus {
@@ -242,12 +297,16 @@ impl Drop for FileReader {
 
 impl FileReader {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_options(path, ReaderOptions::default())
+    }
+
+    pub fn open_with_options(path: impl AsRef<Path>, options: ReaderOptions) -> Result<Self> {
         let path = path.as_ref();
         if is_zst_file(path) {
-            return Self::open_zst(path);
+            return Self::open_zst(path, options);
         }
 
-        let file = open_journal_file(path)?;
+        let file = open_journal_file(path, options)?;
         Ok(Self {
             inner: ReaderCellBuilder {
                 file,
@@ -255,12 +314,14 @@ impl FileReader {
             }
             .build(),
             temp_path: None,
+            data_offsets: Vec::new(),
+            decompressed: Vec::new(),
         })
     }
 
-    fn open_zst(path: &Path) -> Result<Self> {
+    fn open_zst(path: &Path, options: ReaderOptions) -> Result<Self> {
         let temp_path = decompress_zst_to_temp(path, "rust-sdk-journal")?;
-        let file = match open_journal_file(&temp_path) {
+        let file = match open_journal_file(&temp_path, options) {
             Ok(file) => file,
             Err(err) => {
                 let _ = std::fs::remove_file(&temp_path);
@@ -274,6 +335,8 @@ impl FileReader {
             }
             .build(),
             temp_path: Some(temp_path),
+            data_offsets: Vec::new(),
+            decompressed: Vec::new(),
         })
     }
 
@@ -378,10 +441,55 @@ impl FileReader {
     }
 
     pub fn get_entry(&mut self) -> Result<Entry> {
-        self.inner.with_mut(|fields| {
+        let inner = &mut self.inner;
+        let data_offsets = &mut self.data_offsets;
+        let decompressed = &mut self.decompressed;
+        inner.with_mut(|fields| {
             let offset = fields.reader.get_entry_offset()?;
-            read_entry_at(fields.file, fields.reader, offset)
+            read_entry_at(
+                fields.file,
+                fields.reader,
+                offset,
+                data_offsets,
+                decompressed,
+            )
         })
+    }
+
+    pub fn visit_entry_payloads<F>(&mut self, visitor: F) -> Result<()>
+    where
+        F: FnMut(&[u8]) -> Result<()>,
+    {
+        let inner = &mut self.inner;
+        let data_offsets = &mut self.data_offsets;
+        let decompressed = &mut self.decompressed;
+        inner.with_mut(|fields| {
+            let offset = fields.reader.get_entry_offset()?;
+            visit_entry_payloads_at(fields.file, offset, data_offsets, decompressed, visitor)
+        })
+    }
+
+    pub fn collect_entry_payloads(&mut self, payloads: &mut Vec<Vec<u8>>) -> Result<()> {
+        payloads.clear();
+        self.visit_entry_payloads(|payload| {
+            payloads.push(payload.to_vec());
+            Ok(())
+        })
+    }
+
+    pub fn get_entry_payload(&mut self, field: &[u8]) -> Result<Option<Vec<u8>>> {
+        let mut found = None;
+        self.visit_entry_payloads(|payload| {
+            if found.is_none()
+                && payload.len() > field.len()
+                && payload.starts_with(field)
+                && payload[field.len()] == b'='
+            {
+                found = Some(payload.to_vec());
+            }
+            Ok(())
+        })?;
+        Ok(found)
     }
 
     pub fn get_realtime_usec(&self) -> Result<u64> {
@@ -1045,6 +1153,10 @@ struct DirectoryBootNewest {
 
 impl DirectoryReader {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_options(path, ReaderOptions::default())
+    }
+
+    pub fn open_with_options(path: impl AsRef<Path>, options: ReaderOptions) -> Result<Self> {
         let path = path.as_ref();
         if !path.is_dir() {
             return Err(SdkError::InvalidPath(format!(
@@ -1055,7 +1167,7 @@ impl DirectoryReader {
 
         let mut files = Vec::new();
         for file_path in collect_journal_files(path)? {
-            if let Ok(reader) = FileReader::open(&file_path) {
+            if let Ok(reader) = FileReader::open_with_options(&file_path, options) {
                 files.push(reader);
             }
         }
@@ -1064,6 +1176,14 @@ impl DirectoryReader {
     }
 
     pub fn open_files<I, P>(paths: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        Self::open_files_with_options(paths, ReaderOptions::default())
+    }
+
+    pub fn open_files_with_options<I, P>(paths: I, options: ReaderOptions) -> Result<Self>
     where
         I: IntoIterator<Item = P>,
         P: AsRef<Path>,
@@ -1077,7 +1197,7 @@ impl DirectoryReader {
                     path.display()
                 )));
             }
-            files.push(FileReader::open(path)?);
+            files.push(FileReader::open_with_options(path, options)?);
         }
 
         Self::from_readers(files, false)
@@ -1311,6 +1431,30 @@ impl DirectoryReader {
         self.files[self.index].get_entry()
     }
 
+    pub fn visit_entry_payloads<F>(&mut self, visitor: F) -> Result<()>
+    where
+        F: FnMut(&[u8]) -> Result<()>,
+    {
+        if self.index >= self.files.len() {
+            return Err(SdkError::NoEntry);
+        }
+        self.files[self.index].visit_entry_payloads(visitor)
+    }
+
+    pub fn collect_entry_payloads(&mut self, payloads: &mut Vec<Vec<u8>>) -> Result<()> {
+        if self.index >= self.files.len() {
+            return Err(SdkError::NoEntry);
+        }
+        self.files[self.index].collect_entry_payloads(payloads)
+    }
+
+    pub fn get_entry_payload(&mut self, field: &[u8]) -> Result<Option<Vec<u8>>> {
+        if self.index >= self.files.len() {
+            return Err(SdkError::NoEntry);
+        }
+        self.files[self.index].get_entry_payload(field)
+    }
+
     pub fn get_realtime_usec(&self) -> Result<u64> {
         if self.index >= self.files.len() {
             return Err(SdkError::NoEntry);
@@ -1456,8 +1600,14 @@ impl FileReader {
     }
 }
 
-fn open_journal_file(path: &Path) -> Result<JournalFile<Mmap>> {
-    JournalFile::open_path(path, 4096).map_err(Into::into)
+fn open_journal_file(path: &Path, options: ReaderOptions) -> Result<JournalFile<Mmap>> {
+    let file = match options.bounds {
+        ReaderBounds::Live => JournalFile::open_path(path, options.window_size),
+        ReaderBounds::Snapshot => {
+            JournalFile::open_path_snapshot(path, options.window_size, options.mmap_strategy)
+        }
+    };
+    file.map_err(Into::into)
 }
 
 fn build_cursor(file: &JournalFile<Mmap>, reader: &JournalReader<'_, Mmap>) -> Result<String> {
@@ -1477,31 +1627,27 @@ fn read_entry_at(
     file: &JournalFile<Mmap>,
     reader: &JournalReader<'_, Mmap>,
     entry_offset: NonZeroU64,
+    data_offsets: &mut Vec<NonZeroU64>,
+    decompressed: &mut Vec<u8>,
 ) -> Result<Entry> {
-    let (seqnum, realtime, monotonic, boot_id) = {
-        let entry = file.entry_ref(entry_offset)?;
-        (
-            entry.header.seqnum,
-            entry.header.realtime,
-            entry.header.monotonic,
-            entry.header.boot_id,
-        )
-    };
+    let (seqnum, realtime, monotonic, boot_id) =
+        collect_entry_metadata_and_data_offsets(file, entry_offset, data_offsets)?;
 
     let mut fields = HashMap::new();
     let mut field_values: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
     let mut payloads = Vec::new();
-    let mut decompressed = Vec::new();
 
-    for data in file.entry_data_objects(entry_offset)? {
-        let data = match data {
+    payloads.reserve(data_offsets.len());
+
+    for data_offset in data_offsets.iter().copied() {
+        let data = match file.data_ref(data_offset) {
             Ok(data) => data,
             Err(err) if recoverable_entry_data_error(&err) => continue,
             Err(err) => return Err(err.into()),
         };
         let payload = if data.is_compressed() {
             decompressed.clear();
-            data.decompress(&mut decompressed)?;
+            data.decompress(decompressed)?;
             decompressed.as_slice()
         } else {
             data.raw_payload()
@@ -1529,6 +1675,88 @@ fn read_entry_at(
         boot_id,
         cursor: build_cursor(file, reader)?,
     })
+}
+
+fn visit_entry_payloads_at<F>(
+    file: &JournalFile<Mmap>,
+    entry_offset: NonZeroU64,
+    data_offsets: &mut Vec<NonZeroU64>,
+    decompressed: &mut Vec<u8>,
+    mut visitor: F,
+) -> Result<()>
+where
+    F: FnMut(&[u8]) -> Result<()>,
+{
+    collect_entry_data_offsets(file, entry_offset, data_offsets)?;
+
+    for data_offset in data_offsets.iter().copied() {
+        let data = match file.data_ref(data_offset) {
+            Ok(data) => data,
+            Err(err) if recoverable_entry_data_error(&err) => continue,
+            Err(err) => return Err(err.into()),
+        };
+        let payload = if data.is_compressed() {
+            decompressed.clear();
+            data.decompress(decompressed)?;
+            decompressed.as_slice()
+        } else {
+            data.raw_payload()
+        };
+        visitor(payload)?;
+    }
+
+    Ok(())
+}
+
+fn collect_entry_metadata_and_data_offsets(
+    file: &JournalFile<Mmap>,
+    entry_offset: NonZeroU64,
+    data_offsets: &mut Vec<NonZeroU64>,
+) -> Result<(u64, u64, u64, [u8; 16])> {
+    let entry = file.entry_ref(entry_offset)?;
+    let metadata = (
+        entry.header.seqnum,
+        entry.header.realtime,
+        entry.header.monotonic,
+        entry.header.boot_id,
+    );
+    collect_offsets_from_entry_items(&entry.items, data_offsets);
+    Ok(metadata)
+}
+
+fn collect_entry_data_offsets(
+    file: &JournalFile<Mmap>,
+    entry_offset: NonZeroU64,
+    data_offsets: &mut Vec<NonZeroU64>,
+) -> Result<()> {
+    let entry = file.entry_ref(entry_offset)?;
+    collect_offsets_from_entry_items(&entry.items, data_offsets);
+    Ok(())
+}
+
+fn collect_offsets_from_entry_items(
+    items: &EntryItemsType<&[u8]>,
+    data_offsets: &mut Vec<NonZeroU64>,
+) {
+    data_offsets.clear();
+    match items {
+        EntryItemsType::Regular(items) => {
+            data_offsets.reserve(items.len());
+            data_offsets.extend(
+                items
+                    .iter()
+                    .filter_map(|item| NonZeroU64::new(item.object_offset)),
+            );
+        }
+        EntryItemsType::Compact(items) => {
+            data_offsets.reserve(items.len());
+            data_offsets.extend(
+                items
+                    .iter()
+                    .filter_map(|item| NonZeroU64::new(item.object_offset as u64)),
+            );
+        }
+    }
 }
 
 fn verify_journal_file_strict(file: &JournalFile<Mmap>) -> Result<()> {
@@ -2231,6 +2459,28 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_reader_handles_final_partial_mmap_window() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("journals/system.journal");
+        write_facade_test_journal(&path);
+
+        let options = ReaderOptions::snapshot().with_window_size(32 * 1024 * 1024);
+        let mut reader =
+            FileReader::open_with_options(&path, options).expect("open snapshot reader");
+        assert!(reader.next().expect("first entry"));
+
+        let mut payloads = Vec::new();
+        reader
+            .visit_entry_payloads(|payload| {
+                payloads.push(payload.to_vec());
+                Ok(())
+            })
+            .expect("visit current entry payloads");
+        assert!(payloads.iter().any(|payload| payload == b"MESSAGE=first"));
+        assert!(payloads.iter().any(|payload| payload == b"BIN=\x00\xff"));
+    }
+
+    #[test]
     fn jf_facade_stateful_reader_operations() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let path = dir.path().join("journals/system.journal");
@@ -2256,6 +2506,14 @@ mod tests {
         assert!(payloads.iter().any(|payload| payload == b"REPEAT=one"));
         assert!(payloads.iter().any(|payload| payload == b"REPEAT=two"));
         assert!(payloads.iter().any(|payload| payload == b"BIN=\x00\xff"));
+        SdJournalRestartData(&mut journal).expect("restart data again");
+        let mut restarted_payloads = Vec::new();
+        while let Some(payload) =
+            SdJournalEnumerateAvailableData(&mut journal).expect("enumerate restarted data")
+        {
+            restarted_payloads.push(payload);
+        }
+        assert_eq!(payloads, restarted_payloads);
         assert_eq!(
             SdJournalGetData(&mut journal, "REPEAT").expect("get data"),
             b"REPEAT=one"

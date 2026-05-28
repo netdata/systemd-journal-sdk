@@ -190,6 +190,7 @@ pub struct WindowManager<M: MemoryMap> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BoundsMode {
     LiveFile,
+    Snapshot,
     WriterOwned,
 }
 
@@ -201,6 +202,21 @@ impl<M: MemoryMap> WindowManager<M> {
             max_windows,
             BoundsMode::LiveFile,
             ExperimentalMmapStrategy::Windowed,
+        )
+    }
+
+    pub fn new_snapshot(
+        file: File,
+        chunk_size: u64,
+        max_windows: usize,
+        strategy: ExperimentalMmapStrategy,
+    ) -> Result<Self> {
+        Self::new_with_bounds_mode(
+            file,
+            chunk_size,
+            max_windows,
+            BoundsMode::Snapshot,
+            strategy,
         )
     }
 
@@ -239,11 +255,12 @@ impl<M: MemoryMap> WindowManager<M> {
         debug_assert!(max_windows != 0);
 
         let file_size = file.metadata()?.len();
-        let strategy = if bounds_mode == BoundsMode::WriterOwned {
-            strategy
-        } else {
-            ExperimentalMmapStrategy::Windowed
-        };
+        let strategy =
+            if bounds_mode == BoundsMode::WriterOwned || bounds_mode == BoundsMode::Snapshot {
+                strategy
+            } else {
+                ExperimentalMmapStrategy::Windowed
+            };
 
         Ok(WindowManager {
             file,
@@ -317,6 +334,12 @@ impl<M: MemoryMap> WindowManager<M> {
                     return Err(JournalError::ObjectExceedsFileBounds);
                 }
                 requested_size.min(file_size - window_start)
+            }
+            BoundsMode::Snapshot => {
+                if window_start >= self.file_size {
+                    return Err(JournalError::ObjectExceedsFileBounds);
+                }
+                requested_size.min(self.file_size - window_start)
             }
             BoundsMode::WriterOwned => {
                 if requested_end > self.file_size {
@@ -404,10 +427,11 @@ impl<M: MemoryMap> WindowManager<M> {
             // If create_window fails, the index won't point to a non-existent window.
             self.active_window_idx = None;
 
-            // Keep the remapped window centered on the requested range instead of
-            // preserving the old window start. Preserving the old start lets
-            // sequential append access grow one mapping from the beginning of the
-            // file toward the tail, which defeats the intended bounded-window model.
+            // Keep the remapped window chunk-aligned around the requested
+            // position instead of preserving the old window start. Preserving
+            // the old start lets sequential append access grow one mapping from
+            // the beginning of the file toward the tail, which defeats the
+            // intended bounded-window model.
             let range_end = position
                 .checked_add(size_needed)
                 .ok_or(JournalError::ObjectExceedsFileBounds)?;
@@ -496,7 +520,7 @@ impl<M: MemoryMap> WindowManager<M> {
 
 impl<M: MemoryMapMut> WindowManager<M> {
     pub fn get_slice_mut(&mut self, position: u64, size: u64) -> Result<&mut [u8]> {
-        position
+        let _end = position
             .checked_add(size)
             .ok_or(JournalError::ObjectExceedsFileBounds)?;
         let window = self.get_window(position, size)?;

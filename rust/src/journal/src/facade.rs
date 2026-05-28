@@ -1,8 +1,8 @@
 #![allow(non_snake_case)]
 
 use crate::{
-    BootInfo, DirectoryReader, Entry, FileReader, SdkError, export_entry_bytes, format_entry_text,
-    json_entry,
+    BootInfo, DirectoryReader, Entry, FileReader, ReaderOptions, SdkError, export_entry_bytes,
+    format_entry_text, json_entry,
 };
 use std::fmt;
 use std::path::Path;
@@ -84,32 +84,56 @@ pub fn SdJournalOpen(path: &str, flags: u32) -> std::result::Result<SdJournal, E
 }
 
 pub fn SdJournalOpenFile(path: &str, flags: u32) -> std::result::Result<SdJournal, Error> {
+    SdJournalOpenFileWithOptions(path, flags, ReaderOptions::default())
+}
+
+pub fn SdJournalOpenFileWithOptions(
+    path: &str,
+    flags: u32,
+    options: ReaderOptions,
+) -> std::result::Result<SdJournal, Error> {
     if flags != 0 {
         return Err(Error::Unsupported);
     }
     Ok(SdJournal::new(ReaderKind::File(
-        FileReader::open(path).map_err(map_error)?,
+        FileReader::open_with_options(path, options).map_err(map_error)?,
     )))
 }
 
 pub fn SdJournalOpenDirectory(path: &str, flags: u32) -> std::result::Result<SdJournal, Error> {
+    SdJournalOpenDirectoryWithOptions(path, flags, ReaderOptions::default())
+}
+
+pub fn SdJournalOpenDirectoryWithOptions(
+    path: &str,
+    flags: u32,
+    options: ReaderOptions,
+) -> std::result::Result<SdJournal, Error> {
     if flags != 0 {
         return Err(Error::Unsupported);
     }
     Ok(SdJournal::new(ReaderKind::Directory(
-        DirectoryReader::open(path).map_err(map_error)?,
+        DirectoryReader::open_with_options(path, options).map_err(map_error)?,
     )))
 }
 
 pub fn SdJournalOpenFiles(paths: &[&str], flags: u32) -> std::result::Result<SdJournal, Error> {
+    SdJournalOpenFilesWithOptions(paths, flags, ReaderOptions::default())
+}
+
+pub fn SdJournalOpenFilesWithOptions(
+    paths: &[&str],
+    flags: u32,
+    options: ReaderOptions,
+) -> std::result::Result<SdJournal, Error> {
     if flags != 0 {
         return Err(Error::Unsupported);
     }
     if paths.len() == 1 {
-        return SdJournalOpenFile(paths[0], flags);
+        return SdJournalOpenFileWithOptions(paths[0], flags, options);
     }
     Ok(SdJournal::new(ReaderKind::Directory(
-        DirectoryReader::open_files(paths).map_err(map_error)?,
+        DirectoryReader::open_files_with_options(paths, options).map_err(map_error)?,
     )))
 }
 
@@ -271,8 +295,12 @@ impl SdJournal {
     }
 
     pub fn restart_data(&mut self) -> std::result::Result<(), Error> {
-        let entry = self.get_entry()?;
-        self.data_items = entry.payloads;
+        self.data_items.clear();
+        match &mut self.reader {
+            ReaderKind::File(reader) => reader.collect_entry_payloads(&mut self.data_items),
+            ReaderKind::Directory(reader) => reader.collect_entry_payloads(&mut self.data_items),
+        }
+        .map_err(map_error)?;
         self.data_index = 0;
         Ok(())
     }
@@ -281,7 +309,7 @@ impl SdJournal {
         if self.data_index >= self.data_items.len() {
             return Ok(None);
         }
-        let item = self.data_items[self.data_index].clone();
+        let item = std::mem::take(&mut self.data_items[self.data_index]);
         self.data_index += 1;
         Ok(Some(item))
     }
@@ -474,13 +502,12 @@ pub fn SdJournalGetEntry(j: &mut SdJournal) -> std::result::Result<Entry, Error>
 }
 
 pub fn SdJournalGetData(j: &mut SdJournal, field: &str) -> std::result::Result<Vec<u8>, Error> {
-    let entry = j.get_entry()?;
-    entry
-        .field_values
-        .get(field)
-        .and_then(|values| values.first())
-        .map(|value| payload_from_field_value(field, value))
-        .ok_or(Error::NoEntry)
+    let found = match &mut j.reader {
+        ReaderKind::File(reader) => reader.get_entry_payload(field.as_bytes()),
+        ReaderKind::Directory(reader) => reader.get_entry_payload(field.as_bytes()),
+    }
+    .map_err(map_error)?;
+    found.ok_or(Error::NoEntry)
 }
 
 pub fn SdJournalRestartData(j: &mut SdJournal) -> std::result::Result<(), Error> {

@@ -404,6 +404,11 @@ Accepted reader API layers:
 - JSON output, field enumeration, unique queries, and `get_data`-style facade
   helpers are UTF-8 field-name surfaces. Byte-exact RAW names are available
   through full payload/data enumeration and idiomatic byte-name APIs.
+- Performance-sensitive readers should use the raw current-entry payload
+  visitor/enumeration APIs when they already need byte-level `FIELD=value`
+  payloads. Convenience entry materialization APIs may build maps, repeated
+  value maps, owned payload vectors, and cursor strings and are not the
+  primary hot path.
 - The libsystemd-compatible facade is available in Rust, Go, Node.js, and
   Python for file-backed use. It includes open file, open directory, open files,
   close, seek head/tail/realtime/cursor, next/previous/skip, add match,
@@ -541,6 +546,14 @@ Current Rust reader feature slice:
   seqnum metadata, binary field values, repeated field values, field
   enumeration, current-entry data enumeration, unique value enumeration, and
   systemd-compatible export/json/text formatting;
+- configurable reader bounds through `ReaderOptions`: default `Live` mode
+  refreshes file size while reading active files, while `Snapshot` mode fixes
+  the file size at open time for polling/query use cases that do not need to
+  observe appends during the current scan;
+- `ReaderOptions` exposes windowed and whole-file mmap strategies for snapshot
+  readers. Windowed snapshot is the current Rust single-file hot-path baseline;
+- raw current-entry payload visitors on file and directory readers for
+  allocation-light scans that operate on borrowed `FIELD=value` bytes;
 - byte-preserving RAW field-name representation through `Entry::raw_fields()`,
   `Entry::get_raw()`, and `Entry::get_raw_values()`. `Entry.fields` and
   `Entry.field_values` remain UTF-8 string-keyed convenience maps and do not
@@ -557,6 +570,11 @@ Current Rust reader feature slice:
 - Rust conformance adapter support for reader, matching, importer, compression,
   cursor, enumeration, stream, export, header parsing, and file-backed
   journalctl cases.
+- Current SOW-0044 benchmark evidence on a 100k-row compact fixture with 32
+  fields per row shows Rust single-file `sdk-payloads` snapshot/windowed at
+  about 1.18M rows/s versus stock libsystemd data enumeration at about 580k
+  rows/s. Live/windowed remains intentionally slower because it preserves
+  active-file bounds refresh behavior.
 
 Current Rust reader limitations:
 

@@ -526,7 +526,54 @@ impl<M: MemoryMap> JournalFile<M> {
         Self::open_repository_file(file, window_size)
     }
 
+    pub fn open_snapshot(
+        file: &crate::repository::File,
+        window_size: u64,
+        strategy: ExperimentalMmapStrategy,
+    ) -> Result<Self> {
+        Self::open_repository_file_snapshot(file.clone(), window_size, strategy)
+    }
+
+    pub fn open_path_snapshot(
+        path: impl AsRef<Path>,
+        window_size: u64,
+        strategy: ExperimentalMmapStrategy,
+    ) -> Result<Self> {
+        let path = path.as_ref();
+        let absolute_path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(path)
+        };
+        let file = crate::repository::File::from_raw_path(&absolute_path)
+            .ok_or(JournalError::InvalidFilename)?;
+        Self::open_repository_file_snapshot(file, window_size, strategy)
+    }
+
     fn open_repository_file(file: crate::repository::File, window_size: u64) -> Result<Self> {
+        Self::open_repository_file_with_window_manager(file, window_size, |fd| {
+            WindowManager::new(fd, window_size, 16)
+        })
+    }
+
+    fn open_repository_file_snapshot(
+        file: crate::repository::File,
+        window_size: u64,
+        strategy: ExperimentalMmapStrategy,
+    ) -> Result<Self> {
+        Self::open_repository_file_with_window_manager(file, window_size, |fd| {
+            WindowManager::new_snapshot(fd, window_size, 16, strategy)
+        })
+    }
+
+    fn open_repository_file_with_window_manager<F>(
+        file: crate::repository::File,
+        window_size: u64,
+        window_manager_builder: F,
+    ) -> Result<Self>
+    where
+        F: FnOnce(File) -> Result<WindowManager<M>>,
+    {
         debug_assert_eq!(window_size % OBJECT_ALIGNMENT, 0);
 
         // Open file and check its size
@@ -560,7 +607,7 @@ impl<M: MemoryMap> JournalFile<M> {
         )?;
 
         // Create window manager for the rest of the objects
-        let window_manager = GuardedCell::new(WindowManager::new(fd, window_size, 16)?);
+        let window_manager = GuardedCell::new(window_manager_builder(fd)?);
 
         Ok(JournalFile {
             file,

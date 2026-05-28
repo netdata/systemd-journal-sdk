@@ -12,8 +12,6 @@ Last updated: 2026-05-29
 
 - SOW-0026 - Netdata SDK Integration Inventory And Cut Plan: open. Produces the
   fresh Netdata consumer inventory and cut plan after performance gates.
-- SOW-0044 - Rust Reader Hot-Path Optimization: open. Optimizes Rust
-  single-file and ordered directory readers after SOW-0043.
 - SOW-0045 - Go Reader Alignment Optimization: open. Aligns and optimizes Go
   reader after Rust reader optimization.
 - SOW-0046 - Python Node Reader Alignment: open. Aligns Python and Node.js
@@ -34,6 +32,12 @@ Last updated: 2026-05-29
 
 ## Recently Closed Or Completed
 
+- SOW-0044 - Rust Reader Hot-Path Optimization: completed. Rust reader snapshot
+  bounds and raw payload visitor APIs are implemented; single-file
+  `sdk-payloads` snapshot/windowed measured about 1.18M rows/s versus stock
+  libsystemd data enumeration at about 580k rows/s on the accepted 100k-row
+  compact fixture, with checksum-validated benchmark runs and passing Rust,
+  directory, and mixed-directory validation.
 - SOW-0043 - Rust Reader Libsystemd/Jf Parity: completed. Rust now exposes
   additive byte-preserving RAW field-name reader methods, avoids lossy UTF-8
   field-name invention, preserves non-UTF8 RAW names in export byte output,

@@ -17,6 +17,29 @@ This directory has three writer benchmark surfaces:
 Use writer-core results when comparing SDK writer performance against systemd
 and Netdata hot-path expectations.
 
+`run_reader_core_benchmarks.py` measures read loops separately from fixture
+generation. It produces a compact/regular fixture with the Rust writer, then
+times single-file Rust core scans (`core-next`, `core-offsets`,
+`core-payloads`), Rust SDK/facade entry scans, and public libsystemd
+`sd_journal_*` scans. It also generates an explicit multi-file fixture for
+ordered `open-files` regression coverage. Treat the single-file `core-payloads`
+and `sdk-payloads` cases as the closest Netdata low-level reader hot-path
+proxies.
+
+Rust reader benchmark modes separate API cost:
+
+- `sdk-payloads` visits borrowed current-entry `FIELD=value` payload bytes and
+  is the SDK hot path for byte-level scanners.
+- `facade-data` measures libsystemd-style restart/enumerate data behavior.
+- `sdk-entry` materializes convenience maps, repeated-value maps, owned
+  payloads, and cursor strings, so it should not be used as the raw scanner
+  baseline.
+
+Rust reader benchmark results record `bounds`. `live` is the default
+active-file-compatible mode and refreshes file bounds while reading.
+`snapshot` fixes file size at open time for polling/query consumers that do not
+need to observe appends during the current scan.
+
 The writer-core harness aligns initial hash table sizing across systemd and
 SDK drivers with the systemd v260.1 formula:
 `data=max(max_size_bytes*4/768/3,2047)` and `field=1023`. The default
@@ -51,4 +74,15 @@ python3 tests/benchmarks/run_writer_core_benchmarks.py \
   --format compact \
   --final-state online \
   --keep-journals
+```
+
+```bash
+python3 tests/benchmarks/run_reader_core_benchmarks.py \
+  --rows 100000 \
+  --directory-rows 100000 \
+  --repetitions 3 \
+  --warmups 1 \
+  --format compact \
+  --final-state online \
+  --keep-fixtures
 ```
