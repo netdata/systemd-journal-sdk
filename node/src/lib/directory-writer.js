@@ -2,8 +2,8 @@
 
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readSync, readdirSync, readFileSync, unlinkSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { randomUUID, stringToUUID, uuidToString } from './binary.js';
-import { Writer, normalizeFieldNamePolicy, prepareFieldsForPolicy, writerPolicyForLogPolicy } from './writer.js';
+import { isZeroUUID, randomUUID, stringToUUID, uuidToString } from './binary.js';
+import { Writer, normalizeFieldNamePolicy, prepareFieldsForPolicy, prepareRawPayloadsForPolicy, writerPolicyForLogPolicy } from './writer.js';
 import { HEADER_SIZE, STATE_ONLINE, parseFileHeader, parseObjectHeader, normalizeJournalMaxFileSize } from './header.js';
 
 const DEFAULT_MAX_ENTRIES = 0;
@@ -149,6 +149,24 @@ export class Log {
     fields = prepareFieldsForPolicy(fields, this.fieldNamePolicy);
 
     const result = this.writer.append(this._fieldsForAppend(fields, appendOptions), appendOptions);
+    this._captureWriterIdentity();
+    return result;
+  }
+
+  appendRaw(payloads, options = {}) {
+    if (this.closed) throw new Error('journal log is closed');
+    payloads = prepareRawPayloadsForPolicy(payloads, this.fieldNamePolicy);
+    const appendOptions = this._entryOptionsForAppend(options);
+    this._applyRetentionOnOpen();
+    if (this.writer && this._shouldRotate(appendOptions.realtimeUsec)) {
+      this._rotate(appendOptions);
+    }
+    if (!this.writer) {
+      this._openWriter(appendOptions, LOG_LIFECYCLE_REASON_APPEND);
+    }
+    this._applyRetentionOnOpen();
+
+    const result = this.writer.appendRaw(this._payloadsForAppend(payloads, appendOptions), appendOptions);
     this._captureWriterIdentity();
     return result;
   }
@@ -471,14 +489,35 @@ export class Log {
   }
 
   _fieldsForAppend(fields, options) {
-    const sourceRealtime = options.sourceRealtimeUsec;
-    if (sourceRealtime === undefined || sourceRealtime === null || sourceRealtime === 0 || sourceRealtime === 0n) {
-      return fields;
-    }
-    return [
-      ...fields,
-      { name: '_SOURCE_REALTIME_TIMESTAMP', value: Buffer.from(String(BigInt(sourceRealtime)), 'utf8') },
+    const withMetadata = [
+      { name: '_BOOT_ID', value: Buffer.from(uuidToString(this._entryBootIdForAppend(options)), 'utf8') },
     ];
+    const sourceRealtime = options.sourceRealtimeUsec;
+    if (sourceRealtime !== undefined && sourceRealtime !== null && sourceRealtime !== 0 && sourceRealtime !== 0n) {
+      withMetadata.push({ name: '_SOURCE_REALTIME_TIMESTAMP', value: Buffer.from(String(BigInt(sourceRealtime)), 'utf8') });
+    }
+    withMetadata.push(...fields);
+    return withMetadata;
+  }
+
+  _payloadsForAppend(payloads, options) {
+    const withMetadata = [
+      Buffer.from(`_BOOT_ID=${uuidToString(this._entryBootIdForAppend(options))}`, 'utf8'),
+    ];
+    const sourceRealtime = options.sourceRealtimeUsec;
+    if (sourceRealtime !== undefined && sourceRealtime !== null && sourceRealtime !== 0 && sourceRealtime !== 0n) {
+      withMetadata.push(Buffer.from(`_SOURCE_REALTIME_TIMESTAMP=${BigInt(sourceRealtime)}`, 'utf8'));
+    }
+    withMetadata.push(...payloads);
+    return withMetadata;
+  }
+
+  _entryBootIdForAppend(options) {
+    const value = optionValue(options, 'bootId', 'boot_id');
+    if (value === undefined || value === null) return this.bootId;
+    const bootId = uuidOption(value, 'entry boot id');
+    if (isZeroUUID(bootId)) return this.bootId;
+    return bootId;
   }
 
   _retainedSize(path, fallback) {

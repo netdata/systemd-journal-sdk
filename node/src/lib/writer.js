@@ -265,16 +265,7 @@ export class Writer {
   // Append a journal entry.
   append(fields, opts = {}) {
     if (this.closed) throw new Error('writer closed');
-    if (fields.length === 0) throw new Error('empty entry');
 
-    const now = Date.now();
-    const hasRealtime = Object.prototype.hasOwnProperty.call(opts, 'realtimeUsec');
-    const hasMonotonic = Object.prototype.hasOwnProperty.call(opts, 'monotonicUsec');
-    const realtime = hasRealtime ? BigInt(opts.realtimeUsec) : BigInt(now * 1000);
-    const monotonic = hasMonotonic ? BigInt(opts.monotonicUsec) : BigInt((now - this.started) * 1000);
-    const bootId = opts.bootId && !isZeroUUID(opts.bootId) ? Buffer.from(opts.bootId) : this.bootId;
-
-    // Build payloads
     const payloads = [];
     const preparedFields = prepareFieldsForPolicy(fields, this.fieldNamePolicy);
     for (const field of preparedFields) {
@@ -287,6 +278,24 @@ export class Writer {
       valueBuf.copy(payload, nameBuf.length + 1);
       payloads.push(payload);
     }
+    return this._appendPayloads(payloads, opts);
+  }
+
+  // Append one entry from complete KEY=value byte payloads.
+  appendRaw(payloads, opts = {}) {
+    if (this.closed) throw new Error('writer closed');
+    return this._appendPayloads(prepareRawPayloadsForPolicy(payloads, this.fieldNamePolicy), opts);
+  }
+
+  _appendPayloads(payloads, opts = {}) {
+    if (payloads.length === 0) throw new Error('empty entry');
+
+    const now = Date.now();
+    const hasRealtime = Object.prototype.hasOwnProperty.call(opts, 'realtimeUsec');
+    const hasMonotonic = Object.prototype.hasOwnProperty.call(opts, 'monotonicUsec');
+    const realtime = hasRealtime ? BigInt(opts.realtimeUsec) : BigInt(now * 1000);
+    const monotonic = hasMonotonic ? BigInt(opts.monotonicUsec) : BigInt((now - this.started) * 1000);
+    const bootId = opts.bootId && !isZeroUUID(opts.bootId) ? Buffer.from(opts.bootId) : this.bootId;
 
     this._maybeAppendTag(realtime);
 
@@ -1092,6 +1101,8 @@ export function normalizeFieldNamePolicy(value) {
 }
 
 export function writerPolicyForLogPolicy(policy) {
+  // Log applies JOURNAL-APP filtering before injecting SDK-owned protected fields.
+  // The underlying writer must therefore accept those trusted metadata fields.
   return normalizeFieldNamePolicy(policy) === FIELD_NAME_POLICY_RAW
     ? FIELD_NAME_POLICY_RAW
     : FIELD_NAME_POLICY_JOURNALD;
@@ -1116,10 +1127,43 @@ export function prepareFieldsForPolicy(fields, policy) {
   return fields;
 }
 
+export function prepareRawPayloadsForPolicy(payloads, policy) {
+  const normalized = normalizeFieldNamePolicy(policy);
+  if (!Array.isArray(payloads) || payloads.length === 0) throw new Error('empty entry');
+  const prepared = payloads.map(rawPayloadBytes);
+  for (const payload of prepared) {
+    const separator = payload.indexOf(0x3d);
+    if (separator <= 0) throw new Error('invalid raw field payload: missing field name separator');
+  }
+  if (normalized === FIELD_NAME_POLICY_JOURNAL_APP) {
+    const filtered = prepared.filter((payload) => {
+      try {
+        validateFieldNameForPolicy(payload.subarray(0, payload.indexOf(0x3d)), normalized);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    if (filtered.length === 0) throw new Error('empty entry');
+    return filtered;
+  }
+  for (const payload of prepared) {
+    validateFieldNameForPolicy(payload.subarray(0, payload.indexOf(0x3d)), normalized);
+  }
+  return prepared;
+}
+
 export function validateFieldNameForPolicy(name, policy = FIELD_NAME_POLICY_JOURNALD) {
   const normalized = normalizeFieldNamePolicy(policy);
   if (normalized === FIELD_NAME_POLICY_RAW) return validateRawFieldName(name);
   return validateJournaldFieldName(name, normalized === FIELD_NAME_POLICY_JOURNALD);
+}
+
+function rawPayloadBytes(payload) {
+  if (Buffer.isBuffer(payload)) return payload;
+  if (payload instanceof Uint8Array) return Buffer.from(payload);
+  if (typeof payload === 'string') return Buffer.from(payload, 'utf8');
+  return Buffer.from(payload);
 }
 
 export function fieldNameBytes(name) {

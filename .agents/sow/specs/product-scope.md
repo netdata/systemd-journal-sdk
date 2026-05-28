@@ -544,9 +544,16 @@ Current Node.js writer feature slice:
 - keyed hash tables using the journal file ID;
 - byte-safe field values through `Buffer`, `Uint8Array`, and string-compatible
   field values;
-- direct-file writing through `Writer`;
+- direct-file writing through `Writer`, including structured append and raw
+  full-payload append;
 - high-level directory writing through `Log` with Netdata-compatible chain
-  active naming by default and an explicit strict systemd active naming option;
+  active naming by default, structured append and raw full-payload append, and
+  an explicit strict systemd active naming option;
+- high-level `Log` append paths write indexed `_BOOT_ID=<boot-id>` metadata for
+  each entry and `_SOURCE_REALTIME_TIMESTAMP=<usec>` when source realtime is
+  supplied;
+- writer file access uses `Buffer` plus positioned `node:fs` reads/writes; no
+  native mmap dependency is loaded by the Node.js SDK runtime path;
 - zero-entry crash-created active files are discarded on reopen before append so
   sequence numbers continue from the existing chain tail;
 - entry-count, file-size, and active-file-duration rotation. Duration rotation

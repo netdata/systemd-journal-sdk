@@ -130,6 +130,15 @@ writer.append([
 writer.close();
 ```
 
+For already-encoded systemd-style payloads, use `appendRaw()`:
+
+```javascript
+writer.appendRaw([
+  Buffer.from('MESSAGE=plugin started'),
+  Buffer.from('PRIORITY=6'),
+]);
+```
+
 `writer.close()` matches systemd's plain close path and leaves the file in
 `ONLINE` state. Use `writer.closeOffline()` to finalize a single file as
 `OFFLINE`; directory rotation uses `writer.archiveTo()` to produce `ARCHIVED`
@@ -202,6 +211,9 @@ sidecar bytes in size-based retention. `append()` accepts
 `sourceRealtimeUsec` / `source_realtime_usec` and clamps non-progressing
 realtime and monotonic overrides forward, including explicit zero monotonic
 overrides.
+`Log.append()` and `Log.appendRaw()` add indexed `_BOOT_ID=<boot-id>` metadata
+to every entry and `_SOURCE_REALTIME_TIMESTAMP=<usec>` when source realtime is
+provided.
 The low-level `Writer.append()` path preserves explicit caller-provided
 realtime and monotonic timestamps without clamping or rejecting them; callers
 using that raw API are responsible for not producing same-boot backward
@@ -286,6 +298,8 @@ node cmd/journalctl/index.js --file ./active.journal --follow --no-tail --boot=a
 - `createJournal(path, options)` - Create new journal file
   (`options.livePublishEveryEntries` controls explicit live-reader publication)
 - `writer.append(fields, options)` - Append entry
+- `writer.appendRaw(payloads, options)` - Append complete `KEY=value` byte
+  payloads
 - `writer.sync()` - Sync to disk
 - `writer.close()` - Close while preserving `ONLINE` state
 - `writer.closeOffline()` - Close with `OFFLINE` state
@@ -293,6 +307,8 @@ node cmd/journalctl/index.js --file ./active.journal --follow --no-tail --boot=a
 - `new Log(directory, options)` - Create a high-level directory writer
   (`options.livePublishEveryEntries` is passed to active writers)
 - `log.append(fields, options)` - Append through the directory writer
+- `log.appendRaw(payloads, options)` - Append complete `KEY=value` byte
+  payloads through the directory writer
 - `log.sync()` - Sync the active journal file
 - `log.enforceRetention()` - Apply retention without rotating or closing
 - `log.close()` - Archive the active file and apply retention
@@ -308,6 +324,8 @@ node cmd/journalctl/index.js --file ./active.journal --follow --no-tail --boot=a
 ## Limitations
 
 - Full systemd object-graph verification parity is tracked separately
+- Node.js writer file access uses `Buffer` plus positioned `node:fs`
+  reads/writes. No native mmap dependency is loaded by the SDK runtime path.
 - Daemon-only operations not supported
 
 ## Dependencies

@@ -625,6 +625,122 @@ for (const [length, expected] of sipVectors) {
 {
   const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
   try {
+    const journalPath = join(tempDir, 'raw-journald-payloads.journal');
+    const writer = Writer.create(journalPath);
+    writer.appendRaw([
+      Buffer.from('MESSAGE=raw full payload'),
+      Buffer.from('_HOSTNAME=synthetic-host'),
+      Buffer.from('BINARY=a\x00=b=c', 'utf8'),
+    ], { realtimeUsec: 1_700_002_111_100_000n, monotonicUsec: 2n });
+    assert.throws(
+      () => writer.appendRaw([], {
+        realtimeUsec: 1_700_002_111_100_001n,
+        monotonicUsec: 3n,
+      }),
+      /empty entry/,
+    );
+    assert.throws(
+      () => writer.appendRaw([Buffer.from('=value')], {
+        realtimeUsec: 1_700_002_111_100_002n,
+        monotonicUsec: 4n,
+      }),
+      /invalid raw field payload/,
+    );
+    writer.close();
+    verifyJournalFileIfAvailable(journalPath);
+
+    const reader = FileReader.open(journalPath);
+    assert.equal(reader.step(), true);
+    const entry = reader.getEntry();
+    reader.close();
+    assert.equal(entry.fields.MESSAGE.toString('utf8'), 'raw full payload');
+    assert.equal(entry.fields._HOSTNAME.toString('utf8'), 'synthetic-host');
+    assert.deepEqual(entry.fields.BINARY, Buffer.from('a\x00=b=c', 'utf8'));
+    assert.equal(entry.fields._BOOT_ID, undefined);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const write = (name, raw) => {
+      const journalPath = join(tempDir, `${name}.journal`);
+      const writer = Writer.create(journalPath, {
+        fileId: Buffer.from('40000000000000000000000000000000', 'hex'),
+        machineId: Buffer.from('10000000000000000000000000000000', 'hex'),
+        bootId: Buffer.from('20000000000000000000000000000000', 'hex'),
+        seqnumId: Buffer.from('30000000000000000000000000000000', 'hex'),
+        dataHashTableBuckets: 64,
+        fieldHashTableBuckets: 16,
+      });
+      const opts = { realtimeUsec: 1_700_002_111_200_000n, monotonicUsec: 3n };
+      if (raw) {
+        writer.appendRaw([
+          Buffer.from('MESSAGE=equivalent entry'),
+          Buffer.from('PRIORITY=6'),
+          Buffer.from('BINARY=a\x00=b=c', 'utf8'),
+        ], opts);
+      } else {
+        writer.append([
+          { name: 'MESSAGE', value: 'equivalent entry' },
+          { name: 'PRIORITY', value: '6' },
+          { name: 'BINARY', value: Buffer.from('a\x00=b=c', 'utf8') },
+        ], opts);
+      }
+      writer.close();
+      return readFileSync(journalPath);
+    };
+
+    assert.deepEqual(write('structured', false), write('raw', true));
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const bootId = '0123456789abcdef0123456789abcdef';
+    const log = new Log(tempDir, {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      bootId: Buffer.from(bootId, 'hex'),
+    });
+    log.appendRaw([
+      Buffer.from('MESSAGE=raw journald directory'),
+      Buffer.from('TEST_ID=node-log-append-raw-journald'),
+      Buffer.from('_HOSTNAME=synthetic-host'),
+      Buffer.from(`_BOOT_ID=${bootId}`),
+    ], {
+      realtimeUsec: 1_700_002_403_500_000n,
+      monotonicUsec: 35n,
+      sourceRealtimeUsec: 999n,
+    });
+    const journalDir = log.journalDirectory();
+    log.close();
+
+    const path = journalFiles(journalDir)[0];
+    const reader = FileReader.open(path);
+    assert.equal(reader.step(), true);
+    const entry = reader.getEntry();
+    reader.close();
+    assert.equal(entry.fields.MESSAGE.toString('utf8'), 'raw journald directory');
+    assert.equal(entry.fields.TEST_ID.toString('utf8'), 'node-log-append-raw-journald');
+    assert.equal(entry.fields._HOSTNAME.toString('utf8'), 'synthetic-host');
+    assert.equal(entry.fields._BOOT_ID.toString('utf8'), bootId);
+    assert.equal(entry.fieldValues._BOOT_ID.length, 1);
+    assert.equal(entry.fields._SOURCE_REALTIME_TIMESTAMP.toString('utf8'), '999');
+    verifyJournalFileIfAvailable(path);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
     assert.throws(
       () => Writer.create(join(tempDir, 'alias-systemd.journal'), { fieldNamePolicy: 'systemd' }),
       /unsupported field name policy/,
@@ -667,6 +783,45 @@ for (const [length, expected] of sipVectors) {
     const entry = reader.getEntry();
     reader.close();
     assert.equal(entry.fields.MESSAGE.toString('utf8'), 'app valid');
+    assert.equal(entry.fields._HOSTNAME, undefined);
+    assert.equal(entry.fields.lowercase, undefined);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const journalPath = join(tempDir, 'raw-journal-app-field-policy.journal');
+    const writer = Writer.create(journalPath, { fieldNamePolicy: FIELD_NAME_POLICY_JOURNAL_APP });
+    writer.appendRaw([
+      Buffer.from('MESSAGE=raw app valid'),
+      Buffer.from('_HOSTNAME=drop-host'),
+      Buffer.from('lowercase=drop-lowercase'),
+    ], { realtimeUsec: 1_700_002_112_100_000n, monotonicUsec: 3n });
+    assert.throws(
+      () => writer.appendRaw([Buffer.from('_HOSTNAME=drop-only')], {
+        realtimeUsec: 1_700_002_112_100_001n,
+        monotonicUsec: 4n,
+      }),
+      /empty entry/,
+    );
+    assert.throws(
+      () => writer.appendRaw([Buffer.from('NO_EQUALS')], {
+        realtimeUsec: 1_700_002_112_100_002n,
+        monotonicUsec: 5n,
+      }),
+      /invalid raw field payload/,
+    );
+    writer.close();
+    verifyJournalFileIfAvailable(journalPath);
+
+    const reader = FileReader.open(journalPath);
+    assert.equal(reader.step(), true);
+    const entry = reader.getEntry();
+    reader.close();
+    assert.equal(entry.fields.MESSAGE.toString('utf8'), 'raw app valid');
     assert.equal(entry.fields._HOSTNAME, undefined);
     assert.equal(entry.fields.lowercase, undefined);
   } finally {
@@ -1264,15 +1419,18 @@ for (const [length, expected] of sipVectors) {
 {
   const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
   try {
+    const bootId = '0123456789abcdef0123456789abcdef';
     const log = new Log(tempDir, {
       source: 'system',
       machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      bootId: Buffer.from(bootId, 'hex'),
     });
     log.append([
       { name: 'MESSAGE', value: 'journald policy preserves trusted fields' },
       { name: 'TEST_ID', value: 'journald-field-policy' },
       { name: '_HOSTNAME', value: 'synthetic-host' },
       { name: '_TRANSPORT', value: 'snmptrap' },
+      { name: '_BOOT_ID', value: bootId },
     ], { realtimeUsec: 1_700_002_401_000_000n, monotonicUsec: 10n });
     log.sync();
 
@@ -1286,6 +1444,8 @@ for (const [length, expected] of sipVectors) {
     assert.equal(entries.length, 1);
     assert.equal(entries[0].fields._HOSTNAME.toString('utf8'), 'synthetic-host');
     assert.equal(entries[0].fields._TRANSPORT.toString('utf8'), 'snmptrap');
+    assert.equal(entries[0].fields._BOOT_ID.toString('utf8'), bootId);
+    assert.equal(entries[0].fieldValues._BOOT_ID.length, 1);
 
     const journalctl = spawnSync('journalctl', ['--version'], { encoding: 'utf8' });
     if (journalctl.status === 0) {
@@ -1297,6 +1457,7 @@ for (const [length, expected] of sipVectors) {
       assert.equal(stockRows.length, 1);
       assert.equal(stockRows[0]._HOSTNAME, 'synthetic-host');
       assert.equal(stockRows[0]._TRANSPORT, 'snmptrap');
+      assert.equal(stockRows[0]._BOOT_ID, bootId);
     }
     log.close();
     for (const path of journalFiles(log.journalDirectory())) verifyJournalFileIfAvailable(path);
@@ -1341,8 +1502,66 @@ for (const [length, expected] of sipVectors) {
     }
     assert.equal(entries.length, 1);
     assert.equal(entries[0].fields.MESSAGE.toString('utf8'), 'journal app keeps valid fields');
+    assert.match(entries[0].fields._BOOT_ID.toString('utf8'), /^[0-9a-f]{32}$/);
     assert.equal(entries[0].fields._HOSTNAME, undefined);
     assert.equal(entries[0].fields['foo.bar'], undefined);
+    verifyJournalFileIfAvailable(path);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const bootId = '0123456789abcdef0123456789abcdef';
+    const log = new Log(tempDir, {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      bootId: Buffer.from(bootId, 'hex'),
+      fieldNamePolicy: FIELD_NAME_POLICY_JOURNAL_APP,
+    });
+    log.appendRaw([
+      Buffer.from('MESSAGE=raw directory'),
+      Buffer.from('TEST_ID=node-log-append-raw'),
+      Buffer.from('_HOSTNAME=drop-host'),
+      Buffer.from('lowercase=drop-lowercase'),
+    ], {
+      realtimeUsec: 1_700_002_404_000_000n,
+      monotonicUsec: 40n,
+      sourceRealtimeUsec: 1234n,
+    });
+    assert.throws(
+      () => log.appendRaw([Buffer.from('_HOSTNAME=drop-only')], {
+        realtimeUsec: 1_700_002_404_000_001n,
+        monotonicUsec: 41n,
+      }),
+      /empty entry/,
+    );
+    const journalDir = log.journalDirectory();
+    log.close();
+
+    const path = journalFiles(journalDir)[0];
+    const reader = FileReader.open(path);
+    assert.equal(reader.step(), true);
+    const entry = reader.getEntry();
+    reader.close();
+    assert.equal(entry.fields.MESSAGE.toString('utf8'), 'raw directory');
+    assert.equal(entry.fields.TEST_ID.toString('utf8'), 'node-log-append-raw');
+    assert.equal(entry.fields._BOOT_ID.toString('utf8'), bootId);
+    assert.equal(entry.fields._SOURCE_REALTIME_TIMESTAMP.toString('utf8'), '1234');
+    assert.equal(entry.fields._HOSTNAME, undefined);
+    assert.equal(entry.fields.lowercase, undefined);
+
+    const rows = journalctlDirectoryRowsIfAvailable(
+      journalDir,
+      `_BOOT_ID=${bootId}`,
+      'TEST_ID=node-log-append-raw',
+    );
+    if (rows !== null) {
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].MESSAGE, 'raw directory');
+    }
     verifyJournalFileIfAvailable(path);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
