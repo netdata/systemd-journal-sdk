@@ -12,8 +12,6 @@ Last updated: 2026-05-28
 
 - SOW-0026 - Netdata SDK Integration Inventory And Cut Plan: open. Produces the
   fresh Netdata consumer inventory and cut plan after performance gates.
-- SOW-0040 - Python Writer Mmap And Rust Parity: open. Aligns Python writer
-  API, file-access behavior, and writer parity after SOW-0037.
 - SOW-0041 - Node.js Writer Rust Parity: open. Aligns Node.js writer API,
   runtime-specific file-access behavior, and writer parity after SOW-0037.
 - SOW-0042 - Writer Final Certification: open. Owns writer benchmarks,
@@ -39,6 +37,12 @@ Last updated: 2026-05-28
 
 ## Recently Closed Or Completed
 
+- SOW-0040 - Python Writer Mmap And Rust Parity: completed. Python direct and
+  directory writers now expose raw append parity, high-level `_BOOT_ID` /
+  `_SOURCE_REALTIME_TIMESTAMP` metadata injection, and a whole-file mapped
+  arena hot path. Python package tests, binary/compression/compact/live
+  interoperability, and all-language lock matrix passed; writer-core compact
+  baseline improved from ~468 to ~930 append rows/s.
 - SOW-0037 - Writer Reference Closure: completed. Closed the Rust/systemd and
   Go/Rust writer reference matrix, fixed Go/Rust writer drift found during the
   pass, mapped Python/Node.js writer parity to SOW-0040 and SOW-0041, and

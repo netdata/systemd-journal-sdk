@@ -26,6 +26,9 @@ no system journal library linkage.
 - Create regular keyed-hash journal files by default, or compact journal files
   with `compact: True` / `format: 'compact'`
 - Byte-safe field values via `bytes`/`bytearray`/`memoryview`
+- Direct raw full-payload appends via `Writer.append_raw()` and
+  `Log.append_raw()` for systemd-compatible `KEY=value` byte payloads,
+  including binary values after the first `=`
 - Optional zstd, xz, and lz4-compressed DATA object writing via
   `compression: 'zstd'`, `compression: 'xz'`, or `compression: 'lz4'`, using
   systemd's 512-byte default threshold and 8-byte minimum clamp
@@ -39,6 +42,11 @@ no system journal library linkage.
 - Directory writer with chain active naming by default, opt-in strict
   systemd active naming, entry-count/file-size/duration rotation, and
   file-count/byte/age retention
+- Directory writer entries include indexed `_BOOT_ID=<boot-id>` metadata, and
+  include `_SOURCE_REALTIME_TIMESTAMP=<usec>` when `source_realtime_usec` /
+  `sourceRealtimeUsec` is provided
+- Whole-file mapped arena writes for the direct-file writer hot path, with fd
+  fallback only before mapping and during cleanup
 - Shared field-name policy layers for direct-file and directory writers:
   default `FIELD_NAME_POLICY_JOURNALD`, app-facing
   `FIELD_NAME_POLICY_JOURNAL_APP`, and structure-level
@@ -119,6 +127,25 @@ w.append([
 w.close()
 ```
 
+Raw full-payload append is available when the caller already has
+systemd-style `KEY=value` byte payloads:
+
+```python
+w = Writer.create('/path/to/plugin.journal')
+
+w.append_raw([
+    b'MESSAGE=plugin started',
+    b'PRIORITY=6',
+    b'BINARY_PAYLOAD=\xff\x00=value',
+])
+
+w.close()
+```
+
+`append_raw()` validates the bytes before the first `=` as the field name. RAW
+field-name policy still requires a non-empty name and forbids `=` inside the
+name because the journal DATA payload format uses the first `=` as the split.
+
 `writer.close()` matches systemd's plain close path and leaves the file in
 `ONLINE` state. Use `writer.close_offline()` to finalize a single file as
 `OFFLINE`; directory rotation uses `writer.archive_to()` to produce `ARCHIVED`
@@ -157,6 +184,11 @@ journal.append([
     {'name': 'PRIORITY', 'value': b'6'},
 ])
 
+journal.append_raw([
+    b'MESSAGE=raw plugin event',
+    b'PRIORITY=6',
+])
+
 journal.close()
 ```
 
@@ -190,7 +222,9 @@ effective `journalctl --directory` path, active path, and identity.
 `artifact_sizer` includes consumer-owned sidecar bytes in size-based retention.
 `append()` accepts `source_realtime_usec` / `sourceRealtimeUsec` and clamps
 non-progressing realtime and monotonic overrides forward, including explicit
-zero monotonic overrides.
+zero monotonic overrides. `append()` and `append_raw()` prepend the effective
+`_BOOT_ID` as an indexed DATA payload, and prepend `_SOURCE_REALTIME_TIMESTAMP`
+when a source realtime option is supplied.
 The low-level `Writer.append()` path preserves explicit caller-provided
 realtime and monotonic timestamps without clamping or rejecting them; callers
 using that raw API are responsible for not producing same-boot backward
@@ -276,6 +310,8 @@ python3 cmd/journalctl.py --file ./active.journal --follow --no-tail --boot=all
 - `Writer.create(path, options)` - Create new journal file
   (`options['live_publish_every_entries']` controls explicit live-reader publication)
 - `writer.append(fields, options)` - Append entry
+- `writer.append_raw(payloads, options)` - Append full `KEY=value` byte
+  payloads after field-name policy validation/filtering
 - `writer.sync()` - Sync to disk
 - `writer.close()` - Close while preserving `ONLINE` state
 - `writer.close_offline()` - Close with `OFFLINE` state
@@ -283,6 +319,9 @@ python3 cmd/journalctl.py --file ./active.journal --follow --no-tail --boot=all
 - `Log(directory, options)` - Create a high-level directory writer
   (`options['live_publish_every_entries']` is passed to active writers)
 - `log.append(fields, options)` - Append through the directory writer
+- `log.append_raw(payloads, options)` - Append full `KEY=value` byte payloads
+  through the directory writer with the same high-level metadata injection as
+  `log.append()`
 - `log.sync()` - Sync the active journal file
 - `log.enforce_retention()` - Apply retention without rotating or closing
 - `log.close()` - Archive the active file and apply retention

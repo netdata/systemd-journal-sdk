@@ -689,6 +689,118 @@ def test_writer_field_name_policies():
         assert entry['fields']['BINARY'] == b'a\x00=b'
 
 
+def test_writer_append_raw_policies_and_binary_payloads():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'raw-direct.journal')
+        writer = Writer.create(path)
+        writer.append_raw([
+            b'MESSAGE=raw direct',
+            b'PRIORITY=6',
+            b'BINARY=a\x00=b',
+        ], {'realtime_usec': 1_700_002_114_000_000, 'monotonic_usec': 1})
+        for payload in (b'MALFORMED', b'=bad'):
+            try:
+                writer.append_raw([payload], {
+                    'realtime_usec': 1_700_002_114_000_001,
+                    'monotonic_usec': 2,
+                })
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f'expected malformed raw payload {payload!r} to fail')
+        writer.close()
+        run(['journalctl', '--verify', '--file', path])
+        reader = FileReader.open(path)
+        assert reader.step()
+        entry = reader.get_entry()
+        reader.close()
+        assert entry['fields']['MESSAGE'] == b'raw direct'
+        assert entry['fields']['BINARY'] == b'a\x00=b'
+
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'raw-app.journal')
+        writer = Writer.create(path, {'field_name_policy': FIELD_NAME_POLICY_JOURNAL_APP})
+        writer.append_raw([
+            b'MESSAGE=raw app',
+            b'_HOSTNAME=drop-host',
+            b'lowercase=drop-lowercase',
+        ], {'realtime_usec': 1_700_002_115_000_000, 'monotonic_usec': 1})
+        try:
+            writer.append_raw([b'_HOSTNAME=drop-only'], {
+                'realtime_usec': 1_700_002_115_000_001,
+                'monotonic_usec': 2,
+            })
+        except ValueError as err:
+            assert 'empty entry' in str(err)
+        else:
+            raise AssertionError('expected journal-app raw drop-only append to fail')
+        writer.close()
+        reader = FileReader.open(path)
+        assert reader.step()
+        entry = reader.get_entry()
+        reader.close()
+        assert entry['fields']['MESSAGE'] == b'raw app'
+        assert '_HOSTNAME' not in entry['fields']
+        assert 'lowercase' not in entry['fields']
+
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'raw-policy.journal')
+        writer = Writer.create(path, {'field_name_policy': FIELD_NAME_POLICY_RAW})
+        writer.append_raw([
+            b'lowercase=ok',
+            b'field name=space',
+            b'BINARY=a\x00=b',
+        ], {'realtime_usec': 1_700_002_116_000_000, 'monotonic_usec': 1})
+        writer.close()
+        reader = FileReader.open(path)
+        assert reader.step()
+        entry = reader.get_entry()
+        reader.close()
+        assert entry['fields']['lowercase'] == b'ok'
+        assert entry['fields']['field name'] == b'space'
+        assert entry['fields']['BINARY'] == b'a\x00=b'
+
+
+def test_writer_append_raw_matches_structured_bytes():
+    opts = {
+        'file_id': bytes.fromhex('41000000000000000000000000000000'),
+        'machine_id': bytes.fromhex('11000000000000000000000000000000'),
+        'boot_id': bytes.fromhex('21000000000000000000000000000000'),
+        'seqnum_id': bytes.fromhex('31000000000000000000000000000000'),
+        'data_hash_table_buckets': 64,
+        'field_hash_table_buckets': 16,
+        'live_publish_every_entries': 1,
+    }
+    entry_opts = {
+        'realtime_usec': 1_700_002_117_000_000,
+        'monotonic_usec': 5,
+    }
+
+    def write_file(directory, name, raw):
+        path = os.path.join(directory, f'{name}.journal')
+        writer = Writer.create(path, opts)
+        if raw:
+            writer.append_raw([
+                b'MESSAGE=equivalent entry',
+                b'PRIORITY=6',
+                b'BINARY=a\x00=b=c',
+            ], entry_opts)
+        else:
+            writer.append([
+                {'name': 'MESSAGE', 'value': 'equivalent entry'},
+                {'name': 'PRIORITY', 'value': '6'},
+                {'name': 'BINARY', 'value': b'a\x00=b=c'},
+            ], entry_opts)
+        writer.close()
+        return Path(path).read_bytes()
+
+    with tempfile.TemporaryDirectory() as td:
+        structured = write_file(td, 'structured', False)
+        raw = write_file(td, 'raw', True)
+
+    assert structured == raw
+
+
 def test_directory_writer_journald_policy_preserves_protected_fields():
     with tempfile.TemporaryDirectory() as td:
         log = Log(td, {
@@ -780,6 +892,60 @@ def test_directory_writer_journal_app_policy_drops_invalid_fields():
         assert entries[0]['fields']['MESSAGE'] == b'journal app keeps valid fields'
         assert '_HOSTNAME' not in entries[0]['fields']
         assert 'foo.bar' not in entries[0]['fields']
+
+
+def test_directory_writer_append_raw_injects_metadata_and_filters_callers():
+    with tempfile.TemporaryDirectory() as td:
+        boot_id = '0123456789abcdef0123456789abcdef'
+        log = Log(td, {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'boot_id': boot_id,
+            'field_name_policy': FIELD_NAME_POLICY_JOURNAL_APP,
+        })
+        log.append_raw([
+            b'MESSAGE=raw directory',
+            b'TEST_ID=python-log-append-raw',
+            b'_HOSTNAME=drop-host',
+            b'lowercase=drop-lowercase',
+        ], {
+            'realtime_usec': 1_700_002_404_000_000,
+            'monotonic_usec': 40,
+            'source_realtime_usec': 1234,
+        })
+        journal_dir = log.journal_directory()
+        log.close()
+
+        names = sorted(name for name in os.listdir(journal_dir) if name.endswith('.journal'))
+        assert len(names) == 1
+        path = os.path.join(journal_dir, names[0])
+        run(['journalctl', '--verify', '--file', path])
+        reader = FileReader.open(path)
+        assert reader.step()
+        entry = reader.get_entry()
+        reader.close()
+        assert entry['fields']['MESSAGE'] == b'raw directory'
+        assert entry['fields']['TEST_ID'] == b'python-log-append-raw'
+        assert entry['fields']['_BOOT_ID'] == boot_id.encode('ascii')
+        assert entry['fields']['_SOURCE_REALTIME_TIMESTAMP'] == b'1234'
+        assert '_HOSTNAME' not in entry['fields']
+        assert 'lowercase' not in entry['fields']
+
+        rows = [
+            json.loads(line)
+            for line in run([
+                'journalctl',
+                '--directory',
+                journal_dir,
+                '--output=json',
+                '--no-pager',
+                f'_BOOT_ID={boot_id}',
+                'TEST_ID=python-log-append-raw',
+            ]).splitlines()
+            if line.strip()
+        ]
+        assert len(rows) == 1
+        assert rows[0]['MESSAGE'] == 'raw directory'
 
 
 def test_directory_writer_raw_policy_allows_structure_only_field_names():
@@ -1079,6 +1245,10 @@ def test_directory_writer_open_identity_lifecycle_source_timestamp():
             entry['fields']['_SOURCE_REALTIME_TIMESTAMP'].decode()
             for entry in entries
         ] == ['999', '1000', '1001', '1002']
+        assert [
+            entry['fields']['_BOOT_ID'].decode()
+            for entry in entries
+        ] == [boot_id.hex()] * 4
 
 
 def test_directory_writer_different_boot_does_not_seed_monotonic_clamp_from_previous_tail():
@@ -2336,8 +2506,11 @@ def main():
     test_xz_and_lz4_data_object_parse()
     test_directory_writer_rotation()
     test_writer_field_name_policies()
+    test_writer_append_raw_policies_and_binary_payloads()
+    test_writer_append_raw_matches_structured_bytes()
     test_directory_writer_journald_policy_preserves_protected_fields()
     test_directory_writer_journal_app_policy_drops_invalid_fields()
+    test_directory_writer_append_raw_injects_metadata_and_filters_callers()
     test_directory_writer_raw_policy_allows_structure_only_field_names()
     test_directory_writer_duration_rotation()
     test_directory_writer_derives_rotation_defaults_from_retention()

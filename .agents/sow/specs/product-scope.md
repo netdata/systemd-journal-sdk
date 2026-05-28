@@ -609,9 +609,16 @@ Current Python writer feature slice:
 - keyed hash tables using the journal file ID;
 - byte-safe field values through `bytes`, `bytearray`, `memoryview`, and
   string-compatible field values;
-- direct-file writing through `Writer`;
+- direct-file writing through `Writer`, including structured append and raw
+  full-payload append;
 - high-level directory writing through `Log` with Netdata-compatible chain
-  active naming by default and an explicit strict systemd active naming option;
+  active naming by default, structured append and raw full-payload append, and
+  an explicit strict systemd active naming option;
+- high-level `Log` append paths write indexed `_BOOT_ID=<boot-id>` metadata for
+  each entry and `_SOURCE_REALTIME_TIMESTAMP=<usec>` when source realtime is
+  supplied;
+- direct-file writer hot-path reads and writes use a whole-file mapped arena,
+  with fd fallback before mapping and during cleanup;
 - zero-entry crash-created active files are discarded on reopen before append so
   sequence numbers continue from the existing chain tail;
 - entry-count, file-size, and active-file-duration rotation. Duration rotation

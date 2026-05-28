@@ -11,6 +11,7 @@ from .writer import (
     Writer,
     _normalize_field_name_policy,
     _prepare_fields_for_policy,
+    _prepare_raw_payloads_for_policy,
     _writer_policy_for_log_policy,
 )
 
@@ -270,6 +271,20 @@ class Log:
         self._capture_writer_identity()
         return result
 
+    def append_raw(self, payloads, opts=None):
+        if self._closed:
+            raise ValueError('journal log is closed')
+        payloads = _prepare_raw_payloads_for_policy(payloads, self._field_name_policy)
+        opts = self._entry_options_for_append(opts)
+        self._apply_retention_on_open()
+        if self._active_writer and self._should_rotate(opts['realtime_usec']):
+            self._rotate(opts)
+        self._open_writer(opts)
+        self._apply_retention_on_open()
+        result = self._active_writer.append_raw(self._payloads_for_append(payloads, opts), opts)
+        self._capture_writer_identity()
+        return result
+
     def _should_rotate(self, next_realtime_usec):
         h = self._active_writer._header
         return (
@@ -488,13 +503,34 @@ class Log:
         return effective
 
     def _fields_for_append(self, fields, opts):
-        source_realtime = opts.get('source_realtime_usec')
-        if not source_realtime:
-            return fields
-        return list(fields) + [{
-            'name': '_SOURCE_REALTIME_TIMESTAMP',
-            'value': str(int(source_realtime)),
+        with_metadata = [{
+            'name': '_BOOT_ID',
+            'value': uuid_to_string(self._entry_boot_id_for_append(opts)),
         }]
+        source_realtime = opts.get('source_realtime_usec')
+        if source_realtime:
+            with_metadata.append({
+                'name': '_SOURCE_REALTIME_TIMESTAMP',
+                'value': str(int(source_realtime)),
+            })
+        with_metadata.extend(fields)
+        return with_metadata
+
+    def _payloads_for_append(self, payloads, opts):
+        with_metadata = [
+            f'_BOOT_ID={uuid_to_string(self._entry_boot_id_for_append(opts))}'.encode('ascii'),
+        ]
+        source_realtime = opts.get('source_realtime_usec')
+        if source_realtime:
+            with_metadata.append(f'_SOURCE_REALTIME_TIMESTAMP={int(source_realtime)}'.encode('ascii'))
+        with_metadata.extend(payloads)
+        return with_metadata
+
+    def _entry_boot_id_for_append(self, opts):
+        boot_id = opts.get('boot_id')
+        if boot_id is None and 'bootId' in opts:
+            boot_id = opts['bootId']
+        return _uuid_from_config(boot_id) or self._boot_id
 
     def _retained_size(self, path, fallback):
         size = _committed_journal_size(path, fallback)

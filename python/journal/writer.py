@@ -5,6 +5,7 @@ import os
 import struct
 import fcntl
 import lzma
+import mmap
 from .lock import WriterLock
 from .binary import (
     read_uint64_le, write_uint64_le, write_uint32_le, write_uint8,
@@ -44,6 +45,54 @@ FIELD_NAME_POLICY_RAW = 'raw'
 FIELD_NAME_POLICY_JOURNAL_APP = 'journal-app'
 
 
+class _MappedArena:
+    def __init__(self, fd, size):
+        self._fd = fd
+        self._mmap = None
+        self._size = 0
+        self.resize(size)
+
+    def resize(self, size):
+        size = int(size)
+        if size <= 0:
+            raise ValueError('mapped arena size must be positive')
+        if self._mmap is not None and size == self._size:
+            return
+        os.ftruncate(self._fd, size)
+        if self._mmap is None:
+            self._mmap = mmap.mmap(self._fd, size, access=mmap.ACCESS_WRITE)
+        elif size != self._size:
+            try:
+                self._mmap.resize(size)
+            except Exception:
+                self._mmap.flush()
+                self._mmap.close()
+                self._mmap = mmap.mmap(self._fd, size, access=mmap.ACCESS_WRITE)
+        self._size = size
+
+    def read_at(self, offset, size):
+        end = int(offset) + int(size)
+        if offset < 0 or size < 0 or end > self._size:
+            raise ValueError('mapped arena read out of bounds')
+        return self._mmap[offset:end]
+
+    def write_at(self, offset, data):
+        end = int(offset) + len(data)
+        if offset < 0 or end > self._size:
+            raise ValueError('mapped arena write out of bounds')
+        self._mmap[offset:end] = data
+
+    def flush(self):
+        if self._mmap is not None:
+            self._mmap.flush()
+
+    def close(self):
+        if self._mmap is None:
+            return
+        self._mmap.close()
+        self._mmap = None
+
+
 class Writer:
     def __init__(self, fd, path, lock):
         self._fd = fd
@@ -62,6 +111,7 @@ class Writer:
         self._live_publish_every_entries = 1
         self._entries_since_live_publication = 0
         self._field_name_policy = FIELD_NAME_POLICY_JOURNALD
+        self._arena = None
 
     @staticmethod
     def create(path, opts=None):
@@ -165,6 +215,7 @@ class Writer:
             w._field_name_policy = _normalize_field_name_policy(
                 opts.get('field_name_policy', opts.get('fieldNamePolicy'))
             )
+            w._map_arena(max(os.fstat(fd).st_size, header['header_size'] + header['arena_size']))
 
             w._header['state'] = STATE_ONLINE
             w._write_header()
@@ -259,16 +310,17 @@ class Writer:
         self._next_seqnum = opts.get('head_seqnum', 1) or 1
 
         os.ftruncate(self._fd, file_size)
+        self._map_arena(file_size)
         self._write_header()
 
         # systemd writes FIELD hash table first, then DATA hash table
         fht_buf = bytearray(OBJECT_HEADER_SIZE)
         write_object_header(fht_buf, 0, OBJECT_TYPE_FIELD_HASH_TABLE, 0, OBJECT_HEADER_SIZE + field_size)
-        os.pwrite(self._fd, fht_buf, field_obj_offset)
+        self._write_at(field_obj_offset, fht_buf)
 
         dht_buf = bytearray(OBJECT_HEADER_SIZE)
         write_object_header(dht_buf, 0, OBJECT_TYPE_DATA_HASH_TABLE, 0, OBJECT_HEADER_SIZE + data_size)
-        os.pwrite(self._fd, dht_buf, data_obj_offset)
+        self._write_at(data_obj_offset, dht_buf)
 
         if self._seal is not None:
             self._append_first_tag()
@@ -276,33 +328,48 @@ class Writer:
     def _write_header(self):
         buf = bytearray(HEADER_SIZE)
         serialize_file_header(buf, self._header)
-        os.pwrite(self._fd, buf, 0)
+        self._write_at(0, buf)
 
     def _write_uint64_at(self, offset, value):
         buf = struct.pack('<Q', value)
-        os.pwrite(self._fd, buf, offset)
+        self._write_at(offset, buf)
 
     def _write_uuid_at(self, offset, uuid):
-        os.pwrite(self._fd, uuid, offset)
+        self._write_at(offset, uuid)
+
+    def _map_arena(self, size):
+        self._arena = _MappedArena(self._fd, size)
+
+    def _resize_arena(self, size):
+        if self._arena is None:
+            self._map_arena(size)
+        else:
+            self._arena.resize(size)
+
+    def _read_at(self, offset, size):
+        if self._arena is not None:
+            return self._arena.read_at(offset, size)
+        return os.pread(self._fd, size, offset)
+
+    def _write_at(self, offset, data):
+        if self._arena is not None:
+            self._arena.write_at(offset, data)
+        else:
+            os.pwrite(self._fd, data, offset)
+
+    def _read_object_size(self, offset):
+        buf = self._read_at(offset + 8, 8)
+        return read_uint64_le(buf, 0)
+
+    def _read_object_header(self, offset):
+        buf = self._read_at(offset, OBJECT_HEADER_SIZE)
+        return parse_object_header(buf, 0)
 
     def append(self, fields, opts=None):
-        opts = opts or {}
         if self._closed:
             raise ValueError('writer closed')
-        if len(fields) == 0:
-            raise ValueError('empty entry')
-
-        now_ms = _current_time_ms()
-        realtime = opts['realtime_usec'] if 'realtime_usec' in opts else now_ms * 1000
-        monotonic = opts['monotonic_usec'] if 'monotonic_usec' in opts else (now_ms - self._started) * 1000
-        boot_id = opts.get('boot_id')
-        if boot_id is None or is_zero_uuid(boot_id):
-            boot_id = self._boot_id
-        if isinstance(boot_id, str):
-            boot_id = bytes.fromhex(boot_id)
-
-        payloads = []
         fields = _prepare_fields_for_policy(fields, self._field_name_policy)
+        payloads = []
         for field in fields:
             name = field['name']
             name_bytes = _field_name_bytes(name)
@@ -313,8 +380,29 @@ class Writer:
                 value = bytes(value)
             elif not isinstance(value, bytes):
                 value = bytes(value)
-            payload = name_bytes + b'=' + value
-            payloads.append(payload)
+            payloads.append(name_bytes + b'=' + value)
+        return self._append_payloads(payloads, opts)
+
+    def append_raw(self, payloads, opts=None):
+        if self._closed:
+            raise ValueError('writer closed')
+        return self._append_payloads(
+            _prepare_raw_payloads_for_policy(payloads, self._field_name_policy),
+            opts,
+        )
+
+    def _append_payloads(self, payloads, opts=None):
+        opts = opts or {}
+        if len(payloads) == 0:
+            raise ValueError('empty entry')
+        now_ms = _current_time_ms()
+        realtime = opts['realtime_usec'] if 'realtime_usec' in opts else now_ms * 1000
+        monotonic = opts['monotonic_usec'] if 'monotonic_usec' in opts else (now_ms - self._started) * 1000
+        boot_id = opts.get('boot_id')
+        if boot_id is None or is_zero_uuid(boot_id):
+            boot_id = self._boot_id
+        if isinstance(boot_id, str):
+            boot_id = bytes.fromhex(boot_id)
 
         self._maybe_append_tag(realtime)
 
@@ -336,6 +424,7 @@ class Writer:
         entry_size = ENTRY_OBJECT_HEADER_SIZE + len(deduped) * entry_item_size
         self._ensure_compact_object_fits(entry_offset, entry_size)
         aligned_size = align8(entry_size)
+        self._ensure_arena_size(entry_offset + aligned_size)
         entry_buf = bytearray(aligned_size)
         write_object_header(entry_buf, 0, OBJECT_TYPE_ENTRY, 0, entry_size)
         struct.pack_into('<Q', entry_buf, 16, self._next_seqnum)
@@ -351,7 +440,7 @@ class Writer:
             else:
                 struct.pack_into('<Q', entry_buf, off, item['offset'])
                 struct.pack_into('<Q', entry_buf, off + 8, item['hash'])
-        os.pwrite(self._fd, entry_buf, entry_offset)
+        self._write_at(entry_offset, entry_buf)
         self._object_added(entry_offset, entry_size)
 
         self._hmac_put_object(entry_offset, OBJECT_TYPE_ENTRY)
@@ -409,11 +498,12 @@ class Writer:
         size = payload_offset + len(object_payload)
         self._ensure_compact_object_fits(offset, size)
         aligned_size = align8(size)
+        self._ensure_arena_size(offset + aligned_size)
         buf = bytearray(aligned_size)
         write_object_header(buf, 0, OBJECT_TYPE_DATA, compression_flag, size)
         struct.pack_into('<Q', buf, 16, h)
         buf[payload_offset:payload_offset + len(object_payload)] = object_payload
-        os.pwrite(self._fd, buf, offset)
+        self._write_at(offset, buf)
         self._object_added(offset, size)
 
         self._append_hash_item(
@@ -444,11 +534,12 @@ class Writer:
         size = FIELD_OBJECT_HEADER_SIZE + len(payload)
         self._ensure_compact_object_fits(offset, size)
         aligned_size = align8(size)
+        self._ensure_arena_size(offset + aligned_size)
         buf = bytearray(aligned_size)
         write_object_header(buf, 0, OBJECT_TYPE_FIELD, 0, size)
         struct.pack_into('<Q', buf, 16, h)
         buf[FIELD_OBJECT_HEADER_SIZE:FIELD_OBJECT_HEADER_SIZE + len(payload)] = payload
-        os.pwrite(self._fd, buf, offset)
+        self._write_at(offset, buf)
         self._object_added(offset, size)
 
         self._append_hash_item(
@@ -500,7 +591,7 @@ class Writer:
         return None
 
     def _read_hash_item(self, offset):
-        buf = os.pread(self._fd, HASH_ITEM_SIZE, offset)
+        buf = self._read_at(offset, HASH_ITEM_SIZE)
         return {
             'head': read_uint64_le(buf, 0),
             'tail': read_uint64_le(buf, 8),
@@ -508,10 +599,10 @@ class Writer:
 
     def _write_hash_item(self, offset, item):
         buf = struct.pack('<QQ', item['head'], item['tail'])
-        os.pwrite(self._fd, buf, offset)
+        self._write_at(offset, buf)
 
     def _read_data_payload(self, offset):
-        obj_header = _read_object_header_from_fd(self._fd, offset)
+        obj_header = self._read_object_header(offset)
         if not obj_header or obj_header['type'] != OBJECT_TYPE_DATA:
             return None
         obj_size = obj_header['size']
@@ -519,7 +610,7 @@ class Writer:
         payload_len = obj_size - payload_offset
         if payload_len <= 0:
             return None
-        buf = os.pread(self._fd, payload_len, offset + payload_offset)
+        buf = self._read_at(offset + payload_offset, payload_len)
         flags = obj_header['flags']
         if flags & OBJECT_COMPRESSED_ZSTD:
             return decompress_zst_sync(buf, max_output_size=MAX_UNCOMPRESSED_SIZE)
@@ -530,22 +621,22 @@ class Writer:
         return buf
 
     def _read_field_payload(self, offset):
-        obj_size = _read_object_size_from_fd(self._fd, offset)
+        obj_size = self._read_object_size(offset)
         payload_len = obj_size - FIELD_OBJECT_HEADER_SIZE
         if payload_len <= 0:
             return None
-        buf = os.pread(self._fd, payload_len, offset + FIELD_OBJECT_HEADER_SIZE)
+        buf = self._read_at(offset + FIELD_OBJECT_HEADER_SIZE, payload_len)
         return buf
 
     def _read_field_head_data_offset(self, offset):
         return self._read_uint64_at(offset + 32)
 
     def _read_uint64_at(self, offset):
-        buf = os.pread(self._fd, 8, offset)
+        buf = self._read_at(offset, 8)
         return read_uint64_le(buf, 0)
 
     def _write_uint32_at(self, offset, value):
-        os.pwrite(self._fd, struct.pack('<I', value), offset)
+        self._write_at(offset, struct.pack('<I', value))
 
     def _append_hash_item(self, table_offset, table_size, expected_type, h, object_offset):
         n_buckets = table_size // HASH_ITEM_SIZE
@@ -553,7 +644,7 @@ class Writer:
         item = self._read_hash_item(bucket_off)
 
         if item['head'] != 0:
-            head = _read_object_header_from_fd(self._fd, item['head'])
+            head = self._read_object_header(item['head'])
             if not head or head['type'] != expected_type:
                 raise ValueError('invalid journal: hash bucket object type mismatch')
         if item['tail'] != 0:
@@ -577,7 +668,7 @@ class Writer:
         if self._compact and new_size > JOURNAL_COMPACT_SIZE_MAX:
             raise ValueError('compact journal cannot exceed 4 GiB')
         self._header['arena_size'] = new_size - HEADER_SIZE
-        os.ftruncate(self._fd, new_size)
+        self._resize_arena(new_size)
 
     def _entry_added(self, entry_offset, realtime, monotonic, boot_id):
         self._header['n_entries'] += 1
@@ -680,7 +771,7 @@ class Writer:
         self._header['tail_entry_array_n_entries'] = 1
 
     def _read_offset_array_header(self, offset):
-        buf = os.pread(self._fd, OFFSET_ARRAY_OBJECT_HEADER_SIZE, offset)
+        buf = self._read_at(offset, OFFSET_ARRAY_OBJECT_HEADER_SIZE)
         oh = parse_object_header(buf, 0)
         if not oh or oh['type'] != OBJECT_TYPE_ENTRY_ARRAY:
             raise ValueError('invalid entry array object')
@@ -696,9 +787,10 @@ class Writer:
         size = OFFSET_ARRAY_OBJECT_HEADER_SIZE + capacity * self._offset_array_item_size()
         self._ensure_compact_object_fits(offset, size)
         aligned_size = align8(size)
+        self._ensure_arena_size(offset + aligned_size)
         buf = bytearray(aligned_size)
         write_object_header(buf, 0, OBJECT_TYPE_ENTRY_ARRAY, 0, size)
-        os.pwrite(self._fd, buf, offset)
+        self._write_at(offset, buf)
         self._object_added(offset, size)
         self._header['n_entry_arrays'] += 1
         self._publish_object_metadata()
@@ -774,6 +866,8 @@ class Writer:
         if self._closed:
             raise ValueError('writer closed')
         self._write_header()
+        if self._arena is not None:
+            self._arena.flush()
         os.fsync(self._fd)
 
     def close(self):
@@ -789,9 +883,18 @@ class Writer:
         try:
             self._header['state'] = state
             self._write_header()
+            if self._arena is not None:
+                self._arena.flush()
             os.fsync(self._fd)
         except Exception as e:
             close_err = e
+        try:
+            if self._arena is not None:
+                self._arena.close()
+                self._arena = None
+        except Exception as e:
+            if not close_err:
+                close_err = e
         try:
             os.close(self._fd)
         except Exception as e:
@@ -812,6 +915,8 @@ class Writer:
             raise ValueError('writer closed')
         self._header['state'] = STATE_ARCHIVED
         self._write_header()
+        if self._arena is not None:
+            self._arena.flush()
         os.fsync(self._fd)
         try:
             if self._path != path:
@@ -822,6 +927,13 @@ class Writer:
                 _sync_parent_directory(path)
             except Exception as e:
                 close_err = e
+            try:
+                if self._arena is not None:
+                    self._arena.close()
+                    self._arena = None
+            except Exception as e:
+                if not close_err:
+                    close_err = e
             try:
                 os.close(self._fd)
                 self._closed = True
@@ -841,6 +953,8 @@ class Writer:
                 raise
             self._header['state'] = STATE_ONLINE
             self._write_header()
+            if self._arena is not None:
+                self._arena.flush()
             os.fsync(self._fd)
             raise
 
@@ -857,13 +971,14 @@ class Writer:
         size = OBJECT_HEADER_SIZE + 8 + 8 + TAG_LENGTH
         seqnum = self._header['n_tags'] + 1
         epoch = self._seal.get_epoch()
+        self._ensure_arena_size(offset + align8(size))
         buf = bytearray(align8(size))
         write_object_header(buf, 0, OBJECT_TYPE_TAG, 0, size)
         struct.pack_into('<Q', buf, OBJECT_HEADER_SIZE, seqnum)
         struct.pack_into('<Q', buf, OBJECT_HEADER_SIZE + 8, epoch)
         self._seal.hmac_write(bytes(buf[:OBJECT_HEADER_SIZE + 16]))
         buf[OBJECT_HEADER_SIZE + 16:OBJECT_HEADER_SIZE + 16 + TAG_LENGTH] = self._seal.hmac_sum()
-        os.pwrite(self._fd, buf, offset)
+        self._write_at(offset, buf)
         self._object_added(offset, size)
         self._header['n_tags'] = seqnum
         self._seal.hmac_reset()
@@ -907,51 +1022,46 @@ class Writer:
         if self._seal is None:
             return
         self._seal.hmac_start()
-        buf = os.pread(self._fd, OBJECT_HEADER_SIZE, object_start)
+        buf = self._read_at(object_start, OBJECT_HEADER_SIZE)
         self._seal.hmac_write(buf)
 
     def _hmac_put_object(self, object_start, typ):
         if self._seal is None:
             return
         self._seal.hmac_start()
-        buf = os.pread(self._fd, OBJECT_HEADER_SIZE, object_start)
+        buf = self._read_at(object_start, OBJECT_HEADER_SIZE)
         self._seal.hmac_write(buf)
         obj_size = struct.unpack_from('<Q', buf, 8)[0]
         if typ == OBJECT_TYPE_DATA:
-            hash_buf = os.pread(self._fd, 8, object_start + 16)
+            hash_buf = self._read_at(object_start + 16, 8)
             self._seal.hmac_write(hash_buf)
             payload_offset = self._data_payload_offset()
             payload_size = obj_size - payload_offset
             if payload_size > 0:
-                payload = os.pread(self._fd, payload_size, object_start + payload_offset)
+                payload = self._read_at(object_start + payload_offset, payload_size)
                 self._seal.hmac_write(payload)
         elif typ == OBJECT_TYPE_FIELD:
-            hash_buf = os.pread(self._fd, 8, object_start + 16)
+            hash_buf = self._read_at(object_start + 16, 8)
             self._seal.hmac_write(hash_buf)
             payload_size = obj_size - FIELD_OBJECT_HEADER_SIZE
             if payload_size > 0:
-                payload = os.pread(self._fd, payload_size, object_start + FIELD_OBJECT_HEADER_SIZE)
+                payload = self._read_at(object_start + FIELD_OBJECT_HEADER_SIZE, payload_size)
                 self._seal.hmac_write(payload)
         elif typ == OBJECT_TYPE_ENTRY:
             rest_size = obj_size - OBJECT_HEADER_SIZE
             if rest_size > 0:
-                rest = os.pread(self._fd, rest_size, object_start + OBJECT_HEADER_SIZE)
+                rest = self._read_at(object_start + OBJECT_HEADER_SIZE, rest_size)
                 self._seal.hmac_write(rest)
         elif typ in (OBJECT_TYPE_DATA_HASH_TABLE, OBJECT_TYPE_FIELD_HASH_TABLE, OBJECT_TYPE_ENTRY_ARRAY):
             pass
         elif typ == OBJECT_TYPE_TAG:
-            meta = os.pread(self._fd, 16, object_start + OBJECT_HEADER_SIZE)
+            meta = self._read_at(object_start + OBJECT_HEADER_SIZE, 16)
             self._seal.hmac_write(meta)
 
 
 def _read_object_size_from_fd(fd, offset):
     buf = os.pread(fd, 8, offset + 8)
     return read_uint64_le(buf, 0)
-
-
-def _read_object_header_from_fd(fd, offset):
-    buf = os.pread(fd, OBJECT_HEADER_SIZE, offset)
-    return parse_object_header(buf, 0)
 
 
 def _sync_parent_directory(path):
@@ -1005,6 +1115,46 @@ def _prepare_fields_for_policy(fields, policy):
     for field in fields:
         _validate_field_name_for_policy(field['name'], policy)
     return fields
+
+
+def _prepare_raw_payloads_for_policy(payloads, policy):
+    policy = _normalize_field_name_policy(policy)
+    if not payloads:
+        raise ValueError('empty entry')
+    prepared = []
+    for payload in payloads:
+        payload = _raw_payload_bytes(payload)
+        field_name = _raw_payload_field_name(payload)
+        if policy == FIELD_NAME_POLICY_JOURNAL_APP:
+            try:
+                _validate_field_name_for_policy(field_name, policy)
+            except ValueError:
+                continue
+        else:
+            _validate_field_name_for_policy(field_name, policy)
+        prepared.append(payload)
+    if not prepared:
+        raise ValueError('empty entry')
+    return prepared
+
+
+def _raw_payload_bytes(payload):
+    if isinstance(payload, bytes):
+        return payload
+    if isinstance(payload, (bytearray, memoryview)):
+        return bytes(payload)
+    if isinstance(payload, str):
+        return payload.encode('utf-8')
+    return bytes(payload)
+
+
+def _raw_payload_field_name(payload):
+    eq = payload.find(b'=')
+    if eq < 0:
+        raise ValueError('invalid raw payload: missing field separator')
+    if eq == 0:
+        raise ValueError('invalid field name: empty')
+    return payload[:eq]
 
 
 def _validate_field_name_for_policy(name, policy=FIELD_NAME_POLICY_JOURNALD):
