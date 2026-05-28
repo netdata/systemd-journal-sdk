@@ -4,21 +4,47 @@ Last updated: 2026-05-28
 
 ## Current
 
-- SOW-0009 - Benchmark Profile Optimize: paused. Broad performance work waits
-  for the remaining reference-drift work to resume and settle.
-- SOW-0037 - Reference Drift Audit: paused. Paused while the SNMP traps critical
-  field-name policy correction is implemented and released.
+- SOW-0037 - Writer Reference Closure: paused and ready to activate next.
+  Closes the Rust/systemd and Go/Rust writer reference before remaining writer
+  parity and benchmarks.
+- SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
+  performance work is split into focused child SOWs; this file remains the
+  program index.
 
 ## Pending
 
-- SOW-0026 - Netdata SDK Integration: open. Integration should wait until
-  performance gates are acceptable for Netdata hot paths.
-- SOW-0039 - RAW Byte Field Name Reader Representation: open. Tracks the
-  byte-preserving reader API decision for RAW non-UTF8 field names discovered
-  during SOW-0038 review.
+- SOW-0026 - Netdata SDK Integration Inventory And Cut Plan: open. Produces the
+  fresh Netdata consumer inventory and cut plan after performance gates.
+- SOW-0040 - Python Writer Mmap And Rust Parity: open. Aligns Python writer
+  after SOW-0037.
+- SOW-0041 - Node.js Writer Rust Parity: open. Aligns Node.js writer after
+  SOW-0037.
+- SOW-0042 - Writer Final Certification: open. Owns writer benchmarks,
+  profiling, optimization, and final writer certification after writer parity.
+- SOW-0043 - Rust Reader Libsystemd/Jf Parity: open. Defines reader reference,
+  `jf` facade parity, mixed-format reader contract, and RAW byte-name reader
+  representation.
+- SOW-0044 - Rust Reader Hot-Path Optimization: open. Optimizes Rust
+  single-file and ordered directory readers after SOW-0043.
+- SOW-0045 - Go Reader Alignment Optimization: open. Aligns and optimizes Go
+  reader after Rust reader optimization.
+- SOW-0046 - Python Node Reader Alignment: open. Aligns Python and Node.js
+  readers after Rust/Go reader work.
+- SOW-0047 - Netdata NetFlow SDK Integration: open. Component integration for
+  NetFlow reader and writer paths after inventory and performance gates.
+- SOW-0048 - Netdata OTEL Writer SDK Integration: open. Component integration
+  for OTEL writer paths after inventory and writer gates.
+- SOW-0049 - Netdata Reader Plugin SDK Integration: open. Component integration
+  for OTEL signal viewer, no-libsystemd systemd journal reading, and static
+  packaging after reader gates.
+- SOW-0050 - Netdata Vendored Journal Removal: open. Final cleanup after all
+  Netdata component integrations are complete.
 
-## Recently Completed
+## Recently Closed Or Completed
 
+- SOW-0039 - RAW Byte Field Name Reader Representation: closed. Superseded by
+  SOW-0043 so byte-preserving RAW reader representation is designed with the
+  full reader parity work.
 - SOW-0038 - Field Name Policy Layers: completed. Rust, Go, Node.js, and
   Python now expose RAW, JOURNALD, and JOURNAL-APP writer field-name policies;
   producer-specific field-name remapping has been removed from SDK code, docs,
