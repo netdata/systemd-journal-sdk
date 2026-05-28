@@ -12,6 +12,27 @@ pub use memmap2::{Mmap, MmapMut, MmapOptions};
 
 const PAGE_SIZE: u64 = 4096;
 
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ExperimentalMmapStrategy {
+    #[default]
+    Windowed,
+    WholeFile,
+}
+
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WindowManagerStats {
+    pub strategy: ExperimentalMmapStrategy,
+    pub file_size: u64,
+    pub window_count: usize,
+    pub current_mapped_bytes: u64,
+    pub max_mapped_bytes: u64,
+    pub map_count: u64,
+    pub remap_count: u64,
+    pub eviction_count: u64,
+}
+
 pub trait MemoryMap: Deref<Target = [u8]> {
     fn create(file: &File, offset: u64, size: u64) -> Result<Self>
     where
@@ -155,10 +176,15 @@ pub struct WindowManager<M: MemoryMap> {
     file: File,
     file_size: u64,
     bounds_mode: BoundsMode,
+    strategy: ExperimentalMmapStrategy,
     chunk_size: u64,
     active_window_idx: Option<usize>,
     max_windows: usize,
     windows: Vec<Window<M>>,
+    map_count: u64,
+    remap_count: u64,
+    eviction_count: u64,
+    max_mapped_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -169,11 +195,37 @@ enum BoundsMode {
 
 impl<M: MemoryMap> WindowManager<M> {
     pub fn new(file: File, chunk_size: u64, max_windows: usize) -> Result<Self> {
-        Self::new_with_bounds_mode(file, chunk_size, max_windows, BoundsMode::LiveFile)
+        Self::new_with_bounds_mode(
+            file,
+            chunk_size,
+            max_windows,
+            BoundsMode::LiveFile,
+            ExperimentalMmapStrategy::Windowed,
+        )
     }
 
     pub fn new_writer_owned(file: File, chunk_size: u64, max_windows: usize) -> Result<Self> {
-        Self::new_with_bounds_mode(file, chunk_size, max_windows, BoundsMode::WriterOwned)
+        Self::new_writer_owned_with_strategy(
+            file,
+            chunk_size,
+            max_windows,
+            ExperimentalMmapStrategy::Windowed,
+        )
+    }
+
+    pub fn new_writer_owned_with_strategy(
+        file: File,
+        chunk_size: u64,
+        max_windows: usize,
+        strategy: ExperimentalMmapStrategy,
+    ) -> Result<Self> {
+        Self::new_with_bounds_mode(
+            file,
+            chunk_size,
+            max_windows,
+            BoundsMode::WriterOwned,
+            strategy,
+        )
     }
 
     fn new_with_bounds_mode(
@@ -181,21 +233,54 @@ impl<M: MemoryMap> WindowManager<M> {
         chunk_size: u64,
         max_windows: usize,
         bounds_mode: BoundsMode,
+        strategy: ExperimentalMmapStrategy,
     ) -> Result<Self> {
         debug_assert!(chunk_size != 0 && is_multiple_of(chunk_size, PAGE_SIZE));
         debug_assert!(max_windows != 0);
 
         let file_size = file.metadata()?.len();
+        let strategy = if bounds_mode == BoundsMode::WriterOwned {
+            strategy
+        } else {
+            ExperimentalMmapStrategy::Windowed
+        };
 
         Ok(WindowManager {
             file,
             file_size,
             bounds_mode,
+            strategy,
             chunk_size,
             max_windows,
             windows: Vec::new(),
             active_window_idx: None,
+            map_count: 0,
+            remap_count: 0,
+            eviction_count: 0,
+            max_mapped_bytes: 0,
         })
+    }
+
+    pub fn stats(&self) -> WindowManagerStats {
+        let current_mapped_bytes = self.current_mapped_bytes();
+        WindowManagerStats {
+            strategy: self.strategy,
+            file_size: self.file_size,
+            window_count: self.windows.len(),
+            current_mapped_bytes,
+            max_mapped_bytes: self.max_mapped_bytes.max(current_mapped_bytes),
+            map_count: self.map_count,
+            remap_count: self.remap_count,
+            eviction_count: self.eviction_count,
+        }
+    }
+
+    fn current_mapped_bytes(&self) -> u64 {
+        self.windows.iter().map(|window| window.size).sum()
+    }
+
+    fn record_mapped_bytes(&mut self) {
+        self.max_mapped_bytes = self.max_mapped_bytes.max(self.current_mapped_bytes());
     }
 
     fn current_file_size(&mut self) -> Result<u64> {
@@ -252,6 +337,7 @@ impl<M: MemoryMap> WindowManager<M> {
                 );
                 e
             })?;
+        self.map_count += 1;
         Ok(Window {
             offset: window_start,
             size,
@@ -300,8 +386,15 @@ impl<M: MemoryMap> WindowManager<M> {
     }
 
     fn get_window(&mut self, position: u64, size_needed: u64) -> Result<&mut Window<M>> {
+        if self.bounds_mode == BoundsMode::WriterOwned
+            && self.strategy == ExperimentalMmapStrategy::WholeFile
+        {
+            return self.get_whole_file_window(position, size_needed);
+        }
+
         if let Some(idx) = self.lookup_window_by_range(position, size_needed) {
             // Use the existing window
+            self.active_window_idx = Some(idx);
             Ok(&mut self.windows[idx])
         } else if let Some(idx) = self.lookup_window_by_position(position) {
             // Remap the window
@@ -324,7 +417,9 @@ impl<M: MemoryMap> WindowManager<M> {
 
             let new_window = self.create_window(window_start, num_chunks)?;
 
+            self.remap_count += 1;
             self.windows.push(new_window);
+            self.record_mapped_bytes();
             self.active_window_idx = Some(self.windows.len() - 1);
             Ok(self.windows.last_mut().unwrap())
         } else {
@@ -332,6 +427,7 @@ impl<M: MemoryMap> WindowManager<M> {
 
             if self.windows.len() >= self.max_windows {
                 self.windows.remove(self.find_window_to_evict());
+                self.eviction_count += 1;
                 // Invalidate active_window_idx after removal to maintain consistency.
                 // If create_window fails below, the index won't point to a non-existent window.
                 self.active_window_idx = None;
@@ -349,11 +445,41 @@ impl<M: MemoryMap> WindowManager<M> {
                 let new_window = self.create_window(window_start, num_chunks)?;
 
                 self.windows.push(new_window);
+                self.record_mapped_bytes();
             }
 
             self.active_window_idx = Some(self.windows.len() - 1);
             Ok(self.windows.last_mut().unwrap())
         }
+    }
+
+    fn get_whole_file_window(&mut self, position: u64, size_needed: u64) -> Result<&mut Window<M>> {
+        if let Some(idx) = self.lookup_window_by_range(position, size_needed) {
+            self.active_window_idx = Some(idx);
+            return Ok(&mut self.windows[idx]);
+        }
+
+        let requested_end = position
+            .checked_add(size_needed)
+            .ok_or(JournalError::ObjectExceedsFileBounds)?;
+        let target_end = requested_end.max(self.current_file_size()?);
+        let window_end = self.get_chunk_aligned_end(target_end)?;
+        let chunk_count = (window_end / self.chunk_size).max(1);
+
+        let had_windows = !self.windows.is_empty();
+        if had_windows {
+            self.windows.clear();
+            self.active_window_idx = None;
+        }
+
+        let new_window = self.create_window(0, chunk_count)?;
+        if had_windows {
+            self.remap_count += 1;
+        }
+        self.windows.push(new_window);
+        self.record_mapped_bytes();
+        self.active_window_idx = Some(0);
+        Ok(&mut self.windows[0])
     }
 
     pub fn get_slice(&mut self, position: u64, size: u64) -> Result<&[u8]> {
@@ -403,6 +529,10 @@ impl<M: MemoryMapMut> WindowManager<M> {
     /// event with the same-size truncate used by systemd.
     pub fn post_change(&mut self, logical_size: u64) -> Result<()> {
         fence(Ordering::SeqCst);
+        if logical_size < self.file_size {
+            self.windows.clear();
+            self.active_window_idx = None;
+        }
         self.file.set_len(logical_size)?;
         self.file_size = logical_size;
         Ok(())
@@ -612,6 +742,80 @@ mod tests {
             "Expected get_slice to succeed after recovery"
         );
         assert_eq!(wm.windows.len(), 1);
+    }
+
+    #[test]
+    fn whole_file_writer_owned_remaps_after_post_change_growth() {
+        let temp_file = NamedTempFile::new().unwrap();
+        temp_file.as_file().set_len(PAGE_SIZE_TEST).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(temp_file.path())
+            .unwrap();
+        let mut wm: WindowManager<MmapMut> = WindowManager::new_writer_owned_with_strategy(
+            file,
+            PAGE_SIZE_TEST,
+            32,
+            ExperimentalMmapStrategy::WholeFile,
+        )
+        .unwrap();
+
+        wm.get_slice_mut(0, 16).unwrap().copy_from_slice(&[1; 16]);
+        assert_eq!(wm.stats().current_mapped_bytes, PAGE_SIZE_TEST);
+
+        wm.post_change(PAGE_SIZE_TEST * 2).unwrap();
+        assert_eq!(wm.get_slice(0, 16).unwrap(), &[1; 16]);
+
+        let new_offset = PAGE_SIZE_TEST + 128;
+        wm.get_slice_mut(new_offset, 16)
+            .unwrap()
+            .copy_from_slice(&[2; 16]);
+        assert_eq!(wm.get_slice(new_offset, 16).unwrap(), &[2; 16]);
+
+        let stats = wm.stats();
+        assert_eq!(stats.current_mapped_bytes, PAGE_SIZE_TEST * 2);
+        assert_eq!(stats.max_mapped_bytes, PAGE_SIZE_TEST * 2);
+        assert_eq!(stats.remap_count, 1);
+    }
+
+    #[test]
+    fn post_change_drops_mappings_before_truncating_oversized_windows() {
+        let temp_file = NamedTempFile::new().unwrap();
+        temp_file.as_file().set_len(PAGE_SIZE_TEST).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(temp_file.path())
+            .unwrap();
+        let oversized_window = PAGE_SIZE_TEST * 4;
+        let mut wm: WindowManager<MmapMut> = WindowManager::new_writer_owned_with_strategy(
+            file,
+            oversized_window,
+            32,
+            ExperimentalMmapStrategy::WholeFile,
+        )
+        .unwrap();
+
+        wm.get_slice_mut(0, 16).unwrap().copy_from_slice(&[1; 16]);
+        assert_eq!(wm.stats().current_mapped_bytes, oversized_window);
+
+        wm.post_change(PAGE_SIZE_TEST * 2).unwrap();
+        let stats_after_truncate = wm.stats();
+        assert_eq!(stats_after_truncate.file_size, PAGE_SIZE_TEST * 2);
+        assert_eq!(stats_after_truncate.current_mapped_bytes, 0);
+        assert_eq!(stats_after_truncate.window_count, 0);
+
+        let crossing_offset = PAGE_SIZE_TEST * 2 - 1024;
+        let crossing_payload = vec![2; 2048];
+        wm.get_slice_mut(crossing_offset, 2048)
+            .unwrap()
+            .copy_from_slice(&crossing_payload);
+        assert_eq!(
+            wm.get_slice(crossing_offset, 2048).unwrap(),
+            crossing_payload.as_slice()
+        );
+        assert_eq!(wm.stats().current_mapped_bytes, oversized_window);
     }
 
     #[test]

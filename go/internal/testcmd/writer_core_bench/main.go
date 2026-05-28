@@ -30,25 +30,26 @@ var (
 )
 
 type benchResult struct {
-	Records             int      `json:"records"`
-	FieldsPerRow        int      `json:"fields_per_row"`
-	AppendSeconds       float64  `json:"append_seconds"`
-	AppendRowsPerSecond float64  `json:"append_rows_per_second"`
-	CloseSeconds        float64  `json:"close_seconds"`
-	TotalWriterSeconds  float64  `json:"total_writer_seconds"`
-	PrecomputeSeconds   float64  `json:"precompute_seconds"`
-	JournalSizeBytes    int64    `json:"journal_size_bytes"`
-	JournalPath         string   `json:"journal_path"`
-	Format              string   `json:"format"`
-	Compression         string   `json:"compression"`
-	FSS                 bool     `json:"fss"`
-	APIMode             string   `json:"api_mode"`
-	DataHashBuckets     int      `json:"data_hash_table_buckets"`
-	FieldHashBuckets    int      `json:"field_hash_table_buckets"`
-	MaxSizeBytes        uint64   `json:"max_size_bytes"`
-	AppendTimerExcludes []string `json:"append_timer_excludes"`
-	FinalState          string   `json:"final_state"`
-	Errors              []string `json:"errors"`
+	Records                 int      `json:"records"`
+	FieldsPerRow            int      `json:"fields_per_row"`
+	AppendSeconds           float64  `json:"append_seconds"`
+	AppendRowsPerSecond     float64  `json:"append_rows_per_second"`
+	CloseSeconds            float64  `json:"close_seconds"`
+	TotalWriterSeconds      float64  `json:"total_writer_seconds"`
+	PrecomputeSeconds       float64  `json:"precompute_seconds"`
+	JournalSizeBytes        int64    `json:"journal_size_bytes"`
+	JournalPath             string   `json:"journal_path"`
+	Format                  string   `json:"format"`
+	Compression             string   `json:"compression"`
+	FSS                     bool     `json:"fss"`
+	APIMode                 string   `json:"api_mode"`
+	DataHashBuckets         int      `json:"data_hash_table_buckets"`
+	FieldHashBuckets        int      `json:"field_hash_table_buckets"`
+	MaxSizeBytes            uint64   `json:"max_size_bytes"`
+	LivePublishEveryEntries uint64   `json:"live_publish_every_entries"`
+	AppendTimerExcludes     []string `json:"append_timer_excludes"`
+	FinalState              string   `json:"final_state"`
+	Errors                  []string `json:"errors"`
 }
 
 func mustUUID(s string) journal.UUID {
@@ -152,28 +153,31 @@ func main() {
 	var format string
 	var finalState string
 	var maxSize uint64
+	var livePublishEveryEntries uint64
 	var rows int
 	flag.StringVar(&output, "output", "", "journal output path")
 	flag.StringVar(&format, "format", "compact", "journal format: compact or regular")
 	flag.StringVar(&finalState, "final-state", "online", "final state: online, offline, or archived")
 	flag.Uint64Var(&maxSize, "max-size-bytes", defaultMaxSize, "systemd max-size value used for hash table sizing")
+	flag.Uint64Var(&livePublishEveryEntries, "live-publish-every-entries", 1, "explicit live-reader publication cadence; 0 disables explicit publication")
 	flag.IntVar(&rows, "rows", 100_000, "number of rows")
 	flag.Parse()
 
 	dataHashBuckets := dataHashBucketsForMaxSize(maxSize)
 	result := benchResult{
-		Records:             0,
-		FieldsPerRow:        fieldsPerRow,
-		Format:              format,
-		Compression:         "none",
-		FSS:                 false,
-		APIMode:             "field-api",
-		DataHashBuckets:     dataHashBuckets,
-		FieldHashBuckets:    fieldHashBuckets,
-		MaxSizeBytes:        maxSize,
-		AppendTimerExcludes: []string{"row generation", "writer creation", "final close/sync", "journal verification"},
-		FinalState:          finalState,
-		Errors:              []string{},
+		Records:                 0,
+		FieldsPerRow:            fieldsPerRow,
+		Format:                  format,
+		Compression:             "none",
+		FSS:                     false,
+		APIMode:                 "field-api",
+		DataHashBuckets:         dataHashBuckets,
+		FieldHashBuckets:        fieldHashBuckets,
+		MaxSizeBytes:            maxSize,
+		LivePublishEveryEntries: livePublishEveryEntries,
+		AppendTimerExcludes:     []string{"row generation", "writer creation", "final close/sync", "journal verification"},
+		FinalState:              finalState,
+		Errors:                  []string{},
 	}
 	if output == "" {
 		result.Errors = append(result.Errors, "--output is required")
@@ -198,16 +202,17 @@ func main() {
 	}
 	_ = os.Remove(output)
 	w, err := journal.Create(output, journal.Options{
-		MachineID:              machineID,
-		BootID:                 bootID,
-		SeqnumID:               seqnumID,
-		FileID:                 fileID,
-		HeadSeqnum:             1,
-		DataHashTableBuckets:   dataHashBuckets,
-		FieldHashTableBuckets:  fieldHashBuckets,
-		Compression:            journal.CompressionNone,
-		CompressThresholdBytes: 512,
-		Compact:                compact,
+		MachineID:               machineID,
+		BootID:                  bootID,
+		SeqnumID:                seqnumID,
+		FileID:                  fileID,
+		HeadSeqnum:              1,
+		DataHashTableBuckets:    dataHashBuckets,
+		FieldHashTableBuckets:   fieldHashBuckets,
+		Compression:             journal.CompressionNone,
+		CompressThresholdBytes:  512,
+		Compact:                 compact,
+		LivePublishEveryEntries: journal.PublishEveryEntries(livePublishEveryEntries),
 	})
 	if err != nil {
 		result.Errors = append(result.Errors, err.Error())

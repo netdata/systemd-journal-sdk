@@ -17,6 +17,8 @@ Breaking changes to the following public surfaces should be avoided inside the
 
 - `journal.NewLog(directory, journal.LogConfig)`
 - `journal.LogConfig`
+- `journal.Options`
+- `journal.PublishEveryEntries`
 - `journal.LogOpenLazy` and `journal.LogOpenEager`
 - `journal.LogIdentityAuto` and `journal.LogIdentityStrict`
 - `journal.RotationPolicy` and `journal.RetentionPolicy` builder methods
@@ -112,6 +114,22 @@ and generates missing IDs.
 
 `LogIdentityStrict` requires `Options.MachineID` and `Options.BootID` to be
 provided explicitly.
+
+## Live Publication Cadence
+
+`Options.LivePublishEveryEntries` controls explicit live-reader publication
+cadence for low-level `Writer` and high-level `Log` writes.
+
+Use `journal.PublishEveryEntries(n)` to set it:
+
+- `nil` or `1`: default systemd-compatible publication after every entry.
+- `0`: disable explicit SDK live publication for latency-tolerant
+  poll/snapshot consumers.
+- `N > 1`: publish after every `N` appended entries.
+
+This is not a durability sync or `fsync` cadence. Modes other than `1` must not
+be claimed as stock `journalctl --follow` compatible unless their own live
+matrix has been validated.
 
 ## Rotation And Retention
 

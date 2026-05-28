@@ -42,6 +42,7 @@ export class Log {
     this.compression = options.compression ?? 'none';
     this.compressionThresholdBytes = options.compressionThresholdBytes;
     this.compact = options.compact === true || options.format === 'compact';
+    this.livePublishEveryEntries = optionValue(options, 'livePublishEveryEntries', 'live_publish_every_entries');
 
     const rotationPolicy = optionValue(options, 'rotationPolicy', 'rotation_policy');
     const retentionPolicy = optionValue(options, 'retentionPolicy', 'retention_policy');
@@ -212,7 +213,7 @@ export class Log {
       this.activePath = this._chainPathFor(this.seqnumId, this.nextSeqnum, headRealtime);
     }
     if (existsSync(this.activePath)) {
-      this.writer = Writer.open(this.activePath);
+      this.writer = Writer.open(this.activePath, { livePublishEveryEntries: this.livePublishEveryEntries });
       if (this.writer.header.n_entries === 0n) {
         this._discardEmptyOpenedWriter();
         if (!this.activePath) {
@@ -226,7 +227,7 @@ export class Log {
     }
 
     if (existsSync(this.activePath)) {
-      this.writer = Writer.open(this.activePath);
+      this.writer = Writer.open(this.activePath, { livePublishEveryEntries: this.livePublishEveryEntries });
       this._captureWriterIdentity();
       return;
     }
@@ -235,6 +236,9 @@ export class Log {
     if (this.maxBytes > 0) opts.maxFileSize = this.maxBytes;
     if (this.compressionThresholdBytes !== undefined) {
       opts.compressionThresholdBytes = this.compressionThresholdBytes;
+    }
+    if (this.livePublishEveryEntries !== undefined) {
+      opts.livePublishEveryEntries = this.livePublishEveryEntries;
     }
     if (this.seqnumId) opts.seqnumId = this.seqnumId;
     if (this.bootId) opts.bootId = this.bootId;
@@ -259,7 +263,7 @@ export class Log {
 
   _attachExistingActive(path) {
     this.activePath = path;
-    this.writer = Writer.open(path);
+    this.writer = Writer.open(path, { livePublishEveryEntries: this.livePublishEveryEntries });
     if (this.writer.header.n_entries === 0n) {
       this._discardEmptyOpenedWriter();
       return;

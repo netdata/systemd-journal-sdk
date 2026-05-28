@@ -1,5 +1,5 @@
 # Journal file writer. Creates regular-by-default keyed-hash journal files.
-# Compatible with stock journalctl readers during live append.
+# Default options are compatible with stock journalctl readers during live append.
 
 import os
 import struct
@@ -56,6 +56,8 @@ class Writer:
         self._compress_threshold = DEFAULT_COMPRESS_THRESHOLD
         self._compact = False
         self._seal = None
+        self._live_publish_every_entries = 1
+        self._entries_since_live_publication = 0
 
     @staticmethod
     def create(path, opts=None):
@@ -69,6 +71,9 @@ class Writer:
             w = Writer(fd, path, lock)
             w._compression = _normalize_compression(opts.get('compression', COMPRESSION_NONE))
             w._compact = opts.get('compact') is True or opts.get('format') == 'compact'
+            w._live_publish_every_entries = _normalize_live_publish_every_entries(
+                opts.get('live_publish_every_entries', opts.get('livePublishEveryEntries'))
+            )
             if w._compression == COMPRESSION_ZSTD:
                 _ensure_zstd_available()
             elif w._compression == COMPRESSION_XZ:
@@ -88,7 +93,8 @@ class Writer:
             raise
 
     @staticmethod
-    def open(path):
+    def open(path, opts=None):
+        opts = opts or {}
         lock = WriterLock.acquire(path)
         try:
             fd = os.open(path, os.O_RDWR)
@@ -146,6 +152,9 @@ class Writer:
             w._compression = compression
             w._compress_threshold = DEFAULT_COMPRESS_THRESHOLD
             w._compact = bool(flags & INCOMPATIBLE_COMPACT)
+            w._live_publish_every_entries = _normalize_live_publish_every_entries(
+                opts.get('live_publish_every_entries', opts.get('livePublishEveryEntries'))
+            )
 
             w._header['state'] = STATE_ONLINE
             w._write_header()
@@ -343,6 +352,7 @@ class Writer:
 
         self._entry_added(entry_offset, realtime, monotonic, boot_id)
         self._publish_entry_metadata()
+        self._publish_after_entry()
 
         return {'realtime': realtime, 'seqnum': self._next_seqnum - 1}
 
@@ -593,6 +603,20 @@ class Writer:
         self._write_uint32_at(260, self._header['tail_entry_array_n_entries'])
         self._write_uint64_at(264, self._header['tail_entry_offset'])
         self._write_uint64_at(152, self._header['n_entries'])
+
+    def _post_change(self):
+        os.ftruncate(self._fd, self._header['header_size'] + self._header['arena_size'])
+
+    def _publish_after_entry(self):
+        if self._live_publish_every_entries == 0:
+            return
+        if self._live_publish_every_entries == 1:
+            self._post_change()
+            return
+        self._entries_since_live_publication += 1
+        if self._entries_since_live_publication >= self._live_publish_every_entries:
+            self._entries_since_live_publication = 0
+            self._post_change()
 
     def _next_entry_array_capacity(self, index, previous_capacity):
         capacity = previous_capacity
@@ -988,6 +1012,15 @@ def _normalize_compress_threshold(value):
         return DEFAULT_COMPRESS_THRESHOLD
     threshold = int(value)
     return max(MIN_COMPRESS_THRESHOLD, threshold)
+
+
+def _normalize_live_publish_every_entries(value):
+    if value is None:
+        return 1
+    entries = int(value)
+    if entries < 0:
+        raise ValueError(f'invalid live_publish_every_entries: {value}')
+    return entries
 
 
 def _zstd_compress(payload):

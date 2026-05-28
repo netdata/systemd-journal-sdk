@@ -33,7 +33,7 @@ pub use filter::{FilterExpr, JournalFilter, LogicalOp};
 pub use object::{EntryItemsType, HashableObject, HeaderIncompatibleFlags, JournalState};
 
 // Re-export commonly needed external types
-pub use mmap::{Mmap, MmapMut};
+pub use mmap::{ExperimentalMmapStrategy, Mmap, MmapMut, WindowManagerStats};
 
 // Internal utilities that might be needed
 pub use crate::file::hash::journal_hash_data;

@@ -1,6 +1,8 @@
 #![allow(clippy::field_reassign_with_default)]
 
-use super::mmap::{MemoryMap, MemoryMapMut, WindowManager};
+use super::mmap::{
+    ExperimentalMmapStrategy, MemoryMap, MemoryMapMut, WindowManager, WindowManagerStats,
+};
 use crate::collections::HashMap;
 use crate::error::{JournalError, Result};
 use crate::file::guarded_cell::GuardedCell;
@@ -251,6 +253,7 @@ pub struct JournalFileOptions {
     compression: Compression,
     compress_threshold: usize,
     compact: bool,
+    experimental_mmap_strategy: ExperimentalMmapStrategy,
     pub seal: Option<crate::seal::SealOptions>,
 }
 
@@ -269,6 +272,7 @@ impl JournalFileOptions {
             compression: Compression::None,
             compress_threshold: DEFAULT_COMPRESS_THRESHOLD,
             compact: false,
+            experimental_mmap_strategy: ExperimentalMmapStrategy::Windowed,
             seal: None,
         }
     }
@@ -328,6 +332,12 @@ impl JournalFileOptions {
 
     pub fn with_compact(mut self, compact: bool) -> Self {
         self.compact = compact;
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn with_experimental_mmap_strategy(mut self, strategy: ExperimentalMmapStrategy) -> Self {
+        self.experimental_mmap_strategy = strategy;
         self
     }
 
@@ -567,6 +577,11 @@ impl<M: MemoryMap> JournalFile<M> {
 
     pub fn file(&self) -> &crate::repository::File {
         &self.file
+    }
+
+    #[doc(hidden)]
+    pub fn mmap_stats(&self) -> Result<WindowManagerStats> {
+        Ok(self.window_manager.borrow_mut_checked()?.stats())
     }
 
     pub fn hash(&self, data: &[u8]) -> u64 {
@@ -1151,10 +1166,11 @@ impl<M: MemoryMapMut> JournalFile<M> {
         }
 
         // Create window manager for the rest of the objects
-        let window_manager = GuardedCell::new(WindowManager::new_writer_owned(
+        let window_manager = GuardedCell::new(WindowManager::new_writer_owned_with_strategy(
             fd,
             options.window_size,
             32,
+            options.experimental_mmap_strategy,
         )?);
 
         let mut jf = JournalFile {

@@ -258,6 +258,8 @@ pub struct JournalWriter {
     boot_id: uuid::Uuid,
     compression: Compression,
     compress_threshold: usize,
+    live_publish_every_entries: u64,
+    entries_since_live_publication: u64,
     seal: Option<crate::seal::SealState>,
 }
 
@@ -280,6 +282,26 @@ impl JournalWriter {
     /// Get the boot ID for this writer
     pub fn boot_id(&self) -> uuid::Uuid {
         self.boot_id
+    }
+
+    /// Sets how often the writer explicitly publishes live-reader visibility.
+    ///
+    /// `1` is the default and matches systemd-style publication after every
+    /// appended entry. `0` disables this explicit publication; closed-file
+    /// verification and reads after sync/close are unchanged, but stock
+    /// follow-reader visibility while the writer is active is not guaranteed.
+    /// Values greater than `1` publish after every N appended entries.
+    pub fn set_live_publish_every_entries(&mut self, entries: u64) {
+        self.live_publish_every_entries = entries;
+        self.entries_since_live_publication = 0;
+    }
+
+    /// Returns the configured live-reader publication cadence.
+    ///
+    /// See [`JournalWriter::set_live_publish_every_entries`] for the meaning of
+    /// `0`, `1`, and larger values.
+    pub fn live_publish_every_entries(&self) -> u64 {
+        self.live_publish_every_entries
     }
 
     pub fn new(
@@ -350,6 +372,8 @@ impl JournalWriter {
             boot_id,
             compression,
             compress_threshold: normalize_compress_threshold(compress_threshold),
+            live_publish_every_entries: 1,
+            entries_since_live_publication: 0,
             seal,
         };
 
@@ -722,9 +746,25 @@ impl JournalWriter {
             realtime,
             monotonic,
         );
-        journal_file.post_change()?;
+        self.publish_after_entry(journal_file)?;
 
         Ok(())
+    }
+
+    fn publish_after_entry(&mut self, journal_file: &mut JournalFile<MmapMut>) -> Result<()> {
+        match self.live_publish_every_entries {
+            0 => Ok(()),
+            1 => journal_file.post_change(),
+            interval => {
+                self.entries_since_live_publication += 1;
+                if self.entries_since_live_publication >= interval {
+                    self.entries_since_live_publication = 0;
+                    journal_file.post_change()
+                } else {
+                    Ok(())
+                }
+            }
+        }
     }
 
     fn object_added(
@@ -1621,6 +1661,8 @@ mod tests {
             boot_id: test_uuid(4),
             compression: Compression::Zstd,
             compress_threshold: normalize_compress_threshold(threshold),
+            live_publish_every_entries: 1,
+            entries_since_live_publication: 0,
             seal: None,
         }
     }
@@ -1927,6 +1969,44 @@ mod tests {
         std::fs::read(path).expect("read structured corpus journal")
     }
 
+    fn write_rows_structured_with_live_mode(
+        path: &Path,
+        rows: &[Vec<TestField>],
+        live_publish_every_entries: u64,
+    ) -> Vec<u8> {
+        let repo_file =
+            crate::repository::File::from_path(path).expect("test journal path should parse");
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_file_id(test_uuid(5)),
+        )
+        .expect("create live publication mode journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+        writer.set_live_publish_every_entries(live_publish_every_entries);
+
+        let mut structured_fields = Vec::with_capacity(32);
+        for (index, row) in rows.iter().enumerate() {
+            structured_fields.clear();
+            structured_fields.extend(row.iter().map(TestField::structured));
+            writer
+                .add_entry_structured_with_options(
+                    &mut journal_file,
+                    &structured_fields,
+                    1_700_000_060_000_000 + index as u64 * 500,
+                    100 + index as u64 * 50,
+                    EntryWriteOptions::default().trusted_unique_payloads(true),
+                )
+                .expect("write live publication mode entry");
+        }
+        journal_file
+            .sync()
+            .expect("sync live publication mode journal");
+        drop(journal_file);
+        std::fs::read(path).expect("read live publication mode journal")
+    }
+
     #[test]
     fn structured_writer_matches_raw_payload_writer_bytes() {
         let dir = TempDir::new().expect("create temp dir");
@@ -2155,6 +2235,24 @@ mod tests {
         let structured_bytes = write_rows_structured_test_journal(&structured_path, &rows, options);
 
         assert_eq!(structured_bytes, raw_bytes);
+    }
+
+    #[test]
+    fn live_publication_modes_preserve_closed_file_bytes() {
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let immediate_path = journal_dir.join("immediate.journal");
+        let disabled_path = journal_dir.join("disabled.journal");
+        let every_n_path = journal_dir.join("every-n.journal");
+        let rows = make_raw_structured_identity_rows(65);
+
+        let immediate_bytes = write_rows_structured_with_live_mode(&immediate_path, &rows, 1);
+        let disabled_bytes = write_rows_structured_with_live_mode(&disabled_path, &rows, 0);
+        let every_n_bytes = write_rows_structured_with_live_mode(&every_n_path, &rows, 8);
+
+        assert_eq!(disabled_bytes, immediate_bytes);
+        assert_eq!(every_n_bytes, immediate_bytes);
     }
 
     #[test]

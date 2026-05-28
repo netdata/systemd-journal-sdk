@@ -93,6 +93,59 @@ func TestCreateAppendAndReopenLayout(t *testing.T) {
 	}
 }
 
+func TestLivePublishEveryEntriesPreservesClosedFileBytes(t *testing.T) {
+	writeFile := func(name string, every uint64) ([]byte, uint64) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), name+".journal")
+		opts := testOptions()
+		opts.LivePublishEveryEntries = PublishEveryEntries(every)
+		w, err := Create(path, opts)
+		if err != nil {
+			t.Fatalf("Create(%s) error = %v", name, err)
+		}
+		for i := 0; i < 5; i++ {
+			if err := w.Append([]Field{
+				StringField("MESSAGE", fmt.Sprintf("row-%02d", i)),
+				StringField("SYSLOG_IDENTIFIER", "go-live-publish-test"),
+			}, EntryOptions{
+				RealtimeUsec:  1_700_000_100_000_000 + uint64(i),
+				MonotonicUsec: uint64(i + 1),
+			}); err != nil {
+				t.Fatalf("Append(%s, %d) error = %v", name, i, err)
+			}
+		}
+		pending := w.entriesSinceLivePublication
+		if err := w.Close(); err != nil {
+			t.Fatalf("Close(%s) error = %v", name, err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error = %v", name, err)
+		}
+		return data, pending
+	}
+
+	immediate, immediatePending := writeFile("immediate", 1)
+	disabled, disabledPending := writeFile("disabled", 0)
+	everyThree, everyThreePending := writeFile("every-three", 3)
+
+	if immediatePending != 0 {
+		t.Fatalf("immediate pending publication entries = %d, want 0", immediatePending)
+	}
+	if disabledPending != 0 {
+		t.Fatalf("disabled pending publication entries = %d, want 0", disabledPending)
+	}
+	if everyThreePending != 2 {
+		t.Fatalf("every-three pending publication entries = %d, want 2", everyThreePending)
+	}
+	if !bytes.Equal(disabled, immediate) {
+		t.Fatal("disabled live publication changed closed-file bytes")
+	}
+	if !bytes.Equal(everyThree, immediate) {
+		t.Fatal("every-three live publication changed closed-file bytes")
+	}
+}
+
 func TestCreateAndOpenCompressedDataAlgorithms(t *testing.T) {
 	tests := []struct {
 		name             string

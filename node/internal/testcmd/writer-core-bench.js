@@ -24,6 +24,7 @@ function parseArgs(argv) {
     finalState: 'online',
     output: '',
     maxSizeBytes: DEFAULT_MAX_SIZE_BYTES,
+    livePublishEveryEntries: 1,
   };
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
@@ -42,6 +43,9 @@ function parseArgs(argv) {
       i++;
     } else if (arg === '--max-size-bytes' && next !== undefined) {
       args.maxSizeBytes = Number(next);
+      i++;
+    } else if (arg === '--live-publish-every-entries' && next !== undefined) {
+      args.livePublishEveryEntries = Number(next);
       i++;
     } else {
       throw new Error(`unknown or incomplete argument: ${arg}`);
@@ -144,6 +148,7 @@ try {
     data_hash_table_buckets: dataHashBuckets,
     field_hash_table_buckets: FIELD_HASH_BUCKETS,
     max_size_bytes: args.maxSizeBytes,
+    live_publish_every_entries: args.livePublishEveryEntries,
     append_timer_excludes: ['row generation', 'writer creation', 'final close/sync', 'journal verification'],
     final_state: args.finalState,
     errors: [],
@@ -174,6 +179,7 @@ try {
     compressionThresholdBytes: 512,
     dataHashTableBuckets: dataHashBuckets,
     fieldHashTableBuckets: FIELD_HASH_BUCKETS,
+    livePublishEveryEntries: args.livePublishEveryEntries,
     compact,
   });
 
@@ -216,6 +222,7 @@ try {
     data_hash_table_buckets: 0,
     field_hash_table_buckets: FIELD_HASH_BUCKETS,
     max_size_bytes: DEFAULT_MAX_SIZE_BYTES,
+    live_publish_every_entries: 1,
     append_timer_excludes: ['row generation', 'writer creation', 'final close/sync', 'journal verification'],
     final_state: 'unknown',
     errors: [error && error.stack ? error.stack : String(error)],

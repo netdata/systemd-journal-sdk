@@ -120,6 +120,12 @@ pub struct Config {
     /// vendored Rust writer: active files use the chain filename form
     /// `<source>@<seqnum_id>-<head_seqnum>-<head_realtime>.journal`.
     pub strict_systemd_naming: bool,
+    /// Explicit live-reader publication cadence.
+    ///
+    /// `1` is the default systemd-compatible behavior, `0` disables explicit
+    /// per-entry live publication, and values greater than `1` publish after
+    /// every N entries.
+    pub live_publish_every_entries: u64,
 }
 
 impl Config {
@@ -140,6 +146,7 @@ impl Config {
             identity_mode: LogIdentityMode::Auto,
             boot_id: None,
             strict_systemd_naming: false,
+            live_publish_every_entries: 1,
         }
     }
 
@@ -187,6 +194,11 @@ impl Config {
 
     pub fn with_strict_systemd_naming(mut self, strict_systemd_naming: bool) -> Self {
         self.strict_systemd_naming = strict_systemd_naming;
+        self
+    }
+
+    pub fn with_live_publish_every_entries(mut self, entries: u64) -> Self {
+        self.live_publish_every_entries = entries;
         self
     }
 }

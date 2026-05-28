@@ -52,6 +52,7 @@ class Log:
         self._compression = config.get('compression', 'none')
         self._compression_threshold_bytes = config.get('compression_threshold_bytes')
         self._compact = config.get('compact') is True or config.get('format') == 'compact'
+        self._live_publish_every_entries = _option(config, 'live_publish_every_entries', 'livePublishEveryEntries')
 
         rotation_policy = _option(config, 'rotation_policy', 'rotationPolicy')
         retention_policy = _option(config, 'retention_policy', 'retentionPolicy')
@@ -163,7 +164,9 @@ class Log:
             head_realtime = opts.get('realtime_usec') or opts.get('realtimeUsec') or int(time.time() * 1_000_000)
             self._active_file = self._chain_path_for(self._seqnum_id, self._next_seqnum, head_realtime)
         if os.path.exists(self._active_file):
-            self._active_writer = Writer.open(self._active_file)
+            self._active_writer = Writer.open(self._active_file, {
+                'live_publish_every_entries': self._live_publish_every_entries,
+            })
             if self._active_writer._header['n_entries'] == 0:
                 self._discard_empty_opened_writer()
                 if self._active_file is None:
@@ -173,7 +176,9 @@ class Log:
                 self._capture_writer_identity()
                 return
         if os.path.exists(self._active_file):
-            self._active_writer = Writer.open(self._active_file)
+            self._active_writer = Writer.open(self._active_file, {
+                'live_publish_every_entries': self._live_publish_every_entries,
+            })
         else:
             opts = {
                 'head_seqnum': self._next_seqnum,
@@ -189,6 +194,8 @@ class Log:
                 opts['seqnum_id'] = self._seqnum_id
             if self._boot_id:
                 opts['boot_id'] = self._boot_id
+            if self._live_publish_every_entries is not None:
+                opts['live_publish_every_entries'] = self._live_publish_every_entries
             self._active_writer = Writer.create(self._active_file, opts)
         self._capture_writer_identity()
         if reason != LOG_LIFECYCLE_REASON_ROTATION:
@@ -211,7 +218,9 @@ class Log:
 
     def _attach_existing_active(self, path):
         self._active_file = path
-        self._active_writer = Writer.open(path)
+        self._active_writer = Writer.open(path, {
+            'live_publish_every_entries': self._live_publish_every_entries,
+        })
         if self._active_writer._header['n_entries'] == 0:
             self._discard_empty_opened_writer()
             return

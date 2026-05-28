@@ -37,6 +37,13 @@ Do not use this skill for:
 - The final writer target includes compression and Forward Secure Sealing, but implementation may be phased.
 - Live concurrency compatibility is mandatory for every writer and reader. A writer is not production-compatible unless stock `journalctl --file` and stock libsystemd readers can safely read the file while that writer is appending. A reader is not production-compatible unless it can safely read files while they are being appended by each repository writer and, where testable without violating repository-boundary rules, stock systemd writers.
 - The live concurrency contract is one writer plus multiple readers on the same journal file. Tests must cover online state, append publication windows, tail metadata changes, entry-array growth, reader follow/tail behavior, clean close verification, and interruption/reopen scenarios for the claimed feature slice.
+- Writers expose a cross-language `live_publish_every_entries` publication
+  cadence. The default `1` is the stock live-reader compatibility mode. `0`
+  disables explicit SDK live publication, and `N > 1` publishes after every
+  `N` appended entries for latency-tolerant consumers. Non-default modes must
+  not be described as stock `journalctl --follow` compatible unless their exact
+  mode is covered by live matrix evidence; they still must pass clean-close
+  verify and final reads.
 - The reusable live-concurrency harness is under `tests/conformance/live/`. Writer tests should use the configured monotonically increasing sequence field, default `LIVE_SEQ`, so stock readers prove complete ordered visibility.
 - Stock reader harness adapters may retry transient active-writer `ENODATA` open/read failures or partial snapshots only while the writer is active. After the writer exits, final ordered reads and `journalctl --verify --file` must pass.
 - High-level directory writers must apply configured retention once when an active writer is opened or created. Existing-active reopen and eager open enforce during construction; lazy archived-only construction remains side-effect-free until the first append opens the active file, then retention runs before the first entry is written. Active/current files must remain protected and normal retention deletion lifecycle events must be reused.

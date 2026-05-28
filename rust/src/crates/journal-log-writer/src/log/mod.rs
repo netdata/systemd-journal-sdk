@@ -253,6 +253,7 @@ impl ActiveFile {
         compression_threshold: usize,
         compact: bool,
         strict_systemd_naming: bool,
+        live_publish_every_entries: u64,
     ) -> Result<Self> {
         let head_seqnum = next_seqnum;
 
@@ -271,13 +272,14 @@ impl ActiveFile {
             .with_compress_threshold(compression_threshold);
 
         let mut journal_file = JournalFile::create(&repository_file, options)?;
-        let writer = JournalWriter::new_with_compression(
+        let mut writer = JournalWriter::new_with_compression(
             &mut journal_file,
             head_seqnum,
             boot_id,
             compression,
             compression_threshold,
         )?;
+        writer.set_live_publish_every_entries(live_publish_every_entries);
 
         Ok(Self {
             repository_file,
@@ -295,6 +297,7 @@ impl ActiveFile {
         compression: Compression,
         compression_threshold: usize,
         strict_systemd_naming: bool,
+        live_publish_every_entries: u64,
     ) -> Result<Self> {
         let next_seqnum = self.writer.next_seqnum();
         let boot_id = self.writer.boot_id();
@@ -312,13 +315,14 @@ impl ActiveFile {
         old_journal_file.release_writer_lock()?;
         let mut journal_file =
             old_journal_file.create_successor(&repository_file, max_file_size)?;
-        let writer = JournalWriter::new_with_compression(
+        let mut writer = JournalWriter::new_with_compression(
             &mut journal_file,
             head_seqnum,
             boot_id,
             compression,
             compression_threshold,
         )?;
+        writer.set_live_publish_every_entries(live_publish_every_entries);
 
         Ok(Self {
             repository_file,
@@ -1288,6 +1292,7 @@ impl Log {
                 self.config.compression,
                 self.config.compression_threshold,
                 self.config.strict_systemd_naming,
+                self.config.live_publish_every_entries,
             )?;
             let active = new_file.repository_file.clone();
             (
@@ -1306,6 +1311,7 @@ impl Log {
                 self.config.compression_threshold,
                 self.config.compact,
                 self.config.strict_systemd_naming,
+                self.config.live_publish_every_entries,
             )?;
             let active = new_file.repository_file.clone();
             (

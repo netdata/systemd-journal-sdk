@@ -313,7 +313,7 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 		activePath := l.systemdActivePath()
 		if _, err := os.Stat(activePath); err == nil {
 			l.active = activePath
-			w, err := Open(activePath)
+			w, err := OpenWithOptions(activePath, l.options)
 			if err != nil {
 				return nil, err
 			}
@@ -346,7 +346,7 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 		}
 		if state.activePath != "" {
 			l.active = state.activePath
-			w, err := Open(l.active)
+			w, err := OpenWithOptions(l.active, l.options)
 			if err != nil {
 				return nil, err
 			}
@@ -372,7 +372,7 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 }
 
 func (l *Log) archiveOnlineChainActive(path string) error {
-	w, err := Open(path)
+	w, err := OpenWithOptions(path, l.options)
 	if err != nil {
 		return err
 	}

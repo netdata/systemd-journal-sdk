@@ -34,6 +34,9 @@ Current writer scope:
 - live stock-reader validation for the current writer slice with `journalctl
   --file`, `journalctl --file --follow --no-tail --boot=all`, and libsystemd
   reader APIs, including live sequence-order checks;
+- configurable explicit live-reader publication cadence through
+  `Options.LivePublishEveryEntries`, defaulting to systemd-compatible
+  publication after every entry;
 - high-level directory writing with Netdata-compatible chain active naming by
   default, opt-in strict systemd active naming, entry-count, file-size, and
   duration rotation, plus tracked journal-file-count, byte-size, and age
@@ -113,6 +116,19 @@ err := w.Append([]journal.Field{
 
 Use `Append([]journal.Field{...})` for binary payloads. `AppendMap()` and
 `StringField()` are convenience helpers for string-valued fields.
+
+Live-reader publication:
+
+```go
+w, err := journal.Create("/path/to/plugin.journal", journal.Options{
+    LivePublishEveryEntries: journal.PublishEveryEntries(64),
+})
+```
+
+`nil` or `1` publishes after every entry and is the stock-compatible default.
+`0` disables explicit SDK live publication for poll/snapshot consumers.
+`N > 1` publishes after every `N` entries. This is not an `fsync` or durability
+setting.
 
 Directory writer with rotation and retention:
 

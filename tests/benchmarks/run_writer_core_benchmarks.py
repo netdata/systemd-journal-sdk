@@ -136,6 +136,8 @@ def bench_command(
     max_size_bytes: int,
     rust_api_mode: str,
     rust_trusted_unique_payloads: bool,
+    live_publish_every_entries: int,
+    rust_mmap_strategy: str,
 ) -> list[str]:
     cmd = [
         *base,
@@ -150,8 +152,11 @@ def bench_command(
         "--max-size-bytes",
         str(max_size_bytes),
     ]
+    if language != "systemd":
+        cmd.extend(["--live-publish-every-entries", str(live_publish_every_entries)])
     if language == "rust":
         cmd.extend(["--api-mode", rust_api_mode])
+        cmd.extend(["--mmap-strategy", rust_mmap_strategy])
         if rust_trusted_unique_payloads:
             cmd.append("--trusted-unique-payloads")
     return cmd
@@ -174,7 +179,7 @@ def timed_run(cmd: list[str], stats_path: Path, env: dict[str, str]) -> subproce
             [
                 time_bin,
                 "-f",
-                '{"process_wall_seconds":%e,"process_user_seconds":%U,"process_system_seconds":%S,"max_rss_kb":%M}',
+                '{"process_wall_seconds":%e,"process_user_seconds":%U,"process_system_seconds":%S,"max_rss_kb":%M,"minor_page_faults":%R,"major_page_faults":%F,"voluntary_context_switches":%w,"involuntary_context_switches":%c}',
                 "-o",
                 str(stats_path),
                 *cmd,
@@ -252,6 +257,8 @@ def rust_api_mode_byte_identity(
     final_state: str,
     max_size_bytes: int,
     rust_trusted_unique_payloads: bool,
+    live_publish_every_entries: int,
+    rust_mmap_strategy: str,
     env: dict[str, str],
     keep_journals: bool,
     verify: bool,
@@ -273,6 +280,8 @@ def rust_api_mode_byte_identity(
             max_size_bytes=max_size_bytes,
             rust_api_mode=mode,
             rust_trusted_unique_payloads=rust_trusted_unique_payloads,
+            live_publish_every_entries=live_publish_every_entries,
+            rust_mmap_strategy=rust_mmap_strategy,
         )
         result = run(cmd, env=env, timeout=1800)
         driver = parse_driver_result(result.stdout)
@@ -342,6 +351,8 @@ def rust_api_mode_byte_identity(
         "final_state": final_state,
         "max_size_bytes": max_size_bytes,
         "trusted_unique_payloads": rust_trusted_unique_payloads,
+        "live_publish_every_entries": live_publish_every_entries,
+        "mmap_strategy": rust_mmap_strategy,
         "measurements": measurements,
         "errors": errors,
     }
@@ -360,6 +371,8 @@ def one_measurement(
     max_size_bytes: int,
     rust_api_mode: str,
     rust_trusted_unique_payloads: bool,
+    live_publish_every_entries: int,
+    rust_mmap_strategy: str,
     env: dict[str, str],
     verify: bool,
     keep_journals: bool,
@@ -380,6 +393,8 @@ def one_measurement(
         max_size_bytes=max_size_bytes,
         rust_api_mode=rust_api_mode,
         rust_trusted_unique_payloads=rust_trusted_unique_payloads,
+        live_publish_every_entries=live_publish_every_entries,
+        rust_mmap_strategy=rust_mmap_strategy,
     )
     stats_path = run_dir / "time.json"
     result = timed_run(cmd, stats_path, env)
@@ -451,6 +466,11 @@ def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
         ]
         sizes = [int(r["journal_size_bytes"]) for r in rows]
         api_modes = sorted({str(r["driver"].get("api_mode", "unknown")) for r in rows})
+        live_publication = sorted({str(r["driver"].get("live_publication", "unknown")) for r in rows})
+        live_publish_every_entries = sorted(
+            {int(r["driver"].get("live_publish_every_entries", -1) or 0) for r in rows}
+        )
+        mmap_strategies = sorted({str(r["driver"].get("mmap_strategy", "unknown")) for r in rows})
         data_buckets = sorted({int(r["driver"].get("data_hash_table_buckets", 0) or 0) for r in rows})
         field_buckets = sorted({int(r["driver"].get("field_hash_table_buckets", 0) or 0) for r in rows})
         max_sizes = sorted({int(r["driver"].get("max_size_bytes", 0) or 0) for r in rows})
@@ -462,6 +482,9 @@ def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
             "process_rows_per_second_median": statistics.median(process_rates) if process_rates else None,
             "journal_size_bytes_median": statistics.median(sizes),
             "api_modes": api_modes,
+            "live_publication": live_publication,
+            "live_publish_every_entries": live_publish_every_entries,
+            "mmap_strategies": mmap_strategies,
             "data_hash_table_buckets": data_buckets,
             "field_hash_table_buckets": field_buckets,
             "max_size_bytes": max_sizes,
@@ -548,6 +571,26 @@ def environment_report(env: dict[str, str], output_dir: Path) -> dict[str, Any]:
     }
 
 
+def resolve_live_publish_every_entries(
+    mode: str,
+    interval: int,
+    explicit: int | None,
+) -> int:
+    if explicit is not None:
+        if explicit < 0:
+            raise ValueError("--live-publish-every-entries must be non-negative")
+        return explicit
+    if mode == "immediate":
+        return 1
+    if mode == "disabled":
+        return 0
+    if mode == "every-n":
+        if interval <= 0:
+            raise ValueError("--rust-live-publication-interval must be positive")
+        return interval
+    raise ValueError(f"invalid live publication mode: {mode}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--languages", nargs="+", choices=LANGUAGES, default=list(LANGUAGES))
@@ -567,11 +610,40 @@ def main() -> int:
     )
     parser.add_argument("--rust-trusted-unique-payloads", action="store_true")
     parser.add_argument(
+        "--live-publish-every-entries",
+        dest="live_publish_every_entries",
+        type=int,
+        help="Explicit live-reader publication cadence for SDK writers; 1 is default, 0 disables explicit publication.",
+    )
+    parser.add_argument(
+        "--rust-live-publish-every-entries",
+        dest="live_publish_every_entries",
+        type=int,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--rust-live-publication",
+        choices=("immediate", "disabled", "every-n"),
+        default="immediate",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument("--rust-live-publication-interval", type=int, default=64, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--rust-mmap-strategy",
+        choices=("windowed", "whole-file"),
+        default="windowed",
+    )
+    parser.add_argument(
         "--rust-compare-api-modes",
         action="store_true",
         help="After benchmark runs, write the same Rust corpus through raw and structured APIs and require byte identity.",
     )
     args = parser.parse_args()
+    live_publish_every_entries = resolve_live_publish_every_entries(
+        args.rust_live_publication,
+        args.rust_live_publication_interval,
+        args.live_publish_every_entries,
+    )
 
     env = build_env()
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
@@ -580,6 +652,8 @@ def main() -> int:
         profile_parts.append(f"rust-{args.rust_api_mode}")
         if args.rust_trusted_unique_payloads:
             profile_parts.append("trusted-unique")
+        profile_parts.append(f"live-every-{live_publish_every_entries}")
+        profile_parts.append(f"mmap-{args.rust_mmap_strategy}")
     profile = "-".join(profile_parts)
     out = args.output_dir / f"{profile}-{run_id}"
     out.mkdir(parents=True, exist_ok=True)
@@ -606,6 +680,8 @@ def main() -> int:
                     max_size_bytes=args.max_size_bytes,
                     rust_api_mode=args.rust_api_mode,
                     rust_trusted_unique_payloads=args.rust_trusted_unique_payloads,
+                    live_publish_every_entries=live_publish_every_entries,
+                    rust_mmap_strategy=args.rust_mmap_strategy,
                     env=env,
                     verify=False,
                     keep_journals=False,
@@ -625,6 +701,8 @@ def main() -> int:
                     max_size_bytes=args.max_size_bytes,
                     rust_api_mode=args.rust_api_mode,
                     rust_trusted_unique_payloads=args.rust_trusted_unique_payloads,
+                    live_publish_every_entries=live_publish_every_entries,
+                    rust_mmap_strategy=args.rust_mmap_strategy,
                     env=env,
                     verify=not args.skip_verify,
                     keep_journals=args.keep_journals,
@@ -648,6 +726,8 @@ def main() -> int:
                 final_state=args.final_state,
                 max_size_bytes=args.max_size_bytes,
                 rust_trusted_unique_payloads=args.rust_trusted_unique_payloads,
+                live_publish_every_entries=live_publish_every_entries,
+                rust_mmap_strategy=args.rust_mmap_strategy,
                 env=env,
                 keep_journals=args.keep_journals,
                 verify=not args.skip_verify,
@@ -670,6 +750,8 @@ def main() -> int:
             "max_size_bytes": args.max_size_bytes,
             "rust_api_mode": args.rust_api_mode,
             "rust_trusted_unique_payloads": args.rust_trusted_unique_payloads,
+            "live_publish_every_entries": live_publish_every_entries,
+            "rust_mmap_strategy": args.rust_mmap_strategy,
             "rust_compare_api_modes": args.rust_compare_api_modes,
             "hash_table_sizing": "systemd v260.1 formula: data=max(max_size*4/768/3,2047), field=1023",
             "append_timer_excludes": [

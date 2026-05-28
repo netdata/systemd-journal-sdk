@@ -1,5 +1,5 @@
 // Journal file writer. Creates regular-by-default keyed-hash journal files.
-// Compatible with stock journalctl readers during live append.
+// Default options are compatible with stock journalctl readers during live append.
 
 import { openSync, writeSync, readSync, closeSync, ftruncateSync, fsyncSync, renameSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -53,6 +53,8 @@ export class Writer {
     this.compressThreshold = DEFAULT_COMPRESS_THRESHOLD;
     this.compact = false;
     this.seal = null;
+    this.livePublishEveryEntries = 1;
+    this.entriesSinceLivePublication = 0;
   }
 
   // Create or truncate a journal file.
@@ -66,6 +68,7 @@ export class Writer {
       w.compression = normalizeCompression(opts.compression);
       w.compressThreshold = normalizeCompressThreshold(opts.compressionThresholdBytes);
       w.compact = opts.compact === true || opts.format === 'compact';
+      w.livePublishEveryEntries = normalizeLivePublishEveryEntries(opts.livePublishEveryEntries ?? opts.live_publish_every_entries);
       if (opts.seal) {
         w.seal = new SealState(opts.seal);
       }
@@ -79,7 +82,7 @@ export class Writer {
   }
 
   // Open an existing journal file for appending.
-  static open(path) {
+  static open(path, opts = {}) {
     const lock = WriterLock.acquire(path);
     let fd;
     try {
@@ -120,6 +123,7 @@ export class Writer {
         : ((header.incompatible_flags & INCOMPATIBLE_COMPRESSED_ZSTD) !== 0 ? COMPRESSION_ZSTD : COMPRESSION_NONE);
       w.compressThreshold = DEFAULT_COMPRESS_THRESHOLD;
       w.compact = (header.incompatible_flags & INCOMPATIBLE_COMPACT) !== 0;
+      w.livePublishEveryEntries = normalizeLivePublishEveryEntries(opts.livePublishEveryEntries ?? opts.live_publish_every_entries);
 
       w.header.state = STATE_ONLINE;
       w._writeHeader();
@@ -332,6 +336,7 @@ export class Writer {
     // Commit entry metadata last (so live readers see complete rows)
     this._entryAdded(entryOffset, realtime, monotonic, bootId);
     this._publishEntryMetadata();
+    this._publishAfterEntry();
 
     return { realtime, seqnum: this.nextSeqnum - 1n };
   }
@@ -618,6 +623,27 @@ export class Writer {
     this._writeUint64At(264n, this.header.tail_entry_offset);
     // n_entries last (makes entry visible to live readers)
     this._writeUint64At(152n, this.header.n_entries);
+  }
+
+  _postChange() {
+    const size = this.header.header_size + this.header.arena_size;
+    if (size > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error('journal file offset exceeds JavaScript safe integer range');
+    }
+    ftruncateSync(this.fd, Number(size));
+  }
+
+  _publishAfterEntry() {
+    if (this.livePublishEveryEntries === 0) return;
+    if (this.livePublishEveryEntries === 1) {
+      this._postChange();
+      return;
+    }
+    this.entriesSinceLivePublication++;
+    if (this.entriesSinceLivePublication >= this.livePublishEveryEntries) {
+      this.entriesSinceLivePublication = 0;
+      this._postChange();
+    }
   }
 
   _nextEntryArrayCapacity(index, previousCapacity) {
@@ -1040,6 +1066,14 @@ function normalizeCompressThreshold(value) {
     throw new Error(`invalid compression threshold: ${value}`);
   }
   return Math.max(MIN_COMPRESS_THRESHOLD, value);
+}
+
+function normalizeLivePublishEveryEntries(value) {
+  if (value === undefined || value === null) return 1;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`invalid livePublishEveryEntries: ${value}`);
+  }
+  return value;
 }
 
 function _validateFieldName(name) {

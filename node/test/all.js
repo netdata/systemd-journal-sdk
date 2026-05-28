@@ -249,6 +249,44 @@ for (const [input, expected] of remappedFieldVectors) {
 }
 
 {
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-live-publish-'));
+  try {
+    const writeFile = (name, every) => {
+      const journalPath = join(tempDir, `${name}.journal`);
+      const writer = Writer.create(journalPath, {
+        fileId: Buffer.from('40000000000000000000000000000000', 'hex'),
+        machineId: Buffer.from('10000000000000000000000000000000', 'hex'),
+        bootId: Buffer.from('20000000000000000000000000000000', 'hex'),
+        seqnumId: Buffer.from('30000000000000000000000000000000', 'hex'),
+        dataHashTableBuckets: 64,
+        fieldHashTableBuckets: 16,
+        livePublishEveryEntries: every,
+      });
+      for (let i = 0; i < 5; i++) {
+        writer.append([
+          { name: 'MESSAGE', value: `row-${String(i).padStart(2, '0')}` },
+          { name: 'SYSLOG_IDENTIFIER', value: 'node-live-publish-test' },
+        ], { realtimeUsec: 1_700_000_100_000_000n + BigInt(i), monotonicUsec: BigInt(i + 1) });
+      }
+      const pending = writer.entriesSinceLivePublication;
+      writer.close();
+      return { bytes: readFileSync(journalPath), pending };
+    };
+
+    const immediate = writeFile('immediate', 1);
+    const disabled = writeFile('disabled', 0);
+    const everyThree = writeFile('every-three', 3);
+    assert.equal(immediate.pending, 0);
+    assert.equal(disabled.pending, 0);
+    assert.equal(everyThree.pending, 2);
+    assert.deepEqual(disabled.bytes, immediate.bytes);
+    assert.deepEqual(everyThree.bytes, immediate.bytes);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
   const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
   try {
     const journalPath = join(tempDir, 'jf-facade.journal');

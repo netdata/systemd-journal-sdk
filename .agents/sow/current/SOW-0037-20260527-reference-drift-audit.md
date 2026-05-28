@@ -2,11 +2,14 @@
 
 ## Status
 
-Status: in-progress
+Status: paused
 
-Sub-state: activated by user decision on 2026-05-27. SOW-0009 broad
-benchmarking is paused until Rust parity, Rust writer API hierarchy, and Rust
-raw-vs-structured writer performance are established.
+Sub-state: paused on 2026-05-28 after the Rust API/parity checkpoint. SOW-0036
+completed the selected cross-language `live_publish_every_entries` API and
+rejected whole-file mmap/cache-size changes for the measured Rust writer
+workload. Go drift/audit work remains paused until the next explicit resume
+step. SOW-0009 broad benchmarking remains paused until SOW-0037 resumes and
+closes.
 
 ## Requirements
 

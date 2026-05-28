@@ -108,6 +108,7 @@ def result_template(args: argparse.Namespace) -> dict[str, object]:
         "data_hash_table_buckets": data_hash_buckets_for_max_size(args.max_size_bytes),
         "field_hash_table_buckets": FIELD_HASH_BUCKETS,
         "max_size_bytes": args.max_size_bytes,
+        "live_publish_every_entries": args.live_publish_every_entries,
         "append_timer_excludes": [
             "row generation",
             "writer creation",
@@ -126,6 +127,7 @@ def main() -> int:
     parser.add_argument("--format", choices=("compact", "regular"), default="compact")
     parser.add_argument("--final-state", choices=("online", "offline", "archived"), default="online")
     parser.add_argument("--max-size-bytes", type=int, default=DEFAULT_MAX_SIZE_BYTES)
+    parser.add_argument("--live-publish-every-entries", type=int, default=1)
     args = parser.parse_args()
 
     result = result_template(args)
@@ -147,6 +149,7 @@ def main() -> int:
         "compression_threshold_bytes": 512,
         "data_hash_table_buckets": result["data_hash_table_buckets"],
         "field_hash_table_buckets": result["field_hash_table_buckets"],
+        "live_publish_every_entries": args.live_publish_every_entries,
         "compact": compact,
     })
 

@@ -26,6 +26,12 @@ use their public field APIs, which construct payloads inside append. Those are
 the actual public writer paths for those SDKs, but raw-vs-field differences
 must be considered when interpreting cross-language ratios.
 
+SDK benchmark results record `live_publish_every_entries` so stock-compatible
+per-entry publication is never compared silently against latency-tolerant
+modes. The value is `1` by default, `0` disables explicit SDK live publication,
+and `N > 1` publishes after every `N` appended entries. Rust benchmark results
+also record `mmap_strategy` when the internal writer mapping switch is used.
+
 Example:
 
 ```bash

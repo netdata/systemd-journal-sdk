@@ -1,11 +1,12 @@
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use journal_core::file::{
-    Compression, DEFAULT_COMPRESS_THRESHOLD, EntryField, EntryWriteOptions, JournalFile,
-    JournalFileOptions, JournalState, JournalWriter, MmapMut, StructuredField,
+    Compression, DEFAULT_COMPRESS_THRESHOLD, EntryField, EntryWriteOptions,
+    ExperimentalMmapStrategy, JournalFile, JournalFileOptions, JournalState, JournalWriter,
+    MmapMut, StructuredField, WindowManagerStats,
 };
 use journal_registry::repository::File as RepositoryFile;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -36,6 +37,14 @@ struct Args {
     api_mode: String,
     #[arg(long, default_value_t = false)]
     trusted_unique_payloads: bool,
+    #[arg(long, default_value_t = 1)]
+    live_publish_every_entries: u64,
+    #[arg(long, hide = true)]
+    live_publication: Option<String>,
+    #[arg(long, default_value_t = 64)]
+    live_publication_interval: u64,
+    #[arg(long, default_value = "windowed")]
+    mmap_strategy: String,
 }
 
 fn uuid(hex: &str) -> Result<uuid::Uuid> {
@@ -131,10 +140,93 @@ fn data_hash_buckets_for_max_size(max_size: u64) -> usize {
     buckets.max(2047).min(usize::MAX as u64) as usize
 }
 
+fn resolve_live_publish_every_entries(args: &Args) -> Result<u64> {
+    let Some(name) = args.live_publication.as_deref() else {
+        return Ok(args.live_publish_every_entries);
+    };
+    match name {
+        "immediate" => Ok(1),
+        "disabled" => Ok(0),
+        "every-n" => {
+            if args.live_publication_interval == 0 {
+                Err(anyhow!("--live-publication-interval must be positive"))
+            } else {
+                Ok(args.live_publication_interval)
+            }
+        }
+        other => Err(anyhow!("invalid --live-publication: {other}")),
+    }
+}
+
+fn live_publication_name(every_entries: u64) -> String {
+    match every_entries {
+        0 => "disabled".to_string(),
+        1 => "immediate".to_string(),
+        n => format!("every-n:{n}"),
+    }
+}
+
+fn parse_mmap_strategy(name: &str) -> Result<ExperimentalMmapStrategy> {
+    match name {
+        "windowed" => Ok(ExperimentalMmapStrategy::Windowed),
+        "whole-file" => Ok(ExperimentalMmapStrategy::WholeFile),
+        other => Err(anyhow!("invalid --mmap-strategy: {other}")),
+    }
+}
+
+fn mmap_strategy_name(strategy: ExperimentalMmapStrategy) -> &'static str {
+    match strategy {
+        ExperimentalMmapStrategy::Windowed => "windowed",
+        ExperimentalMmapStrategy::WholeFile => "whole-file",
+    }
+}
+
+fn mmap_stats_json(stats: WindowManagerStats) -> Value {
+    json!({
+        "strategy": mmap_strategy_name(stats.strategy),
+        "file_size": stats.file_size,
+        "window_count": stats.window_count,
+        "current_mapped_bytes": stats.current_mapped_bytes,
+        "max_mapped_bytes": stats.max_mapped_bytes,
+        "map_count": stats.map_count,
+        "remap_count": stats.remap_count,
+        "eviction_count": stats.eviction_count,
+    })
+}
+
+fn process_status_kb() -> Value {
+    let Ok(status) = fs::read_to_string("/proc/self/status") else {
+        return json!({});
+    };
+    let wanted = [
+        "VmSize", "VmPeak", "VmRSS", "VmHWM", "RssAnon", "RssFile", "RssShmem", "VmData", "VmStk",
+        "VmExe", "VmLib", "VmPTE",
+    ];
+    let mut object = serde_json::Map::new();
+    for line in status.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if !wanted.contains(&key) {
+            continue;
+        }
+        let Some(kb) = value
+            .split_whitespace()
+            .next()
+            .and_then(|raw| raw.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        object.insert(format!("{key}_kb"), json!(kb));
+    }
+    Value::Object(object)
+}
+
 fn create_writer(
     path: &Path,
     compact: bool,
     max_size_bytes: u64,
+    mmap_strategy: ExperimentalMmapStrategy,
 ) -> Result<(JournalFile<MmapMut>, JournalWriter, usize)> {
     let path = absolute_path(path)?;
     if let Some(parent) = path.parent() {
@@ -152,7 +244,8 @@ fn create_writer(
         .with_keyed_hash(true)
         .with_compression(Compression::None)
         .with_compress_threshold(DEFAULT_COMPRESS_THRESHOLD)
-        .with_compact(compact);
+        .with_compact(compact)
+        .with_experimental_mmap_strategy(mmap_strategy);
     let mut journal_file = JournalFile::<MmapMut>::create(&repo_file, options)?;
     let writer = JournalWriter::new_with_compression(
         &mut journal_file,
@@ -222,6 +315,8 @@ fn main() -> Result<()> {
         "structured-field" => true,
         other => return Err(anyhow!("invalid --api-mode: {other}")),
     };
+    let live_publish_every_entries = resolve_live_publish_every_entries(&args)?;
+    let mmap_strategy = parse_mmap_strategy(&args.mmap_strategy)?;
     let output = absolute_path(&args.output)?;
     let _ = fs::remove_file(&output);
 
@@ -230,7 +325,10 @@ fn main() -> Result<()> {
     let precompute_seconds = precompute_start.elapsed().as_secs_f64();
 
     let (mut journal_file, mut writer, data_hash_buckets) =
-        create_writer(&output, compact, args.max_size_bytes)?;
+        create_writer(&output, compact, args.max_size_bytes, mmap_strategy)?;
+    writer.set_live_publish_every_entries(live_publish_every_entries);
+    let mmap_stats_before_append = journal_file.mmap_stats().map(mmap_stats_json)?;
+    let process_status_before_append = process_status_kb();
     let mut records = 0usize;
     let mut entry_fields: Vec<EntryField<'_>> = Vec::with_capacity(FIELDS_PER_ROW);
     let mut structured_refs: Vec<StructuredField<'_>> = Vec::with_capacity(FIELDS_PER_ROW);
@@ -267,10 +365,14 @@ fn main() -> Result<()> {
         records += 1;
     }
     let append_seconds = append_start.elapsed().as_secs_f64();
+    let mmap_stats_after_append = journal_file.mmap_stats().map(mmap_stats_json)?;
+    let process_status_after_append = process_status_kb();
 
     let close_start = Instant::now();
     let journal_path = finalize_journal_file(&mut journal_file, &output, &args.final_state)?;
     let close_seconds = close_start.elapsed().as_secs_f64();
+    let mmap_stats_after_close = journal_file.mmap_stats().map(mmap_stats_json)?;
+    let process_status_after_close = process_status_kb();
     let journal_size_bytes = fs::metadata(&journal_path)?.len();
 
     println!(
@@ -290,6 +392,15 @@ fn main() -> Result<()> {
             "fss": false,
             "api_mode": args.api_mode,
             "trusted_unique_payloads": args.trusted_unique_payloads,
+            "live_publication": live_publication_name(live_publish_every_entries),
+            "live_publish_every_entries": live_publish_every_entries,
+            "mmap_strategy": mmap_strategy_name(mmap_strategy),
+            "mmap_stats_before_append": mmap_stats_before_append,
+            "mmap_stats_after_append": mmap_stats_after_append,
+            "mmap_stats_after_close": mmap_stats_after_close,
+            "process_status_before_append": process_status_before_append,
+            "process_status_after_append": process_status_after_append,
+            "process_status_after_close": process_status_after_close,
             "data_hash_table_buckets": data_hash_buckets,
             "field_hash_table_buckets": FIELD_HASH_BUCKETS,
             "max_size_bytes": args.max_size_bytes,

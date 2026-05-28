@@ -58,6 +58,11 @@ type Options struct {
 	// Seal enables Forward Secure Sealing with deterministic synthetic keys.
 	// When non-nil, the writer appends TAG objects and sets sealed header flags.
 	Seal *SealOptions
+	// LivePublishEveryEntries controls explicit live-reader publication cadence.
+	// Nil uses the default systemd-compatible cadence of 1. A value of 0 disables
+	// explicit per-entry publication; values greater than 1 publish after every N
+	// appended entries.
+	LivePublishEveryEntries *uint64
 }
 
 // EntryOptions controls timestamps and boot ID for one appended entry.
@@ -107,7 +112,14 @@ type Writer struct {
 	payloadScratch    []byte
 	entryItemsScratch []entryItem
 	// Full memory-ordering point before same-size ftruncate wakes stock follow readers.
-	postChangeFence atomic.Uint64
+	postChangeFence             atomic.Uint64
+	livePublishEveryEntries     uint64
+	entriesSinceLivePublication uint64
+}
+
+// PublishEveryEntries returns a pointer suitable for Options.LivePublishEveryEntries.
+func PublishEveryEntries(entries uint64) *uint64 {
+	return &entries
 }
 
 // Create creates or truncates a journal file after acquiring the writer lock.
@@ -140,6 +152,7 @@ func Create(path string, opts Options) (*Writer, error) {
 	w := &Writer{
 		file: f, path: path, lock: lock, bootID: opts.BootID, started: time.Now(),
 		compression: opts.Compression, compressThreshold: opts.CompressThresholdBytes, compact: opts.Compact,
+		livePublishEveryEntries: livePublishEveryEntries(opts),
 	}
 	if err := w.initialize(opts); err != nil {
 		_ = w.closeArena()
@@ -152,6 +165,13 @@ func Create(path string, opts Options) (*Writer, error) {
 
 // Open opens a journal file created by this package for appending.
 func Open(path string) (*Writer, error) {
+	return OpenWithOptions(path, Options{})
+}
+
+// OpenWithOptions opens a journal file created by this package for appending,
+// using options that affect future appends.
+func OpenWithOptions(path string, opts Options) (*Writer, error) {
+	opts = normalizeOpenOptions(opts)
 	lock, err := acquireWriterLock(path)
 	if err != nil {
 		return nil, err
@@ -209,17 +229,18 @@ func Open(path string) (*Writer, error) {
 	header.state = stateOnline
 	now := time.Now()
 	w := &Writer{
-		file:              f,
-		path:              path,
-		lock:              lock,
-		header:            header,
-		appendOffset:      align8(header.tailObjectOffset + tail.size),
-		nextSeqnum:        header.tailEntrySeqnum + 1,
-		bootID:            header.tailEntryBootID,
-		started:           startTimeForTailMonotonic(now, header.tailEntryMonotonic),
-		compression:       compression,
-		compressThreshold: defaultCompressThreshold,
-		compact:           header.isCompact(),
+		file:                    f,
+		path:                    path,
+		lock:                    lock,
+		header:                  header,
+		appendOffset:            align8(header.tailObjectOffset + tail.size),
+		nextSeqnum:              header.tailEntrySeqnum + 1,
+		bootID:                  header.tailEntryBootID,
+		started:                 startTimeForTailMonotonic(now, header.tailEntryMonotonic),
+		compression:             compression,
+		compressThreshold:       defaultCompressThreshold,
+		compact:                 header.isCompact(),
+		livePublishEveryEntries: livePublishEveryEntries(opts),
 	}
 	fileSize, ok := checkedAdd(header.headerSize, header.arenaSize)
 	if !ok {
@@ -372,7 +393,7 @@ func (w *Writer) Append(fields []Field, opts EntryOptions) error {
 	if err := w.publishEntryMetadata(); err != nil {
 		return err
 	}
-	return w.postChange()
+	return w.publishAfterEntry()
 }
 
 // Sync flushes file data and metadata to disk.
@@ -567,6 +588,20 @@ func normalizeOptions(opts Options) Options {
 		opts.CompressThresholdBytes = minCompressThreshold
 	}
 	return opts
+}
+
+func normalizeOpenOptions(opts Options) Options {
+	if opts.LivePublishEveryEntries == nil {
+		opts.LivePublishEveryEntries = PublishEveryEntries(1)
+	}
+	return opts
+}
+
+func livePublishEveryEntries(opts Options) uint64 {
+	if opts.LivePublishEveryEntries == nil {
+		return 1
+	}
+	return *opts.LivePublishEveryEntries
 }
 
 func validCompression(compression int) bool {
@@ -779,6 +814,22 @@ func (w *Writer) postChange() error {
 		return fmt.Errorf("%w: journal file too large", errInvalidJournal)
 	}
 	return w.file.Truncate(int64(size))
+}
+
+func (w *Writer) publishAfterEntry() error {
+	switch w.livePublishEveryEntries {
+	case 0:
+		return nil
+	case 1:
+		return w.postChange()
+	default:
+		w.entriesSinceLivePublication++
+		if w.entriesSinceLivePublication >= w.livePublishEveryEntries {
+			w.entriesSinceLivePublication = 0
+			return w.postChange()
+		}
+		return nil
+	}
 }
 
 func (w *Writer) readAt(dst []byte, offset uint64) error {

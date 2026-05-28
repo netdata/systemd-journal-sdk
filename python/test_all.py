@@ -182,6 +182,42 @@ def test_siphash_masks_long_message_length():
     assert sip_hash_24(key, payload) == 0xf9a795df589b5204
 
 
+def test_live_publish_every_entries_preserves_closed_file_bytes():
+    def write_file(directory, name, every):
+        path = os.path.join(directory, f'{name}.journal')
+        writer = Writer.create(path, {
+            'file_id': bytes.fromhex('40000000000000000000000000000000'),
+            'machine_id': bytes.fromhex('10000000000000000000000000000000'),
+            'boot_id': bytes.fromhex('20000000000000000000000000000000'),
+            'seqnum_id': bytes.fromhex('30000000000000000000000000000000'),
+            'data_hash_table_buckets': 64,
+            'field_hash_table_buckets': 16,
+            'live_publish_every_entries': every,
+        })
+        for i in range(5):
+            writer.append([
+                {'name': 'MESSAGE', 'value': f'row-{i:02d}'},
+                {'name': 'SYSLOG_IDENTIFIER', 'value': 'python-live-publish-test'},
+            ], {
+                'realtime_usec': 1_700_000_100_000_000 + i,
+                'monotonic_usec': i + 1,
+            })
+        pending = writer._entries_since_live_publication
+        writer.close()
+        return Path(path).read_bytes(), pending
+
+    with tempfile.TemporaryDirectory() as td:
+        immediate, immediate_pending = write_file(td, 'immediate', 1)
+        disabled, disabled_pending = write_file(td, 'disabled', 0)
+        every_three, every_three_pending = write_file(td, 'every-three', 3)
+
+    assert immediate_pending == 0
+    assert disabled_pending == 0
+    assert every_three_pending == 2
+    assert disabled == immediate
+    assert every_three == immediate
+
+
 def test_lowercase_field_rejected():
     from journal.writer import _validate_field_name
 
@@ -2161,6 +2197,7 @@ def main():
     run([sys.executable, '-m', 'compileall', str(PYTHON_ROOT)])
     test_match_validation()
     test_siphash_masks_long_message_length()
+    test_live_publish_every_entries_preserves_closed_file_bytes()
     test_lowercase_field_rejected()
     test_live_delay_parser()
     test_parse_file_header_historical_field_boundaries()

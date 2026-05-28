@@ -33,7 +33,11 @@ Current writer scope:
   an operational exclusion;
 - live stock-reader validation for the current writer slice with `journalctl
   --file`, `journalctl --file --follow --no-tail --boot=all`, and libsystemd
-  reader APIs, including live sequence-order checks.
+  reader APIs, including live sequence-order checks;
+- configurable explicit live-reader publication cadence through
+  `JournalWriter::set_live_publish_every_entries()` and
+  `Config::with_live_publish_every_entries()`, defaulting to systemd-compatible
+  publication after every entry.
 
 Deferred scope:
 
@@ -163,6 +167,17 @@ and emit `ND_REMAPPING=1` metadata rows once per new mapping in each active
 journal file. User-supplied protected names beginning with `_` are remapped;
 SDK-owned protected fields such as `_BOOT_ID` and `_SOURCE_REALTIME_TIMESTAMP`
 are injected internally.
+
+Live-reader publication can be tuned when the consumer does not need immediate
+stock follow-reader wakeups:
+
+```rust
+let config = config.with_live_publish_every_entries(64);
+```
+
+`1` is the default and publishes after every entry. `0` disables explicit SDK
+live publication for poll/snapshot consumers. `N > 1` publishes after every
+`N` entries. This is not an `fsync` or durability setting.
 
 Binary-safe values:
 

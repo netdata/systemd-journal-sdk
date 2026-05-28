@@ -34,13 +34,25 @@ This project produces pure SDKs and file-backed journalctl-compatible tools for 
 - Cross-language interoperability is mandatory: every reader must read journal files produced by every writer.
 - The system must preserve systemd journal file concurrency expectations: one writer and multiple readers may operate on the same journal file according to journal rules.
 - Live concurrency compatibility is a MUST, not a follow-up optimization. No writer or reader implementation may be called production-compatible until this is confirmed with stock systemd tooling and the shared cross-language suite.
+- Writer live-reader publication cadence is configurable, but the default is
+  systemd-compatible. A non-default cadence narrows the live-reader visibility
+  contract and must be labelled in tests, benchmarks, and integration
+  guidance.
 
 ## Live Concurrency Compatibility Contract
 
 Writer compatibility:
 
-- Every writer implementation must produce files that stock `journalctl --file` can read while the writer is still appending.
-- Every writer implementation must produce files that stock libsystemd journal readers can read while the writer is still appending.
+- Every writer implementation's default live publication mode must produce
+  files that stock `journalctl --file` can read while the writer is still
+  appending.
+- Every writer implementation's default live publication mode must produce
+  files that stock libsystemd journal readers can read while the writer is
+  still appending.
+- Configured latency-tolerant publication modes remain valid SDK modes, but
+  they must not be claimed as stock live-follow compatible unless the matching
+  live matrix proves that mode. They must still pass clean-close verification,
+  final reads, and cross-language reads after sync/close.
 - Every writer implementation must support one active writer and multiple concurrent readers on the same file.
 - Every writer implementation must keep stock readers safe during append publication windows; stock readers must not crash, report corruption for committed entries, spin, or require the writer to close the file before reading.
 - Every writer implementation must pass stock `journalctl --verify --file` after clean close and after tested interruption/reopen scenarios for the feature slice claimed by that writer.
@@ -162,6 +174,15 @@ Writer API hierarchy:
   for a non-byte-identity performance mode.
 - Jenkins lookup3 hashing follows systemd `jenkins_hashlittle2()` exactly,
   including the empty payload value `0xdeadbeefdeadbeef`.
+- Every direct-file writer and high-level directory writer exposes
+  `live_publish_every_entries` using the language's idiomatic casing. `1` is
+  the default and performs explicit systemd-style live-reader publication after
+  every appended entry. `0` disables explicit SDK live publication for
+  latency-tolerant poll/snapshot consumers. `N > 1` publishes after every `N`
+  appended entries. This setting controls live-reader publication and wakeup
+  behavior; it is not a durability sync or `fsync` cadence. Node.js and Python
+  direct writers use ordinary file writes, so the option controls explicit
+  publication calls but does not promise zero kernel-visible write events.
 
 Current shared writer layout contract:
 
@@ -270,8 +291,9 @@ Current Go writer feature slice:
 - Forward Secure Sealing TAG writing with configurable deterministic test
   options and stock `journalctl --verify --verify-key` validation for generated
   sealed files;
-- live one-writer/multiple-reader compatibility with stock `journalctl --file`,
-  stock libsystemd readers, and all repository readers for regular,
+- default live publication mode one-writer/multiple-reader compatibility with
+  stock `journalctl --file`, stock libsystemd readers, and all repository
+  readers for regular,
   zstd/xz/lz4-compressed DATA, compact, compact plus compressed DATA, and
   sealed writer slices.
 
@@ -461,8 +483,9 @@ Current Rust writer feature slice:
 - Forward Secure Sealing TAG writing with configurable deterministic test
   options and stock `journalctl --verify --verify-key` validation for generated
   sealed files;
-- live one-writer/multiple-reader compatibility with stock `journalctl --file`,
-  stock libsystemd readers, and all repository readers for regular,
+- default live publication mode one-writer/multiple-reader compatibility with
+  stock `journalctl --file`, stock libsystemd readers, and all repository
+  readers for regular,
   zstd/xz/lz4-compressed DATA, compact, compact plus compressed DATA, and
   sealed writer slices.
 
@@ -524,8 +547,9 @@ Current Node.js writer feature slice:
 - Forward Secure Sealing TAG writing with configurable deterministic test
   options and stock `journalctl --verify --verify-key` validation for generated
   sealed files;
-- live one-writer/multiple-reader compatibility with stock `journalctl --file`,
-  stock libsystemd readers, and all repository readers for regular,
+- default live publication mode one-writer/multiple-reader compatibility with
+  stock `journalctl --file`, stock libsystemd readers, and all repository
+  readers for regular,
   zstd/xz/lz4-compressed DATA, compact, compact plus compressed DATA, and
   sealed writer slices.
 
@@ -589,8 +613,9 @@ Current Python writer feature slice:
 - Forward Secure Sealing TAG writing with configurable deterministic test
   options and stock `journalctl --verify --verify-key` validation for generated
   sealed files;
-- live one-writer/multiple-reader compatibility with stock `journalctl --file`,
-  stock libsystemd readers, and all repository readers for regular,
+- default live publication mode one-writer/multiple-reader compatibility with
+  stock `journalctl --file`, stock libsystemd readers, and all repository
+  readers for regular,
   zstd/xz/lz4-compressed DATA, compact, compact plus compressed DATA, and
   sealed writer slices.
 
