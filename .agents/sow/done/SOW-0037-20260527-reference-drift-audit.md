@@ -365,12 +365,11 @@ Failure handling:
   - Go/Rust compact/no-compression interoperability matrix passed 20/20.
   - Go/Rust regular live interoperability matrix passed 2/2, including stock
     libsystemd live readers.
-  - All-language lock matrix passed stale-lock cleanup 4/4 and confirmed Go
-    and Rust reject each other while a writer lock is held; it failed 4
-    all-language contention cases because existing Node.js and Python
-    cooperative lock implementations have a cross-process contention bug that
-    lets those contenders acquire/publish while another SDK writer holds the
-    lock. That bug is tracked in the Python/Node writer parity follow-up SOWs.
+  - Initial all-language lock matrix with `--entries 20 --delay-ms 1` failed
+    because the holder process could close before later contenders ran. A
+    manual Python-vs-Go lock probe and a longer matrix run with
+    `--entries 200 --delay-ms 20` showed all SDK lock contention and stale-lock
+    cleanup scenarios pass 8/8.
 
 ## Writer Closure Matrix
 
@@ -413,17 +412,15 @@ Baseline source:
 | Compression and compact | Rust writer paths and tests are listed in the Rust/systemd table. | Go writer paths are `go/journal/writer.go:680-704`, `974-1004`; tests are `go/journal/writer_test.go:149-310`, `726-849`; Go/Rust matrices passed compression 72/72 and compact 20/20. | Aligned. |
 | FSS | Rust FSS tests are `rust/src/crates/journal-core/src/file/writer.rs:2347-2831`. | Go FSS tests are `go/journal/seal_test.go:26-304` and verifier tests are `go/journal/verify_test.go:33-194`; full Go suite passed. | Aligned for current SDK sealing contract. |
 | Live publication | Rust default and options are `rust/src/crates/journal-core/src/file/writer.rs:748-761`. | Go option and default are `go/journal/writer.go:61-65`, `593-604`; Go test is `go/journal/writer_test.go:96-148`; live matrix passed 2/2 for Go/Rust. | Aligned. |
-| Writer lock | Rust/Go cooperative lock is SDK-defined because systemd does not mechanically prevent every possible external writer. | Lock matrix result `.local/interoperability/lock-matrix-results-20260528-194028.json` shows Go and Rust contenders fail while Go or Rust holds the lock, and stale lock cleanup passes. Node.js/Python existing-lock cross-process contention bugs are tracked below. | Go/Rust aligned; all-language incomplete. |
+| Writer lock | Rust/Go cooperative lock is SDK-defined because systemd does not mechanically prevent every possible external writer. | Lock matrix result `.local/interoperability/lock-matrix-results-20260528-201400.json` shows all Go, Rust, Node.js, and Python contenders fail while any SDK writer holds the lock, and stale lock cleanup passes. | All-language SDK lock contract aligned for the validated holder window. |
 | DATA payload cache | Rust has no DATA payload cache; only FIELD cache remains. | Go has no DATA payload cache; it has a small direct-mapped FIELD cache in `go/journal/writer.go:520-555`, `1052-1097`. | Aligned in intent. |
 
 ### Tracked Gaps After This SOW
 
-- Python writer must align API, mmap/file-access behavior, field policies,
-  raw/structured append, and fix the existing cooperative writer lock
-  cross-process contention bug in SOW-0040.
+- Python writer must align API, mmap/file-access behavior, field policies, and
+  raw/structured append behavior in SOW-0040.
 - Node.js writer must align API, runtime-specific file-access behavior, field
-  policies, raw/structured append, and fix the existing cooperative writer
-  lock cross-process contention bug in SOW-0041.
+  policies, and raw/structured append behavior in SOW-0041.
 - Final all-language writer certification, including performance and profiling,
   remains SOW-0042.
 - Reader parity and reader performance remain SOW-0043 through SOW-0046.
@@ -444,8 +441,9 @@ Acceptance criteria evidence:
 - Go high-level `Log` now aligns with Rust/systemd journald behavior by writing
   `_BOOT_ID=<boot-id>` as an indexed DATA payload in addition to entry boot-id
   metadata.
-- Python and Node.js all-language writer gaps exposed during the closure pass
-  are mapped to SOW-0040 and SOW-0041.
+- Python and Node.js writer parity gaps exposed during the closure pass are
+  mapped to SOW-0040 and SOW-0041. The cooperative writer lock remains covered
+  by the shared lock matrix rather than a known Python/Node.js bug.
 
 Tests or equivalent validation:
 
@@ -472,18 +470,18 @@ Tests or equivalent validation:
 - `GOCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-cache GOMODCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-mod-cache GOPATH=/home/costa/Documents/systemd-journal-sdk/.local/go-path CARGO_HOME=/home/costa/Documents/systemd-journal-sdk/.local/cargo-home CARGO_TARGET_DIR=/home/costa/Documents/systemd-journal-sdk/.local/cargo-target python3 tests/interoperability/run_live_matrix.py --writers go rust --readers stock go rust --features regular --entries 10 --poll-readers 1 --libsystemd-readers 1 --writer-delay-ms 5`
   passed on 2026-05-28: 2/2.
 - `GOCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-cache GOMODCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-mod-cache GOPATH=/home/costa/Documents/systemd-journal-sdk/.local/go-path CARGO_HOME=/home/costa/Documents/systemd-journal-sdk/.local/cargo-home CARGO_TARGET_DIR=/home/costa/Documents/systemd-journal-sdk/.local/cargo-target python3 tests/interoperability/run_lock_matrix.py --entries 20 --delay-ms 1`
-  failed the all-language contention summary on 2026-05-28 because existing
-  Node.js and Python lock implementations have a cross-process contention bug:
-  Node.js and Python contenders acquired/published while Go, Rust, Node.js, or
-  Python held the cooperative lock. The same result confirms Go and Rust
-  contenders reject locks held by Go, Rust, Node.js, and Python. Stale-lock
-  cleanup passed 4/4. Node.js/Python fixes are now explicit acceptance criteria
-  in SOW-0040 and SOW-0041. Essential result pattern from
-  `.local/interoperability/lock-matrix-results-20260528-194028.json`:
-  runner summary 8 scenarios, 4 passed, 4 failed; contention details covered
-  16 contender attempts, with Go and Rust contenders returning failure before
-  publishing for every holder and Node.js/Python contenders exiting 0 and
-  creating ready files for every holder.
+  failed the all-language contention summary on 2026-05-28, but that result is
+  now classified as invalid for lock correctness because the holder can finish
+  before later contenders run.
+- Manual probe evidence on 2026-05-28: a Go holder kept
+  `.local/sow0040-lock-probe/go-holder.journal.lock`, Python
+  `_lock_file_is_stale()` returned `(False, 'pid ...')`, and Python
+  `WriterLock.acquire()` raised `BlockingIOError` while the Go holder was
+  still active.
+- `GOCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-cache GOMODCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-mod-cache GOPATH=/home/costa/Documents/systemd-journal-sdk/.local/go-path CARGO_HOME=/home/costa/Documents/systemd-journal-sdk/.local/cargo-home CARGO_TARGET_DIR=/home/costa/Documents/systemd-journal-sdk/.local/cargo-target python3 tests/interoperability/run_lock_matrix.py --entries 200 --delay-ms 20`
+  passed on 2026-05-28: 8/8. Essential result pattern from
+  `.local/interoperability/lock-matrix-results-20260528-201400.json`: all four
+  contention scenarios passed and all four stale-lock cleanup scenarios passed.
 
 Real-use evidence:
 
@@ -559,10 +557,13 @@ Reviewer findings:
 - Closure-matrix review dispositions:
   - systemd evidence corrected to the peeled v260.1 commit
     `systemd/systemd @ c0a5a2516d28`.
-  - Python/Node.js lock text corrected across SOW-0037, SOW-0040, SOW-0041,
-    and SOW-status.md.
-  - Essential lock matrix result pattern copied into this SOW so the
-    `.local/` JSON does not need to be preserved to understand the failure.
+  - Python/Node.js lock text was initially corrected across SOW-0037,
+    SOW-0040, SOW-0041, and SOW-status.md from "missing lock" to "existing-lock
+    contention bug". Later lock-matrix correction below supersedes this: the
+    evidence does not support a Python/Node.js lock bug.
+  - Essential lock matrix result patterns copied into this SOW so the
+    `.local/` JSON files do not need to be preserved to understand the
+    validation.
   - Matrix rows added for header/tail metadata, entry arrays, hash-table
     sizing/file identity, and timestamp policy.
   - Outcome, lessons, same-failure patterns, and terminal follow-up mapping
@@ -573,7 +574,8 @@ Reviewer findings:
     durable SOW text and SDK writer locks are not a systemd comparison surface.
   - `glm`: PRODUCTION GRADE. Verified the corrected lock-matrix wording: the
     runner summary is 8 scenarios, 4 passed, 4 failed, and contention details
-    cover 16 contender attempts.
+    cover 16 contender attempts. This was later superseded by the
+    post-close lock-matrix timing correction.
   - `kimi`: stalled in a read-only review run after repository reads and
     produced no final verdict; the specific reviewer process was terminated by
     PID and is not counted as a clean review.
@@ -592,18 +594,19 @@ Same-failure scan:
   high-level `Log` now does.
 - `rg` searches checked DATA cache references. Rust and Go retain bounded FIELD
   caches only; the removed high-cardinality DATA payload cache is not present.
-- Lock matrix JSON was inspected after the all-language failure to confirm the
-  Go/Rust lock contract is working and the failures are Node.js/Python
-  contender behavior.
+- Lock matrix JSON was inspected after the all-language short-hold failure.
+  Follow-up manual probe plus a longer lock matrix showed the short-hold
+  failure was a test-duration artifact, not Node.js/Python contender behavior.
 - Pattern: when a low-level append shape is added or changed, high-level `Log`
   metadata injection must be re-checked in every language. This SOW found the
   Go `_BOOT_ID` indexed-DATA gap only after raw/structured append parity work.
 - Pattern: malformed raw payload behavior can diverge when one layer filters by
   dropping fields and another rejects before filtering. RAW and JOURNAL-APP
   tests must cover no-`=`, empty name, empty payload, and single-`=` payloads.
-- Pattern: same-process lock unit tests are insufficient for the one-writer
-  contract. Cross-language, cross-process lock matrix evidence is required
-  because Python/Node.js had lock implementations but still failed contention.
+- Pattern: lock-matrix holder duration must be long enough for all sequential
+  contenders to run while the holder is still alive. A too-short holder window
+  can make later contenders look like lock violators after the holder has
+  already closed cleanly.
 
 Sensitive data gate:
 
@@ -625,8 +628,8 @@ Artifact maintenance gate:
 - End-user/operator skills: no output/reference skills affected.
 - SOW lifecycle: this SOW is marked completed and moved to `done/` in the same
   commit as the final SOW/status artifact updates.
-- SOW-status.md: updated when the SOW was activated and when SOW-0040/SOW-0041
-  were clarified to own cooperative writer lock contention bugs.
+- SOW-status.md: updated when the SOW was activated and later corrected after
+  the lock-matrix timing artifact was found.
 
 Specs update:
 
@@ -653,10 +656,8 @@ Lessons:
 
 Follow-up mapping:
 
-- Python writer mmap/alignment/existing-lock contention-bug work is tracked by
-  SOW-0040.
-- Node.js writer parity/existing-lock contention-bug work is tracked by
-  SOW-0041.
+- Python writer mmap/alignment work is tracked by SOW-0040.
+- Node.js writer parity work is tracked by SOW-0041.
 - Final all-language writer certification is tracked by SOW-0042.
 - Reader parity and performance work is tracked by SOW-0043 through SOW-0046.
 
@@ -675,8 +676,8 @@ tracked by real follow-up SOWs.
 - High-level writer metadata injection is easy to miss when adding low-level
   raw/structured append APIs; future parity work must check both layers.
 - Cooperative writer locking must be validated cross-process and
-  cross-language. Same-process lock tests can pass while the all-language
-  one-writer contract is still broken.
+  cross-language with holder durations that keep the holder alive throughout
+  all contenders. Otherwise the test can produce a false lock-failure signal.
 
 ## Followup
 
@@ -690,4 +691,51 @@ tracked by real follow-up SOWs.
 
 ## Regression Log
 
-None yet.
+### 2026-05-28 - Lock Matrix Timing Artifact
+
+What broke:
+
+- The close commit incorrectly recorded the short lock matrix failure
+  `.local/interoperability/lock-matrix-results-20260528-194028.json` as a
+  Python/Node.js cooperative writer lock bug.
+
+Evidence:
+
+- Manual Python-vs-Go probe under `.local/sow0040-lock-probe/` showed Python
+  correctly treated a live Go holder lock as non-stale and raised
+  `BlockingIOError`.
+- Rerun with
+  `python3 tests/interoperability/run_lock_matrix.py --entries 200 --delay-ms 20`
+  passed 8/8 and wrote
+  `.local/interoperability/lock-matrix-results-20260528-201400.json`.
+
+Why previous validation missed it:
+
+- The failing run used `--entries 20 --delay-ms 1`, so each holder could finish
+  before later contenders were attempted. The runner records those later
+  successful opens as contention failures even though the lock was already
+  released.
+
+Repair:
+
+- SOW-0037, SOW-status, SOW-0040, and SOW-0041 were corrected to remove the
+  unsupported Python/Node.js lock-bug claim.
+- SOW-0040 and SOW-0041 still require lock-matrix validation as part of writer
+  parity, but they no longer claim a known lock implementation bug.
+
+Validation:
+
+- `tests/interoperability/run_lock_matrix.py --entries 200 --delay-ms 20`
+  passed 8/8 on 2026-05-28.
+
+Reviewer validation:
+
+- `glm`: PRODUCTION GRADE. Verified the short-hold failure pattern,
+  8/8 longer lock matrix, SOW-0040/SOW-0041 lock-regression framing, sensitive
+  data handling, and follow-up mapping.
+- `qwen`: no final verdict; the read-only process stalled after inspecting the
+  same correction scope and was terminated by specific PID.
+- `minimax`: PRODUCTION GRADE. Verified the corrected conclusion is internally
+  consistent, no current-reality text claims a known Python/Node.js lock bug,
+  and SOW-0040/SOW-0041 require lock regression validation without claiming a
+  bug fix.

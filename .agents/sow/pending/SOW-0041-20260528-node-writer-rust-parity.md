@@ -27,9 +27,9 @@ Facts:
   a Rust-like mmap strategy.
 - Node.js writer must share the same field-name policy modes and public writer
   API concepts as the other languages.
-- SOW-0037 validation found Node.js has a cooperative writer lock
-  implementation, but cross-process contention fails because Node.js contenders
-  can still acquire/publish while another SDK writer holds the lock.
+- SOW-0037 initially suspected a Node.js cooperative writer lock contention bug
+  from a too-short lock-matrix run. A longer all-language lock run passed, so
+  there is no known Node.js lock bug at SOW activation time.
 - Common compression libraries are allowed, including packages that provide a
   maintainable pure-runtime or acceptable non-linking path.
 
@@ -48,9 +48,8 @@ Unknowns:
 - Node.js writer API and options match the agreed writer contract from SOW-0037.
 - Node.js writer supports the same field-name policy modes and raw/structured
   append semantics.
-- Node.js writer fixes the existing cooperative writer lock cross-process
-  contention bug and participates in the same lock contract as Rust and Go,
-  including contention rejection and stale lock cleanup.
+- Node.js writer continues to participate in the same cooperative lock contract
+  as Rust and Go, including contention rejection and stale lock cleanup.
 - Node.js writer internal behavior is aligned with Rust where practical, and
   every runtime-specific difference is recorded with evidence.
 - Node.js writer passes shared writer conformance and interoperability tests.
@@ -68,9 +67,9 @@ Sources checked:
 Current state:
 
 - Node.js writer is functionally capable but has runtime-specific file access
-  and allocation behavior that must be classified. It has an existing
-  cooperative writer lock implementation, but the all-language lock matrix
-  shows a cross-process contention bug versus the Rust/Go lock behavior.
+  and allocation behavior that must be classified. Its cooperative writer lock
+  implementation passed the longer all-language lock matrix, so lock
+  validation remains a required regression check rather than a known bug fix.
 
 Risks:
 
@@ -95,8 +94,8 @@ Evidence reviewed:
 Affected contracts and surfaces:
 
 - Node.js writer API, directory writer behavior, compression/FSS/compact output,
-  field-name policy, binary fields, cooperative writer lock contention
-  behavior, and benchmark claims.
+  field-name policy, binary fields, cooperative writer lock behavior, and
+  benchmark claims.
 
 Existing patterns to reuse:
 
@@ -117,8 +116,8 @@ Implementation plan:
 
 1. Wait for SOW-0037.
 2. Compare Node.js writer against the finalized Rust writer matrix.
-3. Align API and internal behavior where practical, including fixing the
-   cooperative writer lock cross-process contention bug.
+3. Align API and internal behavior where practical, including regression
+   coverage for the cooperative writer lock contract.
 4. Record measured runtime-specific differences.
 5. Run conformance, interoperability, lock, and benchmark checks.
 
@@ -151,10 +150,9 @@ Open decisions:
 ## Implications And Decisions
 
 - 2026-05-28: user agreed Node.js writer parity follows Rust/Go writer closure.
-- 2026-05-28: SOW-0037 lock validation showed Node.js has cooperative writer
-  lock code, but Node.js contenders can still acquire/publish while another SDK
-  writer holds the lock; this SOW owns that Node.js cross-process contention
-  bug fix.
+- 2026-05-28: SOW-0037 follow-up validation corrected the earlier Node.js lock
+  bug suspicion. The short-hold matrix failure was a timing artifact; a longer
+  all-language lock matrix passed.
 
 ## Plan
 
