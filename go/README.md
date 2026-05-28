@@ -37,7 +37,7 @@ Current writer scope:
 - configurable explicit live-reader publication cadence through
   `Options.LivePublishEveryEntries`, defaulting to systemd-compatible
   publication after every entry;
-- high-level directory writing with Netdata-compatible chain active naming by
+- high-level directory writing with chain active naming by
   default, opt-in strict systemd active naming, entry-count, file-size, and
   duration rotation, plus tracked journal-file-count, byte-size, and age
   retention.
@@ -96,7 +96,7 @@ defer w.Close()
 return w.Append([]journal.Field{
     journal.StringField("MESSAGE", "plugin started"),
     journal.StringField("PRIORITY", "6"),
-    journal.StringField("SYSLOG_IDENTIFIER", "netdata-plugin"),
+    journal.StringField("SYSLOG_IDENTIFIER", "example-plugin"),
 }, journal.EntryOptions{})
 ```
 
@@ -134,7 +134,7 @@ Directory writer with rotation and retention:
 
 ```go
 log, err := journal.NewLog("/var/log/journal-sdk", journal.LogConfig{
-    Source:       "netdata-plugin",
+    Source:       "example-plugin",
     OpenMode:     journal.LogOpenEager,
     IdentityMode: journal.LogIdentityStrict,
     Options: journal.Options{
@@ -163,7 +163,7 @@ return log.Append([]journal.Field{
 
 `NewLog()` stores files below `<directory>/<machine-id>/`. Rotation archives the
 current active file and opens a new active file. By default the active file uses
-the Netdata Rust writer chain filename form
+the chain filename form
 `<source>@<seqnum-id>-<head-seqnum>-<head-realtime>.journal`; set
 `StrictSystemdNaming: true` to use `<source>.journal` as the active file.
 If strict naming opens a directory with a stale chain-named `ONLINE` active
@@ -209,17 +209,19 @@ unless they are intentionally creating invalid fixtures. On reopen, `Log`
 seeds the monotonic clamp floor from a persisted chain tail only when the tail
 entry boot ID matches the current writer boot ID.
 
-For Netdata-style side indexes, `LogConfig.Lifecycle` reports created, rotated,
+For consumer-owned side indexes, `LogConfig.Lifecycle` reports created, rotated,
 and retention-deleted journal paths, and `LogConfig.ArtifactSizer` includes
 consumer-owned sidecar bytes in size-based retention. See `go/API.md` for the
 versioned public API contract.
 
-The low-level Go `Writer` accepts systemd-compatible field names only. The
-high-level `Log` writer remaps Netdata/OTEL-style dotted, lowercase, or
-otherwise incompatible field names into stock-compatible `ND_*` names and emits
-`ND_REMAPPING=1` metadata rows that preserve the original names. User-supplied
-protected names beginning with `_` are remapped; SDK-owned protected fields such
-as `_BOOT_ID` and `_SOURCE_REALTIME_TIMESTAMP` are injected internally.
+The low-level Go `Writer` and high-level `Log` writer support the same
+field-name policy layers. The default `FieldNamePolicyJournald` preserves
+trusted systemd fields such as `_HOSTNAME` and `_TRANSPORT`.
+`FieldNamePolicyJournalApp` drops caller fields that journald would reject from
+untrusted applications and fails only when no caller fields remain.
+`FieldNamePolicyRaw` accepts any non-empty field name that does not contain
+`=`, but RAW-mode files are not guaranteed to be accepted by stock systemd
+tooling. Producer-specific field transformations belong outside the SDK.
 
 Basic reader usage:
 

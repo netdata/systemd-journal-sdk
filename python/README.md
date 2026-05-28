@@ -36,12 +36,13 @@ no system journal library linkage.
 - Configurable explicit live-reader publication cadence through
   `'live_publish_every_entries'` / `'livePublishEveryEntries'`, defaulting to
   systemd-compatible publication after every entry
-- Directory writer with Netdata chain active naming by default, opt-in strict
+- Directory writer with chain active naming by default, opt-in strict
   systemd active naming, entry-count/file-size/duration rotation, and
   file-count/byte/age retention
-- High-level `Log` field-name remapping for Netdata/OTEL-style dotted,
-  lowercase, or otherwise incompatible field names through `ND_REMAPPING=1`
-  metadata rows and stock-compatible `ND_*` data fields
+- Shared field-name policy layers for direct-file and directory writers:
+  default `FIELD_NAME_POLICY_JOURNALD`, app-facing
+  `FIELD_NAME_POLICY_JOURNAL_APP`, and structure-level
+  `FIELD_NAME_POLICY_RAW`
 - Pure cross-SDK cooperative lockfile with stale-owner detection, plus a secondary advisory `flock`, to prevent multiple SDK writers from opening the same file
 - Native systemd writers do not participate in the SDK lock protocol and remain an operational exclusion
 
@@ -112,7 +113,7 @@ w = Writer.create('/path/to/plugin.journal')
 w.append([
     {'name': 'MESSAGE', 'value': b'plugin started'},
     {'name': 'PRIORITY', 'value': b'6'},
-    {'name': 'SYSLOG_IDENTIFIER', 'value': b'netdata-plugin'},
+    {'name': 'SYSLOG_IDENTIFIER', 'value': b'example-plugin'},
 ])
 
 w.close()
@@ -160,7 +161,7 @@ journal.close()
 ```
 
 `Log` stores files below `<directory>/<machine-id>/`. By default it uses the
-Netdata Rust writer chain filename form for the active file:
+chain filename form for the active file:
 `<source>@<seqnum-id>-<head-seqnum>-<head-realtime>.journal`. Set
 `'strict_systemd_naming': True` to use `<source>.journal` as the active file.
 If strict naming opens a directory with a stale chain-named `ONLINE` active
@@ -200,11 +201,14 @@ tail only when the tail entry boot ID matches the current writer boot ID.
 `Log` is a single-writer object; callers must serialize method calls on one
 instance. The SDK writer lock prevents another cooperating SDK writer from
 owning the same file, but it is not a per-append Python mutex.
-`append()` also remaps non-systemd-compatible field names, such as OTEL dotted
-or lowercase names, into `ND_*` data fields and emits `ND_REMAPPING=1` metadata
-rows once per new mapping in each active journal file. User-supplied protected
-names beginning with `_` are remapped; SDK-owned protected fields such as
-`_BOOT_ID` and `_SOURCE_REALTIME_TIMESTAMP` are injected internally.
+`field_name_policy` / `fieldNamePolicy` selects the writer field-name layer.
+The default `FIELD_NAME_POLICY_JOURNALD` preserves trusted systemd fields such
+as `_HOSTNAME` and `_TRANSPORT`. `FIELD_NAME_POLICY_JOURNAL_APP` drops caller
+fields that journald would reject from untrusted applications and fails only
+when no caller fields remain. `FIELD_NAME_POLICY_RAW` accepts any non-empty
+field name that does not contain `=`, but RAW-mode files are not guaranteed to
+be accepted by stock systemd tooling. Producer-specific field transformations
+belong outside the SDK.
 Structured `'rotation_policy'` / `'rotationPolicy'` and `'retention_policy'` /
 `'retentionPolicy'` option dictionaries are also accepted for the Go-style
 optional policy contract. Omitted policy fields are disabled; explicitly

@@ -24,7 +24,6 @@ The following source directories were copied from the upstream Netdata repositor
 | `rust/src/crates/journal-log-writer/` | `src/crates/journal-log-writer/` | Log writer |
 | `rust/src/crates/journal-registry/` | `src/crates/journal-registry/` | Registry/watch functionality |
 | `rust/src/crates/journal-engine/` | `src/crates/journal-engine/` | Engine |
-| `rust/src/crates/rdp/` | `src/crates/rdp/` | RDP types |
 
 ## License
 

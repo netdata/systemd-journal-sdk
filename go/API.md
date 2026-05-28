@@ -6,14 +6,14 @@ This module is imported as:
 import "github.com/netdata/systemd-journal-sdk/go/journal"
 ```
 
-The first consumable tag for this subdirectory module is expected to be
-`go/v0.1.0`.
+The current consumable tag for this subdirectory module is expected to be
+`go/v0.3.0`.
 
 ## Stability Contract
 
-The `v0.1.x` Go API is intended to be stable enough for Netdata integration.
-Breaking changes to the following public surfaces should be avoided inside the
-`v0.1.x` line:
+The `v0.x` Go API is intended to be stable enough for integration work while
+the SDK is still pre-1.0. Breaking changes to the following public surfaces
+should require a new minor release tag and an explicit SOW decision:
 
 - `journal.NewLog(directory, journal.LogConfig)`
 - `journal.LogConfig`
@@ -90,7 +90,7 @@ Use:
 
 In lazy mode, `ActivePath()` is empty before a journal file exists.
 
-By default, the active file uses the Netdata Rust-compatible chain filename.
+By default, the active file uses the chain filename form.
 `StrictSystemdNaming` uses `<source>.journal` as the active file. When strict
 naming finds a stale chain-named `ONLINE` active file, `NewLog()` archives it
 before creating `<source>.journal`, preserving sequence continuity and avoiding
@@ -183,14 +183,21 @@ explicit zero timestamp overrides from omitted zero-value struct fields.
 
 ## Field Names
 
-The low-level `Writer` accepts systemd-compatible field names only: names must
-start with an uppercase ASCII letter, contain only uppercase ASCII letters,
-digits, and underscores, and be at most 64 bytes.
+The low-level `Writer` and high-level `Log` writer expose the same
+`FieldNamePolicy` contract:
 
-The high-level `Log` writer accepts Netdata/OTEL-style field names and remaps
-non-systemd-compatible names before writing. The remapping format matches the
-Rust writer contract: each journal file gets `ND_REMAPPING=1` metadata rows for
-new mappings, and data rows use stock-compatible `ND_*` field names.
-User-supplied protected names beginning with `_` are remapped; SDK-owned
-protected fields such as `_BOOT_ID` and `_SOURCE_REALTIME_TIMESTAMP` are
-injected internally.
+- `FieldNamePolicyJournald` is the default. It accepts trusted journald-style
+  names: non-empty, at most 64 bytes, not digit-first, uppercase ASCII letters,
+  digits, and underscores, with leading `_` allowed.
+- `FieldNamePolicyJournalApp` applies journald's untrusted application-facing
+  rules. It uses the same character and length limits, disallows leading `_`,
+  drops invalid caller fields, and returns an error only when no caller field
+  remains.
+- `FieldNamePolicyRaw` accepts every field name the journal DATA structure can
+  represent directly: non-empty and no `=` in the name. RAW-mode files are
+  journal files, but they are not guaranteed to be accepted by stock systemd
+  tooling when names violate systemd conventions.
+
+SDK-owned fields such as `_BOOT_ID` and `_SOURCE_REALTIME_TIMESTAMP` are
+injected internally under the journald-compatible rules. Producer-specific
+field transformations belong outside the SDK.

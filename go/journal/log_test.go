@@ -1581,7 +1581,7 @@ func TestLogAppendMapWithOptionsAddsSourceRealtime(t *testing.T) {
 	}
 }
 
-func TestLogRemapsIncompatibleFieldNames(t *testing.T) {
+func TestLogDefaultJournaldPolicyPreservesProtectedFields(t *testing.T) {
 	requireJournalctl(t)
 
 	log, dir := newTestLog(t, LogConfig{
@@ -1589,118 +1589,106 @@ func TestLogRemapsIncompatibleFieldNames(t *testing.T) {
 		Source:  "system",
 	})
 	if err := log.Append([]Field{
-		StringField("MESSAGE", "remapped fields"),
-		StringField("foo.bar", "dot"),
-		StringField("log.body.HostName", "camel"),
-		StringField("_CUSTOM_FIELD", "protected"),
-		StringField("field name", "md5"),
-	}, EntryOptions{RealtimeUsec: 1_700_002_401_000_000, MonotonicUsec: 10}); err != nil {
-		t.Fatalf("Append(remapped fields) error = %v", err)
-	}
-	if err := log.Sync(); err != nil {
-		t.Fatalf("Sync() error = %v", err)
-	}
-
-	rows := runJournalctlDirectoryJSON(t, dir)
-	if len(rows) != 2 {
-		t.Fatalf("row count = %d, want 2; rows=%v", len(rows), rows)
-	}
-	var remapRow, dataRow map[string]any
-	for _, row := range rows {
-		if row["ND_REMAPPING"] == "1" {
-			remapRow = row
-		}
-		if row["MESSAGE"] == "remapped fields" {
-			dataRow = row
-		}
-	}
-	if remapRow == nil {
-		t.Fatalf("missing remapping row: %v", rows)
-	}
-	if dataRow == nil {
-		t.Fatalf("missing data row: %v", rows)
-	}
-
-	assertJSONField(t, remapRow, "NDAE_FOO_BAR", "foo.bar")
-	assertJSONField(t, remapRow, "ND83AAO_LB_HOSTNAME", "log.body.HostName")
-	assertJSONField(t, remapRow, "NDVQT__CUSTOM_FIELD", "_CUSTOM_FIELD")
-	assertJSONField(t, remapRow, "ND_BFAAD773361A781112FB325B433D54F7", "field name")
-	assertJSONField(t, dataRow, "NDAE_FOO_BAR", "dot")
-	assertJSONField(t, dataRow, "ND83AAO_LB_HOSTNAME", "camel")
-	assertJSONField(t, dataRow, "NDVQT__CUSTOM_FIELD", "protected")
-	assertJSONField(t, dataRow, "ND_BFAAD773361A781112FB325B433D54F7", "md5")
-
-	remapRealtime := parseU64JSONField(t, remapRow, "__REALTIME_TIMESTAMP")
-	dataRealtime := parseU64JSONField(t, dataRow, "__REALTIME_TIMESTAMP")
-	if dataRealtime != remapRealtime+1 {
-		t.Fatalf("data realtime = %d, want remap realtime + 1 (%d)", dataRealtime, remapRealtime+1)
-	}
-	remapMonotonic := parseU64JSONField(t, remapRow, "__MONOTONIC_TIMESTAMP")
-	dataMonotonic := parseU64JSONField(t, dataRow, "__MONOTONIC_TIMESTAMP")
-	if dataMonotonic != remapMonotonic+1 {
-		t.Fatalf("data monotonic = %d, want remap monotonic + 1 (%d)", dataMonotonic, remapMonotonic+1)
+		StringField("MESSAGE", "journald policy preserves trusted fields"),
+		StringField("TEST_ID", "journald-field-policy"),
+		StringField("_HOSTNAME", "synthetic-host"),
+		StringField("_TRANSPORT", "snmptrap"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_401_100_000, MonotonicUsec: 11}); err != nil {
+		t.Fatalf("Append(journald fields) error = %v", err)
 	}
 	if err := log.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
+	}
+
+	rows := runJournalctlDirectoryJSON(t, dir, "TEST_ID=journald-field-policy")
+	if len(rows) != 1 {
+		t.Fatalf("row count = %d, want 1; rows=%v", len(rows), rows)
+	}
+	assertJSONField(t, rows[0], "_HOSTNAME", "synthetic-host")
+	assertJSONField(t, rows[0], "_TRANSPORT", "snmptrap")
+	for _, path := range journalFiles(t, dir) {
+		verifyJournalctl(t, path)
+	}
+}
+
+func TestLogJournalAppPolicyDropsProtectedAndInvalidFields(t *testing.T) {
+	requireJournalctl(t)
+
+	opts := testOptions()
+	opts.FieldNamePolicy = FieldNamePolicyJournalApp
+	log, dir := newTestLog(t, LogConfig{
+		Options: opts,
+		Source:  "system",
+	})
+	if err := log.Append([]Field{
+		StringField("MESSAGE", "journal app policy keeps valid fields"),
+		StringField("TEST_ID", "journal-app-field-policy"),
+		StringField("_HOSTNAME", "dropped-host"),
+		StringField("foo.bar", "dropped-dot"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_401_200_000, MonotonicUsec: 12}); err != nil {
+		t.Fatalf("Append(journal-app fields) error = %v", err)
+	}
+	if err := log.Append([]Field{
+		StringField("_HOSTNAME", "drop-only"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_401_200_001, MonotonicUsec: 13}); !errors.Is(err, errEntryEmpty) {
+		t.Fatalf("Append(drop-only journal-app field) error = %v, want errEntryEmpty", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	rows := runJournalctlDirectoryJSON(t, dir, "TEST_ID=journal-app-field-policy")
+	if len(rows) != 1 {
+		t.Fatalf("row count = %d, want 1; rows=%v", len(rows), rows)
+	}
+	assertJSONField(t, rows[0], "MESSAGE", "journal app policy keeps valid fields")
+	if _, ok := rows[0]["_HOSTNAME"]; ok {
+		t.Fatalf("journal-app row kept protected field: %v", rows[0])
+	}
+	if _, ok := rows[0]["foo.bar"]; ok {
+		t.Fatalf("journal-app row kept invalid dotted field: %v", rows[0])
 	}
 	for _, path := range journalFiles(t, dir) {
 		verifyJournalctl(t, path)
 	}
 }
 
-func TestLogRemapRegistryReemitsAfterRotation(t *testing.T) {
-	requireJournalctl(t)
-
+func TestLogRawPolicyAllowsStructureOnlyFieldNames(t *testing.T) {
+	longName := strings.Repeat("a", 1024)
+	opts := testOptions()
+	opts.FieldNamePolicy = FieldNamePolicyRaw
 	log, dir := newTestLog(t, LogConfig{
-		Options:        testOptions(),
-		Source:         "system",
-		RotationPolicy: RotationPolicy{}.WithMaxEntries(2),
+		Options: opts,
+		Source:  "system",
 	})
-	for i := 0; i < 2; i++ {
-		if err := log.Append([]Field{
-			StringField("MESSAGE", fmt.Sprintf("remap-rotate-%d", i)),
-			StringField("log.body.HostName", fmt.Sprintf("host-%d", i)),
-		}, EntryOptions{
-			RealtimeUsec:  1_700_002_402_000_000 + uint64(i),
-			MonotonicUsec: 20 + uint64(i),
-		}); err != nil {
-			t.Fatalf("Append(remap rotate %d) error = %v", i, err)
-		}
+	if err := log.Append([]Field{
+		StringField("lowercase", "ok"),
+		StringField("foo.bar", "dot"),
+		StringField("field name", "space"),
+		StringField(longName, "long"),
+		{Name: "BINARY", Value: []byte{'a', 0, '=', 'b'}},
+	}, EntryOptions{RealtimeUsec: 1_700_002_401_300_000, MonotonicUsec: 13}); err != nil {
+		t.Fatalf("Append(raw fields) error = %v", err)
+	}
+	if err := log.Append([]Field{StringField("BAD=NAME", "bad")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+		t.Fatalf("Append(raw name containing '=') error = %v, want errFieldName", err)
 	}
 	if err := log.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
 
 	files := journalFiles(t, dir)
-	if len(files) != 2 {
-		t.Fatalf("journal file count = %d, want 2; files=%v", len(files), files)
+	if len(files) != 1 {
+		t.Fatalf("journal file count = %d, want 1; files=%v", len(files), files)
 	}
-	for _, path := range files {
-		verifyJournalctl(t, path)
-		rows := runJournalctlJSON(t, path)
-		if len(rows) != 2 {
-			t.Fatalf("%s row count = %d, want 2; rows=%v", path, len(rows), rows)
+	snapshot := readJournalSnapshot(t, files[0])
+	for _, field := range []string{"lowercase", "foo.bar", "field name", longName, "BINARY"} {
+		if _, ok := snapshot.fieldByPayload[field]; !ok {
+			t.Fatalf("missing raw FIELD object %q", field)
 		}
-		var remapRow, dataRow map[string]any
-		for _, row := range rows {
-			if row["ND_REMAPPING"] == "1" {
-				remapRow = row
-			}
-			if message, ok := row["MESSAGE"].(string); ok && strings.HasPrefix(message, "remap-rotate-") {
-				dataRow = row
-			}
-		}
-		if remapRow == nil {
-			t.Fatalf("%s missing remapping row: %v", path, rows)
-		}
-		if dataRow == nil {
-			t.Fatalf("%s missing data row: %v", path, rows)
-		}
-		assertJSONField(t, remapRow, "ND83AAO_LB_HOSTNAME", "log.body.HostName")
-		host, ok := dataRow["ND83AAO_LB_HOSTNAME"].(string)
-		if !ok || !strings.HasPrefix(host, "host-") {
-			t.Fatalf("%s remapped host = %v, want host-*", path, dataRow["ND83AAO_LB_HOSTNAME"])
-		}
+	}
+	if got := snapshot.dataByPayload["BINARY=a\x00=b"].payload; !bytes.Equal(got, []byte{'B', 'I', 'N', 'A', 'R', 'Y', '=', 'a', 0, '=', 'b'}) {
+		t.Fatalf("raw binary payload = %q", got)
 	}
 }
 

@@ -19,7 +19,7 @@ pub use file::{
     MIN_COMPRESS_THRESHOLD, PayloadParts, normalize_compress_threshold,
 };
 pub use reader::JournalReader;
-pub use writer::{EntryField, EntryWriteOptions, JournalWriter, StructuredField};
+pub use writer::{EntryField, EntryWriteOptions, FieldNamePolicy, JournalWriter, StructuredField};
 
 // Essential types for working with readers
 pub use cursor::Location;

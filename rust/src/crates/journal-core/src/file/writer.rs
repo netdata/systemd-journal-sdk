@@ -83,17 +83,33 @@ impl<'a> EntryField<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum FieldNamePolicy {
+    /// Trusted journald-compatible field names. Protected `_...` names are
+    /// allowed.
+    #[default]
+    Journald,
+    /// Journal DATA structure capability only. Stock systemd tooling
+    /// compatibility is not guaranteed for names outside JOURNALD.
+    Raw,
+    /// Untrusted application input accepted by journald. Invalid or protected
+    /// caller fields are dropped.
+    JournalApp,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EntryWriteOptions {
     /// Skips duplicate DATA reference elimination for this ENTRY.
     ///
     /// Set this only when the caller guarantees that the entry contains no
-    /// duplicate full `KEY=value` payloads after any field-name remapping.
+    /// duplicate full `KEY=value` payloads after field-name policy filtering.
     /// Offset sorting by DATA object offset is always performed regardless of
     /// this flag.
     /// Misuse can write duplicate DATA offsets into one ENTRY object. Keep the
     /// default `false` unless the producer owns and enforces that invariant.
     pub trusted_unique_payloads: bool,
+    /// Field-name validation policy for caller-provided fields.
+    pub field_name_policy: FieldNamePolicy,
 }
 
 impl EntryWriteOptions {
@@ -105,10 +121,19 @@ impl EntryWriteOptions {
         self.trusted_unique_payloads = enabled;
         self
     }
+
+    /// Selects the field-name validation policy for caller-provided fields.
+    pub fn field_name_policy(mut self, policy: FieldNamePolicy) -> Self {
+        self.field_name_policy = policy;
+        self
+    }
 }
 
-fn is_journal_field_name_valid(field_name: &[u8]) -> bool {
+fn is_journal_field_name_valid(field_name: &[u8], allow_protected: bool) -> bool {
     if field_name.is_empty() || field_name.len() > 64 {
+        return false;
+    }
+    if field_name[0] == b'_' && !allow_protected {
         return false;
     }
     if field_name[0].is_ascii_digit() {
@@ -117,6 +142,28 @@ fn is_journal_field_name_valid(field_name: &[u8]) -> bool {
     field_name
         .iter()
         .all(|&b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+}
+
+fn is_raw_field_name_valid(field_name: &[u8]) -> bool {
+    !field_name.is_empty() && !field_name.contains(&b'=')
+}
+
+fn accept_entry_field(field: EntryField<'_>, policy: FieldNamePolicy) -> Result<bool> {
+    let Some(field_name) = field.field_name() else {
+        return Err(JournalError::InvalidField);
+    };
+    let valid = match policy {
+        FieldNamePolicy::Raw => is_raw_field_name_valid(field_name),
+        FieldNamePolicy::Journald => is_journal_field_name_valid(field_name, true),
+        FieldNamePolicy::JournalApp => is_journal_field_name_valid(field_name, false),
+    };
+    if valid {
+        return Ok(true);
+    }
+    if matches!(policy, FieldNamePolicy::JournalApp) {
+        return Ok(false);
+    }
+    Err(JournalError::InvalidField)
 }
 
 #[derive(Debug)]
@@ -609,9 +656,6 @@ impl JournalWriter {
         monotonic: u64,
         options: EntryWriteOptions,
     ) -> Result<()> {
-        self.ensure_first_tag(journal_file)?;
-        self.maybe_append_tag(journal_file, realtime)?;
-
         let header = journal_file.journal_header_ref();
         assert!(header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash));
 
@@ -620,13 +664,25 @@ impl JournalWriter {
         let mut xor_hash = 0;
         {
             self.entry_items.clear();
+            let mut publication_ready = false;
             for field in fields {
+                if !accept_entry_field(field, options.field_name_policy)? {
+                    continue;
+                }
+                if !publication_ready {
+                    self.ensure_first_tag(journal_file)?;
+                    self.maybe_append_tag(journal_file, realtime)?;
+                    publication_ready = true;
+                }
                 let entry_item = self.add_data(journal_file, field)?;
                 self.entry_items.push(entry_item);
 
                 // Per journal file format spec: xor_hash always uses Jenkins lookup3,
                 // even for files with HEADER_INCOMPATIBLE_KEYED_HASH flag set
                 xor_hash ^= jenkins_hash64_parts(field.payload_parts().iter());
+            }
+            if self.entry_items.is_empty() {
+                return Err(JournalError::InvalidField);
             }
 
             if !self
@@ -768,13 +824,8 @@ impl JournalWriter {
         journal_file: &mut JournalFile<MmapMut>,
         field: EntryField<'_>,
     ) -> Result<EntryItem> {
-        self.ensure_first_tag(journal_file)?;
-
         let payload = field.payload_parts();
         let field_name = field.field_name().ok_or(JournalError::InvalidField)?;
-        if !is_journal_field_name_valid(field_name) {
-            return Err(JournalError::InvalidField);
-        }
 
         let hash = journal_file.hash_parts(payload);
 
@@ -1528,7 +1579,9 @@ mod tests {
     // Sealed writer tests
     // ------------------------------------------------------------------
 
-    use super::{EntryField, EntryWriteOptions, JournalFile, JournalWriter, StructuredField};
+    use super::{
+        EntryField, EntryWriteOptions, FieldNamePolicy, JournalFile, JournalWriter, StructuredField,
+    };
     use crate::file::{
         Compression, DEFAULT_COMPRESS_THRESHOLD, HeaderCompatibleFlags, JournalFileOptions,
         MIN_COMPRESS_THRESHOLD, MmapMut, ObjectFlags, normalize_compress_threshold,
@@ -2057,6 +2110,140 @@ mod tests {
                 .is_err()
         );
         assert_eq!(journal_file.journal_header_ref().n_entries, 0);
+    }
+
+    #[test]
+    fn writer_field_name_policies_cover_journald_app_and_raw() {
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+
+        let journald_path = journal_dir.join("journald.journal");
+        let repo_file =
+            crate::repository::File::from_path(&journald_path).expect("test journal path");
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3)),
+        )
+        .expect("create journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+        writer
+            .add_entry_structured(
+                &mut journal_file,
+                &[
+                    StructuredField::new(b"MESSAGE", b"trusted fields"),
+                    StructuredField::new(b"_HOSTNAME", b"synthetic-host"),
+                ],
+                1_700_002_111_000_000,
+                1,
+            )
+            .expect("journald policy accepts protected fields");
+        assert_eq!(journal_file.journal_header_ref().n_entries, 1);
+
+        let app_path = journal_dir.join("journal-app.journal");
+        let repo_file = crate::repository::File::from_path(&app_path).expect("test journal path");
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(5), test_uuid(6), test_uuid(7)),
+        )
+        .expect("create journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(8)).expect("create writer");
+        writer
+            .add_entry_structured_with_options(
+                &mut journal_file,
+                &[
+                    StructuredField::new(b"MESSAGE", b"app valid"),
+                    StructuredField::new(b"_HOSTNAME", b"drop-host"),
+                    StructuredField::new(b"lowercase", b"drop-lowercase"),
+                ],
+                1_700_002_112_000_000,
+                1,
+                EntryWriteOptions::default().field_name_policy(FieldNamePolicy::JournalApp),
+            )
+            .expect("journal-app policy drops invalid fields");
+        assert_eq!(journal_file.journal_header_ref().n_entries, 1);
+        let mut entry_offsets = Vec::new();
+        journal_file
+            .entry_offsets(&mut entry_offsets)
+            .expect("collect journal-app entry offsets");
+        let payloads = journal_file
+            .entry_data_objects(entry_offsets[0])
+            .expect("journal-app entry data iterator")
+            .map(|item| item.map(|object| object.raw_payload().to_vec()))
+            .collect::<crate::error::Result<Vec<_>>>()
+            .expect("read journal-app payloads");
+        assert!(payloads.iter().any(|p| p == b"MESSAGE=app valid"));
+        assert!(!payloads.iter().any(|p| p.starts_with(b"_HOSTNAME=")));
+        assert!(!payloads.iter().any(|p| p.starts_with(b"lowercase=")));
+        assert!(
+            writer
+                .add_entry_structured_with_options(
+                    &mut journal_file,
+                    &[StructuredField::new(b"_HOSTNAME", b"drop-only")],
+                    1_700_002_112_000_001,
+                    2,
+                    EntryWriteOptions::default().field_name_policy(FieldNamePolicy::JournalApp),
+                )
+                .is_err()
+        );
+
+        let raw_path = journal_dir.join("raw.journal");
+        let repo_file = crate::repository::File::from_path(&raw_path).expect("test journal path");
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(9), test_uuid(10), test_uuid(11)),
+        )
+        .expect("create journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(12)).expect("create writer");
+        let long_name = vec![b'a'; 1024];
+        writer
+            .add_entry_fields_with_options(
+                &mut journal_file,
+                [
+                    EntryField::structured(b"lowercase", b"ok"),
+                    EntryField::structured(b"foo.bar", b"dot"),
+                    EntryField::structured(b"field name", b"space"),
+                    EntryField::structured(long_name.as_slice(), b"long"),
+                    EntryField::structured(b"BINARY", b"a\0=b"),
+                ],
+                1_700_002_113_000_000,
+                1,
+                EntryWriteOptions::default().field_name_policy(FieldNamePolicy::Raw),
+            )
+            .expect("raw policy accepts structure-only names");
+        let mut entry_offsets = Vec::new();
+        journal_file
+            .entry_offsets(&mut entry_offsets)
+            .expect("collect raw entry offsets");
+        let payloads = journal_file
+            .entry_data_objects(entry_offsets[0])
+            .expect("raw entry data iterator")
+            .map(|item| item.map(|object| object.raw_payload().to_vec()))
+            .collect::<crate::error::Result<Vec<_>>>()
+            .expect("read raw payloads");
+        assert!(payloads.iter().any(|p| p == b"lowercase=ok"));
+        assert!(payloads.iter().any(|p| p == b"foo.bar=dot"));
+        assert!(payloads.iter().any(|p| p == b"field name=space"));
+        assert!(
+            payloads
+                .iter()
+                .any(|p| p == &format!("{}=long", "a".repeat(1024)).into_bytes())
+        );
+        assert!(payloads.iter().any(|p| p == b"BINARY=a\0=b"));
+        assert!(
+            writer
+                .add_entry_fields_with_options(
+                    &mut journal_file,
+                    [EntryField::structured(b"BAD=NAME", b"bad")],
+                    1_700_002_113_000_001,
+                    2,
+                    EntryWriteOptions::default().field_name_policy(FieldNamePolicy::Raw),
+                )
+                .is_err()
+        );
     }
 
     #[test]

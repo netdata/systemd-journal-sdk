@@ -63,6 +63,9 @@ type Options struct {
 	// explicit per-entry publication; values greater than 1 publish after every N
 	// appended entries.
 	LivePublishEveryEntries *uint64
+	// FieldNamePolicy controls validation for caller-provided fields. The zero
+	// value is FieldNamePolicyJournald.
+	FieldNamePolicy FieldNamePolicy
 }
 
 // EntryOptions controls timestamps and boot ID for one appended entry.
@@ -114,6 +117,7 @@ type Writer struct {
 	postChangeFence             atomic.Uint64
 	livePublishEveryEntries     uint64
 	entriesSinceLivePublication uint64
+	fieldNamePolicy             FieldNamePolicy
 }
 
 // PublishEveryEntries returns a pointer suitable for Options.LivePublishEveryEntries.
@@ -126,6 +130,9 @@ func Create(path string, opts Options) (*Writer, error) {
 	opts = normalizeOptions(opts)
 	if !validCompression(opts.Compression) {
 		return nil, fmt.Errorf("unsupported journal compression: %d", opts.Compression)
+	}
+	if err := validateFieldNamePolicy(opts.FieldNamePolicy); err != nil {
+		return nil, err
 	}
 
 	lock, err := acquireWriterLock(path)
@@ -152,6 +159,7 @@ func Create(path string, opts Options) (*Writer, error) {
 		file: f, path: path, lock: lock, bootID: opts.BootID, started: time.Now(),
 		compression: opts.Compression, compressThreshold: opts.CompressThresholdBytes, compact: opts.Compact,
 		livePublishEveryEntries: livePublishEveryEntries(opts),
+		fieldNamePolicy:         opts.FieldNamePolicy,
 	}
 	if err := w.initialize(opts); err != nil {
 		_ = w.closeArena()
@@ -171,6 +179,9 @@ func Open(path string) (*Writer, error) {
 // using options that affect future appends.
 func OpenWithOptions(path string, opts Options) (*Writer, error) {
 	opts = normalizeOpenOptions(opts)
+	if err := validateFieldNamePolicy(opts.FieldNamePolicy); err != nil {
+		return nil, err
+	}
 	lock, err := acquireWriterLock(path)
 	if err != nil {
 		return nil, err
@@ -240,6 +251,7 @@ func OpenWithOptions(path string, opts Options) (*Writer, error) {
 		compressThreshold:       defaultCompressThreshold,
 		compact:                 header.isCompact(),
 		livePublishEveryEntries: livePublishEveryEntries(opts),
+		fieldNamePolicy:         opts.FieldNamePolicy,
 	}
 	fileSize, ok := checkedAdd(header.headerSize, header.arenaSize)
 	if !ok {
@@ -303,14 +315,14 @@ func (w *Writer) Append(fields []Field, opts EntryOptions) error {
 		opts.BootID = w.bootID
 	}
 
-	if err := w.maybeAppendTag(opts.RealtimeUsec); err != nil {
+	preparedFields, err := prepareFieldsForPolicy(fields, w.fieldNamePolicy)
+	if err != nil {
 		return err
 	}
+	fields = preparedFields
 
-	for _, field := range fields {
-		if err := validateFieldName(field.Name); err != nil {
-			return err
-		}
+	if err := w.maybeAppendTag(opts.RealtimeUsec); err != nil {
+		return err
 	}
 
 	items := w.entryItemsScratch[:0]
@@ -594,26 +606,6 @@ func mustRandomUUID() UUID {
 
 func isZeroUUID(id UUID) bool {
 	return id == UUID{}
-}
-
-func validateFieldName(name string) error {
-	if name == "" {
-		return errFieldName
-	}
-	if len(name) > 64 {
-		return fmt.Errorf("%w: %q", errFieldName, name)
-	}
-	if name[0] >= '0' && name[0] <= '9' {
-		return fmt.Errorf("%w: %q", errFieldName, name)
-	}
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		if c == '_' || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
-			continue
-		}
-		return fmt.Errorf("%w: %q", errFieldName, name)
-	}
-	return nil
 }
 
 func startTimeForTailMonotonic(now time.Time, tailUsec uint64) time.Time {

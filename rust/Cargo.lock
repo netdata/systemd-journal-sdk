@@ -1199,7 +1199,6 @@ dependencies = [
  "parking_lot",
  "rand 0.9.4",
  "rayon",
- "rdp",
  "regex",
  "rustc-hash",
  "ruzstd",
@@ -1276,7 +1275,6 @@ dependencies = [
  "journal-core",
  "journal-registry",
  "nix",
- "rdp",
  "serde",
  "serde_json",
  "tempfile",
@@ -1944,13 +1942,6 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
-]
-
-[[package]]
-name = "rdp"
-version = "0.1.0"
-dependencies = [
- "md5",
 ]
 
 [[package]]

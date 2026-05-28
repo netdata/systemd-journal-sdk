@@ -16,12 +16,12 @@ Current writer scope:
 - byte-safe field values through `&[u8]` field payloads;
 - direct-file writing through `journal_core`;
 - high-level directory writing through `journal::Log`;
-- Netdata-compatible chain active naming by default, with
+- chain active naming by default, with
   `Config::with_strict_systemd_naming(true)` available for strict systemd
   `<source>.journal` active naming;
-- high-level `Log` field-name remapping for Netdata/OTEL-style dotted,
-  lowercase, or otherwise incompatible field names through `ND_REMAPPING=1`
-  metadata rows and stock-compatible `ND_*` data fields;
+- shared field-name policy layers for direct-file and directory writers:
+  default `FieldNamePolicy::Journald`, app-facing
+  `FieldNamePolicy::JournalApp`, and structure-level `FieldNamePolicy::Raw`;
 - entry-count, file-size, and duration rotation;
 - tracked journal-file-count, byte-size, and age retention;
 - pure cross-SDK cooperative lockfile with stale-owner detection to prevent
@@ -110,7 +110,7 @@ log.write_entry(
     &[
         b"MESSAGE=plugin started".as_slice(),
         b"PRIORITY=6".as_slice(),
-        b"SYSLOG_IDENTIFIER=netdata-plugin".as_slice(),
+        b"SYSLOG_IDENTIFIER=example-plugin".as_slice(),
     ],
     None,
 )?;
@@ -120,7 +120,7 @@ log.close()?;
 ```
 
 `Log` stores files below `<directory>/<machine-id>/`. By default the active file
-uses the Netdata Rust writer chain filename form
+uses the chain filename form
 `<source>@<seqnum-id>-<head-seqnum>-<head-realtime>.journal`; call
 `Config::with_strict_systemd_naming(true)` to use `<source>.journal` as the
 active file.
@@ -161,12 +161,14 @@ chain tail only when the tail entry boot ID matches the current writer boot ID.
 `Log` is a single-writer object; callers must serialize method calls on one
 instance. The SDK writer lock prevents another cooperating SDK writer from
 owning the same file, but it is not a per-append Rust mutex.
-`write_entry()` and `write_entry_with_timestamps()` remap non-systemd-compatible
-field names, such as OTEL dotted or lowercase names, into `ND_*` data fields
-and emit `ND_REMAPPING=1` metadata rows once per new mapping in each active
-journal file. User-supplied protected names beginning with `_` are remapped;
-SDK-owned protected fields such as `_BOOT_ID` and `_SOURCE_REALTIME_TIMESTAMP`
-are injected internally.
+`Config::with_field_name_policy()` selects the high-level writer field-name
+layer. The default `FieldNamePolicy::Journald` preserves trusted systemd fields
+such as `_HOSTNAME` and `_TRANSPORT`. `FieldNamePolicy::JournalApp` drops caller
+fields that journald would reject from untrusted applications and fails only
+when no caller fields remain. `FieldNamePolicy::Raw` accepts any non-empty
+field name that does not contain `=`, but RAW-mode files are not guaranteed to
+be accepted by stock systemd tooling. Producer-specific field transformations
+belong outside the SDK.
 
 Live-reader publication can be tuned when the consumer does not need immediate
 stock follow-reader wakeups:

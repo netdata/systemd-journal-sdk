@@ -3,9 +3,8 @@
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readSync, readdirSync, readFileSync, unlinkSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID, stringToUUID, uuidToString } from './binary.js';
-import { Writer } from './writer.js';
+import { Writer, normalizeFieldNamePolicy, prepareFieldsForPolicy, writerPolicyForLogPolicy } from './writer.js';
 import { HEADER_SIZE, STATE_ONLINE, parseFileHeader, parseObjectHeader, normalizeJournalMaxFileSize } from './header.js';
-import { REMAPPING_MARKER, remapFields } from './field-remap.js';
 
 const DEFAULT_MAX_ENTRIES = 0;
 const DEFAULT_MAX_BYTES = 0;
@@ -43,6 +42,7 @@ export class Log {
     this.compressionThresholdBytes = options.compressionThresholdBytes;
     this.compact = options.compact === true || options.format === 'compact';
     this.livePublishEveryEntries = optionValue(options, 'livePublishEveryEntries', 'live_publish_every_entries');
+    this.fieldNamePolicy = normalizeFieldNamePolicy(optionValue(options, 'fieldNamePolicy', 'field_name_policy'));
 
     const rotationPolicy = optionValue(options, 'rotationPolicy', 'rotation_policy');
     const retentionPolicy = optionValue(options, 'retentionPolicy', 'retention_policy');
@@ -85,7 +85,6 @@ export class Log {
 
     this.activePath = null;
     this.writer = null;
-    this.remaps = new Map();
     this.closed = false;
     this.openRetentionApplied = false;
     this._pathCounter = 0;
@@ -147,16 +146,7 @@ export class Log {
     }
     this._applyRetentionOnOpen();
 
-    const remapped = remapFields(fields, this.remaps);
-    fields = remapped.fields;
-    if (remapped.mappings.length > 0) {
-      this.writer.append(this._remappingEntryFields(remapped.mappings), appendOptions);
-      for (const mapping of remapped.mappings) {
-        this.remaps.set(mapping.original, mapping.mapped);
-      }
-      this._captureWriterIdentity();
-      appendOptions = this._entryOptionsForAppend(appendOptions);
-    }
+    fields = prepareFieldsForPolicy(fields, this.fieldNamePolicy);
 
     const result = this.writer.append(this._fieldsForAppend(fields, appendOptions), appendOptions);
     this._captureWriterIdentity();
@@ -197,7 +187,6 @@ export class Log {
 
     this.activePath = this.strictSystemdNaming ? this._systemdActivePath() : null;
     this._openWriter(options, LOG_LIFECYCLE_REASON_ROTATION);
-    this.remaps = new Map();
     this._emitLifecycle({
       type: LOG_LIFECYCLE_ROTATED,
       reason: LOG_LIFECYCLE_REASON_ROTATION,
@@ -213,7 +202,10 @@ export class Log {
       this.activePath = this._chainPathFor(this.seqnumId, this.nextSeqnum, headRealtime);
     }
     if (existsSync(this.activePath)) {
-      this.writer = Writer.open(this.activePath, { livePublishEveryEntries: this.livePublishEveryEntries });
+      this.writer = Writer.open(this.activePath, {
+        livePublishEveryEntries: this.livePublishEveryEntries,
+        fieldNamePolicy: writerPolicyForLogPolicy(this.fieldNamePolicy),
+      });
       if (this.writer.header.n_entries === 0n) {
         this._discardEmptyOpenedWriter();
         if (!this.activePath) {
@@ -227,7 +219,10 @@ export class Log {
     }
 
     if (existsSync(this.activePath)) {
-      this.writer = Writer.open(this.activePath, { livePublishEveryEntries: this.livePublishEveryEntries });
+      this.writer = Writer.open(this.activePath, {
+        livePublishEveryEntries: this.livePublishEveryEntries,
+        fieldNamePolicy: writerPolicyForLogPolicy(this.fieldNamePolicy),
+      });
       this._captureWriterIdentity();
       return;
     }
@@ -240,6 +235,7 @@ export class Log {
     if (this.livePublishEveryEntries !== undefined) {
       opts.livePublishEveryEntries = this.livePublishEveryEntries;
     }
+    opts.fieldNamePolicy = writerPolicyForLogPolicy(this.fieldNamePolicy);
     if (this.seqnumId) opts.seqnumId = this.seqnumId;
     if (this.bootId) opts.bootId = this.bootId;
     if (this.machineId) opts.machineId = this.machineId;
@@ -263,7 +259,10 @@ export class Log {
 
   _attachExistingActive(path) {
     this.activePath = path;
-    this.writer = Writer.open(path, { livePublishEveryEntries: this.livePublishEveryEntries });
+    this.writer = Writer.open(path, {
+      livePublishEveryEntries: this.livePublishEveryEntries,
+      fieldNamePolicy: writerPolicyForLogPolicy(this.fieldNamePolicy),
+    });
     if (this.writer.header.n_entries === 0n) {
       this._discardEmptyOpenedWriter();
       return;
@@ -479,17 +478,6 @@ export class Log {
     return [
       ...fields,
       { name: '_SOURCE_REALTIME_TIMESTAMP', value: Buffer.from(String(BigInt(sourceRealtime)), 'utf8') },
-    ];
-  }
-
-  _remappingEntryFields(mappings) {
-    return [
-      { name: '_BOOT_ID', value: Buffer.from(uuidToString(this.bootId), 'utf8') },
-      { name: REMAPPING_MARKER, value: Buffer.from('1', 'utf8') },
-      ...mappings.map((mapping) => ({
-        name: mapping.mapped,
-        value: Buffer.from(mapping.original, 'utf8'),
-      })),
     ];
   }
 

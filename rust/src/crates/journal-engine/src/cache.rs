@@ -9,11 +9,8 @@ use serde::{Deserialize, Serialize};
 /// Cache version number. Increment this when the FileIndex or FileIndexKey
 /// schema changes to automatically invalidate old cache entries.
 ///
-/// v2: ND_REMAPPING bookkeeping entries are now excluded from the index's
-///     time histogram, time-ordered entry list, and per-field bitmaps. Old
-///     v1 caches contain inflated `total_entries` and a phantom "(unset)"
-///     contribution in the histogram bucket holding the remapping entry's
-///     `__REALTIME_TIMESTAMP`.
+/// v2: File index semantics changed from earlier pre-release builds. Old cache
+///     entries are not reused across SDK versions with different index rules.
 const CACHE_VERSION: u32 = 2;
 
 /// Cache key for file indexes that includes the file, facets, source timestamp

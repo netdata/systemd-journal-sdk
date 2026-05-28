@@ -158,12 +158,24 @@ Writer API hierarchy:
 - Every language must expose a structured binary-safe writer layer where each
   field is represented as `{name, value}` / `Field{Name, Value}` without
   requiring callers to concatenate and then re-parse `KEY=value` bytes. This is
-  the canonical SDK hot path for Netdata-style producers that already hold
-  structured values.
-- Structured field names follow the same low-level field-name validity rules as
-  raw payload prefixes unless the high-level `Log` writer remapping layer is in
-  use. Structured values are arbitrary bytes and may contain `=`, NUL, and other
-  binary data.
+  the canonical SDK hot path for producers that already hold structured values.
+- Every direct-file writer and high-level directory writer exposes the same
+  field-name policy layers:
+  - `RAW`: accepts every field name the journal DATA structure can represent
+    directly, currently non-empty and no `=` in the field name. Values are
+    arbitrary bytes and may contain `=`, NUL, and other binary data. RAW-mode
+    files are journal files, but they are not guaranteed to be accepted by
+    stock systemd tooling when field names violate systemd conventions.
+  - `JOURNALD`: default trusted-producer mode. It accepts non-empty field names
+    up to 64 bytes, rejects digit-first names, allows only uppercase ASCII
+    letters, digits, and underscores, and allows leading `_` protected fields
+    such as `_HOSTNAME` and `_TRANSPORT`.
+  - `JOURNAL-APP`: untrusted application-facing mode. It uses the same
+    character and length rules as `JOURNALD`, disallows leading `_`, drops
+    invalid caller fields, and fails only when no caller field remains.
+- The SDK must not perform producer-specific field-name remapping. Consumers
+  that need their own naming scheme must transform fields before calling the
+  SDK writer API.
 - Low-level writers keep systemd-style ENTRY item normalization by default:
   DATA object references are sorted by on-disk DATA object offset and duplicate
   DATA references in one entry are removed.
@@ -278,13 +290,11 @@ Current Go writer feature slice:
   overrides are clamped forward for strict chain ordering. `RealtimeUsecSet`
   and `MonotonicUsecSet` distinguish explicit zero timestamp overrides from
   omitted zero-value struct fields;
-- high-level Rust, Go, Node.js, and Python `Log` writers accept Netdata/OTEL
-  field names and automatically remap non-systemd-compatible names before
-  writing. Each active journal file emits `ND_REMAPPING=1` metadata rows for new
-  mappings, and data rows use stock-compatible `ND_*` field names. User-supplied
-  protected names that begin with `_` are remapped; SDK-owned protected fields
-  such as `_BOOT_ID` and `_SOURCE_REALTIME_TIMESTAMP` are injected internally.
-  Low-level single-file writers remain strict and reject invalid field names;
+- high-level Rust, Go, Node.js, and Python `Log` writers use `JOURNALD`
+  field-name policy by default, preserving caller-provided protected systemd
+  fields such as `_HOSTNAME`. SDK-owned protected fields such as `_BOOT_ID` and
+  `_SOURCE_REALTIME_TIMESTAMP` are injected internally under journald-compatible
+  rules. `JOURNAL-APP` and `RAW` are explicit caller-selected policies;
 - pure cross-SDK cooperative lockfile with stale-owner detection, plus a
   secondary POSIX `flock`, to protect the one-writer contract among
   cooperating SDK writers;
@@ -467,8 +477,8 @@ Current Rust writer feature slice:
 - high-level directory writing with Netdata-compatible chain active naming by
   default and an explicit strict systemd active naming option;
 - high-level Rust `Log` structured write methods that preserve the existing
-  rotation, retention, timestamp, and remapping behavior while avoiding raw
-  `KEY=value` construction in the non-remapped hot path;
+  rotation, retention, and timestamp behavior while avoiding raw `KEY=value`
+  construction in the structured hot path;
 - zero-entry crash-created active files are discarded on reopen before append so
   sequence numbers continue from the existing chain tail;
 - entry-count, file-size, and active-file-duration rotation. Duration rotation

@@ -18,7 +18,12 @@ from .facade import (
 )
 from .reader import FileReader
 from .directory_reader import DirectoryReader
-from .writer import Writer
+from .writer import (
+    FIELD_NAME_POLICY_JOURNALD,
+    FIELD_NAME_POLICY_JOURNAL_APP,
+    FIELD_NAME_POLICY_RAW,
+    Writer,
+)
 from .directory_writer import (
     Log,
     LOG_OPEN_LAZY, LOG_OPEN_EAGER,
@@ -49,6 +54,8 @@ __all__ = [
     'OUTPUT_MODE_DEFAULT', 'OUTPUT_MODE_JSON', 'OUTPUT_MODE_EXPORT',
     'export_entry', 'json_entry', 'text_entry',
     'FileReader', 'DirectoryReader', 'Writer', 'Log',
+    'FIELD_NAME_POLICY_JOURNALD', 'FIELD_NAME_POLICY_JOURNAL_APP',
+    'FIELD_NAME_POLICY_RAW',
     'LOG_OPEN_LAZY', 'LOG_OPEN_EAGER',
     'LOG_IDENTITY_AUTO', 'LOG_IDENTITY_STRICT',
     'LOG_LIFECYCLE_CREATED', 'LOG_LIFECYCLE_ROTATED', 'LOG_LIFECYCLE_DELETED',

@@ -15,7 +15,6 @@ members = [
     "src/crates/journal-log-writer",
     "src/crates/journal-registry",
     "src/crates/journal-engine",
-    "src/crates/rdp",
 
     # Public SDK
     "src/journal",
@@ -151,7 +150,6 @@ flatten-serde-json = { git = "https://github.com/meilisearch/meilisearch", tag =
 # Internal crate path dependencies
 journal-common = { path = "src/crates/journal-common" }
 journal-registry = { path = "src/crates/journal-registry" }
-rdp = { path = "src/crates/rdp" }
 journal-core = { path = "src/crates/journal-core" }
 journal-index = { path = "src/crates/journal-index" }
 journal-log-writer = { path = "src/crates/journal-log-writer" }

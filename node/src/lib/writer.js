@@ -37,6 +37,9 @@ export const COMPRESSION_XZ = 2;
 export const COMPRESSION_LZ4 = 3;
 export const DEFAULT_COMPRESS_THRESHOLD = 512;
 export const MIN_COMPRESS_THRESHOLD = 8;
+export const FIELD_NAME_POLICY_JOURNALD = 'journald';
+export const FIELD_NAME_POLICY_RAW = 'raw';
+export const FIELD_NAME_POLICY_JOURNAL_APP = 'journal-app';
 
 export class Writer {
   constructor(fd, path, lock) {
@@ -55,6 +58,7 @@ export class Writer {
     this.seal = null;
     this.livePublishEveryEntries = 1;
     this.entriesSinceLivePublication = 0;
+    this.fieldNamePolicy = FIELD_NAME_POLICY_JOURNALD;
   }
 
   // Create or truncate a journal file.
@@ -69,6 +73,7 @@ export class Writer {
       w.compressThreshold = normalizeCompressThreshold(opts.compressionThresholdBytes);
       w.compact = opts.compact === true || opts.format === 'compact';
       w.livePublishEveryEntries = normalizeLivePublishEveryEntries(opts.livePublishEveryEntries ?? opts.live_publish_every_entries);
+      w.fieldNamePolicy = normalizeFieldNamePolicy(opts.fieldNamePolicy ?? opts.field_name_policy);
       if (opts.seal) {
         w.seal = new SealState(opts.seal);
       }
@@ -124,6 +129,7 @@ export class Writer {
       w.compressThreshold = DEFAULT_COMPRESS_THRESHOLD;
       w.compact = (header.incompatible_flags & INCOMPATIBLE_COMPACT) !== 0;
       w.livePublishEveryEntries = normalizeLivePublishEveryEntries(opts.livePublishEveryEntries ?? opts.live_publish_every_entries);
+      w.fieldNamePolicy = normalizeFieldNamePolicy(opts.fieldNamePolicy ?? opts.field_name_policy);
 
       w.header.state = STATE_ONLINE;
       w._writeHeader();
@@ -268,20 +274,21 @@ export class Writer {
     const monotonic = hasMonotonic ? BigInt(opts.monotonicUsec) : BigInt((now - this.started) * 1000);
     const bootId = opts.bootId && !isZeroUUID(opts.bootId) ? Buffer.from(opts.bootId) : this.bootId;
 
-    this._maybeAppendTag(realtime);
-
     // Build payloads
     const payloads = [];
-    for (const field of fields) {
+    const preparedFields = prepareFieldsForPolicy(fields, this.fieldNamePolicy);
+    for (const field of preparedFields) {
       const name = field.name;
+      const nameBuf = fieldNameBytes(name);
       const valueBuf = Buffer.isBuffer(field.value) ? field.value : Buffer.from(field.value);
-      _validateFieldName(name);
-      const payload = Buffer.alloc(name.length + 1 + valueBuf.length);
-      Buffer.from(name, 'utf8').copy(payload, 0);
-      payload[name.length] = 0x3d;
-      valueBuf.copy(payload, name.length + 1);
+      const payload = Buffer.alloc(nameBuf.length + 1 + valueBuf.length);
+      nameBuf.copy(payload, 0);
+      payload[nameBuf.length] = 0x3d;
+      valueBuf.copy(payload, nameBuf.length + 1);
       payloads.push(payload);
     }
+
+    this._maybeAppendTag(realtime);
 
     // Write data objects, compute items and xor hash
     const items = [];
@@ -1076,14 +1083,75 @@ function normalizeLivePublishEveryEntries(value) {
   return value;
 }
 
-function _validateFieldName(name) {
-  if (!name || name.length === 0) throw new Error('invalid field name: empty');
-  if (name.length > 64) throw new Error(`invalid field name: too long (${name.length})`);
-  if (name[0] >= '0' && name[0] <= '9') throw new Error(`invalid field name: starts with digit: ${name}`);
-  for (let i = 0; i < name.length; i++) {
-    const c = name.charCodeAt(i);
+export function normalizeFieldNamePolicy(value) {
+  if (value === undefined || value === null || value === '') return FIELD_NAME_POLICY_JOURNALD;
+  if (value === FIELD_NAME_POLICY_JOURNALD) return FIELD_NAME_POLICY_JOURNALD;
+  if (value === FIELD_NAME_POLICY_RAW) return FIELD_NAME_POLICY_RAW;
+  if (value === FIELD_NAME_POLICY_JOURNAL_APP) return FIELD_NAME_POLICY_JOURNAL_APP;
+  throw new Error(`unsupported field name policy: ${value}`);
+}
+
+export function writerPolicyForLogPolicy(policy) {
+  return normalizeFieldNamePolicy(policy) === FIELD_NAME_POLICY_RAW
+    ? FIELD_NAME_POLICY_RAW
+    : FIELD_NAME_POLICY_JOURNALD;
+}
+
+export function prepareFieldsForPolicy(fields, policy) {
+  const normalized = normalizeFieldNamePolicy(policy);
+  if (!Array.isArray(fields) || fields.length === 0) throw new Error('empty entry');
+  if (normalized === FIELD_NAME_POLICY_JOURNAL_APP) {
+    const filtered = fields.filter((field) => {
+      try {
+        validateFieldNameForPolicy(field.name, normalized);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    if (filtered.length === 0) throw new Error('empty entry');
+    return filtered;
+  }
+  for (const field of fields) validateFieldNameForPolicy(field.name, normalized);
+  return fields;
+}
+
+export function validateFieldNameForPolicy(name, policy = FIELD_NAME_POLICY_JOURNALD) {
+  const normalized = normalizeFieldNamePolicy(policy);
+  if (normalized === FIELD_NAME_POLICY_RAW) return validateRawFieldName(name);
+  return validateJournaldFieldName(name, normalized === FIELD_NAME_POLICY_JOURNALD);
+}
+
+export function fieldNameBytes(name) {
+  if (Buffer.isBuffer(name)) return name;
+  if (name instanceof Uint8Array) return Buffer.from(name);
+  return Buffer.from(String(name), 'utf8');
+}
+
+function fieldNameForError(name) {
+  if (Buffer.isBuffer(name) || name instanceof Uint8Array) return Buffer.from(name).toString('utf8');
+  return String(name);
+}
+
+function validateRawFieldName(name) {
+  const bytes = fieldNameBytes(name);
+  if (bytes.length === 0) throw new Error('invalid field name: empty');
+  for (let i = 0; i < bytes.length; i++) {
+    if (bytes[i] === 0x3d) throw new Error(`invalid field name: contains '=': ${fieldNameForError(name)}`);
+  }
+}
+
+function validateJournaldFieldName(name, allowProtected) {
+  const bytes = fieldNameBytes(name);
+  const display = fieldNameForError(name);
+  if (bytes.length === 0) throw new Error('invalid field name: empty');
+  if (bytes.length > 64) throw new Error(`invalid field name: too long (${bytes.length})`);
+  if (!allowProtected && bytes[0] === 0x5f) throw new Error(`invalid field name: protected: ${display}`);
+  if (bytes[0] >= 0x30 && bytes[0] <= 0x39) throw new Error(`invalid field name: starts with digit: ${display}`);
+  for (let i = 0; i < bytes.length; i++) {
+    const c = bytes[i];
     if (c !== 0x5f && !(c >= 0x41 && c <= 0x5a) && !(c >= 0x30 && c <= 0x39)) {
-      throw new Error(`invalid field name: bad char at ${i}: ${name}`);
+      throw new Error(`invalid field name: bad char at ${i}: ${display}`);
     }
   }
 }

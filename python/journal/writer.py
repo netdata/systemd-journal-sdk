@@ -39,6 +39,9 @@ COMPRESSION_XZ = 2
 COMPRESSION_LZ4 = 3
 DEFAULT_COMPRESS_THRESHOLD = 512
 MIN_COMPRESS_THRESHOLD = 8
+FIELD_NAME_POLICY_JOURNALD = 'journald'
+FIELD_NAME_POLICY_RAW = 'raw'
+FIELD_NAME_POLICY_JOURNAL_APP = 'journal-app'
 
 
 class Writer:
@@ -58,6 +61,7 @@ class Writer:
         self._seal = None
         self._live_publish_every_entries = 1
         self._entries_since_live_publication = 0
+        self._field_name_policy = FIELD_NAME_POLICY_JOURNALD
 
     @staticmethod
     def create(path, opts=None):
@@ -73,6 +77,9 @@ class Writer:
             w._compact = opts.get('compact') is True or opts.get('format') == 'compact'
             w._live_publish_every_entries = _normalize_live_publish_every_entries(
                 opts.get('live_publish_every_entries', opts.get('livePublishEveryEntries'))
+            )
+            w._field_name_policy = _normalize_field_name_policy(
+                opts.get('field_name_policy', opts.get('fieldNamePolicy'))
             )
             if w._compression == COMPRESSION_ZSTD:
                 _ensure_zstd_available()
@@ -154,6 +161,9 @@ class Writer:
             w._compact = bool(flags & INCOMPATIBLE_COMPACT)
             w._live_publish_every_entries = _normalize_live_publish_every_entries(
                 opts.get('live_publish_every_entries', opts.get('livePublishEveryEntries'))
+            )
+            w._field_name_policy = _normalize_field_name_policy(
+                opts.get('field_name_policy', opts.get('fieldNamePolicy'))
             )
 
             w._header['state'] = STATE_ONLINE
@@ -291,11 +301,11 @@ class Writer:
         if isinstance(boot_id, str):
             boot_id = bytes.fromhex(boot_id)
 
-        self._maybe_append_tag(realtime)
-
         payloads = []
+        fields = _prepare_fields_for_policy(fields, self._field_name_policy)
         for field in fields:
             name = field['name']
+            name_bytes = _field_name_bytes(name)
             value = field['value']
             if isinstance(value, str):
                 value = value.encode('utf-8')
@@ -303,9 +313,10 @@ class Writer:
                 value = bytes(value)
             elif not isinstance(value, bytes):
                 value = bytes(value)
-            _validate_field_name(name)
-            payload = name.encode('utf-8') + b'=' + value
+            payload = name_bytes + b'=' + value
             payloads.append(payload)
+
+        self._maybe_append_tag(realtime)
 
         items = []
         xor_hash = 0
@@ -960,17 +971,85 @@ def _lock_fd(fd):
     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
-def _validate_field_name(name):
-    if not name or len(name) == 0:
+def _normalize_field_name_policy(value):
+    if value is None or value == '':
+        return FIELD_NAME_POLICY_JOURNALD
+    if value == FIELD_NAME_POLICY_JOURNALD:
+        return FIELD_NAME_POLICY_JOURNALD
+    if value == FIELD_NAME_POLICY_RAW:
+        return FIELD_NAME_POLICY_RAW
+    if value == FIELD_NAME_POLICY_JOURNAL_APP:
+        return FIELD_NAME_POLICY_JOURNAL_APP
+    raise ValueError(f'unsupported field name policy: {value}')
+
+
+def _writer_policy_for_log_policy(policy):
+    return FIELD_NAME_POLICY_RAW if _normalize_field_name_policy(policy) == FIELD_NAME_POLICY_RAW else FIELD_NAME_POLICY_JOURNALD
+
+
+def _prepare_fields_for_policy(fields, policy):
+    policy = _normalize_field_name_policy(policy)
+    if not fields:
+        raise ValueError('empty entry')
+    if policy == FIELD_NAME_POLICY_JOURNAL_APP:
+        filtered = []
+        for field in fields:
+            try:
+                _validate_field_name_for_policy(field['name'], policy)
+            except ValueError:
+                continue
+            filtered.append(field)
+        if not filtered:
+            raise ValueError('empty entry')
+        return filtered
+    for field in fields:
+        _validate_field_name_for_policy(field['name'], policy)
+    return fields
+
+
+def _validate_field_name_for_policy(name, policy=FIELD_NAME_POLICY_JOURNALD):
+    policy = _normalize_field_name_policy(policy)
+    if policy == FIELD_NAME_POLICY_RAW:
+        return _validate_raw_field_name(name)
+    return _validate_journald_field_name(name, allow_protected=(policy == FIELD_NAME_POLICY_JOURNALD))
+
+
+def _field_name_bytes(name):
+    if isinstance(name, bytes):
+        return name
+    if isinstance(name, (bytearray, memoryview)):
+        return bytes(name)
+    return str(name).encode('utf-8')
+
+
+def _field_name_for_error(name):
+    if isinstance(name, (bytes, bytearray, memoryview)):
+        return bytes(name).decode('utf-8', errors='replace')
+    return str(name)
+
+
+def _validate_raw_field_name(name):
+    data = _field_name_bytes(name)
+    if len(data) == 0:
         raise ValueError('invalid field name: empty')
-    if len(name) > 64:
-        raise ValueError(f'invalid field name: too long ({len(name)})')
-    if name[0] >= '0' and name[0] <= '9':
-        raise ValueError(f'invalid field name: starts with digit: {name}')
-    for i, c in enumerate(name):
-        code = ord(c)
+    if b'=' in data:
+        raise ValueError(f"invalid field name: contains '=': {_field_name_for_error(name)}")
+
+
+def _validate_journald_field_name(name, allow_protected=True):
+    data = _field_name_bytes(name)
+    display = _field_name_for_error(name)
+    if len(data) == 0:
+        raise ValueError('invalid field name: empty')
+    if len(data) > 64:
+        raise ValueError(f'invalid field name: too long ({len(data)})')
+    if not allow_protected and data[0] == 0x5F:
+        raise ValueError(f'invalid field name: protected: {display}')
+    if 0x30 <= data[0] <= 0x39:
+        raise ValueError(f'invalid field name: starts with digit: {display}')
+    for i, code in enumerate(data):
         if code != 0x5F and not (0x41 <= code <= 0x5A) and not (0x30 <= code <= 0x39):
-            raise ValueError(f'invalid field name: bad char at {i}: {name}')
+            raise ValueError(f'invalid field name: bad char at {i}: {display}')
 
 
 def _uuid_option(value, fallback):

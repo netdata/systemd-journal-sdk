@@ -3,7 +3,6 @@
 use super::mmap::{
     ExperimentalMmapStrategy, MemoryMap, MemoryMapMut, WindowManager, WindowManagerStats,
 };
-use crate::collections::HashMap;
 use crate::error::{JournalError, Result};
 use crate::file::guarded_cell::GuardedCell;
 use crate::file::hash;
@@ -803,70 +802,6 @@ impl<M: MemoryMap> JournalFile<M> {
         iterator.advance_to_next_nonempty_bucket();
 
         iterator
-    }
-
-    pub fn load_fields(&self) -> Result<HashMap<String, String>> {
-        let remapping_payload = b"ND_REMAPPING=1".as_slice();
-        let hash = self.hash(remapping_payload);
-
-        let mut field_map = HashMap::default();
-
-        match self.find_data_offset(hash, remapping_payload) {
-            Ok(Some(offset)) => {
-                let Some(ic) = self.data_ref(offset)?.header.inlined_cursor() else {
-                    return Err(JournalError::EmptyInlineCursor);
-                };
-
-                let mut entry_offsets = Vec::new();
-                ic.collect_offsets(self, &mut entry_offsets)?;
-
-                let mut data_offsets = Vec::new();
-                for entry_offset in entry_offsets {
-                    {
-                        let entry_object = self.entry_ref(entry_offset)?;
-                        data_offsets.clear();
-                        entry_object.collect_offsets(&mut data_offsets)?;
-                    }
-
-                    for data_offset in data_offsets.iter().copied() {
-                        let data_object = self.data_ref(data_offset)?;
-                        let payload = data_object.raw_payload();
-
-                        if payload == remapping_payload {
-                            continue;
-                        }
-
-                        let s = std::str::from_utf8(payload).expect("utf8 data");
-
-                        let Some((field, value)) = s.split_once('=') else {
-                            return Err(JournalError::InvalidField);
-                        };
-
-                        let systemd_name = String::from(field);
-                        let otel_name = String::from(value);
-
-                        field_map.insert(otel_name, systemd_name);
-                    }
-                }
-            }
-            Ok(None) => {
-                // Just load fields from the field hash table
-            }
-            Err(e) => {
-                return Err(e);
-            }
-        };
-
-        for value_guard in self.fields() {
-            let field = value_guard?;
-            if field.payload.starts_with(b"ND") {
-                continue;
-            }
-            let s = String::from_utf8(field.raw_payload().to_vec()).expect("utf8 data");
-            field_map.insert(s.clone(), s);
-        }
-
-        Ok(field_map)
     }
 
     /// Creates an iterator over all DATA objects for the specified field

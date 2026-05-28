@@ -186,13 +186,13 @@ type Log struct {
 	source        string
 	active        string
 
-	options   Options
-	rotation  RotationPolicy
-	retention RetentionPolicy
-	strict    bool
-	lifecycle LogLifecycleObserver
-	artifacts LogArtifactSizer
-	remaps    map[string]string
+	options         Options
+	rotation        RotationPolicy
+	retention       RetentionPolicy
+	strict          bool
+	lifecycle       LogLifecycleObserver
+	artifacts       LogArtifactSizer
+	fieldNamePolicy FieldNamePolicy
 
 	writer        *Writer
 	entriesInFile int
@@ -234,6 +234,10 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 	if config.IdentityMode != LogIdentityAuto && config.IdentityMode != LogIdentityStrict {
 		return nil, fmt.Errorf("%w: unsupported log identity mode %d", errInvalidJournal, config.IdentityMode)
 	}
+	logFieldPolicy := config.Options.FieldNamePolicy
+	if err := validateFieldNamePolicy(logFieldPolicy); err != nil {
+		return nil, err
+	}
 
 	source := config.Source
 	if source == "" {
@@ -261,6 +265,7 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 	explicitSeqnumID := !isZeroUUID(config.Options.SeqnumID)
 	rotation := deriveRotationPolicy(config.RotationPolicy, config.RetentionPolicy, config.Options.Compact)
 	options := config.Options
+	options.FieldNamePolicy = logWriterFieldNamePolicy(logFieldPolicy)
 	if options.MaxFileSize == 0 && rotation.MaxFileSize != nil {
 		options.MaxFileSize = *rotation.MaxFileSize
 	}
@@ -275,17 +280,17 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 	}
 
 	l := &Log{
-		configuredDir: dir,
-		machineDir:    machineDir,
-		source:        source,
-		options:       opts,
-		rotation:      rotation,
-		retention:     config.RetentionPolicy,
-		strict:        config.StrictSystemdNaming,
-		lifecycle:     config.Lifecycle,
-		artifacts:     config.ArtifactSizer,
-		remaps:        make(map[string]string),
-		entriesInFile: 0,
+		configuredDir:   dir,
+		machineDir:      machineDir,
+		source:          source,
+		options:         opts,
+		rotation:        rotation,
+		retention:       config.RetentionPolicy,
+		strict:          config.StrictSystemdNaming,
+		lifecycle:       config.Lifecycle,
+		artifacts:       config.ArtifactSizer,
+		fieldNamePolicy: logFieldPolicy,
+		entriesInFile:   0,
 	}
 
 	if l.strict {
@@ -418,6 +423,11 @@ func (l *Log) Append(fields []Field, opts EntryOptions) error {
 	if err := validateEntryFields(fields); err != nil {
 		return err
 	}
+	preparedFields, err := prepareFieldsForPolicy(fields, l.fieldNamePolicy)
+	if err != nil {
+		return err
+	}
+	fields = preparedFields
 	opts = l.entryOptionsForAppend(opts)
 	if err := l.enforceRetentionOnOpen(); err != nil {
 		return err
@@ -432,17 +442,6 @@ func (l *Log) Append(fields []Field, opts EntryOptions) error {
 	}
 	if err := l.enforceRetentionOnOpen(); err != nil {
 		return err
-	}
-	fields, mappings := remapLogFields(fields, l.remaps)
-	if len(mappings) > 0 {
-		if err := l.writer.Append(l.remappingEntryFields(mappings), opts); err != nil {
-			return err
-		}
-		for _, mapping := range mappings {
-			l.remaps[mapping.original] = mapping.mapped
-		}
-		l.captureAppendState()
-		opts = l.entryOptionsForAppend(opts)
 	}
 	fields = appendSourceRealtimeField(fields, opts.SourceRealtimeUsec)
 	if err := l.writer.Append(fields, opts); err != nil {
@@ -659,7 +658,6 @@ func (l *Log) rotate(entryOpts EntryOptions) error {
 	if err := l.ensureWriter(entryOpts, LogLifecycleReasonRotation); err != nil {
 		return err
 	}
-	l.remaps = make(map[string]string)
 	l.emitLifecycle(LogLifecycleEvent{
 		Type:         LogLifecycleRotated,
 		Reason:       LogLifecycleReasonRotation,
@@ -674,16 +672,6 @@ func (l *Log) captureAppendState() {
 	l.entriesInFile = int(l.writer.header.nEntries)
 	l.lastRealtime = l.writer.header.tailEntryRealtime
 	l.lastMonotonic = l.writer.header.tailEntryMonotonic
-}
-
-func (l *Log) remappingEntryFields(mappings []remappedFieldMapping) []Field {
-	fields := make([]Field, 0, len(mappings)+2)
-	fields = append(fields, StringField("_BOOT_ID", l.options.BootID.String()))
-	fields = append(fields, StringField(remappingMarker, "1"))
-	for _, mapping := range mappings {
-		fields = append(fields, Field{Name: mapping.mapped, Value: []byte(mapping.original)})
-	}
-	return fields
 }
 
 func (l *Log) archiveActive() (string, error) {

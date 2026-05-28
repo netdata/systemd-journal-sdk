@@ -24,9 +24,6 @@ pub mod fss;
 // Forward Secure Sealing writer support
 pub mod seal;
 
-// Field name mapping for systemd compatibility
-pub mod field_map;
-
 // Re-export repository types from journal-registry for convenience
 pub mod repository {
     pub use journal_registry::repository::*;

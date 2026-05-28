@@ -3,7 +3,10 @@
 
 import { FileReader } from './lib/reader.js';
 import { DirectoryReader } from './lib/directory-reader.js';
-import { Writer } from './lib/writer.js';
+import {
+  FIELD_NAME_POLICY_JOURNALD, FIELD_NAME_POLICY_JOURNAL_APP,
+  FIELD_NAME_POLICY_RAW, Writer,
+} from './lib/writer.js';
 import {
   Log,
   LOG_OPEN_LAZY, LOG_OPEN_EAGER,
@@ -32,6 +35,9 @@ import { parseMatchString } from './lib/hash.js';
 
 // Re-export everything
 export { FileReader, DirectoryReader, Writer, Log };
+export {
+  FIELD_NAME_POLICY_JOURNALD, FIELD_NAME_POLICY_JOURNAL_APP, FIELD_NAME_POLICY_RAW,
+} from './lib/writer.js';
 export {
   LOG_OPEN_LAZY, LOG_OPEN_EAGER,
   LOG_IDENTITY_AUTO, LOG_IDENTITY_STRICT,
@@ -92,6 +98,7 @@ export default {
   FileReader, DirectoryReader, Writer, Log,
   SdJournal, SdJournalOpen, SdJournalOpenDirectory,
   openJournal, createJournal, stringField, binaryField,
+  FIELD_NAME_POLICY_JOURNALD, FIELD_NAME_POLICY_JOURNAL_APP, FIELD_NAME_POLICY_RAW,
   LOG_OPEN_LAZY, LOG_OPEN_EAGER,
   LOG_IDENTITY_AUTO, LOG_IDENTITY_STRICT,
   LOG_LIFECYCLE_CREATED, LOG_LIFECYCLE_ROTATED, LOG_LIFECYCLE_DELETED,

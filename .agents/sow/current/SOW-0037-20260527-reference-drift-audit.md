@@ -2,12 +2,13 @@
 
 ## Status
 
-Status: in-progress
+Status: paused
 
-Sub-state: resumed on 2026-05-28 for the recent DATA cache drift/performance
-decision. SOW-0036 completed the selected cross-language
-`live_publish_every_entries` API. SOW-0009 broad benchmarking remains paused
-until SOW-0037 resumes the wider reference-drift audit and closes.
+Sub-state: paused on 2026-05-28 because SOW-0038 is now the active critical
+path for the SNMP traps `v0.3.0` release. SOW-0036 completed the selected
+cross-language `live_publish_every_entries` API. SOW-0009 broad benchmarking
+remains paused until SOW-0037 resumes the wider reference-drift audit and
+closes.
 
 ## Requirements
 

@@ -39,6 +39,8 @@ from journal import (  # noqa: E402
     SdJournalEnumerateAvailableUnique,
     SdJournalRestartFields,
     SdJournalEnumerateField,
+    FIELD_NAME_POLICY_JOURNAL_APP,
+    FIELD_NAME_POLICY_RAW,
     Writer,
     export_entry,
     json_entry,
@@ -67,7 +69,6 @@ from journal.header import (  # noqa: E402
 )
 from journal.seal import COMPATIBLE_SEALED_CONTINUOUS, OBJECT_TYPE_TAG  # noqa: E402
 from journal.hash import sip_hash_24  # noqa: E402
-from journal.field_remap import encode_remapped_field_name  # noqa: E402
 from journal.fss import gen_mk, gen_state0, evolve, seek, get_key, get_epoch  # noqa: E402
 
 
@@ -218,8 +219,8 @@ def test_live_publish_every_entries_preserves_closed_file_bytes():
     assert every_three == immediate
 
 
-def test_lowercase_field_rejected():
-    from journal.writer import _validate_field_name
+def test_journald_field_policy_validation():
+    from journal.writer import _validate_field_name_for_policy
 
     for item in ('message=value', 'Priority=value', '_myfield=value'):
         try:
@@ -231,11 +232,19 @@ def test_lowercase_field_rejected():
 
     for field in ('message', 'Priority', '_myfield'):
         try:
-            _validate_field_name(field)
+            _validate_field_name_for_policy(field)
         except ValueError:
             pass
         else:
             raise AssertionError(f'expected lowercase writer rejection for {field!r}')
+
+    _validate_field_name_for_policy('_HOSTNAME')
+    try:
+        _validate_field_name_for_policy('_HOSTNAME', FIELD_NAME_POLICY_JOURNAL_APP)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('expected protected app field rejection')
 
 
 def test_live_delay_parser():
@@ -587,36 +596,110 @@ def test_directory_writer_rotation():
         assert len([line for line in stock.splitlines() if line.strip()]) == 5
 
 
-def test_remapped_field_name_vectors():
-    vectors = [
-        ('hello', 'NDE_HELLO'),
-        ('foo.bar', 'NDAE_FOO_BAR'),
-        ('fooBar', 'NDA3J_FOOBAR'),
-        ('log.body.HostName', 'ND83AAO_LB_HOSTNAME'),
-        ('OAuth2Token', 'NDZ9SNSO_OAUTH2TOKEN'),
-        ('HTTPSConnection', 'NDNSSO_HTTPSCONNECTION'),
-        ('hello-world', 'NDCE_HELLO_WORLD'),
-        ('resource.attributes.host.name', 'ND3AE_RA_HOST_NAME'),
-        ('_CUSTOM_FIELD', 'NDVQT__CUSTOM_FIELD'),
-        ('field name', 'ND_BFAAD773361A781112FB325B433D54F7'),
-        (b'\xff\xfe invalid', 'ND_33493B98B07A586AA08BE7C2E7D90C3A'),
-    ]
-    for source, expected in vectors:
-        assert encode_remapped_field_name(source) == expected
+def test_writer_field_name_policies():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'journald.journal')
+        writer = Writer.create(path)
+        writer.append([
+            {'name': 'MESSAGE', 'value': 'trusted fields'},
+            {'name': '_HOSTNAME', 'value': 'synthetic-host'},
+            {'name': '_TRANSPORT', 'value': 'journal'},
+        ], {'realtime_usec': 1_700_002_111_000_000, 'monotonic_usec': 1})
+        for invalid_name in ('lowercase', 'foo.bar', 'A' * 65, '1FIELD'):
+            try:
+                writer.append([
+                    {'name': invalid_name, 'value': 'invalid'},
+                ], {'realtime_usec': 1_700_002_111_000_001, 'monotonic_usec': 2})
+            except ValueError as err:
+                assert 'invalid field name' in str(err)
+            else:
+                raise AssertionError(f'expected invalid journald field {invalid_name!r} to fail')
+        writer.close()
+        run(['journalctl', '--verify', '--file', path])
+        reader = FileReader.open(path)
+        assert reader.step()
+        entry = reader.get_entry()
+        reader.close()
+        assert entry['fields']['_HOSTNAME'] == b'synthetic-host'
+        assert entry['fields']['_TRANSPORT'] == b'journal'
+
+    with tempfile.TemporaryDirectory() as td:
+        for alias in ('systemd', 'app', 'journal_app'):
+            try:
+                Writer.create(os.path.join(td, f'{alias}.journal'), {'field_name_policy': alias})
+            except ValueError as err:
+                assert 'unsupported field name policy' in str(err)
+            else:
+                raise AssertionError(f'expected field policy alias {alias!r} to fail')
+
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'journal-app.journal')
+        writer = Writer.create(path, {'field_name_policy': FIELD_NAME_POLICY_JOURNAL_APP})
+        writer.append([
+            {'name': 'MESSAGE', 'value': 'app valid'},
+            {'name': '_HOSTNAME', 'value': 'drop-host'},
+            {'name': 'lowercase', 'value': 'drop-lowercase'},
+        ], {'realtime_usec': 1_700_002_112_000_000, 'monotonic_usec': 1})
+        try:
+            writer.append([
+                {'name': '_HOSTNAME', 'value': 'drop-only'},
+            ], {'realtime_usec': 1_700_002_112_000_001, 'monotonic_usec': 2})
+        except ValueError as err:
+            assert 'empty entry' in str(err)
+        else:
+            raise AssertionError('expected drop-only journal-app append to fail')
+        writer.close()
+        run(['journalctl', '--verify', '--file', path])
+        reader = FileReader.open(path)
+        assert reader.step()
+        entry = reader.get_entry()
+        reader.close()
+        assert entry['fields']['MESSAGE'] == b'app valid'
+        assert '_HOSTNAME' not in entry['fields']
+        assert 'lowercase' not in entry['fields']
+
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'raw.journal')
+        long_name = 'a' * 1024
+        writer = Writer.create(path, {'field_name_policy': FIELD_NAME_POLICY_RAW})
+        writer.append([
+            {'name': 'lowercase', 'value': 'ok'},
+            {'name': 'foo.bar', 'value': 'dot'},
+            {'name': 'field name', 'value': 'space'},
+            {'name': long_name, 'value': 'long'},
+            {'name': 'BINARY', 'value': b'a\x00=b'},
+        ], {'realtime_usec': 1_700_002_113_000_000, 'monotonic_usec': 1})
+        try:
+            writer.append([
+                {'name': 'BAD=NAME', 'value': 'bad'},
+            ], {'realtime_usec': 1_700_002_113_000_001, 'monotonic_usec': 2})
+        except ValueError as err:
+            assert 'invalid field name' in str(err)
+        else:
+            raise AssertionError('expected raw field name containing = to fail')
+        writer.close()
+        reader = FileReader.open(path)
+        assert reader.step()
+        entry = reader.get_entry()
+        reader.close()
+        assert entry['fields']['lowercase'] == b'ok'
+        assert entry['fields']['foo.bar'] == b'dot'
+        assert entry['fields']['field name'] == b'space'
+        assert entry['fields'][long_name] == b'long'
+        assert entry['fields']['BINARY'] == b'a\x00=b'
 
 
-def test_directory_writer_remaps_incompatible_field_names():
+def test_directory_writer_journald_policy_preserves_protected_fields():
     with tempfile.TemporaryDirectory() as td:
         log = Log(td, {
             'source': 'system',
             'machine_id': '00112233445566778899aabbccddeeff',
         })
         log.append([
-            {'name': 'MESSAGE', 'value': 'remapped fields'},
-            {'name': 'foo.bar', 'value': 'dot'},
-            {'name': 'log.body.HostName', 'value': 'camel'},
-            {'name': '_CUSTOM_FIELD', 'value': 'protected'},
-            {'name': 'field name', 'value': 'md5'},
+            {'name': 'MESSAGE', 'value': 'journald policy preserves trusted fields'},
+            {'name': 'TEST_ID', 'value': 'journald-field-policy'},
+            {'name': '_HOSTNAME', 'value': 'synthetic-host'},
+            {'name': '_TRANSPORT', 'value': 'snmptrap'},
         ], {'realtime_usec': 1_700_002_401_000_000, 'monotonic_usec': 10})
         log.sync()
 
@@ -627,20 +710,9 @@ def test_directory_writer_remaps_incompatible_field_names():
                 entries.append(reader.get_entry())
         finally:
             reader.close()
-        assert len(entries) == 2
-        remap_row = next(e for e in entries if e['fields'].get('ND_REMAPPING') == b'1')
-        data_row = next(e for e in entries if e['fields'].get('MESSAGE') == b'remapped fields')
-
-        assert remap_row['fields']['NDAE_FOO_BAR'] == b'foo.bar'
-        assert remap_row['fields']['ND83AAO_LB_HOSTNAME'] == b'log.body.HostName'
-        assert remap_row['fields']['NDVQT__CUSTOM_FIELD'] == b'_CUSTOM_FIELD'
-        assert remap_row['fields']['ND_BFAAD773361A781112FB325B433D54F7'] == b'field name'
-        assert data_row['fields']['NDAE_FOO_BAR'] == b'dot'
-        assert data_row['fields']['ND83AAO_LB_HOSTNAME'] == b'camel'
-        assert data_row['fields']['NDVQT__CUSTOM_FIELD'] == b'protected'
-        assert data_row['fields']['ND_BFAAD773361A781112FB325B433D54F7'] == b'md5'
-        assert data_row['realtime'] == remap_row['realtime'] + 1
-        assert data_row['monotonic'] == remap_row['monotonic'] + 1
+        assert len(entries) == 1
+        assert entries[0]['fields']['_HOSTNAME'] == b'synthetic-host'
+        assert entries[0]['fields']['_TRANSPORT'] == b'snmptrap'
 
         stock_rows = [
             json.loads(line)
@@ -650,64 +722,114 @@ def test_directory_writer_remaps_incompatible_field_names():
                 log.journal_directory(),
                 '--output=json',
                 '--no-pager',
+                'TEST_ID=journald-field-policy',
             ]).splitlines()
             if line.strip()
         ]
-        assert len(stock_rows) == 2
-        assert any(row.get('ND_REMAPPING') == '1' for row in stock_rows)
-        assert any(
-            row.get('MESSAGE') == 'remapped fields' and
-            row.get('NDAE_FOO_BAR') == 'dot' and
-            row.get('ND83AAO_LB_HOSTNAME') == 'camel' and
-            row.get('NDVQT__CUSTOM_FIELD') == 'protected' and
-            row.get('ND_BFAAD773361A781112FB325B433D54F7') == 'md5'
-            for row in stock_rows
-        )
+        assert len(stock_rows) == 1
+        assert stock_rows[0]['_HOSTNAME'] == 'synthetic-host'
+        assert stock_rows[0]['_TRANSPORT'] == 'snmptrap'
         log.close()
         for name in os.listdir(log.journal_directory()):
             if name.endswith('.journal'):
                 run(['journalctl', '--verify', '--file', os.path.join(log.journal_directory(), name)])
 
 
-def test_directory_writer_reemits_remapping_after_rotation():
+def test_directory_writer_journal_app_policy_drops_invalid_fields():
     with tempfile.TemporaryDirectory() as td:
         log = Log(td, {
             'source': 'system',
             'machine_id': '00112233445566778899aabbccddeeff',
-            'max_entries': 2,
-            'max_files': 10,
+            'field_name_policy': FIELD_NAME_POLICY_JOURNAL_APP,
         })
-        for i in range(2):
+        log.append([
+            {'name': 'MESSAGE', 'value': 'journal app keeps valid fields'},
+            {'name': 'TEST_ID', 'value': 'journal-app-field-policy'},
+            {'name': '_HOSTNAME', 'value': 'dropped-host'},
+            {'name': 'foo.bar', 'value': 'dropped-dot'},
+        ], {
+            'realtime_usec': 1_700_002_402_000_000,
+            'monotonic_usec': 20,
+        })
+        try:
             log.append([
-                {'name': 'MESSAGE', 'value': f'remap-rotate-{i}'},
-                {'name': 'log.body.HostName', 'value': f'host-{i}'},
+                {'name': '_HOSTNAME', 'value': 'drop-only'},
             ], {
-                'realtime_usec': 1_700_002_402_000_000 + i,
-                'monotonic_usec': 20 + i,
+                'realtime_usec': 1_700_002_402_000_001,
+                'monotonic_usec': 21,
             })
+        except ValueError as err:
+            assert 'empty entry' in str(err)
+        else:
+            raise AssertionError('expected drop-only journal-app append to fail')
         journal_dir = log.journal_directory()
         log.close()
 
         names = sorted(name for name in os.listdir(journal_dir) if name.endswith('.journal'))
-        assert len(names) == 2
-        for name in names:
-            path = os.path.join(journal_dir, name)
-            run(['journalctl', '--verify', '--file', path])
-            reader = FileReader.open(path)
-            entries = []
-            try:
-                while reader.step():
-                    entries.append(reader.get_entry())
-            finally:
-                reader.close()
-            assert len(entries) == 2
-            remap_row = next(e for e in entries if e['fields'].get('ND_REMAPPING') == b'1')
-            data_row = next(
-                e for e in entries
-                if e['fields'].get('MESSAGE', b'').startswith(b'remap-rotate-')
-            )
-            assert remap_row['fields']['ND83AAO_LB_HOSTNAME'] == b'log.body.HostName'
-            assert data_row['fields']['ND83AAO_LB_HOSTNAME'].startswith(b'host-')
+        assert len(names) == 1
+        path = os.path.join(journal_dir, names[0])
+        run(['journalctl', '--verify', '--file', path])
+        reader = FileReader.open(path)
+        entries = []
+        try:
+            while reader.step():
+                entries.append(reader.get_entry())
+        finally:
+            reader.close()
+        assert len(entries) == 1
+        assert entries[0]['fields']['MESSAGE'] == b'journal app keeps valid fields'
+        assert '_HOSTNAME' not in entries[0]['fields']
+        assert 'foo.bar' not in entries[0]['fields']
+
+
+def test_directory_writer_raw_policy_allows_structure_only_field_names():
+    with tempfile.TemporaryDirectory() as td:
+        long_name = 'a' * 1024
+        log = Log(td, {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'field_name_policy': FIELD_NAME_POLICY_RAW,
+        })
+        log.append([
+            {'name': 'lowercase', 'value': 'ok'},
+            {'name': 'foo.bar', 'value': 'dot'},
+            {'name': 'field name', 'value': 'space'},
+            {'name': long_name, 'value': 'long'},
+            {'name': 'BINARY', 'value': b'a\x00=b'},
+        ], {
+            'realtime_usec': 1_700_002_403_000_000,
+            'monotonic_usec': 30,
+        })
+        try:
+            log.append([
+                {'name': 'BAD=NAME', 'value': 'bad'},
+            ], {
+                'realtime_usec': 1_700_002_403_000_001,
+                'monotonic_usec': 31,
+            })
+        except ValueError as err:
+            assert 'invalid field name' in str(err)
+        else:
+            raise AssertionError('expected raw field name containing = to fail')
+        journal_dir = log.journal_directory()
+        log.close()
+
+        names = sorted(name for name in os.listdir(journal_dir) if name.endswith('.journal'))
+        assert len(names) == 1
+        path = os.path.join(journal_dir, names[0])
+        reader = FileReader.open(path)
+        entries = []
+        try:
+            while reader.step():
+                entries.append(reader.get_entry())
+        finally:
+            reader.close()
+        assert len(entries) == 1
+        assert entries[0]['fields']['lowercase'] == b'ok'
+        assert entries[0]['fields']['foo.bar'] == b'dot'
+        assert entries[0]['fields']['field name'] == b'space'
+        assert entries[0]['fields'][long_name] == b'long'
+        assert entries[0]['fields']['BINARY'] == b'a\x00=b'
 
 
 def test_directory_writer_duration_rotation():
@@ -2198,7 +2320,7 @@ def main():
     test_match_validation()
     test_siphash_masks_long_message_length()
     test_live_publish_every_entries_preserves_closed_file_bytes()
-    test_lowercase_field_rejected()
+    test_journald_field_policy_validation()
     test_live_delay_parser()
     test_parse_file_header_historical_field_boundaries()
     test_writer_reader_and_binary_export()
@@ -2213,9 +2335,10 @@ def main():
     test_zstd_data_object_parse()
     test_xz_and_lz4_data_object_parse()
     test_directory_writer_rotation()
-    test_remapped_field_name_vectors()
-    test_directory_writer_remaps_incompatible_field_names()
-    test_directory_writer_reemits_remapping_after_rotation()
+    test_writer_field_name_policies()
+    test_directory_writer_journald_policy_preserves_protected_fields()
+    test_directory_writer_journal_app_policy_drops_invalid_fields()
+    test_directory_writer_raw_policy_allows_structure_only_field_names()
     test_directory_writer_duration_rotation()
     test_directory_writer_derives_rotation_defaults_from_retention()
     test_directory_writer_derived_size_rotates_from_retention()

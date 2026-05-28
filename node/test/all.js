@@ -10,9 +10,11 @@ import { zstdCompressSync } from 'node:zlib';
 import assert from 'node:assert/strict';
 import { jenkinsHash64, sipHash24 } from '../src/lib/hash.js';
 import { uuidToString } from '../src/lib/binary.js';
-import { DEFAULT_COMPRESS_THRESHOLD, MIN_COMPRESS_THRESHOLD, Writer } from '../src/lib/writer.js';
+import {
+  DEFAULT_COMPRESS_THRESHOLD, FIELD_NAME_POLICY_JOURNAL_APP, FIELD_NAME_POLICY_RAW,
+  MIN_COMPRESS_THRESHOLD, Writer,
+} from '../src/lib/writer.js';
 import { Log } from '../src/lib/directory-writer.js';
-import { encodeRemappedFieldName } from '../src/lib/field-remap.js';
 import { FileReader } from '../src/lib/reader.js';
 import { parseDataObject } from '../src/lib/entry.js';
 import {
@@ -219,24 +221,6 @@ const sipVectors = [
 
 for (const [length, expected] of sipVectors) {
   assert.equal(sipHash24(sipKey, sipMessage.subarray(0, length)), expected, `sipHash24(length=${length})`);
-}
-
-const remappedFieldVectors = [
-  ['hello', 'NDE_HELLO'],
-  ['foo.bar', 'NDAE_FOO_BAR'],
-  ['fooBar', 'NDA3J_FOOBAR'],
-  ['log.body.HostName', 'ND83AAO_LB_HOSTNAME'],
-  ['OAuth2Token', 'NDZ9SNSO_OAUTH2TOKEN'],
-  ['HTTPSConnection', 'NDNSSO_HTTPSCONNECTION'],
-  ['hello-world', 'NDCE_HELLO_WORLD'],
-  ['resource.attributes.host.name', 'ND3AE_RA_HOST_NAME'],
-  ['_CUSTOM_FIELD', 'NDVQT__CUSTOM_FIELD'],
-  ['field name', 'ND_BFAAD773361A781112FB325B433D54F7'],
-  [Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(' invalid')]), 'ND_33493B98B07A586AA08BE7C2E7D90C3A'],
-];
-
-for (const [input, expected] of remappedFieldVectors) {
-  assert.equal(encodeRemappedFieldName(input), expected, `encodeRemappedFieldName(${String(input)})`);
 }
 
 {
@@ -593,6 +577,134 @@ for (const [input, expected] of remappedFieldVectors) {
     const entry = reader.getEntry();
     reader.close();
     assert.equal(entry.monotonic, 0n);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  let writer;
+  try {
+    const journalPath = join(tempDir, 'journald-field-policy.journal');
+    writer = Writer.create(journalPath);
+    writer.append([
+      { name: 'MESSAGE', value: 'trusted fields' },
+      { name: '_HOSTNAME', value: 'synthetic-host' },
+      { name: '_TRANSPORT', value: 'journal' },
+    ], { realtimeUsec: 1_700_002_111_000_000n, monotonicUsec: 1n });
+    for (const invalidName of ['lowercase', 'foo.bar', 'A'.repeat(65), '1FIELD']) {
+      assert.throws(
+        () => writer.append([{ name: invalidName, value: 'invalid' }], {
+          realtimeUsec: 1_700_002_111_000_001n,
+          monotonicUsec: 2n,
+        }),
+        /invalid field name/,
+      );
+    }
+    writer.close();
+    writer = undefined;
+    verifyJournalFileIfAvailable(journalPath);
+
+    const reader = FileReader.open(journalPath);
+    assert.equal(reader.step(), true);
+    const entry = reader.getEntry();
+    reader.close();
+    assert.equal(entry.fields._HOSTNAME.toString('utf8'), 'synthetic-host');
+    assert.equal(entry.fields._TRANSPORT.toString('utf8'), 'journal');
+  } finally {
+    try {
+      if (writer) writer.close();
+    } catch {
+      // Ignore cleanup errors from already closed writers in failing tests.
+    }
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    assert.throws(
+      () => Writer.create(join(tempDir, 'alias-systemd.journal'), { fieldNamePolicy: 'systemd' }),
+      /unsupported field name policy/,
+    );
+    assert.throws(
+      () => Writer.create(join(tempDir, 'alias-app.journal'), { fieldNamePolicy: 'app' }),
+      /unsupported field name policy/,
+    );
+    assert.throws(
+      () => Writer.create(join(tempDir, 'alias-journal-app.journal'), { fieldNamePolicy: 'journal_app' }),
+      /unsupported field name policy/,
+    );
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const journalPath = join(tempDir, 'journal-app-field-policy.journal');
+    const writer = Writer.create(journalPath, { fieldNamePolicy: FIELD_NAME_POLICY_JOURNAL_APP });
+    writer.append([
+      { name: 'MESSAGE', value: 'app valid' },
+      { name: '_HOSTNAME', value: 'drop-host' },
+      { name: 'lowercase', value: 'drop-lowercase' },
+    ], { realtimeUsec: 1_700_002_112_000_000n, monotonicUsec: 1n });
+    assert.throws(
+      () => writer.append([{ name: '_HOSTNAME', value: 'drop-only' }], {
+        realtimeUsec: 1_700_002_112_000_001n,
+        monotonicUsec: 2n,
+      }),
+      /empty entry/,
+    );
+    writer.close();
+    verifyJournalFileIfAvailable(journalPath);
+
+    const reader = FileReader.open(journalPath);
+    assert.equal(reader.step(), true);
+    const entry = reader.getEntry();
+    reader.close();
+    assert.equal(entry.fields.MESSAGE.toString('utf8'), 'app valid');
+    assert.equal(entry.fields._HOSTNAME, undefined);
+    assert.equal(entry.fields.lowercase, undefined);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const longName = 'a'.repeat(1024);
+    const journalPath = join(tempDir, 'raw-field-policy.journal');
+    const writer = Writer.create(journalPath, { fieldNamePolicy: FIELD_NAME_POLICY_RAW });
+    writer.append([
+      { name: 'lowercase', value: 'ok' },
+      { name: 'foo.bar', value: 'dot' },
+      { name: 'field name', value: 'space' },
+      { name: longName, value: 'long' },
+      { name: 'BINARY', value: Buffer.from([0x61, 0x00, 0x3d, 0x62]) },
+    ], { realtimeUsec: 1_700_002_113_000_000n, monotonicUsec: 1n });
+    assert.throws(
+      () => writer.append([{ name: 'BAD=NAME', value: 'bad' }], {
+        realtimeUsec: 1_700_002_113_000_001n,
+        monotonicUsec: 2n,
+      }),
+      /invalid field name/,
+    );
+    writer.close();
+
+    const reader = FileReader.open(journalPath);
+    assert.equal(reader.step(), true);
+    const entry = reader.getEntry();
+    reader.close();
+    assert.equal(entry.fields.lowercase.toString('utf8'), 'ok');
+    assert.equal(entry.fields['foo.bar'].toString('utf8'), 'dot');
+    assert.equal(entry.fields['field name'].toString('utf8'), 'space');
+    assert.equal(entry.fields[longName].toString('utf8'), 'long');
+    assert.deepEqual(entry.fields.BINARY, Buffer.from([0x61, 0x00, 0x3d, 0x62]));
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -1157,11 +1269,10 @@ for (const [input, expected] of remappedFieldVectors) {
       machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
     });
     log.append([
-      { name: 'MESSAGE', value: 'remapped fields' },
-      { name: 'foo.bar', value: 'dot' },
-      { name: 'log.body.HostName', value: 'camel' },
-      { name: '_CUSTOM_FIELD', value: 'protected' },
-      { name: 'field name', value: 'md5' },
+      { name: 'MESSAGE', value: 'journald policy preserves trusted fields' },
+      { name: 'TEST_ID', value: 'journald-field-policy' },
+      { name: '_HOSTNAME', value: 'synthetic-host' },
+      { name: '_TRANSPORT', value: 'snmptrap' },
     ], { realtimeUsec: 1_700_002_401_000_000n, monotonicUsec: 10n });
     log.sync();
 
@@ -1172,39 +1283,23 @@ for (const [input, expected] of remappedFieldVectors) {
     } finally {
       reader.close();
     }
-    assert.equal(entries.length, 2);
-    const remapRow = entries.find((entry) => entry.fields.ND_REMAPPING?.toString('utf8') === '1');
-    const dataRow = entries.find((entry) => entry.fields.MESSAGE?.toString('utf8') === 'remapped fields');
-    assert.ok(remapRow);
-    assert.ok(dataRow);
-    assert.equal(remapRow.fields.NDAE_FOO_BAR.toString('utf8'), 'foo.bar');
-    assert.equal(remapRow.fields.ND83AAO_LB_HOSTNAME.toString('utf8'), 'log.body.HostName');
-    assert.equal(remapRow.fields.NDVQT__CUSTOM_FIELD.toString('utf8'), '_CUSTOM_FIELD');
-    assert.equal(remapRow.fields.ND_BFAAD773361A781112FB325B433D54F7.toString('utf8'), 'field name');
-    assert.equal(dataRow.fields.NDAE_FOO_BAR.toString('utf8'), 'dot');
-    assert.equal(dataRow.fields.ND83AAO_LB_HOSTNAME.toString('utf8'), 'camel');
-    assert.equal(dataRow.fields.NDVQT__CUSTOM_FIELD.toString('utf8'), 'protected');
-    assert.equal(dataRow.fields.ND_BFAAD773361A781112FB325B433D54F7.toString('utf8'), 'md5');
-    assert.equal(dataRow.realtime, remapRow.realtime + 1n);
-    assert.equal(dataRow.monotonic, remapRow.monotonic + 1n);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].fields._HOSTNAME.toString('utf8'), 'synthetic-host');
+    assert.equal(entries[0].fields._TRANSPORT.toString('utf8'), 'snmptrap');
 
     const journalctl = spawnSync('journalctl', ['--version'], { encoding: 'utf8' });
     if (journalctl.status === 0) {
-      const stockRows = run('journalctl', ['--directory', log.journalDirectory(), '--output=json', '--no-pager'])
+      const stockRows = run('journalctl', ['--directory', log.journalDirectory(), '--output=json', '--no-pager', 'TEST_ID=journald-field-policy'])
         .trim()
         .split('\n')
         .filter(Boolean)
         .map((line) => JSON.parse(line));
-      assert.equal(stockRows.length, 2);
-      assert.ok(stockRows.some((row) => row.ND_REMAPPING === '1'));
-      assert.ok(stockRows.some((row) =>
-        row.MESSAGE === 'remapped fields' &&
-        row.NDAE_FOO_BAR === 'dot' &&
-        row.ND83AAO_LB_HOSTNAME === 'camel' &&
-        row.NDVQT__CUSTOM_FIELD === 'protected' &&
-        row.ND_BFAAD773361A781112FB325B433D54F7 === 'md5'));
+      assert.equal(stockRows.length, 1);
+      assert.equal(stockRows[0]._HOSTNAME, 'synthetic-host');
+      assert.equal(stockRows[0]._TRANSPORT, 'snmptrap');
     }
     log.close();
+    for (const path of journalFiles(log.journalDirectory())) verifyJournalFileIfAvailable(path);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -1215,46 +1310,87 @@ for (const [input, expected] of remappedFieldVectors) {
   try {
     const log = new Log(tempDir, {
       source: 'system',
-      maxEntries: 2,
-      maxFiles: 10,
+      fieldNamePolicy: FIELD_NAME_POLICY_JOURNAL_APP,
       machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
     });
-    for (let i = 0; i < 2; i++) {
-      log.append([
-        { name: 'MESSAGE', value: `remap-rotate-${i}` },
-        { name: 'log.body.HostName', value: `host-${i}` },
-      ], {
-        realtimeUsec: 1_700_002_402_000_000n + BigInt(i),
-        monotonicUsec: 20n + BigInt(i),
-      });
-    }
-    const journalDir = log.journalDirectory();
+    log.append([
+      { name: 'MESSAGE', value: 'journal app keeps valid fields' },
+      { name: 'TEST_ID', value: 'journal-app-field-policy' },
+      { name: '_HOSTNAME', value: 'dropped-host' },
+      { name: 'foo.bar', value: 'dropped-dot' },
+    ], {
+      realtimeUsec: 1_700_002_402_000_000n,
+      monotonicUsec: 20n,
+    });
+    assert.throws(
+      () => log.append([{ name: '_HOSTNAME', value: 'drop-only' }], {
+        realtimeUsec: 1_700_002_402_000_001n,
+        monotonicUsec: 21n,
+      }),
+      /empty entry/,
+    );
     log.close();
 
-    const files = readdirSync(journalDir).filter((name) => name.endsWith('.journal')).sort();
-    assert.equal(files.length, 2);
-    const journalctl = spawnSync('journalctl', ['--version'], { encoding: 'utf8' });
-    for (const name of files) {
-      const path = join(journalDir, name);
-      if (journalctl.status === 0) {
-        run('journalctl', ['--verify', '--file', path]);
-      }
-
-      const reader = FileReader.open(path);
-      const entries = [];
-      try {
-        while (reader.step()) entries.push(reader.getEntry());
-      } finally {
-        reader.close();
-      }
-      assert.equal(entries.length, 2);
-      const remapRow = entries.find((entry) => entry.fields.ND_REMAPPING?.toString('utf8') === '1');
-      const dataRow = entries.find((entry) => entry.fields.MESSAGE?.toString('utf8').startsWith('remap-rotate-'));
-      assert.ok(remapRow);
-      assert.ok(dataRow);
-      assert.equal(remapRow.fields.ND83AAO_LB_HOSTNAME.toString('utf8'), 'log.body.HostName');
-      assert.match(dataRow.fields.ND83AAO_LB_HOSTNAME.toString('utf8'), /^host-/);
+    const path = journalFiles(log.journalDirectory())[0];
+    const reader = FileReader.open(path);
+    const entries = [];
+    try {
+      while (reader.step()) entries.push(reader.getEntry());
+    } finally {
+      reader.close();
     }
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].fields.MESSAGE.toString('utf8'), 'journal app keeps valid fields');
+    assert.equal(entries[0].fields._HOSTNAME, undefined);
+    assert.equal(entries[0].fields['foo.bar'], undefined);
+    verifyJournalFileIfAvailable(path);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const longName = 'a'.repeat(1024);
+    const log = new Log(tempDir, {
+      source: 'system',
+      fieldNamePolicy: FIELD_NAME_POLICY_RAW,
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+    });
+    log.append([
+      { name: 'lowercase', value: 'ok' },
+      { name: 'foo.bar', value: 'dot' },
+      { name: 'field name', value: 'space' },
+      { name: longName, value: 'long' },
+      { name: 'BINARY', value: Buffer.from([0x61, 0x00, 0x3d, 0x62]) },
+    ], {
+      realtimeUsec: 1_700_002_403_000_000n,
+      monotonicUsec: 30n,
+    });
+    assert.throws(
+      () => log.append([{ name: 'BAD=NAME', value: 'bad' }], {
+        realtimeUsec: 1_700_002_403_000_001n,
+        monotonicUsec: 31n,
+      }),
+      /invalid field name/,
+    );
+    log.close();
+
+    const path = journalFiles(log.journalDirectory())[0];
+    const reader = FileReader.open(path);
+    const entries = [];
+    try {
+      while (reader.step()) entries.push(reader.getEntry());
+    } finally {
+      reader.close();
+    }
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].fields.lowercase.toString('utf8'), 'ok');
+    assert.equal(entries[0].fields['foo.bar'].toString('utf8'), 'dot');
+    assert.equal(entries[0].fields['field name'].toString('utf8'), 'space');
+    assert.equal(entries[0].fields[longName].toString('utf8'), 'long');
+    assert.deepEqual(entries[0].fields.BINARY, Buffer.from([0x61, 0x00, 0x3d, 0x62]));
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }

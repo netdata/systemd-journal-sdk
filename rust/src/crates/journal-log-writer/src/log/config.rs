@@ -1,4 +1,6 @@
-use journal_core::file::{Compression, DEFAULT_COMPRESS_THRESHOLD, normalize_compress_threshold};
+use journal_core::file::{
+    Compression, DEFAULT_COMPRESS_THRESHOLD, FieldNamePolicy, normalize_compress_threshold,
+};
 use journal_registry::Origin;
 use std::time::Duration;
 use uuid::Uuid;
@@ -116,8 +118,7 @@ pub struct Config {
     pub boot_id: Option<Uuid>,
     /// Use systemd's `<source>.journal` active filename policy.
     ///
-    /// The default is false so the high-level writer matches the Netdata
-    /// vendored Rust writer: active files use the chain filename form
+    /// The default is false so active files use the chain filename form
     /// `<source>@<seqnum_id>-<head_seqnum>-<head_realtime>.journal`.
     pub strict_systemd_naming: bool,
     /// Explicit live-reader publication cadence.
@@ -126,6 +127,8 @@ pub struct Config {
     /// per-entry live publication, and values greater than `1` publish after
     /// every N entries.
     pub live_publish_every_entries: u64,
+    /// Field-name policy for caller-provided fields.
+    pub field_name_policy: FieldNamePolicy,
 }
 
 impl Config {
@@ -147,6 +150,7 @@ impl Config {
             boot_id: None,
             strict_systemd_naming: false,
             live_publish_every_entries: 1,
+            field_name_policy: FieldNamePolicy::Journald,
         }
     }
 
@@ -199,6 +203,11 @@ impl Config {
 
     pub fn with_live_publish_every_entries(mut self, entries: u64) -> Self {
         self.live_publish_every_entries = entries;
+        self
+    }
+
+    pub fn with_field_name_policy(mut self, policy: FieldNamePolicy) -> Self {
+        self.field_name_policy = policy;
         self
     }
 }

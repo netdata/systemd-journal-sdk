@@ -5,7 +5,6 @@
 //! functions for extracting raw field data from journal entries.
 
 use crate::error::Result;
-use journal_core::field_map::REMAPPING_MARKER;
 use journal_core::file::{JournalFile, Mmap};
 use journal_index::{
     Anchor, Direction, FieldName, FieldValuePair, FileIndex, Filter, LogEntryId, LogQueryParams,
@@ -160,10 +159,7 @@ impl<'a> LogQuery<'a> {
         self
     }
 
-    /// Limit returned field-value pairs to the requested field names.
-    ///
-    /// Field names may be specified using either their OTEL names or the raw
-    /// systemd names present on disk.
+    /// Limit returned field-value pairs to the requested on-disk field names.
     pub fn with_output_fields<I, S>(mut self, fields: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -504,14 +500,8 @@ fn merge_log_entries(
     result
 }
 
-fn is_projected(
-    raw_field_name: &str,
-    output_field_name: &str,
-    output_fields: Option<&HashSet<String>>,
-) -> bool {
-    output_fields.map_or(true, |projected| {
-        projected.contains(raw_field_name) || projected.contains(output_field_name)
-    })
+fn is_projected(raw_field_name: &str, output_fields: Option<&HashSet<String>>) -> bool {
+    output_fields.map_or(true, |projected| projected.contains(raw_field_name))
 }
 
 /// Raw field data extracted from a journal entry.
@@ -566,14 +556,6 @@ fn extract_entry_data(
     for (file, file_entries) in entries_by_file {
         let journal_file = JournalFile::<Mmap>::open(file, 8 * 1024 * 1024)?;
 
-        // Load and reverse the field mapping (systemd -> OTEL)
-        // This allows us to reverse-map systemd field names back to their original OTEL names
-        let field_map = journal_file.load_fields()?;
-        let reverse_map: HashMap<String, String> = field_map
-            .into_iter()
-            .map(|(otel, systemd)| (systemd, otel))
-            .collect();
-
         let mut data_offsets = Vec::new();
 
         for (original_idx, entry) in file_entries {
@@ -587,13 +569,8 @@ fn extract_entry_data(
             entry_guard.collect_offsets(&mut data_offsets)?;
             drop(entry_guard);
 
-            // Extract all field=value pairs, skipping field remapping entries.
-            // Remapping entries are internal bookkeeping (ND_REMAPPING=1) that map
-            // systemd field names back to OTEL names. Their data objects contain
-            // "SYSTEMD_NAME=otel.name", so if processed as log data the OTEL name
-            // would appear as the cell value — which is exactly the column name.
+            // Extract all field=value pairs.
             let mut fields = Vec::new();
-            let mut is_remapping_entry = false;
             for data_offset in data_offsets.iter().copied() {
                 let data_guard = journal_file.data_ref(data_offset)?;
                 let payload_bytes = if data_guard.is_compressed() {
@@ -603,37 +580,14 @@ fn extract_entry_data(
                     data_guard.raw_payload()
                 };
 
-                if payload_bytes == REMAPPING_MARKER {
-                    is_remapping_entry = true;
-                    break;
-                }
-
                 let payload_str = String::from_utf8_lossy(payload_bytes);
 
-                if let Some(mut pair) = FieldValuePair::parse(&payload_str) {
+                if let Some(pair) = FieldValuePair::parse(&payload_str) {
                     let raw_field_name = pair.field();
-                    let otel_field_name = reverse_map.get(raw_field_name).map(String::as_str);
-                    let output_field_name = otel_field_name.unwrap_or(raw_field_name);
-                    let projected = is_projected(raw_field_name, output_field_name, output_fields);
-
-                    // Reverse-map systemd field name back to OTEL name if needed
-                    if let Some(otel_name) = otel_field_name {
-                        pair = FieldValuePair::new_unchecked(
-                            FieldName::new_unchecked(otel_name),
-                            pair.value().to_string(),
-                        );
-                    }
-
-                    // Accept projection filters expressed with either OTEL field names (preferred)
-                    // or the raw systemd names present on disk.
-                    if projected {
+                    if is_projected(raw_field_name, output_fields) {
                         fields.push(pair);
                     }
                 }
-            }
-
-            if is_remapping_entry {
-                continue;
             }
 
             result[original_idx] = Some(LogEntryData {
@@ -643,7 +597,6 @@ fn extract_entry_data(
         }
     }
 
-    // Filter out None entries (remapping entries are skipped and left as None)
     Ok(result.into_iter().flatten().collect())
 }
 
@@ -659,37 +612,18 @@ mod tests {
     fn projection_accepts_raw_systemd_field_name() {
         let projected = projected_fields(&["_SYSTEMD_UNIT"]);
 
-        assert!(is_projected(
-            "_SYSTEMD_UNIT",
-            "systemd.unit",
-            Some(&projected)
-        ));
-    }
-
-    #[test]
-    fn projection_accepts_remapped_otel_field_name() {
-        let projected = projected_fields(&["service.name"]);
-
-        assert!(is_projected(
-            "ND_SD_DFB2E175D0B14B66",
-            "service.name",
-            Some(&projected)
-        ));
+        assert!(is_projected("_SYSTEMD_UNIT", Some(&projected)));
     }
 
     #[test]
     fn projection_rejects_unmatched_field_names() {
         let projected = projected_fields(&["service.name"]);
 
-        assert!(!is_projected(
-            "_SYSTEMD_UNIT",
-            "systemd.unit",
-            Some(&projected)
-        ));
+        assert!(!is_projected("_SYSTEMD_UNIT", Some(&projected)));
     }
 
     #[test]
     fn projection_accepts_all_fields_without_projection_filter() {
-        assert!(is_projected("_SYSTEMD_UNIT", "systemd.unit", None));
+        assert!(is_projected("_SYSTEMD_UNIT", None));
     }
 }

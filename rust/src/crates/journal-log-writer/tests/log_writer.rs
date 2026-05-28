@@ -7,8 +7,9 @@
 
 use journal_common::{Microseconds, load_boot_id, load_machine_id, monotonic_now};
 use journal_core::file::{
-    DEFAULT_COMPRESS_THRESHOLD, HeaderIncompatibleFlags, JournalFile, JournalFileOptions,
-    JournalState, JournalWriter, MIN_COMPRESS_THRESHOLD, Mmap, MmapMut,
+    DEFAULT_COMPRESS_THRESHOLD, FieldNamePolicy, HeaderIncompatibleFlags, JournalFile,
+    JournalFileOptions, JournalState, JournalWriter, MIN_COMPRESS_THRESHOLD, Mmap, MmapMut,
+    StructuredField,
 };
 use journal_log_writer::{
     Config, EntryTimestamps, Log, LogArtifactSizer, LogIdentityMode, LogLifecycleEvent,
@@ -107,6 +108,22 @@ fn journal_file_paths(dir: &TempDir) -> Vec<PathBuf> {
         .collect();
     journal_files.sort();
     journal_files
+}
+
+fn single_entry_payloads(path: &Path) -> Vec<Vec<u8>> {
+    let file = File::from_path(path).expect("journal path should parse");
+    let journal = JournalFile::<Mmap>::open(&file, 4096).expect("open journal");
+    let mut entry_offsets = Vec::new();
+    journal
+        .entry_offsets(&mut entry_offsets)
+        .expect("collect entry offsets");
+    assert_eq!(entry_offsets.len(), 1, "unexpected entry count");
+    journal
+        .entry_data_objects(entry_offsets[0])
+        .expect("entry data iterator")
+        .map(|item| item.map(|object| object.raw_payload().to_vec()))
+        .collect::<journal_core::error::Result<Vec<_>>>()
+        .expect("read entry payloads")
 }
 
 fn read_journal_json(path: &Path) -> Vec<serde_json::Value> {
@@ -1988,10 +2005,10 @@ fn test_different_boot_does_not_seed_monotonic_clamp_from_previous_tail() {
 }
 
 #[test]
-fn test_data_entry_preserves_timestamp_overrides_when_remapping_is_emitted() {
+fn test_log_journald_policy_preserves_protected_fields() {
     if !journalctl_available() {
         eprintln!(
-            "journalctl not available; skipping test_remapping_entry_respects_timestamp_overrides"
+            "journalctl not available; skipping test_log_journald_policy_preserves_protected_fields"
         );
         return;
     }
@@ -2001,12 +2018,10 @@ fn test_data_entry_preserves_timestamp_overrides_when_remapping_is_emitted() {
     let mut log = Log::new(dir.path(), config).unwrap();
 
     let entry = [
-        b"MESSAGE=remap-ts" as &[u8],
-        b"PRIORITY=6",
-        b"foo.bar=value",
-        b"log.body.HostName=camel",
-        b"_CUSTOM_FIELD=protected",
-        b"field name=md5",
+        b"MESSAGE=journald policy preserves trusted fields" as &[u8],
+        b"TEST_ID=journald-field-policy",
+        b"_HOSTNAME=synthetic-host",
+        b"_TRANSPORT=snmptrap",
     ];
     let realtime_override = Microseconds::now().get().saturating_add(1_000_000);
     let monotonic_override = monotonic_now()
@@ -2020,123 +2035,211 @@ fn test_data_entry_preserves_timestamp_overrides_when_remapping_is_emitted() {
     log.sync().unwrap();
 
     let rows = read_journal_json(&journal_file_path(&dir));
-    let remap_row = rows
-        .iter()
-        .find(|row| row.get("ND_REMAPPING").and_then(|v| v.as_str()) == Some("1"))
-        .expect("missing remapping row");
     let data_row = rows
         .iter()
-        .find(|row| row.get("MESSAGE").and_then(|v| v.as_str()) == Some("remap-ts"))
+        .find(|row| row.get("TEST_ID").and_then(|v| v.as_str()) == Some("journald-field-policy"))
         .expect("missing data row");
 
-    let remap_rt =
-        parse_u64_field(remap_row, "__REALTIME_TIMESTAMP").expect("missing remap realtime");
-    let data_rt = parse_u64_field(data_row, "__REALTIME_TIMESTAMP").expect("missing data realtime");
-    let remap_mono =
-        parse_u64_field(remap_row, "__MONOTONIC_TIMESTAMP").expect("missing remap monotonic");
-    let data_mono =
-        parse_u64_field(data_row, "__MONOTONIC_TIMESTAMP").expect("missing data monotonic");
-
     assert_eq!(
-        remap_row
-            .get("ND83AAO_LB_HOSTNAME")
-            .and_then(|v| v.as_str()),
-        Some("log.body.HostName")
+        data_row.get("_HOSTNAME").and_then(|v| v.as_str()),
+        Some("synthetic-host")
     );
     assert_eq!(
-        remap_row
-            .get("NDVQT__CUSTOM_FIELD")
-            .and_then(|v| v.as_str()),
-        Some("_CUSTOM_FIELD")
+        data_row.get("_TRANSPORT").and_then(|v| v.as_str()),
+        Some("snmptrap")
     );
     assert_eq!(
-        data_row.get("ND83AAO_LB_HOSTNAME").and_then(|v| v.as_str()),
-        Some("camel")
+        parse_u64_field(data_row, "__REALTIME_TIMESTAMP"),
+        Some(realtime_override)
     );
     assert_eq!(
-        data_row.get("NDVQT__CUSTOM_FIELD").and_then(|v| v.as_str()),
-        Some("protected")
+        parse_u64_field(data_row, "__MONOTONIC_TIMESTAMP"),
+        Some(monotonic_override)
     );
-    assert_eq!(
-        remap_row
-            .get("ND_BFAAD773361A781112FB325B433D54F7")
-            .and_then(|v| v.as_str()),
-        Some("field name")
-    );
-    assert_eq!(
-        data_row
-            .get("ND_BFAAD773361A781112FB325B433D54F7")
-            .and_then(|v| v.as_str()),
-        Some("md5")
-    );
-    assert_eq!(remap_rt, realtime_override);
-    assert_eq!(data_rt, realtime_override.saturating_add(1));
-    assert_eq!(remap_mono, monotonic_override);
-    assert_eq!(data_mono, monotonic_override.saturating_add(1));
 }
 
 #[test]
-fn test_remapping_registry_reemits_after_rotation() {
+fn test_log_journal_app_policy_drops_invalid_fields() {
     if !journalctl_available() {
         eprintln!(
-            "journalctl not available; skipping test_remapping_registry_reemits_after_rotation"
+            "journalctl not available; skipping test_log_journal_app_policy_drops_invalid_fields"
         );
         return;
     }
 
     let dir = TempDir::new().unwrap();
-    let config =
-        test_config().with_rotation_policy(RotationPolicy::default().with_number_of_entries(2));
+    let config = test_config().with_field_name_policy(FieldNamePolicy::JournalApp);
     let mut log = Log::new(dir.path(), config).unwrap();
 
-    for i in 0..2 {
-        let message = format!("MESSAGE=remap-rotate-{}", i);
-        let host = format!("log.body.HostName=host-{}", i);
-        let entry = [message.as_bytes(), host.as_bytes()];
-        let ts = EntryTimestamps::default()
-            .with_entry_realtime_usec(1_700_002_402_000_000 + i)
-            .with_entry_monotonic_usec(20 + i);
-        log.write_entry_with_timestamps(&entry, ts).unwrap();
-    }
+    let entry = [
+        b"MESSAGE=journal app keeps valid fields" as &[u8],
+        b"TEST_ID=journal-app-field-policy",
+        b"_HOSTNAME=dropped-host",
+        b"foo.bar=dropped-dot",
+    ];
+    let ts = EntryTimestamps::default()
+        .with_entry_realtime_usec(1_700_002_402_000_000)
+        .with_entry_monotonic_usec(20);
+    log.write_entry_with_timestamps(&entry, ts).unwrap();
+
+    let drop_only = [b"_HOSTNAME=drop-only" as &[u8]];
+    let err = log
+        .write_entry_with_timestamps(
+            &drop_only,
+            EntryTimestamps::default()
+                .with_entry_realtime_usec(1_700_002_402_000_001)
+                .with_entry_monotonic_usec(21),
+        )
+        .expect_err("drop-only journal-app entry should fail");
+    assert!(matches!(err, WriterError::EmptyEntry));
+
     log.sync().unwrap();
     drop(log);
 
     let paths = journal_file_paths(&dir);
-    assert_eq!(paths.len(), 2, "expected remap entries in two files");
+    assert_eq!(paths.len(), 1, "expected one journal-app file");
+    let rows = read_journal_json(&paths[0]);
+    assert_eq!(rows.len(), 1, "unexpected row count in {:?}", paths[0]);
+    let data_row = &rows[0];
+    assert_eq!(
+        data_row.get("MESSAGE").and_then(|v| v.as_str()),
+        Some("journal app keeps valid fields")
+    );
+    assert!(data_row.get("_HOSTNAME").is_none());
+    assert!(data_row.get("foo.bar").is_none());
+}
 
-    for path in paths {
-        let rows = read_journal_json(&path);
-        assert_eq!(rows.len(), 2, "unexpected row count in {:?}", path);
+#[test]
+fn test_log_raw_policy_allows_structure_only_field_names() {
+    let dir = TempDir::new().unwrap();
+    let config = test_config().with_field_name_policy(FieldNamePolicy::Raw);
+    let mut log = Log::new(dir.path(), config).unwrap();
 
-        let remap_row = rows
+    let long_payload = format!("{}=long", "a".repeat(1024)).into_bytes();
+    let entry = [
+        b"lowercase=ok" as &[u8],
+        b"foo.bar=dot",
+        b"field name=space",
+        long_payload.as_slice(),
+        b"BINARY=a\0=b",
+    ];
+    let ts = EntryTimestamps::default()
+        .with_entry_realtime_usec(1_700_002_403_000_000)
+        .with_entry_monotonic_usec(30);
+    log.write_entry_with_timestamps(&entry, ts).unwrap();
+
+    let invalid = [b"=bad" as &[u8]];
+    log.write_entry_with_timestamps(
+        &invalid,
+        EntryTimestamps::default()
+            .with_entry_realtime_usec(1_700_002_403_000_001)
+            .with_entry_monotonic_usec(31),
+    )
+    .expect_err("empty raw field name should fail");
+
+    log.sync().unwrap();
+    drop(log);
+
+    let paths = journal_file_paths(&dir);
+    assert_eq!(paths.len(), 1, "expected one raw-policy file");
+    let payloads = single_entry_payloads(&paths[0]);
+    assert!(payloads.iter().any(|p| p == b"lowercase=ok"));
+    assert!(payloads.iter().any(|p| p == b"foo.bar=dot"));
+    assert!(payloads.iter().any(|p| p == b"field name=space"));
+    assert!(payloads.iter().any(|p| p == &long_payload));
+    assert!(payloads.iter().any(|p| p == b"BINARY=a\0=b"));
+}
+
+#[test]
+fn test_log_write_fields_respects_journal_app_and_raw_policies() {
+    let app_dir = TempDir::new().unwrap();
+    let app_config = test_config().with_field_name_policy(FieldNamePolicy::JournalApp);
+    let mut app_log = Log::new(app_dir.path(), app_config).unwrap();
+    let app_fields = [
+        StructuredField::new(b"MESSAGE", b"structured app valid"),
+        StructuredField::new(b"_HOSTNAME", b"drop-host"),
+        StructuredField::new(b"foo.bar", b"drop-dot"),
+    ];
+    app_log
+        .write_fields_with_timestamps(
+            &app_fields,
+            EntryTimestamps::default()
+                .with_entry_realtime_usec(1_700_002_404_000_000)
+                .with_entry_monotonic_usec(40),
+        )
+        .unwrap();
+    let app_drop_only = [StructuredField::new(b"_HOSTNAME", b"drop-only")];
+    let err = app_log
+        .write_fields_with_timestamps(
+            &app_drop_only,
+            EntryTimestamps::default()
+                .with_entry_realtime_usec(1_700_002_404_000_001)
+                .with_entry_monotonic_usec(41),
+        )
+        .expect_err("structured journal-app drop-only entry should fail");
+    assert!(matches!(err, WriterError::EmptyEntry));
+    app_log.sync().unwrap();
+    drop(app_log);
+
+    let app_paths = journal_file_paths(&app_dir);
+    assert_eq!(
+        app_paths.len(),
+        1,
+        "expected one structured app-policy file"
+    );
+    let app_payloads = single_entry_payloads(&app_paths[0]);
+    assert!(
+        app_payloads
             .iter()
-            .find(|row| row.get("ND_REMAPPING").and_then(|v| v.as_str()) == Some("1"))
-            .expect("missing remapping row after rotation");
-        let data_row = rows
-            .iter()
-            .find(|row| {
-                row.get("MESSAGE")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|message| message.starts_with("remap-rotate-"))
-            })
-            .expect("missing data row after rotation");
+            .any(|p| p == b"MESSAGE=structured app valid")
+    );
+    assert!(!app_payloads.iter().any(|p| p.starts_with(b"_HOSTNAME=")));
+    assert!(!app_payloads.iter().any(|p| p.starts_with(b"foo.bar=")));
 
-        assert_eq!(
-            remap_row
-                .get("ND83AAO_LB_HOSTNAME")
-                .and_then(|v| v.as_str()),
-            Some("log.body.HostName")
-        );
-        assert!(
-            data_row
-                .get("ND83AAO_LB_HOSTNAME")
-                .and_then(|v| v.as_str())
-                .is_some_and(|host| host.starts_with("host-")),
-            "missing remapped HostName value in {:?}: {:?}",
-            path,
-            data_row
-        );
-    }
+    let raw_dir = TempDir::new().unwrap();
+    let raw_config = test_config().with_field_name_policy(FieldNamePolicy::Raw);
+    let mut raw_log = Log::new(raw_dir.path(), raw_config).unwrap();
+    let long_name = "a".repeat(1024);
+    let long_payload = format!("{}=long", long_name).into_bytes();
+    let raw_fields = [
+        StructuredField::new(b"lowercase", b"ok"),
+        StructuredField::new(b"foo.bar", b"dot"),
+        StructuredField::new(b"field name", b"space"),
+        StructuredField::new(long_name.as_bytes(), b"long"),
+        StructuredField::new(b"BINARY", b"a\0=b"),
+    ];
+    raw_log
+        .write_fields_with_timestamps(
+            &raw_fields,
+            EntryTimestamps::default()
+                .with_entry_realtime_usec(1_700_002_405_000_000)
+                .with_entry_monotonic_usec(50),
+        )
+        .unwrap();
+    let invalid_raw = [StructuredField::new(b"BAD=NAME", b"bad")];
+    raw_log
+        .write_fields_with_timestamps(
+            &invalid_raw,
+            EntryTimestamps::default()
+                .with_entry_realtime_usec(1_700_002_405_000_001)
+                .with_entry_monotonic_usec(51),
+        )
+        .expect_err("structured raw field name containing '=' should fail");
+    raw_log.sync().unwrap();
+    drop(raw_log);
+
+    let raw_paths = journal_file_paths(&raw_dir);
+    assert_eq!(
+        raw_paths.len(),
+        1,
+        "expected one structured raw-policy file"
+    );
+    let raw_payloads = single_entry_payloads(&raw_paths[0]);
+    assert!(raw_payloads.iter().any(|p| p == b"lowercase=ok"));
+    assert!(raw_payloads.iter().any(|p| p == b"foo.bar=dot"));
+    assert!(raw_payloads.iter().any(|p| p == b"field name=space"));
+    assert!(raw_payloads.iter().any(|p| p == &long_payload));
+    assert!(raw_payloads.iter().any(|p| p == b"BINARY=a\0=b"));
 }
 
 #[test]

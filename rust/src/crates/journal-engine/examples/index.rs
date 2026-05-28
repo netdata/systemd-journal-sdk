@@ -12,7 +12,7 @@
 // sudo chown $USER:$USER /mnt/slow-disk
 //
 // # 2. Copy journal files
-// cp -r ~/repos/tmp/otel-aws /mnt/slow-disk/
+// cp -r /path/to/journal-fixtures /mnt/slow-disk/
 //
 // # 3. Unmount and recreate with delay
 // sudo umount /mnt/slow-disk
@@ -20,7 +20,7 @@
 // sudo dmsetup create slow-disk --table "0 $SIZE delay $LOOP 0 50 $LOOP 0 50"
 // sudo mount /dev/mapper/slow-disk /mnt/slow-disk
 //
-// # 4. Now /mnt/slow-disk/otel-aws has your journals on a "slow" disk
+// # 4. Now /mnt/slow-disk/journal-fixtures has your journals on a "slow" disk
 //
 // # 5. Create slow-io cgroup
 // sudo mkdir -p /sys/fs/cgroup/slow-io
@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = if let Some(arg) = env::args().nth(1) {
         PathBuf::from(arg)
     } else {
-        PathBuf::from("/mnt/slow-disk/otel-aws")
+        PathBuf::from("/mnt/slow-disk/journal-fixtures")
     };
 
     info!("scanning directory: {}", dir.display());

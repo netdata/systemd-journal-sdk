@@ -346,6 +346,119 @@ func TestWriterRejectsInvalidEntries(t *testing.T) {
 	}
 }
 
+func TestWriterJournaldPolicyAllowsProtectedFields(t *testing.T) {
+	requireJournalctl(t)
+
+	path := filepath.Join(t.TempDir(), "journald-fields.journal")
+	w, err := Create(path, testOptions())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := w.Append([]Field{
+		StringField("MESSAGE", "trusted fields"),
+		StringField("_HOSTNAME", "synthetic-host"),
+		StringField("_TRANSPORT", "journal"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_111_000_000, MonotonicUsec: 1}); err != nil {
+		t.Fatalf("Append(trusted fields) error = %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	verifyJournalctl(t, path)
+	rows := runJournalctlJSON(t, path)
+	if len(rows) != 1 {
+		t.Fatalf("row count = %d, want 1; rows=%v", len(rows), rows)
+	}
+	assertJSONField(t, rows[0], "_HOSTNAME", "synthetic-host")
+	assertJSONField(t, rows[0], "_TRANSPORT", "journal")
+}
+
+func TestWriterJournalAppPolicyDropsInvalidCallerFields(t *testing.T) {
+	requireJournalctl(t)
+
+	opts := testOptions()
+	opts.FieldNamePolicy = FieldNamePolicyJournalApp
+	path := filepath.Join(t.TempDir(), "journal-app-fields.journal")
+	w, err := Create(path, opts)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := w.Append([]Field{
+		StringField("MESSAGE", "app valid"),
+		StringField("_HOSTNAME", "drop-host"),
+		StringField("lowercase", "drop-lowercase"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_112_000_000, MonotonicUsec: 1}); err != nil {
+		t.Fatalf("Append(journal-app mixed fields) error = %v", err)
+	}
+	if err := w.Append([]Field{
+		StringField("_HOSTNAME", "drop-only"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_112_000_001, MonotonicUsec: 2}); !errors.Is(err, errEntryEmpty) {
+		t.Fatalf("Append(journal-app drop-only) error = %v, want errEntryEmpty", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	verifyJournalctl(t, path)
+	rows := runJournalctlJSON(t, path)
+	if len(rows) != 1 {
+		t.Fatalf("row count = %d, want 1; rows=%v", len(rows), rows)
+	}
+	assertJSONField(t, rows[0], "MESSAGE", "app valid")
+	if _, ok := rows[0]["_HOSTNAME"]; ok {
+		t.Fatalf("journal-app writer kept protected field: %v", rows[0])
+	}
+	if _, ok := rows[0]["lowercase"]; ok {
+		t.Fatalf("journal-app writer kept invalid lowercase field: %v", rows[0])
+	}
+}
+
+func TestWriterRawPolicyAllowsStructureOnlyFieldNames(t *testing.T) {
+	longName := strings.Repeat("a", 1024)
+	opts := testOptions()
+	opts.FieldNamePolicy = FieldNamePolicyRaw
+	path := filepath.Join(t.TempDir(), "raw-fields.journal")
+	w, err := Create(path, opts)
+	if err != nil {
+		t.Fatalf("Create(raw) error = %v", err)
+	}
+	if err := w.Append([]Field{
+		StringField("lowercase", "ok"),
+		StringField("foo.bar", "dot"),
+		StringField("field name", "space"),
+		StringField(longName, "long"),
+		{Name: "BINARY", Value: []byte{'a', 0, '=', 'b'}},
+	}, EntryOptions{RealtimeUsec: 1_700_002_113_000_000, MonotonicUsec: 1}); err != nil {
+		t.Fatalf("Append(raw fields) error = %v", err)
+	}
+	if err := w.Append([]Field{StringField("BAD=NAME", "bad")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+		t.Fatalf("Append(raw name containing '=') error = %v, want errFieldName", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	snapshot := readJournalSnapshot(t, path)
+	for _, field := range []string{"lowercase", "foo.bar", "field name", longName, "BINARY"} {
+		if _, ok := snapshot.fieldByPayload[field]; !ok {
+			t.Fatalf("missing raw FIELD object %q", field)
+		}
+	}
+	if got := snapshot.dataByPayload["BINARY=a\x00=b"].payload; !bytes.Equal(got, []byte{'B', 'I', 'N', 'A', 'R', 'Y', '=', 'a', 0, '=', 'b'}) {
+		t.Fatalf("raw binary payload = %q", got)
+	}
+}
+
+func TestCreateRejectsUnsupportedFieldNamePolicy(t *testing.T) {
+	opts := testOptions()
+	opts.FieldNamePolicy = FieldNamePolicy(99)
+	if w, err := Create(filepath.Join(t.TempDir(), "invalid-field-policy.journal"), opts); err == nil {
+		_ = w.Close()
+		t.Fatal("Create() with unsupported field name policy succeeded")
+	}
+}
+
 func TestWriterLockRejectsSecondWriter(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "locked.journal")
 	w, err := Create(path, testOptions())

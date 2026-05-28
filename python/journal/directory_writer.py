@@ -5,10 +5,14 @@ import re
 import time
 
 from .binary import random_uuid, uuid_to_string
-from .field_remap import REMAPPING_MARKER, remap_fields
 from .header import HEADER_SIZE, OBJECT_HEADER_SIZE, STATE_ONLINE, parse_file_header, parse_object_header
 from .header import normalize_journal_max_file_size
-from .writer import Writer
+from .writer import (
+    Writer,
+    _normalize_field_name_policy,
+    _prepare_fields_for_policy,
+    _writer_policy_for_log_policy,
+)
 
 
 DEFAULT_MAX_ENTRIES = 0
@@ -53,6 +57,7 @@ class Log:
         self._compression_threshold_bytes = config.get('compression_threshold_bytes')
         self._compact = config.get('compact') is True or config.get('format') == 'compact'
         self._live_publish_every_entries = _option(config, 'live_publish_every_entries', 'livePublishEveryEntries')
+        self._field_name_policy = _normalize_field_name_policy(_option(config, 'field_name_policy', 'fieldNamePolicy'))
 
         rotation_policy = _option(config, 'rotation_policy', 'rotationPolicy')
         retention_policy = _option(config, 'retention_policy', 'retentionPolicy')
@@ -132,7 +137,6 @@ class Log:
         self._journal_dir = os.path.join(self._root_path, uuid_to_string(self._machine_id))
         self._active_file = self._systemd_active_path() if self._strict_systemd_naming else None
         self._active_writer = None
-        self._remaps = {}
         self._closed = False
         self._open_retention_applied = False
         self._last_realtime = 0
@@ -166,6 +170,7 @@ class Log:
         if os.path.exists(self._active_file):
             self._active_writer = Writer.open(self._active_file, {
                 'live_publish_every_entries': self._live_publish_every_entries,
+                'field_name_policy': _writer_policy_for_log_policy(self._field_name_policy),
             })
             if self._active_writer._header['n_entries'] == 0:
                 self._discard_empty_opened_writer()
@@ -178,6 +183,7 @@ class Log:
         if os.path.exists(self._active_file):
             self._active_writer = Writer.open(self._active_file, {
                 'live_publish_every_entries': self._live_publish_every_entries,
+                'field_name_policy': _writer_policy_for_log_policy(self._field_name_policy),
             })
         else:
             opts = {
@@ -196,6 +202,7 @@ class Log:
                 opts['boot_id'] = self._boot_id
             if self._live_publish_every_entries is not None:
                 opts['live_publish_every_entries'] = self._live_publish_every_entries
+            opts['field_name_policy'] = _writer_policy_for_log_policy(self._field_name_policy)
             self._active_writer = Writer.create(self._active_file, opts)
         self._capture_writer_identity()
         if reason != LOG_LIFECYCLE_REASON_ROTATION:
@@ -220,6 +227,7 @@ class Log:
         self._active_file = path
         self._active_writer = Writer.open(path, {
             'live_publish_every_entries': self._live_publish_every_entries,
+            'field_name_policy': _writer_policy_for_log_policy(self._field_name_policy),
         })
         if self._active_writer._header['n_entries'] == 0:
             self._discard_empty_opened_writer()
@@ -257,13 +265,7 @@ class Log:
             self._rotate(opts)
         self._open_writer(opts)
         self._apply_retention_on_open()
-        fields, mappings = remap_fields(fields, self._remaps)
-        if mappings:
-            self._active_writer.append(self._remapping_entry_fields(mappings), opts)
-            for mapping in mappings:
-                self._remaps[mapping['original']] = mapping['mapped']
-            self._capture_writer_identity()
-            opts = self._entry_options_for_append(opts)
+        fields = _prepare_fields_for_policy(fields, self._field_name_policy)
         result = self._active_writer.append(self._fields_for_append(fields, opts), opts)
         self._capture_writer_identity()
         return result
@@ -298,7 +300,6 @@ class Log:
         self._active_writer = None
         self._active_file = self._systemd_active_path() if self._strict_systemd_naming else None
         self._open_writer(opts, LOG_LIFECYCLE_REASON_ROTATION)
-        self._remaps = {}
         self._emit_lifecycle({
             'type': LOG_LIFECYCLE_ROTATED,
             'reason': LOG_LIFECYCLE_REASON_ROTATION,
@@ -494,15 +495,6 @@ class Log:
             'name': '_SOURCE_REALTIME_TIMESTAMP',
             'value': str(int(source_realtime)),
         }]
-
-    def _remapping_entry_fields(self, mappings):
-        return [
-            {'name': '_BOOT_ID', 'value': uuid_to_string(self._boot_id)},
-            {'name': REMAPPING_MARKER, 'value': '1'},
-        ] + [
-            {'name': mapping['mapped'], 'value': mapping['original']}
-            for mapping in mappings
-        ]
 
     def _retained_size(self, path, fallback):
         size = _committed_journal_size(path, fallback)

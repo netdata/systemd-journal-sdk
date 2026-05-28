@@ -74,7 +74,7 @@ Inferences:
 - SOW-0015 provides the systemd and SDK ingesters used by benchmarks.
 - systemd should be the reference baseline, with Rust also tracked as a known high-performance implementation.
 - Netdata's vendored Rust writer and reader/index/query paths must be measured as practical replacement baselines, not only stock systemd.
-- The benchmark plan needs both microbenchmarks and end-to-end Netdata-shaped paths. The Go writer result reported by the user may include SDK overhead, SNMP traps worker overhead, sync cadence, compact/compression choices, field remapping, locking, retention, or dataset/cardinality effects; these must be separated by profiling.
+- The benchmark plan needs both microbenchmarks and end-to-end Netdata-shaped paths. The Go writer result reported by the user may include SDK overhead, SNMP traps worker overhead, sync cadence, compact/compression choices, field-name policy validation/filtering, locking, retention, or dataset/cardinality effects; these must be separated by profiling.
 - A split structured-field SDK API may still be useful and may be optimizable
   by hashing/copying from multiple slices and avoiding delimiter scans, but this
   is an SDK design/performance hypothesis, not the systemd lower-level API
@@ -99,7 +99,7 @@ Unknowns:
 ### Acceptance Criteria
 
 - Benchmarks cover deterministic ingestion writing for systemd, Rust, Go, Node.js, and Python using the SOW-0014 performance corpus of about 200k accepted rows.
-- Benchmarks cover Netdata-shaped writer workloads for SNMP traps, NetFlow, and OTEL logs, including the sync cadence, field counts, value cardinality, binary values, source realtime handling, remapping behavior, compact/regular output selection, compression, FSS, rotation, and retention policies expected by Netdata.
+- Benchmarks cover Netdata-shaped writer workloads for SNMP traps, NetFlow, and OTEL logs, including the sync cadence, field counts, value cardinality, binary values, source realtime handling, field-name policy selection, compact/regular output selection, compression, FSS, rotation, and retention policies expected by Netdata.
 - Benchmarks reproduce or reject the user-reported Go SNMP traps writer result of about 5k logs/s with controlled measurements and a breakdown of SDK time versus caller/worker overhead.
 - Benchmarks cover reading, live one-writer/multiple-reader operation, filtering, journalctl queries, query-unique/facet-style scans, cursor/seek behavior, directory traversal, corruption handling where relevant, and cross-language file sizes.
 - Reader stress benchmarks must separately measure single-file readers and ordered multi-file/directory readers.
@@ -109,7 +109,7 @@ Unknowns:
 - systemd C ingestion and reading are measured as the absolute reference baselines, and Netdata's vendored Rust implementation is measured as the practical replacement baseline where applicable.
 - Rust and Go writer/reader paths must be optimized to substantially exceed the systemd C baseline for hot Netdata workloads. If they do not, this SOW must record profiles, bottlenecks, attempted fixes, and a user decision before closing.
 - Profiling identifies bottlenecks before optimization work.
-- Optimizations are driven by measurements and do not weaken conformance. Profiling must specifically account for allocations, buffer reuse, hashing, object lookup, data/field deduplication, compression, sealing, remapping, lock handling, append publication, reader decompression, query filtering, and directory traversal.
+- Optimizations are driven by measurements and do not weaken conformance. Profiling must specifically account for allocations, buffer reuse, hashing, object lookup, data/field deduplication, compression, sealing, field-name policy validation/filtering, lock handling, append publication, reader decompression, query filtering, and directory traversal.
 - Writer optimization must explicitly report per-language hot-path allocation behavior, file/syscall behavior, mmap or pwrite strategy, publish ordering, write amplification, and flush policy.
 - Rust and Go optimized writer paths must target production hot-path use. For compact/no-compression/no-FSS append, the target design is no per-field heap allocation, no per-object file metadata syscall, bounded scratch/state allocation after warmup, and no readback of writer-owned state.
 - Writer API benchmarks must compare like with like. The systemd-compatible
@@ -163,7 +163,7 @@ Problem / root-cause model:
 
 - Optimization before the relevant API and file-format surfaces are complete risks hard-to-diagnose compatibility bugs, repeated performance regressions, and churn. That prerequisite is now satisfied for the compatibility feature/gap chain through SOW-0034.
 - The user-reported Go writer result of about 5k logs/s versus the current Netdata Rust path around 25k logs/s is too large to ignore. Start with independent writer measurements so SDK writer cost is separated from reader behavior and from Netdata caller overhead.
-- Working theory: the Go writer deficit may come from allocation-heavy field handling, repeated buffer construction, object/hash lookup cost, remapping overhead, compression/compact choices, lock/sync cadence, caller overhead, or a combination. This is speculation until profiles isolate the hot paths.
+- Working theory: the Go writer deficit may come from allocation-heavy field handling, repeated buffer construction, object/hash lookup cost, field-name policy validation/filtering overhead, compression/compact choices, lock/sync cadence, caller overhead, or a combination. This is speculation until profiles isolate the hot paths.
 - Reader performance risk is separate: no-libsystemd `systemd-journal.plugin` and Netdata reader/query/rebuild paths need efficient sequential scan, filtering, field extraction, directory traversal, and compressed/compact/sealed handling.
 - Reader performance must be split into at least two stress surfaces: single-file sequential/query reading and ordered multi-file/directory reading.
 - The systemd C implementation is the reference floor, not the aspirational target. Rust and Go should beat it substantially in the Netdata hot paths.
