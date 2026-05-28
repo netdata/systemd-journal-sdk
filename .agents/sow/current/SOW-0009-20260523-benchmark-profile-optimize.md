@@ -39,6 +39,13 @@ including replacing NetFlow and OTEL vendored copies, and also critical for the
 `systemd-journal.plugin` reader path, which must be significantly faster than a
 naive reader.
 
+On 2026-05-28, after SOW-0038 shipped `v0.3.0` / `go/v0.3.0` and the user
+integrated it into the Netdata SNMP traps backend, the user reported that the
+same SNMP traps benchmark improved from about 5.5k traps/s with `v0.1.0` to
+about 170k traps/s with `v0.3.0`. This is user-reported Netdata integration
+evidence, not a controlled SOW-0009 benchmark result, and must be reproduced
+or explained by the Netdata-shaped benchmark phase.
+
 ### Assistant Understanding
 
 Facts:
@@ -46,6 +53,11 @@ Facts:
 - Benchmarking and optimization must happen after correctness, interoperability, and deterministic writer-equivalence evidence are proven.
 - The user decided on 2026-05-24 to push this SOW to the end, after remaining feature-completeness SOWs, because benchmarking is expected to reveal discrepancies that require profiling, allocation reduction, buffer reuse, and refactoring.
 - The user updated the priority on 2026-05-26 after SNMP traps integration work reported about 5k logs/s from the current Go SDK writer. This datapoint is user-reported and must be reproduced under controlled benchmark conditions before it is treated as a measured project result.
+- The user reported on 2026-05-28 that SNMP traps integration with `v0.3.0`
+  reaches about 170k traps/s on the same benchmark that was about 5.5k traps/s
+  with `v0.1.0`. This is a major real integration signal, but it is still
+  user-reported external evidence until the SOW-0009 harness reproduces the
+  Netdata-shaped workload and records environment/configuration details.
 - The user clarified on 2026-05-26 that feature development must finish before optimization. Performance must not preempt SOW-0023 or other feature work, because optimizing before the feature surface is complete will let performance slip repeatedly as later features change the hot paths.
 - The user clarified on 2026-05-26 after SOW-0027 completed that actual Netdata integration should happen last because the SDK does not yet perform well enough to replace the older vendored libraries. The remaining compatibility feature/gap SOWs should complete first, then this performance SOW, then SOW-0026 integration.
 - Netdata replacement is not production-ready if the SDK writer or reader hot paths are materially slower than the current vendored Rust implementation without a measured explanation and a user-approved exception.
@@ -100,7 +112,10 @@ Unknowns:
 
 - Benchmarks cover deterministic ingestion writing for systemd, Rust, Go, Node.js, and Python using the SOW-0014 performance corpus of about 200k accepted rows.
 - Benchmarks cover Netdata-shaped writer workloads for SNMP traps, NetFlow, and OTEL logs, including the sync cadence, field counts, value cardinality, binary values, source realtime handling, field-name policy selection, compact/regular output selection, compression, FSS, rotation, and retention policies expected by Netdata.
-- Benchmarks reproduce or reject the user-reported Go SNMP traps writer result of about 5k logs/s with controlled measurements and a breakdown of SDK time versus caller/worker overhead.
+- Benchmarks reproduce or reject the user-reported Go SNMP traps writer
+  results with controlled measurements: about 5.5k traps/s with `v0.1.0` and
+  about 170k traps/s with `v0.3.0`. The benchmark report must break down SDK
+  time versus caller/worker overhead and explain the delta.
 - Benchmarks cover reading, live one-writer/multiple-reader operation, filtering, journalctl queries, query-unique/facet-style scans, cursor/seek behavior, directory traversal, corruption handling where relevant, and cross-language file sizes.
 - Reader stress benchmarks must separately measure single-file readers and ordered multi-file/directory readers.
 - Reader benchmarks include SDK idiomatic readers, libsystemd-compatible facades, file-backed journalctl rewrites, Netdata `jf`-style behavior after SOW-0027, stock `journalctl`, stock libsystemd where allowed, and Netdata's current reader/index/query paths where practical.
@@ -177,6 +192,9 @@ Evidence reviewed:
 - User performance requirement from 2026-05-24.
 - User sequencing decision from 2026-05-24: push SOW-0009 to the end instead of running a baseline-only benchmark now.
 - User performance update from 2026-05-26: SNMP traps worker reports the Go SDK writer at about 5k logs/s, compared with Netdata NetFlow vendored Rust around 25k logs/s and prior Rust measurements around 30k logs/s.
+- User performance update from 2026-05-28: after SNMP traps integration moved
+  from SDK `v0.1.0` to `v0.3.0`, the same benchmark improved from about 5.5k
+  traps/s to about 170k traps/s.
 - User sequencing clarification from 2026-05-26: finish SOW-0023 and the remaining feature work first; optimize only after feature development so performance work does not slip as features change.
 - SOW-0026 Netdata integration scope includes replacing NetFlow/OTEL vendored copies and the no-libsystemd `systemd-journal.plugin` reader path, making performance a production gate.
 - SOW-0034 completed the remaining file-backed journalctl query/follow gap, so the compatibility feature/gap chain is complete enough to start this SOW.
@@ -867,6 +885,18 @@ Current chunk validation:
   - `timeout 1800 python3 tests/interoperability/run_compact_matrix.py --writers rust --compression xz --keep-files` passed `14/14`; result file `.local/interoperability/compact-matrix-xz-results-20260527-214826.json`.
   - `timeout 1800 python3 tests/interoperability/run_compact_matrix.py --writers rust --compression lz4 --keep-files` passed `14/14`; result file `.local/interoperability/compact-matrix-lz4-results-20260527-214829.json`.
   - External reviewers `llm-netdata-cloud/glm-5.1`, `llm-netdata-cloud/qwen3.6-plus`, `llm-netdata-cloud/minimax-m2.7-coder`, and `llm-netdata-cloud/kimi-k2.6` all returned `PRODUCTION GRADE` for the adversarial Rust/Go writer benchmark review and Rust post-change repair; no blocking findings were reported.
+
+2026-05-28:
+
+- Recorded user-reported Netdata SNMP traps integration result after the
+  `v0.3.0` / `go/v0.3.0` release:
+  - Baseline with SDK `v0.1.0`: about 5.5k traps/s.
+  - Same benchmark with SDK `v0.3.0`: about 170k traps/s.
+  - Interpretation: this is a major positive integration signal and likely
+    means the earlier SNMP traps bottleneck was dominated by behavior removed
+    or bypassed by the later API/policy work. This interpretation is still a
+    working theory until SOW-0009 reproduces the Netdata-shaped workload under
+    controlled benchmark settings.
 
 Pending validation before this SOW can close:
 
