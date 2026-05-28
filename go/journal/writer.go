@@ -108,7 +108,6 @@ type Writer struct {
 	compact           bool
 	seal              *sealState
 	fieldCache        fieldCache
-	dataCache         recentDataCache
 	payloadScratch    []byte
 	entryItemsScratch []entryItem
 	// Full memory-ordering point before same-size ftruncate wakes stock follow readers.
@@ -483,11 +482,9 @@ type entryItem struct {
 }
 
 const (
-	fieldCacheSlots              = 1024
-	fieldCacheMaxPayloadLen      = 128
-	recentDataCacheSlots         = 65536
-	recentDataCacheMaxPayloadLen = 256
-	payloadScratchMaxRetain      = 1 << 20
+	fieldCacheSlots         = 1024
+	fieldCacheMaxPayloadLen = 128
+	payloadScratchMaxRetain = 1 << 20
 )
 
 type fieldCacheEntry struct {
@@ -522,38 +519,6 @@ func (c *fieldCache) insert(hash uint64, payload []byte, offset, headDataOffset 
 	entry.payload = append(entry.payload[:0], payload...)
 	entry.offset = offset
 	entry.headDataOffset = headDataOffset
-}
-
-type recentDataCacheEntry struct {
-	payload []byte
-	item    entryItem
-}
-
-type recentDataCache struct {
-	entries []recentDataCacheEntry
-}
-
-func (c *recentDataCache) get(hash uint64, payload []byte) (entryItem, bool) {
-	if len(payload) > recentDataCacheMaxPayloadLen || len(c.entries) == 0 {
-		return entryItem{}, false
-	}
-	entry := c.entries[int(hash)&(recentDataCacheSlots-1)]
-	if entry.item.offset == 0 || !bytes.Equal(entry.payload, payload) {
-		return entryItem{}, false
-	}
-	return entry.item, true
-}
-
-func (c *recentDataCache) insert(hash uint64, payload []byte, item entryItem) {
-	if len(payload) > recentDataCacheMaxPayloadLen {
-		return
-	}
-	if len(c.entries) == 0 {
-		c.entries = make([]recentDataCacheEntry, recentDataCacheSlots)
-	}
-	entry := &c.entries[int(hash)&(recentDataCacheSlots-1)]
-	entry.payload = append(entry.payload[:0], payload...)
-	entry.item = item
 }
 
 func normalizeOptions(opts Options) Options {
@@ -993,13 +958,7 @@ func (w *Writer) entryAdded(entryOffset, realtime, monotonic uint64, bootID UUID
 
 func (w *Writer) addData(payload []byte) (uint64, uint64, error) {
 	hash := w.hash(payload)
-	if item, ok := w.dataCache.get(hash, payload); ok {
-		return item.offset, item.hash, nil
-	}
 	if offset, ok, err := w.findData(hash, payload); err != nil || ok {
-		if ok {
-			w.dataCache.insert(hash, payload, entryItem{offset: offset, hash: hash})
-		}
 		return offset, hash, err
 	}
 
@@ -1072,7 +1031,6 @@ func (w *Writer) addData(payload []byte) (uint64, uint64, error) {
 		w.fieldCache.insert(fieldHash, fieldPayload, fieldOffset, offset)
 	}
 
-	w.dataCache.insert(hash, payload, entryItem{offset: offset, hash: hash})
 	return offset, hash, nil
 }
 

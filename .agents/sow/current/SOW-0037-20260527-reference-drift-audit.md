@@ -2,14 +2,12 @@
 
 ## Status
 
-Status: paused
+Status: in-progress
 
-Sub-state: paused on 2026-05-28 after the Rust API/parity checkpoint. SOW-0036
-completed the selected cross-language `live_publish_every_entries` API and
-rejected whole-file mmap/cache-size changes for the measured Rust writer
-workload. Go drift/audit work remains paused until the next explicit resume
-step. SOW-0009 broad benchmarking remains paused until SOW-0037 resumes and
-closes.
+Sub-state: resumed on 2026-05-28 for the recent DATA cache drift/performance
+decision. SOW-0036 completed the selected cross-language
+`live_publish_every_entries` API. SOW-0009 broad benchmarking remains paused
+until SOW-0037 resumes the wider reference-drift audit and closes.
 
 ## Requirements
 
@@ -49,6 +47,13 @@ those bytes again is wasteful. The user also noted that a structured path could
 avoid sorting and deduplication when the caller knows the entry already satisfies
 the relevant invariants.
 
+On 2026-05-28 the user challenged the Rust and Go recent DATA payload caches.
+Evidence showed systemd v260.1 does not have an equivalent recent DATA payload
+cache, and Rust benchmark experiments showed that the cache did not improve
+throughput despite high hit ratios. The user decided to remove the recent DATA
+cache from Rust and requested an equivalent Go cache/no-cache test before
+deciding whether Go should follow.
+
 ### Assistant Understanding
 
 Facts:
@@ -77,6 +82,8 @@ Facts:
 - systemd sorts entry DATA references by on-disk DATA object offset and removes
   duplicate DATA references before writing the ENTRY object. This is not field
   name sorting; repeated field names with different values remain distinct.
+- systemd v260.1 does not have the SDK recent DATA payload cache. It hashes the
+  full DATA payload and searches the journal DATA hash chain for every append.
 - Go's standard writer API is currently structured: `Field{Name, Value}` plus
   `Append([]Field, EntryOptions)`.
 - The Rust public facade has a structured `Field { name, value }` type, but the
@@ -123,6 +130,10 @@ Unknowns:
   callers that guarantee no duplicate full payloads, and whether preserving
   input order should be allowed as a measured non-byte-identity performance
   option.
+- Whether Go's recent DATA cache is also unhelpful under the production-shaped
+  writer-core workload. Rust evidence says the analogous cache should be
+  removed there, but Go needs its own controlled measurement because its hashing,
+  mmap strategy, and payload construction differ.
 
 ### Acceptance Criteria
 
@@ -151,6 +162,10 @@ Unknowns:
 - For every difference, record evidence with file paths and source references.
 - For every accidental drift, either fix it in this SOW after user-approved
   classification or map it to a concrete follow-up SOW before closing.
+- Remove the Rust recent DATA cache if evidence shows it is an accidental
+  performance optimization that does not improve throughput.
+- Benchmark Go with the cache enabled and with cache lookup/insertion fully
+  removed from the hot path before deciding whether to remove the Go cache.
 - Update specs and project skills if the audit changes the durable reference
   model or compatibility workflow.
 - Do not make changes outside this repository.
@@ -571,6 +586,34 @@ Failure handling:
 - Updated durable product scope and the journal compatibility project skill
   with the dual-layer writer API hierarchy, trusted unique-payload invariant,
   and Jenkins empty-hash rule.
+- Resumed this SOW for the recent DATA cache drift/performance slice after the
+  user challenged the Rust/Go cache difference and cache usefulness.
+- Verified systemd v260.1 has no equivalent recent DATA payload cache. systemd
+  hashes each full DATA payload and searches the journal DATA hash chain in
+  `journal_file_append_data()`.
+- Removed the Rust recent DATA cache from `journal-core` after controlled
+  benchmarks showed it did not improve throughput despite high hit ratios. The
+  Rust writer now goes directly through the journal DATA hash/search/create
+  path, matching systemd more closely.
+- Measured Go's analogous recent DATA cache with an instrumented cache binary
+  and a separate no-cache binary that removed all cache lookup and insertion
+  calls from `addData()`. Go source was restored after the temporary benchmark
+  binaries were built.
+- Go corrected benchmark evidence, `100000` rows, `32` fields/row, compact
+  format, no compression, no FSS, fixed `134217728` byte max size, pinned to
+  CPU `3`, non-instrumented perf binaries:
+  - `live_publish_every_entries=0`: cache median `51983.538 rows/sec`,
+    no-cache median `52865.162 rows/sec`, no-cache `+1.70%`.
+  - `live_publish_every_entries=1`: cache median `47038.782 rows/sec`,
+    no-cache median `46890.857 rows/sec`, no-cache `-0.31%`.
+  - Instrumented Go cache hit ratio was `64.34%`
+    (`2058913` hits / `3200000` lookups) with `65536` slots.
+- Benchmark evidence:
+  `.local/benchmarks/sow37-go-recent-data-cache-effect-20260528T072101Z/`.
+- Removed the Go recent DATA cache from `go/journal/writer.go` after the user
+  decision to remove it. The Go writer now uses the normal DATA hash
+  lookup/create path for every DATA payload, matching the Rust removal and the
+  systemd behavior more closely. The FIELD cache remains unchanged.
 
 ## Validation
 
@@ -617,6 +660,24 @@ Acceptance criteria evidence:
   - Rust test `payload_parts_structured_equals_contiguous_payload` proves
     structured multi-part payload comparison matches the equivalent contiguous
     `KEY=value` bytes, including binary values containing `=`.
+- Rust recent DATA cache removal evidence:
+  - Rust cache benchmark with `4096` slots: `46.18%` hit ratio but no material
+    throughput gain.
+  - Rust cache benchmark with `65536` slots: `64.67%` hit ratio but lower
+    throughput than the no-cache variant.
+  - Rust no-cache writer path removes cache lookup, cache insertion, cache slot
+    hashing, cache payload comparison, and cache payload copy from the DATA hot
+    path.
+- Go recent DATA cache benchmark evidence:
+  - Go cache with `65536` slots reached `64.34%` hit ratio.
+  - Go no-cache was `+1.70%` faster at `live_publish_every_entries=0` and
+    `0.31%` slower at `live_publish_every_entries=1`, which is effectively
+    noise-level compared with run variance.
+  - The corrected Go no-cache perf binary removed all `dataCache.get()` and
+    `dataCache.insert()` calls from `addData()`.
+  - Production Go code now removes the `dataCache` writer field, the
+    `recentDataCache` types, the recent DATA cache constants, and all
+    `dataCache.get()` / `dataCache.insert()` calls from `addData()`.
 - Jenkins drift evidence:
   - `rust/src/crates/jf/journal_file/src/hash.rs` already treated empty
     Jenkins lookup3 as `0xdeadbeefdeadbeef`.
@@ -644,6 +705,16 @@ Tests or equivalent validation:
   - Result after final cleanup: pass.
 - `.agents/sow/audit.sh`
   - Result after final cleanup: pass.
+- `CARGO_HOME=.local/cargo-home CARGO_TARGET_DIR=.local/cargo-target cargo test -p journal-core --manifest-path rust/Cargo.toml`
+  - Result after removing the Rust recent DATA cache: pass. 56 journal-core
+    tests passed, 1 doc-test passed, and 3 doc-tests were ignored. The two
+    removed tests were cache-specific unit tests for code that no longer
+    exists.
+- `GOCACHE=$PWD/../.local/go-cache GOMODCACHE=$PWD/../.local/go-mod-cache GOPATH=$PWD/../.local/go-path go test ./...`
+  from `go/`
+  - Result after removing the Go recent DATA cache: pass. Packages tested:
+    `adapter`, `cmd/journalctl`, and `journal`; testcmd packages had no test
+    files.
 - Writer benchmark smoke, 1,000 rows, compact, no compression, no FSS,
   `final_state=online`, fixed `max_size_bytes=134217728`:
   - Rust raw-payload: pass, stock `journalctl --verify --file` pass, median

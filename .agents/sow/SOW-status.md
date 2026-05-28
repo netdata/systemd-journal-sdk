@@ -6,8 +6,9 @@ Last updated: 2026-05-28
 
 - SOW-0009 - Benchmark Profile Optimize: paused. Broad performance work waits
   for the remaining reference-drift work to resume and settle.
-- SOW-0037 - Reference Drift Audit: paused. Rust API/parity checkpoint is done;
-  Go drift/audit work waits for the next explicit resume step.
+- SOW-0037 - Reference Drift Audit: in-progress. Current slice removes the
+  unhelpful Rust and Go recent DATA caches after measurement showed no useful
+  throughput benefit.
 
 ## Pending
 

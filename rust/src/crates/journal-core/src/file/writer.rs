@@ -8,8 +8,7 @@ use crate::file::{
     normalize_compress_threshold,
 };
 use crate::seal::TAG_LENGTH;
-use rustc_hash::{FxHashMap, FxHasher};
-use std::hash::Hasher;
+use rustc_hash::FxHashMap;
 use std::io::Cursor;
 use std::num::NonZeroU64;
 
@@ -18,9 +17,6 @@ const JOURNAL_COMPACT_SIZE_MAX: u64 = u32::MAX as u64;
 const FILE_SIZE_INCREASE: u64 = 8 * 1024 * 1024;
 const FIELD_CACHE_MAX_ENTRIES: usize = 1024;
 const FIELD_CACHE_MAX_PAYLOAD_LEN: usize = 128;
-const RECENT_DATA_CACHE_SLOTS: usize = 4096;
-const RECENT_DATA_CACHE_MAX_PAYLOAD_LEN: usize = 256;
-
 fn round_up_to_file_size_increment(value: u64) -> Result<u64> {
     value
         .checked_add(FILE_SIZE_INCREASE - 1)
@@ -158,62 +154,6 @@ impl FieldCache {
     }
 }
 
-#[derive(Debug, Clone)]
-struct RecentDataCacheEntry {
-    payload: Box<[u8]>,
-    item: EntryItem,
-}
-
-#[derive(Debug)]
-struct RecentDataCache {
-    entries: Box<[Option<RecentDataCacheEntry>]>,
-}
-
-impl RecentDataCache {
-    fn new() -> Self {
-        debug_assert!(RECENT_DATA_CACHE_SLOTS.is_power_of_two());
-        let entries = std::iter::repeat_with(|| None)
-            .take(RECENT_DATA_CACHE_SLOTS)
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
-        Self { entries }
-    }
-
-    #[cfg(test)]
-    fn get(&self, payload: &[u8]) -> Option<EntryItem> {
-        self.get_parts(PayloadParts::raw(payload))
-    }
-
-    fn get_parts(&self, payload: PayloadParts<'_>) -> Option<EntryItem> {
-        let entry = self.entries[self.slot_parts(payload)].as_ref()?;
-        payload.equals_slice(&entry.payload).then_some(entry.item)
-    }
-
-    #[cfg(test)]
-    fn insert(&mut self, payload: &[u8], item: EntryItem) {
-        self.insert_parts(PayloadParts::raw(payload), item);
-    }
-
-    fn insert_parts(&mut self, payload: PayloadParts<'_>, item: EntryItem) {
-        if payload.len() > RECENT_DATA_CACHE_MAX_PAYLOAD_LEN {
-            return;
-        }
-
-        self.entries[self.slot_parts(payload)] = Some(RecentDataCacheEntry {
-            payload: payload.to_vec().into_boxed_slice(),
-            item,
-        });
-    }
-
-    fn slot_parts(&self, payload: PayloadParts<'_>) -> usize {
-        let mut hasher = FxHasher::default();
-        for part in payload.iter() {
-            hasher.write(part);
-        }
-        (hasher.finish() as usize) & (self.entries.len() - 1)
-    }
-}
-
 enum StoredDataPayload<'a> {
     Uncompressed(PayloadParts<'a>),
     Compressed(Vec<u8>, u8),
@@ -253,7 +193,6 @@ pub struct JournalWriter {
     first_tag_written: bool,
     entry_items: Vec<EntryItem>,
     field_cache: FieldCache,
-    recent_data_cache: RecentDataCache,
     first_entry_monotonic: Option<u64>,
     boot_id: uuid::Uuid,
     compression: Compression,
@@ -367,7 +306,6 @@ impl JournalWriter {
             first_tag_written: false,
             entry_items: Vec::with_capacity(128),
             field_cache: FieldCache::new(),
-            recent_data_cache: RecentDataCache::new(),
             first_entry_monotonic: None,
             boot_id,
             compression,
@@ -838,10 +776,6 @@ impl JournalWriter {
             return Err(JournalError::InvalidField);
         }
 
-        if let Some(entry_item) = self.recent_data_cache.get_parts(payload) {
-            return Ok(entry_item);
-        }
-
         let hash = journal_file.hash_parts(payload);
 
         match journal_file.find_data_offset_parts(hash, payload)? {
@@ -851,7 +785,6 @@ impl JournalWriter {
                     offset: data_offset,
                     hash,
                 };
-                self.recent_data_cache.insert_parts(payload, entry_item);
                 Ok(entry_item)
             }
             None => {
@@ -904,7 +837,6 @@ impl JournalWriter {
                     offset: data_offset,
                     hash,
                 };
-                self.recent_data_cache.insert_parts(payload, entry_item);
                 Ok(entry_item)
             }
         }
@@ -1487,8 +1419,8 @@ fn lz4_compress(payload: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        EntryItem, FIELD_CACHE_MAX_ENTRIES, FIELD_CACHE_MAX_PAYLOAD_LEN, FieldCache, PayloadParts,
-        RECENT_DATA_CACHE_MAX_PAYLOAD_LEN, RecentDataCache, zstd_frame_with_content_size,
+        FIELD_CACHE_MAX_ENTRIES, FIELD_CACHE_MAX_PAYLOAD_LEN, FieldCache, PayloadParts,
+        zstd_frame_with_content_size,
     };
     use std::io::{Cursor, Read};
     use std::num::NonZeroU64;
@@ -1535,35 +1467,6 @@ mod tests {
         );
         assert!(cache.get(b"FIELD_0").is_none());
         assert!(cache.len() <= FIELD_CACHE_MAX_ENTRIES);
-    }
-
-    #[test]
-    fn recent_data_cache_hits_exact_payloads() {
-        let mut cache = RecentDataCache::new();
-        let item = EntryItem {
-            offset: NonZeroU64::new(8).unwrap(),
-            hash: 42,
-        };
-
-        cache.insert(b"FOO=bar", item);
-
-        assert_eq!(cache.get(b"FOO=bar").unwrap().offset, item.offset);
-        assert_eq!(cache.get(b"FOO=bar").unwrap().hash, item.hash);
-        assert!(cache.get(b"FOO=baz").is_none());
-    }
-
-    #[test]
-    fn recent_data_cache_skips_oversized_payloads() {
-        let mut cache = RecentDataCache::new();
-        let item = EntryItem {
-            offset: NonZeroU64::new(16).unwrap(),
-            hash: 7,
-        };
-        let oversized = vec![b'x'; RECENT_DATA_CACHE_MAX_PAYLOAD_LEN + 1];
-
-        cache.insert(&oversized, item);
-
-        assert!(cache.get(&oversized).is_none());
     }
 
     #[test]
@@ -1656,7 +1559,6 @@ mod tests {
             first_tag_written: false,
             entry_items: Vec::new(),
             field_cache: FieldCache::new(),
-            recent_data_cache: RecentDataCache::new(),
             first_entry_monotonic: None,
             boot_id: test_uuid(4),
             compression: Compression::Zstd,
