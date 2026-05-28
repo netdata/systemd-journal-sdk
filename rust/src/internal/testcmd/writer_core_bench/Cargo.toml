@@ -9,6 +9,7 @@ license.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 journal-core.workspace = true
+journal-log-writer.workspace = true
 journal-registry.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

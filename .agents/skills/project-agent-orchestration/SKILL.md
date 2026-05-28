@@ -24,7 +24,8 @@ Do not use this skill for:
 
 ## Mandatory Knowledge
 
-- The project manager does not personally perform the technical review for implementation SOWs. Current user routing is local implementation by the project manager and external models as read-only reviewers only. Evidence: `AGENTS.md`.
+- The project manager does not personally perform the terminal technical review for implementation SOWs. Current user routing is local implementation by the project manager and external models as read-only reviewers only. Evidence: `AGENTS.md`.
+- Current review cadence is whole-SOW batching: finish the complete active SOW locally, run local validation, update SOW evidence, then run external reviewers against the entire SOW and changed surface as one meaningful batch. Do not run external reviewers after small local edits or partial fixes unless the user explicitly asks for early review, or a blocking design/security/compatibility decision needs an independent read-only opinion before implementation can continue. Evidence: `AGENTS.md`.
 - Do not run external implementer agents unless the user explicitly changes the current routing decision. Reviewer models are `llm-netdata-cloud/minimax-m2.7-coder`, `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/qwen3.6-plus`, and `llm-netdata-cloud/glm-5.1`; skip `llm-netdata-cloud/mimo-v2.5-pro` while it is out of quota. Evidence: `AGENTS.md`.
 - CRITICAL: Do not make changes outside this repository. This applies to all assistants and all delegated agents.
 - The only write exception outside the repository is `/tmp`; prefer `.local/` inside this repository for scratch files.
@@ -51,10 +52,10 @@ CRITICAL REPOSITORY BOUNDARY:
 - Split work into small SOWs with one concrete deliverable and clear acceptance gates.
 - Work on exactly one active SOW at a time.
 - If the user re-enables external implementers, record the routing decision and any model failure in the active SOW before switching models.
-- Run independent reviewers in parallel after implementation.
+- Run independent reviewers in parallel after the whole SOW implementation and local validation are complete.
 - Keep reviewer prompts neutral: include the original request, SOW filename, changed scope, validation commands, the canonical repository-boundary block, and ask for unwanted side effects and security issues.
 - For dependency research or package metadata checks, include explicit cache redirection instructions before allowing commands such as `go get`, `go list`, `npm view`, `npm pack`, `pip download`, `pip index`, `cargo metadata`, or `cargo doc`.
-- Repeat review cycles with the same scope until reviewers stop finding blocking issues.
+- Repeat review cycles with the same whole-SOW scope until reviewers stop finding blocking issues.
 
 ## Bad Practices
 
@@ -69,7 +70,7 @@ CRITICAL REPOSITORY BOUNDARY:
 1. Confirm the active SOW has a completed pre-implementation gate.
 2. Implement locally unless the user explicitly re-enables external implementer agents.
 3. If an external implementer is explicitly approved, write the implementer prompt from the SOW, include repository boundary rules, run it in normal coding mode without `--agent code-reviewer`, and capture its summary and changed files.
-4. Run reviewer agents in parallel with read-only prompts and reviewer mode.
+4. Run reviewer agents in parallel with read-only prompts and reviewer mode only after the whole SOW is locally implemented and validated.
 5. Record every finding in the SOW with disposition.
 6. Iterate implementation and reviewer cycles until phase gates are satisfied.
 7. Run the project-local audit and record results before closing.

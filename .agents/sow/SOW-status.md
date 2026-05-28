@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-05-28
+Last updated: 2026-05-29
 
 ## Current
 
@@ -12,8 +12,6 @@ Last updated: 2026-05-28
 
 - SOW-0026 - Netdata SDK Integration Inventory And Cut Plan: open. Produces the
   fresh Netdata consumer inventory and cut plan after performance gates.
-- SOW-0042 - Writer Final Certification: open. Owns writer benchmarks,
-  profiling, optimization, and final writer certification after writer parity.
 - SOW-0043 - Rust Reader Libsystemd/Jf Parity: open. Defines reader reference,
   `jf` facade parity, mixed-format reader contract, and RAW byte-name reader
   representation.
@@ -32,9 +30,18 @@ Last updated: 2026-05-28
   packaging after reader gates.
 - SOW-0050 - Netdata Vendored Journal Removal: open. Final cleanup after all
   Netdata component integrations are complete.
+- SOW-0051 - Node.js And Python Writer Performance: open. Follow-up from
+  SOW-0042 to profile and optimize Node.js/Python writers; not on the immediate
+  reader critical path, but required before claiming high-throughput writer
+  performance for those languages.
 
 ## Recently Closed Or Completed
 
+- SOW-0042 - Writer Final Certification: completed. Rust and Go writers are
+  performance-certified for the accepted compact, no-compression, FSS-off direct
+  and directory writer baselines. Node.js and Python writers are
+  correctness-certified for the same baselines, but their high-throughput writer
+  performance remains limited and is tracked by SOW-0051.
 - SOW-0041 - Node.js Writer Rust Parity: completed. Node.js direct and
   directory writers now expose raw full-payload append, high-level `Log`
   entries inject indexed `_BOOT_ID` plus optional

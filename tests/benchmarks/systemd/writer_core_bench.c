@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -31,8 +32,10 @@ static const char *seqnum_id_hex = "22222222222222222222222222222222";
 static const char *arg_output = NULL;
 static const char *arg_format = "compact";
 static const char *arg_final_state = "online";
+static const char *arg_surface = "direct";
 static size_t arg_rows = 100000;
 static uint64_t arg_max_size = 128ULL * 1024ULL * 1024ULL;
+static uint64_t arg_rotation_max_size = 128ULL * 1024ULL * 1024ULL;
 static char arg_archived_output[PATH_MAX];
 
 typedef struct BenchRows {
@@ -71,6 +74,27 @@ static int parse_args(int argc, char **argv) {
                         if (errno != 0 || !end || *end != '\0' || value == 0)
                                 return -EINVAL;
                         arg_max_size = (uint64_t) value;
+                } else if (streq(argv[i], "--rotation-max-size-bytes") && i + 1 < argc) {
+                        char *end = NULL;
+                        unsigned long long value;
+
+                        errno = 0;
+                        value = strtoull(argv[++i], &end, 10);
+                        if (errno != 0 || !end || *end != '\0' || value == 0)
+                                return -EINVAL;
+                        arg_rotation_max_size = (uint64_t) value;
+                } else if (streq(argv[i], "--surface") && i + 1 < argc)
+                        arg_surface = argv[++i];
+                else if (streq(argv[i], "--api-mode") && i + 1 < argc) {
+                        if (!streq(argv[++i], "raw-payload"))
+                                return -EINVAL;
+                } else if (streq(argv[i], "--live-publish-every-entries") && i + 1 < argc) {
+                        char *end = NULL;
+
+                        errno = 0;
+                        (void) strtoull(argv[++i], &end, 10);
+                        if (errno != 0 || !end || *end != '\0')
+                                return -EINVAL;
                 } else
                         return -EINVAL;
         }
@@ -80,6 +104,8 @@ static int parse_args(int argc, char **argv) {
         if (!streq(arg_format, "compact") && !streq(arg_format, "regular"))
                 return -EINVAL;
         if (!streq(arg_final_state, "online") && !streq(arg_final_state, "offline") && !streq(arg_final_state, "archived"))
+                return -EINVAL;
+        if (!streq(arg_surface, "direct") && !streq(arg_surface, "directory"))
                 return -EINVAL;
         return 0;
 }
@@ -117,7 +143,7 @@ static int configure_header(JournalFile *f) {
         return 0;
 }
 
-static int open_journal(const char *path, MMapCache **ret_cache, JournalFile **ret_file) {
+static int open_journal(const char *path, uint64_t max_size, MMapCache **ret_cache, JournalFile **ret_file) {
         JournalMetrics metrics;
         MMapCache *cache;
         JournalFile *file = NULL;
@@ -132,7 +158,7 @@ static int open_journal(const char *path, MMapCache **ret_cache, JournalFile **r
                 return -ENOMEM;
 
         journal_reset_metrics(&metrics);
-        metrics.max_size = arg_max_size;
+        metrics.max_size = max_size;
         metrics.keep_free = 0;
 
         (void) unlink(path);
@@ -342,6 +368,295 @@ static uint64_t data_hash_buckets_for_max_size(uint64_t max_size) {
         return buckets > UINT64_C(2047) ? buckets : UINT64_C(2047);
 }
 
+static int mkdir_if_needed(const char *path) {
+        if (mkdir(path, 0755) >= 0)
+                return 0;
+        if (errno == EEXIST)
+                return 0;
+        return -errno;
+}
+
+static int make_directory_path(char *ret, size_t size) {
+        int n;
+
+        n = snprintf(ret, size, "%s/fedcba9876543210fedcba9876543210", arg_output);
+        if (n < 0 || (size_t) n >= size)
+                return -ENAMETOOLONG;
+        return 0;
+}
+
+static int make_active_path(char *ret, size_t size) {
+        char dir[PATH_MAX];
+        int r, n;
+
+        r = make_directory_path(dir, sizeof(dir));
+        if (r < 0)
+                return r;
+        n = snprintf(ret, size, "%s/system.journal", dir);
+        if (n < 0 || (size_t) n >= size)
+                return -ENAMETOOLONG;
+        return 0;
+}
+
+static uint64_t active_logical_size(JournalFile *file) {
+        if (!file || !file->header)
+                return 0;
+        return le64toh(file->header->tail_object_offset);
+}
+
+static int close_archived_journal(MMapCache *cache, JournalFile *file) {
+        int r;
+
+        r = journal_file_archive(file, NULL);
+        if (r < 0) {
+                journal_file_close(file);
+                mmap_cache_unref(cache);
+                return r;
+        }
+        journal_file_offline_close(file);
+        mmap_cache_unref(cache);
+        return 0;
+}
+
+static int count_journal_files(const char *dir, uint64_t *ret_size, size_t *ret_count) {
+        DIR *d;
+        struct dirent *de;
+        uint64_t total = 0;
+        size_t count = 0;
+
+        d = opendir(dir);
+        if (!d)
+                return -errno;
+
+        while ((de = readdir(d))) {
+                char path[PATH_MAX];
+                struct stat st;
+                int n;
+
+                if (!endswith(de->d_name, ".journal"))
+                        continue;
+                n = snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
+                if (n < 0 || (size_t) n >= sizeof(path)) {
+                        closedir(d);
+                        return -ENAMETOOLONG;
+                }
+                if (stat(path, &st) < 0) {
+                        closedir(d);
+                        return -errno;
+                }
+                total += (uint64_t) st.st_size;
+                count++;
+        }
+        closedir(d);
+        *ret_size = total;
+        *ret_count = count;
+        return 0;
+}
+
+static void print_json_string(const char *value) {
+        const unsigned char *p;
+
+        putchar('"');
+        for (p = (const unsigned char *) value; p && *p; p++) {
+                switch (*p) {
+                case '"':
+                        fputs("\\\"", stdout);
+                        break;
+                case '\\':
+                        fputs("\\\\", stdout);
+                        break;
+                case '\b':
+                        fputs("\\b", stdout);
+                        break;
+                case '\f':
+                        fputs("\\f", stdout);
+                        break;
+                case '\n':
+                        fputs("\\n", stdout);
+                        break;
+                case '\r':
+                        fputs("\\r", stdout);
+                        break;
+                case '\t':
+                        fputs("\\t", stdout);
+                        break;
+                default:
+                        if (*p < 0x20)
+                                printf("\\u%04x", *p);
+                        else
+                                putchar(*p);
+                }
+        }
+        putchar('"');
+}
+
+static void print_journal_files_json(const char *dir) {
+        DIR *d;
+        struct dirent *de;
+        bool first = true;
+
+        putchar('[');
+        d = opendir(dir);
+        if (!d) {
+                putchar(']');
+                return;
+        }
+
+        while ((de = readdir(d))) {
+                char path[PATH_MAX];
+                int n;
+
+                if (!endswith(de->d_name, ".journal"))
+                        continue;
+                n = snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
+                if (n < 0 || (size_t) n >= sizeof(path))
+                        continue;
+                if (!first)
+                        putchar(',');
+                print_json_string(path);
+                first = false;
+        }
+        closedir(d);
+        putchar(']');
+}
+
+static int run_directory_mode(BenchRows *rows, double precompute_seconds) {
+        MMapCache *cache = NULL;
+        JournalFile *file = NULL;
+        sd_id128_t boot_id, seqnum_id = SD_ID128_NULL;
+        uint64_t seqnum = 0, journal_size = 0;
+        size_t records = 0, file_count = 0;
+        char journal_dir[PATH_MAX] = "", current_path[PATH_MAX] = "";
+        struct timespec append_start, append_end, close_start, close_end;
+        double append_seconds = 0, close_seconds = 0;
+        int r;
+
+        r = id128_from_string("0123456789abcdef0123456789abcdef", &boot_id);
+        if (r < 0)
+                goto finish;
+        r = mkdir_if_needed(arg_output);
+        if (r < 0)
+                goto finish;
+        r = make_directory_path(journal_dir, sizeof(journal_dir));
+        if (r < 0)
+                goto finish;
+        r = mkdir_if_needed(journal_dir);
+        if (r < 0)
+                goto finish;
+        r = make_active_path(current_path, sizeof(current_path));
+        if (r < 0)
+                goto finish;
+        r = open_journal(current_path, arg_rotation_max_size, &cache, &file);
+        if (r < 0)
+                goto finish;
+
+        (void) clock_gettime(CLOCK_MONOTONIC, &append_start);
+        for (size_t row = 0; row < rows->rows; row++) {
+                struct dual_timestamp ts = {
+                        .realtime = base_realtime_usec + row * 500ULL,
+                        .monotonic = base_monotonic_usec + row * 50ULL,
+                };
+                bool retried_after_rotation = false;
+
+                if (records > 0 && active_logical_size(file) >= arg_rotation_max_size) {
+                        int close_r;
+
+                        (void) close_archived_journal(cache, file);
+                        cache = NULL;
+                        file = NULL;
+                        r = make_active_path(current_path, sizeof(current_path));
+                        if (r < 0)
+                                break;
+                        r = open_journal(current_path, arg_rotation_max_size, &cache, &file);
+                        if (r < 0)
+                                break;
+                        close_r = configure_header(file);
+                        if (close_r < 0) {
+                                r = close_r;
+                                break;
+                        }
+                }
+
+retry_append:
+                r = journal_file_append_entry(
+                                file,
+                                &ts,
+                                &boot_id,
+                                rows->iovecs + row * FIELDS_PER_ROW,
+                                FIELDS_PER_ROW,
+                                &seqnum,
+                                &seqnum_id,
+                                NULL,
+                                NULL);
+                if (r < 0 && records > 0 && !retried_after_rotation) {
+                        int close_r;
+
+                        (void) close_archived_journal(cache, file);
+                        cache = NULL;
+                        file = NULL;
+                        r = make_active_path(current_path, sizeof(current_path));
+                        if (r < 0)
+                                break;
+                        r = open_journal(current_path, arg_rotation_max_size, &cache, &file);
+                        if (r < 0)
+                                break;
+                        close_r = configure_header(file);
+                        if (close_r < 0) {
+                                r = close_r;
+                                break;
+                        }
+                        retried_after_rotation = true;
+                        goto retry_append;
+                }
+                if (r < 0)
+                        break;
+                records++;
+        }
+        (void) clock_gettime(CLOCK_MONOTONIC, &append_end);
+        append_seconds = elapsed_seconds(append_start, append_end);
+
+        (void) clock_gettime(CLOCK_MONOTONIC, &close_start);
+        if (file) {
+                int close_r = close_archived_journal(cache, file);
+                cache = NULL;
+                file = NULL;
+                if (r >= 0 && close_r < 0)
+                        r = close_r;
+        }
+        (void) clock_gettime(CLOCK_MONOTONIC, &close_end);
+        close_seconds = elapsed_seconds(close_start, close_end);
+
+        if (r >= 0)
+                r = count_journal_files(journal_dir, &journal_size, &file_count);
+
+finish:
+        printf("{\"records\":%zu,\"fields_per_row\":%u,\"surface\":\"directory\",\"append_seconds\":%.9f,\"append_rows_per_second\":%.9f,\"close_seconds\":%.9f,\"total_writer_seconds\":%.9f,\"precompute_seconds\":%.9f,\"journal_size_bytes\":%" PRIu64 ",\"journal_path\":",
+               records,
+               FIELDS_PER_ROW,
+               append_seconds,
+               append_seconds > 0 ? (double) records / append_seconds : 0,
+               close_seconds,
+               append_seconds + close_seconds,
+               precompute_seconds,
+               journal_size);
+        print_json_string(journal_dir);
+        printf(",\"journal_directory\":");
+        print_json_string(journal_dir);
+        printf(",\"journal_files\":");
+        print_journal_files_json(journal_dir);
+        printf(",\"journal_file_count\":%zu,\"format\":\"%s\",\"compression\":\"none\",\"fss\":false,\"api_mode\":\"raw-payload\",\"live_publication\":\"systemd-default\",\"live_publish_every_entries\":1,\"data_hash_table_buckets\":%" PRIu64 ",\"field_hash_table_buckets\":1023,\"max_size_bytes\":%" PRIu64 ",\"rotation_max_size_bytes\":%" PRIu64 ",\"append_timer_excludes\":[\"row generation\",\"writer creation\",\"final close/sync\",\"journal verification\"],\"final_state\":\"archived\",\"errors\":%s}\n",
+               file_count,
+               arg_format,
+               data_hash_buckets_for_max_size(arg_rotation_max_size),
+               arg_rotation_max_size,
+               arg_rotation_max_size,
+               r < 0 ? "[\"failed\"]" : "[]");
+
+        if (file || cache)
+                (void) close_archived_journal(cache, file);
+        return r < 0 || records != rows->rows ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+
 int main(int argc, char **argv) {
         BenchRows rows = {};
         MMapCache *cache = NULL;
@@ -370,7 +685,13 @@ int main(int argc, char **argv) {
         if (r < 0)
                 goto finish;
 
-        r = open_journal(arg_output, &cache, &file);
+        if (streq(arg_surface, "directory")) {
+                int ret = run_directory_mode(&rows, precompute_seconds);
+                free_rows(&rows);
+                return ret;
+        }
+
+        r = open_journal(arg_output, arg_max_size, &cache, &file);
         if (r < 0)
                 goto finish;
 
@@ -410,7 +731,7 @@ int main(int argc, char **argv) {
         close_seconds = elapsed_seconds(close_start, close_end);
 
 finish:
-        printf("{\"records\":%zu,\"fields_per_row\":%u,\"append_seconds\":%.9f,\"append_rows_per_second\":%.9f,\"close_seconds\":%.9f,\"total_writer_seconds\":%.9f,\"precompute_seconds\":%.9f,\"journal_size_bytes\":%" PRIu64 ",\"journal_path\":\"%s\",\"format\":\"%s\",\"compression\":\"none\",\"fss\":false,\"api_mode\":\"raw-payload\",\"data_hash_table_buckets\":%" PRIu64 ",\"field_hash_table_buckets\":1023,\"max_size_bytes\":%" PRIu64 ",\"append_timer_excludes\":[\"row generation\",\"writer creation\",\"final close/sync\",\"journal verification\"],\"final_state\":\"%s\",\"errors\":%s}\n",
+        printf("{\"records\":%zu,\"fields_per_row\":%u,\"append_seconds\":%.9f,\"append_rows_per_second\":%.9f,\"close_seconds\":%.9f,\"total_writer_seconds\":%.9f,\"precompute_seconds\":%.9f,\"journal_size_bytes\":%" PRIu64 ",\"journal_path\":\"%s\",\"format\":\"%s\",\"compression\":\"none\",\"fss\":false,\"api_mode\":\"raw-payload\",\"live_publication\":\"systemd-default\",\"live_publish_every_entries\":1,\"data_hash_table_buckets\":%" PRIu64 ",\"field_hash_table_buckets\":1023,\"max_size_bytes\":%" PRIu64 ",\"append_timer_excludes\":[\"row generation\",\"writer creation\",\"final close/sync\",\"journal verification\"],\"final_state\":\"%s\",\"errors\":%s}\n",
                records,
                FIELDS_PER_ROW,
                append_seconds,

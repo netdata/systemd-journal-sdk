@@ -3023,6 +3023,7 @@ dependencies = [
  "anyhow",
  "clap",
  "journal-core",
+ "journal-log-writer",
  "journal-registry",
  "serde_json",
  "uuid",

@@ -255,6 +255,20 @@ Current shared writer layout contract:
   floor from the persisted chain tail only when the tail entry boot ID matches
   the current writer boot ID.
 
+Current writer performance certification status:
+
+- SOW-0042 certified Rust and Go writer performance for the accepted compact,
+  no-compression, FSS-off direct and directory production baselines.
+- SOW-0042 certified Node.js and Python writer correctness for the same
+  baselines, including stock `journalctl --verify --file` and stock
+  `journalctl --directory` readback, but did not certify their writer
+  performance for high-throughput ingestion.
+- Node.js and Python writer performance remains a known limitation tracked by
+  SOW-0051. SOW-0042 measured Node.js and Python around 0.9k-1.0k append
+  rows/s on the accepted writer baselines, compared with about 31k-38k rows/s
+  for systemd C and about 45k-59k rows/s for Rust and Go depending on surface
+  and live publication cadence.
+
 Current Go writer feature slice:
 
 - regular journal files by default and compact journal files when

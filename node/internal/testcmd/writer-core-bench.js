@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-import { mkdirSync, rmSync, statSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
-import { Writer } from '../../src/index.js';
+import { Log, LOG_IDENTITY_STRICT, Writer } from '../../src/index.js';
 
 const BASE_REALTIME_USEC = 1700000000000000n;
 const BASE_MONOTONIC_USEC = 50000000n;
@@ -22,9 +22,12 @@ function parseArgs(argv) {
     rows: 100000,
     format: 'compact',
     finalState: 'online',
+    surface: 'direct',
     output: '',
     maxSizeBytes: DEFAULT_MAX_SIZE_BYTES,
+    rotationMaxSizeBytes: DEFAULT_MAX_SIZE_BYTES,
     livePublishEveryEntries: 1,
+    apiMode: 'raw-payload',
   };
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
@@ -41,11 +44,20 @@ function parseArgs(argv) {
     } else if (arg === '--final-state' && next !== undefined) {
       args.finalState = next;
       i++;
+    } else if (arg === '--surface' && next !== undefined) {
+      args.surface = next;
+      i++;
     } else if (arg === '--max-size-bytes' && next !== undefined) {
       args.maxSizeBytes = Number(next);
       i++;
+    } else if (arg === '--rotation-max-size-bytes' && next !== undefined) {
+      args.rotationMaxSizeBytes = Number(next);
+      i++;
     } else if (arg === '--live-publish-every-entries' && next !== undefined) {
       args.livePublishEveryEntries = Number(next);
+      i++;
+    } else if (arg === '--api-mode' && next !== undefined) {
+      args.apiMode = next;
       i++;
     } else {
       throw new Error(`unknown or incomplete argument: ${arg}`);
@@ -60,12 +72,26 @@ function dataHashBucketsForMaxSize(maxSizeBytes) {
   return Math.max(buckets, 2047);
 }
 
+function livePublicationName(everyEntries) {
+  if (everyEntries === 0) return 'disabled';
+  if (everyEntries === 1) return 'immediate';
+  return `every-n:${everyEntries}`;
+}
+
+function fieldWithPayload(name, value) {
+  const normalized = Buffer.isBuffer(value) ? value : Buffer.from(String(value));
+  return {
+    field: { name, value: normalized },
+    payload: Buffer.concat([Buffer.from(`${name}=`, 'utf8'), normalized]),
+  };
+}
+
 function makeRows(rows) {
   const fixed = [
-    { name: 'TEST_ID', value: Buffer.from('deterministic-ingestion-performance') },
-    { name: 'PERF_PROFILE', value: Buffer.from('mixed-cardinality-32-fields') },
-    { name: 'HOST_CLASS', value: Buffer.from('synthetic-edge') },
-    { name: 'SOURCE_KIND', value: Buffer.from('journal-sdk-benchmark') },
+    fieldWithPayload('TEST_ID', Buffer.from('deterministic-ingestion-performance')),
+    fieldWithPayload('PERF_PROFILE', Buffer.from('mixed-cardinality-32-fields')),
+    fieldWithPayload('HOST_CLASS', Buffer.from('synthetic-edge')),
+    fieldWithPayload('SOURCE_KIND', Buffer.from('journal-sdk-benchmark')),
   ];
   const lowValues = Array.from({ length: 12 }, (_, offset) =>
     Array.from({ length: 16 }, (_, value) => Buffer.from(`low-${offset.toString().padStart(2, '0')}-${value.toString().padStart(2, '0')}`))
@@ -78,24 +104,27 @@ function makeRows(rows) {
   for (let row = 0; row < rows; row++) {
     const fields = fixed.slice();
     for (let offset = 0; offset < 12; offset++) {
-      fields.push({
-        name: `LOW_CARD_${offset.toString().padStart(2, '0')}`,
-        value: lowValues[offset][row % 16],
-      });
+      fields.push(fieldWithPayload(
+        `LOW_CARD_${offset.toString().padStart(2, '0')}`,
+        lowValues[offset][row % 16],
+      ));
     }
     for (let offset = 0; offset < 8; offset++) {
-      fields.push({
-        name: `MED_CARD_${offset.toString().padStart(2, '0')}`,
-        value: mediumValues[offset][row % 2048],
-      });
+      fields.push(fieldWithPayload(
+        `MED_CARD_${offset.toString().padStart(2, '0')}`,
+        mediumValues[offset][row % 2048],
+      ));
     }
     for (let offset = 0; offset < 8; offset++) {
-      fields.push({
-        name: `HIGH_CARD_${offset.toString().padStart(2, '0')}`,
-        value: Buffer.from(`high-${offset.toString().padStart(2, '0')}-${row.toString().padStart(6, '0')}`),
-      });
+      fields.push(fieldWithPayload(
+        `HIGH_CARD_${offset.toString().padStart(2, '0')}`,
+        Buffer.from(`high-${offset.toString().padStart(2, '0')}-${row.toString().padStart(6, '0')}`),
+      ));
     }
-    all[row] = fields;
+    all[row] = {
+      fields: fields.map((item) => item.field),
+      payloads: fields.map((item) => item.payload),
+    };
   }
   return all;
 }
@@ -123,6 +152,71 @@ function closeWriter(writer, output, finalState) {
   throw new Error(`invalid final state: ${finalState}`);
 }
 
+function collectJournalFiles(root) {
+  const files = [];
+  let total = 0;
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      const path = join(dir, name);
+      const st = statSync(path);
+      if (st.isDirectory()) {
+        walk(path);
+      } else if (name.endsWith('.journal')) {
+        files.push(path);
+        total += st.size;
+      }
+    }
+  };
+  walk(root);
+  return { files, total };
+}
+
+function runDirectory(result, args, rows) {
+  rmSync(args.output, { force: true, recursive: true });
+  const log = new Log(args.output, {
+    source: 'system',
+    machineId: MACHINE_ID,
+    bootId: BOOT_ID,
+    seqnumId: SEQNUM_ID,
+    headSeqnum: 1,
+    identityMode: LOG_IDENTITY_STRICT,
+    compression: 0,
+    compressionThresholdBytes: 512,
+    compact: args.format === 'compact',
+    livePublishEveryEntries: args.livePublishEveryEntries,
+    rotationPolicy: { maxFileSize: args.rotationMaxSizeBytes },
+  });
+
+  const appendStart = performance.now();
+  for (let index = 0; index < rows.length; index++) {
+    const appendOptions = {
+      realtimeUsec: BASE_REALTIME_USEC + BigInt(index) * 500n,
+      monotonicUsec: BASE_MONOTONIC_USEC + BigInt(index) * 50n,
+      bootId: BOOT_ID,
+    };
+    if (args.apiMode === 'raw-payload') {
+      log.appendRaw(rows[index].payloads, appendOptions);
+    } else {
+      log.append(rows[index].fields, appendOptions);
+    }
+    result.records++;
+  }
+  result.append_seconds = (performance.now() - appendStart) / 1000;
+  if (result.append_seconds > 0) {
+    result.append_rows_per_second = result.records / result.append_seconds;
+  }
+
+  const closeStart = performance.now();
+  log.close();
+  result.close_seconds = (performance.now() - closeStart) / 1000;
+  result.total_writer_seconds = result.append_seconds + result.close_seconds;
+  result.journal_directory = log.journalDirectory();
+  result.journal_path = result.journal_directory;
+  const collected = collectJournalFiles(args.output);
+  result.journal_files = collected.files;
+  result.journal_size_bytes = collected.total;
+}
+
 function emit(result, exitCode) {
   console.log(JSON.stringify(result));
   process.exit(exitCode);
@@ -134,6 +228,7 @@ try {
   const result = {
     records: 0,
     fields_per_row: FIELDS_PER_ROW,
+    surface: args.surface,
     append_seconds: 0,
     append_rows_per_second: 0,
     close_seconds: 0,
@@ -141,13 +236,17 @@ try {
     precompute_seconds: 0,
     journal_size_bytes: 0,
     journal_path: '',
+    journal_directory: '',
+    journal_files: [],
     format: args.format,
     compression: 'none',
     fss: false,
-    api_mode: 'field-api',
+    api_mode: args.apiMode,
     data_hash_table_buckets: dataHashBuckets,
     field_hash_table_buckets: FIELD_HASH_BUCKETS,
     max_size_bytes: args.maxSizeBytes,
+    rotation_max_size_bytes: args.rotationMaxSizeBytes,
+    live_publication: livePublicationName(args.livePublishEveryEntries),
     live_publish_every_entries: args.livePublishEveryEntries,
     append_timer_excludes: ['row generation', 'writer creation', 'final close/sync', 'journal verification'],
     final_state: args.finalState,
@@ -162,10 +261,23 @@ try {
     result.errors.push('invalid --format');
     emit(result, 2);
   }
+  if (args.apiMode !== 'raw-payload' && args.apiMode !== 'structured-field') {
+    result.errors.push('invalid --api-mode');
+    emit(result, 2);
+  }
+  if (args.surface !== 'direct' && args.surface !== 'directory') {
+    result.errors.push('invalid --surface');
+    emit(result, 2);
+  }
 
   const precomputeStart = performance.now();
   const rows = makeRows(args.rows);
   result.precompute_seconds = (performance.now() - precomputeStart) / 1000;
+
+  if (args.surface === 'directory') {
+    runDirectory(result, args, rows);
+    emit(result, result.records === args.rows && result.errors.length === 0 ? 0 : 1);
+  }
 
   mkdirSync(dirname(args.output), { recursive: true });
   rmSync(args.output, { force: true });
@@ -185,11 +297,16 @@ try {
 
   const appendStart = performance.now();
   for (let index = 0; index < rows.length; index++) {
-    writer.append(rows[index], {
+    const appendOptions = {
       realtimeUsec: BASE_REALTIME_USEC + BigInt(index) * 500n,
       monotonicUsec: BASE_MONOTONIC_USEC + BigInt(index) * 50n,
       bootId: BOOT_ID,
-    });
+    };
+    if (args.apiMode === 'raw-payload') {
+      writer.appendRaw(rows[index].payloads, appendOptions);
+    } else {
+      writer.append(rows[index].fields, appendOptions);
+    }
     result.records++;
   }
   result.append_seconds = (performance.now() - appendStart) / 1000;
@@ -208,6 +325,7 @@ try {
   emit({
     records: 0,
     fields_per_row: FIELDS_PER_ROW,
+    surface: 'unknown',
     append_seconds: 0,
     append_rows_per_second: 0,
     close_seconds: 0,
@@ -215,13 +333,17 @@ try {
     precompute_seconds: 0,
     journal_size_bytes: 0,
     journal_path: '',
+    journal_directory: '',
+    journal_files: [],
     format: 'unknown',
     compression: 'none',
     fss: false,
-    api_mode: 'field-api',
+    api_mode: 'unknown',
     data_hash_table_buckets: 0,
     field_hash_table_buckets: FIELD_HASH_BUCKETS,
     max_size_bytes: DEFAULT_MAX_SIZE_BYTES,
+    rotation_max_size_bytes: DEFAULT_MAX_SIZE_BYTES,
+    live_publication: 'immediate',
     live_publish_every_entries: 1,
     append_timer_excludes: ['row generation', 'writer creation', 'final close/sync', 'journal verification'],
     final_state: 'unknown',

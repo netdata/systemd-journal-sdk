@@ -134,7 +134,7 @@ def bench_command(
     journal_format: str,
     final_state: str,
     max_size_bytes: int,
-    rust_api_mode: str,
+    api_mode: str,
     rust_trusted_unique_payloads: bool,
     live_publish_every_entries: int,
     rust_mmap_strategy: str,
@@ -154,8 +154,8 @@ def bench_command(
     ]
     if language != "systemd":
         cmd.extend(["--live-publish-every-entries", str(live_publish_every_entries)])
+        cmd.extend(["--api-mode", api_mode])
     if language == "rust":
-        cmd.extend(["--api-mode", rust_api_mode])
         cmd.extend(["--mmap-strategy", rust_mmap_strategy])
         if rust_trusted_unique_payloads:
             cmd.append("--trusted-unique-payloads")
@@ -278,7 +278,7 @@ def rust_api_mode_byte_identity(
             journal_format=journal_format,
             final_state=final_state,
             max_size_bytes=max_size_bytes,
-            rust_api_mode=mode,
+            api_mode=mode,
             rust_trusted_unique_payloads=rust_trusted_unique_payloads,
             live_publish_every_entries=live_publish_every_entries,
             rust_mmap_strategy=rust_mmap_strategy,
@@ -369,7 +369,7 @@ def one_measurement(
     journal_format: str,
     final_state: str,
     max_size_bytes: int,
-    rust_api_mode: str,
+    api_mode: str,
     rust_trusted_unique_payloads: bool,
     live_publish_every_entries: int,
     rust_mmap_strategy: str,
@@ -391,7 +391,7 @@ def one_measurement(
         journal_format=journal_format,
         final_state=final_state,
         max_size_bytes=max_size_bytes,
-        rust_api_mode=rust_api_mode,
+        api_mode=api_mode,
         rust_trusted_unique_payloads=rust_trusted_unique_payloads,
         live_publish_every_entries=live_publish_every_entries,
         rust_mmap_strategy=rust_mmap_strategy,
@@ -604,9 +604,12 @@ def main() -> int:
     parser.add_argument("--keep-journals", action="store_true")
     parser.add_argument("--max-size-bytes", type=int, default=128 * 1024 * 1024)
     parser.add_argument(
+        "--api-mode",
         "--rust-api-mode",
+        dest="api_mode",
         choices=("raw-payload", "structured-field"),
         default="raw-payload",
+        help="Append API shape for SDK writers. systemd always uses raw full-payload iovecs.",
     )
     parser.add_argument("--rust-trusted-unique-payloads", action="store_true")
     parser.add_argument(
@@ -647,12 +650,14 @@ def main() -> int:
 
     env = build_env()
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    profile_parts = [f"{args.format}-none-fss-off"]
+    profile_parts = [
+        f"{args.format}-none-fss-off",
+        f"api-{args.api_mode}",
+        f"live-every-{live_publish_every_entries}",
+    ]
     if "rust" in args.languages:
-        profile_parts.append(f"rust-{args.rust_api_mode}")
         if args.rust_trusted_unique_payloads:
             profile_parts.append("trusted-unique")
-        profile_parts.append(f"live-every-{live_publish_every_entries}")
         profile_parts.append(f"mmap-{args.rust_mmap_strategy}")
     profile = "-".join(profile_parts)
     out = args.output_dir / f"{profile}-{run_id}"
@@ -678,7 +683,7 @@ def main() -> int:
                     journal_format=args.format,
                     final_state=args.final_state,
                     max_size_bytes=args.max_size_bytes,
-                    rust_api_mode=args.rust_api_mode,
+                    api_mode=args.api_mode,
                     rust_trusted_unique_payloads=args.rust_trusted_unique_payloads,
                     live_publish_every_entries=live_publish_every_entries,
                     rust_mmap_strategy=args.rust_mmap_strategy,
@@ -699,7 +704,7 @@ def main() -> int:
                     journal_format=args.format,
                     final_state=args.final_state,
                     max_size_bytes=args.max_size_bytes,
-                    rust_api_mode=args.rust_api_mode,
+                    api_mode=args.api_mode,
                     rust_trusted_unique_payloads=args.rust_trusted_unique_payloads,
                     live_publish_every_entries=live_publish_every_entries,
                     rust_mmap_strategy=args.rust_mmap_strategy,
@@ -748,7 +753,8 @@ def main() -> int:
             "languages": args.languages,
             "keep_journals": args.keep_journals,
             "max_size_bytes": args.max_size_bytes,
-            "rust_api_mode": args.rust_api_mode,
+            "api_mode": args.api_mode,
+            "rust_api_mode": args.api_mode,
             "rust_trusted_unique_payloads": args.rust_trusted_unique_payloads,
             "live_publish_every_entries": live_publish_every_entries,
             "rust_mmap_strategy": args.rust_mmap_strategy,

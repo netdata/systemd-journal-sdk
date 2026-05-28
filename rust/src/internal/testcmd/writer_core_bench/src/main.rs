@@ -5,7 +5,11 @@ use journal_core::file::{
     ExperimentalMmapStrategy, JournalFile, JournalFileOptions, JournalState, JournalWriter,
     MmapMut, StructuredField, WindowManagerStats,
 };
+use journal_log_writer::{
+    Config as LogConfig, EntryTimestamps, Log, LogIdentityMode, RetentionPolicy, RotationPolicy,
+};
 use journal_registry::repository::File as RepositoryFile;
+use journal_registry::{Origin, Source};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -31,8 +35,12 @@ struct Args {
     format: String,
     #[arg(long, default_value = "online")]
     final_state: String,
+    #[arg(long, default_value = "direct")]
+    surface: String,
     #[arg(long, default_value_t = DEFAULT_MAX_SIZE_BYTES)]
     max_size_bytes: u64,
+    #[arg(long, default_value_t = DEFAULT_MAX_SIZE_BYTES)]
+    rotation_max_size_bytes: u64,
     #[arg(long, default_value = "raw-payload")]
     api_mode: String,
     #[arg(long, default_value_t = false)]
@@ -303,6 +311,121 @@ fn finalize_journal_file(
     }
 }
 
+fn collect_journal_files(root: &Path) -> Result<(Vec<PathBuf>, u64)> {
+    fn visit(path: &Path, files: &mut Vec<PathBuf>, total: &mut u64) -> Result<()> {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?;
+            let path = entry.path();
+            let metadata = entry.metadata()?;
+            if metadata.is_dir() {
+                visit(&path, files, total)?;
+            } else if path.extension().and_then(|value| value.to_str()) == Some("journal") {
+                *total += metadata.len();
+                files.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    let mut total = 0;
+    visit(root, &mut files, &mut total)?;
+    Ok((files, total))
+}
+
+fn run_directory(
+    output: &Path,
+    rows: &[Vec<BenchField>],
+    compact: bool,
+    api_mode: &str,
+    max_size_bytes: u64,
+    rotation_max_size_bytes: u64,
+    live_publish_every_entries: u64,
+) -> Result<Value> {
+    match fs::remove_dir_all(output) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
+
+    let origin = Origin {
+        machine_id: Some(uuid(MACHINE_ID)?),
+        namespace: None,
+        source: Source::System,
+    };
+    let rotation = RotationPolicy::default().with_size_of_journal_file(rotation_max_size_bytes);
+    let config = LogConfig::new(origin, rotation, RetentionPolicy::default())
+        .with_compact(compact)
+        .with_identity_mode(LogIdentityMode::Strict)
+        .with_boot_id(uuid(BOOT_ID)?)
+        .with_live_publish_every_entries(live_publish_every_entries);
+    let mut log = Log::new(output, config)?;
+
+    let mut records = 0usize;
+    let mut entry_fields: Vec<&[u8]> = Vec::with_capacity(FIELDS_PER_ROW);
+    let mut structured_refs: Vec<StructuredField<'_>> = Vec::with_capacity(FIELDS_PER_ROW);
+    let structured = api_mode == "structured-field";
+
+    let append_start = Instant::now();
+    for (index, fields) in rows.iter().enumerate() {
+        let timestamps = EntryTimestamps {
+            source_realtime_usec: None,
+            entry_realtime_usec: Some(BASE_REALTIME_USEC + index as u64 * 500),
+            entry_monotonic_usec: Some(BASE_MONOTONIC_USEC + index as u64 * 50),
+        };
+        if structured {
+            structured_refs.clear();
+            structured_refs.extend(fields.iter().map(BenchField::structured));
+            log.write_fields_with_options(
+                &structured_refs,
+                timestamps,
+                EntryWriteOptions::default(),
+            )?;
+        } else {
+            entry_fields.clear();
+            entry_fields.extend(fields.iter().map(|field| field.raw.as_slice()));
+            log.write_entry_with_timestamps(&entry_fields, timestamps)?;
+        }
+        records += 1;
+    }
+    let append_seconds = append_start.elapsed().as_secs_f64();
+    let journal_directory = log.journal_directory().to_path_buf();
+
+    let close_start = Instant::now();
+    log.close()?;
+    let close_seconds = close_start.elapsed().as_secs_f64();
+
+    let (journal_files, journal_size_bytes) = collect_journal_files(output)?;
+    Ok(json!({
+        "records": records,
+        "fields_per_row": FIELDS_PER_ROW,
+        "surface": "directory",
+        "append_seconds": append_seconds,
+        "append_rows_per_second": if append_seconds > 0.0 { records as f64 / append_seconds } else { 0.0 },
+        "close_seconds": close_seconds,
+        "total_writer_seconds": append_seconds + close_seconds,
+        "journal_size_bytes": journal_size_bytes,
+        "journal_path": journal_directory,
+        "journal_directory": journal_directory,
+        "journal_files": journal_files,
+        "format": if compact { "compact" } else { "regular" },
+        "compression": "none",
+        "fss": false,
+        "api_mode": api_mode,
+        "trusted_unique_payloads": false,
+        "live_publication": live_publication_name(live_publish_every_entries),
+        "live_publish_every_entries": live_publish_every_entries,
+        "mmap_strategy": "windowed",
+        "data_hash_table_buckets": data_hash_buckets_for_max_size(max_size_bytes),
+        "field_hash_table_buckets": FIELD_HASH_BUCKETS,
+        "max_size_bytes": max_size_bytes,
+        "rotation_max_size_bytes": rotation_max_size_bytes,
+        "append_timer_excludes": ["row generation", "writer creation", "final close/sync", "journal verification"],
+        "final_state": "archived",
+        "errors": [],
+    }))
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     let compact = match args.format.as_str() {
@@ -315,6 +438,9 @@ fn main() -> Result<()> {
         "structured-field" => true,
         other => return Err(anyhow!("invalid --api-mode: {other}")),
     };
+    if args.surface != "direct" && args.surface != "directory" {
+        return Err(anyhow!("invalid --surface: {}", args.surface));
+    }
     let live_publish_every_entries = resolve_live_publish_every_entries(&args)?;
     let mmap_strategy = parse_mmap_strategy(&args.mmap_strategy)?;
     let output = absolute_path(&args.output)?;
@@ -323,6 +449,23 @@ fn main() -> Result<()> {
     let precompute_start = Instant::now();
     let rows = make_rows(args.rows);
     let precompute_seconds = precompute_start.elapsed().as_secs_f64();
+
+    if args.surface == "directory" {
+        let mut result = run_directory(
+            &output,
+            &rows,
+            compact,
+            &args.api_mode,
+            args.max_size_bytes,
+            args.rotation_max_size_bytes,
+            live_publish_every_entries,
+        )?;
+        if let Some(object) = result.as_object_mut() {
+            object.insert("precompute_seconds".to_string(), json!(precompute_seconds));
+        }
+        println!("{}", serde_json::to_string(&result)?);
+        return Ok(());
+    }
 
     let (mut journal_file, mut writer, data_hash_buckets) =
         create_writer(&output, compact, args.max_size_bytes, mmap_strategy)?;
@@ -380,6 +523,7 @@ fn main() -> Result<()> {
         serde_json::to_string(&json!({
             "records": records,
             "fields_per_row": FIELDS_PER_ROW,
+            "surface": "direct",
             "append_seconds": append_seconds,
             "append_rows_per_second": if append_seconds > 0.0 { records as f64 / append_seconds } else { 0.0 },
             "close_seconds": close_seconds,

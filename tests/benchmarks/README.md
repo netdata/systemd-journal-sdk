@@ -1,11 +1,15 @@
 # Benchmark Harnesses
 
-This directory has two writer benchmark surfaces:
+This directory has three writer benchmark surfaces:
 
 - `run_writer_core_benchmarks.py` measures the actual append loop. Each driver
   pre-materializes deterministic rows before timing, creates the writer before
   timing, stops timing immediately after the last append, and reports final
   close/sync separately.
+- `run_writer_directory_benchmarks.py` measures high-level directory `Log`
+  writing with active-file rotation. It uses the same pre-materialized rows,
+  keeps final close, stock verification, and stock directory readback outside
+  the append timer, and records generated file counts and total journal bytes.
 - `run_writer_benchmarks.py` measures deterministic JSONL ingestion. It is
   useful for end-to-end stress and corpus ingestion checks, but its rows/sec
   includes JSON parsing, value materialization, and caller allocation overhead.
@@ -19,12 +23,16 @@ SDK drivers with the systemd v260.1 formula:
 `--max-size-bytes` is 128 MiB, matching the production baseline for the
 systemd-compatible per-file max-size calculation.
 
-Result JSON records `api_mode` because not every language exposes the same
-lowest-level append surface. `systemd` and the current Rust driver use
-prebuilt raw `KEY=VALUE` payloads in the timed loop; Go, Node.js, and Python
-use their public field APIs, which construct payloads inside append. Those are
-the actual public writer paths for those SDKs, but raw-vs-field differences
-must be considered when interpreting cross-language ratios.
+The writer-directory harness intentionally requires `--max-size-bytes` and
+`--rotation-max-size-bytes` to match. The directory surface is a comparable
+high-level rotation benchmark, so the active-file max-size, hash-table sizing,
+and reported rotation cap must describe the same production baseline.
+
+Result JSON records `api_mode`. `--api-mode raw-payload` times prebuilt
+`KEY=value` byte payload append for SDKs that expose it, matching the systemd C
+helper's `iovec` shape. `--api-mode structured-field` times the SDK field-name
+plus value append shape for producers that already hold structured data.
+`systemd` always remains `raw-payload`.
 
 SDK benchmark results record `live_publish_every_entries` so stock-compatible
 per-entry publication is never compared silently against latency-tolerant

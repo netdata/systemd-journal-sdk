@@ -28,7 +28,9 @@ The SOW system is self-contained in this repository. Normal SOW work must not de
 - **Implementer agent responsibilities:** code, tests, documentation, benchmark/profiling work, and implementation evidence for the assigned SOW.
 - **Reviewer agent responsibilities:** independent technical review, regression search, security review, unwanted side-effect review, and production-grade readiness assessment.
 
-The project manager must not personally perform the technical review for implementation SOWs. By default implementation can be delegated to external agents, but the current user routing decision is local implementation by the project manager with external models used as read-only reviewers only.
+The project manager must not personally perform the terminal technical review for implementation SOWs. By default implementation can be delegated to external agents, but the current user routing decision is local implementation by the project manager with external models used as read-only reviewers only.
+
+Current review cadence: implement the whole active SOW locally, finish local validation, then run external reviewers against the complete SOW as one meaningful batch. Do not run external reviewers after small local edits or partial fixes unless the user explicitly asks for early review, or unless a blocking design/security/compatibility decision needs an independent read-only opinion before implementation can continue.
 
 ### Required First Checks
 
@@ -330,6 +332,7 @@ Output/reference skills:
 - Common compression-library dependencies are allowed after dependency review. Journal parsing/writing must not depend on systemd/libjournal; CGO, native Node.js runtime addon loading/linking, and linking to system journal libraries remain disallowed unless the user explicitly changes those separate constraints. Dependency packages may ship native artifacts if the SDK runtime path is constrained and tested to use only non-native implementations (e.g. WASM) and does not load or link native code at runtime.
 - Current implementation routing: do implementation locally in this repository; do not run external implementer agents unless the user explicitly changes this decision.
 - Reviewer pool: `llm-netdata-cloud/minimax-m2.7-coder`, `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/qwen3.6-plus`, and `llm-netdata-cloud/glm-5.1`. `llm-netdata-cloud/mimo-v2.5-pro` is currently skipped because the user reported it is out of quota.
+- Current review cadence: finish the complete active SOW locally first, including local validation and SOW evidence, then run the reviewer pool against the entire SOW and changed surface as one batch. Do not run reviewers after every small edit.
 - A phase cannot advance until the local implementation or explicitly approved implementer run has completed the active SOW and reviewer findings have been resolved or explicitly dispositioned in the SOW.
 - After each verified chunk, prefer committing the chunk before starting the next work chunk, using explicit path staging only.
 - If the user re-enables external implementers, record the routing decision in the active SOW before running them.
