@@ -12,9 +12,6 @@ Last updated: 2026-05-29
 
 - SOW-0026 - Netdata SDK Integration Inventory And Cut Plan: open. Produces the
   fresh Netdata consumer inventory and cut plan after performance gates.
-- SOW-0043 - Rust Reader Libsystemd/Jf Parity: open. Defines reader reference,
-  `jf` facade parity, mixed-format reader contract, and RAW byte-name reader
-  representation.
 - SOW-0044 - Rust Reader Hot-Path Optimization: open. Optimizes Rust
   single-file and ordered directory readers after SOW-0043.
 - SOW-0045 - Go Reader Alignment Optimization: open. Aligns and optimizes Go
@@ -37,6 +34,11 @@ Last updated: 2026-05-29
 
 ## Recently Closed Or Completed
 
+- SOW-0043 - Rust Reader Libsystemd/Jf Parity: completed. Rust now exposes
+  additive byte-preserving RAW field-name reader methods, avoids lossy UTF-8
+  field-name invention, preserves non-UTF8 RAW names in export byte output,
+  documents UTF-8-only string helper boundaries, and passed two whole-SOW
+  reviewer rounds as production-grade.
 - SOW-0042 - Writer Final Certification: completed. Rust and Go writers are
   performance-certified for the accepted compact, no-compression, FSS-off direct
   and directory writer baselines. Node.js and Python writers are

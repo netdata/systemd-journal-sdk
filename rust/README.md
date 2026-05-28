@@ -59,6 +59,13 @@ Current reader scope:
   seqnum metadata, field enumeration, binary field values, repeated field
   values, stateful current-entry data enumeration, unique value enumeration,
   and export/json/text formatting;
+- byte-preserving RAW field-name access through `Entry::raw_fields()`,
+  `Entry::get_raw()`, and `Entry::get_raw_values()`;
+  `Entry.fields` and `Entry.field_values` are UTF-8 string-keyed convenience
+  maps and do not synthesize lossy names for non-UTF8 RAW field names;
+- export byte output preserves non-UTF8 RAW field names; JSON output, field
+  enumeration, unique queries, and `get_data` facade helpers remain UTF-8
+  field-name surfaces;
 - libsystemd-compatible facade functions for open file/directory/files, close,
   seek head/tail/realtime/cursor, next/previous/skip, match groups,
   current-entry data enumeration, field enumeration, unique value enumeration,
@@ -203,12 +210,27 @@ let mut reader = FileReader::open("/path/to/system.journal")?;
 reader.add_match(b"PRIORITY=6");
 reader.seek_head();
 
-while let Some(entry) = reader.next()? {
+while reader.next()? {
+    let entry = reader.get_entry()?;
     if let Some(message) = entry.get_str("MESSAGE") {
         println!("{message}");
     }
 }
 # Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+For RAW-mode files, use the byte-keyed entry surface when field names are not
+guaranteed to be UTF-8:
+
+```rust
+if let Some(value) = entry.get_raw(b"\xffRAW") {
+    assert_eq!(value, b"raw value");
+}
+
+for field in entry.raw_fields() {
+    let name_bytes = field.name;
+    let value_bytes = field.value;
+}
 ```
 
 File-backed journalctl:

@@ -116,10 +116,35 @@ impl Field {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RawField<'a> {
+    pub name: &'a [u8],
+    pub value: &'a [u8],
+}
+
+impl RawField<'_> {
+    pub fn payload(&self) -> Vec<u8> {
+        let mut payload = Vec::with_capacity(self.name.len() + 1 + self.value.len());
+        payload.extend_from_slice(self.name);
+        payload.push(b'=');
+        payload.extend_from_slice(self.value);
+        payload
+    }
+
+    pub fn name_str(&self) -> Option<&str> {
+        std::str::from_utf8(self.name).ok()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Entry {
+    /// Convenience map for UTF-8 field names. RAW-mode files may contain field
+    /// names that are not valid UTF-8; use `raw_fields()` or `get_raw_values()`
+    /// when byte-identical field-name identity matters.
     pub fields: HashMap<String, Vec<u8>>,
+    /// Convenience repeated-value map for UTF-8 field names.
     pub field_values: HashMap<String, Vec<Vec<u8>>>,
+    /// Full on-disk DATA payloads as `FIELD=value` bytes.
     pub payloads: Vec<Vec<u8>>,
     pub seqnum: u64,
     pub realtime: u64,
@@ -137,6 +162,32 @@ impl Entry {
         self.get(key)
             .and_then(|value| std::str::from_utf8(value).ok())
     }
+
+    pub fn raw_fields(&self) -> impl Iterator<Item = RawField<'_>> {
+        self.payloads
+            .iter()
+            .filter_map(|payload| split_raw_payload(payload))
+    }
+
+    pub fn get_raw(&self, key: &[u8]) -> Option<&[u8]> {
+        self.raw_fields()
+            .find(|field| field.name == key)
+            .map(|field| field.value)
+    }
+
+    pub fn get_raw_values(&self, key: &[u8]) -> Vec<&[u8]> {
+        self.raw_fields()
+            .filter_map(|field| (field.name == key).then_some(field.value))
+            .collect()
+    }
+}
+
+fn split_raw_payload(payload: &[u8]) -> Option<RawField<'_>> {
+    let eq = payload.iter().position(|byte| *byte == b'=')?;
+    Some(RawField {
+        name: &payload[..eq],
+        value: &payload[eq + 1..],
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -1458,10 +1509,13 @@ fn read_entry_at(
 
         payloads.push(payload.to_vec());
         if let Some(eq) = payload.iter().position(|byte| *byte == b'=') {
-            let name = String::from_utf8_lossy(&payload[..eq]).into_owned();
+            let raw_name = &payload[..eq];
             let value = payload[eq + 1..].to_vec();
-            fields.insert(name.clone(), value.clone());
-            field_values.entry(name).or_default().push(value);
+            if let Ok(name) = std::str::from_utf8(raw_name) {
+                let name = name.to_string();
+                fields.insert(name.clone(), value.clone());
+                field_values.entry(name).or_default().push(value);
+            }
         }
     }
 
@@ -1736,6 +1790,18 @@ pub fn export_entry_bytes(entry: &Entry) -> Vec<u8> {
             }
         }
     }
+    let mut byte_name_fields: Vec<_> = entry
+        .raw_fields()
+        .filter(|field| std::str::from_utf8(field.name).is_err() && field.name != b"_BOOT_ID")
+        .collect();
+    byte_name_fields.sort_by(|left, right| {
+        left.name
+            .cmp(right.name)
+            .then_with(|| left.value.cmp(right.value))
+    });
+    for field in byte_name_fields {
+        write_export_field_bytes(&mut out, field.name, field.value);
+    }
     out.push(b'\n');
     out
 }
@@ -1745,16 +1811,20 @@ pub fn export_entry(entry: &Entry) -> String {
 }
 
 fn write_export_field(out: &mut Vec<u8>, name: &str, value: &[u8]) {
+    write_export_field_bytes(out, name.as_bytes(), value);
+}
+
+fn write_export_field_bytes(out: &mut Vec<u8>, name: &[u8], value: &[u8]) {
     if value
         .iter()
         .all(|byte| *byte == b'\t' || (0x20..0x7f).contains(byte))
     {
-        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(name);
         out.push(b'=');
         out.extend_from_slice(value);
         out.push(b'\n');
     } else {
-        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(name);
         out.push(b'\n');
         out.extend_from_slice(&(value.len() as u64).to_le_bytes());
         out.extend_from_slice(value);
@@ -2294,6 +2364,85 @@ mod tests {
         let entry = SdJournalGetEntry(&mut filtered_multi).expect("filtered entry");
         assert_eq!(entry.get_str("MESSAGE"), Some("second"));
         assert_eq!(SdJournalNext(&mut filtered_multi).expect("filtered end"), 0);
+    }
+
+    #[test]
+    fn reader_preserves_raw_byte_field_names() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("journals/raw-byte-names.journal");
+        let (mut journal_file, mut writer) = create_facade_test_writer(&path);
+        let invalid_utf8_name = vec![0xff, b'R', b'A', b'W'];
+        let nul_name = b"RAW\0NAME";
+
+        writer
+            .add_entry_fields_with_options(
+                &mut journal_file,
+                [
+                    journal_core::file::EntryField::structured(b"MESSAGE", b"raw byte names"),
+                    journal_core::file::EntryField::structured(
+                        invalid_utf8_name.as_slice(),
+                        b"invalid utf8",
+                    ),
+                    journal_core::file::EntryField::structured(nul_name, b"nul name"),
+                    journal_core::file::EntryField::structured(b"field name", b"space"),
+                    journal_core::file::EntryField::structured(b"BINARY", b"a\0=b"),
+                ],
+                1_700_004_000_000_000,
+                1,
+                journal_core::file::EntryWriteOptions::default()
+                    .field_name_policy(journal_core::file::FieldNamePolicy::Raw),
+            )
+            .expect("write raw byte-name entry");
+        journal_file.sync().expect("sync raw byte-name journal");
+
+        let mut reader = FileReader::open(&path).expect("open raw byte-name journal");
+        assert!(reader.next().expect("read first entry"));
+        let entry = reader.get_entry().expect("get raw byte-name entry");
+
+        assert_eq!(entry.get("MESSAGE"), Some(b"raw byte names".as_slice()));
+        assert_eq!(
+            entry.get_raw(invalid_utf8_name.as_slice()),
+            Some(b"invalid utf8".as_slice())
+        );
+        assert_eq!(entry.get_raw(nul_name), Some(b"nul name".as_slice()));
+        assert_eq!(entry.get_raw(b"BINARY"), Some(b"a\0=b".as_slice()));
+        assert_eq!(
+            entry.get_raw_values(b"field name"),
+            vec![b"space".as_slice()]
+        );
+        assert!(entry.raw_fields().any(|field| {
+            field.name == invalid_utf8_name.as_slice() && field.value == b"invalid utf8"
+        }));
+        assert!(entry.payloads.iter().any(|payload| {
+            let mut expected = invalid_utf8_name.clone();
+            expected.push(b'=');
+            expected.extend_from_slice(b"invalid utf8");
+            payload == &expected
+        }));
+        let lossy_name = String::from_utf8_lossy(&invalid_utf8_name).into_owned();
+        assert!(
+            !entry.fields.contains_key(&lossy_name),
+            "string convenience map must not invent lossy RAW field names"
+        );
+
+        let export = export_entry_bytes(&entry);
+        let mut expected_export = invalid_utf8_name.clone();
+        expected_export.push(b'=');
+        expected_export.extend_from_slice(b"invalid utf8\n");
+        assert!(
+            export
+                .windows(expected_export.len())
+                .any(|window| window == expected_export.as_slice()),
+            "export output should preserve non-UTF8 RAW field names as bytes"
+        );
+
+        let serde_json::Value::Object(json) = json_entry(&entry) else {
+            panic!("entry JSON should be an object");
+        };
+        assert!(
+            !json.contains_key(&lossy_name),
+            "JSON output must not invent lossy RAW field names"
+        );
     }
 
     fn verification_key(opts: &SealOptions) -> String {

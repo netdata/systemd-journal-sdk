@@ -393,6 +393,17 @@ Accepted reader API layers:
   binary field values, repeated field values, cursor/realtime metadata, field
   enumeration, unique value enumeration, and boot listing for the accepted file
   slice.
+- RAW-mode reader representation treats full `FIELD=value` DATA payload bytes
+  as the canonical byte-identical surface. String-keyed field maps are
+  convenience views for UTF-8 field names and must not invent lossy replacement
+  names for non-UTF8 RAW field names. Rust currently exposes split
+  byte-preserving `Entry::raw_fields()`, `Entry::get_raw()`, and
+  `Entry::get_raw_values()` methods; Go, Node.js, and Python reader alignment
+  SOWs must expose equivalent idiomatic byte-name surfaces before claiming RAW
+  reader parity.
+- JSON output, field enumeration, unique queries, and `get_data`-style facade
+  helpers are UTF-8 field-name surfaces. Byte-exact RAW names are available
+  through full payload/data enumeration and idiomatic byte-name APIs.
 - The libsystemd-compatible facade is available in Rust, Go, Node.js, and
   Python for file-backed use. It includes open file, open directory, open files,
   close, seek head/tail/realtime/cursor, next/previous/skip, add match,
@@ -530,6 +541,13 @@ Current Rust reader feature slice:
   seqnum metadata, binary field values, repeated field values, field
   enumeration, current-entry data enumeration, unique value enumeration, and
   systemd-compatible export/json/text formatting;
+- byte-preserving RAW field-name representation through `Entry::raw_fields()`,
+  `Entry::get_raw()`, and `Entry::get_raw_values()`. `Entry.fields` and
+  `Entry.field_values` remain UTF-8 string-keyed convenience maps and do not
+  synthesize lossy names for non-UTF8 RAW field names;
+- export byte output preserves non-UTF8 RAW field names; JSON output, field
+  enumeration, unique queries, and `get_data` facade helpers remain UTF-8
+  field-name surfaces;
 - libsystemd-style match tree behavior from `SdJournalAddMatch()`,
   `SdJournalAddDisjunction()`, and `SdJournalAddConjunction()`;
 - file-backed Rust journalctl behavior for `--file`, `--directory`,
