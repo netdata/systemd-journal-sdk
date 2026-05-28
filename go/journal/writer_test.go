@@ -344,6 +344,21 @@ func TestWriterRejectsInvalidEntries(t *testing.T) {
 	if err := w.Append([]Field{StringField(strings.Repeat("A", 65), "bad")}, EntryOptions{}); !errors.Is(err, errFieldName) {
 		t.Fatalf("Append(long field name) error = %v, want errFieldName", err)
 	}
+	if err := w.AppendRaw(nil, EntryOptions{}); !errors.Is(err, errEntryEmpty) {
+		t.Fatalf("AppendRaw(nil) error = %v, want errEntryEmpty", err)
+	}
+	if err := w.AppendRaw([][]byte{[]byte("NO_EQUALS")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+		t.Fatalf("AppendRaw(no equals) error = %v, want errFieldName", err)
+	}
+	if err := w.AppendRaw([][]byte{nil}, EntryOptions{}); !errors.Is(err, errFieldName) {
+		t.Fatalf("AppendRaw(empty payload) error = %v, want errFieldName", err)
+	}
+	if err := w.AppendRaw([][]byte{[]byte("=")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+		t.Fatalf("AppendRaw(single equals) error = %v, want errFieldName", err)
+	}
+	if err := w.AppendRaw([][]byte{[]byte("lowercase=bad")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+		t.Fatalf("AppendRaw(lowercase) error = %v, want errFieldName", err)
+	}
 }
 
 func TestWriterJournaldPolicyAllowsProtectedFields(t *testing.T) {
@@ -372,6 +387,107 @@ func TestWriterJournaldPolicyAllowsProtectedFields(t *testing.T) {
 	}
 	assertJSONField(t, rows[0], "_HOSTNAME", "synthetic-host")
 	assertJSONField(t, rows[0], "_TRANSPORT", "journal")
+}
+
+func TestWriterAppendRawJournaldPayloads(t *testing.T) {
+	requireJournalctl(t)
+
+	path := filepath.Join(t.TempDir(), "raw-journald-payloads.journal")
+	w, err := Create(path, testOptions())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := w.AppendRaw([][]byte{
+		[]byte("MESSAGE=raw full payload"),
+		[]byte("_HOSTNAME=synthetic-host"),
+		[]byte("BINARY=a\x00=b=c"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_111_100_000, MonotonicUsec: 2}); err != nil {
+		t.Fatalf("AppendRaw(journald payloads) error = %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	verifyJournalctl(t, path)
+	rows := runJournalctlJSON(t, path, "MESSAGE=raw full payload")
+	if len(rows) != 1 {
+		t.Fatalf("row count = %d, want 1; rows=%v", len(rows), rows)
+	}
+	assertJSONField(t, rows[0], "_HOSTNAME", "synthetic-host")
+	snapshot := readJournalSnapshot(t, path)
+	if got := snapshot.dataByPayload["BINARY=a\x00=b=c"].payload; !bytes.Equal(got, []byte{'B', 'I', 'N', 'A', 'R', 'Y', '=', 'a', 0, '=', 'b', '=', 'c'}) {
+		t.Fatalf("raw binary payload = %q", got)
+	}
+}
+
+func TestWriterAppendRawMatchesStructuredBytes(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, raw bool) []byte {
+		t.Helper()
+		path := filepath.Join(dir, name+".journal")
+		w, err := Create(path, testOptions())
+		if err != nil {
+			t.Fatalf("Create(%s) error = %v", name, err)
+		}
+		opts := EntryOptions{RealtimeUsec: 1_700_002_111_200_000, MonotonicUsec: 3}
+		if raw {
+			err = w.AppendRaw([][]byte{
+				[]byte("MESSAGE=equivalent entry"),
+				[]byte("PRIORITY=6"),
+				[]byte("BINARY=a\x00=b=c"),
+			}, opts)
+		} else {
+			err = w.Append([]Field{
+				StringField("MESSAGE", "equivalent entry"),
+				StringField("PRIORITY", "6"),
+				{Name: "BINARY", Value: []byte{'a', 0, '=', 'b', '=', 'c'}},
+			}, opts)
+		}
+		if err != nil {
+			t.Fatalf("Append(%s) error = %v", name, err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatalf("Close(%s) error = %v", name, err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error = %v", name, err)
+		}
+		return data
+	}
+
+	if structured, raw := write("structured", false), write("raw", true); !bytes.Equal(structured, raw) {
+		t.Fatal("structured Append and raw AppendRaw produced different bytes")
+	}
+}
+
+func TestWriterAppendRawDeduplicatesDuplicatePayloads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "raw-dedup.journal")
+	w, err := Create(path, testOptions())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := w.AppendRaw([][]byte{
+		[]byte("MESSAGE=duplicate"),
+		[]byte("MESSAGE=duplicate"),
+		[]byte("PRIORITY=6"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_111_300_000, MonotonicUsec: 4}); err != nil {
+		t.Fatalf("AppendRaw(duplicate payloads) error = %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	snapshot := readJournalSnapshot(t, path)
+	if len(snapshot.entries) != 1 {
+		t.Fatalf("entry count = %d, want 1", len(snapshot.entries))
+	}
+	if got := len(snapshot.entries[0].itemOffsets); got != 2 {
+		t.Fatalf("entry item count = %d, want 2", got)
+	}
+	if snapshot.dataByPayload["MESSAGE=duplicate"].header.nEntries != 1 {
+		t.Fatalf("MESSAGE=duplicate nEntries = %d, want 1", snapshot.dataByPayload["MESSAGE=duplicate"].header.nEntries)
+	}
 }
 
 func TestWriterJournalAppPolicyDropsInvalidCallerFields(t *testing.T) {
@@ -414,6 +530,52 @@ func TestWriterJournalAppPolicyDropsInvalidCallerFields(t *testing.T) {
 	}
 }
 
+func TestWriterAppendRawJournalAppPolicyDropsInvalidCallerPayloads(t *testing.T) {
+	requireJournalctl(t)
+
+	opts := testOptions()
+	opts.FieldNamePolicy = FieldNamePolicyJournalApp
+	path := filepath.Join(t.TempDir(), "journal-app-raw-payloads.journal")
+	w, err := Create(path, opts)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := w.AppendRaw([][]byte{
+		[]byte("MESSAGE=raw app valid"),
+		[]byte("_HOSTNAME=drop-host"),
+		[]byte("lowercase=drop-lowercase"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_112_100_000, MonotonicUsec: 2}); err != nil {
+		t.Fatalf("AppendRaw(journal-app mixed payloads) error = %v", err)
+	}
+	if err := w.AppendRaw([][]byte{
+		[]byte("_HOSTNAME=drop-only"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_112_100_001, MonotonicUsec: 3}); !errors.Is(err, errEntryEmpty) {
+		t.Fatalf("AppendRaw(journal-app drop-only) error = %v, want errEntryEmpty", err)
+	}
+	if err := w.AppendRaw([][]byte{[]byte("NO_EQUALS")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+		t.Fatalf("AppendRaw(journal-app malformed payload) error = %v, want errFieldName", err)
+	}
+	if err := w.AppendRaw([][]byte{[]byte("=bad")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+		t.Fatalf("AppendRaw(journal-app empty-name payload) error = %v, want errFieldName", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	verifyJournalctl(t, path)
+	rows := runJournalctlJSON(t, path)
+	if len(rows) != 1 {
+		t.Fatalf("row count = %d, want 1; rows=%v", len(rows), rows)
+	}
+	assertJSONField(t, rows[0], "MESSAGE", "raw app valid")
+	if _, ok := rows[0]["_HOSTNAME"]; ok {
+		t.Fatalf("journal-app raw writer kept protected field: %v", rows[0])
+	}
+	if _, ok := rows[0]["lowercase"]; ok {
+		t.Fatalf("journal-app raw writer kept invalid lowercase field: %v", rows[0])
+	}
+}
+
 func TestWriterRawPolicyAllowsStructureOnlyFieldNames(t *testing.T) {
 	longName := strings.Repeat("a", 1024)
 	opts := testOptions()
@@ -434,6 +596,45 @@ func TestWriterRawPolicyAllowsStructureOnlyFieldNames(t *testing.T) {
 	}
 	if err := w.Append([]Field{StringField("BAD=NAME", "bad")}, EntryOptions{}); !errors.Is(err, errFieldName) {
 		t.Fatalf("Append(raw name containing '=') error = %v, want errFieldName", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	snapshot := readJournalSnapshot(t, path)
+	for _, field := range []string{"lowercase", "foo.bar", "field name", longName, "BINARY"} {
+		if _, ok := snapshot.fieldByPayload[field]; !ok {
+			t.Fatalf("missing raw FIELD object %q", field)
+		}
+	}
+	if got := snapshot.dataByPayload["BINARY=a\x00=b"].payload; !bytes.Equal(got, []byte{'B', 'I', 'N', 'A', 'R', 'Y', '=', 'a', 0, '=', 'b'}) {
+		t.Fatalf("raw binary payload = %q", got)
+	}
+}
+
+func TestWriterAppendRawRawPolicyAllowsStructureOnlyPayloadNames(t *testing.T) {
+	longName := strings.Repeat("a", 1024)
+	opts := testOptions()
+	opts.FieldNamePolicy = FieldNamePolicyRaw
+	path := filepath.Join(t.TempDir(), "raw-raw-payloads.journal")
+	w, err := Create(path, opts)
+	if err != nil {
+		t.Fatalf("Create(raw) error = %v", err)
+	}
+	if err := w.AppendRaw([][]byte{
+		[]byte("lowercase=ok"),
+		[]byte("foo.bar=dot"),
+		[]byte("field name=space"),
+		[]byte(longName + "=long"),
+		[]byte("BINARY=a\x00=b"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_113_100_000, MonotonicUsec: 2}); err != nil {
+		t.Fatalf("AppendRaw(raw payloads) error = %v", err)
+	}
+	if err := w.AppendRaw([][]byte{[]byte("NO_EQUALS")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+		t.Fatalf("AppendRaw(no equals) error = %v, want errFieldName", err)
+	}
+	if err := w.AppendRaw([][]byte{[]byte("=bad")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+		t.Fatalf("AppendRaw(empty name) error = %v, want errFieldName", err)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)

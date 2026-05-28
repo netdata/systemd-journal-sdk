@@ -154,7 +154,9 @@ Writer API hierarchy:
 - Every language must expose a systemd-compatible raw full-field payload writer
   layer where each field is already encoded as `KEY=value` bytes. This mirrors
   systemd v260.1 `sd_journal_sendv()` / `journal_file_append_entry()` behavior
-  and is the low-level compatibility layer.
+  and is the low-level compatibility layer. The first `=` byte is the field
+  separator; payloads without a separator or with an empty field name are API
+  errors in every policy mode.
 - Every language must expose a structured binary-safe writer layer where each
   field is represented as `{name, value}` / `Field{Name, Value}` without
   requiring callers to concatenate and then re-parse `KEY=value` bytes. This is
@@ -172,7 +174,9 @@ Writer API hierarchy:
     such as `_HOSTNAME` and `_TRANSPORT`.
   - `JOURNAL-APP`: untrusted application-facing mode. It uses the same
     character and length rules as `JOURNALD`, disallows leading `_`, drops
-    invalid caller fields, and fails only when no caller field remains.
+    invalid caller fields, and fails only when no caller field remains. For raw
+    full-payload APIs, malformed payloads are rejected before field-name
+    filtering.
 - The SDK must not perform producer-specific field-name remapping. Consumers
   that need their own naming scheme must transform fields before calling the
   SDK writer API.

@@ -181,6 +181,23 @@ forward to preserve strict journal ordering in the generated chain.
 `EntryOptions.RealtimeUsecSet` and `EntryOptions.MonotonicUsecSet` distinguish
 explicit zero timestamp overrides from omitted zero-value struct fields.
 
+## Append Shapes
+
+Writers expose two append shapes:
+
+- `Append([]journal.Field, journal.EntryOptions)` accepts structured
+  binary-safe `{Name, Value}` fields and is the preferred SDK hot path for
+  producers that already hold structured data.
+- `AppendRaw([][]byte, journal.EntryOptions)` accepts complete `KEY=value`
+  byte payloads matching the low-level systemd writer shape. The first `=`
+  byte separates the field name from the value; later `=` bytes and arbitrary
+  value bytes are preserved.
+
+Both shapes apply the configured `FieldNamePolicy` to caller-provided fields
+or payloads. High-level `Log` appends SDK-owned fields such as `_BOOT_ID` and
+`_SOURCE_REALTIME_TIMESTAMP` after caller policy filtering; `_BOOT_ID` is also
+written as journal entry metadata.
+
 ## Field Names
 
 The low-level `Writer` and high-level `Log` writer expose the same
@@ -198,6 +215,5 @@ The low-level `Writer` and high-level `Log` writer expose the same
   journal files, but they are not guaranteed to be accepted by stock systemd
   tooling when names violate systemd conventions.
 
-SDK-owned fields such as `_BOOT_ID` and `_SOURCE_REALTIME_TIMESTAMP` are
-injected internally under the journald-compatible rules. Producer-specific
-field transformations belong outside the SDK.
+SDK-owned fields and metadata are written under journald-compatible rules.
+Producer-specific field transformations belong outside the SDK.

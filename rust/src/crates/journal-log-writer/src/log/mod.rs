@@ -7,6 +7,7 @@ pub use config::{Config, LogIdentityMode, LogOpenMode, RetentionPolicy, Rotation
 use crate::{Result, WriterError};
 use itoa::Buffer as ItoaBuffer;
 use journal_common::{Microseconds, RealtimeClock, load_boot_id, load_machine_id, monotonic_now};
+use journal_core::error::JournalError;
 use journal_core::file::mmap::MmapMut;
 use journal_core::file::{
     Compression, EntryField, EntryWriteOptions, FieldNamePolicy, JournalFile, JournalFileOptions,
@@ -31,16 +32,20 @@ fn log_writer_field_name_policy(policy: FieldNamePolicy) -> FieldNamePolicy {
     }
 }
 
-fn filter_raw_items_for_journal_app<'a>(items: &'a [&'a [u8]]) -> Vec<&'a [u8]> {
-    items
-        .iter()
-        .copied()
-        .filter(|item| {
-            item.iter()
-                .position(|&b| b == b'=')
-                .is_some_and(|pos| is_journal_app_field_name(&item[..pos]))
-        })
-        .collect()
+fn filter_raw_items_for_journal_app<'a>(items: &'a [&'a [u8]]) -> Result<Vec<&'a [u8]>> {
+    let mut filtered = Vec::with_capacity(items.len());
+    for item in items.iter().copied() {
+        let Some(pos) = item.iter().position(|&b| b == b'=') else {
+            return Err(JournalError::InvalidField.into());
+        };
+        if pos == 0 {
+            return Err(JournalError::InvalidField.into());
+        }
+        if is_journal_app_field_name(&item[..pos]) {
+            filtered.push(item);
+        }
+    }
+    Ok(filtered)
 }
 
 fn filter_structured_fields_for_journal_app<'a>(
@@ -758,7 +763,7 @@ impl Log {
 
         let filtered_items;
         let write_items = if self.config.field_name_policy == FieldNamePolicy::JournalApp {
-            filtered_items = filter_raw_items_for_journal_app(items);
+            filtered_items = filter_raw_items_for_journal_app(items)?;
             if filtered_items.is_empty() {
                 return Err(WriterError::EmptyEntry);
             }

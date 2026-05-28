@@ -6,10 +6,13 @@
 //! - Retention policies
 
 use journal_common::{Microseconds, load_boot_id, load_machine_id, monotonic_now};
-use journal_core::file::{
-    DEFAULT_COMPRESS_THRESHOLD, FieldNamePolicy, HeaderIncompatibleFlags, JournalFile,
-    JournalFileOptions, JournalState, JournalWriter, MIN_COMPRESS_THRESHOLD, Mmap, MmapMut,
-    StructuredField,
+use journal_core::{
+    error::JournalError,
+    file::{
+        DEFAULT_COMPRESS_THRESHOLD, FieldNamePolicy, HeaderIncompatibleFlags, JournalFile,
+        JournalFileOptions, JournalState, JournalWriter, MIN_COMPRESS_THRESHOLD, Mmap, MmapMut,
+        StructuredField,
+    },
 };
 use journal_log_writer::{
     Config, EntryTimestamps, Log, LogArtifactSizer, LogIdentityMode, LogLifecycleEvent,
@@ -2093,6 +2096,34 @@ fn test_log_journal_app_policy_drops_invalid_fields() {
         .expect_err("drop-only journal-app entry should fail");
     assert!(matches!(err, WriterError::EmptyEntry));
 
+    let malformed = [b"NO_EQUALS" as &[u8]];
+    let err = log
+        .write_entry_with_timestamps(
+            &malformed,
+            EntryTimestamps::default()
+                .with_entry_realtime_usec(1_700_002_402_000_002)
+                .with_entry_monotonic_usec(22),
+        )
+        .expect_err("malformed journal-app raw payload should fail");
+    assert!(matches!(
+        err,
+        WriterError::Journal(JournalError::InvalidField)
+    ));
+
+    let empty_name = [b"=bad" as &[u8]];
+    let err = log
+        .write_entry_with_timestamps(
+            &empty_name,
+            EntryTimestamps::default()
+                .with_entry_realtime_usec(1_700_002_402_000_003)
+                .with_entry_monotonic_usec(23),
+        )
+        .expect_err("empty journal-app raw field name should fail");
+    assert!(matches!(
+        err,
+        WriterError::Journal(JournalError::InvalidField)
+    ));
+
     log.sync().unwrap();
     drop(log);
 
@@ -2136,6 +2167,14 @@ fn test_log_raw_policy_allows_structure_only_field_names() {
             .with_entry_monotonic_usec(31),
     )
     .expect_err("empty raw field name should fail");
+    let missing_separator = [b"NO_EQUALS" as &[u8]];
+    log.write_entry_with_timestamps(
+        &missing_separator,
+        EntryTimestamps::default()
+            .with_entry_realtime_usec(1_700_002_403_000_002)
+            .with_entry_monotonic_usec(32),
+    )
+    .expect_err("raw payload without '=' should fail");
 
     log.sync().unwrap();
     drop(log);

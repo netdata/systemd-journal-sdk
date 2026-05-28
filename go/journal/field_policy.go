@@ -43,52 +43,64 @@ func validateFieldNamePolicy(policy FieldNamePolicy) error {
 }
 
 func validateFieldNameForPolicy(name string, policy FieldNamePolicy) error {
+	return validateFieldNameForPolicyBytes([]byte(name), policy)
+}
+
+func validateFieldNameForPolicyBytes(name []byte, policy FieldNamePolicy) error {
 	if err := validateFieldNamePolicy(policy); err != nil {
 		return err
 	}
 	switch policy {
 	case FieldNamePolicyRaw:
-		return validateRawFieldName(name)
+		return validateRawFieldNameBytes(name)
 	case FieldNamePolicyJournald:
-		return validateJournaldFieldName(name, true)
+		return validateJournaldFieldNameBytes(name, true)
 	case FieldNamePolicyJournalApp:
-		return validateJournaldFieldName(name, false)
+		return validateJournaldFieldNameBytes(name, false)
 	default:
 		panic("unreachable field name policy")
 	}
 }
 
 func validateRawFieldName(name string) error {
-	if name == "" {
+	return validateRawFieldNameBytes([]byte(name))
+}
+
+func validateRawFieldNameBytes(name []byte) error {
+	if len(name) == 0 {
 		return errFieldName
 	}
 	for i := 0; i < len(name); i++ {
 		if name[i] == '=' {
-			return fmt.Errorf("%w: %q", errFieldName, name)
+			return fmt.Errorf("%w: %q", errFieldName, string(name))
 		}
 	}
 	return nil
 }
 
 func validateJournaldFieldName(name string, allowProtected bool) error {
-	if name == "" {
+	return validateJournaldFieldNameBytes([]byte(name), allowProtected)
+}
+
+func validateJournaldFieldNameBytes(name []byte, allowProtected bool) error {
+	if len(name) == 0 {
 		return errFieldName
 	}
 	if len(name) > 64 {
-		return fmt.Errorf("%w: %q", errFieldName, name)
+		return fmt.Errorf("%w: %q", errFieldName, string(name))
 	}
 	if name[0] == '_' && !allowProtected {
-		return fmt.Errorf("%w: %q", errFieldName, name)
+		return fmt.Errorf("%w: %q", errFieldName, string(name))
 	}
 	if name[0] >= '0' && name[0] <= '9' {
-		return fmt.Errorf("%w: %q", errFieldName, name)
+		return fmt.Errorf("%w: %q", errFieldName, string(name))
 	}
 	for i := 0; i < len(name); i++ {
 		c := name[i]
 		if c == '_' || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
 			continue
 		}
-		return fmt.Errorf("%w: %q", errFieldName, name)
+		return fmt.Errorf("%w: %q", errFieldName, string(name))
 	}
 	return nil
 }
@@ -118,6 +130,57 @@ func prepareFieldsForPolicy(fields []Field, policy FieldNamePolicy) ([]Field, er
 		}
 	}
 	return fields, nil
+}
+
+func prepareRawPayloadsForPolicy(payloads [][]byte, policy FieldNamePolicy) ([][]byte, error) {
+	if len(payloads) == 0 {
+		return nil, errEntryEmpty
+	}
+	if err := validateFieldNamePolicy(policy); err != nil {
+		return nil, err
+	}
+	if policy == FieldNamePolicyJournalApp {
+		filtered := make([][]byte, 0, len(payloads))
+		for _, payload := range payloads {
+			name, err := rawPayloadFieldName(payload)
+			if err != nil {
+				return nil, err
+			}
+			if validateFieldNameForPolicyBytes(name, policy) == nil {
+				filtered = append(filtered, payload)
+			}
+		}
+		if len(filtered) == 0 {
+			return nil, errEntryEmpty
+		}
+		return filtered, nil
+	}
+	for _, payload := range payloads {
+		if err := validateRawPayloadForPolicy(payload, policy); err != nil {
+			return nil, err
+		}
+	}
+	return payloads, nil
+}
+
+func validateRawPayloadForPolicy(payload []byte, policy FieldNamePolicy) error {
+	name, err := rawPayloadFieldName(payload)
+	if err != nil {
+		return err
+	}
+	return validateFieldNameForPolicyBytes(name, policy)
+}
+
+func rawPayloadFieldName(payload []byte) ([]byte, error) {
+	for i, b := range payload {
+		if b == '=' {
+			if i == 0 {
+				return nil, errFieldName
+			}
+			return payload[:i], nil
+		}
+	}
+	return nil, errFieldName
 }
 
 func logWriterFieldNamePolicy(policy FieldNamePolicy) FieldNamePolicy {

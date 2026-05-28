@@ -117,6 +117,20 @@ err := w.Append([]journal.Field{
 Use `Append([]journal.Field{...})` for binary payloads. `AppendMap()` and
 `StringField()` are convenience helpers for string-valued fields.
 
+Raw systemd-compatible payloads:
+
+```go
+err := w.AppendRaw([][]byte{
+    []byte("MESSAGE=prebuilt payload"),
+    []byte("_HOSTNAME=synthetic-host"),
+    []byte("BINARY_PAYLOAD=\x00\x01\x02\xff"),
+}, journal.EntryOptions{})
+```
+
+`AppendRaw()` accepts complete `KEY=value` byte payloads. The first `=` splits
+the field name from the value; later `=` bytes and arbitrary value bytes are
+preserved.
+
 Live-reader publication:
 
 ```go
@@ -215,13 +229,17 @@ consumer-owned sidecar bytes in size-based retention. See `go/API.md` for the
 versioned public API contract.
 
 The low-level Go `Writer` and high-level `Log` writer support the same
-field-name policy layers. The default `FieldNamePolicyJournald` preserves
+structured `Append()` and raw full-payload `AppendRaw()` entry shapes plus the
+same field-name policy layers. The default `FieldNamePolicyJournald` preserves
 trusted systemd fields such as `_HOSTNAME` and `_TRANSPORT`.
 `FieldNamePolicyJournalApp` drops caller fields that journald would reject from
 untrusted applications and fails only when no caller fields remain.
 `FieldNamePolicyRaw` accepts any non-empty field name that does not contain
 `=`, but RAW-mode files are not guaranteed to be accepted by stock systemd
-tooling. Producer-specific field transformations belong outside the SDK.
+tooling. High-level `Log` applies these policies to caller fields before
+adding SDK-owned fields such as `_BOOT_ID` and
+`_SOURCE_REALTIME_TIMESTAMP`. Producer-specific field transformations belong
+outside the SDK.
 
 Basic reader usage:
 

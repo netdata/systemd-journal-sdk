@@ -443,8 +443,43 @@ func (l *Log) Append(fields []Field, opts EntryOptions) error {
 	if err := l.enforceRetentionOnOpen(); err != nil {
 		return err
 	}
-	fields = appendSourceRealtimeField(fields, opts.SourceRealtimeUsec)
+	fields = appendLogMetadataFields(fields, l.entryBootIDForAppend(opts), opts.SourceRealtimeUsec)
 	if err := l.writer.Append(fields, opts); err != nil {
+		return err
+	}
+	l.captureAppendState()
+	return nil
+}
+
+// AppendRaw appends one entry from complete KEY=value byte payloads through
+// the directory writer. The first '=' byte separates the field name from the
+// value; later '=' bytes and arbitrary value bytes are preserved.
+func (l *Log) AppendRaw(payloads [][]byte, opts EntryOptions) error {
+	if l.closed {
+		return errWriterClosed
+	}
+	preparedPayloads, err := prepareRawPayloadsForPolicy(payloads, l.fieldNamePolicy)
+	if err != nil {
+		return err
+	}
+	payloads = preparedPayloads
+	opts = l.entryOptionsForAppend(opts)
+	if err := l.enforceRetentionOnOpen(); err != nil {
+		return err
+	}
+	if l.writer != nil && l.shouldRotate(opts.RealtimeUsec) {
+		if err := l.rotate(opts); err != nil {
+			return err
+		}
+	}
+	if err := l.ensureWriter(opts, LogLifecycleReasonAppend); err != nil {
+		return err
+	}
+	if err := l.enforceRetentionOnOpen(); err != nil {
+		return err
+	}
+	payloads = appendLogMetadataPayloads(payloads, l.entryBootIDForAppend(opts), opts.SourceRealtimeUsec)
+	if err := l.writer.AppendRaw(payloads, opts); err != nil {
 		return err
 	}
 	l.captureAppendState()
@@ -1072,14 +1107,43 @@ func validateRetentionPolicy(policy RetentionPolicy) error {
 	return nil
 }
 
-func appendSourceRealtimeField(fields []Field, sourceRealtimeUsec uint64) []Field {
-	if sourceRealtimeUsec == 0 {
-		return fields
+func (l *Log) entryBootIDForAppend(opts EntryOptions) UUID {
+	if !isZeroUUID(opts.BootID) {
+		return opts.BootID
 	}
-	withSource := make([]Field, 0, len(fields)+1)
-	withSource = append(withSource, fields...)
-	withSource = append(withSource, StringField("_SOURCE_REALTIME_TIMESTAMP", strconv.FormatUint(sourceRealtimeUsec, 10)))
-	return withSource
+	return l.options.BootID
+}
+
+func appendLogMetadataFields(fields []Field, bootID UUID, sourceRealtimeUsec uint64) []Field {
+	extra := 1
+	if sourceRealtimeUsec != 0 {
+		extra++
+	}
+	withMetadata := make([]Field, 0, len(fields)+extra)
+	withMetadata = append(withMetadata, StringField("_BOOT_ID", bootID.String()))
+	if sourceRealtimeUsec != 0 {
+		withMetadata = append(withMetadata, StringField("_SOURCE_REALTIME_TIMESTAMP", strconv.FormatUint(sourceRealtimeUsec, 10)))
+	}
+	withMetadata = append(withMetadata, fields...)
+	return withMetadata
+}
+
+func appendLogMetadataPayloads(payloads [][]byte, bootID UUID, sourceRealtimeUsec uint64) [][]byte {
+	extra := 1
+	if sourceRealtimeUsec != 0 {
+		extra++
+	}
+	withMetadata := make([][]byte, 0, len(payloads)+extra)
+	bootPayload := []byte("_BOOT_ID=")
+	bootPayload = append(bootPayload, bootID.String()...)
+	withMetadata = append(withMetadata, bootPayload)
+	if sourceRealtimeUsec != 0 {
+		sourcePayload := []byte("_SOURCE_REALTIME_TIMESTAMP=")
+		sourcePayload = strconv.AppendUint(sourcePayload, sourceRealtimeUsec, 10)
+		withMetadata = append(withMetadata, sourcePayload)
+	}
+	withMetadata = append(withMetadata, payloads...)
+	return withMetadata
 }
 
 func (l *Log) emitLifecycle(event LogLifecycleEvent) {

@@ -119,6 +119,18 @@ func TestLogAppendRejectsEmptyEntryWithoutCreatingFile(t *testing.T) {
 	if err := log.Append(nil, EntryOptions{}); !errors.Is(err, errEntryEmpty) {
 		t.Fatalf("Append(nil) error = %v, want errEntryEmpty", err)
 	}
+	if err := log.AppendRaw(nil, EntryOptions{}); !errors.Is(err, errEntryEmpty) {
+		t.Fatalf("AppendRaw(nil) error = %v, want errEntryEmpty", err)
+	}
+	if err := log.AppendRaw([][]byte{[]byte("NO_EQUALS")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+		t.Fatalf("AppendRaw(no equals) error = %v, want errFieldName", err)
+	}
+	if err := log.AppendRaw([][]byte{nil}, EntryOptions{}); !errors.Is(err, errFieldName) {
+		t.Fatalf("AppendRaw(empty payload) error = %v, want errFieldName", err)
+	}
+	if err := log.AppendRaw([][]byte{[]byte("=")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+		t.Fatalf("AppendRaw(single equals) error = %v, want errFieldName", err)
+	}
 	if files := journalFiles(t, dir); len(files) != 0 {
 		t.Fatalf("journal files after empty append = %d, want 0; files=%v", len(files), files)
 	}
@@ -1606,7 +1618,61 @@ func TestLogDefaultJournaldPolicyPreservesProtectedFields(t *testing.T) {
 	}
 	assertJSONField(t, rows[0], "_HOSTNAME", "synthetic-host")
 	assertJSONField(t, rows[0], "_TRANSPORT", "snmptrap")
-	for _, path := range journalFiles(t, dir) {
+	files := journalFiles(t, dir)
+	if len(files) != 1 {
+		t.Fatalf("journal file count = %d, want 1; files=%v", len(files), files)
+	}
+	snapshot := readJournalSnapshot(t, files[0])
+	if _, ok := snapshot.dataByPayload["_BOOT_ID="+testBootID.String()]; !ok {
+		t.Fatalf("missing indexed _BOOT_ID payload")
+	}
+	for _, path := range files {
+		verifyJournalctl(t, path)
+	}
+}
+
+func TestLogAppendRawJournaldPolicyAddsSourceRealtime(t *testing.T) {
+	requireJournalctl(t)
+
+	log, dir := newTestLog(t, LogConfig{
+		Options: testOptions(),
+		Source:  "system",
+	})
+	if err := log.AppendRaw([][]byte{
+		[]byte("MESSAGE=raw directory payload"),
+		[]byte("TEST_ID=raw-journald-field-policy"),
+		[]byte("_HOSTNAME=synthetic-host"),
+		[]byte("BINARY=a\x00=b=c"),
+	}, EntryOptions{
+		RealtimeUsec:       1_700_002_401_150_000,
+		MonotonicUsec:      11,
+		SourceRealtimeUsec: 1_700_002_401_149_999,
+	}); err != nil {
+		t.Fatalf("AppendRaw(journald payloads) error = %v", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	rows := runJournalctlDirectoryJSON(t, dir, "TEST_ID=raw-journald-field-policy")
+	if len(rows) != 1 {
+		t.Fatalf("row count = %d, want 1; rows=%v", len(rows), rows)
+	}
+	assertJSONField(t, rows[0], "_HOSTNAME", "synthetic-host")
+	assertJSONField(t, rows[0], "_BOOT_ID", testBootID.String())
+	assertJSONField(t, rows[0], "_SOURCE_REALTIME_TIMESTAMP", "1700002401149999")
+	files := journalFiles(t, dir)
+	if len(files) != 1 {
+		t.Fatalf("journal file count = %d, want 1; files=%v", len(files), files)
+	}
+	snapshot := readJournalSnapshot(t, files[0])
+	if _, ok := snapshot.dataByPayload["_BOOT_ID="+testBootID.String()]; !ok {
+		t.Fatalf("missing indexed _BOOT_ID payload")
+	}
+	if got := snapshot.dataByPayload["BINARY=a\x00=b=c"].payload; !bytes.Equal(got, []byte{'B', 'I', 'N', 'A', 'R', 'Y', '=', 'a', 0, '=', 'b', '=', 'c'}) {
+		t.Fatalf("raw binary payload = %q", got)
+	}
+	for _, path := range files {
 		verifyJournalctl(t, path)
 	}
 }
@@ -1642,11 +1708,61 @@ func TestLogJournalAppPolicyDropsProtectedAndInvalidFields(t *testing.T) {
 		t.Fatalf("row count = %d, want 1; rows=%v", len(rows), rows)
 	}
 	assertJSONField(t, rows[0], "MESSAGE", "journal app policy keeps valid fields")
+	assertJSONField(t, rows[0], "_BOOT_ID", testBootID.String())
 	if _, ok := rows[0]["_HOSTNAME"]; ok {
 		t.Fatalf("journal-app row kept protected field: %v", rows[0])
 	}
 	if _, ok := rows[0]["foo.bar"]; ok {
 		t.Fatalf("journal-app row kept invalid dotted field: %v", rows[0])
+	}
+	for _, path := range journalFiles(t, dir) {
+		verifyJournalctl(t, path)
+	}
+}
+
+func TestLogAppendRawJournalAppPolicyDropsProtectedAndInvalidPayloads(t *testing.T) {
+	requireJournalctl(t)
+
+	opts := testOptions()
+	opts.FieldNamePolicy = FieldNamePolicyJournalApp
+	log, dir := newTestLog(t, LogConfig{
+		Options: opts,
+		Source:  "system",
+	})
+	if err := log.AppendRaw([][]byte{
+		[]byte("MESSAGE=raw journal app policy keeps valid fields"),
+		[]byte("TEST_ID=raw-journal-app-field-policy"),
+		[]byte("_HOSTNAME=dropped-host"),
+		[]byte("foo.bar=dropped-dot"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_401_250_000, MonotonicUsec: 13}); err != nil {
+		t.Fatalf("AppendRaw(journal-app payloads) error = %v", err)
+	}
+	if err := log.AppendRaw([][]byte{
+		[]byte("_HOSTNAME=drop-only"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_401_250_001, MonotonicUsec: 14}); !errors.Is(err, errEntryEmpty) {
+		t.Fatalf("AppendRaw(drop-only journal-app payload) error = %v, want errEntryEmpty", err)
+	}
+	if err := log.AppendRaw([][]byte{[]byte("NO_EQUALS")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+		t.Fatalf("AppendRaw(journal-app malformed payload) error = %v, want errFieldName", err)
+	}
+	if err := log.AppendRaw([][]byte{[]byte("=bad")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+		t.Fatalf("AppendRaw(journal-app empty-name payload) error = %v, want errFieldName", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	rows := runJournalctlDirectoryJSON(t, dir, "TEST_ID=raw-journal-app-field-policy")
+	if len(rows) != 1 {
+		t.Fatalf("row count = %d, want 1; rows=%v", len(rows), rows)
+	}
+	assertJSONField(t, rows[0], "MESSAGE", "raw journal app policy keeps valid fields")
+	assertJSONField(t, rows[0], "_BOOT_ID", testBootID.String())
+	if _, ok := rows[0]["_HOSTNAME"]; ok {
+		t.Fatalf("journal-app raw row kept protected field: %v", rows[0])
+	}
+	if _, ok := rows[0]["foo.bar"]; ok {
+		t.Fatalf("journal-app raw row kept invalid dotted field: %v", rows[0])
 	}
 	for _, path := range journalFiles(t, dir) {
 		verifyJournalctl(t, path)
@@ -1672,6 +1788,48 @@ func TestLogRawPolicyAllowsStructureOnlyFieldNames(t *testing.T) {
 	}
 	if err := log.Append([]Field{StringField("BAD=NAME", "bad")}, EntryOptions{}); !errors.Is(err, errFieldName) {
 		t.Fatalf("Append(raw name containing '=') error = %v, want errFieldName", err)
+	}
+	if err := log.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	files := journalFiles(t, dir)
+	if len(files) != 1 {
+		t.Fatalf("journal file count = %d, want 1; files=%v", len(files), files)
+	}
+	snapshot := readJournalSnapshot(t, files[0])
+	for _, field := range []string{"lowercase", "foo.bar", "field name", longName, "BINARY"} {
+		if _, ok := snapshot.fieldByPayload[field]; !ok {
+			t.Fatalf("missing raw FIELD object %q", field)
+		}
+	}
+	if got := snapshot.dataByPayload["BINARY=a\x00=b"].payload; !bytes.Equal(got, []byte{'B', 'I', 'N', 'A', 'R', 'Y', '=', 'a', 0, '=', 'b'}) {
+		t.Fatalf("raw binary payload = %q", got)
+	}
+}
+
+func TestLogAppendRawRawPolicyAllowsStructureOnlyPayloadNames(t *testing.T) {
+	longName := strings.Repeat("a", 1024)
+	opts := testOptions()
+	opts.FieldNamePolicy = FieldNamePolicyRaw
+	log, dir := newTestLog(t, LogConfig{
+		Options: opts,
+		Source:  "system",
+	})
+	if err := log.AppendRaw([][]byte{
+		[]byte("lowercase=ok"),
+		[]byte("foo.bar=dot"),
+		[]byte("field name=space"),
+		[]byte(longName + "=long"),
+		[]byte("BINARY=a\x00=b"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_401_350_000, MonotonicUsec: 14}); err != nil {
+		t.Fatalf("AppendRaw(raw payloads) error = %v", err)
+	}
+	if err := log.AppendRaw([][]byte{[]byte("NO_EQUALS")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+		t.Fatalf("AppendRaw(no equals) error = %v, want errFieldName", err)
+	}
+	if err := log.AppendRaw([][]byte{[]byte("=bad")}, EntryOptions{}); !errors.Is(err, errFieldName) {
+		t.Fatalf("AppendRaw(empty name) error = %v, want errFieldName", err)
 	}
 	if err := log.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)

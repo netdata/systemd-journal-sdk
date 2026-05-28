@@ -4,9 +4,8 @@ Last updated: 2026-05-28
 
 ## Current
 
-- SOW-0037 - Writer Reference Closure: paused and ready to activate next.
-  Closes the Rust/systemd and Go/Rust writer reference before remaining writer
-  parity and benchmarks.
+- SOW-0037 - Writer Reference Closure: in-progress. Closes the Rust/systemd
+  and Go/Rust writer reference before remaining writer parity and benchmarks.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.

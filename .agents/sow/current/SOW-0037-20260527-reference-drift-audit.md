@@ -2,11 +2,10 @@
 
 ## Status
 
-Status: paused
+Status: in-progress
 
-Sub-state: rescope agreed on 2026-05-28. This is the next writer-side closure
-SOW to activate before Python/Node.js writer parity and before reader
-performance work.
+Sub-state: activated on 2026-05-28 after the user approved proceeding with the
+writer-side closure pass.
 
 ## Requirements
 
@@ -283,28 +282,174 @@ Failure handling:
 
 - Rescoped SOW from broad reference drift to writer reference closure after the
   user agreed to split writer, reader, and Netdata integration work.
+- Activated for implementation after the user approved proceeding.
+- Writer API audit found a Go/Rust public API parity gap:
+  - Rust exposes raw full-payload and structured direct-file append paths in
+    `rust/src/crates/journal-core/src/file/writer.rs`.
+  - Rust exposes raw and structured high-level `Log` write paths in
+    `rust/src/crates/journal-log-writer/src/log/mod.rs`.
+  - Go exposed structured `Append([]Field, EntryOptions)` but did not expose a
+    raw full-payload `KEY=value` append shape for `Writer` or `Log`.
+- Implemented the Go raw append shape:
+  - `go/journal/writer.go`: added `Writer.AppendRaw` and shared append internals
+    with structured `Append`.
+  - `go/journal/log.go`: added `Log.AppendRaw`, including high-level
+    `_SOURCE_REALTIME_TIMESTAMP` injection after caller field policy filtering.
+  - `go/journal/field_policy.go`: added byte-slice field-name validation and
+    raw payload policy preparation.
+  - `go/journal/writer_test.go` and `go/journal/log_test.go`: added raw append
+    coverage for JOURNALD, JOURNAL-APP, and RAW field-name policies.
+  - `go/API.md`, `go/README.md`, and `go/journal/doc.go`: documented the new
+    raw append public surface.
+  - `.agents/sow/specs/product-scope.md`: clarified that raw full-payload APIs
+    require the first `=` separator and reject malformed raw payloads before
+    journal-app field-name filtering.
+- Reviewer round 1 completed with `minimax`, `kimi`, `qwen`, and `glm`.
+  Reviewers agreed the Go raw append implementation is production-grade, and
+  reported low-risk follow-ups plus one Rust parity edge.
+- Addressed reviewer round 1 findings:
+  - Rust high-level `Log` journal-app raw filtering now rejects malformed raw
+    payloads with no `=` separator or an empty field name instead of silently
+    dropping them.
+  - Added Rust regression coverage for malformed journal-app raw payloads.
+  - Added Go byte-identity coverage proving structured `Append` and raw
+    `AppendRaw` produce identical files for the same logical entry.
+  - Added Go `AppendRaw` duplicate-payload deduplication coverage.
+  - Clarified Go API/README wording that caller field policies apply to
+    caller-provided fields/payloads, while SDK-owned fields/metadata use
+    journald-compatible rules.
+  - Dispositioned the pre-existing xor-hash-before-dedup observation as aligned
+    with systemd v260.1; systemd computes `xor_hash` before
+    `remove_duplicate_entry_items()` in
+    `src/libsystemd/sd-journal/journal-file.c`.
+- Reviewer round 2 completed with `minimax`, `kimi`, `qwen`, and `glm`.
+  `kimi`, `qwen`, and `glm` marked the batch production-grade with low-risk
+  observations. `minimax` returned findings citing non-existent Go symbols
+  (`RawItem`, `filterForJournalApp`, `xorHashBeforeDedup`) and was rejected as
+  not applicable to this repository.
+- Addressed real reviewer round 2 findings:
+  - Go high-level `Log` now injects indexed `_BOOT_ID=<boot-id>` DATA fields
+    for structured and raw append paths, matching Rust and systemd journald's
+    indexed boot-id behavior.
+  - Go `Log` tests now verify the `_BOOT_ID` DATA payload exists for structured
+    and raw high-level appends.
+  - Go JOURNAL-APP raw tests now cover both malformed no-`=` and empty-name
+    `=bad` payloads at direct-file and high-level `Log` layers.
+  - Rust RAW policy tests now cover malformed no-`=` raw payloads.
+  - Go API/README wording now states that high-level `Log` appends `_BOOT_ID`
+    and `_SOURCE_REALTIME_TIMESTAMP` under journald-compatible rules.
+  - SOW artifact maintenance text updated to reflect the product-scope spec and
+    Go public docs changes.
+- Reviewer round 3 completed with `qwen` and `glm`. Both marked the chunk
+  production-grade with low-risk test coverage observations. `kimi` produced no
+  final review after hanging in a read-only review run; the specific stalled
+  process IDs were terminated without touching repository files.
+- Addressed low-risk reviewer round 3 test coverage observations:
+  - Go direct-file and high-level raw append tests now cover empty raw payloads
+    and single-`=` payloads where applicable.
+  - Go JOURNAL-APP high-level structured and raw tests now assert SDK-owned
+    `_BOOT_ID` is still written after caller protected fields are dropped.
+- Rejected the proposed high-level `Log` byte-for-byte structured/raw identity
+  test as an invalid assertion. Evidence: `go/journal/log.go` intentionally
+  clears `Options.FileID` in `ensureWriter`, so each directory-writer journal
+  file receives a unique file ID even when the logical payload and caller
+  options are identical. Direct-file `Writer` byte identity remains tested
+  where the file ID is caller-controlled and deterministic.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Pending activation.
+- Go now exposes both writer append shapes required by the writer API hierarchy:
+  structured `Append([]Field, EntryOptions)` and raw full-payload
+  `AppendRaw([][]byte, EntryOptions)` for both direct-file `Writer` and
+  high-level directory `Log`.
+- Rust high-level journal-app raw filtering now matches the SOW/spec rule that
+  malformed raw payloads are rejected before journal-app field-name filtering.
+- Go high-level `Log` now aligns with Rust/systemd journald behavior by writing
+  `_BOOT_ID=<boot-id>` as an indexed DATA payload in addition to entry boot-id
+  metadata.
 
 Tests or equivalent validation:
 
-- Pending activation.
+- `GOCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-cache GOMODCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-mod-cache GOPATH=/home/costa/Documents/systemd-journal-sdk/.local/go-path go test ./...`
+  from `go/` passed on 2026-05-28.
+- `CARGO_HOME=/home/costa/Documents/systemd-journal-sdk/.local/cargo-home CARGO_TARGET_DIR=/home/costa/Documents/systemd-journal-sdk/.local/cargo-target cargo test --manifest-path rust/Cargo.toml -p journal-log-writer test_log_journal_app_policy_drops_invalid_fields -- --nocapture`
+  passed on 2026-05-28.
+- `CARGO_HOME=/home/costa/Documents/systemd-journal-sdk/.local/cargo-home CARGO_TARGET_DIR=/home/costa/Documents/systemd-journal-sdk/.local/cargo-target cargo test --manifest-path rust/Cargo.toml -p journal-log-writer`
+  passed on 2026-05-28.
+- After `_BOOT_ID` alignment and test additions, the same `go test ./...`,
+  `cargo test --manifest-path rust/Cargo.toml -p journal-log-writer`, and
+  `git diff --check` commands passed again on 2026-05-28.
+- After round-3 coverage additions, the same `go test ./...`,
+  `cargo test --manifest-path rust/Cargo.toml -p journal-log-writer`, and
+  `git diff --check` commands passed again on 2026-05-28.
 
 Real-use evidence:
 
-- Pending activation.
+- Go tests added in this SOW generate journal files and validate them with stock
+  `journalctl --file` / `journalctl --directory` through existing helpers.
+  Rust log-writer tests also exercise stock `journalctl --file` where the
+  package's existing journalctl helpers require it.
 
 Reviewer findings:
 
-- Pending activation.
+- Round 1:
+  - `minimax`: PRODUCTION GRADE for Go, found Rust journal-app raw malformed
+    payload divergence, recommended Go byte-identity coverage, and raised
+    pre-existing xor-hash-before-dedup observation.
+  - `kimi`: PRODUCTION GRADE, no blocking issues; noted low-risk cleanup-only
+    observations.
+  - `qwen`: PRODUCTION GRADE, recommended explicit Go raw duplicate-payload
+    dedup coverage and API wording clarification.
+  - `glm`: PRODUCTION GRADE, no blocking issues; noted low-risk residuals.
+- Dispositions:
+  - Rust malformed raw payload divergence fixed and tested.
+  - Go byte-identity and duplicate-payload dedup tests added.
+  - Go API/README wording clarified.
+  - xor-hash-before-dedup left unchanged because it matches systemd v260.1
+    `systemd/systemd @ c0a5a2516d28`
+    `src/libsystemd/sd-journal/journal-file.c:2608-2631`.
+- Round 2:
+  - `kimi`: PRODUCTION GRADE, flagged a real pre-existing `_BOOT_ID` indexed
+    DATA payload parity gap and a low-risk Go JOURNAL-APP `=bad` test gap.
+  - `qwen`: PRODUCTION GRADE, verified round-1 fixes; noted only low residuals.
+  - `glm`: PRODUCTION GRADE, flagged Rust RAW no-`=` test coverage and SOW
+    artifact maintenance inconsistency.
+  - `minimax`: rejected as not applicable because its blocking findings cited
+    symbols that do not exist in this repository: `RawItem`,
+    `filterForJournalApp`, and `xorHashBeforeDedup`.
+- Round 2 dispositions:
+  - `_BOOT_ID` indexed DATA payload gap fixed in Go `Log` and tested.
+  - Go JOURNAL-APP `=bad` tests added for `Writer.AppendRaw` and
+    `Log.AppendRaw`.
+  - Rust RAW no-`=` test added.
+  - SOW artifact maintenance text corrected.
+- Round 3:
+  - `qwen`: PRODUCTION GRADE, with low-risk observations about log-level
+    byte-identity coverage, JOURNAL-APP `_BOOT_ID` assertions, and duplicate
+    `_BOOT_ID` behavior in trusted modes.
+  - `glm`: PRODUCTION GRADE, with low-risk observations about empty/single-`=`
+    raw payload tests and confirmation that double validation is acceptable.
+  - `kimi`: no final review output; the read-only process hung and was
+    terminated by specific PID after producing no actionable final review.
+- Round 3 dispositions:
+  - Empty and single-`=` raw payload coverage added where applicable.
+  - JOURNAL-APP high-level `_BOOT_ID` assertions added.
+  - High-level `Log` byte-for-byte identity rejected because directory writer
+    files intentionally receive unique file IDs; direct-file `Writer` byte
+    identity remains covered.
+  - Duplicate caller-provided `_BOOT_ID` in JOURNALD/RAW trusted modes is
+    accepted as consistent with the trusted writer contract and the existing
+    Rust behavior; untrusted JOURNAL-APP caller `_BOOT_ID` is dropped before
+    SDK-owned `_BOOT_ID` injection.
 
 Same-failure scan:
 
-- Pending activation.
+- `rg` searches checked `_BOOT_ID` handling across Go/Rust tests, Go reader
+  synthesis, Rust log writer injection, and systemd journald evidence. The
+  remaining low-level `Writer` APIs intentionally do not inject `_BOOT_ID`;
+  high-level `Log` now does.
 
 Sensitive data gate:
 
@@ -315,17 +460,23 @@ Sensitive data gate:
 
 Artifact maintenance gate:
 
-- AGENTS.md: no update needed for this rescope.
-- Runtime project skills: no update needed for this rescope.
-- Specs: no behavior change in this rescope.
-- End-user/operator docs: no behavior change in this rescope.
+- AGENTS.md: no update needed; no project-wide workflow rule changed.
+- Runtime project skills: no update needed; compatibility rules already require
+  raw and structured append shapes and policy parity.
+- Specs: `.agents/sow/specs/product-scope.md` updated to clarify malformed raw
+  full-payload rejection before journal-app filtering.
+- End-user/operator docs: `go/API.md`, `go/README.md`, and `go/journal/doc.go`
+  updated for the Go raw append API and high-level `Log` SDK-owned field
+  behavior.
 - End-user/operator skills: no output/reference skills affected.
-- SOW lifecycle: this SOW remains paused/current until activated.
-- SOW-status.md: updated by the restructuring commit.
+- SOW lifecycle: this SOW remains current/in-progress after this implementation
+  chunk; it is not ready to close until the full writer closure matrix is done.
+- SOW-status.md: updated when the SOW was activated.
 
 Specs update:
 
-- No spec update needed for the rescope itself.
+- `.agents/sow/specs/product-scope.md` updated for raw full-payload malformed
+  rejection semantics.
 
 Project skills update:
 
@@ -333,7 +484,8 @@ Project skills update:
 
 End-user/operator docs update:
 
-- No docs update needed for the rescope itself.
+- Go API and README docs updated for `AppendRaw`, caller-policy scope, and
+  high-level `Log` SDK-owned field injection behavior.
 
 End-user/operator skills update:
 

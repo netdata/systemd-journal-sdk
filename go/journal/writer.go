@@ -300,7 +300,39 @@ func (w *Writer) Append(fields []Field, opts EntryOptions) error {
 	if w.closed {
 		return errWriterClosed
 	}
-	if len(fields) == 0 {
+	preparedFields, err := prepareFieldsForPolicy(fields, w.fieldNamePolicy)
+	if err != nil {
+		return err
+	}
+	fields = preparedFields
+	return w.appendPayloads(len(fields), func(i int) []byte {
+		field := fields[i]
+		w.payloadScratch = append(w.payloadScratch[:0], field.Name...)
+		w.payloadScratch = append(w.payloadScratch, '=')
+		w.payloadScratch = append(w.payloadScratch, field.Value...)
+		return w.payloadScratch
+	}, opts)
+}
+
+// AppendRaw appends one journal entry from complete KEY=value byte payloads.
+// The first '=' byte separates the field name from the value; later '=' bytes
+// and arbitrary value bytes are preserved.
+func (w *Writer) AppendRaw(payloads [][]byte, opts EntryOptions) error {
+	if w.closed {
+		return errWriterClosed
+	}
+	preparedPayloads, err := prepareRawPayloadsForPolicy(payloads, w.fieldNamePolicy)
+	if err != nil {
+		return err
+	}
+	payloads = preparedPayloads
+	return w.appendPayloads(len(payloads), func(i int) []byte {
+		return payloads[i]
+	}, opts)
+}
+
+func (w *Writer) appendPayloads(count int, payloadAt func(int) []byte, opts EntryOptions) error {
+	if count == 0 {
 		return errEntryEmpty
 	}
 
@@ -315,19 +347,13 @@ func (w *Writer) Append(fields []Field, opts EntryOptions) error {
 		opts.BootID = w.bootID
 	}
 
-	preparedFields, err := prepareFieldsForPolicy(fields, w.fieldNamePolicy)
-	if err != nil {
-		return err
-	}
-	fields = preparedFields
-
 	if err := w.maybeAppendTag(opts.RealtimeUsec); err != nil {
 		return err
 	}
 
 	items := w.entryItemsScratch[:0]
-	if cap(items) < len(fields) {
-		items = make([]entryItem, 0, len(fields))
+	if cap(items) < count {
+		items = make([]entryItem, 0, count)
 	}
 	defer func() {
 		w.entryItemsScratch = items[:0]
@@ -336,11 +362,8 @@ func (w *Writer) Append(fields []Field, opts EntryOptions) error {
 		}
 	}()
 	xorHash := uint64(0)
-	for _, field := range fields {
-		w.payloadScratch = append(w.payloadScratch[:0], field.Name...)
-		w.payloadScratch = append(w.payloadScratch, '=')
-		w.payloadScratch = append(w.payloadScratch, field.Value...)
-		payload := w.payloadScratch
+	for i := 0; i < count; i++ {
+		payload := payloadAt(i)
 		offset, hash, err := w.addData(payload)
 		if err != nil {
 			return err
