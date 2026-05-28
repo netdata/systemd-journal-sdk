@@ -26,6 +26,9 @@ Facts:
 - Python writer currently uses `pwrite`/`pread`-style file access rather than
   the Rust windowed mmap strategy.
 - Python must expose the same writer API concepts as Rust, Go, and Node.js.
+- SOW-0037 validation found Python has a cooperative writer lock
+  implementation, but cross-process contention fails because Python contenders
+  can still acquire/publish while another SDK writer holds the lock.
 - Common libraries are allowed for compression; journal parsing/writing must
   remain independent of systemd/libjournal.
 
@@ -44,6 +47,9 @@ Unknowns:
 - Python writer API and options match the agreed writer contract from SOW-0037.
 - Python writer supports the same field-name policy modes and raw/structured
   append semantics as the other languages.
+- Python writer fixes the existing cooperative writer lock cross-process
+  contention bug and participates in the same lock contract as Rust and Go,
+  including contention rejection and stale lock cleanup.
 - Python writer uses mmap or a measured alternative with evidence explaining
   any difference from Rust.
 - Python writer passes shared writer conformance and interoperability tests.
@@ -62,7 +68,9 @@ Sources checked:
 Current state:
 
 - Python writer is functionally capable but not yet aligned with the Rust mmap
-  model.
+  model. It has an existing cooperative writer lock implementation, but the
+  all-language lock matrix shows a cross-process contention bug versus the
+  Rust/Go lock behavior.
 
 Risks:
 
@@ -87,7 +95,8 @@ Evidence reviewed:
 Affected contracts and surfaces:
 
 - Python writer API, directory writer behavior, compression/FSS/compact output,
-  field-name policy, binary fields, and benchmark claims.
+  field-name policy, binary fields, cooperative writer lock contention
+  behavior, and benchmark claims.
 
 Existing patterns to reuse:
 
@@ -110,8 +119,9 @@ Implementation plan:
 1. Wait for SOW-0037.
 2. Compare Python writer against the finalized Rust writer matrix.
 3. Implement mmap or measured equivalent behavior.
-4. Align API/docs/tests with Rust/Go.
-5. Run conformance, interoperability, and benchmark checks.
+4. Align API/docs/tests with Rust/Go, including fixing the cooperative writer
+   lock cross-process contention bug.
+5. Run conformance, interoperability, lock, and benchmark checks.
 
 Validation plan:
 
@@ -142,6 +152,10 @@ Open decisions:
 ## Implications And Decisions
 
 - 2026-05-28: user agreed Python writer parity follows Rust/Go writer closure.
+- 2026-05-28: SOW-0037 lock validation showed Python has cooperative writer
+  lock code, but Python contenders can still acquire/publish while another SDK
+  writer holds the lock; this SOW owns that Python cross-process contention bug
+  fix.
 
 ## Plan
 

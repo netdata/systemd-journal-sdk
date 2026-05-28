@@ -4,8 +4,6 @@ Last updated: 2026-05-28
 
 ## Current
 
-- SOW-0037 - Writer Reference Closure: in-progress. Closes the Rust/systemd
-  and Go/Rust writer reference before remaining writer parity and benchmarks.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
@@ -14,10 +12,12 @@ Last updated: 2026-05-28
 
 - SOW-0026 - Netdata SDK Integration Inventory And Cut Plan: open. Produces the
   fresh Netdata consumer inventory and cut plan after performance gates.
-- SOW-0040 - Python Writer Mmap And Rust Parity: open. Aligns Python writer
+- SOW-0040 - Python Writer Mmap And Rust Parity: open. Aligns Python writer,
+  including the existing cooperative writer lock cross-process contention bug,
   after SOW-0037.
-- SOW-0041 - Node.js Writer Rust Parity: open. Aligns Node.js writer after
-  SOW-0037.
+- SOW-0041 - Node.js Writer Rust Parity: open. Aligns Node.js writer,
+  including the existing cooperative writer lock cross-process contention bug,
+  after SOW-0037.
 - SOW-0042 - Writer Final Certification: open. Owns writer benchmarks,
   profiling, optimization, and final writer certification after writer parity.
 - SOW-0043 - Rust Reader Libsystemd/Jf Parity: open. Defines reader reference,
@@ -41,6 +41,10 @@ Last updated: 2026-05-28
 
 ## Recently Closed Or Completed
 
+- SOW-0037 - Writer Reference Closure: completed. Closed the Rust/systemd and
+  Go/Rust writer reference matrix, fixed Go/Rust writer drift found during the
+  pass, and mapped Python/Node.js writer parity plus existing cooperative lock
+  contention bugs to SOW-0040 and SOW-0041.
 - SOW-0039 - RAW Byte Field Name Reader Representation: closed. Superseded by
   SOW-0043 so byte-preserving RAW reader representation is designed with the
   full reader parity work.

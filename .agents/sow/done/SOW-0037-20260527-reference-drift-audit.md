@@ -2,10 +2,10 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: activated on 2026-05-28 after the user approved proceeding with the
-writer-side closure pass.
+Sub-state: completed on 2026-05-28 after final closure review, audit, and
+follow-up mapping.
 
 ## Requirements
 
@@ -94,7 +94,8 @@ Sources checked:
 - `.agents/sow/SOW-status.md`
 - `.agents/sow/current/SOW-0009-20260523-benchmark-profile-optimize.md`
 - `.agents/sow/pending/SOW-0026-20260526-netdata-sdk-integration.md`
-- `.agents/sow/pending/SOW-0039-20260528-raw-byte-field-name-reader-representation.md`
+- `.agents/sow/done/SOW-0039-20260528-raw-byte-field-name-reader-representation.md`
+  (closed and superseded by SOW-0043)
 - `.agents/sow/specs/product-scope.md`
 - `rust/src/crates/journal-core/src/file/file.rs`
 - `rust/src/crates/journal-core/src/file/mmap.rs`
@@ -355,11 +356,85 @@ Failure handling:
   file receives a unique file ID even when the logical payload and caller
   options are identical. Direct-file `Writer` byte identity remains tested
   where the file ID is caller-controlled and deterministic.
+- Built the writer closure matrix from systemd v260.1 source, Rust/Go code,
+  tests, and focused interoperability runs.
+- Focused validation results:
+  - `journal-core` Rust tests passed: 54 tests plus doc-tests.
+  - Go/Rust binary interoperability matrix passed 18/18.
+  - Go/Rust zstd/xz/lz4 compression interoperability matrix passed 72/72.
+  - Go/Rust compact/no-compression interoperability matrix passed 20/20.
+  - Go/Rust regular live interoperability matrix passed 2/2, including stock
+    libsystemd live readers.
+  - All-language lock matrix passed stale-lock cleanup 4/4 and confirmed Go
+    and Rust reject each other while a writer lock is held; it failed 4
+    all-language contention cases because existing Node.js and Python
+    cooperative lock implementations have a cross-process contention bug that
+    lets those contenders acquire/publish while another SDK writer holds the
+    lock. That bug is tracked in the Python/Node writer parity follow-up SOWs.
+
+## Writer Closure Matrix
+
+### Rust Versus systemd v260.1
+
+Baseline source:
+
+- `systemd/systemd @ c0a5a2516d28` (`v260.1` commit)
+
+| Surface | systemd v260.1 evidence | Rust evidence | Status |
+| --- | --- | --- | --- |
+| JOURNALD field names | `src/libsystemd/sd-journal/journal-file.c:1710-1746` enforces non-empty, <=64 bytes, not digit-first, `A-Z0-9_`, and optional protected `_...` fields. | `rust/src/crates/journal-core/src/file/writer.rs:132-167` implements the same JOURNALD/JOURNAL-APP predicates. | Aligned. |
+| RAW field names | DATA objects require a complete payload with a first `=` separator before a FIELD object is linked: `src/libsystemd/sd-journal/journal-file.c:1859-1875`, `1911-1914`. | `rust/src/crates/journal-core/src/file/writer.rs:147-153` requires non-empty field names and a raw payload separator. RAW permits names outside journald syntax but never `=` in the key. | SDK RAW is intentionally lower-level than systemd-friendly naming; format separator rule is aligned. |
+| Structured/raw writer API | systemd `journal_file_append_entry()` accepts iovec payloads and writes DATA/FIELD/ENTRY objects: `src/libsystemd/sd-journal/journal-file.c:2527-2659`. | Rust exposes raw, structured, and mixed `EntryField` paths; byte identity is tested in `rust/src/crates/journal-core/src/file/writer.rs:1965-2039` and `2313-2327`. | Aligned and tested. |
+| Duplicate DATA refs and xor hash | systemd computes xor hash before sorting/dedup, then sorts by object offset and removes duplicate entry items: `src/libsystemd/sd-journal/journal-file.c:2608-2631`. | Rust keeps default duplicate elimination and tests duplicate/trusted behavior in `rust/src/crates/journal-core/src/file/writer.rs:2249-2311`. | Aligned for default behavior; trusted fast path is explicit SDK extension. |
+| Header/tail metadata and entry arrays | systemd links entries into the global entry array and updates head/tail realtime, monotonic, boot ID, and tail-entry offset: `src/libsystemd/sd-journal/journal-file.c:2253-2273`, `2386-2393`. | Rust updates the same header fields in `rust/src/crates/journal-core/src/file/writer.rs:801-816` and grows entry arrays in `1096-1184`. | Aligned and covered by stock verify plus binary/compact/live matrices. |
+| Binary fields | systemd DATA payloads are raw bytes after `KEY=`; binary export/read behavior is validated by stock tooling. | Rust structured binary test is `rust/src/crates/journal-core/src/file/writer.rs:2041-2083`; Go/Rust binary matrix passed 18/18 against stock journalctl/libsystemd. | Aligned. |
+| Compression | systemd attempts configured DATA compression only at/above threshold and keeps uncompressed data on failure/non-benefit: `src/libsystemd/sd-journal/journal-file.c:1808-1894`. | Rust compression path is `rust/src/crates/journal-core/src/file/writer.rs:896-949`; Go/Rust compression matrix passed 72/72 for zstd/xz/lz4. | Aligned for supported algorithms. |
+| Compact format | systemd uses `HEADER_INCOMPATIBLE_COMPACT` and compact ENTRY/DATA layouts: `src/libsystemd/sd-journal/journal-def.h:168-184`. | Rust compact writer tests include stock verification and arena growth in `rust/src/crates/journal-core/src/file/writer.rs:2780-2886`; Go/Rust compact matrix passed 20/20. | Aligned. |
+| FSS | systemd sets sealed flags and appends HMAC/TAG objects when sealing is enabled: `src/libsystemd/sd-journal/journal-file.c:413-425`, `2382-2399`, `2584-2588`. | Rust FSS writer tests cover stock verification, wrong-key failure, tamper failure, epoch gaps, empty sealed files, and compact+sealed in `rust/src/crates/journal-core/src/file/writer.rs:2347-2831`. | Aligned for SDK deterministic sealing API. |
+| Live publication | systemd posts mmap changes by truncating the file to its current size after writes, or schedules a coalesced timer: `src/libsystemd/sd-journal/journal-file.c:2414-2506`, `2654-2657`. | Rust default publishes every entry and exposes `live_publish_every_entries`; implementation is `rust/src/crates/journal-core/src/file/writer.rs:748-761`. Regular live matrix passed 2/2 for Go/Rust with stock libsystemd readers. | Default aligned; non-1 cadence is an explicit latency-tolerant SDK extension. |
+| Directory archive naming | systemd archives active files as `<source>@<seqnum-id>-<head-seqnum>-<head-realtime>.journal`: `src/libsystemd/sd-journal/journal-file.c:4359-4402`. | Rust default keeps Netdata-compatible chain naming and offers strict systemd active naming; covered in `rust/src/crates/journal-log-writer/tests/log_writer.rs:245-273`, `555-689`, `764-817`. | File naming compatibility is intentional: default follows Netdata; strict mode follows systemd active naming. |
+| Retention and rotation | systemd computes default `max_use` from filesystem size and default `max_size = max_use / 8` capped at 128 MiB: `src/libsystemd/sd-journal/journal-file.c:4011-4063`; time rotation uses configured `max_file_usec`: `src/libsystemd/sd-journal/journal-file.c:4696-4708`; vacuum deletes oldest archived files by age/bytes/count while protecting active files: `src/libsystemd/sd-journal/journal-vacuum.c:179-195`, `295-321`. | Rust SDK uses the user-approved SDK contract: retention-derived rotation in 1/20 steps for bytes/age, explicit overrides, active-file protection, and retention-on-open. Tests are `rust/src/crates/journal-log-writer/tests/log_writer.rs:945-1159`, `1198-1581`. | Deliberate SDK-level policy difference; file format remains systemd-compatible. |
+| Hash-table sizing and file identity | systemd reserves DATA buckets as `max(max_size * 4 / 768 / 3, 2047)` and FIELD buckets as `1023`: `src/libsystemd/sd-journal/journal-file.c:48-49`, `1279-1323`. | Rust creates hash tables and stores `file_id` in `rust/src/crates/journal-core/src/file/file.rs:1021-1076`; derived sizing tests are `rust/src/crates/journal-log-writer/tests/log_writer.rs:971-987`, `1064-1072`, `1088-1121`. | Aligned for the SDK effective max-file-size contract. |
+| Timestamp validity policy | systemd rejects invalid realtime/monotonic input at append and can enforce strict ordering: `src/libsystemd/sd-journal/journal-file.c:2550-2558`, `2332-2359`. | Rust low-level writers preserve explicit caller timestamps for deterministic/corrupt-test files, while high-level `Log` clamps non-progressing timestamps; tests are `rust/src/crates/journal-log-writer/tests/log_writer.rs:1718-1803`, `1850-1900`. | Deliberate SDK API-layer split; high-level outputs remain stock-verifiable. |
+| Open/closed journal state | systemd online/archive state and archive transition are in `src/libsystemd/sd-journal/journal-def.h:161-162` and `src/libsystemd/sd-journal/journal-file.c:4395-4402`. | Rust close/rotation/reopen tests cover online and archived paths in `rust/src/crates/journal-log-writer/tests/log_writer.rs:372-689`, `1271-1321`. | Covered. |
+| DATA payload cache | systemd searches the on-file hash table for DATA objects; no SDK-style recent DATA payload cache is required for compatibility. | Rust no longer has a DATA payload cache. It still has a bounded FIELD-name cache in `rust/src/crates/journal-core/src/file/writer.rs:169-196`, which is not the high-cardinality DATA cache removed for performance. | Closed. |
+
+### Go Versus Rust
+
+| Surface | Rust reference | Go evidence | Status |
+| --- | --- | --- | --- |
+| Field-name policies | Rust `FieldNamePolicy` and validators are in `rust/src/crates/journal-core/src/file/writer.rs:86-167`; high-level journal-app raw filtering is in `rust/src/crates/journal-log-writer/src/log/mod.rs:35-71`, `764-782`. | Go policy implementation is `go/journal/field_policy.go:5-191`; tests are `go/journal/writer_test.go:320-654` and `go/journal/log_test.go:1680-1852`. | Aligned. |
+| Raw and structured append | Rust raw/structured/mixed tests are `rust/src/crates/journal-core/src/file/writer.rs:1965-2039`. | Go direct writer exposes `Append` and `AppendRaw` in `go/journal/writer.go:300-332`; direct byte identity and duplicate tests are `go/journal/writer_test.go:392-492`. | Aligned for direct-file writer. |
+| High-level `Log` metadata | Rust high-level `Log` injects `_BOOT_ID` and `_SOURCE_REALTIME_TIMESTAMP` before caller fields in `rust/src/crates/journal-log-writer/src/log/mod.rs:880-988`. | Go high-level `Log` injects the same SDK-owned fields in `go/journal/log.go:430-487`, `1110-1147`; tests assert stock-visible `_BOOT_ID` in `go/journal/log_test.go:1596-1769`. | Aligned. |
+| Header/tail metadata and entry arrays | Rust updates header fields and grows global entry arrays in `rust/src/crates/journal-core/src/file/writer.rs:801-816`, `1096-1184`. | Go publishes object/entry metadata and grows entry arrays in `go/journal/writer.go:837-893`, `958-971`, `1343-1408`; basic header tests are `go/journal/writer_test.go:64-82`. | Aligned. |
+| Hash-table sizing and file identity | Rust effective sizing is covered by the Rust/systemd matrix row. | Go uses the same formula in `go/journal/format.go:26-70`, applies it in `go/journal/writer.go:559-583`, and tests derived/explicit sizing in `go/journal/log_test.go:353-373`, `413-414`, `466-507`. | Aligned. |
+| Timestamp validity policy | Rust low-level/high-level timestamp split is covered by the Rust/systemd matrix row. | Go low-level validation tests stock rejection for same-boot backward monotonic timestamps in `go/journal/writer_test.go:900-920`; high-level `Log` clamps source/entry timestamps in `go/journal/log.go:657-677` and `go/journal/log_test.go:1400-1497`, `1522-1560`. | Aligned for the SDK API-layer split. |
+| Rotation and retention | Rust tests cover explicit and derived byte/time rotation, count/byte/age retention, active protection, and retention-on-open in `rust/src/crates/journal-log-writer/tests/log_writer.rs:855-1581`. | Go implements the same policy in `go/journal/log.go:240-276`, `657-702`, `771-855`, `1062-1108`; tests cover the same surfaces in `go/journal/log_test.go:285-1299`. | Aligned. |
+| Compression and compact | Rust writer paths and tests are listed in the Rust/systemd table. | Go writer paths are `go/journal/writer.go:680-704`, `974-1004`; tests are `go/journal/writer_test.go:149-310`, `726-849`; Go/Rust matrices passed compression 72/72 and compact 20/20. | Aligned. |
+| FSS | Rust FSS tests are `rust/src/crates/journal-core/src/file/writer.rs:2347-2831`. | Go FSS tests are `go/journal/seal_test.go:26-304` and verifier tests are `go/journal/verify_test.go:33-194`; full Go suite passed. | Aligned for current SDK sealing contract. |
+| Live publication | Rust default and options are `rust/src/crates/journal-core/src/file/writer.rs:748-761`. | Go option and default are `go/journal/writer.go:61-65`, `593-604`; Go test is `go/journal/writer_test.go:96-148`; live matrix passed 2/2 for Go/Rust. | Aligned. |
+| Writer lock | Rust/Go cooperative lock is SDK-defined because systemd does not mechanically prevent every possible external writer. | Lock matrix result `.local/interoperability/lock-matrix-results-20260528-194028.json` shows Go and Rust contenders fail while Go or Rust holds the lock, and stale lock cleanup passes. Node.js/Python existing-lock cross-process contention bugs are tracked below. | Go/Rust aligned; all-language incomplete. |
+| DATA payload cache | Rust has no DATA payload cache; only FIELD cache remains. | Go has no DATA payload cache; it has a small direct-mapped FIELD cache in `go/journal/writer.go:520-555`, `1052-1097`. | Aligned in intent. |
+
+### Tracked Gaps After This SOW
+
+- Python writer must align API, mmap/file-access behavior, field policies,
+  raw/structured append, and fix the existing cooperative writer lock
+  cross-process contention bug in SOW-0040.
+- Node.js writer must align API, runtime-specific file-access behavior, field
+  policies, raw/structured append, and fix the existing cooperative writer
+  lock cross-process contention bug in SOW-0041.
+- Final all-language writer certification, including performance and profiling,
+  remains SOW-0042.
+- Reader parity and reader performance remain SOW-0043 through SOW-0046.
 
 ## Validation
 
 Acceptance criteria evidence:
 
+- Rust/systemd writer closure matrix is recorded in this SOW under
+  `Rust Versus systemd v260.1`.
+- Go/Rust writer closure matrix is recorded in this SOW under `Go Versus Rust`.
 - Go now exposes both writer append shapes required by the writer API hierarchy:
   structured `Append([]Field, EntryOptions)` and raw full-payload
   `AppendRaw([][]byte, EntryOptions)` for both direct-file `Writer` and
@@ -369,6 +444,8 @@ Acceptance criteria evidence:
 - Go high-level `Log` now aligns with Rust/systemd journald behavior by writing
   `_BOOT_ID=<boot-id>` as an indexed DATA payload in addition to entry boot-id
   metadata.
+- Python and Node.js all-language writer gaps exposed during the closure pass
+  are mapped to SOW-0040 and SOW-0041.
 
 Tests or equivalent validation:
 
@@ -384,6 +461,29 @@ Tests or equivalent validation:
 - After round-3 coverage additions, the same `go test ./...`,
   `cargo test --manifest-path rust/Cargo.toml -p journal-log-writer`, and
   `git diff --check` commands passed again on 2026-05-28.
+- `CARGO_HOME=/home/costa/Documents/systemd-journal-sdk/.local/cargo-home CARGO_TARGET_DIR=/home/costa/Documents/systemd-journal-sdk/.local/cargo-target cargo test --manifest-path rust/Cargo.toml -p journal-core`
+  passed on 2026-05-28: 54 tests plus doc-tests.
+- `GOCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-cache GOMODCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-mod-cache GOPATH=/home/costa/Documents/systemd-journal-sdk/.local/go-path python3 tests/interoperability/run_binary_matrix.py --writers go rust --readers stock go rust`
+  passed on 2026-05-28: 18/18.
+- `GOCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-cache GOMODCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-mod-cache GOPATH=/home/costa/Documents/systemd-journal-sdk/.local/go-path CARGO_HOME=/home/costa/Documents/systemd-journal-sdk/.local/cargo-home CARGO_TARGET_DIR=/home/costa/Documents/systemd-journal-sdk/.local/cargo-target python3 tests/interoperability/run_compression_matrix.py --writers go rust --readers stock go rust --compression zstd xz lz4 --entries 2`
+  passed on 2026-05-28: 72/72.
+- `GOCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-cache GOMODCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-mod-cache GOPATH=/home/costa/Documents/systemd-journal-sdk/.local/go-path CARGO_HOME=/home/costa/Documents/systemd-journal-sdk/.local/cargo-home CARGO_TARGET_DIR=/home/costa/Documents/systemd-journal-sdk/.local/cargo-target python3 tests/interoperability/run_compact_matrix.py --writers go rust --readers stock go rust --entries 2 --compression none`
+  passed on 2026-05-28: 20/20.
+- `GOCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-cache GOMODCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-mod-cache GOPATH=/home/costa/Documents/systemd-journal-sdk/.local/go-path CARGO_HOME=/home/costa/Documents/systemd-journal-sdk/.local/cargo-home CARGO_TARGET_DIR=/home/costa/Documents/systemd-journal-sdk/.local/cargo-target python3 tests/interoperability/run_live_matrix.py --writers go rust --readers stock go rust --features regular --entries 10 --poll-readers 1 --libsystemd-readers 1 --writer-delay-ms 5`
+  passed on 2026-05-28: 2/2.
+- `GOCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-cache GOMODCACHE=/home/costa/Documents/systemd-journal-sdk/.local/go-mod-cache GOPATH=/home/costa/Documents/systemd-journal-sdk/.local/go-path CARGO_HOME=/home/costa/Documents/systemd-journal-sdk/.local/cargo-home CARGO_TARGET_DIR=/home/costa/Documents/systemd-journal-sdk/.local/cargo-target python3 tests/interoperability/run_lock_matrix.py --entries 20 --delay-ms 1`
+  failed the all-language contention summary on 2026-05-28 because existing
+  Node.js and Python lock implementations have a cross-process contention bug:
+  Node.js and Python contenders acquired/published while Go, Rust, Node.js, or
+  Python held the cooperative lock. The same result confirms Go and Rust
+  contenders reject locks held by Go, Rust, Node.js, and Python. Stale-lock
+  cleanup passed 4/4. Node.js/Python fixes are now explicit acceptance criteria
+  in SOW-0040 and SOW-0041. Essential result pattern from
+  `.local/interoperability/lock-matrix-results-20260528-194028.json`:
+  runner summary 8 scenarios, 4 passed, 4 failed; contention details covered
+  16 contender attempts, with Go and Rust contenders returning failure before
+  publishing for every holder and Node.js/Python contenders exiting 0 and
+  creating ready files for every holder.
 
 Real-use evidence:
 
@@ -391,6 +491,9 @@ Real-use evidence:
   `journalctl --file` / `journalctl --directory` through existing helpers.
   Rust log-writer tests also exercise stock `journalctl --file` where the
   package's existing journalctl helpers require it.
+- Focused interoperability runs generated Go/Rust binary, compressed, compact,
+  and live journals and validated them with stock systemd 260.1 tooling,
+  stock libsystemd helpers where applicable, and Go/Rust readers.
 
 Reviewer findings:
 
@@ -443,6 +546,43 @@ Reviewer findings:
     accepted as consistent with the trusted writer contract and the existing
     Rust behavior; untrusted JOURNAL-APP caller `_BOOT_ID` is dropped before
     SDK-owned `_BOOT_ID` injection.
+- Closure-matrix review round:
+  - `qwen`: PRODUCTION GRADE with one medium evidence-quality finding. The
+    systemd v260.1 citation used the annotated tag object instead of the peeled
+    source commit.
+  - `glm`: NOT PRODUCTION GRADE because the Python/Node.js writer lock gap was
+    materially mischaracterized as missing/ignored locking instead of an
+    existing-lock cross-process contention bug.
+  - `kimi`: NOT PRODUCTION GRADE because terminal SOW sections were still
+    pending, same-failure patterns were not synthesized, and low-risk
+    follow-up/evidence-path cleanup remained.
+- Closure-matrix review dispositions:
+  - systemd evidence corrected to the peeled v260.1 commit
+    `systemd/systemd @ c0a5a2516d28`.
+  - Python/Node.js lock text corrected across SOW-0037, SOW-0040, SOW-0041,
+    and SOW-status.md.
+  - Essential lock matrix result pattern copied into this SOW so the
+    `.local/` JSON does not need to be preserved to understand the failure.
+  - Matrix rows added for header/tail metadata, entry arrays, hash-table
+    sizing/file identity, and timestamp policy.
+  - Outcome, lessons, same-failure patterns, and terminal follow-up mapping
+    completed before close.
+- Final closure review round:
+  - `qwen`: PRODUCTION GRADE. Low-severity observations only; no action
+    required because essential `.local/` lock-matrix evidence is summarized in
+    durable SOW text and SDK writer locks are not a systemd comparison surface.
+  - `glm`: PRODUCTION GRADE. Verified the corrected lock-matrix wording: the
+    runner summary is 8 scenarios, 4 passed, 4 failed, and contention details
+    cover 16 contender attempts.
+  - `kimi`: stalled in a read-only review run after repository reads and
+    produced no final verdict; the specific reviewer process was terminated by
+    PID and is not counted as a clean review.
+- Final closure review disposition:
+  - No blocking finding remained after `qwen` and `glm` reviewed the full
+    closure scope and marked it production-grade. Because this final round was
+    limited to validating SOW/status artifact corrections after prior
+    multi-reviewer implementation rounds, two independent full-scope
+    production-grade reviews were accepted as sufficient for close.
 
 Same-failure scan:
 
@@ -450,6 +590,20 @@ Same-failure scan:
   synthesis, Rust log writer injection, and systemd journald evidence. The
   remaining low-level `Writer` APIs intentionally do not inject `_BOOT_ID`;
   high-level `Log` now does.
+- `rg` searches checked DATA cache references. Rust and Go retain bounded FIELD
+  caches only; the removed high-cardinality DATA payload cache is not present.
+- Lock matrix JSON was inspected after the all-language failure to confirm the
+  Go/Rust lock contract is working and the failures are Node.js/Python
+  contender behavior.
+- Pattern: when a low-level append shape is added or changed, high-level `Log`
+  metadata injection must be re-checked in every language. This SOW found the
+  Go `_BOOT_ID` indexed-DATA gap only after raw/structured append parity work.
+- Pattern: malformed raw payload behavior can diverge when one layer filters by
+  dropping fields and another rejects before filtering. RAW and JOURNAL-APP
+  tests must cover no-`=`, empty name, empty payload, and single-`=` payloads.
+- Pattern: same-process lock unit tests are insufficient for the one-writer
+  contract. Cross-language, cross-process lock matrix evidence is required
+  because Python/Node.js had lock implementations but still failed contention.
 
 Sensitive data gate:
 
@@ -469,9 +623,10 @@ Artifact maintenance gate:
   updated for the Go raw append API and high-level `Log` SDK-owned field
   behavior.
 - End-user/operator skills: no output/reference skills affected.
-- SOW lifecycle: this SOW remains current/in-progress after this implementation
-  chunk; it is not ready to close until the full writer closure matrix is done.
-- SOW-status.md: updated when the SOW was activated.
+- SOW lifecycle: this SOW is marked completed and moved to `done/` in the same
+  commit as the final SOW/status artifact updates.
+- SOW-status.md: updated when the SOW was activated and when SOW-0040/SOW-0041
+  were clarified to own cooperative writer lock contention bugs.
 
 Specs update:
 
@@ -498,18 +653,30 @@ Lessons:
 
 Follow-up mapping:
 
-- Python writer mmap/alignment work is tracked by SOW-0040.
-- Node.js writer parity work is tracked by SOW-0041.
+- Python writer mmap/alignment/existing-lock contention-bug work is tracked by
+  SOW-0040.
+- Node.js writer parity/existing-lock contention-bug work is tracked by
+  SOW-0041.
 - Final all-language writer certification is tracked by SOW-0042.
 - Reader parity and performance work is tracked by SOW-0043 through SOW-0046.
 
 ## Outcome
 
-Pending.
+Rust/systemd and Go/Rust writer reference closure is complete for the surfaces
+covered by this SOW. Go/Rust writer drift discovered during the SOW was fixed
+or explicitly dispositioned, the writer closure matrix now records intentional
+SDK policy differences, and remaining Python/Node.js writer parity work is
+tracked by real follow-up SOWs.
 
 ## Lessons Extracted
 
-Pending.
+- Annotated upstream tags must be peeled to the source commit before durable
+  SOW citations are written.
+- High-level writer metadata injection is easy to miss when adding low-level
+  raw/structured append APIs; future parity work must check both layers.
+- Cooperative writer locking must be validated cross-process and
+  cross-language. Same-process lock tests can pass while the all-language
+  one-writer contract is still broken.
 
 ## Followup
 
@@ -517,6 +684,9 @@ Pending.
 - SOW-0041 - Node.js Writer Rust Parity.
 - SOW-0042 - Writer Final Certification.
 - SOW-0043 - Rust Reader Libsystemd/Jf Parity.
+- SOW-0044 - Rust Reader Hot-Path Optimization.
+- SOW-0045 - Go Reader Alignment Optimization.
+- SOW-0046 - Python Node Reader Alignment.
 
 ## Regression Log
 
