@@ -15,6 +15,12 @@ type mappedArena struct {
 	size uint64
 }
 
+type readOnlyMapping struct {
+	file *os.File
+	data []byte
+	size uint64
+}
+
 func checkedAdd(a, b uint64) (uint64, bool) {
 	if a > ^uint64(0)-b {
 		return 0, false
@@ -114,5 +120,92 @@ func (a *mappedArena) close() error {
 	err := syscall.Munmap(a.data)
 	a.data = nil
 	a.size = 0
+	return err
+}
+
+func newReadOnlyMapping(file *os.File) (*readOnlyMapping, error) {
+	m := &readOnlyMapping{file: file}
+	if err := m.remap(); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (m *readOnlyMapping) remap() error {
+	info, err := m.file.Stat()
+	if err != nil {
+		return err
+	}
+	size := uint64(info.Size())
+	if size == m.size && len(m.data) > 0 {
+		return nil
+	}
+	if size > uint64(int(^uint(0)>>1)) {
+		return fmt.Errorf("%w: mapped reader file too large", errInvalidJournal)
+	}
+	oldData := m.data
+	oldSize := m.size
+	m.data = nil
+	m.size = 0
+	if size == 0 {
+		if len(oldData) > 0 {
+			if err := syscall.Munmap(oldData); err != nil {
+				m.data = oldData
+				m.size = oldSize
+				return err
+			}
+		}
+		return nil
+	}
+	data, err := syscall.Mmap(
+		int(m.file.Fd()),
+		0,
+		int(size),
+		syscall.PROT_READ,
+		syscall.MAP_SHARED,
+	)
+	if err != nil {
+		m.data = oldData
+		m.size = oldSize
+		return err
+	}
+	if len(oldData) > 0 {
+		if err := syscall.Munmap(oldData); err != nil {
+			_ = syscall.Munmap(data)
+			m.data = oldData
+			m.size = oldSize
+			return err
+		}
+	}
+	m.data = data
+	m.size = size
+	return nil
+}
+
+func (m *readOnlyMapping) bytesAt(offset, size uint64) ([]byte, error) {
+	end, ok := checkedAdd(offset, size)
+	if !ok || end > m.size || end > uint64(len(m.data)) {
+		return nil, fmt.Errorf("%w: mapped reader access out of bounds", errInvalidJournal)
+	}
+	return m.data[int(offset):int(end)], nil
+}
+
+func (m *readOnlyMapping) readAt(dst []byte, offset uint64) error {
+	src, err := m.bytesAt(offset, uint64(len(dst)))
+	if err != nil {
+		return err
+	}
+	copy(dst, src)
+	return nil
+}
+
+func (m *readOnlyMapping) close() error {
+	if len(m.data) == 0 {
+		m.size = 0
+		return nil
+	}
+	err := syscall.Munmap(m.data)
+	m.data = nil
+	m.size = 0
 	return err
 }

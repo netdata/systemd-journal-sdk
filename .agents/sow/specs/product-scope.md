@@ -64,6 +64,12 @@ Reader compatibility:
 - Every reader implementation must correctly handle online journal state, tail metadata changes, entry-array growth, data hash-table growth by chaining, and observable file-size changes without treating normal live updates as corruption.
 - Every reader implementation must support multiple readers observing the same live file concurrently.
 - Reader follow/tail behavior must be validated against stock `journalctl` semantics for file-backed operation.
+- Go reader default access mode is mmap-backed live reading on Unix, matching
+  the optimized reader hot path. `ReadAt` remains an explicit option for
+  diagnostics or constrained environments, not the production baseline.
+- Reader SDKs should expose a current-entry payload visitor/enumerator hot path
+  so consumers that already operate on `FIELD=value` bytes do not need to
+  materialize full entry maps.
 
 Required validation evidence:
 

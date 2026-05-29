@@ -3,6 +3,7 @@ package journal
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -62,6 +63,193 @@ func TestReaderOpenFile(t *testing.T) {
 	if count != 5 {
 		t.Errorf("read %d entries, want 5", count)
 	}
+}
+
+func TestReaderRawFieldPayloadAPIs(t *testing.T) {
+	rawName := []byte{0xff, 'R', 'A', 'W'}
+	rawValue := []byte{'v', 0, '=', 'x'}
+	rawPayload := append(append(append([]byte(nil), rawName...), '='), rawValue...)
+
+	path := filepath.Join(t.TempDir(), "raw-reader.journal")
+	opts := testOptions()
+	opts.FieldNamePolicy = FieldNamePolicyRaw
+	opts.Compact = true
+	w, err := Create(path, opts)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := w.AppendRaw([][]byte{
+		[]byte("MESSAGE=raw reader"),
+		rawPayload,
+		[]byte("BINARY=a\x00=b"),
+	}, EntryOptions{RealtimeUsec: 1_700_003_000_000_000, MonotonicUsec: 1}); err != nil {
+		t.Fatalf("AppendRaw() error = %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	for _, accessMode := range []ReaderAccessMode{ReaderAccessReadAt, ReaderAccessMmap} {
+		t.Run(accessModeName(accessMode), func(t *testing.T) {
+			r, err := OpenFileWithOptions(path, DefaultReaderOptions().WithAccessMode(accessMode))
+			if err != nil {
+				t.Fatalf("OpenFileWithOptions() error = %v", err)
+			}
+			defer r.Close()
+			if ok, err := r.Step(); err != nil || !ok {
+				t.Fatalf("Step() = %v, %v", ok, err)
+			}
+
+			entry, err := r.GetEntry()
+			if err != nil {
+				t.Fatalf("GetEntry() error = %v", err)
+			}
+			if _, ok := entry.Fields[string(rawName)]; ok {
+				t.Fatalf("invalid UTF-8 raw name leaked into UTF-8 Fields map")
+			}
+			if got, ok := entry.Raw(rawName); !ok || !bytes.Equal(got, rawValue) {
+				t.Fatalf("Entry.Raw(%x) = %q, %v; want %q, true", rawName, got, ok, rawValue)
+			}
+			if got := entry.RawFieldValues[hex.EncodeToString(rawName)]; len(got) != 1 || !bytes.Equal(got[0], rawValue) {
+				t.Fatalf("RawFieldValues[%x] = %q", rawName, got)
+			}
+
+			payload, ok, err := r.GetEntryPayload(rawName)
+			if err != nil || !ok || !bytes.Equal(payload, rawPayload) {
+				t.Fatalf("GetEntryPayload(%x) = %q, %v, %v", rawName, payload, ok, err)
+			}
+			value, ok, err := r.GetRaw(rawName)
+			if err != nil || !ok || !bytes.Equal(value, rawValue) {
+				t.Fatalf("GetRaw(%x) = %q, %v, %v", rawName, value, ok, err)
+			}
+			values, err := r.GetRawValues([]byte("BINARY"))
+			if err != nil || len(values) != 1 || !bytes.Equal(values[0], []byte("a\x00=b")) {
+				t.Fatalf("GetRawValues(BINARY) = %q, %v", values, err)
+			}
+
+			var visited [][]byte
+			if err := r.VisitEntryPayloads(func(payload []byte) error {
+				visited = append(visited, append([]byte(nil), payload...))
+				return nil
+			}); err != nil {
+				t.Fatalf("VisitEntryPayloads() error = %v", err)
+			}
+			if !readerTestContainsPayload(visited, rawPayload) {
+				t.Fatalf("VisitEntryPayloads() did not include raw payload %q in %q", rawPayload, visited)
+			}
+
+			if err := r.EntryDataRestart(); err != nil {
+				t.Fatalf("EntryDataRestart() error = %v", err)
+			}
+			var enumerated [][]byte
+			for {
+				payload, ok, err := r.EnumerateEntryPayload()
+				if err != nil {
+					t.Fatalf("EnumerateEntryPayload() error = %v", err)
+				}
+				if !ok {
+					break
+				}
+				enumerated = append(enumerated, append([]byte(nil), payload...))
+			}
+			if !readerTestContainsPayload(enumerated, rawPayload) {
+				t.Fatalf("EnumerateEntryPayload() did not include raw payload %q in %q", rawPayload, enumerated)
+			}
+
+			j, err := SdJournalOpenFileWithOptions(path, 0, DefaultReaderOptions().WithAccessMode(accessMode))
+			if err != nil {
+				t.Fatalf("SdJournalOpenFileWithOptions() error = %v", err)
+			}
+			defer SdJournalClose(j)
+			if n, err := SdJournalNext(j); err != nil || n != 1 {
+				t.Fatalf("SdJournalNext() = %d, %v", n, err)
+			}
+			facadePayload, err := SdJournalGetData(j, string(rawName))
+			if err != nil || !bytes.Equal(facadePayload, rawPayload) {
+				t.Fatalf("SdJournalGetData(raw) = %q, %v", facadePayload, err)
+			}
+		})
+	}
+}
+
+func TestReaderBoundsControlLiveRefresh(t *testing.T) {
+	for _, accessMode := range []ReaderAccessMode{ReaderAccessReadAt, ReaderAccessMmap} {
+		t.Run(accessModeName(accessMode), func(t *testing.T) {
+			livePath := filepath.Join(t.TempDir(), "live.journal")
+			w, err := Create(livePath, testOptions())
+			if err != nil {
+				t.Fatalf("Create(live) error = %v", err)
+			}
+			if err := w.Append([]Field{StringField("MESSAGE", "first")}, EntryOptions{RealtimeUsec: 1_700_004_000_000_000, MonotonicUsec: 1}); err != nil {
+				t.Fatalf("Append(first) error = %v", err)
+			}
+			r, err := OpenFileWithOptions(livePath, DefaultReaderOptions().WithAccessMode(accessMode))
+			if err != nil {
+				t.Fatalf("OpenFileWithOptions(live) error = %v", err)
+			}
+			if ok, err := r.Step(); err != nil || !ok {
+				t.Fatalf("live Step(first) = %v, %v", ok, err)
+			}
+			if ok, err := r.Step(); err != nil || ok {
+				t.Fatalf("live Step(eof) = %v, %v; want false, nil", ok, err)
+			}
+			if err := w.Append([]Field{StringField("MESSAGE", "second")}, EntryOptions{RealtimeUsec: 1_700_004_000_000_001, MonotonicUsec: 2}); err != nil {
+				t.Fatalf("Append(second) error = %v", err)
+			}
+			if ok, err := r.Step(); err != nil || !ok {
+				t.Fatalf("live Step(after append) = %v, %v; want true, nil", ok, err)
+			}
+			entry, err := r.GetEntry()
+			if err != nil {
+				t.Fatalf("GetEntry(second) error = %v", err)
+			}
+			if got := string(entry.Fields["MESSAGE"]); got != "second" {
+				t.Fatalf("live refreshed MESSAGE = %q, want second", got)
+			}
+			_ = r.Close()
+			_ = w.Close()
+
+			snapshotPath := filepath.Join(t.TempDir(), "snapshot.journal")
+			w, err = Create(snapshotPath, testOptions())
+			if err != nil {
+				t.Fatalf("Create(snapshot) error = %v", err)
+			}
+			if err := w.Append([]Field{StringField("MESSAGE", "first")}, EntryOptions{RealtimeUsec: 1_700_004_100_000_000, MonotonicUsec: 1}); err != nil {
+				t.Fatalf("Append(snapshot first) error = %v", err)
+			}
+			r, err = OpenFileWithOptions(snapshotPath, DefaultReaderOptions().WithAccessMode(accessMode).WithSnapshot(true))
+			if err != nil {
+				t.Fatalf("OpenFileWithOptions(snapshot) error = %v", err)
+			}
+			if ok, err := r.Step(); err != nil || !ok {
+				t.Fatalf("snapshot Step(first) = %v, %v", ok, err)
+			}
+			if err := w.Append([]Field{StringField("MESSAGE", "second")}, EntryOptions{RealtimeUsec: 1_700_004_100_000_001, MonotonicUsec: 2}); err != nil {
+				t.Fatalf("Append(snapshot second) error = %v", err)
+			}
+			if ok, err := r.Step(); err != nil || ok {
+				t.Fatalf("snapshot Step(after append) = %v, %v; want false, nil", ok, err)
+			}
+			_ = r.Close()
+			_ = w.Close()
+		})
+	}
+}
+
+func accessModeName(mode ReaderAccessMode) string {
+	if mode == ReaderAccessMmap {
+		return "mmap"
+	}
+	return "read-at"
+}
+
+func readerTestContainsPayload(payloads [][]byte, want []byte) bool {
+	for _, payload := range payloads {
+		if bytes.Equal(payload, want) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestReaderSystemdZstdFixture(t *testing.T) {
@@ -786,6 +974,93 @@ func TestDirectoryReader(t *testing.T) {
 
 	if count != 9 {
 		t.Errorf("DirectoryReader read %d entries, want 9", count)
+	}
+}
+
+func TestDirectoryReaderSequentialFastPathOrdersNonOverlappingFiles(t *testing.T) {
+	dir := t.TempDir()
+	seqnumID := UUID{0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x5f, 0x60}
+	machineID := UUID{0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x6b, 0x6c, 0x6d, 0x6e, 0x6f, 0x70}
+	bootID := UUID{0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7a, 0x7b, 0x7c, 0x7d, 0x7e, 0x7f, 0x80}
+	first := filepath.Join(dir, "first.journal")
+	second := filepath.Join(dir, "second.journal")
+
+	for _, tc := range []struct {
+		path     string
+		head     uint64
+		realtime uint64
+		messages []string
+	}{
+		{first, 1, 1_700_006_000_000_000, []string{"first-a", "first-b"}},
+		{second, 3, 1_700_006_000_000_010, []string{"second-a", "second-b"}},
+	} {
+		w, err := Create(tc.path, Options{
+			MachineID:  machineID,
+			BootID:     bootID,
+			SeqnumID:   seqnumID,
+			HeadSeqnum: tc.head,
+		})
+		if err != nil {
+			t.Fatalf("Create(%s) error = %v", tc.path, err)
+		}
+		for i, message := range tc.messages {
+			if err := w.Append([]Field{StringField("MESSAGE", message)}, EntryOptions{
+				RealtimeUsec: tc.realtime + uint64(i),
+			}); err != nil {
+				t.Fatalf("Append(%s) error = %v", message, err)
+			}
+		}
+		if err := w.Close(); err != nil {
+			t.Fatalf("Close(%s) error = %v", tc.path, err)
+		}
+	}
+
+	reader, err := OpenFiles([]string{second, first})
+	if err != nil {
+		t.Fatalf("OpenFiles error = %v", err)
+	}
+	defer reader.Close()
+	if !reader.nonOverlapping {
+		t.Fatalf("nonOverlapping = false, want sequential fast path enabled")
+	}
+
+	gotForward := collectDirectoryMessages(t, reader, true)
+	if want := "first-a,first-b,second-a,second-b"; strings.Join(gotForward, ",") != want {
+		t.Fatalf("forward order = %q, want %q", gotForward, want)
+	}
+	if err := reader.SeekTail(); err != nil {
+		t.Fatalf("SeekTail error = %v", err)
+	}
+	gotBackward := collectDirectoryMessages(t, reader, false)
+	if want := "second-b,second-a,first-b,first-a"; strings.Join(gotBackward, ",") != want {
+		t.Fatalf("backward order = %q, want %q", gotBackward, want)
+	}
+}
+
+func collectDirectoryMessages(t *testing.T, reader *DirectoryReader, forward bool) []string {
+	t.Helper()
+	var got []string
+	for {
+		var (
+			ok  bool
+			err error
+		)
+		if forward {
+			ok, err = reader.Step()
+		} else {
+			ok, err = reader.StepBack()
+		}
+		if err != nil {
+			t.Fatalf("Step(forward=%v) error = %v", forward, err)
+		}
+		if !ok {
+			return got
+		}
+		entry, err := reader.GetEntry()
+		if err != nil {
+			t.Fatalf("GetEntry(forward=%v) error = %v", forward, err)
+		}
+		got = append(got, string(entry.Fields["MESSAGE"]))
 	}
 }
 

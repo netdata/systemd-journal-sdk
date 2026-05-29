@@ -34,6 +34,10 @@ type sdReader interface {
 	Step() (bool, error)
 	StepBack() (bool, error)
 	GetEntry() (*Entry, error)
+	GetEntryPayload([]byte) ([]byte, bool, error)
+	EntryDataRestart() error
+	EnumerateEntryPayload() ([]byte, bool, error)
+	ClearEntryDataState()
 }
 
 type sdJournal struct {
@@ -41,6 +45,7 @@ type sdJournal struct {
 	outputMode  string
 	dataItems   [][]byte
 	dataIndex   int
+	readerData  bool
 	fieldItems  []string
 	fieldIndex  int
 	uniqueItems [][]byte
@@ -53,6 +58,10 @@ type UniqueValue struct {
 }
 
 func SdJournalOpen(path string, flags int) (*sdJournal, error) {
+	return SdJournalOpenWithOptions(path, flags, DefaultReaderOptions())
+}
+
+func SdJournalOpenWithOptions(path string, flags int, opts ReaderOptions) (*sdJournal, error) {
 	if flags != sdJournalFlag {
 		return nil, ErrUnsupported
 	}
@@ -61,13 +70,13 @@ func SdJournalOpen(path string, flags int) (*sdJournal, error) {
 
 	if isJournalFileName(path) {
 		var err error
-		r, err = OpenFile(path)
+		r, err = OpenFileWithOptions(path, opts)
 		if err != nil {
 			return nil, err
 		}
 	} else {
 		var err error
-		r, err = OpenDirectory(path)
+		r, err = OpenDirectoryWithOptions(path, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -77,10 +86,14 @@ func SdJournalOpen(path string, flags int) (*sdJournal, error) {
 }
 
 func SdJournalOpenFile(path string, flags int) (*sdJournal, error) {
+	return SdJournalOpenFileWithOptions(path, flags, DefaultReaderOptions())
+}
+
+func SdJournalOpenFileWithOptions(path string, flags int, opts ReaderOptions) (*sdJournal, error) {
 	if flags != sdJournalFlag {
 		return nil, ErrUnsupported
 	}
-	r, err := OpenFile(path)
+	r, err := OpenFileWithOptions(path, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -88,10 +101,14 @@ func SdJournalOpenFile(path string, flags int) (*sdJournal, error) {
 }
 
 func SdJournalOpenDirectory(path string, flags int) (*sdJournal, error) {
+	return SdJournalOpenDirectoryWithOptions(path, flags, DefaultReaderOptions())
+}
+
+func SdJournalOpenDirectoryWithOptions(path string, flags int, opts ReaderOptions) (*sdJournal, error) {
 	if flags != sdJournalFlag {
 		return nil, ErrUnsupported
 	}
-	r, err := OpenDirectory(path)
+	r, err := OpenDirectoryWithOptions(path, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -99,13 +116,17 @@ func SdJournalOpenDirectory(path string, flags int) (*sdJournal, error) {
 }
 
 func SdJournalOpenFiles(paths []string, flags int) (*sdJournal, error) {
+	return SdJournalOpenFilesWithOptions(paths, flags, DefaultReaderOptions())
+}
+
+func SdJournalOpenFilesWithOptions(paths []string, flags int, opts ReaderOptions) (*sdJournal, error) {
 	if flags != sdJournalFlag {
 		return nil, ErrUnsupported
 	}
 	if len(paths) == 1 {
-		return SdJournalOpenFile(paths[0], flags)
+		return SdJournalOpenFileWithOptions(paths[0], flags, opts)
 	}
-	r, err := OpenFiles(paths)
+	r, err := OpenFilesWithOptions(paths, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -284,10 +305,12 @@ func SdJournalClose(j *sdJournal) error {
 func (j *sdJournal) resetIterators() {
 	j.dataItems = nil
 	j.dataIndex = 0
+	j.readerData = false
 	j.fieldItems = nil
 	j.fieldIndex = 0
 	j.uniqueItems = nil
 	j.uniqueIndex = 0
+	j.reader.ClearEntryDataState()
 }
 
 func (j *sdJournal) AddMatch(data []byte) {
@@ -330,6 +353,10 @@ func (j *sdJournal) SeekRealtimeUsec(usec uint64) error {
 	return SdJournalSeekRealtimeUsec(j, usec)
 }
 
+func (j *sdJournal) GetRealtimeUsec() (uint64, error) {
+	return SdJournalGetRealtimeUsec(j)
+}
+
 func (j *sdJournal) SetOutputMode(mode string) {
 	SdJournalSetOutputMode(j, mode)
 }
@@ -340,6 +367,14 @@ func (j *sdJournal) ProcessOutput(entry *Entry) (string, error) {
 
 func (j *sdJournal) GetEntry() (*Entry, error) {
 	return SdJournalGetEntry(j)
+}
+
+func (j *sdJournal) RestartData() error {
+	return SdJournalRestartData(j)
+}
+
+func (j *sdJournal) EnumerateAvailableData() ([]byte, bool, error) {
+	return SdJournalEnumerateAvailableData(j)
 }
 
 func (j *sdJournal) ListBoots() ([]BootInfo, error) {
@@ -383,29 +418,36 @@ func SdJournalGetEntry(j *sdJournal) (*Entry, error) {
 	return j.reader.GetEntry()
 }
 
+// SdJournalGetData returns an owned FIELD=value payload copy for field.
 func SdJournalGetData(j *sdJournal, field string) ([]byte, error) {
-	entry, err := j.reader.GetEntry()
+	payload, ok, err := j.reader.GetEntryPayload([]byte(field))
 	if err != nil {
 		return nil, err
 	}
-	values := entry.FieldValues[field]
-	if len(values) == 0 {
+	if !ok {
 		return nil, ErrNoEntry
 	}
-	return payloadFromFieldValue(field, values[0]), nil
+	return payload, nil
 }
 
 func SdJournalRestartData(j *sdJournal) error {
-	entry, err := j.reader.GetEntry()
-	if err != nil {
+	if err := j.reader.EntryDataRestart(); err != nil {
 		return err
 	}
-	j.dataItems = append([][]byte(nil), entry.Payloads...)
+	j.dataItems = nil
 	j.dataIndex = 0
+	j.readerData = true
 	return nil
 }
 
+// SdJournalEnumerateAvailableData returns the next FIELD=value payload for the
+// current entry. The returned slice follows libsystemd-style borrowed lifetime:
+// it may alias reader-owned storage and is valid only until the next journal
+// reader call or close. Copy it when ownership is required.
 func SdJournalEnumerateAvailableData(j *sdJournal) ([]byte, bool, error) {
+	if j.readerData {
+		return j.reader.EnumerateEntryPayload()
+	}
 	if j.dataIndex >= len(j.dataItems) {
 		return nil, false, nil
 	}
@@ -495,12 +537,12 @@ func SdJournalSeekCursor(j *sdJournal, cursor string) error {
 		ok, err := j.reader.Step()
 		if err != nil {
 			if errors.Is(err, errEndOfEntries) {
-				return ErrNoEntry
+				return nil
 			}
 			return err
 		}
 		if !ok {
-			return ErrNoEntry
+			return nil
 		}
 
 		entry, err := j.reader.GetEntry()
@@ -513,7 +555,7 @@ func SdJournalSeekCursor(j *sdJournal, cursor string) error {
 			return err
 		}
 		if gotRealtime > wantRealtime {
-			return ErrNoEntry
+			return nil
 		}
 		if gotSeqnumID == wantSeqnumID &&
 			gotBootID == wantBootID &&

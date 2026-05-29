@@ -3,6 +3,7 @@ package journal
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -34,14 +35,97 @@ const (
 )
 
 type Entry struct {
-	Fields      map[string][]byte
-	FieldValues map[string][][]byte
-	Payloads    [][]byte
-	Seqnum      uint64
-	Realtime    uint64
-	Monotonic   uint64
-	BootID      UUID
-	Cursor      string
+	Fields         map[string][]byte
+	FieldValues    map[string][][]byte
+	Payloads       [][]byte
+	RawFields      []RawField
+	RawFieldValues map[string][][]byte
+	Seqnum         uint64
+	Realtime       uint64
+	Monotonic      uint64
+	BootID         UUID
+	Cursor         string
+}
+
+type RawField struct {
+	Name  []byte
+	Value []byte
+}
+
+func (e *Entry) RawValues(name []byte) [][]byte {
+	if e == nil || e.RawFieldValues == nil {
+		return nil
+	}
+	return e.RawFieldValues[rawFieldKey(name)]
+}
+
+func (e *Entry) Raw(name []byte) ([]byte, bool) {
+	values := e.RawValues(name)
+	if len(values) == 0 {
+		return nil, false
+	}
+	return values[0], true
+}
+
+type ReaderAccessMode int
+
+const (
+	ReaderAccessReadAt ReaderAccessMode = iota
+	ReaderAccessMmap
+)
+
+type ReaderBounds int
+
+const (
+	ReaderBoundsLive ReaderBounds = iota
+	ReaderBoundsSnapshot
+)
+
+type ReaderOptions struct {
+	AccessMode ReaderAccessMode
+	Bounds     ReaderBounds
+}
+
+func DefaultReaderOptions() ReaderOptions {
+	return ReaderOptions{AccessMode: ReaderAccessMmap, Bounds: ReaderBoundsLive}
+}
+
+func (o ReaderOptions) WithAccessMode(mode ReaderAccessMode) ReaderOptions {
+	o.AccessMode = mode
+	return o
+}
+
+func (o ReaderOptions) WithMmap(enabled bool) ReaderOptions {
+	if enabled {
+		o.AccessMode = ReaderAccessMmap
+	} else {
+		o.AccessMode = ReaderAccessReadAt
+	}
+	return o
+}
+
+func (o ReaderOptions) WithBounds(bounds ReaderBounds) ReaderOptions {
+	o.Bounds = bounds
+	return o
+}
+
+func (o ReaderOptions) WithSnapshot(enabled bool) ReaderOptions {
+	if enabled {
+		o.Bounds = ReaderBoundsSnapshot
+	} else {
+		o.Bounds = ReaderBoundsLive
+	}
+	return o
+}
+
+func (o ReaderOptions) normalized() ReaderOptions {
+	if o.AccessMode != ReaderAccessMmap {
+		o.AccessMode = ReaderAccessReadAt
+	}
+	if o.Bounds != ReaderBoundsSnapshot {
+		o.Bounds = ReaderBoundsLive
+	}
+	return o
 }
 
 type Reader struct {
@@ -49,6 +133,9 @@ type Reader struct {
 	header      journalHeader
 	path        string
 	cleanupPath string
+	options     ReaderOptions
+	mapping     *readOnlyMapping
+	fileSize    uint64
 
 	cursor    uint64
 	position  int
@@ -58,7 +145,16 @@ type Reader struct {
 	entryIndex   int
 	realtimeSeek *uint64
 
+	currentHeader       entryHeader
+	currentHeaderOffset uint64
+	currentHeaderValid  bool
+
 	filter *filterBuilder
+
+	entryDataOffsets      []uint64
+	entryDataOffsetsEntry uint64
+	entryDataIndex        int
+	entryDataActive       bool
 }
 
 type filterBuilder struct {
@@ -216,6 +312,11 @@ func (falseExpr) matches(*Entry) bool {
 }
 
 func OpenFile(path string) (*Reader, error) {
+	return OpenFileWithOptions(path, DefaultReaderOptions())
+}
+
+func OpenFileWithOptions(path string, opts ReaderOptions) (*Reader, error) {
+	opts = opts.normalized()
 	f, cleanupPath, err := openJournalFile(path)
 	if err != nil {
 		return nil, err
@@ -244,10 +345,23 @@ func OpenFile(path string) (*Reader, error) {
 		header:      header,
 		path:        path,
 		cleanupPath: cleanupPath,
+		options:     opts,
+	}
+	if info, err := f.Stat(); err == nil {
+		r.fileSize = uint64(info.Size())
+	}
+	if opts.AccessMode == ReaderAccessMmap {
+		mapping, err := newReadOnlyMapping(f)
+		if err != nil {
+			_ = closeJournalFile(f, cleanupPath)
+			return nil, err
+		}
+		r.mapping = mapping
+		r.fileSize = mapping.size
 	}
 
 	if err := r.loadEntryArray(); err != nil {
-		_ = closeJournalFile(f, cleanupPath)
+		_ = r.Close()
 		return nil, err
 	}
 
@@ -255,7 +369,13 @@ func OpenFile(path string) (*Reader, error) {
 }
 
 func (r *Reader) Close() error {
-	return closeJournalFile(r.file, r.cleanupPath)
+	var unmapErr error
+	if r.mapping != nil {
+		unmapErr = r.mapping.close()
+		r.mapping = nil
+	}
+	closeErr := closeJournalFile(r.file, r.cleanupPath)
+	return errors.Join(unmapErr, closeErr)
 }
 
 func openJournalFile(path string) (*os.File, string, error) {
@@ -328,6 +448,154 @@ func (h *journalHeader) HeaderSize() uint64 {
 	return h.headerSize
 }
 
+func (r *Reader) readAt(dst []byte, offset uint64) error {
+	if r.mapping != nil {
+		return r.mapping.readAt(dst, offset)
+	}
+	_, err := r.file.ReadAt(dst, int64(offset))
+	return err
+}
+
+func (r *Reader) readSlice(offset, size uint64) ([]byte, error) {
+	if r.mapping != nil {
+		return r.mapping.bytesAt(offset, size)
+	}
+	if size > uint64(int(^uint(0)>>1)) {
+		return nil, fmt.Errorf("%w: reader request too large", errInvalidJournal)
+	}
+	buf := make([]byte, size)
+	if err := r.readAt(buf, offset); err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
+func rawFieldKey(name []byte) string {
+	return hex.EncodeToString(name)
+}
+
+func splitRawPayload(payload []byte) ([]byte, []byte, bool) {
+	eq := bytes.IndexByte(payload, '=')
+	if eq < 0 {
+		return nil, nil, false
+	}
+	return payload[:eq], payload[eq+1:], true
+}
+
+func cloneBytes(src []byte) []byte {
+	return append([]byte(nil), src...)
+}
+
+func (r *Reader) clearEntryDataState() {
+	r.entryDataOffsets = nil
+	r.entryDataOffsetsEntry = 0
+	r.entryDataIndex = 0
+	r.entryDataActive = false
+}
+
+func (r *Reader) ClearEntryDataState() {
+	r.clearEntryDataState()
+}
+
+func (r *Reader) clearCurrentEntryState() {
+	r.clearEntryDataState()
+	r.currentHeaderValid = false
+}
+
+func (r *Reader) currentEntryOffset() (uint64, error) {
+	if r.entryIndex < 0 || r.entryIndex >= len(r.entryOffsets) {
+		return 0, errEndOfEntries
+	}
+	return r.entryOffsets[r.entryIndex], nil
+}
+
+func (r *Reader) readCurrentHeader() (journalHeader, uint64, error) {
+	buf := make([]byte, headerSize)
+	n, err := r.file.ReadAt(buf, 0)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return journalHeader{}, 0, err
+	}
+	if n < headerMinSize {
+		return journalHeader{}, 0, errInvalidJournal
+	}
+	header, err := parseHeader(buf[:n])
+	if err != nil {
+		return journalHeader{}, 0, err
+	}
+	info, err := r.file.Stat()
+	if err != nil {
+		return journalHeader{}, 0, err
+	}
+	return header, uint64(info.Size()), nil
+}
+
+func (r *Reader) Refresh() (bool, error) {
+	return r.refreshEntryOffsets()
+}
+
+func (r *Reader) refreshEntryOffsets() (bool, error) {
+	if r.cleanupPath != "" || r.options.Bounds == ReaderBoundsSnapshot {
+		return false, nil
+	}
+	header, size, err := r.readCurrentHeader()
+	if err != nil {
+		return false, err
+	}
+	sameHeaderState := size == r.fileSize &&
+		header.nEntries == r.header.nEntries &&
+		header.tailEntryArrayOffset == r.header.tailEntryArrayOffset &&
+		header.tailEntryArrayNEntries == r.header.tailEntryArrayNEntries
+	if sameHeaderState {
+		r.header = header
+		if r.entryIndex > len(r.entryOffsets) {
+			r.entryIndex = len(r.entryOffsets)
+		}
+		return false, nil
+	}
+
+	oldHeader := r.header
+	oldOffsets := r.entryOffsets
+	oldIndex := r.entryIndex
+	oldFileSize := r.fileSize
+	var oldMapping *readOnlyMapping
+	var newMapping *readOnlyMapping
+	if r.options.AccessMode == ReaderAccessMmap {
+		oldMapping = r.mapping
+		newMapping, err = newReadOnlyMapping(r.file)
+		if err != nil {
+			return false, nil
+		}
+	}
+
+	r.header = header
+	r.fileSize = size
+	if newMapping != nil {
+		r.mapping = newMapping
+		r.fileSize = newMapping.size
+	}
+	r.clearCurrentEntryState()
+	if err := r.loadEntryArray(); err != nil {
+		if newMapping != nil {
+			_ = newMapping.close()
+		}
+		r.header = oldHeader
+		r.entryOffsets = oldOffsets
+		r.entryIndex = oldIndex
+		r.fileSize = oldFileSize
+		r.mapping = oldMapping
+		r.clearCurrentEntryState()
+		return false, nil
+	}
+	r.entryIndex = oldIndex
+	if oldMapping != nil {
+		_ = oldMapping.close()
+	}
+	if r.entryIndex > len(r.entryOffsets) {
+		r.entryIndex = len(r.entryOffsets)
+	}
+	return true, nil
+}
+
 func (r *Reader) loadEntryArray() error {
 	if r.header.entryArrayOffset == 0 {
 		r.entryOffsets = nil
@@ -350,7 +618,7 @@ func (r *Reader) loadEntryArray() error {
 		dataOffset := offset + offsetArrayObjectHeaderSize
 		dataSize := toRead * itemSize
 		buf := make([]byte, dataSize)
-		if _, err := r.file.ReadAt(buf, int64(dataOffset)); err != nil {
+		if err := r.readAt(buf, dataOffset); err != nil {
 			return err
 		}
 		for i := uint64(0); i < toRead; i++ {
@@ -381,7 +649,7 @@ func (r *Reader) loadEntryArray() error {
 
 func (r *Reader) validEntryObjectOffset(offset uint64) (bool, error) {
 	headerBuf := make([]byte, objectHeaderSize)
-	if _, err := r.file.ReadAt(headerBuf, int64(offset)); err != nil {
+	if err := r.readAt(headerBuf, offset); err != nil {
 		return false, err
 	}
 	objHeader, err := parseObjectHeader(headerBuf)
@@ -399,7 +667,7 @@ func (r *Reader) validEntryObjectOffset(offset uint64) (bool, error) {
 
 func (r *Reader) readOffsetArrayHeader(offset uint64) (offsetArrayHeader, uint64, error) {
 	buf := make([]byte, offsetArrayObjectHeaderSize)
-	if _, err := r.file.ReadAt(buf, int64(offset)); err != nil {
+	if err := r.readAt(buf, offset); err != nil {
 		return offsetArrayHeader{}, 0, err
 	}
 	header, err := parseOffsetArrayHeader(buf)
@@ -418,13 +686,25 @@ func (r *Reader) readOffsetArrayHeader(offset uint64) (offsetArrayHeader, uint64
 }
 
 func (r *Reader) Next() error {
+	r.clearCurrentEntryState()
 	if r.realtimeSeek != nil {
-		idx, err := r.firstRealtimeIndexAtOrAfter(*r.realtimeSeek)
+		usec := *r.realtimeSeek
+		idx, err := r.firstRealtimeIndexAtOrAfter(usec)
 		r.realtimeSeek = nil
 		if err != nil {
 			return err
 		}
 		r.direction = DirectionForward
+		if idx >= len(r.entryOffsets) {
+			if changed, err := r.refreshEntryOffsets(); err != nil {
+				return err
+			} else if changed {
+				idx, err = r.firstRealtimeIndexAtOrAfter(usec)
+				if err != nil {
+					return err
+				}
+			}
+		}
 		if idx >= len(r.entryOffsets) {
 			r.entryIndex = len(r.entryOffsets)
 			return errEndOfEntries
@@ -439,6 +719,17 @@ func (r *Reader) Next() error {
 	r.direction = DirectionForward
 
 	if r.entryIndex >= len(r.entryOffsets) {
+		oldLen := len(r.entryOffsets)
+		if changed, err := r.refreshEntryOffsets(); err != nil {
+			return err
+		} else if changed && oldLen < len(r.entryOffsets) {
+			if r.entryIndex > oldLen {
+				r.entryIndex = oldLen
+			}
+			if r.entryIndex < len(r.entryOffsets) {
+				return nil
+			}
+		}
 		r.entryIndex = len(r.entryOffsets)
 		return errEndOfEntries
 	}
@@ -446,6 +737,7 @@ func (r *Reader) Next() error {
 }
 
 func (r *Reader) Previous() error {
+	r.clearCurrentEntryState()
 	if r.realtimeSeek != nil {
 		idx, err := r.lastRealtimeIndexAtOrBefore(*r.realtimeSeek)
 		r.realtimeSeek = nil
@@ -474,6 +766,7 @@ func (r *Reader) Previous() error {
 }
 
 func (r *Reader) SeekHead() error {
+	r.clearCurrentEntryState()
 	r.entryIndex = -1
 	r.direction = DirectionForward
 	r.realtimeSeek = nil
@@ -481,6 +774,7 @@ func (r *Reader) SeekHead() error {
 }
 
 func (r *Reader) SeekTail() error {
+	r.clearCurrentEntryState()
 	r.entryIndex = len(r.entryOffsets)
 	r.direction = DirectionBackward
 	r.realtimeSeek = nil
@@ -488,6 +782,7 @@ func (r *Reader) SeekTail() error {
 }
 
 func (r *Reader) SeekRealtimeUsec(usec uint64) error {
+	r.clearCurrentEntryState()
 	value := usec
 	r.realtimeSeek = &value
 	return nil
@@ -508,16 +803,91 @@ func (r *Reader) lastRealtimeIndexAtOrBefore(usec uint64) (int, error) {
 	return idx, nil
 }
 
+func (r *Reader) readEntryHeaderAt(offset uint64) (*entryHeader, error) {
+	if r.currentHeaderValid && r.currentHeaderOffset == offset {
+		return &r.currentHeader, nil
+	}
+	entryBuf, err := r.readSlice(offset, entryObjectHeaderSize)
+	if err != nil {
+		return nil, err
+	}
+
+	entryHdr, err := parseEntryHeader(entryBuf)
+	if err != nil {
+		return nil, err
+	}
+	if entryHdr.object.typ != objectTypeEntry {
+		return nil, errCorruptObject
+	}
+	if entryHdr.object.size < entryObjectHeaderSize {
+		return nil, errCorruptObject
+	}
+	if currentOffset, err := r.currentEntryOffset(); err == nil && currentOffset == offset {
+		r.currentHeader = *entryHdr
+		r.currentHeaderOffset = offset
+		r.currentHeaderValid = true
+		return &r.currentHeader, nil
+	}
+	return entryHdr, nil
+}
+
+func (r *Reader) readEntryDataOffsetsAt(offset uint64, dst []uint64) (*entryHeader, []uint64, error) {
+	entryHdr, err := r.readEntryHeaderAt(offset)
+	if err != nil {
+		return nil, nil, err
+	}
+	itemSize := r.entryItemSize()
+	if (entryHdr.object.size-entryObjectHeaderSize)%itemSize != 0 {
+		return nil, nil, errCorruptObject
+	}
+	nItems := (entryHdr.object.size - entryObjectHeaderSize) / itemSize
+	itemsOffset := offset + entryObjectHeaderSize
+	itemsSize := nItems * itemSize
+	itemsBuf, err := r.readSlice(itemsOffset, itemsSize)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	offsets := dst[:0]
+	for i := uint64(0); i < nItems; i++ {
+		var dataOff uint64
+		item := itemsBuf[i*itemSize:]
+		if r.header.isCompact() {
+			dataOff = uint64(binary.LittleEndian.Uint32(item[:compactEntryItemSize]))
+		} else {
+			dataOff = binary.LittleEndian.Uint64(item[:8])
+		}
+		if dataOff != 0 {
+			offsets = append(offsets, dataOff)
+		}
+	}
+	return entryHdr, offsets, nil
+}
+
+func (r *Reader) currentEntryDataOffsets() ([]uint64, error) {
+	if r.entryIndex < 0 || r.entryIndex >= len(r.entryOffsets) {
+		return nil, errEndOfEntries
+	}
+	offset := r.entryOffsets[r.entryIndex]
+	if r.entryDataOffsetsEntry == offset && r.entryDataOffsets != nil {
+		return r.entryDataOffsets, nil
+	}
+	_, offsets, err := r.readEntryDataOffsetsAt(offset, r.entryDataOffsets)
+	if err != nil {
+		return nil, err
+	}
+	r.entryDataOffsets = offsets
+	r.entryDataOffsetsEntry = offset
+	r.entryDataIndex = 0
+	return r.entryDataOffsets, nil
+}
+
 func (r *Reader) entryRealtimeAtIndex(index int) (uint64, error) {
 	if index < 0 || index >= len(r.entryOffsets) {
 		return 0, errNotFound
 	}
 	offset := r.entryOffsets[index]
-	headerBuf := make([]byte, entryObjectHeaderSize)
-	if _, err := r.file.ReadAt(headerBuf, int64(offset)); err != nil {
-		return 0, err
-	}
-	hdr, err := parseEntryHeader(headerBuf)
+	hdr, err := r.readEntryHeaderAt(offset)
 	if err != nil {
 		return 0, err
 	}
@@ -529,95 +899,177 @@ func (r *Reader) GetEntry() (*Entry, error) {
 		return nil, errEndOfEntries
 	}
 
+	r.entryDataActive = false
 	offset := r.entryOffsets[r.entryIndex]
 	return r.readEntryAt(offset)
 }
 
+// VisitEntryPayloads calls visitor for each current DATA payload as FIELD=value
+// bytes. Uncompressed mmap mode may pass slices backed by the mapped file; do
+// not retain or mutate them after the visitor returns.
+func (r *Reader) VisitEntryPayloads(visitor func([]byte) error) error {
+	if visitor == nil {
+		return nil
+	}
+	r.entryDataActive = false
+	offsets, err := r.currentEntryDataOffsets()
+	if err != nil {
+		return err
+	}
+	for _, dataOff := range offsets {
+		payload, err := r.readDataPayload(dataOff)
+		if err != nil {
+			return err
+		}
+		if err := visitor(payload); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CollectEntryPayloads returns owned FIELD=value payload copies for the current
+// entry.
+func (r *Reader) CollectEntryPayloads() ([][]byte, error) {
+	var payloads [][]byte
+	err := r.VisitEntryPayloads(func(payload []byte) error {
+		payloads = append(payloads, cloneBytes(payload))
+		return nil
+	})
+	return payloads, err
+}
+
+// GetEntryPayload returns an owned FIELD=value payload copy for fieldName.
+func (r *Reader) GetEntryPayload(fieldName []byte) ([]byte, bool, error) {
+	var found []byte
+	err := r.VisitEntryPayloads(func(payload []byte) error {
+		if found != nil {
+			return nil
+		}
+		if len(payload) > len(fieldName) &&
+			bytes.Equal(payload[:len(fieldName)], fieldName) &&
+			payload[len(fieldName)] == '=' {
+			found = cloneBytes(payload)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return found, found != nil, nil
+}
+
+// GetRaw returns an owned value copy for fieldName.
+func (r *Reader) GetRaw(fieldName []byte) ([]byte, bool, error) {
+	payload, ok, err := r.GetEntryPayload(fieldName)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	_, value, split := splitRawPayload(payload)
+	if !split {
+		return nil, false, errCorruptObject
+	}
+	return cloneBytes(value), true, nil
+}
+
+// GetRawValues returns owned value copies for every occurrence of fieldName.
+func (r *Reader) GetRawValues(fieldName []byte) ([][]byte, error) {
+	var values [][]byte
+	err := r.VisitEntryPayloads(func(payload []byte) error {
+		name, value, ok := splitRawPayload(payload)
+		if ok && bytes.Equal(name, fieldName) {
+			values = append(values, cloneBytes(value))
+		}
+		return nil
+	})
+	return values, err
+}
+
+// EntryDataRestart resets libsystemd-style DATA enumeration for the current
+// entry.
+func (r *Reader) EntryDataRestart() error {
+	if _, err := r.currentEntryDataOffsets(); err != nil {
+		return err
+	}
+	r.entryDataIndex = 0
+	r.entryDataActive = true
+	return nil
+}
+
+// EnumerateEntryPayload returns the next FIELD=value payload for the current
+// entry. The returned slice may alias reader-owned storage in mmap mode and is
+// valid only until the next reader method call, refresh, or Close. Use
+// CollectEntryPayloads or copy the slice when ownership is required.
+func (r *Reader) EnumerateEntryPayload() ([]byte, bool, error) {
+	if !r.entryDataActive {
+		if err := r.EntryDataRestart(); err != nil {
+			return nil, false, err
+		}
+	}
+	if r.entryDataIndex >= len(r.entryDataOffsets) {
+		r.clearEntryDataState()
+		return nil, false, nil
+	}
+	dataOff := r.entryDataOffsets[r.entryDataIndex]
+	r.entryDataIndex++
+	payload, err := r.readDataPayload(dataOff)
+	if err != nil {
+		return nil, false, err
+	}
+	return payload, true, nil
+}
+
 func (r *Reader) readEntryAt(offset uint64) (*Entry, error) {
-	headerBuf := make([]byte, objectHeaderSize)
-	if _, err := r.file.ReadAt(headerBuf, int64(offset)); err != nil {
-		return nil, err
-	}
-
-	objHeader, err := parseObjectHeader(headerBuf)
+	entryHdr, entries, err := r.readEntryDataOffsetsAt(offset, nil)
 	if err != nil {
 		return nil, err
-	}
-
-	if objHeader.typ != objectTypeEntry {
-		return nil, errCorruptObject
-	}
-	if objHeader.size < entryObjectHeaderSize {
-		return nil, errCorruptObject
-	}
-
-	entryBuf := make([]byte, entryObjectHeaderSize)
-	if _, err := r.file.ReadAt(entryBuf, int64(offset)); err != nil {
-		return nil, err
-	}
-
-	entryHdr, err := parseEntryHeader(entryBuf)
-	if err != nil {
-		return nil, err
-	}
-
-	itemSize := r.entryItemSize()
-	if (objHeader.size-entryObjectHeaderSize)%itemSize != 0 {
-		return nil, errCorruptObject
-	}
-	nItems := (objHeader.size - entryObjectHeaderSize) / itemSize
-	entries := make([]uint64, 0, nItems)
-	itemsOffset := offset + entryObjectHeaderSize
-	itemsSize := nItems * itemSize
-	itemsBuf := make([]byte, itemsSize)
-	if _, err := r.file.ReadAt(itemsBuf, int64(itemsOffset)); err != nil {
-		return nil, err
-	}
-	for i := uint64(0); i < nItems; i++ {
-		var dataOff uint64
-		if r.header.isCompact() {
-			dataOff = uint64(binary.LittleEndian.Uint32(itemsBuf[i*itemSize : i*itemSize+compactEntryItemSize]))
-		} else {
-			dataOff = binary.LittleEndian.Uint64(itemsBuf[i*itemSize : i*itemSize+8])
-		}
-		if dataOff != 0 {
-			entries = append(entries, dataOff)
-		}
 	}
 
 	fields := make(map[string][]byte)
 	fieldValues := make(map[string][][]byte)
+	rawFieldValues := make(map[string][][]byte)
 	payloads := make([][]byte, 0, len(entries))
+	rawFields := make([]RawField, 0, len(entries))
 	for _, dataOff := range entries {
 		payload, err := r.readDataPayload(dataOff)
 		if err != nil {
 			return nil, fmt.Errorf("read data object at offset %d for entry at offset %d: %w", dataOff, offset, err)
 		}
-		eq := bytes.IndexByte(payload, '=')
-		if eq < 0 {
+		nameBytes, value, ok := splitRawPayload(payload)
+		if !ok {
 			return nil, fmt.Errorf("%w: data object at offset %d has no field separator", errCorruptObject, dataOff)
 		}
-		payloads = append(payloads, append([]byte(nil), payload...))
-		name := string(payload[:eq])
-		value := payload[eq+1:]
-		copied := append([]byte(nil), value...)
-		if _, ok := fields[name]; !ok {
-			fields[name] = copied
+
+		payloadCopy := cloneBytes(payload)
+		payloads = append(payloads, payloadCopy)
+		nameCopy := cloneBytes(nameBytes)
+		valueCopy := cloneBytes(value)
+		rawFields = append(rawFields, RawField{Name: nameCopy, Value: valueCopy})
+		key := rawFieldKey(nameBytes)
+		rawFieldValues[key] = append(rawFieldValues[key], valueCopy)
+
+		if utf8.Valid(nameBytes) {
+			name := string(nameBytes)
+			if _, ok := fields[name]; !ok {
+				fields[name] = valueCopy
+			}
+			fieldValues[name] = append(fieldValues[name], valueCopy)
 		}
-		fieldValues[name] = append(fieldValues[name], copied)
 	}
 
 	cursor := r.makeCursor(offset, entryHdr)
 
 	return &Entry{
-		Fields:      fields,
-		FieldValues: fieldValues,
-		Payloads:    payloads,
-		Seqnum:      entryHdr.seqnum,
-		Realtime:    entryHdr.realtime,
-		Monotonic:   entryHdr.monotonic,
-		BootID:      entryHdr.bootID,
-		Cursor:      cursor,
+		Fields:         fields,
+		FieldValues:    fieldValues,
+		Payloads:       payloads,
+		RawFields:      rawFields,
+		RawFieldValues: rawFieldValues,
+		Seqnum:         entryHdr.seqnum,
+		Realtime:       entryHdr.realtime,
+		Monotonic:      entryHdr.monotonic,
+		BootID:         entryHdr.bootID,
+		Cursor:         cursor,
 	}, nil
 }
 
@@ -629,9 +1081,17 @@ func (r *Reader) makeCursor(entryOffset uint64, hdr *entryHeader) string {
 		hdr.seqnum)
 }
 
+func formatCursorFromDirectoryKey(key directoryEntryKey) string {
+	return fmt.Sprintf("s=%s;j=%s;c=%016x;n=%d",
+		key.seqnumID.String(),
+		key.bootID.String(),
+		key.realtime,
+		key.seqnum)
+}
+
 func (r *Reader) readDataPayload(offset uint64) ([]byte, error) {
-	headerBuf := make([]byte, dataObjectHeaderSize)
-	if _, err := r.file.ReadAt(headerBuf, int64(offset)); err != nil {
+	headerBuf, err := r.readSlice(offset, dataObjectHeaderSize)
+	if err != nil {
 		return nil, err
 	}
 
@@ -649,8 +1109,8 @@ func (r *Reader) readDataPayload(offset uint64) ([]byte, error) {
 	}
 
 	payloadLen := dataHdr.object.size - payloadOffset
-	payload := make([]byte, payloadLen)
-	if _, err := r.file.ReadAt(payload, int64(offset+payloadOffset)); err != nil {
+	payload, err := r.readSlice(offset+payloadOffset, payloadLen)
+	if err != nil {
 		return nil, err
 	}
 	if dataHdr.object.flag&objectCompressedZSTD != 0 {
@@ -760,17 +1220,11 @@ func (r *Reader) FlushMatches() {
 }
 
 func (r *Reader) GetRealtimeUsec() (uint64, error) {
-	if r.entryIndex < 0 || r.entryIndex >= len(r.entryOffsets) {
-		return 0, errEndOfEntries
-	}
-
-	offset := r.entryOffsets[r.entryIndex]
-	headerBuf := make([]byte, entryObjectHeaderSize)
-	if _, err := r.file.ReadAt(headerBuf, int64(offset)); err != nil {
+	offset, err := r.currentEntryOffset()
+	if err != nil {
 		return 0, err
 	}
-
-	hdr, err := parseEntryHeader(headerBuf)
+	hdr, err := r.readEntryHeaderAt(offset)
 	if err != nil {
 		return 0, err
 	}
@@ -779,17 +1233,11 @@ func (r *Reader) GetRealtimeUsec() (uint64, error) {
 }
 
 func (r *Reader) GetCursor() (string, error) {
-	if r.entryIndex < 0 || r.entryIndex >= len(r.entryOffsets) {
-		return "", errEndOfEntries
-	}
-
-	offset := r.entryOffsets[r.entryIndex]
-	headerBuf := make([]byte, entryObjectHeaderSize)
-	if _, err := r.file.ReadAt(headerBuf, int64(offset)); err != nil {
+	offset, err := r.currentEntryOffset()
+	if err != nil {
 		return "", err
 	}
-
-	hdr, err := parseEntryHeader(headerBuf)
+	hdr, err := r.readEntryHeaderAt(offset)
 	if err != nil {
 		return "", err
 	}
@@ -905,9 +1353,14 @@ type DirectoryReader struct {
 	direction         Direction
 	hasDirection      bool
 	bootNewest        map[UUID]directoryBootNewest
+	nonOverlapping    bool
 }
 
 func OpenDirectory(path string) (*DirectoryReader, error) {
+	return OpenDirectoryWithOptions(path, DefaultReaderOptions())
+}
+
+func OpenDirectoryWithOptions(path string, opts ReaderOptions) (*DirectoryReader, error) {
 	paths, err := collectJournalFiles(path)
 	if err != nil {
 		return nil, err
@@ -915,7 +1368,7 @@ func OpenDirectory(path string) (*DirectoryReader, error) {
 
 	var readers []*Reader
 	for _, filePath := range paths {
-		r, err := OpenFile(filePath)
+		r, err := OpenFileWithOptions(filePath, opts)
 		if err != nil {
 			continue
 		}
@@ -926,12 +1379,16 @@ func OpenDirectory(path string) (*DirectoryReader, error) {
 }
 
 func OpenFiles(paths []string) (*DirectoryReader, error) {
+	return OpenFilesWithOptions(paths, DefaultReaderOptions())
+}
+
+func OpenFilesWithOptions(paths []string, opts ReaderOptions) (*DirectoryReader, error) {
 	readers := make([]*Reader, 0, len(paths))
 	for _, path := range paths {
 		if !isJournalFileName(path) {
 			return nil, fmt.Errorf("not a journal file: %s", path)
 		}
-		r, err := OpenFile(path)
+		r, err := OpenFileWithOptions(path, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -952,11 +1409,29 @@ func newDirectoryReader(readers []*Reader, allowEmpty bool) (*DirectoryReader, e
 	})
 
 	return &DirectoryReader{
-		files:      readers,
-		index:      -1,
-		candidates: make([]*directoryCandidate, len(readers)),
-		bootNewest: buildDirectoryBootNewest(readers),
+		files:          readers,
+		index:          -1,
+		candidates:     make([]*directoryCandidate, len(readers)),
+		bootNewest:     buildDirectoryBootNewest(readers),
+		nonOverlapping: directoryFilesNonOverlapping(readers),
 	}, nil
+}
+
+func directoryFilesNonOverlapping(readers []*Reader) bool {
+	for i := 1; i < len(readers); i++ {
+		prev := readers[i-1].header
+		next := readers[i].header
+		if prev.seqnumID != next.seqnumID ||
+			prev.tailEntrySeqnum == 0 ||
+			next.headEntrySeqnum == 0 ||
+			prev.tailEntrySeqnum >= next.headEntrySeqnum ||
+			prev.tailEntryRealtime == 0 ||
+			next.headEntryRealtime == 0 ||
+			prev.tailEntryRealtime >= next.headEntryRealtime {
+			return false
+		}
+	}
+	return len(readers) > 0
 }
 
 type directoryCandidate struct {
@@ -1127,6 +1602,68 @@ func (dr *DirectoryReader) GetEntry() (*Entry, error) {
 	return dr.files[dr.index].GetEntry()
 }
 
+func (dr *DirectoryReader) VisitEntryPayloads(visitor func([]byte) error) error {
+	r, err := dr.currentReader()
+	if err != nil {
+		return err
+	}
+	return r.VisitEntryPayloads(visitor)
+}
+
+func (dr *DirectoryReader) CollectEntryPayloads() ([][]byte, error) {
+	r, err := dr.currentReader()
+	if err != nil {
+		return nil, err
+	}
+	return r.CollectEntryPayloads()
+}
+
+func (dr *DirectoryReader) GetEntryPayload(fieldName []byte) ([]byte, bool, error) {
+	r, err := dr.currentReader()
+	if err != nil {
+		return nil, false, err
+	}
+	return r.GetEntryPayload(fieldName)
+}
+
+func (dr *DirectoryReader) GetRaw(fieldName []byte) ([]byte, bool, error) {
+	r, err := dr.currentReader()
+	if err != nil {
+		return nil, false, err
+	}
+	return r.GetRaw(fieldName)
+}
+
+func (dr *DirectoryReader) GetRawValues(fieldName []byte) ([][]byte, error) {
+	r, err := dr.currentReader()
+	if err != nil {
+		return nil, err
+	}
+	return r.GetRawValues(fieldName)
+}
+
+func (dr *DirectoryReader) EntryDataRestart() error {
+	r, err := dr.currentReader()
+	if err != nil {
+		return err
+	}
+	return r.EntryDataRestart()
+}
+
+func (dr *DirectoryReader) EnumerateEntryPayload() ([]byte, bool, error) {
+	r, err := dr.currentReader()
+	if err != nil {
+		return nil, false, err
+	}
+	return r.EnumerateEntryPayload()
+}
+
+func (dr *DirectoryReader) ClearEntryDataState() {
+	if r, err := dr.currentReader(); err == nil {
+		r.ClearEntryDataState()
+	}
+}
+
 func (dr *DirectoryReader) Step() (bool, error) {
 	return dr.stepMerged(DirectionForward, true)
 }
@@ -1183,6 +1720,9 @@ func (dr *DirectoryReader) FlushMatches() {
 }
 
 func (dr *DirectoryReader) GetRealtimeUsec() (uint64, error) {
+	if dr.currentKey != nil {
+		return dr.currentKey.realtime, nil
+	}
 	r, err := dr.currentReader()
 	if err != nil {
 		return 0, err
@@ -1191,6 +1731,9 @@ func (dr *DirectoryReader) GetRealtimeUsec() (uint64, error) {
 }
 
 func (dr *DirectoryReader) GetCursor() (string, error) {
+	if dr.currentKey != nil {
+		return formatCursorFromDirectoryKey(*dr.currentKey), nil
+	}
 	r, err := dr.currentReader()
 	if err != nil {
 		return "", err
@@ -1284,6 +1827,9 @@ func (dr *DirectoryReader) SeekRealtimeUsec(usec uint64) error {
 }
 
 func (dr *DirectoryReader) stepMerged(direction Direction, applyFilter bool) (bool, error) {
+	if dr.canStepSequential(direction, applyFilter) {
+		return dr.stepSequential(direction)
+	}
 	if err := dr.prepareMergeDirection(direction); err != nil {
 		return false, err
 	}
@@ -1319,6 +1865,90 @@ func (dr *DirectoryReader) stepMerged(direction Direction, applyFilter bool) (bo
 	dr.candidates[best.readerIndex] = nil
 	dr.realtimeSeekBound = nil
 	return true, nil
+}
+
+func (dr *DirectoryReader) canStepSequential(direction Direction, applyFilter bool) bool {
+	if !dr.nonOverlapping || dr.realtimeSeek != nil || applyFilter && dr.filter != nil {
+		return false
+	}
+	if dr.hasDirection && dr.direction != direction && dr.currentKey != nil {
+		return false
+	}
+	return true
+}
+
+func (dr *DirectoryReader) stepSequential(direction Direction) (bool, error) {
+	if len(dr.files) == 0 {
+		dr.index = -1
+		dr.currentKey = nil
+		return false, nil
+	}
+	if !dr.hasDirection || dr.direction != direction {
+		for _, r := range dr.files {
+			if direction == DirectionForward {
+				if err := r.SeekHead(); err != nil {
+					return false, err
+				}
+			} else if err := r.SeekTail(); err != nil {
+				return false, err
+			}
+		}
+		if direction == DirectionForward {
+			dr.index = 0
+		} else {
+			dr.index = len(dr.files) - 1
+		}
+		dr.resetCandidates()
+		dr.currentKey = nil
+		dr.realtimeSeekBound = nil
+		dr.direction = direction
+		dr.hasDirection = true
+	}
+	if direction == DirectionForward {
+		if dr.index < 0 {
+			dr.index = 0
+		}
+		for dr.index < len(dr.files) {
+			ok, err := stepReaderRaw(dr.files[dr.index], direction)
+			if err != nil {
+				return false, err
+			}
+			if ok {
+				key, err := dr.files[dr.index].currentDirectoryEntryKey()
+				if err != nil {
+					return false, err
+				}
+				dr.currentKey = &key
+				return true, nil
+			}
+			dr.index++
+		}
+		dr.index = -1
+		dr.currentKey = nil
+		return false, nil
+	}
+
+	if dr.index >= len(dr.files) {
+		dr.index = len(dr.files) - 1
+	}
+	for dr.index >= 0 {
+		ok, err := stepReaderRaw(dr.files[dr.index], direction)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			key, err := dr.files[dr.index].currentDirectoryEntryKey()
+			if err != nil {
+				return false, err
+			}
+			dr.currentKey = &key
+			return true, nil
+		}
+		dr.index--
+	}
+	dr.index = -1
+	dr.currentKey = nil
+	return false, nil
 }
 
 func (dr *DirectoryReader) prepareMergeDirection(direction Direction) error {
@@ -1439,16 +2069,11 @@ func stepReaderRaw(r *Reader, direction Direction) (bool, error) {
 }
 
 func (r *Reader) currentDirectoryEntryKey() (directoryEntryKey, error) {
-	if r.entryIndex < 0 || r.entryIndex >= len(r.entryOffsets) {
-		return directoryEntryKey{}, errEndOfEntries
-	}
-
-	offset := r.entryOffsets[r.entryIndex]
-	entryBuf := make([]byte, entryObjectHeaderSize)
-	if _, err := r.file.ReadAt(entryBuf, int64(offset)); err != nil {
+	offset, err := r.currentEntryOffset()
+	if err != nil {
 		return directoryEntryKey{}, err
 	}
-	hdr, err := parseEntryHeader(entryBuf)
+	hdr, err := r.readEntryHeaderAt(offset)
 	if err != nil {
 		return directoryEntryKey{}, err
 	}
@@ -1648,6 +2273,12 @@ func ExportEntry(entry *Entry) string {
 			writeExportField(&buf, k, value)
 		}
 	}
+	for _, field := range entry.RawFields {
+		if utf8.Valid(field.Name) {
+			continue
+		}
+		writeExportRawField(&buf, field.Name, field.Value)
+	}
 
 	buf.WriteByte('\n')
 	return buf.String()
@@ -1720,6 +2351,10 @@ func entryValues(entry *Entry, name string) [][]byte {
 }
 
 func writeExportField(buf *bytes.Buffer, name string, value []byte) {
+	writeExportRawField(buf, []byte(name), value)
+}
+
+func writeExportRawField(buf *bytes.Buffer, name []byte, value []byte) {
 	text := make([]byte, 0, len(name)+1+len(value))
 	text = append(text, name...)
 	text = append(text, '=')
@@ -1731,7 +2366,7 @@ func writeExportField(buf *bytes.Buffer, name string, value []byte) {
 		return
 	}
 
-	buf.WriteString(name)
+	buf.Write(name)
 	buf.WriteByte('\n')
 	var size [8]byte
 	binary.LittleEndian.PutUint64(size[:], uint64(len(value)))

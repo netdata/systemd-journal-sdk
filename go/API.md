@@ -36,6 +36,15 @@ should require a new minor release tag and an explicit SOW decision:
 - `(*journal.Log).MachineID`
 - `(*journal.Log).BootID`
 - `(*journal.Log).Source`
+- `journal.ReaderOptions`, `journal.ReaderAccessMode`, and
+  `journal.ReaderBounds`
+- `journal.OpenFileWithOptions`, `journal.OpenDirectoryWithOptions`, and
+  `journal.OpenFilesWithOptions`
+- `(*journal.Reader).VisitEntryPayloads`,
+  `(*journal.Reader).CollectEntryPayloads`,
+  `(*journal.Reader).GetEntryPayload`, `(*journal.Reader).GetRaw`,
+  `(*journal.Reader).GetRawValues`, `(*journal.Reader).EntryDataRestart`,
+  and `(*journal.Reader).EnumerateEntryPayload`
 - lifecycle and artifact-size callback interfaces
 - lifecycle event type and reason constants
 - exported sentinel errors
@@ -70,6 +79,19 @@ binary-safe. `SdJournalGetData` returns the first value for a repeated field;
 callers that need all repeated values must use the restart/enumerate data API.
 Direct `SdJournalQueryUnique` returns `[]UniqueValue`, where `Field` is the
 field name and `Value` is the binary-safe raw field value.
+
+`DefaultReaderOptions()` uses live mmap-backed reads on Unix. Use
+`WithAccessMode(journal.ReaderAccessReadAt)` only when mmap is undesirable for
+diagnostics or a constrained environment. `ReaderBoundsLive` refreshes visible
+entries when active files grow; `ReaderBoundsSnapshot` fixes the visible file
+state at open time.
+
+`VisitEntryPayloads`, `EnumerateEntryPayload`, and
+`SdJournalEnumerateAvailableData` are zero-copy hot paths. Returned or callback
+payload slices may alias reader-owned storage in mmap mode and are valid only
+until the next reader call, refresh, or close. Use `CollectEntryPayloads`,
+`GetEntryPayload`, `GetRaw`, `GetRawValues`, or an explicit copy when ownership
+is required.
 
 ## Directory Contract
 

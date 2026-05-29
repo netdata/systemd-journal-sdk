@@ -12,8 +12,6 @@ Last updated: 2026-05-29
 
 - SOW-0026 - Netdata SDK Integration Inventory And Cut Plan: open. Produces the
   fresh Netdata consumer inventory and cut plan after performance gates.
-- SOW-0045 - Go Reader Alignment Optimization: open. Aligns and optimizes Go
-  reader after Rust reader optimization.
 - SOW-0047 - Netdata NetFlow SDK Integration: open. Component integration for
   NetFlow reader and writer paths after inventory and performance gates.
 - SOW-0048 - Netdata OTEL Writer SDK Integration: open. Component integration
@@ -23,9 +21,22 @@ Last updated: 2026-05-29
   packaging after reader gates.
 - SOW-0050 - Netdata Vendored Journal Removal: open. Final cleanup after all
   Netdata component integrations are complete.
+- SOW-0055 - Rust Seek Cursor Systemd Parity: open. Follow-up from SOW-0045
+  review to realign Rust `SdJournalSeekCursor()` with upstream systemd's
+  no-existence-proof seek-location behavior.
 
 ## Recently Closed Or Completed
 
+- SOW-0045 - Go Reader Alignment Optimization: completed. Go reader now has
+  mmap-backed Unix access by default, live/snapshot bounds, byte-preserving RAW
+  field APIs, current-entry payload visitor/enumerator APIs, libsystemd facade
+  DATA fast paths, non-overlapping directory fast-path coverage, and shared
+  reader benchmark integration. Compact 100k-row benchmark medians measured Go
+  single-file `sdk-payloads` live/mmap at 1.07M rows/s and `facade-data` at
+  1.09M rows/s versus stock systemd DATA enumeration at 565k rows/s; Go
+  open-files `sdk-payloads` measured 697k rows/s versus stock systemd open-files
+  DATA at 532k rows/s. Rust remains faster and Rust cursor-seek systemd
+  divergence discovered during review is tracked by SOW-0055.
 - SOW-0054 - Node.js Reader And Writer Rust Port: completed. Node.js now carries
   the finalized reader/writer compatibility slice where practical under the
   no-native-runtime policy: byte-preserving RAW field access, active-file

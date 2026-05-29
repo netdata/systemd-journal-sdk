@@ -20,7 +20,7 @@ and Netdata hot-path expectations.
 `run_reader_core_benchmarks.py` measures read loops separately from fixture
 generation. It produces a compact/regular fixture with the Rust writer, then
 times single-file Rust core scans (`core-next`, `core-offsets`,
-`core-payloads`), Rust SDK/facade entry scans, and public libsystemd
+`core-payloads`), Rust/Go SDK/facade entry scans, and public libsystemd
 `sd_journal_*` scans. It also generates an explicit multi-file fixture for
 ordered `open-files` regression coverage. Treat the single-file `core-payloads`
 and `sdk-payloads` cases as the closest Netdata low-level reader hot-path
@@ -40,6 +40,10 @@ active-file-compatible mode. It follows libsystemd's cached mutable bounds
 model: it refreshes cached file size only when a read would exceed the cached
 end of file. `snapshot` fixes file size at open time for polling/query
 consumers that do not need to observe appends during the current scan.
+
+Go reader results record `mmap_strategy`. `mmap` is the default SDK reader
+access mode on Unix and is the production hot path. `read-at` remains in the
+harness as an explicit comparison and diagnostic mode.
 
 The writer-core harness aligns initial hash table sizing across systemd and
 SDK drivers with the systemd v260.1 formula:
@@ -83,6 +87,7 @@ python3 tests/benchmarks/run_reader_core_benchmarks.py \
   --directory-rows 100000 \
   --repetitions 3 \
   --warmups 1 \
+  --languages rust,go,systemd \
   --format compact \
   --final-state online \
   --keep-fixtures

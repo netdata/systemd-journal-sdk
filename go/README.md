@@ -54,6 +54,9 @@ Current reader scope:
 - `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst` files;
 - zstd-compressed fixture files and zstd, xz, and lz4-compressed DATA objects
   through pure-Go dependencies;
+- mmap-backed live reading by default on Unix, with explicit `ReadAt` access
+  available through `ReaderOptions` for diagnostics or constrained
+  environments;
 - directory reading across active and archived files with stock-compatible
   root plus one machine-id subdirectory traversal and interleaved multi-file
   ordering, including mixed regular/compact, compressed/uncompressed,
@@ -263,6 +266,40 @@ for {
     _ = entry.Fields["MESSAGE"]
 }
 ```
+
+Hot-path reader usage:
+
+```go
+r, err := journal.OpenFileWithOptions(
+    "/path/to/system.journal",
+    journal.DefaultReaderOptions().
+        WithAccessMode(journal.ReaderAccessMmap).
+        WithBounds(journal.ReaderBoundsLive),
+)
+if err != nil {
+    return err
+}
+defer r.Close()
+
+for {
+    ok, err := r.Step()
+    if err != nil || !ok {
+        return err
+    }
+    if err := r.VisitEntryPayloads(func(payload []byte) error {
+        // payload is FIELD=value bytes. In mmap mode, do not retain it after
+        // the callback returns unless it is copied.
+        return nil
+    }); err != nil {
+        return err
+    }
+}
+```
+
+`VisitEntryPayloads`, `EnumerateEntryPayload`, and the facade data enumerator
+are zero-copy paths. In mmap mode their payload slices may alias reader storage;
+copy the slice, or use `CollectEntryPayloads` / `GetEntryPayload`, when the data
+must outlive the current reader call.
 
 File-backed journalctl:
 

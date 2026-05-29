@@ -44,6 +44,15 @@ SINGLE_FILE_CASES = [
     ("rust", "file", "facade-data", "live", "windowed"),
     ("rust", "file", "facade-data", "snapshot", "windowed"),
     ("rust", "file", "facade-data", "snapshot", "whole-file"),
+    ("go", "file", "sdk-entry", "live", "read-at"),
+    ("go", "file", "sdk-payloads", "live", "read-at"),
+    ("go", "file", "facade-data", "live", "read-at"),
+    ("go", "file", "sdk-entry", "live", "mmap"),
+    ("go", "file", "sdk-payloads", "live", "mmap"),
+    ("go", "file", "facade-data", "live", "mmap"),
+    ("go", "file", "sdk-entry", "snapshot", "mmap"),
+    ("go", "file", "sdk-payloads", "snapshot", "mmap"),
+    ("go", "file", "facade-data", "snapshot", "mmap"),
     ("python", "file", "sdk-entry", "live", "mmap"),
     ("python", "file", "sdk-payloads", "live", "mmap"),
     ("python", "file", "facade-data", "live", "mmap"),
@@ -61,6 +70,12 @@ OPEN_FILES_CASES = [
     ("rust", "open-files", "sdk-payloads", "snapshot", "windowed"),
     ("rust", "open-files", "facade-data", "live", "windowed"),
     ("rust", "open-files", "facade-data", "snapshot", "windowed"),
+    ("go", "open-files", "sdk-entry", "live", "read-at"),
+    ("go", "open-files", "sdk-payloads", "live", "read-at"),
+    ("go", "open-files", "facade-data", "live", "read-at"),
+    ("go", "open-files", "sdk-entry", "live", "mmap"),
+    ("go", "open-files", "sdk-payloads", "live", "mmap"),
+    ("go", "open-files", "facade-data", "live", "mmap"),
     ("python", "open-files", "sdk-entry", "live", "mmap"),
     ("python", "open-files", "sdk-payloads", "live", "mmap"),
     ("python", "open-files", "facade-data", "live", "mmap"),
@@ -78,6 +93,12 @@ COMPARABLE_RUST_PAYLOAD_MODES = {
 }
 
 COMPARABLE_PYTHON_PAYLOAD_MODES = {
+    "sdk-entry",
+    "sdk-payloads",
+    "facade-data",
+}
+
+COMPARABLE_GO_PAYLOAD_MODES = {
     "sdk-entry",
     "sdk-payloads",
     "facade-data",
@@ -194,10 +215,20 @@ def build_tools(env: dict[str, str]) -> dict[str, list[str]]:
         timeout=300,
     )
     require_ok(systemd_build, "build systemd reader-core bench")
+    require_ok(
+        run(
+            ["go", "build", "-o", str(BIN_DIR / "go-reader-core-bench"), "./internal/testcmd/reader_core_bench"],
+            cwd=ROOT / "go",
+            env=env,
+            timeout=300,
+        ),
+        "build go reader-core bench",
+    )
     systemd_binary = systemd_build.stdout.strip().splitlines()[-1]
     return {
         "rust_writer": [str(ROOT / ".local" / "cargo-target" / "release" / "writer_core_bench")],
         "rust_reader": [str(ROOT / ".local" / "cargo-target" / "release" / "reader_core_bench")],
+        "go_reader": [str(BIN_DIR / "go-reader-core-bench")],
         "python_reader": [sys.executable, str(ROOT / "python" / "cmd" / "reader_core_bench.py")],
         "node_reader": ["node", str(ROOT / "node" / "cmd" / "reader_core_bench.js")],
         "systemd_reader": [systemd_binary],
@@ -343,6 +374,22 @@ def case_command(
             "--mmap-strategy",
             mmap_strategy,
         ]
+    elif language == "go":
+        cmd = [
+            *tools["go_reader"],
+            "--surface",
+            surface,
+            "--mode",
+            mode,
+            "--direction",
+            direction,
+            "--window-size",
+            str(window_size),
+            "--bounds",
+            bounds,
+            "--mmap-strategy",
+            mmap_strategy,
+        ]
     elif language == "node":
         cmd = [
             *tools["node_reader"],
@@ -390,6 +437,8 @@ def validate_equivalent_checksums(runs: list[dict[str, Any]]) -> None:
         result = item["result"]
         comparable = (
             result["language"] == "rust" and result["mode"] in COMPARABLE_RUST_PAYLOAD_MODES
+        ) or (
+            result["language"] == "go" and result["mode"] in COMPARABLE_GO_PAYLOAD_MODES
         ) or (
             result["language"] == "python" and result["mode"] in COMPARABLE_PYTHON_PAYLOAD_MODES
         ) or (
@@ -476,6 +525,7 @@ def main() -> int:
     parser.add_argument("--directory-max-size-bytes", type=int, default=DEFAULT_DIRECTORY_MAX_SIZE_BYTES)
     parser.add_argument("--window-size", type=int, default=DEFAULT_WINDOW_SIZE)
     parser.add_argument("--direction", choices=("forward", "backward"), default="forward")
+    parser.add_argument("--languages", default="", help="Comma-separated language filter, e.g. rust,go,systemd")
     parser.add_argument("--skip-open-files", action="store_true")
     parser.add_argument("--keep-fixtures", action="store_true")
     args = parser.parse_args()
@@ -511,6 +561,9 @@ def main() -> int:
     cases = list(SINGLE_FILE_CASES)
     if directory_fixture is not None:
         cases.extend(OPEN_FILES_CASES)
+    if args.languages:
+        wanted_languages = {item.strip() for item in args.languages.split(",") if item.strip()}
+        cases = [case for case in cases if case[0] in wanted_languages]
 
     total_iterations = args.warmups + args.repetitions
     for language, surface, mode, bounds, mmap_strategy in cases:
@@ -576,6 +629,7 @@ def main() -> int:
         "directory_max_size_bytes": args.directory_max_size_bytes,
         "window_size": args.window_size,
         "direction": args.direction,
+        "languages": args.languages,
         "direct_fixture": direct_fixture,
         "directory_fixture": directory_fixture,
         "timer_excludes": ["fixture generation", "tool builds", "process startup", "external verification"],
@@ -593,7 +647,7 @@ def main() -> int:
             shutil.rmtree(latest)
         else:
             latest.unlink()
-    latest.symlink_to(run_dir, target_is_directory=True)
+    latest.symlink_to(run_dir.resolve(), target_is_directory=True)
 
     if not args.keep_fixtures:
         shutil.rmtree(fixture_dir, ignore_errors=True)
