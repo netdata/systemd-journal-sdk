@@ -2,7 +2,7 @@
 
 ## Current
 
-- `SOW-0009-20260523-benchmark-profile-optimize.md` - in-progress. Writer profiling and optimization resumes from the fixed-128 MiB compact/no-compression/no-FSS writer-core baseline. Previous writer-core results that used a 2 GiB default max-size are retained only as invalidated diagnostic evidence.
+- `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
 
 ## Pending
 
@@ -10,6 +10,7 @@
 
 ## Done
 
+- `SOW-0057-20260529-rust-live-whole-file-mmap-reader-option.md`
 - `SOW-0035-20260527-derived-rotation-policy.md`
 - `SOW-0034-20260526-file-backed-journalctl-query-parity.md`
 - `SOW-0033-20260526-full-verification-parity.md`

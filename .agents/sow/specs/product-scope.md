@@ -567,8 +567,10 @@ Current Rust reader feature slice:
   would exceed the cached end of file, while `Snapshot` mode fixes the file
   size at open time for polling/query use cases that do not need to observe
   appends during the current scan;
-- `ReaderOptions` exposes windowed and whole-file mmap strategies for snapshot
-  readers. Windowed snapshot is the current Rust single-file hot-path baseline;
+- `ReaderOptions` exposes windowed and whole-file mmap strategies for live and
+  snapshot readers. Default live readers remain windowed; explicit live
+  whole-file mmap is an experimental measurement/performance option and
+  increases virtual-memory pressure on large active files;
 - raw current-entry payload visitors on file and directory readers for
   allocation-light scans that operate on borrowed `FIELD=value` bytes;
 - byte-preserving RAW field-name representation through `Entry::raw_fields()`,
@@ -593,6 +595,10 @@ Current Rust reader feature slice:
   libsystemd data enumeration at about 660k rows/s. The fixed live mode uses
   6 `statx` calls in the profiled hot-path run instead of the previous
   7,600,032-call refresh-every-slice behavior.
+- Current SOW-0057 measurement evidence on a 100k-row compact/offline fixture
+  shows Rust single-file `sdk-payloads` live/windowed at about 2.52M rows/s and
+  live/whole-file at about 2.52M rows/s; live whole-file mmap did not explain
+  the Go/Rust payload-reader gap on that corpus.
 
 Current Rust reader limitations:
 

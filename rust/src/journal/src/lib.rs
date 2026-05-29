@@ -1768,7 +1768,9 @@ impl FileReader {
 
 fn open_journal_file(path: &Path, options: ReaderOptions) -> Result<JournalFile<Mmap>> {
     let file = match options.bounds {
-        ReaderBounds::Live => JournalFile::open_path(path, options.window_size),
+        ReaderBounds::Live => {
+            JournalFile::open_path_with_strategy(path, options.window_size, options.mmap_strategy)
+        }
         ReaderBounds::Snapshot => {
             JournalFile::open_path_snapshot(path, options.window_size, options.mmap_strategy)
         }

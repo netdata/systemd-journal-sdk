@@ -536,7 +536,23 @@ impl<M: MemoryMap> JournalFile<M> {
         Self::open_repository_file(file.clone(), window_size)
     }
 
+    pub fn open_with_strategy(
+        file: &crate::repository::File,
+        window_size: u64,
+        strategy: ExperimentalMmapStrategy,
+    ) -> Result<Self> {
+        Self::open_repository_file_with_strategy(file.clone(), window_size, strategy)
+    }
+
     pub fn open_path(path: impl AsRef<Path>, window_size: u64) -> Result<Self> {
+        Self::open_path_with_strategy(path, window_size, ExperimentalMmapStrategy::Windowed)
+    }
+
+    pub fn open_path_with_strategy(
+        path: impl AsRef<Path>,
+        window_size: u64,
+        strategy: ExperimentalMmapStrategy,
+    ) -> Result<Self> {
         let path = path.as_ref();
         let absolute_path = if path.is_absolute() {
             path.to_path_buf()
@@ -545,7 +561,7 @@ impl<M: MemoryMap> JournalFile<M> {
         };
         let file = crate::repository::File::from_raw_path(&absolute_path)
             .ok_or(JournalError::InvalidFilename)?;
-        Self::open_repository_file(file, window_size)
+        Self::open_repository_file_with_strategy(file, window_size, strategy)
     }
 
     pub fn open_snapshot(
@@ -573,8 +589,20 @@ impl<M: MemoryMap> JournalFile<M> {
     }
 
     fn open_repository_file(file: crate::repository::File, window_size: u64) -> Result<Self> {
+        Self::open_repository_file_with_strategy(
+            file,
+            window_size,
+            ExperimentalMmapStrategy::Windowed,
+        )
+    }
+
+    fn open_repository_file_with_strategy(
+        file: crate::repository::File,
+        window_size: u64,
+        strategy: ExperimentalMmapStrategy,
+    ) -> Result<Self> {
         Self::open_repository_file_with_window_manager(file, window_size, |fd| {
-            WindowManager::new(fd, window_size, 16)
+            WindowManager::new_with_strategy(fd, window_size, 16, strategy)
         })
     }
 

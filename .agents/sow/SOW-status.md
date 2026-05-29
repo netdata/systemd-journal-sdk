@@ -27,6 +27,13 @@ Last updated: 2026-05-29
 
 ## Recently Closed Or Completed
 
+- SOW-0057 - Rust Live Whole-File Mmap Reader Option: completed. Rust live
+  readers can explicitly opt into whole-file mmap through the existing
+  experimental mmap strategy option while default live readers remain windowed.
+  The compact/offline 100k-row benchmark measured Rust single-file
+  `sdk-payloads` live/windowed at 2.52M rows/s and live/whole-file at 2.52M
+  rows/s, so whole-file mmap does not explain the Go/Rust reader gap on this
+  corpus.
 - SOW-0056 - Go Reader Hot-Path Optimization Phase 2: completed. Go reader
   hot-path internals now avoid redundant DATA header parsing, preserve
   current-entry DATA-offset slice backing storage safely, return ENTRY headers

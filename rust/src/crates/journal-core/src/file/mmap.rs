@@ -196,12 +196,26 @@ enum BoundsMode {
 
 impl<M: MemoryMap> WindowManager<M> {
     pub fn new(file: File, chunk_size: u64, max_windows: usize) -> Result<Self> {
+        Self::new_with_strategy(
+            file,
+            chunk_size,
+            max_windows,
+            ExperimentalMmapStrategy::Windowed,
+        )
+    }
+
+    pub fn new_with_strategy(
+        file: File,
+        chunk_size: u64,
+        max_windows: usize,
+        strategy: ExperimentalMmapStrategy,
+    ) -> Result<Self> {
         Self::new_with_bounds_mode(
             file,
             chunk_size,
             max_windows,
             BoundsMode::LiveFile,
-            ExperimentalMmapStrategy::Windowed,
+            strategy,
         )
     }
 
@@ -255,12 +269,6 @@ impl<M: MemoryMap> WindowManager<M> {
         debug_assert!(max_windows != 0);
 
         let file_size = file.metadata()?.len();
-        let strategy =
-            if bounds_mode == BoundsMode::WriterOwned || bounds_mode == BoundsMode::Snapshot {
-                strategy
-            } else {
-                ExperimentalMmapStrategy::Windowed
-            };
 
         Ok(WindowManager {
             file,
@@ -916,6 +924,50 @@ mod tests {
             JournalError::ObjectExceedsFileBounds
         ));
         assert_eq!(wm.stats().file_size, PAGE_SIZE_TEST);
+    }
+
+    #[test]
+    fn live_whole_file_maps_cached_file_once_and_remaps_on_growth() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file
+            .write_all(&vec![1u8; PAGE_SIZE_TEST as usize])
+            .unwrap();
+        temp_file.flush().unwrap();
+
+        let file = File::open(temp_file.path()).unwrap();
+        let mut wm: WindowManager<Mmap> = WindowManager::new_with_strategy(
+            file,
+            PAGE_SIZE_TEST,
+            32,
+            ExperimentalMmapStrategy::WholeFile,
+        )
+        .unwrap();
+
+        assert_eq!(wm.get_slice(128, 16).unwrap(), &[1u8; 16]);
+        let stats = wm.stats();
+        assert_eq!(stats.strategy, ExperimentalMmapStrategy::WholeFile);
+        assert_eq!(stats.file_size, PAGE_SIZE_TEST);
+        assert_eq!(stats.current_mapped_bytes, PAGE_SIZE_TEST);
+        assert_eq!(stats.map_count, 1);
+        assert_eq!(stats.remap_count, 0);
+
+        temp_file
+            .write_all(&vec![2u8; PAGE_SIZE_TEST as usize])
+            .unwrap();
+        temp_file.flush().unwrap();
+
+        assert_eq!(wm.get_slice(256, 16).unwrap(), &[1u8; 16]);
+        let stats = wm.stats();
+        assert_eq!(stats.file_size, PAGE_SIZE_TEST);
+        assert_eq!(stats.map_count, 1);
+        assert_eq!(stats.remap_count, 0);
+
+        assert_eq!(wm.get_slice(PAGE_SIZE_TEST + 128, 16).unwrap(), &[2u8; 16]);
+        let stats = wm.stats();
+        assert_eq!(stats.file_size, PAGE_SIZE_TEST * 2);
+        assert_eq!(stats.current_mapped_bytes, PAGE_SIZE_TEST * 2);
+        assert_eq!(stats.map_count, 2);
+        assert_eq!(stats.remap_count, 1);
     }
 
     #[test]

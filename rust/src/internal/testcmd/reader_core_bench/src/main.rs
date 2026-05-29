@@ -114,7 +114,7 @@ fn open_core(
     strategy: ExperimentalMmapStrategy,
 ) -> Result<JournalFile<Mmap>> {
     let result = match bounds {
-        "live" => JournalFile::open_path(path, window_size),
+        "live" => JournalFile::open_path_with_strategy(path, window_size, strategy),
         "snapshot" => JournalFile::open_path_snapshot(path, window_size, strategy),
         other => return Err(anyhow!("invalid --bounds: {other}")),
     };
