@@ -52,6 +52,13 @@ func (a *mappedArena) checkBounds(offset, size uint64) error {
 	return nil
 }
 
+func (a *mappedArena) directBytesAt(offset, size uint64) ([]byte, bool, error) {
+	if err := a.checkBounds(offset, size); err != nil {
+		return nil, false, err
+	}
+	return nil, false, nil
+}
+
 func (a *mappedArena) readAt(dst []byte, offset uint64) error {
 	if err := a.checkBounds(offset, uint64(len(dst))); err != nil {
 		return err

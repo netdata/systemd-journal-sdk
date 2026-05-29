@@ -79,6 +79,14 @@ func (a *mappedArena) bytesAt(offset, size uint64) ([]byte, error) {
 	return a.data[int(offset):int(end)], nil
 }
 
+func (a *mappedArena) directBytesAt(offset, size uint64) ([]byte, bool, error) {
+	data, err := a.bytesAt(offset, size)
+	if err != nil {
+		return nil, false, err
+	}
+	return data, true, nil
+}
+
 func (a *mappedArena) readAt(dst []byte, offset uint64) error {
 	src, err := a.bytesAt(offset, uint64(len(dst)))
 	if err != nil {

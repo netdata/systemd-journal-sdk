@@ -166,17 +166,6 @@ struct PayloadMatcher<'data, T> {
     _phantom: PhantomData<T>,
 }
 
-impl<'data, B: ByteSlice> PayloadMatcher<'data, DataObject<B>> {
-    fn data_parts_matcher(payload: PayloadParts<'data>, hash: u64) -> Self {
-        Self {
-            payload,
-            hash,
-            decompression_buffer: Vec::new(),
-            _phantom: PhantomData::<DataObject<B>>,
-        }
-    }
-}
-
 impl<'data, B: ByteSlice> PayloadMatcher<'data, FieldObject<B>> {
     fn field_matcher(payload: &'data [u8], hash: u64) -> Self {
         Self {
@@ -442,6 +431,12 @@ pub struct DataPayloadReadContext {
 pub struct DataPayloadObjectInfo {
     size_needed: u64,
     is_compressed: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DataLookupResult {
+    next_hash_offset: Option<NonZeroU64>,
+    matches: bool,
 }
 
 impl DataPayloadObjectInfo {
@@ -1043,8 +1038,103 @@ impl<M: MemoryMap> JournalFile<M> {
         hash: u64,
         payload: PayloadParts<'_>,
     ) -> Result<Option<NonZeroU64>> {
-        let visitor = PayloadMatcher::data_parts_matcher(payload, hash);
-        self.visit_bucket(self.data_hash_table_ref(), hash, visitor)
+        let hash_table = self
+            .data_hash_table_ref()
+            .ok_or(JournalError::MissingHashTable)?;
+        let context = self.data_payload_read_context();
+        let mut decompression_buffer = Vec::new();
+        let mut object_offset = hash_table.hash_item_ref(hash).head_hash_offset;
+
+        while let Some(offset) = object_offset {
+            let result = self.data_lookup_result_at(
+                context,
+                offset,
+                hash,
+                payload,
+                &mut decompression_buffer,
+            )?;
+            if result.matches {
+                return Ok(Some(offset));
+            }
+            object_offset = result.next_hash_offset;
+        }
+
+        Ok(None)
+    }
+
+    fn data_lookup_result_at(
+        &self,
+        context: DataPayloadReadContext,
+        offset: NonZeroU64,
+        hash: u64,
+        payload: PayloadParts<'_>,
+        decompression_buffer: &mut Vec<u8>,
+    ) -> Result<DataLookupResult> {
+        validate_offset_alignment(offset)?;
+        if offset.get() < context.header_size {
+            return Err(JournalError::ObjectExceedsFileBounds);
+        }
+
+        self.window_manager.with_mut(|wm| {
+            let header_slice =
+                wm.get_slice(offset.get(), std::mem::size_of::<DataObjectHeader>() as u64)?;
+            if header_slice[0] != ObjectType::Data as u8 {
+                return Err(JournalError::InvalidObjectType);
+            }
+
+            let flags = header_slice[1];
+            let size_needed = u64::from_le_bytes(header_slice[8..16].try_into().unwrap());
+            if size_needed < std::mem::size_of::<DataObjectHeader>() as u64 {
+                return Err(JournalError::InvalidObjectSize(size_needed));
+            }
+            if size_needed < context.payload_prefix_size {
+                return Err(JournalError::InvalidObjectSize(size_needed));
+            }
+
+            let end_offset = offset
+                .get()
+                .checked_add(size_needed)
+                .ok_or(JournalError::ObjectExceedsFileBounds)?;
+            if end_offset > context.arena_end {
+                return Err(JournalError::ObjectExceedsFileBounds);
+            }
+
+            let stored_hash = u64::from_le_bytes(header_slice[16..24].try_into().unwrap());
+            let next_hash_offset =
+                NonZeroU64::new(u64::from_le_bytes(header_slice[24..32].try_into().unwrap()));
+            if stored_hash != hash {
+                return Ok(DataLookupResult {
+                    next_hash_offset,
+                    matches: false,
+                });
+            }
+
+            let data = if let Some(data) = wm.active_slice_if_contains(offset.get(), size_needed) {
+                data
+            } else {
+                wm.get_slice(offset.get(), size_needed)?
+            };
+            let payload_start = context.payload_prefix_size as usize;
+            let is_compressed = (flags
+                & (ObjectFlags::CompressedZstd as u8
+                    | ObjectFlags::CompressedLz4 as u8
+                    | ObjectFlags::CompressedXz as u8))
+                != 0;
+            let matches = if is_compressed {
+                let object = DataObject::from_data(data, context.is_compact)
+                    .ok_or(JournalError::ZerocopyFailure)?;
+                decompression_buffer.clear();
+                let len = object.decompress(decompression_buffer)?;
+                payload.equals_slice(&decompression_buffer[..len])
+            } else {
+                payload.equals_slice(&data[payload_start..])
+            };
+
+            Ok(DataLookupResult {
+                next_hash_offset,
+                matches,
+            })
+        })
     }
 
     pub fn find_field_offset(&self, hash: u64, payload: &[u8]) -> Result<Option<NonZeroU64>> {
@@ -2309,11 +2399,9 @@ mod tests {
             .expect("write second compact entry");
         journal_file.sync().expect("sync compact journal");
 
-        assert!(
-            journal_file
-                .journal_header_ref()
-                .has_incompatible_flag(HeaderIncompatibleFlags::Compact)
-        );
+        assert!(journal_file
+            .journal_header_ref()
+            .has_incompatible_flag(HeaderIncompatibleFlags::Compact));
 
         let mut entry_offsets = Vec::new();
         journal_file

@@ -1,11 +1,11 @@
 use super::mmap::MmapMut;
 use crate::error::{JournalError, Result};
 use crate::file::{
-    CompactDataFields, CompactEntryItem, Compression, DEFAULT_COMPRESS_THRESHOLD, DataObject,
-    DataObjectHeader, DataPayloadType, EntryObjectHeader, FieldObjectHeader, HashTable,
-    HashableObjectMut, HeaderIncompatibleFlags, JournalFile, JournalHeader, ObjectFlags,
-    ObjectHeader, ObjectType, PayloadParts, RegularEntryItem, hash::jenkins_hash64_parts,
-    normalize_compress_threshold,
+    hash::jenkins_hash64_parts, normalize_compress_threshold, CompactDataFields, CompactEntryItem,
+    Compression, DataObject, DataObjectHeader, DataPayloadType, EntryObjectHeader,
+    FieldObjectHeader, HashTable, HashableObjectMut, HeaderIncompatibleFlags, JournalFile,
+    JournalHeader, ObjectFlags, ObjectHeader, ObjectType, PayloadParts, RegularEntryItem,
+    DEFAULT_COMPRESS_THRESHOLD,
 };
 use crate::seal::TAG_LENGTH;
 use rustc_hash::FxHashMap;
@@ -831,7 +831,6 @@ impl JournalWriter {
 
         match journal_file.find_data_offset_parts(hash, payload)? {
             Some(data_offset) => {
-                Self::update_data_hash_chain_depth(journal_file, hash)?;
                 let entry_item = EntryItem {
                     offset: data_offset,
                     hash,
@@ -1255,6 +1254,58 @@ impl JournalWriter {
         }
     }
 
+    fn append_to_data_entry_array_tail(
+        &mut self,
+        journal_file: &mut JournalFile<MmapMut>,
+        tail_offset: NonZeroU64,
+        tail_entries: u64,
+        entry_offset: NonZeroU64,
+        current_count: u64,
+    ) -> Result<Option<(NonZeroU64, u64)>> {
+        if tail_entries == 0 || tail_entries > current_count {
+            return Ok(None);
+        }
+
+        let tail_capacity = {
+            let tail_guard = match journal_file.offset_array_ref(tail_offset) {
+                Ok(guard) => guard,
+                Err(_) => return Ok(None),
+            };
+            if tail_guard.header.next_offset_array.is_some() {
+                return Ok(None);
+            }
+            tail_guard.capacity() as u64
+        };
+
+        if tail_entries > tail_capacity {
+            return Ok(None);
+        }
+
+        if tail_entries < tail_capacity {
+            let mut tail_guard = journal_file.offset_array_mut(tail_offset, None)?;
+            tail_guard.set(tail_entries as usize, entry_offset)?;
+            return Ok(Some((tail_offset, tail_entries + 1)));
+        }
+
+        let new_capacity = NonZeroU64::new(Self::next_entry_array_capacity(
+            current_count,
+            tail_capacity,
+        ))
+        .unwrap();
+        let new_array_offset = self.allocate_new_array(journal_file, new_capacity)?;
+
+        {
+            let mut tail_guard = journal_file.offset_array_mut(tail_offset, None)?;
+            tail_guard.header.next_offset_array = Some(new_array_offset);
+        }
+        {
+            let mut new_array_guard = journal_file.offset_array_mut(new_array_offset, None)?;
+            new_array_guard.set(0, entry_offset)?;
+        }
+
+        Ok(Some((new_array_offset, 1)))
+    }
+
     fn link_data_to_entry(
         &mut self,
         journal_file: &mut JournalFile<MmapMut>,
@@ -1302,17 +1353,31 @@ impl JournalWriter {
                         let current_count = x - 1;
                         let array_offset = data_guard.header.entry_array_offset.unwrap();
                         let is_compact = Self::is_compact(journal_file);
+                        let compact_tail = Self::compact_data_tail(&data_guard);
 
                         // Drop the data guard to avoid borrow conflicts
                         drop(data_guard);
 
-                        // Find the tail of the entry array chain and append
-                        let (tail_offset, tail_entries) = self.append_to_data_entry_array(
-                            journal_file,
-                            array_offset,
-                            entry_offset,
-                            current_count,
-                        )?;
+                        let tail_result = match (is_compact, compact_tail) {
+                            (true, Some((tail_offset, tail_entries))) => self
+                                .append_to_data_entry_array_tail(
+                                    journal_file,
+                                    tail_offset,
+                                    tail_entries,
+                                    entry_offset,
+                                    current_count,
+                                )?,
+                            _ => None,
+                        };
+                        let (tail_offset, tail_entries) = match tail_result {
+                            Some(result) => result,
+                            None => self.append_to_data_entry_array(
+                                journal_file,
+                                array_offset,
+                                entry_offset,
+                                current_count,
+                            )?,
+                        };
 
                         // Update the count
                         let mut data_guard = journal_file.data_mut(data_offset, None)?;
@@ -1330,6 +1395,17 @@ impl JournalWriter {
         }
 
         Ok(())
+    }
+
+    fn compact_data_tail(data_guard: &DataObject<&mut [u8]>) -> Option<(NonZeroU64, u64)> {
+        match &data_guard.payload {
+            DataPayloadType::Compact { compact_fields, .. } => {
+                let tail_offset = NonZeroU64::new(compact_fields.tail_entry_array_offset as u64)?;
+                let tail_entries = compact_fields.tail_entry_array_n_entries as u64;
+                (tail_entries != 0).then_some((tail_offset, tail_entries))
+            }
+            DataPayloadType::Regular(_) => None,
+        }
     }
 
     fn is_compact(journal_file: &JournalFile<MmapMut>) -> bool {
@@ -1470,8 +1546,8 @@ fn lz4_compress(payload: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        FIELD_CACHE_MAX_ENTRIES, FIELD_CACHE_MAX_PAYLOAD_LEN, FieldCache, PayloadParts,
-        zstd_frame_with_content_size,
+        zstd_frame_with_content_size, FieldCache, PayloadParts, FIELD_CACHE_MAX_ENTRIES,
+        FIELD_CACHE_MAX_PAYLOAD_LEN,
     };
     use std::io::{Cursor, Read};
     use std::num::NonZeroU64;
@@ -1583,8 +1659,8 @@ mod tests {
         EntryField, EntryWriteOptions, FieldNamePolicy, JournalFile, JournalWriter, StructuredField,
     };
     use crate::file::{
-        Compression, DEFAULT_COMPRESS_THRESHOLD, HeaderCompatibleFlags, JournalFileOptions,
-        MIN_COMPRESS_THRESHOLD, MmapMut, ObjectFlags, normalize_compress_threshold,
+        normalize_compress_threshold, Compression, HeaderCompatibleFlags, JournalFileOptions,
+        MmapMut, ObjectFlags, DEFAULT_COMPRESS_THRESHOLD, MIN_COMPRESS_THRESHOLD,
     };
     use crate::seal::SealOptions;
     #[cfg(unix)]
@@ -2099,16 +2175,14 @@ mod tests {
         let mut writer =
             JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
 
-        assert!(
-            writer
-                .add_entry_structured(
-                    &mut journal_file,
-                    &[StructuredField::new(b"not-valid", b"value")],
-                    1_700_000_060_000_000,
-                    100,
-                )
-                .is_err()
-        );
+        assert!(writer
+            .add_entry_structured(
+                &mut journal_file,
+                &[StructuredField::new(b"not-valid", b"value")],
+                1_700_000_060_000_000,
+                100,
+            )
+            .is_err());
         assert_eq!(journal_file.journal_header_ref().n_entries, 0);
     }
 
@@ -2177,17 +2251,15 @@ mod tests {
         assert!(payloads.iter().any(|p| p == b"MESSAGE=app valid"));
         assert!(!payloads.iter().any(|p| p.starts_with(b"_HOSTNAME=")));
         assert!(!payloads.iter().any(|p| p.starts_with(b"lowercase=")));
-        assert!(
-            writer
-                .add_entry_structured_with_options(
-                    &mut journal_file,
-                    &[StructuredField::new(b"_HOSTNAME", b"drop-only")],
-                    1_700_002_112_000_001,
-                    2,
-                    EntryWriteOptions::default().field_name_policy(FieldNamePolicy::JournalApp),
-                )
-                .is_err()
-        );
+        assert!(writer
+            .add_entry_structured_with_options(
+                &mut journal_file,
+                &[StructuredField::new(b"_HOSTNAME", b"drop-only")],
+                1_700_002_112_000_001,
+                2,
+                EntryWriteOptions::default().field_name_policy(FieldNamePolicy::JournalApp),
+            )
+            .is_err());
 
         let raw_path = journal_dir.join("raw.journal");
         let repo_file = crate::repository::File::from_path(&raw_path).expect("test journal path");
@@ -2227,23 +2299,19 @@ mod tests {
         assert!(payloads.iter().any(|p| p == b"lowercase=ok"));
         assert!(payloads.iter().any(|p| p == b"foo.bar=dot"));
         assert!(payloads.iter().any(|p| p == b"field name=space"));
-        assert!(
-            payloads
-                .iter()
-                .any(|p| p == &format!("{}=long", "a".repeat(1024)).into_bytes())
-        );
+        assert!(payloads
+            .iter()
+            .any(|p| p == &format!("{}=long", "a".repeat(1024)).into_bytes()));
         assert!(payloads.iter().any(|p| p == b"BINARY=a\0=b"));
-        assert!(
-            writer
-                .add_entry_fields_with_options(
-                    &mut journal_file,
-                    [EntryField::structured(b"BAD=NAME", b"bad")],
-                    1_700_002_113_000_001,
-                    2,
-                    EntryWriteOptions::default().field_name_policy(FieldNamePolicy::Raw),
-                )
-                .is_err()
-        );
+        assert!(writer
+            .add_entry_fields_with_options(
+                &mut journal_file,
+                [EntryField::structured(b"BAD=NAME", b"bad")],
+                1_700_002_113_000_001,
+                2,
+                EntryWriteOptions::default().field_name_policy(FieldNamePolicy::Raw),
+            )
+            .is_err());
     }
 
     #[test]

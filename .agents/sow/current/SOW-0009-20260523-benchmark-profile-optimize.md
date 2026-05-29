@@ -268,6 +268,10 @@ Failure handling:
   product specs, and tests now record that cached current-row payload
   references/objects remain valid after end-of-row enumeration and until the
   next row/lifecycle boundary.
+- Added SOW-0062 as the active Rust-first, Go-second writer absolute
+  performance pass after the user stated that Netdata NetFlow, OTEL logs, and
+  SNMP traps ingestion require the fastest possible compatible writers, not
+  merely writers that beat systemd.
 
 ## Validation
 
@@ -338,6 +342,7 @@ Follow-up mapping:
 - Node.js reader/writer Rust-port work: SOW-0054.
 - Cross-language row-scoped current-entry facade payload lifetime parity:
   completed by SOW-0061.
+- Rust and Go writer absolute performance: SOW-0062.
 
 ## Outcome
 
@@ -356,6 +361,7 @@ Pending.
 - SOW-0052 - Rust Reader Last-Mile Optimization.
 - SOW-0053 - Python Reader And Writer Rust Port.
 - SOW-0054 - Node.js Reader And Writer Rust Port.
+- SOW-0062 - Rust And Go Writer Absolute Performance.
 
 ## Regression Log
 

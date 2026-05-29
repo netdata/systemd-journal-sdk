@@ -1,15 +1,15 @@
 #![allow(unused_imports, dead_code)]
 
 use crate::{
-    CompactEntryItem, DataHashTable, DataObject, DataObjectHeader, DataPayloadType, EntryObject,
-    EntryObjectHeader, FieldHashTable, FieldObject, FieldObjectHeader, HashItem, HashTable,
-    HashTableMut, HashableObject, HashableObjectMut, HeaderIncompatibleFlags, JournalFile,
-    JournalFileOptions, JournalHeader, JournalState, ObjectHeader, ObjectType, RegularEntryItem,
-    journal_hash_data,
+    journal_hash_data, CompactEntryItem, DataHashTable, DataObject, DataObjectHeader,
+    DataPayloadType, EntryObject, EntryObjectHeader, FieldHashTable, FieldObject,
+    FieldObjectHeader, HashItem, HashTable, HashTableMut, HashableObject, HashableObjectMut,
+    HeaderIncompatibleFlags, JournalFile, JournalFileOptions, JournalHeader, JournalState,
+    ObjectHeader, ObjectType, RegularEntryItem,
 };
 use error::{JournalError, Result};
 use memmap2::MmapMut;
-use rand::{Rng, seq::IndexedRandom};
+use rand::{seq::IndexedRandom, Rng};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::Path;
 use window_manager::MemoryMapMut;
@@ -191,10 +191,7 @@ impl JournalWriter {
         let hash = journal_file.hash(payload);
 
         match journal_file.find_data_offset(hash, payload)? {
-            Some(data_offset) => {
-                Self::update_data_hash_chain_depth(journal_file, hash)?;
-                Ok(data_offset)
-            }
+            Some(data_offset) => Ok(data_offset),
             None => {
                 // We will have to write the new data object at the current
                 // tail offset
@@ -587,7 +584,7 @@ impl JournalWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Direction, JournalFile, JournalReader, Location, load_boot_id};
+    use crate::{load_boot_id, Direction, JournalFile, JournalReader, Location};
     use memmap2::Mmap;
     use std::collections::HashMap;
     use tempfile::NamedTempFile;

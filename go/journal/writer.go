@@ -381,7 +381,10 @@ func (w *Writer) appendPayloads(count int, payloadAt func(int) []byte, opts Entr
 	if err := w.ensureCompactObjectFits(entryOffset, entrySize); err != nil {
 		return err
 	}
-	buf := make([]byte, align8(entrySize))
+	buf, direct, err := w.newObjectBuffer(entryOffset, entrySize)
+	if err != nil {
+		return err
+	}
 	putEntryHeader(buf[:entryObjectHeaderSize], entryHeader{
 		object: objectHeader{typ: objectTypeEntry, size: entrySize},
 		seqnum: w.nextSeqnum, realtime: opts.RealtimeUsec,
@@ -399,7 +402,7 @@ func (w *Writer) appendPayloads(count int, payloadAt func(int) []byte, opts Entr
 			binary.LittleEndian.PutUint64(buf[off+8:off+16], item.hash)
 		}
 	}
-	if err := w.writeObject(entryOffset, buf); err != nil {
+	if err := w.commitObjectBuffer(entryOffset, buf, direct); err != nil {
 		return err
 	}
 	if err := w.objectAdded(entryOffset, entrySize); err != nil {
@@ -910,6 +913,33 @@ func (w *Writer) writeObject(offset uint64, buf []byte) error {
 	return w.writeAt(offset, buf)
 }
 
+func (w *Writer) newObjectBuffer(offset, size uint64) ([]byte, bool, error) {
+	alignedSize := align8(size)
+	end, ok := checkedAdd(offset, alignedSize)
+	if !ok {
+		return nil, false, fmt.Errorf("%w: object exceeds file bounds", errInvalidJournal)
+	}
+	if err := w.ensureArenaSize(end); err != nil {
+		return nil, false, err
+	}
+	if w.arena != nil {
+		if data, ok, err := w.arena.directBytesAt(offset, alignedSize); err != nil || ok {
+			return data, ok, err
+		}
+	}
+	if alignedSize > uint64(int(^uint(0)>>1)) {
+		return nil, false, fmt.Errorf("%w: object exceeds file bounds", errInvalidJournal)
+	}
+	return make([]byte, int(alignedSize)), false, nil
+}
+
+func (w *Writer) commitObjectBuffer(offset uint64, buf []byte, direct bool) error {
+	if direct {
+		return nil
+	}
+	return w.writeAt(offset, buf)
+}
+
 func readObjectHeaderAt(f *os.File, offset uint64) (objectHeader, error) {
 	buf := make([]byte, objectHeaderSize)
 	if _, err := f.ReadAt(buf, int64(offset)); err != nil {
@@ -1008,13 +1038,16 @@ func (w *Writer) addData(payload []byte) (uint64, uint64, error) {
 	if err := w.ensureCompactObjectFits(offset, size); err != nil {
 		return 0, 0, err
 	}
-	buf := make([]byte, align8(size))
+	buf, direct, err := w.newObjectBuffer(offset, size)
+	if err != nil {
+		return 0, 0, err
+	}
 	putDataHeader(buf[:dataObjectHeaderSize], dataHeader{
 		object: objectHeader{typ: objectTypeData, flag: compressionFlag, size: size},
 		hash:   hash,
 	})
 	copy(buf[payloadOffset:], objectPayload)
-	if err := w.writeObject(offset, buf); err != nil {
+	if err := w.commitObjectBuffer(offset, buf, direct); err != nil {
 		return 0, 0, err
 	}
 	if err := w.objectAdded(offset, size); err != nil {
@@ -1071,13 +1104,16 @@ func (w *Writer) addField(hash uint64, payload []byte) (uint64, uint64, error) {
 	if err := w.ensureCompactObjectFits(offset, size); err != nil {
 		return 0, 0, err
 	}
-	buf := make([]byte, align8(size))
+	buf, direct, err := w.newObjectBuffer(offset, size)
+	if err != nil {
+		return 0, 0, err
+	}
 	putFieldHeader(buf[:fieldObjectHeaderSize], fieldHeader{
 		object: objectHeader{typ: objectTypeField, size: size},
 		hash:   hash,
 	})
 	copy(buf[fieldObjectHeaderSize:], payload)
-	if err := w.writeObject(offset, buf); err != nil {
+	if err := w.commitObjectBuffer(offset, buf, direct); err != nil {
 		return 0, 0, err
 	}
 	if err := w.objectAdded(offset, size); err != nil {
@@ -1178,12 +1214,18 @@ func (w *Writer) findData(hash uint64, payload []byte) (uint64, bool, error) {
 
 	depth := uint64(0)
 	for offset := item.head; offset != 0; {
-		header, stored, err := w.readDataObject(offset)
+		header, err := w.readDataHeader(offset)
 		if err != nil {
 			return 0, false, err
 		}
-		if header.hash == hash && bytes.Equal(stored, payload) {
-			return offset, true, nil
+		if header.hash == hash {
+			stored, err := w.readDataPayload(header, offset)
+			if err != nil {
+				return 0, false, err
+			}
+			if bytes.Equal(stored, payload) {
+				return offset, true, nil
+			}
 		}
 		if header.nextHashOffset != 0 {
 			depth++
@@ -1224,17 +1266,25 @@ func (w *Writer) findField(hash uint64, payload []byte) (uint64, bool, error) {
 }
 
 func (w *Writer) readHashItem(offset uint64) (hashItem, error) {
-	buf := make([]byte, hashItemSize)
-	if err := w.readAt(buf, offset); err != nil {
+	if w.arena != nil {
+		if src, ok, err := w.arena.directBytesAt(offset, hashItemSize); err != nil || ok {
+			if err != nil {
+				return hashItem{}, err
+			}
+			return parseHashItem(src), nil
+		}
+	}
+	var buf [hashItemSize]byte
+	if err := w.readAt(buf[:], offset); err != nil {
 		return hashItem{}, err
 	}
-	return parseHashItem(buf), nil
+	return parseHashItem(buf[:]), nil
 }
 
 func (w *Writer) writeHashItem(offset uint64, item hashItem) error {
-	buf := make([]byte, hashItemSize)
-	putHashItem(buf, item)
-	return w.writeAt(offset, buf)
+	var buf [hashItemSize]byte
+	putHashItem(buf[:], item)
+	return w.writeAt(offset, buf[:])
 }
 
 func (w *Writer) readDataObject(offset uint64) (dataHeader, []byte, error) {
@@ -1242,34 +1292,57 @@ func (w *Writer) readDataObject(offset uint64) (dataHeader, []byte, error) {
 	if err != nil {
 		return dataHeader{}, nil, err
 	}
+	payload, err := w.readDataPayload(header, offset)
+	if err != nil {
+		return dataHeader{}, nil, err
+	}
+	return header, payload, nil
+}
+
+func (w *Writer) readDataPayload(header dataHeader, offset uint64) ([]byte, error) {
 	payloadOffset := w.dataPayloadOffset()
 	if header.object.typ != objectTypeData || header.object.size < payloadOffset {
-		return dataHeader{}, nil, errInvalidJournal
+		return nil, errInvalidJournal
 	}
-	payload := make([]byte, header.object.size-payloadOffset)
-	if err := w.readAt(payload, offset+payloadOffset); err != nil {
-		return dataHeader{}, nil, err
+	payloadSize := header.object.size - payloadOffset
+	var payload []byte
+	if w.arena != nil {
+		if src, ok, err := w.arena.directBytesAt(offset+payloadOffset, payloadSize); err != nil || ok {
+			if err != nil {
+				return nil, err
+			}
+			payload = src
+		}
+	}
+	if payload == nil {
+		if payloadSize > uint64(int(^uint(0)>>1)) {
+			return nil, errInvalidJournal
+		}
+		payload = make([]byte, int(payloadSize))
+		if err := w.readAt(payload, offset+payloadOffset); err != nil {
+			return nil, err
+		}
 	}
 	if header.object.flag&objectCompressedZSTD != 0 {
 		decoded, err := zstdDecompress(payload)
 		if err != nil {
-			return dataHeader{}, nil, err
+			return nil, err
 		}
 		payload = decoded
 	} else if header.object.flag&objectCompressedXZ != 0 {
 		decoded, err := xzDecompress(payload)
 		if err != nil {
-			return dataHeader{}, nil, err
+			return nil, err
 		}
 		payload = decoded
 	} else if header.object.flag&objectCompressedLZ4 != 0 {
 		decoded, err := lz4Decompress(payload)
 		if err != nil {
-			return dataHeader{}, nil, err
+			return nil, err
 		}
 		payload = decoded
 	}
-	return header, payload, nil
+	return payload, nil
 }
 
 func (w *Writer) readFieldObject(offset uint64) (fieldHeader, []byte, error) {
@@ -1288,39 +1361,81 @@ func (w *Writer) readFieldObject(offset uint64) (fieldHeader, []byte, error) {
 }
 
 func (w *Writer) readObjectHeader(offset uint64) (objectHeader, error) {
-	buf := make([]byte, objectHeaderSize)
-	if err := w.readAt(buf, offset); err != nil {
+	if w.arena != nil {
+		if src, ok, err := w.arena.directBytesAt(offset, objectHeaderSize); err != nil || ok {
+			if err != nil {
+				return objectHeader{}, err
+			}
+			return parseObjectHeader(src)
+		}
+	}
+	var buf [objectHeaderSize]byte
+	if err := w.readAt(buf[:], offset); err != nil {
 		return objectHeader{}, err
 	}
-	return parseObjectHeader(buf)
+	return parseObjectHeader(buf[:])
 }
 
 func (w *Writer) readDataHeader(offset uint64) (dataHeader, error) {
-	buf := make([]byte, dataObjectHeaderSize)
-	if err := w.readAt(buf, offset); err != nil {
+	if w.arena != nil {
+		if src, ok, err := w.arena.directBytesAt(offset, dataObjectHeaderSize); err != nil || ok {
+			if err != nil {
+				return dataHeader{}, err
+			}
+			return parseDataHeader(src)
+		}
+	}
+	var buf [dataObjectHeaderSize]byte
+	if err := w.readAt(buf[:], offset); err != nil {
 		return dataHeader{}, err
 	}
-	return parseDataHeader(buf)
+	return parseDataHeader(buf[:])
 }
 
 func (w *Writer) readFieldHeader(offset uint64) (fieldHeader, error) {
-	buf := make([]byte, fieldObjectHeaderSize)
-	if err := w.readAt(buf, offset); err != nil {
+	if w.arena != nil {
+		if src, ok, err := w.arena.directBytesAt(offset, fieldObjectHeaderSize); err != nil || ok {
+			if err != nil {
+				return fieldHeader{}, err
+			}
+			return parseFieldHeader(src)
+		}
+	}
+	var buf [fieldObjectHeaderSize]byte
+	if err := w.readAt(buf[:], offset); err != nil {
 		return fieldHeader{}, err
 	}
-	return parseFieldHeader(buf)
+	return parseFieldHeader(buf[:])
 }
 
 func (w *Writer) writeUint64At(offset, value uint64) error {
-	buf := make([]byte, 8)
-	binary.LittleEndian.PutUint64(buf, value)
-	return w.writeAt(offset, buf)
+	if w.arena != nil {
+		if dst, ok, err := w.arena.directBytesAt(offset, 8); err != nil || ok {
+			if err != nil {
+				return err
+			}
+			binary.LittleEndian.PutUint64(dst, value)
+			return nil
+		}
+	}
+	var buf [8]byte
+	binary.LittleEndian.PutUint64(buf[:], value)
+	return w.writeAt(offset, buf[:])
 }
 
 func (w *Writer) writeUint32At(offset uint64, value uint32) error {
-	buf := make([]byte, 4)
-	binary.LittleEndian.PutUint32(buf, value)
-	return w.writeAt(offset, buf)
+	if w.arena != nil {
+		if dst, ok, err := w.arena.directBytesAt(offset, 4); err != nil || ok {
+			if err != nil {
+				return err
+			}
+			binary.LittleEndian.PutUint32(dst, value)
+			return nil
+		}
+	}
+	var buf [4]byte
+	binary.LittleEndian.PutUint32(buf[:], value)
+	return w.writeAt(offset, buf[:])
 }
 
 func (w *Writer) writeUUIDAt(offset uint64, value UUID) error {
@@ -1414,11 +1529,14 @@ func (w *Writer) allocateOffsetArray(capacity uint64) (uint64, error) {
 	if err := w.ensureCompactObjectFits(offset, size); err != nil {
 		return 0, err
 	}
-	buf := make([]byte, align8(size))
+	buf, direct, err := w.newObjectBuffer(offset, size)
+	if err != nil {
+		return 0, err
+	}
 	putOffsetArrayHeader(buf[:offsetArrayObjectHeaderSize], offsetArrayHeader{
 		object: objectHeader{typ: objectTypeEntryArray, size: size},
 	})
-	if err := w.writeObject(offset, buf); err != nil {
+	if err := w.commitObjectBuffer(offset, buf, direct); err != nil {
 		return 0, err
 	}
 	if err := w.objectAdded(offset, size); err != nil {
@@ -1435,11 +1553,23 @@ func (w *Writer) allocateOffsetArray(capacity uint64) (uint64, error) {
 }
 
 func (w *Writer) readOffsetArrayHeader(offset uint64) (offsetArrayHeader, uint64, error) {
-	buf := make([]byte, offsetArrayObjectHeaderSize)
-	if err := w.readAt(buf, offset); err != nil {
-		return offsetArrayHeader{}, 0, err
+	var src []byte
+	if w.arena != nil {
+		if data, ok, err := w.arena.directBytesAt(offset, offsetArrayObjectHeaderSize); err != nil || ok {
+			if err != nil {
+				return offsetArrayHeader{}, 0, err
+			}
+			src = data
+		}
 	}
-	header, err := parseOffsetArrayHeader(buf)
+	var buf [offsetArrayObjectHeaderSize]byte
+	if src == nil {
+		if err := w.readAt(buf[:], offset); err != nil {
+			return offsetArrayHeader{}, 0, err
+		}
+		src = buf[:]
+	}
+	header, err := parseOffsetArrayHeader(src)
 	if err != nil {
 		return offsetArrayHeader{}, 0, err
 	}
@@ -1487,10 +1617,7 @@ func (w *Writer) linkDataToEntry(dataOffset, entryOffset uint64) error {
 			return err
 		}
 		if w.compact {
-			if err := w.writeUint32At(dataOffset+compactDataTailOffsetOffset, uint32(arrayOffset)); err != nil {
-				return err
-			}
-			if err := w.writeUint32At(dataOffset+compactDataTailEntriesOffset, 1); err != nil {
+			if err := w.writeCompactDataTail(dataOffset, arrayOffset, 1); err != nil {
 				return err
 			}
 		}
@@ -1499,20 +1626,95 @@ func (w *Writer) linkDataToEntry(dataOffset, entryOffset uint64) error {
 		if header.entryArrayOffset == 0 {
 			return errInvalidJournal
 		}
-		tailOffset, tailEntries, err := w.appendToDataEntryArray(header.entryArrayOffset, header.nEntries-1, entryOffset)
+		currentCount := header.nEntries - 1
+		tailOffset, tailEntries, ok, err := w.appendToCompactDataEntryArrayTail(dataOffset, currentCount, entryOffset)
 		if err != nil {
 			return err
 		}
-		if w.compact {
-			if err := w.writeUint32At(dataOffset+compactDataTailOffsetOffset, uint32(tailOffset)); err != nil {
+		if !ok {
+			tailOffset, tailEntries, err = w.appendToDataEntryArray(header.entryArrayOffset, currentCount, entryOffset)
+			if err != nil {
 				return err
 			}
-			if err := w.writeUint32At(dataOffset+compactDataTailEntriesOffset, uint32(tailEntries)); err != nil {
+		}
+		if w.compact {
+			if err := w.writeCompactDataTail(dataOffset, tailOffset, tailEntries); err != nil {
 				return err
 			}
 		}
 		return w.writeUint64At(dataOffset+56, header.nEntries+1)
 	}
+}
+
+func (w *Writer) appendToCompactDataEntryArrayTail(dataOffset, currentCount, entryOffset uint64) (uint64, uint64, bool, error) {
+	if !w.compact {
+		return 0, 0, false, nil
+	}
+	tailOffset, tailEntries, ok, err := w.readCompactDataTail(dataOffset)
+	if err != nil || !ok {
+		return 0, 0, ok, err
+	}
+	if tailEntries == 0 || tailEntries > currentCount {
+		return 0, 0, false, nil
+	}
+	header, cap, err := w.readOffsetArrayHeader(tailOffset)
+	if err != nil {
+		return 0, 0, false, nil
+	}
+	if header.nextArrayOffset != 0 || tailEntries > cap {
+		return 0, 0, false, nil
+	}
+	if tailEntries < cap {
+		if err := w.writeArrayItem(tailOffset, tailEntries, entryOffset); err != nil {
+			return 0, 0, false, err
+		}
+		return tailOffset, tailEntries + 1, true, nil
+	}
+	newOffset, err := w.allocateOffsetArray(nextEntryArrayCapacity(currentCount, cap))
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if err := w.writeUint64At(tailOffset+16, newOffset); err != nil {
+		return 0, 0, false, err
+	}
+	if err := w.writeArrayItem(newOffset, 0, entryOffset); err != nil {
+		return 0, 0, false, err
+	}
+	return newOffset, 1, true, nil
+}
+
+func (w *Writer) readCompactDataTail(dataOffset uint64) (uint64, uint64, bool, error) {
+	if !w.compact {
+		return 0, 0, false, nil
+	}
+	tailFieldOffset := dataOffset + compactDataTailOffsetOffset
+	if w.arena != nil {
+		if src, ok, err := w.arena.directBytesAt(tailFieldOffset, 8); err != nil || ok {
+			if err != nil {
+				return 0, 0, false, err
+			}
+			tailOffset := uint64(binary.LittleEndian.Uint32(src[0:4]))
+			tailEntries := uint64(binary.LittleEndian.Uint32(src[4:8]))
+			return tailOffset, tailEntries, tailOffset != 0 && tailEntries != 0, nil
+		}
+	}
+	var buf [8]byte
+	if err := w.readAt(buf[:], tailFieldOffset); err != nil {
+		return 0, 0, false, err
+	}
+	tailOffset := uint64(binary.LittleEndian.Uint32(buf[0:4]))
+	tailEntries := uint64(binary.LittleEndian.Uint32(buf[4:8]))
+	return tailOffset, tailEntries, tailOffset != 0 && tailEntries != 0, nil
+}
+
+func (w *Writer) writeCompactDataTail(dataOffset, tailOffset, tailEntries uint64) error {
+	if tailOffset > journalCompactSizeMax || tailEntries > uint64(^uint32(0)) {
+		return fmt.Errorf("%w: compact DATA tail exceeds 32-bit range", errInvalidJournal)
+	}
+	if err := w.writeUint32At(dataOffset+compactDataTailOffsetOffset, uint32(tailOffset)); err != nil {
+		return err
+	}
+	return w.writeUint32At(dataOffset+compactDataTailEntriesOffset, uint32(tailEntries))
 }
 
 func (w *Writer) appendToDataEntryArray(arrayOffset, currentCount, entryOffset uint64) (uint64, uint64, error) {

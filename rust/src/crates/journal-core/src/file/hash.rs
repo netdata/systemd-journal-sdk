@@ -28,7 +28,87 @@ fn jenkins_hash64_contiguous(data: &[u8]) -> u64 {
         return 0xdead_beef_dead_beef;
     }
 
-    jenkins_hash64_from_parts([data], data.len())
+    let mut remaining = data.len();
+    let init = 0xdead_beefu32.wrapping_add(remaining as u32);
+    let mut a = init;
+    let mut b = init;
+    let mut c = init;
+    let mut offset = 0usize;
+
+    while remaining > 12 {
+        a = a.wrapping_add(read_u32_le_at(data, offset));
+        b = b.wrapping_add(read_u32_le_at(data, offset + 4));
+        c = c.wrapping_add(read_u32_le_at(data, offset + 8));
+        mix(&mut a, &mut b, &mut c);
+        offset += 12;
+        remaining -= 12;
+    }
+
+    let tail = &data[offset..];
+    match remaining {
+        12 => {
+            c = c.wrapping_add(read_u32_le_at(tail, 8));
+            b = b.wrapping_add(read_u32_le_at(tail, 4));
+            a = a.wrapping_add(read_u32_le_at(tail, 0));
+        }
+        11 => {
+            c = c
+                .wrapping_add(tail[8] as u32 | ((tail[9] as u32) << 8) | ((tail[10] as u32) << 16));
+            b = b.wrapping_add(read_u32_le_at(tail, 4));
+            a = a.wrapping_add(read_u32_le_at(tail, 0));
+        }
+        10 => {
+            c = c.wrapping_add(tail[8] as u32 | ((tail[9] as u32) << 8));
+            b = b.wrapping_add(read_u32_le_at(tail, 4));
+            a = a.wrapping_add(read_u32_le_at(tail, 0));
+        }
+        9 => {
+            c = c.wrapping_add(tail[8] as u32);
+            b = b.wrapping_add(read_u32_le_at(tail, 4));
+            a = a.wrapping_add(read_u32_le_at(tail, 0));
+        }
+        8 => {
+            b = b.wrapping_add(read_u32_le_at(tail, 4));
+            a = a.wrapping_add(read_u32_le_at(tail, 0));
+        }
+        7 => {
+            b = b.wrapping_add(tail[4] as u32 | ((tail[5] as u32) << 8) | ((tail[6] as u32) << 16));
+            a = a.wrapping_add(read_u32_le_at(tail, 0));
+        }
+        6 => {
+            b = b.wrapping_add(tail[4] as u32 | ((tail[5] as u32) << 8));
+            a = a.wrapping_add(read_u32_le_at(tail, 0));
+        }
+        5 => {
+            b = b.wrapping_add(tail[4] as u32);
+            a = a.wrapping_add(read_u32_le_at(tail, 0));
+        }
+        4 => {
+            a = a.wrapping_add(read_u32_le_at(tail, 0));
+        }
+        3 => {
+            a = a.wrapping_add(tail[0] as u32 | ((tail[1] as u32) << 8) | ((tail[2] as u32) << 16));
+        }
+        2 => {
+            a = a.wrapping_add(tail[0] as u32 | ((tail[1] as u32) << 8));
+        }
+        1 => {
+            a = a.wrapping_add(tail[0] as u32);
+        }
+        0 => return ((c as u64) << 32) | b as u64,
+        _ => unreachable!("tail length cannot exceed 12"),
+    }
+
+    final_mix(&mut a, &mut b, &mut c);
+    ((c as u64) << 32) | b as u64
+}
+
+#[inline(always)]
+fn read_u32_le_at(data: &[u8], offset: usize) -> u32 {
+    debug_assert!(offset + 4 <= data.len());
+    // SAFETY: callers check chunk/tail length before requesting each word.
+    // `read_unaligned` is required because journal payloads are byte strings.
+    u32::from_le(unsafe { std::ptr::read_unaligned(data.as_ptr().add(offset).cast::<u32>()) })
 }
 
 fn jenkins_hash64_from_parts<'a>(
@@ -306,6 +386,23 @@ mod tests {
                     jenkins_hash64(payload),
                     jenkins_hash64_parts(parts),
                     "split at {first}, {second}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn contiguous_jenkins_fast_path_matches_multi_part_reference_for_tail_lengths() {
+        let payload: Vec<u8> = (0..=255).map(|i| ((i * 37 + 11) & 0xff) as u8).collect();
+
+        for len in 0..=payload.len() {
+            let joined = &payload[..len];
+            for split in 0..=len {
+                let parts = [&joined[..split], &joined[split..], &[][..]];
+                assert_eq!(
+                    jenkins_hash64(joined),
+                    jenkins_hash64_parts(parts),
+                    "len={len} split={split}"
                 );
             }
         }
