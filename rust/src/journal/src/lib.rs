@@ -119,7 +119,17 @@ impl Field {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReaderBounds {
+    /// Systemd-style mutable reader bounds.
+    ///
+    /// The reader keeps a cached file size and refreshes it only when a read
+    /// would go beyond the cached end of file, matching libsystemd's active
+    /// journal behavior without a metadata syscall on every object read.
     Live,
+    /// Immutable reader bounds.
+    ///
+    /// The reader fixes the file size at open time, like
+    /// `SD_JOURNAL_ASSUME_IMMUTABLE`, for polling/query consumers that do not
+    /// need to observe appends during the current scan.
     Snapshot,
 }
 

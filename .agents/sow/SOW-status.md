@@ -32,12 +32,13 @@ Last updated: 2026-05-29
 
 ## Recently Closed Or Completed
 
-- SOW-0044 - Rust Reader Hot-Path Optimization: completed. Rust reader snapshot
-  bounds and raw payload visitor APIs are implemented; single-file
-  `sdk-payloads` snapshot/windowed measured about 1.18M rows/s versus stock
-  libsystemd data enumeration at about 580k rows/s on the accepted 100k-row
-  compact fixture, with checksum-validated benchmark runs and passing Rust,
-  directory, and mixed-directory validation.
+- SOW-0044 - Rust Reader Hot-Path Optimization: completed after regression
+  repair. Rust `Live` reader bounds now use systemd-style cached mutable bounds
+  instead of refresh-every-slice behavior; 100k-row compact `sdk-payloads`
+  live/windowed measured about 1.34M rows/s versus stock libsystemd data
+  enumeration at about 660k rows/s, with 6 `statx` calls in the profiled live
+  hot-path run and passing Rust, directory, mixed-directory, live matrix, and
+  read-only reviewer gates.
 - SOW-0043 - Rust Reader Libsystemd/Jf Parity: completed. Rust now exposes
   additive byte-preserving RAW field-name reader methods, avoids lossy UTF-8
   field-name invention, preserves non-UTF8 RAW names in export byte output,

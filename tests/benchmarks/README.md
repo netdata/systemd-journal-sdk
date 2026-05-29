@@ -36,9 +36,10 @@ Rust reader benchmark modes separate API cost:
   baseline.
 
 Rust reader benchmark results record `bounds`. `live` is the default
-active-file-compatible mode and refreshes file bounds while reading.
-`snapshot` fixes file size at open time for polling/query consumers that do not
-need to observe appends during the current scan.
+active-file-compatible mode. It follows libsystemd's cached mutable bounds
+model: it refreshes cached file size only when a read would exceed the cached
+end of file. `snapshot` fixes file size at open time for polling/query
+consumers that do not need to observe appends during the current scan.
 
 The writer-core harness aligns initial hash table sizing across systemd and
 SDK drivers with the systemd v260.1 formula:

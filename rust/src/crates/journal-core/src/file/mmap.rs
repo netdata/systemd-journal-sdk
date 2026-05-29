@@ -300,11 +300,19 @@ impl<M: MemoryMap> WindowManager<M> {
         self.max_mapped_bytes = self.max_mapped_bytes.max(self.current_mapped_bytes());
     }
 
-    fn current_file_size(&mut self) -> Result<u64> {
-        if self.bounds_mode == BoundsMode::LiveFile {
-            self.file_size = self.file.metadata()?.len();
-        }
+    fn refresh_file_size(&mut self) -> Result<u64> {
+        self.file_size = self.file.metadata()?.len();
         Ok(self.file_size)
+    }
+
+    fn ensure_cached_file_contains(&mut self, end: u64) -> Result<()> {
+        if end <= self.file_size {
+            return Ok(());
+        }
+        if self.bounds_mode == BoundsMode::LiveFile && end <= self.refresh_file_size()? {
+            return Ok(());
+        }
+        Err(JournalError::ObjectExceedsFileBounds)
     }
 
     fn get_chunk_aligned_start(&self, position: u64) -> u64 {
@@ -329,11 +337,13 @@ impl<M: MemoryMap> WindowManager<M> {
             .ok_or(JournalError::ObjectExceedsFileBounds)?;
         let size = match self.bounds_mode {
             BoundsMode::LiveFile => {
-                let file_size = self.current_file_size()?;
-                if window_start >= file_size {
+                if window_start >= self.file_size {
+                    self.refresh_file_size()?;
+                }
+                if window_start >= self.file_size {
                     return Err(JournalError::ObjectExceedsFileBounds);
                 }
-                requested_size.min(file_size - window_start)
+                requested_size.min(self.file_size - window_start)
             }
             BoundsMode::Snapshot => {
                 if window_start >= self.file_size {
@@ -409,9 +419,7 @@ impl<M: MemoryMap> WindowManager<M> {
     }
 
     fn get_window(&mut self, position: u64, size_needed: u64) -> Result<&mut Window<M>> {
-        if self.bounds_mode == BoundsMode::WriterOwned
-            && self.strategy == ExperimentalMmapStrategy::WholeFile
-        {
+        if self.strategy == ExperimentalMmapStrategy::WholeFile {
             return self.get_whole_file_window(position, size_needed);
         }
 
@@ -486,7 +494,13 @@ impl<M: MemoryMap> WindowManager<M> {
         let requested_end = position
             .checked_add(size_needed)
             .ok_or(JournalError::ObjectExceedsFileBounds)?;
-        let target_end = requested_end.max(self.current_file_size()?);
+        match self.bounds_mode {
+            BoundsMode::LiveFile | BoundsMode::Snapshot => {
+                self.ensure_cached_file_contains(requested_end)?
+            }
+            BoundsMode::WriterOwned => {}
+        }
+        let target_end = requested_end.max(self.file_size);
         let window_end = self.get_chunk_aligned_end(target_end)?;
         let chunk_count = (window_end / self.chunk_size).max(1);
 
@@ -510,9 +524,7 @@ impl<M: MemoryMap> WindowManager<M> {
         let end = position
             .checked_add(size)
             .ok_or(JournalError::ObjectExceedsFileBounds)?;
-        if end > self.current_file_size()? {
-            return Err(JournalError::ObjectExceedsFileBounds);
-        }
+        self.ensure_cached_file_contains(end)?;
         let window = self.get_window(position, size)?;
         Ok(window.get_slice(position, size))
     }
@@ -766,6 +778,119 @@ mod tests {
             "Expected get_slice to succeed after recovery"
         );
         assert_eq!(wm.windows.len(), 1);
+    }
+
+    #[test]
+    fn live_reader_refreshes_file_size_only_when_access_exceeds_cache() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file
+            .write_all(&vec![1u8; PAGE_SIZE_TEST as usize])
+            .unwrap();
+        temp_file.flush().unwrap();
+
+        let file = File::open(temp_file.path()).unwrap();
+        let mut wm: WindowManager<Mmap> = WindowManager::new(file, PAGE_SIZE_TEST, 2).unwrap();
+        assert_eq!(wm.stats().file_size, PAGE_SIZE_TEST);
+
+        assert_eq!(wm.get_slice(0, 16).unwrap(), &[1u8; 16]);
+
+        temp_file
+            .write_all(&vec![2u8; PAGE_SIZE_TEST as usize])
+            .unwrap();
+        temp_file.flush().unwrap();
+
+        assert_eq!(wm.get_slice(128, 16).unwrap(), &[1u8; 16]);
+        assert_eq!(wm.stats().file_size, PAGE_SIZE_TEST);
+
+        assert_eq!(wm.get_slice(PAGE_SIZE_TEST + 128, 16).unwrap(), &[2u8; 16]);
+        assert_eq!(wm.stats().file_size, PAGE_SIZE_TEST * 2);
+    }
+
+    #[test]
+    fn snapshot_reader_does_not_refresh_file_size_after_growth() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file
+            .write_all(&vec![1u8; PAGE_SIZE_TEST as usize])
+            .unwrap();
+        temp_file.flush().unwrap();
+
+        let file = File::open(temp_file.path()).unwrap();
+        let mut wm: WindowManager<Mmap> = WindowManager::new_snapshot(
+            file,
+            PAGE_SIZE_TEST,
+            2,
+            ExperimentalMmapStrategy::Windowed,
+        )
+        .unwrap();
+        assert_eq!(wm.stats().file_size, PAGE_SIZE_TEST);
+
+        temp_file
+            .write_all(&vec![2u8; PAGE_SIZE_TEST as usize])
+            .unwrap();
+        temp_file.flush().unwrap();
+
+        assert!(matches!(
+            wm.get_slice(PAGE_SIZE_TEST + 128, 16).unwrap_err(),
+            JournalError::ObjectExceedsFileBounds
+        ));
+        assert_eq!(wm.stats().file_size, PAGE_SIZE_TEST);
+    }
+
+    #[test]
+    fn snapshot_whole_file_maps_cached_file_once() {
+        let temp_file = NamedTempFile::new().unwrap();
+        temp_file.as_file().set_len(PAGE_SIZE_TEST * 2).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .open(temp_file.path())
+            .unwrap();
+        let mut wm: WindowManager<Mmap> = WindowManager::new_snapshot(
+            file,
+            PAGE_SIZE_TEST,
+            32,
+            ExperimentalMmapStrategy::WholeFile,
+        )
+        .unwrap();
+
+        assert_eq!(wm.get_slice(PAGE_SIZE_TEST + 128, 16).unwrap(), &[0; 16]);
+        assert_eq!(wm.get_slice(128, 16).unwrap(), &[0; 16]);
+
+        let stats = wm.stats();
+        assert_eq!(stats.strategy, ExperimentalMmapStrategy::WholeFile);
+        assert_eq!(stats.file_size, PAGE_SIZE_TEST * 2);
+        assert_eq!(stats.current_mapped_bytes, PAGE_SIZE_TEST * 2);
+        assert_eq!(stats.map_count, 1);
+        assert_eq!(stats.remap_count, 0);
+    }
+
+    #[test]
+    fn snapshot_whole_file_does_not_refresh_file_size_after_growth() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file
+            .write_all(&vec![1u8; PAGE_SIZE_TEST as usize])
+            .unwrap();
+        temp_file.flush().unwrap();
+
+        let file = File::open(temp_file.path()).unwrap();
+        let mut wm: WindowManager<Mmap> = WindowManager::new_snapshot(
+            file,
+            PAGE_SIZE_TEST,
+            32,
+            ExperimentalMmapStrategy::WholeFile,
+        )
+        .unwrap();
+        assert_eq!(wm.get_slice(128, 16).unwrap(), &[1u8; 16]);
+
+        temp_file
+            .write_all(&vec![2u8; PAGE_SIZE_TEST as usize])
+            .unwrap();
+        temp_file.flush().unwrap();
+
+        assert!(matches!(
+            wm.get_slice(PAGE_SIZE_TEST + 128, 16).unwrap_err(),
+            JournalError::ObjectExceedsFileBounds
+        ));
+        assert_eq!(wm.stats().file_size, PAGE_SIZE_TEST);
     }
 
     #[test]

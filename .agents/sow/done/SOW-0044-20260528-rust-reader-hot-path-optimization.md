@@ -4,8 +4,8 @@
 
 Status: completed
 
-Sub-state: completed on 2026-05-29 after final whole-SOW review, validation,
-and audit.
+Sub-state: regression repaired on 2026-05-29. `Live` now uses systemd-style
+cached mutable bounds instead of refresh-every-slice behavior.
 
 ## Requirements
 
@@ -448,4 +448,161 @@ SOW-0026 plus the component integration SOWs.
 
 ## Regression Log
 
-None yet.
+## Regression - 2026-05-29
+
+What broke:
+
+- The SOW-0044 `ReaderBounds::Live` implementation refreshes file size on every
+  immutable slice access. This made Rust live/windowed `sdk-payloads` about
+  97k rows/s on the 100k-row benchmark, far slower than stock libsystemd's
+  about 580k rows/s data enumeration. That behavior is not systemd parity.
+
+Evidence:
+
+- Current Rust code before this regression fix:
+  - `rust/src/crates/journal-core/src/file/mmap.rs:303-307` refreshes metadata
+    whenever `current_file_size()` is called in `LiveFile` mode.
+  - `rust/src/crates/journal-core/src/file/mmap.rs:509-515` calls that path
+    before every immutable slice access.
+- systemd/systemd `v260.1` reference:
+  - `src/systemd/sd-journal.h:62-72` defines
+    `SD_JOURNAL_ASSUME_IMMUTABLE`, with the contract that entries added later
+    may be ignored.
+  - `src/libsystemd/sd-journal/journal-file.c:831-868` refreshes `fstat()`
+    only when the requested object range exceeds cached `last_stat.st_size`;
+    otherwise it uses the cached size.
+  - `src/libsystemd/sd-journal/sd-journal.c:1007-1018` reads live header
+    entry counts and skips only when entry count has not changed after EOF.
+  - `src/libsystemd/sd-journal/sd-journal.c:3121-3179` uses inotify/wait
+    processing for follow/change notification.
+
+Why previous validation missed it:
+
+- The benchmark separated live and snapshot modes, but the review accepted the
+  live slowdown as inherent active-file safety cost. The comparison was wrong:
+  Rust `Live` was stricter than systemd, not equivalent to systemd's mutable
+  reader behavior.
+
+Repair plan:
+
+1. Change Rust `BoundsMode::LiveFile` to keep cached file size and refresh it
+   only when a requested immutable range exceeds the cached size.
+2. Preserve `Snapshot` as the `SD_JOURNAL_ASSUME_IMMUTABLE`-style polling/query
+   mode that never observes growth during the current scan.
+3. Add regression tests that prove live readers can observe append growth after
+   refreshing only on beyond-cache access, while snapshot readers continue to
+   reject growth beyond their open-time size.
+4. Rerun Rust tests and the reader benchmark to compare cached-live against
+   libsystemd.
+5. Update specs, benchmark docs, and this SOW with the corrected terminology
+   and results.
+
+Validation required:
+
+- `cargo test --manifest-path rust/Cargo.toml -p journal-core -p journal`
+- `cargo test --manifest-path rust/Cargo.toml --workspace`
+- Reader benchmark smoke and 100k-row run with checksum validation.
+- Directory and mixed-directory Rust matrices if reader behavior changes
+  beyond the mmap bounds layer.
+- Whole-SOW read-only reviewer pass after local validation.
+
+Repair implemented:
+
+- Replaced refresh-every-slice live bounds with cached mutable bounds in
+  `WindowManager`. Live readers now refresh cached file size only when a
+  requested immutable range exceeds the cached size, matching the systemd
+  object-range pattern recorded above.
+- Preserved snapshot bounds as immutable at open time and added a regression
+  test proving external file growth is still rejected by a snapshot reader.
+- Added a live regression test proving external file growth is observed only
+  when the reader requests bytes beyond the cached end of file.
+- Fixed the related snapshot mmap strategy inconsistency discovered during
+  documentation review: `ExperimentalMmapStrategy::WholeFile` is now honored by
+  snapshot readers as well as writer-owned mappings. Live readers still force
+  windowed mappings.
+- Addressed the first reviewer pass' low-severity defense-in-depth observation
+  by making the private whole-file mmap path enforce cached bounds for both
+  `LiveFile` and `Snapshot`, while preserving `WriterOwned` growth semantics.
+- Added Rust API documentation for `ReaderBounds::Live` and
+  `ReaderBounds::Snapshot`.
+
+Regression validation:
+
+- `cargo test --manifest-path rust/Cargo.toml -p journal-core -p journal`:
+  PASS. `journal-core` now has 58 tests, including
+  `live_reader_refreshes_file_size_only_when_access_exceeds_cache`,
+  `snapshot_reader_does_not_refresh_file_size_after_growth`,
+  `snapshot_whole_file_maps_cached_file_once`, and
+  `snapshot_whole_file_does_not_refresh_file_size_after_growth`.
+- `cargo test --manifest-path rust/Cargo.toml --workspace`: PASS.
+- 100k-row compact reader benchmark with checksum validation:
+  `.local/benchmarks/reader-core/20260529T004557Z`: PASS.
+  Key medians:
+  - Rust single-file `sdk-payloads` live/windowed: 1,343,910 rows/s,
+    43,005,131 fields/s.
+  - Rust single-file `sdk-payloads` snapshot/windowed: 1,364,635 rows/s,
+    43,668,304 fields/s.
+  - Rust single-file `sdk-payloads` snapshot/whole-file: 1,354,952 rows/s,
+    43,358,464 fields/s.
+  - Rust single-file `facade-data` live/windowed: 985,498 rows/s,
+    31,535,935 fields/s.
+  - Stock libsystemd single-file data enumeration: 659,326 rows/s,
+    21,098,425 fields/s.
+  - Rust `open-files` `sdk-payloads` live/windowed: 901,276 rows/s,
+    29,742,124 fields/s.
+  - Stock libsystemd `open-files` data enumeration: 624,285 rows/s,
+    20,601,421 fields/s.
+- Current syscall profile:
+  `.local/benchmarks/reader-core/profiles/sdk-payloads-live-cached-current.strace`.
+  The 100k-row live/windowed `sdk-payloads` run made 6 `statx` calls, 4
+  `fstat` calls, and 111 total syscalls. The previous refresh-every-slice
+  behavior made 7,600,032 `statx` calls.
+- `python3 tests/interoperability/run_directory_matrix.py --readers stock
+  rust`: PASS with `systemd 260 (260.1-2-manjaro)`.
+- `python3 tests/interoperability/run_mixed_directory_matrix.py --readers
+  stock rust`: PASS, 27/27, with `systemd 260 (260.1-2-manjaro)`.
+- `python3 tests/interoperability/run_live_matrix.py --entries 200 --features
+  regular compact --writers rust --readers rust stock --poll-readers 1
+  --libsystemd-readers 1 --writer-delay-ms 1`: PASS, 2/2, with stock
+  libsystemd live readers observing all 200 entries.
+- `.agents/sow/audit.sh`: PASS after marking the regression repaired, moving
+  the SOW back to `done/`, and updating `SOW-status.md`.
+
+Regression artifact updates:
+
+- Updated `.agents/sow/specs/product-scope.md` to describe `Live` as
+  systemd-style cached mutable bounds instead of refresh-every-read behavior,
+  and recorded the corrected benchmark envelope.
+- Updated `tests/benchmarks/README.md` with the cached-live reader bounds
+  model.
+
+Regression reviewer gate:
+
+- First read-only whole-SOW review pass:
+  - `minimax-m2.7-coder`: PRODUCTION GRADE. Reported only a non-blocking
+    observation that `get_slice_mut()` computes `_end` for overflow checking.
+  - `glm-5.1`: PRODUCTION GRADE. Reported a low-severity defense-in-depth
+    observation that the private whole-file path should also enforce cached
+    bounds for `Snapshot`.
+  - `qwen3.6-plus`: stalled after initial file reads and produced no findings;
+    only the two qwen reviewer PIDs were stopped.
+- The low-severity `glm-5.1` observation was fixed with
+  `snapshot_whole_file_does_not_refresh_file_size_after_growth`, and focused
+  plus workspace Rust tests passed after the fix.
+- Second read-only whole-SOW review pass over the same scope:
+  - `minimax-m2.7-coder`: PRODUCTION GRADE; all five claims verified with
+    file/line evidence and no security, correctness, or compatibility blocker.
+  - `glm-5.1`: PRODUCTION GRADE; all five claims verified with file/line
+    evidence and only an optional readability comment on the branch semantics
+    in `ensure_cached_file_contains()`.
+- Reviewer process hygiene note: the second reviewer pass ran read-only
+  commands and one reviewer executed cargo without the local target-directory
+  environment. This created ignored build output under `rust/target`, but no
+  tracked source, SOW, spec, or documentation file was modified by reviewers.
+
+Regression outcome:
+
+- The Rust live reader now follows systemd's cached mutable bounds model and is
+  faster than stock libsystemd data enumeration in the measured hot path. The
+  original 5x live-mode slowdown was a regression in our implementation, not an
+  inherent live-reader cost.

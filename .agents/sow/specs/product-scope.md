@@ -546,10 +546,11 @@ Current Rust reader feature slice:
   seqnum metadata, binary field values, repeated field values, field
   enumeration, current-entry data enumeration, unique value enumeration, and
   systemd-compatible export/json/text formatting;
-- configurable reader bounds through `ReaderOptions`: default `Live` mode
-  refreshes file size while reading active files, while `Snapshot` mode fixes
-  the file size at open time for polling/query use cases that do not need to
-  observe appends during the current scan;
+- configurable reader bounds through `ReaderOptions`: default `Live` mode uses
+  systemd-style cached mutable bounds and refreshes file size only when a read
+  would exceed the cached end of file, while `Snapshot` mode fixes the file
+  size at open time for polling/query use cases that do not need to observe
+  appends during the current scan;
 - `ReaderOptions` exposes windowed and whole-file mmap strategies for snapshot
   readers. Windowed snapshot is the current Rust single-file hot-path baseline;
 - raw current-entry payload visitors on file and directory readers for
@@ -570,11 +571,12 @@ Current Rust reader feature slice:
 - Rust conformance adapter support for reader, matching, importer, compression,
   cursor, enumeration, stream, export, header parsing, and file-backed
   journalctl cases.
-- Current SOW-0044 benchmark evidence on a 100k-row compact fixture with 32
-  fields per row shows Rust single-file `sdk-payloads` snapshot/windowed at
-  about 1.18M rows/s versus stock libsystemd data enumeration at about 580k
-  rows/s. Live/windowed remains intentionally slower because it preserves
-  active-file bounds refresh behavior.
+- Current SOW-0044 regression benchmark evidence on a 100k-row compact fixture
+  with 32 fields per row shows Rust single-file `sdk-payloads` live/windowed at
+  about 1.34M rows/s and snapshot/windowed at about 1.36M rows/s versus stock
+  libsystemd data enumeration at about 660k rows/s. The fixed live mode uses
+  6 `statx` calls in the profiled hot-path run instead of the previous
+  7,600,032-call refresh-every-slice behavior.
 
 Current Rust reader limitations:
 
