@@ -32,12 +32,15 @@ Last updated: 2026-05-29
 
 ## Recently Closed Or Completed
 
-- SOW-0043 - Rust Reader Libsystemd/Jf Parity: completed after regression
-  repair. The Rust facade current-entry DATA enumeration now follows
-  libsystemd/Netdata `jf` current DATA object semantics: `restart_data` resets
-  state, `enumerate_available_data` returns one borrowed `FIELD=value` payload
-  at a time from a reusable reader-owned buffer, and journal object guards are
-  released before interleaved metadata or entry calls.
+- SOW-0043 - Rust Reader Libsystemd/Jf Parity: completed after second
+  regression repair. Rust facade current-entry DATA enumeration now matches the
+  systemd/libsystemd and old Netdata `jf` model: uncompressed DATA is returned
+  directly from mmap-backed journal payloads, compressed DATA uses one reusable
+  reader-owned decompression buffer, and active current-DATA state is
+  invalidated only when a later operation supersedes that pointer. The compact
+  100k-row benchmark measured Rust single-file `facade-data` live/windowed at
+  about 1.17M rows/s versus stock libsystemd data enumeration at about 645k
+  rows/s.
 - SOW-0044 - Rust Reader Hot-Path Optimization: completed after regression
   repair. Rust `Live` reader bounds now use systemd-style cached mutable bounds
   instead of refresh-every-slice behavior; 100k-row compact `sdk-payloads`

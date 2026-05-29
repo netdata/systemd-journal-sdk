@@ -72,9 +72,9 @@ Current reader scope:
   realtime/monotonic/seqnum/cursor metadata, and boot listing;
 - current-entry facade data enumeration returns borrowed `FIELD=value` bytes
   for the current DATA object, matching libsystemd-style validity until the
-  next data/read-pointer operation; the facade copies only the current DATA
-  object into one reusable reader buffer so journal object guards are released
-  before interleaved metadata or entry calls;
+  next data/read-pointer operation; uncompressed DATA is returned directly from
+  the mmap-backed journal payload, while compressed DATA is returned from one
+  reusable reader-owned decompression buffer;
 - direct facade unique queries return language-native `(field, value)` pairs;
   stateful unique enumeration returns full binary-safe `FIELD=value` payloads;
 - `--output export` uses systemd's size-prefixed binary field encoding and

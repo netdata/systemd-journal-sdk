@@ -4,14 +4,14 @@
 
 Status: completed
 
-Sub-state: reopened on 2026-05-29 for a facade data-enumeration regression.
-The completed SOW claimed Rust `jf`/libsystemd facade parity, but the Rust SDK
-facade pre-materialized current-entry DATA payloads into `Vec<Vec<u8>>` instead
-of exposing stateful current DATA object bytes like libsystemd and the old
-Netdata `jf` FFI.
-The regression repair is complete: current-entry DATA enumeration now returns
-one borrowed payload at a time from a reusable reader-owned buffer and releases
-journal object guards before returning.
+Sub-state: reopened again on 2026-05-29 for a facade uncompressed-DATA
+zero-copy regression. The prior repair made current-entry DATA enumeration
+stateful and safe, but copied uncompressed DATA into a reusable buffer instead
+of returning mmap-backed bytes like systemd/libsystemd and the old Netdata `jf`
+FFI. The regression repair is complete: uncompressed facade DATA now returns
+the mmap-backed payload directly, compressed DATA still uses the reusable
+decompression buffer, and active facade DATA state is invalidated only when a
+later operation supersedes the current DATA pointer.
 
 ## Requirements
 
@@ -596,3 +596,112 @@ Close disposition:
 - No valid deferred items remain. Follow-up reader alignment work for Go,
   Python, Node.js, and Netdata integrations is already tracked by separate
   pending SOWs.
+
+### 2026-05-29 - Facade Uncompressed DATA Copied Instead Of Mmap-Backed
+
+What broke:
+
+- The first regression repair changed the Rust facade to enumerate one current
+  DATA object at a time, but copied uncompressed DATA into the reusable
+  decompression buffer before returning.
+- That made the API safe and stateful, but it did not match the systemd and old
+  Netdata `jf` performance/lifetime model for uncompressed DATA.
+
+Evidence:
+
+- systemd/libsystemd reference:
+  - `systemd/systemd @ c0a5a2516d28`
+  - `man/sd_journal_get_data.xml`: returned DATA is in a read-only memory map
+    and remains valid until the next data operation or read-pointer change.
+  - `src/libsystemd/sd-journal/journal-file.c`: `maybe_decompress_payload()`
+    returns `f->compress_buffer` for compressed DATA and the mmap payload
+    pointer directly for uncompressed DATA.
+- Netdata vendored `jf` reference in this repository:
+  - `rust/src/crates/jf/journal_reader_ffi/src/lib.rs`:
+    `rsd_journal_enumerate_available_data()` returns the reusable
+    `decompressed_payload` buffer only for compressed DATA and returns
+    `data_guard.payload_bytes().as_ptr()` directly for uncompressed DATA.
+- Current SDK before this repair:
+  - `rust/src/journal/src/lib.rs`: `FileReader::enumerate_entry_payload()`
+    called `decompressed.extend_from_slice(data_guard.raw_payload())` for
+    uncompressed DATA.
+
+Why previous validation missed it:
+
+- The first regression repair correctly removed `Vec<Vec<u8>>`
+  pre-materialization and fixed `ValueGuardInUse` failures, but accepted
+  copy-per-uncompressed-payload as a conservative safety compromise.
+- The benchmark then showed the facade path slower than the Rust-native
+  payload visitor path, exposing that the conservative copy was still not the
+  intended libsystemd/`jf` model.
+
+Repair plan:
+
+1. Preserve one-current-DATA-at-a-time enumeration state.
+2. Return direct mmap-backed bytes for uncompressed DATA while keeping the
+   object guard active until the next invalidating operation.
+3. Keep compressed DATA on the reusable reader-owned buffer.
+4. Make later entry/data/read-pointer operations explicitly invalidate the
+   current facade DATA guard before they need another journal object.
+5. Keep interleaved metadata calls working by avoiding unnecessary object
+   lookups where possible or by invalidating consistently where the operation
+   is allowed to supersede current DATA.
+6. Rerun Rust facade tests, full Rust tests where practical, SOW audit, and the
+   reader benchmark requested by the user.
+
+Validation:
+
+- `cargo test --manifest-path Cargo.toml -p journal jf_facade`: PASS.
+  Confirms stateful facade enumeration, compressed DATA enumeration, and
+  interleaved metadata/entry calls still work.
+- `cargo test --manifest-path Cargo.toml -p journal
+  facade_uncompressed_data_uses_mmap_payload`: PASS. Confirms the returned
+  uncompressed facade payload pointer equals the underlying mmap-backed DATA
+  object payload pointer.
+- `cargo test --manifest-path Cargo.toml --workspace`: PASS. Confirms the Rust
+  workspace accepts the zero-copy uncompressed facade path.
+- `python3 tests/benchmarks/run_reader_core_benchmarks.py --rows 100000
+  --directory-rows 100000 --repetitions 3 --warmups 1 --format compact
+  --final-state offline --max-size-bytes 134217728
+  --directory-max-size-bytes 134217728`: PASS.
+  Result directory:
+  `.local/benchmarks/reader-core/20260529T023254Z`.
+- Benchmark medians after restoring uncompressed zero-copy facade DATA:
+  - Rust single-file `facade-data` live/windowed:
+    1,168,285 rows/s, 37,385,109 fields/s.
+  - Rust single-file `facade-data` snapshot/windowed:
+    1,163,903 rows/s, 37,244,897 fields/s.
+  - Rust single-file `facade-data` snapshot/whole-file:
+    1,168,070 rows/s, 37,378,244 fields/s.
+  - Stock libsystemd single-file data enumeration:
+    644,684 rows/s, 20,629,877 fields/s.
+  - Rust single-file `sdk-payloads` live/windowed:
+    1,326,435 rows/s, 42,445,932 fields/s.
+  - Rust open-files `facade-data` live/windowed:
+    1,089,767 rows/s, 35,962,313 fields/s.
+  - Rust open-files `facade-data` snapshot/windowed:
+    1,135,386 rows/s, 37,467,722 fields/s.
+  - Stock libsystemd open-files data enumeration:
+    592,492 rows/s, 19,552,247 fields/s.
+
+Reviewer status:
+
+- GLM: PRODUCTION GRADE. No blocking findings. Confirmed uncompressed facade
+  DATA returns mmap-backed bytes, compressed DATA uses the reusable reader-owned
+  buffer, current-pointer invalidation is correct, metadata cache is consistent,
+  docs/specs are accurate, and no security issues were found.
+- Qwen: PRODUCTION GRADE. No blocking findings. Confirmed zero-copy behavior
+  through the `data_guard.raw_payload()` path and pointer-equality regression
+  test. Non-blocking observation: an additional assertion on a later
+  uncompressed DATA object would strengthen coverage, but the current pointer
+  equality test already proves the repaired path and no follow-up SOW is
+  warranted for this narrow case.
+- Minimax: stalled and was stopped with targeted process IDs after repeated
+  analysis without a final review answer. No accepted finding was returned.
+
+Close disposition:
+
+- The regression was repaired and benchmarked.
+- Two completed read-only reviewers marked the repaired SOW production-grade.
+- No valid deferred items remain. Related future reader alignment and Netdata
+  integration work remains tracked by the existing pending SOWs.

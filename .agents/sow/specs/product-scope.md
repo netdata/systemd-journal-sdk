@@ -424,12 +424,13 @@ Accepted reader API layers:
 - Rust current-entry facade data enumeration returns borrowed `FIELD=value`
   bytes for the current DATA object. The returned slice has libsystemd-style
   current-pointer validity and must be treated as invalid after the next
-  data-enumeration or read-pointer operation. Rust copies only the current DATA
-  object into one reusable reader buffer before returning, including
-  uncompressed DATA, so journal object guards are released before interleaved
-  metadata or entry calls. Other languages may expose equivalent idiomatic
-  borrowed or copy-on-iteration forms, but must not pre-materialize every field
-  in an entry for facade enumeration.
+  data-enumeration or read-pointer operation. Rust returns uncompressed DATA
+  directly from the mmap-backed journal payload and returns compressed DATA
+  from one reusable reader-owned decompression buffer. Later operations that
+  need a different journal object explicitly invalidate the current DATA guard
+  before proceeding. Other languages may expose equivalent idiomatic borrowed
+  or copy-on-iteration forms, but must not pre-materialize every field in an
+  entry for facade enumeration.
 - Directory readers and `OpenFiles` merge candidate entries across all opened
   files using systemd-compatible ordering, including overlapping realtime
   ranges. Same seqnum-source entries compare by seqnum; same boot entries

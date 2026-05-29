@@ -287,13 +287,15 @@ struct ReaderCell {
 pub struct FileReader {
     inner: ReaderCell,
     temp_path: Option<PathBuf>,
+    current_key: Option<DirectoryEntryKey>,
     data_offsets: Vec<NonZeroU64>,
     data_index: usize,
+    entry_data_state_active: bool,
     decompressed: Vec<u8>,
 }
 
 enum StepStatus {
-    Valid,
+    Valid(DirectoryEntryKey),
     Skip,
     End,
 }
@@ -325,8 +327,10 @@ impl FileReader {
             }
             .build(),
             temp_path: None,
+            current_key: None,
             data_offsets: Vec::new(),
             data_index: 0,
+            entry_data_state_active: false,
             decompressed: Vec::new(),
         })
     }
@@ -347,8 +351,10 @@ impl FileReader {
             }
             .build(),
             temp_path: Some(temp_path),
+            current_key: None,
             data_offsets: Vec::new(),
             data_index: 0,
+            entry_data_state_active: false,
             decompressed: Vec::new(),
         })
     }
@@ -377,18 +383,24 @@ impl FileReader {
     }
 
     pub fn seek_head(&mut self) {
+        self.invalidate_entry_data_state();
+        self.current_key = None;
         self.inner.with_reader_mut(|reader| {
             reader.set_location(Location::Head);
         });
     }
 
     pub fn seek_tail(&mut self) {
+        self.invalidate_entry_data_state();
+        self.current_key = None;
         self.inner.with_reader_mut(|reader| {
             reader.set_location(Location::Tail);
         });
     }
 
     pub fn seek_realtime(&mut self, usec: u64) {
+        self.invalidate_entry_data_state();
+        self.current_key = None;
         self.inner.with_reader_mut(|reader| {
             reader.set_location(Location::Realtime(usec));
         });
@@ -434,26 +446,40 @@ impl FileReader {
                     return Ok(StepStatus::End);
                 }
 
-                match fields
-                    .reader
-                    .get_entry_offset()
-                    .and_then(|offset| fields.file.entry_ref(offset).map(|_| ()))
-                {
-                    Ok(()) => Ok(StepStatus::Valid),
+                match fields.reader.get_entry_offset().and_then(|offset| {
+                    let entry = fields.file.entry_ref(offset)?;
+                    let header = fields.file.journal_header_ref();
+                    Ok(DirectoryEntryKey {
+                        seqnum_id: header.seqnum_id,
+                        seqnum: entry.header.seqnum,
+                        boot_id: entry.header.boot_id,
+                        monotonic: entry.header.monotonic,
+                        realtime: entry.header.realtime,
+                        xor_hash: entry.header.xor_hash,
+                    })
+                }) {
+                    Ok(key) => Ok(StepStatus::Valid(key)),
                     Err(err) if recoverable_entry_error(&err) => Ok(StepStatus::Skip),
                     Err(err) => Err(err),
                 }
             })?;
 
             match status {
-                StepStatus::Valid => return Ok(true),
+                StepStatus::Valid(key) => {
+                    self.current_key = Some(key);
+                    return Ok(true);
+                }
                 StepStatus::Skip => continue,
-                StepStatus::End => return Ok(false),
+                StepStatus::End => {
+                    self.current_key = None;
+                    return Ok(false);
+                }
             }
         }
     }
 
     pub fn get_entry(&mut self) -> Result<Entry> {
+        self.invalidate_entry_data_state();
         let inner = &mut self.inner;
         let data_offsets = &mut self.data_offsets;
         let decompressed = &mut self.decompressed;
@@ -473,6 +499,7 @@ impl FileReader {
     where
         F: FnMut(&[u8]) -> Result<()>,
     {
+        self.invalidate_entry_data_state();
         let inner = &mut self.inner;
         let data_offsets = &mut self.data_offsets;
         let decompressed = &mut self.decompressed;
@@ -485,8 +512,15 @@ impl FileReader {
     pub fn clear_entry_data_state(&mut self) {
         self.data_offsets.clear();
         self.data_index = 0;
+        self.entry_data_state_active = false;
         self.inner
             .with_reader_mut(|reader| reader.entry_data_restart());
+    }
+
+    fn invalidate_entry_data_state(&mut self) {
+        if self.entry_data_state_active {
+            self.clear_entry_data_state();
+        }
     }
 
     pub fn entry_data_restart(&mut self) -> Result<()> {
@@ -500,6 +534,7 @@ impl FileReader {
             collect_entry_data_offsets(fields.file, offset, data_offsets)
         })?;
         self.data_index = 0;
+        self.entry_data_state_active = true;
         Ok(())
     }
 
@@ -511,17 +546,11 @@ impl FileReader {
         self.data_index += 1;
         let decompressed = &mut self.decompressed;
         self.inner.with_mut(|fields| {
-            let len = {
-                let data_guard = fields.reader.data_object_at(fields.file, data_offset)?;
-                if data_guard.is_compressed() {
-                    data_guard.decompress(decompressed)?
-                } else {
-                    decompressed.clear();
-                    decompressed.extend_from_slice(data_guard.raw_payload());
-                    decompressed.len()
-                }
-            };
-            fields.reader.entry_data_restart();
+            let data_guard = fields.reader.data_object_at(fields.file, data_offset)?;
+            if !data_guard.is_compressed() {
+                return Ok(Some(data_guard.raw_payload()));
+            }
+            let len = data_guard.decompress(decompressed)?;
             Ok(Some(&decompressed[..len]))
         })
     }
@@ -550,17 +579,26 @@ impl FileReader {
     }
 
     pub fn get_realtime_usec(&self) -> Result<u64> {
+        if let Some(key) = self.current_key {
+            return Ok(key.realtime);
+        }
         self.inner
             .with(|fields| fields.reader.get_realtime_usec(fields.file))
             .map_err(Into::into)
     }
 
     pub fn get_cursor(&self) -> Result<String> {
+        if let Some(key) = self.current_key {
+            return Ok(format_cursor_from_key(key));
+        }
         self.inner
             .with(|fields| build_cursor(fields.file, fields.reader))
     }
 
     fn current_directory_entry_key(&self) -> Result<DirectoryEntryKey> {
+        if let Some(key) = self.current_key {
+            return Ok(key);
+        }
         self.inner.with(|fields| {
             let offset = fields.reader.get_entry_offset()?;
             let entry = fields.file.entry_ref(offset)?;
@@ -1691,13 +1729,24 @@ fn build_cursor(file: &JournalFile<Mmap>, reader: &JournalReader<'_, Mmap>) -> R
     let (seqnum, seqnum_id) = reader.get_seqnum(file)?;
     let offset = reader.get_entry_offset()?;
     let entry = file.entry_ref(offset)?;
-    Ok(format!(
+    Ok(format_cursor_from_key(DirectoryEntryKey {
+        seqnum_id,
+        seqnum,
+        boot_id: entry.header.boot_id,
+        monotonic: entry.header.monotonic,
+        realtime: entry.header.realtime,
+        xor_hash: entry.header.xor_hash,
+    }))
+}
+
+fn format_cursor_from_key(key: DirectoryEntryKey) -> String {
+    format!(
         "s={};j={};c={:016x};n={}",
-        hex::encode(seqnum_id),
-        hex::encode(entry.header.boot_id),
-        entry.header.realtime,
-        seqnum
-    ))
+        hex::encode(key.seqnum_id),
+        hex::encode(key.boot_id),
+        key.realtime,
+        key.seqnum
+    )
 }
 
 fn read_entry_at(
@@ -2579,6 +2628,39 @@ mod tests {
             .expect("visit current entry payloads");
         assert!(payloads.iter().any(|payload| payload == b"MESSAGE=first"));
         assert!(payloads.iter().any(|payload| payload == b"BIN=\x00\xff"));
+    }
+
+    #[test]
+    fn facade_uncompressed_data_uses_mmap_payload() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("journals/system.journal");
+        write_facade_test_journal(&path);
+
+        let mut reader = FileReader::open(&path).expect("open reader");
+        assert!(reader.next().expect("first entry"));
+        reader.entry_data_restart().expect("restart data");
+        let first_offset = reader.data_offsets[0];
+        let (returned_ptr, returned_len, returned_payload) = {
+            let payload = reader
+                .enumerate_entry_payload()
+                .expect("enumerate data")
+                .expect("first payload");
+            (payload.as_ptr(), payload.len(), payload.to_vec())
+        };
+        reader.clear_entry_data_state();
+
+        let (mmap_ptr, mmap_len, mmap_payload) = reader.inner.with(|fields| {
+            let data = fields.file.data_ref(first_offset).expect("data ref");
+            (
+                data.raw_payload().as_ptr(),
+                data.raw_payload().len(),
+                data.raw_payload().to_vec(),
+            )
+        });
+
+        assert_eq!(returned_payload, mmap_payload);
+        assert_eq!(returned_len, mmap_len);
+        assert_eq!(returned_ptr, mmap_ptr);
     }
 
     #[test]
