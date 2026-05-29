@@ -1902,6 +1902,52 @@ def test_facade_unique_binary_values():
         assert values == [('BINARY', bytes([0, 255]))]
 
 
+def test_facade_data_payloads_remain_valid_for_current_row():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'facade-row-lifetime.journal')
+        writer = Writer.create(path)
+        writer.append([
+            {'name': 'MESSAGE', 'value': 'first'},
+            {'name': 'REPEAT', 'value': 'one'},
+            {'name': 'REPEAT', 'value': 'two'},
+        ], {'realtime_usec': 1000, 'monotonic_usec': 11})
+        writer.close()
+
+        journal = SdJournalOpenFiles([path], 0)
+        assert SdJournalNext(journal) == 1
+        SdJournalRestartData(journal)
+        payloads = collect_nullable(lambda: SdJournalEnumerateAvailableData(journal))
+        journal.close()
+
+        assert b'MESSAGE=first' in payloads
+        assert b'REPEAT=one' in payloads
+        assert b'REPEAT=two' in payloads
+
+
+def test_facade_compressed_mixed_data_payloads_remain_valid_for_current_row():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'facade-compressed-row-lifetime.journal')
+        large_value = b'mixed ' * 256
+        writer = Writer.create(path, {
+            'compression': 'zstd',
+            'compression_threshold_bytes': 8,
+        })
+        writer.append([
+            {'name': 'SMALL', 'value': 'x'},
+            {'name': 'LARGE', 'value': large_value},
+        ], {'realtime_usec': 1000, 'monotonic_usec': 11})
+        writer.close()
+
+        journal = SdJournalOpenFiles([path], 0)
+        assert SdJournalNext(journal) == 1
+        SdJournalRestartData(journal)
+        payloads = collect_nullable(lambda: SdJournalEnumerateAvailableData(journal))
+        journal.close()
+
+        assert b'SMALL=x' in payloads
+        assert b'LARGE=' + large_value in payloads
+
+
 def test_jf_facade_stateful_reader_operations():
     with tempfile.TemporaryDirectory() as td:
         path = os.path.join(td, 'jf-facade.journal')
@@ -2772,6 +2818,8 @@ def main():
     test_directory_writer_discards_empty_online_file_and_continues_sequence()
     test_directory_writer_zero_rotation_limits_disable_rotation()
     test_facade_unique_binary_values()
+    test_facade_data_payloads_remain_valid_for_current_row()
+    test_facade_compressed_mixed_data_payloads_remain_valid_for_current_row()
     test_jf_facade_stateful_reader_operations()
     test_reader_preserves_raw_byte_field_names()
     test_python_resource_context_managers_and_bytes_facade_payloads()

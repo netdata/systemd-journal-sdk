@@ -441,9 +441,10 @@ func SdJournalRestartData(j *sdJournal) error {
 }
 
 // SdJournalEnumerateAvailableData returns the next FIELD=value payload for the
-// current entry. The returned slice follows libsystemd-style borrowed lifetime:
-// it may alias reader-owned storage and is valid only until the next journal
-// reader call or close. Copy it when ownership is required.
+// current entry. Returned slices stay valid for the current row after
+// end-of-row enumeration and until the journal advances, seeks,
+// clears/restarts DATA enumeration, refreshes/remaps the file, or closes. Copy
+// the slice when longer ownership is required.
 func SdJournalEnumerateAvailableData(j *sdJournal) ([]byte, bool, error) {
 	if j.readerData {
 		return j.reader.EnumerateEntryPayload()

@@ -438,10 +438,11 @@ Accepted reader API layers:
   directly from whole-file mmap-backed journal payloads when that mode is
   selected, stores compressed DATA in row-scoped owned buffers, and uses
   row-scoped owned buffers for windowed mmap when pointer stability cannot be
-  proven. Go, Node.js, and Python must be brought to the same row-scoped
-  facade contract through their idiomatic borrowed or copy-on-iteration forms
-  before cross-language reader facade parity is claimed for this strengthened
-  lifetime.
+  proven. Go, Node.js, and Python expose the same row-scoped facade contract
+  through their idiomatic borrowed or copy-on-iteration forms: Go returns
+  mmap/read-at slices or fresh decompressed slices, Node.js returns `Buffer`
+  slices or fresh decompressed `Buffer` objects, and Python returns `bytes`
+  objects from the facade. Callback-style visitor APIs remain callback-scoped.
 - Directory readers and `OpenFiles` merge candidate entries across all opened
   files using systemd-compatible ordering, including overlapping realtime
   ranges. Same seqnum-source entries compare by seqnum; same boot entries

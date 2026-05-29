@@ -193,6 +193,93 @@ func TestSdJournalQueryUniqueBinaryValues(t *testing.T) {
 	}
 }
 
+func TestSdJournalDataPayloadsRemainValidForCurrentRow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "facade-row-lifetime.journal")
+	w, err := Create(path, testOptions())
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if err := w.Append([]Field{
+		StringField("MESSAGE", "first"),
+		{Name: "REPEAT", Value: []byte("one")},
+		{Name: "REPEAT", Value: []byte("two")},
+	}, EntryOptions{RealtimeUsec: 1000, MonotonicUsec: 11}); err != nil {
+		t.Fatalf("Append error: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close error: %v", err)
+	}
+
+	j, err := SdJournalOpenFiles([]string{path}, 0)
+	if err != nil {
+		t.Fatalf("SdJournalOpenFiles error: %v", err)
+	}
+	defer j.Close()
+
+	if n, err := SdJournalNext(j); err != nil || n != 1 {
+		t.Fatalf("Next = %d, %v", n, err)
+	}
+	if err := SdJournalRestartData(j); err != nil {
+		t.Fatalf("SdJournalRestartData error: %v", err)
+	}
+
+	payloads := collectFacadeData(t, j, SdJournalEnumerateAvailableData)
+	for _, want := range [][]byte{
+		[]byte("MESSAGE=first"),
+		[]byte("REPEAT=one"),
+		[]byte("REPEAT=two"),
+	} {
+		if !containsPayload(payloads, want) {
+			t.Fatalf("cached row payloads after end-of-row = %q, missing %q", payloads, want)
+		}
+	}
+}
+
+func TestSdJournalCompressedMixedDataPayloadsRemainValidForCurrentRow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "facade-compressed-row-lifetime.journal")
+	opts := testOptions()
+	opts.Compression = CompressionZSTD
+	opts.CompressThresholdBytes = 8
+	w, err := Create(path, opts)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	largeValue := bytes.Repeat([]byte("mixed "), 256)
+	if err := w.Append([]Field{
+		{Name: "SMALL", Value: []byte("x")},
+		{Name: "LARGE", Value: largeValue},
+	}, EntryOptions{RealtimeUsec: 1000, MonotonicUsec: 11}); err != nil {
+		t.Fatalf("Append error: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close error: %v", err)
+	}
+
+	j, err := SdJournalOpenFiles([]string{path}, 0)
+	if err != nil {
+		t.Fatalf("SdJournalOpenFiles error: %v", err)
+	}
+	defer j.Close()
+
+	if n, err := SdJournalNext(j); err != nil || n != 1 {
+		t.Fatalf("Next = %d, %v", n, err)
+	}
+	if err := SdJournalRestartData(j); err != nil {
+		t.Fatalf("SdJournalRestartData error: %v", err)
+	}
+
+	payloads := collectFacadeData(t, j, SdJournalEnumerateAvailableData)
+	wantLarge := append([]byte("LARGE="), largeValue...)
+	for _, want := range [][]byte{
+		[]byte("SMALL=x"),
+		wantLarge,
+	} {
+		if !containsPayload(payloads, want) {
+			t.Fatalf("cached compressed/mixed row payloads after end-of-row missing %q", want)
+		}
+	}
+}
+
 func TestSdJournalJfFacadeStatefulReaderOperations(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "jf-facade.journal")

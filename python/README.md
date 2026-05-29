@@ -308,6 +308,12 @@ python3 cmd/journalctl.py --file ./active.journal --follow --no-tail --boot=all
   `SdJournalEnumerateAvailableUnique(journal)` - stateful unique-value enumeration
   as full `FIELD=value` payloads
 - `SdJournalListBoots(journal)` - List boot entries
+
+Current-entry data payloads returned by `SdJournalEnumerateAvailableData()` stay
+valid after end-of-row enumeration and until the reader advances, seeks,
+clears/restarts DATA enumeration, refreshes/remaps the file, or closes. Python
+returns `bytes` objects from the facade, so callers can retain those objects
+normally.
 - `SdJournalAddMatch(journal, data)` - Add match filter (AND)
 - `SdJournalAddDisjunction(journal)` - Add OR group for subsequent matches
 - `SdJournalAddConjunction(journal)` - Start an explicit AND group

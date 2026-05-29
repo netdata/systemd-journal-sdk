@@ -364,6 +364,55 @@ for (const [length, expected] of sipVectors) {
 {
   const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
   try {
+    const journalPath = join(tempDir, 'facade-row-lifetime.journal');
+    const writer = Writer.create(journalPath);
+    writer.append([
+      { name: 'MESSAGE', value: 'first' },
+      { name: 'REPEAT', value: 'one' },
+      { name: 'REPEAT', value: 'two' },
+    ], { realtimeUsec: 1000n, monotonicUsec: 11n });
+    writer.close();
+
+    const journal = SdJournalOpenFiles([journalPath], 0);
+    assert.equal(SdJournalNext(journal), 1);
+    SdJournalRestartData(journal);
+    const payloads = collectNullable(() => SdJournalEnumerateAvailableData(journal));
+    assert.ok(payloads.some(p => p.equals(Buffer.from('MESSAGE=first'))));
+    assert.ok(payloads.some(p => p.equals(Buffer.from('REPEAT=one'))));
+    assert.ok(payloads.some(p => p.equals(Buffer.from('REPEAT=two'))));
+    journal.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const journalPath = join(tempDir, 'facade-compressed-row-lifetime.journal');
+    const writer = Writer.create(journalPath, { compression: 'zstd', compressionThresholdBytes: 8 });
+    const largeValue = Buffer.from('mixed '.repeat(256));
+    writer.append([
+      { name: 'SMALL', value: 'x' },
+      { name: 'LARGE', value: largeValue },
+    ], { realtimeUsec: 1000n, monotonicUsec: 11n });
+    writer.close();
+
+    const journal = SdJournalOpenFiles([journalPath], 0);
+    assert.equal(SdJournalNext(journal), 1);
+    SdJournalRestartData(journal);
+    const payloads = collectNullable(() => SdJournalEnumerateAvailableData(journal));
+    assert.ok(payloads.some(p => p.equals(Buffer.from('SMALL=x'))));
+    assert.ok(payloads.some(p => p.equals(Buffer.concat([Buffer.from('LARGE='), largeValue]))));
+    journal.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
     const journalPath = join(tempDir, 'raw-byte-names.journal');
     const invalidUtf8Name = Buffer.from([0xff, 0x52, 0x41, 0x57]);
     const nulName = Buffer.from('RAW\0NAME', 'latin1');

@@ -1035,9 +1035,10 @@ func (r *Reader) EntryDataRestart() error {
 }
 
 // EnumerateEntryPayload returns the next FIELD=value payload for the current
-// entry. The returned slice may alias reader-owned storage in mmap mode and is
-// valid only until the next reader method call, refresh, or Close. Use
-// CollectEntryPayloads or copy the slice when ownership is required.
+// entry. Returned slices stay valid for the current row after end-of-row
+// enumeration and until the reader advances, seeks, clears/restarts DATA
+// enumeration, refreshes/remaps the file, or closes. Use CollectEntryPayloads
+// or copy the slice when longer ownership is required.
 func (r *Reader) EnumerateEntryPayload() ([]byte, bool, error) {
 	if !r.entryDataActive {
 		if err := r.EntryDataRestart(); err != nil {

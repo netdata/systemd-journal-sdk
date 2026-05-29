@@ -88,10 +88,14 @@ state at open time.
 
 `VisitEntryPayloads`, `EnumerateEntryPayload`, and
 `SdJournalEnumerateAvailableData` are zero-copy hot paths. Returned or callback
-payload slices may alias reader-owned storage in mmap mode and are valid only
-until the next reader call, refresh, or close. Use `CollectEntryPayloads`,
-`GetEntryPayload`, `GetRaw`, `GetRawValues`, or an explicit copy when ownership
-is required.
+payload slices may alias reader-owned storage in mmap mode. Current-row
+payloads returned by `EnumerateEntryPayload` or
+`SdJournalEnumerateAvailableData` stay valid after end-of-row enumeration and
+until the reader advances, seeks, clears/restarts DATA enumeration,
+refreshes/remaps the file, or closes. Callback payload slices passed to
+`VisitEntryPayloads` remain callback-scoped. Use `CollectEntryPayloads`,
+`GetEntryPayload`, `GetRaw`, `GetRawValues`, or an explicit copy when longer
+ownership is required.
 
 ## Directory Contract
 

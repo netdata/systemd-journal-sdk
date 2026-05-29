@@ -263,6 +263,11 @@ Failure handling:
   Node.js, and Python facade parity for that strengthened lifetime remains
   tracked by this reader-performance umbrella before the reader phase can
   close.
+- SOW-0061 completed Go, Node.js, and Python facade DATA enumeration parity for
+  the Rust row-scoped current-entry payload lifetime contract. Public docs,
+  product specs, and tests now record that cached current-row payload
+  references/objects remain valid after end-of-row enumeration and until the
+  next row/lifecycle boundary.
 
 ## Validation
 
@@ -332,7 +337,7 @@ Follow-up mapping:
 - Python reader/writer Rust-port work: SOW-0053.
 - Node.js reader/writer Rust-port work: SOW-0054.
 - Cross-language row-scoped current-entry facade payload lifetime parity:
-  tracked by this SOW after SOW-0060 establishes the Rust reference behavior.
+  completed by SOW-0061.
 
 ## Outcome
 
@@ -351,8 +356,6 @@ Pending.
 - SOW-0052 - Rust Reader Last-Mile Optimization.
 - SOW-0053 - Python Reader And Writer Rust Port.
 - SOW-0054 - Node.js Reader And Writer Rust Port.
-- Cross-language row-scoped current-entry facade payload lifetime parity after
-  SOW-0060.
 
 ## Regression Log
 
