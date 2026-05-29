@@ -288,6 +288,7 @@ pub struct FileReader {
     inner: ReaderCell,
     temp_path: Option<PathBuf>,
     data_offsets: Vec<NonZeroU64>,
+    data_index: usize,
     decompressed: Vec<u8>,
 }
 
@@ -325,6 +326,7 @@ impl FileReader {
             .build(),
             temp_path: None,
             data_offsets: Vec::new(),
+            data_index: 0,
             decompressed: Vec::new(),
         })
     }
@@ -346,6 +348,7 @@ impl FileReader {
             .build(),
             temp_path: Some(temp_path),
             data_offsets: Vec::new(),
+            data_index: 0,
             decompressed: Vec::new(),
         })
     }
@@ -476,6 +479,50 @@ impl FileReader {
         inner.with_mut(|fields| {
             let offset = fields.reader.get_entry_offset()?;
             visit_entry_payloads_at(fields.file, offset, data_offsets, decompressed, visitor)
+        })
+    }
+
+    pub fn clear_entry_data_state(&mut self) {
+        self.data_offsets.clear();
+        self.data_index = 0;
+        self.inner
+            .with_reader_mut(|reader| reader.entry_data_restart());
+    }
+
+    pub fn entry_data_restart(&mut self) -> Result<()> {
+        self.inner
+            .with_reader_mut(|reader| reader.entry_data_restart());
+        let inner = &mut self.inner;
+        let data_offsets = &mut self.data_offsets;
+        data_offsets.clear();
+        inner.with_mut(|fields| {
+            let offset = fields.reader.get_entry_offset()?;
+            collect_entry_data_offsets(fields.file, offset, data_offsets)
+        })?;
+        self.data_index = 0;
+        Ok(())
+    }
+
+    pub fn enumerate_entry_payload(&mut self) -> Result<Option<&[u8]>> {
+        let Some(data_offset) = self.data_offsets.get(self.data_index).copied() else {
+            self.clear_entry_data_state();
+            return Ok(None);
+        };
+        self.data_index += 1;
+        let decompressed = &mut self.decompressed;
+        self.inner.with_mut(|fields| {
+            let len = {
+                let data_guard = fields.reader.data_object_at(fields.file, data_offset)?;
+                if data_guard.is_compressed() {
+                    data_guard.decompress(decompressed)?
+                } else {
+                    decompressed.clear();
+                    decompressed.extend_from_slice(data_guard.raw_payload());
+                    decompressed.len()
+                }
+            };
+            fields.reader.entry_data_restart();
+            Ok(Some(&decompressed[..len]))
         })
     }
 
@@ -1451,6 +1498,26 @@ impl DirectoryReader {
         self.files[self.index].visit_entry_payloads(visitor)
     }
 
+    pub fn clear_entry_data_state(&mut self) {
+        if self.index < self.files.len() {
+            self.files[self.index].clear_entry_data_state();
+        }
+    }
+
+    pub fn entry_data_restart(&mut self) -> Result<()> {
+        if self.index >= self.files.len() {
+            return Err(SdkError::NoEntry);
+        }
+        self.files[self.index].entry_data_restart()
+    }
+
+    pub fn enumerate_entry_payload(&mut self) -> Result<Option<&[u8]>> {
+        if self.index >= self.files.len() {
+            return Err(SdkError::NoEntry);
+        }
+        self.files[self.index].enumerate_entry_payload()
+    }
+
     pub fn collect_entry_payloads(&mut self, payloads: &mut Vec<Vec<u8>>) -> Result<()> {
         if self.index >= self.files.len() {
             return Err(SdkError::NoEntry);
@@ -2344,6 +2411,30 @@ mod tests {
         (journal_file, writer)
     }
 
+    fn create_facade_compressed_test_writer(path: &Path) -> (JournalFile<MmapMut>, JournalWriter) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create journal parent");
+        }
+        let repo_file = RepoFile::from_path(path)
+            .unwrap_or_else(|| panic!("test journal path should parse: {}", path.display()));
+        let mut journal_file = JournalFile::<MmapMut>::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_compression(Compression::Zstd)
+                .with_compress_threshold(8),
+        )
+        .expect("create compressed journal");
+        let writer = JournalWriter::new_with_compression(
+            &mut journal_file,
+            1,
+            test_uuid(4),
+            Compression::Zstd,
+            8,
+        )
+        .expect("create compressed writer");
+        (journal_file, writer)
+    }
+
     fn write_facade_test_journal(path: &Path) {
         let (mut journal_file, mut writer) = create_facade_test_writer(path);
         writer
@@ -2506,12 +2597,37 @@ mod tests {
         assert_eq!(monotonic, 11);
         assert_ne!(boot_id, [0; 16]);
 
+        SdJournalRestartData(&mut journal).expect("restart data for interleaved calls");
+        let first_payload = SdJournalEnumerateAvailableData(&mut journal)
+            .expect("enumerate first data")
+            .expect("first data exists");
+        assert!(!first_payload.is_empty());
+        assert_eq!(
+            SdJournalGetRealtimeUsec(&journal).expect("interleaved realtime"),
+            1000
+        );
+        assert!(
+            !SdJournalGetCursor(&journal)
+                .expect("interleaved cursor")
+                .is_empty()
+        );
+        assert_eq!(
+            SdJournalGetData(&mut journal, "REPEAT").expect("interleaved get data"),
+            b"REPEAT=one"
+        );
+        assert_eq!(
+            SdJournalGetEntry(&mut journal)
+                .expect("interleaved get entry")
+                .get_str("MESSAGE"),
+            Some("first")
+        );
+
         SdJournalRestartData(&mut journal).expect("restart data");
         let mut payloads = Vec::new();
         while let Some(payload) =
             SdJournalEnumerateAvailableData(&mut journal).expect("enumerate data")
         {
-            payloads.push(payload);
+            payloads.push(payload.to_vec());
         }
         assert!(payloads.iter().any(|payload| payload == b"REPEAT=one"));
         assert!(payloads.iter().any(|payload| payload == b"REPEAT=two"));
@@ -2521,7 +2637,7 @@ mod tests {
         while let Some(payload) =
             SdJournalEnumerateAvailableData(&mut journal).expect("enumerate restarted data")
         {
-            restarted_payloads.push(payload);
+            restarted_payloads.push(payload.to_vec());
         }
         assert_eq!(payloads, restarted_payloads);
         assert_eq!(
@@ -2632,6 +2748,36 @@ mod tests {
         let entry = SdJournalGetEntry(&mut filtered_multi).expect("filtered entry");
         assert_eq!(entry.get_str("MESSAGE"), Some("second"));
         assert_eq!(SdJournalNext(&mut filtered_multi).expect("filtered end"), 0);
+    }
+
+    #[test]
+    fn jf_facade_data_enumeration_handles_compressed_payloads() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("journals/system.journal");
+        let (mut journal_file, mut writer) = create_facade_compressed_test_writer(&path);
+        let compressed_payload = format!("MESSAGE={}", "compressed ".repeat(128));
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[compressed_payload.as_bytes()],
+                1000,
+                11,
+            )
+            .expect("write compressed entry");
+        journal_file.sync().expect("sync compressed journal");
+
+        let mut journal =
+            SdJournalOpenFiles(&[path.to_str().expect("utf8 path")], 0).expect("open files");
+        assert_eq!(SdJournalNext(&mut journal).expect("next"), 1);
+        SdJournalRestartData(&mut journal).expect("restart data");
+        let mut payloads = Vec::new();
+        while let Some(payload) =
+            SdJournalEnumerateAvailableData(&mut journal).expect("enumerate data")
+        {
+            payloads.push(payload.to_vec());
+        }
+
+        assert_eq!(payloads, vec![compressed_payload.into_bytes()]);
     }
 
     #[test]

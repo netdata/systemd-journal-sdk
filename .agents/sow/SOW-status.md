@@ -32,6 +32,12 @@ Last updated: 2026-05-29
 
 ## Recently Closed Or Completed
 
+- SOW-0043 - Rust Reader Libsystemd/Jf Parity: completed after regression
+  repair. The Rust facade current-entry DATA enumeration now follows
+  libsystemd/Netdata `jf` current DATA object semantics: `restart_data` resets
+  state, `enumerate_available_data` returns one borrowed `FIELD=value` payload
+  at a time from a reusable reader-owned buffer, and journal object guards are
+  released before interleaved metadata or entry calls.
 - SOW-0044 - Rust Reader Hot-Path Optimization: completed after regression
   repair. Rust `Live` reader bounds now use systemd-style cached mutable bounds
   instead of refresh-every-slice behavior; 100k-row compact `sdk-payloads`
@@ -39,11 +45,6 @@ Last updated: 2026-05-29
   enumeration at about 660k rows/s, with 6 `statx` calls in the profiled live
   hot-path run and passing Rust, directory, mixed-directory, live matrix, and
   read-only reviewer gates.
-- SOW-0043 - Rust Reader Libsystemd/Jf Parity: completed. Rust now exposes
-  additive byte-preserving RAW field-name reader methods, avoids lossy UTF-8
-  field-name invention, preserves non-UTF8 RAW names in export byte output,
-  documents UTF-8-only string helper boundaries, and passed two whole-SOW
-  reviewer rounds as production-grade.
 - SOW-0042 - Writer Final Certification: completed. Rust and Go writers are
   performance-certified for the accepted compact, no-compression, FSS-off direct
   and directory writer baselines. Node.js and Python writers are

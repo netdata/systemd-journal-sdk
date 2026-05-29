@@ -58,8 +58,6 @@ enum ReaderKind {
 pub struct SdJournal {
     reader: ReaderKind,
     output_mode: OutputMode,
-    data_items: Vec<Vec<u8>>,
-    data_index: usize,
     field_items: Vec<String>,
     field_index: usize,
     unique_items: Vec<Vec<u8>>,
@@ -146,8 +144,6 @@ impl SdJournal {
         Self {
             reader,
             output_mode: OutputMode::Default,
-            data_items: Vec::new(),
-            data_index: 0,
             field_items: Vec::new(),
             field_index: 0,
             unique_items: Vec::new(),
@@ -156,8 +152,10 @@ impl SdJournal {
     }
 
     fn reset_iterators(&mut self) {
-        self.data_items.clear();
-        self.data_index = 0;
+        match &mut self.reader {
+            ReaderKind::File(reader) => reader.clear_entry_data_state(),
+            ReaderKind::Directory(reader) => reader.clear_entry_data_state(),
+        }
         self.field_items.clear();
         self.field_index = 0;
         self.unique_items.clear();
@@ -295,23 +293,19 @@ impl SdJournal {
     }
 
     pub fn restart_data(&mut self) -> std::result::Result<(), Error> {
-        self.data_items.clear();
         match &mut self.reader {
-            ReaderKind::File(reader) => reader.collect_entry_payloads(&mut self.data_items),
-            ReaderKind::Directory(reader) => reader.collect_entry_payloads(&mut self.data_items),
+            ReaderKind::File(reader) => reader.entry_data_restart(),
+            ReaderKind::Directory(reader) => reader.entry_data_restart(),
         }
-        .map_err(map_error)?;
-        self.data_index = 0;
-        Ok(())
+        .map_err(map_error)
     }
 
-    pub fn enumerate_available_data(&mut self) -> std::result::Result<Option<Vec<u8>>, Error> {
-        if self.data_index >= self.data_items.len() {
-            return Ok(None);
+    pub fn enumerate_available_data(&mut self) -> std::result::Result<Option<&[u8]>, Error> {
+        match &mut self.reader {
+            ReaderKind::File(reader) => reader.enumerate_entry_payload(),
+            ReaderKind::Directory(reader) => reader.enumerate_entry_payload(),
         }
-        let item = std::mem::take(&mut self.data_items[self.data_index]);
-        self.data_index += 1;
-        Ok(Some(item))
+        .map_err(map_error)
     }
 
     pub fn enumerate_fields(&mut self) -> std::result::Result<Vec<String>, Error> {
@@ -516,7 +510,7 @@ pub fn SdJournalRestartData(j: &mut SdJournal) -> std::result::Result<(), Error>
 
 pub fn SdJournalEnumerateAvailableData(
     j: &mut SdJournal,
-) -> std::result::Result<Option<Vec<u8>>, Error> {
+) -> std::result::Result<Option<&[u8]>, Error> {
     j.enumerate_available_data()
 }
 

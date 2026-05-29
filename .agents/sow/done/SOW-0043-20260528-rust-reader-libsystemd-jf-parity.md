@@ -4,9 +4,14 @@
 
 Status: completed
 
-Sub-state: completed on 2026-05-29 after two whole-SOW reviewer rounds
-returned production-grade results and all findings were resolved or
-dispositioned.
+Sub-state: reopened on 2026-05-29 for a facade data-enumeration regression.
+The completed SOW claimed Rust `jf`/libsystemd facade parity, but the Rust SDK
+facade pre-materialized current-entry DATA payloads into `Vec<Vec<u8>>` instead
+of exposing stateful current DATA object bytes like libsystemd and the old
+Netdata `jf` FFI.
+The regression repair is complete: current-entry DATA enumeration now returns
+one borrowed payload at a time from a reusable reader-owned buffer and releases
+journal object guards before returning.
 
 ## Requirements
 
@@ -471,4 +476,123 @@ None yet.
 
 ## Regression Log
 
-None yet.
+### 2026-05-29 - Facade DATA Enumeration Pre-Copied Whole Entries
+
+What broke:
+
+- The Rust facade's `SdJournalRestartData()` and
+  `SdJournalEnumerateAvailableData()` were semantically compatible for values,
+  but not for the libsystemd/`jf` data-lifetime and hot-path contract.
+- `SdJournalRestartData()` collected every current-entry payload into
+  `Vec<Vec<u8>>`.
+- `SdJournalEnumerateAvailableData()` returned owned `Vec<u8>` values from
+  that collection.
+
+Evidence:
+
+- Current SDK before the fix:
+  - `rust/src/journal/src/facade.rs`: `SdJournal` stored
+    `data_items: Vec<Vec<u8>>`.
+  - `rust/src/journal/src/facade.rs`: `restart_data()` called
+    `collect_entry_payloads()`.
+  - `rust/src/journal/src/lib.rs`: `collect_entry_payloads()` copied every
+    payload with `payload.to_vec()`.
+- Netdata vendored `jf` reference in this repository:
+  - `rust/src/crates/jf/journal_reader_ffi/src/lib.rs`: `RsdJournal` stores one
+    reusable `decompressed_payload: Vec<u8>`.
+  - `rust/src/crates/jf/journal_reader_ffi/src/lib.rs`:
+    `rsd_journal_enumerate_available_data()` returns pointer plus length for
+    one DATA object at a time, using the reusable buffer only for compressed
+    DATA.
+- systemd/libsystemd reference:
+  - `systemd/systemd @ c0a5a2516d28`
+  - `src/systemd/sd-journal.h`: `SD_JOURNAL_FOREACH_DATA` wraps
+    `sd_journal_restart_data()` and `sd_journal_enumerate_available_data()`.
+  - `man/sd_journal_get_data.xml`: current DATA is returned as a pointer plus
+    size and remains valid only until the next journal data/read-pointer
+    operation.
+
+Why previous validation missed it:
+
+- SOW-0043 checked value-level behavior and RAW byte-name representation.
+- Reviewers validated that enumeration returned correct bytes, but the SOW did
+  not explicitly require libsystemd/`jf` memory-lifetime semantics or prohibit
+  pre-materializing all current-entry DATA payloads.
+
+Repair plan:
+
+1. Reopen this SOW as a regression.
+2. Add stateful entry DATA enumeration to the Rust core reader, matching the old
+   `jf` reader pattern.
+3. Change Rust facade current-entry DATA enumeration to return borrowed
+   `FIELD=value` bytes for one current DATA object at a time.
+4. Keep one reusable reader buffer for the current DATA payload. Compressed
+   DATA is decompressed into that buffer. Uncompressed DATA is copied into that
+   same buffer one object at a time so the journal object guard can be released
+   before returning.
+5. Update docs/specs to record the current-pointer validity contract.
+6. Run Rust tests, reader benchmark sanity checks, SOW audit, and whole-SOW
+   read-only reviewer passes before closing.
+
+Validation:
+
+- `cargo test --manifest-path rust/Cargo.toml -p journal jf_facade`: PASS.
+  Confirms stateful facade data enumeration, compressed DATA enumeration, and
+  interleaved metadata/entry calls after a data-enumeration call.
+- `cargo test --manifest-path rust/Cargo.toml --workspace`: PASS.
+  Confirms Rust SDK, journalctl wrapper, benchmark tool, imported `jf` crate,
+  and related crates compile and test with the borrowed facade API.
+- `python3 tests/benchmarks/run_reader_core_benchmarks.py --rows 100000
+  --directory-rows 100000 --repetitions 3 --warmups 1 --format compact
+  --final-state offline --max-size-bytes 134217728
+  --directory-max-size-bytes 134217728`: PASS.
+  Result directory:
+  `.local/benchmarks/reader-core/20260529T015522Z`.
+- Benchmark medians after the reusable-current-payload repair:
+  - Rust single-file `facade-data` live/windowed:
+    942,466 rows/s, 30,158,903 fields/s.
+  - Stock libsystemd single-file data enumeration:
+    492,716 rows/s, 15,766,898 fields/s.
+  - Rust open-files `facade-data` live/windowed:
+    973,205 rows/s, 32,115,779 fields/s.
+  - Stock libsystemd open-files data enumeration:
+    633,437 rows/s, 20,903,416 fields/s.
+
+Reviewer status:
+
+- Round 1:
+  - GLM: PRODUCTION GRADE, no blocking findings.
+  - Minimax: PRODUCTION GRADE, no blocking findings.
+  - Kimi: NOT PRODUCTION GRADE. Blocking finding: returning a direct borrowed
+    uncompressed mmap slice kept `JournalReader.data_guard` active after
+    `SdJournalEnumerateAvailableData()`, so interleaved metadata or entry
+    facade calls could fail with `ValueGuardInUse`. Disposition: fixed by
+    copying only the current DATA payload into one reusable reader buffer,
+    releasing the guard before returning, and adding an interleaved facade
+    regression assertion.
+  - Qwen: stalled after read-only file inspection and was stopped by targeted
+    process IDs. No finding was returned.
+- Round 2 after the Kimi finding fix:
+  - GLM: PRODUCTION GRADE. Confirmed the `ValueGuardInUse` blocker is fixed,
+    borrowed data lifetime is correct, directory delegation is sound, docs/specs
+    are accurate, and no safety or security issues were found.
+  - Minimax: PRODUCTION GRADE. Confirmed the same blocker is fixed, the returned
+    bytes borrow from the reusable owned reader buffer rather than mmap state,
+    libsystemd/`jf` current-pointer semantics are preserved, and no native
+    reader or directory-reader side effects were found.
+  - Kimi: review infrastructure failure, no accepted verdict. The model endpoint
+    failed with a LiteLLM empty-assistant-message error before returning a final
+    review. The partial transcript also ran a `cargo test --no-run` command
+    despite the read-only/no-build reviewer prompt; this used repository-local
+    `.local/` cache paths, returned no tracked-file changes, and is not used as
+    review evidence.
+  - Qwen: skipped in round 2 after the prior stalled run.
+
+Close disposition:
+
+- The original Kimi blocker was fixed and directly regression-tested.
+- Two second-round reviewers independently marked the repaired whole SOW
+  production-grade.
+- No valid deferred items remain. Follow-up reader alignment work for Go,
+  Python, Node.js, and Netdata integrations is already tracked by separate
+  pending SOWs.

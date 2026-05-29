@@ -350,7 +350,7 @@ fn read_facade(
                 counts.add_record_marker(realtime);
                 SdJournalRestartData(&mut journal)?;
                 while let Some(payload) = SdJournalEnumerateAvailableData(&mut journal)? {
-                    counts.add_payload(black_box(&payload));
+                    counts.add_payload(black_box(payload));
                 }
             }
             other => return Err(anyhow!("invalid facade mode: {other}")),

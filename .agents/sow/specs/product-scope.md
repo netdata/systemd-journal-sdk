@@ -421,6 +421,15 @@ Accepted reader API layers:
   binary-safe and preserve repeated values. `GetData` returns the first value
   for a repeated field; callers that need every repeated value use
   restart/enumerate data.
+- Rust current-entry facade data enumeration returns borrowed `FIELD=value`
+  bytes for the current DATA object. The returned slice has libsystemd-style
+  current-pointer validity and must be treated as invalid after the next
+  data-enumeration or read-pointer operation. Rust copies only the current DATA
+  object into one reusable reader buffer before returning, including
+  uncompressed DATA, so journal object guards are released before interleaved
+  metadata or entry calls. Other languages may expose equivalent idiomatic
+  borrowed or copy-on-iteration forms, but must not pre-materialize every field
+  in an entry for facade enumeration.
 - Directory readers and `OpenFiles` merge candidate entries across all opened
   files using systemd-compatible ordering, including overlapping realtime
   ranges. Same seqnum-source entries compare by seqnum; same boot entries
