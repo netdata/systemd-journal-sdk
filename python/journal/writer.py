@@ -43,6 +43,8 @@ MIN_COMPRESS_THRESHOLD = 8
 FIELD_NAME_POLICY_JOURNALD = 'journald'
 FIELD_NAME_POLICY_RAW = 'raw'
 FIELD_NAME_POLICY_JOURNAL_APP = 'journal-app'
+FIELD_CACHE_MAX_ENTRIES = 1024
+FIELD_CACHE_MAX_PAYLOAD_LEN = 128
 
 
 class _MappedArena:
@@ -67,6 +69,7 @@ class _MappedArena:
             except Exception:
                 self._mmap.flush()
                 self._mmap.close()
+                self._mmap = None
                 self._mmap = mmap.mmap(self._fd, size, access=mmap.ACCESS_WRITE)
         self._size = size
 
@@ -112,6 +115,18 @@ class Writer:
         self._entries_since_live_publication = 0
         self._field_name_policy = FIELD_NAME_POLICY_JOURNALD
         self._arena = None
+        self._field_cache = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            self.close()
+        except Exception:
+            if exc_type is None:
+                raise
+        return False
 
     @staticmethod
     def create(path, opts=None):
@@ -525,9 +540,13 @@ class Writer:
         return offset, h
 
     def _add_field(self, payload):
+        cached = self._field_cache.get(payload)
+        if cached is not None:
+            return cached
         h = self._hash(payload)
         existing = self._find_field(h, payload)
         if existing is not None:
+            self._cache_field(payload, existing)
             return existing
 
         offset = self._append_offset
@@ -550,7 +569,15 @@ class Writer:
 
         self._hmac_put_object(offset, OBJECT_TYPE_FIELD)
 
+        self._cache_field(payload, offset)
         return offset
+
+    def _cache_field(self, payload, offset):
+        if len(payload) > FIELD_CACHE_MAX_PAYLOAD_LEN:
+            return
+        if len(self._field_cache) >= FIELD_CACHE_MAX_ENTRIES and payload not in self._field_cache:
+            self._field_cache.clear()
+        self._field_cache[bytes(payload)] = offset
 
     def _find_data(self, h, payload):
         n_buckets = self._header['data_hash_table_size'] // HASH_ITEM_SIZE

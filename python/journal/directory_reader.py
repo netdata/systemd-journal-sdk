@@ -17,6 +17,17 @@ class DirectoryReader:
         self._direction = None
         self._boot_newest = _build_boot_newest(self._readers)
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            self.close()
+        except Exception:
+            if exc_type is None:
+                raise
+        return False
+
     @staticmethod
     def open(path):
         if not os.path.isdir(path):
@@ -144,10 +155,9 @@ class DirectoryReader:
             ok = reader.step() if direction == 0 else reader.step_back()
             if not ok:
                 return
-            entry = reader.get_entry()
-            if not entry:
+            key = reader.current_entry_key()
+            if key is None:
                 continue
-            key = _entry_key(reader, entry)
             if self._realtime_seek_bound is not None:
                 usec, seek_direction = self._realtime_seek_bound
                 if (seek_direction == 0 and key['realtime'] < usec) or (
@@ -273,6 +283,51 @@ class DirectoryReader:
                     results.append(v)
         return results
 
+    def current_entry_key(self):
+        if self._index < 0 or self._index >= len(self._readers):
+            return None
+        return self._readers[self._index].current_entry_key()
+
+    def visit_entry_payloads(self, visitor):
+        if self._index < 0 or self._index >= len(self._readers):
+            raise ValueError('no entry at current position')
+        return self._readers[self._index].visit_entry_payloads(visitor)
+
+    def collect_entry_payloads(self):
+        if self._index < 0 or self._index >= len(self._readers):
+            raise ValueError('no entry at current position')
+        return self._readers[self._index].collect_entry_payloads()
+
+    def get_entry_payload(self, field_name):
+        if self._index < 0 or self._index >= len(self._readers):
+            return None
+        return self._readers[self._index].get_entry_payload(field_name)
+
+    def get_raw(self, field_name):
+        if self._index < 0 or self._index >= len(self._readers):
+            return None
+        return self._readers[self._index].get_raw(field_name)
+
+    def get_raw_values(self, field_name):
+        if self._index < 0 or self._index >= len(self._readers):
+            return []
+        return self._readers[self._index].get_raw_values(field_name)
+
+    def entry_data_restart(self):
+        if self._index < 0 or self._index >= len(self._readers):
+            raise ValueError('no entry at current position')
+        return self._readers[self._index].entry_data_restart()
+
+    def enumerate_entry_payload(self):
+        if self._index < 0 or self._index >= len(self._readers):
+            return None
+        return self._readers[self._index].enumerate_entry_payload()
+
+    def clear_entry_data_state(self):
+        if self._index < 0 or self._index >= len(self._readers):
+            return
+        self._readers[self._index].clear_entry_data_state()
+
     def list_boots(self):
         boots = {}
         for r in self._readers:
@@ -300,8 +355,15 @@ class DirectoryReader:
         return result
 
     def close(self):
+        close_err = None
         for r in self._readers:
-            r.close()
+            try:
+                r.close()
+            except Exception as e:
+                if close_err is None:
+                    close_err = e
+        if close_err is not None:
+            raise close_err
 
     def _reset_merge_state(self):
         self._index = -1
@@ -363,17 +425,6 @@ def _id128_string_valid(value):
                 return False
         return True
     return False
-
-
-def _entry_key(reader, entry):
-    return {
-        'seqnum_id': reader.header()['seqnum_id'],
-        'seqnum': entry['seqnum'],
-        'boot_id': entry['boot_id'],
-        'monotonic': entry['monotonic'],
-        'realtime': entry['realtime'],
-        'xor_hash': entry['xor_hash'],
-    }
 
 
 def _build_boot_newest(readers):

@@ -713,6 +713,11 @@ Current Python reader feature slice:
 
 - regular and compact journal files;
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
+- mmap-backed file reads for normal and whole-file `.journal.zst` inputs
+  after repository-local decompression;
+- active `.journal` / `.journal~` readers refresh header and entry-array
+  state at tail/end so entries published after open become visible during the
+  same reader session;
 - whole-file zstd fixtures and zstd-compressed DATA objects through Python
   `compression.zstd` where the optional standard-library module is available;
 - xz and lz4-compressed DATA objects through standard-library `lzma` and
@@ -722,8 +727,18 @@ Current Python reader feature slice:
   ordering;
 - forward/backward iteration, cursors, realtime and monotonic timestamps,
   seqnum metadata, binary field values as `bytes`, repeated field values,
-  field enumeration, current-entry data enumeration, and unique value
-  enumeration;
+  field enumeration, current-entry data enumeration, raw current-entry payload
+  visitation, and unique value enumeration;
+- byte-preserving RAW field-name representation through full `FIELD=value`
+  payloads, `raw_fields`, `raw_field_values`, `FileReader.get_raw()`, and
+  `FileReader.get_raw_values()`. String-keyed `fields` and `field_values`
+  remain UTF-8 convenience maps and do not synthesize lossy names for non-UTF8
+  RAW field names;
+- context-manager cleanup for Python `FileReader`, `DirectoryReader`,
+  `SdJournal`, and `Writer` resource owners;
+- match filtering remains a systemd-compatible UTF-8 field-name convenience
+  path; non-UTF8 RAW field names are available through raw byte APIs rather
+  than `add_match()` string filters;
 - systemd-compatible export/json/text formatting for the accepted fixture set;
 - libsystemd-style match tree behavior from `SdJournalAddMatch()`,
   `SdJournalAddDisjunction()`, and `SdJournalAddConjunction()`;
@@ -739,6 +754,10 @@ Current Python reader/writer limitations:
 
 - boot listing APIs use file-level boot metadata in this slice; file-backed
   `--boot` filtering scans entry `_BOOT_ID` values;
+- Python facade current-entry DATA enumeration returns `bytes` per iteration
+  rather than borrowed mmap slices. It avoids pre-materializing the whole entry,
+  but it remains a copy-on-iteration API because Python cannot safely expose
+  libsystemd-style pointer lifetime semantics through ordinary `bytes`;
 - daemon-only journalctl operations remain unsupported.
 
 ## journalctl Target

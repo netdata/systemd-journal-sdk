@@ -14,6 +14,16 @@ no system journal library linkage.
 - LZ4 DATA object support via `lz4` block compression
 - Forward/backward iteration, cursors, timestamps
 - Binary field values as `bytes`
+- mmap-backed file reads for `.journal` / `.journal~` inputs and for
+  `.journal.zst` inputs after repository-local decompression
+- Open `.journal` / `.journal~` readers refresh header and entry-array state
+  at tail/end so published appends become visible during the same reader
+  session
+- Raw current-entry `FIELD=value` payload enumeration without materializing
+  the full entry first
+- Byte-preserving RAW field-name access via full payloads, `raw_fields`,
+  `raw_field_values`, `FileReader.get_raw()`, and
+  `FileReader.get_raw_values()`
 - Field enumeration and unique value queries
 - Export, JSON, and text output formatting
 - libsystemd-compatible `SdJournal` facade
@@ -75,8 +85,10 @@ files together.
 
 ## Requirements
 
-Python 3.14+ (for `compression.zstd` standard library module) and
-`lz4==4.4.5` for LZ4 DATA object compression/decompression.
+Python 3.14+ provides the `compression.zstd` standard library module needed for
+zstd DATA objects and whole-file `.journal.zst` inputs. Non-zstd reads do not
+use that module. LZ4 DATA object compression/decompression requires
+`lz4==4.4.5`.
 
 ## Basic Reader Usage
 
@@ -304,6 +316,17 @@ python3 cmd/journalctl.py --file ./active.journal --follow --no-tail --boot=all
 - `verify_file(path)` - Verify journal structure
 - `verify_file_with_key(path, verification_key)` - Verify sealed TAG/HMAC
   integrity and then journal structure
+- `FileReader.visit_entry_payloads(callback)` - Visit current-entry
+  `FIELD=value` payloads without materializing the full entry object
+- `FileReader.collect_entry_payloads()` - Collect current-entry full payloads
+- `FileReader.get_entry_payload(field_name)` - Get the first full payload for
+  a UTF-8 or byte field name
+- `FileReader.get_raw(field_name)` / `FileReader.get_raw_values(field_name)` -
+  Return byte-name field values from the current entry
+- `FileReader.refresh()` - Refresh header and entry-array state for active
+  `.journal` / `.journal~` inputs
+- `FileReader`, `DirectoryReader`, `SdJournal`, and `Writer` support Python
+  context-manager cleanup with `with ...:`
 
 ### Writer API
 

@@ -47,10 +47,13 @@ from journal import (  # noqa: E402
     parse_match_string,
 )
 from journal.entry import parse_data_object  # noqa: E402
+from journal.facade import _payload_from_field_value  # noqa: E402
+from journal import reader as reader_module  # noqa: E402
 from journal.header import (  # noqa: E402
     COMPATIBLE_SEALED,
     COMPACT_DATA_OBJECT_HEADER_SIZE,
     DATA_OBJECT_HEADER_SIZE,
+    ENTRY_OBJECT_HEADER_SIZE,
     FILE_SIZE_INCREASE,
     HEADER_SIZE,
     INCOMPATIBLE_COMPACT,
@@ -60,6 +63,7 @@ from journal.header import (  # noqa: E402
     OBJECT_COMPRESSED_XZ,
     OBJECT_COMPRESSED_ZSTD,
     OBJECT_TYPE_DATA,
+    OBJECT_TYPE_ENTRY,
     STATE_ARCHIVED,
     DEFAULT_FIELD_HASH_BUCKETS,
     data_hash_buckets_for_max_file_size,
@@ -1977,6 +1981,231 @@ def test_jf_facade_stateful_reader_operations():
         multi.close()
 
 
+def test_reader_preserves_raw_byte_field_names():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'raw-byte-names.journal')
+        invalid_utf8_name = b'\xffRAW'
+        nul_name = b'RAW\x00NAME'
+        writer = Writer.create(path, {'field_name_policy': FIELD_NAME_POLICY_RAW})
+        writer.append([
+            {'name': 'MESSAGE', 'value': 'raw byte names'},
+            {'name': invalid_utf8_name, 'value': b'invalid utf8'},
+            {'name': nul_name, 'value': b'nul name'},
+            {'name': 'field name', 'value': b'space'},
+            {'name': 'BINARY', 'value': b'a\x00=b'},
+        ], {'realtime_usec': 1_700_004_000_000_000, 'monotonic_usec': 1})
+        writer.close()
+
+        reader = FileReader.open(path)
+        assert reader.step()
+        entry = reader.get_entry()
+        assert entry['fields']['MESSAGE'] == b'raw byte names'
+        assert entry['raw_field_values'][invalid_utf8_name] == [b'invalid utf8']
+        assert entry['raw_field_values'][nul_name] == [b'nul name']
+        assert entry['raw_field_values'][b'field name'] == [b'space']
+        assert reader.get_raw(invalid_utf8_name) == b'invalid utf8'
+        assert reader.get_raw(nul_name) == b'nul name'
+        assert reader.get_raw_values(b'field name') == [b'space']
+        assert any(name == invalid_utf8_name and value == b'invalid utf8'
+                   for name, value in entry['raw_fields'])
+        assert invalid_utf8_name + b'=invalid utf8' in entry['payloads']
+        lossy_name = invalid_utf8_name.decode('utf-8', errors='replace')
+        assert lossy_name not in entry['fields']
+
+        payloads = []
+        reader.visit_entry_payloads(payloads.append)
+        assert invalid_utf8_name + b'=invalid utf8' in payloads
+        reader.close()
+
+        exported = export_entry(entry)
+        assert invalid_utf8_name + b'=invalid utf8\n' in exported
+        encoded = json_entry(entry)
+        assert lossy_name not in encoded
+
+        journal = SdJournalOpen(path, 0)
+        assert SdJournalNext(journal) == 1
+        SdJournalRestartData(journal)
+        facade_payloads = collect_nullable(lambda: SdJournalEnumerateAvailableData(journal))
+        journal.close()
+        assert invalid_utf8_name + b'=invalid utf8' in facade_payloads
+
+
+def test_python_resource_context_managers_and_bytes_facade_payloads():
+    assert _payload_from_field_value(b'MESSAGE', b'hello') == b'MESSAGE=hello'
+    assert _payload_from_field_value(bytearray(b'BINARY'), b'\x00value') == b'BINARY=\x00value'
+
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'context.journal')
+        with Writer.create(path) as writer:
+            writer.append([
+                {'name': 'MESSAGE', 'value': 'context managers'},
+                {'name': 'BINARY', 'value': b'a\x00b'},
+            ], {'realtime_usec': 1_700_004_010_000_000, 'monotonic_usec': 1})
+
+        with FileReader.open(path) as reader:
+            assert reader.step()
+            assert reader.get_raw('BINARY') == b'a\x00b'
+
+        with DirectoryReader.open(td) as reader:
+            assert reader.step()
+            assert reader.get_raw(b'BINARY') == b'a\x00b'
+
+        with SdJournalOpen(path, 0) as journal:
+            assert SdJournalNext(journal) == 1
+            assert SdJournalGetData(journal, b'MESSAGE') == b'MESSAGE=context managers'
+
+
+def test_python_resource_close_hardening():
+    class FakeReader:
+        def __init__(self, name, fail=False):
+            self.name = name
+            self.fail = fail
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+            if self.fail:
+                raise RuntimeError(f'{self.name} close failed')
+
+    first = FakeReader('first', fail=True)
+    second = FakeReader('second')
+    directory = DirectoryReader.__new__(DirectoryReader)
+    directory._readers = [first, second]
+    try:
+        directory.close()
+    except RuntimeError as e:
+        assert 'first close failed' in str(e)
+    else:
+        raise AssertionError('expected close failure from first reader')
+    assert first.closed is True
+    assert second.closed is True
+
+    reader = FileReader.__new__(FileReader)
+    reader.close = lambda: (_ for _ in ()).throw(RuntimeError('close failed'))
+    try:
+        with reader:
+            raise ValueError('body failed')
+    except ValueError as e:
+        assert str(e) == 'body failed'
+    else:
+        raise AssertionError('expected body exception to be preserved')
+
+    try:
+        with reader:
+            pass
+    except RuntimeError as e:
+        assert str(e) == 'close failed'
+    else:
+        raise AssertionError('expected close exception without body exception')
+
+
+def test_file_reader_refresh_failure_preserves_current_mapping():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'refresh-failure.journal')
+        writer = Writer.create(path)
+        writer.append([
+            {'name': 'MESSAGE', 'value': 'refresh guard'},
+        ], {'realtime_usec': 1_700_004_015_000_000, 'monotonic_usec': 1})
+        writer.close()
+
+        reader = FileReader.open(path)
+        original_parse = reader_module.parse_file_header
+        old_fd = reader._fd
+        old_mmap = reader._mmap
+        old_buffer = reader._buffer
+        old_offsets = list(reader._entry_offsets)
+        try:
+            reader.seek_head()
+            assert reader.step()
+            reader.entry_data_restart()
+            assert reader._entry_data_state_active is True
+            os.truncate(path, os.path.getsize(path) + 4096)
+
+            def fail_parse(_buffer):
+                raise ValueError('forced refresh parse failure')
+
+            reader_module.parse_file_header = fail_parse
+            assert reader.refresh() is False
+        finally:
+            reader_module.parse_file_header = original_parse
+        assert reader._fd == old_fd
+        assert reader._mmap is old_mmap
+        assert reader._buffer is old_buffer
+        assert reader._entry_offsets == old_offsets
+        assert reader._entry_data_state_active is False
+        assert reader._entry_data_offsets == []
+        reader.seek_head()
+        assert reader.step()
+        reader.close()
+
+
+def test_file_reader_rejects_entry_object_extending_past_buffer():
+    reader = FileReader.__new__(FileReader)
+    reader._buffer = bytearray(ENTRY_OBJECT_HEADER_SIZE)
+    reader._entry_item_size = 16
+    reader._compact = False
+    write_object_header(reader._buffer, 0, OBJECT_TYPE_ENTRY, 0, ENTRY_OBJECT_HEADER_SIZE + 8)
+    try:
+        reader._read_entry_metadata_and_offsets(0)
+    except ValueError as e:
+        assert 'entry object exceeds buffer' in str(e)
+    else:
+        raise AssertionError('expected oversized entry object rejection')
+
+
+def test_file_reader_refreshes_published_appends():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'live-reader.journal')
+        writer = Writer.create(path, {'live_publish_every_entries': 1})
+        try:
+            writer.append([
+                {'name': 'MESSAGE', 'value': 'first'},
+                {'name': 'LIVE_REFRESH', 'value': '1'},
+            ], {'realtime_usec': 1_700_004_020_000_000, 'monotonic_usec': 1})
+            writer.sync()
+
+            reader = FileReader.open(path)
+            try:
+                reader.seek_head()
+                assert reader.next()
+                assert reader.get_entry()['fields']['MESSAGE'] == b'first'
+                assert reader.next() is False
+
+                writer.append([
+                    {'name': 'MESSAGE', 'value': 'second'},
+                    {'name': 'LIVE_REFRESH', 'value': '2'},
+                ], {'realtime_usec': 1_700_004_020_000_001, 'monotonic_usec': 2})
+                writer.sync()
+
+                assert reader.next()
+                assert reader.get_entry()['fields']['MESSAGE'] == b'second'
+            finally:
+                reader.close()
+        finally:
+            writer.close()
+
+
+def test_reader_rejects_non_utf8_match_field_names():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'non-utf8-match.journal')
+        writer = Writer.create(path, {'field_name_policy': FIELD_NAME_POLICY_RAW})
+        writer.append([
+            {'name': b'\xffRAW', 'value': b'value'},
+        ], {'realtime_usec': 1_700_004_030_000_000, 'monotonic_usec': 1})
+        writer.close()
+
+        reader = FileReader.open(path)
+        try:
+            try:
+                reader.add_match(b'\xffRAW=value')
+            except ValueError:
+                pass
+            else:
+                raise AssertionError('expected non-UTF8 match field rejection')
+        finally:
+            reader.close()
+
+
 def test_fsprg_vectors():
     vectors_path = REPO_ROOT / 'tests/fss/fixtures/fsprg-vectors-v01.json'
     data = json.loads(vectors_path.read_text())
@@ -2544,6 +2773,13 @@ def main():
     test_directory_writer_zero_rotation_limits_disable_rotation()
     test_facade_unique_binary_values()
     test_jf_facade_stateful_reader_operations()
+    test_reader_preserves_raw_byte_field_names()
+    test_python_resource_context_managers_and_bytes_facade_payloads()
+    test_python_resource_close_hardening()
+    test_file_reader_refresh_failure_preserves_current_mapping()
+    test_file_reader_rejects_entry_object_extending_past_buffer()
+    test_file_reader_refreshes_published_appends()
+    test_reader_rejects_non_utf8_match_field_names()
     test_fsprg_vectors()
     test_verify_file_detects_corruption()
     test_verify_file_passes_on_valid_fixture()

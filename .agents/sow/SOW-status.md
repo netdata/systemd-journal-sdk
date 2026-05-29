@@ -23,13 +23,20 @@ Last updated: 2026-05-29
   packaging after reader gates.
 - SOW-0050 - Netdata Vendored Journal Removal: open. Final cleanup after all
   Netdata component integrations are complete.
-- SOW-0053 - Python Reader And Writer Rust Port: open. Ports finalized Rust
-  reader and writer behavior to Python after SOW-0052.
 - SOW-0054 - Node.js Reader And Writer Rust Port: open. Ports finalized Rust
   reader and writer behavior to Node.js after SOW-0053.
 
 ## Recently Closed Or Completed
 
+- SOW-0053 - Python Reader And Writer Rust Port: completed. Python now carries
+  the finalized Rust reader/writer contract where practical for pure Python:
+  mmap-backed normal and decompressed `.journal.zst` reads, active-file
+  refresh at tail/end, byte-preserving raw payload access, current-entry
+  facade DATA enumeration without full-entry materialization, context-manager
+  cleanup, and retained writer policy/compression/compact/FSS parity. Python
+  package tests, directory/mixed/live/journalctl matrices, reader benchmarks,
+  and audit passed; remaining writer throughput limits are documented as a
+  pure-Python runtime limitation.
 - SOW-0052 - Rust Reader Last-Mile Optimization: completed. Rust reader payload
   scans now avoid redundant ENTRY/DATA materialization, reuse active mmap
   windows, cache current-entry DATA offsets safely, and return mmap-backed

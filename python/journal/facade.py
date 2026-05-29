@@ -47,16 +47,36 @@ def export_entry(entry):
         for v in vals:
             parts.append(_format_export_field(name, v))
 
+    byte_name_fields = []
+    for name, value in entry.get('raw_fields', []):
+        if name == b'_BOOT_ID':
+            continue
+        try:
+            name.decode('utf-8')
+            continue
+        except Exception:
+            pass
+        byte_name_fields.append((name, value))
+    byte_name_fields.sort(key=lambda item: (item[0], item[1]))
+    for name, value in byte_name_fields:
+        parts.append(_format_export_field_bytes(name, value))
+
     parts.append(b'\n')
     return b''.join(parts)
 
 
 def _format_export_field(name, value):
-    line = name.encode('utf-8') + b'=' + value
+    return _format_export_field_bytes(name.encode('utf-8'), value)
+
+
+def _format_export_field_bytes(name, value):
+    name = bytes(name)
+    value = bytes(value)
+    line = name + b'=' + value
     if _is_printable(value, False):
         return line + b'\n'
     size_bytes = len(value).to_bytes(8, 'little')
-    return name.encode('utf-8') + b'\n' + size_bytes + value + b'\n'
+    return name + b'\n' + size_bytes + value + b'\n'
 
 
 def json_entry(entry):
@@ -103,10 +123,22 @@ class SdJournal:
         self._output_mode = 'default'
         self._data_items = []
         self._data_index = 0
+        self._data_reader_active = False
         self._field_items = []
         self._field_index = 0
         self._unique_items = []
         self._unique_index = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            self.close()
+        except Exception:
+            if exc_type is None:
+                raise
+        return False
 
     @staticmethod
     def open(path):
@@ -130,11 +162,15 @@ class SdJournal:
         return SdJournal(DirectoryReader.open_files(paths))
 
     def close(self):
+        self._reset_iterators()
         self._reader.close()
 
     def _reset_iterators(self):
+        if self._data_reader_active and hasattr(self._reader, 'clear_entry_data_state'):
+            self._reader.clear_entry_data_state()
         self._data_items = []
         self._data_index = 0
+        self._data_reader_active = False
         self._field_items = []
         self._field_index = 0
         self._unique_items = []
@@ -178,10 +214,9 @@ class SdJournal:
             entry = self.get_entry()
             got = _parse_cursor(entry['cursor'])
             if got['realtime'] > want['realtime']:
-                break
+                return
             if got == want:
                 return
-        raise ValueError('cursor not found')
 
     def set_output_mode(self, mode):
         self._output_mode = mode
@@ -226,13 +261,31 @@ class SdJournal:
         return entry['monotonic'], entry['boot_id']
 
     def get_data(self, field_name):
+        if hasattr(self._reader, 'get_entry_payload'):
+            payload = self._reader.get_entry_payload(field_name)
+            if payload is not None:
+                return bytes(payload)
         entry = self.get_entry()
-        values = entry['field_values'].get(field_name) if entry else None
+        values = None
+        if entry:
+            if isinstance(field_name, str):
+                values = entry['field_values'].get(field_name)
+            else:
+                values = entry.get('raw_field_values', {}).get(_field_name_to_bytes(field_name))
+                string_name = _field_name_to_string_or_none(field_name)
+                if values is None and string_name is not None:
+                    values = entry['field_values'].get(string_name)
         if not values:
             raise ValueError('data field not found')
         return _payload_from_field_value(field_name, values[0])
 
     def restart_data(self):
+        if hasattr(self._reader, 'entry_data_restart'):
+            self._reader.entry_data_restart()
+            self._data_items = []
+            self._data_index = 0
+            self._data_reader_active = True
+            return
         entry = self.get_entry()
         if not entry:
             raise ValueError('no entry at current position')
@@ -241,8 +294,15 @@ class SdJournal:
             payloads = _payloads_from_entry(entry)
         self._data_items = list(payloads)
         self._data_index = 0
+        self._data_reader_active = False
 
     def enumerate_available_data(self):
+        if self._data_reader_active:
+            item = self._reader.enumerate_entry_payload()
+            if item is None:
+                self._data_reader_active = False
+                return None
+            return bytes(item)
         if self._data_index >= len(self._data_items):
             return None
         item = self._data_items[self._data_index]
@@ -482,7 +542,24 @@ def _parse_cursor(cursor):
 
 
 def _payload_from_field_value(field_name, value):
-    return field_name.encode('utf-8') + b'=' + bytes(value)
+    return _field_name_to_bytes(field_name) + b'=' + bytes(value)
+
+
+def _field_name_to_bytes(field_name):
+    if isinstance(field_name, bytes):
+        return field_name
+    if isinstance(field_name, (bytearray, memoryview)):
+        return bytes(field_name)
+    return str(field_name).encode('utf-8')
+
+
+def _field_name_to_string_or_none(field_name):
+    if isinstance(field_name, str):
+        return field_name
+    try:
+        return _field_name_to_bytes(field_name).decode('utf-8')
+    except UnicodeDecodeError:
+        return None
 
 
 def _payloads_from_entry(entry):
