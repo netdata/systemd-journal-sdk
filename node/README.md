@@ -14,6 +14,11 @@ no system journal library linkage.
 - LZ4 DATA object support via pure JavaScript `lz4js`
 - Forward/backward iteration, cursors, timestamps
 - Binary field values as `Buffer`
+- Byte-preserving RAW field names via `entry.rawFields`,
+  `entry.rawFieldValues`, `reader.getRaw()`, and `reader.getRawValues()`
+- Current-entry payload scanning via `reader.visitEntryPayloads()` and the
+  libsystemd-style DATA enumeration facade
+- Active-file refresh at tail/end for published appends
 - Field enumeration and unique value queries
 - Export, JSON, and text output formatting
 - libsystemd-compatible `SdJournal` facade
@@ -325,7 +330,9 @@ node cmd/journalctl/index.js --file ./active.journal --follow --no-tail --boot=a
 
 - Full systemd object-graph verification parity is tracked separately
 - Node.js writer file access uses `Buffer` plus positioned `node:fs`
-  reads/writes. No native mmap dependency is loaded by the SDK runtime path.
+  reads/writes. Node.js reader access uses whole-file Buffers plus small header
+  reads for active refresh. No native mmap dependency is loaded by the SDK
+  runtime path.
 - Daemon-only operations not supported
 
 ## Dependencies

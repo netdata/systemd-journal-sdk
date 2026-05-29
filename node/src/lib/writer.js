@@ -40,6 +40,8 @@ export const MIN_COMPRESS_THRESHOLD = 8;
 export const FIELD_NAME_POLICY_JOURNALD = 'journald';
 export const FIELD_NAME_POLICY_RAW = 'raw';
 export const FIELD_NAME_POLICY_JOURNAL_APP = 'journal-app';
+const FIELD_CACHE_MAX_ENTRIES = 1024;
+const FIELD_CACHE_MAX_PAYLOAD_LEN = 128;
 
 export class Writer {
   constructor(fd, path, lock) {
@@ -59,6 +61,7 @@ export class Writer {
     this.livePublishEveryEntries = 1;
     this.entriesSinceLivePublication = 0;
     this.fieldNamePolicy = FIELD_NAME_POLICY_JOURNALD;
+    this.fieldCache = new Map();
   }
 
   // Create or truncate a journal file.
@@ -438,9 +441,15 @@ export class Writer {
   }
 
   _addField(payload) {
+    const cacheKey = fieldCacheKey(payload);
+    const cached = cacheKey === null ? undefined : this.fieldCache.get(cacheKey);
+    if (cached !== undefined) return cached;
     const hash = this._hash(payload);
     const existing = this._findField(hash, payload);
-    if (existing !== null) return existing;
+    if (existing !== null) {
+      this._cacheField(payload, existing);
+      return existing;
+    }
 
     const offset = this.appendOffset;
     const size = BigInt(FIELD_OBJECT_HEADER_SIZE + payload.length);
@@ -458,7 +467,17 @@ export class Writer {
     this.header.n_fields++;
     this._hmacPutObject(offset, OBJECT_TYPE_FIELD);
 
+    this._cacheField(payload, offset);
     return offset;
+  }
+
+  _cacheField(payload, offset) {
+    const cacheKey = fieldCacheKey(payload);
+    if (cacheKey === null) return;
+    if (this.fieldCache.size >= FIELD_CACHE_MAX_ENTRIES && !this.fieldCache.has(cacheKey)) {
+      this.fieldCache.clear();
+    }
+    this.fieldCache.set(cacheKey, offset);
   }
 
   _findData(hash, payload) {
@@ -1049,6 +1068,11 @@ function readObjectHeaderFromFd(fd, offset) {
   const buf = Buffer.alloc(OBJECT_HEADER_SIZE);
   readSync(fd, buf, 0, OBJECT_HEADER_SIZE, Number(offset));
   return parseObjectHeader(buf, 0);
+}
+
+function fieldCacheKey(payload) {
+  if (payload.length > FIELD_CACHE_MAX_PAYLOAD_LEN) return null;
+  return payload.toString('base64');
 }
 
 function syncParentDirectory(path) {

@@ -650,6 +650,18 @@ Current Node.js reader feature slice:
   seqnum metadata, binary field values as `Buffer`, repeated field values,
   field enumeration, current-entry data enumeration, and unique value
   enumeration;
+- current-entry raw payload visitors on file and directory readers for
+  allocation-light scans over `FIELD=value` bytes;
+- byte-preserving RAW field-name representation through `entry.rawFields`,
+  `entry.rawFieldValues`, `reader.getRaw()`, and `reader.getRawValues()`.
+  `entry.fields` and `entry.fieldValues` remain UTF-8 string-keyed convenience
+  maps and do not synthesize lossy names for non-UTF8 RAW field names;
+- active-file refresh at tail/end for live append visibility. Because the
+  accepted Node.js runtime path has no non-native mmap support, refresh uses
+  small header reads to detect published appends and reloads the file Buffer
+  only when published entry metadata changes;
+- facade DATA enumeration and `getData()` use current-entry payload access
+  instead of materializing full entries when the reader supports it;
 - systemd-compatible export/json/text formatting for the accepted fixture set;
 - libsystemd-style match tree behavior from `SdJournalAddMatch()`,
   `SdJournalAddDisjunction()`, and `SdJournalAddConjunction()`;
@@ -665,6 +677,10 @@ Current Node.js reader/writer limitations:
 
 - boot listing APIs use file-level boot metadata in this slice; file-backed
   `--boot` filtering scans entry `_BOOT_ID` values;
+- Node.js reader and writer file access uses `Buffer` plus positioned
+  `node:fs` reads/writes. npm mmap candidates checked during SOW-0054 were
+  native binding packages, so no mmap dependency is loaded by the SDK runtime
+  path;
 - daemon-only journalctl operations remain unsupported.
 
 Current Python writer feature slice:

@@ -16,7 +16,8 @@ import {
 } from '../src/lib/writer.js';
 import { Log } from '../src/lib/directory-writer.js';
 import { FileReader } from '../src/lib/reader.js';
-import { parseDataObject } from '../src/lib/entry.js';
+import { DirectoryReader } from '../src/lib/directory-reader.js';
+import { parseDataObject, parseEntryObject } from '../src/lib/entry.js';
 import {
   exportEntry, jsonEntry, SdJournalOpen, SdJournalOpenFiles, SdJournalQueryUnique,
   SdJournalNext, SdJournalPrevious, SdJournalSeekRealtimeUsec,
@@ -29,6 +30,7 @@ import {
 } from '../src/facade.js';
 import {
   DATA_OBJECT_HEADER_SIZE,
+  ENTRY_OBJECT_HEADER_SIZE,
   COMPACT_DATA_OBJECT_HEADER_SIZE,
   HEADER_SIZE,
   INCOMPATIBLE_COMPACT,
@@ -38,6 +40,7 @@ import {
   OBJECT_COMPRESSED_XZ,
   OBJECT_COMPRESSED_ZSTD,
   OBJECT_TYPE_DATA,
+  OBJECT_TYPE_ENTRY,
   OBJECT_TYPE_TAG,
   FILE_SIZE_INCREASE,
   JOURNAL_COMPACT_SIZE_MAX,
@@ -329,6 +332,8 @@ for (const [length, expected] of sipVectors) {
     assert.equal(SdJournalGetEntry(journal).fields.MESSAGE.toString('utf8'), 'first');
     SdJournalSeekCursor(journal, cursor);
     assert.equal(SdJournalGetEntry(journal).fields.MESSAGE.toString('utf8'), 'second');
+    const missingCursor = cursor.replace(/n=\d+$/, 'n=999999');
+    assert.doesNotThrow(() => SdJournalSeekCursor(journal, missingCursor));
     journal.close();
 
     const journalPath2 = join(tempDir, 'jf-facade-second.journal');
@@ -354,6 +359,98 @@ for (const [length, expected] of sipVectors) {
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const journalPath = join(tempDir, 'raw-byte-names.journal');
+    const invalidUtf8Name = Buffer.from([0xff, 0x52, 0x41, 0x57]);
+    const nulName = Buffer.from('RAW\0NAME', 'latin1');
+    const writer = Writer.create(journalPath, { fieldNamePolicy: FIELD_NAME_POLICY_RAW });
+    writer.append([
+      { name: 'MESSAGE', value: 'raw byte names' },
+      { name: invalidUtf8Name, value: Buffer.from('invalid utf8') },
+      { name: nulName, value: Buffer.from('nul name') },
+      { name: 'field name', value: Buffer.from('space') },
+      { name: 'BINARY', value: Buffer.from('a\0=b', 'latin1') },
+    ], { realtimeUsec: 1_700_004_000_000_000n, monotonicUsec: 1n });
+    writer.close();
+
+    const reader = FileReader.open(journalPath);
+    assert.equal(reader.step(), true);
+    const entry = reader.getEntry();
+    assert.equal(entry.fields.MESSAGE.toString('utf8'), 'raw byte names');
+    assert.equal(entry.rawFieldValues.get(invalidUtf8Name.toString('hex'))[0].toString('utf8'), 'invalid utf8');
+    assert.equal(entry.rawFieldValues.get(nulName.toString('hex'))[0].toString('utf8'), 'nul name');
+    assert.equal(entry.rawFieldValues.get(Buffer.from('field name').toString('hex'))[0].toString('utf8'), 'space');
+    assert.equal(reader.getRaw(invalidUtf8Name).toString('utf8'), 'invalid utf8');
+    assert.equal(reader.getRaw(nulName).toString('utf8'), 'nul name');
+    assert.deepEqual(reader.getRawValues(Buffer.from('field name')).map(v => v.toString('utf8')), ['space']);
+    assert.ok(entry.rawFields.some(([name, value]) => name.equals(invalidUtf8Name) && value.equals(Buffer.from('invalid utf8'))));
+    assert.ok(entry.payloads.some(p => p.equals(Buffer.concat([invalidUtf8Name, Buffer.from('=invalid utf8')]))));
+    assert.equal(Object.prototype.hasOwnProperty.call(entry.fields, invalidUtf8Name.toString('utf8')), false);
+
+    const payloads = [];
+    reader.visitEntryPayloads((payload) => payloads.push(Buffer.from(payload)));
+    assert.ok(payloads.some(p => p.equals(Buffer.concat([invalidUtf8Name, Buffer.from('=invalid utf8')]))));
+    reader.close();
+
+    const exported = exportEntry(entry);
+    assert.ok(exported.includes(Buffer.concat([invalidUtf8Name, Buffer.from('=invalid utf8\n')])));
+    const encoded = jsonEntry(entry);
+    assert.equal(Object.prototype.hasOwnProperty.call(encoded, invalidUtf8Name.toString('utf8')), false);
+
+    const dirReader = DirectoryReader.openFiles([journalPath]);
+    assert.equal(dirReader.step(), true);
+    assert.equal(dirReader.getRaw(invalidUtf8Name).toString('utf8'), 'invalid utf8');
+    dirReader.close();
+
+    const journal = SdJournalOpen(journalPath, 0);
+    assert.equal(SdJournalNext(journal), 1);
+    assert.deepEqual(SdJournalGetData(journal, Buffer.from('BINARY')), Buffer.from('BINARY=a\0=b', 'latin1'));
+    const originalGetEntryPayload = journal.reader.getEntryPayload;
+    journal.reader.getEntryPayload = undefined;
+    assert.deepEqual(SdJournalGetData(journal, invalidUtf8Name), Buffer.concat([invalidUtf8Name, Buffer.from('=invalid utf8')]));
+    journal.reader.getEntryPayload = originalGetEntryPayload;
+    SdJournalRestartData(journal);
+    const facadePayloads = collectNullable(() => SdJournalEnumerateAvailableData(journal));
+    journal.close();
+    assert.ok(facadePayloads.some(p => p.equals(Buffer.concat([invalidUtf8Name, Buffer.from('=invalid utf8')]))));
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const journalPath = join(tempDir, 'active-reader-refresh.journal');
+    const writer = Writer.create(journalPath, { livePublishEveryEntries: 1 });
+    writer.append([{ name: 'MESSAGE', value: 'first' }], { realtimeUsec: 1_700_004_010_000_000n, monotonicUsec: 1n });
+    const reader = FileReader.open(journalPath);
+    reader.seekHead();
+    assert.equal(reader.step(), true);
+    assert.equal(reader.getEntry().fields.MESSAGE.toString('utf8'), 'first');
+    assert.equal(reader.step(), false);
+    writer.append([{ name: 'MESSAGE', value: 'second' }], { realtimeUsec: 1_700_004_010_000_001n, monotonicUsec: 2n });
+    assert.equal(reader.step(), true);
+    assert.equal(reader.getEntry().fields.MESSAGE.toString('utf8'), 'second');
+    reader.close();
+    writer.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const dataBuf = Buffer.alloc(DATA_OBJECT_HEADER_SIZE + 4);
+  writeObjectHeader(dataBuf, 0, OBJECT_TYPE_DATA, 0, BigInt(DATA_OBJECT_HEADER_SIZE + 16));
+  assert.throws(() => parseDataObject(dataBuf, 0), /data object exceeds buffer/);
+
+  const entryBuf = Buffer.alloc(ENTRY_OBJECT_HEADER_SIZE);
+  writeObjectHeader(entryBuf, 0, OBJECT_TYPE_ENTRY, 0, BigInt(ENTRY_OBJECT_HEADER_SIZE + 16));
+  assert.throws(() => parseEntryObject(entryBuf, 0), /entry object exceeds buffer/);
 }
 
 {

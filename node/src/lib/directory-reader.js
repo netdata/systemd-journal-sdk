@@ -58,8 +58,16 @@ export class DirectoryReader {
   }
 
   close() {
-    for (const r of this.readers) r.close();
+    let firstError = null;
+    for (const r of this.readers) {
+      try {
+        r.close();
+      } catch (error) {
+        if (!firstError) firstError = error;
+      }
+    }
     this.readers = [];
+    if (firstError) throw firstError;
   }
 
   seekHead() {
@@ -97,6 +105,14 @@ export class DirectoryReader {
 
   stepBack() {
     return this._stepMerged(1, true);
+  }
+
+  next() {
+    return this.step();
+  }
+
+  previous() {
+    return this.stepBack();
   }
 
   _stepMerged(direction, applyFilter) {
@@ -163,11 +179,23 @@ export class DirectoryReader {
       const ok = direction === 0 ? reader.next() : reader.previous();
       if (!ok) return;
 
-      const entry = reader.getEntry();
-      if (!entry) continue;
-      if (applyFilter && this.filter && !this.filter.matches(entry)) continue;
+      let key = null;
+      try {
+        key = reader.currentEntryKey();
+      } catch {
+        continue;
+      }
+      if (!key) continue;
+      if (applyFilter && this.filter) {
+        let entry = null;
+        try {
+          entry = reader.getEntry();
+        } catch {
+          continue;
+        }
+        if (!entry || !this.filter.matches(entry)) continue;
+      }
 
-      const key = this._entryKey(reader, entry);
       if (this.realtimeSeekBound) {
         const { usec, direction: seekDirection } = this.realtimeSeekBound;
         if ((seekDirection === 0 && key.realtime < usec) || (seekDirection === 1 && key.realtime > usec)) {
@@ -246,6 +274,51 @@ export class DirectoryReader {
   getRealtimeUsec() {
     if (this.index < 0 || this.index >= this.readers.length) return 0n;
     return this.readers[this.index].getRealtimeUsec();
+  }
+
+  currentEntryKey() {
+    if (this.index < 0 || this.index >= this.readers.length) return null;
+    return this.readers[this.index].currentEntryKey();
+  }
+
+  visitEntryPayloads(visitor) {
+    if (this.index < 0 || this.index >= this.readers.length) throw new Error('no entry at current position');
+    return this.readers[this.index].visitEntryPayloads(visitor);
+  }
+
+  collectEntryPayloads() {
+    if (this.index < 0 || this.index >= this.readers.length) throw new Error('no entry at current position');
+    return this.readers[this.index].collectEntryPayloads();
+  }
+
+  getEntryPayload(fieldName) {
+    if (this.index < 0 || this.index >= this.readers.length) return null;
+    return this.readers[this.index].getEntryPayload(fieldName);
+  }
+
+  getRaw(fieldName) {
+    if (this.index < 0 || this.index >= this.readers.length) return null;
+    return this.readers[this.index].getRaw(fieldName);
+  }
+
+  getRawValues(fieldName) {
+    if (this.index < 0 || this.index >= this.readers.length) return [];
+    return this.readers[this.index].getRawValues(fieldName);
+  }
+
+  entryDataRestart() {
+    if (this.index < 0 || this.index >= this.readers.length) throw new Error('no entry at current position');
+    return this.readers[this.index].entryDataRestart();
+  }
+
+  enumerateEntryPayload() {
+    if (this.index < 0 || this.index >= this.readers.length) return null;
+    return this.readers[this.index].enumerateEntryPayload();
+  }
+
+  clearEntryDataState() {
+    if (this.index < 0 || this.index >= this.readers.length) return;
+    this.readers[this.index].clearEntryDataState();
   }
 
   addMatch(data) {

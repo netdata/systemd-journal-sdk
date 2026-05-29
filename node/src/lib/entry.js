@@ -14,6 +14,9 @@ import { decompressXzDataPayload } from './xz-block.js';
 // Parse an entry object from a buffer at offset.
 // Returns { seqnum, realtime, monotonic, boot_id, xor_hash, items: [{offset, hash}] }.
 export function parseEntryObject(buf, offset, compact = false) {
+  if (buf.length < offset + ENTRY_OBJECT_HEADER_SIZE) {
+    throw new Error('buffer too small for entry object');
+  }
   const objType = buf.readUInt8(offset);
   if (objType !== OBJECT_TYPE_ENTRY) {
     throw new Error(`expected ENTRY (type ${OBJECT_TYPE_ENTRY}), got type ${objType} at offset ${offset}`);
@@ -21,6 +24,9 @@ export function parseEntryObject(buf, offset, compact = false) {
   const objSize = readUint64LE(buf, offset + 8);
   if (objSize < BigInt(ENTRY_OBJECT_HEADER_SIZE)) {
     throw new Error(`entry object too small: ${objSize}`);
+  }
+  if (BigInt(offset) + objSize > BigInt(buf.length)) {
+    throw new Error(`entry object exceeds buffer at offset ${offset}`);
   }
 
   const eOff = offset + OBJECT_HEADER_SIZE;
@@ -53,6 +59,18 @@ export function parseEntryObject(buf, offset, compact = false) {
 // Parse a DATA object from buffer at offset.
 // Returns { name: Buffer, value: Buffer }.
 export function parseDataObject(buf, offset, compact = false) {
+  const payload = parseDataPayload(buf, offset, compact);
+  const eqPos = payload.indexOf(0x3d);
+  if (eqPos < 0) throw new Error('DATA object missing field separator');
+
+  return {
+    name: payload.slice(0, eqPos),
+    value: payload.slice(eqPos + 1),
+  };
+}
+
+// Parse a DATA object from buffer at offset and return the full KEY=value payload.
+export function parseDataPayload(buf, offset, compact = false) {
   const payloadOffset = compact ? COMPACT_DATA_OBJECT_HEADER_SIZE : DATA_OBJECT_HEADER_SIZE;
   if (buf.length < offset + payloadOffset) {
     throw new Error('buffer too small for data object');
@@ -66,6 +84,9 @@ export function parseDataObject(buf, offset, compact = false) {
   }
   if (objSize < BigInt(payloadOffset)) {
     throw new Error(`data object too small: ${objSize}`);
+  }
+  if (BigInt(offset) + objSize > BigInt(buf.length)) {
+    throw new Error(`data object exceeds buffer at offset ${offset}`);
   }
 
   let payload = buf.slice(offset + payloadOffset, offset + Number(objSize));
@@ -85,12 +106,5 @@ export function parseDataObject(buf, offset, compact = false) {
   } else if (objFlags & OBJECT_COMPRESSED_XZ) {
     payload = decompressXzDataPayload(payload);
   }
-
-  const eqPos = payload.indexOf(0x3d);
-  if (eqPos < 0) throw new Error('DATA object missing field separator');
-
-  return {
-    name: payload.slice(0, eqPos),
-    value: payload.slice(eqPos + 1),
-  };
+  return payload;
 }

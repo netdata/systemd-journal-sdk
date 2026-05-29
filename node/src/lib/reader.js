@@ -2,9 +2,10 @@
 // Reads .journal, .journal~, .journal.zst, .journal~.zst files.
 // Uses entry-array-based iteration (matching Go/Rust).
 
-import { readFileSync, openSync, readSync, closeSync, statSync, existsSync, unlinkSync, rmdirSync } from 'node:fs';
+import { readFileSync, openSync, readSync, closeSync, statSync, unlinkSync, rmdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { readUint64LE, uuidToString, align8 } from './binary.js';
+import { TextDecoder } from 'node:util';
+import { readUint64LE, uuidToString } from './binary.js';
 import {
   parseFileHeader, parseObjectHeader,
   HEADER_MIN_SIZE, HEADER_SIZE, OBJECT_TYPE_ENTRY, OBJECT_TYPE_ENTRY_ARRAY,
@@ -13,9 +14,17 @@ import {
   REGULAR_ENTRY_ITEM_SIZE, INCOMPATIBLE_KEYED_HASH, INCOMPATIBLE_COMPACT,
   COMPACT_OFFSET_ARRAY_ITEM_SIZE, REGULAR_OFFSET_ARRAY_ITEM_SIZE,
   INCOMPATIBLE_COMPRESSED_XZ, INCOMPATIBLE_COMPRESSED_ZSTD, INCOMPATIBLE_COMPRESSED_LZ4,
+  COMPACT_ENTRY_ITEM_SIZE, COMPACT_DATA_OBJECT_HEADER_SIZE,
 } from './header.js';
 import { decompressZstToTemp, isZstFile } from './compress.js';
-import { parseEntryObject, parseDataObject } from './entry.js';
+import { parseEntryObject, parseDataPayload } from './entry.js';
+
+const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
+const SUPPORTED_INCOMPATIBLE_FLAGS = INCOMPATIBLE_KEYED_HASH |
+  INCOMPATIBLE_COMPRESSED_XZ |
+  INCOMPATIBLE_COMPRESSED_ZSTD |
+  INCOMPATIBLE_COMPRESSED_LZ4 |
+  INCOMPATIBLE_COMPACT;
 
 export class FileReader {
   constructor(buffer, header, path, cleanupPath) {
@@ -29,6 +38,15 @@ export class FileReader {
     this.direction = 0;
     this.filter = null;
     this.realtimeSeek = null;
+    this.entryDataOffsets = [];
+    this.entryDataOffsetsEntry = null;
+    this.entryDataIndex = 0;
+    this.entryDataStateActive = false;
+
+    this.compact = this._headerIsCompact();
+    this.entryItemSize = this.compact ? COMPACT_ENTRY_ITEM_SIZE : REGULAR_ENTRY_ITEM_SIZE;
+    this.offsetArrayItemSizeValue = this.compact ? COMPACT_OFFSET_ARRAY_ITEM_SIZE : REGULAR_OFFSET_ARRAY_ITEM_SIZE;
+    this.dataPayloadOffsetValue = this.compact ? COMPACT_DATA_OBJECT_HEADER_SIZE : DATA_OBJECT_HEADER_SIZE;
 
     this._loadEntryArray();
   }
@@ -52,19 +70,7 @@ export class FileReader {
 
       const header = parseFileHeader(buffer);
 
-      if (header.header_size < BigInt(HEADER_MIN_SIZE)) {
-        throw new Error('unsupported journal: header size too small');
-      }
-
-      // Must have keyed hash
-      if (!(header.incompatible_flags & INCOMPATIBLE_KEYED_HASH)) {
-        throw new Error('unsupported journal: keyed hash required');
-      }
-
-      const supported = INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_XZ | INCOMPATIBLE_COMPRESSED_ZSTD | INCOMPATIBLE_COMPRESSED_LZ4 | INCOMPATIBLE_COMPACT;
-      if (header.incompatible_flags & ~supported) {
-        throw new Error('unsupported journal: incompatible flags ' + header.incompatible_flags.toString(16));
-      }
+      ensureSupportedHeader(header);
 
       return new FileReader(buffer, header, path, cleanupPath);
     } catch (err) {
@@ -78,9 +84,13 @@ export class FileReader {
 
   // Load all entry offsets from the entry array chain.
   _loadEntryArray() {
+    this.entryOffsets = this._readEntryArrayOffsets();
+    this.entryIndex = -1;
+  }
+
+  _readEntryArrayOffsets() {
     if (this.header.entry_array_offset === 0n) {
-      this.entryOffsets = [];
-      return;
+      return [];
     }
 
     const offsets = [];
@@ -97,7 +107,7 @@ export class FileReader {
         break;
       }
       const nextOffset = readUint64LE(this.buffer, Number(offset) + 16);
-      const itemSize = this._offsetArrayItemSize();
+      const itemSize = this.offsetArrayItemSizeValue;
       if ((objSize - BigInt(OFFSET_ARRAY_OBJECT_HEADER_SIZE)) % BigInt(itemSize) !== 0n) {
         throw new Error('entry array item payload has invalid compact alignment');
       }
@@ -120,8 +130,92 @@ export class FileReader {
       offset = nextOffset;
     }
 
-    this.entryOffsets = offsets;
-    this.entryIndex = -1;
+    return offsets;
+  }
+
+  refresh() {
+    return this._refreshEntryOffsets();
+  }
+
+  _refreshEntryOffsets() {
+    if (this.cleanupPath) return false;
+
+    let newHeader = null;
+    let newSize = 0;
+    try {
+      const stat = statSync(this.path);
+      if (!stat.isFile() || stat.size <= 0) return false;
+      newSize = stat.size;
+      newHeader = this._readCurrentHeader();
+    } catch {
+      return false;
+    }
+
+    const sameHeaderState =
+      newSize === this.buffer.length &&
+      newHeader.n_entries === this.header.n_entries &&
+      newHeader.tail_entry_array_offset === this.header.tail_entry_array_offset &&
+      newHeader.tail_entry_array_n_entries === this.header.tail_entry_array_n_entries;
+    if (sameHeaderState) {
+      this.header = newHeader;
+      this.entryIndex = Math.min(this.entryIndex, this.entryOffsets.length);
+      return false;
+    }
+
+    const oldBuffer = this.buffer;
+    const oldHeader = this.header;
+    const oldOffsets = this.entryOffsets;
+    const oldIndex = this.entryIndex;
+    const oldCompact = this.compact;
+    const oldEntryItemSize = this.entryItemSize;
+    const oldOffsetArrayItemSize = this.offsetArrayItemSizeValue;
+    const oldDataPayloadOffset = this.dataPayloadOffsetValue;
+
+    try {
+      const buffer = readFileSync(this.path);
+      if (buffer.length < HEADER_MIN_SIZE) throw new Error('file too small for journal header');
+      const header = parseFileHeader(buffer);
+      ensureSupportedHeader(header);
+      this.buffer = buffer;
+      this.header = header;
+      this._updateLayoutCache();
+      this.entryOffsets = this._readEntryArrayOffsets();
+      this.entryIndex = Math.min(oldIndex, this.entryOffsets.length);
+      this._resetCachedEntryDataState();
+      return (
+        this.entryOffsets.length !== oldOffsets.length ||
+        (
+          this.entryOffsets.length > 0 &&
+          oldOffsets.length > 0 &&
+          this.entryOffsets[this.entryOffsets.length - 1] !== oldOffsets[oldOffsets.length - 1]
+        )
+      );
+    } catch {
+      this.buffer = oldBuffer;
+      this.header = oldHeader;
+      this.entryOffsets = oldOffsets;
+      this.entryIndex = Math.min(oldIndex, this.entryOffsets.length);
+      this.compact = oldCompact;
+      this.entryItemSize = oldEntryItemSize;
+      this.offsetArrayItemSizeValue = oldOffsetArrayItemSize;
+      this.dataPayloadOffsetValue = oldDataPayloadOffset;
+      this._resetCachedEntryDataState();
+      return false;
+    }
+  }
+
+  _readCurrentHeader() {
+    const fd = openSync(this.path, 'r');
+    try {
+      const headerBuf = Buffer.alloc(HEADER_SIZE);
+      const bytesRead = readSync(fd, headerBuf, 0, HEADER_SIZE, 0);
+      if (bytesRead < HEADER_MIN_SIZE) throw new Error('file too small for journal header');
+      const header = parseFileHeader(headerBuf.subarray(0, bytesRead));
+      ensureSupportedHeader(header);
+      return header;
+    } finally {
+      closeSync(fd);
+    }
   }
 
   _validEntryOffset(offset) {
@@ -131,31 +225,63 @@ export class FileReader {
     if (!oh) return false;
     if (oh.type === 0 && oh.size === 0n) return false;
     if (oh.type !== OBJECT_TYPE_ENTRY) return false;
+    if (BigInt(off) + oh.size > BigInt(this.buffer.length)) return false;
     return true;
   }
 
-  seekHead() { this.entryIndex = -1; this.direction = 0; this.realtimeSeek = null; }
-  seekTail() { this.entryIndex = this.entryOffsets.length; this.direction = 1; this.realtimeSeek = null; }
+  seekHead() {
+    this._resetCachedEntryDataState();
+    this.entryIndex = -1;
+    this.direction = 0;
+    this.realtimeSeek = null;
+  }
+
+  seekTail() {
+    this._resetCachedEntryDataState();
+    this.entryIndex = this.entryOffsets.length;
+    this.direction = 1;
+    this.realtimeSeek = null;
+  }
 
   seekRealtimeUsec(usec) {
+    this._resetCachedEntryDataState();
     this.realtimeSeek = BigInt(usec);
   }
 
   next() {
+    this._resetCachedEntryDataState();
     if (this.realtimeSeek !== null) {
       const idx = this._firstRealtimeIndexAtOrAfter(this.realtimeSeek);
+      let effectiveIdx = idx;
+      if (effectiveIdx >= this.entryOffsets.length && this._refreshEntryOffsets()) {
+        effectiveIdx = this._firstRealtimeIndexAtOrAfter(this.realtimeSeek);
+      }
       this.realtimeSeek = null;
       this.direction = 0;
-      if (idx >= this.entryOffsets.length) {
+      if (effectiveIdx >= this.entryOffsets.length) {
         this.entryIndex = this.entryOffsets.length;
         return false;
       }
-      this.entryIndex = idx;
+      this.entryIndex = effectiveIdx;
       return true;
     }
     this.direction = 0;
+    if (this.entryIndex >= this.entryOffsets.length) {
+      const nextIndex = this.entryIndex;
+      if (this._refreshEntryOffsets() && nextIndex < this.entryOffsets.length) {
+        this.entryIndex = nextIndex;
+        return true;
+      }
+      this.entryIndex = this.entryOffsets.length;
+      return false;
+    }
     this.entryIndex++;
     if (this.entryIndex >= this.entryOffsets.length) {
+      const nextIndex = this.entryIndex;
+      if (this._refreshEntryOffsets() && nextIndex < this.entryOffsets.length) {
+        this.entryIndex = nextIndex;
+        return true;
+      }
       this.entryIndex = this.entryOffsets.length;
       return false;
     }
@@ -163,6 +289,7 @@ export class FileReader {
   }
 
   previous() {
+    this._resetCachedEntryDataState();
     if (this.realtimeSeek !== null) {
       const idx = this._lastRealtimeIndexAtOrBefore(this.realtimeSeek);
       this.realtimeSeek = null;
@@ -214,10 +341,11 @@ export class FileReader {
     for (;;) {
       if (!this.next()) return false;
       if (!this.filter) return true;
+      let entry;
       try {
-        const entry = this.getEntry();
-        if (entry && this.filter.matches(entry)) return true;
+        entry = this.getEntry();
       } catch { /* skip corrupt */ }
+      if (entry && this.filter.matches(entry)) return true;
     }
   }
 
@@ -225,32 +353,46 @@ export class FileReader {
     for (;;) {
       if (!this.previous()) return false;
       if (!this.filter) return true;
+      let entry;
       try {
-        const entry = this.getEntry();
-        if (entry && this.filter.matches(entry)) return true;
+        entry = this.getEntry();
       } catch { /* skip corrupt */ }
+      if (entry && this.filter.matches(entry)) return true;
     }
   }
 
   getEntry() {
+    this._invalidateEntryDataState();
     if (this.entryIndex < 0 || this.entryIndex >= this.entryOffsets.length) return null;
     return this._readEntryAt(this.entryOffsets[this.entryIndex]);
   }
 
   _readEntryAt(offset) {
-    const off = Number(offset);
-    const e = parseEntryObject(this.buffer, off, this._isCompact());
+    const { entry: e, dataOffsets } = this._readEntryMetadataAndOffsets(offset);
 
     const fields = Object.create(null);
     const fieldValues = Object.create(null);
+    const rawFieldValues = new Map();
+    const rawFields = [];
     const payloads = [];
 
-    for (const item of e.items) {
+    for (const dataOffset of dataOffsets) {
       try {
-        const { name, value } = parseDataObject(this.buffer, Number(item.offset), this._isCompact());
-        const nameStr = name.toString('utf8');
-        const valueBuf = Buffer.from(value);
-        payloads.push(Buffer.concat([Buffer.from(name), Buffer.from('='), valueBuf]));
+        const payload = this._readDataPayloadAt(dataOffset);
+        const eqPos = payload.indexOf(0x3d);
+        if (eqPos < 0) continue;
+        const name = Buffer.from(payload.slice(0, eqPos));
+        const valueBuf = Buffer.from(payload.slice(eqPos + 1));
+        const payloadBuf = Buffer.from(payload);
+        payloads.push(payloadBuf);
+        rawFields.push([name, valueBuf]);
+        const rawKey = fieldKey(name);
+        const rawValues = rawFieldValues.get(rawKey);
+        if (rawValues) rawValues.push(valueBuf);
+        else rawFieldValues.set(rawKey, [valueBuf]);
+
+        const nameStr = decodeUtf8OrNull(name);
+        if (nameStr === null) continue;
         if (!(nameStr in fields)) fields[nameStr] = valueBuf;
         if (!fieldValues[nameStr]) fieldValues[nameStr] = [];
         fieldValues[nameStr].push(valueBuf);
@@ -261,6 +403,8 @@ export class FileReader {
     return {
       fields,
       fieldValues,
+      rawFields,
+      rawFieldValues,
       payloads,
       seqnum: e.seqnum,
       realtime: e.realtime,
@@ -287,7 +431,7 @@ export class FileReader {
   getCursor() {
     if (this.entryIndex < 0 || this.entryIndex >= this.entryOffsets.length) return null;
     const offset = this.entryOffsets[this.entryIndex];
-    const e = parseEntryObject(this.buffer, Number(offset), this._isCompact());
+    const { entry: e } = this._readEntryMetadataAndOffsets(offset, false);
     return this._makeCursor(offset, e);
   }
 
@@ -311,13 +455,17 @@ export class FileReader {
   flushMatches() { this.filter = null; }
 
   queryUnique(fieldName) {
+    const rawKey = fieldKey(fieldNameBytes(fieldName));
+    const stringKey = fieldNameStringOrNull(fieldName);
     const seen = new Set();
     const results = [];
     for (const off of this.entryOffsets) {
       try {
         const entry = this._readEntryAt(off);
-        if (entry && entry.fieldValues[fieldName]) {
-          for (const v of entry.fieldValues[fieldName]) {
+        if (!entry) continue;
+        const values = entry.rawFieldValues.get(rawKey) || (stringKey !== null ? entry.fieldValues[stringKey] : null);
+        if (values) {
+          for (const v of values) {
             const key = v.toString('base64');
             if (!seen.has(key)) { seen.add(key); results.push(v); }
           }
@@ -339,6 +487,7 @@ export class FileReader {
   }
 
   close() {
+    this._resetCachedEntryDataState();
     if (this.cleanupPath) {
       try { unlinkSync(this.cleanupPath); } catch {}
       try { rmdirSync(dirname(this.cleanupPath)); } catch {}
@@ -348,18 +497,143 @@ export class FileReader {
   }
 
   _isCompact() {
-    return (this.header.incompatible_flags & INCOMPATIBLE_COMPACT) !== 0;
+    return this.compact;
   }
 
   _offsetArrayItemSize() {
-    return this._isCompact() ? COMPACT_OFFSET_ARRAY_ITEM_SIZE : REGULAR_OFFSET_ARRAY_ITEM_SIZE;
+    return this.offsetArrayItemSizeValue;
+  }
+
+  _dataPayloadOffset() {
+    return this.dataPayloadOffsetValue;
+  }
+
+  _headerIsCompact() {
+    return (this.header.incompatible_flags & INCOMPATIBLE_COMPACT) !== 0;
+  }
+
+  _updateLayoutCache() {
+    this.compact = this._headerIsCompact();
+    this.entryItemSize = this.compact ? COMPACT_ENTRY_ITEM_SIZE : REGULAR_ENTRY_ITEM_SIZE;
+    this.offsetArrayItemSizeValue = this.compact ? COMPACT_OFFSET_ARRAY_ITEM_SIZE : REGULAR_OFFSET_ARRAY_ITEM_SIZE;
+    this.dataPayloadOffsetValue = this.compact ? COMPACT_DATA_OBJECT_HEADER_SIZE : DATA_OBJECT_HEADER_SIZE;
+  }
+
+  currentEntryKey() {
+    if (this.entryIndex < 0 || this.entryIndex >= this.entryOffsets.length) return null;
+    const offset = this.entryOffsets[this.entryIndex];
+    const { entry } = this._readEntryMetadataAndOffsets(offset, false);
+    return {
+      seqnumId: Buffer.from(this.header.seqnum_id),
+      seqnum: entry.seqnum,
+      bootId: Buffer.from(entry.boot_id),
+      monotonic: entry.monotonic,
+      realtime: entry.realtime,
+      xorHash: entry.xor_hash,
+    };
+  }
+
+  visitEntryPayloads(visitor) {
+    this._invalidateEntryDataState();
+    const offsets = this._currentEntryDataOffsets();
+    for (const dataOffset of offsets) {
+      visitor(this._readDataPayloadAt(dataOffset));
+    }
+  }
+
+  collectEntryPayloads() {
+    const payloads = [];
+    this.visitEntryPayloads((payload) => payloads.push(payload));
+    return payloads;
+  }
+
+  getEntryPayload(fieldName) {
+    const prefix = Buffer.concat([fieldNameBytes(fieldName), Buffer.from('=')]);
+    let found = null;
+    this.visitEntryPayloads((payload) => {
+      if (found === null && payload.subarray(0, prefix.length).equals(prefix)) {
+        found = payload;
+      }
+    });
+    return found;
+  }
+
+  getRaw(fieldName) {
+    const values = this.getRawValues(fieldName);
+    return values.length > 0 ? values[0] : null;
+  }
+
+  getRawValues(fieldName) {
+    const entry = this.getEntry();
+    if (!entry) return [];
+    return Array.from(entry.rawFieldValues.get(fieldKey(fieldNameBytes(fieldName))) || []);
+  }
+
+  entryDataRestart() {
+    this.entryDataOffsets = this._currentEntryDataOffsets();
+    this.entryDataIndex = 0;
+    this.entryDataStateActive = true;
+  }
+
+  enumerateEntryPayload() {
+    if (this.entryDataIndex >= this.entryDataOffsets.length) {
+      this.clearEntryDataState();
+      return null;
+    }
+    const dataOffset = this.entryDataOffsets[this.entryDataIndex++];
+    this.entryDataStateActive = true;
+    return this._readDataPayloadAt(dataOffset);
+  }
+
+  clearEntryDataState() {
+    this._resetCachedEntryDataState();
+  }
+
+  _resetCachedEntryDataState() {
+    this.entryDataOffsets = [];
+    this.entryDataOffsetsEntry = null;
+    this.entryDataIndex = 0;
+    this.entryDataStateActive = false;
+  }
+
+  _invalidateEntryDataState() {
+    if (this.entryDataStateActive) this.clearEntryDataState();
+  }
+
+  _currentEntryDataOffsets() {
+    if (this.entryIndex < 0 || this.entryIndex >= this.entryOffsets.length) {
+      throw new Error('no entry at current position');
+    }
+    const entryOffset = this.entryOffsets[this.entryIndex];
+    if (this.entryDataOffsetsEntry !== entryOffset) {
+      const { dataOffsets } = this._readEntryMetadataAndOffsets(entryOffset);
+      this.entryDataOffsets = dataOffsets;
+      this.entryDataOffsetsEntry = entryOffset;
+    }
+    return this.entryDataOffsets;
+  }
+
+  _readEntryMetadataAndOffsets(offset, includeOffsets = true) {
+    const e = parseEntryObject(this.buffer, Number(offset), this.compact);
+    return {
+      entry: e,
+      dataOffsets: includeOffsets ? e.items.map((item) => item.offset).filter((itemOffset) => itemOffset !== 0n) : [],
+    };
+  }
+
+  _readDataPayloadAt(offset) {
+    return parseDataPayload(this.buffer, Number(offset), this.compact);
   }
 }
 
 // Match filter (mirrors Go filterBuilder).
 export class FilterBuilder {
   constructor() { this.level0 = []; this.level1 = []; this.current = []; }
-  addMatch(data) { this.current.push(Buffer.from(data)); }
+  addMatch(data) {
+    const item = Buffer.from(data);
+    matchFieldName(item);
+    this.current.push(item);
+  }
   addDisjunction() { this._commitCurrent(); }
   addConjunction() { this._commitCurrent(); this._commitLevel1(); }
 
@@ -423,7 +697,7 @@ function buildCurrentExpr(matches) {
   for (const item of matches) {
     const eq = item.indexOf(0x3d);
     if (eq < 0) return FALSE_EXPR;
-    const field = item.slice(0, eq).toString('utf8');
+    const field = matchFieldName(item);
     if (!byField[field]) { fieldOrder.push(field); byField[field] = []; }
     byField[field].push(new MatchExpr(field, item.slice(eq + 1)));
   }
@@ -439,4 +713,48 @@ function buildOrExpr(level1) {
   if (level1.length === 0) return null;
   if (level1.length === 1) return level1[0];
   return new OrExpr(level1);
+}
+
+function ensureSupportedHeader(header) {
+  if (header.header_size < BigInt(HEADER_MIN_SIZE)) {
+    throw new Error('unsupported journal: header size too small');
+  }
+  if (!(header.incompatible_flags & INCOMPATIBLE_KEYED_HASH)) {
+    throw new Error('unsupported journal: keyed hash required');
+  }
+  if (header.incompatible_flags & ~SUPPORTED_INCOMPATIBLE_FLAGS) {
+    throw new Error('unsupported journal: incompatible flags ' + header.incompatible_flags.toString(16));
+  }
+}
+
+function decodeUtf8OrNull(buf) {
+  try {
+    return utf8Decoder.decode(buf);
+  } catch {
+    return null;
+  }
+}
+
+function fieldNameBytes(fieldName) {
+  if (Buffer.isBuffer(fieldName)) return fieldName;
+  if (fieldName instanceof Uint8Array) return Buffer.from(fieldName.buffer, fieldName.byteOffset, fieldName.byteLength);
+  return Buffer.from(String(fieldName), 'utf8');
+}
+
+function fieldNameStringOrNull(fieldName) {
+  if (typeof fieldName === 'string') return fieldName;
+  return decodeUtf8OrNull(fieldNameBytes(fieldName));
+}
+
+function fieldKey(fieldName) {
+  return fieldNameBytes(fieldName).toString('hex');
+}
+
+function matchFieldName(item) {
+  const eq = item.indexOf(0x3d);
+  if (eq < 0) throw new Error('match must contain = separator');
+  const field = decodeUtf8OrNull(item.slice(0, eq));
+  if (field === null) throw new Error('match field name must be UTF-8');
+  if (field === '') throw new Error('match field name must not be empty');
+  return field;
 }

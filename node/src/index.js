@@ -65,7 +65,7 @@ export {
 export { parseMatchString, sipHash24, jenkinsHash64 } from './lib/hash.js';
 export { readUint64LE, writeUint64LE, writeUint32LE, writeUint8, align8, bufEqual, uuidToString, stringToUUID, isZeroUUID, randomUUID } from './lib/binary.js';
 export { decompressZstSync, isJournalFileName, isZstFile } from './lib/compress.js';
-export { parseEntryObject, parseDataObject } from './lib/entry.js';
+export { parseEntryObject, parseDataObject, parseDataPayload } from './lib/entry.js';
 export {
   HEADER_SIZE, OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE,
   DATA_OBJECT_HEADER_SIZE, FIELD_OBJECT_HEADER_SIZE, HASH_ITEM_SIZE,

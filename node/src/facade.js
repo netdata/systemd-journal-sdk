@@ -40,6 +40,11 @@ export function exportEntryBuffer(entry) {
       parts.push(formatExportField(name, entry.fields[name]));
     }
   }
+  for (const [name, value] of entry.rawFields || []) {
+    if (decodeUtf8OrNull(name) === null) {
+      parts.push(formatExportRawField(name, value));
+    }
+  }
 
   parts.push(Buffer.from('\n'));
   return Buffer.concat(parts);
@@ -60,6 +65,17 @@ function formatExportField(name, value) {
   const sizeBuf = Buffer.alloc(8);
   sizeBuf.writeBigUInt64LE(BigInt(value.length), 0);
   return Buffer.concat([Buffer.from(name + '\n', 'utf8'), sizeBuf, value, Buffer.from('\n')]);
+}
+
+function formatExportRawField(name, value) {
+  const nameBuf = Buffer.from(name);
+  const valueBuf = Buffer.from(value);
+  if (isPrintable(valueBuf, false)) {
+    return Buffer.concat([nameBuf, Buffer.from('='), valueBuf, Buffer.from('\n')]);
+  }
+  const sizeBuf = Buffer.alloc(8);
+  sizeBuf.writeBigUInt64LE(BigInt(valueBuf.length), 0);
+  return Buffer.concat([nameBuf, Buffer.from('\n'), sizeBuf, valueBuf, Buffer.from('\n')]);
 }
 
 // Format an entry as JSON object.
@@ -114,6 +130,14 @@ function isPrintable(buf, allowNewline) {
   return true;
 }
 
+function decodeUtf8OrNull(buf) {
+  try {
+    return utf8Decoder.decode(buf);
+  } catch {
+    return null;
+  }
+}
+
 // Parse a cursor string.
 export function parseCursor(cursor) {
   const parts = {};
@@ -137,6 +161,7 @@ export class SdJournal {
     this.outputMode = 'default';
     this.dataItems = [];
     this.dataIndex = 0;
+    this.dataFromReader = false;
     this.fieldItems = [];
     this.fieldIndex = 0;
     this.uniqueItems = [];
@@ -168,10 +193,14 @@ export class SdJournal {
   resetIterators() {
     this.dataItems = [];
     this.dataIndex = 0;
+    this.dataFromReader = false;
     this.fieldItems = [];
     this.fieldIndex = 0;
     this.uniqueItems = [];
     this.uniqueIndex = 0;
+    if (this.reader && typeof this.reader.clearEntryDataState === 'function') {
+      this.reader.clearEntryDataState();
+    }
   }
 
   addMatch(data) {
@@ -231,27 +260,47 @@ export class SdJournal {
         return;
       }
     }
-    throw new Error('cursor not found');
   }
 
   restartData() {
+    if (typeof this.reader.entryDataRestart === 'function') {
+      this.reader.entryDataRestart();
+      this.dataItems = [];
+      this.dataIndex = 0;
+      this.dataFromReader = true;
+      return;
+    }
     const entry = this.getEntry();
     if (!entry) throw new Error('no entry at current position');
     this.dataItems = [...(entry.payloads || payloadsFromEntry(entry))];
     this.dataIndex = 0;
+    this.dataFromReader = false;
   }
 
   enumerateAvailableData() {
+    if (this.dataFromReader) {
+      return this.reader.enumerateEntryPayload();
+    }
     if (this.dataIndex >= this.dataItems.length) return null;
-    return Buffer.from(this.dataItems[this.dataIndex++]);
+    return this.dataItems[this.dataIndex++];
   }
 
   getData(fieldName) {
+    if (typeof this.reader.getEntryPayload === 'function') {
+      const payload = this.reader.getEntryPayload(fieldName);
+      if (payload !== null) return payload;
+    }
     const entry = this.getEntry();
-    if (!entry || !entry.fieldValues[fieldName] || entry.fieldValues[fieldName].length === 0) {
+    const nameBytes = fieldNameBytes(fieldName);
+    const key = typeof fieldName === 'string' ? fieldName : decodeUtf8OrNull(nameBytes);
+    if (entry && key === null && entry.rawFieldValues) {
+      const rawValues = entry.rawFieldValues.get(nameBytes.toString('hex'));
+      if (rawValues && rawValues.length > 0) return payloadFromFieldValue(nameBytes, rawValues[0]);
+    }
+    if (!entry || key === null || !entry.fieldValues[key] || entry.fieldValues[key].length === 0) {
       throw new Error('data field not found');
     }
-    return payloadFromFieldValue(fieldName, entry.fieldValues[fieldName][0]);
+    return payloadFromFieldValue(key, entry.fieldValues[key][0]);
   }
 
   processOutput(entry) {
@@ -468,7 +517,13 @@ export function SdJournalProcessOutput(journal, entry) {
 }
 
 function payloadFromFieldValue(fieldName, value) {
-  return Buffer.concat([Buffer.from(fieldName + '=', 'utf8'), Buffer.from(value)]);
+  return Buffer.concat([fieldNameBytes(fieldName), Buffer.from('='), Buffer.from(value)]);
+}
+
+function fieldNameBytes(fieldName) {
+  if (Buffer.isBuffer(fieldName)) return fieldName;
+  if (fieldName instanceof Uint8Array) return Buffer.from(fieldName.buffer, fieldName.byteOffset, fieldName.byteLength);
+  return Buffer.from(String(fieldName), 'utf8');
 }
 
 function payloadsFromEntry(entry) {

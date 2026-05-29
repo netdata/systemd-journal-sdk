@@ -47,6 +47,9 @@ SINGLE_FILE_CASES = [
     ("python", "file", "sdk-entry", "live", "mmap"),
     ("python", "file", "sdk-payloads", "live", "mmap"),
     ("python", "file", "facade-data", "live", "mmap"),
+    ("node", "file", "sdk-entry", "live", "buffer"),
+    ("node", "file", "sdk-payloads", "live", "buffer"),
+    ("node", "file", "facade-data", "live", "buffer"),
     ("systemd", "file", "next", "", ""),
     ("systemd", "file", "data", "", ""),
 ]
@@ -61,6 +64,9 @@ OPEN_FILES_CASES = [
     ("python", "open-files", "sdk-entry", "live", "mmap"),
     ("python", "open-files", "sdk-payloads", "live", "mmap"),
     ("python", "open-files", "facade-data", "live", "mmap"),
+    ("node", "open-files", "sdk-entry", "live", "buffer"),
+    ("node", "open-files", "sdk-payloads", "live", "buffer"),
+    ("node", "open-files", "facade-data", "live", "buffer"),
     ("systemd", "open-files", "data", "", ""),
 ]
 
@@ -72,6 +78,12 @@ COMPARABLE_RUST_PAYLOAD_MODES = {
 }
 
 COMPARABLE_PYTHON_PAYLOAD_MODES = {
+    "sdk-entry",
+    "sdk-payloads",
+    "facade-data",
+}
+
+COMPARABLE_NODE_PAYLOAD_MODES = {
     "sdk-entry",
     "sdk-payloads",
     "facade-data",
@@ -187,6 +199,7 @@ def build_tools(env: dict[str, str]) -> dict[str, list[str]]:
         "rust_writer": [str(ROOT / ".local" / "cargo-target" / "release" / "writer_core_bench")],
         "rust_reader": [str(ROOT / ".local" / "cargo-target" / "release" / "reader_core_bench")],
         "python_reader": [sys.executable, str(ROOT / "python" / "cmd" / "reader_core_bench.py")],
+        "node_reader": ["node", str(ROOT / "node" / "cmd" / "reader_core_bench.js")],
         "systemd_reader": [systemd_binary],
     }
 
@@ -330,6 +343,22 @@ def case_command(
             "--mmap-strategy",
             mmap_strategy,
         ]
+    elif language == "node":
+        cmd = [
+            *tools["node_reader"],
+            "--surface",
+            surface,
+            "--mode",
+            mode,
+            "--direction",
+            direction,
+            "--window-size",
+            str(window_size),
+            "--bounds",
+            bounds,
+            "--mmap-strategy",
+            mmap_strategy,
+        ]
     else:
         raise ValueError(language)
 
@@ -363,6 +392,8 @@ def validate_equivalent_checksums(runs: list[dict[str, Any]]) -> None:
             result["language"] == "rust" and result["mode"] in COMPARABLE_RUST_PAYLOAD_MODES
         ) or (
             result["language"] == "python" and result["mode"] in COMPARABLE_PYTHON_PAYLOAD_MODES
+        ) or (
+            result["language"] == "node" and result["mode"] in COMPARABLE_NODE_PAYLOAD_MODES
         )
         if not comparable:
             continue
