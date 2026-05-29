@@ -7,6 +7,8 @@ import (
 	"math/bits"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +34,13 @@ type counts struct {
 	fields   uint64
 	bytes    uint64
 	checksum uint64
+}
+
+func (c *counts) addRun(other counts) {
+	c.records += other.records
+	c.fields += other.fields
+	c.bytes += other.bytes
+	c.checksum = bits.RotateLeft64(c.checksum, 11) ^ other.checksum
 }
 
 func (c *counts) addPayload(payload []byte) {
@@ -289,6 +298,9 @@ func main() {
 	bounds := flag.String("bounds", "live", "")
 	mmapStrategy := flag.String("mmap-strategy", "read-at", "")
 	windowSize := flag.Uint64("window-size", defaultWindowSize, "")
+	cpuProfile := flag.String("cpuprofile", "", "")
+	memProfile := flag.String("memprofile", "", "")
+	loops := flag.Int("loops", 1, "")
 	flag.Var(&inputs, "input", "")
 	flag.Parse()
 	if len(inputs) == 0 {
@@ -299,6 +311,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "invalid --direction: %s\n", *direction)
 		os.Exit(2)
 	}
+	if *loops < 1 {
+		fmt.Fprintf(os.Stderr, "invalid --loops: %d\n", *loops)
+		os.Exit(2)
+	}
 	opts, err := parseOptions(*bounds, *mmapStrategy)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -307,21 +323,59 @@ func main() {
 	_ = windowSize // Go currently benchmarks read-at and whole-file mmap only.
 
 	before := processStatusKB()
+	if *cpuProfile != "" {
+		f, err := os.Create(*cpuProfile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "create cpu profile: %v\n", err)
+			os.Exit(1)
+		}
+		if err := pprof.StartCPUProfile(f); err != nil {
+			_ = f.Close()
+			fmt.Fprintf(os.Stderr, "start cpu profile: %v\n", err)
+			os.Exit(1)
+		}
+		defer f.Close()
+		defer pprof.StopCPUProfile()
+	}
 	started := time.Now()
 	var result counts
-	switch *mode {
-	case "sdk-entry", "sdk-payloads":
-		result, err = readSDK(*surface, *mode, *direction, inputs, opts)
-	case "facade-next", "facade-data":
-		result, err = readFacade(*surface, *mode, *direction, inputs, opts)
-	default:
-		err = fmt.Errorf("invalid --mode: %s", *mode)
+	for i := 0; i < *loops; i++ {
+		var partial counts
+		switch *mode {
+		case "sdk-entry", "sdk-payloads":
+			partial, err = readSDK(*surface, *mode, *direction, inputs, opts)
+		case "facade-next", "facade-data":
+			partial, err = readFacade(*surface, *mode, *direction, inputs, opts)
+		default:
+			err = fmt.Errorf("invalid --mode: %s", *mode)
+		}
+		if err != nil {
+			break
+		}
+		result.addRun(partial)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	seconds := time.Since(started).Seconds()
+	if *memProfile != "" {
+		f, err := os.Create(*memProfile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "create memory profile: %v\n", err)
+			os.Exit(1)
+		}
+		runtime.GC()
+		if err := pprof.WriteHeapProfile(f); err != nil {
+			_ = f.Close()
+			fmt.Fprintf(os.Stderr, "write memory profile: %v\n", err)
+			os.Exit(1)
+		}
+		if err := f.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "close memory profile: %v\n", err)
+			os.Exit(1)
+		}
+	}
 	after := processStatusKB()
 	absInputs := make([]string, 0, len(inputs))
 	for _, input := range inputs {
@@ -349,6 +403,7 @@ func main() {
 		"window_size":            *windowSize,
 		"bounds":                 *bounds,
 		"mmap_strategy":          *mmapStrategy,
+		"loops":                  *loops,
 		"timer_excludes":         []string{"fixture generation", "process startup", "external verification"},
 		"process_status_before":  before,
 		"process_status_after":   after,

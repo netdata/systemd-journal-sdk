@@ -27,6 +27,17 @@ Last updated: 2026-05-29
 
 ## Recently Closed Or Completed
 
+- SOW-0056 - Go Reader Hot-Path Optimization Phase 2: completed. Go reader
+  hot-path internals now avoid redundant DATA header parsing, preserve
+  current-entry DATA-offset slice backing storage safely, return ENTRY headers
+  by value, cache immutable compact/regular layout constants, and specialize
+  regular/compact offset loops. The compact 100k-row reader benchmark measured
+  Go single-file `sdk-payloads` live/mmap at 2.74M rows/s and `facade-data` at
+  2.33M rows/s; Go open-files `sdk-payloads` live/mmap measured 2.40M rows/s
+  and `facade-data` 1.99M rows/s, versus stock systemd DATA medians of 634k
+  rows/s single-file and 628k rows/s open-files. Go tests, mixed-directory,
+  cross-language, live regular/compact matrices, read-only reviewers, and audit
+  passed.
 - SOW-0045 - Go Reader Alignment Optimization: completed. Go reader now has
   mmap-backed Unix access by default, live/snapshot bounds, byte-preserving RAW
   field APIs, current-entry payload visitor/enumerator APIs, libsystemd facade

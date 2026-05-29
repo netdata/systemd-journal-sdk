@@ -45,6 +45,12 @@ Go reader results record `mmap_strategy`. `mmap` is the default SDK reader
 access mode on Unix and is the production hot path. `read-at` remains in the
 harness as an explicit comparison and diagnostic mode.
 
+The Go reader benchmark helper also accepts `--cpuprofile`, `--memprofile`,
+and `--loops` for targeted profiling outside the full Python harness. Keep
+profile outputs under `.local/benchmarks/`; `--loops` repeats the selected
+read case inside one process to collect enough samples and is not used by the
+shared checksum-comparison harness.
+
 The writer-core harness aligns initial hash table sizing across systemd and
 SDK drivers with the systemd v260.1 formula:
 `data=max(max_size_bytes*4/768/3,2047)` and `field=1023`. The default

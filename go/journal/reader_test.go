@@ -172,6 +172,138 @@ func TestReaderRawFieldPayloadAPIs(t *testing.T) {
 	}
 }
 
+func TestReaderPayloadEnumerationReusesOffsetsAcrossEntries(t *testing.T) {
+	rows := []struct {
+		fields []Field
+		want   [][]byte
+	}{
+		{
+			fields: []Field{
+				StringField("MESSAGE", "one"),
+				StringField("A", "1"),
+				StringField("B", "1"),
+			},
+			want: [][]byte{
+				[]byte("MESSAGE=one"),
+				[]byte("A=1"),
+				[]byte("B=1"),
+			},
+		},
+		{
+			fields: []Field{
+				StringField("MESSAGE", "two"),
+			},
+			want: [][]byte{
+				[]byte("MESSAGE=two"),
+			},
+		},
+		{
+			fields: []Field{
+				StringField("MESSAGE", "three"),
+				StringField("A", "3"),
+				StringField("C", "3"),
+				StringField("D", "3"),
+				StringField("E", "3"),
+			},
+			want: [][]byte{
+				[]byte("MESSAGE=three"),
+				[]byte("A=3"),
+				[]byte("C=3"),
+				[]byte("D=3"),
+				[]byte("E=3"),
+			},
+		},
+	}
+
+	for _, compact := range []bool{false, true} {
+		name := "regular"
+		if compact {
+			name = "compact"
+		}
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "payload-reuse.journal")
+			opts := testOptions()
+			opts.Compact = compact
+			w, err := Create(path, opts)
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			for i, row := range rows {
+				if err := w.Append(row.fields, EntryOptions{
+					RealtimeUsec:  1_700_005_000_000_000 + uint64(i),
+					MonotonicUsec: uint64(i + 1),
+				}); err != nil {
+					t.Fatalf("Append(%d) error = %v", i, err)
+				}
+			}
+			if err := w.Close(); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+
+			for _, accessMode := range []ReaderAccessMode{ReaderAccessReadAt, ReaderAccessMmap} {
+				t.Run(accessModeName(accessMode), func(t *testing.T) {
+					r, err := OpenFileWithOptions(path, DefaultReaderOptions().WithAccessMode(accessMode))
+					if err != nil {
+						t.Fatalf("OpenFileWithOptions() error = %v", err)
+					}
+					defer r.Close()
+
+					for i, row := range rows {
+						if ok, err := r.Step(); err != nil || !ok {
+							t.Fatalf("Step(%d) = %v, %v; want true, nil", i, ok, err)
+						}
+
+						var visited [][]byte
+						if err := r.VisitEntryPayloads(func(payload []byte) error {
+							visited = append(visited, append([]byte(nil), payload...))
+							return nil
+						}); err != nil {
+							t.Fatalf("VisitEntryPayloads(%d) error = %v", i, err)
+						}
+						readerTestPayloadSetMatches(t, visited, row.want)
+
+						if err := r.EntryDataRestart(); err != nil {
+							t.Fatalf("EntryDataRestart(%d) error = %v", i, err)
+						}
+						var enumerated [][]byte
+						for {
+							payload, ok, err := r.EnumerateEntryPayload()
+							if err != nil {
+								t.Fatalf("EnumerateEntryPayload(%d) error = %v", i, err)
+							}
+							if !ok {
+								break
+							}
+							enumerated = append(enumerated, append([]byte(nil), payload...))
+						}
+						readerTestPayloadSetMatches(t, enumerated, row.want)
+
+						if err := r.EntryDataRestart(); err != nil {
+							t.Fatalf("EntryDataRestart(%d repeat) error = %v", i, err)
+						}
+						var repeated [][]byte
+						for {
+							payload, ok, err := r.EnumerateEntryPayload()
+							if err != nil {
+								t.Fatalf("EnumerateEntryPayload(%d repeat) error = %v", i, err)
+							}
+							if !ok {
+								break
+							}
+							repeated = append(repeated, append([]byte(nil), payload...))
+						}
+						readerTestPayloadSetMatches(t, repeated, row.want)
+					}
+
+					if ok, err := r.Step(); err != nil || ok {
+						t.Fatalf("final Step() = %v, %v; want false, nil", ok, err)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestReaderBoundsControlLiveRefresh(t *testing.T) {
 	for _, accessMode := range []ReaderAccessMode{ReaderAccessReadAt, ReaderAccessMmap} {
 		t.Run(accessModeName(accessMode), func(t *testing.T) {
@@ -250,6 +382,19 @@ func readerTestContainsPayload(payloads [][]byte, want []byte) bool {
 		}
 	}
 	return false
+}
+
+func readerTestPayloadSetMatches(t *testing.T, got [][]byte, want [][]byte) {
+	t.Helper()
+
+	if len(got) != len(want) {
+		t.Fatalf("payload count = %d, want %d; got %q want %q", len(got), len(want), got, want)
+	}
+	for _, payload := range want {
+		if !readerTestContainsPayload(got, payload) {
+			t.Fatalf("payloads %q did not include %q", got, payload)
+		}
+	}
 }
 
 func TestReaderSystemdZstdFixture(t *testing.T) {
