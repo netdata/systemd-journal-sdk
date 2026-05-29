@@ -450,6 +450,20 @@ impl DataPayloadObjectInfo {
     }
 }
 
+fn parse_data_payload_object_header(header_slice: &[u8]) -> Result<DataPayloadObjectInfo> {
+    let object_header =
+        ObjectHeader::ref_from_bytes(header_slice).map_err(|_| JournalError::ZerocopyFailure)?;
+
+    if object_header.type_ != ObjectType::Data as u8 {
+        return Err(JournalError::InvalidObjectType);
+    }
+
+    Ok(DataPayloadObjectInfo {
+        size_needed: object_header.validated_size()?,
+        is_compressed: object_header.is_compressed(),
+    })
+}
+
 fn map_hash_table<M: MemoryMap>(
     file: &File,
     header_size: u64,
@@ -885,17 +899,10 @@ impl<M: MemoryMap> JournalFile<M> {
         }
 
         self.window_manager.with_mut(|wm| {
-            let data_header_size = std::mem::size_of::<DataObjectHeader>() as u64;
-            let header_slice = wm.get_slice(offset.get(), data_header_size)?;
-            let data_header = DataObjectHeader::ref_from_bytes(header_slice)
-                .map_err(|_| JournalError::ZerocopyFailure)?;
-            let object_type = data_header.object_header.type_;
-            let is_compressed = data_header.is_compressed();
-            let size_needed = data_header.object_header.validated_size()?;
-
-            if object_type != ObjectType::Data as u8 {
-                return Err(JournalError::InvalidObjectType);
-            }
+            let object_header_size = std::mem::size_of::<ObjectHeader>() as u64;
+            let header_slice = wm.get_slice(offset.get(), object_header_size)?;
+            let info = parse_data_payload_object_header(header_slice)?;
+            let size_needed = info.size_needed;
 
             let end_offset = offset
                 .get()
@@ -914,7 +921,7 @@ impl<M: MemoryMap> JournalFile<M> {
             } else {
                 wm.get_slice(offset.get(), size_needed)?
             };
-            if !is_compressed {
+            if !info.is_compressed {
                 return visitor(&data[context.payload_prefix_size as usize..]);
             }
 
@@ -938,16 +945,10 @@ impl<M: MemoryMap> JournalFile<M> {
         }
 
         self.window_manager.with_mut(|wm| {
-            let data_header_size = std::mem::size_of::<DataObjectHeader>() as u64;
-            let header_slice = wm.get_slice(offset.get(), data_header_size)?;
-            let data_header = DataObjectHeader::ref_from_bytes(header_slice)
-                .map_err(|_| JournalError::ZerocopyFailure)?;
-            let object_type = data_header.object_header.type_;
-            let size_needed = data_header.object_header.validated_size()?;
-
-            if object_type != ObjectType::Data as u8 {
-                return Err(JournalError::InvalidObjectType);
-            }
+            let object_header_size = std::mem::size_of::<ObjectHeader>() as u64;
+            let header_slice = wm.get_slice(offset.get(), object_header_size)?;
+            let info = parse_data_payload_object_header(header_slice)?;
+            let size_needed = info.size_needed;
 
             let end_offset = offset
                 .get()
@@ -960,10 +961,7 @@ impl<M: MemoryMap> JournalFile<M> {
                 return Err(JournalError::InvalidObjectSize(size_needed));
             }
 
-            Ok(DataPayloadObjectInfo {
-                size_needed,
-                is_compressed: data_header.is_compressed(),
-            })
+            Ok(info)
         })
     }
 

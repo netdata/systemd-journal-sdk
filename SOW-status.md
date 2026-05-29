@@ -10,6 +10,7 @@
 
 ## Done
 
+- `SOW-0058-20260529-rust-data-header-fast-path.md`
 - `SOW-0057-20260529-rust-live-whole-file-mmap-reader-option.md`
 - `SOW-0035-20260527-derived-rotation-policy.md`
 - `SOW-0034-20260526-file-backed-journalctl-query-parity.md`

@@ -27,6 +27,13 @@ Last updated: 2026-05-29
 
 ## Recently Closed Or Completed
 
+- SOW-0058 - Rust DATA Header Fast Path: completed. Rust DATA payload hot paths
+  now parse only the 16-byte object header before validation and payload
+  slicing. Correctness tests passed, read-only reviewers found no blockers, and
+  benchmark evidence was mixed: single-file `sdk-payloads` and `facade-data`
+  improved in the clean baseline/current comparison, but low-level
+  `core-payloads` and some open-files medians were flat or lower, so this
+  change does not conclusively explain the Go/Rust reader gap.
 - SOW-0057 - Rust Live Whole-File Mmap Reader Option: completed. Rust live
   readers can explicitly opt into whole-file mmap through the existing
   experimental mmap strategy option while default live readers remain windowed.
