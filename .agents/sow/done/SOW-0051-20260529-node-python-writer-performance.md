@@ -2,11 +2,11 @@
 
 ## Status
 
-Status: open
+Status: closed
 
-Sub-state: follow-up from SOW-0042. This work is not on the immediate reader
-critical path, but it blocks any claim that Node.js and Python writers are
-performance-certified for high-throughput ingestion.
+Sub-state: superseded on 2026-05-29 by language-specific SOWs after the user
+changed the priority order to Rust reader optimization, then Python
+reader/writer port, then Node.js reader/writer port.
 
 ## Requirements
 
@@ -305,15 +305,21 @@ Follow-up mapping:
 
 ## Outcome
 
-Pending.
+Closed without implementation. Superseded by:
+
+- `SOW-0053-20260529-python-reader-writer-rust-port.md`
+- `SOW-0054-20260529-node-reader-writer-rust-port.md`
 
 ## Lessons Extracted
 
-Pending.
+Writer performance work should be handled together with reader/API parity for
+each dynamic language, so each language leaves the SOW with a coherent public
+API and benchmark story.
 
 ## Followup
 
-None yet.
+- SOW-0053 owns Python writer performance and Rust-parity work.
+- SOW-0054 owns Node.js writer performance and Rust-parity work.
 
 ## Regression Log
 

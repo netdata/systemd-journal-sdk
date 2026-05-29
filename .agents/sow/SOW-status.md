@@ -7,6 +7,9 @@ Last updated: 2026-05-29
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
+- SOW-0052 - Rust Reader Last-Mile Optimization: in progress. Final
+  profiling-driven Rust reader optimization pass before Python and Node.js
+  reader/writer ports.
 
 ## Pending
 
@@ -14,8 +17,6 @@ Last updated: 2026-05-29
   fresh Netdata consumer inventory and cut plan after performance gates.
 - SOW-0045 - Go Reader Alignment Optimization: open. Aligns and optimizes Go
   reader after Rust reader optimization.
-- SOW-0046 - Python Node Reader Alignment: open. Aligns Python and Node.js
-  readers after Rust/Go reader work.
 - SOW-0047 - Netdata NetFlow SDK Integration: open. Component integration for
   NetFlow reader and writer paths after inventory and performance gates.
 - SOW-0048 - Netdata OTEL Writer SDK Integration: open. Component integration
@@ -25,13 +26,19 @@ Last updated: 2026-05-29
   packaging after reader gates.
 - SOW-0050 - Netdata Vendored Journal Removal: open. Final cleanup after all
   Netdata component integrations are complete.
-- SOW-0051 - Node.js And Python Writer Performance: open. Follow-up from
-  SOW-0042 to profile and optimize Node.js/Python writers; not on the immediate
-  reader critical path, but required before claiming high-throughput writer
-  performance for those languages.
+- SOW-0053 - Python Reader And Writer Rust Port: open. Ports finalized Rust
+  reader and writer behavior to Python after SOW-0052.
+- SOW-0054 - Node.js Reader And Writer Rust Port: open. Ports finalized Rust
+  reader and writer behavior to Node.js after SOW-0053.
 
 ## Recently Closed Or Completed
 
+- SOW-0051 - Node.js And Python Writer Performance: closed without
+  implementation. Superseded by language-specific SOW-0053 and SOW-0054 after
+  the user changed priority to Rust -> Python -> Node.js full-language ports.
+- SOW-0046 - Python Node Reader Alignment: closed without implementation.
+  Superseded by language-specific SOW-0053 and SOW-0054 after the user changed
+  priority to Rust -> Python -> Node.js full-language ports.
 - SOW-0043 - Rust Reader Libsystemd/Jf Parity: completed after second
   regression repair. Rust facade current-entry DATA enumeration now matches the
   systemd/libsystemd and old Netdata `jf` model: uncompressed DATA is returned

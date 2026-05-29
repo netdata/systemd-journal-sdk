@@ -2,9 +2,11 @@
 
 ## Status
 
-Status: open
+Status: closed
 
-Sub-state: created on 2026-05-28 as the dynamic-language reader alignment SOW.
+Sub-state: superseded on 2026-05-29 by language-specific SOWs after the user
+changed the priority order to Rust reader optimization, then Python
+reader/writer port, then Node.js reader/writer port.
 
 ## Requirements
 
@@ -244,15 +246,20 @@ Follow-up mapping:
 
 ## Outcome
 
-Pending.
+Closed without implementation. Superseded by:
+
+- `SOW-0053-20260529-python-reader-writer-rust-port.md`
+- `SOW-0054-20260529-node-reader-writer-rust-port.md`
 
 ## Lessons Extracted
 
-Pending.
+Mixed-language reader SOWs hide priority and API sequencing. For the current
+project state, language-specific reader/writer port SOWs are clearer.
 
 ## Followup
 
-None yet.
+- SOW-0053 owns Python reader and writer Rust-port work.
+- SOW-0054 owns Node.js reader and writer Rust-port work.
 
 ## Regression Log
 

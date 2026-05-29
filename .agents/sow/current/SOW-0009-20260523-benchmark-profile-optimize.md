@@ -6,8 +6,9 @@ Status: paused
 
 Sub-state: retained as the umbrella performance program. The writer side is
 split into SOW-0042 after SOW-0037/SOW-0040/SOW-0041. The reader side is split
-into SOW-0044, SOW-0045, and SOW-0046 after SOW-0043 defines the reader
-compatibility target.
+into SOW-0044, SOW-0052, SOW-0053, and SOW-0054 after SOW-0043 defines the
+reader compatibility target and after the user changed priority to
+Rust -> Python -> Node.js full-language ports.
 
 ## Requirements
 
@@ -69,10 +70,11 @@ Unknowns:
 - This umbrella SOW remains the performance program index until child SOWs
   close.
 - Writer benchmarking and optimization are tracked by SOW-0042.
-- Rust reader baseline/parity and optimization are tracked by SOW-0043 and
-  SOW-0044.
+- Rust reader baseline/parity and optimization are tracked by SOW-0043,
+  SOW-0044, and SOW-0052.
 - Go reader alignment and optimization are tracked by SOW-0045.
-- Python and Node.js reader alignment are tracked by SOW-0046.
+- Python reader/writer Rust-port work is tracked by SOW-0053.
+- Node.js reader/writer Rust-port work is tracked by SOW-0054.
 - Netdata integration remains blocked by the relevant child SOWs unless the
   user explicitly accepts a staged exception.
 - Benchmark reports must record production-relevant settings: file size,
@@ -207,8 +209,10 @@ Open decisions:
 2. Complete SOW-0040 and SOW-0041 writer parity gaps.
 3. Complete SOW-0042 writer final certification and benchmarks.
 4. Complete SOW-0043 reader parity.
-5. Complete SOW-0044 through SOW-0046 reader performance work.
-6. Use the results to unblock SOW-0026 and component Netdata integration SOWs.
+5. Complete SOW-0052 Rust reader last-mile optimization.
+6. Complete SOW-0053 Python reader/writer Rust-port work.
+7. Complete SOW-0054 Node.js reader/writer Rust-port work.
+8. Use the results to unblock SOW-0026 and component Netdata integration SOWs.
 
 ## Delegation Plan
 
@@ -306,9 +310,10 @@ Lessons:
 Follow-up mapping:
 
 - Writer certification: SOW-0042.
-- Rust reader parity/performance: SOW-0043 and SOW-0044.
+- Rust reader parity/performance: SOW-0043, SOW-0044, and SOW-0052.
 - Go reader performance: SOW-0045.
-- Python/Node.js reader performance: SOW-0046.
+- Python reader/writer Rust-port work: SOW-0053.
+- Node.js reader/writer Rust-port work: SOW-0054.
 
 ## Outcome
 
@@ -324,7 +329,9 @@ Pending.
 - SOW-0043 - Rust Reader Libsystemd/Jf Parity.
 - SOW-0044 - Rust Reader Hot-Path Optimization.
 - SOW-0045 - Go Reader Alignment Optimization.
-- SOW-0046 - Python Node Reader Alignment.
+- SOW-0052 - Rust Reader Last-Mile Optimization.
+- SOW-0053 - Python Reader And Writer Rust Port.
+- SOW-0054 - Node.js Reader And Writer Rust Port.
 
 ## Regression Log
 
