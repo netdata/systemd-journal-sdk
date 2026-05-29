@@ -98,3 +98,110 @@ python3 tests/benchmarks/run_reader_core_benchmarks.py \
   --final-state online \
   --keep-fixtures
 ```
+
+## Standard benchmark reports
+
+Use `report_benchmarks.py` to render benchmark results. Do not hand-compose
+benchmark tables in SOWs or status updates when a `summary.json` or
+`report.json` exists.
+
+The report format is fixed:
+
+1. `Run Identity`
+2. `Configuration`
+3. `Production Comparison`
+4. `Diagnostic Modes` for reader-core reports
+5. `Change Comparison` when `--before` and `--after` are provided
+6. `Conclusion`
+7. `Raw Evidence`
+
+Writer-core reports omit `Diagnostic Modes`, so subsequent sections move up by
+one position for writer-only reports.
+
+Use either `--run` for a single run report or `--before` plus `--after` for a
+change report. Do not combine `--run` with `--before` or `--after`.
+
+Reader production comparisons always use this row order per surface:
+
+1. `systemd:data`
+2. `rust:core-payloads`
+3. `rust:sdk-payloads`
+4. `rust:facade-data`
+5. `go:sdk-payloads`
+6. `go:facade-data`
+7. `node:sdk-payloads`
+8. `node:facade-data`
+9. `python:sdk-payloads`
+10. `python:facade-data`
+
+Reader reports always split `file` and `open-files` surfaces. `sdk-entry`,
+`core-next`, `core-offsets`, alternate bounds, alternate mmap strategies, and
+other non-production rows appear under `Diagnostic Modes`.
+`rust:core-payloads` is a production row only for the `file` surface; when it
+appears for `open-files`, the reporter keeps it under `Diagnostic Modes`.
+
+Production comparison tables include a `status` column. Rows expected from the
+run's configured languages but missing from the artifact remain visible with
+`status=missing` and blank metric columns.
+
+Change reports include an `Unmatched Rows` subsection when a row exists only in
+the before run or only in the after run. Treat unmatched rows as a configuration
+or benchmark-surface difference before using the deltas for decisions.
+Change reports show the after-run configuration in the `Configuration` section,
+so verify the before/after manifests match when interpreting deltas.
+
+Writer-core reports always use this language order:
+
+1. `systemd`
+2. `rust`
+3. `go`
+4. `node`
+5. `python`
+
+Writer-core change reports also include a `Configuration Differences`
+subsection when the same language was measured with different API modes or
+access strategies between the before and after artifacts.
+
+The reporter does not infer whether a benchmark is a win or regression. Pass an
+explicit `--conclusion` value after reviewing the numbers. Accepted conclusion
+labels are:
+
+- `clear-win`
+- `mixed`
+- `no-measurable-change`
+- `regression`
+- `inconclusive`
+- `not-assessed`
+
+Examples:
+
+```bash
+python3 tests/benchmarks/report_benchmarks.py \
+  --run .local/benchmarks/reader-core/latest \
+  --title "Reader Core Benchmark" \
+  --conclusion not-assessed
+```
+
+```bash
+python3 tests/benchmarks/report_benchmarks.py \
+  --before .local/benchmarks/reader-core-before/latest \
+  --after .local/benchmarks/reader-core-after/latest \
+  --title "Reader Core Optimization Benchmark" \
+  --conclusion mixed \
+  --conclusion-note "Single-file SDK payload improved, open-files did not."
+```
+
+```bash
+python3 tests/benchmarks/report_benchmarks.py \
+  --run .local/benchmarks/writer-core/<run-directory> \
+  --title "Writer Core Benchmark" \
+  --conclusion not-assessed
+```
+
+```bash
+python3 tests/benchmarks/report_benchmarks.py \
+  --before .local/benchmarks/writer-core-before/<run-directory> \
+  --after .local/benchmarks/writer-core-after/<run-directory> \
+  --title "Writer Core Optimization Benchmark" \
+  --conclusion not-assessed
+```

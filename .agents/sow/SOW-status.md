@@ -27,6 +27,10 @@ Last updated: 2026-05-29
 
 ## Recently Closed Or Completed
 
+- SOW-0059 - Standard Benchmark Reporting: completed. Added a stdlib-only
+  benchmark report generator for reader-core and writer-core JSON artifacts,
+  documented the canonical report shape, added 15 report-shape/unit tests, and
+  validated output against existing SOW-0058 reader and writer-core artifacts.
 - SOW-0058 - Rust DATA Header Fast Path: completed. Rust DATA payload hot paths
   now parse only the 16-byte object header before validation and payload
   slicing. Correctness tests passed, read-only reviewers found no blockers, and
