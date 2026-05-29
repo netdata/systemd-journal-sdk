@@ -34,6 +34,7 @@ pub use facade::{
     SdJournalSeekTail, SdJournalSetOutputMode, SdJournalTestCursor,
 };
 pub use journal_core::error::JournalError;
+use journal_core::file::file::DataPayloadReadContext;
 pub use journal_core::file::{
     BucketUtilization, Compression, Direction, EntryItemsType, ExperimentalMmapStrategy,
     FieldNamePolicy, HashableObject, JournalFile, JournalReader, Location, Mmap,
@@ -289,13 +290,15 @@ pub struct FileReader {
     temp_path: Option<PathBuf>,
     current_key: Option<DirectoryEntryKey>,
     data_offsets: Vec<NonZeroU64>,
+    data_payload_context: Option<DataPayloadReadContext>,
+    data_offsets_entry: Option<NonZeroU64>,
     data_index: usize,
     entry_data_state_active: bool,
     decompressed: Vec<u8>,
 }
 
 enum StepStatus {
-    Valid(DirectoryEntryKey),
+    Valid(DirectoryEntryKey, NonZeroU64),
     Skip,
     End,
 }
@@ -329,6 +332,8 @@ impl FileReader {
             temp_path: None,
             current_key: None,
             data_offsets: Vec::new(),
+            data_payload_context: None,
+            data_offsets_entry: None,
             data_index: 0,
             entry_data_state_active: false,
             decompressed: Vec::new(),
@@ -353,6 +358,8 @@ impl FileReader {
             temp_path: Some(temp_path),
             current_key: None,
             data_offsets: Vec::new(),
+            data_payload_context: None,
+            data_offsets_entry: None,
             data_index: 0,
             entry_data_state_active: false,
             decompressed: Vec::new(),
@@ -383,7 +390,7 @@ impl FileReader {
     }
 
     pub fn seek_head(&mut self) {
-        self.invalidate_entry_data_state();
+        self.reset_cached_entry_data_state();
         self.current_key = None;
         self.inner.with_reader_mut(|reader| {
             reader.set_location(Location::Head);
@@ -391,7 +398,7 @@ impl FileReader {
     }
 
     pub fn seek_tail(&mut self) {
-        self.invalidate_entry_data_state();
+        self.reset_cached_entry_data_state();
         self.current_key = None;
         self.inner.with_reader_mut(|reader| {
             reader.set_location(Location::Tail);
@@ -399,7 +406,7 @@ impl FileReader {
     }
 
     pub fn seek_realtime(&mut self, usec: u64) {
-        self.invalidate_entry_data_state();
+        self.reset_cached_entry_data_state();
         self.current_key = None;
         self.inner.with_reader_mut(|reader| {
             reader.set_location(Location::Realtime(usec));
@@ -441,6 +448,7 @@ impl FileReader {
 
     fn step_valid(&mut self, direction: Direction) -> Result<bool> {
         loop {
+            let data_offsets = &mut self.data_offsets;
             let status = self.inner.with_mut(|fields| {
                 if !fields.reader.step(fields.file, direction)? {
                     return Ok(StepStatus::End);
@@ -449,29 +457,41 @@ impl FileReader {
                 match fields.reader.get_entry_offset().and_then(|offset| {
                     let entry = fields.file.entry_ref(offset)?;
                     let header = fields.file.journal_header_ref();
-                    Ok(DirectoryEntryKey {
-                        seqnum_id: header.seqnum_id,
-                        seqnum: entry.header.seqnum,
-                        boot_id: entry.header.boot_id,
-                        monotonic: entry.header.monotonic,
-                        realtime: entry.header.realtime,
-                        xor_hash: entry.header.xor_hash,
-                    })
+                    collect_offsets_from_entry_items(&entry.items, data_offsets);
+                    Ok((
+                        DirectoryEntryKey {
+                            seqnum_id: header.seqnum_id,
+                            seqnum: entry.header.seqnum,
+                            boot_id: entry.header.boot_id,
+                            monotonic: entry.header.monotonic,
+                            realtime: entry.header.realtime,
+                            xor_hash: entry.header.xor_hash,
+                        },
+                        offset,
+                    ))
                 }) {
-                    Ok(key) => Ok(StepStatus::Valid(key)),
+                    Ok((key, offset)) => Ok(StepStatus::Valid(key, offset)),
                     Err(err) if recoverable_entry_error(&err) => Ok(StepStatus::Skip),
                     Err(err) => Err(err),
                 }
             })?;
 
             match status {
-                StepStatus::Valid(key) => {
+                StepStatus::Valid(key, offset) => {
                     self.current_key = Some(key);
+                    self.data_offsets_entry = Some(offset);
+                    self.data_payload_context = Some(
+                        self.inner
+                            .with_file(|file| file.data_payload_read_context()),
+                    );
                     return Ok(true);
                 }
                 StepStatus::Skip => continue,
                 StepStatus::End => {
                     self.current_key = None;
+                    self.data_offsets.clear();
+                    self.data_offsets_entry = None;
+                    self.data_payload_context = None;
                     return Ok(false);
                 }
             }
@@ -482,9 +502,11 @@ impl FileReader {
         self.invalidate_entry_data_state();
         let inner = &mut self.inner;
         let data_offsets = &mut self.data_offsets;
+        let data_offsets_entry = &mut self.data_offsets_entry;
         let decompressed = &mut self.decompressed;
         inner.with_mut(|fields| {
             let offset = fields.reader.get_entry_offset()?;
+            *data_offsets_entry = Some(offset);
             read_entry_at(
                 fields.file,
                 fields.reader,
@@ -502,19 +524,30 @@ impl FileReader {
         self.invalidate_entry_data_state();
         let inner = &mut self.inner;
         let data_offsets = &mut self.data_offsets;
+        let data_offsets_entry = &mut self.data_offsets_entry;
         let decompressed = &mut self.decompressed;
         inner.with_mut(|fields| {
             let offset = fields.reader.get_entry_offset()?;
-            visit_entry_payloads_at(fields.file, offset, data_offsets, decompressed, visitor)
+            if *data_offsets_entry != Some(offset) {
+                collect_entry_data_offsets(fields.file, offset, data_offsets)?;
+                *data_offsets_entry = Some(offset);
+            }
+            visit_entry_payload_offsets(fields.file, data_offsets, decompressed, visitor)
         })
     }
 
     pub fn clear_entry_data_state(&mut self) {
-        self.data_offsets.clear();
-        self.data_index = 0;
-        self.entry_data_state_active = false;
+        self.reset_cached_entry_data_state();
         self.inner
             .with_reader_mut(|reader| reader.entry_data_restart());
+    }
+
+    fn reset_cached_entry_data_state(&mut self) {
+        self.data_offsets.clear();
+        self.data_offsets_entry = None;
+        self.data_payload_context = None;
+        self.data_index = 0;
+        self.entry_data_state_active = false;
     }
 
     fn invalidate_entry_data_state(&mut self) {
@@ -528,10 +561,16 @@ impl FileReader {
             .with_reader_mut(|reader| reader.entry_data_restart());
         let inner = &mut self.inner;
         let data_offsets = &mut self.data_offsets;
-        data_offsets.clear();
+        let data_offsets_entry = &mut self.data_offsets_entry;
+        let data_payload_context = &mut self.data_payload_context;
         inner.with_mut(|fields| {
             let offset = fields.reader.get_entry_offset()?;
-            collect_entry_data_offsets(fields.file, offset, data_offsets)
+            if *data_offsets_entry != Some(offset) {
+                collect_entry_data_offsets(fields.file, offset, data_offsets)?;
+                *data_offsets_entry = Some(offset);
+            }
+            *data_payload_context = Some(fields.file.data_payload_read_context());
+            Ok::<(), SdkError>(())
         })?;
         self.data_index = 0;
         self.entry_data_state_active = true;
@@ -544,12 +583,24 @@ impl FileReader {
             return Ok(None);
         };
         self.data_index += 1;
+        self.entry_data_state_active = true;
         let decompressed = &mut self.decompressed;
         self.inner.with_mut(|fields| {
-            let data_guard = fields.reader.data_object_at(fields.file, data_offset)?;
-            if !data_guard.is_compressed() {
-                return Ok(Some(data_guard.raw_payload()));
+            let context = self
+                .data_payload_context
+                .unwrap_or_else(|| fields.file.data_payload_read_context());
+            fields.reader.release_object_guards();
+            let info = fields
+                .file
+                .data_payload_object_info_at(context, data_offset)?;
+            if !info.is_compressed() {
+                let payload =
+                    fields
+                        .reader
+                        .raw_data_payload_at(fields.file, context, info, data_offset)?;
+                return Ok(Some(payload));
             }
+            let data_guard = fields.reader.data_object_at(fields.file, data_offset)?;
             let len = data_guard.decompress(decompressed)?;
             Ok(Some(&decompressed[..len]))
         })
@@ -1803,32 +1854,32 @@ fn read_entry_at(
     })
 }
 
-fn visit_entry_payloads_at<F>(
+fn visit_entry_payload_offsets<F>(
     file: &JournalFile<Mmap>,
-    entry_offset: NonZeroU64,
-    data_offsets: &mut Vec<NonZeroU64>,
+    data_offsets: &[NonZeroU64],
     decompressed: &mut Vec<u8>,
     mut visitor: F,
 ) -> Result<()>
 where
     F: FnMut(&[u8]) -> Result<()>,
 {
-    collect_entry_data_offsets(file, entry_offset, data_offsets)?;
-
+    let context = file.data_payload_read_context();
     for data_offset in data_offsets.iter().copied() {
-        let data = match file.data_ref(data_offset) {
-            Ok(data) => data,
+        let mut visitor_result = Ok(());
+        match file.visit_data_payload_at_with_context(
+            context,
+            data_offset,
+            decompressed,
+            |payload| {
+                visitor_result = visitor(payload);
+                Ok(())
+            },
+        ) {
+            Ok(()) => {}
             Err(err) if recoverable_entry_data_error(&err) => continue,
             Err(err) => return Err(err.into()),
-        };
-        let payload = if data.is_compressed() {
-            decompressed.clear();
-            data.decompress(decompressed)?;
-            decompressed.as_slice()
-        } else {
-            data.raw_payload()
-        };
-        visitor(payload)?;
+        }
+        visitor_result?;
     }
 
     Ok(())
@@ -2661,6 +2712,30 @@ mod tests {
         assert_eq!(returned_payload, mmap_payload);
         assert_eq!(returned_len, mmap_len);
         assert_eq!(returned_ptr, mmap_ptr);
+    }
+
+    #[test]
+    fn file_reader_seek_clears_cached_entry_payload_offsets() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("journals/system.journal");
+        write_facade_test_journal(&path);
+
+        let mut reader = FileReader::open(&path).expect("open reader");
+        assert!(reader.next().expect("first entry"));
+        assert!(
+            reader
+                .enumerate_entry_payload()
+                .expect("enumerate first payload")
+                .is_some()
+        );
+
+        reader.seek_tail();
+        assert!(
+            reader
+                .enumerate_entry_payload()
+                .expect("enumerate after seek")
+                .is_none()
+        );
     }
 
     #[test]

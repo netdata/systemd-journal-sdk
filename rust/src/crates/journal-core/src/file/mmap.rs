@@ -418,6 +418,31 @@ impl<M: MemoryMap> WindowManager<M> {
         None
     }
 
+    pub(crate) fn active_slice_if_contains(&self, position: u64, size: u64) -> Option<&[u8]> {
+        let idx = self.active_window_idx?;
+        let window = &self.windows[idx];
+        if window.contains_range(position, size) {
+            Some(window.get_slice(position, size))
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn active_window_contains(&self, position: u64, size: u64) -> bool {
+        self.active_window_idx
+            .and_then(|idx| self.windows.get(idx))
+            .is_some_and(|window| window.contains_range(position, size))
+    }
+
+    pub(crate) fn active_slice(&self, position: u64, size: u64) -> &[u8] {
+        let idx = self
+            .active_window_idx
+            .expect("active window should exist when active_window_contains returned true");
+        let window = &self.windows[idx];
+        debug_assert!(window.contains_range(position, size));
+        window.get_slice(position, size)
+    }
+
     fn get_window(&mut self, position: u64, size_needed: u64) -> Result<&mut Window<M>> {
         if self.strategy == ExperimentalMmapStrategy::WholeFile {
             return self.get_whole_file_window(position, size_needed);

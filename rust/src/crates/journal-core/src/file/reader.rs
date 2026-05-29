@@ -21,6 +21,7 @@ pub struct JournalReader<'a, M: MemoryMap> {
 
     field_guard: Option<ValueGuard<'a, FieldObject<&'a [u8]>>>,
     data_guard: Option<ValueGuard<'a, DataObject<&'a [u8]>>>,
+    raw_payload_guard: Option<ValueGuard<'a, &'a [u8]>>,
 }
 
 #[cfg(test)]
@@ -112,6 +113,7 @@ impl<M: MemoryMap> Default for JournalReader<'_, M> {
             entry_data_iterator: None,
             field_guard: None,
             data_guard: None,
+            raw_payload_guard: None,
         }
     }
 }
@@ -208,6 +210,12 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
     fn drop_guards(&mut self) {
         self.field_guard.take();
         self.data_guard.take();
+        self.raw_payload_guard.take();
+    }
+
+    #[doc(hidden)]
+    pub fn release_object_guards(&mut self) {
+        self.drop_guards();
     }
 
     pub fn fields_restart(&mut self) {
@@ -294,6 +302,23 @@ impl<'a, M: MemoryMap> JournalReader<'a, M> {
         self.drop_guards();
         self.data_guard = Some(journal_file.data_ref(data_offset)?);
         Ok(self.data_guard.as_ref().expect("data guard is present"))
+    }
+
+    #[doc(hidden)]
+    pub fn raw_data_payload_at(
+        &mut self,
+        journal_file: &'a JournalFile<M>,
+        context: crate::file::file::DataPayloadReadContext,
+        info: crate::file::file::DataPayloadObjectInfo,
+        data_offset: NonZeroU64,
+    ) -> Result<&[u8]> {
+        self.drop_guards();
+        let guard = journal_file.raw_data_payload_ref_with_info(context, data_offset, info)?;
+        self.raw_payload_guard = Some(guard);
+        Ok(**self
+            .raw_payload_guard
+            .as_ref()
+            .expect("raw payload guard is present"))
     }
 
     pub fn entry_data_offsets(

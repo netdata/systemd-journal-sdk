@@ -428,6 +428,28 @@ pub struct JournalFile<M: MemoryMap> {
     pub seal_options: Option<crate::seal::SealOptions>,
 }
 
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub struct DataPayloadReadContext {
+    is_compact: bool,
+    header_size: u64,
+    arena_end: u64,
+    payload_prefix_size: u64,
+}
+
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub struct DataPayloadObjectInfo {
+    size_needed: u64,
+    is_compressed: bool,
+}
+
+impl DataPayloadObjectInfo {
+    pub fn is_compressed(self) -> bool {
+        self.is_compressed
+    }
+}
+
 fn map_hash_table<M: MemoryMap>(
     file: &File,
     header_size: u64,
@@ -784,6 +806,165 @@ impl<M: MemoryMap> JournalFile<M> {
 
     pub fn data_ref(&self, offset: NonZeroU64) -> Result<ValueGuard<'_, DataObject<&[u8]>>> {
         self.journal_object_ref(offset)
+    }
+
+    #[doc(hidden)]
+    pub fn data_payload_read_context(&self) -> DataPayloadReadContext {
+        let journal_header = self.journal_header_ref();
+        let is_compact = journal_header.has_incompatible_flag(HeaderIncompatibleFlags::Compact);
+        let payload_prefix_size = std::mem::size_of::<DataObjectHeader>() as u64
+            + if is_compact {
+                std::mem::size_of::<CompactDataFields>() as u64
+            } else {
+                0
+            };
+        DataPayloadReadContext {
+            is_compact,
+            header_size: journal_header.header_size,
+            arena_end: journal_header.header_size + journal_header.arena_size,
+            payload_prefix_size,
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn visit_data_payload_at<F>(
+        &self,
+        offset: NonZeroU64,
+        decompressed: &mut Vec<u8>,
+        visitor: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(&[u8]) -> Result<()>,
+    {
+        let context = self.data_payload_read_context();
+        self.visit_data_payload_at_with_context(context, offset, decompressed, visitor)
+    }
+
+    #[doc(hidden)]
+    pub fn visit_data_payload_at_with_context<F>(
+        &self,
+        context: DataPayloadReadContext,
+        offset: NonZeroU64,
+        decompressed: &mut Vec<u8>,
+        visitor: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(&[u8]) -> Result<()>,
+    {
+        validate_offset_alignment(offset)?;
+        if offset.get() < context.header_size {
+            return Err(JournalError::ObjectExceedsFileBounds);
+        }
+
+        self.window_manager.with_mut(|wm| {
+            let data_header_size = std::mem::size_of::<DataObjectHeader>() as u64;
+            let header_slice = wm.get_slice(offset.get(), data_header_size)?;
+            let data_header = DataObjectHeader::ref_from_bytes(header_slice)
+                .map_err(|_| JournalError::ZerocopyFailure)?;
+            let object_type = data_header.object_header.type_;
+            let is_compressed = data_header.is_compressed();
+            let size_needed = data_header.object_header.validated_size()?;
+
+            if object_type != ObjectType::Data as u8 {
+                return Err(JournalError::InvalidObjectType);
+            }
+
+            let end_offset = offset
+                .get()
+                .checked_add(size_needed)
+                .ok_or(JournalError::ObjectExceedsFileBounds)?;
+            if end_offset > context.arena_end {
+                return Err(JournalError::ObjectExceedsFileBounds);
+            }
+
+            if size_needed < context.payload_prefix_size {
+                return Err(JournalError::InvalidObjectSize(size_needed));
+            }
+
+            let data = if let Some(data) = wm.active_slice_if_contains(offset.get(), size_needed) {
+                data
+            } else {
+                wm.get_slice(offset.get(), size_needed)?
+            };
+            if !is_compressed {
+                return visitor(&data[context.payload_prefix_size as usize..]);
+            }
+
+            let object = DataObject::from_data(data, context.is_compact)
+                .ok_or(JournalError::ZerocopyFailure)?;
+            decompressed.clear();
+            let len = object.decompress(decompressed)?;
+            visitor(&decompressed[..len])
+        })
+    }
+
+    #[doc(hidden)]
+    pub fn data_payload_object_info_at(
+        &self,
+        context: DataPayloadReadContext,
+        offset: NonZeroU64,
+    ) -> Result<DataPayloadObjectInfo> {
+        validate_offset_alignment(offset)?;
+        if offset.get() < context.header_size {
+            return Err(JournalError::ObjectExceedsFileBounds);
+        }
+
+        self.window_manager.with_mut(|wm| {
+            let data_header_size = std::mem::size_of::<DataObjectHeader>() as u64;
+            let header_slice = wm.get_slice(offset.get(), data_header_size)?;
+            let data_header = DataObjectHeader::ref_from_bytes(header_slice)
+                .map_err(|_| JournalError::ZerocopyFailure)?;
+            let object_type = data_header.object_header.type_;
+            let size_needed = data_header.object_header.validated_size()?;
+
+            if object_type != ObjectType::Data as u8 {
+                return Err(JournalError::InvalidObjectType);
+            }
+
+            let end_offset = offset
+                .get()
+                .checked_add(size_needed)
+                .ok_or(JournalError::ObjectExceedsFileBounds)?;
+            if end_offset > context.arena_end {
+                return Err(JournalError::ObjectExceedsFileBounds);
+            }
+            if size_needed < context.payload_prefix_size {
+                return Err(JournalError::InvalidObjectSize(size_needed));
+            }
+
+            Ok(DataPayloadObjectInfo {
+                size_needed,
+                is_compressed: data_header.is_compressed(),
+            })
+        })
+    }
+
+    #[doc(hidden)]
+    pub fn raw_data_payload_ref_with_info(
+        &self,
+        context: DataPayloadReadContext,
+        offset: NonZeroU64,
+        info: DataPayloadObjectInfo,
+    ) -> Result<ValueGuard<'_, &[u8]>> {
+        validate_offset_alignment(offset)?;
+        if offset.get() < context.header_size {
+            return Err(JournalError::ObjectExceedsFileBounds);
+        }
+        if info.is_compressed {
+            return Err(JournalError::InvalidObjectType);
+        }
+        if info.size_needed < context.payload_prefix_size {
+            return Err(JournalError::InvalidObjectSize(info.size_needed));
+        }
+
+        self.window_manager.with_guarded(offset, |wm| {
+            if wm.active_window_contains(offset.get(), info.size_needed) {
+                let data = wm.active_slice(offset.get(), info.size_needed);
+                return Ok(&data[context.payload_prefix_size as usize..]);
+            }
+            let data = wm.get_slice(offset.get(), info.size_needed)?;
+            Ok(&data[context.payload_prefix_size as usize..])
+        })
     }
 
     pub fn tag_ref(&self, offset: NonZeroU64) -> Result<ValueGuard<'_, TagObject<&[u8]>>> {
@@ -1932,6 +2113,97 @@ mod tests {
             iter.next().is_none(),
             "iterator should stop after the error"
         );
+    }
+
+    fn first_data_offset(journal_file: &JournalFile<crate::file::MmapMut>) -> NonZeroU64 {
+        let mut entry_offsets = Vec::new();
+        journal_file
+            .entry_offsets(&mut entry_offsets)
+            .expect("collect entry offsets");
+        let entry_offset = *entry_offsets.first().expect("journal entry");
+        let entry = journal_file.entry_ref(entry_offset).expect("entry object");
+        match &entry.items {
+            EntryItemsType::Regular(items) => {
+                NonZeroU64::new(items[0].object_offset).expect("data offset")
+            }
+            EntryItemsType::Compact(items) => {
+                NonZeroU64::new(items[0].object_offset as u64).expect("data offset")
+            }
+        }
+    }
+
+    #[test]
+    fn visit_data_payload_at_returns_compact_uncompressed_payload() {
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3)).with_compact(true),
+        )
+        .expect("create compact journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[b"MESSAGE=compact payload".as_slice()],
+                1_000_000,
+                100,
+            )
+            .expect("write compact entry");
+
+        let offset = first_data_offset(&journal_file);
+        let mut decompressed = Vec::new();
+        let mut observed = Vec::new();
+        journal_file
+            .visit_data_payload_at(offset, &mut decompressed, |payload| {
+                observed.extend_from_slice(payload);
+                Ok(())
+            })
+            .expect("visit payload");
+
+        assert_eq!(observed, b"MESSAGE=compact payload");
+    }
+
+    #[test]
+    fn visit_data_payload_at_decompresses_payload() {
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_compression(Compression::Zstd)
+                .with_compress_threshold(8),
+        )
+        .expect("create compressed journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+        let payload = format!("MESSAGE={}", "x".repeat(1024));
+        writer
+            .add_entry(&mut journal_file, &[payload.as_bytes()], 1_000_000, 100)
+            .expect("write compressed entry");
+
+        let offset = first_data_offset(&journal_file);
+        let mut decompressed = Vec::new();
+        let mut observed = Vec::new();
+        journal_file
+            .visit_data_payload_at(offset, &mut decompressed, |payload| {
+                observed.extend_from_slice(payload);
+                Ok(())
+            })
+            .expect("visit payload");
+
+        assert_eq!(observed, payload.as_bytes());
     }
 
     #[test]

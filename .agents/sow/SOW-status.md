@@ -7,9 +7,6 @@ Last updated: 2026-05-29
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
-- SOW-0052 - Rust Reader Last-Mile Optimization: in progress. Final
-  profiling-driven Rust reader optimization pass before Python and Node.js
-  reader/writer ports.
 
 ## Pending
 
@@ -33,6 +30,15 @@ Last updated: 2026-05-29
 
 ## Recently Closed Or Completed
 
+- SOW-0052 - Rust Reader Last-Mile Optimization: completed. Rust reader payload
+  scans now avoid redundant ENTRY/DATA materialization, reuse active mmap
+  windows, cache current-entry DATA offsets safely, and return mmap-backed
+  uncompressed facade payloads while preserving compressed reusable-buffer
+  fallback. The compact 200k-row benchmark measured Rust single-file
+  `sdk-payloads` live/windowed at 2.44M rows/s and `facade-data` at 2.24M
+  rows/s versus stock systemd data enumeration at 537k rows/s; full Rust,
+  directory, mixed-directory, live, journalctl query, and read-only reviewer
+  gates passed.
 - SOW-0051 - Node.js And Python Writer Performance: closed without
   implementation. Superseded by language-specific SOW-0053 and SOW-0054 after
   the user changed priority to Rust -> Python -> Node.js full-language ports.

@@ -148,6 +148,39 @@ impl<T> GuardedCell<T> {
         unsafe { Ok(&mut *self.value.get()) }
     }
 
+    /// Executes a closure with temporary mutable access to the inner value.
+    ///
+    /// Unlike `with_guarded`, the returned value must not contain references
+    /// into the guarded value. This is intended for hot paths that consume
+    /// borrowed data inside the closure, allowing the guard to be cleared before
+    /// this method returns.
+    pub fn with_mut<R, F>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce(&mut T) -> Result<R>,
+    {
+        let mut is_in_use = self.guard.borrow_mut();
+        if *is_in_use {
+            return Err(JournalError::ValueGuardInUse);
+        }
+        *is_in_use = true;
+        drop(is_in_use);
+
+        struct GuardReset<'a>(&'a RefCell<bool>);
+        impl Drop for GuardReset<'_> {
+            fn drop(&mut self) {
+                *self.0.borrow_mut() = false;
+            }
+        }
+
+        let _reset = GuardReset(&self.guard);
+
+        // SAFETY: The guard was set above and will be cleared by GuardReset
+        // after the closure returns. Callers must not return references into the
+        // guarded value, so no derived reference can outlive the closure.
+        let value_ref = unsafe { &mut *self.value.get() };
+        f(value_ref)
+    }
+
     /// Gets a mutable reference to the inner value.
     ///
     /// This is safe because it requires `&mut self`, guaranteeing unique access.
