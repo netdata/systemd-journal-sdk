@@ -8,7 +8,9 @@ Sub-state: retained as the umbrella performance program. The writer side is
 split into SOW-0042 after SOW-0037/SOW-0040/SOW-0041. The reader side is split
 into SOW-0044, SOW-0052, SOW-0053, and SOW-0054 after SOW-0043 defines the
 reader compatibility target and after the user changed priority to
-Rust -> Python -> Node.js full-language ports.
+Rust -> Python -> Node.js full-language ports. SOW-0060 completed the Rust
+reader absolute hot-path profiling pass after later Go results set a stricter
+performance bar.
 
 ## Requirements
 
@@ -71,7 +73,7 @@ Unknowns:
   close.
 - Writer benchmarking and optimization are tracked by SOW-0042.
 - Rust reader baseline/parity and optimization are tracked by SOW-0043,
-  SOW-0044, and SOW-0052.
+  SOW-0044, SOW-0052, and SOW-0060.
 - Go reader alignment and optimization are tracked by SOW-0045.
 - Python reader/writer Rust-port work is tracked by SOW-0053.
 - Node.js reader/writer Rust-port work is tracked by SOW-0054.
@@ -210,9 +212,11 @@ Open decisions:
 3. Complete SOW-0042 writer final certification and benchmarks.
 4. Complete SOW-0043 reader parity.
 5. Complete SOW-0052 Rust reader last-mile optimization.
-6. Complete SOW-0053 Python reader/writer Rust-port work.
-7. Complete SOW-0054 Node.js reader/writer Rust-port work.
-8. Use the results to unblock SOW-0026 and component Netdata integration SOWs.
+6. Complete SOW-0060 Rust reader absolute hot-path profiling. Completed on
+   2026-05-29.
+7. Complete SOW-0053 Python reader/writer Rust-port work.
+8. Complete SOW-0054 Node.js reader/writer Rust-port work.
+9. Use the results to unblock SOW-0026 and component Netdata integration SOWs.
 
 ## Delegation Plan
 
@@ -246,6 +250,19 @@ Failure handling:
 ### 2026-05-28
 
 - Rescoped this file as the umbrella performance program after user agreement.
+
+### 2026-05-29
+
+- Added SOW-0060 as the active Rust reader absolute hot-path profiling pass
+  after the user clarified that optimized reader paths may use
+  snapshot-at-query-start semantics and whole-file mmap when those choices
+  improve performance without sacrificing accuracy or robustness.
+- SOW-0060 completed the Rust absolute reader hot-path profiling pass,
+  implemented Rust ordered-directory non-overlap sequential stepping, and
+  established the Rust row-scoped current-entry facade payload lifetime. Go,
+  Node.js, and Python facade parity for that strengthened lifetime remains
+  tracked by this reader-performance umbrella before the reader phase can
+  close.
 
 ## Validation
 
@@ -314,6 +331,8 @@ Follow-up mapping:
 - Go reader performance: SOW-0045.
 - Python reader/writer Rust-port work: SOW-0053.
 - Node.js reader/writer Rust-port work: SOW-0054.
+- Cross-language row-scoped current-entry facade payload lifetime parity:
+  tracked by this SOW after SOW-0060 establishes the Rust reference behavior.
 
 ## Outcome
 
@@ -332,6 +351,8 @@ Pending.
 - SOW-0052 - Rust Reader Last-Mile Optimization.
 - SOW-0053 - Python Reader And Writer Rust Port.
 - SOW-0054 - Node.js Reader And Writer Rust Port.
+- Cross-language row-scoped current-entry facade payload lifetime parity after
+  SOW-0060.
 
 ## Regression Log
 

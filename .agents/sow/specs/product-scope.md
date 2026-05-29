@@ -428,15 +428,20 @@ Accepted reader API layers:
   for a repeated field; callers that need every repeated value use
   restart/enumerate data.
 - Rust current-entry facade data enumeration returns borrowed `FIELD=value`
-  bytes for the current DATA object. The returned slice has libsystemd-style
-  current-pointer validity and must be treated as invalid after the next
-  data-enumeration or read-pointer operation. Rust returns uncompressed DATA
-  directly from the mmap-backed journal payload and returns compressed DATA
-  from one reusable reader-owned decompression buffer. Later operations that
-  need a different journal object explicitly invalidate the current DATA guard
-  before proceeding. Other languages may expose equivalent idiomatic borrowed
-  or copy-on-iteration forms, but must not pre-materialize every field in an
-  entry for facade enumeration.
+  bytes for the current DATA object with a stronger row-scoped lifetime than
+  stock libsystemd documents. Payload slices returned while enumerating the
+  current row remain valid until the reader advances to another row, seeks,
+  closes, restarts/releases current-entry DATA state, or remaps the backing
+  file. The end-of-data result for the current row does not release those
+  slices, so consumers may cache field pointers during enumeration and process
+  them after the inner data loop finishes. Rust returns uncompressed DATA
+  directly from whole-file mmap-backed journal payloads when that mode is
+  selected, stores compressed DATA in row-scoped owned buffers, and uses
+  row-scoped owned buffers for windowed mmap when pointer stability cannot be
+  proven. Go, Node.js, and Python must be brought to the same row-scoped
+  facade contract through their idiomatic borrowed or copy-on-iteration forms
+  before cross-language reader facade parity is claimed for this strengthened
+  lifetime.
 - Directory readers and `OpenFiles` merge candidate entries across all opened
   files using systemd-compatible ordering, including overlapping realtime
   ranges. Same seqnum-source entries compare by seqnum; same boot entries

@@ -288,6 +288,7 @@ struct ReaderCell {
 pub struct FileReader {
     inner: ReaderCell,
     temp_path: Option<PathBuf>,
+    borrow_uncompressed_row_payloads: bool,
     current_key: Option<DirectoryEntryKey>,
     data_offsets: Vec<NonZeroU64>,
     data_payload_context: Option<DataPayloadReadContext>,
@@ -295,6 +296,33 @@ pub struct FileReader {
     data_index: usize,
     entry_data_state_active: bool,
     decompressed: Vec<u8>,
+    row_payloads: Vec<RowPayload>,
+    row_owned_payloads: Vec<Vec<u8>>,
+}
+
+#[derive(Clone, Copy)]
+enum RowPayload {
+    Borrowed { ptr: *const u8, len: usize },
+    Owned { index: usize },
+}
+
+enum RowPayloadData {
+    Borrowed { ptr: *const u8, len: usize },
+    Owned(Vec<u8>),
+}
+
+impl RowPayload {
+    fn as_slice<'a>(&self, owned: &'a [Vec<u8>]) -> &'a [u8] {
+        match self {
+            Self::Borrowed { ptr, len } => {
+                // SAFETY: FileReader only creates borrowed row payloads for whole-file mmap.
+                // Row storage is cleared before advancing/seeking/remapping, so the mapped
+                // bytes stay valid for the documented current-row lifetime.
+                unsafe { std::slice::from_raw_parts(*ptr, *len) }
+            }
+            Self::Owned { index } => owned[*index].as_slice(),
+        }
+    }
 }
 
 enum StepStatus {
@@ -330,6 +358,8 @@ impl FileReader {
             }
             .build(),
             temp_path: None,
+            borrow_uncompressed_row_payloads: options.mmap_strategy
+                == ExperimentalMmapStrategy::WholeFile,
             current_key: None,
             data_offsets: Vec::new(),
             data_payload_context: None,
@@ -337,6 +367,8 @@ impl FileReader {
             data_index: 0,
             entry_data_state_active: false,
             decompressed: Vec::new(),
+            row_payloads: Vec::new(),
+            row_owned_payloads: Vec::new(),
         })
     }
 
@@ -356,6 +388,8 @@ impl FileReader {
             }
             .build(),
             temp_path: Some(temp_path),
+            borrow_uncompressed_row_payloads: options.mmap_strategy
+                == ExperimentalMmapStrategy::WholeFile,
             current_key: None,
             data_offsets: Vec::new(),
             data_payload_context: None,
@@ -363,6 +397,8 @@ impl FileReader {
             data_index: 0,
             entry_data_state_active: false,
             decompressed: Vec::new(),
+            row_payloads: Vec::new(),
+            row_owned_payloads: Vec::new(),
         })
     }
 
@@ -484,6 +520,10 @@ impl FileReader {
                         self.inner
                             .with_file(|file| file.data_payload_read_context()),
                     );
+                    self.data_index = 0;
+                    self.entry_data_state_active = false;
+                    self.row_payloads.clear();
+                    self.row_owned_payloads.clear();
                     return Ok(true);
                 }
                 StepStatus::Skip => continue,
@@ -492,6 +532,10 @@ impl FileReader {
                     self.data_offsets.clear();
                     self.data_offsets_entry = None;
                     self.data_payload_context = None;
+                    self.data_index = 0;
+                    self.entry_data_state_active = false;
+                    self.row_payloads.clear();
+                    self.row_owned_payloads.clear();
                     return Ok(false);
                 }
             }
@@ -548,6 +592,8 @@ impl FileReader {
         self.data_payload_context = None;
         self.data_index = 0;
         self.entry_data_state_active = false;
+        self.row_payloads.clear();
+        self.row_owned_payloads.clear();
     }
 
     fn invalidate_entry_data_state(&mut self) {
@@ -574,35 +620,72 @@ impl FileReader {
         })?;
         self.data_index = 0;
         self.entry_data_state_active = true;
+        self.row_payloads.clear();
+        self.row_owned_payloads.clear();
         Ok(())
     }
 
     pub fn enumerate_entry_payload(&mut self) -> Result<Option<&[u8]>> {
         let Some(data_offset) = self.data_offsets.get(self.data_index).copied() else {
-            self.clear_entry_data_state();
+            self.entry_data_state_active = true;
             return Ok(None);
         };
+        let index = self.data_index;
         self.data_index += 1;
         self.entry_data_state_active = true;
-        let decompressed = &mut self.decompressed;
+        if self.row_payloads.len() == index {
+            let payload = self.read_row_payload(data_offset)?;
+            let payload = match payload {
+                RowPayloadData::Borrowed { ptr, len } => RowPayload::Borrowed { ptr, len },
+                RowPayloadData::Owned(bytes) => {
+                    let owned_index = self.row_owned_payloads.len();
+                    self.row_owned_payloads.push(bytes);
+                    RowPayload::Owned { index: owned_index }
+                }
+            };
+            self.row_payloads.push(payload);
+        }
+        let payload = self
+            .row_payloads
+            .get(index)
+            .expect("payload should be stored before returning it");
+        Ok(Some(payload.as_slice(&self.row_owned_payloads)))
+    }
+
+    fn read_row_payload(&mut self, data_offset: NonZeroU64) -> Result<RowPayloadData> {
+        let borrow_uncompressed = self.borrow_uncompressed_row_payloads;
+        let cached_context = self.data_payload_context;
         self.inner.with_mut(|fields| {
-            let context = self
-                .data_payload_context
-                .unwrap_or_else(|| fields.file.data_payload_read_context());
+            let context = cached_context.unwrap_or_else(|| fields.file.data_payload_read_context());
             fields.reader.release_object_guards();
             let info = fields
                 .file
                 .data_payload_object_info_at(context, data_offset)?;
             if !info.is_compressed() {
+                if borrow_uncompressed {
+                    let (ptr, len) = fields.file.raw_data_payload_ptr_with_info_unguarded(
+                        context,
+                        data_offset,
+                        info,
+                    )?;
+                    return Ok(RowPayloadData::Borrowed { ptr, len });
+                }
+
                 let payload =
                     fields
                         .reader
                         .raw_data_payload_at(fields.file, context, info, data_offset)?;
-                return Ok(Some(payload));
+                let owned = RowPayloadData::Owned(payload.to_vec());
+                fields.reader.release_object_guards();
+                return Ok(owned);
             }
+
             let data_guard = fields.reader.data_object_at(fields.file, data_offset)?;
-            let len = data_guard.decompress(decompressed)?;
-            Ok(Some(&decompressed[..len]))
+            let mut decompressed = Vec::new();
+            let len = data_guard.decompress(&mut decompressed)?;
+            decompressed.truncate(len);
+            fields.reader.release_object_guards();
+            Ok(RowPayloadData::Owned(decompressed))
         })
     }
 
@@ -1272,6 +1355,7 @@ pub struct DirectoryReader {
     current_key: Option<DirectoryEntryKey>,
     direction: Option<Direction>,
     boot_newest: HashMap<[u8; 16], DirectoryBootNewest>,
+    non_overlapping: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1358,6 +1442,7 @@ impl DirectoryReader {
 
         files.sort_by_key(FileReader::header_realtime_start);
         let boot_newest = build_directory_boot_newest(&files);
+        let non_overlapping = directory_files_non_overlapping(&files);
         let candidates = vec![None; files.len()];
         Ok(Self {
             files,
@@ -1368,6 +1453,7 @@ impl DirectoryReader {
             current_key: None,
             direction: None,
             boot_newest,
+            non_overlapping,
         })
     }
 
@@ -1413,6 +1499,10 @@ impl DirectoryReader {
     }
 
     fn step_merged(&mut self, direction: Direction) -> Result<bool> {
+        if self.can_step_sequential(direction) {
+            return self.step_sequential(direction);
+        }
+
         self.prepare_merge_direction(direction);
 
         let mut best: Option<DirectoryCandidate> = None;
@@ -1757,6 +1847,82 @@ impl DirectoryReader {
         self.direction = None;
         self.realtime_seek_bound = None;
         self.reset_candidates();
+    }
+
+    fn can_step_sequential(&self, direction: Direction) -> bool {
+        if !self.non_overlapping || self.pending_realtime_seek.is_some() {
+            return false;
+        }
+        if self.direction.is_some_and(|current| current != direction) && self.current_key.is_some()
+        {
+            return false;
+        }
+        true
+    }
+
+    fn step_sequential(&mut self, direction: Direction) -> Result<bool> {
+        if self.files.is_empty() {
+            self.index = usize::MAX;
+            self.current_key = None;
+            return Ok(false);
+        }
+
+        if self.direction != Some(direction) {
+            match direction {
+                Direction::Forward => {
+                    for reader in &mut self.files {
+                        reader.seek_head();
+                    }
+                    self.index = 0;
+                }
+                Direction::Backward => {
+                    for reader in &mut self.files {
+                        reader.seek_tail();
+                    }
+                    self.index = self.files.len() - 1;
+                }
+            }
+            self.reset_candidates();
+            self.current_key = None;
+            self.realtime_seek_bound = None;
+            self.direction = Some(direction);
+        }
+
+        match direction {
+            Direction::Forward => {
+                if self.index == usize::MAX {
+                    self.index = 0;
+                }
+                while self.index < self.files.len() {
+                    if self.files[self.index].next()? {
+                        self.current_key =
+                            Some(self.files[self.index].current_directory_entry_key()?);
+                        return Ok(true);
+                    }
+                    self.index += 1;
+                }
+            }
+            Direction::Backward => {
+                if self.index >= self.files.len() {
+                    self.index = self.files.len() - 1;
+                }
+                loop {
+                    if self.files[self.index].previous()? {
+                        self.current_key =
+                            Some(self.files[self.index].current_directory_entry_key()?);
+                        return Ok(true);
+                    }
+                    if self.index == 0 {
+                        break;
+                    }
+                    self.index -= 1;
+                }
+            }
+        }
+
+        self.index = usize::MAX;
+        self.current_key = None;
+        Ok(false)
     }
 }
 
@@ -2137,6 +2303,29 @@ fn build_directory_boot_newest(files: &[FileReader]) -> HashMap<[u8; 16], Direct
         });
     }
     newest
+}
+
+fn directory_files_non_overlapping(files: &[FileReader]) -> bool {
+    if files.is_empty() {
+        return false;
+    }
+
+    for pair in files.windows(2) {
+        let previous = pair[0].header();
+        let next = pair[1].header();
+        if previous.seqnum_id != next.seqnum_id
+            || previous.tail_entry_seqnum == 0
+            || next.head_entry_seqnum == 0
+            || previous.tail_entry_seqnum >= next.head_entry_seqnum
+            || previous.tail_entry_realtime == 0
+            || next.head_entry_realtime == 0
+            || previous.tail_entry_realtime >= next.head_entry_realtime
+        {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn cmp_u64(a: u64, b: u64) -> i8 {
@@ -2563,6 +2752,31 @@ mod tests {
         journal_file.sync().expect("sync journal");
     }
 
+    fn write_single_entry_journal(
+        path: &Path,
+        seqnum: u64,
+        realtime: u64,
+        monotonic: u64,
+        payload: &[u8],
+    ) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create journal parent");
+        }
+        let repo_file = RepoFile::from_path(path)
+            .unwrap_or_else(|| panic!("test journal path should parse: {}", path.display()));
+        let mut journal_file = JournalFile::<MmapMut>::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3)),
+        )
+        .expect("create journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, seqnum, test_uuid(4)).expect("create writer");
+        writer
+            .add_entry(&mut journal_file, &[payload], realtime, monotonic)
+            .expect("write entry");
+        journal_file.sync().expect("sync journal");
+    }
+
     fn write_facade_single_message_journal(path: &Path, message: &[u8], realtime: u64) {
         let (mut journal_file, mut writer) = create_facade_test_writer(path);
         let payload = [b"MESSAGE=".as_slice(), message].concat();
@@ -2684,12 +2898,65 @@ mod tests {
     }
 
     #[test]
-    fn facade_uncompressed_data_uses_mmap_payload() {
+    fn directory_reader_uses_sequential_path_for_non_overlapping_files() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let first_path = dir.path().join("journals/first.journal");
+        let second_path = dir.path().join("journals/second.journal");
+
+        write_single_entry_journal(&first_path, 1, 1_700_004_000_000_000, 10, b"MESSAGE=first");
+        write_single_entry_journal(
+            &second_path,
+            2,
+            1_700_004_000_000_001,
+            20,
+            b"MESSAGE=second",
+        );
+
+        let mut reader =
+            DirectoryReader::open_files([&first_path, &second_path]).expect("open files");
+        assert!(
+            reader.non_overlapping,
+            "test files should qualify for sequential directory reads"
+        );
+
+        reader.seek_head();
+        assert!(reader.next().expect("first entry"));
+        assert_eq!(
+            reader.get_realtime_usec().expect("first realtime"),
+            1_700_004_000_000_000
+        );
+        assert!(reader.next().expect("second entry"));
+        assert_eq!(
+            reader.get_realtime_usec().expect("second realtime"),
+            1_700_004_000_000_001
+        );
+        assert!(!reader.next().expect("end"));
+
+        reader.seek_tail();
+        assert!(reader.previous().expect("tail entry"));
+        assert_eq!(
+            reader.get_realtime_usec().expect("tail realtime"),
+            1_700_004_000_000_001
+        );
+        assert!(reader.previous().expect("previous entry"));
+        assert_eq!(
+            reader.get_realtime_usec().expect("previous realtime"),
+            1_700_004_000_000_000
+        );
+        assert!(!reader.previous().expect("start"));
+    }
+
+    #[test]
+    fn facade_uncompressed_data_uses_mmap_payload_for_whole_file_reader() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let path = dir.path().join("journals/system.journal");
         write_facade_test_journal(&path);
 
-        let mut reader = FileReader::open(&path).expect("open reader");
+        let mut reader = FileReader::open_with_options(
+            &path,
+            ReaderOptions::snapshot().with_mmap_strategy(ExperimentalMmapStrategy::WholeFile),
+        )
+        .expect("open reader");
         assert!(reader.next().expect("first entry"));
         reader.entry_data_restart().expect("restart data");
         let first_offset = reader.data_offsets[0];
@@ -2714,6 +2981,163 @@ mod tests {
         assert_eq!(returned_payload, mmap_payload);
         assert_eq!(returned_len, mmap_len);
         assert_eq!(returned_ptr, mmap_ptr);
+    }
+
+    #[test]
+    fn facade_uncompressed_windowed_data_remains_valid_for_current_row() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("journals/system.journal");
+        write_facade_test_journal(&path);
+
+        let mut reader = FileReader::open(&path).expect("open reader");
+        assert!(reader.next().expect("first entry"));
+        reader.entry_data_restart().expect("restart data");
+        let first_offset = reader.data_offsets[0];
+
+        let (first_ptr, first_len) = {
+            let payload = reader
+                .enumerate_entry_payload()
+                .expect("enumerate first data")
+                .expect("first payload");
+            assert_eq!(payload, b"MESSAGE=first");
+            (payload.as_ptr(), payload.len())
+        };
+
+        let second = reader
+            .enumerate_entry_payload()
+            .expect("enumerate second data")
+            .expect("second payload")
+            .to_vec();
+        assert_eq!(second, b"REPEAT=one");
+        while reader
+            .enumerate_entry_payload()
+            .expect("enumerate rest")
+            .is_some()
+        {}
+
+        let first_after_end = unsafe { std::slice::from_raw_parts(first_ptr, first_len) };
+        assert_eq!(first_after_end, b"MESSAGE=first");
+
+        let mmap_ptr = reader.inner.with(|fields| {
+            let data = fields.file.data_ref(first_offset).expect("data ref");
+            data.raw_payload().as_ptr()
+        });
+        assert_ne!(
+            first_ptr, mmap_ptr,
+            "windowed mmap facade payloads must use row-owned storage"
+        );
+    }
+
+    #[test]
+    fn facade_compressed_data_payloads_remain_valid_for_current_row() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("journals/system.journal");
+        let (mut journal_file, mut writer) = create_facade_compressed_test_writer(&path);
+        let first_payload = format!("FIRST={}", "a".repeat(2048));
+        let second_payload = format!("SECOND={}", "b".repeat(2047));
+        assert_eq!(first_payload.len(), second_payload.len());
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[first_payload.as_bytes(), second_payload.as_bytes()],
+                1000,
+                11,
+            )
+            .expect("write compressed entry");
+        journal_file.sync().expect("sync compressed journal");
+
+        let mut reader = FileReader::open(&path).expect("open reader");
+        assert!(reader.next().expect("first entry"));
+        reader.entry_data_restart().expect("restart data");
+
+        let (first_ptr, first_len) = {
+            let payload = reader
+                .enumerate_entry_payload()
+                .expect("enumerate first data")
+                .expect("first payload");
+            assert_eq!(payload, first_payload.as_bytes());
+            (payload.as_ptr(), payload.len())
+        };
+
+        let second = reader
+            .enumerate_entry_payload()
+            .expect("enumerate second data")
+            .expect("second payload")
+            .to_vec();
+        assert_eq!(second, second_payload.as_bytes());
+        assert!(
+            reader
+                .enumerate_entry_payload()
+                .expect("enumerate end")
+                .is_none()
+        );
+
+        let first_after_second = unsafe { std::slice::from_raw_parts(first_ptr, first_len) };
+        assert_eq!(first_after_second, first_payload.as_bytes());
+    }
+
+    #[test]
+    fn facade_whole_file_row_handles_mixed_compressed_and_uncompressed_payloads() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("journals/system.journal");
+        let (mut journal_file, mut writer) = create_facade_compressed_test_writer(&path);
+        let small_payload = b"SMALL=x".to_vec();
+        let large_payload = format!("LARGE={}", "mixed ".repeat(256)).into_bytes();
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[small_payload.as_slice(), large_payload.as_slice()],
+                1000,
+                11,
+            )
+            .expect("write mixed compressed entry");
+        journal_file.sync().expect("sync mixed compressed journal");
+
+        let mut reader = FileReader::open_with_options(
+            &path,
+            ReaderOptions::snapshot().with_mmap_strategy(ExperimentalMmapStrategy::WholeFile),
+        )
+        .expect("open whole-file reader");
+        assert!(reader.next().expect("first entry"));
+        reader.entry_data_restart().expect("restart data");
+        let small_offset = reader.data_offsets[0];
+
+        let (small_ptr, small_len) = {
+            let payload = reader
+                .enumerate_entry_payload()
+                .expect("enumerate small data")
+                .expect("small payload");
+            assert_eq!(payload, small_payload.as_slice());
+            (payload.as_ptr(), payload.len())
+        };
+        let (large_ptr, large_len) = {
+            let payload = reader
+                .enumerate_entry_payload()
+                .expect("enumerate large data")
+                .expect("large payload");
+            assert_eq!(payload, large_payload.as_slice());
+            (payload.as_ptr(), payload.len())
+        };
+        assert!(
+            reader
+                .enumerate_entry_payload()
+                .expect("enumerate end")
+                .is_none()
+        );
+
+        let small_after_end = unsafe { std::slice::from_raw_parts(small_ptr, small_len) };
+        let large_after_end = unsafe { std::slice::from_raw_parts(large_ptr, large_len) };
+        assert_eq!(small_after_end, small_payload.as_slice());
+        assert_eq!(large_after_end, large_payload.as_slice());
+
+        let mmap_ptr = reader.inner.with(|fields| {
+            let data = fields.file.data_ref(small_offset).expect("data ref");
+            data.raw_payload().as_ptr()
+        });
+        assert_eq!(
+            small_ptr, mmap_ptr,
+            "small uncompressed payload should remain borrowed from whole-file mmap"
+        );
     }
 
     #[test]

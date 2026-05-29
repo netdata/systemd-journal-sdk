@@ -993,6 +993,43 @@ impl<M: MemoryMap> JournalFile<M> {
         })
     }
 
+    #[doc(hidden)]
+    /// Returns an unguarded pointer to an uncompressed DATA payload.
+    ///
+    /// The caller must only expose the pointer while it can prove the backing
+    /// mmap window will not be remapped or evicted. This is intended for
+    /// whole-file mmap row-scoped facade enumeration. Do not call this for
+    /// windowed mmap; use `raw_data_payload_ref_with_info()` or copy the
+    /// payload instead.
+    pub fn raw_data_payload_ptr_with_info_unguarded(
+        &self,
+        context: DataPayloadReadContext,
+        offset: NonZeroU64,
+        info: DataPayloadObjectInfo,
+    ) -> Result<(*const u8, usize)> {
+        validate_offset_alignment(offset)?;
+        if offset.get() < context.header_size {
+            return Err(JournalError::ObjectExceedsFileBounds);
+        }
+        if info.is_compressed {
+            return Err(JournalError::InvalidObjectType);
+        }
+        if info.size_needed < context.payload_prefix_size {
+            return Err(JournalError::InvalidObjectSize(info.size_needed));
+        }
+
+        self.window_manager.with_mut(|wm| {
+            let data =
+                if let Some(data) = wm.active_slice_if_contains(offset.get(), info.size_needed) {
+                    data
+                } else {
+                    wm.get_slice(offset.get(), info.size_needed)?
+                };
+            let payload = &data[context.payload_prefix_size as usize..];
+            Ok((payload.as_ptr(), payload.len()))
+        })
+    }
+
     pub fn tag_ref(&self, offset: NonZeroU64) -> Result<ValueGuard<'_, TagObject<&[u8]>>> {
         self.journal_object_ref(offset)
     }

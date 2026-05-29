@@ -10,6 +10,7 @@
 
 ## Done
 
+- `SOW-0060-20260529-rust-reader-absolute-hot-path-profiling.md`
 - `SOW-0059-20260529-standard-benchmark-reporting.md`
 - `SOW-0058-20260529-rust-data-header-fast-path.md`
 - `SOW-0057-20260529-rust-live-whole-file-mmap-reader-option.md`
