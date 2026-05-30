@@ -23,6 +23,7 @@ METADATA_ORDER = (
     "__SEQNUM",
     "__BOOT_ID",
 )
+METADATA_PAYLOAD_NAMES = {b"_BOOT_ID"}
 
 
 def _u64(value: int) -> bytes:
@@ -109,7 +110,11 @@ class CanonicalDigest:
     ) -> None:
         self._ensure_started()
         entry_index = self.counts.entries
-        payload_list = [bytes(payload) for payload in payloads]
+        payload_list = [
+            bytes(payload)
+            for payload in payloads
+            if split_payload_name(bytes(payload)) not in METADATA_PAYLOAD_NAMES
+        ]
         metadata = {} if metadata is None else metadata
 
         self._sha.update(b"E")

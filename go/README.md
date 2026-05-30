@@ -250,6 +250,12 @@ raw API are responsible for not producing same-boot backward monotonic entries
 unless they are intentionally creating invalid fixtures. On reopen, `Log`
 seeds the monotonic clamp floor from a persisted chain tail only when the tail
 entry boot ID matches the current writer boot ID.
+`EntryOptions.Seqnum` is a low-level exact-regeneration override. Leave it zero
+for normal auto-incrementing sequence numbers; when set, it must move forward
+from the writer's next sequence number and may contain gaps.
+`SealOptions.StartUsec` is normalized to systemd's FSS verification-key epoch
+boundary so stock `journalctl --verify --verify-key` can validate sealed
+outputs created from unaligned source timestamps.
 
 For consumer-owned side indexes, `LogConfig.Lifecycle` reports created, rotated,
 and retention-deleted journal paths, and `LogConfig.ArtifactSizer` includes

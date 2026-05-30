@@ -10,6 +10,7 @@ use std::time::Instant;
 const SCHEMA_VERSION: &str = "systemd-journal-sdk-corpus-logical-v1";
 const SCHEMA_MAGIC: &[u8] = b"systemd-journal-sdk-corpus-logical-v1\0";
 const DEFAULT_WINDOW_SIZE: u64 = 32 * 1024 * 1024;
+const METADATA_PAYLOAD_NAMES: &[&[u8]] = &[b"_BOOT_ID"];
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -94,7 +95,15 @@ impl CanonicalDigest {
         let mut seen = HashSet::<Vec<u8>>::new();
         let mut repeated = false;
         let mut repeated_occurrences = 0u64;
+        let mut canonical_payloads = Vec::with_capacity(payloads.len());
         for payload in payloads.iter() {
+            if payload_name(payload)
+                .map(|name| METADATA_PAYLOAD_NAMES.contains(&name))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            canonical_payloads.push(payload.clone());
             self.counts.payloads += 1;
             self.counts.payload_bytes += payload.len() as u64;
             self.counts.largest_payload_bytes =
@@ -102,16 +111,11 @@ impl CanonicalDigest {
             if payload.iter().any(|byte| *byte < 32 && *byte != b'\t') {
                 self.counts.binary_payloads += 1;
             }
-            let Some(eq) = payload
-                .iter()
-                .position(|byte| *byte == b'=')
-                .filter(|eq| *eq > 0)
-            else {
+            let Some(name) = payload_name(payload) else {
                 self.counts.payloads_without_separator += 1;
                 continue;
             };
-            let name = payload[..eq].to_vec();
-            if !seen.insert(name) {
+            if !seen.insert(name.to_vec()) {
                 repeated = true;
                 repeated_occurrences += 1;
             }
@@ -121,8 +125,8 @@ impl CanonicalDigest {
             self.counts.repeated_field_name_occurrences += repeated_occurrences;
         }
 
-        payloads.sort();
-        for payload in payloads.iter() {
+        canonical_payloads.sort();
+        for payload in canonical_payloads.iter() {
             self.update_bytes(b'P', payload);
         }
         self.sha.update(b"e");
@@ -151,6 +155,14 @@ impl CanonicalDigest {
             },
         })
     }
+}
+
+fn payload_name(payload: &[u8]) -> Option<&[u8]> {
+    let offset = payload.iter().position(|byte| *byte == b'=')?;
+    if offset == 0 {
+        return None;
+    }
+    Some(&payload[..offset])
 }
 
 fn hex_bytes(bytes: &[u8]) -> String {

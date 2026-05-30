@@ -93,6 +93,52 @@ func TestCreateAppendAndReopenLayout(t *testing.T) {
 	}
 }
 
+func TestWriterEntrySeqnumOverridePreservesGaps(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "go-writer-seqnum.journal")
+	opts := testOptions()
+	opts.HeadSeqnum = 10
+
+	w, err := Create(path, opts)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	for i, seqnum := range []uint64{10, 12, 20} {
+		if err := w.Append([]Field{
+			StringField("MESSAGE", fmt.Sprintf("seqnum-%d", seqnum)),
+		}, EntryOptions{
+			RealtimeUsec:  1_700_000_000_000_010 + uint64(i),
+			MonotonicUsec: uint64(i + 1),
+			Seqnum:        seqnum,
+		}); err != nil {
+			t.Fatalf("Append(seqnum=%d) error = %v", seqnum, err)
+		}
+	}
+	if err := w.Append([]Field{
+		StringField("MESSAGE", "backwards"),
+	}, EntryOptions{
+		RealtimeUsec:  1_700_000_000_000_020,
+		MonotonicUsec: 20,
+		Seqnum:        19,
+	}); !errors.Is(err, errInvalidJournal) {
+		t.Fatalf("Append(backwards seqnum) error = %v, want errInvalidJournal", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	snapshot := readJournalSnapshot(t, path)
+	if snapshot.header.headEntrySeqnum != 10 || snapshot.header.tailEntrySeqnum != 20 {
+		t.Fatalf("seqnum range = %d..%d, want 10..20", snapshot.header.headEntrySeqnum, snapshot.header.tailEntrySeqnum)
+	}
+	var seqnums []uint64
+	for _, entry := range snapshot.entries {
+		seqnums = append(seqnums, entry.header.seqnum)
+	}
+	if got, want := fmt.Sprint(seqnums), "[10 12 20]"; got != want {
+		t.Fatalf("entry seqnums = %s, want %s", got, want)
+	}
+}
+
 func TestLivePublishEveryEntriesPreservesClosedFileBytes(t *testing.T) {
 	writeFile := func(name string, every uint64) ([]byte, uint64) {
 		t.Helper()

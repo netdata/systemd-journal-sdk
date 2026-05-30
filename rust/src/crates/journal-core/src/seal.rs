@@ -30,6 +30,8 @@ type HmacSha256 = Hmac<Sha256>;
 pub struct SealOptions {
     pub seed: [u8; RECOMMENDED_SEEDLEN],
     pub interval_usec: u64,
+    /// Writer state uses systemd's verification-key boundary:
+    /// `floor(start_usec / interval_usec) * interval_usec`.
     pub start_usec: u64,
 }
 
@@ -58,6 +60,10 @@ pub struct SealState {
 
 impl SealState {
     pub fn new(opts: &SealOptions) -> Result<Self> {
+        if opts.interval_usec == 0 || opts.start_usec < opts.interval_usec {
+            return Err(JournalError::FssVerificationError);
+        }
+        let start = (opts.start_usec / opts.interval_usec) * opts.interval_usec;
         let (msk, mpk) = gen_mk(&opts.seed, RECOMMENDED_SECPAR);
         let state0 = gen_state0(&mpk, &opts.seed);
         Ok(Self {
@@ -65,7 +71,7 @@ impl SealState {
             msk,
             seed: opts.seed,
             interval: opts.interval_usec,
-            start: opts.start_usec,
+            start,
             hmac: None,
             hmac_running: false,
         })

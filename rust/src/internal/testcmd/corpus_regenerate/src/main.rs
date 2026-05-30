@@ -64,6 +64,13 @@ fn data_hash_buckets_for_max_size(max_size: u64) -> usize {
     buckets.max(2047).min(usize::MAX as u64) as usize
 }
 
+fn systemd_fss_start_usec(realtime: u64, interval_usec: u64) -> u64 {
+    if interval_usec == 0 {
+        return realtime;
+    }
+    (realtime / interval_usec) * interval_usec
+}
+
 fn parse_compression(value: &str) -> Result<Compression> {
     match value {
         "none" => Ok(Compression::None),
@@ -186,7 +193,10 @@ fn main() -> Result<()> {
         .map(|entry| uuid_from_bytes(entry.boot_id))
         .unwrap_or(uuid(FALLBACK_BOOT_ID)?);
     let head_seqnum = first.as_ref().map(|entry| entry.seqnum).unwrap_or(1);
-    let fss_start = first.as_ref().map(|entry| entry.realtime).unwrap_or(1);
+    let fss_start = first
+        .as_ref()
+        .map(|entry| systemd_fss_start_usec(entry.realtime, args.fss_interval_usec))
+        .unwrap_or(args.fss_interval_usec);
 
     let (mut journal_file, mut writer) = create_writer(
         &output,
@@ -217,7 +227,7 @@ fn main() -> Result<()> {
             fields.iter().copied(),
             entry.realtime,
             entry.monotonic,
-            write_options,
+            write_options.seqnum(entry.seqnum),
         )?;
         records += 1;
         payloads += entry.payloads.len() as u64;
@@ -239,7 +249,7 @@ fn main() -> Result<()> {
             fields.iter().copied(),
             entry.realtime,
             entry.monotonic,
-            write_options,
+            write_options.seqnum(entry.seqnum),
         )?;
         records += 1;
         payloads += entry.payloads.len() as u64;

@@ -784,11 +784,13 @@ Repair plan:
 1. Keep the existing harness implementation.
 2. Run a real-corpus dry-run inventory against the journal roots to confirm
    file count, size distribution, suffixes, and scratch-space requirements.
-3. Run the full guarded corpus evaluation with `--mode run --allow-full-run`
+3. Before interpreting performance, run a single-file end-to-end correctness
+   pass and fix concrete reader/writer discrepancies found there.
+4. Run the full guarded corpus evaluation with `--mode run --allow-full-run`
    against the real corpus, incrementally, with sanitized reports only.
-4. Report real counts, digests, performance, memory, I/O, footprint, and
+5. Report real counts, digests, performance, memory, I/O, footprint, and
    discrepancies.
-5. Create or identify follow-up SOWs only for concrete discrepancies or missing
+6. Create or identify follow-up SOWs only for concrete discrepancies or missing
    measurement capabilities discovered by the real run.
 
 Validation required before reclosing:
@@ -800,7 +802,75 @@ Validation required before reclosing:
   usernames, or binary payload dumps.
 - `.agents/sow/audit.sh` and `git diff --check` pass.
 
-None yet.
+Discrepancy-first repair progress:
+
+- User routing update: on 2026-05-30, the user requested handling
+  discrepancies before discussing performance. This SOW therefore repaired
+  concrete single-file correctness discrepancies before running a full-corpus
+  interpretation pass.
+- Single-file run before fixes found three real classes:
+  - systemd export `_BOOT_ID` was counted as a raw payload by the canonical
+    parser, while Rust/Go expose boot ID as entry metadata;
+  - compact FSS regenerated files failed stock `journalctl --verify
+    --verify-key` because FSS start timestamps were not aligned to systemd's
+    verification-key epoch boundary;
+  - regular regenerated files preserved all payload data and timestamps but did
+    not preserve original `__SEQNUM` gaps.
+- Systemd FSS evidence checked:
+  - `systemd/systemd @ cf3156842209`
+  - `src/journal/journalctl-authenticate.c:130` divides current realtime by the
+    interval before key-header creation.
+  - `src/journal/journalctl-authenticate.c:148` writes `start_usec` as
+    `n * arg_interval`.
+  - `src/libsystemd/sd-journal/journal-authenticate.c:543` reconstructs
+    `fss_start_usec` from verification-key `start * interval`.
+- Repairs implemented in this SOW:
+  - canonical `_BOOT_ID` handling now treats `_BOOT_ID` as metadata for
+    systemd, Rust, and Go digest parity;
+  - Rust and Go FSS seal state now normalizes start timestamps to
+    `floor(start / interval) * interval`, matching stock verification-key
+    semantics;
+  - Rust and Go low-level writers now support monotonic per-entry sequence
+    number overrides for exact regeneration, with gaps allowed and rewinds
+    rejected.
+- One-file end-to-end evidence after fixes:
+  - report: `.local/corpus-eval/single-real-after-seqnum-20260530T213000Z/report.json`
+  - input files: 1
+  - input bytes: 134,217,728
+  - entries: 261,304
+  - payloads: 6,971,052
+  - payload bytes: 1,162,105,052
+  - logical digest: `b5bbfeca3a4cce03403a6920d2505aee703308a77be48c26b75bfdd8e6e22682`
+  - readers compared: systemd, Rust, Go
+  - writer modes compared: Rust regular, Rust compact FSS, Go regular, Go
+    compact FSS
+  - stock verification: passed for all regenerated writer outputs, including
+    `--verify-key` for FSS outputs
+  - systemd reread of regenerated outputs: same counts and logical digest
+  - discrepancies: 0
+- Scope note: the one-file rates collected in this report are correctness-run
+  observations only. They are not benchmark conclusions for SOW-0009 or for
+  full-corpus performance.
+
+Validation rerun for the repair:
+
+- `python -m unittest tests.corpus_eval.test_canonical`
+  - Result: passed, 7 tests.
+- `cargo test --manifest-path rust/Cargo.toml -p journal-core -p
+  corpus_digest -p corpus_regenerate`
+  - Result: passed.
+- `cd go && go test ./journal ./internal/testcmd/corpus_digest
+  ./internal/testcmd/corpus_regenerate`
+  - Result: passed.
+- `cd go && go test ./...`
+  - Result: passed.
+- `cargo test --manifest-path rust/Cargo.toml -p journal -p adapter -p
+  journalctl`
+  - Result: passed.
+- `git diff --check`
+  - Result: passed.
+- `.agents/sow/audit.sh`
+  - Result: passed; verdict reported SOW initialization complete and clean.
 
 Append regression entries here only after this SOW was completed or closed and
 later testing or use found broken behavior. Use a dated `## Regression -

@@ -223,6 +223,12 @@ forward to preserve strict journal ordering in the generated chain.
 `EntryOptions.RealtimeUsecSet` and `EntryOptions.MonotonicUsecSet` distinguish
 explicit zero timestamp overrides from omitted zero-value struct fields.
 
+`EntryOptions.Seqnum` is a low-level exact-regeneration override for direct
+writer use. Leave it zero for normal auto-incrementing sequence numbers. When
+set, it must be greater than or equal to the writer's next sequence number; gaps
+are allowed, but rewinding is rejected. High-level `Log` users should normally
+leave it unset because the directory writer manages chain sequence continuity.
+
 ## Append Shapes
 
 Writers expose two append shapes:
@@ -239,6 +245,11 @@ Both shapes apply the configured `FieldNamePolicy` to caller-provided fields
 or payloads. High-level `Log` appends SDK-owned fields such as `_BOOT_ID` and
 `_SOURCE_REALTIME_TIMESTAMP` after caller policy filtering; `_BOOT_ID` is also
 written as journal entry metadata.
+
+Forward Secure Sealing `SealOptions.StartUsec` is normalized to systemd's
+verification-key epoch boundary: `floor(StartUsec / IntervalUsec) *
+IntervalUsec`. This keeps generated sealed files compatible with stock
+`journalctl --verify --verify-key`.
 
 ## Field Names
 

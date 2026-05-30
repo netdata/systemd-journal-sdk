@@ -20,7 +20,9 @@ const (
 type SealOptions struct {
 	Seed         []byte
 	IntervalUsec uint64
-	StartUsec    uint64
+	// StartUsec is normalized to systemd's verification-key boundary:
+	// floor(StartUsec / IntervalUsec) * IntervalUsec.
+	StartUsec uint64
 }
 
 // sealState holds per-writer FSS+HMAC state.
@@ -38,6 +40,10 @@ func newSealState(opts SealOptions) (*sealState, error) {
 	if len(opts.Seed) != fsprgRecommendedSeedlen {
 		return nil, fmt.Errorf("seal seed must be %d bytes", fsprgRecommendedSeedlen)
 	}
+	if opts.IntervalUsec == 0 || opts.StartUsec < opts.IntervalUsec {
+		return nil, fmt.Errorf("FSS start and interval must be set")
+	}
+	start := (opts.StartUsec / opts.IntervalUsec) * opts.IntervalUsec
 	msk, mpk, err := fsprgGenMK(opts.Seed, fsprgRecommendedSecpar)
 	if err != nil {
 		return nil, err
@@ -48,7 +54,7 @@ func newSealState(opts SealOptions) (*sealState, error) {
 		msk:        msk,
 		seed:       append([]byte(nil), opts.Seed...),
 		interval:   opts.IntervalUsec,
-		start:      opts.StartUsec,
+		start:      start,
 	}, nil
 }
 

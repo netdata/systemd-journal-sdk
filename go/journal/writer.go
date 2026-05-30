@@ -76,6 +76,9 @@ type EntryOptions struct {
 	// MonotonicUsecSet marks MonotonicUsec as caller-provided even when it is zero.
 	MonotonicUsecSet bool
 	BootID           UUID
+	// Seqnum is an optional low-level ENTRY seqnum override for exact journal
+	// regeneration. Leave zero for the normal auto-incrementing sequence.
+	Seqnum uint64
 	// SourceRealtimeUsec is consumed by the high-level Log writer, which injects
 	// _SOURCE_REALTIME_TIMESTAMP. The low-level Writer accepts prebuilt fields
 	// and does not inject this field.
@@ -313,6 +316,13 @@ func (w *Writer) appendPayloads(count int, payloadAt func(int) []byte, opts Entr
 	if isZeroUUID(opts.BootID) {
 		opts.BootID = w.bootID
 	}
+	entrySeqnum := w.nextSeqnum
+	if opts.Seqnum != 0 {
+		if opts.Seqnum < w.nextSeqnum || opts.Seqnum == ^uint64(0) {
+			return errInvalidJournal
+		}
+		entrySeqnum = opts.Seqnum
+	}
 
 	if err := w.maybeAppendTag(opts.RealtimeUsec); err != nil {
 		return err
@@ -354,7 +364,7 @@ func (w *Writer) appendPayloads(count int, payloadAt func(int) []byte, opts Entr
 	}
 	putEntryHeader(buf[:entryObjectHeaderSize], entryHeader{
 		object: objectHeader{typ: objectTypeEntry, size: entrySize},
-		seqnum: w.nextSeqnum, realtime: opts.RealtimeUsec,
+		seqnum: entrySeqnum, realtime: opts.RealtimeUsec,
 		monotonic: opts.MonotonicUsec, bootID: opts.BootID, xorHash: xorHash,
 	})
 	for i, item := range items {
@@ -393,7 +403,7 @@ func (w *Writer) appendPayloads(count int, payloadAt func(int) []byte, opts Entr
 			return err
 		}
 	}
-	w.entryAdded(entryOffset, opts.RealtimeUsec, opts.MonotonicUsec, opts.BootID)
+	w.entryAdded(entryOffset, entrySeqnum, opts.RealtimeUsec, opts.MonotonicUsec, opts.BootID)
 	if err := w.publishEntryMetadata(); err != nil {
 		return err
 	}
@@ -932,20 +942,20 @@ func (w *Writer) ensureArenaSize(requiredSize uint64) error {
 	return nil
 }
 
-func (w *Writer) entryAdded(entryOffset, realtime, monotonic uint64, bootID UUID) {
+func (w *Writer) entryAdded(entryOffset, entrySeqnum, realtime, monotonic uint64, bootID UUID) {
 	w.header.nEntries++
 	if w.header.headEntrySeqnum == 0 {
-		w.header.headEntrySeqnum = w.nextSeqnum
+		w.header.headEntrySeqnum = entrySeqnum
 	}
 	if w.header.headEntryRealtime == 0 {
 		w.header.headEntryRealtime = realtime
 	}
-	w.header.tailEntrySeqnum = w.nextSeqnum
+	w.header.tailEntrySeqnum = entrySeqnum
 	w.header.tailEntryRealtime = realtime
 	w.header.tailEntryMonotonic = monotonic
 	w.header.tailEntryBootID = bootID
 	w.header.tailEntryOffset = entryOffset
-	w.nextSeqnum++
+	w.nextSeqnum = entrySeqnum + 1
 }
 
 func (w *Writer) addData(payload []byte) (uint64, uint64, error) {

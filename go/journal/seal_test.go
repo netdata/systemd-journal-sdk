@@ -315,6 +315,44 @@ func TestWriterSealedMultiIntervalGap(t *testing.T) {
 	t.Logf("journalctl verify multi-interval gap output:\n%s", out)
 }
 
+func TestWriterSealedUnalignedStartUsesSystemdEpochBoundary(t *testing.T) {
+	requireJournalctl(t)
+
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "test.journal")
+
+	seal := &SealOptions{
+		Seed:         make([]byte, 12),
+		IntervalUsec: 1000000,
+		StartUsec:    1702717,
+	}
+	opts := Options{Seal: seal}
+	w, err := Create(path, opts)
+	if err != nil {
+		t.Fatalf("create sealed writer: %v", err)
+	}
+
+	for i, realtime := range []uint64{1702717, 2100000, 2800000} {
+		if err := w.Append([]Field{
+			StringField("MESSAGE", fmt.Sprintf("unaligned-start-%d", i)),
+		}, EntryOptions{RealtimeUsec: realtime, MonotonicUsec: uint64(i + 1)}); err != nil {
+			t.Fatalf("append unaligned-start entry %d: %v", i, err)
+		}
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	key := testVerificationKey(seal)
+	cmd := exec.Command("journalctl", "--verify", "--verify-key", key, "--file", path)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("journalctl verify unaligned-start failed: %v\n%s", err, out)
+	}
+	t.Logf("journalctl verify unaligned-start output:\n%s", out)
+}
+
 func TestWriterSealedEmptyFileStockVerify(t *testing.T) {
 	requireJournalctl(t)
 

@@ -9,7 +9,10 @@ Last updated: 2026-05-30
   program index.
 - SOW-0064 - Real World Journal Corpus Evaluation: reopened. The harness
   implementation is merged, but the required full local 100+ GiB corpus
-  regeneration/evaluation was not run before closure.
+  regeneration/evaluation was not run before closure. Single-file correctness
+  discrepancies in `_BOOT_ID` canonicalization, FSS start alignment, and
+  `__SEQNUM` gap preservation have been repaired; a one-file end-to-end rerun
+  recorded 0 discrepancies.
 
 ## Pending
 

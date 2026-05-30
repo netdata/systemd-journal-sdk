@@ -110,6 +110,12 @@ pub struct EntryWriteOptions {
     pub trusted_unique_payloads: bool,
     /// Field-name validation policy for caller-provided fields.
     pub field_name_policy: FieldNamePolicy,
+    /// Optional low-level ENTRY seqnum override.
+    ///
+    /// This is for exact journal regeneration and must be monotonically
+    /// increasing relative to previously written entries. Leave unset for the
+    /// normal systemd-style auto-incrementing sequence.
+    pub seqnum: Option<u64>,
 }
 
 impl EntryWriteOptions {
@@ -125,6 +131,12 @@ impl EntryWriteOptions {
     /// Selects the field-name validation policy for caller-provided fields.
     pub fn field_name_policy(mut self, policy: FieldNamePolicy) -> Self {
         self.field_name_policy = policy;
+        self
+    }
+
+    /// Uses a caller-provided ENTRY seqnum for this entry.
+    pub fn seqnum(mut self, seqnum: u64) -> Self {
+        self.seqnum = Some(seqnum);
         self
     }
 }
@@ -658,6 +670,10 @@ impl JournalWriter {
     ) -> Result<()> {
         let header = journal_file.journal_header_ref();
         assert!(header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash));
+        let entry_seqnum = options.seqnum.unwrap_or(self.next_seqnum);
+        if entry_seqnum == 0 || entry_seqnum == u64::MAX || entry_seqnum < self.next_seqnum {
+            return Err(JournalError::InvalidField);
+        }
 
         // Write the data/field objects while computing the entry's xor-hash
         // and storing each data object's offset/hash
@@ -711,7 +727,7 @@ impl JournalWriter {
             let size = Some(entry_payload_size);
             let mut entry_guard = journal_file.entry_mut(entry_offset, size)?;
 
-            entry_guard.header.seqnum = self.next_seqnum;
+            entry_guard.header.seqnum = entry_seqnum;
             entry_guard.header.xor_hash = xor_hash;
             entry_guard.header.boot_id = *self.boot_id.as_bytes();
             entry_guard.header.monotonic = monotonic;
@@ -737,6 +753,7 @@ impl JournalWriter {
         self.entry_added(
             journal_file.journal_header_mut(),
             entry_offset,
+            entry_seqnum,
             realtime,
             monotonic,
         );
@@ -792,6 +809,7 @@ impl JournalWriter {
         &mut self,
         header: &mut JournalHeader,
         entry_offset: NonZeroU64,
+        entry_seqnum: u64,
         realtime: u64,
         monotonic: u64,
     ) {
@@ -799,7 +817,7 @@ impl JournalWriter {
         header.tail_object_offset = Some(self.tail_object_offset);
 
         if header.head_entry_seqnum == 0 {
-            header.head_entry_seqnum = self.next_seqnum;
+            header.head_entry_seqnum = entry_seqnum;
         }
         if header.head_entry_realtime == 0 {
             header.head_entry_realtime = realtime;
@@ -808,14 +826,14 @@ impl JournalWriter {
             self.first_entry_monotonic = Some(monotonic);
         }
 
-        header.tail_entry_seqnum = self.next_seqnum;
+        header.tail_entry_seqnum = entry_seqnum;
         header.tail_entry_realtime = realtime;
         header.tail_entry_monotonic = monotonic;
         header.tail_entry_boot_id = *self.boot_id.as_bytes();
         header.tail_entry_offset = entry_offset.get();
         header.n_entries += 1;
 
-        self.next_seqnum += 1;
+        self.next_seqnum = entry_seqnum + 1;
         self.num_written_objects = 0;
     }
 
@@ -1888,6 +1906,70 @@ mod tests {
         )
     }
 
+    #[test]
+    fn entry_seqnum_override_preserves_gaps() {
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3)),
+        )
+        .expect("create journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 10, test_uuid(4)).expect("create writer");
+
+        for (idx, seqnum) in [10, 12, 20].into_iter().enumerate() {
+            let payload = format!("MESSAGE=seqnum-{seqnum}");
+            writer
+                .add_entry_fields_with_options(
+                    &mut journal_file,
+                    [EntryField::raw(payload.as_bytes())],
+                    1_700_000_060_000_000 + idx as u64,
+                    idx as u64 + 1,
+                    EntryWriteOptions::default().seqnum(seqnum),
+                )
+                .expect("write entry with seqnum override");
+        }
+        assert!(
+            writer
+                .add_entry_fields_with_options(
+                    &mut journal_file,
+                    [EntryField::raw(b"MESSAGE=backwards")],
+                    1_700_000_060_000_010,
+                    10,
+                    EntryWriteOptions::default().seqnum(19),
+                )
+                .is_err(),
+            "writer accepted a backwards seqnum override"
+        );
+
+        let header = journal_file.journal_header_ref();
+        assert_eq!(header.head_entry_seqnum, 10);
+        assert_eq!(header.tail_entry_seqnum, 20);
+        assert_eq!(writer.next_seqnum(), 21);
+
+        let mut entry_offsets = Vec::new();
+        journal_file
+            .entry_offsets(&mut entry_offsets)
+            .expect("collect entry offsets");
+        let seqnums = entry_offsets
+            .iter()
+            .map(|offset| {
+                journal_file
+                    .entry_ref(*offset)
+                    .expect("entry ref")
+                    .header
+                    .seqnum
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(seqnums, vec![10, 12, 20]);
+    }
+
     #[derive(Clone)]
     struct TestField {
         raw: Vec<u8>,
@@ -2818,6 +2900,59 @@ mod tests {
         assert!(
             output.status.success(),
             "journalctl verify failed for multi-interval gap sealed file: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn sealed_writer_unaligned_start_uses_systemd_epoch_boundary() {
+        if !journalctl_available() {
+            eprintln!("journalctl not available; skipping unaligned-start stock verify");
+            return;
+        }
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let seal = SealOptions::new([0u8; 12], 1_000_000, 1_702_717);
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_seal(seal.clone()),
+        )
+        .expect("create sealed journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+
+        for (idx, realtime) in [1_702_717, 2_100_000, 2_800_000].into_iter().enumerate() {
+            let payload = format!("MESSAGE=unaligned-start-{idx}");
+            writer
+                .add_entry(
+                    &mut journal_file,
+                    &[payload.as_bytes()],
+                    realtime,
+                    (idx + 1) as u64,
+                )
+                .expect("write unaligned-start entry");
+        }
+        journal_file.sync().expect("sync journal");
+
+        let key = verification_key(&seal);
+        let output = Command::new("journalctl")
+            .arg("--verify")
+            .arg("--verify-key")
+            .arg(&key)
+            .arg("--file")
+            .arg(&path)
+            .output()
+            .expect("run journalctl verify");
+        assert!(
+            output.status.success(),
+            "journalctl verify failed for unaligned-start sealed file: stdout={} stderr={}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );

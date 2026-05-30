@@ -101,6 +101,22 @@ class CanonicalDigestTests(unittest.TestCase):
         self.assertEqual(counts["binary_payloads"], 1)
         self.assertEqual(counts["payloads_without_separator"], 0)
 
+    def test_boot_id_payload_is_metadata_not_payload(self) -> None:
+        result = digest_entries(
+            [
+                (
+                    {"__BOOT_ID": "0123456789abcdef0123456789abcdef"},
+                    [
+                        b"_BOOT_ID=0123456789abcdef0123456789abcdef",
+                        b"MESSAGE=hello",
+                    ],
+                )
+            ]
+        )
+        counts = result["counts"]
+        self.assertEqual(counts["payloads"], 1)
+        self.assertEqual(counts["payload_bytes"], len(b"MESSAGE=hello"))
+
     def test_truncated_export_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             digest_export_bytes(b"BINARY\n" + struct.pack("<Q", 10) + b"short")

@@ -48,6 +48,13 @@ func dataHashBucketsForMaxSize(maxSize uint64) int {
 	return int(buckets)
 }
 
+func systemdFSSStartUsec(realtime, interval uint64) uint64 {
+	if interval == 0 {
+		return realtime
+	}
+	return (realtime / interval) * interval
+}
+
 func parseCompression(value string) (int, error) {
 	switch value {
 	case "none":
@@ -133,11 +140,11 @@ func main() {
 
 	bootID := mustUUID(fallbackBoot)
 	headSeqnum := uint64(1)
-	fssStartUsec := uint64(1)
+	fssStartUsec := *fssIntervalUsec
 	if first != nil {
 		bootID = first.BootID
 		headSeqnum = first.Seqnum
-		fssStartUsec = first.Realtime
+		fssStartUsec = systemdFSSStartUsec(first.Realtime, *fssIntervalUsec)
 	}
 	if err := os.MkdirAll(filepath.Dir(*output), 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "create output directory: %v\n", err)
@@ -185,6 +192,7 @@ func main() {
 			MonotonicUsec:    entry.Monotonic,
 			MonotonicUsecSet: true,
 			BootID:           entry.BootID,
+			Seqnum:           entry.Seqnum,
 		})
 		if err != nil {
 			return err

@@ -21,6 +21,10 @@ const (
 	defaultWindowLen = uint64(32 * 1024 * 1024)
 )
 
+var metadataPayloadNames = map[string]struct{}{
+	"_BOOT_ID": {},
+}
+
 type counts struct {
 	Entries                       uint64 `json:"entries"`
 	Payloads                      uint64 `json:"payloads"`
@@ -103,12 +107,18 @@ func (d *canonicalDigest) addEntry(entry *journal.Entry) {
 	d.writeNamedBytes('M', []byte("__SEQNUM"), []byte(fmt.Sprintf("%d", entry.Seqnum)))
 	d.writeNamedBytes('M', []byte("__BOOT_ID"), []byte(hex.EncodeToString(entry.BootID[:])))
 
-	payloads := make([][]byte, len(entry.Payloads))
-	copy(payloads, entry.Payloads)
+	payloads := make([][]byte, 0, len(entry.Payloads))
 	seen := map[string]struct{}{}
 	repeated := false
 	var repeatedOccurrences uint64
-	for _, payload := range payloads {
+	for _, payload := range entry.Payloads {
+		name, ok := payloadName(payload)
+		if ok {
+			if _, metadata := metadataPayloadNames[string(name)]; metadata {
+				continue
+			}
+		}
+		payloads = append(payloads, payload)
 		d.counts.Payloads++
 		d.counts.PayloadBytes += uint64(len(payload))
 		if uint64(len(payload)) > d.counts.LargestPayloadBytes {
@@ -117,7 +127,6 @@ func (d *canonicalDigest) addEntry(entry *journal.Entry) {
 		if binaryPayload(payload) {
 			d.counts.BinaryPayloads++
 		}
-		name, ok := payloadName(payload)
 		if !ok {
 			d.counts.PayloadsWithoutSeparator++
 			continue

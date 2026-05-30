@@ -354,6 +354,10 @@ Current Go writer feature slice:
   overrides are clamped forward for strict chain ordering. `RealtimeUsecSet`
   and `MonotonicUsecSet` distinguish explicit zero timestamp overrides from
   omitted zero-value struct fields;
+- low-level Go `EntryOptions.Seqnum` can preserve original ENTRY sequence
+  numbers during exact journal regeneration. Normal writers leave it zero for
+  auto-incrementing sequence numbers. Overrides must move forward from the
+  writer's next sequence number; gaps are allowed and rewinds are rejected;
 - high-level Rust, Go, Node.js, and Python `Log` writers use `JOURNALD`
   field-name policy by default, preserving caller-provided protected systemd
   fields such as `_HOSTNAME`. SDK-owned protected fields such as `_BOOT_ID` and
@@ -365,7 +369,8 @@ Current Go writer feature slice:
   systemd compatibility and is not part of the core writer default;
 - Forward Secure Sealing TAG writing with configurable deterministic test
   options and stock `journalctl --verify --verify-key` validation for generated
-  sealed files;
+  sealed files. Go normalizes FSS start timestamps to systemd's verification-key
+  epoch boundary: `floor(start / interval) * interval`;
 - default live publication mode one-writer/multiple-reader compatibility with
   stock `journalctl --file`, stock libsystemd readers, and all repository
   readers for regular,
@@ -573,6 +578,10 @@ Current Rust writer feature slice:
 - direct-file writing through `journal_core`, including raw full-payload append,
   structured append, mixed `EntryField` append, and trusted unique-payload
   options;
+- low-level `EntryWriteOptions::seqnum(...)` can preserve original ENTRY
+  sequence numbers during exact journal regeneration. Normal writers leave it
+  unset for auto-incrementing sequence numbers. Overrides must move forward from
+  the writer's next sequence number; gaps are allowed and rewinds are rejected;
 - high-level directory writing with Netdata-compatible chain active naming by
   default and an explicit strict systemd active naming option;
 - high-level Rust `Log` structured write methods that preserve the existing
@@ -591,7 +600,8 @@ Current Rust writer feature slice:
   callers explicitly acquire `journal_core::file::lock::WriterLock`;
 - Forward Secure Sealing TAG writing with configurable deterministic test
   options and stock `journalctl --verify --verify-key` validation for generated
-  sealed files;
+  sealed files. Rust normalizes FSS start timestamps to systemd's
+  verification-key epoch boundary: `floor(start / interval) * interval`;
 - default live publication mode one-writer/multiple-reader compatibility with
   stock `journalctl --file`, stock libsystemd readers, and all repository
   readers for regular,
