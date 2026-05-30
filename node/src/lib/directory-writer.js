@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { isZeroUUID, randomUUID, stringToUUID, uuidToString } from './binary.js';
 import { Writer, normalizeFieldNamePolicy, prepareFieldsForPolicy, prepareRawPayloadsForPolicy, writerPolicyForLogPolicy } from './writer.js';
 import { HEADER_SIZE, STATE_ONLINE, parseFileHeader, parseObjectHeader, normalizeJournalMaxFileSize } from './header.js';
+import { readHostBootId } from './platform.js';
 
 const DEFAULT_MAX_ENTRIES = 0;
 const DEFAULT_MAX_BYTES = 0;
@@ -639,11 +640,7 @@ function readMachineId() {
 }
 
 function readBootId() {
-  try {
-    const text = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim().replaceAll('-', '');
-    if (/^[0-9a-fA-F]{32}$/.test(text)) return stringToUUID(text);
-  } catch {}
-  return null;
+  return readHostBootId();
 }
 
 function readJournalHeader(path) {

@@ -57,6 +57,13 @@ import { decompressZstSync } from '../src/lib/compress.js';
 import { fsprgGenMK, fsprgGenState0, fsprgEvolve, fsprgSeek, fsprgGetKey, fsprgGetEpoch } from '../src/lib/fss.js';
 import { verifyFile, verifyFileWithKey, VerificationError } from '../src/lib/verify.js';
 import { SealOptions, COMPATIBLE_SEALED, COMPATIBLE_SEALED_CONTINUOUS } from '../src/lib/seal.js';
+import {
+  UNKNOWN_PROCESS_START_TIME,
+  lockOwnerIsActive,
+  parseLinuxProcStatStartTime,
+  readHostBootId,
+  readHostBootIdText,
+} from '../src/lib/platform.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, '..');
@@ -270,6 +277,40 @@ for (const [length, expected] of sipVectors) {
     assert.deepEqual(everyThree.bytes, immediate.bytes);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const statFields = Array.from({ length: 20 }, (_, i) => String(i + 1));
+  statFields[19] = '424242';
+  assert.equal(parseLinuxProcStatStartTime(`123 (node worker) ${statFields.join(' ')}`), '424242');
+
+  assert.equal(lockOwnerIsActive(
+    { pid: 123, bootId: 'boot-a', startTime: '1' },
+    { bootId: 'boot-b', processStartTime: () => '1', processAlive: () => true },
+  ), false);
+  assert.equal(lockOwnerIsActive(
+    { pid: 123, bootId: '', startTime: '1' },
+    { bootId: '', processStartTime: () => '2', processAlive: () => true },
+  ), false);
+  assert.equal(lockOwnerIsActive(
+    { pid: 123, bootId: '', startTime: UNKNOWN_PROCESS_START_TIME },
+    { bootId: '', processStartTime: () => null, processAlive: () => false },
+  ), false);
+  assert.equal(lockOwnerIsActive(
+    { pid: 123, bootId: '', startTime: UNKNOWN_PROCESS_START_TIME },
+    { bootId: '', processStartTime: () => null, processAlive: () => true },
+  ), true);
+  assert.equal(lockOwnerIsActive(
+    { pid: 123, bootId: '', startTime: UNKNOWN_PROCESS_START_TIME },
+    { bootId: '', processStartTime: () => null, processAlive: () => null },
+  ), true);
+
+  const hostBootId = readHostBootId();
+  if (hostBootId !== null) assert.equal(hostBootId.length, 16);
+  const hostBootIdText = readHostBootIdText();
+  if (hostBootIdText) {
+    assert.match(hostBootIdText, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   }
 }
 

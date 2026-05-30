@@ -1,7 +1,7 @@
 // Journal file writer. Creates regular-by-default keyed-hash journal files.
 // Default options are compatible with stock journalctl readers during live append.
 
-import { openSync, writeSync, readSync, closeSync, ftruncateSync, fsyncSync, renameSync, readFileSync } from 'node:fs';
+import { openSync, writeSync, readSync, closeSync, ftruncateSync, fsyncSync, renameSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
 import { readUint64LE, writeUint64LE, writeUint32LE, writeUint8, align8, randomUUID, isZeroUUID, bufEqual } from './binary.js';
@@ -30,6 +30,7 @@ import { sipHash24, jenkinsHash64 } from './hash.js';
 import { decompressZstdDataPayload } from './compress.js';
 import { compressLz4DataPayload, decompressLz4DataPayload } from './lz4-block.js';
 import { compressXzDataPayload, decompressXzDataPayload } from './xz-block.js';
+import { readHostBootId } from './platform.js';
 
 export const COMPRESSION_NONE = 0;
 export const COMPRESSION_ZSTD = 1;
@@ -1050,11 +1051,7 @@ export class Writer {
 }
 
 function readBootId() {
-  try {
-    return Buffer.from(readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim().replaceAll('-', ''), 'hex');
-  } catch {
-    return null;
-  }
+  return readHostBootId();
 }
 
 // Read object size (uint64 at offset+8) from an fd.
