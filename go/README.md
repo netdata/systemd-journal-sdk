@@ -26,7 +26,7 @@ Current writer scope:
 - pure cross-SDK cooperative lockfile with stale-owner detection to prevent
   multiple SDK writers from opening the same file. Linux uses `/proc`
   boot/process-start checks plus non-blocking `flock`; FreeBSD and macOS use
-  boot-time and process-start checks plus `flock`; Windows uses process
+  boot-time and `ps` process-start checks plus `flock`; Windows uses process
   creation time checks plus non-blocking `LockFileEx` on a byte range outside
   journal data;
 - Forward Secure Sealing TAG writing with `journal.SealOptions`, including
@@ -97,15 +97,17 @@ Platform behavior:
 - FreeBSD, macOS, and Windows build the Go SDK without CGO or libsystemd.
   Files generated on those targets are expected to be copied to Linux for stock
   systemd verification when stock tooling is required.
+- FreeBSD and macOS writer locking requires `ps` in `PATH`; the SDK forces
+  `LC_ALL=C` for process-start evidence so lock ownership is locale-stable.
 - `LogIdentityAuto` loads the host boot ID only on Linux. On other targets,
   callers should pass explicit IDs when deterministic identity matters, or use
   `LogIdentityStrict` to require them.
 - Directory fsync is performed on Unix. Non-Unix targets still sync journal
   file contents, but parent-directory metadata is not fsynced by this SDK; newly
   created or renamed files rely on the target filesystem's crash semantics.
-- Unknown targets outside Linux, FreeBSD, macOS, and Windows do not provide
-  writer file-locking guarantees; writer open fails instead of silently writing
-  without a platform lock.
+- Unknown non-Unix/non-Windows targets do not provide writer file-locking
+  guarantees; writer open fails instead of silently writing without a platform
+  lock.
 
 Basic usage:
 

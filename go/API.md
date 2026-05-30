@@ -128,10 +128,11 @@ owning the same file, but it is not a per-append goroutine mutex.
 
 The lock is platform-specific behind the same public contract: Linux keeps
 exact `/proc` stale-owner checks plus `flock`; FreeBSD and macOS use boot-time
-and process-start checks plus `flock`; Windows uses process creation time
-checks plus a non-blocking byte-range lock outside journal data. Unknown
-non-Unix/non-Windows targets fail writer open instead of silently writing
-without a platform file lock.
+and `ps` process-start checks plus `flock`; Windows uses process creation time
+checks plus a non-blocking byte-range lock outside journal data. FreeBSD and
+macOS require `ps` in `PATH`, and the SDK forces `LC_ALL=C` for locale-stable
+process-start evidence. Unknown non-Unix/non-Windows targets fail writer open
+instead of silently writing without a platform file lock.
 
 ## Open And Identity Modes
 

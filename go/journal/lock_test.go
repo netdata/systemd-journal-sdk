@@ -36,6 +36,21 @@ func TestLockFileIsStaleDeadPID(t *testing.T) {
 	}
 }
 
+func TestLockFileIsStaleBootMismatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "boot-mismatch.lock")
+	owner, err := currentLockOwner()
+	if err != nil {
+		t.Fatalf("currentLockOwner() error = %v", err)
+	}
+	owner.BootID += "-different"
+	writeTestLockOwner(t, path, owner)
+
+	stale, holder := lockFileIsStale(path)
+	if !stale {
+		t.Fatalf("lockFileIsStale() = not stale, holder %q; want stale", holder)
+	}
+}
+
 func writeTestLockOwner(t *testing.T, path string, owner lockOwner) {
 	t.Helper()
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, lockFilePerm)

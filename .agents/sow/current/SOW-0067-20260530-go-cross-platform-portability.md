@@ -4,8 +4,8 @@
 
 Status: in-progress
 
-Sub-state: reviewer findings fixed; whole-SOW reviewer rerun pending; child of
-SOW-0063.
+Sub-state: reviewer round 2 finding fixed; whole-SOW reviewer rerun pending;
+child of SOW-0063.
 
 ## Requirements
 
@@ -226,6 +226,12 @@ Failure handling:
   close paths now reuse `unlockAndClose`.
 - Updated Go docs/API and product scope to describe FreeBSD/macOS lock owner
   behavior, unknown-target lock failure, and non-Unix directory-sync limits.
+- Ran whole-SOW read-only reviewer round 2 against commit `946b2ad`.
+- Fixed the round 2 FreeBSD/macOS lock-owner locale finding: `ps` process-start
+  lookup now forces `LC_ALL=C`, has a bounded timeout, and docs/API/specs
+  disclose the `ps` dependency and locale-stable behavior.
+- Added direct boot-ID mismatch stale-lock coverage and aligned unknown-target
+  wording to unknown non-Unix/non-Windows targets.
 
 ## Validation
 
@@ -287,6 +293,23 @@ Tests or equivalent validation:
     `node/src/lib/lz4-block.js` `MODULE_NOT_FOUND` error.
   - `git diff --check`: PASS.
   - `.agents/sow/audit.sh`: PASS.
+- Reviewer-fix validation after round 2:
+  - `go test ./journal -run 'TestLockFileIsStale|TestWriterLockRejectsSecondWriter|TestWriterSyncCloseAndClosedAppend' -v`:
+    PASS, including new `TestLockFileIsStaleBootMismatch`.
+  - `go test ./...` from `go/` with `.local` Go caches: PASS.
+  - `GOOS=windows GOARCH=amd64 go test ./...` from `go/` with `.local` Go
+    caches: PASS.
+  - `GOOS=freebsd GOARCH=amd64 go test -exec=true ./...`: PASS.
+  - `GOOS=darwin GOARCH=amd64 go test -exec=true ./...`: PASS.
+  - Writer smoke benchmark driver using
+    `.local/sow-0067-writer-smoke-r4.journal`: PASS with `errors: []`, 1,000
+    records, 32 fields per row.
+  - Reader smoke benchmark driver against
+    `.local/sow-0067-writer-smoke-r4.journal`: PASS with `errors: []`, 1,000
+    records, 32,000 fields.
+  - `python3 tests/interoperability/run_lock_matrix.py --entries 20 --delay-ms 1`:
+    still blocked before lock assertions by the existing Node
+    `node/src/lib/lz4-block.js` `MODULE_NOT_FOUND` error.
 
 Real-use evidence:
 
@@ -308,6 +331,12 @@ Reviewer findings:
   - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
   - `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`.
   - `llm-netdata-cloud/mimo-v2.5-pro`: `NOT PRODUCTION GRADE`.
+- Round 2 reviewer pool:
+  - `llm-netdata-cloud/kimi-k2.6`: `NOT PRODUCTION GRADE`.
+  - `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
 - Finding: Windows process-owner checks used `PROCESS_QUERY_INFORMATION`,
   which can fail across Windows integrity levels and cause false stale-lock
   classification. Disposition: fixed in `go/journal/lock_owner_windows.go` by
@@ -330,6 +359,22 @@ Reviewer findings:
   and routing stock-tool-required writer tests through `requireJournalctl(t)`.
 - Finding: duplicated writer unlock/close sequences ignored existing
   `unlockAndClose`. Disposition: fixed in `go/journal/writer.go`.
+- Round 2 finding: FreeBSD/macOS `ps -o lstart=` process-start evidence could
+  vary by locale if the lock owner and checker run with different locale
+  settings, causing a false stale-lock decision and violating one-writer
+  protection. Disposition: fixed in `go/journal/lock_owner_bsd.go` by running
+  `ps` through `exec.CommandContext`, forcing `LC_ALL=C`, and bounding lookup
+  time. Docs/API/specs now disclose the `ps` dependency and locale-stable
+  behavior.
+- Round 2 finding: direct boot-ID mismatch stale-lock coverage was missing.
+  Disposition: fixed with `TestLockFileIsStaleBootMismatch`.
+- Round 2 documentation finding: unknown-target wording was ambiguous.
+  Disposition: aligned README/spec wording to unknown non-Unix/non-Windows
+  targets.
+- Round 2 finding from `llm-netdata-cloud/qwen3.6-plus`: `archiveTo` might
+  leak resources when directory sync fails. Disposition: rejected as not
+  applicable to current code; `archiveTo` stores `dirErr`, still runs
+  `closeArena()` and `unlockAndClose(w.file)`, then joins errors.
 - Findings accepted as documented residual limits: FreeBSD/macOS native runtime
   execution was unavailable in this Linux worktree; non-Unix directory metadata
   fsync remains limited by target facilities; cross-SDK lock matrix remains
@@ -357,6 +402,9 @@ Same-failure scan:
     Windows.
   - `rg` confirmed the unknown-platform file lock path returns
     `errUnsupportedFileLock`.
+  - Round 2 `rg` found the only `ps` process-start command in
+    `go/journal/lock_owner_bsd.go`; it now uses `exec.CommandContext`,
+    `LC_ALL=C`, and the documented timeout.
 
 Sensitive data gate:
 
