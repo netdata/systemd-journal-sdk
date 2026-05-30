@@ -302,7 +302,8 @@ Current Go writer feature slice:
   accepting work;
 - high-level Go identity handling supports host/random fallback by default and
   `LogIdentityStrict` for integrations that require explicit machine and boot
-  IDs;
+  IDs. Host boot ID auto-loading is Linux-only; non-Linux targets use explicit
+  caller IDs or generated IDs unless strict identity requires both IDs;
 - high-level Go path accessors expose the configured root, effective
   machine-id journal directory, exact active path after file creation, machine
   ID, boot ID, and source prefix;
@@ -319,9 +320,13 @@ Current Go writer feature slice:
   fields such as `_HOSTNAME`. SDK-owned protected fields such as `_BOOT_ID` and
   `_SOURCE_REALTIME_TIMESTAMP` are injected internally under journald-compatible
   rules. `JOURNAL-APP` and `RAW` are explicit caller-selected policies;
-- pure cross-SDK cooperative lockfile with stale-owner detection, plus a
-  secondary POSIX `flock`, to protect the one-writer contract among
-  cooperating SDK writers;
+- pure cross-SDK cooperative lockfile with stale-owner detection to protect
+  the one-writer contract among cooperating SDK writers. Linux keeps exact
+  `/proc` boot/process-start stale-owner checks and a secondary non-blocking
+  POSIX `flock`; other Unix targets use conservative process-existence
+  stale-owner checks plus POSIX `flock`; Windows uses process creation time
+  checks plus a non-blocking `LockFileEx` byte-range lock outside the journal
+  data range so repository readers are not blocked;
 - Forward Secure Sealing TAG writing with configurable deterministic test
   options and stock `journalctl --verify --verify-key` validation for generated
   sealed files;

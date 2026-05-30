@@ -1329,6 +1329,7 @@ func le64(data []byte) uint64 {
 
 func runJournalctlJSON(t *testing.T, path string, matches ...string) []map[string]any {
 	t.Helper()
+	requireJournalctl(t)
 
 	args := append([]string{"--file", path, "--output=json", "--no-pager"}, matches...)
 	cmd := exec.Command("journalctl", args...)
@@ -1354,6 +1355,7 @@ func runJournalctlJSON(t *testing.T, path string, matches ...string) []map[strin
 
 func runJournalctlLineCount(t *testing.T, path string, matches ...string) int {
 	t.Helper()
+	requireJournalctl(t)
 
 	args := append([]string{"--file", path, "--output=json", "--no-pager"}, matches...)
 	cmd := exec.Command("journalctl", args...)
@@ -1370,6 +1372,7 @@ func runJournalctlLineCount(t *testing.T, path string, matches ...string) int {
 
 func runJournalctlExport(t *testing.T, path string, matches ...string) map[string][][]byte {
 	t.Helper()
+	requireJournalctl(t)
 
 	args := append([]string{"--file", path, "--output=export", "--no-pager"}, matches...)
 	cmd := exec.Command("journalctl", args...)
@@ -1441,6 +1444,7 @@ func parseJournalExport(t *testing.T, data []byte) []map[string][][]byte {
 
 func verifyJournalctl(t *testing.T, path string) {
 	t.Helper()
+	requireJournalctl(t)
 
 	verify := exec.Command("journalctl", "--verify", "--file", path)
 	if output, err := verify.CombinedOutput(); err != nil {
@@ -1450,6 +1454,7 @@ func verifyJournalctl(t *testing.T, path string) {
 
 func verifyJournalctlFails(t *testing.T, path string, want string) {
 	t.Helper()
+	requireJournalctl(t)
 
 	verify := exec.Command("journalctl", "--verify", "--file", path)
 	output, err := verify.CombinedOutput()

@@ -11,7 +11,6 @@ import (
 	"os"
 	"sort"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -139,7 +138,7 @@ func Create(path string, opts Options) (*Writer, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o640)
+	f, err := openWriterFile(path, true, 0o640)
 	if err != nil {
 		_ = lock.release()
 		return nil, err
@@ -186,7 +185,7 @@ func OpenWithOptions(path string, opts Options) (*Writer, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	f, err := openWriterFile(path, false, 0)
 	if err != nil {
 		_ = lock.release()
 		return nil, err
@@ -265,7 +264,7 @@ func OpenWithOptions(path string, opts Options) (*Writer, error) {
 		return nil, err
 	}
 	if isZeroUUID(w.bootID) {
-		if bootID, err := readUUIDFile("/proc/sys/kernel/random/boot_id"); err == nil {
+		if bootID, err := readHostBootID(); err == nil {
 			w.bootID = bootID
 		} else {
 			w.bootID = header.fileID
@@ -462,7 +461,7 @@ func (w *Writer) closeWithState(state uint8) error {
 	err1 := w.writeHeader()
 	err2 := w.syncArena()
 	err3 := w.closeArena()
-	err4 := syscall.Flock(int(w.file.Fd()), syscall.LOCK_UN)
+	err4 := unlockFile(w.file)
 	err5 := w.file.Close()
 	err6 := w.lock.release()
 	w.lock = nil
@@ -503,7 +502,7 @@ func (w *Writer) archiveTo(path string) error {
 	w.path = path
 	dirErr := syncJournalDirectory(path)
 	arenaErr := w.closeArena()
-	unlockErr := syscall.Flock(int(w.file.Fd()), syscall.LOCK_UN)
+	unlockErr := unlockFile(w.file)
 	closeErr := w.file.Close()
 	lockErr := w.lock.release()
 	w.lock = nil
@@ -640,19 +639,6 @@ func startTimeForTailMonotonic(now time.Time, tailUsec uint64) time.Time {
 		tailUsec = maxDurationUsec
 	}
 	return now.Add(-time.Duration(tailUsec) * time.Microsecond)
-}
-
-func lockFile(f *os.File) error {
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return err
-	}
-	return nil
-}
-
-func unlockAndClose(f *os.File) error {
-	err1 := syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	err2 := f.Close()
-	return errors.Join(err1, err2)
 }
 
 func (w *Writer) initialize(opts Options) error {

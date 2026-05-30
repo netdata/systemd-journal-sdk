@@ -399,7 +399,7 @@ func (r *Reader) Close() error {
 
 func openJournalFile(path string) (*os.File, string, error) {
 	if !strings.HasSuffix(path, ".zst") {
-		f, err := os.Open(path)
+		f, err := openReaderFile(path)
 		return f, "", err
 	}
 

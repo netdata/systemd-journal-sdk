@@ -126,6 +126,11 @@ parallel active files.
 instance; the SDK writer lock prevents a second cooperating SDK writer from
 owning the same file, but it is not a per-append goroutine mutex.
 
+The lock is platform-specific behind the same public contract: Linux keeps
+exact `/proc` stale-owner checks plus `flock`; other Unix targets use
+conservative process-existence checks plus `flock`; Windows uses process
+creation time checks plus a non-blocking byte-range lock outside journal data.
+
 ## Open And Identity Modes
 
 `LogOpenLazy` is the default. It validates the configured directory and existing
@@ -140,6 +145,10 @@ and generates missing IDs.
 
 `LogIdentityStrict` requires `Options.MachineID` and `Options.BootID` to be
 provided explicitly.
+
+Host boot ID auto-loading is Linux-only. FreeBSD, macOS, and Windows callers
+that need deterministic boot identity should provide `Options.BootID`, or use
+`LogIdentityStrict` to make missing IDs an error.
 
 ## Live Publication Cadence
 

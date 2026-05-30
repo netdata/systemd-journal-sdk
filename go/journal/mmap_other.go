@@ -3,7 +3,9 @@
 package journal
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -93,9 +95,20 @@ func newReadOnlyMapping(file *os.File) (*readOnlyMapping, error) {
 }
 
 func (m *readOnlyMapping) remap() error {
-	data, err := os.ReadFile(m.file.Name())
+	info, err := m.file.Stat()
 	if err != nil {
 		return err
+	}
+	size := info.Size()
+	if size < 0 || uint64(size) > uint64(int(^uint(0)>>1)) {
+		return fmt.Errorf("%w: mapped reader file too large", errInvalidJournal)
+	}
+	data := make([]byte, int(size))
+	if len(data) > 0 {
+		n, err := m.file.ReadAt(data, 0)
+		if err != nil && !(errors.Is(err, io.EOF) && n == len(data)) {
+			return err
+		}
 	}
 	m.data = data
 	m.size = uint64(len(data))

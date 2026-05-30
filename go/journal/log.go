@@ -998,7 +998,7 @@ func (l *Log) scanChainState() (chainState, error) {
 }
 
 func readJournalHeader(path string) (journalHeader, error) {
-	f, err := os.Open(path)
+	f, err := openReaderFile(path)
 	if err != nil {
 		return journalHeader{}, err
 	}
@@ -1011,7 +1011,7 @@ func readJournalHeader(path string) (journalHeader, error) {
 }
 
 func committedJournalSize(path string, fallback uint64) uint64 {
-	f, err := os.Open(path)
+	f, err := openReaderFile(path)
 	if err != nil {
 		return fallback
 	}
@@ -1052,7 +1052,7 @@ func normalizeLogOptions(opts Options, mode LogIdentityMode) (Options, error) {
 		}
 	}
 	if isZeroUUID(opts.BootID) {
-		if bootID, err := readUUIDFile("/proc/sys/kernel/random/boot_id"); err == nil {
+		if bootID, err := readHostBootID(); err == nil {
 			opts.BootID = bootID
 		}
 	}
@@ -1215,20 +1215,6 @@ func validateJournalSource(source string) error {
 		return errInvalidJournal
 	}
 	return nil
-}
-
-func syncParentDir(path string) error {
-	dir := path
-	if info, err := os.Stat(path); err == nil && !info.IsDir() {
-		dir = filepath.Dir(path)
-	}
-	f, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	err1 := f.Sync()
-	err2 := f.Close()
-	return errors.Join(err1, err2)
 }
 
 func saturatingSub(value, other uint64) uint64 {

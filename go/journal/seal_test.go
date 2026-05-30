@@ -24,6 +24,8 @@ func testVerificationKey(opts *SealOptions) string {
 }
 
 func TestWriterSealedBasic(t *testing.T) {
+	requireJournalctl(t)
+
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
@@ -54,6 +56,8 @@ func TestWriterSealedBasic(t *testing.T) {
 }
 
 func TestWriterSealedIntervalCrossing(t *testing.T) {
+	requireJournalctl(t)
+
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
@@ -98,6 +102,8 @@ func TestWriterSealedIntervalCrossing(t *testing.T) {
 }
 
 func TestWriterSealedWrongKeyFails(t *testing.T) {
+	requireJournalctl(t)
+
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
@@ -127,6 +133,8 @@ func TestWriterSealedWrongKeyFails(t *testing.T) {
 }
 
 func TestWriterSealedTamperedDataFails(t *testing.T) {
+	requireJournalctl(t)
+
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
@@ -184,6 +192,8 @@ func TestWriterUnsealedDoesNotSetFlags(t *testing.T) {
 }
 
 func TestWriterCompactSealedStockVerify(t *testing.T) {
+	requireJournalctl(t)
+
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
@@ -214,6 +224,8 @@ func TestWriterCompactSealedStockVerify(t *testing.T) {
 }
 
 func TestWriterSealedFirstEntryFutureEpoch(t *testing.T) {
+	requireJournalctl(t)
+
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
@@ -268,6 +280,8 @@ func TestWriterSealedEntryBeforeStartRejected(t *testing.T) {
 }
 
 func TestWriterSealedMultiIntervalGap(t *testing.T) {
+	requireJournalctl(t)
+
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
@@ -302,6 +316,8 @@ func TestWriterSealedMultiIntervalGap(t *testing.T) {
 }
 
 func TestWriterSealedEmptyFileStockVerify(t *testing.T) {
+	requireJournalctl(t)
+
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")
 
