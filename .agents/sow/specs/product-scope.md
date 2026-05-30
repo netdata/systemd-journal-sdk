@@ -632,6 +632,11 @@ Current Node.js writer feature slice:
 - high-level `Log` append paths write indexed `_BOOT_ID=<boot-id>` metadata for
   each entry and `_SOURCE_REALTIME_TIMESTAMP=<usec>` when source realtime is
   supplied;
+- high-level Node.js `Log` automatic identity uses explicit caller options
+  first, then Linux host machine ID / boot ID when available, and random UUIDs on
+  non-Linux or restricted hosts. Callers that need stable non-Linux host
+  identity across process restarts must pass `machineId` and `bootId`, or select
+  strict identity mode;
 - writer file access uses `Buffer` plus positioned `node:fs` reads/writes; no
   native mmap dependency is loaded by the Node.js SDK runtime path;
 - zero-entry crash-created active files are discarded on reopen before append so
@@ -644,7 +649,11 @@ Current Node.js writer feature slice:
   zero-valued limits are disabled. `log.enforceRetention()` applies retention
   without requiring a rotation or close;
 - pure cross-SDK cooperative lockfile with stale-owner detection to protect the
-  one-writer contract among cooperating SDK writers;
+  one-writer contract among cooperating SDK writers. Node.js uses Linux
+  `/proc` boot/process-start evidence when available, and otherwise falls back
+  to Node's portable process-liveness probe. Unknown or reused owner identity is
+  treated as still held on non-Linux targets to preserve one-writer safety over
+  aggressive stale cleanup;
 - Forward Secure Sealing TAG writing with configurable deterministic test
   options and stock `journalctl --verify --verify-key` validation for generated
   sealed files;
@@ -695,6 +704,8 @@ Current Node.js reader/writer limitations:
 
 - boot listing APIs use file-level boot metadata in this slice; file-backed
   `--boot` filtering scans entry `_BOOT_ID` values;
+- automatic host boot ID discovery is Linux-only in Node.js. Non-Linux auto
+  identity mode uses random boot IDs unless the caller supplies `bootId`;
 - Node.js reader and writer file access uses `Buffer` plus positioned
   `node:fs` reads/writes. npm mmap candidates checked during SOW-0054 were
   native binding packages, so no mmap dependency is loaded by the SDK runtime

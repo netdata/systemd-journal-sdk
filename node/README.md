@@ -78,6 +78,27 @@ Requires Node.js v22+ (for built-in `node:zlib` zstd support).
 npm install .
 ```
 
+## Platform Behavior
+
+The Node.js SDK uses portable `node:fs` positioned reads/writes and does not
+load native mmap, native systemd, or libjournal runtime dependencies. It targets
+Linux, FreeBSD, macOS, and Windows for SDK import, file reading/writing,
+directory writing, and file-backed journalctl operation.
+
+Automatic identity uses explicit caller options first. In `Log` auto mode,
+Linux host machine ID and boot ID are used when available; otherwise the writer
+falls back to random UUIDs. On non-Linux targets, pass `machineId` and `bootId`
+or use `identityMode: 'strict'` when stable host identity is required across
+processes or application restarts.
+
+Writer locking uses an exclusive SDK lock file next to the journal. On Linux,
+stale-lock detection records the kernel boot ID and `/proc/<pid>/stat` process
+start time. On FreeBSD, macOS, Windows, and restricted Linux environments, stale
+cleanup falls back to `process.kill(pid, 0)` liveness checks and treats unknown
+or reused process identity as still held. This conservative fallback preserves
+the one-writer safety contract; a stale lock may require manual removal if the
+platform cannot prove that the recorded owner is gone.
+
 ## Basic Reader Usage
 
 ```javascript
