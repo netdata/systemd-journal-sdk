@@ -7,10 +7,6 @@ Last updated: 2026-05-30
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
-- SOW-0026 - Netdata SDK Integration Inventory And Cut Plan: in-progress.
-  Inventory and cut plan implemented, whole-SOW read-only review complete, and
-  ready for orchestrator merge. No Netdata source edits were made; component
-  integration remains mapped to SOW-0047 through SOW-0050.
 
 ## Pending
 
@@ -23,12 +19,21 @@ Last updated: 2026-05-30
   packaging after reader gates.
 - SOW-0050 - Netdata Vendored Journal Removal: open. Final cleanup after all
   Netdata component integrations are complete.
-- SOW-0055 - Rust Seek Cursor Systemd Parity: open. Follow-up from SOW-0045
-  review to realign Rust `SdJournalSeekCursor()` with upstream systemd's
-  no-existence-proof seek-location behavior.
 
 ## Recently Closed Or Completed
 
+- SOW-0064 - Real World Journal Corpus Evaluation: completed. The streaming,
+  sensitive-data-safe corpus evaluation harness, Rust/Go digest and regeneration
+  helpers, smoke validation, whole-SOW review fixes, and audit passed. Future
+  full-corpus discrepancies should become targeted follow-up SOWs.
+- SOW-0055 - Rust Seek Cursor Systemd Parity: completed. Rust, Go, Python, and
+  Node.js cursor conformance now covers found cursors, malformed cursor
+  rejection, valid-missing cursor seek behavior, missing-cursor post-seek
+  position, and Rust multi-file directory cursor positioning.
+- SOW-0026 - Netdata SDK Integration Inventory And Cut Plan: completed. Netdata
+  journal SDK integration inventory and cut plan are merged; no Netdata source
+  edits were made. Component integrations remain mapped to SOW-0047 through
+  SOW-0050.
 - SOW-0063 - Cross Platform Portability: completed. Native Linux/macOS/Windows
   and repo-local QEMU FreeBSD validation passed for Rust, Go, Python, and
   Node.js; FreeBSD no-stock single-file and directory matrices passed; files
@@ -98,8 +103,8 @@ Last updated: 2026-05-30
   single-file `sdk-payloads` live/mmap at 1.07M rows/s and `facade-data` at
   1.09M rows/s versus stock systemd DATA enumeration at 565k rows/s; Go
   open-files `sdk-payloads` measured 697k rows/s versus stock systemd open-files
-  DATA at 532k rows/s. Rust remains faster and Rust cursor-seek systemd
-  divergence discovered during review is tracked by SOW-0055.
+  DATA at 532k rows/s. Rust remains faster; the cursor-seek systemd divergence
+  discovered during review was closed by SOW-0055.
 - SOW-0054 - Node.js Reader And Writer Rust Port: completed. Node.js now carries
   the finalized reader/writer compatibility slice where practical under the
   no-native-runtime policy: byte-preserving RAW field access, active-file

@@ -2,9 +2,10 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: reviewed; ready for orchestrator merge.
+Sub-state: implementation and review commits are already merged into `master`;
+this SOW is closed as an inventory and cut-plan SOW.
 
 Actual Netdata component edits remain out of scope for this SOW.
 
@@ -584,11 +585,10 @@ Artifact impact plan:
   behavior in component SOWs.
 - End-user/operator skills: update only if Netdata docs/spec changes affect
   output/reference skills.
-- SOW lifecycle: SOW-0026 remains in-progress with sub-state
-  `reviewed; ready for orchestrator merge`; SOW-0047 through SOW-0050 remain
-  the implementation follow-ons.
+- SOW lifecycle: SOW-0026 completed as an inventory and cut-plan SOW; SOW-0047
+  through SOW-0050 remain the implementation follow-ons.
 - SOW-status.md: root `SOW-status.md` and `.agents/sow/SOW-status.md` are
-  updated to reflect the in-progress reviewed state.
+  updated to reflect the completed state.
 
 Open-source reference evidence:
 
@@ -891,11 +891,10 @@ Artifact maintenance gate:
   planning, not a shipped SDK contract change.
 - End-user/operator docs: no update needed; no shipped behavior changed.
 - End-user/operator skills: no output/reference skill affected.
-- SOW lifecycle: SOW moved from `pending/` to `current/`, status changed to
-  `in-progress`, and sub-state changed to
-  `reviewed; ready for orchestrator merge` per user instruction.
+- SOW lifecycle: SOW moved from `pending/` to `current/`, reviewed, merged into
+  `master`, then closed as `completed` and moved to `done/`.
 - SOW-status.md: root `SOW-status.md` and `.agents/sow/SOW-status.md` updated
-  to reflect SOW-0026 as current/in-progress and reviewed.
+  to reflect SOW-0026 as completed.
 
 Specs update:
 
@@ -932,8 +931,8 @@ Follow-up mapping:
 
 ## Outcome
 
-Reviewed inventory and cut plan. This SOW remains `in-progress` with sub-state
-`reviewed; ready for orchestrator merge` as requested.
+Reviewed inventory and cut plan. The implementation and review commits are
+already merged into `master`; this SOW is closed as `completed`.
 
 ## Lessons Extracted
 

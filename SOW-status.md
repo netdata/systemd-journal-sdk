@@ -3,21 +3,21 @@
 ## Current
 
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
-- `SOW-0026-20260526-netdata-sdk-integration.md` - in-progress. Netdata SDK integration inventory and cut plan implemented, whole-SOW read-only review complete, and ready for orchestrator merge. No Netdata source edits were made; component integration remains mapped to SOW-0047 through SOW-0050.
 
 ## Pending
 
 - `SOW-0066-20260530-v1-release-and-registry-publication.md` - open. Publish the final stable `v1.0.0` SDK across language registries and versioned module tags after compatibility, portability, real-corpus validation, parity closure, and release checks pass.
 - `SOW-0065-20260530-parallel-language-parity-closure.md` - open. Future post-stabilization phase to close remaining Go/Python/Node.js parity and performance gaps against Rust, potentially using one approved worktree and implementation agent per language after prerequisite gates close.
-- `SOW-0064-20260530-real-world-journal-corpus-evaluation.md` - open. Build streaming, metrics-only tooling to evaluate the workstation's large real journal corpus with systemd, Rust, and Go readers/writers, measuring logical completeness, regenerated-output validity, speed, memory, I/O, I/O multiplication, footprint changes, and byte identity where meaningful.
 - `SOW-0047-20260528-netdata-netflow-sdk-integration.md` - open. Integrate the SDK into Netdata NetFlow writer and reader/query paths after the inventory and performance gates are accepted.
 - `SOW-0048-20260528-netdata-otel-writer-sdk-integration.md` - open. Integrate the SDK compact-default structured writer into Netdata OTEL logs ingestion after the inventory and writer gates are accepted.
 - `SOW-0049-20260528-netdata-reader-plugin-sdk-integration.md` - open. Integrate SDK reader/facade paths into Netdata OTEL signal viewer, no-libsystemd systemd-journal plugin mode, and static packaging after reader gates are accepted.
 - `SOW-0050-20260528-netdata-vendored-journal-removal.md` - open. Remove old Netdata vendored journal code only after all Netdata component integrations are complete and fresh searches prove no production references remain.
-- `SOW-0055-20260529-rust-seek-cursor-systemd-parity.md` - open. Fix Rust seek-cursor facade semantics to match systemd behavior for syntactically valid but nonexistent cursors, while preserving any exact-cursor helper explicitly.
 
 ## Done
 
+- `SOW-0064-20260530-real-world-journal-corpus-evaluation.md`
+- `SOW-0055-20260529-rust-seek-cursor-systemd-parity.md`
+- `SOW-0026-20260526-netdata-sdk-integration.md`
 - `SOW-0063-20260530-cross-platform-portability.md`
 - `SOW-0071-20260530-runtime-purity-and-optional-platform-services.md`
 - `SOW-0067-20260530-go-cross-platform-portability.md`
@@ -79,9 +79,9 @@
 - SOW-0019 Phase 3 added file-backed journalctl `--verify`, existing `--verify-only`, and `--verify-key` behavior in Rust, Go, Node.js, and Python. The rewrites parse `--verify-key` before verification, match stock invalid-key behavior on repo-local files, verify unsealed files through Phase 2B APIs, and follow symlinks to regular journal files during directory verification.
 - SOW-0019 Phase 4 added sealed journal writers in Rust, Go, Node.js, and Python with deterministic test keys and configurable sealing intervals. Stock `journalctl --verify --verify-key` validates generated sealed files.
 - SOW-0019 Phase 5 added sealed TAG/HMAC verification APIs and file-backed journalctl `--verify-key` validation in Rust, Go, Node.js, and Python. The shared `journal-verify-sealed` adapter case now runs real behavior in every language.
-- SOW-0009 was originally sequenced last. The 2026-05-26 SNMP traps performance report makes it a critical Netdata integration gate. User scheduling decision on 2026-05-26: finish remaining compatibility feature/gap SOWs first, then run SOW-0009, then do SOW-0026 last because the SDK does not yet perform well enough to replace the faster vendored libraries.
+- SOW-0009 was originally sequenced last. The 2026-05-26 SNMP traps performance report made it a critical Netdata integration gate. Later focused writer and reader performance SOWs completed the hot-path work, and SOW-0026 completed the Netdata integration inventory/cut plan.
 - SOW-0025 completed open-time retention enforcement for Rust, Go, Node.js, and Python high-level directory writers. Eager/existing-active open enforces during construction; lazy archived-only construction remains side-effect-free until first append opens the active file, then retention runs before the first entry is written.
-- SOW-0027 completed the accepted file-backed Netdata `jf`/libsystemd-like reader facade across Rust, Go, Node.js, and Python, including open file/directory/files, close, seek head/tail/realtime/cursor, next/previous/skip, match groups, current-entry data enumeration, field enumeration, unique enumeration, realtime/monotonic/seqnum/cursor metadata, boot listing, and binary/repeated value support. Netdata integration remains tracked by SOW-0026; broader compatibility gap validation is now split across SOW-0028 through SOW-0034.
+- SOW-0027 completed the accepted file-backed Netdata `jf`/libsystemd-like reader facade across Rust, Go, Node.js, and Python, including open file/directory/files, close, seek head/tail/realtime/cursor, next/previous/skip, match groups, current-entry data enumeration, field enumeration, unique enumeration, realtime/monotonic/seqnum/cursor metadata, boot listing, and binary/repeated value support. SOW-0026 completed the Netdata integration inventory and cut plan; component integrations remain tracked by SOW-0047 through SOW-0050.
 - SOW-0020 completed directory traversal parity for SDK readers and file-backed `journalctl --directory` across Rust, Go, Node.js, and Python. `run_directory_matrix.py` passes against stock `journalctl` from systemd 260.1 and all repository rewrites for root files, one machine-id subdirectory level, interleaved ordering, matching, fields, boots, corrupt-skip, verify-skip, empty directories, and the repository `.journal.zst` directory extension.
 - SOW-0024 completed mixed-format directory reader validation across stock journalctl plus Rust, Go, Node.js, and Python file-backed rewrites. `run_mixed_directory_matrix.py` passes 72/72 for mixed regular/compact files, uncompressed and zstd/xz/lz4 DATA-compressed files, sealed/unsealed files, active/archive names, directory verification key behavior, and repository whole-file `.journal.zst` / `.journal~.zst` extension discovery. No reader implementation changes were required.
 - SOW-0022 was completed as a compatibility planning/triage SOW on 2026-05-26. Its stale gaps were closed by SOW-0019, SOW-0020, and SOW-0024 where applicable; the remaining executable work was split into SOW-0028 through SOW-0034.
@@ -89,7 +89,7 @@
 - SOW-0032 completed live feature compatibility validation. `run_live_matrix.py` now validates regular, zstd/xz/lz4 DATA-compressed, compact, compact plus DATA-compressed, and sealed/FSS active journal files across Go, Rust, Node.js, and Python writers; stock `journalctl --file`; stock libsystemd; Go/Rust/Node.js/Python readers; final `journalctl --verify --file`; sealed `--verify-key`; and structural feature checks. The default run passed 36/36 on `systemd 260 (260.1-2-manjaro)`.
 - SOW-0033 completed full verification parity for the supported fixture envelope. `run_verify_matrix.py` passes against stock `journalctl --verify --file` and Rust, Go, Node.js, and Python verification paths for 9 positive files and 12 negative corruption classes on `systemd 260 (260.1-2-manjaro)`.
 - SOW-0063 tracks mandatory cross-platform SDK support for Linux, FreeBSD, macOS, and Windows. Stock systemd validation remains Linux-based; files generated on non-Linux targets must be validated on Linux with stock systemd tooling after transfer.
-- SOW-0064 tracks real-world corpus-scale verification on the workstation's large local journal corpus. Its reports must be streaming, metrics-only, and sensitive-data safe; fixes for discovered discrepancies belong in follow-up SOWs.
+- SOW-0064 completed the real-world corpus evaluation harness for the workstation's large local journal corpus. Its reports are streaming, metrics-only, and sensitive-data safe; fixes for discrepancies discovered by future full-corpus runs belong in follow-up SOWs.
 - SOW-0065 tracks the future parallel language parity/performance closure phase after Rust, portability, corpus, and integration gates are stable. Actual git worktree creation and external implementer routing still require explicit user approval at activation time.
 - SOW-0066 tracks the final `v1.0.0` release and language registry publication. Registry credentials must never be written to durable artifacts.
 - Byte-for-byte writer identity is the target for deterministic uncompressed journals. Any feature slice that cannot be made byte-identical must return with evidence before the acceptance condition is changed.

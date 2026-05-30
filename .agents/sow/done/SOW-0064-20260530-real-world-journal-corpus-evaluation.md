@@ -2,9 +2,10 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: reviewed; ready for orchestrator merge.
+Sub-state: implementation and review commits are already merged into `master`;
+this SOW is closed.
 
 ## Requirements
 
@@ -416,7 +417,8 @@ Failure handling:
 - Confirmed user-authorized parallel implementation routing; AGENTS.md
   external-implementer exception applies for this worktree.
 - Moved this SOW from `.agents/sow/pending/` to `.agents/sow/current/` and set
-  `Status: in-progress`.
+  `Status: in-progress`; the closure update later moved it to `done/` with
+  `Status: completed`.
 - Implemented the metrics-only corpus harness under `tests/corpus_eval/`.
 - Implemented a shared canonical logical digest schema:
   `systemd-journal-sdk-corpus-logical-v1`.
@@ -671,10 +673,9 @@ Artifact maintenance gate:
 - End-user/operator docs: added `tests/corpus_eval/README.md` for safe dry-run,
   smoke, and guarded full-run usage.
 - End-user/operator skills: no output/reference skill affected.
-- SOW lifecycle: moved from `pending/open` to `current/in-progress`; left
-  `completed` transition to the orchestrator as required by the prompt.
-- SOW-status.md: intentionally not edited in this worktree; orchestrator owns
-  status reconciliation.
+- SOW lifecycle: moved from `pending/open` to `current/in-progress`, then closed
+  as `completed` and moved to `done/`.
+- SOW-status.md: reconciled by the closure update.
 
 Specs update:
 
@@ -726,8 +727,8 @@ Follow-up mapping:
 ## Outcome
 
 Implemented locally, fixed real whole-SOW review findings, reran the whole-SOW
-read-only reviewer pool, and left in `Status: in-progress` with sub-state
-`reviewed; ready for orchestrator merge`.
+read-only reviewer pool, merged the implementation into `master`, and closed
+the SOW as `completed`.
 
 ## Lessons Extracted
 
@@ -742,11 +743,11 @@ read-only reviewer pool, and left in `Status: in-progress` with sub-state
 
 ## Followup
 
-- Consider a follow-up SOW for systemd regeneration through
-  `systemd-journal-remote` with safe pipeline metrics.
-- Consider a follow-up SOW for peak I/O sampling if full-corpus acceptance
-  requires measured peak read/write bytes per second rather than average I/O
-  and filesystem counter totals.
+- No required implementation follow-up remains for this tooling SOW.
+- Systemd regeneration through `systemd-journal-remote` and peak I/O sampling
+  are not required to close this harness work. If a future full-corpus run proves
+  either is required for acceptance, open a targeted follow-up SOW with evidence
+  from that run.
 
 ## Regression Log
 

@@ -2,9 +2,10 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: reviewed; ready for orchestrator merge. Keep `Status: in-progress`.
+Sub-state: implementation and review commits are already merged into `master`;
+this SOW is closed.
 
 ## Requirements
 
@@ -84,7 +85,7 @@ Risks:
 
 ## Pre-Implementation Gate
 
-Status: in-progress
+Status: completed
 
 Problem / root-cause model:
 
@@ -434,10 +435,9 @@ Artifact maintenance gate:
 - End-user/operator docs: updated `rust/README.md`, `go/API.md`,
   `python/README.md`, and `node/README.md`.
 - End-user/operator skills: no output/reference skills exist or were affected.
-- SOW lifecycle: moved SOW-0055 from `pending/` to `current/`, kept
-  `Status: in-progress` per implementation prompt, and recorded validation.
-- `SOW-status.md`: intentionally not edited in this worktree per prompt; status
-  reconciliation remains with the orchestrator.
+- SOW lifecycle: moved SOW-0055 from `pending/` to `current/`, recorded
+  validation and review, then closed as `completed` and moved to `done/`.
+- `SOW-status.md`: reconciled by the closure update.
 
 Specs update:
 
@@ -469,15 +469,14 @@ Lessons:
 Follow-up mapping:
 
 - No new implementation follow-up remains from round-1 findings or round-2
-  review. The remaining lifecycle step is orchestrator merge/closure outside
-  this worker handoff.
+  review. The previously pending lifecycle closure is completed in this update.
 
 ## Outcome
 
 Implemented locally; round-1 reviewer findings fixed, local validation passed,
 and round-2 whole-SOW read-only review returned `PRODUCTION GRADE` from all
-five approved reviewers. The SOW intentionally remains in `current/` with
-`Status: in-progress` and sub-state `reviewed; ready for orchestrator merge`.
+five approved reviewers. The already-merged implementation is now closed as
+`completed`.
 
 ## Lessons Extracted
 
@@ -488,5 +487,4 @@ five approved reviewers. The SOW intentionally remains in `current/` with
 ## Followup
 
 - No implementation follow-up remains for this worker. `SOW-status.md`
-  reconciliation and final merge/closure remain with the orchestrator per the
-  implementation prompt.
+  reconciliation and final merge/closure are completed in this update.
