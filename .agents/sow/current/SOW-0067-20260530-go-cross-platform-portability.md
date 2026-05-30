@@ -4,8 +4,7 @@
 
 Status: in-progress
 
-Sub-state: reviewer round 2 finding fixed; whole-SOW reviewer rerun pending;
-child of SOW-0063.
+Sub-state: reviewed; ready for orchestrator merge; child of SOW-0063.
 
 ## Requirements
 
@@ -232,6 +231,8 @@ Failure handling:
   disclose the `ps` dependency and locale-stable behavior.
 - Added direct boot-ID mismatch stale-lock coverage and aligned unknown-target
   wording to unknown non-Unix/non-Windows targets.
+- Ran whole-SOW read-only reviewer round 3 against commit `87ca9ea`; all five
+  reviewers voted `PRODUCTION GRADE`.
 
 ## Validation
 
@@ -291,8 +292,6 @@ Tests or equivalent validation:
   - `python3 tests/interoperability/run_lock_matrix.py --entries 20 --delay-ms 1`:
     still blocked before lock assertions by the existing Node
     `node/src/lib/lz4-block.js` `MODULE_NOT_FOUND` error.
-  - `git diff --check`: PASS.
-  - `.agents/sow/audit.sh`: PASS.
 - Reviewer-fix validation after round 2:
   - `go test ./journal -run 'TestLockFileIsStale|TestWriterLockRejectsSecondWriter|TestWriterSyncCloseAndClosedAppend' -v`:
     PASS, including new `TestLockFileIsStaleBootMismatch`.
@@ -310,6 +309,18 @@ Tests or equivalent validation:
   - `python3 tests/interoperability/run_lock_matrix.py --entries 20 --delay-ms 1`:
     still blocked before lock assertions by the existing Node
     `node/src/lib/lz4-block.js` `MODULE_NOT_FOUND` error.
+- Final whole-SOW reviewer round 3 after the round 2 fix:
+  - `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+  - Reviewers independently checked the whole SOW and changed scope, including
+    Windows `LockFileEx`, FreeBSD/macOS `ps` locale stability, unknown-target
+    lock failure, test gating, docs/spec accuracy, Linux regression risk,
+    sensitive-data handling, and Node lz4 out-of-scope classification.
+  - `git diff --check`: PASS.
+  - `.agents/sow/audit.sh`: PASS.
 
 Real-use evidence:
 
@@ -333,6 +344,12 @@ Reviewer findings:
   - `llm-netdata-cloud/mimo-v2.5-pro`: `NOT PRODUCTION GRADE`.
 - Round 2 reviewer pool:
   - `llm-netdata-cloud/kimi-k2.6`: `NOT PRODUCTION GRADE`.
+  - `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+- Round 3 reviewer pool:
+  - `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`.
   - `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`.
   - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
   - `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`.
@@ -375,6 +392,12 @@ Reviewer findings:
   leak resources when directory sync fails. Disposition: rejected as not
   applicable to current code; `archiveTo` stores `dirErr`, still runs
   `closeArena()` and `unlockAndClose(w.file)`, then joins errors.
+- Round 3 findings: no blocking findings. Reviewers listed only documented
+  residual limits: no native FreeBSD/macOS runtime in this worktree, Node lz4
+  blocking the cross-SDK lock matrix, BSD `ps` dependency, conservative
+  PID-only stale detection on other Unix targets outside this SOW target set,
+  non-Unix directory metadata fsync limitations, and non-Unix read/write mmap
+  fallback memory tradeoffs.
 - Findings accepted as documented residual limits: FreeBSD/macOS native runtime
   execution was unavailable in this Linux worktree; non-Unix directory metadata
   fsync remains limited by target facilities; cross-SDK lock matrix remains
@@ -405,6 +428,7 @@ Same-failure scan:
   - Round 2 `rg` found the only `ps` process-start command in
     `go/journal/lock_owner_bsd.go`; it now uses `exec.CommandContext`,
     `LC_ALL=C`, and the documented timeout.
+  - Round 3 reviewers found no additional same-pattern implementation issues.
 
 Sensitive data gate:
 
@@ -421,8 +445,8 @@ Artifact maintenance gate:
   identity behavior.
 - End-user/operator docs: updated `go/README.md` and `go/API.md`.
 - End-user/operator skills: none affected.
-- SOW lifecycle: moved from `pending/` to `current/`, status set to
-  `in-progress`, sub-state set to implemented/ready for orchestrator review.
+- SOW lifecycle: moved from `pending/` to `current/`, status remains
+  `in-progress`, sub-state set to `reviewed; ready for orchestrator merge`.
 - `SOW-status.md`: intentionally not edited per assigned prompt to reduce merge
   conflicts; orchestrator reconciliation required.
 
