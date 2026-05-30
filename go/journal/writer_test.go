@@ -301,7 +301,7 @@ func TestCompressionThresholdSystemdPolicy(t *testing.T) {
 			if gotCompressedObj != tc.wantCompressedObj {
 				t.Fatalf("zstd-compressed DATA object presence = %v, want %v", gotCompressedObj, tc.wantCompressedObj)
 			}
-			if _, err := exec.LookPath("journalctl"); err == nil {
+			if journalctlAvailable() {
 				verifyJournalctl(t, path)
 			}
 		})
@@ -679,9 +679,7 @@ func TestWriterLockRejectsSecondWriter(t *testing.T) {
 }
 
 func TestJournalctlReadsCreatedJournal(t *testing.T) {
-	if _, err := exec.LookPath("journalctl"); err != nil {
-		t.Skip("journalctl is not installed")
-	}
+	requireJournalctl(t)
 
 	path := filepath.Join(t.TempDir(), "journalctl-readback.journal")
 	w, err := Create(path, testOptions())
@@ -724,9 +722,7 @@ func TestJournalctlReadsCreatedJournal(t *testing.T) {
 }
 
 func TestCompactWriterReaderAndJournalctl(t *testing.T) {
-	if _, err := exec.LookPath("journalctl"); err != nil {
-		t.Skip("journalctl is not installed")
-	}
+	requireJournalctl(t)
 
 	path := filepath.Join(t.TempDir(), "compact-writer.journal")
 	opts := testOptions()
@@ -787,9 +783,7 @@ func TestCompactWriterReaderAndJournalctl(t *testing.T) {
 }
 
 func TestCompactWriterGrowsArenaPastInitialAllocation(t *testing.T) {
-	if _, err := exec.LookPath("journalctl"); err != nil {
-		t.Skip("journalctl is not installed")
-	}
+	requireJournalctl(t)
 
 	path := filepath.Join(t.TempDir(), "compact-grown.journal")
 	opts := testOptions()
@@ -818,9 +812,7 @@ func TestCompactWriterGrowsArenaPastInitialAllocation(t *testing.T) {
 }
 
 func TestWriterInitialArenaCoversLargeHashTables(t *testing.T) {
-	if _, err := exec.LookPath("journalctl"); err != nil {
-		t.Skip("journalctl is not installed")
-	}
+	requireJournalctl(t)
 
 	path := filepath.Join(t.TempDir(), "large-hash-table.journal")
 	opts := testOptions()
@@ -848,9 +840,7 @@ func TestWriterInitialArenaCoversLargeHashTables(t *testing.T) {
 }
 
 func TestOpenAppendDefaultMonotonicPreservesJournalctlVerify(t *testing.T) {
-	if _, err := exec.LookPath("journalctl"); err != nil {
-		t.Skip("journalctl is not installed")
-	}
+	requireJournalctl(t)
 
 	path := filepath.Join(t.TempDir(), "reopen-monotonic.journal")
 	w, err := Create(path, testOptions())
@@ -960,9 +950,7 @@ func TestWriterRawExplicitZeroMonotonicPassThrough(t *testing.T) {
 }
 
 func TestEntryArrayGrowthAndJournalctlReadback(t *testing.T) {
-	if _, err := exec.LookPath("journalctl"); err != nil {
-		t.Skip("journalctl is not installed")
-	}
+	requireJournalctl(t)
 
 	path := filepath.Join(t.TempDir(), "entry-array-growth.journal")
 	w, err := Create(path, testOptions())
@@ -988,9 +976,7 @@ func TestEntryArrayGrowthAndJournalctlReadback(t *testing.T) {
 }
 
 func TestWriterBinaryFieldCompatibility(t *testing.T) {
-	if _, err := exec.LookPath("journalctl"); err != nil {
-		t.Skip("journalctl is not installed")
-	}
+	requireJournalctl(t)
 
 	path := filepath.Join(t.TempDir(), "binary-fields.journal")
 	binaryValue := []byte{0x00, 0x01, 0x02, 'A', '\n', 0x7f, 0x80, 0xff}
@@ -1329,6 +1315,7 @@ func le64(data []byte) uint64 {
 
 func runJournalctlJSON(t *testing.T, path string, matches ...string) []map[string]any {
 	t.Helper()
+	requireJournalctl(t)
 
 	args := append([]string{"--file", path, "--output=json", "--no-pager"}, matches...)
 	cmd := exec.Command("journalctl", args...)
@@ -1354,6 +1341,7 @@ func runJournalctlJSON(t *testing.T, path string, matches ...string) []map[strin
 
 func runJournalctlLineCount(t *testing.T, path string, matches ...string) int {
 	t.Helper()
+	requireJournalctl(t)
 
 	args := append([]string{"--file", path, "--output=json", "--no-pager"}, matches...)
 	cmd := exec.Command("journalctl", args...)
@@ -1370,6 +1358,7 @@ func runJournalctlLineCount(t *testing.T, path string, matches ...string) int {
 
 func runJournalctlExport(t *testing.T, path string, matches ...string) map[string][][]byte {
 	t.Helper()
+	requireJournalctl(t)
 
 	args := append([]string{"--file", path, "--output=export", "--no-pager"}, matches...)
 	cmd := exec.Command("journalctl", args...)
@@ -1441,6 +1430,7 @@ func parseJournalExport(t *testing.T, data []byte) []map[string][][]byte {
 
 func verifyJournalctl(t *testing.T, path string) {
 	t.Helper()
+	requireJournalctl(t)
 
 	verify := exec.Command("journalctl", "--verify", "--file", path)
 	if output, err := verify.CombinedOutput(); err != nil {
@@ -1450,6 +1440,7 @@ func verifyJournalctl(t *testing.T, path string) {
 
 func verifyJournalctlFails(t *testing.T, path string, want string) {
 	t.Helper()
+	requireJournalctl(t)
 
 	verify := exec.Command("journalctl", "--verify", "--file", path)
 	output, err := verify.CombinedOutput()

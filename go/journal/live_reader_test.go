@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -96,6 +97,12 @@ started:
 
 func buildGoTestBinary(t *testing.T, moduleRoot, pkg, name string) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("spawning the Go tool from Windows test binaries is not available in the local cross-target runner")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skipf("go tool is not available: %v", err)
+	}
 	bin := filepath.Join(t.TempDir(), name)
 	cmd := exec.Command("go", "build", "-o", bin, pkg)
 	cmd.Dir = moduleRoot

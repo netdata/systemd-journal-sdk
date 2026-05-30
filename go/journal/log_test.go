@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -1144,6 +1145,8 @@ func TestLogDiscardsEmptyOnlineFileAndContinuesSequence(t *testing.T) {
 }
 
 func TestNewLogLazyRetentionRunsOnFirstOpen(t *testing.T) {
+	requireJournalctl(t)
+
 	root := t.TempDir()
 	config := LogConfig{
 		Options:        testOptions(),
@@ -1212,6 +1215,8 @@ func TestNewLogLazyRetentionRunsOnFirstOpen(t *testing.T) {
 }
 
 func TestNewLogEagerRetentionRunsOnOpenForAllPolicies(t *testing.T) {
+	requireJournalctl(t)
+
 	for _, tc := range []struct {
 		name      string
 		retention RetentionPolicy
@@ -2141,13 +2146,27 @@ func equalUint64s(a, b []uint64) bool {
 
 func requireJournalctl(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("journalctl"); err != nil {
+	if runtime.GOOS != "linux" {
+		t.Skip("stock journalctl validation is Linux-only")
+	}
+	if !journalctlAvailable() {
 		t.Skip("journalctl is not installed")
 	}
 }
 
+func journalctlAvailable() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	if _, err := exec.LookPath("journalctl"); err != nil {
+		return false
+	}
+	return true
+}
+
 func runJournalctlDirectoryJSON(t *testing.T, dir string, matches ...string) []map[string]any {
 	t.Helper()
+	requireJournalctl(t)
 
 	args := append([]string{"--directory", dir, "--output=json", "--no-pager"}, matches...)
 	cmd := exec.Command("journalctl", args...)

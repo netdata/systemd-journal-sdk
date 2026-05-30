@@ -23,9 +23,12 @@ Current writer scope:
   reopen/append for files created by this writer;
 - data and field de-duplication;
 - global entry arrays and per-DATA entry links;
-- pure cross-SDK cooperative lockfile with stale-owner detection, plus a
-  secondary advisory `flock`, to prevent multiple SDK writers from opening the
-  same file;
+- pure cross-SDK cooperative lockfile with stale-owner detection to prevent
+  multiple SDK writers from opening the same file. Linux uses `/proc`
+  boot/process-start checks plus non-blocking `flock`; FreeBSD and macOS use
+  boot-time and `ps` process-start checks plus `flock`; Windows uses process
+  creation time checks plus non-blocking `LockFileEx` on a byte range outside
+  journal data;
 - Forward Secure Sealing TAG writing with `journal.SealOptions`, including
   stock `journalctl --verify --verify-key` coverage for sealed files generated
   by this writer;
@@ -56,7 +59,7 @@ Current reader scope:
   through pure-Go dependencies;
 - mmap-backed live reading by default on Unix, with explicit `ReadAt` access
   available through `ReaderOptions` for diagnostics or constrained
-  environments;
+  environments. Non-Unix targets use the `ReadAt`-backed mapping fallback;
 - directory reading across active and archived files with stock-compatible
   root plus one machine-id subdirectory traversal and interleaved multi-file
   ordering, including mixed regular/compact, compressed/uncompressed,
@@ -86,6 +89,25 @@ Reader limitations:
 
 - full systemd object-graph verification parity is tracked separately;
 - daemon-only journalctl operations are not implemented.
+
+Platform behavior:
+
+- Linux is the stock systemd validation target for `journalctl --file`,
+  `journalctl --directory`, live follow, and libsystemd reader checks.
+- FreeBSD, macOS, and Windows build the Go SDK without CGO or libsystemd.
+  Files generated on those targets are expected to be copied to Linux for stock
+  systemd verification when stock tooling is required.
+- FreeBSD and macOS writer locking requires `ps` in `PATH`; the SDK forces
+  `LC_ALL=C` for process-start evidence so lock ownership is locale-stable.
+- `LogIdentityAuto` loads the host boot ID only on Linux. On other targets,
+  callers should pass explicit IDs when deterministic identity matters, or use
+  `LogIdentityStrict` to require them.
+- Directory fsync is performed on Unix. Non-Unix targets still sync journal
+  file contents, but parent-directory metadata is not fsynced by this SDK; newly
+  created or renamed files rely on the target filesystem's crash semantics.
+- Unknown non-Unix/non-Windows targets do not provide writer file-locking
+  guarantees; writer open fails instead of silently writing without a platform
+  lock.
 
 Basic usage:
 
