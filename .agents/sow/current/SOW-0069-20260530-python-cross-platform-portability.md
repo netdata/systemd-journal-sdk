@@ -4,7 +4,7 @@
 
 Status: in-progress
 
-Sub-state: implemented; ready for orchestrator review; child of SOW-0063.
+Sub-state: reviewed; ready for orchestrator merge; child of SOW-0063.
 
 ## Requirements
 
@@ -179,7 +179,8 @@ Implementer:
 
 Reviewers:
 
-- Whole-SOW read-only reviewer pass after implementation and local validation.
+- Whole-SOW read-only reviewer pass completed after implementation and local
+  validation.
 
 Repository boundary block for every external-agent prompt:
 
@@ -227,6 +228,17 @@ Failure handling:
 - Installed validation-only dependencies under repo-local ignored paths:
   `.local/python-venv`, `.local/pip-cache`, `.local/npm-cache`, and
   `node/node_modules`.
+- Committed implementation as `2b7f422` (`Make Python journal paths portable`)
+  for whole-SOW review.
+- Ran whole-SOW read-only reviewer cycle against commit `2b7f422` with
+  `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/qwen3.6-plus`,
+  `llm-netdata-cloud/glm-5.1`,
+  `llm-netdata-cloud/minimax-m2.7-coder`, and
+  `llm-netdata-cloud/mimo-v2.5-pro`.
+- All five reviewers voted `PRODUCTION GRADE`; findings were non-blocking and
+  are recorded below with dispositions.
+- Updated `.agents/sow/SOW-status.md` with the SOW-0069 reviewed in-progress
+  state.
 
 ## Validation
 
@@ -289,8 +301,87 @@ Real-use evidence:
 
 Reviewer findings:
 
-- Not run in this worktree by instruction. Whole-SOW read-only reviewer pass is
-  left to the orchestrator after merge/reconciliation.
+Reviewer run scope:
+
+- Commit reviewed: `2b7f422 Make Python journal paths portable`.
+- SOW reviewed:
+  `.agents/sow/current/SOW-0069-20260530-python-cross-platform-portability.md`.
+- Changed surface reviewed: Python platform helper, writer, lock, directory
+  writer, tests, Python README, product spec, and SOW lifecycle move.
+- Review prompts required read-only mode, no file changes, no package manager
+  commands, no live host journal probing, whole-SOW scope, exact vote, security
+  review, unwanted side-effect search, docs/spec accuracy check, and
+  sensitive-data check.
+
+Reviewer votes:
+
+- `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+
+Findings and dispositions:
+
+1. Windows/non-Linux stale-lock detection cannot detect PID reuse as strongly
+   as Linux procfs start-time checks.
+   - Evidence cited by reviewers:
+     `python/journal/_platform.py` process-start and liveness helpers, plus
+     `python/journal/lock.py` stale-lock decision.
+   - Disposition: accepted non-blocking residual risk. The implementation
+     deliberately prefers conservative liveness checks over false-stale lock
+     deletion when precise start time is unavailable. The README and product
+     spec document this behavior, and parent SOW-0063 owns real non-Linux
+     runtime matrix reconciliation.
+
+2. Windows `archive_to()` cannot restore an open writer if rename fails after
+   the fd is closed.
+   - Evidence cited by reviewers:
+     `python/journal/writer.py` Windows close-before-rename path.
+   - Disposition: accepted non-blocking residual risk. Closing before rename
+     is required for Windows-compatible behavior. Existing tests prove the
+     success path produces an archived, stock-verifiable journal. The failure
+     case propagates the exception and closes/releases resources rather than
+     leaving a half-owned writer object. No implementation change was made
+     after unanimous `PRODUCTION GRADE` votes.
+
+3. Fallback positional I/O uses one module-level `threading.RLock()`.
+   - Evidence cited by reviewers:
+     `python/journal/_platform.py` `_FALLBACK_IO_LOCK`.
+   - Disposition: accepted non-blocking performance trade-off. The lock is
+     only used where `os.pread` / `os.pwrite` are unavailable and preserves
+     correctness for seek-based fallback I/O. The SDK writer remains a
+     one-writer contract.
+
+4. macOS directory durability uses Python `os.fsync()` and does not use
+   macOS-specific `F_FULLFSYNC`.
+   - Evidence cited by reviewers:
+     `python/journal/_platform.py` `sync_directory()`.
+   - Disposition: accepted non-blocking platform limitation. The implementation
+     stays inside Python standard-library APIs and docs/specs avoid claiming
+     stronger non-Linux directory durability than implemented.
+
+5. Windows `unlock_fd()` suppresses `OSError` from `msvcrt.locking(...,
+   LK_UNLCK, ...)`.
+   - Evidence cited by reviewers:
+     `python/journal/_platform.py` `unlock_fd()`.
+   - Disposition: accepted non-blocking cleanup behavior. The lock fd is closed
+     immediately after unlock, and Windows releases byte-range locks on close.
+
+6. `_PROCESS_START_TOKEN` is module-level and forked children inherit it.
+   - Evidence cited by reviewers:
+     `python/journal/_platform.py` token initialization.
+   - Disposition: accepted non-blocking. The token is used only when precise
+     process start time is unavailable; portable-token comparisons fall back
+     to liveness checks. Fork-specific precision can be considered only if a
+     future SOW adds fork-aware non-Linux lock-owner guarantees.
+
+7. Real Windows, macOS, and FreeBSD runtimes were not available locally.
+   - Evidence cited by reviewers: SOW Validation records `wine` without
+     `python.exe`, and no `freebsd-version` or `sw_vers`.
+   - Disposition: accepted documented validation gap. The SOW records exact
+     local blockers, adds import/fallback simulations, and leaves cross-OS
+     runtime matrix reconciliation to parent SOW-0063.
 
 Same-failure scan:
 
@@ -317,9 +408,9 @@ Artifact maintenance gate:
 - End-user/operator skills: no output/reference skills exist for this project.
 - SOW lifecycle: moved this SOW from `pending/` to `current/`, changed
   `Status: open` to `Status: in-progress`, and left it in-progress with
-  sub-state `implemented; ready for orchestrator review`.
-- `SOW-status.md`: intentionally not edited per assigned worktree prompt;
-  status reconciliation is left to the orchestrator.
+  sub-state `reviewed; ready for orchestrator merge`.
+- `SOW-status.md`: updated for SOW-0069 current reviewed state; broader status
+  reconciliation is left to the orchestrator.
 
 Lessons extracted:
 
@@ -332,7 +423,7 @@ Lessons extracted:
 Follow-up mapping:
 
 - Parent umbrella: `SOW-0063-20260530-cross-platform-portability.md`.
-- Orchestrator review/reconciliation: this SOW remains in `current/` and is not
+- Orchestrator merge/reconciliation: this SOW remains in `current/` and is not
   marked completed by this worktree.
 - Non-Linux runtime execution: exact local blockers are recorded above; parent
   SOW-0063 owns cross-OS runtime matrix reconciliation.
