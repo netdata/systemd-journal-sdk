@@ -1,10 +1,10 @@
-use anyhow::{Result as AnyResult, anyhow};
+use anyhow::{anyhow, Result as AnyResult};
 use journal::{
-    Config, EntryTimestamps, FileReader, Log, Origin, OutputMode, RetentionPolicy, RotationPolicy,
-    SdJournalAddConjunction, SdJournalAddDisjunction, SdJournalAddMatch, SdJournalEnumerateFields,
-    SdJournalGetCursor, SdJournalGetEntry, SdJournalListBoots, SdJournalNext, SdJournalOpen,
-    SdJournalProcessOutput, SdJournalSeekHead, SdJournalSetOutputMode, SdJournalTestCursor, Source,
-    parse_match_string, verify_file, verify_file_with_key,
+    parse_match_string, verify_file, verify_file_with_key, Config, EntryTimestamps, FileReader,
+    Log, Origin, OutputMode, RetentionPolicy, RotationPolicy, SdJournalAddConjunction,
+    SdJournalAddDisjunction, SdJournalAddMatch, SdJournalEnumerateFields, SdJournalGetCursor,
+    SdJournalGetEntry, SdJournalListBoots, SdJournalNext, SdJournalOpen, SdJournalProcessOutput,
+    SdJournalSeekCursor, SdJournalSeekHead, SdJournalSetOutputMode, SdJournalTestCursor, Source,
 };
 use journal_core::file::{JournalFile, JournalFileOptions, JournalWriter, MmapMut};
 use journal_core::repository::File as RepoFile;
@@ -727,7 +727,22 @@ fn test_cursor(tc: &TestCase, start: Instant) -> AdapterResult {
             return Ok(false);
         }
         let cursor = SdJournalGetCursor(&journal)?;
-        SdJournalTestCursor(&journal, &cursor)
+        if !SdJournalTestCursor(&journal, &cursor)? {
+            return Ok(false);
+        }
+        if SdJournalTestCursor(&journal, "invalid-cursor")? {
+            return Ok(false);
+        }
+        if SdJournalSeekCursor(&mut journal, "invalid-cursor").is_ok() {
+            return Ok(false);
+        }
+        SdJournalSeekCursor(&mut journal, &cursor)?;
+        let Some((cursor_prefix, _)) = cursor.rsplit_once("n=") else {
+            return Ok(false);
+        };
+        let missing_cursor = format!("{cursor_prefix}n=999999");
+        SdJournalSeekCursor(&mut journal, &missing_cursor)?;
+        Ok(true)
     })();
     match result {
         Ok(ok) => AdapterResult::pass(&tc.test_name, &tc.expected.result_format, json!(ok), start),

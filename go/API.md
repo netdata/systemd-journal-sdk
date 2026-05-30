@@ -74,6 +74,10 @@ libsystemd/Netdata `jf` needed by Netdata readers:
   `SdJournalGetSeqnum`, `SdJournalGetCursor`, `SdJournalTestCursor`, and
   `SdJournalListBoots`
 
+`SdJournalSeekCursor` accepts a syntactically valid cursor as a seek location
+even when no exact entry exists. Use `SdJournalTestCursor` to check whether the
+current entry exactly matches a cursor.
+
 Stateful data and unique enumeration return full `FIELD=value` payloads and are
 binary-safe. `SdJournalGetData` returns the first value for a repeated field;
 callers that need all repeated values must use the restart/enumerate data API.

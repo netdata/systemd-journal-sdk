@@ -9,7 +9,18 @@ import { FileReader } from '../src/lib/reader.js';
 import { DirectoryReader } from '../src/lib/directory-reader.js';
 import { Writer } from '../src/lib/writer.js';
 import { SealOptions } from '../src/lib/seal.js';
-import { exportEntry, jsonEntry, parseCursor } from '../src/facade.js';
+import {
+  SdJournalClose,
+  SdJournalGetCursor,
+  SdJournalNext,
+  SdJournalOpen,
+  SdJournalSeekCursor,
+  SdJournalSeekHead,
+  SdJournalTestCursor,
+  exportEntry,
+  jsonEntry,
+  parseCursor,
+} from '../src/facade.js';
 import { parseMatchString } from '../src/lib/hash.js';
 import { verifyFile, verifyFileWithKey } from '../src/lib/verify.js';
 import { isJournalFileName } from '../src/lib/compress.js';
@@ -279,14 +290,38 @@ function runStreamTest(tc) {
 function runCursorTest(tc) {
   const path = resolveFixture(tc, 'journal_dir');
   if (!path) return { status: 'SKIP', note: 'no journal_dir fixture' };
-  const r = DirectoryReader.open(path);
+  const r = SdJournalOpen(path, 0);
   try {
-    r.seekHead();
-    if (!r.step()) return { status: 'FAIL', error: 'no entries' };
-    const cursor = r.getCursor();
+    SdJournalSeekHead(r);
+    if (SdJournalNext(r) === 0) return { status: 'FAIL', error: 'no entries' };
+    const cursor = SdJournalGetCursor(r);
     if (!cursor) return { status: 'FAIL', error: 'null cursor' };
-    return { status: 'PASS', actual: r.testCursor(cursor) };
-  } finally { r.close(); }
+    if (!SdJournalTestCursor(r, cursor)) return { status: 'FAIL', error: 'current cursor did not match' };
+    if (SdJournalTestCursor(r, 'invalid-cursor')) {
+      return { status: 'FAIL', error: 'invalid cursor matched current position' };
+    }
+    let invalidSeekRejected = false;
+    try {
+      SdJournalSeekCursor(r, 'invalid-cursor');
+    } catch {
+      invalidSeekRejected = true;
+    }
+    if (!invalidSeekRejected) return { status: 'FAIL', error: 'invalid seek cursor was accepted' };
+    SdJournalSeekCursor(r, cursor);
+    const cursorPrefix = cursor.split(/n=[^;]*$/)[0];
+    if (cursorPrefix === cursor) return { status: 'FAIL', error: 'cursor missing seqnum segment' };
+    SdJournalSeekCursor(r, `${cursorPrefix}n=999999`);
+    return {
+      status: 'PASS',
+      actual: true,
+      evidence: {
+        found_cursor: true,
+        invalid_test_cursor: false,
+        invalid_seek_rejected: true,
+        missing_seek: true,
+      },
+    };
+  } finally { SdJournalClose(r); }
 }
 
 // ---- ENUMERATION ----

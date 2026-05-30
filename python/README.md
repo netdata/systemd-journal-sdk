@@ -289,7 +289,8 @@ python3 cmd/journalctl.py --file ./active.journal --follow --no-tail --boot=all
 - `SdJournalSeekHead(journal)` - Seek to first entry
 - `SdJournalSeekTail(journal)` - Seek to last entry
 - `SdJournalSeekRealtimeUsec(journal, usec)` - Seek by realtime timestamp
-- `SdJournalSeekCursor(journal, cursor)` - Seek to an exact cursor
+- `SdJournalSeekCursor(journal, cursor)` - Seek to a cursor location; a
+  syntactically valid cursor is accepted even when no exact entry exists
 - `SdJournalGetEntry(journal)` - Get current entry object
 - `SdJournalGetData(journal, field_name)` - Get first `FIELD=value` payload for a field
 - `SdJournalRestartData(journal)` / `SdJournalEnumerateAvailableData(journal)` -

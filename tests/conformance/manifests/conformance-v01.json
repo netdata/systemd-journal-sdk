@@ -170,7 +170,7 @@
       {
         "test_name": "journal-cursor-test",
         "category": "cursor-navigation",
-        "description": "Verify sd_journal_test_cursor confirms cursor validity",
+        "description": "Verify cursor test and seek semantics",
         "fixtures": {
           "journal_dir": {
             "type": "file",
@@ -182,7 +182,7 @@
         "expected": {
           "result_format": "boolean",
           "entries_match": true,
-          "note": "sd_journal_get_cursor returns cursor string; sd_journal_test_cursor returns true for same cursor"
+          "note": "sd_journal_get_cursor returns a cursor string; sd_journal_test_cursor returns true for the current cursor and false for an invalid cursor; sd_journal_seek_cursor rejects invalid syntax and accepts both an existing cursor and a syntactically valid cursor that does not identify an existing entry"
         },
         "tags": [
           "cursor",

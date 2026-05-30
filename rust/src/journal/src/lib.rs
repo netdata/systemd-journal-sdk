@@ -471,7 +471,7 @@ impl FileReader {
                 return Ok(());
             }
         }
-        Err(SdkError::InvalidCursor(cursor.to_string()))
+        Ok(())
     }
 
     pub fn next(&mut self) -> Result<bool> {
@@ -1733,14 +1733,21 @@ impl DirectoryReader {
     }
 
     pub fn seek_cursor(&mut self, cursor: &str) -> Result<()> {
-        self.pending_realtime_seek = None;
-        for idx in 0..self.files.len() {
-            if self.files[idx].seek_cursor(cursor).is_ok() {
-                self.index = idx;
+        let want = parse_cursor(cursor).map_err(|err| SdkError::InvalidCursor(err.to_string()))?;
+        let realtime = want.2;
+        self.seek_realtime(realtime);
+        while self.next()? {
+            let current_cursor = self.get_cursor()?;
+            let got = parse_cursor(&current_cursor)
+                .map_err(|err| SdkError::InvalidCursor(err.to_string()))?;
+            if got.2 > realtime {
+                return Ok(());
+            }
+            if got == want {
                 return Ok(());
             }
         }
-        Err(SdkError::InvalidCursor(cursor.to_string()))
+        Ok(())
     }
 
     pub fn enumerate_fields(&mut self) -> Result<Vec<String>> {
@@ -2540,8 +2547,11 @@ pub fn parse_cursor(
 
     for part in cursor.split(';') {
         let Some((key, value)) = part.split_once('=') else {
-            continue;
+            return Err("invalid cursor: malformed segment".into());
         };
+        if key.is_empty() {
+            return Err("invalid cursor: empty key".into());
+        }
         match key {
             "s" => seqnum_id = value.to_string(),
             "j" => boot_id = value.to_string(),
@@ -3269,6 +3279,10 @@ mod tests {
         let cursor = SdJournalGetCursor(&journal).expect("cursor");
         assert!(SdJournalTestCursor(&journal, &cursor).expect("test current cursor"));
         assert!(!SdJournalTestCursor(&journal, "invalid-cursor").expect("test invalid cursor"));
+        assert!(matches!(
+            SdJournalSeekCursor(&mut journal, "invalid-cursor"),
+            Err(FacadeError::InvalidCursor)
+        ));
         SdJournalSeekRealtimeUsec(&mut journal, 1000).expect("seek first by realtime");
         assert_eq!(SdJournalNext(&mut journal).expect("next to first"), 1);
         let entry = SdJournalGetEntry(&mut journal).expect("first entry");
@@ -3276,6 +3290,10 @@ mod tests {
         SdJournalSeekCursor(&mut journal, &cursor).expect("seek cursor back to second");
         let entry = SdJournalGetEntry(&mut journal).expect("entry after cursor seek");
         assert_eq!(entry.get_str("MESSAGE"), Some("second"));
+        let (cursor_prefix, _) = cursor.rsplit_once("n=").expect("cursor has seqnum");
+        let missing_cursor = format!("{cursor_prefix}n=999999");
+        SdJournalSeekCursor(&mut journal, &missing_cursor)
+            .expect("valid missing cursor is accepted as a seek location");
 
         let path2 = dir.path().join("journals/user.journal");
         write_facade_single_message_journal(&path2, b"third", 1002);
