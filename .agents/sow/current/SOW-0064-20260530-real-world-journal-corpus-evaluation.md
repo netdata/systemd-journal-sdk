@@ -4,7 +4,7 @@
 
 Status: in-progress
 
-Sub-state: review fixes in progress.
+Sub-state: reviewed; ready for orchestrator merge.
 
 ## Requirements
 
@@ -447,6 +447,11 @@ Failure handling:
 - Hardened `journalctl` process handling, JSON helper output parsing,
   regenerator failure containment and cleanup, resume identity matching, Go
   payload sorting, and status output.
+- Reran the whole-SOW read-only review cycle after fixes. Four reviewers
+  completed normally with `PRODUCTION GRADE`; the first
+  `llm-netdata-cloud/minimax-m2.7-coder` round-2 attempt timed out after 30
+  minutes without a vote, then a same-scope rerun completed with
+  `PRODUCTION GRADE`.
 
 ## Validation
 
@@ -579,7 +584,55 @@ Reviewer findings:
       - Disposition: fixed in `tests/corpus_eval/run_corpus_eval.py`; writer
         regeneration, stock verify, systemd reread, generated-size stat, and
         cleanup are now contained as per-case `failed` results.
-- Round 2 rerun remains pending after the validation commands listed below.
+- Round 2 after fix commit `e49a7d9`:
+  - `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`.
+    - Finding: Rust regeneration cannot preserve per-entry boot IDs for
+      multi-boot journals with the current writer helper API.
+      - Disposition: non-blocking for this SOW because the harness will surface
+        that as a real corpus writer discrepancy; fixing Rust writer metadata
+        preservation belongs in a follow-up SOW if the full corpus finds it.
+    - Finding: regeneration helpers do not preserve arbitrary original sequence
+      numbers.
+      - Disposition: non-blocking known interpretation risk. The harness hashes
+        `__SEQNUM` deliberately, so sequence-number renumbering is visible rather
+        than hidden.
+  - `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`.
+    - Finding: writer digest comparison may produce expected discrepancies on
+      real files with sequence-number gaps.
+      - Disposition: non-blocking; record as a report-interpretation risk for
+        full-corpus use and map to follow-up if it prevents useful triage.
+    - Finding: archived-mode failure could leave renamed generated files.
+      - Disposition: not applicable to the implemented harness modes because the
+        CLI supports only `regular`, `compact`, `compact-zstd`, and
+        `compact-fss`, and `regenerate_cmd` always requests `--final-state
+        offline`.
+    - Finding: `display_path` can print an absolute path when `--out` is outside
+      the repository.
+      - Disposition: non-blocking CLI-only leak risk. Durable reports remain
+        path-sanitized; normal documented output path is under `.local/`.
+    - Finding: fixed 5-second thread join could be tight for pathological very
+      large single entries.
+      - Disposition: non-blocking; it fails closed with `TimeoutError` and does
+        not leak a child process.
+  - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+    - Finding: silent exclusion of non-selected `__`-prefixed systemd export
+      fields could surprise future maintainers.
+      - Disposition: non-blocking. This is intentional for the current SDK
+        reader surface; future systemd metadata drift can be handled with a
+        focused schema update.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+    - Disposition: no blocking findings. The reviewer verified the process,
+      cleanup, JSON parsing, identity, Go sort, Rust count, status-output, and
+      validation fixes.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`.
+    - Note: the first round-2 attempt timed out before producing a vote; a
+      same-scope rerun completed successfully.
+    - Finding: the insufficient-scratch-space error string includes byte counts
+      before being hashed into `error_sha256`.
+      - Disposition: non-blocking. The raw string is not written to durable
+        reports; only the hash is stored. Treat as a residual crash-dump/in-memory
+        disclosure risk.
+- Final reviewer state: all five approved reviewers voted `PRODUCTION GRADE`.
 
 Same-failure scan:
 
@@ -661,12 +714,20 @@ Follow-up mapping:
   peak I/O rate becomes a hard acceptance metric for full-corpus runs, create a
   follow-up SOW for `/proc/<pid>/io` sampling across direct commands and
   pipelines.
+- Real corpus writer discrepancies involving `__SEQNUM` gaps or multi-boot
+  per-entry boot IDs should be interpreted as metadata-preservation findings, not
+  raw payload loss. If those dominate the full-corpus report, create a follow-up
+  SOW for a secondary comparison mode or writer metadata preservation work.
+- CLI status output for `--out` outside the repository may print an absolute
+  report path. This is not a durable-report leak; change it later only if
+  external output directories become a documented workflow.
 - No SDK reader/writer discrepancies were found in final smoke validation.
 
 ## Outcome
 
-Implemented locally and left in `Status: in-progress` for orchestrator review,
-as required by the assigned prompt.
+Implemented locally, fixed real whole-SOW review findings, reran the whole-SOW
+read-only reviewer pool, and left in `Status: in-progress` with sub-state
+`reviewed; ready for orchestrator merge`.
 
 ## Lessons Extracted
 
