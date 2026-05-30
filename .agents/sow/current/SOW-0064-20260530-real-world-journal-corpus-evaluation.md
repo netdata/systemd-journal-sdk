@@ -2,10 +2,10 @@
 
 ## Status
 
-Status: completed
+Status: in-progress
 
-Sub-state: implementation and review commits are already merged into `master`;
-this SOW is closed.
+Sub-state: reopened after closure review. The harness implementation is merged,
+but the real 100+ GiB corpus evaluation requested by the user has not been run.
 
 ## Requirements
 
@@ -750,6 +750,55 @@ the SOW as `completed`.
   from that run.
 
 ## Regression Log
+
+### 2026-05-30 - Closure Error: Full Corpus Evaluation Not Run
+
+What broke:
+
+- The SOW was closed after harness implementation, smoke validation, and
+  reviewer approval, but before running the real workstation corpus evaluation.
+- The user's requested acceptance was not just the tooling. The request included
+  regenerating the large local journal corpus and reporting hashes, counts,
+  performance, memory, I/O, footprint, and discrepancies for systemd, Rust, and
+  Go where supported.
+
+Evidence:
+
+- Local corpus inventory on 2026-05-30 found 7,227 journal files under
+  `/var/log/journal` and `/run/log/journal`, totaling 150,252,799,312 bytes
+  (about 139.93 GiB).
+- The closed validation recorded only a repository-local smoke run with one
+  synthetic 8 MiB journal file and 0 discrepancies.
+- The previous outcome text incorrectly treated smoke validation as enough to
+  close this SOW.
+
+Why previous validation missed it:
+
+- The SOW text mixed two separate deliverables: building the safe streaming
+  harness and performing the real corpus evaluation.
+- The close decision validated the first deliverable and failed to enforce the
+  second deliverable as an acceptance gate.
+
+Repair plan:
+
+1. Keep the existing harness implementation.
+2. Run a real-corpus dry-run inventory against the journal roots to confirm
+   file count, size distribution, suffixes, and scratch-space requirements.
+3. Run the full guarded corpus evaluation with `--mode run --allow-full-run`
+   against the real corpus, incrementally, with sanitized reports only.
+4. Report real counts, digests, performance, memory, I/O, footprint, and
+   discrepancies.
+5. Create or identify follow-up SOWs only for concrete discrepancies or missing
+   measurement capabilities discovered by the real run.
+
+Validation required before reclosing:
+
+- Real-corpus dry-run report exists and is summarized.
+- Full real-corpus run report exists, or a concrete environmental blocker is
+  recorded with evidence.
+- Reports contain no raw journal field names, values, messages, hostnames, IPs,
+  usernames, or binary payload dumps.
+- `.agents/sow/audit.sh` and `git diff --check` pass.
 
 None yet.
 

@@ -7,6 +7,9 @@ Last updated: 2026-05-30
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
+- SOW-0064 - Real World Journal Corpus Evaluation: reopened. The harness
+  implementation is merged, but the required full local 100+ GiB corpus
+  regeneration/evaluation was not run before closure.
 
 ## Pending
 
@@ -21,11 +24,6 @@ Last updated: 2026-05-30
   Netdata component integrations are complete.
 
 ## Recently Closed Or Completed
-
-- SOW-0064 - Real World Journal Corpus Evaluation: completed. The streaming,
-  sensitive-data-safe corpus evaluation harness, Rust/Go digest and regeneration
-  helpers, smoke validation, whole-SOW review fixes, and audit passed. Future
-  full-corpus discrepancies should become targeted follow-up SOWs.
 - SOW-0055 - Rust Seek Cursor Systemd Parity: completed. Rust, Go, Python, and
   Node.js cursor conformance now covers found cursors, malformed cursor
   rejection, valid-missing cursor seek behavior, missing-cursor post-seek
