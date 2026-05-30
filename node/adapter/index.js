@@ -12,6 +12,7 @@ import { SealOptions } from '../src/lib/seal.js';
 import {
   SdJournalClose,
   SdJournalGetCursor,
+  SdJournalGetRealtimeUsec,
   SdJournalNext,
   SdJournalOpen,
   SdJournalSeekCursor,
@@ -297,6 +298,7 @@ function runCursorTest(tc) {
     const cursor = SdJournalGetCursor(r);
     if (!cursor) return { status: 'FAIL', error: 'null cursor' };
     if (!SdJournalTestCursor(r, cursor)) return { status: 'FAIL', error: 'current cursor did not match' };
+    const cursorRealtime = SdJournalGetRealtimeUsec(r);
     if (SdJournalTestCursor(r, 'invalid-cursor')) {
       return { status: 'FAIL', error: 'invalid cursor matched current position' };
     }
@@ -311,6 +313,12 @@ function runCursorTest(tc) {
     const cursorPrefix = cursor.split(/n=[^;]*$/)[0];
     if (cursorPrefix === cursor) return { status: 'FAIL', error: 'cursor missing seqnum segment' };
     SdJournalSeekCursor(r, `${cursorPrefix}n=999999`);
+    if (SdJournalTestCursor(r, cursor)) {
+      return { status: 'FAIL', error: 'missing seek stayed on original cursor' };
+    }
+    if (SdJournalGetRealtimeUsec(r) < cursorRealtime) {
+      return { status: 'FAIL', error: 'missing seek moved before requested cursor' };
+    }
     return {
       status: 'PASS',
       actual: true,
@@ -319,6 +327,7 @@ function runCursorTest(tc) {
         invalid_test_cursor: false,
         invalid_seek_rejected: true,
         missing_seek: true,
+        missing_seek_position: true,
       },
     };
   } finally { SdJournalClose(r); }

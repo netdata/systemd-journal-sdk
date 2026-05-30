@@ -716,6 +716,10 @@ func runCursorTest(tc *TestCase) Result {
 	if !match {
 		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: "current cursor did not match"}
 	}
+	cursorRealtime, err := journal.SdJournalGetRealtimeUsec(r)
+	if err != nil {
+		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
+	}
 	invalidMatch, err := journal.SdJournalTestCursor(r, "invalid-cursor")
 	if err != nil {
 		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
@@ -736,6 +740,20 @@ func runCursorTest(tc *TestCase) Result {
 	if err := journal.SdJournalSeekCursor(r, cursor[:idx]+"n=999999"); err != nil {
 		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
 	}
+	missingMatch, err := journal.SdJournalTestCursor(r, cursor)
+	if err != nil {
+		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
+	}
+	if missingMatch {
+		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: "missing seek stayed on original cursor"}
+	}
+	missingRealtime, err := journal.SdJournalGetRealtimeUsec(r)
+	if err != nil {
+		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
+	}
+	if missingRealtime < cursorRealtime {
+		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: "missing seek moved before requested cursor"}
+	}
 
 	return Result{
 		TestName:     tc.TestName,
@@ -747,6 +765,7 @@ func runCursorTest(tc *TestCase) Result {
 			"invalid_test_cursor":   false,
 			"invalid_seek_rejected": true,
 			"missing_seek":          true,
+			"missing_seek_position": true,
 		},
 	}
 }

@@ -3287,13 +3287,26 @@ mod tests {
         assert_eq!(SdJournalNext(&mut journal).expect("next to first"), 1);
         let entry = SdJournalGetEntry(&mut journal).expect("first entry");
         assert_eq!(entry.get_str("MESSAGE"), Some("first"));
+        let first_cursor = SdJournalGetCursor(&journal).expect("first cursor");
+        let first_realtime =
+            SdJournalGetRealtimeUsec(&journal).expect("first realtime after cursor seek");
         SdJournalSeekCursor(&mut journal, &cursor).expect("seek cursor back to second");
         let entry = SdJournalGetEntry(&mut journal).expect("entry after cursor seek");
         assert_eq!(entry.get_str("MESSAGE"), Some("second"));
-        let (cursor_prefix, _) = cursor.rsplit_once("n=").expect("cursor has seqnum");
+        let (cursor_prefix, _) = first_cursor.rsplit_once("n=").expect("cursor has seqnum");
         let missing_cursor = format!("{cursor_prefix}n=999999");
         SdJournalSeekCursor(&mut journal, &missing_cursor)
             .expect("valid missing cursor is accepted as a seek location");
+        assert!(
+            !SdJournalTestCursor(&journal, &first_cursor)
+                .expect("missing cursor seek does not stay on original cursor")
+        );
+        assert!(
+            SdJournalGetRealtimeUsec(&journal).expect("realtime after missing cursor seek")
+                >= first_realtime
+        );
+        let entry = SdJournalGetEntry(&mut journal).expect("entry after missing cursor seek");
+        assert_eq!(entry.get_str("MESSAGE"), Some("second"));
 
         let path2 = dir.path().join("journals/user.journal");
         write_facade_single_message_journal(&path2, b"third", 1002);
@@ -3313,6 +3326,55 @@ mod tests {
         }
         // systemd compares same-source seqnums before realtime when interleaving files.
         assert_eq!(messages, vec!["first", "third", "second"]);
+
+        let mut cursor_multi = SdJournalOpenFiles(
+            &[
+                path2.to_str().expect("utf8 second path"),
+                path.to_str().expect("utf8 first path"),
+            ],
+            0,
+        )
+        .expect("open cursor multiple files");
+        assert_eq!(
+            SdJournalNext(&mut cursor_multi).expect("cursor multi first"),
+            1
+        );
+        let multi_first_cursor =
+            SdJournalGetCursor(&cursor_multi).expect("cursor multi first cursor");
+        let multi_first_realtime =
+            SdJournalGetRealtimeUsec(&cursor_multi).expect("cursor multi first realtime");
+        assert_eq!(
+            SdJournalNext(&mut cursor_multi).expect("cursor multi second"),
+            1
+        );
+        let multi_second_cursor =
+            SdJournalGetCursor(&cursor_multi).expect("cursor multi second cursor");
+        let entry = SdJournalGetEntry(&mut cursor_multi).expect("cursor multi second entry");
+        assert_eq!(entry.get_str("MESSAGE"), Some("third"));
+        SdJournalSeekCursor(&mut cursor_multi, &multi_second_cursor)
+            .expect("directory cursor seek to found entry");
+        assert!(
+            SdJournalTestCursor(&cursor_multi, &multi_second_cursor)
+                .expect("directory cursor seek landed on found cursor")
+        );
+        let entry =
+            SdJournalGetEntry(&mut cursor_multi).expect("directory entry after cursor seek");
+        assert_eq!(entry.get_str("MESSAGE"), Some("third"));
+        let (cursor_prefix, _) = multi_first_cursor
+            .rsplit_once("n=")
+            .expect("multi cursor has seqnum");
+        let missing_cursor = format!("{cursor_prefix}n=999999");
+        SdJournalSeekCursor(&mut cursor_multi, &missing_cursor)
+            .expect("directory valid missing cursor is accepted as a seek location");
+        assert!(
+            !SdJournalTestCursor(&cursor_multi, &multi_first_cursor)
+                .expect("directory missing seek does not stay on original cursor")
+        );
+        assert!(
+            SdJournalGetRealtimeUsec(&cursor_multi)
+                .expect("directory realtime after missing cursor seek")
+                >= multi_first_realtime
+        );
 
         SdJournalSeekRealtimeUsec(&mut multi, 1002).expect("multi seek realtime backward");
         assert_eq!(SdJournalPrevious(&mut multi).expect("multi previous"), 1);

@@ -1,10 +1,11 @@
-use anyhow::{anyhow, Result as AnyResult};
+use anyhow::{Result as AnyResult, anyhow};
 use journal::{
-    parse_match_string, verify_file, verify_file_with_key, Config, EntryTimestamps, FileReader,
-    Log, Origin, OutputMode, RetentionPolicy, RotationPolicy, SdJournalAddConjunction,
-    SdJournalAddDisjunction, SdJournalAddMatch, SdJournalEnumerateFields, SdJournalGetCursor,
-    SdJournalGetEntry, SdJournalListBoots, SdJournalNext, SdJournalOpen, SdJournalProcessOutput,
-    SdJournalSeekCursor, SdJournalSeekHead, SdJournalSetOutputMode, SdJournalTestCursor, Source,
+    Config, EntryTimestamps, FileReader, Log, Origin, OutputMode, RetentionPolicy, RotationPolicy,
+    SdJournalAddConjunction, SdJournalAddDisjunction, SdJournalAddMatch, SdJournalEnumerateFields,
+    SdJournalGetCursor, SdJournalGetEntry, SdJournalGetRealtimeUsec, SdJournalListBoots,
+    SdJournalNext, SdJournalOpen, SdJournalProcessOutput, SdJournalSeekCursor, SdJournalSeekHead,
+    SdJournalSetOutputMode, SdJournalTestCursor, Source, parse_match_string, verify_file,
+    verify_file_with_key,
 };
 use journal_core::file::{JournalFile, JournalFileOptions, JournalWriter, MmapMut};
 use journal_core::repository::File as RepoFile;
@@ -730,6 +731,7 @@ fn test_cursor(tc: &TestCase, start: Instant) -> AdapterResult {
         if !SdJournalTestCursor(&journal, &cursor)? {
             return Ok(false);
         }
+        let cursor_realtime = SdJournalGetRealtimeUsec(&journal)?;
         if SdJournalTestCursor(&journal, "invalid-cursor")? {
             return Ok(false);
         }
@@ -742,6 +744,12 @@ fn test_cursor(tc: &TestCase, start: Instant) -> AdapterResult {
         };
         let missing_cursor = format!("{cursor_prefix}n=999999");
         SdJournalSeekCursor(&mut journal, &missing_cursor)?;
+        if SdJournalTestCursor(&journal, &cursor)? {
+            return Ok(false);
+        }
+        if SdJournalGetRealtimeUsec(&journal)? < cursor_realtime {
+            return Ok(false);
+        }
         Ok(true)
     })();
     match result {

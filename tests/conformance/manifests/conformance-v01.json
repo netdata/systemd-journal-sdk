@@ -182,7 +182,7 @@
         "expected": {
           "result_format": "boolean",
           "entries_match": true,
-          "note": "sd_journal_get_cursor returns a cursor string; sd_journal_test_cursor returns true for the current cursor and false for an invalid cursor; sd_journal_seek_cursor rejects invalid syntax and accepts both an existing cursor and a syntactically valid cursor that does not identify an existing entry"
+          "note": "sd_journal_get_cursor returns a cursor string; sd_journal_test_cursor returns true for the current cursor and false for an invalid cursor; sd_journal_seek_cursor rejects invalid syntax and accepts both an existing cursor and a syntactically valid cursor that does not identify an existing entry; a missing-cursor seek must not stay on the original cursor or move before the requested realtime"
         },
         "tags": [
           "cursor",

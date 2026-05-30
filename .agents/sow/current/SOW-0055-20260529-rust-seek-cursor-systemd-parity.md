@@ -4,10 +4,8 @@
 
 Status: in-progress
 
-Sub-state: implementation agent started on 2026-05-30 from
-`.local/agent-prompts/sow-0055-rust-cursor.md`; implement locally in this
-dedicated worktree, leave in-progress when implemented and ready for
-orchestrator review. Implemented locally and ready for orchestrator review.
+Sub-state: round-1 external review findings fixed locally and validation
+passed; whole-SOW reviewer rerun pending. Keep `Status: in-progress`.
 
 ## Requirements
 
@@ -267,20 +265,46 @@ Failure handling:
   `go/API.md`, `python/README.md`, `node/README.md`, and
   `tests/conformance/manifests/conformance-v01.json` with the accepted cursor
   contract.
+- Ran whole-SOW read-only review against implementation commit
+  `ee2a3365ff2e` with the approved reviewer pool:
+  `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/qwen3.6-plus`,
+  `llm-netdata-cloud/glm-5.1`, `llm-netdata-cloud/minimax-m2.7-coder`,
+  and `llm-netdata-cloud/mimo-v2.5-pro`.
+- Round-1 review votes: `qwen3.6-plus` and `minimax-m2.7-coder` voted
+  `PRODUCTION GRADE`; `glm-5.1` and `mimo-v2.5-pro` voted
+  `NOT PRODUCTION GRADE`; `kimi-k2.6` produced contradictory text, with an
+  early explicit `NOT PRODUCTION GRADE` vote and later `PRODUCTION GRADE`
+  text, so it was dispositioned conservatively as not clean.
+- Dispositioned the real round-1 findings by adding missing-cursor post-seek
+  position assertions to Rust, Go, Python, and Node shared cursor adapter
+  checks; adding direct Rust multi-file directory cursor positioning coverage;
+  adding Go empty `s=`/`j=` parser unit coverage; and normalizing Python/Node
+  empty `c=`/`n=` parser rejection before numeric conversion.
+- Revalidated the fixed work locally. Whole-SOW reviewer rerun remains pending.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Rust `SdJournalSeekCursor()` accepts a valid missing cursor:
+- Rust `SdJournalSeekCursor()` accepts a valid missing cursor and leaves the
+  reader at a current entry at or after the requested realtime instead of
+  staying on the original cursor:
   `rust/src/journal/src/lib.rs` test `jf_facade_stateful_reader_operations`
-  builds `missing_cursor` by changing the cursor `n=` segment and expects
-  `SdJournalSeekCursor()` success.
+  builds `missing_cursor` by changing the cursor `n=` segment, expects
+  `SdJournalSeekCursor()` success, asserts `SdJournalTestCursor()` is false for
+  the original cursor, checks realtime did not move backward, and checks the
+  single-file fixture lands on the next entry.
+- Rust directory cursor seeking is positioned after found and valid-missing
+  cursor seeks: `jf_facade_stateful_reader_operations` opens multiple files,
+  seeks back to a captured directory cursor, confirms `SdJournalTestCursor()`
+  against that cursor, then seeks a valid missing cursor and confirms it does
+  not remain on the original cursor or move backward in realtime.
 - Rust invalid cursor syntax still fails:
   `rust/src/journal/src/lib.rs` test `jf_facade_stateful_reader_operations`
   expects `Err(FacadeError::InvalidCursor)` for `invalid-cursor`.
 - Shared cursor conformance now covers Rust, Go, Python, and Node.js through
-  `tests/conformance/manifests/conformance-v01.json` and the four adapters.
+  `tests/conformance/manifests/conformance-v01.json` and the four adapters,
+  including missing-cursor post-seek position checks.
 - Docs/specs state the accepted no-existence-proof contract in
   `.agents/sow/specs/product-scope.md`, `rust/README.md`, `go/API.md`,
   `python/README.md`, and `node/README.md`.
@@ -289,27 +313,27 @@ Acceptance criteria evidence:
 
 Tests or equivalent validation:
 
-- OK: `cargo test -p journal jf_facade_stateful_reader_operations` from
-  `rust/`, with Cargo home and target directory pointed under `.local/`.
+- OK after round-1 fixes: `cargo test -p journal jf_facade_stateful_reader_operations`
+  from `rust/` (`1` targeted test passed).
 - OK: shared `journal-cursor-test` adapter case in Rust, Go, Python, and
   Node.js. Each adapter returned PASS with boolean actual true; Go, Python, and
   Node.js evidence confirmed found cursor seek, invalid seek rejection, invalid
-  cursor mismatch, and missing cursor seek acceptance.
-- OK: `cargo test -p journal -p adapter` from `rust/`, with Cargo home and
-  target directory pointed under `.local/` (`22` journal tests passed; adapter
-  has `0` unit tests).
-- OK: `go test ./...` from `go/`, with Go build/module caches pointed under
-  `.local/`.
-- OK: `python3 python/test_all.py`, with Python import path pointed at the
+  cursor mismatch, missing cursor seek acceptance, and missing cursor position.
+- OK after round-1 fixes: `cargo test -p journal -p adapter` from `rust/`
+  (`22` journal tests passed; adapter has `0` unit tests).
+- OK after round-1 fixes: `go test ./...` from `go/`.
+- OK after round-1 fixes: `python3 python/test_all.py`, with Python import
+  path pointed at the
   local `.local/python-deps` validation dependency directory.
   The first run exposed a missing local validation dependency (`lz4`); it was
   installed under `.local/python-deps` with `.local/pip-cache`, then the full
   Python package tests passed.
-- OK: `npm ci --prefix node --cache "$PWD/.local/npm-cache" && node node/test/all.js`.
-  Generated `node/node_modules` was removed after validation.
-- OK: `python3 tests/conformance/runner/manifest_checker.py validate tests/conformance/manifests/conformance-v01.json`.
-- OK: `git diff --check`.
-- OK: project-local SOW checker.
+- OK after round-1 fixes: `npm ci --prefix node --cache "$PWD/.local/npm-cache"`
+  and `node node/test/all.js`.
+- OK after round-1 fixes:
+  `python3 tests/conformance/runner/manifest_checker.py validate tests/conformance/manifests/conformance-v01.json`.
+- OK after round-1 fixes: `git diff --check`.
+- OK after round-1 fixes: `.agents/sow/audit.sh`.
 
 Real-use evidence:
 
@@ -324,9 +348,33 @@ Real-use evidence:
 
 Reviewer findings:
 
-- Not run by this worker. `.local/agent-prompts/sow-0055-rust-cursor.md`
-  explicitly says not to run external assistants or reviewers; orchestrator
-  review is the next step.
+- Round 1, `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`.
+  Non-blocking notes: add direct Go empty ID parser coverage and consider an
+  explicit beyond-last-cursor test. Disposition: Go empty `s=`/`j=` parser unit
+  coverage was added; beyond-last cursor positioning remains non-blocking
+  because the accepted shared contract is valid-missing acceptance plus
+  at-or-after positioning, now tested.
+- Round 1, `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`.
+  Non-blocking/contradictory notes included a claimed Rust directory found
+  cursor positioning risk. Disposition: source review shows `step_merged()`
+  sets `self.index` and `self.current_key` to the selected candidate before
+  returning; direct Rust multi-file found cursor assertions were added anyway
+  to prevent regression.
+- Round 1, `llm-netdata-cloud/glm-5.1`: `NOT PRODUCTION GRADE`.
+  Blocking finding: missing-cursor seek tests only proved no error, not
+  post-seek position. Disposition: fixed by adding missing-cursor post-seek
+  position assertions in Rust unit coverage and all four adapters.
+- Round 1, `llm-netdata-cloud/mimo-v2.5-pro`: `NOT PRODUCTION GRADE`.
+  Findings: post-seek position after valid missing cursors was untested;
+  Python/Node empty `c=`/`n=` values were rejected only by numeric conversion
+  errors; docs/specs should avoid overclaiming exact systemd lazy-location
+  internals. Disposition: added position assertions, normalized Python/Node
+  empty `c=`/`n=` validation, and kept docs/specs scoped to the accepted SDK
+  facade contract rather than claiming lazy internal implementation parity.
+- Round 1, `llm-netdata-cloud/kimi-k2.6`: output was self-contradictory. It
+  first emitted `NOT PRODUCTION GRADE`, later emitted `PRODUCTION GRADE`, and
+  still listed missing post-seek position validation as a gap. Disposition:
+  treated conservatively as not clean and fixed the shared position coverage.
 
 Same-failure scan:
 
@@ -386,20 +434,24 @@ Lessons:
 
 Follow-up mapping:
 
-- No new implementation follow-up was introduced by this worker. Remaining
-  work is orchestrator review/merge/closure for this SOW.
+- No new implementation follow-up remains from round-1 findings. Remaining
+  work is whole-SOW reviewer rerun and final review disposition.
 
 ## Outcome
 
-Implemented locally; ready for orchestrator review. The SOW intentionally
-remains in `current/` with `Status: in-progress` per the implementation prompt.
+Implemented locally; round-1 reviewer findings fixed and local validation
+passed. The SOW intentionally remains in `current/` with `Status: in-progress`
+while whole-SOW reviewer rerun is pending.
 
 ## Lessons Extracted
 
 - When a global facade contract is documented, the shared adapter should assert
-  that contract in every language, not rely on per-language unit tests.
+  both acceptance/rejection and relevant post-operation state in every
+  language, not rely on per-language unit tests.
 
 ## Followup
 
-- Orchestrator: run the configured read-only reviewer batch, reconcile
-  `SOW-status.md`, and close/move this SOW only after review disposition.
+- Rerun the configured whole-SOW read-only reviewer batch after the round-1
+  fixes commit.
+- After clean reviewer disposition, reconcile `SOW-status.md` and leave final
+  merge/closure to the orchestrator.

@@ -534,7 +534,7 @@ def _parse_cursor(cursor):
         if not sep or not key:
             raise ValueError('invalid cursor format')
         parts[key] = value
-    if not parts.get('s') or not parts.get('j') or 'c' not in parts or 'n' not in parts:
+    if not parts.get('s') or not parts.get('j') or not parts.get('c') or not parts.get('n'):
         raise ValueError('invalid cursor format')
     return {
         'seqnum_id': parts['s'],

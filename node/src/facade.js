@@ -146,7 +146,7 @@ export function parseCursor(cursor) {
     if (eq <= 0) throw new Error('invalid cursor format');
     parts[seg.slice(0, eq)] = seg.slice(eq + 1);
   }
-  if (!parts['s'] || !parts['j'] || parts['c'] === undefined || parts['n'] === undefined) {
+  if (!parts['s'] || !parts['j'] || !parts['c'] || !parts['n']) {
     throw new Error('invalid cursor format');
   }
   return {

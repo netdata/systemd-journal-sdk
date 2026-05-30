@@ -15,7 +15,7 @@ from journal import (
     SdJournalEnumerateFields, SdJournalSeekHead, SdJournalNext,
     SdJournalGetEntry, SdJournalProcessOutput, SdJournalSeekTail,
     SdJournalPrevious, SdJournalGetCursor, SdJournalTestCursor,
-    SdJournalSeekCursor, export_entry, json_entry,
+    SdJournalSeekCursor, SdJournalGetRealtimeUsec, export_entry, json_entry,
 )
 from journal.compress import _HAS_ZSTD
 from journal.hash import parse_match_string
@@ -334,6 +334,7 @@ def run_cursor_test(tc):
             return {'status': 'FAIL', 'error': 'null cursor'}
         if not SdJournalTestCursor(r, cursor):
             return {'status': 'FAIL', 'error': 'current cursor did not match'}
+        cursor_realtime = SdJournalGetRealtimeUsec(r)
         if SdJournalTestCursor(r, 'invalid-cursor'):
             return {'status': 'FAIL', 'error': 'invalid cursor matched current position'}
         try:
@@ -346,6 +347,10 @@ def run_cursor_test(tc):
             return {'status': 'FAIL', 'error': 'cursor missing seqnum segment'}
         missing_cursor = cursor.rsplit('n=', 1)[0] + 'n=999999'
         SdJournalSeekCursor(r, missing_cursor)
+        if SdJournalTestCursor(r, cursor):
+            return {'status': 'FAIL', 'error': 'missing seek stayed on original cursor'}
+        if SdJournalGetRealtimeUsec(r) < cursor_realtime:
+            return {'status': 'FAIL', 'error': 'missing seek moved before requested cursor'}
         return {
             'status': 'PASS',
             'actual': True,
@@ -354,6 +359,7 @@ def run_cursor_test(tc):
                 'invalid_test_cursor': False,
                 'invalid_seek_rejected': True,
                 'missing_seek': True,
+                'missing_seek_position': True,
             },
         }
     finally:
