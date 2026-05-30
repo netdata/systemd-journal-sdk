@@ -2,11 +2,11 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: native Linux/macOS/Windows validation complete for the reviewed
-child portability work; parent remains open until SOW-0071 runtime-purity split
-is implemented and reviewed.
+Sub-state: completed. Native Linux, macOS, Windows, and FreeBSD validation
+passed for the reviewed child portability work; SOW-0071 and SOW-0072 are
+completed; non-Linux generated journal files passed Linux stock verification.
 
 ## Requirements
 
@@ -367,8 +367,9 @@ Facts:
 
 - SOW-0067 through SOW-0070 are already in `current/` with reviewed child
   portability work.
-- SOW-0071 is open and explicitly keeps runtime-purity separation out of this
-  native validation pass.
+- At the time of the native macOS/Windows validation pass, SOW-0071 was open
+  and explicitly kept runtime-purity separation out of that pass. SOW-0071 is
+  completed in the final outcome recorded below.
 - The available native validation hosts for this pass are the approved macOS
   and Windows SSH targets from the assigned prompt.
 
@@ -377,9 +378,9 @@ Scope:
 - Validate the already-merged portability work on Linux, macOS, and Windows for
   Rust, Go, Python, and Node.js.
 - Fix native macOS/Windows portability bugs found by those validations only.
-- Do not implement SOW-0071, do not split core SDK runtime-purity layers, and
-  do not refactor architecture unless native validation proves a direct
-  portability bug.
+- That pass did not implement SOW-0071, split core SDK runtime-purity layers,
+  or refactor architecture unless native validation proved a direct portability
+  bug. SOW-0071 later completed that split before this parent closed.
 
 Remote clone setup:
 
@@ -527,20 +528,42 @@ Failure handling:
   - Rust `serde-api` depended on a Git package with long upstream paths that
     failed Windows Cargo checkout under repo-local caches; replaced it with a
     small in-crate JSON flattener and coverage.
-- Did not implement SOW-0071. Runtime-purity and optional platform-service
-  separation remains tracked there.
+- SOW-0071 completed the runtime-purity and optional platform-service split
+  required before this parent SOW could close.
+- Added native FreeBSD validation using a repository-local QEMU VM under
+  `.local/freebsd-validation/`.
+  - Source image: official FreeBSD `14.3-RELEASE` amd64
+    `BASIC-CLOUDINIT-ufs.qcow2.xz`.
+  - Verified the image with the upstream `CHECKSUM.SHA512` entry before use.
+  - Kept the image, VM disk, SSH key, copied repository, package caches, and
+    generated artifacts under `.local/` in this repository.
+  - Shut down the VM with the recorded QEMU PID after validation.
+- Recorded sanitized native FreeBSD runtime:
+  - FreeBSD `14.3-RELEASE-p14 amd64`.
+  - Rust/Cargo `1.94.0`.
+  - Go `go1.25.10 freebsd/amd64`.
+  - Python package default `3.11.15`; Python portability and zstd coverage used
+    repo-local Python `3.14.4` venv because the SDK's zstd contract requires
+    `compression.zstd`.
+  - Node.js `v24.14.1`, npm `11.11.0`.
+- Found and handled one FreeBSD validation-environment issue:
+  - The default FreeBSD `python3` package is Python `3.11.15`, so zstd
+    whole-file `.journal.zst` support is unavailable there by design.
+  - Installed FreeBSD `python314` and a repo-local Python `3.14.4` venv with
+    `lz4` for the Python SDK validation path. This matches the documented
+    Python 3.14+ SDK requirement.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Native Linux/macOS/Windows evidence is complete for the reviewed child
-  portability work.
-- Files written natively on macOS and Windows by Rust, Go, Python, and Node.js
-  were copied back under Linux `.local/native-smoke/` and passed stock
-  `journalctl --verify --file`.
-- SOW-0063 remains `in-progress` because SOW-0071 is still open and because
-  this pass did not add native FreeBSD runtime execution.
+- Native Linux/macOS/Windows/FreeBSD evidence is complete for the reviewed
+  child portability work.
+- Files written natively on macOS, Windows, and FreeBSD by Rust, Go, Python,
+  and Node.js were copied back under Linux `.local/` validation directories and
+  passed stock `journalctl --verify --file`.
+- SOW-0071 completed the runtime-purity split, and SOW-0072 completed the
+  dependency/package hygiene cleanup raised during SOW-0063 review.
 
 Tests or equivalent validation:
 
@@ -572,17 +595,39 @@ Tests or equivalent validation:
   - Repo-local official Node.js `v26.2.0` ran `node/test/all.js`: PASS.
   - Rust, Go, Python, and Node.js each wrote and read a synthetic journal under
     remote `.local/native-smoke/`: PASS.
+- FreeBSD:
+  - Official FreeBSD `14.3-RELEASE` cloud image checksum verification: PASS.
+  - Rust affected crates:
+    `cargo test --manifest-path rust/Cargo.toml -p journal-common -p journal-registry -p journal-core -p journal-log-writer -p journal -p journalctl`: PASS.
+  - Rust serde API:
+    `cargo test --manifest-path rust/Cargo.toml -p journal-log-writer --features serde-api`: PASS.
+  - Go: `go test ./...` from `go/`: PASS.
+  - Python: `python/test_all.py` under FreeBSD Python `3.11.15`: PASS for the
+    non-zstd/default-runtime surface after installing `py311-lz4` and
+    `py311-zstandard`.
+  - Python: `python/test_all.py` under repo-local Python `3.14.4` venv with
+    `compression.zstd` and `lz4`: PASS for the documented SDK zstd surface.
+  - Node.js: `npm ci` plus `npm test`: PASS.
+  - Repository single-file interoperability matrix without native stock
+    systemd: 80/80 PASS across Go, Rust, Python, and Node.js writers/readers.
+  - Repository directory reader matrix without native stock systemd: 48/48 PASS
+    across Go, Rust, Python, and Node.js readers, including the repository
+    whole-file `.journal.zst` directory extension.
 - Cross-OS artifact validation:
-  - Copied 4 macOS-generated and 4 Windows-generated synthetic `.journal` files
-    back to Linux `.local/native-smoke/`.
-  - `journalctl --verify --file` passed for all 8 copied files.
+  - Copied 4 macOS-generated, 4 Windows-generated, and 4 FreeBSD-generated
+    synthetic `.journal` files back to Linux `.local/` validation directories.
+  - `journalctl --verify --file` passed for all 12 copied files.
+  - Linux stock `journalctl --file --output=json` read 10 entries from each of
+    the 4 FreeBSD-generated writer files.
 
 Real-use evidence:
 
 - Native macOS and Windows smoke tests wrote real journal files with each
   language writer and read them back with the same language reader.
+- Native FreeBSD smoke/matrix tests wrote real journal files with each language
+  writer and read them back with every repository reader.
 - Linux stock `journalctl --verify --file` accepted all copied macOS/Windows
-  writer artifacts.
+  and FreeBSD writer artifacts.
 - Linux stock and repository readers accepted all four language writers in the
   closed-file matrix: 104/104 PASS.
 
@@ -610,8 +655,8 @@ Reviewer findings:
   - Rust `File::from_str()` remaining slash-oriented is accepted as a
     pre-existing string-parser limitation. Native runtime paths fixed in this
     pass use `File::from_path()`/`File::from_raw_path()` and passed native
-    Windows validation. A future API-hardening SOW can decide whether to extend
-    the string parser.
+    Windows validation. No follow-up SOW is created because the accepted native
+    `Path` APIs cover the supported portability contract.
   - Rust `from_path()` constructing a filename-only `/{filename}` for internal
     `Status::parse()`/`Source::parse()` is accepted as low-risk because the
     external native path boundary is handled with `Path` APIs and is covered by
@@ -642,20 +687,21 @@ Sensitive data gate:
 
 Artifact maintenance gate:
 
-- AGENTS.md: no update. The existing SOW and runtime-purity rules already cover
-  this validation workflow.
+- AGENTS.md: no update in this SOW. SOW-0071 already updated the repository-wide
+  runtime-purity and optional platform-service rules that this parent SOW
+  depended on.
 - Runtime project skills: no update. The compatibility skill already requires
   cross-language and stock-tool validation discipline.
 - Specs: `.agents/sow/specs/product-scope.md` updated for Node.js `>=22.15.0`
-  zstd support, Windows parent-directory fsync behavior, and later SOW-0072
-  Node.js XZ package hygiene.
+  zstd support, Windows parent-directory fsync behavior, and completed
+  SOW-0072 Node.js XZ package hygiene.
 - End-user/operator docs: `node/README.md` updated for Node.js `>=22.15.0`,
   bundled WASM-only XZ runtime behavior, and Windows directory fsync scope.
 - End-user/operator skills: no output/reference skill exists for this repo
   surface.
-- SOW lifecycle: moved this SOW from `pending/` to `current/` with
-  `Status: in-progress`; SOW-0071 remains pending/open.
-- SOW-status.md: updated to show SOW-0063 current native validation status.
+- SOW lifecycle: this SOW is marked `completed` and moved to `done/` after all
+  child portability SOWs, SOW-0071, SOW-0072, and FreeBSD validation completed.
+- SOW-status.md: updated to show SOW-0063 completed.
 
 Specs update:
 
@@ -695,16 +741,19 @@ Follow-up mapping:
   implementation.
 - `SOW-0070-20260530-node-cross-platform-portability.md` tracks Node.js
   implementation.
-- `SOW-0071-20260530-runtime-purity-and-optional-platform-services.md` remains
-  the blocker for closing this parent SOW and for stable API release.
-- `SOW-0072-20260530-dependency-and-package-hygiene.md` tracks the dependency
-  and package hygiene cleanup raised during orchestrator review of this SOW.
+- `SOW-0071-20260530-runtime-purity-and-optional-platform-services.md`
+  completed the runtime-purity and optional platform-service split required to
+  close this parent SOW.
+- `SOW-0072-20260530-dependency-and-package-hygiene.md` completed the
+  dependency and package hygiene cleanup raised during orchestrator review of
+  this SOW.
 
 ## Outcome
 
-Native Linux/macOS/Windows validation for the reviewed child portability work
-is complete. SOW-0063 remains in progress because SOW-0071 is still pending and
-because native FreeBSD runtime execution was not part of this pass.
+Native Linux/macOS/Windows/FreeBSD validation for the reviewed child
+portability work is complete. The SDK has runtime evidence for Rust, Go,
+Python, and Node.js on all required operating systems, with Linux stock
+systemd verification of non-Linux generated journal files.
 
 ## Lessons Extracted
 
@@ -714,13 +763,15 @@ because native FreeBSD runtime execution was not part of this pass.
   file-format compatibility plus Linux stock validation of transferred files.
 - Keep generated validation artifacts under `.local/` and sanitize remote paths
   in durable records.
+- FreeBSD validation needs Python 3.14 for the documented Python zstd surface;
+  the default FreeBSD `python3` package is not enough for that specific feature.
 
 ## Followup
 
 - Child implementation SOWs: SOW-0067, SOW-0068, SOW-0069, and SOW-0070.
-- Required blocker SOW: SOW-0071.
-- Cleanup SOW raised by orchestrator review: SOW-0072.
-- Remaining parent-scope validation gap: native FreeBSD runtime execution.
+- Required blocker SOW completed: SOW-0071.
+- Cleanup SOW raised by orchestrator review completed: SOW-0072.
+- No remaining parent-scope validation gap is left open in this SOW.
 
 ## Regression Log
 

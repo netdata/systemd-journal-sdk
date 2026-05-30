@@ -4,10 +4,6 @@ Last updated: 2026-05-30
 
 ## Current
 
-- SOW-0063 - Cross Platform Portability: in-progress. Native macOS/Windows
-  validation passed for the reviewed child portability work; parent remains
-  open for native FreeBSD runtime validation and any remaining shared
-  portability reconciliation.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
@@ -33,6 +29,11 @@ Last updated: 2026-05-30
 
 ## Recently Closed Or Completed
 
+- SOW-0063 - Cross Platform Portability: completed. Native Linux/macOS/Windows
+  and repo-local QEMU FreeBSD validation passed for Rust, Go, Python, and
+  Node.js; FreeBSD no-stock single-file and directory matrices passed; files
+  generated on macOS, Windows, and FreeBSD passed Linux stock
+  `journalctl --verify --file`; SOW-0071 and SOW-0072 blockers are completed.
 - SOW-0071 - Runtime Purity And Optional Platform Services: completed. Core
   reader/writer paths in Rust, Go, Node.js, and Python no longer host-probe,
   execute subprocesses, or acquire writer locks implicitly; identity discovery
