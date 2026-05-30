@@ -143,14 +143,17 @@ export function parseCursor(cursor) {
   const parts = {};
   for (const seg of cursor.split(';')) {
     const eq = seg.indexOf('=');
-    if (eq < 0) continue;
+    if (eq <= 0) throw new Error('invalid cursor format');
     parts[seg.slice(0, eq)] = seg.slice(eq + 1);
   }
+  if (!parts['s'] || !parts['j'] || !parts['c'] || !parts['n']) {
+    throw new Error('invalid cursor format');
+  }
   return {
-    seqnumId: parts['s'] || '',
-    bootId: parts['j'] || '',
-    realtime: parts['c'] ? BigInt('0x' + parts['c']) : 0n,
-    seqnum: parts['n'] ? BigInt(parts['n']) : 0n,
+    seqnumId: parts['s'],
+    bootId: parts['j'],
+    realtime: BigInt('0x' + parts['c']),
+    seqnum: BigInt(parts['n']),
   };
 }
 

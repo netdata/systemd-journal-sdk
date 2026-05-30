@@ -531,13 +531,16 @@ def _parse_cursor(cursor):
     parts = {}
     for segment in cursor.split(';'):
         key, sep, value = segment.partition('=')
-        if sep:
-            parts[key] = value
+        if not sep or not key:
+            raise ValueError('invalid cursor format')
+        parts[key] = value
+    if not parts.get('s') or not parts.get('j') or not parts.get('c') or not parts.get('n'):
+        raise ValueError('invalid cursor format')
     return {
-        'seqnum_id': parts.get('s', ''),
-        'boot_id': parts.get('j', ''),
-        'realtime': int(parts.get('c', '0'), 16),
-        'seqnum': int(parts.get('n', '0'), 10),
+        'seqnum_id': parts['s'],
+        'boot_id': parts['j'],
+        'realtime': int(parts['c'], 16),
+        'seqnum': int(parts['n'], 10),
     }
 
 

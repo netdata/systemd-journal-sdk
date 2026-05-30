@@ -689,32 +689,84 @@ func runCursorTest(tc *TestCase) Result {
 		}
 	}
 
-	r, err := journal.OpenDirectory(path)
+	r, err := journal.SdJournalOpen(path, 0)
 	if err != nil {
 		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
 	}
 	defer r.Close()
 
-	r.SeekHead()
-	if ok, _ := r.Step(); !ok {
+	if err := journal.SdJournalSeekHead(r); err != nil {
+		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
+	}
+	if n, err := journal.SdJournalNext(r); err != nil {
+		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
+	} else if n == 0 {
 		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: "cannot read first entry"}
 	}
 
-	cursor, err := r.GetCursor()
+	cursor, err := journal.SdJournalGetCursor(r)
 	if err != nil {
 		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
 	}
 
-	match, err := r.TestCursor(cursor)
+	match, err := journal.SdJournalTestCursor(r, cursor)
 	if err != nil {
 		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
+	}
+	if !match {
+		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: "current cursor did not match"}
+	}
+	cursorRealtime, err := journal.SdJournalGetRealtimeUsec(r)
+	if err != nil {
+		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
+	}
+	invalidMatch, err := journal.SdJournalTestCursor(r, "invalid-cursor")
+	if err != nil {
+		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
+	}
+	if invalidMatch {
+		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: "invalid cursor matched current position"}
+	}
+	if err := journal.SdJournalSeekCursor(r, "invalid-cursor"); err == nil {
+		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: "invalid seek cursor was accepted"}
+	}
+	if err := journal.SdJournalSeekCursor(r, cursor); err != nil {
+		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
+	}
+	idx := strings.LastIndex(cursor, "n=")
+	if idx < 0 {
+		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: "cursor missing seqnum segment"}
+	}
+	if err := journal.SdJournalSeekCursor(r, cursor[:idx]+"n=999999"); err != nil {
+		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
+	}
+	missingMatch, err := journal.SdJournalTestCursor(r, cursor)
+	if err != nil {
+		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
+	}
+	if missingMatch {
+		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: "missing seek stayed on original cursor"}
+	}
+	missingRealtime, err := journal.SdJournalGetRealtimeUsec(r)
+	if err != nil {
+		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
+	}
+	if missingRealtime < cursorRealtime {
+		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: "missing seek moved before requested cursor"}
 	}
 
 	return Result{
 		TestName:     tc.TestName,
 		ResultFormat: "boolean",
 		Status:       "PASS",
-		Actual:       match,
+		Actual:       true,
+		Evidence: map[string]bool{
+			"found_cursor":          true,
+			"invalid_test_cursor":   false,
+			"invalid_seek_rejected": true,
+			"missing_seek":          true,
+			"missing_seek_position": true,
+		},
 	}
 }
 

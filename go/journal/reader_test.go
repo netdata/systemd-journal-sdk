@@ -1305,9 +1305,16 @@ func TestParseMatchString(t *testing.T) {
 }
 
 func TestParseCursor(t *testing.T) {
-	_, _, _, _, err := ParseCursor("invalid")
-	if err == nil {
-		t.Error("ParseCursor should fail for invalid cursor")
+	invalid := []string{
+		"invalid",
+		"s=;j=def456;c=0000000000000001;n=42",
+		"s=abc123;j=;c=0000000000000001;n=42",
+	}
+	for _, cursor := range invalid {
+		_, _, _, _, err := ParseCursor(cursor)
+		if err == nil {
+			t.Errorf("ParseCursor(%q) should fail", cursor)
+		}
 	}
 
 	seqnumID, bootID, realtime, seqnum, err := ParseCursor("s=abc123;j=def456;c=0000000000000001;n=42")

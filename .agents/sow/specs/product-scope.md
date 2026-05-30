@@ -423,6 +423,10 @@ Accepted reader API layers:
   language-native `(field, raw value)` pairs, stateful unique enumeration as
   `FIELD=value` payloads, get realtime, get monotonic/boot metadata, get
   seqnum, get cursor, test cursor, output formatting, and boot listing.
+- `seek_cursor()` follows libsystemd's no-existence-proof contract: a
+  syntactically valid cursor is accepted as a seek location even when no current
+  entry has that exact cursor. Invalid cursor syntax fails. `test_cursor()`
+  remains the exact-current-position check.
 - Current-entry data enumeration and query-unique stateful enumeration are
   binary-safe and preserve repeated values. `GetData` returns the first value
   for a repeated field; callers that need every repeated value use

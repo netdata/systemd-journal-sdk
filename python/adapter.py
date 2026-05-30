@@ -14,7 +14,8 @@ from journal import (
     SdJournalAddMatch, SdJournalAddDisjunction, SdJournalListBoots,
     SdJournalEnumerateFields, SdJournalSeekHead, SdJournalNext,
     SdJournalGetEntry, SdJournalProcessOutput, SdJournalSeekTail,
-    SdJournalPrevious, export_entry, json_entry,
+    SdJournalPrevious, SdJournalGetCursor, SdJournalTestCursor,
+    SdJournalSeekCursor, SdJournalGetRealtimeUsec, export_entry, json_entry,
 )
 from journal.compress import _HAS_ZSTD
 from journal.hash import parse_match_string
@@ -323,15 +324,44 @@ def run_cursor_test(tc):
     path = resolve_fixture(tc, 'journal_dir')
     if not path:
         return {'status': 'SKIP', 'note': 'no journal_dir fixture'}
+    r = SdJournalOpen(path, 0)
     try:
-        r = DirectoryReader.open(path)
-        r.seek_head()
-        if not r.step():
+        SdJournalSeekHead(r)
+        if SdJournalNext(r) == 0:
             return {'status': 'FAIL', 'error': 'no entries'}
-        cursor = r.get_cursor()
+        cursor = SdJournalGetCursor(r)
         if not cursor:
             return {'status': 'FAIL', 'error': 'null cursor'}
-        return {'status': 'PASS', 'actual': r.test_cursor(cursor)}
+        if not SdJournalTestCursor(r, cursor):
+            return {'status': 'FAIL', 'error': 'current cursor did not match'}
+        cursor_realtime = SdJournalGetRealtimeUsec(r)
+        if SdJournalTestCursor(r, 'invalid-cursor'):
+            return {'status': 'FAIL', 'error': 'invalid cursor matched current position'}
+        try:
+            SdJournalSeekCursor(r, 'invalid-cursor')
+            return {'status': 'FAIL', 'error': 'invalid seek cursor was accepted'}
+        except Exception:
+            pass
+        SdJournalSeekCursor(r, cursor)
+        if 'n=' not in cursor:
+            return {'status': 'FAIL', 'error': 'cursor missing seqnum segment'}
+        missing_cursor = cursor.rsplit('n=', 1)[0] + 'n=999999'
+        SdJournalSeekCursor(r, missing_cursor)
+        if SdJournalTestCursor(r, cursor):
+            return {'status': 'FAIL', 'error': 'missing seek stayed on original cursor'}
+        if SdJournalGetRealtimeUsec(r) < cursor_realtime:
+            return {'status': 'FAIL', 'error': 'missing seek moved before requested cursor'}
+        return {
+            'status': 'PASS',
+            'actual': True,
+            'evidence': {
+                'found_cursor': True,
+                'invalid_test_cursor': False,
+                'invalid_seek_rejected': True,
+                'missing_seek': True,
+                'missing_seek_position': True,
+            },
+        }
     finally:
         r.close()
 

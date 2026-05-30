@@ -70,6 +70,8 @@ Current reader scope:
   seek head/tail/realtime/cursor, next/previous/skip, match groups,
   current-entry data enumeration, field enumeration, unique value enumeration,
   realtime/monotonic/seqnum/cursor metadata, and boot listing;
+- facade cursor seeking follows libsystemd semantics: valid missing cursors are
+  accepted as seek locations, while `test_cursor` checks exact current position;
 - current-entry facade data enumeration returns borrowed `FIELD=value` bytes
   for the current DATA object, matching libsystemd-style validity until the
   next data/read-pointer operation; uncompressed DATA is returned directly from

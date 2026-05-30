@@ -2505,7 +2505,7 @@ func ParseCursor(cursor string) (seqnumID string, bootID string, realtime uint64
 	j, okJ := values["j"]
 	c, okC := values["c"]
 	nstr, okN := values["n"]
-	if !okS || !okJ || !okC || !okN {
+	if !okS || !okJ || !okC || !okN || s == "" || j == "" {
 		return "", "", 0, 0, errors.New("invalid cursor format")
 	}
 	seqnumID = s
