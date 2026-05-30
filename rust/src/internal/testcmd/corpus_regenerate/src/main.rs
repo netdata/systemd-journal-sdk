@@ -128,13 +128,11 @@ fn finalize(
         "online" => {
             journal_file.journal_header_mut().state = JournalState::Online as u8;
             journal_file.sync()?;
-            journal_file.release_writer_lock()?;
             Ok(output.to_path_buf())
         }
         "offline" => {
             journal_file.journal_header_mut().state = JournalState::Offline as u8;
             journal_file.sync()?;
-            journal_file.release_writer_lock()?;
             Ok(output.to_path_buf())
         }
         "archived" => {
@@ -147,7 +145,6 @@ fn finalize(
             fs::rename(output, &archive_path)?;
             journal_file.journal_header_mut().state = JournalState::Archived as u8;
             journal_file.sync()?;
-            journal_file.release_writer_lock()?;
             Ok(archive_path)
         }
         other => Err(anyhow!("invalid --final-state: {other}")),

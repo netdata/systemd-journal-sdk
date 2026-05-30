@@ -22,6 +22,34 @@ type writerLock struct {
 	owner lockOwner
 }
 
+// WriterLock is an optional cooperating-writer lock helper.
+//
+// The journal file format does not define a lock protocol. Callers that want
+// SDK-to-SDK writer exclusion can acquire this helper before opening a Writer
+// and release it after closing that Writer.
+type WriterLock struct {
+	lock *writerLock
+}
+
+// AcquireWriterLock acquires the optional cooperating-writer lock for path.
+func AcquireWriterLock(journalPath string) (*WriterLock, error) {
+	lock, err := acquireWriterLock(journalPath)
+	if err != nil {
+		return nil, err
+	}
+	return &WriterLock{lock: lock}, nil
+}
+
+// Release releases the optional cooperating-writer lock.
+func (l *WriterLock) Release() error {
+	if l == nil || l.lock == nil {
+		return nil
+	}
+	err := l.lock.release()
+	l.lock = nil
+	return err
+}
+
 type lockOwner struct {
 	PID       int
 	BootID    string

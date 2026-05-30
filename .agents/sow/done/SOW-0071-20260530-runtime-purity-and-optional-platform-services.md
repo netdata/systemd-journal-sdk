@@ -2,10 +2,10 @@
 
 ## Status
 
-Status: open
+Status: completed
 
-Sub-state: pending architectural correction after the reviewed parallel
-worktree branches are merged.
+Sub-state: implementation, local/macOS/Windows validation, three whole-SOW
+review rounds, final cleanup, and final local validation are complete.
 
 ## Requirements
 
@@ -354,12 +354,19 @@ Open decisions:
 
 ## Plan
 
-1. Keep this SOW pending until the reviewed SOW-0055, SOW-0064, SOW-0067,
-   SOW-0068, SOW-0069, SOW-0070, and SOW-0026 branches are merged.
-2. Activate SOW-0071 immediately after merge reconciliation and merged-main
-   validation.
-3. Make instruction/spec updates first, then code refactors, then Linux,
-   macOS, and Windows validation.
+1. Update `AGENTS.md`, runtime project skills, product specs, and language docs
+   with the four-layer runtime-purity architecture.
+2. Remove implicit host identity probing from high-level writer auto modes and
+   make auto modes use explicit caller IDs or SDK-local synthetic IDs only.
+3. Remove lock-enable options from core writer constructors and high-level log
+   writer configs. Keep lock behavior as explicit helper acquisition around
+   writer use.
+4. Update livewriter and lock matrix harnesses to acquire optional locks
+   explicitly.
+5. Add a static runtime-purity scan that fails on forbidden core-runtime host
+   probing, subprocess APIs, and lock-enable options.
+6. Run Linux, macOS, Windows, interoperability, directory, lock, and stock
+   verification validation before reviewer handoff.
 
 ## Delegation Plan
 
@@ -408,55 +415,262 @@ Failure handling:
   compatibility, identity discovery, and writer-lock convenience.
 - Recorded Netdata vendored Rust evidence showing explicit low-level writer
   boot ID inputs and separate high-level host identity probing.
+- Activated after the reviewed portability child SOWs SOW-0067 through
+  SOW-0070 were reconciled and moved to `done/`.
+- Updated `AGENTS.md`, `.agents/skills/project-agent-orchestration/SKILL.md`,
+  `.agents/skills/project-journal-compatibility/SKILL.md`, and
+  `.agents/sow/specs/product-scope.md` so future agents must preserve the
+  core/systemd-compatibility/identity-helper/lock-helper split.
+- Updated Rust, Go, Node.js, and Python docs to describe caller-provided or
+  SDK-local synthetic identities and explicit optional lock helpers.
+- Removed integrated writer-lock options from core writer constructors:
+  Rust `JournalFileOptions::with_writer_lock` and `Config::with_writer_lock`,
+  Go `Options.EnableLock`, Node `enableLock` / `enable_lock`, and Python
+  `enable_lock` / `enableLock`.
+- Kept optional lock helpers explicit and independent:
+  Rust `journal_core::file::lock::WriterLock`, Go
+  `journal.AcquireWriterLock(path)`, Node.js `WriterLock.acquire(path)`, and
+  Python `journal.lock.WriterLock.acquire(path)`.
+- Updated Rust, Go, Node.js, and Python livewriter harnesses plus lock tests to
+  acquire optional locks explicitly around writer use.
+- Removed Go BSD/macOS optional lock helper use of external `ps`; it now uses
+  native boot-time evidence plus conservative process-liveness checks.
+- Added `tests/runtime_purity/test_core_runtime_purity.py` static scan for
+  core-runtime forbidden host probing, subprocess APIs, and lock-enable option
+  names.
+- Ran whole-SOW reviewer round 1 with Kimi, Qwen, GLM, Minimax, and Mimo; all
+  five voted `PRODUCTION GRADE`.
+- Resolved reviewer findings by:
+  - strengthening the runtime-purity static guard with import-boundary checks
+    and additional host-helper names;
+  - splitting Python core file-I/O helpers into `python/journal/_platform_io.py`
+    so core writers no longer import from the optional host-observation helper
+    module;
+  - removing the dead Go `readHostBootID()` implementation and the unused
+    `readUUIDFile()` core helper;
+  - replacing Rust optional identity-helper subprocess calls with native
+    macOS `gethostuuid(3)` and macOS/FreeBSD `sysctlbyname("kern.boottime")`;
+  - adding native macOS/FreeBSD boot-time evidence to the Rust optional lock
+    helper so stale-lock checks are not PID-only on those targets.
+- Ran same-scope whole-SOW reviewer round 2.
+  - `llm-netdata-cloud/qwen3.6-plus`, `llm-netdata-cloud/minimax-m2.7-coder`,
+    and `llm-netdata-cloud/mimo-v2.5-pro` voted `PRODUCTION GRADE` with only
+    non-blocking observations.
+  - `llm-netdata-cloud/kimi-k2.6` voted `PRODUCTION GRADE` but identified the
+    legacy Rust `jf` crate as a same-pattern miss because it still exposed
+    host identity helper code.
+  - `llm-netdata-cloud/glm-5.1` voted `NOT PRODUCTION GRADE` because the
+    runtime-purity static scan did not cover public facade files and because
+    the legacy Rust `jf` crate still had subprocess identity helpers.
+- Fixed round 2 findings by:
+  - removing legacy `jf` host identity helper functions and the public
+    `load_boot_id` re-export from `rust/src/crates/jf/journal_file`;
+  - changing the legacy `jf` writer test to use synthetic boot ID bytes;
+  - removing now-unused legacy `jf` `hex` dependencies;
+  - expanding `tests/runtime_purity/test_core_runtime_purity.py` to scan public
+    Rust/Go/Node.js/Python facade files and legacy `jf` file/writer runtime
+    files;
+  - expanding import-boundary checks to cover all scanned reader, writer,
+    facade, and legacy `jf` runtime files.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Pending implementation after reviewed branch merge.
+- Core file-format writers no longer acquire locks implicitly:
+  - Rust core writer has no `with_writer_lock` option and optional lock helper
+    is exposed separately through `journal_core::file::lock::WriterLock`.
+  - Go core writer `Options` no longer contains `EnableLock`; optional helper
+    is `journal.AcquireWriterLock(path)`.
+  - Node.js `Writer.create/open` and `Log` no longer accept or forward
+    `enableLock` / `enable_lock`; optional helper is `WriterLock.acquire(path)`.
+  - Python `Writer.create/open` and `Log` no longer accept or forward
+    `enable_lock` / `enableLock`; optional helper is
+    `journal.lock.WriterLock.acquire(path)`.
+- High-level auto identity paths use explicit caller IDs or SDK-local synthetic
+  UUIDs only; no core/high-level writer path reads `/etc/machine-id`, host boot
+  ID, `/proc`, platform registries, or external commands to discover identity.
+- `tests/runtime_purity/test_core_runtime_purity.py` scans the core runtime
+  files for `/proc`, `/host/proc`, `/etc/machine-id`, `system_profiler`,
+  `sysctl`, subprocess/spawn/exec APIs, host identity helper names, and
+  lock-enable option names.
 
 Tests or equivalent validation:
 
-- SOW creation validation pending below.
+- PASS: `python -m unittest tests.runtime_purity.test_core_runtime_purity`.
+- PASS: `cargo test -p journal-common -p journal-core -p journal-log-writer --tests`.
+- PASS after round 2 fixes: `cargo test -p journal_file --tests`.
+- PASS after round 2 fixes: `cargo test -p journal --tests`.
+- PASS after final cleanup: `go test ./...` in `go/`.
+- PASS: `npm test` in `node/` with repo-local npm cache configured.
+- PASS: Python package tests with repo-local virtual environment.
+- PASS: `python -m compileall python`.
+- PASS: `python3 tests/interoperability/run_matrix.py --writers rust go node python --readers rust go node python stock --entries 10`; result: 104/104.
+- PASS: `python3 tests/interoperability/run_directory_matrix.py --readers rust go node python stock`; result status `PASS`.
+- PASS: `python3 tests/interoperability/run_lock_matrix.py`; result: 8/8.
 
 Real-use evidence:
 
-- Pending implementation and macOS/Windows validation.
+- macOS validation on `PlakaM4mini`, using
+  `~/src/systemd-journal-sdk-sow71-validation`:
+  - PASS runtime purity scan.
+  - PASS Rust `journal-common` / `journal-core` / `journal-log-writer` tests,
+    including native `gethostuuid(3)` and `sysctlbyname("kern.boottime")`
+    compilation paths.
+  - PASS Go `go test ./...`.
+  - PASS Node package tests.
+  - PASS Python 3.14 package tests with repo-local `lz4==4.4.5`.
+- Windows validation on `win11` under `MSYSTEM=MSYS`, using
+  `~/src/systemd-journal-sdk-sow71-validation`:
+  - PASS runtime purity scan.
+  - PASS Go `go test ./...`.
+  - PASS Node package tests with repo-local Node v26.2.0.
+  - PASS Python package tests in a repo-local venv with `lz4==4.4.5`.
+  - Rust was not rerun in the post-review cleanup pass because `cargo` was not
+    available in the current Windows SSH/MSYS path. The post-review Rust
+    changes are `cfg(target_os = "macos")` / `cfg(target_os = "freebsd")`
+    helper code plus Linux-validated shared code; pre-cleanup Windows Rust
+    validation for the affected portability slice remains recorded in SOW-0063.
+- Non-Linux generated-file stock verification:
+  - Generated 3-entry journal files on macOS with Rust, Go, Node.js, and
+    Python livewriters.
+  - Generated 3-entry journal files on Windows with Rust, Go, Node.js, and
+    Python livewriters.
+  - Copied all 8 generated files back to Linux and verified each with stock
+    `journalctl --verify --file`.
 
 Reviewer findings:
 
-- Pending implementation.
+- Round 1:
+  - `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`; findings covered
+    runtime-purity scan/import gaps, dead Go identity helper scaffolding, Rust
+    optional identity-helper subprocess use, Node helper module proximity,
+    Python `_platform` import risk, and legacy `jf` host-probing context.
+  - `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`; findings covered
+    dead Go/Python host-helper code, Rust non-Linux lock boot evidence, and
+    static scan scope.
+  - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`; findings covered dead Go
+    helper code and scan coverage limitations.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`; findings
+    covered Rust non-Linux optional lock boot evidence, runtime-scan platform
+    notes, and optional-helper proximity risks.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`; findings covered
+    helper-module scan gaps, indirect host-probing risk, and Rust test-section
+    scan fragility.
+- Round 1 dispositions:
+  - Strengthened `tests/runtime_purity/test_core_runtime_purity.py` with
+    additional forbidden helper names and explicit import-boundary checks.
+  - Split Python core I/O helpers into `_platform_io.py` and retargeted core
+    writers/tests to that module.
+  - Removed dead Go `readHostBootID()` bodies and unused `readUUIDFile()` from
+    core `log.go`.
+  - Replaced Rust optional identity-helper subprocesses with native
+    `gethostuuid(3)` and `sysctlbyname`.
+  - Added macOS/FreeBSD boot-time evidence to Rust optional lock helper.
+  - Left Node `platform.js` grouping as non-blocking because it is only used by
+    optional lock/test code and the strengthened import-boundary test prevents
+    core writers from importing it.
+- Round 2:
+  - `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`; observations only.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`; observations
+    covered legacy `jf` subprocess helper scope, `journal-common` helper
+    re-exports, and platform lock-helper limitations.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`; observations
+    covered hardcoded static-scan scope and non-blocking platform lock-helper
+    limitations.
+  - `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`; identified the legacy
+    Rust `jf` crate host identity helpers as a same-pattern miss and requested
+    a fix or explicit scope carve-out.
+  - `llm-netdata-cloud/glm-5.1`: `NOT PRODUCTION GRADE`; required runtime
+    purity scan coverage for public facade files and explicit handling of the
+    legacy Rust `jf` crate identity helpers.
+- Round 2 dispositions:
+  - Public facade files are now included in the static runtime-purity scan:
+    `rust/src/journal/src/lib.rs`, `rust/src/journal/src/facade.rs`,
+    `go/journal/facade.go`, `node/src/facade.js`, and
+    `python/journal/facade.py`.
+  - Legacy Rust `jf` runtime files are now included in the static scan:
+    `rust/src/crates/jf/journal_file/src/file.rs` and
+    `rust/src/crates/jf/journal_file/src/writer.rs`.
+  - Legacy Rust `jf` host identity helper functions and public re-export were
+    removed instead of carving out an exception.
+  - Legacy Rust `jf` tests now use synthetic identity bytes.
+  - `python -m unittest tests.runtime_purity.test_core_runtime_purity`,
+    `cargo test -p journal_file --tests`, and `cargo test -p journal --tests`
+    passed after the fixes.
+- Round 3:
+  - `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`; observations covered
+    Rust test-section scan fragility, `journal-common` optional identity helper
+    re-exports, and the already-recorded Windows Rust validation gap.
+  - `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`; no blocking
+    findings.
+  - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`; observations covered
+    optional lock-helper access consistency and a dead Go helper.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`; observations
+    covered manual static-scan maintenance, dead Go helper/stub files, and
+    lock-helper API consistency.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`; observations
+    covered adding Python `_platform_io.py` to scan coverage and
+    `journal-common` optional identity helper re-exports.
+- Round 3 dispositions:
+  - Removed the unused Go `unlockAndClose()` helper and reran `go test ./...`.
+  - Added `python/journal/_platform_io.py` to runtime-purity scan coverage and
+    reran the scan plus `python -m compileall python`.
+  - Kept Go `boot_id_*` stub files as explicit architecture markers. They have
+    no runtime behavior, and deleting files requires explicit user approval.
+  - Kept `journal-common` identity helper re-exports as the Rust optional
+    identity-helper API surface. Core runtime files are forbidden from using
+    those names by the static scan.
+  - Kept the Rust test-section scanner as-is because it strips the large
+    terminal `#[cfg(test)] mod tests` blocks that contain stock-tool
+    subprocess checks. Inline `#[cfg(test)]` helpers before that block remain
+    scanned, which is conservative and can only create a false positive.
+  - Treated cross-language lock-helper access differences as acceptable API
+    idioms because every language keeps acquisition explicit and outside core
+    writer constructors.
+  - Windows Rust post-cleanup validation gap remains mapped to SOW-0063.
 
 Same-failure scan:
 
-- Pending implementation. Initial reviewed-branch scans identified host probing
-  and external-command candidates listed under Analysis.
+- Static scan passes for core reader, writer, facade, Python core I/O helper,
+  and legacy Rust `jf` runtime files.
+- Text search found no remaining host-observation code in legacy Rust `jf`
+  runtime files.
+- Remaining host-observation code is limited to optional helper, benchmark,
+  test, and documentation contexts. The scanned runtime files do not contain
+  the forbidden patterns.
 
 Sensitive data gate:
 
-- SOW creation used source references and sanitized decisions only. No real
-  boot IDs, machine IDs, process data, log payloads, credentials, SNMP
-  communities, customer identifiers, personal data, private endpoints, or
-  proprietary incident details were written.
+- Validation used synthetic generated journals and did not inspect live host
+  journals. Durable artifacts record only source paths, commands, pass/fail
+  status, sanitized host labels, and synthetic fixture outcomes. No real boot
+  IDs, machine IDs, process data, log payloads, credentials, SNMP communities,
+  customer identifiers, personal data, private endpoints, or proprietary
+  incident details were written.
 
 Artifact maintenance gate:
 
-- AGENTS.md: pending SOW implementation; this SOW records the required update.
-- Runtime project skills: pending SOW implementation; this SOW records required
-  updates.
-- Specs: pending SOW implementation; this SOW records required updates.
-- End-user/operator docs: pending SOW implementation; language docs must be
-  updated during SOW-0071.
-- End-user/operator skills: no output/reference skills currently exist; verify
-  again during closure.
-- SOW lifecycle: created as `Status: open` under `.agents/sow/pending/`.
-- SOW-status.md: updated during SOW creation.
+- AGENTS.md: updated with the runtime-purity architecture and explicit
+  prohibition on lock-enable options in core writer constructors.
+- Runtime project skills: updated orchestration and journal compatibility
+  skills with runtime-purity and reviewer prompt requirements.
+- Specs: updated `.agents/sow/specs/product-scope.md` with core/systemd
+  compatibility/identity-helper/lock-helper split and per-language behavior.
+- End-user/operator docs: updated Rust, Go, Node.js, and Python README/API docs.
+- End-user/operator skills: no output/reference skills currently exist.
+- SOW lifecycle: moved from `pending/` to `current/` during implementation and
+  from `current/` to `done/` at closure.
+- SOW-status.md: root and `.agents/sow/` status indexes updated.
 
 Lessons extracted:
 
 - Cross-platform portability can easily drift into host-observation behavior.
   The project needs explicit architecture rules and static checks, not just
   reviewer judgment.
+- "Disabled by default" is not strong enough for the core lock contract. The
+  core writer APIs must avoid lock-enable options entirely; optional locks are
+  separate acquire/release helpers around writer use.
 
 Follow-up mapping:
 
@@ -467,15 +681,22 @@ Follow-up mapping:
 
 ## Outcome
 
-Pending.
+Implemented and locally/macOS/Windows validated. Round 1 and round 2 findings
+were fixed. Round 3 returned five `PRODUCTION GRADE` votes; non-blocking
+observations were either fixed, intentionally retained with rationale, or
+mapped to existing SOW-0063 validation. Final local validation passed.
 
 ## Lessons Extracted
 
-Pending implementation.
+- Runtime-purity requirements must be encoded in tests and instructions, not
+  only remembered from discussion.
+- Optional platform services need API separation, not just boolean toggles on
+  core constructors.
 
 ## Followup
 
-None yet. This SOW is the tracked follow-up for the runtime-purity debt.
+None. Non-blocking reviewer observations were fixed, rejected with rationale,
+or mapped to existing SOW-0063/SOW-0066 work where applicable.
 
 ## Regression Log
 

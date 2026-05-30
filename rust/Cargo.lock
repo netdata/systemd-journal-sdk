@@ -1315,7 +1315,6 @@ version = "0.1.0"
 dependencies = [
  "error",
  "hashers",
- "hex",
  "lz4_flex",
  "lzma-rust2",
  "memmap2",

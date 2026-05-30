@@ -61,9 +61,9 @@ no system journal library linkage.
   default `FIELD_NAME_POLICY_JOURNALD`, app-facing
   `FIELD_NAME_POLICY_JOURNAL_APP`, and structure-level
   `FIELD_NAME_POLICY_RAW`
-- Pure cross-SDK cooperative lockfile with stale-owner detection, plus a
-  secondary platform file lock, to prevent multiple SDK writers from opening
-  the same file
+- Optional pure cross-SDK cooperative lockfile with stale-owner detection, plus
+  a secondary platform file lock on the lock file, when callers explicitly
+  acquire `journal.lock.WriterLock.acquire(path)`
 - Native systemd writers do not participate in the SDK lock protocol and remain an operational exclusion
 
 ### journalctl
@@ -95,8 +95,9 @@ use that module. LZ4 DATA object compression/decompression requires
 ## Platform Behavior
 
 The package import path is safe on Linux, FreeBSD, macOS, and Windows. POSIX
-targets load `fcntl` only when acquiring a file lock. Windows uses Python's
-standard-library `msvcrt` byte-range lock API instead.
+targets load `fcntl` only when the caller enables the optional writer lock.
+Windows uses Python's standard-library `msvcrt` byte-range lock API for that
+optional helper.
 
 The writer uses `os.pread` / `os.pwrite` where Python provides them and falls
 back to seek-preserving `os.read` / `os.write` positional I/O otherwise. If a
@@ -108,10 +109,10 @@ targets also fsync parent directories through directory file descriptors where
 available. Windows skips parent-directory fsync because Python exposes file
 fsync there, not a portable directory-handle fsync.
 
-Lock stale-owner detection uses Linux procfs boot/process start evidence when
-available. On other targets it uses conservative process-liveness checks, so a
-live PID is not treated as stale merely because procfs start-time evidence is
-unavailable.
+Optional lock stale-owner detection uses Linux procfs boot/process start
+evidence when available. On other targets it uses conservative
+process-liveness checks, so a live PID is not treated as stale merely because
+procfs start-time evidence is unavailable.
 
 ## Basic Reader Usage
 
@@ -249,7 +250,7 @@ construction, while lazy archived-only construction defers enforcement until
 the first append opens the active file, before the first entry is written.
 Use `'open_mode': 'eager'` to create/open the active file during construction,
 and `'identity_mode': 'strict'` with `'machine_id'` and `'boot_id'` when callers
-must reject missing identity instead of using host/random fallback.
+must reject missing identity instead of generating SDK-local IDs.
 `configured_directory()`, `journal_directory()`, `active_file_path()`,
 `machine_id()`, `boot_id()`, and `source_name()` expose the configured root,
 effective `journalctl --directory` path, active path, and identity.
@@ -268,8 +269,9 @@ Timestamp option key presence distinguishes explicit zero from an omitted
 default. On reopen, `Log` seeds the monotonic clamp floor from a persisted chain
 tail only when the tail entry boot ID matches the current writer boot ID.
 `Log` is a single-writer object; callers must serialize method calls on one
-instance. The SDK writer lock prevents another cooperating SDK writer from
-owning the same file, but it is not a per-append Python mutex.
+instance. The journal file contract is one writer per file. Acquire
+`journal.lock.WriterLock.acquire(path)` when the caller wants the optional
+cooperating-writer lock helper to reject another SDK writer for the same file.
 `field_name_policy` / `fieldNamePolicy` selects the writer field-name layer.
 The default `FIELD_NAME_POLICY_JOURNALD` preserves trusted systemd fields such
 as `_HOSTNAME` and `_TRANSPORT`. `FIELD_NAME_POLICY_JOURNAL_APP` drops caller

@@ -2,8 +2,5 @@
 
 package journal
 
-import "errors"
-
-func readHostBootID() (UUID, error) {
-	return UUID{}, errors.New("host boot id is not available on this platform")
-}
+// Host identity discovery is intentionally kept out of core writer code.
+// Optional identity helpers should live in a separate public API, not here.

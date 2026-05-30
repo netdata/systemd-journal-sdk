@@ -127,16 +127,16 @@ before creating `<source>.journal`, preserving sequence continuity and avoiding
 parallel active files.
 
 `Log` is a single-writer object. Callers must serialize method calls on one
-instance; the SDK writer lock prevents a second cooperating SDK writer from
-owning the same file, but it is not a per-append goroutine mutex.
+instance. The journal file format requires one active writer per file, but the
+SDK core writer does not enforce that contract by default.
 
-The lock is platform-specific behind the same public contract: Linux keeps
-exact `/proc` stale-owner checks plus `flock`; FreeBSD and macOS use boot-time
-and `ps` process-start checks plus `flock`; Windows uses process creation time
-checks plus a non-blocking byte-range lock outside journal data. FreeBSD and
-macOS require `ps` in `PATH`, and the SDK forces `LC_ALL=C` for locale-stable
-process-start evidence. Unknown non-Unix/non-Windows targets fail writer open
-instead of silently writing without a platform file lock.
+Acquire `journal.AcquireWriterLock(path)` when the caller explicitly wants the
+optional cooperating-writer lock helper. That helper is independent from
+systemd compatibility and from core writer constructors. Linux keeps exact
+`/proc` stale-owner checks; FreeBSD and macOS use boot-time plus conservative
+process-liveness checks; Windows uses process creation-time checks. Unknown
+non-Unix/non-Windows targets fail optional lock acquisition instead of silently
+pretending to lock.
 
 ## Open And Identity Modes
 
@@ -144,18 +144,18 @@ instead of silently writing without a platform file lock.
 chain state, but creates a new active file on first append.
 
 `LogOpenEager` creates or opens the active journal file during `NewLog`, proving
-file creation, writer lock acquisition, and writer options before callers accept
-work.
+file creation/open and configured writer options before callers accept work.
 
-`LogIdentityAuto` is the default. It loads host machine/boot IDs when available
-and generates missing IDs.
+`LogIdentityAuto` is the default. It uses explicit IDs when provided and
+generates SDK-local IDs for missing values. It does not read host identity
+files or platform identity services.
 
 `LogIdentityStrict` requires `Options.MachineID` and `Options.BootID` to be
 provided explicitly.
 
-Host boot ID auto-loading is Linux-only. FreeBSD, macOS, and Windows callers
-that need deterministic boot identity should provide `Options.BootID`, or use
-`LogIdentityStrict` to make missing IDs an error.
+Callers that need a host's systemd/journald identity must obtain it explicitly,
+for example through an opt-in identity helper, and pass `Options.MachineID` and
+`Options.BootID`. Use `LogIdentityStrict` to make missing IDs an error.
 
 ## Live Publication Cadence
 

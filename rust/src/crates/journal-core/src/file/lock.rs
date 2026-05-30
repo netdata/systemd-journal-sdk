@@ -13,13 +13,18 @@ struct LockOwner {
     start_time: String,
 }
 
+/// Optional cooperating-writer lock helper.
+///
+/// The journal file format does not define a lock protocol. Callers that want
+/// SDK-to-SDK writer exclusion can acquire this helper before opening a writer
+/// and release it after closing that writer.
 #[derive(Debug)]
-pub(crate) struct WriterLock {
+pub struct WriterLock {
     path: Option<PathBuf>,
 }
 
 impl WriterLock {
-    pub(crate) fn acquire(journal_path: &str) -> io::Result<Self> {
+    pub fn acquire(journal_path: &str) -> io::Result<Self> {
         let lock_path = PathBuf::from(format!("{journal_path}.lock"));
         let owner = current_owner()?;
 
@@ -58,7 +63,7 @@ impl WriterLock {
         }
     }
 
-    pub(crate) fn release(&mut self) -> io::Result<()> {
+    pub fn release(&mut self) -> io::Result<()> {
         let Some(path) = self.path.take() else {
             return Ok(());
         };
@@ -137,11 +142,29 @@ fn platform_boot_id() -> String {
         .unwrap_or_default()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
 fn platform_boot_id() -> String {
-    journal_common::load_boot_id()
-        .map(|boot_id| boot_id.as_simple().to_string())
-        .unwrap_or_default()
+    let name = b"kern.boottime\0";
+    let mut boottime: libc::timeval = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::timeval>();
+    let rc = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr() as *const libc::c_char,
+            &mut boottime as *mut _ as *mut libc::c_void,
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 || len < std::mem::size_of::<libc::timeval>() {
+        return String::new();
+    }
+    format!("{}:{}", boottime.tv_sec, boottime.tv_usec)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+fn platform_boot_id() -> String {
+    String::new()
 }
 
 fn process_start_time(pid: u32) -> io::Result<String> {

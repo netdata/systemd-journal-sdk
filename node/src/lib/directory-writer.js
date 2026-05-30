@@ -1,11 +1,10 @@
 // Directory writer (Log) for managing a journal directory with rotation and retention.
 
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readSync, readdirSync, readFileSync, unlinkSync, statSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readSync, readdirSync, unlinkSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { isZeroUUID, randomUUID, stringToUUID, uuidToString } from './binary.js';
 import { Writer, normalizeFieldNamePolicy, prepareFieldsForPolicy, prepareRawPayloadsForPolicy, writerPolicyForLogPolicy } from './writer.js';
 import { HEADER_SIZE, STATE_ONLINE, parseFileHeader, parseObjectHeader, normalizeJournalMaxFileSize } from './header.js';
-import { readHostBootId } from './platform.js';
 
 const DEFAULT_MAX_ENTRIES = 0;
 const DEFAULT_MAX_BYTES = 0;
@@ -101,8 +100,8 @@ export class Log {
       if (bootIdOption === undefined || bootIdOption === null) throw new Error('strict identity requires boot id');
     }
     this.seqnumId = uuidOption(seqnumIdOption, 'seqnum id') || randomUUID();
-    this.bootId = uuidOption(bootIdOption, 'boot id') || readBootId() || randomUUID();
-    this.machineId = uuidOption(machineIdOption, 'machine id') || readMachineId() || randomUUID();
+    this.bootId = uuidOption(bootIdOption, 'boot id') || randomUUID();
+    this.machineId = uuidOption(machineIdOption, 'machine id') || randomUUID();
     this.directory = join(this.rootDirectory, uuidToString(this.machineId));
 
     this._ensureDirectory();
@@ -629,18 +628,6 @@ function validateJournalSource(source) {
       (c >= 0x30 && c <= 0x39) || c === 0x5f || c === 0x2d || c === 0x2e;
     if (!ok) throw new Error('invalid journal source');
   }
-}
-
-function readMachineId() {
-  try {
-    const text = readFileSync('/etc/machine-id', 'utf8').trim();
-    if (/^[0-9a-fA-F]{32}$/.test(text)) return stringToUUID(text);
-  } catch {}
-  return null;
-}
-
-function readBootId() {
-  return readHostBootId();
 }
 
 function readJournalHeader(path) {

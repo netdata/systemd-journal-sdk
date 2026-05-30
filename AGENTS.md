@@ -15,6 +15,37 @@ Success means:
 
 Project SOW status: initialized
 
+## Runtime Purity Architecture
+
+This project has four separate layers. Keep them separate in every language:
+
+1. **Core journal file-format SDK** - reads and writes journal files only. Core
+   readers and writers must not execute external programs, probe host identity
+   sources, read OS-specific identity files or registries, or enforce writer
+   locks by default. They operate only on caller-provided paths, bytes, options,
+   timestamps, machine IDs, boot IDs, seqnum IDs, and related metadata.
+2. **Systemd/journald compatibility layer** - applies journald-compatible field
+   naming, metadata, and API conventions. It may require caller-provided machine
+   and boot identity. It must not silently discover host identity. If callers
+   want automatic identity discovery, they must explicitly invoke an optional
+   identity helper and pass the result in.
+3. **Optional identity helper service** - discovers host machine/boot identity
+   when a caller explicitly opts in. This helper is outside the core
+   file-format SDK contract.
+4. **Optional writer-lock helper service** - provides cooperating-writer
+   exclusion when a caller explicitly opts in. This helper is independent from
+   systemd compatibility. The journal file format requires one writer per file
+   as an operational contract, but systemd does not define or enforce a portable
+   lock protocol in the journal file format. Core writer constructors must not
+   expose lock-enable options; callers acquire and release the lock helper
+   separately around writer use.
+
+Core SDK runtime code must not depend on `/proc`, `/host/proc`,
+`/etc/machine-id`, platform registries, `sysctl`, `system_profiler`, `ps`, shell
+commands, subprocess APIs, or equivalent host-observation mechanisms. Tests,
+docs, and examples must use synthetic identities unless explicitly testing an
+optional helper.
+
 ## SOW System
 
 This project uses a local Statement of Work system.

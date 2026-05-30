@@ -6,7 +6,8 @@ Last updated: 2026-05-30
 
 - SOW-0063 - Cross Platform Portability: in-progress. Native macOS/Windows
   validation passed for the reviewed child portability work; parent remains
-  open until SOW-0071 runtime-purity split is implemented and reviewed.
+  open for native FreeBSD runtime validation and any remaining shared
+  portability reconciliation.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
@@ -17,12 +18,6 @@ Last updated: 2026-05-30
 
 ## Pending
 
-- SOW-0071 - Runtime Purity And Optional Platform Services: open. Architectural
-  correction to keep core journal readers/writers file-format-only, move host
-  identity discovery to optional helpers, move writer locking to independent
-  optional helpers, update instructions/specs/docs, and validate on Linux plus
-  provided macOS/Windows hosts before closing portability or releasing stable
-  APIs.
 - SOW-0047 - Netdata NetFlow SDK Integration: open. Component integration for
   NetFlow reader and writer paths after inventory and performance gates.
 - SOW-0048 - Netdata OTEL Writer SDK Integration: open. Component integration
@@ -38,6 +33,13 @@ Last updated: 2026-05-30
 
 ## Recently Closed Or Completed
 
+- SOW-0071 - Runtime Purity And Optional Platform Services: completed. Core
+  reader/writer paths in Rust, Go, Node.js, and Python no longer host-probe,
+  execute subprocesses, or acquire writer locks implicitly; identity discovery
+  and writer locks are optional helpers; legacy Rust `jf` host identity helpers
+  were removed; runtime-purity scans cover core, facade, Python I/O helper, and
+  legacy `jf` runtime files; Linux/macOS/Windows validation and three
+  whole-SOW reviewer rounds passed.
 - SOW-0067 - Go Cross Platform Portability: completed. Go SDK portability
   implementation, whole-SOW reviews, Linux/Windows tests, FreeBSD/macOS compile
   checks, and parent native macOS/Windows generated-file validation passed.

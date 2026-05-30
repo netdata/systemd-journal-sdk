@@ -90,8 +90,8 @@ const (
 	// time, but creates a new active file only when the first entry is appended.
 	LogOpenLazy LogOpenMode = iota
 	// LogOpenEager creates or opens the active file during NewLog(), proving
-	// file creation/open, writer lock acquisition, and configured writer
-	// options before the caller accepts work.
+	// file creation/open and configured writer options before the caller accepts
+	// work.
 	LogOpenEager
 )
 
@@ -99,7 +99,8 @@ const (
 type LogIdentityMode int
 
 const (
-	// LogIdentityAuto loads host IDs when available and generates missing IDs.
+	// LogIdentityAuto uses explicit IDs when provided and generates SDK-local
+	// IDs for missing values. It does not probe host identity.
 	LogIdentityAuto LogIdentityMode = iota
 	// LogIdentityStrict requires Options.MachineID and Options.BootID to be
 	// provided explicitly.
@@ -1046,16 +1047,6 @@ func normalizeLogOptions(opts Options, mode LogIdentityMode) (Options, error) {
 	if mode == LogIdentityStrict {
 		return normalizeOptions(opts), nil
 	}
-	if isZeroUUID(opts.MachineID) {
-		if machineID, err := readUUIDFile("/etc/machine-id"); err == nil {
-			opts.MachineID = machineID
-		}
-	}
-	if isZeroUUID(opts.BootID) {
-		if bootID, err := readHostBootID(); err == nil {
-			opts.BootID = bootID
-		}
-	}
 	return normalizeOptions(opts), nil
 }
 
@@ -1150,14 +1141,6 @@ func (l *Log) emitLifecycle(event LogLifecycleEvent) {
 	if l.lifecycle != nil {
 		l.lifecycle.OnLogLifecycleEvent(event)
 	}
-}
-
-func readUUIDFile(path string) (UUID, error) {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return UUID{}, err
-	}
-	return ParseUUID(strings.TrimSpace(string(content)))
 }
 
 // ParseUUID parses a 32-character or dashed 36-character UUID string.

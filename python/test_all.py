@@ -595,18 +595,26 @@ def test_writer_initial_arena_covers_large_hash_tables():
 
 def test_writer_exclusive_lock():
     with tempfile.TemporaryDirectory() as td:
+        unlocked_path = os.path.join(td, 'unlocked-default.journal')
+        unlocked = Writer.create(unlocked_path)
+        unlocked.close()
+        assert not os.path.exists(unlocked_path + '.lock')
+
         path = os.path.join(td, 'test.journal')
+        from journal.lock import WriterLock
+        lock = WriterLock.acquire(path)
         writer = Writer.create(path)
         try:
             try:
-                other = Writer.open(path)
+                other = WriterLock.acquire(path)
             except BlockingIOError:
                 other = None
             else:
-                other.close()
-                raise AssertionError('expected second writer open to fail while first writer holds lock')
+                other.release()
+                raise AssertionError('expected second writer lock acquire to fail while first lock is held')
         finally:
             writer.close()
+            lock.release()
 
 
 def test_writer_lock_portable_owner_without_proc():
@@ -646,7 +654,7 @@ def test_writer_lock_portable_owner_without_proc():
 
 
 def test_platform_positional_io_fallback_without_pread_pwrite():
-    from journal import _platform as platform_module
+    from journal import _platform_io as platform_module
 
     had_pread = hasattr(os, 'pread')
     had_pwrite = hasattr(os, 'pwrite')
@@ -677,7 +685,7 @@ def test_platform_positional_io_fallback_without_pread_pwrite():
 
 
 def test_platform_directory_sync_skips_windows_directory_handles():
-    from journal import _platform as platform_module
+    from journal import _platform_io as platform_module
 
     original_is_windows = platform_module._IS_WINDOWS
     platform_module._IS_WINDOWS = True

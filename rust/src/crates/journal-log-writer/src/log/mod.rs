@@ -6,7 +6,7 @@ pub use config::{Config, LogIdentityMode, LogOpenMode, RetentionPolicy, Rotation
 
 use crate::{Result, WriterError};
 use itoa::Buffer as ItoaBuffer;
-use journal_common::{Microseconds, RealtimeClock, load_boot_id, load_machine_id, monotonic_now};
+use journal_common::{Microseconds, RealtimeClock, monotonic_now};
 use journal_core::error::JournalError;
 use journal_core::file::mmap::MmapMut;
 use journal_core::file::{
@@ -184,11 +184,7 @@ fn resolve_machine_id(config: &Config) -> Result<uuid::Uuid> {
         LogIdentityMode::Strict => config.origin.machine_id.ok_or_else(|| {
             WriterError::MachineId("strict identity requires machine id".to_string())
         }),
-        LogIdentityMode::Auto => Ok(config
-            .origin
-            .machine_id
-            .or_else(|| load_machine_id().ok())
-            .unwrap_or_else(uuid::Uuid::new_v4)),
+        LogIdentityMode::Auto => Ok(config.origin.machine_id.unwrap_or_else(uuid::Uuid::new_v4)),
     }
 }
 
@@ -197,10 +193,7 @@ fn resolve_boot_id(config: &Config) -> Result<uuid::Uuid> {
         LogIdentityMode::Strict => config
             .boot_id
             .ok_or_else(|| WriterError::MachineId("strict identity requires boot id".to_string())),
-        LogIdentityMode::Auto => Ok(config
-            .boot_id
-            .or_else(|| load_boot_id().ok())
-            .unwrap_or_else(uuid::Uuid::new_v4)),
+        LogIdentityMode::Auto => Ok(config.boot_id.unwrap_or_else(uuid::Uuid::new_v4)),
     }
 }
 
@@ -429,8 +422,7 @@ impl ActiveFile {
             chain.create_chain_file(seqnum_id, head_seqnum, _head_realtime)?
         };
 
-        let mut old_journal_file = self.journal_file;
-        old_journal_file.release_writer_lock()?;
+        let old_journal_file = self.journal_file;
         let mut journal_file =
             old_journal_file.create_successor(&repository_file, max_file_size)?;
         let mut writer = JournalWriter::new_with_compression(
@@ -690,7 +682,6 @@ impl Log {
             let mut opened = ActiveFile::open(repository_file.clone(), boot_id)?;
             let n_entries = opened.journal_file.journal_header_ref().n_entries;
             if n_entries == 0 {
-                opened.journal_file.release_writer_lock()?;
                 match std::fs::remove_file(repository_file.path()) {
                     Ok(()) => {}
                     Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -701,7 +692,6 @@ impl Log {
                 chain.update_file_size(&repository_file, opened.current_file_size());
                 opened.journal_file.journal_header_mut().state = JournalState::Archived as u8;
                 opened.journal_file.sync()?;
-                opened.journal_file.release_writer_lock()?;
             }
         }
         let existing_active_file = if config.strict_systemd_naming {
@@ -710,11 +700,10 @@ impl Log {
             chain.online_chain_file()?
         };
         if let Some(repository_file) = existing_active_file {
-            let mut opened = ActiveFile::open(repository_file, boot_id)?;
+            let opened = ActiveFile::open(repository_file, boot_id)?;
             let n_entries = opened.journal_file.journal_header_ref().n_entries;
             if n_entries == 0 {
                 let repository_file = opened.repository_file.clone();
-                opened.journal_file.release_writer_lock()?;
                 match std::fs::remove_file(repository_file.path()) {
                     Ok(()) => {}
                     Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -1096,7 +1085,6 @@ impl Log {
 
         let n_entries = active_file.journal_file.journal_header_ref().n_entries;
         if self.config.strict_systemd_naming && n_entries == 0 {
-            active_file.journal_file.release_writer_lock()?;
             match std::fs::remove_file(active_file.repository_file.path()) {
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -1124,7 +1112,6 @@ impl Log {
         } else {
             active_file.repository_file.clone()
         };
-        active_file.journal_file.release_writer_lock()?;
 
         self.apply_retention(Some(&protected_file))?;
 

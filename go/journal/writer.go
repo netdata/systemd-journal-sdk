@@ -97,7 +97,6 @@ func StringField(name, value string) Field {
 type Writer struct {
 	file              *os.File
 	path              string
-	lock              *writerLock
 	arena             *mappedArena
 	header            journalHeader
 	appendOffset      uint64
@@ -124,7 +123,7 @@ func PublishEveryEntries(entries uint64) *uint64 {
 	return &entries
 }
 
-// Create creates or truncates a journal file after acquiring the writer lock.
+// Create creates or truncates a journal file.
 func Create(path string, opts Options) (*Writer, error) {
 	opts = normalizeOptions(opts)
 	if !validCompression(opts.Compression) {
@@ -134,36 +133,24 @@ func Create(path string, opts Options) (*Writer, error) {
 		return nil, err
 	}
 
-	lock, err := acquireWriterLock(path)
-	if err != nil {
-		return nil, err
-	}
 	f, err := openWriterFile(path, true, 0o640)
 	if err != nil {
-		_ = lock.release()
-		return nil, err
-	}
-	if err := lockFile(f); err != nil {
-		_ = f.Close()
-		_ = lock.release()
 		return nil, err
 	}
 	if err := f.Truncate(0); err != nil {
-		_ = unlockAndClose(f)
-		_ = lock.release()
+		_ = f.Close()
 		return nil, err
 	}
 
 	w := &Writer{
-		file: f, path: path, lock: lock, bootID: opts.BootID, started: time.Now(),
+		file: f, path: path, bootID: opts.BootID, started: time.Now(),
 		compression: opts.Compression, compressThreshold: opts.CompressThresholdBytes, compact: opts.Compact,
 		livePublishEveryEntries: livePublishEveryEntries(opts),
 		fieldNamePolicy:         opts.FieldNamePolicy,
 	}
 	if err := w.initialize(opts); err != nil {
 		_ = w.closeArena()
-		_ = unlockAndClose(f)
-		_ = lock.release()
+		_ = f.Close()
 		return nil, err
 	}
 	return w, nil
@@ -181,49 +168,34 @@ func OpenWithOptions(path string, opts Options) (*Writer, error) {
 	if err := validateFieldNamePolicy(opts.FieldNamePolicy); err != nil {
 		return nil, err
 	}
-	lock, err := acquireWriterLock(path)
-	if err != nil {
-		return nil, err
-	}
 	f, err := openWriterFile(path, false, 0)
 	if err != nil {
-		_ = lock.release()
-		return nil, err
-	}
-	if err := lockFile(f); err != nil {
-		_ = f.Close()
-		_ = lock.release()
 		return nil, err
 	}
 
 	buf := make([]byte, headerSize)
 	if _, err := f.ReadAt(buf, 0); err != nil {
-		_ = unlockAndClose(f)
-		_ = lock.release()
+		_ = f.Close()
 		return nil, err
 	}
 	header, err := parseHeader(buf)
 	if err != nil {
-		_ = unlockAndClose(f)
-		_ = lock.release()
+		_ = f.Close()
 		return nil, err
 	}
 	const supportedWriterIncompatible = incompatibleKeyedHash | incompatibleCompressedZSTD | incompatibleCompressedXZ | incompatibleCompressedLZ4 | incompatibleCompact
 	if header.incompatibleFlags&^supportedWriterIncompatible != 0 {
-		_ = unlockAndClose(f)
-		_ = lock.release()
+		_ = f.Close()
 		return nil, errUnsupportedJournal
 	}
 	if header.dataHashTableOffset == 0 || header.fieldHashTableOffset == 0 || header.tailObjectOffset == 0 {
-		_ = unlockAndClose(f)
-		_ = lock.release()
+		_ = f.Close()
 		return nil, errInvalidJournal
 	}
 
 	tail, err := readObjectHeaderAt(f, header.tailObjectOffset)
 	if err != nil {
-		_ = unlockAndClose(f)
-		_ = lock.release()
+		_ = f.Close()
 		return nil, err
 	}
 
@@ -240,7 +212,6 @@ func OpenWithOptions(path string, opts Options) (*Writer, error) {
 	w := &Writer{
 		file:                    f,
 		path:                    path,
-		lock:                    lock,
 		header:                  header,
 		appendOffset:            align8(header.tailObjectOffset + tail.size),
 		nextSeqnum:              header.tailEntrySeqnum + 1,
@@ -254,26 +225,23 @@ func OpenWithOptions(path string, opts Options) (*Writer, error) {
 	}
 	fileSize, ok := checkedAdd(header.headerSize, header.arenaSize)
 	if !ok {
-		_ = unlockAndClose(f)
-		_ = lock.release()
+		_ = f.Close()
 		return nil, errInvalidJournal
 	}
 	if err := w.mapArena(fileSize); err != nil {
-		_ = unlockAndClose(f)
-		_ = lock.release()
+		_ = f.Close()
 		return nil, err
 	}
 	if isZeroUUID(w.bootID) {
-		if bootID, err := readHostBootID(); err == nil {
-			w.bootID = bootID
+		if !isZeroUUID(opts.BootID) {
+			w.bootID = opts.BootID
 		} else {
 			w.bootID = header.fileID
 		}
 	}
 	if err := w.writeHeader(); err != nil {
 		_ = w.closeArena()
-		_ = unlockAndClose(f)
-		_ = lock.release()
+		_ = f.Close()
 		return nil, err
 	}
 	return w, nil
@@ -447,8 +415,7 @@ func (w *Writer) Close() error {
 	return w.closeWithState(stateOnline)
 }
 
-// CloseOffline marks the journal offline, syncs it, releases the writer lock,
-// and closes it.
+// CloseOffline marks the journal offline, syncs it, and closes it.
 func (w *Writer) CloseOffline() error {
 	return w.closeWithState(stateOffline)
 }
@@ -461,11 +428,9 @@ func (w *Writer) closeWithState(state uint8) error {
 	err1 := w.writeHeader()
 	err2 := w.syncArena()
 	err3 := w.closeArena()
-	err4 := unlockAndClose(w.file)
-	err5 := w.lock.release()
-	w.lock = nil
+	err4 := w.file.Close()
 	w.closed = true
-	return errors.Join(err1, err2, err3, err4, err5)
+	return errors.Join(err1, err2, err3, err4)
 }
 
 // CurrentSize returns the current committed journal file size in bytes.
@@ -474,7 +439,7 @@ func (w *Writer) CurrentSize() uint64 {
 }
 
 // ArchiveTo marks the journal archived, renames it, syncs the parent
-// directory, releases the writer lock, and closes it.
+// directory, and closes it.
 func (w *Writer) ArchiveTo(path string) error {
 	return w.archiveTo(path)
 }
@@ -501,11 +466,9 @@ func (w *Writer) archiveTo(path string) error {
 	w.path = path
 	dirErr := syncJournalDirectory(path)
 	arenaErr := w.closeArena()
-	closeErr := unlockAndClose(w.file)
-	lockErr := w.lock.release()
-	w.lock = nil
+	closeErr := w.file.Close()
 	w.closed = true
-	if err := errors.Join(dirErr, arenaErr, closeErr, lockErr); err != nil {
+	if err := errors.Join(dirErr, arenaErr, closeErr); err != nil {
 		return err
 	}
 	return nil

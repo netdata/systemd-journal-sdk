@@ -4,7 +4,7 @@ import os
 import re
 import time
 
-from ._platform import boot_id_bytes, sync_directory
+from ._platform_io import sync_directory
 from .binary import random_uuid, uuid_to_string
 from .header import HEADER_SIZE, OBJECT_HEADER_SIZE, STATE_ONLINE, parse_file_header, parse_object_header
 from .header import normalize_journal_max_file_size
@@ -134,8 +134,8 @@ class Log:
                 raise ValueError('strict identity requires boot id')
         self._next_seqnum = int(head_seqnum_option or 1)
         self._seqnum_id = _uuid_from_config(seqnum_id_option) or random_uuid()
-        self._boot_id = _uuid_from_config(boot_id_option) or _read_boot_id() or random_uuid()
-        self._machine_id = _uuid_from_config(machine_id_option) or _read_machine_id() or random_uuid()
+        self._boot_id = _uuid_from_config(boot_id_option) or random_uuid()
+        self._machine_id = _uuid_from_config(machine_id_option) or random_uuid()
         self._journal_dir = os.path.join(self._root_path, uuid_to_string(self._machine_id))
         self._active_file = self._systemd_active_path() if self._strict_systemd_naming else None
         self._active_writer = None
@@ -707,21 +707,6 @@ def _uuid_from_config(value):
     if not isinstance(value, bytes) or len(value) != 16:
         raise ValueError('uuid values must be 16 bytes or 32 hex characters')
     return value
-
-
-def _read_machine_id():
-    try:
-        with open('/etc/machine-id', 'r', encoding='utf-8') as f:
-            text = f.read().strip()
-    except OSError:
-        return None
-    if re.fullmatch(r'[0-9a-fA-F]{32}', text):
-        return bytes.fromhex(text)
-    return None
-
-
-def _read_boot_id():
-    return boot_id_bytes()
 
 
 def _committed_journal_size(path, fallback):

@@ -28,7 +28,7 @@ fn parse_uuid_text(content: &str) -> io::Result<uuid::Uuid> {
 /// Loads the machine ID from the system.
 ///
 /// On Linux, this reads from `/etc/machine-id`.
-/// On macOS, this uses `system_profiler` to get the hardware UUID.
+/// On macOS, this uses the native `gethostuuid(3)` API.
 /// On other platforms, this returns an error.
 #[cfg(target_os = "linux")]
 pub fn load_machine_id() -> io::Result<uuid::Uuid> {
@@ -38,29 +38,16 @@ pub fn load_machine_id() -> io::Result<uuid::Uuid> {
 
 #[cfg(target_os = "macos")]
 pub fn load_machine_id() -> io::Result<uuid::Uuid> {
-    use std::process::Command;
-
-    let output = Command::new("system_profiler")
-        .arg("SPHardwareDataType")
-        .output()?;
-
-    if output.status.success() {
-        let output_str = String::from_utf8_lossy(&output.stdout);
-        for line in output_str.lines() {
-            if line.contains("Hardware UUID:") {
-                if let Some(uuid_str) = line.split("Hardware UUID:").nth(1) {
-                    let uuid_str = uuid_str.trim();
-                    return uuid::Uuid::try_parse(uuid_str)
-                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e));
-                }
-            }
-        }
+    let mut bytes = [0u8; 16];
+    let timeout = libc::timespec {
+        tv_sec: 1,
+        tv_nsec: 0,
+    };
+    let rc = unsafe { libc::gethostuuid(bytes.as_mut_ptr(), &timeout) };
+    if rc == 0 {
+        return Ok(uuid::Uuid::from_bytes(bytes));
     }
-
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "Could not find Hardware UUID",
-    ))
+    Err(io::Error::last_os_error())
 }
 
 #[cfg(target_os = "freebsd")]
@@ -102,43 +89,52 @@ pub fn load_boot_id() -> io::Result<uuid::Uuid> {
 
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]
 fn load_boot_id_from_sysctl_boottime() -> io::Result<uuid::Uuid> {
-    use std::process::Command;
+    let name = b"kern.boottime\0";
+    let mut boottime: libc::timeval = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<libc::timeval>();
+    let rc = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr() as *const libc::c_char,
+            &mut boottime as *mut _ as *mut libc::c_void,
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if len < std::mem::size_of::<libc::timeval>() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "kern.boottime returned a truncated timeval",
+        ));
+    }
+    let sec = u64::try_from(boottime.tv_sec).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "kern.boottime returned a negative seconds value",
+        )
+    })?;
+    let usec = u32::try_from(boottime.tv_usec).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "kern.boottime returned an invalid microseconds value",
+        )
+    })?;
 
-    let output = Command::new("sysctl")
-        .arg("-n")
-        .arg("kern.boottime")
-        .output()?;
-
-    if output.status.success() {
-        let output_str = String::from_utf8_lossy(&output.stdout);
-        // Parse "{ sec = 1753988677, usec = 131097 } Thu Jul 31 22:04:37 2025"
-        // Extract sec and usec values
-        if let (Some(sec_start), Some(usec_start)) =
-            (output_str.find("sec = "), output_str.find("usec = "))
-        {
-            let sec_str = &output_str[sec_start + 6..];
-            let sec_end = sec_str.find(',').unwrap_or(sec_str.len());
-            let sec_str = &sec_str[..sec_end].trim();
-
-            let usec_str = &output_str[usec_start + 7..];
-            let usec_end = usec_str.find(' ').unwrap_or(usec_str.len());
-            let usec_str = &usec_str[..usec_end].trim();
-
-            if let (Ok(sec), Ok(usec)) = (sec_str.parse::<u64>(), usec_str.parse::<u64>()) {
-                // Synthetic deterministic ID for same-boot comparison only.
-                let mut bytes = [0u8; 16];
-                bytes[0..8].copy_from_slice(&sec.to_be_bytes());
-                bytes[8..12].copy_from_slice(&(usec as u32).to_be_bytes());
-                // bytes[12..16] remain zero-filled for consistency
-                return Ok(uuid::Uuid::from_bytes(bytes));
-            }
-        }
+    if usec >= 1_000_000 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "kern.boottime returned out-of-range microseconds",
+        ));
     }
 
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "Could not parse boot time",
-    ))
+    // Synthetic deterministic ID for same-boot comparison only.
+    let mut bytes = [0u8; 16];
+    bytes[0..8].copy_from_slice(&sec.to_be_bytes());
+    bytes[8..12].copy_from_slice(&usec.to_be_bytes());
+    Ok(uuid::Uuid::from_bytes(bytes))
 }
 
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]

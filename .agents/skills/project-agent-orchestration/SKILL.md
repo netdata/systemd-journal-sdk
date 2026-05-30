@@ -34,6 +34,8 @@ Do not use this skill for:
 - Reviewer agents must run read-only. For opencode reviewer runs, use `--agent code-reviewer` and prompts that forbid creating, modifying, deleting, moving, formatting, staging, committing, or changing files.
 - Read-only dependency metadata commands can still write package caches. Prompts that allow dependency inspection must either forbid dependency-fetching commands or require cache/output variables under `.local/` or `/tmp`, including `GOMODCACHE`, `GOCACHE`, `GOPATH`, `npm_config_cache`, `PIP_CACHE_DIR`, `CARGO_HOME`, and equivalent tool caches.
 - Journal work must not probe the live host journal. External-agent prompts for journal compatibility work must forbid `systemd-cat`, `logger`, live `journalctl` without `--file` or a repository-local `--directory`, writes to `/var/log/journal` or `/run/log/journal`, and any systemd command that changes host journal state.
+- Core SDK runtime work must preserve the four-layer runtime-purity split from `AGENTS.md`: core file-format SDK, systemd/journald compatibility layer, optional identity helper, and optional writer-lock helper. Prompts must not ask agents to put host identity discovery or cooperating-writer locking back into core reader/writer paths.
+- Core reader/writer runtime prompts must forbid external programs and host-observation sources in core code, including `/proc`, `/host/proc`, `/etc/machine-id`, platform registries, `sysctl`, `system_profiler`, `ps`, shell commands, subprocess APIs, and equivalent mechanisms. These are allowed only in explicitly named optional helper code and tests for those helpers.
 
 Canonical external-agent prompt block:
 
@@ -54,6 +56,7 @@ CRITICAL REPOSITORY BOUNDARY:
 - If the user re-enables external implementers, record the routing decision and any model failure in the active SOW before switching models.
 - Run independent reviewers in parallel after the whole SOW implementation and local validation are complete.
 - Keep reviewer prompts neutral: include the original request, SOW filename, changed scope, validation commands, the canonical repository-boundary block, and ask for unwanted side effects and security issues.
+- For SOWs touching runtime purity, ask reviewers to verify that core SDK code has no implicit host identity discovery, subprocess execution, or automatic writer locking, and that optional helpers are opt-in and documented separately.
 - For dependency research or package metadata checks, include explicit cache redirection instructions before allowing commands such as `go get`, `go list`, `npm view`, `npm pack`, `pip download`, `pip index`, `cargo metadata`, or `cargo doc`.
 - Repeat review cycles with the same whole-SOW scope until reviewers stop finding blocking issues.
 

@@ -4,8 +4,7 @@
 import { openSync, writeSync, readSync, closeSync, ftruncateSync, fsyncSync, renameSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
-import { readUint64LE, writeUint64LE, writeUint32LE, writeUint8, align8, randomUUID, isZeroUUID, bufEqual } from './binary.js';
-import { WriterLock } from './lock.js';
+import { readUint64LE, writeUint64LE, writeUint32LE, writeUint8, align8, randomUUID, isZeroUUID, bufEqual, stringToUUID } from './binary.js';
 import {
   serializeFileHeader, parseFileHeader, parseObjectHeader, writeObjectHeader,
   HEADER_SIZE, OBJECT_TYPE_DATA, OBJECT_TYPE_ENTRY,
@@ -30,7 +29,6 @@ import { sipHash24, jenkinsHash64 } from './hash.js';
 import { decompressZstdDataPayload } from './compress.js';
 import { compressLz4DataPayload, decompressLz4DataPayload } from './lz4-block.js';
 import { compressXzDataPayload, decompressXzDataPayload } from './xz-block.js';
-import { readHostBootId } from './platform.js';
 
 export const COMPRESSION_NONE = 0;
 export const COMPRESSION_ZSTD = 1;
@@ -45,10 +43,9 @@ const FIELD_CACHE_MAX_ENTRIES = 1024;
 const FIELD_CACHE_MAX_PAYLOAD_LEN = 128;
 
 export class Writer {
-  constructor(fd, path, lock) {
+  constructor(fd, path) {
     this.fd = fd;
     this.path = path;
-    this.lock = lock;
     this.header = null;
     this.appendOffset = 0n;
     this.nextSeqnum = 1n;
@@ -67,12 +64,11 @@ export class Writer {
 
   // Create or truncate a journal file.
   static create(path, opts = {}) {
-    const lock = WriterLock.acquire(path);
     let fd;
     try {
       fd = openSync(path, 'w+', 0o640);
       ftruncateSync(fd, 0);
-      const w = new Writer(fd, path, lock);
+      const w = new Writer(fd, path);
       w.compression = normalizeCompression(opts.compression);
       w.compressThreshold = normalizeCompressThreshold(opts.compressionThresholdBytes);
       w.compact = opts.compact === true || opts.format === 'compact';
@@ -85,14 +81,12 @@ export class Writer {
       return w;
     } catch (error) {
       if (fd !== undefined) closeSync(fd);
-      lock.release();
       throw error;
     }
   }
 
   // Open an existing journal file for appending.
   static open(path, opts = {}) {
-    const lock = WriterLock.acquire(path);
     let fd;
     try {
       fd = openSync(path, 'r+');
@@ -118,12 +112,13 @@ export class Writer {
         ? Number(header.tail_entry_monotonic / 1000n)
         : 0;
 
-      const w = new Writer(fd, path, lock);
+      const w = new Writer(fd, path);
       w.header = header;
       w.appendOffset = align8(header.tail_object_offset + tailSize);
       w.nextSeqnum = header.tail_entry_seqnum + 1n;
       w.bootId = Buffer.from(header.tail_entry_boot_id);
-      if (isZeroUUID(w.bootId)) w.bootId = readBootId() || Buffer.from(header.file_id);
+      const explicitBootId = uuidOption(opts.bootId ?? opts.boot_id, 'boot id');
+      if (isZeroUUID(w.bootId)) w.bootId = explicitBootId && !isZeroUUID(explicitBootId) ? explicitBootId : Buffer.from(header.file_id);
       w.started = now - monotonicBase;
       w.compression = (header.incompatible_flags & INCOMPATIBLE_COMPRESSED_XZ) !== 0
         ? COMPRESSION_XZ
@@ -140,7 +135,6 @@ export class Writer {
       return w;
     } catch (error) {
       if (fd !== undefined) closeSync(fd);
-      lock.release();
       throw error;
     }
   }
@@ -167,10 +161,10 @@ export class Writer {
       throw new Error('journal file offset exceeds JavaScript safe integer range');
     }
 
-    const fileId = opts.fileId || randomUUID();
-    const machineId = opts.machineId || randomUUID();
-    const bootId = opts.bootId || randomUUID();
-    const seqnumId = opts.seqnumId || randomUUID();
+    const fileId = uuidOption(opts.fileId ?? opts.file_id, 'file id') || randomUUID();
+    const machineId = uuidOption(opts.machineId ?? opts.machine_id, 'machine id') || randomUUID();
+    const bootId = uuidOption(opts.bootId ?? opts.boot_id, 'boot id') || randomUUID();
+    const seqnumId = uuidOption(opts.seqnumId ?? opts.seqnum_id, 'seqnum id') || randomUUID();
 
     let incFlags = INCOMPATIBLE_KEYED_HASH;
     if (this.compression === COMPRESSION_XZ) {
@@ -299,7 +293,8 @@ export class Writer {
     const hasMonotonic = Object.prototype.hasOwnProperty.call(opts, 'monotonicUsec');
     const realtime = hasRealtime ? BigInt(opts.realtimeUsec) : BigInt(now * 1000);
     const monotonic = hasMonotonic ? BigInt(opts.monotonicUsec) : BigInt((now - this.started) * 1000);
-    const bootId = opts.bootId && !isZeroUUID(opts.bootId) ? Buffer.from(opts.bootId) : this.bootId;
+    const explicitBootId = uuidOption(opts.bootId ?? opts.boot_id, 'entry boot id');
+    const bootId = explicitBootId && !isZeroUUID(explicitBootId) ? explicitBootId : this.bootId;
 
     this._maybeAppendTag(realtime);
 
@@ -879,12 +874,6 @@ export class Writer {
     } catch (error) {
       if (!closeError) closeError = error;
     }
-    try {
-      this.lock.release();
-    } catch (error) {
-      if (!closeError) closeError = error;
-    }
-    this.lock = null;
     this.closed = true;
     if (closeError) throw closeError;
   }
@@ -911,12 +900,6 @@ export class Writer {
       } catch (error) {
         if (!closeError) closeError = error;
       }
-      try {
-        this.lock.release();
-      } catch (error) {
-        if (!closeError) closeError = error;
-      }
-      this.lock = null;
       if (closeError) throw closeError;
     } catch (error) {
       if (this.closed) throw error;
@@ -1050,10 +1033,6 @@ export class Writer {
   }
 }
 
-function readBootId() {
-  return readHostBootId();
-}
-
 // Read object size (uint64 at offset+8) from an fd.
 function readObjectSizeFromFd(fd, offset) {
   const buf = Buffer.alloc(8);
@@ -1121,6 +1100,20 @@ export function normalizeFieldNamePolicy(value) {
   if (value === FIELD_NAME_POLICY_RAW) return FIELD_NAME_POLICY_RAW;
   if (value === FIELD_NAME_POLICY_JOURNAL_APP) return FIELD_NAME_POLICY_JOURNAL_APP;
   throw new Error(`unsupported field name policy: ${value}`);
+}
+
+function uuidOption(value, label) {
+  if (value === undefined || value === null) return null;
+  let out;
+  if (typeof value === 'string') {
+    const clean = value.trim().replaceAll('-', '');
+    if (!/^[0-9a-fA-F]{32}$/.test(clean)) throw new Error(`${label} must be 16 bytes or 32 hex characters`);
+    out = stringToUUID(clean);
+  } else {
+    out = Buffer.from(value);
+  }
+  if (out.length !== 16) throw new Error(`${label} must be 16 bytes or 32 hex characters`);
+  return out;
 }
 
 export function writerPolicyForLogPolicy(policy) {

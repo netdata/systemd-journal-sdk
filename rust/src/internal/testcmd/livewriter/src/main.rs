@@ -3,7 +3,7 @@ use clap::Parser;
 use journal::{Config, EntryTimestamps, Log, Origin, RetentionPolicy, RotationPolicy, Source};
 use journal_core::file::{
     Compression, DEFAULT_COMPRESS_THRESHOLD, JournalFile, JournalFileOptions, JournalWriter,
-    MmapMut,
+    MmapMut, lock::WriterLock,
 };
 use journal_core::repository::File as RepositoryFile;
 use journal_core::seal::SealOptions;
@@ -148,6 +148,7 @@ fn run_file_writer(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    let _writer_lock = WriterLock::acquire(path.to_string_lossy().as_ref())?;
     let repo_file = RepositoryFile::from_path(path)
         .ok_or_else(|| anyhow!("journal path must be absolute and end in .journal"))?;
     let machine_id = uuid::Uuid::new_v4();

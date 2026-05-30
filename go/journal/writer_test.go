@@ -662,7 +662,17 @@ func TestCreateRejectsUnsupportedFieldNamePolicy(t *testing.T) {
 
 func TestWriterLockRejectsSecondWriter(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "locked.journal")
-	w, err := Create(path, testOptions())
+	opts := testOptions()
+	lock, err := AcquireWriterLock(path)
+	if err != nil {
+		t.Fatalf("AcquireWriterLock() error = %v", err)
+	}
+	defer func() {
+		if err := lock.Release(); err != nil {
+			t.Fatalf("Release() error = %v", err)
+		}
+	}()
+	w, err := Create(path, opts)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -672,9 +682,25 @@ func TestWriterLockRejectsSecondWriter(t *testing.T) {
 		}
 	}()
 
-	if second, err := Open(path); err == nil {
-		_ = second.Close()
-		t.Fatal("Open() succeeded while first writer lock is held")
+	if second, err := AcquireWriterLock(path); err == nil {
+		_ = second.Release()
+		t.Fatal("AcquireWriterLock() succeeded while first writer lock is held")
+	}
+}
+
+func TestWriterDoesNotLockByDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "unlocked-by-default.journal")
+	w, err := Create(path, testOptions())
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	defer func() {
+		if err := w.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	}()
+	if _, err := os.Stat(path + ".lock"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("default Create() lock file stat error = %v, want not exist", err)
 	}
 }
 

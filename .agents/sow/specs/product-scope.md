@@ -27,6 +27,26 @@ This project produces pure SDKs and file-backed journalctl-compatible tools for 
 - Go implementations must not use CGO.
 - Node.js implementations must not load or link native code at runtime. Dependency packages may ship native artifacts if the SDK runtime path is constrained and tested to use only non-native implementations (e.g. WASM).
 - Python implementations must not use native journal bindings.
+- Core journal readers and writers are file-format implementations only. They
+  must not execute external programs, probe host identity, read host identity
+  files or registries, or enforce writer locks by default.
+- Core journal readers and writers operate only on caller-provided paths,
+  journal bytes, timestamps, machine IDs, boot IDs, seqnum IDs, and options.
+- Systemd/journald compatibility is a policy/API layer above the core writer.
+  It may require caller-provided machine and boot IDs, but it must not silently
+  discover host identity.
+- Automatic machine/boot identity discovery is an optional helper service. A
+  caller must explicitly invoke the helper and pass the result to the SDK.
+- Cooperating-writer locking is an optional helper/wrapper service, independent
+  from systemd compatibility. The journal file-format contract is one writer
+  per file, but the file format does not define or enforce a portable lock
+  protocol. Core writer constructors do not expose lock-enable options; callers
+  acquire and release the optional lock helper separately around writer use.
+- Host-observation mechanisms such as `/proc`, `/host/proc`,
+  `/etc/machine-id`, platform registries, `sysctl`, `system_profiler`, `ps`,
+  shell commands, subprocess APIs, and equivalent OS-specific identity sources
+  are forbidden in core reader/writer runtime paths. They are allowed only in
+  explicitly named optional helper code and tests for those helpers.
 - Each language must provide two API layers: an idiomatic SDK API and a libsystemd-compatible reader facade.
 - The libsystemd-compatible reader facade is required unless a SOW records concrete evidence that it would require native bindings, violate the pure-language policy, or create an unsafe/unrepresentable API in that language.
 - Common compression-library dependencies are allowed after dependency review.
@@ -41,25 +61,18 @@ This project produces pure SDKs and file-backed journalctl-compatible tools for 
 
 ## Rust Platform Behavior
 
-- Linux remains the Rust reference runtime. Rust uses `CLOCK_MONOTONIC` for
-  journal monotonic timestamps, Linux boot IDs from
-  `/proc/sys/kernel/random/boot_id`, Linux `/proc/<pid>/stat` start-time checks
-  for lock stale-owner detection, mmap-backed hot paths, Unix directory sync,
-  and a SIGBUS handler for mmap fault recovery.
-- FreeBSD and macOS Rust builds use `clock_gettime(CLOCK_MONOTONIC)`.
-  FreeBSD machine IDs are loaded from common `machine-id` paths when present;
-  macOS machine IDs use the hardware UUID. FreeBSD and macOS boot IDs are
-  derived from `sysctl kern.boottime` as a synthetic same-boot comparison ID,
-  not as a kernel-provided random UUID. Writer lock stale-owner detection uses
-  PID liveness where process start-time identity is not available, so PID reuse
-  can conservatively keep a stale lock held instead of risking a second writer.
+- Linux remains the Rust reference runtime. Rust uses monotonic timestamps,
+  mmap-backed hot paths, Unix directory sync, and a SIGBUS handler for mmap
+  fault recovery.
+- FreeBSD and macOS Rust builds use monotonic timestamps and the same core
+  file-format reader/writer paths. Optional identity and writer-lock helpers
+  are separate from the core file-format writer.
 - Windows Rust builds use Windows unbiased interrupt time for generated
   monotonic timestamps when the caller does not provide explicit timestamps.
-  Automatic machine/boot identity falls back to generated UUIDs where native
-  IDs are unavailable. Writer lock stale-owner detection uses Windows process
-  creation time plus process-handle wait status. Directory fsync and SIGBUS
-  handling are no-ops on Windows because those Unix durability/fault mechanisms
-  do not have the same portable API surface.
+  Optional identity and writer-lock helpers are separate from the core
+  file-format writer. Directory fsync and SIGBUS handling are no-ops on
+  Windows because those Unix durability/fault mechanisms do not have the same
+  portable API surface.
 - Non-Linux Rust target checks prove compilation only unless a SOW records
   runtime evidence from that operating system. Files generated on non-Linux
   targets still require Linux stock `journalctl --verify --file` and
@@ -325,12 +338,11 @@ Current Go writer feature slice:
   `EnforceRetention()` applies retention without requiring a rotation or close;
 - high-level Go directory writer construction supports lazy open by default and
   eager active-file open through `LogOpenEager`, so integrations can validate
-  file creation/open, writer lock acquisition, and writer options before
-  accepting work;
-- high-level Go identity handling supports host/random fallback by default and
-  `LogIdentityStrict` for integrations that require explicit machine and boot
-  IDs. Host boot ID auto-loading is Linux-only; non-Linux targets use explicit
-  caller IDs or generated IDs unless strict identity requires both IDs;
+  file creation/open and writer options before accepting work;
+- high-level Go identity handling uses explicit IDs when provided and otherwise
+  generates SDK-local IDs by default. `LogIdentityStrict` requires explicit
+  machine and boot IDs. Host identity discovery belongs to optional helpers
+  that callers invoke explicitly;
 - high-level Go path accessors expose the configured root, effective
   machine-id journal directory, exact active path after file creation, machine
   ID, boot ID, and source prefix;
@@ -347,15 +359,10 @@ Current Go writer feature slice:
   fields such as `_HOSTNAME`. SDK-owned protected fields such as `_BOOT_ID` and
   `_SOURCE_REALTIME_TIMESTAMP` are injected internally under journald-compatible
   rules. `JOURNAL-APP` and `RAW` are explicit caller-selected policies;
-- pure cross-SDK cooperative lockfile with stale-owner detection to protect
-  the one-writer contract among cooperating SDK writers. Linux keeps exact
-  `/proc` boot/process-start stale-owner checks and a secondary non-blocking
-  POSIX `flock`; FreeBSD and macOS use boot-time and locale-stable `ps`
-  process-start stale-owner checks plus POSIX `flock`; Windows uses process
-  creation time checks plus a non-blocking `LockFileEx` byte-range lock outside
-  the journal data range so repository readers are not blocked; unknown
-  non-Unix/non-Windows targets fail writer open rather than silently writing
-  without a platform file lock;
+- optional pure cross-SDK cooperative lockfile with stale-owner detection when
+  callers explicitly enable the lock helper. The lock helper protects the
+  one-writer contract among cooperating SDK writers, but it is independent from
+  systemd compatibility and is not part of the core writer default;
 - Forward Secure Sealing TAG writing with configurable deterministic test
   options and stock `journalctl --verify --verify-key` validation for generated
   sealed files;
@@ -396,8 +403,7 @@ Current shared high-level directory writer API slice:
   same journal directory.
 - Rust, Go, Node.js, and Python expose a strict identity mode requiring
   explicit machine ID and boot ID; default identity mode uses explicit IDs when
-  provided, otherwise host/random fallback where the language implementation
-  can do so without linking to journald.
+  provided, otherwise generates SDK-local IDs without probing host identity.
 - Rust, Go, Node.js, and Python expose configured-root, effective machine-id
   journal directory, active path, machine ID, boot ID, and source-prefix
   accessors on the high-level directory writer.
@@ -406,10 +412,9 @@ Current shared high-level directory writer API slice:
   paths. Callback failures are best-effort and do not roll back completed
   journal operations by default.
 - Rust, Go, Node.js, and Python high-level `Log` instances are single-writer
-  mutable objects. Callers must serialize method calls on one instance; the SDK
-  writer lock protects the one-writer file contract across cooperating SDK
-  instances and processes, but it does not add hidden per-append mutex cost
-  inside a single `Log`.
+  mutable objects. Callers must serialize method calls on one instance. The
+  journal contract is one writer per file; optional SDK writer locks protect
+  that contract across cooperating SDK instances only when explicitly enabled.
 - Rust, Go, Node.js, and Python support artifact-size providers/callbacks so
   consumer-owned per-journal sidecar bytes are included in size-based retention
   decisions. Missing artifacts should be reported by returning zero; unexpected
@@ -582,8 +587,8 @@ Current Rust writer feature slice:
   but is never selected for deletion to satisfy retention limits. Rust uses
   `None` to disable each limit. `Log::enforce_retention()` applies retention
   without requiring a rotation or close;
-- pure cross-SDK cooperative lockfile with stale-owner detection to protect the
-  one-writer contract among cooperating SDK writers;
+- optional pure cross-SDK cooperative lockfile with stale-owner detection when
+  callers explicitly acquire `journal_core::file::lock::WriterLock`;
 - Forward Secure Sealing TAG writing with configurable deterministic test
   options and stock `journalctl --verify --verify-key` validation for generated
   sealed files;
@@ -672,10 +677,9 @@ Current Node.js writer feature slice:
   each entry and `_SOURCE_REALTIME_TIMESTAMP=<usec>` when source realtime is
   supplied;
 - high-level Node.js `Log` automatic identity uses explicit caller options
-  first, then Linux host machine ID / boot ID when available, and random UUIDs on
-  non-Linux or restricted hosts. Callers that need stable non-Linux host
-  identity across process restarts must pass `machineId` and `bootId`, or select
-  strict identity mode;
+  first, then generated SDK-local UUIDs. Callers that need stable host identity
+  across process restarts must pass `machineId` and `bootId`, or select strict
+  identity mode;
 - writer file access uses `Buffer` plus positioned `node:fs` reads/writes; no
   native mmap dependency is loaded by the Node.js SDK runtime path;
 - directory writer archive/rotation paths fsync file contents on every target.
@@ -692,12 +696,11 @@ Current Node.js writer feature slice:
   but is never selected for deletion to satisfy retention limits. Omitted or
   zero-valued limits are disabled. `log.enforceRetention()` applies retention
   without requiring a rotation or close;
-- pure cross-SDK cooperative lockfile with stale-owner detection to protect the
-  one-writer contract among cooperating SDK writers. Node.js uses Linux
-  `/proc` boot/process-start evidence when available, and otherwise falls back
-  to Node's portable process-liveness probe. Unknown or reused owner identity is
-  treated as still held on non-Linux targets to preserve one-writer safety over
-  aggressive stale cleanup;
+- optional pure cross-SDK cooperative lockfile with stale-owner detection when
+  callers explicitly acquire `WriterLock.acquire(path)`. Node.js uses Linux
+  `/proc` boot/process-start evidence when the optional helper is enabled and
+  available, and otherwise falls back to Node's portable process-liveness
+  probe;
 - Forward Secure Sealing TAG writing with configurable deterministic test
   options and stock `journalctl --verify --verify-key` validation for generated
   sealed files;
@@ -749,8 +752,9 @@ Current Node.js reader/writer limitations:
 
 - boot listing APIs use file-level boot metadata in this slice; file-backed
   `--boot` filtering scans entry `_BOOT_ID` values;
-- automatic host boot ID discovery is Linux-only in Node.js. Non-Linux auto
-  identity mode uses random boot IDs unless the caller supplies `bootId`;
+- automatic host boot ID discovery is not part of Node.js core writer auto
+  identity mode. Auto identity uses explicit `bootId` or generated SDK-local
+  IDs;
 - Node.js reader and writer file access uses `Buffer` plus positioned
   `node:fs` reads/writes. npm mmap candidates checked during SOW-0054 were
   native binding packages, so no mmap dependency is loaded by the SDK runtime
@@ -788,13 +792,13 @@ Current Python writer feature slice:
   but is never selected for deletion to satisfy retention limits. Omitted or
   zero-valued limits are disabled. `log.enforce_retention()` applies retention
   without requiring a rotation or close;
-- pure cross-SDK cooperative lockfile with stale-owner detection, plus a
-  secondary platform file lock, to protect the one-writer contract among
-  cooperating SDK writers. POSIX targets use `fcntl.flock`; Windows uses the
-  Python standard-library `msvcrt` byte-range lock API. On non-Linux targets
-  without procfs process start times, stale-owner cleanup uses conservative
-  process-liveness checks so a live PID is never treated as stale only because
-  its start time is unavailable;
+- optional pure cross-SDK cooperative lockfile with stale-owner detection, plus
+  a secondary platform file lock on the lock file, when callers explicitly
+  acquire `journal.lock.WriterLock.acquire(path)`. POSIX targets use
+  `fcntl.flock`; Windows uses the Python standard-library `msvcrt` byte-range
+  lock API. On non-Linux targets without procfs process start times,
+  stale-owner cleanup uses conservative process-liveness checks so a live PID
+  is never treated as stale only because its start time is unavailable;
 - directory writer archive/rotation paths fsync file contents on every target.
   POSIX targets also fsync parent directories through directory file
   descriptors where Python exposes them. Windows skips parent-directory fsync

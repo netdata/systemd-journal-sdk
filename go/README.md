@@ -23,12 +23,10 @@ Current writer scope:
   reopen/append for files created by this writer;
 - data and field de-duplication;
 - global entry arrays and per-DATA entry links;
-- pure cross-SDK cooperative lockfile with stale-owner detection to prevent
-  multiple SDK writers from opening the same file. Linux uses `/proc`
-  boot/process-start checks plus non-blocking `flock`; FreeBSD and macOS use
-  boot-time and `ps` process-start checks plus `flock`; Windows uses process
-  creation time checks plus non-blocking `LockFileEx` on a byte range outside
-  journal data;
+- optional pure cross-SDK cooperative lockfile with stale-owner detection when
+  callers explicitly acquire `journal.AcquireWriterLock(path)`. The journal
+  file format itself does not define a lock protocol, so core writers do not
+  lock;
 - Forward Secure Sealing TAG writing with `journal.SealOptions`, including
   stock `journalctl --verify --verify-key` coverage for sealed files generated
   by this writer;
@@ -97,17 +95,20 @@ Platform behavior:
 - FreeBSD, macOS, and Windows build the Go SDK without CGO or libsystemd.
   Files generated on those targets are expected to be copied to Linux for stock
   systemd verification when stock tooling is required.
-- FreeBSD and macOS writer locking requires `ps` in `PATH`; the SDK forces
-  `LC_ALL=C` for process-start evidence so lock ownership is locale-stable.
-- `LogIdentityAuto` loads the host boot ID only on Linux. On other targets,
-  callers should pass explicit IDs when deterministic identity matters, or use
-  `LogIdentityStrict` to require them.
+- `LogIdentityAuto` uses explicit IDs when provided and generates SDK-local
+  IDs for missing values. It does not read host identity files or platform
+  identity services. Callers that need host systemd/journald identity should
+  pass explicit IDs, or use `LogIdentityStrict` to require them.
+- Optional writer locking is a separate helper acquired with
+  `journal.AcquireWriterLock(path)`. Linux uses procfs boot/process-start
+  evidence; FreeBSD and macOS use native boot-time plus conservative process
+  liveness evidence; Windows uses process creation-time evidence. The core
+  writer constructors never acquire this helper.
 - Directory fsync is performed on Unix. Non-Unix targets still sync journal
   file contents, but parent-directory metadata is not fsynced by this SDK; newly
   created or renamed files rely on the target filesystem's crash semantics.
-- Unknown non-Unix/non-Windows targets do not provide writer file-locking
-  guarantees; writer open fails instead of silently writing without a platform
-  lock.
+- Unknown non-Unix/non-Windows targets fail optional lock acquisition instead
+  of silently pretending to lock.
 
 Basic usage:
 
@@ -211,8 +212,9 @@ does not keep parallel active files.
 Unset rotation and retention limits are disabled; enabling a limit with zero or
 a negative value makes `NewLog()` fail. `LogOpenEager` creates or opens the
 active file during construction so callers can reject a job before accepting
-input. `LogIdentityStrict` requires explicit machine and boot IDs instead of
-falling back to host files or generated IDs.
+input. `LogIdentityAuto` uses explicit IDs when provided and otherwise
+generates SDK-local IDs. `LogIdentityStrict` requires explicit machine and boot
+IDs.
 
 `ConfiguredDirectory()` returns the root passed to `NewLog()`.
 `JournalDirectory()` returns the effective `<directory>/<machine-id>` directory
@@ -220,8 +222,9 @@ to pass to stock `journalctl --directory`. `ActivePath()` returns the exact
 active journal path after eager open or a successful append; it is empty before
 lazy-open creation.
 `Log` is a single-writer object; callers must serialize method calls on one
-instance. The SDK writer lock prevents another cooperating SDK writer from
-owning the same file, but it is not a per-append goroutine mutex.
+instance. The journal file contract is one writer per file. Acquire
+`journal.AcquireWriterLock(path)` when the caller wants the optional
+cooperating-writer lock helper to reject another SDK writer for the same file.
 
 Duration rotation is checked before append using the incoming entry realtime and
 the active file head realtime. Retention counts the tracked active/current file

@@ -80,7 +80,16 @@ func TestGoWriterLiveInterruptionReopenAndVerify(t *testing.T) {
 	assertLiveHarnessSummary(t, output, 160)
 	verifyJournalctl(t, journalPath)
 
-	w, err := Open(journalPath)
+	lock, err := AcquireWriterLock(journalPath)
+	if err != nil {
+		t.Fatalf("AcquireWriterLock(interrupted journal) error = %v", err)
+	}
+	defer func() {
+		if err := lock.Release(); err != nil {
+			t.Fatalf("Release(interrupted journal) error = %v", err)
+		}
+	}()
+	w, err := OpenWithOptions(journalPath, Options{})
 	if err != nil {
 		t.Fatalf("Open(interrupted journal) error = %v", err)
 	}
@@ -156,10 +165,10 @@ func TestGoWriterLiveRejectsSecondWriter(t *testing.T) {
 	}()
 
 	waitForReadyFile(t, readyFile, done, stdout.String, stderr.String)
-	w, err := Open(journalPath)
+	lock, err := AcquireWriterLock(journalPath)
 	if err == nil {
-		_ = w.Close()
-		t.Fatalf("Open succeeded while the live writer held the journal lock")
+		_ = lock.Release()
+		t.Fatalf("AcquireWriterLock succeeded while the live writer held the journal lock")
 	}
 }
 

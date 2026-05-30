@@ -29,7 +29,6 @@ ruzstd = "0.8.3"
 lz4_flex = { version = "0.13.1", default-features = false, features = ["std", "safe-decode", "checked-decode"] }
 lzma-rust2 = { version = "0.16.3", default-features = false, features = ["std", "xz"] }
 libc = "0.2"
-hex = "0.4"
 tempfile = "3"
 cbindgen = "0.28.0"
 

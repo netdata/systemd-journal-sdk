@@ -5,10 +5,7 @@ import os
 import struct
 import lzma
 import mmap
-from .lock import WriterLock
-from ._platform import (
-    boot_id_bytes,
-    lock_fd_exclusive,
+from ._platform_io import (
     read_at as _read_fd_at,
     rename_requires_closed_file,
     sync_parent_directory,
@@ -137,10 +134,9 @@ class _FileArena:
 
 
 class Writer:
-    def __init__(self, fd, path, lock):
+    def __init__(self, fd, path):
         self._fd = fd
         self._path = path
-        self._lock = lock
         self._header = None
         self._append_offset = 0
         self._next_seqnum = 1
@@ -171,13 +167,11 @@ class Writer:
     @staticmethod
     def create(path, opts=None):
         opts = opts or {}
-        lock = WriterLock.acquire(path)
         fd = None
         try:
             fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o640)
-            _lock_fd(fd)
             os.ftruncate(fd, 0)
-            w = Writer(fd, path, lock)
+            w = Writer(fd, path)
             w._compression = _normalize_compression(opts.get('compression', COMPRESSION_NONE))
             w._compact = opts.get('compact') is True or opts.get('format') == 'compact'
             w._live_publish_every_entries = _normalize_live_publish_every_entries(
@@ -201,20 +195,13 @@ class Writer:
         except Exception:
             if fd is not None:
                 os.close(fd)
-            lock.release()
             raise
 
     @staticmethod
     def open(path, opts=None):
         opts = opts or {}
-        lock = WriterLock.acquire(path)
+        fd = os.open(path, os.O_RDWR)
         try:
-            fd = os.open(path, os.O_RDWR)
-        except Exception:
-            lock.release()
-            raise
-        try:
-            _lock_fd(fd)
             header_buf = os.read(fd, HEADER_SIZE)
             if len(header_buf) < HEADER_SIZE:
                 raise ValueError('cannot read journal header')
@@ -245,7 +232,6 @@ class Writer:
                 compression = COMPRESSION_NONE
         except Exception:
             os.close(fd)
-            lock.release()
             raise
 
         try:
@@ -253,13 +239,13 @@ class Writer:
             now_ms = _current_time_ms()
             monotonic_base = header['tail_entry_monotonic'] // 1000 if header['tail_entry_monotonic'] > 0 else 0
 
-            w = Writer(fd, path, lock)
+            w = Writer(fd, path)
             w._header = header
             w._append_offset = align8(header['tail_object_offset'] + tail_size)
             w._next_seqnum = header['tail_entry_seqnum'] + 1
             w._boot_id = header['tail_entry_boot_id']
             if is_zero_uuid(w._boot_id):
-                w._boot_id = _read_boot_id() or header['file_id']
+                w._boot_id = _uuid_option(opts.get('boot_id', opts.get('bootId')), header['file_id'])
             w._started = now_ms - monotonic_base
             w._compression = compression
             w._compress_threshold = DEFAULT_COMPRESS_THRESHOLD
@@ -277,7 +263,6 @@ class Writer:
             return w
         except Exception:
             os.close(fd)
-            lock.release()
             raise
 
     def _initialize(self, opts):
@@ -976,12 +961,6 @@ class Writer:
         except Exception as e:
             if not close_err:
                 close_err = e
-        try:
-            self._lock.release()
-        except Exception as e:
-            if not close_err:
-                close_err = e
-        self._lock = None
         self._closed = True
         if close_err:
             raise close_err
@@ -1019,12 +998,6 @@ class Writer:
             except Exception as e:
                 if not close_err:
                     close_err = e
-            try:
-                self._lock.release()
-            except Exception as e:
-                if not close_err:
-                    close_err = e
-            self._lock = None
             if close_err:
                 raise close_err
         except Exception:
@@ -1051,22 +1024,14 @@ class Writer:
             if not close_err:
                 close_err = e
         if close_err:
-            try:
-                self._lock.release()
-            finally:
-                self._lock = None
-                self._closed = True
+            self._closed = True
             raise close_err
         try:
             os.rename(self._path, path)
             self._path = path
             _sync_parent_directory(path)
         finally:
-            try:
-                self._lock.release()
-            finally:
-                self._lock = None
-                self._closed = True
+            self._closed = True
 
     def current_size(self):
         return self._append_offset
@@ -1181,10 +1146,6 @@ def _sync_parent_directory(path):
 def _current_time_ms():
     import time
     return int(time.time() * 1000)
-
-
-def _lock_fd(fd):
-    lock_fd_exclusive(fd)
 
 
 def _normalize_field_name_policy(value):
@@ -1319,10 +1280,6 @@ def _uuid_option(value, fallback):
     if not isinstance(value, bytes) or len(value) != 16:
         raise ValueError('uuid options must be 16 bytes or 32 hex characters')
     return value
-
-
-def _read_boot_id():
-    return boot_id_bytes()
 
 
 def _normalize_compression(value):

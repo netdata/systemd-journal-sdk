@@ -451,7 +451,6 @@ fn test_default_chain_reopens_online_file() {
         )
         .unwrap();
     journal.sync().unwrap();
-    journal.release_writer_lock().unwrap();
     drop(journal);
 
     let corrupt_path = journal_dir.join(format!(
@@ -533,8 +532,7 @@ fn test_default_chain_discards_empty_online_file_and_continues_sequence() {
     let empty_file = File::from_path(&empty_path).expect("empty journal path should parse");
     let boot_id = test_boot_id();
     let options = JournalFileOptions::new(machine_id, boot_id, seqnum_id).with_keyed_hash(true);
-    let mut empty_journal = JournalFile::<MmapMut>::create(&empty_file, options).unwrap();
-    empty_journal.release_writer_lock().unwrap();
+    let empty_journal = JournalFile::<MmapMut>::create(&empty_file, options).unwrap();
     drop(empty_journal);
 
     {
@@ -601,7 +599,6 @@ fn test_strict_systemd_naming_reopens_existing_system_journal() {
         )
         .unwrap();
     journal.sync().unwrap();
-    journal.release_writer_lock().unwrap();
     drop(journal);
 
     let config = test_config().with_strict_systemd_naming(true);
@@ -665,7 +662,6 @@ fn test_strict_systemd_naming_archives_online_chain_active() {
             .unwrap();
     }
     journal.sync().unwrap();
-    journal.release_writer_lock().unwrap();
     drop(journal);
 
     let mut log = Log::new(dir.path(), test_config().with_strict_systemd_naming(true)).unwrap();
@@ -728,7 +724,6 @@ fn test_default_chain_tail_ignores_lower_strict_system_journal() {
             .unwrap();
     }
     chain_journal.sync().unwrap();
-    chain_journal.release_writer_lock().unwrap();
     drop(chain_journal);
 
     let strict_boot_id = uuid::Uuid::from_u128(0x5152535455565758595a5b5c5d5e5f60);
@@ -751,7 +746,6 @@ fn test_default_chain_tail_ignores_lower_strict_system_journal() {
             .unwrap();
     }
     strict_journal.sync().unwrap();
-    strict_journal.release_writer_lock().unwrap();
     drop(strict_journal);
 
     let mut log = Log::new(dir.path(), test_config()).unwrap();

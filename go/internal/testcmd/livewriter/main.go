@@ -71,6 +71,17 @@ func main() {
 		os.Exit(2)
 	}
 
+	lock, err := journal.AcquireWriterLock(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "acquire writer lock: %v\n", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if err := lock.Release(); err != nil {
+			fmt.Fprintf(os.Stderr, "release writer lock: %v\n", err)
+		}
+	}()
+
 	opts := journal.Options{Compression: compression, CompressThresholdBytes: compressThreshold, Compact: compact}
 	if seal {
 		if sealIntervalUsec == 0 || sealStartUsec == 0 {

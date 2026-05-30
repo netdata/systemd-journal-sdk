@@ -4,7 +4,7 @@ pub mod file;
 pub mod filter;
 mod guarded_cell;
 pub mod hash;
-mod lock;
+pub mod lock;
 pub mod mmap;
 mod object;
 pub mod offset_array;

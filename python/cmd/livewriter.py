@@ -8,6 +8,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from journal import Writer
+from journal.lock import WriterLock
 from journal.seal import SealOptions
 
 
@@ -88,8 +89,10 @@ def main():
             start_usec=args.seal_start_usec,
         )
 
-    writer = Writer.create(args.path, writer_options)
+    lock = WriterLock.acquire(args.path)
+    writer = None
     try:
+        writer = Writer.create(args.path, writer_options)
         realtime_base = 1_700_001_000_000_000
         for seq in range(args.entries):
             if args.binary_fixture and seq == 0:
@@ -161,12 +164,22 @@ def main():
 
         writer.close()
     except Exception as e:
+        if writer is not None:
+            try:
+                writer.close()
+            except Exception:
+                pass
         try:
-            writer.close()
+            lock.release()
         except Exception:
             pass
         print(str(e), file=sys.stderr)
         sys.exit(1)
+    finally:
+        try:
+            lock.release()
+        except Exception:
+            pass
 
     sys.exit(0)
 

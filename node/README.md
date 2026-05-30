@@ -48,7 +48,7 @@ no system journal library linkage.
   default `FIELD_NAME_POLICY_JOURNALD`, app-facing
   `FIELD_NAME_POLICY_JOURNAL_APP`, and structure-level
   `FIELD_NAME_POLICY_RAW`
-- Pure cross-SDK cooperative lockfile with stale-owner detection to prevent multiple SDK writers from opening the same file
+- Optional pure cross-SDK cooperative lockfile with stale-owner detection when callers explicitly acquire `WriterLock.acquire(path)`
 - Native systemd writers do not participate in the SDK lock protocol and remain an operational exclusion
 
 ### journalctl
@@ -86,17 +86,19 @@ Linux, FreeBSD, macOS, and Windows for SDK import, file reading/writing,
 directory writing, and file-backed journalctl operation.
 
 Automatic identity uses explicit caller options first. In `Log` auto mode,
-Linux host machine ID and boot ID are used when available; otherwise the writer
-falls back to random UUIDs. On non-Linux targets, pass `machineId` and `bootId`
-or use `identityMode: 'strict'` when stable host identity is required across
-processes or application restarts.
+missing IDs are generated as SDK-local UUIDs. The core writer does not read
+host identity files or platform identity services. Pass `machineId` and
+`bootId`, or use `identityMode: 'strict'`, when stable host identity is
+required across processes or application restarts.
 
-Writer locking uses an exclusive SDK lock file next to the journal. On Linux,
-stale-lock detection records the kernel boot ID and `/proc/<pid>/stat` process
-start time. On FreeBSD, macOS, Windows, and restricted Linux environments, stale
-cleanup falls back to `process.kill(pid, 0)` liveness checks and treats unknown
-or reused process identity as still held. This conservative fallback preserves
-the one-writer safety contract; a stale lock may require manual removal if the
+Optional writer locking uses an exclusive SDK lock file next to the journal
+only when callers explicitly acquire `WriterLock.acquire(path)`. On Linux,
+stale-lock detection
+records the kernel boot ID and `/proc/<pid>/stat` process start time. On
+FreeBSD, macOS, Windows, and restricted Linux environments, stale cleanup falls
+back to `process.kill(pid, 0)` liveness checks and treats unknown or reused
+process identity as still held. This conservative fallback preserves the
+one-writer safety contract; a stale lock may require manual removal if the
 platform cannot prove that the recorded owner is gone.
 
 Directory rotation and retention fsync journal files on every target. POSIX
@@ -233,7 +235,7 @@ while lazy archived-only construction defers enforcement until the first append
 opens the active file, before the first entry is written.
 Use `openMode: 'eager'` to create/open the active file during construction, and
 `identityMode: 'strict'` with `machineId` and `bootId` when callers must reject
-missing identity instead of using host/random fallback. `configuredDirectory()`,
+missing identity instead of generating SDK-local IDs. `configuredDirectory()`,
 `journalDirectory()`, `activeFilePath()`, `machineID()`, `bootID()`, and
 `sourceName()` expose the configured root, effective `journalctl --directory`
 path, active path, and identity. `lifecycle` callbacks receive `created`,
@@ -253,8 +255,9 @@ Timestamp option key presence distinguishes explicit zero from an omitted
 default. On reopen, `Log` seeds the monotonic clamp floor from a persisted chain
 tail only when the tail entry boot ID matches the current writer boot ID.
 `Log` is a single-writer object; callers must serialize method calls on one
-instance. The SDK writer lock prevents another cooperating SDK writer from
-owning the same file, but it is not a per-append JavaScript mutex.
+instance. The journal file contract is one writer per file. Acquire
+`WriterLock.acquire(path)` when the caller wants the optional cooperating-writer
+lock helper to reject another SDK writer for the same file.
 `fieldNamePolicy` / `field_name_policy` selects the writer field-name layer.
 The default `FIELD_NAME_POLICY_JOURNALD` preserves trusted systemd fields such
 as `_HOSTNAME` and `_TRANSPORT`. `FIELD_NAME_POLICY_JOURNAL_APP` drops caller

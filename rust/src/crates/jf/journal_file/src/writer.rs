@@ -584,7 +584,7 @@ impl JournalWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{load_boot_id, Direction, JournalFile, JournalReader, Location};
+    use crate::{Direction, JournalFile, JournalReader, Location};
     use memmap2::Mmap;
     use std::collections::HashMap;
     use tempfile::NamedTempFile;
@@ -615,7 +615,7 @@ mod tests {
         let journal_path = temp_file.path();
 
         // Step 1: Create and write to the journal
-        let boot_id = load_boot_id().unwrap_or([1; 16]); // Use real boot_id or fallback
+        let boot_id = [1; 16];
         let num_entries = test_data.values().next().unwrap().len();
 
         let options = JournalFileOptions::new(

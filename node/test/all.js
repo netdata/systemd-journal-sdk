@@ -58,6 +58,7 @@ import { decompressZstSync } from '../src/lib/compress.js';
 import { fsprgGenMK, fsprgGenState0, fsprgEvolve, fsprgSeek, fsprgGetKey, fsprgGetEpoch } from '../src/lib/fss.js';
 import { verifyFile, verifyFileWithKey, VerificationError } from '../src/lib/verify.js';
 import { SealOptions, COMPATIBLE_SEALED, COMPATIBLE_SEALED_CONTINUOUS } from '../src/lib/seal.js';
+import { WriterLock } from '../src/lib/lock.js';
 import {
   UNKNOWN_PROCESS_START_TIME,
   lockOwnerIsActive,
@@ -1331,15 +1332,21 @@ for (const [length, expected] of sipVectors) {
 {
   const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
   try {
+    const unlockedPath = join(tempDir, 'writer-unlocked-default.journal');
+    const unlocked = Writer.create(unlockedPath);
+    unlocked.close();
+    assert.equal(existsSync(`${unlockedPath}.lock`), false);
+
     const journalPath = join(tempDir, 'writer-lock.journal');
+    const lock = WriterLock.acquire(journalPath);
     const writer = Writer.create(journalPath);
     try {
       writer.append([{ name: 'MESSAGE', value: 'held' }]);
       assert.ok(existsSync(`${journalPath}.lock`));
-      assert.throws(() => Writer.open(journalPath), /journal writer lock held/);
-      assert.throws(() => Writer.create(journalPath), /journal writer lock held/);
+      assert.throws(() => WriterLock.acquire(journalPath), /journal writer lock held/);
     } finally {
       writer.close();
+      lock.release();
     }
     assert.equal(existsSync(`${journalPath}.lock`), false);
     const reopened = Writer.open(journalPath);

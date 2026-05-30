@@ -20,8 +20,11 @@ pub enum LogOpenMode {
 /// Controls how missing machine and boot identities are handled.
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
 pub enum LogIdentityMode {
-    /// Use explicit IDs when provided, otherwise load host IDs and generate
-    /// missing IDs as a final fallback.
+    /// Use explicit IDs when provided, otherwise generate SDK-local IDs.
+    ///
+    /// This mode does not probe host identity. Callers that need the current
+    /// host's systemd/journald identity must call an optional identity helper
+    /// explicitly and pass the IDs into the config.
     #[default]
     Auto,
     /// Require explicit machine ID and boot ID in the config.

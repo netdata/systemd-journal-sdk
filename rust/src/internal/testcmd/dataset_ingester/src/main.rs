@@ -184,7 +184,6 @@ fn finalize_journal_file(
         }
         _ => return Err(anyhow!("invalid final state: {final_state}")),
     }
-    journal_file.release_writer_lock()?;
     Ok(())
 }
 

@@ -2,6 +2,5 @@
 
 package journal
 
-func readHostBootID() (UUID, error) {
-	return readUUIDFile("/proc/sys/kernel/random/boot_id")
-}
+// Host identity discovery is intentionally kept out of core writer code.
+// Optional identity helpers should live in a separate public API, not here.

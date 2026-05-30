@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { SealOptions } from '../../src/lib/seal.js';
 import { Writer } from '../../src/lib/writer.js';
+import { WriterLock } from '../../src/lib/lock.js';
 
 function parseArgs(argv) {
   const args = {
@@ -148,10 +149,12 @@ async function main() {
       args.sealStartUsec,
     );
   }
-  const writer = Writer.create(args.path, writerOptions);
+  const lock = WriterLock.acquire(args.path);
+  let writer;
   const realtimeBase = 1_700_001_000_000_000n;
 
   try {
+    writer = Writer.create(args.path, writerOptions);
     for (let i = 0; i < args.entries; i++) {
       let fields;
       if (args.binaryFixture && i === 0) {
@@ -233,9 +236,17 @@ async function main() {
     }
 
     writer.close();
+    lock.release();
   } catch (error) {
+    if (writer) {
+      try {
+        writer.close();
+      } catch {
+        // Preserve the original failure.
+      }
+    }
     try {
-      writer.close();
+      lock.release();
     } catch {
       // Preserve the original failure.
     }

@@ -34,6 +34,10 @@ Do not use this skill for:
 - Each language writer must expose two compatible append shapes: a systemd-compatible raw full-field `KEY=value` byte payload layer and a structured binary-safe `{name, value}` SDK layer. Structured is the SDK hot path for already-structured producers; raw full payloads are the systemd-compatible low-level layer.
 - Each language writer must expose the same three field-name policy layers: `RAW`, `JOURNALD`, and `JOURNAL-APP`. `JOURNALD` is the default and preserves trusted protected fields such as `_HOSTNAME`; `JOURNAL-APP` emulates untrusted application-facing journald restrictions and drops invalid caller fields; `RAW` allows every field name the DATA structure can represent directly, currently non-empty and no `=` in the field name.
 - The SDK must not perform producer-specific field-name remapping. Do not add or keep SDK behavior that emits project-specific mapping marker fields or project-specific mapped field prefixes. Consumers that need naming transformations must perform them before calling the SDK.
+- Core journal readers and writers are file-format implementations only. They must not execute external programs, discover host identity, read host identity sources, or enforce cooperating-writer locks by default. They must operate on explicit caller-provided paths, bytes, timestamps, machine IDs, boot IDs, seqnum IDs, and options.
+- Systemd/journald compatibility is a policy/API layer above the file-format core. It may require caller-provided machine and boot identity, but it must not silently probe host identity. Callers that want automatic identity discovery must explicitly call the optional identity helper and pass the result in.
+- Cooperating-writer locking is an optional helper/wrapper, independent from systemd compatibility. The journal format has a one-writer operational contract, but the lock protocol is not part of the systemd journal file format and must not be described as systemd compatibility. Core writer constructors must not expose lock-enable options; callers acquire and release the optional lock helper separately around writer use.
+- Host-observation mechanisms such as `/proc`, `/host/proc`, `/etc/machine-id`, platform registries, `sysctl`, `system_profiler`, `ps`, shell commands, and subprocess APIs are forbidden in core reader/writer runtime paths. They are allowed only in explicitly named optional helper code and tests for that helper.
 - Low-level writers must sort ENTRY DATA references by on-disk DATA object offset and remove duplicate DATA references by default, matching systemd. A trusted unique-payload option may skip only duplicate elimination when the caller guarantees no duplicate full payloads in one entry; it must not skip offset sorting unless a later SOW records measured evidence, compatibility validation, and a user decision for a non-byte-identity mode.
 - Jenkins lookup3 hashing must match systemd `jenkins_hashlittle2()`, including the empty payload value `0xdeadbeefdeadbeef`.
 - The final writer target includes compression and Forward Secure Sealing, but implementation may be phased.
@@ -90,6 +94,8 @@ Do not use this skill for:
   and require all SDK writer pairs to reject a second active writer before the
   contender publishes a ready file, plus stale-lock cleanup after crashed
   writers.
+  This matrix applies to optional lock helpers/wrappers, not to the core writer
+  constructors after SOW-0071.
 - For directory reader or file-backed `journalctl --directory` changes, run
   `tests/interoperability/run_directory_matrix.py` and require stock
   journalctl plus Rust, Go, Node.js, and Python rewrites to agree on traversal,
