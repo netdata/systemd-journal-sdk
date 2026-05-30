@@ -759,7 +759,8 @@ Current Python writer feature slice:
   each entry and `_SOURCE_REALTIME_TIMESTAMP=<usec>` when source realtime is
   supplied;
 - direct-file writer hot-path reads and writes use a whole-file mapped arena,
-  with fd fallback before mapping and during cleanup;
+  with a positional file-I/O arena fallback when mmap is unavailable and fd
+  fallback before mapping and during cleanup;
 - zero-entry crash-created active files are discarded on reopen before append so
   sequence numbers continue from the existing chain tail;
 - entry-count, file-size, and active-file-duration rotation. Duration rotation
@@ -770,8 +771,17 @@ Current Python writer feature slice:
   zero-valued limits are disabled. `log.enforce_retention()` applies retention
   without requiring a rotation or close;
 - pure cross-SDK cooperative lockfile with stale-owner detection, plus a
-  secondary POSIX `flock`, to protect the one-writer contract among
-  cooperating SDK writers;
+  secondary platform file lock, to protect the one-writer contract among
+  cooperating SDK writers. POSIX targets use `fcntl.flock`; Windows uses the
+  Python standard-library `msvcrt` byte-range lock API. On non-Linux targets
+  without procfs process start times, stale-owner cleanup uses conservative
+  process-liveness checks so a live PID is never treated as stale only because
+  its start time is unavailable;
+- directory writer archive/rotation paths fsync file contents on every target.
+  POSIX targets also fsync parent directories through directory file
+  descriptors where Python exposes them. Windows skips parent-directory fsync
+  because Python's standard library exposes file `_commit`/`fsync`, not a
+  durable directory-handle sync API;
 - Forward Secure Sealing TAG writing with configurable deterministic test
   options and stock `journalctl --verify --verify-key` validation for generated
   sealed files;

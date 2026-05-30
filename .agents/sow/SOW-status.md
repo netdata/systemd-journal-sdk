@@ -10,6 +10,9 @@ Last updated: 2026-05-30
 - SOW-0068 - Rust Cross Platform Portability: in-progress, reviewed, ready for
   orchestrator merge. Rust SDK crates are Windows-target clean, Linux runtime
   validation passed, and all five read-only reviewers voted production grade.
+- SOW-0069 - Python Cross Platform Portability: in-progress. Implementation
+  commit `2b7f422` is reviewed by the approved whole-SOW read-only reviewer
+  pool with unanimous `PRODUCTION GRADE` votes; ready for orchestrator merge.
 
 ## Pending
 

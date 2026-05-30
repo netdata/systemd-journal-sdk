@@ -55,13 +55,15 @@ no system journal library linkage.
 - Directory writer entries include indexed `_BOOT_ID=<boot-id>` metadata, and
   include `_SOURCE_REALTIME_TIMESTAMP=<usec>` when `source_realtime_usec` /
   `sourceRealtimeUsec` is provided
-- Whole-file mapped arena writes for the direct-file writer hot path, with fd
-  fallback only before mapping and during cleanup
+- Whole-file mapped arena writes for the direct-file writer hot path, with
+  positional file-I/O fallback when mmap is unavailable
 - Shared field-name policy layers for direct-file and directory writers:
   default `FIELD_NAME_POLICY_JOURNALD`, app-facing
   `FIELD_NAME_POLICY_JOURNAL_APP`, and structure-level
   `FIELD_NAME_POLICY_RAW`
-- Pure cross-SDK cooperative lockfile with stale-owner detection, plus a secondary advisory `flock`, to prevent multiple SDK writers from opening the same file
+- Pure cross-SDK cooperative lockfile with stale-owner detection, plus a
+  secondary platform file lock, to prevent multiple SDK writers from opening
+  the same file
 - Native systemd writers do not participate in the SDK lock protocol and remain an operational exclusion
 
 ### journalctl
@@ -89,6 +91,27 @@ Python 3.14+ provides the `compression.zstd` standard library module needed for
 zstd DATA objects and whole-file `.journal.zst` inputs. Non-zstd reads do not
 use that module. LZ4 DATA object compression/decompression requires
 `lz4==4.4.5`.
+
+## Platform Behavior
+
+The package import path is safe on Linux, FreeBSD, macOS, and Windows. POSIX
+targets load `fcntl` only when acquiring a file lock. Windows uses Python's
+standard-library `msvcrt` byte-range lock API instead.
+
+The writer uses `os.pread` / `os.pwrite` where Python provides them and falls
+back to seek-preserving `os.read` / `os.write` positional I/O otherwise. If a
+writable mmap cannot be created or resized, the direct writer falls back to the
+same positional file-I/O arena.
+
+Directory rotation and retention fsync journal files on every target. POSIX
+targets also fsync parent directories through directory file descriptors where
+available. Windows skips parent-directory fsync because Python exposes file
+fsync there, not a portable directory-handle fsync.
+
+Lock stale-owner detection uses Linux procfs boot/process start evidence when
+available. On other targets it uses conservative process-liveness checks, so a
+live PID is not treated as stale merely because procfs start-time evidence is
+unavailable.
 
 ## Basic Reader Usage
 
