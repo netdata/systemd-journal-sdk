@@ -4,8 +4,8 @@
 
 Status: open
 
-Sub-state: pending portability implementation for Linux, FreeBSD, macOS, and
-Windows.
+Sub-state: decomposed into per-language child SOWs for parallel worktree
+execution; parent closes after child SOWs and shared validation reconcile.
 
 ## Requirements
 
@@ -405,6 +405,10 @@ Failure handling:
   FreeBSD, macOS, and Windows.
 - Recorded current blockers from local source inspection and direct Go/Rust
   Windows build checks.
+- Split implementation into per-language child SOWs so the user can spawn
+  independent implementation agents in isolated git worktrees:
+  `SOW-0067` for Go, `SOW-0068` for Rust, `SOW-0069` for Python, and
+  `SOW-0070` for Node.js.
 
 ## Validation
 
@@ -473,8 +477,14 @@ Lessons:
 
 Follow-up mapping:
 
-- None yet. Child SOWs may be created after the portability audit if the full
-  scope is too large for one implementation pass.
+- `SOW-0067-20260530-go-cross-platform-portability.md` tracks Go
+  implementation.
+- `SOW-0068-20260530-rust-cross-platform-portability.md` tracks Rust
+  implementation.
+- `SOW-0069-20260530-python-cross-platform-portability.md` tracks Python
+  implementation.
+- `SOW-0070-20260530-node-cross-platform-portability.md` tracks Node.js
+  implementation.
 
 ## Outcome
 
@@ -486,7 +496,7 @@ Pending.
 
 ## Followup
 
-None yet.
+- Child implementation SOWs: SOW-0067, SOW-0068, SOW-0069, and SOW-0070.
 
 ## Regression Log
 

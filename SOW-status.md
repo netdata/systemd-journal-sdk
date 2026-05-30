@@ -6,10 +6,14 @@
 
 ## Pending
 
+- `SOW-0070-20260530-node-cross-platform-portability.md` - open. Node.js-only child of SOW-0063 for Linux, FreeBSD, macOS, and Windows portability without native mmap/systemd runtime dependencies.
+- `SOW-0069-20260530-python-cross-platform-portability.md` - open. Python-only child of SOW-0063 for import, reader, writer, locking, directory, and platform behavior portability.
+- `SOW-0068-20260530-rust-cross-platform-portability.md` - open. Rust-only child of SOW-0063 for portable time, locking, process identity, boot ID, directory sync, and target checks while preserving Rust reference behavior.
+- `SOW-0067-20260530-go-cross-platform-portability.md` - open. Go-only child of SOW-0063 for portable locking, process identity, directory sync, target checks, and Linux hot-path preservation.
 - `SOW-0066-20260530-v1-release-and-registry-publication.md` - open. Publish the final stable `v1.0.0` SDK across language registries and versioned module tags after compatibility, portability, real-corpus validation, parity closure, and release checks pass.
 - `SOW-0065-20260530-parallel-language-parity-closure.md` - open. Future post-stabilization phase to close remaining Go/Python/Node.js parity and performance gaps against Rust, potentially using one approved worktree and implementation agent per language after prerequisite gates close.
 - `SOW-0064-20260530-real-world-journal-corpus-evaluation.md` - open. Build streaming, metrics-only tooling to evaluate the workstation's large real journal corpus with systemd, Rust, and Go readers/writers, measuring logical completeness, regenerated-output validity, speed, memory, I/O, I/O multiplication, footprint changes, and byte identity where meaningful.
-- `SOW-0063-20260530-cross-platform-portability.md` - open. Make Rust, Go, Node.js, and Python SDK readers/writers portable to Linux, FreeBSD, macOS, and Windows, including platform-specific locking, mmap/read-write fallback, directory sync, cross-OS interoperability, and Linux stock validation of non-Linux generated files.
+- `SOW-0063-20260530-cross-platform-portability.md` - open umbrella. Cross-platform portability parent split into SOW-0067 through SOW-0070; closes after child SOWs and shared validation/docs reconcile.
 - `SOW-0026-20260526-netdata-sdk-integration.md` - open, last pending integration SOW. Integrate the SDK into Netdata NetFlow reader/writer paths, OTEL writer path, OTEL signal viewer reader path, and no-libsystemd systemd-journal reader mode. Blocked until SOW-0009 shows acceptable performance or the user explicitly accepts a staged exception, and until the user authorizes the Netdata repository work target and dependency strategy. Netdata writers must default to compact format after integration.
 - `SOW-0047-20260528-netdata-netflow-sdk-integration.md` - open. Integrate the SDK into Netdata NetFlow writer and reader/query paths after the inventory and performance gates are accepted.
 - `SOW-0048-20260528-netdata-otel-writer-sdk-integration.md` - open. Integrate the SDK compact-default structured writer into Netdata OTEL logs ingestion after the inventory and writer gates are accepted.
