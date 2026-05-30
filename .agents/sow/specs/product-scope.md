@@ -321,7 +321,9 @@ Current Go writer feature slice:
   `Options.Compact` is enabled;
 - uncompressed DATA objects by default;
 - optional zstd, xz, and lz4-compressed DATA object writing with configurable
-  compression threshold using the shared systemd threshold policy;
+  compression threshold using the shared systemd threshold policy, including
+  zstd frame content-size metadata required by stock systemd verification and
+  readback of large compressed payloads;
 - keyed hash tables using the journal file ID;
 - byte-safe DATA field values through `Field.Value []byte`;
 - high-level directory writing with Netdata-compatible chain active naming by

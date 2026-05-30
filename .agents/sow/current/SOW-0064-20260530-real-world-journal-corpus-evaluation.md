@@ -837,7 +837,10 @@ Discrepancy-first repair progress:
     regeneration of multi-boot files, matching the Go writer capability;
   - run mode now copies one input journal at a time into `.local` scratch before
     comparing readers and regenerators, then deletes that snapshot. This avoids
-    false discrepancies from active journals growing between per-driver runs.
+    false discrepancies from active journals growing between per-driver runs;
+  - Go zstd-compressed DATA frames now include content-size metadata, matching
+    Rust behavior and allowing stock systemd to verify and read back large
+    compressed payloads in compact-zstd files.
 - One-file end-to-end evidence after fixes:
   - report: `.local/corpus-eval/single-real-after-seqnum-20260530T213000Z/report.json`
   - input files: 1
@@ -860,6 +863,22 @@ Discrepancy-first repair progress:
   - input bytes: 864,026,624
   - results: 1,100
   - readers compared: systemd, Rust, Go
+  - writer modes compared: Rust/Go regular, compact, compact zstd, compact FSS
+  - discrepancies: 0
+- Full-corpus run progress after the snapshot fix found two Go compact-zstd
+  discrepancies on large compressed payload files; the run was stopped before
+  completion to avoid spending hours on known-bad output. The Go zstd
+  content-size fix repaired both targeted files:
+  - report: `.local/corpus-eval/debug-go-zstd-after-fix-20260530T214517Z/report.json`
+  - input files: 2
+  - results: 10
+  - writer modes compared: Rust/Go compact zstd
+  - discrepancies: 0
+- Real-corpus batch evidence after the Go zstd content-size fix:
+  - report: `.local/corpus-eval/real-run-100-after-go-zstd-fix-20260530T214536Z/report.json`
+  - input files: 100
+  - input bytes: 864,026,624
+  - results: 1,100
   - writer modes compared: Rust/Go regular, compact, compact zstd, compact FSS
   - discrepancies: 0
 - Scope note: the one-file rates collected in this report are correctness-run
@@ -888,11 +907,29 @@ Validation rerun for the repair:
   compact-fss --max-files 100`
   - Result: passed, 100 files, 1,100 results, 0 discrepancies after per-file
     input snapshots.
+- `python tests/corpus_eval/run_corpus_eval.py --mode run --allow-full-run
+  --root [two real large-payload journals] --drivers systemd rust go
+  --regenerators rust go --regeneration-modes compact-zstd`
+  - Result: passed, 2 files, 10 results, 0 discrepancies after the Go zstd
+    content-size fix.
+- `python tests/corpus_eval/run_corpus_eval.py --mode run --allow-full-run
+  --root /var/log/journal --root /run/log/journal --drivers systemd rust go
+  --regenerators rust go --regeneration-modes regular compact compact-zstd
+  compact-fss --max-files 100`
+  - Result: passed, 100 files, 1,100 results, 0 discrepancies after the Go zstd
+    content-size fix.
 - `cd go && go test ./journal ./internal/testcmd/corpus_digest
   ./internal/testcmd/corpus_regenerate`
   - Result: passed.
 - `cd go && go test ./...`
   - Result: passed.
+- `python tests/interoperability/run_compression_matrix.py`
+  - Result: passed, 72/72 checks.
+- `python tests/interoperability/run_compact_matrix.py`
+  - Result: passed, 56/56 checks for compact/uncompressed.
+- `python tests/interoperability/run_compact_matrix.py --compression zstd
+  --compression-threshold-bytes 8`
+  - Result: passed, 56/56 checks for compact/zstd.
 - `cargo test --manifest-path rust/Cargo.toml -p journal -p adapter -p
   journalctl`
   - Result: passed.

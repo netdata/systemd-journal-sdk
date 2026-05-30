@@ -282,6 +282,61 @@ func TestCreateAndOpenCompressedDataAlgorithms(t *testing.T) {
 	}
 }
 
+func TestZstdFrameWithContentSizeAddsDecodableFrameSize(t *testing.T) {
+	payload := bytes.Repeat([]byte("0123456789abcdef"), 12000)
+	frame, err := zstdCompress(payload)
+	if err != nil {
+		t.Fatalf("zstdCompress() error = %v", err)
+	}
+	if len(frame) < 9 {
+		t.Fatalf("compressed frame too short: %d", len(frame))
+	}
+	if !bytes.Equal(frame[:4], []byte{0x28, 0xb5, 0x2f, 0xfd}) {
+		t.Fatalf("unexpected zstd magic: %x", frame[:4])
+	}
+	if frame[4]>>6 != 2 {
+		t.Fatalf("frame content-size flag = %d, want 2 for %d-byte payload", frame[4]>>6, len(payload))
+	}
+	if frame[4]&(1<<5) == 0 {
+		t.Fatal("single-segment flag was not set")
+	}
+	gotSize := binary.LittleEndian.Uint32(frame[5:9])
+	if gotSize != uint32(len(payload)) {
+		t.Fatalf("frame content size = %d, want %d", gotSize, len(payload))
+	}
+	decoded, err := zstdDecompress(frame)
+	if err != nil {
+		t.Fatalf("zstdDecompress() error = %v", err)
+	}
+	if !bytes.Equal(decoded, payload) {
+		t.Fatal("decoded zstd payload does not match original")
+	}
+}
+
+func TestZstdFrameWithContentSizeLeavesUnsupportedFramesUnchanged(t *testing.T) {
+	invalid := []byte{0, 1, 2, 3, 4, 5}
+	if got := zstdFrameWithContentSize(invalid, 16); !bytes.Equal(got, invalid) {
+		t.Fatal("invalid frame was changed")
+	}
+
+	payload := bytes.Repeat([]byte("zstd"), 128)
+	patched, err := zstdCompress(payload)
+	if err != nil {
+		t.Fatalf("zstdCompress() error = %v", err)
+	}
+	if got := zstdFrameWithContentSize(patched, len(payload)); !bytes.Equal(got, patched) {
+		t.Fatal("already patched frame was changed")
+	}
+
+	dictionaryFrame := append([]byte(nil), patched...)
+	dictionaryFrame[4] &^= 0xc0
+	dictionaryFrame[4] &^= 1 << 5
+	dictionaryFrame[4] |= 1
+	if got := zstdFrameWithContentSize(dictionaryFrame, len(payload)); !bytes.Equal(got, dictionaryFrame) {
+		t.Fatal("dictionary-id frame was changed")
+	}
+}
+
 func TestCompressionThresholdSystemdPolicy(t *testing.T) {
 	tests := []struct {
 		name              string

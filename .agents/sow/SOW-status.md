@@ -13,8 +13,9 @@ Last updated: 2026-05-30
   discrepancies in `_BOOT_ID` canonicalization, FSS start alignment, and
   `__SEQNUM` gap preservation have been repaired. Rust multi-boot per-entry
   boot ID regeneration and active-file snapshot handling have also been
-  repaired; the latest 100-file real-corpus batch recorded 1,100 results and 0
-  discrepancies.
+  repaired. A Go compact-zstd large-payload readback issue was found by the
+  full-corpus sweep and repaired with zstd frame content-size metadata; the
+  latest 100-file real-corpus batch recorded 1,100 results and 0 discrepancies.
 
 ## Pending
 

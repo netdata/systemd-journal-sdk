@@ -1762,7 +1762,60 @@ func zstdCompress(payload []byte) ([]byte, error) {
 	if err := enc.Close(); err != nil {
 		return nil, err
 	}
-	return buf.Bytes(), nil
+	return zstdFrameWithContentSize(buf.Bytes(), len(payload)), nil
+}
+
+func zstdFrameWithContentSize(frame []byte, contentSize int) []byte {
+	const (
+		zstdMagic           = "\x28\xb5\x2f\xfd"
+		singleSegmentFlag   = byte(1 << 5)
+		contentChecksumFlag = byte(1 << 2)
+	)
+	if len(frame) < 6 || string(frame[:4]) != zstdMagic {
+		return frame
+	}
+	descriptor := frame[4]
+	dictionaryIDFlag := descriptor & 0x03
+	frameContentSizeFlag := descriptor >> 6
+	if dictionaryIDFlag != 0 || frameContentSizeFlag != 0 || descriptor&singleSegmentFlag != 0 {
+		return frame
+	}
+
+	var sizeFlag byte
+	var sizeBytes []byte
+	switch {
+	case contentSize <= 255:
+		sizeFlag = 0
+		sizeBytes = []byte{byte(contentSize)}
+	case contentSize <= 65791:
+		sizeFlag = 1
+		encoded := uint16(contentSize - 256)
+		sizeBytes = []byte{byte(encoded), byte(encoded >> 8)}
+	case uint64(contentSize) <= uint64(^uint32(0)):
+		sizeFlag = 2
+		encoded := uint32(contentSize)
+		sizeBytes = []byte{byte(encoded), byte(encoded >> 8), byte(encoded >> 16), byte(encoded >> 24)}
+	default:
+		sizeFlag = 3
+		encoded := uint64(contentSize)
+		sizeBytes = []byte{
+			byte(encoded),
+			byte(encoded >> 8),
+			byte(encoded >> 16),
+			byte(encoded >> 24),
+			byte(encoded >> 32),
+			byte(encoded >> 40),
+			byte(encoded >> 48),
+			byte(encoded >> 56),
+		}
+	}
+
+	patched := make([]byte, 0, len(frame)+len(sizeBytes)-1)
+	patched = append(patched, frame[:4]...)
+	patched = append(patched, sizeFlag<<6|singleSegmentFlag|descriptor&contentChecksumFlag)
+	patched = append(patched, sizeBytes...)
+	patched = append(patched, frame[6:]...)
+	return patched
 }
 
 func zstdDecompress(payload []byte) ([]byte, error) {
