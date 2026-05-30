@@ -7,6 +7,10 @@ Last updated: 2026-05-30
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
+- SOW-0026 - Netdata SDK Integration Inventory And Cut Plan: in-progress.
+  Inventory and cut plan implemented, whole-SOW read-only review complete, and
+  ready for orchestrator merge. No Netdata source edits were made; component
+  integration remains mapped to SOW-0047 through SOW-0050.
 - SOW-0068 - Rust Cross Platform Portability: in-progress, reviewed, ready for
   orchestrator merge. Rust SDK crates are Windows-target clean, Linux runtime
   validation passed, and all five read-only reviewers voted production grade.
@@ -22,8 +26,6 @@ Last updated: 2026-05-30
   optional helpers, update instructions/specs/docs, and validate on Linux plus
   provided macOS/Windows hosts before closing portability or releasing stable
   APIs.
-- SOW-0026 - Netdata SDK Integration Inventory And Cut Plan: open. Produces the
-  fresh Netdata consumer inventory and cut plan after performance gates.
 - SOW-0047 - Netdata NetFlow SDK Integration: open. Component integration for
   NetFlow reader and writer paths after inventory and performance gates.
 - SOW-0048 - Netdata OTEL Writer SDK Integration: open. Component integration
