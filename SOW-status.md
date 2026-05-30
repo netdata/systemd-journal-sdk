@@ -6,6 +6,8 @@
 
 ## Pending
 
+- `SOW-0066-20260530-v1-release-and-registry-publication.md` - open. Publish the final stable `v1.0.0` SDK across language registries and versioned module tags after compatibility, portability, real-corpus validation, parity closure, and release checks pass.
+- `SOW-0065-20260530-parallel-language-parity-closure.md` - open. Future post-stabilization phase to close remaining Go/Python/Node.js parity and performance gaps against Rust, potentially using one approved worktree and implementation agent per language after prerequisite gates close.
 - `SOW-0064-20260530-real-world-journal-corpus-evaluation.md` - open. Build streaming, metrics-only tooling to evaluate the workstation's large real journal corpus with systemd, Rust, and Go readers/writers, measuring logical completeness, regenerated-output validity, speed, memory, I/O, I/O multiplication, footprint changes, and byte identity where meaningful.
 - `SOW-0063-20260530-cross-platform-portability.md` - open. Make Rust, Go, Node.js, and Python SDK readers/writers portable to Linux, FreeBSD, macOS, and Windows, including platform-specific locking, mmap/read-write fallback, directory sync, cross-OS interoperability, and Linux stock validation of non-Linux generated files.
 - `SOW-0026-20260526-netdata-sdk-integration.md` - open, last pending integration SOW. Integrate the SDK into Netdata NetFlow reader/writer paths, OTEL writer path, OTEL signal viewer reader path, and no-libsystemd systemd-journal reader mode. Blocked until SOW-0009 shows acceptable performance or the user explicitly accepts a staged exception, and until the user authorizes the Netdata repository work target and dependency strategy. Netdata writers must default to compact format after integration.
@@ -82,5 +84,7 @@
 - SOW-0033 completed full verification parity for the supported fixture envelope. `run_verify_matrix.py` passes against stock `journalctl --verify --file` and Rust, Go, Node.js, and Python verification paths for 9 positive files and 12 negative corruption classes on `systemd 260 (260.1-2-manjaro)`.
 - SOW-0063 tracks mandatory cross-platform SDK support for Linux, FreeBSD, macOS, and Windows. Stock systemd validation remains Linux-based; files generated on non-Linux targets must be validated on Linux with stock systemd tooling after transfer.
 - SOW-0064 tracks real-world corpus-scale verification on the workstation's large local journal corpus. Its reports must be streaming, metrics-only, and sensitive-data safe; fixes for discovered discrepancies belong in follow-up SOWs.
+- SOW-0065 tracks the future parallel language parity/performance closure phase after Rust, portability, corpus, and integration gates are stable. Actual git worktree creation and external implementer routing still require explicit user approval at activation time.
+- SOW-0066 tracks the final `v1.0.0` release and language registry publication. Registry credentials must never be written to durable artifacts.
 - Byte-for-byte writer identity is the target for deterministic uncompressed journals. Any feature slice that cannot be made byte-identical must return with evidence before the acceptance condition is changed.
 - The external systemd source checkout is read-only for this project. Build outputs and generated files must remain inside this repository or `/tmp`.
