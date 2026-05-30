@@ -25,6 +25,8 @@ members = [
     "src/internal/testcmd/dataset_ingester",
     "src/internal/testcmd/writer_core_bench",
     "src/internal/testcmd/reader_core_bench",
+    "src/internal/testcmd/corpus_digest",
+    "src/internal/testcmd/corpus_regenerate",
 
     # Conformance adapter
     "src/adapter",
