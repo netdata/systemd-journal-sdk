@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -8,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/netdata/systemd-journal-sdk/go/journal"
@@ -87,25 +89,10 @@ func payloadName(payload []byte) ([]byte, bool) {
 	return nil, false
 }
 
-func byteLess(a, b []byte) bool {
-	min := len(a)
-	if len(b) < min {
-		min = len(b)
-	}
-	for i := 0; i < min; i++ {
-		if a[i] != b[i] {
-			return a[i] < b[i]
-		}
-	}
-	return len(a) < len(b)
-}
-
 func sortPayloads(payloads [][]byte) {
-	for i := 1; i < len(payloads); i++ {
-		for j := i; j > 0 && byteLess(payloads[j], payloads[j-1]); j-- {
-			payloads[j], payloads[j-1] = payloads[j-1], payloads[j]
-		}
-	}
+	sort.Slice(payloads, func(i, j int) bool {
+		return bytes.Compare(payloads[i], payloads[j]) < 0
+	})
 }
 
 func (d *canonicalDigest) addEntry(entry *journal.Entry) {

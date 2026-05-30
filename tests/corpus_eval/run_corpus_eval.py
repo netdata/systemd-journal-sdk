@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -111,6 +112,7 @@ def safe_file_id(root: Path, path: Path, stat: os.stat_result) -> str:
         "relative": str(rel),
         "size": stat.st_size,
         "mtime_ns": stat.st_mtime_ns,
+        "ctime_ns": stat.st_ctime_ns,
         "dev": stat.st_dev,
         "ino": stat.st_ino,
     }
@@ -149,6 +151,7 @@ def discover_cases(roots: list[Path], *, max_files: int | None = None) -> list[J
                         "file_id": file_id,
                         "size": stat.st_size,
                         "mtime_ns": stat.st_mtime_ns,
+                        "ctime_ns": stat.st_ctime_ns,
                         "suffix": suffix,
                     },
                 )
@@ -269,13 +272,25 @@ def timed_command_prefix(stats_path: Path) -> list[str]:
 
 
 def json_from_stdout(stdout: bytes) -> dict[str, Any]:
-    for raw_line in reversed(stdout.splitlines()):
-        line = raw_line.strip()
-        if line.startswith(b"{") and line.endswith(b"}"):
-            parsed = json.loads(line)
-            if isinstance(parsed, dict):
-                return parsed
-    raise ValueError("command stdout did not contain a JSON object")
+    lines = [raw_line.strip() for raw_line in stdout.splitlines() if raw_line.strip()]
+    if len(lines) != 1:
+        raise ValueError("command stdout must contain exactly one JSON line")
+    parsed = json.loads(lines[0])
+    if not isinstance(parsed, dict):
+        raise ValueError("command stdout JSON payload is not an object")
+    return parsed
+
+
+def drain_stream_digest(stream: BinaryIO) -> dict[str, Any]:
+    sha = hashlib.sha256()
+    byte_count = 0
+    while True:
+        chunk = stream.read(65536)
+        if not chunk:
+            break
+        sha.update(chunk)
+        byte_count += len(chunk)
+    return {"sha256": sha.hexdigest(), "bytes": byte_count}
 
 
 def run_json_driver(
@@ -341,13 +356,91 @@ def systemd_digest(
         stderr=subprocess.PIPE,
     )
     assert proc.stdout is not None
-    try:
-        digest = digest_export_stream(proc.stdout)
-    except Exception:
+    assert proc.stderr is not None
+    digest_state: dict[str, Any] = {}
+    stderr_state: dict[str, Any] = {}
+
+    def parse_stdout() -> None:
+        try:
+            digest_state["digest"] = digest_export_stream(proc.stdout)
+        except Exception as exc:
+            digest_state["error"] = exc
+
+    def drain_stderr() -> None:
+        try:
+            stderr_state.update(drain_stream_digest(proc.stderr))
+        except Exception as exc:
+            stderr_state["error_class"] = type(exc).__name__
+            stderr_state["error_sha256"] = hashlib.sha256(str(exc).encode("utf-8")).hexdigest()
+
+    stdout_thread = threading.Thread(target=parse_stdout, name="systemd-export-digest")
+    stderr_thread = threading.Thread(target=drain_stderr, name="systemd-export-stderr")
+    stdout_thread.start()
+    stderr_thread.start()
+
+    deadline = time.monotonic() + timeout
+    timed_out = False
+    while proc.poll() is None and stdout_thread.is_alive():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            proc.kill()
+            break
+        stdout_thread.join(timeout=min(0.1, remaining))
+
+    if "error" in digest_state and proc.poll() is None:
         proc.kill()
-        raise
-    stderr = proc.stderr.read() if proc.stderr is not None else b""
-    returncode = proc.wait(timeout=timeout)
+
+    try:
+        remaining = max(0.0, deadline - time.monotonic())
+        returncode = proc.wait(timeout=remaining)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        proc.kill()
+        returncode = proc.wait()
+
+    stdout_thread.join(timeout=5)
+    stderr_thread.join(timeout=5)
+    stderr_sha = str(stderr_state.get("sha256", hashlib.sha256(b"").hexdigest()))
+    if stdout_thread.is_alive() or stderr_thread.is_alive():
+        raise TimeoutError(
+            json.dumps(
+                {
+                    "returncode": returncode,
+                    "command_sha256": command_digest(cmd),
+                    "stderr_sha256": stderr_sha,
+                    "reader_thread_alive": stdout_thread.is_alive(),
+                    "stderr_thread_alive": stderr_thread.is_alive(),
+                },
+                sort_keys=True,
+            )
+        )
+    if "error" in digest_state:
+        raise digest_state["error"]
+    if timed_out:
+        raise TimeoutError(
+            json.dumps(
+                {
+                    "returncode": returncode,
+                    "command_sha256": command_digest(cmd),
+                    "stderr_sha256": stderr_sha,
+                },
+                sort_keys=True,
+            )
+        )
+    digest = digest_state.get("digest")
+    if not isinstance(digest, dict):
+        raise RuntimeError(
+            json.dumps(
+                {
+                    "returncode": returncode,
+                    "command_sha256": command_digest(cmd),
+                    "stderr_sha256": stderr_sha,
+                    "reason": "systemd digest did not produce a result",
+                },
+                sort_keys=True,
+            )
+        )
     stats = parse_time_stats(stats_path)
     if returncode != 0:
         raise RuntimeError(
@@ -355,7 +448,7 @@ def systemd_digest(
                 {
                     "returncode": returncode,
                     "command_sha256": command_digest(cmd),
-                    "stderr_sha256": hashlib.sha256(stderr).hexdigest(),
+                    "stderr_sha256": stderr_sha,
                 },
                 sort_keys=True,
             )
@@ -528,9 +621,48 @@ def run_regenerator(
             "reason": "systemd public regeneration requires journal export plus systemd-journal-remote; this harness records the limitation unless an installed remote helper is explicitly enabled later",
         }
 
+    generated_path = output
     try:
+        free_bytes = shutil.disk_usage(output.parent).free
+        required_bytes = max(case.size * 2, 64 * 1024 * 1024)
+        if free_bytes < required_bytes:
+            raise OSError(
+                f"insufficient scratch space: required_bytes={required_bytes} free_bytes={free_bytes}"
+            )
         writer_result, stats = run_json_driver(cmd, env=env, stats_path=stats_path, timeout=timeout)
+        generated_path = Path(str(writer_result.get("generated_path", output)))
+        verify_key = None
+        if writer_result.get("fss"):
+            start_usec = int(writer_result.get("fss_start_usec") or 0)
+            interval_usec = int(writer_result.get("fss_interval_usec") or 0)
+            if start_usec > 0 and interval_usec > 0:
+                verify_key = fss_verify_key(start_usec, interval_usec)
+        verify = verify_generated(generated_path, tools, env, timeout, verify_key=verify_key)
+        generated_case = JournalCase(
+            path=generated_path,
+            root=generated_path.parent,
+            file_id=f"{case.file_id}-{driver}-{mode}",
+            size=int(writer_result.get("generated_bytes") or generated_path.stat().st_size),
+            mtime_ns=generated_path.stat().st_mtime_ns,
+            suffix=".journal",
+            identity={"file_id": f"{case.file_id}-{driver}-{mode}", "suffix": ".journal"},
+        )
+        reread = run_digest_driver(
+            "systemd",
+            generated_case,
+            tools=tools,
+            env=env,
+            stats_dir=stats_dir,
+            timeout=timeout,
+        )
+        generated_digest = str(reread.get("logical_digest"))
+        generated_bytes = int(writer_result.get("generated_bytes") or generated_case.size)
     except Exception as exc:
+        if not keep_outputs:
+            try:
+                generated_path.unlink()
+            except FileNotFoundError:
+                pass
         return {
             "kind": "writer",
             "driver": driver,
@@ -540,34 +672,6 @@ def run_regenerator(
             "error_class": type(exc).__name__,
             "error_sha256": hashlib.sha256(str(exc).encode("utf-8")).hexdigest(),
         }
-
-    generated_path = Path(str(writer_result.get("generated_path", output)))
-    verify_key = None
-    if writer_result.get("fss"):
-        start_usec = int(writer_result.get("fss_start_usec") or 0)
-        interval_usec = int(writer_result.get("fss_interval_usec") or 0)
-        if start_usec > 0 and interval_usec > 0:
-            verify_key = fss_verify_key(start_usec, interval_usec)
-    verify = verify_generated(generated_path, tools, env, timeout, verify_key=verify_key)
-    generated_case = JournalCase(
-        path=generated_path,
-        root=generated_path.parent,
-        file_id=f"{case.file_id}-{driver}-{mode}",
-        size=int(writer_result.get("generated_bytes") or generated_path.stat().st_size),
-        mtime_ns=generated_path.stat().st_mtime_ns,
-        suffix=".journal",
-        identity={"file_id": f"{case.file_id}-{driver}-{mode}", "suffix": ".journal"},
-    )
-    reread = run_digest_driver(
-        "systemd",
-        generated_case,
-        tools=tools,
-        env=env,
-        stats_dir=stats_dir,
-        timeout=timeout,
-    )
-    generated_digest = str(reread.get("logical_digest"))
-    generated_bytes = int(writer_result.get("generated_bytes") or generated_case.size)
     if not keep_outputs:
         try:
             generated_path.unlink()
@@ -846,13 +950,30 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def main() -> int:
+def display_path(path: Path) -> str:
     try:
-        report = run_evaluation(parse_args())
+        return str(path.resolve().relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        run_evaluation(args)
     except Exception as exc:
         print(f"corpus evaluation failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps({"status": "ok", "report": str(Path(report.get("mode", "")))}))
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                "report_json": display_path(args.out / "report.json"),
+                "report_md": display_path(args.out / "report.md"),
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 

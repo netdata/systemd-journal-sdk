@@ -102,14 +102,14 @@ impl CanonicalDigest {
             if payload.iter().any(|byte| *byte < 32 && *byte != b'\t') {
                 self.counts.binary_payloads += 1;
             }
-            let Some(eq) = payload.iter().position(|byte| *byte == b'=') else {
+            let Some(eq) = payload
+                .iter()
+                .position(|byte| *byte == b'=')
+                .filter(|eq| *eq > 0)
+            else {
                 self.counts.payloads_without_separator += 1;
                 continue;
             };
-            if eq == 0 {
-                self.counts.payloads_without_separator += 1;
-                continue;
-            }
             let name = payload[..eq].to_vec();
             if !seen.insert(name) {
                 repeated = true;

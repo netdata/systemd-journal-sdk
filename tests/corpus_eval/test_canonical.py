@@ -6,6 +6,7 @@ import struct
 import unittest
 
 from tests.corpus_eval.canonical import digest_entries, digest_export_bytes
+from tests.corpus_eval.run_corpus_eval import json_from_stdout
 
 
 class CanonicalDigestTests(unittest.TestCase):
@@ -69,6 +70,19 @@ class CanonicalDigestTests(unittest.TestCase):
         self.assertEqual(counts["repeated_field_name_occurrences"], 1)
         self.assertNotIn("MESSAGE", str(result))
 
+    def test_payloads_without_separator_are_counted_once(self) -> None:
+        result = digest_entries(
+            [
+                (
+                    {"__REALTIME_TIMESTAMP": 1},
+                    [b"=empty-name", b"NO_SEPARATOR", b"FIELD=value"],
+                )
+            ]
+        )
+        counts = result["counts"]
+        self.assertEqual(counts["payloads"], 3)
+        self.assertEqual(counts["payloads_without_separator"], 2)
+
     def test_systemd_export_text_and_binary_fields(self) -> None:
         binary_field = b"BINARY\n" + struct.pack("<Q", 5) + b"a\x00b\nc" + b"\n"
         data = (
@@ -90,6 +104,13 @@ class CanonicalDigestTests(unittest.TestCase):
     def test_truncated_export_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             digest_export_bytes(b"BINARY\n" + struct.pack("<Q", 10) + b"short")
+
+    def test_helper_stdout_must_be_one_json_object_line(self) -> None:
+        self.assertEqual(json_from_stdout(b'{"status":"ok"}\n'), {"status": "ok"})
+        with self.assertRaises(ValueError):
+            json_from_stdout(b'{"progress":1}\n{"status":"ok"}\n')
+        with self.assertRaises(ValueError):
+            json_from_stdout(b"helper log line\n")
 
 
 if __name__ == "__main__":

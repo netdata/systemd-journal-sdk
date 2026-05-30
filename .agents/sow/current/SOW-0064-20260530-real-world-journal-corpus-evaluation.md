@@ -4,7 +4,7 @@
 
 Status: in-progress
 
-Sub-state: implemented; ready for orchestrator review.
+Sub-state: review fixes in progress.
 
 ## Requirements
 
@@ -378,8 +378,9 @@ Reviewers:
 - Use read-only reviewers from the approved pool after implementation and local
   validation complete: `llm-netdata-cloud/minimax-m2.7-coder`,
   `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/qwen3.6-plus`, and
-  `llm-netdata-cloud/glm-5.1`. Skip `llm-netdata-cloud/mimo-v2.5-pro` while it
-  remains out of quota.
+  `llm-netdata-cloud/glm-5.1`. User explicitly re-added
+  `llm-netdata-cloud/mimo-v2.5-pro` for the whole-SOW review cycle on
+  2026-05-30.
 
 Repository boundary block for every external-agent prompt:
 
@@ -438,6 +439,14 @@ Failure handling:
   verification key; the key and FSS start timestamp are not written to reports.
 - Left `SOW-status.md` untouched per the assigned prompt; status reconciliation
   is left to the orchestrator to reduce merge conflicts.
+- Ran the user-requested whole-SOW read-only external review cycle against
+  implementation commit `8476e58`.
+- Round 1 produced four `PRODUCTION GRADE` votes and one
+  `NOT PRODUCTION GRADE` vote. Real findings were fixed locally before rerunning
+  validation and reviewers.
+- Hardened `journalctl` process handling, JSON helper output parsing,
+  regenerator failure containment and cleanup, resume identity matching, Go
+  payload sorting, and status output.
 
 ## Validation
 
@@ -487,15 +496,15 @@ Acceptance criteria evidence:
 Tests or equivalent validation:
 
 - `python -m unittest tests.corpus_eval.test_canonical`
-  - Result: passed, 4 tests.
+  - Result: passed, 6 tests.
 - `python tests/corpus_eval/run_corpus_eval.py --mode dry-run --root
-  .local/corpus-eval/smoke-validation-final/smoke-fixtures --out
-  .local/corpus-eval/dry-run-validation-final --max-files 5`
+  .local/corpus-eval/smoke-validation-review-fixes/smoke-fixtures --out
+  .local/corpus-eval/dry-run-validation-review-fixes --max-files 5`
   - Result: passed.
   - Evidence: 1 `.journal` file discovered, 8,388,608 input bytes, 0 payload
     reads, 0 discrepancies.
 - `python tests/corpus_eval/run_corpus_eval.py --mode smoke --out
-  .local/corpus-eval/smoke-validation-final --drivers systemd rust go
+  .local/corpus-eval/smoke-validation-review-fixes --drivers systemd rust go
   --regenerators rust go --timeout 1800`
   - Result: passed.
   - Evidence: 1 generated synthetic fixture, 11 result rows, 0 discrepancies.
@@ -528,9 +537,49 @@ Real-use evidence:
 
 Reviewer findings:
 
-- No external reviewers were run because the assigned prompt explicitly forbids
-  external assistants or reviewers for this implementation worktree.
-- Orchestrator review remains pending outside this worktree.
+- Round 1 against commit `8476e58`:
+  - `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`.
+    - Disposition: no blocking findings. Cleanup/free-space and process-risk
+      observations were covered by the hardening changes below.
+  - `llm-netdata-cloud/qwen3.6-plus`: `NOT PRODUCTION GRADE`.
+    - Finding: Rust `payloads_without_separator` could double-count empty-name
+      payloads.
+      - Disposition: rejected as a false positive for the original code because
+        the `else` arm for missing `=` and the `eq == 0` branch were mutually
+        exclusive. To make intent unambiguous, Rust counting was refactored to a
+        single filtered branch in
+        `rust/src/internal/testcmd/corpus_digest/src/main.rs`, and a synthetic
+        test was added in `tests/corpus_eval/test_canonical.py`.
+    - Finding: `json_from_stdout` could silently pick the wrong JSON-like line.
+      - Disposition: fixed in `tests/corpus_eval/run_corpus_eval.py`; helper
+        stdout must now contain exactly one JSON object line.
+    - Finding: Go helper used an O(n^2) payload sort.
+      - Disposition: fixed in `go/internal/testcmd/corpus_digest/main.go` by
+        using `sort.Slice` with `bytes.Compare`.
+    - Finding: resume identity could be stale for recreated files with matching
+      size and mtime.
+      - Disposition: fixed in `tests/corpus_eval/run_corpus_eval.py` by adding
+        `ctime_ns` to both sanitized file ID input and resume identity.
+    - Finding: main status output reported the mode string as a report path.
+      - Disposition: fixed in `tests/corpus_eval/run_corpus_eval.py`; stdout now
+        reports `report_json` and `report_md`.
+  - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+    - Disposition: no blocking findings.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`.
+    - Disposition: no blocking findings. Resume-identity and systemd-version
+      observations were covered or remain documented non-blocking risks.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+    - Finding: `systemd_digest` timeout paths could leave `journalctl` running
+      and stderr could fill its pipe.
+      - Disposition: fixed in `tests/corpus_eval/run_corpus_eval.py`; stdout
+        parsing and stderr digesting now run concurrently, timeout paths kill and
+        wait for the exact child process, and reports retain only stderr hashes.
+    - Finding: unexpected errors during generated-file verification/reread could
+      abort the entire evaluation.
+      - Disposition: fixed in `tests/corpus_eval/run_corpus_eval.py`; writer
+        regeneration, stock verify, systemd reread, generated-size stat, and
+        cleanup are now contained as per-case `failed` results.
+- Round 2 rerun remains pending after the validation commands listed below.
 
 Same-failure scan:
 
@@ -545,6 +594,14 @@ Same-failure scan:
   run passed with 0 discrepancies.
 - Search confirmed final smoke/dry-run reports did not contain raw fixture
   paths, `MESSAGE=` payloads, deterministic FSS key bytes, or `fss_start_usec`.
+- Review-fix validation confirmed
+  `.local/corpus-eval/smoke-validation-review-fixes/report.*` and
+  `.local/corpus-eval/dry-run-validation-review-fixes/report.*` contain none of
+  those raw/sensitive markers.
+- Review-finding pattern scan checked the changed scope for the same classes:
+  `subprocess.Popen`, `json_from_stdout`, `payloads_without_separator`,
+  `sortPayloads`, `safe_file_id`, `state.json`, and `run_regenerator`. No second
+  unhandled instance of these patterns was found outside the fixed sites.
 
 Sensitive data gate:
 
