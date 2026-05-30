@@ -110,9 +110,10 @@ fn lock_file_is_stale(path: &Path) -> (bool, String) {
     if owner.boot_id != boot_id() {
         return (true, format!("pid {} from previous boot", owner.pid));
     }
-    match process_start_time(owner.pid) {
-        Ok(start_time) if start_time == owner.start_time => (false, format!("pid {}", owner.pid)),
-        _ => (true, format!("stale pid {}", owner.pid)),
+    match owner_process_is_alive(&owner) {
+        Ok(true) => (false, format!("pid {}", owner.pid)),
+        Ok(false) => (true, format!("stale pid {}", owner.pid)),
+        Err(_) => (false, format!("pid {} with unknown liveness", owner.pid)),
     }
 }
 
@@ -126,12 +127,33 @@ fn current_owner() -> io::Result<LockOwner> {
 }
 
 fn boot_id() -> String {
+    platform_boot_id()
+}
+
+#[cfg(target_os = "linux")]
+fn platform_boot_id() -> String {
     fs::read_to_string("/proc/sys/kernel/random/boot_id")
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
 }
 
+#[cfg(not(target_os = "linux"))]
+fn platform_boot_id() -> String {
+    journal_common::load_boot_id()
+        .map(|boot_id| boot_id.as_simple().to_string())
+        .unwrap_or_default()
+}
+
 fn process_start_time(pid: u32) -> io::Result<String> {
+    platform_process_start_time(pid)
+}
+
+fn owner_process_is_alive(owner: &LockOwner) -> io::Result<bool> {
+    platform_owner_process_is_alive(owner)
+}
+
+#[cfg(target_os = "linux")]
+fn platform_process_start_time(pid: u32) -> io::Result<String> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
     let end = stat
         .rfind(')')
@@ -144,6 +166,130 @@ fn process_start_time(pid: u32) -> io::Result<String> {
         ));
     }
     Ok(fields[19].to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn platform_owner_process_is_alive(owner: &LockOwner) -> io::Result<bool> {
+    match platform_process_start_time(owner.pid) {
+        Ok(start_time) => Ok(start_time == owner.start_time),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Ok(false),
+    }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn platform_process_start_time(_pid: u32) -> io::Result<String> {
+    Ok("process-start-unavailable".to_string())
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn platform_owner_process_is_alive(owner: &LockOwner) -> io::Result<bool> {
+    let rc = unsafe { libc::kill(owner.pid as libc::pid_t, 0) };
+    if rc == 0 {
+        return Ok(true);
+    }
+
+    let err = io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(code) if code == libc::ESRCH || code == libc::EINVAL => Ok(false),
+        Some(code) if code == libc::EPERM => Ok(true),
+        _ => Err(err),
+    }
+}
+
+#[cfg(windows)]
+fn platform_process_start_time(pid: u32) -> io::Result<String> {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        let err = io::Error::last_os_error();
+        return match err.raw_os_error() {
+            Some(code) if code == ERROR_INVALID_PARAMETER as i32 => {
+                Err(io::Error::new(io::ErrorKind::NotFound, err))
+            }
+            Some(code) if code == ERROR_ACCESS_DENIED as i32 => {
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, err))
+            }
+            _ => Err(err),
+        };
+    }
+
+    let mut creation = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut exit = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut kernel = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut user = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+
+    let ok = unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) };
+    unsafe {
+        CloseHandle(handle);
+    }
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let creation_ticks = ((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64;
+    Ok(creation_ticks.to_string())
+}
+
+#[cfg(windows)]
+fn platform_owner_process_is_alive(owner: &LockOwner) -> io::Result<bool> {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, WAIT_FAILED, WAIT_OBJECT_0,
+        WAIT_TIMEOUT,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
+
+    match platform_process_start_time(owner.pid) {
+        Ok(start_time) if start_time != owner.start_time => return Ok(false),
+        Ok(_) => {}
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(err) if err.kind() == io::ErrorKind::PermissionDenied => return Ok(true),
+        Err(err) => return Err(err),
+    }
+
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, owner.pid) };
+    if handle.is_null() {
+        let err = io::Error::last_os_error();
+        return match err.raw_os_error() {
+            Some(code) if code == ERROR_INVALID_PARAMETER as i32 => Ok(false),
+            Some(code) if code == ERROR_ACCESS_DENIED as i32 => Ok(true),
+            _ => Err(err),
+        };
+    }
+
+    let wait = unsafe { WaitForSingleObject(handle, 0) };
+    unsafe {
+        CloseHandle(handle);
+    }
+    match wait {
+        WAIT_TIMEOUT => Ok(true),
+        WAIT_OBJECT_0 => Ok(false),
+        WAIT_FAILED => Err(io::Error::last_os_error()),
+        _ => Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("unexpected WaitForSingleObject result {wait}"),
+        )),
+    }
 }
 
 fn read_owner(path: &Path) -> io::Result<LockOwner> {
@@ -191,4 +337,29 @@ fn read_owner(path: &Path) -> io::Result<LockOwner> {
         boot_id: boot_id.unwrap_or_default(),
         start_time,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_dead_pid_lock_is_reclaimed() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let journal_path = dir.path().join("stale.journal");
+        let lock_path = PathBuf::from(format!("{}.lock", journal_path.display()));
+        let owner = LockOwner {
+            pid: u32::MAX,
+            boot_id: boot_id(),
+            start_time: "not-a-real-process-start".to_string(),
+        };
+        let mut file = File::create(&lock_path).expect("create stale lock");
+        write_owner(&mut file, &owner).expect("write stale lock");
+        drop(file);
+
+        let _lock = WriterLock::acquire(journal_path.to_str().expect("utf8 path"))
+            .expect("stale lock should be reclaimed");
+        let live_owner = read_owner(&lock_path).expect("read new lock");
+        assert_eq!(live_owner.pid, std::process::id());
+    }
 }

@@ -93,6 +93,23 @@ Current reader scope:
   `journal::verify_file_with_key()` for sealed TAG/HMAC verification;
 - a conformance adapter under `src/adapter`.
 
+Platform behavior:
+
+- Linux is the validated reference runtime and keeps mmap-backed hot paths,
+  `CLOCK_MONOTONIC`, `/proc` boot/process identity, Unix directory sync, and
+  SIGBUS handling.
+- FreeBSD and macOS builds use `clock_gettime(CLOCK_MONOTONIC)`, derive boot
+  identity from `sysctl kern.boottime`, and use PID liveness for stale lock
+  detection when process start-time identity is unavailable.
+- Windows builds use unbiased interrupt time for automatic writer timestamps,
+  generated UUID fallback for automatic identity where native IDs are
+  unavailable, Windows process creation-time and process-handle stale lock
+  detection, and no-op directory fsync/SIGBUS hooks.
+- Non-Linux build checks are compilation evidence only unless runtime evidence
+  from that OS is recorded separately. Files written on non-Linux targets must
+  still pass Linux stock `journalctl --verify --file` and repository
+  interoperability checks before production compatibility is claimed.
+
 Reader limitations:
 
 - `list_boots` uses file-level boot metadata in this slice;

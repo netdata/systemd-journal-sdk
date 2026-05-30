@@ -863,6 +863,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn verify_directory_follows_symlink_and_skips_directories() {
         let fixture = repo_root().join("fixtures/systemd/test-data/no-rtc/system.journal.zst");

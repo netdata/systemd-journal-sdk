@@ -304,12 +304,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
-name = "cfg_aliases"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
-
-[[package]]
 name = "chrono"
 version = "0.4.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1192,10 +1186,11 @@ name = "journal-common"
 version = "0.1.0"
 dependencies = [
  "allocative",
- "nix",
+ "libc",
  "rustc-hash",
  "serde",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1217,7 +1212,6 @@ dependencies = [
  "lzma-rust2",
  "md5",
  "memmap2",
- "nix",
  "notify",
  "num-bigint",
  "parking_lot",
@@ -1239,6 +1233,7 @@ dependencies = [
  "twox-hash",
  "uuid",
  "walkdir",
+ "windows-sys 0.61.2",
  "zerocopy 0.9.0-alpha.0",
 ]
 
@@ -1298,7 +1293,6 @@ dependencies = [
  "journal-common",
  "journal-core",
  "journal-registry",
- "nix",
  "serde",
  "serde_json",
  "tempfile",
@@ -1627,18 +1621,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6a51313c5820b0b02bd422f4b44776fbf47961755c74ce64afc73bfad10226c3"
 dependencies = [
  "getrandom 0.2.17",
-]
-
-[[package]]
-name = "nix"
-version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
-dependencies = [
- "bitflags",
- "cfg-if",
- "cfg_aliases",
- "libc",
 ]
 
 [[package]]

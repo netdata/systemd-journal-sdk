@@ -15,5 +15,10 @@ allocative = ["dep:allocative"]
 rustc-hash = { workspace = true }
 uuid = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-nix = { workspace = true, features = ["time"] }
 allocative = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_WindowsProgramming"] }

@@ -82,12 +82,11 @@ impl OwnedChain {
     pub(super) fn new(path: PathBuf, machine_id: Uuid, source: Source) -> Result<Self> {
         #[cfg(debug_assertions)]
         {
-            use std::os::unix::ffi::OsStrExt;
-
             debug_assert!(path.exists() && path.is_dir());
 
-            let filename = path.file_name().unwrap().as_bytes();
-            debug_assert_eq!(Ok(machine_id), Uuid::try_parse_ascii(filename));
+            if let Some(filename) = path.file_name().and_then(|name| name.to_str()) {
+                debug_assert_eq!(Ok(machine_id), Uuid::try_parse(filename));
+            }
         }
 
         let source_name = source_basename(&source);
@@ -343,7 +342,7 @@ impl OwnedChain {
         let renamed = file.path() != archived.path() && std::path::Path::new(file.path()).exists();
         if renamed {
             std::fs::rename(file.path(), archived.path())?;
-            std::fs::File::open(&self.path)?.sync_all()?;
+            sync_directory(&self.path)?;
         }
 
         let size = self.file_sizes.remove(file).unwrap_or(0);
@@ -439,7 +438,7 @@ impl OwnedChain {
 
         if error.is_none()
             && !deleted_files.is_empty()
-            && let Err(err) = std::fs::File::open(&self.path).and_then(|file| file.sync_all())
+            && let Err(err) = sync_directory(&self.path)
         {
             error = Some(err.into());
         }
@@ -569,6 +568,16 @@ fn committed_journal_size(file: &repository::File) -> Option<u64> {
 
 fn align8(value: u64) -> u64 {
     value.saturating_add(7) & !7
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> std::io::Result<()> {
+    std::fs::File::open(path)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]

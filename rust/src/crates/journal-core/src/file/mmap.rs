@@ -1,6 +1,8 @@
 use crate::error::{JournalError, Result};
 use journal_common::compat::is_multiple_of;
 use std::fs::File;
+#[cfg(not(unix))]
+use std::io::{Seek, SeekFrom, Write};
 use std::ops::{Deref, DerefMut};
 #[cfg(unix)]
 use std::os::unix::fs::FileExt;
@@ -588,6 +590,11 @@ impl<M: MemoryMapMut> WindowManager<M> {
                     .file
                     .write_at(&header_bytes[written..], written as u64)?;
             }
+        }
+        #[cfg(not(unix))]
+        {
+            self.file.seek(SeekFrom::Start(0))?;
+            self.file.write_all(header_bytes)?;
         }
         self.file.sync_data()?;
         self.file_size = logical_size;

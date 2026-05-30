@@ -1679,6 +1679,25 @@ mod tests {
         SealOptions::new([0u8; 12], 1_000_000, 1_000_000)
     }
 
+    fn write_test_bytes_at(
+        file: &mut std::fs::File,
+        bytes: &[u8],
+        offset: u64,
+    ) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            file.write_all_at(bytes, offset)
+        }
+
+        #[cfg(not(unix))]
+        {
+            use std::io::{Seek, SeekFrom, Write};
+
+            file.seek(SeekFrom::Start(offset))?;
+            file.write_all(bytes)
+        }
+    }
+
     fn zstd_writer(threshold: usize) -> JournalWriter {
         JournalWriter {
             tail_object_offset: NonZeroU64::new(8).unwrap(),
@@ -2613,11 +2632,11 @@ mod tests {
 
         // Tamper with a byte in the DATA object payload area
         use std::fs::OpenOptions;
-        let f = OpenOptions::new()
+        let mut f = OpenOptions::new()
             .write(true)
             .open(&path)
             .expect("open for tamper");
-        f.write_all_at(&[0xff], 512).expect("tamper write");
+        write_test_bytes_at(&mut f, &[0xff], 512).expect("tamper write");
         drop(f);
 
         let key = verification_key(&seal);
