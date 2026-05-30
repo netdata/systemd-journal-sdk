@@ -4,7 +4,7 @@
 
 Status: in-progress
 
-Sub-state: implemented; ready for orchestrator review.
+Sub-state: review fixes implemented; reviewer rerun pending.
 
 ## Requirements
 
@@ -198,11 +198,12 @@ Failure handling:
   `Status: open` to `Status: in-progress`.
 - Replaced `journal-common` unconditional `nix` time usage with platform
   clock helpers: Unix uses `clock_gettime(CLOCK_MONOTONIC)` through `libc`;
-  non-Unix uses a process-local `Instant` baseline.
+  Windows uses `QueryUnbiasedInterruptTime`; other non-Unix targets use a
+  process-local `Instant` fallback.
 - Replaced Rust writer lock Linux `/proc` assumptions with platform helpers:
   Linux keeps `/proc/<pid>/stat` start-time verification, FreeBSD/macOS use
-  same-boot PID liveness, and Windows uses `OpenProcess` plus
-  `WaitForSingleObject`.
+  PID liveness, and Windows uses process creation time plus
+  `OpenProcess`/`WaitForSingleObject` status.
 - Added FreeBSD identity support for common `machine-id` paths and FreeBSD
   boot ID derivation from `sysctl kern.boottime`.
 - Kept Linux mmap hot paths intact and added a non-Unix fallback for header
@@ -211,8 +212,18 @@ Failure handling:
   mechanisms do not exist.
 - Updated `rust/README.md` and `.agents/sow/specs/product-scope.md` with Rust
   platform behavior and non-Linux validation limits.
-- Did not edit `SOW-status.md`; status reconciliation is left to the
-  orchestrator per the worktree prompt.
+- Ran whole-SOW read-only reviewer round 1 with
+  `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/qwen3.6-plus`,
+  `llm-netdata-cloud/glm-5.1`, `llm-netdata-cloud/minimax-m2.7-coder`, and
+  `llm-netdata-cloud/mimo-v2.5-pro`.
+- Implemented real reviewer findings: restored Linux `/host/proc` boot-ID
+  fallback, replaced Windows process-local monotonic timestamps with Windows
+  unbiased interrupt time, added Windows process creation-time stale-lock
+  identity checks, treated BSD/macOS invalid PIDs as stale, target-gated
+  `journal-common` `libc`, simplified macOS UUID parsing, added a common
+  FreeBSD machine-id path, and corrected docs/spec overclaims.
+- Rejected reviewer-suggested removal of `OpenOptionsExt` because Linux tests
+  proved `journal-core/src/file/file.rs` still uses `.mode(0o640)`.
 
 ## Validation
 
@@ -222,8 +233,8 @@ Acceptance criteria evidence:
   `journal-common`, `journal-core`, `journal-log-writer`, `journal`, and
   `journalctl`.
 - Windows Rust target checks passed for SDK crates in scope:
-  `journal-core`, `journal-log-writer`, `journal`, and `journalctl`,
-  including `--tests`.
+  `journal-common`, `journal-core`, `journal-log-writer`, `journal`, and
+  `journalctl`, including `--tests`.
 - FreeBSD/macOS target checks were attempted and blocked before crate code by
   missing installed Rust standard-library targets:
   `x86_64-unknown-freebsd` and `x86_64-apple-darwin`.
@@ -237,15 +248,7 @@ Acceptance criteria evidence:
 Tests or equivalent validation:
 
 - Succeeded:
-  `CARGO_HOME="$PWD/.local/cargo-home" CARGO_TARGET_DIR="$PWD/.local/cargo-target" cargo check --manifest-path rust/Cargo.toml -p journal-core --target x86_64-pc-windows-gnu`
-- Succeeded:
-  `CARGO_HOME="$PWD/.local/cargo-home" CARGO_TARGET_DIR="$PWD/.local/cargo-target" cargo check --manifest-path rust/Cargo.toml -p journal-log-writer --target x86_64-pc-windows-gnu`
-- Succeeded:
-  `CARGO_HOME="$PWD/.local/cargo-home" CARGO_TARGET_DIR="$PWD/.local/cargo-target" cargo check --manifest-path rust/Cargo.toml -p journal --target x86_64-pc-windows-gnu`
-- Succeeded:
-  `CARGO_HOME="$PWD/.local/cargo-home" CARGO_TARGET_DIR="$PWD/.local/cargo-target" cargo check --manifest-path rust/Cargo.toml -p journalctl --target x86_64-pc-windows-gnu`
-- Succeeded:
-  `CARGO_HOME="$PWD/.local/cargo-home" CARGO_TARGET_DIR="$PWD/.local/cargo-target" cargo check --manifest-path rust/Cargo.toml -p journal-core -p journal-log-writer -p journal -p journalctl --tests --target x86_64-pc-windows-gnu`
+  `CARGO_HOME="$PWD/.local/cargo-home" CARGO_TARGET_DIR="$PWD/.local/cargo-target" cargo check --manifest-path rust/Cargo.toml -p journal-common -p journal-core -p journal-log-writer -p journal -p journalctl --tests --target x86_64-pc-windows-gnu`
 - Succeeded:
   `CARGO_HOME="$PWD/.local/cargo-home" CARGO_TARGET_DIR="$PWD/.local/cargo-target" cargo test --manifest-path rust/Cargo.toml -p journal-common -p journal-core -p journal-log-writer -p journal -p journalctl`
   Result summary: 22 `journal` tests, 31 `journal-common` tests, 63
@@ -254,15 +257,18 @@ Tests or equivalent validation:
   doctests passed.
 - Succeeded:
   Rust-only livewriter lock contention and stale-lock recovery probe using
-  `.local/interoperability/bin/rust-livewriter`; both generated journals passed
-  `journalctl --verify --file`.
+  `.local/interoperability/bin/rust-livewriter`.
+  Result artifact:
+  `.local/interoperability/rust-lock-validation/result-20260530-091236.json`.
+  Contention, stale-lock recovery, lock cleanup, and stock verification all
+  succeeded.
 - Succeeded:
   writer smoke:
-  `cargo run --manifest-path rust/Cargo.toml -p writer_core_bench -- --output "$PWD/.local/fedcba9876543210fedcba9876543210/system.journal" --rows 1000 --format regular --surface direct --api-mode raw-payload --final-state offline`
+  `CARGO_HOME="$PWD/.local/cargo-home" CARGO_TARGET_DIR="$PWD/.local/cargo-target" cargo run --manifest-path rust/Cargo.toml -p writer_core_bench -- --output "$PWD/.local/review-smoke/fedcba9876543210fedcba9876543210/system.journal" --rows 1000 --format regular --surface direct --api-mode raw-payload --final-state offline`
   Result: 1000 rows, 32 fields per row, regular direct writer, offline close,
-  `append_rows_per_second` about `41328`, `errors: []`.
+  `append_rows_per_second` about `41283`, `errors: []`.
 - Succeeded:
-  `journalctl --verify --file "$PWD/.local/fedcba9876543210fedcba9876543210/system.journal"`
+  `journalctl --verify --file "$PWD/.local/review-smoke/fedcba9876543210fedcba9876543210/system.journal"`
 - Succeeded: `git diff --check`.
 - Succeeded: `.agents/sow/audit.sh`.
 - BLOCKED by local toolchain:
@@ -295,13 +301,55 @@ Real-use evidence:
 
 Reviewer findings:
 
-- External reviewers were not run in this implementation worktree, per the
-  prompt. Whole-SOW reviewer pass is left to the orchestrator.
+- Round 1, `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`.
+  Findings: invalid-PID `EINVAL` on non-Linux Unix could leave a stale lock
+  unreclaimed; hardcoded mmap page-size is a pre-existing runtime portability
+  risk; Windows integration tests would panic if executed where machine IDs
+  are unsupported; `OpenOptionsExt` looked unused; SIGBUS mmap return handling
+  is pre-existing. Disposition: implemented `EINVAL` stale handling; rejected
+  `OpenOptionsExt` removal because `.mode(0o640)` requires it; tracked page
+  size, Windows runtime-test fallback, and SIGBUS return handling as
+  non-blocking/pre-existing because current SOW validates non-Linux
+  compilation, not runtime certification.
+- Round 1, `llm-netdata-cloud/qwen3.6-plus`: `NOT PRODUCTION GRADE`.
+  Findings: Linux `load_boot_id()` lost `/host/proc` fallback; Windows
+  monotonic timestamps were process-relative; `journal-common` pulled `libc`
+  into Windows builds; FreeBSD `/host/` fallback and synthetic boot IDs needed
+  clearer documentation. Disposition: fixed Linux boot-ID host fallback,
+  replaced Windows monotonic clock with `QueryUnbiasedInterruptTime`, moved
+  `libc` under `cfg(unix)`, and clarified synthetic boot-ID docs.
+- Round 1, `llm-netdata-cloud/glm-5.1`: `NOT PRODUCTION GRADE`.
+  Findings: Windows boot IDs degrade to empty strings; macOS UUID parsing was
+  more fragile than needed; `monotonic_now()` documentation overclaimed
+  universal `CLOCK_MONOTONIC`; synthetic boot IDs needed clearer comments.
+  Disposition: added Windows process creation-time identity checks so stale
+  locks do not depend only on empty boot IDs and PID liveness; simplified
+  macOS UUID parsing; corrected `monotonic_now()` comments and synthetic
+  boot-ID comments.
+- Round 1, `llm-netdata-cloud/minimax-m2.7-coder`: `NOT PRODUCTION GRADE`.
+  Findings: non-Linux Unix lock error handling and same-boot wording needed
+  review; Windows process-local monotonic time was weaker than desired;
+  FreeBSD boot-ID derivation was synthetic; mmap/header and directory-sync
+  non-Unix fallbacks have lower durability/atomicity than Unix. Disposition:
+  fixed invalid-PID stale handling, Windows monotonic source, and docs wording;
+  left documented non-Unix sync/header trade-offs unchanged because they are
+  part of this SOW's portable fallback surface and Linux hot paths remain
+  intact.
+- Round 1, `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+  Findings: Windows empty boot ID, process-local monotonic time, and no-op
+  directory sync were non-blocking as documented; SIGBUS return-value handling
+  is pre-existing. Disposition: still improved Windows monotonic and process
+  identity based on other reviewers; left no-op directory sync and SIGBUS
+  return-value handling as documented/pre-existing risks.
 
 Same-failure scan:
 
 - `rg -n "\bnix::|nix =" rust/src/crates/journal-common rust/src/crates/journal-core rust/src/crates/journal-log-writer rust/src/journal rust/src/cmd/journalctl rust/Cargo.toml`
   returned no matches after removing `nix` from the affected crates.
+- `rg -n "process-local monotonic|same-boot PID|External reviewers were not run|reviewer pass is left|left to the orchestrator|nix::|nix =" ...`
+  found no stale reviewer-handoff text after this update; the only remaining
+  `process-local monotonic` mention is the explicit fallback for unsupported
+  non-Unix/non-Windows targets in `journal-common/src/time.rs`.
 - `rg -n "/proc/sys/kernel/random/boot_id|/proc/\{pid\}/stat|std::os::unix::ffi::OsStrExt|write_all_at|MAP_ANONYMOUS" ...`
   found only target-gated Linux/Unix usages or Unix-only tests:
   `journal-core/src/file/lock.rs`, `journal-common/src/system.rs`,
@@ -325,10 +373,10 @@ Artifact maintenance gate:
 - End-user/operator skills: none affected; this repository has no output skill
   for Rust SDK consumers.
 - SOW lifecycle: moved this SOW from `pending/open` to
-  `current/in-progress` and left it ready for orchestrator review, not
-  completed.
-- `SOW-status.md`: intentionally not updated in this worktree because the
-  prompt required leaving status reconciliation to the orchestrator.
+  `current/in-progress`; review fixes are implemented and the reviewer rerun
+  is pending.
+- `SOW-status.md`: pending final update after the reviewer rerun establishes
+  the final sub-state.
 
 Lessons extracted:
 
@@ -341,8 +389,6 @@ Lessons extracted:
 Follow-up mapping:
 
 - Parent umbrella: `SOW-0063-20260530-cross-platform-portability.md`.
-- Orchestrator follow-up: run whole-SOW read-only reviewers and reconcile this
-  SOW into `SOW-status.md`.
 - Parent/CI follow-up: collect runtime evidence on FreeBSD, macOS, and Windows
   machines or runners, then validate generated files on Linux with stock
   systemd tooling.

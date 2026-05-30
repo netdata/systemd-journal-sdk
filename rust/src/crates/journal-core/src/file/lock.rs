@@ -191,15 +191,62 @@ fn platform_owner_process_is_alive(owner: &LockOwner) -> io::Result<bool> {
 
     let err = io::Error::last_os_error();
     match err.raw_os_error() {
-        Some(code) if code == libc::ESRCH => Ok(false),
+        Some(code) if code == libc::ESRCH || code == libc::EINVAL => Ok(false),
         Some(code) if code == libc::EPERM => Ok(true),
         _ => Err(err),
     }
 }
 
 #[cfg(windows)]
-fn platform_process_start_time(_pid: u32) -> io::Result<String> {
-    Ok("process-start-unavailable".to_string())
+fn platform_process_start_time(pid: u32) -> io::Result<String> {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        let err = io::Error::last_os_error();
+        return match err.raw_os_error() {
+            Some(code) if code == ERROR_INVALID_PARAMETER as i32 => {
+                Err(io::Error::new(io::ErrorKind::NotFound, err))
+            }
+            Some(code) if code == ERROR_ACCESS_DENIED as i32 => {
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, err))
+            }
+            _ => Err(err),
+        };
+    }
+
+    let mut creation = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut exit = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut kernel = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut user = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+
+    let ok = unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) };
+    unsafe {
+        CloseHandle(handle);
+    }
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let creation_ticks = ((creation.dwHighDateTime as u64) << 32) | creation.dwLowDateTime as u64;
+    Ok(creation_ticks.to_string())
 }
 
 #[cfg(windows)]
@@ -211,6 +258,14 @@ fn platform_owner_process_is_alive(owner: &LockOwner) -> io::Result<bool> {
     use windows_sys::Win32::System::Threading::{
         OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
     };
+
+    match platform_process_start_time(owner.pid) {
+        Ok(start_time) if start_time != owner.start_time => return Ok(false),
+        Ok(_) => {}
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(err) if err.kind() == io::ErrorKind::PermissionDenied => return Ok(true),
+        Err(err) => return Err(err),
+    }
 
     let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, owner.pid) };
     if handle.is_null() {

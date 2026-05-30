@@ -5,9 +5,9 @@
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::ops::{Add, Rem, Sub};
-#[cfg(not(unix))]
+#[cfg(all(not(unix), not(windows)))]
 use std::sync::OnceLock;
-#[cfg(not(unix))]
+#[cfg(all(not(unix), not(windows)))]
 use std::time::Instant;
 
 /// Timestamp in seconds since Unix epoch.
@@ -283,13 +283,14 @@ impl Default for RealtimeClock {
     }
 }
 
-/// Gets the current monotonic timestamp in microseconds since boot.
+/// Gets the current monotonic timestamp in microseconds since boot or system start.
 ///
-/// Uses CLOCK_MONOTONIC which provides a monotonically increasing timestamp
-/// that is not affected by system clock adjustments but does not count time
-/// when the system is suspended.
+/// Unix targets use `CLOCK_MONOTONIC`, which provides a monotonically increasing
+/// timestamp that is not affected by system clock adjustments but does not count
+/// time when the system is suspended. Windows uses unbiased interrupt time,
+/// which also counts only time spent in the working state since system start.
 ///
-/// This matches systemd's behavior for journal entry monotonic timestamps.
+/// Other non-Unix targets fall back to process-local monotonic elapsed time.
 pub fn monotonic_now() -> std::io::Result<Microseconds> {
     #[cfg(unix)]
     {
@@ -323,7 +324,19 @@ pub fn monotonic_now() -> std::io::Result<Microseconds> {
         Ok(Microseconds::new(micros))
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::WindowsProgramming::QueryUnbiasedInterruptTime;
+
+        let mut ticks_100ns = 0u64;
+        let ok = unsafe { QueryUnbiasedInterruptTime(&mut ticks_100ns) };
+        if ok == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Microseconds::new(ticks_100ns / 10))
+    }
+
+    #[cfg(all(not(unix), not(windows)))]
     {
         static START: OnceLock<Instant> = OnceLock::new();
         let elapsed = START.get_or_init(Instant::now).elapsed();

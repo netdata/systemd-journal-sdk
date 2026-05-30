@@ -1166,6 +1166,7 @@ dependencies = [
  "rustc-hash",
  "serde",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

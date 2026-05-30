@@ -99,10 +99,10 @@ Platform behavior:
 - FreeBSD and macOS builds use `clock_gettime(CLOCK_MONOTONIC)`, derive boot
   identity from `sysctl kern.boottime`, and use PID liveness for stale lock
   detection when process start-time identity is unavailable.
-- Windows builds use process-local monotonic timestamps for automatic writer
-  timestamps, generated UUID fallback for automatic identity where native IDs
-  are unavailable, Windows process-handle stale lock detection, and no-op
-  directory fsync/SIGBUS hooks.
+- Windows builds use unbiased interrupt time for automatic writer timestamps,
+  generated UUID fallback for automatic identity where native IDs are
+  unavailable, Windows process creation-time and process-handle stale lock
+  detection, and no-op directory fsync/SIGBUS hooks.
 - Non-Linux build checks are compilation evidence only unless runtime evidence
   from that OS is recorded separately. Files written on non-Linux targets must
   still pass Linux stock `journalctl --verify --file` and repository

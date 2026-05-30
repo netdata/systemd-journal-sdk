@@ -49,17 +49,17 @@ This project produces pure SDKs and file-backed journalctl-compatible tools for 
 - FreeBSD and macOS Rust builds use `clock_gettime(CLOCK_MONOTONIC)`.
   FreeBSD machine IDs are loaded from common `machine-id` paths when present;
   macOS machine IDs use the hardware UUID. FreeBSD and macOS boot IDs are
-  derived from `sysctl kern.boottime`. Writer lock stale-owner detection uses
-  same-boot PID liveness checks where process start-time identity is not
-  available, so PID reuse can conservatively keep a stale lock held instead of
-  risking a second writer.
-- Windows Rust builds use a process-local monotonic `Instant` baseline for
-  generated monotonic timestamps when the caller does not provide explicit
-  timestamps. Automatic machine/boot identity falls back to generated UUIDs
-  where native IDs are unavailable. Writer lock stale-owner detection uses
-  Windows process handles and wait status. Directory fsync and SIGBUS handling
-  are no-ops on Windows because those Unix durability/fault mechanisms do not
-  have the same portable API surface.
+  derived from `sysctl kern.boottime` as a synthetic same-boot comparison ID,
+  not as a kernel-provided random UUID. Writer lock stale-owner detection uses
+  PID liveness where process start-time identity is not available, so PID reuse
+  can conservatively keep a stale lock held instead of risking a second writer.
+- Windows Rust builds use Windows unbiased interrupt time for generated
+  monotonic timestamps when the caller does not provide explicit timestamps.
+  Automatic machine/boot identity falls back to generated UUIDs where native
+  IDs are unavailable. Writer lock stale-owner detection uses Windows process
+  creation time plus process-handle wait status. Directory fsync and SIGBUS
+  handling are no-ops on Windows because those Unix durability/fault mechanisms
+  do not have the same portable API surface.
 - Non-Linux Rust target checks prove compilation only unless a SOW records
   runtime evidence from that operating system. Files generated on non-Linux
   targets still require Linux stock `journalctl --verify --file` and
