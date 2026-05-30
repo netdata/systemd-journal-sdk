@@ -7,8 +7,6 @@ Last updated: 2026-05-30
 - SOW-0063 - Cross Platform Portability: in-progress. Native macOS/Windows
   validation passed for the reviewed child portability work; parent remains
   open until SOW-0071 runtime-purity split is implemented and reviewed.
-- SOW-0067 - Go Cross Platform Portability: in-progress, reviewed, ready for
-  orchestrator merge. Native macOS/Windows Go validation passed under SOW-0063.
 - SOW-0068 - Rust Cross Platform Portability: in-progress, reviewed, ready for
   orchestrator merge. Native macOS/Windows Rust validation passed under
   SOW-0063 after targeted portability repairs.
@@ -49,6 +47,9 @@ Last updated: 2026-05-30
 
 ## Recently Closed Or Completed
 
+- SOW-0067 - Go Cross Platform Portability: completed. Go SDK portability
+  implementation, whole-SOW reviews, Linux/Windows tests, FreeBSD/macOS compile
+  checks, and parent native macOS/Windows generated-file validation passed.
 - SOW-0072 - Dependency And Package Hygiene: completed. Removed the hidden
   Node native-install dependency risk by vendoring only the XZ WASM runtime
   files with license and hash provenance, added package tarball hygiene and

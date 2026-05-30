@@ -2,10 +2,10 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: reviewed; native macOS/Windows validation passed under parent
-SOW-0063; ready for orchestrator merge.
+Sub-state: completed; implementation, reviewer gates, native macOS/Windows
+validation, and orchestrator lifecycle reconciliation finished.
 
 ## Requirements
 
@@ -446,10 +446,9 @@ Artifact maintenance gate:
   identity behavior.
 - End-user/operator docs: updated `go/README.md` and `go/API.md`.
 - End-user/operator skills: none affected.
-- SOW lifecycle: moved from `pending/` to `current/`, status remains
-  `in-progress`, sub-state set to `reviewed; ready for orchestrator merge`.
-- `SOW-status.md`: intentionally not edited per assigned prompt to reduce merge
-  conflicts; orchestrator reconciliation required.
+- SOW lifecycle: moved from `pending/` to `current/` by the implementer, then
+  reconciled by the orchestrator as `completed` and moved to `done/`.
+- `SOW-status.md`: reconciled by the orchestrator during close.
 
 Lessons extracted:
 
@@ -470,6 +469,14 @@ Follow-up mapping:
 - Cross-SDK lock matrix failure is blocked by the Node writer dependency
   startup error and should be reconciled by the orchestrator or the Node
   portability SOW, not this Go-only SOW.
+
+## Outcome
+
+Go cross-platform portability work is complete for this SOW. Linux tests,
+Windows native tests, FreeBSD/macOS compile checks, writer/reader smoke checks,
+whole-SOW reviewer rounds, and parent native macOS/Windows validation passed.
+The remaining native FreeBSD runtime gap and SOW-0071 runtime-purity split stay
+with parent SOW-0063, not this Go-only child SOW.
 
 ## Parent Native Validation Addendum - 2026-05-30
 
