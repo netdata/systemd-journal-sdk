@@ -1,15 +1,24 @@
 import os
 import time
 
+from ._platform import (
+    boot_id_string,
+    lock_fd_exclusive,
+    process_matches_start_time,
+    process_start_time,
+    unlock_fd,
+)
+
 
 LOCK_VERSION = 'systemd-journal-sdk-lock-v1'
 STALE_GRACE_SECONDS = 2.0
 
 
 class WriterLock:
-    def __init__(self, path, owner):
+    def __init__(self, path, owner, fd=None):
         self.path = path
         self.owner = owner
+        self.fd = fd
 
     @staticmethod
     def acquire(journal_path):
@@ -19,8 +28,9 @@ class WriterLock:
             parent = os.path.dirname(lock_path)
             if parent:
                 os.makedirs(parent, mode=0o750, exist_ok=True)
+            fd = None
             try:
-                fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
             except FileExistsError:
                 stale, holder = _lock_file_is_stale(lock_path)
                 if not stale:
@@ -31,11 +41,13 @@ class WriterLock:
                     pass
                 continue
             try:
+                lock_fd_exclusive(fd)
                 _write_owner(fd, owner)
-                return WriterLock(lock_path, owner)
+                return WriterLock(lock_path, owner, fd)
             except Exception:
                 try:
-                    os.close(fd)
+                    if fd is not None:
+                        os.close(fd)
                 except OSError:
                     pass
                 finally:
@@ -48,17 +60,32 @@ class WriterLock:
     def release(self):
         if not self.path:
             return
+        should_unlink = False
         try:
             owner = _read_owner(self.path)
         except FileNotFoundError:
+            self._close_fd()
             self.path = None
             return
         if owner == _current_owner():
+            should_unlink = True
+        self._close_fd()
+        if should_unlink:
             try:
                 os.unlink(self.path)
             except FileNotFoundError:
                 pass
         self.path = None
+
+    def _close_fd(self):
+        if self.fd is None:
+            return
+        fd = self.fd
+        self.fd = None
+        try:
+            unlock_fd(fd)
+        finally:
+            os.close(fd)
 
 
 def _write_owner(fd, owner):
@@ -68,9 +95,15 @@ def _write_owner(fd, owner):
         f'boot_id={owner["boot_id"]}\n'
         f'start_time={owner["start_time"]}\n'
     ).encode('utf-8')
-    os.write(fd, text)
+    os.ftruncate(fd, 0)
+    os.lseek(fd, 0, os.SEEK_SET)
+    written = 0
+    while written < len(text):
+        n = os.write(fd, text[written:])
+        if n <= 0:
+            raise OSError('short lock metadata write')
+        written += n
     os.fsync(fd)
-    os.close(fd)
 
 
 def _lock_file_is_stale(path):
@@ -85,13 +118,10 @@ def _lock_file_is_stale(path):
             return False, 'partially-created lock'
         return True, 'malformed stale lock'
 
-    if owner.get('boot_id') != _boot_id():
+    current_boot_id = _boot_id()
+    if current_boot_id and owner.get('boot_id') and owner.get('boot_id') != current_boot_id:
         return True, f'pid {owner.get("pid")} from previous boot'
-    try:
-        start_time = _process_start_time(owner['pid'])
-    except OSError:
-        return True, f'stale pid {owner.get("pid")}'
-    if start_time != owner.get('start_time'):
+    if not process_matches_start_time(owner['pid'], owner.get('start_time')):
         return True, f'stale pid {owner.get("pid")}'
     return False, f'pid {owner.get("pid")}'
 
@@ -106,23 +136,11 @@ def _current_owner():
 
 
 def _boot_id():
-    try:
-        with open('/proc/sys/kernel/random/boot_id', 'r', encoding='ascii') as f:
-            return f.read().strip()
-    except OSError:
-        return ''
+    return boot_id_string()
 
 
 def _process_start_time(pid):
-    with open(f'/proc/{pid}/stat', 'r', encoding='ascii') as f:
-        text = f.read()
-    end = text.rfind(')')
-    if end < 0:
-        raise OSError(f'cannot parse /proc/{pid}/stat')
-    fields = text[end + 2:].split()
-    if len(fields) < 20:
-        raise OSError(f'cannot parse start time from /proc/{pid}/stat')
-    return fields[19]
+    return process_start_time(pid)
 
 
 def _read_owner(path):

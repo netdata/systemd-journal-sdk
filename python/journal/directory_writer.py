@@ -4,6 +4,7 @@ import os
 import re
 import time
 
+from ._platform import boot_id_bytes, sync_directory
 from .binary import random_uuid, uuid_to_string
 from .header import HEADER_SIZE, OBJECT_HEADER_SIZE, STATE_ONLINE, parse_file_header, parse_object_header
 from .header import normalize_journal_max_file_size
@@ -720,14 +721,7 @@ def _read_machine_id():
 
 
 def _read_boot_id():
-    try:
-        with open('/proc/sys/kernel/random/boot_id', 'r', encoding='ascii') as f:
-            text = f.read().strip().replace('-', '')
-    except OSError:
-        return None
-    if re.fullmatch(r'[0-9a-fA-F]{32}', text):
-        return bytes.fromhex(text)
-    return None
+    return boot_id_bytes()
 
 
 def _committed_journal_size(path, fallback):
@@ -777,8 +771,4 @@ def _hex64(value):
 
 
 def _sync_directory(path):
-    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    return sync_directory(path)

@@ -140,6 +140,29 @@ def verify_journal_file_fails_if_available(path, expected_text):
         )
 
 
+def test_windows_import_safety_without_fcntl():
+    script = f"""
+import builtins
+import sys
+
+sys.path.insert(0, {str(PYTHON_ROOT)!r})
+real_import = builtins.__import__
+
+def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == 'fcntl':
+        raise ModuleNotFoundError("No module named 'fcntl'")
+    return real_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = guarded_import
+import journal
+assert journal.Writer is not None
+assert journal.Log is not None
+assert journal.FileReader is not None
+print('ok')
+"""
+    assert run([sys.executable, '-c', script]).strip() == b'ok'
+
+
 def journalctl_directory_rows_if_available(directory, *matches):
     try:
         run(['journalctl', '--version'])
@@ -534,6 +557,145 @@ def test_writer_exclusive_lock():
                 raise AssertionError('expected second writer open to fail while first writer holds lock')
         finally:
             writer.close()
+
+
+def test_writer_lock_portable_owner_without_proc():
+    from journal import lock as lock_module
+
+    original_start_time = lock_module.process_start_time
+    original_matches = lock_module.process_matches_start_time
+
+    def fake_start_time(pid):
+        if int(pid) == os.getpid():
+            return 'portable-test-start'
+        raise OSError('synthetic missing procfs')
+
+    def fake_matches(pid, start_time):
+        return int(pid) == os.getpid() and start_time == 'portable-test-start'
+
+    lock_module.process_start_time = fake_start_time
+    lock_module.process_matches_start_time = fake_matches
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, 'portable-lock.journal')
+            lock = lock_module.WriterLock.acquire(path)
+            try:
+                try:
+                    other = lock_module.WriterLock.acquire(path)
+                except BlockingIOError:
+                    other = None
+                else:
+                    other.release()
+                    raise AssertionError('expected portable lock owner to block a second writer')
+            finally:
+                lock.release()
+            assert not os.path.exists(path + '.lock')
+    finally:
+        lock_module.process_start_time = original_start_time
+        lock_module.process_matches_start_time = original_matches
+
+
+def test_platform_positional_io_fallback_without_pread_pwrite():
+    from journal import _platform as platform_module
+
+    had_pread = hasattr(os, 'pread')
+    had_pwrite = hasattr(os, 'pwrite')
+    original_pread = getattr(os, 'pread', None)
+    original_pwrite = getattr(os, 'pwrite', None)
+    try:
+        if had_pread:
+            delattr(os, 'pread')
+        if had_pwrite:
+            delattr(os, 'pwrite')
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, 'positional.bin')
+            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                os.write(fd, b'abcdefghij')
+                os.lseek(fd, 5, os.SEEK_SET)
+                platform_module.write_all_at(fd, b'XYZ', 2)
+                assert os.lseek(fd, 0, os.SEEK_CUR) == 5
+                assert platform_module.read_at(fd, 5, 0) == b'abXYZ'
+                assert os.lseek(fd, 0, os.SEEK_CUR) == 5
+            finally:
+                os.close(fd)
+    finally:
+        if had_pread:
+            os.pread = original_pread
+        if had_pwrite:
+            os.pwrite = original_pwrite
+
+
+def test_platform_directory_sync_skips_windows_directory_handles():
+    from journal import _platform as platform_module
+
+    original_is_windows = platform_module._IS_WINDOWS
+    platform_module._IS_WINDOWS = True
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            assert platform_module.sync_directory(td) is False
+            assert platform_module.sync_parent_directory(os.path.join(td, 'x.journal')) is False
+    finally:
+        platform_module._IS_WINDOWS = original_is_windows
+
+
+def test_writer_file_arena_fallback_without_mmap():
+    from journal import writer as writer_module
+
+    original_mapped_arena = writer_module._MappedArena
+
+    class FailingMappedArena:
+        def __init__(self, fd, size):
+            raise OSError('synthetic mmap unavailable')
+
+    writer_module._MappedArena = FailingMappedArena
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, 'file-arena.journal')
+            writer = Writer.create(path)
+            writer.append([
+                {'name': 'MESSAGE', 'value': 'file arena fallback'},
+                {'name': 'PRIORITY', 'value': '6'},
+            ], {'realtime_usec': 1_700_002_500_000_000, 'monotonic_usec': 1})
+            writer.close()
+
+            reader = FileReader.open(path)
+            try:
+                assert reader.step()
+                assert reader.get_entry()['fields']['MESSAGE'] == b'file arena fallback'
+            finally:
+                reader.close()
+            verify_journal_file_if_available(path)
+    finally:
+        writer_module._MappedArena = original_mapped_arena
+
+
+def test_writer_archive_closes_before_rename_when_required():
+    from journal import writer as writer_module
+
+    original_rename_requires_closed_file = writer_module.rename_requires_closed_file
+    writer_module.rename_requires_closed_file = lambda: True
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            active = os.path.join(td, 'active.journal')
+            archived = os.path.join(td, 'archived.journal')
+            writer = Writer.create(active)
+            writer.append([
+                {'name': 'MESSAGE', 'value': 'closed rename archive'},
+                {'name': 'PRIORITY', 'value': '6'},
+            ], {'realtime_usec': 1_700_002_501_000_000, 'monotonic_usec': 1})
+            writer.archive_to(archived)
+
+            assert not os.path.exists(active)
+            assert os.path.exists(archived)
+            assert not os.path.exists(active + '.lock')
+
+            with open(archived, 'rb') as f:
+                header = parse_file_header(f.read(HEADER_SIZE))
+            assert header['state'] == STATE_ARCHIVED
+            verify_journal_file_if_available(archived)
+    finally:
+        writer_module.rename_requires_closed_file = original_rename_requires_closed_file
 
 
 def test_zstd_data_object_parse():
@@ -2762,6 +2924,7 @@ def test_compact_sealed_writer_stock_verify():
 
 def main():
     run([sys.executable, '-m', 'compileall', str(PYTHON_ROOT)])
+    test_windows_import_safety_without_fcntl()
     test_match_validation()
     test_siphash_masks_long_message_length()
     test_live_publish_every_entries_preserves_closed_file_bytes()
@@ -2777,6 +2940,11 @@ def main():
     test_compact_writer_grows_arena_past_initial_allocation()
     test_writer_initial_arena_covers_large_hash_tables()
     test_writer_exclusive_lock()
+    test_writer_lock_portable_owner_without_proc()
+    test_platform_positional_io_fallback_without_pread_pwrite()
+    test_platform_directory_sync_skips_windows_directory_handles()
+    test_writer_file_arena_fallback_without_mmap()
+    test_writer_archive_closes_before_rename_when_required()
     test_zstd_data_object_parse()
     test_xz_and_lz4_data_object_parse()
     test_directory_writer_rotation()

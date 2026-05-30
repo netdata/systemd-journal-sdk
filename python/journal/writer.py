@@ -3,10 +3,17 @@
 
 import os
 import struct
-import fcntl
 import lzma
 import mmap
 from .lock import WriterLock
+from ._platform import (
+    boot_id_bytes,
+    lock_fd_exclusive,
+    read_at as _read_fd_at,
+    rename_requires_closed_file,
+    sync_parent_directory,
+    write_all_at as _write_fd_at,
+)
 from .binary import (
     read_uint64_le, write_uint64_le, write_uint32_le, write_uint8,
     align8, random_uuid, is_zero_uuid, buf_equal,
@@ -94,6 +101,39 @@ class _MappedArena:
             return
         self._mmap.close()
         self._mmap = None
+
+
+class _FileArena:
+    def __init__(self, fd, size):
+        self._fd = fd
+        self._size = 0
+        self.resize(size)
+
+    def resize(self, size):
+        size = int(size)
+        if size <= 0:
+            raise ValueError('file arena size must be positive')
+        if size != self._size:
+            os.ftruncate(self._fd, size)
+            self._size = size
+
+    def read_at(self, offset, size):
+        end = int(offset) + int(size)
+        if offset < 0 or size < 0 or end > self._size:
+            raise ValueError('file arena read out of bounds')
+        return _read_fd_at(self._fd, size, offset)
+
+    def write_at(self, offset, data):
+        end = int(offset) + len(data)
+        if offset < 0 or end > self._size:
+            raise ValueError('file arena write out of bounds')
+        _write_fd_at(self._fd, data, offset)
+
+    def flush(self):
+        return None
+
+    def close(self):
+        return None
 
 
 class Writer:
@@ -353,24 +393,33 @@ class Writer:
         self._write_at(offset, uuid)
 
     def _map_arena(self, size):
-        self._arena = _MappedArena(self._fd, size)
+        try:
+            self._arena = _MappedArena(self._fd, size)
+        except (BufferError, OSError, ValueError):
+            self._arena = _FileArena(self._fd, size)
 
     def _resize_arena(self, size):
         if self._arena is None:
             self._map_arena(size)
         else:
-            self._arena.resize(size)
+            try:
+                self._arena.resize(size)
+            except (BufferError, OSError, ValueError):
+                try:
+                    self._arena.close()
+                finally:
+                    self._arena = _FileArena(self._fd, size)
 
     def _read_at(self, offset, size):
         if self._arena is not None:
             return self._arena.read_at(offset, size)
-        return os.pread(self._fd, size, offset)
+        return _read_fd_at(self._fd, size, offset)
 
     def _write_at(self, offset, data):
         if self._arena is not None:
             self._arena.write_at(offset, data)
         else:
-            os.pwrite(self._fd, data, offset)
+            _write_fd_at(self._fd, data, offset)
 
     def _read_object_size(self, offset):
         buf = self._read_at(offset + 8, 8)
@@ -945,6 +994,9 @@ class Writer:
         if self._arena is not None:
             self._arena.flush()
         os.fsync(self._fd)
+        if rename_requires_closed_file() and self._path != path:
+            self._archive_to_after_closing(path)
+            return
         try:
             if self._path != path:
                 os.rename(self._path, path)
@@ -984,6 +1036,37 @@ class Writer:
                 self._arena.flush()
             os.fsync(self._fd)
             raise
+
+    def _archive_to_after_closing(self, path):
+        close_err = None
+        try:
+            if self._arena is not None:
+                self._arena.close()
+                self._arena = None
+        except Exception as e:
+            close_err = e
+        try:
+            os.close(self._fd)
+        except Exception as e:
+            if not close_err:
+                close_err = e
+        if close_err:
+            try:
+                self._lock.release()
+            finally:
+                self._lock = None
+                self._closed = True
+            raise close_err
+        try:
+            os.rename(self._path, path)
+            self._path = path
+            _sync_parent_directory(path)
+        finally:
+            try:
+                self._lock.release()
+            finally:
+                self._lock = None
+                self._closed = True
 
     def current_size(self):
         return self._append_offset
@@ -1087,16 +1170,12 @@ class Writer:
 
 
 def _read_object_size_from_fd(fd, offset):
-    buf = os.pread(fd, 8, offset + 8)
+    buf = _read_fd_at(fd, 8, offset + 8)
     return read_uint64_le(buf, 0)
 
 
 def _sync_parent_directory(path):
-    dir_fd = os.open(os.path.dirname(path), os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+    return sync_parent_directory(path)
 
 
 def _current_time_ms():
@@ -1105,7 +1184,7 @@ def _current_time_ms():
 
 
 def _lock_fd(fd):
-    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    lock_fd_exclusive(fd)
 
 
 def _normalize_field_name_policy(value):
@@ -1243,12 +1322,7 @@ def _uuid_option(value, fallback):
 
 
 def _read_boot_id():
-    try:
-        with open('/proc/sys/kernel/random/boot_id', 'r', encoding='ascii') as f:
-            text = f.read().strip().replace('-', '')
-        return bytes.fromhex(text) if len(text) == 32 else None
-    except (OSError, ValueError):
-        return None
+    return boot_id_bytes()
 
 
 def _normalize_compression(value):
