@@ -4,7 +4,9 @@
 
 Status: in-progress
 
-Sub-state: reviewed; ready for orchestrator merge.
+Sub-state: reviewed; native macOS/Windows validation passed under parent
+SOW-0063 after targeted runtime-floor and test repairs; ready for orchestrator
+merge.
 
 ## Requirements
 
@@ -380,3 +382,42 @@ Follow-up mapping:
 - Parent umbrella: `SOW-0063-20260530-cross-platform-portability.md`.
 - Non-Linux runtime execution evidence remains for the parent/orchestrator to
   collect with real FreeBSD, macOS, and Windows Node runtimes.
+
+## Parent Native Validation Addendum - 2026-05-30
+
+Facts:
+
+- Parent SOW-0063 ran native Node.js validation on approved macOS and Windows
+  hosts after the child portability work.
+- Windows default Node.js `v22.14.0` failed import because `node:zlib` does not
+  export `zstdDecompressSync`; the package now correctly requires Node.js
+  `>=22.15.0`.
+
+Repairs:
+
+- `node/package.json`, `node/package-lock.json`, `node/README.md`, and product
+  scope now record the Node.js `>=22.15.0` engine floor.
+- `node/.npmrc` sets `ignore-scripts=true` so install does not run native
+  `node-liblzma` build hooks; the runtime imports the WASM path directly.
+- Node tests now gate stock `journalctl` assertions when the tool is absent and
+  use native path APIs instead of POSIX-only path splitting.
+- Node writer directory sync now skips parent-directory fsync on Windows while
+  preserving file fsync.
+
+Evidence:
+
+- Linux `npm test` with Node.js `v26.2.0`: PASS.
+- macOS `npm test` with Node.js `v26.0.0`: PASS.
+- Windows default Node.js `v22.14.0`: expected failure proving the old
+  `>=22.0.0` package floor was too low.
+- Windows repo-local official Node.js `v26.2.0` running `node/test/all.js`:
+  PASS.
+- macOS and Windows Node.js writer/read synthetic journal smokes under remote
+  `.local/native-smoke/`: PASS.
+- Linux stock `journalctl --verify --file` passed for the copied macOS and
+  Windows Node.js-generated journal files.
+
+Remaining parent blockers:
+
+- SOW-0063 remains open for SOW-0071 runtime-purity separation and native
+  FreeBSD runtime execution.

@@ -4,7 +4,8 @@
 
 Status: in-progress
 
-Sub-state: reviewed; ready for orchestrator merge; child of SOW-0063.
+Sub-state: reviewed; native macOS/Windows validation passed under parent
+SOW-0063 after targeted test/adapter gating; ready for orchestrator merge.
 
 ## Requirements
 
@@ -427,3 +428,40 @@ Follow-up mapping:
   marked completed by this worktree.
 - Non-Linux runtime execution: exact local blockers are recorded above; parent
   SOW-0063 owns cross-OS runtime matrix reconciliation.
+
+## Parent Native Validation Addendum - 2026-05-30
+
+Facts:
+
+- Parent SOW-0063 ran native Python validation on approved macOS and Windows
+  hosts after the child portability work.
+- Native validation found test/adapter assumptions about stock `journalctl`,
+  POSIX mode bits, and stdlib zstd availability.
+
+Repairs:
+
+- `python/test_all.py` now skips stock `journalctl` checks only when the tool is
+  absent.
+- `python/test_all.py` no longer enforces POSIX `0640` mode bits on
+  Windows-like platforms.
+- `python/test_all.py` and `python/adapter.py` skip only zstd-specific fixture
+  coverage when stdlib `compression.zstd` is unavailable.
+
+Evidence:
+
+- Linux `python/test_all.py` with Python `3.14.5`: PASS.
+- macOS `python/test_all.py`: PASS.
+- Windows `python/test_all.py` with Python `3.12.13`: PASS, with
+  zstd-specific fixture tests skipped because stdlib `compression.zstd` is not
+  present in that runtime.
+- macOS and Windows Python writer/read synthetic journal smokes under remote
+  `.local/native-smoke/`: PASS.
+- Linux stock `journalctl --verify --file` passed for the copied macOS and
+  Windows Python-generated journal files.
+
+Remaining parent blockers:
+
+- SOW-0063 remains open for SOW-0071 runtime-purity separation and native
+  FreeBSD runtime execution.
+- Full Windows Python zstd fixture execution requires a Windows Python runtime
+  with stdlib `compression.zstd` support.

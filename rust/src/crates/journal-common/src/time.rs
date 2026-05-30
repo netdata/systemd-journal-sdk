@@ -583,9 +583,9 @@ mod tests {
         let initial = Microseconds::new(1000000);
         let clock = RealtimeClock::with_initial(initial);
 
-        // Even if system time doesn't advance, clock should increment
-        let t1 = clock.now();
-        let t2 = clock.now();
+        // Even if an observed timestamp doesn't advance, clock should increment.
+        let t1 = clock.observe(initial);
+        let t2 = clock.observe(initial);
 
         assert!(t2 > t1);
         assert_eq!(t2.get() - t1.get(), 1); // Should increment by 1 microsecond

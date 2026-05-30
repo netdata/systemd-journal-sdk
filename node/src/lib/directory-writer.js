@@ -793,9 +793,11 @@ function saturatingSubBigInt(value, amount) {
 }
 
 function syncDirectory(path) {
+  if (process.platform === 'win32') return false;
   const fd = openSync(path, 'r');
   try {
     fsyncSync(fd);
+    return true;
   } finally {
     closeSync(fd);
   }

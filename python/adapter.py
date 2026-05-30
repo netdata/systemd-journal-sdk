@@ -46,6 +46,18 @@ def resolve_fixture(tc, key):
     return os.path.join(fixture_base(), tc['fixtures'][key]['path'])
 
 
+def fixture_requires_zstd(path):
+    if _HAS_ZSTD:
+        return False
+    if path.endswith('.zst'):
+        return True
+    if os.path.isdir(path):
+        for _root, _dirs, files in os.walk(path):
+            if any(name.endswith('.zst') for name in files):
+                return True
+    return False
+
+
 def run_adapter():
     input_data = sys.stdin.buffer.read()
     try:
@@ -104,6 +116,8 @@ def run_file_format_test(tc):
         path = resolve_fixture(tc, 'journal_file')
         if not path:
             return {'status': 'SKIP', 'note': 'no journal_file fixture'}
+        if fixture_requires_zstd(path):
+            return {'status': 'SKIP', 'note': 'zstd decompression unavailable'}
         return test_file_header_parse(path)
     return {'status': 'SKIP', 'note': f'unsupported: {name}'}
 
@@ -295,6 +309,8 @@ def run_stream_test(tc):
     path = resolve_fixture(tc, 'journal_dir')
     if not path:
         return {'status': 'SKIP', 'note': 'no journal_dir fixture'}
+    if fixture_requires_zstd(path):
+        return {'status': 'SKIP', 'note': 'zstd decompression unavailable'}
     try:
         r = DirectoryReader.open(path)
         entries = []
@@ -324,6 +340,8 @@ def run_cursor_test(tc):
     path = resolve_fixture(tc, 'journal_dir')
     if not path:
         return {'status': 'SKIP', 'note': 'no journal_dir fixture'}
+    if fixture_requires_zstd(path):
+        return {'status': 'SKIP', 'note': 'zstd decompression unavailable'}
     r = SdJournalOpen(path, 0)
     try:
         SdJournalSeekHead(r)
@@ -370,6 +388,8 @@ def run_enumeration_test(tc):
     path = resolve_fixture(tc, 'journal_dir')
     if not path:
         return {'status': 'SKIP', 'note': 'no journal_dir fixture'}
+    if fixture_requires_zstd(path):
+        return {'status': 'SKIP', 'note': 'zstd decompression unavailable'}
     try:
         r = DirectoryReader.open(path)
         fields = r.enumerate_fields()
@@ -384,6 +404,8 @@ def run_import_export_test(tc):
     path = resolve_fixture(tc, 'journal_dir')
     if not path:
         return {'status': 'SKIP', 'note': 'no journal_dir fixture'}
+    if fixture_requires_zstd(path):
+        return {'status': 'SKIP', 'note': 'zstd decompression unavailable'}
     try:
         r = DirectoryReader.open(path)
         exports = []
@@ -409,6 +431,8 @@ def run_journalctl_test(tc):
         path = resolve_fixture(tc, 'journal_dir')
         if not path:
             return {'status': 'SKIP', 'note': 'no journal_dir fixture'}
+        if fixture_requires_zstd(path):
+            return {'status': 'SKIP', 'note': 'zstd decompression unavailable'}
         try:
             r = DirectoryReader.open(path)
             return {'status': 'PASS', 'actual': r.list_boots()}
@@ -421,6 +445,8 @@ def run_compression_test(tc):
     path = resolve_fixture(tc, 'journal_file')
     if not path:
         return {'status': 'SKIP', 'note': 'no journal_file fixture'}
+    if path.endswith('.zst') and not _HAS_ZSTD:
+        return {'status': 'SKIP', 'note': 'zstd decompression unavailable'}
     try:
         r = FileReader.open(path)
         if not r.step():
@@ -448,6 +474,8 @@ def run_corruption_test(tc):
         path = resolve_fixture(tc, 'corrupted_file')
         if not path:
             return {'status': 'SKIP', 'note': 'no corrupted_file fixture'}
+        if fixture_requires_zstd(path):
+            return {'status': 'SKIP', 'note': 'zstd decompression unavailable'}
         try:
             verify_file(path)
         except VerificationError as e:
@@ -459,6 +487,8 @@ def run_corruption_test(tc):
         path = resolve_fixture(tc, key)
         if not path:
             continue
+        if fixture_requires_zstd(path):
+            return {'status': 'SKIP', 'note': 'zstd decompression unavailable'}
         checked += 1
         try:
             r = FileReader.open(path)

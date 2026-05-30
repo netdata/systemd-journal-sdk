@@ -4,7 +4,8 @@
 
 Status: in-progress
 
-Sub-state: reviewed; ready for orchestrator merge.
+Sub-state: reviewed; native macOS/Windows validation passed under parent
+SOW-0063 after targeted repairs; ready for orchestrator merge.
 
 ## Requirements
 
@@ -440,3 +441,44 @@ Follow-up mapping:
   page assumptions with runtime page-size detection, harden SIGBUS
   `mmap()`-failure handling, and decide whether Linux lock boot-ID lookup
   should share the generic `/host/` fallback.
+
+## Parent Native Validation Addendum - 2026-05-30
+
+Facts:
+
+- Parent SOW-0063 ran native Rust validation on approved macOS and Windows
+  hosts after the child portability work.
+- Native validation found additional Rust portability debt and repaired it in
+  this branch.
+
+Repairs:
+
+- `journal-registry` now accepts native absolute paths in `File::from_path()`
+  and `File::from_raw_path()`.
+- non-Linux Unix stale-lock checks now reject invalid or wrapped PIDs before
+  calling `kill(pid, 0)`.
+- `journal-common` realtime-clock coverage no longer depends on the host clock
+  advancing by exactly one microsecond.
+- `journal-log-writer` tests use deterministic machine and boot IDs instead of
+  host identity helpers.
+- `journal-log-writer` `serde-api` no longer depends on the Git
+  `flatten-serde-json` package that failed Windows checkout under repo-local
+  Cargo caches.
+
+Evidence:
+
+- Linux affected Rust crates plus `journal-log-writer --features serde-api`:
+  PASS.
+- macOS affected Rust crates plus `journal-log-writer --features serde-api`:
+  PASS.
+- Windows affected Rust crates plus `journal-log-writer --features serde-api`:
+  PASS.
+- macOS and Windows Rust writer/read synthetic journal smokes under remote
+  `.local/native-smoke/`: PASS.
+- Linux stock `journalctl --verify --file` passed for the copied macOS and
+  Windows Rust-generated journal files.
+
+Remaining parent blockers:
+
+- SOW-0063 remains open for SOW-0071 runtime-purity separation and native
+  FreeBSD runtime execution.

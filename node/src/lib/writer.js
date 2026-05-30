@@ -1073,9 +1073,11 @@ function fieldCacheKey(payload) {
 }
 
 function syncParentDirectory(path) {
+  if (process.platform === 'win32') return false;
   const dirFd = openSync(dirname(path), 'r');
   try {
     fsyncSync(dirFd);
+    return true;
   } finally {
     closeSync(dirFd);
   }

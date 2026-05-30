@@ -72,7 +72,7 @@ files together.
 
 ## Installation
 
-Requires Node.js v22+ (for built-in `node:zlib` zstd support).
+Requires Node.js v22.15+ (for built-in `node:zlib` zstd support).
 
 ```bash
 npm install .
@@ -98,6 +98,11 @@ cleanup falls back to `process.kill(pid, 0)` liveness checks and treats unknown
 or reused process identity as still held. This conservative fallback preserves
 the one-writer safety contract; a stale lock may require manual removal if the
 platform cannot prove that the recorded owner is gone.
+
+Directory rotation and retention fsync journal files on every target. POSIX
+targets also fsync parent directories through directory file descriptors where
+available. Windows skips parent-directory fsync because Node.js does not expose
+a portable durable directory-handle sync path there.
 
 ## Basic Reader Usage
 
@@ -367,11 +372,16 @@ retention should copy the returned `Buffer`.
 Uses built-in Node.js modules and compression dependencies:
 
 - `node:fs` - File I/O
-- `node:zlib` - Zstd compression (Node.js v22+)
+- `node:zlib` - Zstd compression (Node.js v22.15+)
 - `node:util` - Argument parsing
 - `node-liblzma@5.0.1` - WASM XZ compression/decompression runtime path
 - `lz4js@0.2.0` - Raw LZ4 block compression used with the systemd journal
   8-byte uncompressed-size prefix
+
+The committed `node/.npmrc` sets `ignore-scripts=true` so dependency install
+does not run native build hooks. This is intentional: the SDK imports the
+`node-liblzma/wasm/*` files directly and must not build or load the native
+`node-liblzma` addon for its supported runtime path.
 
 ## Conformance
 

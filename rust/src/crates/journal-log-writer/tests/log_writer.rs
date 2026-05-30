@@ -5,7 +5,7 @@
 //! - File rotation (size-based, count-based)
 //! - Retention policies
 
-use journal_common::{Microseconds, load_boot_id, load_machine_id, monotonic_now};
+use journal_common::{Microseconds, monotonic_now};
 use journal_core::{
     error::JournalError,
     file::{
@@ -27,9 +27,17 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tempfile::TempDir;
 
 /// Helper to create a default test config
+fn test_machine_id() -> uuid::Uuid {
+    uuid::Uuid::parse_str("00112233445566778899aabbccddeeff").unwrap()
+}
+
+fn test_boot_id() -> uuid::Uuid {
+    uuid::Uuid::parse_str("ffeeddccbbaa99887766554433221100").unwrap()
+}
+
 fn test_config() -> Config {
     let origin = Origin {
-        machine_id: None,
+        machine_id: Some(test_machine_id()),
         namespace: None,
         source: journal_registry::Source::System,
     };
@@ -39,6 +47,7 @@ fn test_config() -> Config {
         RotationPolicy::default(),
         RetentionPolicy::default(),
     )
+    .with_boot_id(test_boot_id())
 }
 
 #[test]
@@ -52,7 +61,7 @@ fn config_uses_systemd_compression_threshold_policy() {
 
 /// Helper to count journal files in a directory
 fn count_journal_files(dir: &TempDir) -> usize {
-    let machine_id = load_machine_id().unwrap();
+    let machine_id = test_machine_id();
     let journal_dir = dir.path().join(machine_id.as_simple().to_string());
 
     fs::read_dir(&journal_dir)
@@ -69,7 +78,7 @@ fn count_journal_files(dir: &TempDir) -> usize {
 }
 
 fn journal_file_path(dir: &TempDir) -> PathBuf {
-    let machine_id = load_machine_id().unwrap();
+    let machine_id = test_machine_id();
     let journal_dir = dir.path().join(machine_id.as_simple().to_string());
 
     let journal_files: Vec<_> = fs::read_dir(&journal_dir)
@@ -94,7 +103,7 @@ fn journal_file_path(dir: &TempDir) -> PathBuf {
 }
 
 fn journal_file_paths(dir: &TempDir) -> Vec<PathBuf> {
-    let machine_id = load_machine_id().unwrap();
+    let machine_id = test_machine_id();
     let journal_dir = dir.path().join(machine_id.as_simple().to_string());
 
     let mut journal_files: Vec<_> = fs::read_dir(&journal_dir)
@@ -259,7 +268,7 @@ fn test_default_active_filename_uses_netdata_chain_naming() {
         "active filename should use Netdata chain naming, got {name}"
     );
 
-    let machine_id = load_machine_id().unwrap();
+    let machine_id = test_machine_id();
     let strict_path = dir
         .path()
         .join(machine_id.as_simple().to_string())
@@ -408,7 +417,7 @@ fn test_default_chain_reopen_preserves_sequence_identity() {
 #[test]
 fn test_default_chain_reopens_online_file() {
     let dir = TempDir::new().unwrap();
-    let machine_id = load_machine_id().unwrap();
+    let machine_id = test_machine_id();
     let journal_dir = dir.path().join(machine_id.as_simple().to_string());
     fs::create_dir_all(&journal_dir).unwrap();
 
@@ -504,7 +513,7 @@ fn test_default_chain_discards_empty_online_file_and_continues_sequence() {
         log.close().unwrap();
     }
 
-    let machine_id = load_machine_id().unwrap();
+    let machine_id = test_machine_id();
     let journal_dir = dir.path().join(machine_id.as_simple().to_string());
     let paths = journal_file_paths(&dir);
     assert_eq!(paths.len(), 1, "expected one initial archive");
@@ -522,7 +531,7 @@ fn test_default_chain_discards_empty_online_file_and_continues_sequence() {
         1_700_010_000_000_010_u64
     ));
     let empty_file = File::from_path(&empty_path).expect("empty journal path should parse");
-    let boot_id = load_boot_id().unwrap();
+    let boot_id = test_boot_id();
     let options = JournalFileOptions::new(machine_id, boot_id, seqnum_id).with_keyed_hash(true);
     let mut empty_journal = JournalFile::<MmapMut>::create(&empty_file, options).unwrap();
     empty_journal.release_writer_lock().unwrap();
@@ -571,7 +580,7 @@ fn test_strict_systemd_naming_uses_system_journal_active() {
 #[test]
 fn test_strict_systemd_naming_reopens_existing_system_journal() {
     let dir = TempDir::new().unwrap();
-    let machine_id = load_machine_id().unwrap();
+    let machine_id = test_machine_id();
     let journal_dir = dir.path().join(machine_id.as_simple().to_string());
     fs::create_dir_all(&journal_dir).unwrap();
 
@@ -627,7 +636,7 @@ fn test_strict_systemd_naming_reopens_existing_system_journal() {
 #[test]
 fn test_strict_systemd_naming_archives_online_chain_active() {
     let dir = TempDir::new().unwrap();
-    let machine_id = load_machine_id().unwrap();
+    let machine_id = test_machine_id();
     let journal_dir = dir.path().join(machine_id.as_simple().to_string());
     fs::create_dir_all(&journal_dir).unwrap();
 
@@ -689,7 +698,7 @@ fn test_strict_systemd_naming_archives_online_chain_active() {
 #[test]
 fn test_default_chain_tail_ignores_lower_strict_system_journal() {
     let dir = TempDir::new().unwrap();
-    let machine_id = load_machine_id().unwrap();
+    let machine_id = test_machine_id();
     let journal_dir = dir.path().join(machine_id.as_simple().to_string());
     fs::create_dir_all(&journal_dir).unwrap();
 
@@ -1598,8 +1607,6 @@ fn test_empty_entry() {
 
 #[test]
 fn test_boot_id_injection() {
-    use journal_common::load_boot_id;
-
     if !journalctl_available() {
         eprintln!("journalctl not available; skipping test_boot_id_injection");
         return;
@@ -1616,7 +1623,7 @@ fn test_boot_id_injection() {
     log.sync().unwrap();
 
     // Find the created journal file
-    let machine_id = load_machine_id().unwrap();
+    let machine_id = test_machine_id();
     let journal_dir = dir.path().join(machine_id.as_simple().to_string());
     let journal_files: Vec<_> = fs::read_dir(&journal_dir)
         .unwrap()
@@ -1637,7 +1644,7 @@ fn test_boot_id_injection() {
     );
 
     let journal_path = journal_files[0].path();
-    let boot_id = load_boot_id().unwrap();
+    let boot_id = test_boot_id();
     let expected_boot_id = boot_id.as_simple().to_string();
 
     // Use journalctl to verify _BOOT_ID field is present
@@ -1689,7 +1696,7 @@ fn test_write_uses_machine_id_subdirectory() {
         "expected no .journal files directly in configured directory"
     );
 
-    let machine_id = load_machine_id().unwrap();
+    let machine_id = test_machine_id();
     let machine_id_dir = target_dir.join(machine_id.as_simple().to_string());
     assert!(
         machine_id_dir.is_dir(),
@@ -2286,7 +2293,7 @@ fn test_lifecycle_observer_reports_rotation_and_retention_deletion() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let config = Config::new(
         Origin {
-            machine_id: None,
+            machine_id: Some(test_machine_id()),
             namespace: None,
             source: journal_registry::Source::System,
         },
@@ -2339,7 +2346,7 @@ fn test_artifact_sizer_contributes_to_retention_bytes() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let config = Config::new(
         Origin {
-            machine_id: None,
+            machine_id: Some(test_machine_id()),
             namespace: None,
             source: journal_registry::Source::System,
         },
@@ -2390,7 +2397,7 @@ fn test_lifecycle_observer_reports_missing_retention_deletions() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let config = Config::new(
         Origin {
-            machine_id: None,
+            machine_id: Some(test_machine_id()),
             namespace: None,
             source: journal_registry::Source::System,
         },

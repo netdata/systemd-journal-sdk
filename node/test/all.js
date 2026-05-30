@@ -3,7 +3,7 @@
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { zstdCompressSync } from 'node:zlib';
@@ -113,14 +113,16 @@ function collectNullable(next) {
   }
 }
 
+function journalctlAvailable() {
+  return spawnSync('journalctl', ['--version'], { encoding: 'utf8' }).status === 0;
+}
+
 function verifyJournalFileIfAvailable(path) {
-  const journalctl = spawnSync('journalctl', ['--version'], { encoding: 'utf8' });
-  if (journalctl.status === 0) run('journalctl', ['--verify', '--file', path]);
+  if (journalctlAvailable()) run('journalctl', ['--verify', '--file', path]);
 }
 
 function verifyJournalFileFailsIfAvailable(path, expectedText) {
-  const journalctl = spawnSync('journalctl', ['--version'], { encoding: 'utf8' });
-  if (journalctl.status !== 0) return;
+  if (!journalctlAvailable()) return;
   const result = spawnSync('journalctl', ['--verify', '--file', path], { encoding: 'utf8' });
   assert.notEqual(result.status, 0, `journalctl --verify unexpectedly passed for ${path}`);
   const output = `${result.stdout}${result.stderr}`.toLowerCase();
@@ -128,10 +130,28 @@ function verifyJournalFileFailsIfAvailable(path, expectedText) {
 }
 
 function journalctlDirectoryRowsIfAvailable(directory, ...matches) {
-  const journalctl = spawnSync('journalctl', ['--version'], { encoding: 'utf8' });
-  if (journalctl.status !== 0) return null;
+  if (!journalctlAvailable()) return null;
   const output = run('journalctl', ['--directory', directory, '--output=json', '--no-pager', ...matches]);
   return output.trim() === '' ? [] : output.trim().split('\n').map((line) => JSON.parse(line));
+}
+
+function verifyJournalFileWithKeyIfAvailable(path, key, label = 'journalctl verify') {
+  if (!journalctlAvailable()) return;
+  const result = spawnSync('journalctl', ['--verify', '--verify-key', key, '--file', path], { encoding: 'utf8' });
+  if (result.status !== 0) {
+    throw new Error(`${label} failed: ${result.stderr}`);
+  }
+  if (!result.stderr.includes('PASS:')) {
+    throw new Error(`expected PASS in stderr, got: ${result.stderr}`);
+  }
+}
+
+function verifyJournalFileWithKeyFailsIfAvailable(path, key) {
+  if (!journalctlAvailable()) return;
+  const result = spawnSync('journalctl', ['--verify', '--verify-key', key, '--file', path], { encoding: 'utf8' });
+  if (result.status === 0) {
+    throw new Error(`expected verify to fail, got: ${result.stderr}`);
+  }
 }
 
 function journalHasDataObjectFlag(path, flag) {
@@ -1574,7 +1594,7 @@ for (const [length, expected] of sipVectors) {
     for (let i = 0; i < 5; i++) {
       log.append([{ name: 'MESSAGE', value: `entry-${i}` }]);
       if (i === 0) {
-        assert.match(log.activeFile().split('/').pop(), /^custom-source@[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{16}\.journal$/);
+        assert.match(basename(log.activeFile()), /^custom-source@[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{16}\.journal$/);
         assert.equal(existsSync(join(log.journalDirectory(), 'custom-source.journal')), false);
       }
     }
@@ -1849,7 +1869,7 @@ for (const [length, expected] of sipVectors) {
     });
     log.append([{ name: 'MESSAGE', value: 'default system naming' }]);
     assert.equal(log.nextSeqnum, 2n);
-    assert.match(log.activeFile().split('/').pop(), /^system@[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{16}\.journal$/);
+    assert.match(basename(log.activeFile()), /^system@[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{16}\.journal$/);
     assert.equal(existsSync(join(log.journalDirectory(), 'system.journal')), false);
     log.close();
   } finally {
@@ -2719,13 +2739,7 @@ function tamperDataPayload(path, expectedPayload) {
     writer.close();
 
     const key = testVerificationKey(testSealOpts());
-    const result = spawnSync('journalctl', ['--verify', '--verify-key', key, '--file', journalPath], { encoding: 'utf8' });
-    if (result.status !== 0) {
-      throw new Error(`journalctl verify failed: ${result.stderr}`);
-    }
-    if (!result.stderr.includes('PASS:')) {
-      throw new Error(`expected PASS in stderr, got: ${result.stderr}`);
-    }
+    verifyJournalFileWithKeyIfAvailable(journalPath, key);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -2743,13 +2757,7 @@ function tamperDataPayload(path, expectedPayload) {
     writer.close();
 
     const key = testVerificationKey(testSealOpts());
-    const result = spawnSync('journalctl', ['--verify', '--verify-key', key, '--file', journalPath], { encoding: 'utf8' });
-    if (result.status !== 0) {
-      throw new Error(`journalctl verify failed: ${result.stderr}`);
-    }
-    if (!result.stderr.includes('PASS:')) {
-      throw new Error(`expected PASS in stderr, got: ${result.stderr}`);
-    }
+    verifyJournalFileWithKeyIfAvailable(journalPath, key);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -2789,13 +2797,7 @@ function tamperDataPayload(path, expectedPayload) {
     writer.close();
 
     const key = testVerificationKey(testSealOpts());
-    const result = spawnSync('journalctl', ['--verify', '--verify-key', key, '--file', journalPath], { encoding: 'utf8' });
-    if (result.status !== 0) {
-      throw new Error(`journalctl verify first-entry future-epoch failed: ${result.stderr}`);
-    }
-    if (!result.stderr.includes('PASS:')) {
-      throw new Error(`expected PASS in stderr, got: ${result.stderr}`);
-    }
+    verifyJournalFileWithKeyIfAvailable(journalPath, key, 'journalctl verify first-entry future-epoch');
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -2837,13 +2839,7 @@ function tamperDataPayload(path, expectedPayload) {
     writer.close();
 
     const key = testVerificationKey(testSealOpts());
-    const result = spawnSync('journalctl', ['--verify', '--verify-key', key, '--file', journalPath], { encoding: 'utf8' });
-    if (result.status !== 0) {
-      throw new Error(`journalctl verify multi-interval gap failed: ${result.stderr}`);
-    }
-    if (!result.stderr.includes('PASS:')) {
-      throw new Error(`expected PASS in stderr, got: ${result.stderr}`);
-    }
+    verifyJournalFileWithKeyIfAvailable(journalPath, key, 'journalctl verify multi-interval gap');
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -2858,13 +2854,7 @@ function tamperDataPayload(path, expectedPayload) {
     writer.close();
 
     const key = testVerificationKey(testSealOpts());
-    const result = spawnSync('journalctl', ['--verify', '--verify-key', key, '--file', journalPath], { encoding: 'utf8' });
-    if (result.status !== 0) {
-      throw new Error(`journalctl verify empty sealed file failed: ${result.stderr}`);
-    }
-    if (!result.stderr.includes('PASS:')) {
-      throw new Error(`expected PASS in stderr, got: ${result.stderr}`);
-    }
+    verifyJournalFileWithKeyIfAvailable(journalPath, key, 'journalctl verify empty sealed file');
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -2882,13 +2872,7 @@ function tamperDataPayload(path, expectedPayload) {
     writer.close();
 
     const key = testVerificationKey(testSealOpts());
-    const result = spawnSync('journalctl', ['--verify', '--verify-key', key, '--file', journalPath], { encoding: 'utf8' });
-    if (result.status !== 0) {
-      throw new Error(`journalctl verify compact+sealed failed: ${result.stderr}`);
-    }
-    if (!result.stderr.includes('PASS:')) {
-      throw new Error(`expected PASS in stderr, got: ${result.stderr}`);
-    }
+    verifyJournalFileWithKeyIfAvailable(journalPath, key, 'journalctl verify compact+sealed');
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -2904,10 +2888,7 @@ function tamperDataPayload(path, expectedPayload) {
     writer.close();
 
     const wrongKey = '000000000000000000000001/1-f4240';
-    const result = spawnSync('journalctl', ['--verify', '--verify-key', wrongKey, '--file', journalPath], { encoding: 'utf8' });
-    if (result.status === 0) {
-      throw new Error(`expected verify to fail with wrong key, got: ${result.stderr}`);
-    }
+    verifyJournalFileWithKeyFailsIfAvailable(journalPath, wrongKey);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -2926,10 +2907,7 @@ function tamperDataPayload(path, expectedPayload) {
     tamperDataPayload(journalPath, Buffer.from('MESSAGE=sealed-covered-stock'));
 
     const key = testVerificationKey(testSealOpts());
-    const result = spawnSync('journalctl', ['--verify', '--verify-key', key, '--file', journalPath], { encoding: 'utf8' });
-    if (result.status === 0) {
-      throw new Error(`expected verify to fail with tampered data, got: ${result.stderr}`);
-    }
+    verifyJournalFileWithKeyFailsIfAvailable(journalPath, key);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
