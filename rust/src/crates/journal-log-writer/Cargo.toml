@@ -20,10 +20,9 @@ itoa = { workspace = true }
 
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
-flatten-serde-json = { workspace = true, optional = true }
 
 [features]
-serde-api = ["serde", "serde_json", "flatten-serde-json"]
+serde-api = ["serde", "serde_json"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

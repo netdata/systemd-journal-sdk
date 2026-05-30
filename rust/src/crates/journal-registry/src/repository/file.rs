@@ -231,12 +231,42 @@ impl File {
     }
 
     pub fn from_path(path: &Path) -> Option<Self> {
-        Self::from_str(path.to_str()?)
+        if !path.is_absolute() {
+            return None;
+        }
+
+        let path_str = path.to_str()?;
+        let filename = path.file_name()?.to_str()?;
+        let filename_path = format!("/{filename}");
+        let (status, path_after_status) = Status::parse(&filename_path)?;
+        let (source, _) = Source::parse(path_after_status)?;
+
+        let (machine_id, namespace) = path
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|dirname| dirname.to_str())
+            .map(parse_machine_id_namespace)
+            .unwrap_or((None, None));
+
+        let origin = Origin {
+            machine_id,
+            namespace,
+            source,
+        };
+
+        let inner = Arc::new(FileInner {
+            path: path_str.to_string(),
+            origin,
+            status,
+        });
+
+        Some(File { inner })
     }
 
     pub fn from_raw_path(path: &Path) -> Option<Self> {
         let path = path.to_str()?;
-        if !path.starts_with('/') {
+        let raw_path = Path::new(path);
+        if !raw_path.is_absolute() {
             return None;
         }
 
@@ -246,7 +276,7 @@ impl File {
                 machine_id: None,
                 namespace: None,
                 source: Source::Unknown(
-                    Path::new(path)
+                    raw_path
                         .file_stem()
                         .and_then(|stem| stem.to_str())
                         .unwrap_or("journal")
@@ -376,6 +406,61 @@ impl File {
     /// Get the namespace if this journal belongs to a namespace
     pub fn namespace(&self) -> Option<&str> {
         self.inner.origin.namespace.as_deref()
+    }
+}
+
+fn parse_machine_id_namespace(dirname: &str) -> (Option<Uuid>, Option<String>) {
+    if let Some((id_str, ns)) = dirname.split_once('.') {
+        let Some(machine_id) = Uuid::try_parse(id_str).ok() else {
+            return (None, None);
+        };
+        (Some(machine_id), Some(ns.to_string()))
+    } else {
+        (Uuid::try_parse(dirname).ok(), None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{File, Source, Status};
+    use std::path::PathBuf;
+
+    #[test]
+    fn from_path_parses_native_absolute_paths() {
+        let path = std::env::temp_dir()
+            .join("00112233445566778899aabbccddeeff")
+            .join("system.journal");
+        let file = File::from_path(&path).expect("native absolute path parses");
+
+        assert_eq!(file.path(), path.to_str().expect("utf8 path"));
+        assert_eq!(
+            file.origin()
+                .machine_id
+                .expect("machine id")
+                .simple()
+                .to_string(),
+            "00112233445566778899aabbccddeeff"
+        );
+        assert_eq!(file.origin().source, Source::System);
+        assert_eq!(file.status(), &Status::Active);
+    }
+
+    #[test]
+    fn from_path_rejects_relative_paths() {
+        assert!(File::from_path(&PathBuf::from("system.journal")).is_none());
+    }
+
+    #[test]
+    fn from_raw_path_accepts_native_absolute_paths() {
+        let path = std::env::temp_dir().join("raw-byte-names.journal");
+        let file = File::from_raw_path(&path).expect("raw native absolute path parses");
+
+        assert_eq!(file.path(), path.to_str().expect("utf8 path"));
+        assert_eq!(
+            file.origin().source,
+            Source::Unknown("raw-byte-names".to_string())
+        );
+        assert_eq!(file.status(), &Status::Active);
     }
 }
 

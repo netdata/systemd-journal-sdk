@@ -4,6 +4,20 @@ Last updated: 2026-05-30
 
 ## Current
 
+- SOW-0063 - Cross Platform Portability: in-progress. Native macOS/Windows
+  validation passed for the reviewed child portability work; parent remains
+  open until SOW-0071 runtime-purity split is implemented and reviewed.
+- SOW-0067 - Go Cross Platform Portability: in-progress, reviewed, ready for
+  orchestrator merge. Native macOS/Windows Go validation passed under SOW-0063.
+- SOW-0068 - Rust Cross Platform Portability: in-progress, reviewed, ready for
+  orchestrator merge. Native macOS/Windows Rust validation passed under
+  SOW-0063 after targeted portability repairs.
+- SOW-0069 - Python Cross Platform Portability: in-progress, reviewed, ready
+  for orchestrator merge. Native macOS/Windows Python validation passed under
+  SOW-0063 with documented Windows Python zstd fixture skips on Python 3.12.
+- SOW-0070 - Node Cross Platform Portability: in-progress, reviewed, ready for
+  orchestrator merge. Native macOS/Windows Node.js validation passed under
+  SOW-0063 with Node.js `>=22.15.0` as the documented runtime floor.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
@@ -11,12 +25,6 @@ Last updated: 2026-05-30
   Inventory and cut plan implemented, whole-SOW read-only review complete, and
   ready for orchestrator merge. No Netdata source edits were made; component
   integration remains mapped to SOW-0047 through SOW-0050.
-- SOW-0068 - Rust Cross Platform Portability: in-progress, reviewed, ready for
-  orchestrator merge. Rust SDK crates are Windows-target clean, Linux runtime
-  validation passed, and all five read-only reviewers voted production grade.
-- SOW-0069 - Python Cross Platform Portability: in-progress. Implementation
-  commit `2b7f422` is reviewed by the approved whole-SOW read-only reviewer
-  pool with unanimous `PRODUCTION GRADE` votes; ready for orchestrator merge.
 
 ## Pending
 

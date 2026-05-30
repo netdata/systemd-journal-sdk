@@ -146,10 +146,6 @@ serde_yaml = "0.9.34"
 serde_regex = "1.1.0"
 rmp-serde = "1.3.1"
 
-# Flatten serde JSON (for journal-log-writer serde-api feature)
-# From upstream Netdata: https://github.com/meilisearch/meilisearch.git tag v1.22.1
-flatten-serde-json = { git = "https://github.com/meilisearch/meilisearch", tag = "v1.22.1" }
-
 # Internal crate path dependencies
 journal-common = { path = "src/crates/journal-common" }
 journal-registry = { path = "src/crates/journal-registry" }

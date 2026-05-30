@@ -184,7 +184,11 @@ fn platform_process_start_time(_pid: u32) -> io::Result<String> {
 
 #[cfg(all(unix, not(target_os = "linux")))]
 fn platform_owner_process_is_alive(owner: &LockOwner) -> io::Result<bool> {
-    let rc = unsafe { libc::kill(owner.pid as libc::pid_t, 0) };
+    let pid = match libc::pid_t::try_from(owner.pid) {
+        Ok(pid) if pid > 0 => pid,
+        _ => return Ok(false),
+    };
+    let rc = unsafe { libc::kill(pid, 0) };
     if rc == 0 {
         return Ok(true);
     }

@@ -3,6 +3,7 @@
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -111,18 +112,26 @@ def collect_nullable(next_func):
         values.append(value)
 
 
-def verify_journal_file_if_available(path):
+def journalctl_available():
+    return shutil.which('journalctl') is not None
+
+
+def zstd_available():
     try:
-        run(['journalctl', '--version'])
-    except AssertionError:
+        import compression.zstd  # noqa: F401
+    except ModuleNotFoundError:
+        return False
+    return True
+
+
+def verify_journal_file_if_available(path):
+    if not journalctl_available():
         return
     run(['journalctl', '--verify', '--file', path])
 
 
 def verify_journal_file_fails_if_available(path, expected_text):
-    try:
-        run(['journalctl', '--version'])
-    except AssertionError:
+    if not journalctl_available():
         return
     result = subprocess.run(
         ['journalctl', '--verify', '--file', path],
@@ -138,6 +147,29 @@ def verify_journal_file_fails_if_available(path, expected_text):
         raise AssertionError(
             f'journalctl --verify output missing {expected_text!r}: {output}'
         )
+
+
+def verify_journal_file_with_key_if_available(path, key, label='journalctl verify'):
+    if not journalctl_available():
+        return
+    result = subprocess.run(
+        ['journalctl', '--verify', '--verify-key', key, '--file', str(path)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f'{label} failed: {result.stderr}'
+    assert 'PASS:' in result.stderr
+
+
+def verify_journal_file_with_key_fails_if_available(path, key):
+    if not journalctl_available():
+        return
+    result = subprocess.run(
+        ['journalctl', '--verify', '--verify-key', key, '--file', str(path)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0, 'expected verify to fail'
 
 
 def test_windows_import_safety_without_fcntl():
@@ -164,14 +196,27 @@ print('ok')
 
 
 def journalctl_directory_rows_if_available(directory, *matches):
-    try:
-        run(['journalctl', '--version'])
-    except AssertionError:
+    if not journalctl_available():
         return None
     output = run([
         'journalctl',
         '--directory',
         directory,
+        '--output=json',
+        '--no-pager',
+        *matches,
+    ])
+    text = output.decode().strip()
+    return [] if text == '' else [json.loads(line) for line in text.splitlines()]
+
+
+def journalctl_file_rows_if_available(path, *matches):
+    if not journalctl_available():
+        return None
+    output = run([
+        'journalctl',
+        '--file',
+        str(path),
         '--output=json',
         '--no-pager',
         *matches,
@@ -372,8 +417,9 @@ def test_writer_reader_and_binary_export():
         assert encoded['BINARY'] == [0, 1, 255, 254]
         reader.close()
 
-        stock_count = run(['journalctl', '--file', path, '--output=json', '--no-pager'])
-        assert len([line for line in stock_count.splitlines() if line.strip()]) == 1
+        stock_rows = journalctl_file_rows_if_available(path)
+        if stock_rows is not None:
+            assert len(stock_rows) == 1
 
 
 def test_writer_head_seqnum_zero_defaults_to_one():
@@ -434,6 +480,9 @@ def test_writer_raw_explicit_zero_monotonic_pass_through():
 
 def test_compression_threshold_systemd_policy():
     from journal.writer import DEFAULT_COMPRESS_THRESHOLD, MIN_COMPRESS_THRESHOLD
+
+    if not zstd_available():
+        return
 
     cases = [
         {
@@ -501,9 +550,10 @@ def test_compact_writer_reader_and_stock_verify():
         assert reader.get_entry()['fields']['MESSAGE'] == b'second compact entry'
         reader.close()
 
-        stock = run(['journalctl', '--file', path, '--output=json', '--no-pager'])
-        assert len([line for line in stock.splitlines() if line.strip()]) == 2
-        run(['journalctl', '--verify', '--file', path, '--no-pager'])
+        stock_rows = journalctl_file_rows_if_available(path)
+        if stock_rows is not None:
+            assert len(stock_rows) == 2
+        verify_journal_file_if_available(path)
 
 
 def test_compact_writer_grows_arena_past_initial_allocation():
@@ -520,7 +570,7 @@ def test_compact_writer_grows_arena_past_initial_allocation():
         with open(path, 'rb') as f:
             header = parse_file_header(f.read(HEADER_SIZE))
         assert header['arena_size'] + HEADER_SIZE > FILE_SIZE_INCREASE
-        run(['journalctl', '--verify', '--file', path, '--no-pager'])
+        verify_journal_file_if_available(path)
 
 
 def test_writer_initial_arena_covers_large_hash_tables():
@@ -540,7 +590,7 @@ def test_writer_initial_arena_covers_large_hash_tables():
         with open(path, 'rb') as f:
             header = parse_file_header(f.read(HEADER_SIZE))
         assert header['arena_size'] + HEADER_SIZE > FILE_SIZE_INCREASE
-        run(['journalctl', '--verify', '--file', path, '--no-pager'])
+        verify_journal_file_if_available(path)
 
 
 def test_writer_exclusive_lock():
@@ -699,6 +749,8 @@ def test_writer_archive_closes_before_rename_when_required():
 
 
 def test_zstd_data_object_parse():
+    if not zstd_available():
+        return
     from compression import zstd
 
     payload = b'MESSAGE=zstd-data-object'
@@ -758,8 +810,9 @@ def test_directory_writer_rotation():
         reader.close()
         assert seq == [f'{i:06d}'.encode() for i in range(5)]
 
-        stock = run(['journalctl', '--directory', td, '--output=json', '--no-pager'])
-        assert len([line for line in stock.splitlines() if line.strip()]) == 5
+        stock_rows = journalctl_directory_rows_if_available(td)
+        if stock_rows is not None:
+            assert len(stock_rows) == 5
 
 
 def test_writer_field_name_policies():
@@ -781,7 +834,7 @@ def test_writer_field_name_policies():
             else:
                 raise AssertionError(f'expected invalid journald field {invalid_name!r} to fail')
         writer.close()
-        run(['journalctl', '--verify', '--file', path])
+        verify_journal_file_if_available(path)
         reader = FileReader.open(path)
         assert reader.step()
         entry = reader.get_entry()
@@ -815,7 +868,7 @@ def test_writer_field_name_policies():
         else:
             raise AssertionError('expected drop-only journal-app append to fail')
         writer.close()
-        run(['journalctl', '--verify', '--file', path])
+        verify_journal_file_if_available(path)
         reader = FileReader.open(path)
         assert reader.step()
         entry = reader.get_entry()
@@ -875,7 +928,7 @@ def test_writer_append_raw_policies_and_binary_payloads():
             else:
                 raise AssertionError(f'expected malformed raw payload {payload!r} to fail')
         writer.close()
-        run(['journalctl', '--verify', '--file', path])
+        verify_journal_file_if_available(path)
         reader = FileReader.open(path)
         assert reader.step()
         entry = reader.get_entry()
@@ -992,25 +1045,18 @@ def test_directory_writer_journald_policy_preserves_protected_fields():
         assert entries[0]['fields']['_HOSTNAME'] == b'synthetic-host'
         assert entries[0]['fields']['_TRANSPORT'] == b'snmptrap'
 
-        stock_rows = [
-            json.loads(line)
-            for line in run([
-                'journalctl',
-                '--directory',
-                log.journal_directory(),
-                '--output=json',
-                '--no-pager',
-                'TEST_ID=journald-field-policy',
-            ]).splitlines()
-            if line.strip()
-        ]
-        assert len(stock_rows) == 1
-        assert stock_rows[0]['_HOSTNAME'] == 'synthetic-host'
-        assert stock_rows[0]['_TRANSPORT'] == 'snmptrap'
+        stock_rows = journalctl_directory_rows_if_available(
+            log.journal_directory(),
+            'TEST_ID=journald-field-policy',
+        )
+        if stock_rows is not None:
+            assert len(stock_rows) == 1
+            assert stock_rows[0]['_HOSTNAME'] == 'synthetic-host'
+            assert stock_rows[0]['_TRANSPORT'] == 'snmptrap'
         log.close()
         for name in os.listdir(log.journal_directory()):
             if name.endswith('.journal'):
-                run(['journalctl', '--verify', '--file', os.path.join(log.journal_directory(), name)])
+                verify_journal_file_if_available(os.path.join(log.journal_directory(), name))
 
 
 def test_directory_writer_journal_app_policy_drops_invalid_fields():
@@ -1046,7 +1092,7 @@ def test_directory_writer_journal_app_policy_drops_invalid_fields():
         names = sorted(name for name in os.listdir(journal_dir) if name.endswith('.journal'))
         assert len(names) == 1
         path = os.path.join(journal_dir, names[0])
-        run(['journalctl', '--verify', '--file', path])
+        verify_journal_file_if_available(path)
         reader = FileReader.open(path)
         entries = []
         try:
@@ -1085,7 +1131,7 @@ def test_directory_writer_append_raw_injects_metadata_and_filters_callers():
         names = sorted(name for name in os.listdir(journal_dir) if name.endswith('.journal'))
         assert len(names) == 1
         path = os.path.join(journal_dir, names[0])
-        run(['journalctl', '--verify', '--file', path])
+        verify_journal_file_if_available(path)
         reader = FileReader.open(path)
         assert reader.step()
         entry = reader.get_entry()
@@ -1097,21 +1143,14 @@ def test_directory_writer_append_raw_injects_metadata_and_filters_callers():
         assert '_HOSTNAME' not in entry['fields']
         assert 'lowercase' not in entry['fields']
 
-        rows = [
-            json.loads(line)
-            for line in run([
-                'journalctl',
-                '--directory',
-                journal_dir,
-                '--output=json',
-                '--no-pager',
-                f'_BOOT_ID={boot_id}',
-                'TEST_ID=python-log-append-raw',
-            ]).splitlines()
-            if line.strip()
-        ]
-        assert len(rows) == 1
-        assert rows[0]['MESSAGE'] == 'raw directory'
+        rows = journalctl_directory_rows_if_available(
+            journal_dir,
+            f'_BOOT_ID={boot_id}',
+            'TEST_ID=python-log-append-raw',
+        )
+        if rows is not None:
+            assert len(rows) == 1
+            assert rows[0]['MESSAGE'] == 'raw directory'
 
 
 def test_directory_writer_raw_policy_allows_structure_only_field_names():
@@ -2087,6 +2126,8 @@ def test_facade_data_payloads_remain_valid_for_current_row():
 
 
 def test_facade_compressed_mixed_data_payloads_remain_valid_for_current_row():
+    if not zstd_available():
+        return
     with tempfile.TemporaryDirectory() as td:
         path = os.path.join(td, 'facade-compressed-row-lifetime.journal')
         large_value = b'mixed ' * 256
@@ -2458,6 +2499,18 @@ def test_conformance_manifest():
     manifest_path = REPO_ROOT / 'tests/conformance/manifests/conformance-v01.json'
     manifest = json.loads(manifest_path.read_text())
     expected_skips = set()
+    if not zstd_available():
+        expected_skips.update({
+            'journal-cursor-test',
+            'journal-corruption-append-resilient',
+            'journal-export-format',
+            'journal-file-header-parse',
+            'journal-list-boots',
+            'journal-query-unique-fields',
+            'journal-stream-directory-iteration',
+            'journal-zstd-compressed-read',
+            'journal-verify-corruption-detection',
+        })
     failures = []
     results = []
     for test_case in manifest['test_suite']['test_cases']:
@@ -2478,6 +2531,8 @@ def test_conformance_manifest():
 
 
 def test_verify_file_detects_corruption():
+    if not zstd_available():
+        return
     from journal.verify import verify_file, VerificationError
     path = REPO_ROOT / 'fixtures/systemd/test-data/corrupted/zstd-truncated-frame.zst'
     try:
@@ -2489,6 +2544,8 @@ def test_verify_file_detects_corruption():
 
 
 def test_verify_file_passes_on_valid_fixture():
+    if not zstd_available():
+        return
     from journal.verify import verify_file
     path = REPO_ROOT / 'fixtures/systemd/test-data/no-rtc/system.journal.zst'
     verify_file(str(path))  # should not raise
@@ -2508,10 +2565,11 @@ def test_verify_file_with_key_sealed():
         key = _test_verification_key(seal_opts)
         verify_file_with_key(str(path), key)
 
-        from compression import zstd
-        zst_path = Path(tmpdir) / 'sealed.journal.zst'
-        zst_path.write_bytes(zstd.compress(path.read_bytes()))
-        verify_file_with_key(str(zst_path), key)
+        if zstd_available():
+            from compression import zstd
+            zst_path = Path(tmpdir) / 'sealed.journal.zst'
+            zst_path.write_bytes(zstd.compress(path.read_bytes()))
+            verify_file_with_key(str(zst_path), key)
 
         try:
             verify_file_with_key(str(path), '000000000000000000000001/1-f4240')
@@ -2541,6 +2599,8 @@ def test_verify_file_with_key_sealed():
 
 
 def test_journalctl_verify():
+    if not zstd_available():
+        return
     valid_path = REPO_ROOT / 'fixtures/systemd/test-data/no-rtc/system.journal.zst'
     corrupt_path = REPO_ROOT / 'fixtures/systemd/test-data/corrupted/zstd-truncated-frame.zst'
     script = PYTHON_ROOT / 'cmd/journalctl.py'
@@ -2748,12 +2808,7 @@ def test_writer_sealed_basic():
                  {'realtime_usec': 1_500_000})
         w.close()
         key = _test_verification_key(opts['seal'])
-        result = subprocess.run(
-            ['journalctl', '--verify', '--verify-key', key, '--file', str(path)],
-            capture_output=True, text=True,
-        )
-        assert result.returncode == 0, f'journalctl verify failed: {result.stderr}'
-        assert 'PASS:' in result.stderr
+        verify_journal_file_with_key_if_available(path, key)
 
 
 def test_writer_sealed_interval_crossing():
@@ -2767,12 +2822,7 @@ def test_writer_sealed_interval_crossing():
         w.append([{'name': 'MESSAGE', 'value': 'epoch2'}], {'realtime_usec': 3_000_000})
         w.close()
         key = _test_verification_key(opts['seal'])
-        result = subprocess.run(
-            ['journalctl', '--verify', '--verify-key', key, '--file', str(path)],
-            capture_output=True, text=True,
-        )
-        assert result.returncode == 0, f'journalctl verify failed: {result.stderr}'
-        assert 'PASS:' in result.stderr
+        verify_journal_file_with_key_if_available(path, key)
 
 
 def test_writer_sealed_first_entry_future_epoch():
@@ -2785,12 +2835,7 @@ def test_writer_sealed_first_entry_future_epoch():
                  {'realtime_usec': 3_000_000})
         w.close()
         key = _test_verification_key(opts['seal'])
-        result = subprocess.run(
-            ['journalctl', '--verify', '--verify-key', key, '--file', str(path)],
-            capture_output=True, text=True,
-        )
-        assert result.returncode == 0, f'journalctl verify first-entry future-epoch failed: {result.stderr}'
-        assert 'PASS:' in result.stderr
+        verify_journal_file_with_key_if_available(path, key, 'journalctl verify first-entry future-epoch')
 
 
 def test_writer_sealed_entry_before_start_rejected():
@@ -2819,12 +2864,7 @@ def test_writer_sealed_multi_interval_gap():
         w.append([{'name': 'MESSAGE', 'value': 'epoch5'}], {'realtime_usec': 6_000_000})
         w.close()
         key = _test_verification_key(opts['seal'])
-        result = subprocess.run(
-            ['journalctl', '--verify', '--verify-key', key, '--file', str(path)],
-            capture_output=True, text=True,
-        )
-        assert result.returncode == 0, f'journalctl verify multi-interval gap failed: {result.stderr}'
-        assert 'PASS:' in result.stderr
+        verify_journal_file_with_key_if_available(path, key, 'journalctl verify multi-interval gap')
 
 
 def test_writer_sealed_empty_file_stock_verify():
@@ -2835,12 +2875,7 @@ def test_writer_sealed_empty_file_stock_verify():
         w = Writer.create(str(path), opts)
         w.close()
         key = _test_verification_key(opts['seal'])
-        result = subprocess.run(
-            ['journalctl', '--verify', '--verify-key', key, '--file', str(path)],
-            capture_output=True, text=True,
-        )
-        assert result.returncode == 0, f'journalctl verify empty sealed file failed: {result.stderr}'
-        assert 'PASS:' in result.stderr
+        verify_journal_file_with_key_if_available(path, key, 'journalctl verify empty sealed file')
 
 
 def test_writer_sealed_wrong_key_fails():
@@ -2852,11 +2887,7 @@ def test_writer_sealed_wrong_key_fails():
         w.append([{'name': 'MESSAGE', 'value': 'hello'}], {'realtime_usec': 1_500_000})
         w.close()
         wrong_key = '000000000000000000000001/1-f4240'
-        result = subprocess.run(
-            ['journalctl', '--verify', '--verify-key', wrong_key, '--file', str(path)],
-            capture_output=True, text=True,
-        )
-        assert result.returncode != 0, 'expected verify to fail with wrong key'
+        verify_journal_file_with_key_fails_if_available(path, wrong_key)
 
 
 def test_writer_sealed_tampered_data_fails():
@@ -2870,13 +2901,7 @@ def test_writer_sealed_tampered_data_fails():
         w.close()
         _tamper_data_payload(path, b'MESSAGE=sealed-covered-stock')
         key = _test_verification_key(opts['seal'])
-        result = subprocess.run(
-            ['journalctl', '--verify', '--verify-key', key, '--file', str(path)],
-            capture_output=True, text=True,
-        )
-        assert result.returncode != 0, (
-            f'expected verify to fail with tampered data, got exit {result.returncode}: {result.stderr}'
-        )
+        verify_journal_file_with_key_fails_if_available(path, key)
 
 
 def test_writer_unsealed_does_not_set_sealed_flags():
@@ -2901,7 +2926,10 @@ def test_writer_file_permissions():
         path = Path(tmpdir) / 'test.journal'
         w = Writer.create(str(path))
         w.close()
-        assert stat.S_IMODE(path.stat().st_mode) == 0o640
+        if os.name == 'nt' or sys.platform.startswith(('win', 'msys', 'cygwin')):
+            assert path.exists()
+        else:
+            assert stat.S_IMODE(path.stat().st_mode) == 0o640
 
 
 def test_compact_sealed_writer_stock_verify():
@@ -2914,12 +2942,7 @@ def test_compact_sealed_writer_stock_verify():
                  {'realtime_usec': 1_500_000})
         w.close()
         key = _test_verification_key(opts['seal'])
-        result = subprocess.run(
-            ['journalctl', '--verify', '--verify-key', key, '--file', str(path)],
-            capture_output=True, text=True,
-        )
-        assert result.returncode == 0, f'journalctl verify compact+sealed failed: {result.stderr}'
-        assert 'PASS:' in result.stderr
+        verify_journal_file_with_key_if_available(path, key, 'journalctl verify compact+sealed')
 
 
 def main():

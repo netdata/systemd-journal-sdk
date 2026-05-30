@@ -70,6 +70,75 @@ fn is_journal_app_field_name(field_name: &[u8]) -> bool {
         .all(|&b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
 }
 
+#[cfg(feature = "serde-api")]
+fn flatten_json_map(
+    json: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    fn insert_value(
+        out: &mut serde_json::Map<String, serde_json::Value>,
+        key: &str,
+        value: serde_json::Value,
+        came_from_array: bool,
+    ) {
+        if let Some(existing) = out.get_mut(key) {
+            if let Some(array) = existing.as_array_mut() {
+                array.push(value);
+            } else {
+                let previous = std::mem::take(existing);
+                *existing = serde_json::Value::Array(vec![previous, value]);
+            }
+        } else if came_from_array {
+            out.insert(key.to_string(), serde_json::Value::Array(vec![value]));
+        } else {
+            out.insert(key.to_string(), value);
+        }
+    }
+
+    fn insert_array(
+        out: &mut serde_json::Map<String, serde_json::Value>,
+        key: &str,
+        array: &[serde_json::Value],
+        originals: &mut Vec<(String, serde_json::Value)>,
+    ) {
+        for value in array {
+            match value {
+                serde_json::Value::Object(object) => {
+                    insert_object(out, Some(key), object, originals)
+                }
+                serde_json::Value::Array(array) => insert_array(out, key, array, originals),
+                value => insert_value(out, key, value.clone(), true),
+            }
+        }
+    }
+
+    fn insert_object(
+        out: &mut serde_json::Map<String, serde_json::Value>,
+        base_key: Option<&str>,
+        object: &serde_json::Map<String, serde_json::Value>,
+        originals: &mut Vec<(String, serde_json::Value)>,
+    ) {
+        for (key, value) in object {
+            let next_key = base_key.map_or_else(|| key.clone(), |base| format!("{base}.{key}"));
+            originals.push((next_key.clone(), value.clone()));
+            match value {
+                serde_json::Value::Object(object) => {
+                    insert_object(out, Some(&next_key), object, originals)
+                }
+                serde_json::Value::Array(array) => insert_array(out, &next_key, array, originals),
+                value => insert_value(out, &next_key, value.clone(), false),
+            }
+        }
+    }
+
+    let mut out = serde_json::Map::new();
+    let mut originals = Vec::new();
+    insert_object(&mut out, None, json, &mut originals);
+    for (key, value) in originals {
+        out.entry(key).or_insert(value);
+    }
+    out
+}
+
 fn create_chain(
     path: &Path,
     source: journal_registry::Source,
@@ -1254,8 +1323,6 @@ impl Log {
     /// ```
     #[cfg(feature = "serde-api")]
     pub fn write_structured<T: serde::Serialize>(&mut self, value: &T) -> Result<()> {
-        use flatten_serde_json::flatten;
-
         // Serialize to JSON value
         let json_value = serde_json::to_value(value).map_err(|e| {
             WriterError::Serialization(format!("failed to serialize to JSON: {}", e))
@@ -1263,7 +1330,7 @@ impl Log {
 
         // Flatten the JSON structure - requires a JSON object (Map)
         let flattened = if let serde_json::Value::Object(map) = json_value {
-            flatten(&map)
+            flatten_json_map(&map)
         } else {
             // If not an object, return error
             return Err(WriterError::Serialization(
@@ -1306,6 +1373,33 @@ impl Log {
         let field_refs: Vec<&[u8]> = fields.iter().map(|f| f.as_slice()).collect();
 
         self.write_entry(&field_refs, None)
+    }
+}
+
+#[cfg(all(test, feature = "serde-api"))]
+mod serde_api_tests {
+    use super::flatten_json_map;
+    use serde_json::json;
+
+    #[test]
+    fn flatten_json_map_preserves_nested_originals_and_arrays() {
+        let mut value = json!({
+            "tags": {"t1": "v1"},
+            "events": [
+                {"state": "start"},
+                {"state": "stop"},
+                null
+            ],
+            "empty": []
+        });
+        let object = std::mem::take(value.as_object_mut().expect("object"));
+        let flattened = flatten_json_map(&object);
+
+        assert_eq!(flattened["tags"], json!({"t1": "v1"}));
+        assert_eq!(flattened["tags.t1"], json!("v1"));
+        assert_eq!(flattened["events.state"], json!(["start", "stop"]));
+        assert_eq!(flattened["events"], json!([null]));
+        assert_eq!(flattened["empty"], json!([]));
     }
 }
 

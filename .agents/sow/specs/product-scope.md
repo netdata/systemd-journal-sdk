@@ -656,9 +656,9 @@ Current Node.js writer feature slice:
   `compact: true` or `format: 'compact'` is enabled;
 - uncompressed DATA objects by default;
 - optional zstd, xz, and lz4-compressed DATA object writing with configurable
-  compression threshold through Node.js built-in `node:zlib`, pure
-  JavaScript `lz4js@0.2.0`, and `node-liblzma@5.0.1` WASM path, using the
-  shared systemd threshold policy;
+  compression threshold through Node.js built-in `node:zlib` on Node.js v22.15
+  or newer, pure JavaScript `lz4js@0.2.0`, and `node-liblzma@5.0.1` WASM path,
+  using the shared systemd threshold policy;
 - keyed hash tables using the journal file ID;
 - byte-safe field values through `Buffer`, `Uint8Array`, and string-compatible
   field values;
@@ -677,6 +677,11 @@ Current Node.js writer feature slice:
   strict identity mode;
 - writer file access uses `Buffer` plus positioned `node:fs` reads/writes; no
   native mmap dependency is loaded by the Node.js SDK runtime path;
+- directory writer archive/rotation paths fsync file contents on every target.
+  POSIX targets also fsync parent directories through directory file
+  descriptors where Node.js exposes them. Windows skips parent-directory fsync
+  because Node.js does not expose a portable durable directory-handle sync path
+  there;
 - zero-entry crash-created active files are discarded on reopen before append so
   sequence numbers continue from the existing chain tail;
 - entry-count, file-size, and active-file-duration rotation. Duration rotation
@@ -706,8 +711,9 @@ Current Node.js reader feature slice:
 - regular and compact journal files;
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
 - whole-file zstd fixtures through Node.js built-in `node:zlib`;
-- zstd, xz, and lz4-compressed DATA objects through Node.js built-in `node:zlib`,
-  `node-liblzma@5.0.1` WASM path, and pure JavaScript `lz4js@0.2.0`;
+- zstd, xz, and lz4-compressed DATA objects through Node.js built-in
+  `node:zlib` on Node.js v22.15 or newer, `node-liblzma@5.0.1` WASM path,
+  and pure JavaScript `lz4js@0.2.0`;
 - directory iteration across active and archived files with stock-compatible
   root plus one machine-id subdirectory traversal and interleaved multi-file
   ordering;

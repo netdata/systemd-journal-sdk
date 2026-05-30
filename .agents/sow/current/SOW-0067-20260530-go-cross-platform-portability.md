@@ -4,7 +4,8 @@
 
 Status: in-progress
 
-Sub-state: reviewed; ready for orchestrator merge; child of SOW-0063.
+Sub-state: reviewed; native macOS/Windows validation passed under parent
+SOW-0063; ready for orchestrator merge.
 
 ## Requirements
 
@@ -469,3 +470,25 @@ Follow-up mapping:
 - Cross-SDK lock matrix failure is blocked by the Node writer dependency
   startup error and should be reconciled by the orchestrator or the Node
   portability SOW, not this Go-only SOW.
+
+## Parent Native Validation Addendum - 2026-05-30
+
+Facts:
+
+- Parent SOW-0063 ran native Go validation on approved macOS and Windows hosts
+  after the child portability work.
+- No additional Go source changes were required during native validation.
+
+Evidence:
+
+- macOS `go test ./...` from `go/` with repo-local caches: PASS.
+- macOS Go writer/read synthetic journal smoke under remote `.local/native-smoke/`: PASS.
+- Windows `go test ./...` from `go/` with repo-local caches: PASS.
+- Windows Go writer/read synthetic journal smoke under remote `.local/native-smoke/`: PASS.
+- Linux stock `journalctl --verify --file` passed for the copied macOS and
+  Windows Go-generated journal files.
+
+Remaining parent blockers:
+
+- SOW-0063 remains open for SOW-0071 runtime-purity separation and native
+  FreeBSD runtime execution.

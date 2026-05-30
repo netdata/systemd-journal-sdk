@@ -2,10 +2,11 @@
 
 ## Status
 
-Status: open
+Status: in-progress
 
-Sub-state: decomposed into per-language child SOWs for parallel worktree
-execution; parent closes after child SOWs and shared validation reconcile.
+Sub-state: native Linux/macOS/Windows validation complete for the reviewed
+child portability work; parent remains open until SOW-0071 runtime-purity split
+is implemented and reviewed.
 
 ## Requirements
 
@@ -293,7 +294,8 @@ Artifact impact plan:
 - SOW lifecycle: this SOW may need child SOWs by language or platform after the
   audit phase, but no implementation should be marked complete until the full
   portability matrix is proven.
-- SOW-status.md: add this SOW to Pending.
+- SOW-status.md: keep the current/pending SOW index aligned with any lifecycle
+  move.
 
 Open-source reference evidence:
 
@@ -359,6 +361,77 @@ Open decisions:
    - Scope: docs/specs/skills updated, reviewers run whole-SOW, audit clean,
      committed rollback point.
 
+## Native Validation Plan
+
+Facts:
+
+- SOW-0067 through SOW-0070 are already in `current/` with reviewed child
+  portability work.
+- SOW-0071 is open and explicitly keeps runtime-purity separation out of this
+  native validation pass.
+- The available native validation hosts for this pass are the approved macOS
+  and Windows SSH targets from the assigned prompt.
+
+Scope:
+
+- Validate the already-merged portability work on Linux, macOS, and Windows for
+  Rust, Go, Python, and Node.js.
+- Fix native macOS/Windows portability bugs found by those validations only.
+- Do not implement SOW-0071, do not split core SDK runtime-purity layers, and
+  do not refactor architecture unless native validation proves a direct
+  portability bug.
+
+Remote clone setup:
+
+- Create a bundle from this local branch under `.local/`.
+- Copy the bundle to each approved remote host under `/tmp`.
+- Recreate the remote validation clone under the approved repository directory
+  on each host from the bundle.
+- Check out `codex/sow-0063-native-validation`.
+- Put language caches under each remote clone's `.local/` directory.
+
+Linux validation:
+
+- Record sanitized OS/runtime versions.
+- Run `git diff --check` and `.agents/sow/audit.sh`.
+- Run Rust affected SDK tests for reader/writer/facade/journalctl crates.
+- Run `go test ./...` from `go/`.
+- Run `python3 python/test_all.py` with repository-local Python cache/deps.
+- Run `npm test` from `node/` with npm cache under `.local/`.
+- Run interoperability smoke after any runtime-behavior fix.
+
+macOS validation:
+
+- Record sanitized OS/runtime versions.
+- Run Rust affected tests or record exact build blocker.
+- Run Go tests.
+- Run Python tests/imports.
+- Run Node tests.
+- Generate at least one synthetic journal per writer that can execute.
+- Copy generated synthetic journals back to Linux under `.local/` and verify
+  applicable files with stock `journalctl --verify --file`.
+
+Windows validation:
+
+- Record sanitized OS/runtime versions.
+- Use Bash where practical and add the user Rust toolchain directory through
+  `$HOME/.cargo/bin` without recording a personal home path.
+- Run Rust affected tests or record exact build blocker.
+- Run Go tests.
+- Run Python tests/imports.
+- Run Node tests.
+- Generate at least one synthetic journal per writer that can execute.
+- Copy generated synthetic journals back to Linux under `.local/` and verify
+  applicable files with stock `journalctl --verify --file`.
+
+Evidence handling:
+
+- Use synthetic journal data only.
+- Do not read live host journals, `/var/log/journal`, `/run/log/journal`, or
+  live `journalctl` without `--file` or a repository-local `--directory`.
+- Record only sanitized versions, commands, pass/fail results, generated
+  synthetic artifact paths under `.local/`, and exact code blockers.
+
 ## Delegation Plan
 
 Implementer:
@@ -368,11 +441,11 @@ Implementer:
 
 Reviewers:
 
-- Use read-only reviewers from the approved pool after implementation and local
-  validation complete: `llm-netdata-cloud/minimax-m2.7-coder`,
-  `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/qwen3.6-plus`, and
-  `llm-netdata-cloud/glm-5.1`. Skip `llm-netdata-cloud/mimo-v2.5-pro` while it
-  remains out of quota.
+- Use all five read-only reviewers after implementation and local/remote
+  validation complete: `llm-netdata-cloud/kimi-k2.6`,
+  `llm-netdata-cloud/qwen3.6-plus`, `llm-netdata-cloud/glm-5.1`,
+  `llm-netdata-cloud/minimax-m2.7-coder`, and
+  `llm-netdata-cloud/mimo-v2.5-pro`.
 
 Repository boundary block for every external-agent prompt:
 
@@ -409,71 +482,207 @@ Failure handling:
   independent implementation agents in isolated git worktrees:
   `SOW-0067` for Go, `SOW-0068` for Rust, `SOW-0069` for Python, and
   `SOW-0070` for Node.js.
+- Moved this SOW to `current/` for native macOS/Windows validation of the
+  reviewed child work.
+- Recreated approved remote validation clones from a local branch bundle under
+  each remote `$HOME/src/systemd-journal-sdk/`, with language caches under each
+  clone's `.local/`.
+- Recorded sanitized native runtimes:
+  - Linux: `Linux 7.0.9-1-MANJARO x86_64`, Rust/Cargo `1.91.1`, Go
+    `go1.26.3-X:nodwarf5 linux/amd64`, Python `3.14.5`, Node.js `v26.2.0`,
+    npm `11.14.1`, systemd `260 (260.1-2-manjaro)`.
+  - macOS: Darwin `25.5.0 arm64`, product `26.5`, Rust/Cargo `1.95.0`
+    Homebrew, Go `go1.26.3 darwin/arm64`, Homebrew Python `3.14.5`,
+    Node.js `v26.0.0`, npm `11.12.1`.
+  - Windows: MSYS `MSYS_NT-10.0-26200 3.6.7 x86_64`, Rust/Cargo `1.94.0`,
+    Go `go1.26.0 windows/amd64`, Python `3.12.13`, default Node.js `v22.14.0`,
+    default npm `10.9.2`; Node.js package validation used repo-local official
+    Node.js `v26.2.0` because the package now requires Node.js `>=22.15.0`.
+- Found and repaired native portability debt:
+  - Node.js package metadata previously allowed Node.js `>=22.0.0`, but
+    `node:zlib` zstd exports are absent in Node.js `v22.14.0`; raised package
+    and docs requirement to `>=22.15.0`.
+  - Node.js dependency install on Windows attempted native `node-gyp` hooks for
+    `node-liblzma`; added `node/.npmrc` with `ignore-scripts=true` because the
+    runtime imports only `node-liblzma/wasm/*`.
+  - Node.js tests assumed POSIX path separators and stock `journalctl`
+    availability; switched path checks to `basename()` and gated stock
+    `journalctl` assertions when the tool is absent.
+  - Node.js writer directory fsync used POSIX directory descriptors; Windows now
+    skips parent-directory fsync while still fsyncing journal files.
+  - Python tests and adapter assumed stock `journalctl`, POSIX mode bits, and
+    stdlib zstd availability; added target-aware skips only for unavailable
+    stock tooling and zstd fixtures.
+  - Rust non-Linux Unix stale-lock liveness accepted invalid or wrapped PIDs;
+    invalid/non-positive `pid_t` values now count as stale.
+  - Rust `journal-registry` path parsing rejected native Windows absolute
+    paths; `File::from_path()` and `File::from_raw_path()` now accept native
+    absolute paths.
+  - Rust `journal-common` realtime-clock test assumed two real `now()` calls
+    differ by exactly one microsecond; the test now uses deterministic observed
+    timestamps.
+  - Rust `journal-log-writer` tests loaded host machine/boot IDs; tests now use
+    deterministic IDs so Windows runtime tests do not depend on host identity
+    services.
+  - Rust `serde-api` depended on a Git package with long upstream paths that
+    failed Windows Cargo checkout under repo-local caches; replaced it with a
+    small in-crate JSON flattener and coverage.
+- Did not implement SOW-0071. Runtime-purity and optional platform-service
+  separation remains tracked there.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Pending implementation.
+- Native Linux/macOS/Windows evidence is complete for the reviewed child
+  portability work.
+- Files written natively on macOS and Windows by Rust, Go, Python, and Node.js
+  were copied back under Linux `.local/native-smoke/` and passed stock
+  `journalctl --verify --file`.
+- SOW-0063 remains `in-progress` because SOW-0071 is still open and because
+  this pass did not add native FreeBSD runtime execution.
 
 Tests or equivalent validation:
 
-- SOW creation evidence only:
-  - `GOOS=windows GOARCH=amd64 go test ./...` currently fails due to
-    `syscall.Flock` and POSIX lock constants.
-  - `cargo check --manifest-path rust/Cargo.toml -p journal-core --target x86_64-pc-windows-gnu`
-    currently fails due to Windows target issues in `journal-common` time code.
+- Linux:
+  - `git diff --check`: PASS.
+  - Rust touched-file `rustfmt --edition 2024 --check`: PASS.
+  - `cargo test --manifest-path rust/Cargo.toml -p journal-common -p journal-registry -p journal-core -p journal-log-writer -p journal -p journalctl`: PASS.
+  - `cargo test --manifest-path rust/Cargo.toml -p journal-log-writer --features serde-api`: PASS.
+  - `go test ./...` from `go/` with repo-local Go caches: PASS.
+  - `python/test_all.py` with repo-local Python environment: PASS.
+  - `npm test` from `node/` with repo-local npm cache: PASS.
+  - `tests/interoperability/run_matrix.py --entries 10 --writers go rust python node --readers stock go rust python node`: 104/104 PASS.
+  - `tests/interoperability/run_directory_matrix.py --readers stock go rust python node`: `status: PASS`.
+- macOS:
+  - Rust affected crates plus `journal-log-writer --features serde-api`: PASS.
+  - `go test ./...` from `go/`: PASS.
+  - `python/test_all.py`: PASS.
+  - `node/test/all.js` through `npm test`: PASS.
+  - Rust, Go, Python, and Node.js each wrote and read a synthetic journal under
+    remote `.local/native-smoke/`: PASS.
+- Windows:
+  - Rust affected crates plus `journal-log-writer --features serde-api`: PASS.
+  - `go test ./...` from `go/`: PASS.
+  - `python/test_all.py`: PASS with zstd-specific fixture tests skipped because
+    Windows Python `3.12.13` lacks stdlib `compression.zstd`.
+  - Default Node.js `v22.14.0` failed as expected because `node:zlib` does not
+    export `zstdDecompressSync`; this confirms the corrected `>=22.15.0`
+    engine floor.
+  - Repo-local official Node.js `v26.2.0` ran `node/test/all.js`: PASS.
+  - Rust, Go, Python, and Node.js each wrote and read a synthetic journal under
+    remote `.local/native-smoke/`: PASS.
+- Cross-OS artifact validation:
+  - Copied 4 macOS-generated and 4 Windows-generated synthetic `.journal` files
+    back to Linux `.local/native-smoke/`.
+  - `journalctl --verify --file` passed for all 8 copied files.
 
 Real-use evidence:
 
-- Pending implementation.
+- Native macOS and Windows smoke tests wrote real journal files with each
+  language writer and read them back with the same language reader.
+- Linux stock `journalctl --verify --file` accepted all copied macOS/Windows
+  writer artifacts.
+- Linux stock and repository readers accepted all four language writers in the
+  closed-file matrix: 104/104 PASS.
 
 Reviewer findings:
 
-- Pending implementation and whole-SOW review.
+- Five read-only whole-SOW reviewers completed after implementation and
+  local/remote validation:
+  - `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`; no blocking findings.
+  - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`; one non-blocking note that
+    `File::from_str()` remains Unix-string oriented while `from_path()` and
+    `from_raw_path()` are now native-path safe.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`; no blocking
+    findings.
+  - `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`; maintenance notes about
+    package-level `node/.npmrc` `ignore-scripts=true`, artificial POSIX
+    filename parsing inside Rust `from_path()`, extra JSON-flattening parity
+    coverage, and a stale Python zstd-skip observation.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`; no blocking
+    findings.
+- Dispositions:
+  - `node/.npmrc` `ignore-scripts=true` is accepted for this package because the
+    runtime imports only `node-liblzma/wasm/*`; `node/README.md` documents the
+    rationale. Future dependency additions must re-evaluate this install
+    policy.
+  - Rust `File::from_str()` remaining slash-oriented is accepted as a
+    pre-existing string-parser limitation. Native runtime paths fixed in this
+    pass use `File::from_path()`/`File::from_raw_path()` and passed native
+    Windows validation. A future API-hardening SOW can decide whether to extend
+    the string parser.
+  - Rust `from_path()` constructing a filename-only `/{filename}` for internal
+    `Status::parse()`/`Source::parse()` is accepted as low-risk because the
+    external native path boundary is handled with `Path` APIs and is covered by
+    tests.
+  - Extra `flatten_json_map()` parity cases are accepted as non-blocking; the
+    replacement is feature-gated, tested for nested objects/arrays/originals,
+    and passed Linux/macOS/Windows `serde-api` tests.
+  - The Python zstd skip note is stale for the current code:
+    `test_conformance_manifest()` uses `zstd_available()` and the adapter uses
+    `_HAS_ZSTD`/fixture inspection rather than a Windows-only substring skip.
 
 Same-failure scan:
 
-- Initial scan found platform-specific assumptions in Go, Rust, Python, and
-  Node.js paths listed under Analysis.
+- Same-class fixes were searched across the changed surfaces:
+  - Node.js stock `journalctl` assertions now use shared availability gates.
+  - Node.js path separator assumptions now use path APIs.
+  - Python conformance zstd skips now apply to every fixture path that requires
+    zstd when stdlib zstd is unavailable.
+  - Rust tests no longer depend on host machine/boot IDs in
+    `journal-log-writer` runtime tests.
 
 Sensitive data gate:
 
-- No sensitive runtime data used. Only synthetic code/build evidence recorded.
+- No sensitive runtime data used.
+- Remote validation used only deterministic synthetic journal entries.
+- Live host journals, `/var/log/journal`, `/run/log/journal`, and live
+  `journalctl` without repository-local `--file`/`--directory` were not read.
 
 Artifact maintenance gate:
 
-- AGENTS.md: no update during SOW creation.
-- Runtime project skills: no update during SOW creation.
-- Specs: pending implementation; product scope must be updated during this SOW.
-- End-user/operator docs: pending implementation; language README/API docs must
-  be updated during this SOW.
-- End-user/operator skills: no output/reference skill affected during SOW
-  creation.
-- SOW lifecycle: created as `Status: open` under `.agents/sow/pending/`.
-- SOW-status.md: updated to list this SOW as pending.
+- AGENTS.md: no update. The existing SOW and runtime-purity rules already cover
+  this validation workflow.
+- Runtime project skills: no update. The compatibility skill already requires
+  cross-language and stock-tool validation discipline.
+- Specs: `.agents/sow/specs/product-scope.md` updated for Node.js `>=22.15.0`
+  zstd support and Windows parent-directory fsync behavior.
+- End-user/operator docs: `node/README.md` updated for Node.js `>=22.15.0`,
+  WASM-only `node-liblzma` install behavior, and Windows directory fsync scope.
+- End-user/operator skills: no output/reference skill exists for this repo
+  surface.
+- SOW lifecycle: moved this SOW from `pending/` to `current/` with
+  `Status: in-progress`; SOW-0071 remains pending/open.
+- SOW-status.md: updated to show SOW-0063 current native validation status.
 
 Specs update:
 
-- Pending implementation.
+- Updated `.agents/sow/specs/product-scope.md` for the Node.js zstd engine
+  floor and platform-specific directory fsync behavior.
 
 Project skills update:
 
-- Pending implementation decision. `project-journal-compatibility` likely needs
-  a cross-platform validation gate after this SOW lands.
+- No project skill update made. The existing compatibility skill remains
+  accurate for this validation pass.
 
 End-user/operator docs update:
 
-- Pending implementation.
+- Updated `node/README.md` for the Node.js runtime floor, no-native-build
+  install behavior, and Windows directory fsync limitation.
 
 End-user/operator skills update:
 
-- Pending implementation.
+- No end-user/operator skill exists or was affected.
 
 Lessons:
 
 - Cross-platform support must be proven with runtime tests. Cross-compilation
   catches only part of the problem.
+- Engine floors must be validated against the exact oldest claimed runtime.
+  Node.js `v22.14.0` is too old for the current zstd API surface.
+- Windows validation needs repo-local runtime/tool caches so tests can run
+  without changing the host installation.
 
 Follow-up mapping:
 
@@ -485,18 +694,29 @@ Follow-up mapping:
   implementation.
 - `SOW-0070-20260530-node-cross-platform-portability.md` tracks Node.js
   implementation.
+- `SOW-0071-20260530-runtime-purity-and-optional-platform-services.md` remains
+  the blocker for closing this parent SOW and for stable API release.
 
 ## Outcome
 
-Pending.
+Native Linux/macOS/Windows validation for the reviewed child portability work
+is complete. SOW-0063 remains in progress because SOW-0071 is still pending and
+because native FreeBSD runtime execution was not part of this pass.
 
 ## Lessons Extracted
 
-Pending.
+- Record the minimum supported runtime version as an executable contract, not
+  documentation only.
+- Keep non-Linux stock-systemd assertions gated; the portability contract is
+  file-format compatibility plus Linux stock validation of transferred files.
+- Keep generated validation artifacts under `.local/` and sanitize remote paths
+  in durable records.
 
 ## Followup
 
 - Child implementation SOWs: SOW-0067, SOW-0068, SOW-0069, and SOW-0070.
+- Required blocker SOW: SOW-0071.
+- Remaining parent-scope validation gap: native FreeBSD runtime execution.
 
 ## Regression Log
 
