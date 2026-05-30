@@ -2,10 +2,10 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: reviewed; native macOS/Windows validation passed under parent
-SOW-0063 after targeted repairs; ready for orchestrator merge.
+Sub-state: completed; implementation, reviewer gates, native macOS/Windows
+validation, and orchestrator lifecycle reconciliation finished.
 
 ## Requirements
 
@@ -413,10 +413,9 @@ Artifact maintenance gate:
   and validation limits.
 - End-user/operator skills: none affected; this repository has no output skill
   for Rust SDK consumers.
-- SOW lifecycle: moved this SOW from `pending/open` to
-  `current/in-progress`; final sub-state is `reviewed; ready for orchestrator
-  merge`, not completed.
-- `SOW-status.md`: updated to list SOW-0068 in current reviewed state.
+- SOW lifecycle: reconciled by orchestrator as completed and moved to
+  `.agents/sow/done/`.
+- `SOW-status.md`: updated to list SOW-0068 as completed.
 
 Lessons extracted:
 
@@ -441,6 +440,14 @@ Follow-up mapping:
   page assumptions with runtime page-size detection, harden SIGBUS
   `mmap()`-failure handling, and decide whether Linux lock boot-ID lookup
   should share the generic `/host/` fallback.
+
+## Outcome
+
+Rust cross-platform portability work is complete for this child SOW. Linux
+tests, Windows target checks, whole-SOW reviewer rounds, native macOS/Windows
+validation under SOW-0063, and Linux stock verification of non-Linux generated
+journal files passed. The native FreeBSD runtime gap and SOW-0071 runtime-purity
+split stay with parent SOW-0063, not this Rust-only child SOW.
 
 ## Parent Native Validation Addendum - 2026-05-30
 
