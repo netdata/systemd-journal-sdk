@@ -4,7 +4,7 @@
 
 Status: in-progress
 
-Sub-state: implemented; ready for orchestrator review.
+Sub-state: reviewed; ready for orchestrator merge.
 
 ## Requirements
 
@@ -211,6 +211,11 @@ Failure handling:
   behavior.
 - Did not edit `SOW-status.md`; prompt requires status reconciliation to be left
   to the orchestrator.
+- Ran whole-SOW read-only reviewer pass against implementation commit
+  `37c9589772e5` with the approved reviewer pool. All reviewers voted
+  `PRODUCTION GRADE`.
+- Updated sub-state to `reviewed; ready for orchestrator merge`; status remains
+  `in-progress` and the SOW remains in `current/`.
 
 ## Validation
 
@@ -259,8 +264,12 @@ Tests or equivalent validation:
   `.local/interoperability/matrix-results-20260530-083955.json`.
 - `python3 tests/interoperability/run_directory_matrix.py --readers node stock`:
   passed, including Node and stock `journalctl --directory` JSON, export, text,
-  fields, boot listing, corrupt-directory skip, and Node `.journal.zst`
-  extension checks.
+  fields, boot listing, corrupt-directory skip, Node `.journal.zst` extension
+  checks, and empty-directory behavior. A post-review rerun returned
+  `status: PASS` with 22/22 checks passing.
+- Post-review `npm_config_cache=../.local/npm-cache npm test` from `node/`:
+  passed.
+- Post-review `git diff --check`: passed.
 - `.agents/sow/audit.sh`: passed with verdict
   `SOW initialization complete and clean`.
 
@@ -280,8 +289,52 @@ Real-use evidence:
 
 Reviewer findings:
 
-- Not run in this implementation worktree. The assigned prompt forbids external
-  assistants/reviewers; whole-SOW read-only review is left to the orchestrator.
+- Whole-SOW read-only reviewer pass was run against commit `37c9589772e5` with
+  the assigned SOW file
+  `.agents/sow/current/SOW-0070-20260530-node-cross-platform-portability.md`.
+- Reviewer commands used the required form:
+  `opencode run -m "<model>" --agent code-reviewer "<prompt>"`, with prompts
+  scoped to SOW-0070 and this worktree, forbidding file creation, modification,
+  deletion, formatting, staging, committing, pushing, changing files, and
+  running other external assistants.
+- `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`. Non-blocking notes:
+  direct tests for `processIsAlive()` / `createLockOwner()` output shape are
+  light; non-Linux runtime execution is not available in this worktree; PID
+  reuse on non-Linux can preserve a stale lock until manual cleanup. Disposition:
+  accepted as documented limitations; lock matrix and platform-helper tests
+  cover the safety behavior.
+- `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`. Non-blocking notes:
+  non-Linux PID reuse cannot be distinguished from the original owner;
+  `readMachineId()` still probes `/etc/machine-id` before falling back to random
+  UUIDs; an empty `start_time=` line would be accepted. Disposition: accepted.
+  The PID-reuse behavior is the documented conservative one-writer trade-off,
+  `readMachineId()` already falls back safely, and no SDK writer emits an empty
+  `start_time`.
+- `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`. Non-blocking notes:
+  `readMachineId()` is not routed through `platform.js`; `sameOwner()` lacks a
+  direct unit test; `lockOwnerIsActive()` coverage could include more happy-path
+  and cross-environment cases; the directory matrix pass was not persisted as a
+  JSON results file. Disposition: accepted as non-blocking. The behavior is
+  covered by fallbacks, lock matrix evidence, and recorded command output. The
+  directory matrix was rerun after review and passed 22/22 checks; no code
+  change required.
+- `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`. Non-blocking
+  notes: shortened lock-matrix false failure is already recorded; non-Linux
+  runtime execution is source-construction evidence only; `node-liblzma` package
+  metadata still includes native build metadata although runtime source imports
+  the WASM path; `/proc` references remain in `platform.js` by design.
+  Disposition: accepted as already documented and validated.
+- `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`. Non-blocking notes:
+  mixed restricted-`/proc` and unrestricted-Linux SDKs can disagree about stale
+  locks; `/etc/machine-id` fallback is Linux-specific but safe; platform helper
+  tests could include more defensive cases; unknown liveness is conservatively
+  treated as still held; Node writes extra lock fields ignored by other SDKs.
+  Disposition: accepted as documented one-writer/conservative behavior and
+  validated by shared lock matrix.
+- Blocking findings: none.
+- Findings fixed after review: no code defects required fixes. One evidence
+  gap was closed by rerunning the directory matrix after review and recording
+  the 22/22 pass result.
 
 Same-failure scan:
 
@@ -312,7 +365,7 @@ Artifact maintenance gate:
   behavior, identity, and lock semantics.
 - End-user/operator skills: none exist for this project, so none were affected.
 - SOW lifecycle: moved from `pending/open` to `current/in-progress`; left
-  sub-state `implemented; ready for orchestrator review`.
+  sub-state `reviewed; ready for orchestrator merge`.
 - `SOW-status.md`: intentionally not updated, per assigned prompt; orchestrator
   must reconcile status after merge/review.
 
