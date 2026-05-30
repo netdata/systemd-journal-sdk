@@ -15,5 +15,5 @@ allocative = ["dep:allocative"]
 rustc-hash = { workspace = true }
 uuid = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-nix = { workspace = true, features = ["time"] }
+libc = { workspace = true }
 allocative = { workspace = true, optional = true }

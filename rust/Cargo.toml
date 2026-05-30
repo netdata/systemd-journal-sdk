@@ -102,7 +102,7 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4", "rng", "serde"] }
 
 # System
-nix = { version = "0.30" }
+windows-sys = { version = "0.61", default-features = false }
 
 # File watching
 notify = "8.2"

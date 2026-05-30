@@ -5,6 +5,10 @@
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::ops::{Add, Rem, Sub};
+#[cfg(not(unix))]
+use std::sync::OnceLock;
+#[cfg(not(unix))]
+use std::time::Instant;
 
 /// Timestamp in seconds since Unix epoch.
 ///
@@ -287,14 +291,50 @@ impl Default for RealtimeClock {
 ///
 /// This matches systemd's behavior for journal entry monotonic timestamps.
 pub fn monotonic_now() -> std::io::Result<Microseconds> {
-    use nix::sys::time::TimeValLike;
-    use nix::time::ClockId;
+    #[cfg(unix)]
+    {
+        let mut ts = std::mem::MaybeUninit::<libc::timespec>::uninit();
+        let rc = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, ts.as_mut_ptr()) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let ts = unsafe { ts.assume_init() };
+        let seconds = u64::try_from(ts.tv_sec).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "CLOCK_MONOTONIC returned a negative seconds value",
+            )
+        })?;
+        let nanos = u64::try_from(ts.tv_nsec).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "CLOCK_MONOTONIC returned a negative nanoseconds value",
+            )
+        })?;
+        let micros = seconds
+            .checked_mul(1_000_000)
+            .and_then(|value| value.checked_add(nanos / 1_000))
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "CLOCK_MONOTONIC microseconds overflowed u64",
+                )
+            })?;
+        Ok(Microseconds::new(micros))
+    }
 
-    let ts = ClockId::CLOCK_MONOTONIC
-        .now()
-        .map_err(|e| std::io::Error::from_raw_os_error(e as i32))?;
-
-    Ok(Microseconds::new(ts.num_microseconds() as u64))
+    #[cfg(not(unix))]
+    {
+        static START: OnceLock<Instant> = OnceLock::new();
+        let elapsed = START.get_or_init(Instant::now).elapsed();
+        let micros = u64::try_from(elapsed.as_micros()).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "monotonic elapsed microseconds overflowed u64",
+            )
+        })?;
+        Ok(Microseconds::new(micros))
+    }
 }
 
 #[cfg(test)]
@@ -572,5 +612,12 @@ mod tests {
 
         let t3 = clock.observe(Microseconds::new(1_500_000));
         assert_eq!(t3.get(), 1_500_000);
+    }
+
+    #[test]
+    fn test_monotonic_now_is_ordered() {
+        let first = monotonic_now().expect("monotonic clock");
+        let second = monotonic_now().expect("monotonic clock");
+        assert!(second >= first);
     }
 }

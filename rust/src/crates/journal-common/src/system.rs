@@ -8,6 +8,7 @@ use std::io;
 /// Reads a file from the host filesystem, trying both the normal path and /host/ prefix.
 ///
 /// This is useful when running in containers where the host filesystem may be mounted at /host.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
 fn read_host_file(filename: &str) -> io::Result<String> {
     match std::fs::read_to_string(filename) {
         Ok(contents) => Ok(contents),
@@ -19,6 +20,11 @@ fn read_host_file(filename: &str) -> io::Result<String> {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn parse_uuid_text(content: &str) -> io::Result<uuid::Uuid> {
+    uuid::Uuid::try_parse(content.trim()).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
 /// Loads the machine ID from the system.
 ///
 /// On Linux, this reads from `/etc/machine-id`.
@@ -27,7 +33,7 @@ fn read_host_file(filename: &str) -> io::Result<String> {
 #[cfg(target_os = "linux")]
 pub fn load_machine_id() -> io::Result<uuid::Uuid> {
     let content = read_host_file("/etc/machine-id")?;
-    uuid::Uuid::try_parse(content.trim()).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    parse_uuid_text(&content)
 }
 
 #[cfg(target_os = "macos")]
@@ -66,7 +72,25 @@ pub fn load_machine_id() -> io::Result<uuid::Uuid> {
     ))
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(target_os = "freebsd")]
+pub fn load_machine_id() -> io::Result<uuid::Uuid> {
+    let mut last_error = None;
+    for path in [
+        "/etc/machine-id",
+        "/var/db/dbus/machine-id",
+        "/var/lib/dbus/machine-id",
+    ] {
+        match read_host_file(path).and_then(|content| parse_uuid_text(&content)) {
+            Ok(machine_id) => return Ok(machine_id),
+            Err(err) => last_error = Some(err),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        io::Error::new(io::ErrorKind::NotFound, "Could not find machine ID")
+    }))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
 pub fn load_machine_id() -> io::Result<uuid::Uuid> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -82,11 +106,11 @@ pub fn load_machine_id() -> io::Result<uuid::Uuid> {
 #[cfg(target_os = "linux")]
 pub fn load_boot_id() -> io::Result<uuid::Uuid> {
     let content = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
-    uuid::Uuid::try_parse(content.trim()).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    parse_uuid_text(&content)
 }
 
-#[cfg(target_os = "macos")]
-pub fn load_boot_id() -> io::Result<uuid::Uuid> {
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+fn load_boot_id_from_sysctl_boottime() -> io::Result<uuid::Uuid> {
     use std::process::Command;
 
     let output = Command::new("sysctl")
@@ -127,7 +151,12 @@ pub fn load_boot_id() -> io::Result<uuid::Uuid> {
     ))
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+pub fn load_boot_id() -> io::Result<uuid::Uuid> {
+    load_boot_id_from_sysctl_boottime()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
 pub fn load_boot_id() -> io::Result<uuid::Uuid> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,

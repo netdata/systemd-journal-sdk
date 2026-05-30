@@ -1,12 +1,19 @@
 #![allow(dead_code)]
 
-use crate::error::{JournalError, Result};
+#[cfg(unix)]
+use crate::error::JournalError;
+use crate::error::Result;
+#[cfg(unix)]
 use std::sync::OnceLock;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
+#[cfg(unix)]
 static SIGBUS_OCCURRED: AtomicBool = AtomicBool::new(false);
+#[cfg(unix)]
 static HANDLER_INSTALLED: OnceLock<i32> = OnceLock::new();
 
+#[cfg(unix)]
 extern "C" fn sigbus_handler(
     _sig: libc::c_int,
     info: *mut libc::siginfo_t,
@@ -21,7 +28,7 @@ extern "C" fn sigbus_handler(
             page_addr,
             4096,
             libc::PROT_READ,
-            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED,
+            libc::MAP_PRIVATE | anonymous_map_flag() | libc::MAP_FIXED,
             -1,
             0,
         );
@@ -30,10 +37,27 @@ extern "C" fn sigbus_handler(
     }
 }
 
+#[cfg(all(unix, target_os = "linux"))]
+fn anonymous_map_flag() -> libc::c_int {
+    libc::MAP_ANONYMOUS
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn anonymous_map_flag() -> libc::c_int {
+    libc::MAP_ANON
+}
+
+#[cfg(unix)]
 pub fn signalled() -> bool {
     SIGBUS_OCCURRED.load(Ordering::Relaxed)
 }
 
+#[cfg(not(unix))]
+pub fn signalled() -> bool {
+    false
+}
+
+#[cfg(unix)]
 pub fn install_handler() -> Result<()> {
     let rc = HANDLER_INSTALLED.get_or_init(|| unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
@@ -48,4 +72,9 @@ pub fn install_handler() -> Result<()> {
         -1 => Err(JournalError::SigbusHandlerError),
         _ => Ok(()),
     }
+}
+
+#[cfg(not(unix))]
+pub fn install_handler() -> Result<()> {
+    Ok(())
 }
