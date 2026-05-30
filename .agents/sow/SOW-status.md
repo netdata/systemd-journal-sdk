@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-05-29
+Last updated: 2026-05-30
 
 ## Current
 
@@ -10,6 +10,12 @@ Last updated: 2026-05-29
 
 ## Pending
 
+- SOW-0071 - Runtime Purity And Optional Platform Services: open. Architectural
+  correction to keep core journal readers/writers file-format-only, move host
+  identity discovery to optional helpers, move writer locking to independent
+  optional helpers, update instructions/specs/docs, and validate on Linux plus
+  provided macOS/Windows hosts before closing portability or releasing stable
+  APIs.
 - SOW-0026 - Netdata SDK Integration Inventory And Cut Plan: open. Produces the
   fresh Netdata consumer inventory and cut plan after performance gates.
 - SOW-0047 - Netdata NetFlow SDK Integration: open. Component integration for

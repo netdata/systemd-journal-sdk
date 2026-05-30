@@ -6,6 +6,7 @@
 
 ## Pending
 
+- `SOW-0071-20260530-runtime-purity-and-optional-platform-services.md` - open. Architectural correction to keep core journal readers/writers file-format-only, move host identity discovery to optional helpers, move writer locking to independent optional helpers, update instructions/specs/docs, and validate on Linux plus provided macOS/Windows hosts before closing portability or releasing stable APIs.
 - `SOW-0070-20260530-node-cross-platform-portability.md` - open. Node.js-only child of SOW-0063 for Linux, FreeBSD, macOS, and Windows portability without native mmap/systemd runtime dependencies.
 - `SOW-0069-20260530-python-cross-platform-portability.md` - open. Python-only child of SOW-0063 for import, reader, writer, locking, directory, and platform behavior portability.
 - `SOW-0068-20260530-rust-cross-platform-portability.md` - open. Rust-only child of SOW-0063 for portable time, locking, process identity, boot ID, directory sync, and target checks while preserving Rust reference behavior.
