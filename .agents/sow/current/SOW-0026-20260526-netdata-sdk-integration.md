@@ -4,7 +4,7 @@
 
 Status: in-progress
 
-Sub-state: implemented; ready for orchestrator review.
+Sub-state: reviewed; ready for orchestrator merge.
 
 Actual Netdata component edits remain out of scope for this SOW.
 
@@ -97,6 +97,14 @@ Remaining open items for component SOWs:
 Sources checked:
 
 - `.agents/sow/current/SOW-0009-20260523-benchmark-profile-optimize.md`
+- `.agents/sow/done/SOW-0042-20260528-writer-final-certification.md`
+- `.agents/sow/done/SOW-0043-20260528-rust-reader-libsystemd-jf-parity.md`
+- `.agents/sow/done/SOW-0044-20260528-rust-reader-hot-path-optimization.md`
+- `.agents/sow/done/SOW-0045-20260528-go-reader-alignment-optimization.md`
+- `.agents/sow/done/SOW-0046-20260528-python-node-reader-alignment.md`
+- `.agents/sow/done/SOW-0051-20260529-node-python-writer-performance.md`
+- `.agents/sow/done/SOW-0053-20260529-python-reader-writer-rust-port.md`
+- `.agents/sow/done/SOW-0054-20260529-nodejs-reader-writer-rust-port.md`
 - `.agents/sow/pending/SOW-0047-20260528-netdata-netflow-sdk-integration.md`
 - `.agents/sow/pending/SOW-0048-20260528-netdata-otel-writer-sdk-integration.md`
 - `.agents/sow/pending/SOW-0049-20260528-netdata-reader-plugin-sdk-integration.md`
@@ -111,6 +119,14 @@ Current state:
   modified.
 - Component integration SOWs exist and remain the correct implementation
   targets after this inventory.
+- SOW-0042 through SOW-0046 are resolved in `done/`; SOW-0042 through SOW-0045
+  form the accepted performance and compatibility gate evidence, while
+  SOW-0046 was closed after later language-specific work superseded it.
+- SOW-0051 was closed without direct implementation after later
+  language-specific SOWs superseded it; Node.js and Python writer throughput
+  limits do not gate the current Rust Netdata component integrations.
+- Whole-SOW read-only review completed on 2026-05-30. All five reviewer models
+  voted `PRODUCTION GRADE`.
 
 Open-source reference evidence:
 
@@ -181,6 +197,8 @@ Facts:
 
 - `src/crates/netflow-plugin/Cargo.toml:23-28` depends on all local journal
   crates.
+- `src/crates/netflow-plugin/src/main.rs:43-47` installs the shared SIGBUS
+  handler before journal mmap paths are used.
 - `src/crates/netflow-plugin/src/ingest.rs:18-24` imports
   `journal_common`, `journal_engine`, `journal_index`, `journal_log_writer`,
   and `journal_registry`.
@@ -216,10 +234,19 @@ Facts:
   retention to 10 GB and 7 days, with 1 hour rotation duration.
 - `src/crates/netflow-plugin/src/query.rs:14-19` imports the old reader,
   cursor, registry, and machine-id crates.
+- `src/crates/netflow-plugin/src/query.rs:14-19` includes `JournalFileMap` for
+  closed-file mmap-backed scan paths.
 - `src/crates/netflow-plugin/src/query/service.rs:23-47` watches all tier
   directories through `journal_registry`.
 - `src/crates/netflow-plugin/src/query/service.rs:75-137` initializes facets by
   scanning archived and active files.
+- `src/crates/netflow-plugin/src/facet_runtime.rs:16` imports
+  `JournalFileMap`.
+- `src/crates/netflow-plugin/src/facet_runtime.rs:506-513` opens closed
+  NetFlow journal files through `JournalFileMap` for facet contribution scans.
+- `src/crates/netflow-plugin/src/query/facets/cache/scan.rs:3-20` accepts
+  `&JournalFileMap`, enumerates field DATA objects, and decompresses payloads
+  on demand.
 - `src/crates/netflow-plugin/src/query/scan/direct.rs:11-24` exposes the
   direct scan callback over `JournalFile<Mmap>`, data offsets, and a
   decompression buffer.
@@ -247,9 +274,12 @@ Cut-plan requirements:
 - Preserve both source realtime and entry realtime timestamps.
 - Preserve per-tier directories, retention, rotation, lifecycle observer hooks,
   sync cadence, metrics, and facet sidecars.
+- Preserve the SIGBUS handler before mmap-backed journal access.
 - Replace reader/query paths only with SDK APIs that can scan by file/time,
   visit raw DATA payloads, decompress on demand, and avoid full-entry maps on
   hot paths.
+- Preserve closed-file `JournalFileMap` facet scans or provide an SDK
+  equivalent that enumerates field DATA objects without materializing entries.
 
 Risk:
 
@@ -263,6 +293,10 @@ Facts:
 
 - `src/crates/netdata-otel/otel-plugin/Cargo.toml:33-36` depends on local
   journal crates.
+- `src/crates/netdata-otel/otel-plugin/Cargo.toml:37` depends on the local
+  `flatten_otel` crate.
+- `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:2` imports
+  `flatten_otel::json_from_export_logs_service_request`.
 - `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:3-5` imports
   `load_machine_id`, `journal_log_writer`, and `journal_registry::Origin`.
 - `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:15-44` owns a
@@ -290,6 +324,9 @@ Cut-plan requirements:
   sync-after-export-batch behavior.
 - Preserve `OTLP_JSON` storage behavior.
 - Use SDK `RAW` field policy if keeping current flattened OTEL field names.
+- Preserve the `flatten_otel` producer contract. It is not itself a journal
+  SDK consumer, but its output determines the field-name policy decision in
+  SOW-0048.
 
 Risk:
 
@@ -444,11 +481,17 @@ Facts:
   and OTEL, plus local journal crate internals/tests.
 - Reader search across `src/crates` and `src/collectors/systemd-journal.plugin`
   for `JournalFile::<Mmap>::open`, `JournalReader`, `JournalCursor`,
-  `batch_compute_file_indexes`, `LogQuery::new`, `FileIndexer`,
+  `JournalFileMap`, `batch_compute_file_indexes`, `LogQuery::new`, `FileIndexer`,
   `nsd_journal_open_files`, `sd_journal_open_files`, `journal_reader_ffi`, and
   local journal crate names found production reader consumers in NetFlow query
   and rebuild paths, OTEL signal viewer and `journal-function`, and
   `systemd-journal.plugin`.
+- `log2journal` was checked as a same-pattern candidate and excluded from SDK
+  integration scope: `CMakeLists.txt:3334-3358` builds it as a C executable
+  linked to `libnetdata` and PCRE2, while `src/collectors/log2journal/README.md:17-34`
+  and `src/collectors/log2journal/README.md:64-65` describe it as producing
+  Journal Export Format for `systemd-cat-native`; it is not a journal file
+  reader/writer consumer.
 
 Conclusion:
 
@@ -474,7 +517,13 @@ Evidence reviewed:
 
 - Current SOW inventory and product-scope spec.
 - SOW-0047 through SOW-0050 component SOWs.
+- Completed or closed prerequisite SOWs in `done/`: SOW-0042 through
+  SOW-0046, SOW-0051, SOW-0053, and SOW-0054.
 - Read-only Netdata evidence from `ktsaou/netdata @ 445dd8eb845c`.
+- Whole-SOW read-only reviewer results from
+  `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/qwen3.6-plus`,
+  `llm-netdata-cloud/glm-5.1`, `llm-netdata-cloud/minimax-m2.7-coder`, and
+  `llm-netdata-cloud/mimo-v2.5-pro`.
 
 Affected contracts and surfaces:
 
@@ -521,7 +570,7 @@ Validation plan:
 - `git diff --check`.
 - `.agents/sow/audit.sh`.
 - Component SOWs own Netdata build/test validation.
-- Orchestrator review owns external reviewer routing for this implemented
+- Whole-SOW read-only reviewer cycle is complete for this implemented
   inventory.
 
 Artifact impact plan:
@@ -535,11 +584,11 @@ Artifact impact plan:
   behavior in component SOWs.
 - End-user/operator skills: update only if Netdata docs/spec changes affect
   output/reference skills.
-- SOW lifecycle: SOW-0026 remains in-progress for orchestrator review; SOW-0047
-  through SOW-0050 remain the implementation follow-ons.
-- SOW-status.md: not updated in this worktree because the user explicitly
-  required the SOW to remain in-progress and the current prompt scope is the
-  assigned SOW file.
+- SOW lifecycle: SOW-0026 remains in-progress with sub-state
+  `reviewed; ready for orchestrator merge`; SOW-0047 through SOW-0050 remain
+  the implementation follow-ons.
+- SOW-status.md: root `SOW-status.md` and `.agents/sow/SOW-status.md` are
+  updated to reflect the in-progress reviewed state.
 
 Open-source reference evidence:
 
@@ -551,11 +600,20 @@ Open-source reference evidence:
   - `CMakeLists.txt:3484-3520`
   - `src/crates/Cargo.toml:3-32`
   - `src/crates/Cargo.toml:159-183`
+  - `CMakeLists.txt:3334-3358`
   - `src/crates/netflow-plugin/src/ingest/encode.rs:4-99`
+  - `src/crates/netflow-plugin/src/main.rs:43-47`
+  - `src/crates/netflow-plugin/src/facet_runtime.rs:16`
+  - `src/crates/netflow-plugin/src/facet_runtime.rs:506-513`
+  - `src/crates/netflow-plugin/src/query/facets/cache/scan.rs:3-20`
   - `src/crates/netflow-plugin/src/query/scan/direct.rs:11-161`
   - `src/crates/netflow-plugin/src/query/scan/raw.rs:104-303`
+  - `src/crates/netdata-otel/otel-plugin/Cargo.toml:37`
+  - `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:2`
   - `src/crates/netdata-otel/otel-plugin/src/logs_service.rs:3-176`
   - `src/crates/netdata-log-viewer/otel-signal-viewer-plugin/src/catalog.rs:31-531`
+  - `src/collectors/log2journal/README.md:17-34`
+  - `src/collectors/log2journal/README.md:64-65`
   - `src/collectors/systemd-journal.plugin/provider/netdata_provider.h:10-73`
   - `src/collectors/systemd-journal.plugin/provider/netdata_provider.c:21-199`
   - `src/crates/jf/journal_reader_ffi/src/lib.rs:98-454`
@@ -591,10 +649,16 @@ Open decisions:
 ### Ordered Cut Plan
 
 1. Prerequisite SDK gates
-   - SOW-0042 must certify writer performance for the Rust/Go surfaces needed
-     by Netdata writer integrations.
-   - SOW-0044 through SOW-0046 must cover reader/query/facade performance and
-     compatibility before reader-heavy Netdata paths are cut over.
+   - SOW-0042 is completed and certifies writer performance for the Rust/Go
+     surfaces needed by current Netdata writer integrations.
+   - SOW-0043 is completed and certifies Rust reader libsystemd/Netdata `jf`
+     facade parity for current-entry DATA enumeration.
+   - SOW-0044 and SOW-0045 are completed and cover Rust/Go reader hot-path
+     performance and compatibility.
+   - SOW-0046 is in `done/` as closed after later Python and Node.js
+     language-specific reader/writer ports superseded it. That closure does
+     not block the Rust Netdata component integrations in SOW-0047 through
+     SOW-0049.
    - Risk: skipping this gate could regress NetFlow hot ingestion, projected
      grouped queries, OTEL signal viewer queries, or the no-libsystemd
      `systemd-journal.plugin` path.
@@ -613,7 +677,8 @@ Open decisions:
      projected raw scan, facet initialization, and tier rebuild readers.
    - Required settings: compact output, borrowed raw payload append API,
      source/entry realtime parity, lifecycle observer parity, tier retention
-     and rotation parity, sync cadence parity, and zero-allocation hot scans.
+     and rotation parity, sync cadence parity, SIGBUS safety, `JournalFileMap`
+     facet scan parity, and zero-allocation hot scans.
    - Validation: flow encoding round trips, raw/tier writes, projected grouped
      query parity, facet sidecar parity, rebuild parity, retention/rotation,
      active file handling, and performance gates.
@@ -645,8 +710,15 @@ Implementer:
 
 Reviewers:
 
-- Orchestrator-owned read-only review after this worktree commit. This
-  implementation agent does not run external reviewers.
+- Whole-SOW read-only review cycle completed on 2026-05-30 for this worktree
+  commit and changed scope.
+- Reviewers run:
+  - `llm-netdata-cloud/kimi-k2.6`
+  - `llm-netdata-cloud/qwen3.6-plus`
+  - `llm-netdata-cloud/glm-5.1`
+  - `llm-netdata-cloud/minimax-m2.7-coder`
+  - `llm-netdata-cloud/mimo-v2.5-pro`
+- All five reviewers voted `PRODUCTION GRADE`.
 
 Repository boundary block for every external-agent prompt:
 
@@ -679,6 +751,13 @@ Failure handling:
   follow-on SOW mapping. No Netdata source files were changed.
 - Redacted the observed GitHub SSH remote string after the SOW audit flagged
   it as a durable-artifact email-address pattern.
+- Ran whole-SOW read-only reviewer cycle against the implemented inventory and
+  cut plan with Kimi, Qwen, GLM, Minimax, and Mimo models. All five voted
+  `PRODUCTION GRADE`.
+- Dispositioned reviewer findings by adding NetFlow `JournalFileMap` facet
+  scan evidence, NetFlow SIGBUS evidence, `flatten_otel` producer evidence,
+  `log2journal` exclusion evidence, prerequisite SOW status detail, and updated
+  SOW status indexes.
 
 ### 2026-05-28
 
@@ -713,20 +792,22 @@ Acceptance criteria evidence:
     readers.
   - SOW-0050 covers vendored removal.
 - Record performance prerequisites:
-  - SOW-0042 and SOW-0044 through SOW-0046 prerequisites recorded in the
-    ordered cut plan.
+  - SOW-0042 through SOW-0046 prerequisite status recorded in the ordered cut
+    plan, including SOW-0043 and the SOW-0046 supersession note.
 - Record repository boundary and authorization:
   - SOW states Netdata source was inspected read-only and not modified.
   - User-authorized parallel implementation routing note is recorded in the
     execution log.
 - No changes outside this repository:
-  - Only this SOW file was edited in this worktree; Netdata was read-only.
+  - Only this SOW file and the two SOW status indexes were edited in this
+    worktree; Netdata was read-only.
 
 Tests or equivalent validation:
 
-- `git diff --check` passed on 2026-05-30.
-- `.agents/sow/audit.sh` passed on 2026-05-30 after the observed SSH remote was
-  redacted from the durable SOW artifact.
+- `git diff --check` passed on 2026-05-30 after reviewer dispositions and
+  status-index updates.
+- `.agents/sow/audit.sh` passed on 2026-05-30 after reviewer dispositions and
+  status-index updates.
 
 Real-use evidence:
 
@@ -739,10 +820,41 @@ Real-use evidence:
 
 Reviewer findings:
 
-- External reviewers were not run by this implementation worktree. The user
-  required this SOW to remain `in-progress` with sub-state
-  `implemented; ready for orchestrator review`, so reviewer routing remains an
-  orchestrator gate.
+- `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`.
+  - Finding: NetFlow `JournalFileMap` facet paths and SIGBUS handler were not
+    explicit enough in the inventory.
+  - Disposition: fixed by adding durable source evidence for
+    `src/crates/netflow-plugin/src/main.rs`, `facet_runtime.rs`,
+    `query.rs`, and `query/facets/cache/scan.rs`, plus cut-plan requirements
+    to preserve SIGBUS handling and closed-file facet scans.
+  - Finding: SOW-0042 through SOW-0046 status should be recorded.
+  - Disposition: fixed in sources checked, current state, and ordered cut
+    plan.
+- `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`.
+  - Finding: no blocking issues. Non-blocking notes confirmed that SOW-0047
+    through SOW-0050 remain open follow-ons, the OTEL field-policy decision is
+    correctly scoped to SOW-0048, and `journal-function` retention is
+    correctly proof-driven in SOW-0049/SOW-0050.
+  - Disposition: no code or artifact correction required beyond preserving the
+    existing follow-up mapping.
+- `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+  - Finding: `facet_runtime.rs` and `flatten_otel` should be explicitly
+    reflected in the inventory; minor cited line drift was non-blocking.
+  - Disposition: fixed by adding `facet_runtime.rs`, `flatten_otel`
+    dependency/import evidence, and the OTEL producer-contract note. Line-drift
+    comments did not change any source-reference meaning.
+- `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`.
+  - Finding: prerequisite gate wording should distinguish completed Rust/Go
+    gates from closed/superseded Node.js/Python follow-up work, and
+    `SOW-status.md` should be updated.
+  - Disposition: fixed by recording SOW-0042 through SOW-0046, SOW-0051,
+    SOW-0053, and SOW-0054 status context, and by updating both SOW status
+    index files.
+- `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+  - Finding: SOW-0043 was omitted from the ordered cut plan; minor line-number
+    drift was non-blocking.
+  - Disposition: fixed by adding SOW-0043 to the prerequisite SDK gate list.
+    Line-drift comments did not change any source-reference meaning.
 
 Same-failure scan:
 
@@ -750,10 +862,13 @@ Same-failure scan:
   `write_entry_with_timestamps`, `write_entry(`, `Log::new(`, and related
   writer construction terms across `src/crates` and `src/collectors`.
 - Reader scan terms included `JournalFile::<Mmap>::open`, `JournalReader`,
-  `JournalCursor`, `batch_compute_file_indexes`, `LogQuery::new`,
-  `FileIndexer`, `nsd_journal_open_files`, `sd_journal_open_files`,
-  `journal_reader_ffi`, and local journal crate names across `src/crates` and
-  `src/collectors/systemd-journal.plugin`.
+  `JournalCursor`, `JournalFileMap`, `batch_compute_file_indexes`,
+  `LogQuery::new`, `FileIndexer`, `nsd_journal_open_files`,
+  `sd_journal_open_files`, `journal_reader_ffi`, and local journal crate names
+  across `src/crates` and `src/collectors/systemd-journal.plugin`.
+- `log2journal` was checked and excluded because it produces Journal Export
+  Format for `systemd-cat-native`; it does not read or write journal files
+  through the old Rust journal crates or the SDK.
 - Production journal consumers found are the ones recorded in this SOW:
   NetFlow, OTEL writer, OTEL signal viewer, and systemd-journal no-libsystemd
   reader. Remaining matches were local journal crate internals, tests, benches,
@@ -777,10 +892,10 @@ Artifact maintenance gate:
 - End-user/operator docs: no update needed; no shipped behavior changed.
 - End-user/operator skills: no output/reference skill affected.
 - SOW lifecycle: SOW moved from `pending/` to `current/`, status changed to
-  `in-progress`, and sub-state left as `implemented; ready for orchestrator
-  review` per user instruction.
-- SOW-status.md: not updated in this worktree because the user explicitly
-  required the assigned SOW to remain in progress for orchestrator review.
+  `in-progress`, and sub-state changed to
+  `reviewed; ready for orchestrator merge` per user instruction.
+- SOW-status.md: root `SOW-status.md` and `.agents/sow/SOW-status.md` updated
+  to reflect SOW-0026 as current/in-progress and reviewed.
 
 Specs update:
 
@@ -817,8 +932,8 @@ Follow-up mapping:
 
 ## Outcome
 
-Implemented inventory and cut plan. This SOW remains `in-progress` with
-sub-state `implemented; ready for orchestrator review` as requested.
+Reviewed inventory and cut plan. This SOW remains `in-progress` with sub-state
+`reviewed; ready for orchestrator merge` as requested.
 
 ## Lessons Extracted
 

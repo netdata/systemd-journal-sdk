@@ -1,17 +1,19 @@
 # SOW Status
 
-Last updated: 2026-05-29
+Last updated: 2026-05-30
 
 ## Current
 
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
+- SOW-0026 - Netdata SDK Integration Inventory And Cut Plan: in-progress.
+  Inventory and cut plan implemented, whole-SOW read-only review complete, and
+  ready for orchestrator merge. No Netdata source edits were made; component
+  integration remains mapped to SOW-0047 through SOW-0050.
 
 ## Pending
 
-- SOW-0026 - Netdata SDK Integration Inventory And Cut Plan: open. Produces the
-  fresh Netdata consumer inventory and cut plan after performance gates.
 - SOW-0047 - Netdata NetFlow SDK Integration: open. Component integration for
   NetFlow reader and writer paths after inventory and performance gates.
 - SOW-0048 - Netdata OTEL Writer SDK Integration: open. Component integration
