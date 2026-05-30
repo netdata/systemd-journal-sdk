@@ -49,6 +49,11 @@ Last updated: 2026-05-30
 
 ## Recently Closed Or Completed
 
+- SOW-0072 - Dependency And Package Hygiene: completed. Removed the hidden
+  Node native-install dependency risk by vendoring only the XZ WASM runtime
+  files with license and hash provenance, added package tarball hygiene and
+  tests, strengthened Rust serde flattener parity/provenance, and updated
+  reviewer-pool instructions.
 - SOW-0059 - Standard Benchmark Reporting: completed. Added a stdlib-only
   benchmark report generator for reader-core and writer-core JSON artifacts,
   documented the canonical report shape, added 15 report-shape/unit tests, and

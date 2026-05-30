@@ -10,7 +10,7 @@ no system journal library linkage.
 - Read `.journal`, `.journal~`, `.journal.zst`, `.journal~.zst` files
 - Read regular and compact journal object layouts
 - Zstd compression support via built-in `node:zlib`
-- XZ DATA object support through `node-liblzma` WASM runtime
+- XZ DATA object support through the bundled `node-liblzma` WASM runtime
 - LZ4 DATA object support via pure JavaScript `lz4js`
 - Forward/backward iteration, cursors, timestamps
 - Binary field values as `Buffer`
@@ -374,14 +374,17 @@ Uses built-in Node.js modules and compression dependencies:
 - `node:fs` - File I/O
 - `node:zlib` - Zstd compression (Node.js v22.15+)
 - `node:util` - Argument parsing
-- `node-liblzma@5.0.1` - WASM XZ compression/decompression runtime path
+- Bundled `node-liblzma@5.0.1` WASM runtime files - XZ
+  compression/decompression with systemd-compatible `CHECK_NONE` output
 - `lz4js@0.2.0` - Raw LZ4 block compression used with the systemd journal
   8-byte uncompressed-size prefix
 
-The committed `node/.npmrc` sets `ignore-scripts=true` so dependency install
-does not run native build hooks. This is intentional: the SDK imports the
-`node-liblzma/wasm/*` files directly and must not build or load the native
-`node-liblzma` addon for its supported runtime path.
+The published package dependency graph must not require native addon build
+hooks for the supported SDK runtime path. XZ support vendors only the
+`node-liblzma` WASM runtime files under `vendor/node-liblzma-wasm/`; the SDK
+does not depend on the full `node-liblzma` package and does not ship or load
+its native addon prebuilds. The committed `node/.npmrc` is only a local
+development guard; package correctness does not rely on it.
 
 ## Conformance
 

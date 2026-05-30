@@ -24,6 +24,7 @@
 
 ## Done
 
+- `SOW-0072-20260530-dependency-and-package-hygiene.md`
 - `SOW-0062-20260530-rust-go-writer-absolute-performance.md`
 - `SOW-0061-20260529-cross-language-row-scoped-facade-lifetime.md`
 - `SOW-0060-20260529-rust-reader-absolute-hot-path-profiling.md`

@@ -7,6 +7,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { zstdCompressSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { jenkinsHash64, sipHash24 } from '../src/lib/hash.js';
 import { uuidToString } from '../src/lib/binary.js';
@@ -1457,12 +1458,40 @@ for (const [length, expected] of sipVectors) {
 }
 
 {
-  // Verify no node-liblzma .node native addon is loaded at runtime.
+  // Verify the supported runtime path does not load native addons.
   const req = createRequire(import.meta.url);
   const nativeAddonKeys = Object.keys(req.cache).filter(
-    (k) => k.includes('node-liblzma') && k.endsWith('.node'),
+    (k) => k.startsWith(packageRoot) && k.endsWith('.node'),
   );
-  assert.equal(nativeAddonKeys.length, 0, 'node-liblzma .node native addon must not be loaded');
+  assert.equal(nativeAddonKeys.length, 0, 'SDK runtime path must not load .node native addons');
+}
+
+{
+  // Verify production dependencies do not require native install hooks.
+  const lock = JSON.parse(readFileSync(join(packageRoot, 'package-lock.json'), 'utf8'));
+  const packages = Object.entries(lock.packages ?? {});
+  const installScriptPackages = packages
+    .filter(([, metadata]) => metadata.hasInstallScript === true)
+    .map(([name]) => name);
+  assert.deepEqual(installScriptPackages, [], 'package-lock must not include install-script dependencies');
+  assert.equal(lock.packages?.['node_modules/node-liblzma'], undefined, 'full node-liblzma package must not be a dependency');
+  assert.equal(lock.packages?.['node_modules/node-gyp-build'], undefined, 'node-gyp-build must not be a dependency');
+}
+
+{
+  // Keep vendored WASM provenance executable, not only documented.
+  const expected = new Map([
+    ['liblzma.js', 'f33997f0c680a29fd307d18b8336325949811c78bb00ad9a038bf8f205623e02'],
+    ['liblzma.wasm', 'a9216b509c9bf0006f306e85f696bd67d31e4ca1972b9e35307aef8650fe705c'],
+    ['LICENSE', 'f97bc4bb9b7ae8a653941073678b5c7775e8de44a01c3bcc21e7cdc148b90e61'],
+  ]);
+  const vendorDir = join(packageRoot, 'vendor/node-liblzma-wasm');
+  for (const [fileName, expectedHash] of expected) {
+    const actualHash = createHash('sha256')
+      .update(readFileSync(join(vendorDir, fileName)))
+      .digest('hex');
+    assert.equal(actualHash, expectedHash, `${fileName} vendor hash mismatch`);
+  }
 }
 
 {

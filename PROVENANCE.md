@@ -35,10 +35,40 @@ See the root `LICENSE` file for the full license text.
 
 The imported Rust code depends on third-party crates from crates.io and git repositories:
 
-- `flatten-serde-json`: MIT licensed, from `https://github.com/meilisearch/meilisearch` tag v1.22.1 (git dependency)
 - `roaring`: Apache-2.0 licensed, from crates.io version 0.11 (local); upstream Netdata uses git branch `allocative` from `https://github.com/netdata/roaring-rs.git`
 
 All other dependencies are from crates.io with their respective licenses.
+
+The optional Rust `journal-log-writer` `serde-api` JSON-flattening helper
+mirrors the behavior of Meilisearch's MIT-licensed `flatten-serde-json`
+implementation:
+
+- **Repository**: `https://github.com/meilisearch/meilisearch`
+- **Commit**: `077ec2ab11bb4daefcb57f89eab9cff16e075fdc`
+- **Path**: `crates/flatten-serde-json/src/lib.rs`
+- **License**: MIT, copyright 2019-2025 Meili SAS
+
+The Git dependency was removed to avoid checking out the full upstream
+monorepo in package builds. Local parity tests cover the upstream edge cases
+used by this SDK.
+
+The Node.js SDK vendors the WASM runtime files from `node-liblzma` for XZ DATA
+object support:
+
+- **Package**: `node-liblzma`
+- **Version**: `5.0.1`
+- **Repository**: `https://github.com/oorabona/node-liblzma`
+- **Local path**: `node/vendor/node-liblzma-wasm/`
+- **Included files**: `liblzma.js`, `liblzma.wasm`, `LICENSE`, `README.md`
+- **License**: LGPL-3.0
+- **Vendored file SHA-256 values**:
+  - `liblzma.js`: `f33997f0c680a29fd307d18b8336325949811c78bb00ad9a038bf8f205623e02`
+  - `liblzma.wasm`: `a9216b509c9bf0006f306e85f696bd67d31e4ca1972b9e35307aef8650fe705c`
+  - `LICENSE`: `f97bc4bb9b7ae8a653941073678b5c7775e8de44a01c3bcc21e7cdc148b90e61`
+
+Only the WASM runtime files are included. The full npm package's native addon
+prebuilds and install hook are intentionally not included in this repository or
+the published Node.js package.
 
 ## Modifications
 
@@ -48,6 +78,13 @@ The following minimal modifications were made to the copied source to enable bui
 2. **Roaring version**: Local uses crates.io `0.11`; upstream Netdata uses `netdata/roaring-rs` git branch `allocative`. This is a known divergence.
 3. **Workspace lints**: Added `[workspace.lints]` configuration to satisfy Rust build requirements.
 4. **Internal crate path dependencies**: Added path dependencies for internal crate references.
-5. **flatten-serde-json**: Added git dependency to restore the optional `serde-api` feature.
+5. **Serde JSON flattening**: Replaced the `flatten-serde-json` Git dependency
+   with an in-crate helper for the optional `serde-api` feature, preserving the
+   upstream behavior with local parity tests and recorded provenance.
+6. **Node.js XZ runtime**: Replaced the full `node-liblzma` npm dependency with
+   vendored WASM runtime files from `node-liblzma@5.0.1`, preserving
+   systemd-compatible XZ `CHECK_NONE` output without native install hooks.
 
-These modifications were limited to build configuration only and do not alter the functional behavior of the copied code.
+These modifications are intended to preserve the functional behavior of the
+copied code while making the repository buildable and portable in this
+standalone SDK layout.

@@ -603,10 +603,10 @@ Reviewer findings:
   - `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`; no blocking
     findings.
 - Dispositions:
-  - `node/.npmrc` `ignore-scripts=true` is accepted for this package because the
-    runtime imports only `node-liblzma/wasm/*`; `node/README.md` documents the
-    rationale. Future dependency additions must re-evaluate this install
-    policy.
+  - The original `node/.npmrc` `ignore-scripts=true` disposition was superseded
+    by SOW-0072. The final Node.js package no longer depends on the full
+    `node-liblzma` package; it vendors only the WASM runtime files and keeps
+    `.npmrc` as a local development guard, not as the package guarantee.
   - Rust `File::from_str()` remaining slash-oriented is accepted as a
     pre-existing string-parser limitation. Native runtime paths fixed in this
     pass use `File::from_path()`/`File::from_raw_path()` and passed native
@@ -647,9 +647,10 @@ Artifact maintenance gate:
 - Runtime project skills: no update. The compatibility skill already requires
   cross-language and stock-tool validation discipline.
 - Specs: `.agents/sow/specs/product-scope.md` updated for Node.js `>=22.15.0`
-  zstd support and Windows parent-directory fsync behavior.
+  zstd support, Windows parent-directory fsync behavior, and later SOW-0072
+  Node.js XZ package hygiene.
 - End-user/operator docs: `node/README.md` updated for Node.js `>=22.15.0`,
-  WASM-only `node-liblzma` install behavior, and Windows directory fsync scope.
+  bundled WASM-only XZ runtime behavior, and Windows directory fsync scope.
 - End-user/operator skills: no output/reference skill exists for this repo
   surface.
 - SOW lifecycle: moved this SOW from `pending/` to `current/` with
@@ -696,6 +697,8 @@ Follow-up mapping:
   implementation.
 - `SOW-0071-20260530-runtime-purity-and-optional-platform-services.md` remains
   the blocker for closing this parent SOW and for stable API release.
+- `SOW-0072-20260530-dependency-and-package-hygiene.md` tracks the dependency
+  and package hygiene cleanup raised during orchestrator review of this SOW.
 
 ## Outcome
 
@@ -716,6 +719,7 @@ because native FreeBSD runtime execution was not part of this pass.
 
 - Child implementation SOWs: SOW-0067, SOW-0068, SOW-0069, and SOW-0070.
 - Required blocker SOW: SOW-0071.
+- Cleanup SOW raised by orchestrator review: SOW-0072.
 - Remaining parent-scope validation gap: native FreeBSD runtime execution.
 
 ## Regression Log

@@ -2,6 +2,7 @@
   "name": "@netdata/systemd-journal-sdk",
   "version": "0.1.0",
   "description": "Pure-JavaScript systemd journal reader and writer SDK",
+  "license": "GPL-3.0-or-later",
   "type": "module",
   "main": "src/index.js",
   "bin": {
@@ -16,8 +17,16 @@
   "engines": {
     "node": ">=22.15.0"
   },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "adapter/",
+    "cmd/",
+    "src/",
+    "vendor/",
+    "package.json"
+  ],
   "dependencies": {
-    "lz4js": "0.2.0",
-    "node-liblzma": "5.0.1"
+    "lz4js": "0.2.0"
   }
 }

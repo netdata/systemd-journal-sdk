@@ -657,8 +657,9 @@ Current Node.js writer feature slice:
 - uncompressed DATA objects by default;
 - optional zstd, xz, and lz4-compressed DATA object writing with configurable
   compression threshold through Node.js built-in `node:zlib` on Node.js v22.15
-  or newer, pure JavaScript `lz4js@0.2.0`, and `node-liblzma@5.0.1` WASM path,
-  using the shared systemd threshold policy;
+  or newer, bundled `node-liblzma@5.0.1` WASM runtime files for XZ
+  `CHECK_NONE` output, and pure JavaScript `lz4js@0.2.0`, using the shared
+  systemd threshold policy;
 - keyed hash tables using the journal file ID;
 - byte-safe field values through `Buffer`, `Uint8Array`, and string-compatible
   field values;
@@ -712,8 +713,8 @@ Current Node.js reader feature slice:
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
 - whole-file zstd fixtures through Node.js built-in `node:zlib`;
 - zstd, xz, and lz4-compressed DATA objects through Node.js built-in
-  `node:zlib` on Node.js v22.15 or newer, `node-liblzma@5.0.1` WASM path,
-  and pure JavaScript `lz4js@0.2.0`;
+  `node:zlib` on Node.js v22.15 or newer, bundled `node-liblzma@5.0.1` WASM
+  runtime files for XZ, and pure JavaScript `lz4js@0.2.0`;
 - directory iteration across active and archived files with stock-compatible
   root plus one machine-id subdirectory traversal and interleaved multi-file
   ordering;
