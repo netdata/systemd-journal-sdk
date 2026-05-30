@@ -1,12 +1,15 @@
 # SOW Status
 
-Last updated: 2026-05-29
+Last updated: 2026-05-30
 
 ## Current
 
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
+- SOW-0068 - Rust Cross Platform Portability: in-progress, reviewed, ready for
+  orchestrator merge. Rust SDK crates are Windows-target clean, Linux runtime
+  validation passed, and all five read-only reviewers voted production grade.
 
 ## Pending
 

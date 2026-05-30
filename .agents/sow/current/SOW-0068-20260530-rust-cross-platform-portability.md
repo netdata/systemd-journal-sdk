@@ -4,7 +4,7 @@
 
 Status: in-progress
 
-Sub-state: review fixes implemented; reviewer rerun pending.
+Sub-state: reviewed; ready for orchestrator merge.
 
 ## Requirements
 
@@ -224,6 +224,11 @@ Failure handling:
   FreeBSD machine-id path, and corrected docs/spec overclaims.
 - Rejected reviewer-suggested removal of `OpenOptionsExt` because Linux tests
   proved `journal-core/src/file/file.rs` still uses `.mode(0o640)`.
+- Reran the whole-SOW read-only reviewer scope after the fix commit. Captured
+  final votes from all five approved reviewers:
+  `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/qwen3.6-plus`,
+  `llm-netdata-cloud/glm-5.1`, `llm-netdata-cloud/minimax-m2.7-coder`, and
+  `llm-netdata-cloud/mimo-v2.5-pro` all voted `PRODUCTION GRADE`.
 
 ## Validation
 
@@ -341,6 +346,41 @@ Reviewer findings:
   is pre-existing. Disposition: still improved Windows monotonic and process
   identity based on other reviewers; left no-op directory sync and SIGBUS
   return-value handling as documented/pre-existing risks.
+- Round 2, `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`.
+  Findings: non-blocking risks only. Noted `journal-core` still has an
+  unconditional `libc` dependency, Linux lock owner checks still treat all
+  `/proc` errors as stale as in the pre-SOW behavior, macOS `system_profiler`
+  is slow, FreeBSD/macOS `sysctl` text parsing is fragile, and 4096-byte page
+  assumptions are pre-existing. Disposition: no new code changes; these are
+  either pre-existing, documented, or cleanup outside the current validated
+  scope.
+- Round 2, `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`.
+  Findings: non-blocking risks only. Noted unconditional `journal-core`
+  `libc`, pre-existing 4096-byte page assumptions, no-op non-Unix directory
+  sync, seek/write non-Unix header rewrite, synthetic FreeBSD/macOS boot IDs,
+  and Linux `lock.rs` direct `/proc` boot-ID read instead of the generic
+  `/host/` fallback. Disposition: no blocker; behavior is conservative or
+  documented, and Linux runtime validation remains clean.
+- Round 2, `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+  Findings: non-blocking risks only. Confirmed all round-1 fixes, Linux test
+  suite, Windows target checks, dependency changes, and docs/spec claims.
+  Noted the same low-risk cleanup candidates: `journal-core` `libc` gating,
+  hardcoded page size, slow macOS identity lookup, synthetic boot IDs, and
+  no-op non-Unix directory sync. Disposition: no code changes after final
+  review.
+- Round 2, `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`.
+  Findings: non-blocking risks only. Noted non-Linux Unix PID reuse can keep a
+  stale lock held, Windows lock acquisition uses additional syscalls, non-Unix
+  mmap/SIGBUS fallbacks have lower durability/atomicity, and Linux lock
+  `boot_id()` does not use the generic `/host/proc` fallback. Disposition:
+  accepted as documented conservative behavior in the SOW scope.
+- Round 2, `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+  Findings: non-blocking risks only. Noted `journal-core` unconditional
+  `libc`, non-Linux Unix PID reuse gap, no-op non-Unix directory sync,
+  pre-existing hardcoded page size/SIGBUS return-value handling, and Windows
+  empty boot ID compensated by creation-time/wait-status checks. Disposition:
+  no blocker; the implementation is production-grade within the SOW's stated
+  Linux-runtime/non-Linux-compilation scope.
 
 Same-failure scan:
 
@@ -373,10 +413,9 @@ Artifact maintenance gate:
 - End-user/operator skills: none affected; this repository has no output skill
   for Rust SDK consumers.
 - SOW lifecycle: moved this SOW from `pending/open` to
-  `current/in-progress`; review fixes are implemented and the reviewer rerun
-  is pending.
-- `SOW-status.md`: pending final update after the reviewer rerun establishes
-  the final sub-state.
+  `current/in-progress`; final sub-state is `reviewed; ready for orchestrator
+  merge`, not completed.
+- `SOW-status.md`: updated to list SOW-0068 in current reviewed state.
 
 Lessons extracted:
 
@@ -396,3 +435,8 @@ Follow-up mapping:
   decide whether `journal-engine` keeps `foyer`/native `lz4-sys` for
   non-public indexing/cache paths or receives a target-specific dependency
   configuration.
+- Cleanup candidates for a future SOW if runtime portability hardening is
+  expanded: target-gate `journal-core` `libc`, replace pre-existing 4096-byte
+  page assumptions with runtime page-size detection, harden SIGBUS
+  `mmap()`-failure handling, and decide whether Linux lock boot-ID lookup
+  should share the generic `/host/` fallback.
