@@ -2,11 +2,10 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: reviewed; native macOS/Windows validation passed under parent
-SOW-0063 after targeted runtime-floor and test repairs; ready for orchestrator
-merge.
+Sub-state: completed; implementation, reviewer gates, native macOS/Windows
+validation, and orchestrator lifecycle reconciliation finished.
 
 ## Requirements
 
@@ -366,10 +365,9 @@ Artifact maintenance gate:
 - End-user/operator docs: updated `node/README.md` with Node.js platform
   behavior, identity, and lock semantics.
 - End-user/operator skills: none exist for this project, so none were affected.
-- SOW lifecycle: moved from `pending/open` to `current/in-progress`; left
-  sub-state `reviewed; ready for orchestrator merge`.
-- `SOW-status.md`: intentionally not updated, per assigned prompt; orchestrator
-  must reconcile status after merge/review.
+- SOW lifecycle: reconciled by orchestrator as completed and moved to
+  `.agents/sow/done/`.
+- `SOW-status.md`: updated to list SOW-0070 as completed.
 
 Lessons extracted:
 
@@ -382,6 +380,15 @@ Follow-up mapping:
 - Parent umbrella: `SOW-0063-20260530-cross-platform-portability.md`.
 - Non-Linux runtime execution evidence remains for the parent/orchestrator to
   collect with real FreeBSD, macOS, and Windows Node runtimes.
+
+## Outcome
+
+Node.js cross-platform portability work is complete for this child SOW. Linux
+package tests, lock and directory interoperability matrices, whole-SOW reviewer
+rounds, Node.js engine-floor repair evidence, native macOS/Windows validation
+under SOW-0063, and Linux stock verification of non-Linux generated journal
+files passed. The native FreeBSD runtime gap and SOW-0071 runtime-purity split
+stay with parent SOW-0063, not this Node.js-only child SOW.
 
 ## Parent Native Validation Addendum - 2026-05-30
 

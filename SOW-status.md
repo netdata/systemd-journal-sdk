@@ -8,7 +8,6 @@
 ## Pending
 
 - `SOW-0071-20260530-runtime-purity-and-optional-platform-services.md` - open. Architectural correction to keep core journal readers/writers file-format-only, move host identity discovery to optional helpers, move writer locking to independent optional helpers, update instructions/specs/docs, and validate on Linux plus provided macOS/Windows hosts before closing portability or releasing stable APIs.
-- `SOW-0070-20260530-node-cross-platform-portability.md` - open. Node.js-only child of SOW-0063 for Linux, FreeBSD, macOS, and Windows portability without native mmap/systemd runtime dependencies.
 - `SOW-0066-20260530-v1-release-and-registry-publication.md` - open. Publish the final stable `v1.0.0` SDK across language registries and versioned module tags after compatibility, portability, real-corpus validation, parity closure, and release checks pass.
 - `SOW-0065-20260530-parallel-language-parity-closure.md` - open. Future post-stabilization phase to close remaining Go/Python/Node.js parity and performance gaps against Rust, potentially using one approved worktree and implementation agent per language after prerequisite gates close.
 - `SOW-0064-20260530-real-world-journal-corpus-evaluation.md` - open. Build streaming, metrics-only tooling to evaluate the workstation's large real journal corpus with systemd, Rust, and Go readers/writers, measuring logical completeness, regenerated-output validity, speed, memory, I/O, I/O multiplication, footprint changes, and byte identity where meaningful.
@@ -24,6 +23,7 @@
 - `SOW-0067-20260530-go-cross-platform-portability.md`
 - `SOW-0068-20260530-rust-cross-platform-portability.md`
 - `SOW-0069-20260530-python-cross-platform-portability.md`
+- `SOW-0070-20260530-node-cross-platform-portability.md`
 - `SOW-0072-20260530-dependency-and-package-hygiene.md`
 - `SOW-0062-20260530-rust-go-writer-absolute-performance.md`
 - `SOW-0061-20260529-cross-language-row-scoped-facade-lifetime.md`
