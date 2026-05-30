@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: open
+Status: in-progress
 
-Sub-state: pending tooling SOW for large-scale real journal corpus evaluation.
+Sub-state: reviewed; ready for orchestrator merge.
 
 ## Requirements
 
@@ -297,6 +297,18 @@ Open-source reference evidence:
   and record durable `systemd/systemd @ <commit>` citations if new systemd
   internals are inspected.
 
+Official documentation evidence checked during implementation:
+
+- `https://systemd.io/JOURNAL_EXPORT_FORMATS/`
+  - Confirms journal export is binary-safe, that entries may contain repeated
+    fields, and that `journalctl -o export` generates the export stream used by
+    the systemd baseline driver.
+- `https://www.freedesktop.org/software/systemd/man/latest/systemd-journal-remote.service.html`
+  - Confirms `systemd-journal-remote` consumes Journal Export Format input and
+    can write a journal file. The harness records systemd regeneration as a
+    recognized limitation unless that optional helper is explicitly enabled in
+    a later phase.
+
 Open decisions:
 
 - Resolved by user: this SOW is for tooling/evaluation and discrepancy
@@ -366,8 +378,9 @@ Reviewers:
 - Use read-only reviewers from the approved pool after implementation and local
   validation complete: `llm-netdata-cloud/minimax-m2.7-coder`,
   `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/qwen3.6-plus`, and
-  `llm-netdata-cloud/glm-5.1`. Skip `llm-netdata-cloud/mimo-v2.5-pro` while it
-  remains out of quota.
+  `llm-netdata-cloud/glm-5.1`. User explicitly re-added
+  `llm-netdata-cloud/mimo-v2.5-pro` for the whole-SOW review cycle on
+  2026-05-30.
 
 Repository boundary block for every external-agent prompt:
 
@@ -400,28 +413,248 @@ Failure handling:
 
 - Created this pending SOW from the user's request for a real-world
   corpus-scale verification and performance harness.
+- Confirmed user-authorized parallel implementation routing; AGENTS.md
+  external-implementer exception applies for this worktree.
+- Moved this SOW from `.agents/sow/pending/` to `.agents/sow/current/` and set
+  `Status: in-progress`.
+- Implemented the metrics-only corpus harness under `tests/corpus_eval/`.
+- Implemented a shared canonical logical digest schema:
+  `systemd-journal-sdk-corpus-logical-v1`.
+- Implemented binary-safe systemd export parsing that treats `_BOOT_ID` as
+  common entry metadata instead of a raw payload, matching the Rust/Go reader
+  API surface.
+- Implemented Rust helper commands:
+  `rust/src/internal/testcmd/corpus_digest/` and
+  `rust/src/internal/testcmd/corpus_regenerate/`.
+- Implemented Go helper commands:
+  `go/internal/testcmd/corpus_digest/` and
+  `go/internal/testcmd/corpus_regenerate/`.
+- Added guarded dry-run, smoke, and full-run modes. Full corpus execution
+  requires explicit `--allow-full-run`; no full corpus was run.
+- Added resume state, sanitized JSON/Markdown reporting, process resource
+  metrics, filesystem I/O counters from GNU `time`, page-fault counts, and
+  lower-bound page-fault byte estimates.
+- Added Rust/Go regeneration for regular, compact, compact zstd, and compact
+  FSS modes. Generated FSS files are verified with an in-memory deterministic
+  verification key; the key and FSS start timestamp are not written to reports.
+- Left `SOW-status.md` untouched per the assigned prompt; status reconciliation
+  is left to the orchestrator to reduce merge conflicts.
+- Ran the user-requested whole-SOW read-only external review cycle against
+  implementation commit `8476e58`.
+- Round 1 produced four `PRODUCTION GRADE` votes and one
+  `NOT PRODUCTION GRADE` vote. Real findings were fixed locally before rerunning
+  validation and reviewers.
+- Hardened `journalctl` process handling, JSON helper output parsing,
+  regenerator failure containment and cleanup, resume identity matching, Go
+  payload sorting, and status output.
+- Reran the whole-SOW read-only review cycle after fixes. Four reviewers
+  completed normally with `PRODUCTION GRADE`; the first
+  `llm-netdata-cloud/minimax-m2.7-coder` round-2 attempt timed out after 30
+  minutes without a vote, then a same-scope rerun completed with
+  `PRODUCTION GRADE`.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Pending implementation.
+- Streaming discovery and scheduler:
+  - `tests/corpus_eval/run_corpus_eval.py` discovers configured roots only and
+    processes one input file at a time.
+  - `--mode dry-run` writes stat/list-only reports and does not open journal
+    payloads.
+  - `--mode run` refuses to execute unless `--allow-full-run` is provided.
+- Sensitive-data-safe reporting:
+  - Reports use sanitized `file_id` values and omit raw input paths by default.
+  - Reports contain counts, digests, sizes, metrics, status codes, and
+    discrepancy summaries only.
+  - Validation confirmed final dry-run and smoke reports do not contain raw
+    fixture paths, `MESSAGE=` payloads, deterministic FSS key bytes, or
+    `fss_start_usec`.
+- Reader drivers:
+  - systemd baseline uses `journalctl --file <path> --output=export --all
+    --no-pager` and streams stdout into the canonical digest parser.
+  - Rust uses `rust/src/internal/testcmd/corpus_digest/`.
+  - Go uses `go/internal/testcmd/corpus_digest/`.
+- Writer/regeneration drivers:
+  - Rust uses `rust/src/internal/testcmd/corpus_regenerate/`.
+  - Go uses `go/internal/testcmd/corpus_regenerate/`.
+  - systemd regeneration is recognized but marked unsupported by default in
+    this harness because safe use needs optional `systemd-journal-remote`
+    enablement and separate pipeline metrics handling.
+- Canonical digest/count schema:
+  - Binary-safe payload hashing uses length-prefixed SHA-256 input.
+  - Per-entry payloads are sorted before hashing so undefined field iteration
+    order does not create false mismatches.
+  - Repeated field names and binary payloads are counted without writing names
+    or values to reports.
+- Metrics:
+  - Per-driver process wall/user/system seconds, max RSS, minor/major page
+    faults, filesystem input/output counters, average I/O rates, input bytes,
+    generated bytes, footprint ratios, and I/O multiplication ratios are
+    recorded where available.
+  - Peak I/O rate is explicitly labelled `not-sampled` in this slice rather
+    than fabricated.
+- Resume/skip:
+  - `state.json` records completed file/driver/mode combinations keyed by
+    sanitized file identity, size, mtime, and suffix.
 
 Tests or equivalent validation:
 
-- Pending implementation.
+- `python -m unittest tests.corpus_eval.test_canonical`
+  - Result: passed, 6 tests.
+- `python tests/corpus_eval/run_corpus_eval.py --mode dry-run --root
+  .local/corpus-eval/smoke-validation-review-fixes/smoke-fixtures --out
+  .local/corpus-eval/dry-run-validation-review-fixes --max-files 5`
+  - Result: passed.
+  - Evidence: 1 `.journal` file discovered, 8,388,608 input bytes, 0 payload
+    reads, 0 discrepancies.
+- `python tests/corpus_eval/run_corpus_eval.py --mode smoke --out
+  .local/corpus-eval/smoke-validation-review-fixes --drivers systemd rust go
+  --regenerators rust go --timeout 1800`
+  - Result: passed.
+  - Evidence: 1 generated synthetic fixture, 11 result rows, 0 discrepancies.
+  - Covered reader drivers: systemd, Rust, Go.
+  - Covered writer modes: regular, compact, compact zstd, compact FSS for Rust
+    and Go.
+- `cargo test --manifest-path rust/src/internal/testcmd/corpus_digest/Cargo.toml`
+  - Result: passed, helper built and ran 0 unit tests.
+- `cargo test --manifest-path
+  rust/src/internal/testcmd/corpus_regenerate/Cargo.toml`
+  - Result: passed, helper built and ran 0 unit tests.
+- `go test ./internal/testcmd/corpus_digest
+  ./internal/testcmd/corpus_regenerate`
+  - Result: passed, both helper packages compiled.
+- `git diff --check`
+  - Result: passed.
+- `.agents/sow/audit.sh`
+  - Result: passed; verdict reported SOW initialization complete and clean.
+- Stock systemd used during smoke:
+  - `journalctl --version`: `systemd 260 (260.1-2-manjaro)`.
 
 Real-use evidence:
 
-- Pending implementation against the workstation's real journal corpus.
+- No full workstation corpus run was performed, per the assigned prompt.
+- Smoke mode exercised actual stock `journalctl --file --output=export` and
+  `journalctl --verify --file` on a generated repository-local journal under
+  `.local/`.
+- Dry-run mode was exercised against the smoke fixture directory and persisted
+  only sanitized file IDs, sizes, suffix counts, and scratch-space estimates.
 
 Reviewer findings:
 
-- Pending implementation and whole-SOW review.
+- Round 1 against commit `8476e58`:
+  - `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`.
+    - Disposition: no blocking findings. Cleanup/free-space and process-risk
+      observations were covered by the hardening changes below.
+  - `llm-netdata-cloud/qwen3.6-plus`: `NOT PRODUCTION GRADE`.
+    - Finding: Rust `payloads_without_separator` could double-count empty-name
+      payloads.
+      - Disposition: rejected as a false positive for the original code because
+        the `else` arm for missing `=` and the `eq == 0` branch were mutually
+        exclusive. To make intent unambiguous, Rust counting was refactored to a
+        single filtered branch in
+        `rust/src/internal/testcmd/corpus_digest/src/main.rs`, and a synthetic
+        test was added in `tests/corpus_eval/test_canonical.py`.
+    - Finding: `json_from_stdout` could silently pick the wrong JSON-like line.
+      - Disposition: fixed in `tests/corpus_eval/run_corpus_eval.py`; helper
+        stdout must now contain exactly one JSON object line.
+    - Finding: Go helper used an O(n^2) payload sort.
+      - Disposition: fixed in `go/internal/testcmd/corpus_digest/main.go` by
+        using `sort.Slice` with `bytes.Compare`.
+    - Finding: resume identity could be stale for recreated files with matching
+      size and mtime.
+      - Disposition: fixed in `tests/corpus_eval/run_corpus_eval.py` by adding
+        `ctime_ns` to both sanitized file ID input and resume identity.
+    - Finding: main status output reported the mode string as a report path.
+      - Disposition: fixed in `tests/corpus_eval/run_corpus_eval.py`; stdout now
+        reports `report_json` and `report_md`.
+  - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+    - Disposition: no blocking findings.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`.
+    - Disposition: no blocking findings. Resume-identity and systemd-version
+      observations were covered or remain documented non-blocking risks.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+    - Finding: `systemd_digest` timeout paths could leave `journalctl` running
+      and stderr could fill its pipe.
+      - Disposition: fixed in `tests/corpus_eval/run_corpus_eval.py`; stdout
+        parsing and stderr digesting now run concurrently, timeout paths kill and
+        wait for the exact child process, and reports retain only stderr hashes.
+    - Finding: unexpected errors during generated-file verification/reread could
+      abort the entire evaluation.
+      - Disposition: fixed in `tests/corpus_eval/run_corpus_eval.py`; writer
+        regeneration, stock verify, systemd reread, generated-size stat, and
+        cleanup are now contained as per-case `failed` results.
+- Round 2 after fix commit `e49a7d9`:
+  - `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`.
+    - Finding: Rust regeneration cannot preserve per-entry boot IDs for
+      multi-boot journals with the current writer helper API.
+      - Disposition: non-blocking for this SOW because the harness will surface
+        that as a real corpus writer discrepancy; fixing Rust writer metadata
+        preservation belongs in a follow-up SOW if the full corpus finds it.
+    - Finding: regeneration helpers do not preserve arbitrary original sequence
+      numbers.
+      - Disposition: non-blocking known interpretation risk. The harness hashes
+        `__SEQNUM` deliberately, so sequence-number renumbering is visible rather
+        than hidden.
+  - `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`.
+    - Finding: writer digest comparison may produce expected discrepancies on
+      real files with sequence-number gaps.
+      - Disposition: non-blocking; record as a report-interpretation risk for
+        full-corpus use and map to follow-up if it prevents useful triage.
+    - Finding: archived-mode failure could leave renamed generated files.
+      - Disposition: not applicable to the implemented harness modes because the
+        CLI supports only `regular`, `compact`, `compact-zstd`, and
+        `compact-fss`, and `regenerate_cmd` always requests `--final-state
+        offline`.
+    - Finding: `display_path` can print an absolute path when `--out` is outside
+      the repository.
+      - Disposition: non-blocking CLI-only leak risk. Durable reports remain
+        path-sanitized; normal documented output path is under `.local/`.
+    - Finding: fixed 5-second thread join could be tight for pathological very
+      large single entries.
+      - Disposition: non-blocking; it fails closed with `TimeoutError` and does
+        not leak a child process.
+  - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+    - Finding: silent exclusion of non-selected `__`-prefixed systemd export
+      fields could surprise future maintainers.
+      - Disposition: non-blocking. This is intentional for the current SDK
+        reader surface; future systemd metadata drift can be handled with a
+        focused schema update.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+    - Disposition: no blocking findings. The reviewer verified the process,
+      cleanup, JSON parsing, identity, Go sort, Rust count, status-output, and
+      validation fixes.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`.
+    - Note: the first round-2 attempt timed out before producing a vote; a
+      same-scope rerun completed successfully.
+    - Finding: the insufficient-scratch-space error string includes byte counts
+      before being hashed into `error_sha256`.
+      - Disposition: non-blocking. The raw string is not written to durable
+        reports; only the hash is stored. Treat as a residual crash-dump/in-memory
+        disclosure risk.
+- Final reviewer state: all five approved reviewers voted `PRODUCTION GRADE`.
 
 Same-failure scan:
 
-- Pending implementation.
+- Smoke validation initially found a digest schema mismatch: systemd export
+  exposed `_BOOT_ID` while Rust/Go SDK readers expose boot ID as entry
+  metadata. The schema was corrected to canonicalize `_BOOT_ID` as
+  `__BOOT_ID` metadata. The final smoke run passed with 0 discrepancies.
+- All-mode smoke validation initially found compact FSS stock verification
+  failures because sealed files require `journalctl --verify-key`. The harness
+  was corrected to use an in-memory deterministic verification key for
+  generated FSS files and to avoid writing that key to reports. The final smoke
+  run passed with 0 discrepancies.
+- Search confirmed final smoke/dry-run reports did not contain raw fixture
+  paths, `MESSAGE=` payloads, deterministic FSS key bytes, or `fss_start_usec`.
+- Review-fix validation confirmed
+  `.local/corpus-eval/smoke-validation-review-fixes/report.*` and
+  `.local/corpus-eval/dry-run-validation-review-fixes/report.*` contain none of
+  those raw/sensitive markers.
+- Review-finding pattern scan checked the changed scope for the same classes:
+  `subprocess.Popen`, `json_from_stdout`, `payloads_without_separator`,
+  `sortPayloads`, `safe_file_id`, `state.json`, and `run_regenerator`. No second
+  unhandled instance of these patterns was found outside the fixed sites.
 
 Sensitive data gate:
 
@@ -430,30 +663,39 @@ Sensitive data gate:
 
 Artifact maintenance gate:
 
-- AGENTS.md: no update during SOW creation.
-- Runtime project skills: no update during SOW creation.
-- Specs: pending implementation; update only if claims or workflow change.
-- End-user/operator docs: pending implementation.
-- End-user/operator skills: no output/reference skill affected during SOW
-  creation.
-- SOW lifecycle: created as `Status: open` under `.agents/sow/pending/`.
-- SOW-status.md: updated to list this SOW as pending.
+- AGENTS.md: no update needed; existing repository-boundary, SOW lifecycle,
+  sensitive-data, and external-agent rules covered this work.
+- Runtime project skills: no update needed; no durable workflow rule changed.
+- Specs: no product-scope update needed; this adds evaluation tooling and does
+  not change SDK public contracts or compatibility claims.
+- End-user/operator docs: added `tests/corpus_eval/README.md` for safe dry-run,
+  smoke, and guarded full-run usage.
+- End-user/operator skills: no output/reference skill affected.
+- SOW lifecycle: moved from `pending/open` to `current/in-progress`; left
+  `completed` transition to the orchestrator as required by the prompt.
+- SOW-status.md: intentionally not edited in this worktree; orchestrator owns
+  status reconciliation.
 
 Specs update:
 
-- Pending implementation.
+- No spec update was needed because no product behavior, SDK API, file format,
+  or compatibility guarantee changed. The corpus harness measures existing
+  behavior and records discrepancies for follow-up SOWs.
 
 Project skills update:
 
-- Pending implementation.
+- No project skill update was needed. The existing journal compatibility and
+  orchestration skills already require safe stock-reader validation,
+  repository-boundary handling, and sensitive-data handling.
 
 End-user/operator docs update:
 
-- Pending implementation.
+- Added `tests/corpus_eval/README.md`.
 
 End-user/operator skills update:
 
-- Pending implementation.
+- No end-user/operator skill exists for this tooling and none was required by
+  this SOW.
 
 Lessons:
 
@@ -463,20 +705,48 @@ Lessons:
 
 Follow-up mapping:
 
-- None yet. Every discrepancy found by the eventual harness must be mapped to a
-  fix SOW, rejected with evidence, or marked not reproducible with evidence.
+- systemd writer/regenerator baseline is recognized but remains unsupported by
+  default until a later SOW explicitly enables `systemd-journal-remote` pipeline
+  execution and pipeline-level metrics. This is a harness limitation, not an SDK
+  discrepancy.
+- Peak per-process I/O rate is not sampled in this slice; reports explicitly
+  record `peak_io_source: not-sampled` instead of fabricating a number. If
+  peak I/O rate becomes a hard acceptance metric for full-corpus runs, create a
+  follow-up SOW for `/proc/<pid>/io` sampling across direct commands and
+  pipelines.
+- Real corpus writer discrepancies involving `__SEQNUM` gaps or multi-boot
+  per-entry boot IDs should be interpreted as metadata-preservation findings, not
+  raw payload loss. If those dominate the full-corpus report, create a follow-up
+  SOW for a secondary comparison mode or writer metadata preservation work.
+- CLI status output for `--out` outside the repository may print an absolute
+  report path. This is not a durable-report leak; change it later only if
+  external output directories become a documented workflow.
+- No SDK reader/writer discrepancies were found in final smoke validation.
 
 ## Outcome
 
-Pending.
+Implemented locally, fixed real whole-SOW review findings, reran the whole-SOW
+read-only reviewer pool, and left in `Status: in-progress` with sub-state
+`reviewed; ready for orchestrator merge`.
 
 ## Lessons Extracted
 
-Pending.
+- Treating systemd export fields as raw DATA payloads can create false
+  mismatches. `_BOOT_ID` must be normalized as entry metadata for parity with
+  the Rust/Go reader APIs.
+- FSS verification needs `journalctl --verify-key`; plain stock verify is not a
+  sufficient sealed-output check.
+- Sensitive reporting needs filtering at both the command-output and final
+  report layers, because helper commands may need transient data that should
+  not survive into durable artifacts.
 
 ## Followup
 
-None yet.
+- Consider a follow-up SOW for systemd regeneration through
+  `systemd-journal-remote` with safe pipeline metrics.
+- Consider a follow-up SOW for peak I/O sampling if full-corpus acceptance
+  requires measured peak read/write bytes per second rather than average I/O
+  and filesystem counter totals.
 
 ## Regression Log
 

@@ -408,6 +408,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "corpus_digest"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "journal",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "corpus_regenerate"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "journal",
+ "journal-core",
+ "journal-registry",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
