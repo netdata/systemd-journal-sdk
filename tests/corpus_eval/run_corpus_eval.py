@@ -173,8 +173,42 @@ def summarize_discovery(cases: list[JournalCase]) -> dict[str, Any]:
         "total_input_bytes": total_bytes,
         "largest_input_bytes": largest,
         "suffix_counts": suffix_counts,
-        "estimated_min_scratch_bytes_per_file": largest * 2 if largest else 0,
+        "estimated_min_scratch_bytes_per_file": largest * 4 if largest else 0,
+        "scratch_estimate_includes_input_snapshot": True,
     }
+
+
+def snapshot_case(case: JournalCase, work_dir: Path) -> JournalCase:
+    """Create a bounded per-file input snapshot for consistent driver compares."""
+    snapshot_dir = work_dir / "snapshots"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    suffix = ".journal.zst" if case.suffix == ".journal.zst" else ".journal"
+    snapshot = snapshot_dir / f"{case.file_id}{suffix}"
+    try:
+        snapshot.unlink()
+    except FileNotFoundError:
+        pass
+    shutil.copyfile(case.path, snapshot)
+    stat = snapshot.stat()
+    return JournalCase(
+        path=snapshot,
+        root=snapshot_dir,
+        file_id=case.file_id,
+        size=stat.st_size,
+        mtime_ns=stat.st_mtime_ns,
+        suffix=case.suffix,
+        identity=case.identity,
+    )
+
+
+def case_keys(case: JournalCase, args: argparse.Namespace) -> list[str]:
+    keys = [f"{case.file_id}:reader:{driver}" for driver in args.drivers]
+    keys.extend(
+        f"{case.file_id}:writer:{driver}:{mode}"
+        for driver in args.regenerators
+        for mode in args.regeneration_modes
+    )
+    return keys
 
 
 def build_tools(env: dict[str, str], out: Path) -> ToolPaths:
@@ -813,6 +847,7 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
         "canonical_digest_schema": SCHEMA_VERSION,
         "sensitive_data_policy": "metrics-only: no raw journal field names, values, messages, hostnames, IPs, usernames, or binary payload dumps are written",
         "full_corpus_guard": "full corpus execution requires explicit --allow-full-run and is not used by smoke or dry-run",
+        "input_snapshot_policy": "run mode copies one input journal at a time into .local scratch before reader/writer comparisons, then deletes the snapshot",
         "discovery": discovery,
         "inputs": [case.identity for case in cases],
         "results": [],
@@ -838,87 +873,109 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
     work_dir = out / "work"
 
     for case in cases:
-        reader_results: dict[str, dict[str, Any]] = {}
-        for driver in args.drivers:
-            key = f"{case.file_id}:reader:{driver}"
-            if key in completed and completed[key].get("identity") == case.identity:
-                result = completed[key]["result"]
-            else:
-                try:
-                    result = run_digest_driver(
-                        driver,
-                        case,
-                        tools=tools,
-                        env=env,
-                        stats_dir=stats_dir,
-                        timeout=args.timeout,
-                    )
-                except Exception as exc:
-                    result = {
-                        "kind": "reader",
-                        "driver": driver,
-                        "status": "failed",
-                        "file_id": case.file_id,
-                        "error_class": type(exc).__name__,
-                        "error_sha256": hashlib.sha256(str(exc).encode("utf-8")).hexdigest(),
-                    }
-                completed[key] = {"identity": case.identity, "result": result}
-                write_json(state_path, state)
-            report["results"].append(result)
-            reader_results[driver] = result
+        expected_keys = case_keys(case, args)
+        case_complete = all(
+            key in completed and completed[key].get("identity") == case.identity
+            for key in expected_keys
+        )
+        if not case_complete:
+            for key in expected_keys:
+                completed.pop(key, None)
 
-        baseline = reader_results.get("systemd")
-        if baseline and baseline.get("status") == "ok":
-            baseline_digest = str(baseline.get("logical_digest"))
-            for driver, result in reader_results.items():
-                if driver == "systemd" or result.get("status") != "ok":
-                    continue
-                if result.get("logical_digest") != baseline_digest:
-                    report["discrepancies"].append(
-                        {
-                            "code": "reader_digest_mismatch",
-                            "file_id": case.file_id,
-                            "detail": f"{driver} logical digest differs from systemd baseline",
-                        }
-                    )
+        active_case = case
+        snapshot_path: Path | None = None
+        try:
+            if not case_complete:
+                active_case = snapshot_case(case, work_dir)
+                snapshot_path = active_case.path
 
-            for regen_driver in args.regenerators:
-                for regen_mode in args.regeneration_modes:
-                    key = f"{case.file_id}:writer:{regen_driver}:{regen_mode}"
-                    if key in completed and completed[key].get("identity") == case.identity:
-                        regen_result = completed[key]["result"]
-                    else:
-                        regen_result = run_regenerator(
-                            regen_driver,
-                            regen_mode,
-                            case,
-                            baseline_digest,
+            reader_results: dict[str, dict[str, Any]] = {}
+            for driver in args.drivers:
+                key = f"{case.file_id}:reader:{driver}"
+                if key in completed and completed[key].get("identity") == case.identity:
+                    result = completed[key]["result"]
+                else:
+                    try:
+                        result = run_digest_driver(
+                            driver,
+                            active_case,
                             tools=tools,
                             env=env,
-                            work_dir=work_dir,
                             stats_dir=stats_dir,
-                            keep_outputs=args.keep_outputs,
                             timeout=args.timeout,
                         )
-                        completed[key] = {"identity": case.identity, "result": regen_result}
-                        write_json(state_path, state)
-                    report["results"].append(regen_result)
-                    if regen_result.get("status") == "discrepancy":
+                    except Exception as exc:
+                        result = {
+                            "kind": "reader",
+                            "driver": driver,
+                            "status": "failed",
+                            "file_id": case.file_id,
+                            "error_class": type(exc).__name__,
+                            "error_sha256": hashlib.sha256(str(exc).encode("utf-8")).hexdigest(),
+                        }
+                    completed[key] = {"identity": case.identity, "result": result}
+                    write_json(state_path, state)
+                report["results"].append(result)
+                reader_results[driver] = result
+
+            baseline = reader_results.get("systemd")
+            if baseline and baseline.get("status") == "ok":
+                baseline_digest = str(baseline.get("logical_digest"))
+                for driver, result in reader_results.items():
+                    if driver == "systemd" or result.get("status") != "ok":
+                        continue
+                    if result.get("logical_digest") != baseline_digest:
                         report["discrepancies"].append(
                             {
-                                "code": "writer_regeneration_mismatch",
+                                "code": "reader_digest_mismatch",
                                 "file_id": case.file_id,
-                                "detail": f"{regen_driver}/{regen_mode} generated output did not match systemd logical digest or stock verify",
+                                "detail": f"{driver} logical digest differs from systemd baseline",
                             }
                         )
-        else:
-            report["discrepancies"].append(
-                {
-                    "code": "missing_systemd_baseline",
-                    "file_id": case.file_id,
-                    "detail": "systemd baseline failed, so SDK parity checks were not conclusive",
-                }
-            )
+
+                for regen_driver in args.regenerators:
+                    for regen_mode in args.regeneration_modes:
+                        key = f"{case.file_id}:writer:{regen_driver}:{regen_mode}"
+                        if key in completed and completed[key].get("identity") == case.identity:
+                            regen_result = completed[key]["result"]
+                        else:
+                            regen_result = run_regenerator(
+                                regen_driver,
+                                regen_mode,
+                                active_case,
+                                baseline_digest,
+                                tools=tools,
+                                env=env,
+                                work_dir=work_dir,
+                                stats_dir=stats_dir,
+                                keep_outputs=args.keep_outputs,
+                                timeout=args.timeout,
+                            )
+                            completed[key] = {"identity": case.identity, "result": regen_result}
+                            write_json(state_path, state)
+                        report["results"].append(regen_result)
+                        if regen_result.get("status") == "discrepancy":
+                            report["discrepancies"].append(
+                                {
+                                    "code": "writer_regeneration_mismatch",
+                                    "file_id": case.file_id,
+                                    "detail": f"{regen_driver}/{regen_mode} generated output did not match systemd logical digest or stock verify",
+                                }
+                            )
+            else:
+                report["discrepancies"].append(
+                    {
+                        "code": "missing_systemd_baseline",
+                        "file_id": case.file_id,
+                        "detail": "systemd baseline failed, so SDK parity checks were not conclusive",
+                    }
+                )
+        finally:
+            if snapshot_path is not None:
+                try:
+                    snapshot_path.unlink()
+                except FileNotFoundError:
+                    pass
 
     write_json(out / "report.json", report)
     (out / "report.md").write_text(report_markdown(report), encoding="utf-8")

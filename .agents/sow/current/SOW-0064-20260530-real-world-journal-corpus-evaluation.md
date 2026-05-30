@@ -832,7 +832,12 @@ Discrepancy-first repair progress:
     semantics;
   - Rust and Go low-level writers now support monotonic per-entry sequence
     number overrides for exact regeneration, with gaps allowed and rewinds
-    rejected.
+    rejected;
+  - Rust low-level writers now support per-entry boot ID overrides for exact
+    regeneration of multi-boot files, matching the Go writer capability;
+  - run mode now copies one input journal at a time into `.local` scratch before
+    comparing readers and regenerators, then deletes that snapshot. This avoids
+    false discrepancies from active journals growing between per-driver runs.
 - One-file end-to-end evidence after fixes:
   - report: `.local/corpus-eval/single-real-after-seqnum-20260530T213000Z/report.json`
   - input files: 1
@@ -848,6 +853,15 @@ Discrepancy-first repair progress:
     `--verify-key` for FSS outputs
   - systemd reread of regenerated outputs: same counts and logical digest
   - discrepancies: 0
+- Real-corpus batch evidence after the multi-boot and active-file snapshot
+  repairs:
+  - report: `.local/corpus-eval/real-run-100-after-snapshot-fix-20260530T212120Z/report.json`
+  - input files: 100
+  - input bytes: 864,026,624
+  - results: 1,100
+  - readers compared: systemd, Rust, Go
+  - writer modes compared: Rust/Go regular, compact, compact zstd, compact FSS
+  - discrepancies: 0
 - Scope note: the one-file rates collected in this report are correctness-run
   observations only. They are not benchmark conclusions for SOW-0009 or for
   full-corpus performance.
@@ -856,9 +870,24 @@ Validation rerun for the repair:
 
 - `python -m unittest tests.corpus_eval.test_canonical`
   - Result: passed, 7 tests.
+- `python -m py_compile tests/corpus_eval/run_corpus_eval.py`
+  - Result: passed.
 - `cargo test --manifest-path rust/Cargo.toml -p journal-core -p
   corpus_digest -p corpus_regenerate`
   - Result: passed.
+- `cargo test --manifest-path rust/Cargo.toml -p journal-core entry_ -- --nocapture`
+  - Result: passed, including the per-entry boot ID and seqnum override tests.
+- `python tests/corpus_eval/run_corpus_eval.py --mode run --allow-full-run
+  --root [single archived real journal] --drivers systemd rust go
+  --regenerators rust go --regeneration-modes regular compact compact-zstd
+  compact-fss --max-files 1`
+  - Result: passed, 0 discrepancies after the Rust per-entry boot ID fix.
+- `python tests/corpus_eval/run_corpus_eval.py --mode run --allow-full-run
+  --root /var/log/journal --root /run/log/journal --drivers systemd rust go
+  --regenerators rust go --regeneration-modes regular compact compact-zstd
+  compact-fss --max-files 100`
+  - Result: passed, 100 files, 1,100 results, 0 discrepancies after per-file
+    input snapshots.
 - `cd go && go test ./journal ./internal/testcmd/corpus_digest
   ./internal/testcmd/corpus_regenerate`
   - Result: passed.

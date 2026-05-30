@@ -116,6 +116,11 @@ pub struct EntryWriteOptions {
     /// increasing relative to previously written entries. Leave unset for the
     /// normal systemd-style auto-incrementing sequence.
     pub seqnum: Option<u64>,
+    /// Optional low-level ENTRY boot ID override.
+    ///
+    /// This is for exact journal regeneration of multi-boot files. Leave unset
+    /// for the normal writer-wide boot ID.
+    pub boot_id: Option<uuid::Uuid>,
 }
 
 impl EntryWriteOptions {
@@ -137,6 +142,12 @@ impl EntryWriteOptions {
     /// Uses a caller-provided ENTRY seqnum for this entry.
     pub fn seqnum(mut self, seqnum: u64) -> Self {
         self.seqnum = Some(seqnum);
+        self
+    }
+
+    /// Uses a caller-provided ENTRY boot ID for this entry.
+    pub fn boot_id(mut self, boot_id: uuid::Uuid) -> Self {
+        self.boot_id = Some(boot_id);
         self
     }
 }
@@ -674,6 +685,7 @@ impl JournalWriter {
         if entry_seqnum == 0 || entry_seqnum == u64::MAX || entry_seqnum < self.next_seqnum {
             return Err(JournalError::InvalidField);
         }
+        let entry_boot_id = options.boot_id.unwrap_or(self.boot_id);
 
         // Write the data/field objects while computing the entry's xor-hash
         // and storing each data object's offset/hash
@@ -729,7 +741,7 @@ impl JournalWriter {
 
             entry_guard.header.seqnum = entry_seqnum;
             entry_guard.header.xor_hash = xor_hash;
-            entry_guard.header.boot_id = *self.boot_id.as_bytes();
+            entry_guard.header.boot_id = *entry_boot_id.as_bytes();
             entry_guard.header.monotonic = monotonic;
             entry_guard.header.realtime = realtime;
 
@@ -754,6 +766,7 @@ impl JournalWriter {
             journal_file.journal_header_mut(),
             entry_offset,
             entry_seqnum,
+            entry_boot_id,
             realtime,
             monotonic,
         );
@@ -810,6 +823,7 @@ impl JournalWriter {
         header: &mut JournalHeader,
         entry_offset: NonZeroU64,
         entry_seqnum: u64,
+        entry_boot_id: uuid::Uuid,
         realtime: u64,
         monotonic: u64,
     ) {
@@ -829,7 +843,7 @@ impl JournalWriter {
         header.tail_entry_seqnum = entry_seqnum;
         header.tail_entry_realtime = realtime;
         header.tail_entry_monotonic = monotonic;
-        header.tail_entry_boot_id = *self.boot_id.as_bytes();
+        header.tail_entry_boot_id = *entry_boot_id.as_bytes();
         header.tail_entry_offset = entry_offset.get();
         header.n_entries += 1;
 
@@ -1968,6 +1982,85 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(seqnums, vec![10, 12, 20]);
+    }
+
+    #[test]
+    fn entry_boot_id_override_preserves_multiboot_ordering() {
+        if !journalctl_available() {
+            eprintln!("journalctl not available; skipping multiboot stock verify");
+            return;
+        }
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let boot_a = test_uuid(4);
+        let boot_b = test_uuid(5);
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), boot_a, test_uuid(3)),
+        )
+        .expect("create journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, boot_a).expect("create writer");
+
+        let entries = [
+            (boot_a, 1_700_000_060_000_000, 100),
+            (boot_a, 1_700_000_060_000_001, 200),
+            (boot_b, 1_700_000_060_000_002, 50),
+        ];
+        for (idx, (boot_id, realtime, monotonic)) in entries.into_iter().enumerate() {
+            let payload = format!("MESSAGE=boot-override-{idx}");
+            writer
+                .add_entry_fields_with_options(
+                    &mut journal_file,
+                    [EntryField::raw(payload.as_bytes())],
+                    realtime,
+                    monotonic,
+                    EntryWriteOptions::default().boot_id(boot_id),
+                )
+                .expect("write entry with boot override");
+        }
+        journal_file.sync().expect("sync journal");
+
+        let mut entry_offsets = Vec::new();
+        journal_file
+            .entry_offsets(&mut entry_offsets)
+            .expect("collect entry offsets");
+        let boot_ids = entry_offsets
+            .iter()
+            .map(|offset| {
+                journal_file
+                    .entry_ref(*offset)
+                    .expect("entry ref")
+                    .header
+                    .boot_id
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            boot_ids,
+            vec![*boot_a.as_bytes(), *boot_a.as_bytes(), *boot_b.as_bytes()]
+        );
+        assert_eq!(
+            journal_file.journal_header_ref().tail_entry_boot_id,
+            *boot_b.as_bytes()
+        );
+
+        let output = Command::new("journalctl")
+            .arg("--verify")
+            .arg("--file")
+            .arg(&path)
+            .output()
+            .expect("run journalctl verify");
+        assert!(
+            output.status.success(),
+            "journalctl verify failed for multiboot boot-id override: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[derive(Clone)]

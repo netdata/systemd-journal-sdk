@@ -3,6 +3,10 @@
 This tooling evaluates real journal files incrementally without copying the
 full corpus or writing raw journal content to durable reports.
 
+Run mode copies one input journal at a time into `.local` scratch before
+reader/writer comparisons, then deletes that snapshot. This keeps comparisons
+stable for active journals without retaining a second full corpus copy.
+
 Safe modes:
 
 ```bash

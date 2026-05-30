@@ -578,10 +578,12 @@ Current Rust writer feature slice:
 - direct-file writing through `journal_core`, including raw full-payload append,
   structured append, mixed `EntryField` append, and trusted unique-payload
   options;
-- low-level `EntryWriteOptions::seqnum(...)` can preserve original ENTRY
-  sequence numbers during exact journal regeneration. Normal writers leave it
-  unset for auto-incrementing sequence numbers. Overrides must move forward from
-  the writer's next sequence number; gaps are allowed and rewinds are rejected;
+- low-level `EntryWriteOptions::seqnum(...)` and
+  `EntryWriteOptions::boot_id(...)` can preserve original ENTRY sequence
+  numbers and per-entry boot IDs during exact journal regeneration. Normal
+  writers leave them unset for auto-incrementing sequence numbers and the
+  writer-wide boot ID. Sequence overrides must move forward from the writer's
+  next sequence number; gaps are allowed and rewinds are rejected;
 - high-level directory writing with Netdata-compatible chain active naming by
   default and an explicit strict systemd active naming option;
 - high-level Rust `Log` structured write methods that preserve the existing

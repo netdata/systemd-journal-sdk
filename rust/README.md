@@ -32,9 +32,11 @@ Current writer scope:
 - FSS `SealOptions::start_usec` normalization to systemd's verification-key
   epoch boundary, so unaligned source timestamps still produce sealed files that
   stock `journalctl --verify --verify-key` can validate;
-- low-level `EntryWriteOptions::seqnum(...)` exact-regeneration support for
-  preserving ENTRY sequence gaps when rewriting existing journal files. Leave it
-  unset for normal auto-incrementing sequence numbers;
+- low-level `EntryWriteOptions::seqnum(...)` and
+  `EntryWriteOptions::boot_id(...)` exact-regeneration support for preserving
+  ENTRY sequence gaps and per-entry boot IDs when rewriting existing journal
+  files. Leave them unset for normal auto-incrementing sequence numbers and the
+  writer-wide boot ID;
 - native systemd writers do not participate in the SDK lock protocol and remain
   an operational exclusion;
 - live stock-reader validation for the current writer slice with `journalctl

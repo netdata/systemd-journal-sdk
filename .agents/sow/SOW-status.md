@@ -11,8 +11,10 @@ Last updated: 2026-05-30
   implementation is merged, but the required full local 100+ GiB corpus
   regeneration/evaluation was not run before closure. Single-file correctness
   discrepancies in `_BOOT_ID` canonicalization, FSS start alignment, and
-  `__SEQNUM` gap preservation have been repaired; a one-file end-to-end rerun
-  recorded 0 discrepancies.
+  `__SEQNUM` gap preservation have been repaired. Rust multi-boot per-entry
+  boot ID regeneration and active-file snapshot handling have also been
+  repaired; the latest 100-file real-corpus batch recorded 1,100 results and 0
+  discrepancies.
 
 ## Pending
 

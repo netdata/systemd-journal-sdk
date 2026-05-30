@@ -227,7 +227,9 @@ fn main() -> Result<()> {
             fields.iter().copied(),
             entry.realtime,
             entry.monotonic,
-            write_options.seqnum(entry.seqnum),
+            write_options
+                .seqnum(entry.seqnum)
+                .boot_id(uuid_from_bytes(entry.boot_id)),
         )?;
         records += 1;
         payloads += entry.payloads.len() as u64;
@@ -249,7 +251,9 @@ fn main() -> Result<()> {
             fields.iter().copied(),
             entry.realtime,
             entry.monotonic,
-            write_options.seqnum(entry.seqnum),
+            write_options
+                .seqnum(entry.seqnum)
+                .boot_id(uuid_from_bytes(entry.boot_id)),
         )?;
         records += 1;
         payloads += entry.payloads.len() as u64;
