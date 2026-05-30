@@ -461,12 +461,11 @@ func (w *Writer) closeWithState(state uint8) error {
 	err1 := w.writeHeader()
 	err2 := w.syncArena()
 	err3 := w.closeArena()
-	err4 := unlockFile(w.file)
-	err5 := w.file.Close()
-	err6 := w.lock.release()
+	err4 := unlockAndClose(w.file)
+	err5 := w.lock.release()
 	w.lock = nil
 	w.closed = true
-	return errors.Join(err1, err2, err3, err4, err5, err6)
+	return errors.Join(err1, err2, err3, err4, err5)
 }
 
 // CurrentSize returns the current committed journal file size in bytes.
@@ -502,12 +501,11 @@ func (w *Writer) archiveTo(path string) error {
 	w.path = path
 	dirErr := syncJournalDirectory(path)
 	arenaErr := w.closeArena()
-	unlockErr := unlockFile(w.file)
-	closeErr := w.file.Close()
+	closeErr := unlockAndClose(w.file)
 	lockErr := w.lock.release()
 	w.lock = nil
 	w.closed = true
-	if err := errors.Join(dirErr, arenaErr, unlockErr, closeErr, lockErr); err != nil {
+	if err := errors.Join(dirErr, arenaErr, closeErr, lockErr); err != nil {
 		return err
 	}
 	return nil

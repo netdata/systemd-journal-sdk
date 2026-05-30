@@ -25,8 +25,8 @@ Current writer scope:
 - global entry arrays and per-DATA entry links;
 - pure cross-SDK cooperative lockfile with stale-owner detection to prevent
   multiple SDK writers from opening the same file. Linux uses `/proc`
-  boot/process-start checks plus non-blocking `flock`; other Unix targets use
-  conservative process-existence checks plus `flock`; Windows uses process
+  boot/process-start checks plus non-blocking `flock`; FreeBSD and macOS use
+  boot-time and process-start checks plus `flock`; Windows uses process
   creation time checks plus non-blocking `LockFileEx` on a byte range outside
   journal data;
 - Forward Secure Sealing TAG writing with `journal.SealOptions`, including
@@ -101,8 +101,11 @@ Platform behavior:
   callers should pass explicit IDs when deterministic identity matters, or use
   `LogIdentityStrict` to require them.
 - Directory fsync is performed on Unix. Non-Unix targets still sync journal
-  file contents, but parent-directory durability is limited by the operating
-  system facilities exposed through the Go standard library.
+  file contents, but parent-directory metadata is not fsynced by this SDK; newly
+  created or renamed files rely on the target filesystem's crash semantics.
+- Unknown targets outside Linux, FreeBSD, macOS, and Windows do not provide
+  writer file-locking guarantees; writer open fails instead of silently writing
+  without a platform lock.
 
 Basic usage:
 

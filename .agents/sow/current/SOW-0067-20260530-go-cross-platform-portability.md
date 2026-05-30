@@ -4,7 +4,8 @@
 
 Status: in-progress
 
-Sub-state: implemented; ready for orchestrator review; child of SOW-0063.
+Sub-state: reviewer findings fixed; whole-SOW reviewer rerun pending; child of
+SOW-0063.
 
 ## Requirements
 
@@ -216,6 +217,15 @@ Failure handling:
 - Updated Go docs/API and product scope with platform behavior. `SOW-status.md`
   intentionally not edited per the worktree prompt; orchestrator will
   reconcile status.
+- Ran whole-SOW read-only reviewer round 1 against commit `2d607bc`.
+- Fixed real reviewer findings: Windows process-owner checks now use
+  `PROCESS_QUERY_LIMITED_INFORMATION`; FreeBSD/macOS lock owner tokens now use
+  boot-time and process-start evidence; unknown non-Unix/non-Windows targets
+  fail writer open instead of silently skipping file locks; journalctl tests now
+  share the Linux-only gate; direct stale-lock unit coverage was added; writer
+  close paths now reuse `unlockAndClose`.
+- Updated Go docs/API and product scope to describe FreeBSD/macOS lock owner
+  behavior, unknown-target lock failure, and non-Unix directory-sync limits.
 
 ## Validation
 
@@ -258,6 +268,25 @@ Tests or equivalent validation:
   blocked before lock assertions because the Node writer failed to start with
   `MODULE_NOT_FOUND` from `node/src/lib/lz4-block.js`. This is outside this
   Go-only SOW and is recorded for orchestrator follow-up.
+- Reviewer-fix validation after round 1:
+  - `go test ./...` from `go/` with `.local` Go caches: PASS.
+  - `GOOS=windows GOARCH=amd64 go test ./...` from `go/` with `.local` Go
+    caches: PASS.
+  - `GOOS=freebsd GOARCH=amd64 go test -exec=true ./...`: PASS.
+  - `GOOS=darwin GOARCH=amd64 go test -exec=true ./...`: PASS.
+  - `go test ./journal -run 'TestWriterLockRejectsSecondWriter|TestLockFileIsStale|TestWriterSyncCloseAndClosedAppend'`:
+    PASS.
+  - Writer smoke benchmark driver using
+    `.local/sow-0067-writer-smoke-r3.journal`: PASS with `errors: []`, 1,000
+    records, 32 fields per row.
+  - Reader smoke benchmark driver against
+    `.local/sow-0067-writer-smoke-r3.journal`: PASS with `errors: []`, 1,000
+    records, 32,000 fields.
+  - `python3 tests/interoperability/run_lock_matrix.py --entries 20 --delay-ms 1`:
+    still blocked before lock assertions by the existing Node
+    `node/src/lib/lz4-block.js` `MODULE_NOT_FOUND` error.
+  - `git diff --check`: PASS.
+  - `.agents/sow/audit.sh`: PASS.
 
 Real-use evidence:
 
@@ -273,8 +302,38 @@ Real-use evidence:
 
 Reviewer findings:
 
-- Not run by this implementation agent per prompt. Whole-SOW read-only
-  reviewers are orchestrator-owned after this worktree is merged/reviewed.
+- Round 1 reviewer pool:
+  - `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/qwen3.6-plus`: `NOT PRODUCTION GRADE`.
+  - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: `NOT PRODUCTION GRADE`.
+- Finding: Windows process-owner checks used `PROCESS_QUERY_INFORMATION`,
+  which can fail across Windows integrity levels and cause false stale-lock
+  classification. Disposition: fixed in `go/journal/lock_owner_windows.go` by
+  using `PROCESS_QUERY_LIMITED_INFORMATION` while still reading creation time
+  with `GetProcessTimes`.
+- Finding: FreeBSD/macOS stale-lock detection could not distinguish PID reuse
+  because non-Linux Unix start tokens were static. Disposition: fixed with
+  `go/journal/lock_owner_bsd.go`, which uses `kern.boottime` for boot evidence
+  and `ps -o lstart= -p <pid>` for process-start evidence on FreeBSD/macOS;
+  the conservative PID-existence fallback remains only for other Unix targets
+  outside this SOW's target list.
+- Finding: unknown non-Unix/non-Windows targets used a no-op file lock.
+  Disposition: fixed in `go/journal/file_lock_other.go`; writer open now fails
+  with an unsupported-locking error rather than silently writing without a
+  platform file lock.
+- Finding: direct stale-lock unit coverage was missing. Disposition: fixed with
+  `go/journal/lock_test.go` covering current-owner and dead-PID stale checks.
+- Finding: several writer tests had local `journalctl` lookups instead of the
+  shared Linux-only gate. Disposition: fixed by adding `journalctlAvailable()`
+  and routing stock-tool-required writer tests through `requireJournalctl(t)`.
+- Finding: duplicated writer unlock/close sequences ignored existing
+  `unlockAndClose`. Disposition: fixed in `go/journal/writer.go`.
+- Findings accepted as documented residual limits: FreeBSD/macOS native runtime
+  execution was unavailable in this Linux worktree; non-Unix directory metadata
+  fsync remains limited by target facilities; cross-SDK lock matrix remains
+  blocked by the Node lz4 module startup failure.
 
 Same-failure scan:
 
@@ -288,6 +347,16 @@ Same-failure scan:
 - Reader/directory helper paths now call `openReaderFile` at
   `go/journal/reader.go:402`, `go/journal/log.go:1001`, and
   `go/journal/log.go:1014`.
+- Round 1 same-pattern searches:
+  - `rg` found no remaining `PROCESS_QUERY_INFORMATION` usage in Go journal
+    code; Windows owner checks use `processQueryLimitedInformation`.
+  - `rg` found no stock `journalctl` test call sites outside
+    `journalctlAvailable()` / `requireJournalctl(t)`.
+  - `rg` confirmed FreeBSD/macOS now have dedicated lock-owner code while the
+    `"unknown"` Unix fallback is excluded from Linux, FreeBSD, macOS, and
+    Windows.
+  - `rg` confirmed the unknown-platform file lock path returns
+    `errUnsupportedFileLock`.
 
 Sensitive data gate:
 

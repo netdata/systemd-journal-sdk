@@ -323,10 +323,12 @@ Current Go writer feature slice:
 - pure cross-SDK cooperative lockfile with stale-owner detection to protect
   the one-writer contract among cooperating SDK writers. Linux keeps exact
   `/proc` boot/process-start stale-owner checks and a secondary non-blocking
-  POSIX `flock`; other Unix targets use conservative process-existence
+  POSIX `flock`; FreeBSD and macOS use boot-time and process-start
   stale-owner checks plus POSIX `flock`; Windows uses process creation time
   checks plus a non-blocking `LockFileEx` byte-range lock outside the journal
-  data range so repository readers are not blocked;
+  data range so repository readers are not blocked; unknown targets outside
+  Linux, FreeBSD, macOS, and Windows fail writer open rather than silently
+  writing without a platform file lock;
 - Forward Secure Sealing TAG writing with configurable deterministic test
   options and stock `journalctl --verify --verify-key` validation for generated
   sealed files;

@@ -7,6 +7,8 @@ import (
 	"syscall"
 )
 
+const processQueryLimitedInformation = 0x1000
+
 func currentBootID() string {
 	return "windows"
 }
@@ -15,7 +17,7 @@ func processStartTime(pid int) (string, error) {
 	if pid <= 0 {
 		return "", fmt.Errorf("invalid pid %d", pid)
 	}
-	handle, err := syscall.OpenProcess(syscall.PROCESS_QUERY_INFORMATION, false, uint32(pid))
+	handle, err := syscall.OpenProcess(processQueryLimitedInformation, false, uint32(pid))
 	if err != nil {
 		return "", err
 	}

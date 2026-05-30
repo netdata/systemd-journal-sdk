@@ -2149,9 +2149,19 @@ func requireJournalctl(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("stock journalctl validation is Linux-only")
 	}
-	if _, err := exec.LookPath("journalctl"); err != nil {
+	if !journalctlAvailable() {
 		t.Skip("journalctl is not installed")
 	}
+}
+
+func journalctlAvailable() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	if _, err := exec.LookPath("journalctl"); err != nil {
+		return false
+	}
+	return true
 }
 
 func runJournalctlDirectoryJSON(t *testing.T, dir string, matches ...string) []map[string]any {
