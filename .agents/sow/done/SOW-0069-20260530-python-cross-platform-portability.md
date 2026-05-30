@@ -2,10 +2,10 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: reviewed; native macOS/Windows validation passed under parent
-SOW-0063 after targeted test/adapter gating; ready for orchestrator merge.
+Sub-state: completed; implementation, reviewer gates, native macOS/Windows
+validation, and orchestrator lifecycle reconciliation finished.
 
 ## Requirements
 
@@ -407,11 +407,9 @@ Artifact maintenance gate:
   behavior.
 - End-user/operator docs: updated `python/README.md`.
 - End-user/operator skills: no output/reference skills exist for this project.
-- SOW lifecycle: moved this SOW from `pending/` to `current/`, changed
-  `Status: open` to `Status: in-progress`, and left it in-progress with
-  sub-state `reviewed; ready for orchestrator merge`.
-- `SOW-status.md`: updated for SOW-0069 current reviewed state; broader status
-  reconciliation is left to the orchestrator.
+- SOW lifecycle: reconciled by orchestrator as completed and moved to
+  `.agents/sow/done/`.
+- `SOW-status.md`: updated to list SOW-0069 as completed.
 
 Lessons extracted:
 
@@ -428,6 +426,15 @@ Follow-up mapping:
   marked completed by this worktree.
 - Non-Linux runtime execution: exact local blockers are recorded above; parent
   SOW-0063 owns cross-OS runtime matrix reconciliation.
+
+## Outcome
+
+Python cross-platform portability work is complete for this child SOW. Linux
+tests, import-safety checks, lock and directory interoperability matrices,
+whole-SOW reviewer rounds, native macOS/Windows validation under SOW-0063, and
+Linux stock verification of non-Linux generated journal files passed. The
+native FreeBSD runtime gap, Windows zstd-runtime gap, and SOW-0071
+runtime-purity split stay with parent SOW-0063, not this Python-only child SOW.
 
 ## Parent Native Validation Addendum - 2026-05-30
 
