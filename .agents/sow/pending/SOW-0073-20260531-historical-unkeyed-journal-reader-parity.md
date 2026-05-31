@@ -4,7 +4,7 @@
 
 Status: open
 
-Sub-state: discrepancy found during RHEL 8.10/systemd 239 read check; pending implementation after SOW-0064.
+Sub-state: root cause narrowed by local subagent; core reader gap is Go's keyed-hash rejection, while the 23-entry count difference is old systemd 239 journalctl duplicate suppression not present in systemd 260.1.
 
 ## Requirements
 
@@ -25,24 +25,28 @@ Facts:
 - `incompatible_flags=0x2` means LZ4 compression is present and keyed hash is absent.
 - Stock `journalctl --verify --file` reports `PASS` on a copied snapshot of the file.
 - Current Go reader rejects the file before reading because `parseHeader()` requires `incompatibleKeyedHash`.
-- Rust and a temporary Go bypass both read the file, but their logical entry counts differ from stock `journalctl` by 23 entries on copied snapshots.
+- Rust and a temporary Go bypass both read the file and expose all entries from the global entry array.
+- RHEL 8.10 systemd 239 `journalctl` output suppresses 23 adjacent duplicate-looking entries on copied snapshots.
+- A local systemd 260.1 `journalctl` read of the same class of snapshot matches the SDK/global entry-array count.
+- The 23 missing entries in RHEL 8.10 systemd 239 output are the later entries in adjacent duplicate-identity groups in forward traversal; reverse traversal suppresses the earlier entries in the same groups.
 
 Inferences:
 
-- Historical unkeyed-hash journals need explicit reader parity coverage, not just removal of the Go keyed-hash gate.
-- The +23 entry difference is probably an online/historical traversal boundary mismatch, but the exact root cause is not proven yet.
+- Historical unkeyed-hash journals need explicit reader parity coverage.
+- Core SDK readers should expose the file-format entry set matching current systemd, not emulate old systemd 239 `journalctl` duplicate suppression.
 
 Unknowns:
 
-- Whether the +23 entries are uncommitted online tail entries, historical entry-array traversal differences, or another systemd 239 rule.
 - Whether Python and Node have the same rejection/count behavior once the historical fixture is available.
+- Whether the project needs an optional `journalctl` compatibility mode for exact RHEL 8/systemd 239 CLI output.
 
 ### Acceptance Criteria
 
 - Add a sanitized historical unkeyed/LZ4 journal fixture or deterministic fixture generator that reproduces the RHEL 8.10/systemd 239 behavior without committing raw host logs.
-- Rust, Go, Python, and Node readers match stock `journalctl --file --output=export --all` canonical digest and counts on the historical unkeyed/LZ4 fixture.
+- Rust, Go, Python, and Node core readers expose the complete current-systemd/file-format entry set on the historical unkeyed/LZ4 fixture.
+- The fixture records the old RHEL 8/systemd 239 CLI count separately as historical CLI behavior, not as the core reader pass condition.
 - Go no longer rejects historical unkeyed-hash journals solely because `HEADER_INCOMPATIBLE_KEYED_HASH` is absent.
-- Reader traversal stops at the same logical boundary as stock systemd for this historical online-file case.
+- Reader traversal behavior is explicitly compared with current stock systemd and historical systemd 239 where available.
 - Shared conformance/interoperability tests cover keyed and unkeyed historical hash modes.
 
 ## Analysis
@@ -56,18 +60,23 @@ Sources checked:
 - `rust/src/crates/journal-core/src/file/hash.rs:332`: Rust uses Jenkins hash for unkeyed mode.
 - `rust/src/crates/journal-core/src/file/file.rs:693`: Rust determines keyed mode from the on-disk header flag.
 - RHEL 8.10 test host with systemd 239, checked read-only; raw journal data was not copied into this repository.
+- Local subagent investigation found the count difference maps to old systemd 239 duplicate suppression in `sd-journal` traversal.
+- `systemd/systemd @ de7436b02bad`: `src/journal/sd-journal.c:441-447` treats entries as equal using boot id, monotonic timestamp, realtime timestamp, and xor hash before comparing seqnum; `src/journal/sd-journal.c:777-803` advances until an entry is different.
+- `systemd/systemd @ c0a5a2516d28`: `src/libsystemd/sd-journal/sd-journal.c:620-630` suppresses duplicates only when seqnum also matches and the candidate is from a different file; `src/libsystemd/sd-journal/sd-journal.c:1087-1094` also requires seqnum equality for file-location equality.
 
 Current state:
 
 - Stock systemd 239 can verify and read the historical journal.
 - Current Go SDK rejects it with `unsupported journal file`.
-- Temporary Go code that bypassed the keyed-hash rejection could read the file, but produced more entries than stock systemd.
-- Rust built on the RHEL 8.10 host could read the file, but also produced more entries than stock systemd.
+- Temporary Go code that bypassed the keyed-hash rejection could read the file and exposed all global entry-array entries.
+- Rust built on the RHEL 8.10 host could read the file and exposed all global entry-array entries.
+- RHEL 8.10 systemd 239 CLI output is lower by 23 entries due to old duplicate suppression.
+- Current systemd behavior matches the SDK/global entry-array count for this class.
 
 Risks:
 
 - Historical field/hash traversal fixes can affect all readers and should not be folded into the active corpus sweep without a focused fixture and matrix.
-- Matching stock systemd may require intentionally ignoring some object-graph entries even if they are structurally valid.
+- Emulating systemd 239 duplicate suppression in core readers would intentionally hide valid same-file entries and would diverge from current systemd behavior.
 - Raw host journal files may contain sensitive data and must not be committed or copied into durable artifacts.
 
 ## Pre-Implementation Gate
@@ -76,17 +85,21 @@ Status: ready
 
 Problem / root-cause model:
 
-- The SDK reader stack lacks full parity for historical unkeyed-hash LZ4 journals produced by systemd 239.
+- The SDK reader stack lacks full Go support for historical unkeyed-hash LZ4 journals produced by systemd 239.
 - Go has an explicit keyed-hash requirement at `go/journal/format.go:356`, which rejects valid older journals.
-- Rust has unkeyed hash support, but Rust and a temporary Go bypass both report 23 more entries than stock systemd on copied online snapshots, so traversal semantics also need analysis.
+- Rust has unkeyed hash support and exposes all file-format entries.
+- The observed +23 difference versus RHEL 8.10 systemd 239 is old same-file duplicate suppression in that historical `journalctl` implementation, not unreadable objects, LZ4 failure, unkeyed-hash failure, online-tail corruption, or entry-array corruption.
 
 Evidence reviewed:
 
 - RHEL 8.10 systemd version: `systemd 239 (239-82.el8_10.16)`.
 - Historical header evidence from the copied journal snapshot: `compatible_flags=0`, `incompatible_flags=2`, `header_size=240`.
 - Stock verification evidence: `journalctl --verify --file [snapshot]` returned `PASS`.
-- Temporary Go bypass evidence: Go read the file but did not match stock counts/digest.
-- Rust-on-RHEL evidence: Rust read the file but did not match stock counts/digest.
+- Temporary Go bypass evidence: Go read the file and exposed all global entry-array entries.
+- Rust-on-RHEL evidence: Rust read the file and exposed all global entry-array entries.
+- RHEL 8.10 systemd 239 evidence: forward and reverse output both suppress 23 entries, but suppress opposite sides of the adjacent duplicate-looking groups.
+- Current systemd evidence: local systemd 260.1 output matches the SDK/global entry-array count.
+- Upstream history evidence: `b6849042d6` and `b17f651a17` fixed same-file duplicate and same-seqnum suppression behavior after v239.
 
 Affected contracts and surfaces:
 
@@ -106,6 +119,7 @@ Risk and blast radius:
 
 - Reader traversal changes can alter results for live/online files, directory readers, and journalctl rewrites.
 - Unkeyed-hash support must not weaken keyed-hash parsing or writer compatibility.
+- RHEL 8/systemd 239 exact CLI emulation, if needed, belongs in an optional journalctl compatibility mode, not in core readers.
 - The fixture must be sanitized or generated; raw RHEL journal content must remain outside committed artifacts.
 
 Sensitive data handling plan:
@@ -116,17 +130,18 @@ Sensitive data handling plan:
 
 Implementation plan:
 
-1. Reproduce the historical discrepancy with a sanitized or generated fixture.
-2. Analyze systemd 239 and systemd v260.1 reader behavior for unkeyed hash and online-file traversal boundaries.
-3. Fix Go header parsing so unkeyed historical journals are accepted.
-4. Fix Rust traversal if stock systemd excludes the +23 entries by design.
-5. Port equivalent reader behavior to Go, Python, and Node.
-6. Add shared conformance and interoperability coverage.
+1. Reproduce the historical unkeyed/LZ4 reader case with a sanitized or generated fixture.
+2. Fix Go header parsing so unkeyed historical journals are accepted.
+3. Verify Rust, Go, Python, and Node core readers expose the current-systemd/file-format entry set.
+4. Add shared conformance and interoperability coverage for historical unkeyed hash mode.
+5. Document RHEL 8/systemd 239 duplicate suppression as historical CLI behavior, not core reader behavior.
+6. If the user later requires exact RHEL 8 `journalctl` output compatibility, create a separate optional journalctl-239 compatibility SOW.
 
 Validation plan:
 
 - Stock `journalctl --verify --file` passes on the fixture.
-- Stock `journalctl --file --output=export --all --no-pager` canonical digest matches Rust, Go, Python, and Node readers.
+- Current stock `journalctl --file --output=export --all --no-pager` canonical digest matches Rust, Go, Python, and Node core readers.
+- RHEL 8/systemd 239 CLI duplicate-suppression behavior is recorded as a separate historical observation when that host is available.
 - Existing reader, directory, mixed-format, compression, and corpus smoke tests still pass.
 - Reviewer pool reviews the whole SOW after implementation.
 
@@ -146,18 +161,19 @@ Open-source reference evidence:
 
 Open decisions:
 
-- None. This is a correctness bug under the existing historical-reader compatibility goal.
+- None for core readers. The default decision is not to emulate old systemd 239 same-file duplicate suppression in core readers.
+- A later user decision is needed only if exact RHEL 8 `journalctl` CLI output compatibility is required.
 
 ## Implications And Decisions
 
-No user decision is currently required. The SDK already claims historical reader compatibility; this SOW repairs a concrete gap.
+No user decision is currently required for core readers. The SDK should accept valid historical unkeyed journals and expose the complete file-format entry set matching current systemd behavior. Exact systemd 239 CLI duplicate suppression is a separate optional behavior if needed later.
 
 ## Plan
 
 1. Build or obtain a non-sensitive historical unkeyed/LZ4 fixture.
-2. Determine why stock systemd excludes the extra 23 entries.
-3. Implement cross-language reader parity.
-4. Validate with stock systemd, all SDK readers, and existing matrices.
+2. Remove Go's invalid keyed-hash requirement for readers.
+3. Implement or verify cross-language reader parity for unkeyed historical journals.
+4. Validate with current systemd, RHEL 8/systemd 239 observations, all SDK readers, and existing matrices.
 
 ## Delegation Plan
 
@@ -191,6 +207,7 @@ Failure handling:
 ### 2026-05-31
 
 - Created from the RHEL 8.10/systemd 239 read check performed while SOW-0064 corpus evaluation was running.
+- Local subagent investigation found that the 23-entry difference is old RHEL 8/systemd 239 same-file duplicate suppression. Current systemd 260.1 and SDK/global entry-array traversal expose all entries. The SOW was updated so core reader acceptance targets current file-format behavior, while exact RHEL 8 CLI duplicate suppression is optional journalctl compatibility work if requested later.
 
 ## Validation
 

@@ -21,9 +21,11 @@ Last updated: 2026-05-30
 
 - SOW-0073 - Historical Unkeyed Journal Reader Parity: open. A RHEL
   8.10/systemd 239 check found an unkeyed LZ4 journal that stock systemd
-  verifies and reads; current Go rejects it, while Rust and a temporary Go
-  bypass read extra entries compared with stock systemd on copied online
-  snapshots.
+  verifies and reads; current Go rejects it. Follow-up investigation showed the
+  Rust/temporary-Go extra entries are valid file-format entries exposed by
+  current systemd, while old systemd 239 `journalctl` suppresses same-file
+  duplicate-looking entries. Core reader work is to accept historical unkeyed
+  journals, not to emulate old CLI duplicate suppression.
 - SOW-0047 - Netdata NetFlow SDK Integration: open. Component integration for
   NetFlow reader and writer paths after inventory and performance gates.
 - SOW-0048 - Netdata OTEL Writer SDK Integration: open. Component integration
