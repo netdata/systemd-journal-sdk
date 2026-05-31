@@ -4,19 +4,68 @@
 #include <assert.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
 #include "sd-id128.h"
-#include "sd-json.h"
 
+#if __has_include("sd-json.h")
+#include "sd-json.h"
+#define MATRIX_FSPRG_RETURNS_INT 1
+#define MatrixJsonVariant sd_json_variant
+#define matrix_json_parse sd_json_parse
+#define matrix_json_variant_unref sd_json_variant_unref
+#define matrix_json_variant_by_key sd_json_variant_by_key
+#define matrix_json_variant_by_index sd_json_variant_by_index
+#define matrix_json_variant_is_string sd_json_variant_is_string
+#define matrix_json_variant_is_unsigned sd_json_variant_is_unsigned
+#define matrix_json_variant_is_array sd_json_variant_is_array
+#define matrix_json_variant_is_object sd_json_variant_is_object
+#define matrix_json_variant_is_null sd_json_variant_is_null
+#define matrix_json_variant_string sd_json_variant_string
+#define matrix_json_variant_unsigned sd_json_variant_unsigned
+#define matrix_json_variant_elements sd_json_variant_elements
+#define matrix_json_variant_unbase64 sd_json_variant_unbase64
+#else
+#include "json.h"
+#define MATRIX_FSPRG_RETURNS_INT 0
+#define MatrixJsonVariant JsonVariant
+#define matrix_json_parse json_parse
+#define matrix_json_variant_unref json_variant_unref
+#define matrix_json_variant_by_key json_variant_by_key
+#define matrix_json_variant_by_index json_variant_by_index
+#define matrix_json_variant_is_string json_variant_is_string
+#define matrix_json_variant_is_unsigned json_variant_is_unsigned
+#define matrix_json_variant_is_array json_variant_is_array
+#define matrix_json_variant_is_object json_variant_is_object
+#define matrix_json_variant_is_null json_variant_is_null
+#define matrix_json_variant_string json_variant_string
+#define matrix_json_variant_unsigned json_variant_unsigned
+#define matrix_json_variant_elements json_variant_elements
+#define matrix_json_variant_unbase64 json_variant_unbase64
+#endif
+
+#include "alloc-util.h"
+#include "fsprg.h"
 #include "journal-file.h"
+#if __has_include("journal-file-util.h")
 #include "journal-file-util.h"
+#define MATRIX_HAS_JOURNAL_FILE_UTIL 1
+#else
+#define MATRIX_HAS_JOURNAL_FILE_UTIL 0
+#endif
+#include "journal-def.h"
+#if __has_include("iovec-util.h")
 #include "iovec-util.h"
+#elif __has_include("io-util.h")
+#include "io-util.h"
+#endif
 #include "log.h"
 #include "mmap-cache.h"
 #include "string-util.h"
@@ -24,8 +73,10 @@
 
 static const char *arg_dataset = NULL;
 static const char *arg_output = NULL;
+static const char *arg_fss_root = NULL;
 static bool arg_rejection_mode = false;
 static bool arg_compact = false;
+static bool arg_sealed = false;
 static uint64_t arg_max_size = 64ULL * 1024ULL * 1024ULL;
 static enum {
         FINAL_STATE_ONLINE,
@@ -57,6 +108,10 @@ static int parse_args(int argc, char **argv) {
                 }
                 else if (streq(argv[i], "--compact"))
                         arg_compact = true;
+                else if (streq(argv[i], "--sealed"))
+                        arg_sealed = true;
+                else if (streq(argv[i], "--fss-root") && i + 1 < argc)
+                        arg_fss_root = argv[++i];
                 else if (streq(argv[i], "--max-size-bytes") && i + 1 < argc) {
                         char *end = NULL;
                         unsigned long long v;
@@ -70,13 +125,17 @@ static int parse_args(int argc, char **argv) {
                         arg_max_size = (uint64_t) v;
                 }
                 else {
-                        fprintf(stderr, "usage: %s --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived] [--compact] [--max-size-bytes BYTES]\n", argv[0]);
+                        fprintf(stderr, "usage: %s --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived] [--compact] [--sealed --fss-root PATH] [--max-size-bytes BYTES]\n", argv[0]);
                         return -EINVAL;
                 }
         }
 
         if (!arg_dataset || !arg_output) {
-                fprintf(stderr, "usage: %s --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived] [--compact] [--max-size-bytes BYTES]\n", argv[0]);
+                fprintf(stderr, "usage: %s --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived] [--compact] [--sealed --fss-root PATH] [--max-size-bytes BYTES]\n", argv[0]);
+                return -EINVAL;
+        }
+        if (arg_sealed && !arg_fss_root) {
+                fprintf(stderr, "--sealed requires --fss-root\n");
                 return -EINVAL;
         }
 
@@ -112,8 +171,173 @@ static int configure_header(JournalFile *f) {
         f->header->file_id = file_id;
         f->header->machine_id = machine_id;
         f->header->seqnum_id = seqnum_id;
+#if defined(PROJECT_VERSION) && PROJECT_VERSION >= 254
         f->header->tail_entry_boot_id = boot_id;
+#else
+        (void) boot_id;
+#endif
         return 0;
+}
+
+static int mkdir_p_simple(const char *path) {
+        char *copy;
+        int r = 0;
+
+        copy = strdup(path);
+        if (!copy)
+                return -ENOMEM;
+
+        for (char *p = copy + 1; *p; p++) {
+                if (*p != '/')
+                        continue;
+                *p = '\0';
+                if (mkdir(copy, 0700) < 0 && errno != EEXIST) {
+                        r = -errno;
+                        goto finish;
+                }
+                *p = '/';
+        }
+        if (mkdir(copy, 0700) < 0 && errno != EEXIST)
+                r = -errno;
+
+finish:
+        free(copy);
+        return r;
+}
+
+static int write_all_fd(int fd, const void *data, size_t size) {
+        const uint8_t *p = data;
+
+        while (size > 0) {
+                ssize_t n = write(fd, p, size);
+                if (n < 0)
+                        return -errno;
+                if (n == 0)
+                        return -EIO;
+                p += n;
+                size -= (size_t) n;
+        }
+        return 0;
+}
+
+static int format_verification_key(
+                const uint8_t *seed,
+                size_t seed_size,
+                uint64_t start,
+                uint64_t interval,
+                char **ret) {
+
+        FILE *f;
+        char *buffer = NULL;
+        size_t size = 0;
+
+        assert(seed);
+        assert(ret);
+
+        f = open_memstream(&buffer, &size);
+        if (!f)
+                return -ENOMEM;
+
+        for (size_t i = 0; i < seed_size; i++) {
+                if (i > 0 && i % 3 == 0)
+                        fputc('-', f);
+                fprintf(f, "%02x", seed[i]);
+        }
+
+        fprintf(f, "/%"PRIx64"-%"PRIx64, start, interval);
+
+        if (fclose(f) != 0) {
+                free(buffer);
+                return -errno;
+        }
+
+        *ret = buffer;
+        return 0;
+}
+
+static int setup_synthetic_fss(char **ret_verification_key) {
+#if HAVE_GCRYPT
+        const uint64_t interval = 15ULL * 60ULL * 1000ULL * 1000ULL;
+        const uint64_t start = 1699999200000000ULL / interval;
+        _cleanup_free_ char *machine_path = NULL;
+        _cleanup_free_ char *fss_path = NULL;
+        sd_id128_t machine, boot;
+        size_t mpk_size, seed_size, state_size;
+        uint8_t *mpk, *seed, *state;
+        struct FSSHeader h = {};
+        int fd = -1, r;
+
+        assert(ret_verification_key);
+
+        r = sd_id128_get_machine(&machine);
+        if (r < 0)
+                return r;
+        r = id128_from_string("0123456789abcdef0123456789abcdef", &boot);
+        if (r < 0)
+                return r;
+
+        if (asprintf(&machine_path, "%s/" SD_ID128_FORMAT_STR,
+                     arg_fss_root, SD_ID128_FORMAT_VAL(machine)) < 0)
+                return -ENOMEM;
+        if (asprintf(&fss_path, "%s/fss", machine_path) < 0)
+                return -ENOMEM;
+
+        r = mkdir_p_simple(machine_path);
+        if (r < 0)
+                return r;
+
+        mpk_size = FSPRG_mskinbytes(FSPRG_RECOMMENDED_SECPAR);
+        mpk = alloca_safe(mpk_size);
+
+        seed_size = FSPRG_RECOMMENDED_SEEDLEN;
+        seed = alloca_safe(seed_size);
+        for (size_t i = 0; i < seed_size; i++)
+                seed[i] = (uint8_t) (3 + i * 17);
+
+        state_size = FSPRG_stateinbytes(FSPRG_RECOMMENDED_SECPAR);
+        state = alloca_safe(state_size);
+
+#if MATRIX_FSPRG_RETURNS_INT
+        r = FSPRG_GenMK(NULL, mpk, seed, seed_size, FSPRG_RECOMMENDED_SECPAR);
+        if (r < 0)
+                return r;
+        r = FSPRG_GenState0(state, mpk, seed, seed_size);
+        if (r < 0)
+                return r;
+#else
+        FSPRG_GenMK(NULL, mpk, seed, seed_size, FSPRG_RECOMMENDED_SECPAR);
+        FSPRG_GenState0(state, mpk, seed, seed_size);
+#endif
+
+        h = (struct FSSHeader) {
+                .signature = { 'K', 'S', 'H', 'H', 'R', 'H', 'L', 'P' },
+                .machine_id = machine,
+                .boot_id = boot,
+                .header_size = htole64(sizeof(h)),
+                .start_usec = htole64(start * interval),
+                .interval_usec = htole64(interval),
+                .fsprg_secpar = htole16(FSPRG_RECOMMENDED_SECPAR),
+                .fsprg_state_size = htole64(state_size),
+        };
+
+        fd = open(fss_path, O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, 0600);
+        if (fd < 0)
+                return -errno;
+
+        r = write_all_fd(fd, &h, sizeof(h));
+        if (r >= 0)
+                r = write_all_fd(fd, state, state_size);
+        if (r >= 0 && fsync(fd) < 0)
+                r = -errno;
+        if (close(fd) < 0 && r >= 0)
+                r = -errno;
+        if (r < 0)
+                return r;
+
+        return format_verification_key(seed, seed_size, start, interval, ret_verification_key);
+#else
+        return -EOPNOTSUPP;
+#endif
 }
 
 static int open_journal(const char *path, uint64_t max_size, MMapCache **ret_cache, JournalFile **ret_file) {
@@ -128,6 +352,8 @@ static int open_journal(const char *path, uint64_t max_size, MMapCache **ret_cac
         (void) setenv("SYSTEMD_JOURNAL_COMPRESS", "0", 1);
         (void) setenv("SYSTEMD_JOURNAL_COMPACT", arg_compact ? "1" : "0", 1);
         (void) setenv("SYSTEMD_JOURNAL_KEYED_HASH", "1", 1);
+        if (arg_sealed)
+                (void) setenv("SYSTEMD_JOURNAL_FSS_ROOT", arg_fss_root, 1);
 
         cache = mmap_cache_new();
         if (!cache)
@@ -142,7 +368,7 @@ static int open_journal(const char *path, uint64_t max_size, MMapCache **ret_cac
                         -EBADF,
                         path,
                         O_RDWR | O_CREAT,
-                        0,
+                        arg_sealed ? JOURNAL_SEAL : 0,
                         0644,
                         UINT64_MAX,
                         &metrics,
@@ -154,11 +380,13 @@ static int open_journal(const char *path, uint64_t max_size, MMapCache **ret_cac
                 return r;
         }
 
-        r = configure_header(file);
-        if (r < 0) {
-                journal_file_close(file);
-                mmap_cache_unref(cache);
-                return r;
+        if (!arg_sealed) {
+                r = configure_header(file);
+                if (r < 0) {
+                        journal_file_close(file);
+                        mmap_cache_unref(cache);
+                        return r;
+                }
         }
 
         *ret_cache = cache;
@@ -174,10 +402,24 @@ static int close_journal(MMapCache *cache, JournalFile *file) {
                         r = journal_file_archive(file, NULL);
                         if (r < 0)
                                 journal_file_close(file);
+#if MATRIX_HAS_JOURNAL_FILE_UTIL
                         else
                                 journal_file_offline_close(file);
+#else
+                        else {
+                                (void) journal_file_set_offline_thread_join(file);
+                                journal_file_close(file);
+                        }
+#endif
+#if MATRIX_HAS_JOURNAL_FILE_UTIL
                 } else if (arg_final_state == FINAL_STATE_OFFLINE)
                         journal_file_offline_close(file);
+#else
+                } else if (arg_final_state == FINAL_STATE_OFFLINE) {
+                        (void) journal_file_set_offline_thread_join(file);
+                        journal_file_close(file);
+                }
+#endif
                 else {
                         (void) journal_file_set_offline_thread_join(file);
                         journal_file_close(file);
@@ -188,28 +430,28 @@ static int close_journal(MMapCache *cache, JournalFile *file) {
         return r;
 }
 
-static sd_json_variant *by_key(sd_json_variant *v, const char *key) {
-        return sd_json_variant_by_key(v, key);
+static MatrixJsonVariant *by_key(MatrixJsonVariant *v, const char *key) {
+        return matrix_json_variant_by_key(v, key);
 }
 
-static const char *string_by_key(sd_json_variant *v, const char *key) {
-        sd_json_variant *child = by_key(v, key);
+static const char *string_by_key(MatrixJsonVariant *v, const char *key) {
+        MatrixJsonVariant *child = by_key(v, key);
 
-        if (!child || !sd_json_variant_is_string(child))
+        if (!child || !matrix_json_variant_is_string(child))
                 return NULL;
-        return sd_json_variant_string(child);
+        return matrix_json_variant_string(child);
 }
 
-static int unsigned_by_key(sd_json_variant *v, const char *key, uint64_t *ret) {
-        sd_json_variant *child = by_key(v, key);
+static int unsigned_by_key(MatrixJsonVariant *v, const char *key, uint64_t *ret) {
+        MatrixJsonVariant *child = by_key(v, key);
 
-        if (!child || !sd_json_variant_is_unsigned(child))
+        if (!child || !matrix_json_variant_is_unsigned(child))
                 return -EINVAL;
-        *ret = sd_json_variant_unsigned(child);
+        *ret = matrix_json_variant_unsigned(child);
         return 0;
 }
 
-static int materialize_value(sd_json_variant *value, void **ret, size_t *ret_size) {
+static int materialize_value(MatrixJsonVariant *value, void **ret, size_t *ret_size) {
         const char *kind;
         int r;
 
@@ -236,12 +478,12 @@ static int materialize_value(sd_json_variant *value, void **ret, size_t *ret_siz
         }
 
         if (streq(kind, "bytes")) {
-                sd_json_variant *base64 = by_key(value, "base64");
+                MatrixJsonVariant *base64 = by_key(value, "base64");
                 uint64_t expected = 0;
 
-                if (!base64 || !sd_json_variant_is_string(base64))
+                if (!base64 || !matrix_json_variant_is_string(base64))
                         return -EINVAL;
-                r = sd_json_variant_unbase64(base64, ret, ret_size);
+                r = matrix_json_variant_unbase64(base64, ret, ret_size);
                 if (r < 0)
                         return r;
                 r = unsigned_by_key(value, "size", &expected);
@@ -305,6 +547,25 @@ static int make_payload(const char *name, const void *value, size_t value_size, 
         return 0;
 }
 
+static int matrix_append_entry(
+                JournalFile *file,
+                const struct dual_timestamp *ts,
+                const sd_id128_t *boot_id,
+                struct iovec *iov,
+                size_t n_iov,
+                uint64_t *seqnum,
+                sd_id128_t *seqnum_id) {
+
+#if defined(PROJECT_VERSION) && PROJECT_VERSION >= 254
+        return journal_file_append_entry(file, ts, boot_id, iov, n_iov, seqnum, seqnum_id, NULL, NULL);
+#else
+        (void) seqnum_id;
+        if (n_iov > UINT_MAX)
+                return -E2BIG;
+        return journal_file_append_entry(file, ts, boot_id, iov, (unsigned) n_iov, seqnum, NULL, NULL);
+#endif
+}
+
 static void free_iovecs(struct iovec *iov, size_t n) {
         if (!iov)
                 return;
@@ -313,8 +574,8 @@ static void free_iovecs(struct iovec *iov, size_t n) {
         free(iov);
 }
 
-static int append_accepted_record(JournalFile *file, sd_json_variant *record, uint64_t *seqnum, sd_id128_t *seqnum_id) {
-        sd_json_variant *fields;
+static int append_accepted_record(JournalFile *file, MatrixJsonVariant *record, uint64_t *seqnum, sd_id128_t *seqnum_id) {
+        MatrixJsonVariant *fields;
         struct iovec *iov = NULL;
         size_t n_fields;
         struct dual_timestamp ts;
@@ -322,10 +583,10 @@ static int append_accepted_record(JournalFile *file, sd_json_variant *record, ui
         int r;
 
         fields = by_key(record, "fields");
-        if (!fields || !sd_json_variant_is_array(fields))
+        if (!fields || !matrix_json_variant_is_array(fields))
                 return -EINVAL;
 
-        n_fields = sd_json_variant_elements(fields);
+        n_fields = matrix_json_variant_elements(fields);
         if (n_fields == 0)
                 return -EINVAL;
 
@@ -334,9 +595,9 @@ static int append_accepted_record(JournalFile *file, sd_json_variant *record, ui
                 return -ENOMEM;
 
         for (size_t i = 0; i < n_fields; i++) {
-                sd_json_variant *field = sd_json_variant_by_index(fields, i);
+                MatrixJsonVariant *field = matrix_json_variant_by_index(fields, i);
                 const char *name = string_by_key(field, "name");
-                sd_json_variant *value = by_key(field, "value");
+                MatrixJsonVariant *value = by_key(field, "value");
                 void *value_data = NULL;
                 size_t value_size = 0;
 
@@ -366,7 +627,7 @@ static int append_accepted_record(JournalFile *file, sd_json_variant *record, ui
         if (r < 0)
                 goto finish;
 
-        r = journal_file_append_entry(file, &ts, &boot_id, iov, n_fields, seqnum, seqnum_id, NULL, NULL);
+        r = matrix_append_entry(file, &ts, &boot_id, iov, n_fields, seqnum, seqnum_id);
 
 finish:
         free_iovecs(iov, n_fields);
@@ -387,14 +648,14 @@ static int append_payload(JournalFile *file, const void *payload, size_t payload
                 return r;
 
         iov = IOVEC_MAKE((void*) payload, payload_size);
-        return journal_file_append_entry(file, &ts, &boot_id, &iov, 1, seqnum, seqnum_id, NULL, NULL);
+        return matrix_append_entry(file, &ts, &boot_id, &iov, 1, seqnum, seqnum_id);
 }
 
 static int append_raw_payload(JournalFile *file, const char *payload, uint64_t *seqnum, sd_id128_t *seqnum_id) {
         return append_payload(file, payload, strlen(payload), seqnum, seqnum_id);
 }
 
-static int append_field_payload(JournalFile *file, const char *name, sd_json_variant *value, uint64_t *seqnum, sd_id128_t *seqnum_id) {
+static int append_field_payload(JournalFile *file, const char *name, MatrixJsonVariant *value, uint64_t *seqnum, sd_id128_t *seqnum_id) {
         struct iovec iov = {};
         void *value_data = NULL;
         size_t value_size = 0;
@@ -425,14 +686,24 @@ static int run_accepted(void) {
         JournalFile *file = NULL;
         FILE *input = NULL;
         char *line = NULL;
+        char *verification_key = NULL;
         size_t line_alloc = 0, records = 0, errors = 0;
         uint64_t seqnum = 0;
         sd_id128_t seqnum_id = SD_ID128_NULL;
         int r;
 
+        if (arg_sealed) {
+                r = setup_synthetic_fss(&verification_key);
+                if (r < 0) {
+                        fprintf(stderr, "setup synthetic FSS failed: %s\n", strerror(-r));
+                        return r;
+                }
+        }
+
         r = open_journal(arg_output, arg_max_size, &cache, &file);
         if (r < 0) {
                 fprintf(stderr, "open journal failed: %s\n", strerror(-r));
+                free(verification_key);
                 return r;
         }
 
@@ -443,10 +714,10 @@ static int run_accepted(void) {
         }
 
         while (getline(&line, &line_alloc, input) >= 0) {
-                sd_json_variant *record = NULL;
+                MatrixJsonVariant *record = NULL;
                 const char *record_type;
 
-                r = sd_json_parse(line, 0, &record, NULL, NULL);
+                r = matrix_json_parse(line, 0, &record, NULL, NULL);
                 if (r < 0) {
                         errors++;
                         continue;
@@ -462,7 +733,7 @@ static int run_accepted(void) {
                         } else
                                 records++;
                 }
-                sd_json_variant_unref(record);
+                matrix_json_variant_unref(record);
         }
 
         r = errors == 0 ? 0 : -EINVAL;
@@ -477,9 +748,14 @@ finish:
                         r = close_r;
         }
         if (r < 0)
-                printf("{\"records\":%zu,\"errors\":[\"failed\"]}\n", records);
+                printf("{\"records\":%zu,\"sealed\":%s,\"errors\":[\"failed\"]}\n",
+                       records, arg_sealed ? "true" : "false");
+        else if (verification_key)
+                printf("{\"records\":%zu,\"sealed\":true,\"verification_key\":\"%s\",\"errors\":[]}\n",
+                       records, verification_key);
         else
-                printf("{\"records\":%zu,\"errors\":[]}\n", records);
+                printf("{\"records\":%zu,\"sealed\":false,\"errors\":[]}\n", records);
+        free(verification_key);
         return r;
 }
 
@@ -506,11 +782,11 @@ static int run_rejections(void) {
         }
 
         while (getline(&line, &line_alloc, input) >= 0) {
-                sd_json_variant *record = NULL, *input_object;
+                MatrixJsonVariant *record = NULL, *input_object;
                 const char *record_type, *case_id, *expected, *raw_payload, *field_name;
                 int got;
 
-                r = sd_json_parse(line, 0, &record, NULL, NULL);
+                r = matrix_json_parse(line, 0, &record, NULL, NULL);
                 if (r < 0) {
                         errors++;
                         continue;
@@ -518,7 +794,7 @@ static int run_rejections(void) {
 
                 record_type = string_by_key(record, "record_type");
                 if (!record_type || !streq(record_type, "rejected")) {
-                        sd_json_variant_unref(record);
+                        matrix_json_variant_unref(record);
                         continue;
                 }
 
@@ -527,7 +803,7 @@ static int run_rejections(void) {
                 input_object = by_key(record, "input");
                 if (!case_id || !expected || !input_object) {
                         errors++;
-                        sd_json_variant_unref(record);
+                        matrix_json_variant_unref(record);
                         continue;
                 }
 
@@ -543,11 +819,11 @@ static int run_rejections(void) {
                                 got = append_raw_payload(file, raw_payload, &seqnum, &seqnum_id);
                 }
                 else if (field_name) {
-                        sd_json_variant *value = by_key(input_object, "value");
+                        MatrixJsonVariant *value = by_key(input_object, "value");
 
-                        if (!value || sd_json_variant_is_null(value))
+                        if (!value || matrix_json_variant_is_null(value))
                                 got = -EINVAL;
-                        else if (sd_json_variant_is_object(value) &&
+                        else if (matrix_json_variant_is_object(value) &&
                                  streq_ptr(string_by_key(value, "kind"), "repeat")) {
                                 uint64_t size = 0;
 
@@ -570,7 +846,7 @@ static int run_rejections(void) {
                         errors++;
                 }
 
-                sd_json_variant_unref(record);
+                matrix_json_variant_unref(record);
         }
 
         r = errors == 0 ? 0 : -EINVAL;

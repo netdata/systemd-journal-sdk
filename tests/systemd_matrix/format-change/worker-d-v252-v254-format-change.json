@@ -3491,6 +3491,20 @@
   ],
   "generated_at": "2026-05-31T17:29:59Z",
   "latest_journalctl": "systemd 260 (260.1-2-manjaro)",
+  "sealed_fss_supplement": {
+    "report": "tests/systemd_matrix/reports/sealed-fss-smoke-report.json",
+    "status": "ok",
+    "versions": [
+      "v252",
+      "v254"
+    ],
+    "formats": [
+      "regular",
+      "compact"
+    ],
+    "discrepancies": 0,
+    "note": "original sealed cases in this report failed before the runner could patch systemd FSS lookup into .local; supplemental sealed smoke covers this gap without touching host journal state"
+  },
   "source_reference": "systemd/systemd",
   "summary": {
     "discrepancy_cases": 22,

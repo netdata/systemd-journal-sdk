@@ -1,8 +1,8 @@
 {
   "blockers_and_limits": [
     {
-      "code": "fss_not_generated",
-      "detail": "systemd's journal_file_fss_load() looks for /var/log/journal/<machine-id>/fss; this worker did not patch that path or write host journal state, so sealed/sealed-continuous systemd-generated files were recorded as infeasible in this slice"
+      "code": "fss_not_generated_resolved",
+      "detail": "resolved by tests/systemd_matrix/reports/sealed-fss-smoke-report.md; the runner patches only .local systemd source copies so sealed/FSS cases use SYSTEMD_JOURNAL_FSS_ROOT instead of host journal state"
     },
     {
       "code": "helper_patched_into_local_sources",
@@ -13,7 +13,7 @@
     "v258.8": {
       "compact_off_on": true,
       "files": 24,
-      "fss": "not-generated: systemd fss loader hardcodes /var/log/journal/<machine>/fss; repository boundary forbids that host-state write",
+      "fss": "covered by tests/systemd_matrix/reports/sealed-fss-smoke-report.md",
       "keyed_hash_off_on": true,
       "states": "archived,offline,online",
       "zstd_off_on": true
@@ -21,7 +21,7 @@
     "v260.2": {
       "compact_off_on": true,
       "files": 24,
-      "fss": "not-generated: systemd fss loader hardcodes /var/log/journal/<machine>/fss; repository boundary forbids that host-state write",
+      "fss": "covered by tests/systemd_matrix/reports/sealed-fss-smoke-report.md",
       "keyed_hash_off_on": true,
       "states": "archived,offline,online",
       "zstd_off_on": true

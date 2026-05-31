@@ -59,13 +59,17 @@ Coverage in generated files:
   - Latest journalctl, Rust, and Go logical digests match.
   - v252 journalctl export omits `__SEQNUM`, so its canonical digest differs under the SOW-0064 schema.
 - `GENERATOR_FAILED`: `4` cases.
-  - These are the FSS/sealed attempts, two per version.
-  - The synthetic direct-FSS setup failed with `EINVAL`.
-  - The run did not use or create `/var/log/journal/<machine-id>/fss`, because touching live host journal state was forbidden.
+  - These were the original FSS/sealed attempts, two per version.
+  - This gap is now covered by the sealed/FSS supplement:
+    `tests/systemd_matrix/reports/sealed-fss-smoke-report.md`.
+  - The committed runner patches only `.local` systemd source copies so FSS
+    key lookup uses `SYSTEMD_JOURNAL_FSS_ROOT`; it still does not use or create
+    `/var/log/journal/<machine-id>/fss`.
 
 ## Status
 
-Partially implemented:
+Implemented plus supplemental sealed/FSS coverage:
 
 - Build, generation, and validation succeeded for all unsealed v252/v254 format-change cases.
-- FSS/sealed generation remains blocked for this worker slice under the no-live-host-journal-state constraint.
+- FSS/sealed generation succeeded for v252 and v254 in both regular and compact
+  formats in `tests/systemd_matrix/reports/sealed-fss-smoke-report.md`.

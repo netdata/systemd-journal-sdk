@@ -7,21 +7,6 @@ Last updated: 2026-05-31
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
-- SOW-0064 - Real World Journal Corpus Evaluation: reopened. The harness
-  implementation is merged, but the required full local 100+ GiB corpus
-  regeneration/evaluation was not run before closure. Single-file correctness
-  discrepancies in `_BOOT_ID` canonicalization, FSS start alignment, and
-  `__SEQNUM` gap preservation have been repaired. Rust multi-boot per-entry
-  boot ID regeneration and active-file snapshot handling have also been
-  repaired. A Go compact-zstd large-payload readback issue was found by the
-  full-corpus sweep and repaired with zstd frame content-size metadata; the
-  latest full-corpus sweep was paused cleanly at 20,497 completed checks, all
-  `ok`, while the Go historical unkeyed-reader gate from SOW-0073 is repaired.
-  The first systemd-version matrix artifacts are integrated for v219, v239,
-  v246, v247, v252, v254, v258.8, v260.1, and v260.2; modern stock/Rust/Go
-  parity passes for generated unsealed files, old `journalctl -o export`
-  metadata drift is classified as non-blocking, and systemd-generated FSS
-  historical coverage remains an open gap.
 - SOW-0073 - Historical Unkeyed Journal Reader Parity: in progress. A RHEL
   8.10/systemd 239 check found an unkeyed LZ4 journal that stock systemd
   verifies and reads; Go's keyed-hash header gate has been removed for readers
@@ -51,6 +36,14 @@ Last updated: 2026-05-31
   objects while preserving the existing libsystemd-compatible facade.
 
 ## Recently Closed Or Completed
+- SOW-0064 - Real World Journal Corpus Evaluation: completed after regression
+  repair. The corpus harness, single-file repair work, focused 100-file
+  real-corpus checks, raw reader/spool-writer experiments, systemd-version
+  matrix, and sealed/FSS systemd-generated supplement are merged. Sealed/FSS
+  historical coverage passed v252, v254, v258.8, v260.1, and v260.2 in regular
+  and compact forms with 10/10 files passing and 0 discrepancies; durable
+  reports store only sanitized counts, digests, command hashes, and FSS
+  verification-key hashes.
 - SOW-0027 - Netdata Reader API And jf Facade: completed after reopening two
   regressions. Field-name and unique-value enumeration use journal-native
   FIELD/DATA index traversal; Rust and Go now provide streaming unique-value

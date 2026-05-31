@@ -2,10 +2,10 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: reopened after closure review. The harness implementation is merged,
-but the real 100+ GiB corpus evaluation requested by the user has not been run.
+Sub-state: closed after real-corpus repair work, systemd-version matrix
+coverage, sealed/FSS supplement coverage, and whole-SOW reviewer approval.
 
 ## Requirements
 
@@ -521,10 +521,16 @@ Failure handling:
   - corrected the recent/current report note now that the committed framework
     exists while the systemd helper is still patched only into `.local` source
     checkouts.
-- Remaining gap:
-  - systemd-generated FSS/sealed historical corpus files are not yet covered by
-    this version matrix. The current reports record this as a blocker rather
-    than treating the matrix as complete.
+- Previous remaining gap resolved:
+  - systemd-generated FSS/sealed historical corpus files are now covered by the
+    sealed/FSS matrix supplement in
+    `tests/systemd_matrix/reports/sealed-fss-smoke-report.md`.
+  - The runner patches only `.local` systemd source copies so
+    `journal_file_fss_load()` can use `SYSTEMD_JOURNAL_FSS_ROOT`; it does not
+    write or require host journal state under `/var/log/journal`.
+  - Validated sealed regular and compact files for v252, v254, v258.8, v260.1,
+    and v260.2 with 0 discrepancies. v252 still has the known non-blocking
+    `VERSION_EXPORT_METADATA_DRIFT` observation from old `journalctl -o export`.
 
 ## Validation
 
@@ -619,6 +625,59 @@ Tests or equivalent validation:
     - Result: passed; modern stock `journalctl` was selected as baseline and
       old-version digest drift with matching counts was classified as
       `VERSION_EXPORT_METADATA_DRIFT`, not as a blocking discrepancy.
+- Sealed/FSS matrix supplement validation:
+  - `python tests/systemd_matrix/run_systemd_matrix.py smoke --version v252
+    --case sealed-v252-regular --sealed --systemd-src
+    .local/systemd-matrix/versions/format-change/src/systemd-v252 --timeout
+    1800`
+    - Result: passed, 0 discrepancies, 1 non-blocking
+      `VERSION_EXPORT_METADATA_DRIFT` observation.
+  - `python tests/systemd_matrix/run_systemd_matrix.py smoke --version v252
+    --case sealed-v252-compact --sealed --compact --systemd-src
+    .local/systemd-matrix/versions/format-change/src/systemd-v252 --timeout
+    1800`
+    - Result: passed, 0 discrepancies, 1 non-blocking
+      `VERSION_EXPORT_METADATA_DRIFT` observation.
+  - `python tests/systemd_matrix/run_systemd_matrix.py smoke --version v254
+    --case sealed-v254-regular --sealed --systemd-src
+    .local/systemd-matrix/versions/format-change/src/systemd-v254 --timeout
+    1800`
+    - Result: passed, 0 discrepancies.
+  - `python tests/systemd_matrix/run_systemd_matrix.py smoke --version v254
+    --case sealed-v254-compact --sealed --compact --systemd-src
+    .local/systemd-matrix/versions/format-change/src/systemd-v254 --timeout
+    1800`
+    - Result: passed, 0 discrepancies.
+  - `python tests/systemd_matrix/run_systemd_matrix.py smoke --version v258.8
+    --source-ref HEAD --case sealed-v2588-regular --sealed --systemd-src
+    .local/systemd-matrix/versions/recent-current/src/systemd-v258.8
+    --timeout 1800`
+    - Result: passed, 0 discrepancies.
+  - `python tests/systemd_matrix/run_systemd_matrix.py smoke --version v258.8
+    --source-ref HEAD --case sealed-v2588-compact --sealed --compact
+    --systemd-src
+    .local/systemd-matrix/versions/recent-current/src/systemd-v258.8
+    --timeout 1800`
+    - Result: passed, 0 discrepancies.
+  - `python tests/systemd_matrix/run_systemd_matrix.py smoke --version v260.1
+    --case sealed-v2601-regular-final --sealed --systemd-src
+    "$HOME/src/systemd.git" --timeout 1800`
+    - Result: passed, 0 discrepancies.
+  - `python tests/systemd_matrix/run_systemd_matrix.py smoke --version v260.1
+    --case sealed-v2601-compact-final --sealed --compact --systemd-src
+    "$HOME/src/systemd.git" --timeout 1800`
+    - Result: passed, 0 discrepancies.
+  - `python tests/systemd_matrix/run_systemd_matrix.py smoke --version v260.2
+    --source-ref HEAD --case sealed-v2602-regular --sealed --systemd-src
+    .local/systemd-matrix/versions/recent-current/src/systemd-v260.2
+    --timeout 1800`
+    - Result: passed, 0 discrepancies.
+  - `python tests/systemd_matrix/run_systemd_matrix.py smoke --version v260.2
+    --source-ref HEAD --case sealed-v2602-compact --sealed --compact
+    --systemd-src
+    .local/systemd-matrix/versions/recent-current/src/systemd-v260.2
+    --timeout 1800`
+    - Result: passed, 0 discrepancies.
 
 Real-use evidence:
 
@@ -1111,6 +1170,85 @@ Validation rerun for the repair:
   - Result: passed.
 - `.agents/sow/audit.sh`
   - Result: passed; verdict reported SOW initialization complete and clean.
+
+Final sealed/FSS closure pass:
+
+- Remaining closure gap:
+  - systemd-generated sealed/FSS historical matrix coverage originally failed
+    because systemd expects FSS state at `/var/log/journal/<machine-id>/fss`,
+    which this repository must not write.
+  - The repair patches only `.local/systemd-matrix/builds/...` systemd source
+    copies so `journal_file_fss_load()` honors `SYSTEMD_JOURNAL_FSS_ROOT` for
+    generation.
+  - Raw verification keys are written only under
+    `.local/systemd-matrix/secrets/` with mode `0600`; durable reports record
+    only key hashes.
+- Final sealed/FSS report:
+  - `tests/systemd_matrix/reports/sealed-fss-smoke-report.md`
+  - Generated sealed files: 10.
+  - Passed sealed files: 10.
+  - Discrepancies: 0.
+  - Covered versions: v252, v254, v258.8, v260.1, v260.2.
+  - Covered layouts: regular and compact.
+  - v252 retains only the known non-blocking
+    `VERSION_EXPORT_METADATA_DRIFT` observation.
+- Validation:
+  - `python -m py_compile tests/systemd_matrix/run_systemd_matrix.py`
+    - Result: passed.
+  - `python -m json.tool
+    tests/systemd_matrix/reports/sealed-fss-smoke-report.json`
+    - Result: passed.
+  - `python -m json.tool
+    tests/systemd_matrix/reports/recent-current-report.json`
+    - Result: passed.
+  - `python -m json.tool
+    tests/systemd_matrix/format-change/worker-d-v252-v254-format-change.json`
+    - Result: passed.
+  - `git diff --check`
+    - Result: passed before reviewer pass.
+  - `.agents/sow/audit.sh`
+    - Result: passed before reviewer pass.
+- Reviewers:
+  - `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`.
+    - Findings: reporting-only non-git fingerprint should be documented;
+      non-git source recopying is safe but I/O-heavy; sealed files use the
+      helper runtime machine ID and are not cross-host byte-identical; verify
+      behavior should clarify that `--verify-key` is the stock sealed-file
+      check.
+    - Disposition: documentation/comments added for the reporting-only
+      fingerprint, sealed machine-ID determinism, and generation-vs-verify
+      FSS-root behavior. Non-git recopying remains intentional to avoid stale
+      patched source trees.
+  - `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`.
+    - Finding: the new sealed report files were untracked.
+    - Disposition: the files are included in the final explicit staging list.
+  - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+    - Finding: no blocking issues; it documented the host-machine-ID concern as
+      informational because sealed mode skips synthetic header override and
+      therefore keeps systemd FSS state aligned.
+    - Disposition: accepted and documented.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`.
+    - Finding: no blocking issues; residual observations were documentation
+      and test-helper determinism notes.
+    - Disposition: accepted.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+    - Finding: sealed report files were untracked; standalone build-script
+      helper naming differs from the matrix runner but is independent; non-git
+      fingerprint is report-only.
+    - Disposition: sealed reports are staged; helper naming is non-blocking and
+      outside this fix; reporting-only fingerprint is documented.
+- Sensitive-data gate:
+  - Durable reports were checked for raw verification keys, `MESSAGE=` payloads,
+    `_HOSTNAME=` payloads, workstation paths, and the user's personal name.
+  - No raw key or raw journal data leak was found in durable artifacts.
+- Artifact maintenance:
+  - `tests/systemd_matrix/README.md` documents sealed/FSS artifact locations,
+    key-hash reporting, and cross-host byte-identity limits.
+  - `tests/systemd_matrix/reports/recent-current-report.*` and
+    `tests/systemd_matrix/format-change/worker-d-v252-v254-format-change.*`
+    now point to the sealed/FSS supplement instead of leaving FSS as an open
+    gap.
+  - No SDK public contract, runtime skill, or AGENTS.md update was needed.
 
 Append regression entries here only after this SOW was completed or closed and
 later testing or use found broken behavior. Use a dated `## Regression -

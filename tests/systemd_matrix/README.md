@@ -13,6 +13,8 @@ files or caller-provided journal files, and stock systemd validation always uses
 
 - Build artifacts: `.local/systemd-matrix/builds/<version>/`
 - Generated corpus files: `.local/systemd-matrix/corpus/<version>/`
+- Generated FSS state and verification-key files:
+  `.local/systemd-matrix/fss/` and `.local/systemd-matrix/secrets/`
 - SDK helper builds and caches: `.local/systemd-matrix/sdk-build/`
 - JSON and Markdown reports: `.local/systemd-matrix/reports/`
 
@@ -23,7 +25,7 @@ locations and prevents generated output cleanup from touching user files.
 Reports contain only sanitized metadata: status, counts, digests, byte sizes,
 tool versions, command hashes, stderr/stdout hashes, and discrepancy codes.
 They must not contain raw field names, field values, messages, hostnames, IPs,
-usernames, or binary payloads.
+usernames, binary payloads, or raw FSS verification keys.
 
 ## Commands
 
@@ -50,6 +52,25 @@ Run the initial smoke end to end:
 ```bash
 python tests/systemd_matrix/run_systemd_matrix.py smoke --version v260.1 --case smoke --systemd-src "$HOME/src/systemd.git"
 ```
+
+Run a sealed/FSS smoke file without touching `/var/log/journal`:
+
+```bash
+python tests/systemd_matrix/run_systemd_matrix.py smoke \
+  --version v260.1 \
+  --case sealed-smoke \
+  --sealed \
+  --systemd-src "$HOME/src/systemd.git"
+```
+
+For sealed files, the runner patches only the `.local/systemd-matrix/builds/...`
+copy of systemd so `journal_file_fss_load()` honors
+`SYSTEMD_JOURNAL_FSS_ROOT`. Raw verification keys are written under
+`.local/systemd-matrix/secrets/`; committed reports record only key hashes.
+The generated sealed files use the systemd helper's runtime machine ID because
+systemd FSS key lookup and the journal header machine ID must agree. These
+files are therefore not byte-identical across hosts; matrix pass/fail decisions
+use logical digests and stock `journalctl --verify --verify-key`.
 
 Write a Markdown summary from any JSON report:
 
@@ -98,3 +119,5 @@ Reader matrix reports have:
   differs from modern stock output while counts match; modern stock/Rust/Go
   parity remains the pass/fail gate
 - `VERSION_JOURNALCTL_UNAVAILABLE`: version build did not produce journalctl
+- `VERIFY_KEY_MISSING`: sealed journal verification was requested but the
+  runner could not find the matching verification key under `.local`

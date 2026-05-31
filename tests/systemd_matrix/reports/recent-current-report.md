@@ -18,8 +18,8 @@
 
 | tag | files | compact off/on | keyed off/on | zstd off/on | states | FSS |
 | --- | --- | --- | --- | --- | --- | --- |
-| `v258.8` | `24` | `True` | `True` | `True` | `archived,offline,online` | `not-generated: systemd fss loader hardcodes /var/log/journal/<machine>/fss; repository boundary forbids that host-state write` |
-| `v260.2` | `24` | `True` | `True` | `True` | `archived,offline,online` | `not-generated: systemd fss loader hardcodes /var/log/journal/<machine>/fss; repository boundary forbids that host-state write` |
+| `v258.8` | `24 + 2 sealed supplement` | `True` | `True` | `True` | `archived,offline,online` | `covered by tests/systemd_matrix/reports/sealed-fss-smoke-report.md` |
+| `v260.2` | `24 + 2 sealed supplement` | `True` | `True` | `True` | `archived,offline,online` | `covered by tests/systemd_matrix/reports/sealed-fss-smoke-report.md` |
 
 ## Result Rows
 
@@ -76,7 +76,10 @@
 
 ## Blockers And Limits
 
-- `fss_not_generated`: systemd's journal_file_fss_load() looks for /var/log/journal/<machine-id>/fss; this worker did not patch that path or write host journal state, so sealed/sealed-continuous systemd-generated files were recorded as infeasible in this slice
+- `fss_not_generated`: resolved by
+  `tests/systemd_matrix/reports/sealed-fss-smoke-report.md`. The runner now
+  patches only `.local` systemd source copies so sealed/FSS cases use
+  `SYSTEMD_JOURNAL_FSS_ROOT` instead of host journal state.
 - `helper_patched_into_local_sources`: the committed matrix framework exists,
   but the systemd internal generator helper is copied only into `.local`
   systemd source checkouts; upstream systemd source trees are not modified.

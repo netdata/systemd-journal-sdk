@@ -56,6 +56,7 @@ DISCREPANCY_CODES = {
         "counts match; this is recorded as a historical-export observation"
     ),
     "VERSION_JOURNALCTL_UNAVAILABLE": "version build did not produce journalctl",
+    "VERIFY_KEY_MISSING": "sealed journal verification key was not available",
 }
 
 
@@ -417,6 +418,8 @@ def stream_journalctl_digest(
 
 def maybe_meson_option(options_text: str, name: str, value: str) -> list[str]:
     if f"option('{name}'" in options_text or f'option("{name}"' in options_text:
+        if value == "disabled" and f"option('{name}', type : 'combo', choices : ['auto', 'true', 'false']" in options_text:
+            value = "false"
         return [f"-D{name}={value}"]
     return []
 
@@ -428,6 +431,39 @@ def resolve_systemd_ref(systemd_src: Path, version: str, explicit_ref: str | Non
     if proc.returncode != 0:
         raise RuntimeError(f"could not resolve systemd ref {ref!r} from {systemd_src}")
     return proc.stdout.strip()
+
+
+def is_git_checkout(path: Path) -> bool:
+    proc = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+        cwd=str(ROOT),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return False
+    return Path(proc.stdout.strip()).resolve() == path.resolve()
+
+
+def non_git_source_fingerprint(path: Path) -> str:
+    """Return a report-only identifier for unpacked release source trees."""
+    digest = hashlib.sha256()
+    for relative_name in (
+        "meson.build",
+        "meson_options.txt",
+        "NEWS",
+        "src/libsystemd/sd-journal/journal-file.c",
+        "src/libsystemd/sd-journal/journal-authenticate.c",
+    ):
+        item = path / relative_name
+        if not item.exists():
+            continue
+        digest.update(relative_name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(sha256_file(item).encode("ascii"))
+        digest.update(b"\0")
+    return f"non-git-source-sha256:{digest.hexdigest()[:24]}"
 
 
 def ensure_systemd_source(
@@ -442,6 +478,20 @@ def ensure_systemd_source(
     version_root = out / "builds" / slug
     source_dir = version_root / "source"
     commands: list[dict[str, Any]] = []
+    if not is_git_checkout(systemd_src):
+        if not (systemd_src / "meson.build").exists():
+            raise RuntimeError(f"systemd source tree is not buildable: {systemd_src}")
+        if source_dir.exists():
+            shutil.rmtree(source_dir)
+        source_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(
+            systemd_src,
+            source_dir,
+            symlinks=True,
+            ignore=shutil.ignore_patterns(".git", "build", "__pycache__"),
+        )
+        return source_dir, non_git_source_fingerprint(systemd_src), commands
+
     commit = resolve_systemd_ref(systemd_src, version, source_ref)
     if not (source_dir / ".git").exists():
         source_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -480,21 +530,89 @@ def patch_systemd_helper(source_dir: Path) -> None:
 
     meson_file = source_dir / "src" / "libsystemd" / "meson.build"
     text = meson_file.read_text(encoding="utf-8")
-    if SYSTEMD_HELPER_SOURCE_NAME in text:
-        return
-    marker = """        {
+    if SYSTEMD_HELPER_SOURCE_NAME not in text:
+        marker = """        {
                 'sources' : files('sd-journal/test-journal-append.c'),
                 'type' : 'manual',
         },
 """
-    entry = f"""        {{
+        entry = f"""        {{
                 'sources' : files('sd-journal/{SYSTEMD_HELPER_SOURCE_NAME}'),
                 'type' : 'manual',
         }},
 """
-    if marker not in text:
-        raise RuntimeError("could not find systemd meson test-journal-append marker")
-    meson_file.write_text(text.replace(marker, marker + entry), encoding="utf-8")
+        if marker in text:
+            text = text.replace(marker, marker + entry)
+        else:
+            simple_marker = "        'sd-journal/test-journal-file.c',\n"
+            simple_entry = f"        'sd-journal/{SYSTEMD_HELPER_SOURCE_NAME}',\n"
+            legacy_marker = """        [files('sd-journal/test-format-change-ingester.c'),
+         [], [], [], '', 'manual'],
+"""
+            legacy_entry = f"""        [files('sd-journal/{SYSTEMD_HELPER_SOURCE_NAME}'),
+         [], [], [], '', 'manual'],
+"""
+            if simple_marker in text:
+                text = text.replace(simple_marker, simple_marker + simple_entry)
+            elif legacy_marker in text:
+                text = text.replace(legacy_marker, legacy_marker + legacy_entry)
+            else:
+                raise RuntimeError("could not find systemd meson journal test marker")
+        meson_file.write_text(text, encoding="utf-8")
+
+    authenticate_file = (
+        source_dir / "src" / "libsystemd" / "sd-journal" / "journal-authenticate.c"
+    )
+    text = authenticate_file.read_text(encoding="utf-8")
+    if "SYSTEMD_JOURNAL_FSS_ROOT" not in text:
+        # Generation opens the file through systemd internals, which load the
+        # FSS state path before appending. Verification still uses --verify-key
+        # and must not depend on any host or repository-local FSS state.
+        if "#include <stdlib.h>" not in text:
+            text = text.replace("#include <unistd.h>\n", "#include <stdlib.h>\n#include <unistd.h>\n")
+        new = """        const char *fss_root = getenv("SYSTEMD_JOURNAL_FSS_ROOT");
+        if (!fss_root || !*fss_root)
+                fss_root = "/var/log/journal";
+
+        if (asprintf(&path, "%s/" SD_ID128_FORMAT_STR "/fss",
+                     fss_root, SD_ID128_FORMAT_VAL(machine)) < 0)
+                return -ENOMEM;
+"""
+        old = """        if (asprintf(&path, "/var/log/journal/" SD_ID128_FORMAT_STR "/fss",
+                     SD_ID128_FORMAT_VAL(machine)) < 0)
+                return -ENOMEM;
+"""
+        old_legacy = """        if (asprintf(&p, "/var/log/journal/" SD_ID128_FORMAT_STR "/fss",
+                     SD_ID128_FORMAT_VAL(machine)) < 0)
+                return -ENOMEM;
+"""
+        new_legacy = """        const char *fss_root = getenv("SYSTEMD_JOURNAL_FSS_ROOT");
+        if (!fss_root || !*fss_root)
+                fss_root = "/var/log/journal";
+
+        if (asprintf(&p, "%s/" SD_ID128_FORMAT_STR "/fss",
+                     fss_root, SD_ID128_FORMAT_VAL(machine)) < 0)
+                return -ENOMEM;
+"""
+        if old in text:
+            text = text.replace(old, new)
+        elif old_legacy in text:
+            text = text.replace(old_legacy, new_legacy)
+        else:
+            raise RuntimeError("could not find systemd journal FSS path marker")
+        authenticate_file.write_text(text, encoding="utf-8")
+
+    filesystems_file = source_dir / "src" / "basic" / "filesystems-gperf.gperf"
+    if filesystems_file.exists():
+        text = filesystems_file.read_text(encoding="utf-8")
+        additions = {
+            "bcachefs,": "bcachefs,        {BCACHEFS_SUPER_MAGIC}\n",
+            "guest_memfd,": "guest_memfd,     {GUEST_MEMFD_MAGIC}\n",
+            "pidfs,": "pidfs,           {PID_FS_MAGIC}\n",
+        }
+        missing = [line for marker, line in additions.items() if marker not in text]
+        if missing:
+            filesystems_file.write_text(text.rstrip() + "\n" + "".join(missing), encoding="utf-8")
 
 
 def build_systemd(args: argparse.Namespace) -> dict[str, Any]:
@@ -542,6 +660,17 @@ def build_systemd(args: argparse.Namespace) -> dict[str, Any]:
             commands.append(result.as_dict())
             if result.returncode != 0:
                 raise RuntimeError("meson setup failed")
+        else:
+            cmd = ["meson", "setup", "--reconfigure", str(build_dir), str(source_dir), *meson_opts]
+            result, _ = run_capture(
+                "meson reconfigure systemd",
+                cmd,
+                env=env,
+                timeout=args.timeout,
+            )
+            commands.append(result.as_dict())
+            if result.returncode != 0:
+                raise RuntimeError("meson reconfigure failed")
         cmd = ["ninja", "-C", str(build_dir), "journalctl", SYSTEMD_HELPER_NAME]
         result, _ = run_capture("ninja systemd matrix targets", cmd, env=env, timeout=args.timeout)
         commands.append(result.as_dict())
@@ -665,9 +794,35 @@ def generated_journal_path(out: Path, version: str, case: str) -> Path:
     return out / "corpus" / version_slug(version) / f"{version_slug(case)}.journal"
 
 
+def verification_key_path(out: Path, version: str, case: str) -> Path:
+    return out / "secrets" / version_slug(version) / f"{version_slug(case)}.verify-key"
+
+
+def fss_root_path(out: Path, version: str, case: str) -> Path:
+    return out / "fss" / version_slug(version) / version_slug(case)
+
+
+def sanitize_generator_payload(
+    payload: dict[str, Any] | None,
+    key_path: Path,
+) -> tuple[dict[str, Any] | None, str | None]:
+    if payload is None:
+        return None, None
+    sanitized = dict(payload)
+    key = sanitized.pop("verification_key", None)
+    if not isinstance(key, str):
+        return sanitized, None
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    key_path.write_text(key + "\n", encoding="utf-8")
+    key_path.chmod(0o600)
+    sanitized["verification_key_sha256"] = sha256_bytes(key.encode("utf-8"))
+    sanitized["verification_key_file"] = relative(key_path)
+    return sanitized, key
+
+
 def generate_corpus(args: argparse.Namespace) -> dict[str, Any]:
     out = args.out.resolve()
-    build = ensure_build(args)
+    build = build_systemd(args) if args.sealed else ensure_build(args)
     slug = version_slug(args.version)
     case = version_slug(args.case)
     reports_dir = out / "reports"
@@ -675,8 +830,10 @@ def generate_corpus(args: argparse.Namespace) -> dict[str, Any]:
     status = "ok"
     journal_path = args.journal or generated_journal_path(out, args.version, args.case)
     journal_path = require_under(journal_path, out, "--journal output")
+    key_path = verification_key_path(out, args.version, args.case)
     journal_path.parent.mkdir(parents=True, exist_ok=True)
     journal_path.unlink(missing_ok=True)
+    key_path.unlink(missing_ok=True)
     artifacts = build.get("artifacts", {}) if build else {}
     generator_rel = artifacts.get("generator")
     generator = ROOT / generator_rel if generator_rel else None
@@ -700,6 +857,12 @@ def generate_corpus(args: argparse.Namespace) -> dict[str, Any]:
         ]
         if args.compact:
             cmd.append("--compact")
+        if args.sealed:
+            fss_root = fss_root_path(out, args.version, args.case)
+            if fss_root.exists():
+                shutil.rmtree(fss_root)
+            fss_root.mkdir(parents=True, exist_ok=True)
+            cmd.extend(["--sealed", "--fss-root", str(fss_root)])
         payload, result = run_json_line(
             "generate deterministic systemd corpus",
             cmd,
@@ -710,6 +873,8 @@ def generate_corpus(args: argparse.Namespace) -> dict[str, Any]:
         if result.returncode != 0 or payload is None:
             status = "failed"
             discrepancies.append({"code": "GENERATE_FAILED", "command_sha256": result.command_sha256})
+        else:
+            payload, _ = sanitize_generator_payload(payload, key_path)
 
     journal = None
     if status == "ok" and journal_path.exists():
@@ -721,6 +886,7 @@ def generate_corpus(args: argparse.Namespace) -> dict[str, Any]:
             "producer": "systemd-matrix-ingester",
             "final_state": args.final_state,
             "compact": args.compact,
+            "sealed": args.sealed,
         }
     elif status == "ok":
         status = "failed"
@@ -739,6 +905,11 @@ def generate_corpus(args: argparse.Namespace) -> dict[str, Any]:
         },
         "journal": journal,
         "generator_result": payload,
+        "verification_key": {
+            "present": key_path.exists(),
+            "artifact": relative(key_path) if key_path.exists() else None,
+            "sha256": sha256_file(key_path) if key_path.exists() else None,
+        } if args.sealed else None,
         "command": command,
         "status": status,
         "discrepancies": discrepancies,
@@ -755,8 +926,11 @@ def verify_with_journalctl(
     *,
     env: dict[str, str],
     timeout: int,
+    verification_key: str | None = None,
 ) -> dict[str, Any]:
     cmd = [str(journalctl), "--verify", "--file", str(journal_path)]
+    if verification_key:
+        cmd.append(f"--verify-key={verification_key}")
     result, _ = run_capture(role, cmd, env=env, timeout=timeout)
     return {
         "role": role,
@@ -883,6 +1057,16 @@ def test_matrix(args: argparse.Namespace) -> dict[str, Any]:
     journal_path = require_under(journal_path, out, "--journal input")
     if not journal_path.exists():
         raise SystemExit(f"journal input does not exist: {journal_path}")
+    key_path = getattr(args, "verify_key_file", None) or verification_key_path(out, args.version, args.case)
+    verification_key = None
+    verification_key_info = None
+    if key_path.exists():
+        verification_key = key_path.read_text(encoding="utf-8").strip()
+        verification_key_info = {
+            "present": True,
+            "artifact": relative(key_path),
+            "sha256": sha256_file(key_path),
+        }
 
     artifacts = build.get("artifacts", {}) if build else {}
     version_journalctl = ROOT / artifacts["journalctl"] if artifacts.get("journalctl") else None
@@ -905,6 +1089,7 @@ def test_matrix(args: argparse.Namespace) -> dict[str, Any]:
                 journal_path,
                 env=env,
                 timeout=args.timeout,
+                verification_key=verification_key,
             )
         )
         results.append(
@@ -929,6 +1114,7 @@ def test_matrix(args: argparse.Namespace) -> dict[str, Any]:
                 journal_path,
                 env=env,
                 timeout=args.timeout,
+                verification_key=verification_key,
             )
         )
         results.append(
@@ -1000,6 +1186,7 @@ def test_matrix(args: argparse.Namespace) -> dict[str, Any]:
             "sha256": sha256_file(journal_path),
         },
         "tools": tools,
+        "verification_key": verification_key_info,
         "results": results,
         "baseline": {"role": baseline.get("role")} if baseline else None,
         "observations": observations,
@@ -1153,12 +1340,14 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--journal", type=Path)
     generate.add_argument("--final-state", choices=("online", "offline", "archived"), default="offline")
     generate.add_argument("--compact", action="store_true")
+    generate.add_argument("--sealed", action="store_true")
     generate.add_argument("--max-size-bytes", type=int, default=64 * 1024 * 1024)
 
     test = sub.add_parser("test", help="run stock/version/Rust/Go reader matrix")
     add_common_args(test)
     test.add_argument("--case", default="smoke")
     test.add_argument("--journal", type=Path)
+    test.add_argument("--verify-key-file", type=Path)
 
     smoke_cmd = sub.add_parser("smoke", help="build, generate, and test one version")
     add_common_args(smoke_cmd)
@@ -1167,6 +1356,7 @@ def build_parser() -> argparse.ArgumentParser:
     smoke_cmd.add_argument("--journal", type=Path)
     smoke_cmd.add_argument("--final-state", choices=("online", "offline", "archived"), default="offline")
     smoke_cmd.add_argument("--compact", action="store_true")
+    smoke_cmd.add_argument("--sealed", action="store_true")
     smoke_cmd.add_argument("--max-size-bytes", type=int, default=64 * 1024 * 1024)
 
     summarize = sub.add_parser("summarize", help="write a sanitized Markdown summary for a JSON report")
