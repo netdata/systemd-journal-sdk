@@ -343,6 +343,34 @@ Open decisions:
    - Risk: keeping raw failing files requires explicit user approval and must
      remain uncommitted.
 
+4. 2026-05-31 fast confidence strategy
+   - Decision: finish this SOW with selective, evidence-driven certification
+     instead of exhaustive regeneration of the entire local journal corpus.
+   - Implication: the close gate should combine a full corpus inventory,
+     systemd-version generated corpus coverage, stratified real-corpus sampling,
+     and a small VM-generated reality corpus.
+   - Risk: this is not mathematical proof over every byte of the local corpus;
+     it is a targeted confidence strategy designed to cover known format and
+     production-risk boundaries quickly.
+
+5. 2026-05-31 parallel work override
+   - Decision: the user approved parallel workstreams for the certification
+     effort, with one short scope summary reviewed before each agent is spawned.
+   - Implication: SOW-0064 may coordinate multiple worktrees/agents for the
+     systemd-version matrix, VM corpus, and selective real-corpus verification;
+     SOW-0074 may run in parallel for the optimized Rust/Go explorer API.
+   - Risk: parallel branches can conflict; each workstream must stay scoped,
+     commit locally, avoid changes outside the repository, and return a clear
+     merge/review handoff.
+
+6. 2026-05-31 release gate before parallelism
+   - Decision: release `v0.4.0` before starting the parallel workstreams so
+     downstream Netdata integration can test the current SDK state.
+   - Implication: root tag `v0.4.0` and Go submodule tag `go/v0.4.0` must point
+     to the same commit.
+   - Risk: release tags must not be moved after publication without explicit
+     user approval.
+
 ## Plan
 
 1. Define canonical digest and metrics contract.
