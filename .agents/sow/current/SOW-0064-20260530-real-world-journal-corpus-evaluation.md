@@ -899,6 +899,10 @@ Discrepancy-first repair progress:
   - `--hash none --binary-stats false`: minimal stats mode; counts entries,
     payload references, payload bytes, largest payload, and missing separators,
     but discards payload bytes without hashing or binary-byte classification.
+  - `--hash none --binary-stats false --separator-stats false`: no payload
+    content scan mode; counts entries, payload references, payload byte lengths,
+    and largest payload only, without scanning even for the `FIELD=value`
+    separator.
 - Focused single-file evidence:
   - report: `.local/corpus-eval/spool-experiment-single-large/report.json`
   - input files: 1
@@ -933,6 +937,20 @@ Discrepancy-first repair progress:
   - uncompressed compact, full hash and binary stats: median 215,834 entries/s
   - uncompressed compact, no hash but binary stats: median 421,476 entries/s
   - uncompressed compact, minimal stats: median 2,454,710 entries/s
+- Focused Rust no-scan/key-scan evidence on the same single real-journal
+  payload stream:
+  - report: `.local/corpus-eval/rust-reader-baseline/no-scan-key-experiment-runs.json`
+  - entries: 261,304
+  - payloads: 7,232,356
+  - payload bytes: 1,172,818,516
+  - compressed source, no content scan: median 139,746 entries/s
+  - compressed source, key delimiter scan: median 136,967 entries/s
+  - compressed source, full payload hash: median 105,416 entries/s
+  - compressed source, binary scan: median 108,735 entries/s
+  - uncompressed compact, no content scan: median 3,002,201 entries/s
+  - uncompressed compact, key delimiter scan: median 2,482,267 entries/s
+  - uncompressed compact, full payload hash: median 390,316 entries/s
+  - uncompressed compact, binary scan: median 430,919 entries/s
 - Scope note: the one-file rates collected in this report are correctness-run
   observations only. They are not benchmark conclusions for SOW-0009 or for
   full-corpus performance.

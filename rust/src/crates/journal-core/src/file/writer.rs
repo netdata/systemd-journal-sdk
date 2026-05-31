@@ -1,11 +1,11 @@
 use super::mmap::MmapMut;
 use crate::error::{JournalError, Result};
 use crate::file::{
-    hash::jenkins_hash64_parts, normalize_compress_threshold, CompactDataFields, CompactEntryItem,
-    Compression, DataObject, DataObjectHeader, DataPayloadType, EntryObjectHeader,
-    FieldObjectHeader, HashTable, HashableObjectMut, HeaderIncompatibleFlags, JournalFile,
-    JournalHeader, ObjectFlags, ObjectHeader, ObjectType, PayloadParts, RegularEntryItem,
-    DEFAULT_COMPRESS_THRESHOLD,
+    CompactDataFields, CompactEntryItem, Compression, DEFAULT_COMPRESS_THRESHOLD, DataObject,
+    DataObjectHeader, DataPayloadType, EntryObjectHeader, FieldObjectHeader, HashTable,
+    HashableObjectMut, HeaderIncompatibleFlags, JournalFile, JournalHeader, ObjectFlags,
+    ObjectHeader, ObjectType, PayloadParts, RegularEntryItem, hash::jenkins_hash64_parts,
+    normalize_compress_threshold,
 };
 use crate::seal::TAG_LENGTH;
 use rustc_hash::FxHashMap;
@@ -1578,8 +1578,8 @@ fn lz4_compress(payload: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        zstd_frame_with_content_size, FieldCache, PayloadParts, FIELD_CACHE_MAX_ENTRIES,
-        FIELD_CACHE_MAX_PAYLOAD_LEN,
+        FIELD_CACHE_MAX_ENTRIES, FIELD_CACHE_MAX_PAYLOAD_LEN, FieldCache, PayloadParts,
+        zstd_frame_with_content_size,
     };
     use std::io::{Cursor, Read};
     use std::num::NonZeroU64;
@@ -1691,8 +1691,8 @@ mod tests {
         EntryField, EntryWriteOptions, FieldNamePolicy, JournalFile, JournalWriter, StructuredField,
     };
     use crate::file::{
-        normalize_compress_threshold, Compression, HeaderCompatibleFlags, JournalFileOptions,
-        MmapMut, ObjectFlags, DEFAULT_COMPRESS_THRESHOLD, MIN_COMPRESS_THRESHOLD,
+        Compression, DEFAULT_COMPRESS_THRESHOLD, HeaderCompatibleFlags, JournalFileOptions,
+        MIN_COMPRESS_THRESHOLD, MmapMut, ObjectFlags, normalize_compress_threshold,
     };
     use crate::seal::SealOptions;
     #[cfg(unix)]
@@ -2004,8 +2004,7 @@ mod tests {
             JournalFileOptions::new(test_uuid(1), boot_a, test_uuid(3)),
         )
         .expect("create journal");
-        let mut writer =
-            JournalWriter::new(&mut journal_file, 1, boot_a).expect("create writer");
+        let mut writer = JournalWriter::new(&mut journal_file, 1, boot_a).expect("create writer");
 
         let entries = [
             (boot_a, 1_700_000_060_000_000, 100),
@@ -2369,14 +2368,16 @@ mod tests {
         let mut writer =
             JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
 
-        assert!(writer
-            .add_entry_structured(
-                &mut journal_file,
-                &[StructuredField::new(b"not-valid", b"value")],
-                1_700_000_060_000_000,
-                100,
-            )
-            .is_err());
+        assert!(
+            writer
+                .add_entry_structured(
+                    &mut journal_file,
+                    &[StructuredField::new(b"not-valid", b"value")],
+                    1_700_000_060_000_000,
+                    100,
+                )
+                .is_err()
+        );
         assert_eq!(journal_file.journal_header_ref().n_entries, 0);
     }
 
@@ -2445,15 +2446,17 @@ mod tests {
         assert!(payloads.iter().any(|p| p == b"MESSAGE=app valid"));
         assert!(!payloads.iter().any(|p| p.starts_with(b"_HOSTNAME=")));
         assert!(!payloads.iter().any(|p| p.starts_with(b"lowercase=")));
-        assert!(writer
-            .add_entry_structured_with_options(
-                &mut journal_file,
-                &[StructuredField::new(b"_HOSTNAME", b"drop-only")],
-                1_700_002_112_000_001,
-                2,
-                EntryWriteOptions::default().field_name_policy(FieldNamePolicy::JournalApp),
-            )
-            .is_err());
+        assert!(
+            writer
+                .add_entry_structured_with_options(
+                    &mut journal_file,
+                    &[StructuredField::new(b"_HOSTNAME", b"drop-only")],
+                    1_700_002_112_000_001,
+                    2,
+                    EntryWriteOptions::default().field_name_policy(FieldNamePolicy::JournalApp),
+                )
+                .is_err()
+        );
 
         let raw_path = journal_dir.join("raw.journal");
         let repo_file = crate::repository::File::from_path(&raw_path).expect("test journal path");
@@ -2493,19 +2496,23 @@ mod tests {
         assert!(payloads.iter().any(|p| p == b"lowercase=ok"));
         assert!(payloads.iter().any(|p| p == b"foo.bar=dot"));
         assert!(payloads.iter().any(|p| p == b"field name=space"));
-        assert!(payloads
-            .iter()
-            .any(|p| p == &format!("{}=long", "a".repeat(1024)).into_bytes()));
+        assert!(
+            payloads
+                .iter()
+                .any(|p| p == &format!("{}=long", "a".repeat(1024)).into_bytes())
+        );
         assert!(payloads.iter().any(|p| p == b"BINARY=a\0=b"));
-        assert!(writer
-            .add_entry_fields_with_options(
-                &mut journal_file,
-                [EntryField::structured(b"BAD=NAME", b"bad")],
-                1_700_002_113_000_001,
-                2,
-                EntryWriteOptions::default().field_name_policy(FieldNamePolicy::Raw),
-            )
-            .is_err());
+        assert!(
+            writer
+                .add_entry_fields_with_options(
+                    &mut journal_file,
+                    [EntryField::structured(b"BAD=NAME", b"bad")],
+                    1_700_002_113_000_001,
+                    2,
+                    EntryWriteOptions::default().field_name_policy(FieldNamePolicy::Raw),
+                )
+                .is_err()
+        );
     }
 
     #[test]

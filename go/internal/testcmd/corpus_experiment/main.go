@@ -77,6 +77,7 @@ func rawRead(args []string) {
 	access := fs.String("access", "mmap", "reader access: mmap or read-at")
 	hashMode := fs.String("hash", "sha256", "payload hash mode: sha256 or none")
 	binaryStats := fs.Bool("binary-stats", true, "count payloads containing binary bytes")
+	separatorStats := fs.Bool("separator-stats", true, "count payloads missing the FIELD=value separator")
 	_ = fs.Parse(args)
 
 	paths, err := inputPaths(*input, *directory, *limit)
@@ -85,7 +86,7 @@ func rawRead(args []string) {
 	}
 	rows := make([]map[string]any, 0, len(paths))
 	for _, path := range paths {
-		row := rawReadOne(path, *access, *hashMode, *binaryStats)
+		row := rawReadOne(path, *access, *hashMode, *binaryStats, *separatorStats)
 		rows = append(rows, row)
 	}
 	if *output == "json" {
@@ -95,7 +96,7 @@ func rawRead(args []string) {
 	writeRawCSV(rows)
 }
 
-func rawReadOne(path, access, hashMode string, binaryStats bool) map[string]any {
+func rawReadOne(path, access, hashMode string, binaryStats bool, separatorStats bool) map[string]any {
 	started := time.Now()
 	opts := journal.DefaultReaderOptions().WithBounds(journal.ReaderBoundsSnapshot)
 	switch access {
@@ -150,7 +151,7 @@ func rawReadOne(path, access, hashMode string, binaryStats bool) map[string]any 
 			if uint64(len(payload)) > counts.LargestPayloadBytes {
 				counts.LargestPayloadBytes = uint64(len(payload))
 			}
-			if payloadName(payload) == nil {
+			if separatorStats && payloadName(payload) == nil {
 				counts.PayloadsWithoutSeparator++
 			}
 			if binaryStats && payloadHasBinary(payload) {
@@ -176,19 +177,24 @@ func rawReadOne(path, access, hashMode string, binaryStats bool) map[string]any 
 	if binaryStats {
 		binaryPayloads = counts.BinaryPayloads
 	}
+	var payloadsWithoutEquals any
+	if separatorStats {
+		payloadsWithoutEquals = counts.PayloadsWithoutSeparator
+	}
 	return map[string]any{
 		"schema":                   rawReaderSchema,
 		"driver":                   "go",
 		"status":                   "ok",
 		"hash_mode":                hashMode,
 		"binary_stats":             binaryStats,
+		"separator_stats":          separatorStats,
 		"file_id":                  sanitizedFileID(path),
 		"input_bytes":              inputBytes,
 		"entries":                  counts.Entries,
 		"payloads":                 counts.Payloads,
 		"payload_bytes":            counts.PayloadBytes,
 		"binary_payloads":          binaryPayloads,
-		"payloads_without_equals":  counts.PayloadsWithoutSeparator,
+		"payloads_without_equals":  payloadsWithoutEquals,
 		"largest_payload_bytes":    counts.LargestPayloadBytes,
 		"hash":                     digest,
 		"elapsed_seconds":          elapsed,
@@ -196,7 +202,7 @@ func rawReadOne(path, access, hashMode string, binaryStats bool) map[string]any 
 		"payloads_per_second":      rate(counts.Payloads, elapsed),
 		"payload_bytes_per_second": rate(counts.PayloadBytes, elapsed),
 		"input_bytes_per_second":   rate(uint64(inputBytes), elapsed),
-		"reader_path":              "raw-payload-visitor",
+		"reader_path":              rawReaderPath(hashMode, binaryStats, separatorStats),
 	}
 }
 
@@ -529,7 +535,7 @@ func journalLike(path string) bool {
 func writeRawCSV(rows []map[string]any) {
 	w := csv.NewWriter(os.Stdout)
 	defer w.Flush()
-	header := []string{"schema", "driver", "status", "file_id", "input_bytes", "entries", "payloads", "payload_bytes", "binary_payloads", "payloads_without_equals", "largest_payload_bytes", "hash", "hash_mode", "binary_stats", "elapsed_seconds", "entries_per_second", "payloads_per_second", "payload_bytes_per_second", "input_bytes_per_second", "reader_path", "error_class", "error_sha256"}
+	header := []string{"schema", "driver", "status", "file_id", "input_bytes", "entries", "payloads", "payload_bytes", "binary_payloads", "payloads_without_equals", "largest_payload_bytes", "hash", "hash_mode", "binary_stats", "separator_stats", "elapsed_seconds", "entries_per_second", "payloads_per_second", "payload_bytes_per_second", "input_bytes_per_second", "reader_path", "error_class", "error_sha256"}
 	_ = w.Write(header)
 	for _, row := range rows {
 		record := make([]string, len(header))
@@ -594,6 +600,21 @@ func payloadHasBinary(payload []byte) bool {
 		}
 	}
 	return false
+}
+
+func rawReaderPath(hashMode string, binaryStats bool, separatorStats bool) string {
+	switch {
+	case hashMode == "none" && !binaryStats && !separatorStats:
+		return "raw-payload-visitor-no-content-scan"
+	case hashMode == "none" && !binaryStats && separatorStats:
+		return "raw-payload-visitor-key-delimiter-scan"
+	case hashMode == "none" && binaryStats:
+		return "raw-payload-visitor-binary-scan"
+	case hashMode == "sha256" && !binaryStats:
+		return "raw-payload-visitor-hash-full-payload"
+	default:
+		return "raw-payload-visitor-hash-and-binary-scan"
+	}
 }
 
 func bytesIndex(buf []byte, want byte) int {

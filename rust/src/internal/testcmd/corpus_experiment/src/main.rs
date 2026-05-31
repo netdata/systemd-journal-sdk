@@ -55,6 +55,8 @@ struct RawReadArgs {
     hash: String,
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     binary_stats: bool,
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    separator_stats: bool,
 }
 
 #[derive(Args, Debug)]
@@ -130,6 +132,7 @@ fn raw_read(args: RawReadArgs) -> Result<()> {
             args.window_size,
             hash_mode,
             args.binary_stats,
+            args.separator_stats,
         )
     })
     .collect::<Vec<_>>();
@@ -169,6 +172,7 @@ fn raw_read_one(
     window_size: u64,
     hash_mode: RawHashMode,
     binary_stats: bool,
+    separator_stats: bool,
 ) -> Value {
     let started = Instant::now();
     let mmap_strategy = match access {
@@ -210,7 +214,7 @@ fn raw_read_one(
             counts.payloads += 1;
             counts.payload_bytes += payload.len() as u64;
             counts.largest_payload_bytes = counts.largest_payload_bytes.max(payload.len() as u64);
-            if payload_name(payload).is_none() {
+            if separator_stats && payload_name(payload).is_none() {
                 counts.payloads_without_separator += 1;
             }
             if binary_stats && payload_has_binary(payload) {
@@ -233,13 +237,14 @@ fn raw_read_one(
         "status": "ok",
         "hash_mode": hash_mode.as_str(),
         "binary_stats": binary_stats,
+        "separator_stats": separator_stats,
         "file_id": sanitized_file_id(path),
         "input_bytes": file_size(path),
         "entries": counts.entries,
         "payloads": counts.payloads,
         "payload_bytes": counts.payload_bytes,
         "binary_payloads": if binary_stats { Some(counts.binary_payloads) } else { None },
-        "payloads_without_equals": counts.payloads_without_separator,
+        "payloads_without_equals": if separator_stats { Some(counts.payloads_without_separator) } else { None },
         "largest_payload_bytes": counts.largest_payload_bytes,
         "hash": hash.map(|hash| hex::encode(hash.finalize())),
         "elapsed_seconds": elapsed,
@@ -247,7 +252,7 @@ fn raw_read_one(
         "payloads_per_second": rate(counts.payloads, elapsed),
         "payload_bytes_per_second": rate(counts.payload_bytes, elapsed),
         "input_bytes_per_second": rate(file_size(path), elapsed),
-        "reader_path": "raw-payload-visitor",
+        "reader_path": raw_reader_path(hash_mode, binary_stats, separator_stats),
     })
 }
 
@@ -630,6 +635,7 @@ fn write_raw_csv(rows: &[Value]) -> Result<()> {
         "hash",
         "hash_mode",
         "binary_stats",
+        "separator_stats",
         "elapsed_seconds",
         "entries_per_second",
         "payloads_per_second",
@@ -707,6 +713,20 @@ fn payload_name(payload: &[u8]) -> Option<&[u8]> {
 
 fn payload_has_binary(payload: &[u8]) -> bool {
     payload.iter().any(|byte| *byte < 32 && *byte != b'\t')
+}
+
+fn raw_reader_path(
+    hash_mode: RawHashMode,
+    binary_stats: bool,
+    separator_stats: bool,
+) -> &'static str {
+    match (hash_mode, binary_stats, separator_stats) {
+        (RawHashMode::None, false, false) => "raw-payload-visitor-no-content-scan",
+        (RawHashMode::None, false, true) => "raw-payload-visitor-key-delimiter-scan",
+        (RawHashMode::None, true, _) => "raw-payload-visitor-binary-scan",
+        (RawHashMode::Sha256, false, _) => "raw-payload-visitor-hash-full-payload",
+        (RawHashMode::Sha256, true, _) => "raw-payload-visitor-hash-and-binary-scan",
+    }
 }
 
 fn parse_compression(value: &str) -> Result<Compression> {

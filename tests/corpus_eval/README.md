@@ -48,11 +48,13 @@ The Rust and Go `corpus_experiment raw-read` helpers support measurement modes:
 corpus_experiment raw-read --input /path/to/file.journal --output json --hash sha256 --binary-stats true
 corpus_experiment raw-read --input /path/to/file.journal --output json --hash none --binary-stats true
 corpus_experiment raw-read --input /path/to/file.journal --output json --hash none --binary-stats false
+corpus_experiment raw-read --input /path/to/file.journal --output json --hash none --binary-stats false --separator-stats false
 ```
 
 Use `--hash none --binary-stats false` for minimal row/payload/byte counting
 when payload bytes should be discarded without hashing or content
-classification.
+classification. Add `--separator-stats false` when the measurement should not
+scan payload bytes even to find the `FIELD=value` separator.
 
 Durable `report.json`, `report.md`, and `state.json` records contain sanitized
 file identifiers, counts, digests, status codes, and metrics only. They must

@@ -1,15 +1,15 @@
 #![allow(unused_imports, dead_code)]
 
 use crate::{
-    journal_hash_data, CompactEntryItem, DataHashTable, DataObject, DataObjectHeader,
-    DataPayloadType, EntryObject, EntryObjectHeader, FieldHashTable, FieldObject,
-    FieldObjectHeader, HashItem, HashTable, HashTableMut, HashableObject, HashableObjectMut,
-    HeaderIncompatibleFlags, JournalFile, JournalFileOptions, JournalHeader, JournalState,
-    ObjectHeader, ObjectType, RegularEntryItem,
+    CompactEntryItem, DataHashTable, DataObject, DataObjectHeader, DataPayloadType, EntryObject,
+    EntryObjectHeader, FieldHashTable, FieldObject, FieldObjectHeader, HashItem, HashTable,
+    HashTableMut, HashableObject, HashableObjectMut, HeaderIncompatibleFlags, JournalFile,
+    JournalFileOptions, JournalHeader, JournalState, ObjectHeader, ObjectType, RegularEntryItem,
+    journal_hash_data,
 };
 use error::{JournalError, Result};
 use memmap2::MmapMut;
-use rand::{seq::IndexedRandom, Rng};
+use rand::{Rng, seq::IndexedRandom};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::Path;
 use window_manager::MemoryMapMut;
