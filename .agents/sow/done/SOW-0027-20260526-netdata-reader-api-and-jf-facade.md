@@ -4,7 +4,7 @@
 
 Status: completed
 
-Sub-state: Completed on 2026-05-26. Reader-consumer evidence refreshed; cross-language facade parity, tests, docs, and specs are implemented and reviewed.
+Sub-state: Completed after regression repair, local validation, and whole-SOW read-only reviewer pass.
 
 ## Requirements
 
@@ -384,4 +384,158 @@ Completed. The SDK now has a stabilized file-backed reader facade contract acros
 
 ## Regression Log
 
-None yet.
+### Regression - 2026-05-31 - Unique Enumeration Uses Row Scans
+
+Status: in-progress.
+
+Regression summary:
+
+- The SOW accepted libsystemd/JF-compatible field and unique enumeration semantics, but the public unfiltered unique-value APIs currently enumerate entries and expand entry values instead of using the journal FIELD object's DATA chain.
+- This is separate from SOW-0074. SOW-0074 tracks new filtered explorer/query APIs. This regression tracks the existing unfiltered `query_unique` / `QueryUnique` / `queryUnique` / stateful unique enumeration behavior.
+
+Evidence:
+
+- `systemd/systemd @ cf3156842209`
+  - `src/libsystemd/sd-journal/sd-journal.c:3332` initializes `sd_journal_query_unique()`.
+  - `src/libsystemd/sd-journal/sd-journal.c:3386` finds the FIELD object for the queried field.
+  - `src/libsystemd/sd-journal/sd-journal.c:3390` starts from `field.head_data_offset`.
+  - `src/libsystemd/sd-journal/sd-journal.c:3396` advances through `data.next_field_offset`.
+  - `src/libsystemd/sd-journal/sd-journal.c:3439` de-duplicates results across earlier files.
+- SDK repository:
+  - `rust/src/journal/src/lib.rs:1768` scans entries in `DirectoryReader::query_unique()`.
+  - `go/journal/reader.go:1286` scans `entryOffsets` in `Reader.QueryUnique()`.
+  - `python/journal/reader.py:474` scans `_entry_offsets` in `query_unique()`.
+  - `node/src/lib/reader.js:457` scans `entryOffsets` in `queryUnique()`.
+  - `rust/src/crates/journal-core/src/file/reader.rs:244` already exposes a lower-level `field_data_query_unique()` that uses `journal_file.field_data_objects(field_name)`.
+
+Why previous validation missed it:
+
+- SOW-0027 validation covered output semantics, repeated/binary values, and cross-language facade shape, but did not assert the algorithmic/systemd parity that unique enumeration must traverse the FIELD/DATA index rather than scanning all entries.
+- The tests were correctness-oriented and did not include a high-cardinality or sparse-field performance case where row-scan behavior is obvious.
+
+Repair plan:
+
+1. Add conformance/performance-sensitive tests proving unfiltered unique enumeration uses field-index traversal, not full entry traversal. The test should include a sparse field and many irrelevant entries so a row-scan implementation is detectable.
+2. Fix Rust public `FileReader`/`DirectoryReader` and facade unique paths to use the existing FIELD/DATA indexed primitive where possible, preserving binary-safe value output and stateful `FIELD=value` payload semantics.
+3. Fix Go, Python, and Node.js unique paths to use FIELD/DATA object chains instead of entry scans, matching systemd semantics for file and directory readers.
+4. Preserve directory de-duplication across files. Match systemd's observable behavior: unique values should not be returned repeatedly across files.
+5. Validate against stock systemd/libsystemd-compatible behavior, shared fixtures, binary/repeated fields, compressed DATA, compact files, mixed directories, and high-cardinality sparse fields.
+6. Update docs/specs only if they need to state the index-backed unique enumeration guarantee.
+
+Validation required before re-closing:
+
+- Rust, Go, Python, and Node unit tests for unique enumeration.
+- Shared conformance test for sparse-field unique enumeration that fails under full-entry scan instrumentation.
+- Directory reader tests proving cross-file de-duplication.
+- Compression/compact/mixed-directory unique tests where supported by existing readers.
+- Benchmark or operation-counter evidence showing unique enumeration cost is proportional to DATA objects for the requested field, not total entries.
+- Read-only reviewer pass across the whole reopened SOW after implementation and local validation.
+
+Implementation update - 2026-05-31:
+
+- Added a durable performance contract to `AGENTS.md`, root `README.md`,
+  `.agents/skills/project-journal-compatibility/SKILL.md`, and
+  `.agents/sow/specs/product-scope.md`.
+- Rust public `FileReader::query_unique()`, `DirectoryReader::query_unique()`,
+  and the facade unique paths now use FIELD/DATA indexed traversal through the
+  existing journal-core `field_data_objects()` primitive.
+- Rust public `FileReader::enumerate_fields()`, `DirectoryReader::enumerate_fields()`,
+  and facade field enumeration now prefer FIELD hash table traversal. They fall
+  back to entry scanning only when FIELD hash traversal is unusable, preserving
+  historical-fixture compatibility.
+- Go `Reader.QueryUnique()` now finds the FIELD object through the field hash
+  table, walks `DATA.next_field_offset`, and returns unique values without
+  consulting `entryOffsets`.
+- Go `Reader.EnumerateFields()` now prefers FIELD hash table traversal and
+  falls back to the previous entry scan only if the FIELD table cannot be used.
+- Python `FileReader.query_unique()` now finds the FIELD object through the
+  field hash table, walks `next_field_offset`, and returns unique values without
+  consulting `_entry_offsets`.
+- Python `FileReader.enumerate_fields()` and `DirectoryReader.enumerate_fields()`
+  now prefer FIELD hash table traversal and fall back to the previous entry scan
+  only if the FIELD table cannot be used.
+- Node.js `FileReader.queryUnique()` now finds the FIELD object through the
+  field hash table, walks `nextFieldOffset`, and returns unique values without
+  consulting `entryOffsets`.
+- Node.js `FileReader.enumerateFields()` now prefers FIELD hash table traversal
+  and falls back to the previous entry scan only if the FIELD table cannot be
+  used.
+- Go, Python, and Node.js regression tests clear the entry-offset list before
+  calling unfiltered unique and field-name enumeration, proving those
+  implementations no longer depend on row traversal for normal indexed files.
+- Directory-reader regression tests verify cross-file de-duplication for
+  `query_unique`/`QueryUnique`/`queryUnique`.
+- Compatibility note: one archived systemd `no-rtc` fixture has an unusable
+  FIELD hash chain for field-name enumeration. The SDK keeps the indexed fast
+  path for valid files and uses the entry-scan fallback only for this
+  compatibility case. This fallback does not apply to unfiltered unique value
+  enumeration for valid FIELD/DATA chains.
+
+Local validation - 2026-05-31:
+
+- `cargo test -p journal`: passed before the field-enumeration expansion.
+- `cargo test -p journal -p adapter`: passed, 24 journal tests and adapter build/test.
+- `go test ./...`: passed.
+- `PYTHONPATH=python:.local/python-deps .local/python-venv/bin/python python/test_all.py`: passed.
+- `node node/test/all.js`: passed.
+- `python3 tests/conformance/runner/manifest_checker.py validate tests/conformance/manifests/conformance-v01.json`: passed.
+- `git diff --check -- AGENTS.md README.md .agents/skills/project-journal-compatibility/SKILL.md .agents/sow/specs/product-scope.md .agents/sow/current/SOW-0027-20260526-netdata-reader-api-and-jf-facade.md .agents/sow/SOW-status.md rust/src/journal/src/lib.rs rust/src/journal/src/facade.rs go/journal/reader.go go/journal/reader_test.go python/journal/reader.py python/journal/directory_reader.py python/test_all.py node/src/lib/reader.js node/test/all.js`: passed.
+- `.agents/sow/audit.sh`: passed.
+- `PYTHONPATH=python python3 python/test_all.py`: failed because the system
+  Python interpreter does not have `lz4`; rerun with the repo-local dependency
+  environment passed.
+
+Reviewer status:
+
+- `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+
+Reviewer dispositions:
+
+- Qwen noted that Go uses `string(value)` for binary de-duplication. This was
+  rejected as a false finding: Go strings preserve arbitrary bytes, including
+  invalid UTF-8, and the value stored in the result is copied with
+  `cloneBytes(value)`.
+- Qwen, GLM, and Kimi noted the broad field-enumeration fallback in
+  Python/Node.js and related Rust compatibility behavior. This was accepted as
+  intentional compatibility handling for historical/damaged FIELD tables; the
+  fast path remains indexed for valid files, and the SOW records the fallback
+  boundary.
+- Kimi noted that FIELD and DATA chain cycle detection is not added by this
+  regression repair. This was rejected for this regression because the work did
+  not introduce chain walking as a new corrupted-file validation surface; it
+  replaced public row scans with the same indexed graph shape used by systemd
+  and the existing Rust core/JF primitives.
+- GLM noted that high-cardinality benchmark evidence was not added here. This
+  was accepted as non-blocking because the regression is proven by tests that
+  clear entry-offset lists and by source evidence showing FIELD/DATA traversal;
+  benchmark and profiling work remains tracked by the active performance SOW.
+- Mimo noted that Python did not have a mixed-value cross-file unique-values
+  test. Fixed by
+  `test_directory_reader_query_unique_deduplicates_indexed_values_across_files`,
+  which is now called by the full `python/test_all.py` runner.
+
+Post-review validation update - 2026-05-31:
+
+- Targeted Python unique/facade/directory tests passed after adding the
+  mixed-value directory regression test and wiring the indexed unique-values
+  regression test into `main()`.
+- `PYTHONPATH=python:.local/python-deps .local/python-venv/bin/python python/test_all.py`: passed.
+- `cargo test -p journal -p adapter`: passed, 24 journal tests and adapter build/test.
+- `go test ./...`: passed.
+- `node node/test/all.js`: passed.
+
+Close evidence:
+
+- All four public reader implementations use FIELD/DATA indexed traversal for
+  unfiltered unique-value enumeration on valid indexed files.
+- All four public reader implementations use FIELD hash traversal for
+  field-name enumeration on valid indexed files, with the documented scan
+  fallback only for unusable FIELD tables.
+- Directory readers de-duplicate unique values across files.
+- The durable performance contract is recorded in `AGENTS.md`, root
+  `README.md`, `.agents/skills/project-journal-compatibility/SKILL.md`, and
+  `.agents/sow/specs/product-scope.md`.

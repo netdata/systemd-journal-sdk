@@ -261,14 +261,7 @@ class DirectoryReader:
     def enumerate_fields(self):
         fields = set()
         for r in self._readers:
-            r.seek_head()
-            while r.next():
-                try:
-                    entry = r.get_entry()
-                    if entry:
-                        fields.update(entry['fields'].keys())
-                except Exception:
-                    pass
+            fields.update(r.enumerate_fields())
         return sorted(fields)
 
     def query_unique(self, field_name):

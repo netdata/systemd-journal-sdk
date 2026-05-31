@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-05-30
+Last updated: 2026-05-31
 
 ## Current
 
@@ -34,8 +34,26 @@ Last updated: 2026-05-30
   packaging after reader gates.
 - SOW-0050 - Netdata Vendored Journal Removal: open. Final cleanup after all
   Netdata component integrations are complete.
+- SOW-0074 - Rust And Go Optimized Log Explorer Query API: open. Adds an
+  SDK-native query API for high-performance log explorers: journal-native
+  positive `FIELD IN [...]` and negative `FIELD NOT IN [...]` filters slice
+  candidate rows through journal DATA/entry indexes, selected facet fields are
+  materialized only for candidate rows, no-facet and filter-equal-facet
+  requests bypass candidate-row field traversal, filtered unique-values use the
+  same index-backed filter plan, FTS intentionally expands all fields, and full
+  display expansion is deferred to returned rows. The goal is to avoid
+  decompression and repeated `FIELD=VALUE` processing for irrelevant DATA
+  objects while preserving the existing libsystemd-compatible facade.
 
 ## Recently Closed Or Completed
+- SOW-0027 - Netdata Reader API And jf Facade: completed after regression
+  repair. Existing unfiltered unique-value APIs now use FIELD/DATA indexed
+  traversal on valid indexed files in Rust, Go, Node.js, and Python, and
+  field-name enumeration now uses FIELD hash traversal with a documented
+  compatibility fallback for unusable historical FIELD tables. The durable
+  performance contract is recorded in AGENTS.md, README.md, the journal
+  compatibility skill, and product scope. Filtered explorer/query APIs remain
+  tracked separately by SOW-0074.
 - SOW-0055 - Rust Seek Cursor Systemd Parity: completed. Rust, Go, Python, and
   Node.js cursor conformance now covers found cursors, malformed cursor
   rejection, valid-missing cursor seek behavior, missing-cursor post-seek

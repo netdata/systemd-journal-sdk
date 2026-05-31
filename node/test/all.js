@@ -1596,8 +1596,71 @@ for (const [length, expected] of sipVectors) {
     const facadeValues = SdJournalQueryUnique(journal, 'FIELD');
     journal.close();
     assert.equal(facadeValues.length, 2);
-    assert.deepEqual(facadeValues[0][1], Buffer.from([0xff]));
-    assert.deepEqual(facadeValues[1][1], Buffer.from([0xef, 0xbf, 0xbd]));
+    assert.ok(facadeValues.some(([, value]) => value.equals(Buffer.from([0xff]))));
+    assert.ok(facadeValues.some(([, value]) => value.equals(Buffer.from([0xef, 0xbf, 0xbd]))));
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const journalPath = join(tempDir, 'indexed-unique.journal');
+    const writer = Writer.create(journalPath);
+    for (const priority of ['0', '3', '6', '7']) {
+      writer.append([
+        { name: 'MESSAGE', value: 'irrelevant' },
+        { name: 'PRIORITY', value: priority },
+      ]);
+    }
+    writer.close();
+
+    const reader = FileReader.open(journalPath);
+    reader.entryOffsets = [];
+    const fields = reader.enumerateFields();
+    const values = reader.queryUnique('PRIORITY');
+    reader.close();
+    assert.ok(fields.has('MESSAGE'));
+    assert.ok(fields.has('PRIORITY'));
+    assert.deepEqual(
+      new Set(values.map(v => v.toString())),
+      new Set(['0', '3', '6', '7']),
+    );
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const firstPath = join(tempDir, 'unique-first.journal');
+    const secondPath = join(tempDir, 'unique-second.journal');
+    const first = Writer.create(firstPath);
+    first.append([
+      { name: 'MESSAGE', value: 'first' },
+      { name: 'PRIORITY', value: '6' },
+    ]);
+    first.close();
+    const second = Writer.create(secondPath);
+    second.append([
+      { name: 'MESSAGE', value: 'second' },
+      { name: 'PRIORITY', value: '6' },
+    ]);
+    second.append([
+      { name: 'MESSAGE', value: 'third' },
+      { name: 'PRIORITY', value: '3' },
+    ]);
+    second.close();
+
+    const reader = DirectoryReader.openFiles([firstPath, secondPath]);
+    const values = reader.queryUnique('PRIORITY');
+    reader.close();
+    assert.deepEqual(
+      new Set(values.map(v => v.toString())),
+      new Set(['3', '6']),
+    );
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }

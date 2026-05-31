@@ -815,8 +815,10 @@ def test_directory_writer_rotation():
         seq = []
         while reader.step():
             seq.append(reader.get_entry()['fields']['LIVE_SEQ'])
+        priorities = reader.query_unique('PRIORITY')
         reader.close()
         assert seq == [f'{i:06d}'.encode() for i in range(5)]
+        assert {bytes(v) for v in priorities} == {b'6'}
 
         stock_rows = journalctl_directory_rows_if_available(td)
         if stock_rows is not None:
@@ -2111,6 +2113,61 @@ def test_facade_unique_binary_values():
         assert values == [('BINARY', bytes([0, 255]))]
 
 
+def test_query_unique_uses_field_index_without_entry_offsets():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'indexed-unique.journal')
+        writer = Writer.create(path)
+        for priority in ('0', '3', '6', '7'):
+            writer.append([
+                {'name': 'MESSAGE', 'value': 'irrelevant'},
+                {'name': 'PRIORITY', 'value': priority},
+            ])
+        writer.close()
+
+        reader = FileReader.open(path)
+        reader._entry_offsets = []
+        try:
+            fields = reader.enumerate_fields()
+            values = reader.query_unique('PRIORITY')
+        finally:
+            reader.close()
+
+        assert {'MESSAGE', 'PRIORITY'}.issubset(fields)
+        assert {bytes(v) for v in values} == {b'0', b'3', b'6', b'7'}
+
+
+def test_directory_reader_query_unique_deduplicates_indexed_values_across_files():
+    with tempfile.TemporaryDirectory() as td:
+        first_path = os.path.join(td, 'unique-first.journal')
+        second_path = os.path.join(td, 'unique-second.journal')
+
+        first = Writer.create(first_path)
+        first.append([
+            {'name': 'MESSAGE', 'value': 'first'},
+            {'name': 'PRIORITY', 'value': '6'},
+        ])
+        first.close()
+
+        second = Writer.create(second_path)
+        second.append([
+            {'name': 'MESSAGE', 'value': 'second'},
+            {'name': 'PRIORITY', 'value': '6'},
+        ])
+        second.append([
+            {'name': 'MESSAGE', 'value': 'third'},
+            {'name': 'PRIORITY', 'value': '3'},
+        ])
+        second.close()
+
+        reader = DirectoryReader.open_files([first_path, second_path])
+        try:
+            values = reader.query_unique('PRIORITY')
+        finally:
+            reader.close()
+
+        assert {bytes(v) for v in values} == {b'3', b'6'}
+
+
 def test_facade_data_payloads_remain_valid_for_current_row():
     with tempfile.TemporaryDirectory() as td:
         path = os.path.join(td, 'facade-row-lifetime.journal')
@@ -3017,6 +3074,8 @@ def main():
     test_directory_writer_discards_empty_online_file_and_continues_sequence()
     test_directory_writer_zero_rotation_limits_disable_rotation()
     test_facade_unique_binary_values()
+    test_query_unique_uses_field_index_without_entry_offsets()
+    test_directory_reader_query_unique_deduplicates_indexed_values_across_files()
     test_facade_data_payloads_remain_valid_for_current_row()
     test_facade_compressed_mixed_data_payloads_remain_valid_for_current_row()
     test_jf_facade_stateful_reader_operations()

@@ -995,6 +995,23 @@ func TestReaderUniqueFields(t *testing.T) {
 	if len(values) != 4 {
 		t.Errorf("QueryUnique returned %d values, want 4", len(values))
 	}
+
+	r.entryOffsets = nil
+	values, err = r.QueryUnique("PRIORITY")
+	if err != nil {
+		t.Fatalf("indexed QueryUnique error after clearing entry offsets: %v", err)
+	}
+	if len(values) != 4 {
+		t.Fatalf("indexed QueryUnique returned %d values after clearing entry offsets, want 4", len(values))
+	}
+
+	fields, err := r.EnumerateFields()
+	if err != nil {
+		t.Fatalf("indexed EnumerateFields error after clearing entry offsets: %v", err)
+	}
+	if _, ok := fields["PRIORITY"]; !ok {
+		t.Fatalf("indexed EnumerateFields missing PRIORITY after clearing entry offsets: %#v", fields)
+	}
 }
 
 func TestReaderEnumerateFields(t *testing.T) {
@@ -1088,6 +1105,7 @@ func TestDirectoryReader(t *testing.T) {
 		for j := 0; j < 3; j++ {
 			if err := w.Append([]Field{
 				StringField("INDEX", string(rune('0'+i))),
+				StringField("PRIORITY", "6"),
 			}, EntryOptions{
 				RealtimeUsec: uint64(1000 + i*10 + j),
 			}); err != nil {
@@ -1119,6 +1137,21 @@ func TestDirectoryReader(t *testing.T) {
 
 	if count != 9 {
 		t.Errorf("DirectoryReader read %d entries, want 9", count)
+	}
+
+	values, err := dr.QueryUnique("INDEX")
+	if err != nil {
+		t.Fatalf("DirectoryReader QueryUnique INDEX error: %v", err)
+	}
+	if len(values) != 3 {
+		t.Fatalf("DirectoryReader QueryUnique INDEX returned %d values, want 3", len(values))
+	}
+	values, err = dr.QueryUnique("PRIORITY")
+	if err != nil {
+		t.Fatalf("DirectoryReader QueryUnique PRIORITY error: %v", err)
+	}
+	if len(values) != 1 || string(values[0]) != "6" {
+		t.Fatalf("DirectoryReader QueryUnique PRIORITY returned %#v, want one value 6", values)
 	}
 }
 

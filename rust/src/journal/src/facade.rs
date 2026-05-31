@@ -333,7 +333,7 @@ impl SdJournal {
 
     fn query_unique_values(&mut self, field: &str) -> std::result::Result<Vec<Vec<u8>>, Error> {
         match &mut self.reader {
-            ReaderKind::File(reader) => query_file_unique(reader, field),
+            ReaderKind::File(reader) => reader.query_unique(field),
             ReaderKind::Directory(reader) => reader.query_unique(field),
         }
         .map_err(map_error)
@@ -561,34 +561,7 @@ pub fn SdJournalProcessOutput(j: &SdJournal, entry: &Entry) -> std::result::Resu
 }
 
 fn enumerate_file_fields(reader: &mut FileReader) -> crate::Result<Vec<String>> {
-    let mut fields = std::collections::HashSet::new();
-    reader.seek_head();
-    while reader.next()? {
-        if let Ok(entry) = reader.get_entry() {
-            fields.extend(entry.fields.into_keys());
-        }
-    }
-    let mut out: Vec<_> = fields.into_iter().collect();
-    out.sort();
-    Ok(out)
-}
-
-fn query_file_unique(reader: &mut FileReader, field: &str) -> crate::Result<Vec<Vec<u8>>> {
-    let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
-    reader.seek_head();
-    while reader.next()? {
-        if let Ok(entry) = reader.get_entry() {
-            if let Some(values) = entry.field_values.get(field) {
-                for value in values {
-                    if seen.insert(value.clone()) {
-                        out.push(value.clone());
-                    }
-                }
-            }
-        }
-    }
-    Ok(out)
+    reader.enumerate_fields()
 }
 
 fn payload_from_field_value(field: &str, value: &[u8]) -> Vec<u8> {

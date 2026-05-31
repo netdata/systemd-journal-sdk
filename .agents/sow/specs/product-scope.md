@@ -456,6 +456,16 @@ Accepted reader API layers:
 - JSON output, field enumeration, unique queries, and `get_data`-style facade
   helpers are UTF-8 field-name surfaces. Byte-exact RAW names are available
   through full payload/data enumeration and idiomatic byte-name APIs.
+- Field-name enumeration is a journal-index operation on valid indexed files.
+  Readers should walk FIELD hash tables instead of expanding every entry. A
+  compatibility fallback may scan entries only when a historical or damaged
+  FIELD table cannot be traversed safely.
+- Unfiltered unique value enumeration is a journal-index operation, not an
+  entry-scan operation. Readers must find the requested FIELD object, walk that
+  FIELD object's DATA chain, decode only matching DATA payloads, and de-duplicate
+  across files. This matches systemd's `sd_journal_query_unique()` /
+  `sd_journal_enumerate_unique()` algorithmic contract and avoids expanding
+  unrelated entries or fields.
 - Performance-sensitive readers should use the raw current-entry payload
   visitor/enumeration APIs when they already need byte-level `FIELD=value`
   payloads. Convenience entry materialization APIs may build maps, repeated

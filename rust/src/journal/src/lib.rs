@@ -1753,11 +1753,8 @@ impl DirectoryReader {
     pub fn enumerate_fields(&mut self) -> Result<Vec<String>> {
         let mut fields = HashSet::new();
         for reader in &mut self.files {
-            reader.seek_head();
-            while reader.next()? {
-                if let Ok(entry) = reader.get_entry() {
-                    fields.extend(entry.fields.into_keys());
-                }
+            for field in reader.enumerate_fields()? {
+                fields.insert(field);
             }
         }
         let mut out: Vec<_> = fields.into_iter().collect();
@@ -1769,16 +1766,9 @@ impl DirectoryReader {
         let mut seen = HashSet::new();
         let mut out = Vec::new();
         for reader in &mut self.files {
-            reader.seek_head();
-            while reader.next()? {
-                if let Ok(entry) = reader.get_entry() {
-                    if let Some(values) = entry.field_values.get(field_name) {
-                        for value in values {
-                            if seen.insert(value.clone()) {
-                                out.push(value.clone());
-                            }
-                        }
-                    }
+            for value in reader.query_unique(field_name)? {
+                if seen.insert(value.clone()) {
+                    out.push(value);
                 }
             }
         }
@@ -1937,6 +1927,21 @@ impl FileReader {
     fn header_realtime_start(&self) -> u64 {
         self.header().head_entry_realtime
     }
+
+    pub fn enumerate_fields(&mut self) -> Result<Vec<String>> {
+        self.invalidate_entry_data_state();
+        match self.inner.with_file(enumerate_file_fields_indexed) {
+            Ok(fields) => Ok(fields),
+            Err(_) => enumerate_file_fields_by_scan(self),
+        }
+    }
+
+    pub fn query_unique(&mut self, field_name: &str) -> Result<Vec<Vec<u8>>> {
+        self.invalidate_entry_data_state();
+        let decompressed = &mut self.decompressed;
+        self.inner
+            .with_file(|file| query_file_unique_indexed(file, field_name.as_bytes(), decompressed))
+    }
 }
 
 fn open_journal_file(path: &Path, options: ReaderOptions) -> Result<JournalFile<Mmap>> {
@@ -2058,6 +2063,70 @@ where
     }
 
     Ok(())
+}
+
+fn enumerate_file_fields_indexed(file: &JournalFile<Mmap>) -> Result<Vec<String>> {
+    let mut fields = HashSet::new();
+
+    for field in file.fields() {
+        let field = field?;
+        if let Ok(name) = std::str::from_utf8(field.payload.as_ref()) {
+            fields.insert(name.to_string());
+        }
+    }
+
+    let mut out: Vec<_> = fields.into_iter().collect();
+    out.sort();
+    Ok(out)
+}
+
+fn enumerate_file_fields_by_scan(reader: &mut FileReader) -> Result<Vec<String>> {
+    let mut fields = HashSet::new();
+    reader.seek_head();
+    while reader.next()? {
+        if let Ok(entry) = reader.get_entry() {
+            fields.extend(entry.fields.into_keys());
+        }
+    }
+    let mut out: Vec<_> = fields.into_iter().collect();
+    out.sort();
+    Ok(out)
+}
+
+fn query_file_unique_indexed(
+    file: &JournalFile<Mmap>,
+    field_name: &[u8],
+    decompressed: &mut Vec<u8>,
+) -> Result<Vec<Vec<u8>>> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    let context = file.data_payload_read_context();
+
+    for data in file.field_data_objects(field_name)? {
+        let data = data?;
+        let data_offset = data.offset();
+        drop(data);
+
+        let mut visitor_result = Ok(());
+        file.visit_data_payload_at_with_context(context, data_offset, decompressed, |payload| {
+            let Some(value) = payload
+                .strip_prefix(field_name)
+                .and_then(|rest| rest.strip_prefix(b"="))
+            else {
+                visitor_result = Err(SdkError::VerificationError(
+                    "field DATA chain object does not match requested field".to_string(),
+                ));
+                return Ok(());
+            };
+            if seen.insert(value.to_vec()) {
+                out.push(value.to_vec());
+            }
+            Ok(())
+        })?;
+        visitor_result?;
+    }
+
+    Ok(out)
 }
 
 fn collect_entry_metadata_and_data_offsets(
@@ -3172,6 +3241,81 @@ mod tests {
                 .expect("enumerate after seek")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn file_reader_query_unique_uses_field_index() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("journals/indexed-unique.journal");
+        let (mut journal_file, mut writer) = create_facade_test_writer(&path);
+        for (index, priority) in [b"0", b"3", b"6", b"7"].into_iter().enumerate() {
+            let payload = [b"PRIORITY=".as_slice(), priority.as_slice()].concat();
+            writer
+                .add_entry(
+                    &mut journal_file,
+                    &[b"MESSAGE=irrelevant".as_slice(), payload.as_slice()],
+                    2_000 + index as u64,
+                    20 + index as u64,
+                )
+                .expect("write entry");
+        }
+        journal_file.sync().expect("sync journal");
+
+        let mut reader = FileReader::open(&path).expect("open reader");
+        let fields = reader.enumerate_fields().expect("enumerate fields");
+        assert!(fields.iter().any(|field| field == "MESSAGE"));
+        assert!(fields.iter().any(|field| field == "PRIORITY"));
+
+        let values = reader.query_unique("PRIORITY").expect("query unique");
+        let got: HashSet<Vec<u8>> = values.into_iter().collect();
+        let want: HashSet<Vec<u8>> = [b"0", b"3", b"6", b"7"]
+            .into_iter()
+            .map(|value| value.to_vec())
+            .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn directory_reader_query_unique_deduplicates_indexed_values_across_files() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let first_path = dir.path().join("journals/unique-first.journal");
+        let second_path = dir.path().join("journals/unique-second.journal");
+        let (mut first_file, mut first_writer) = create_facade_test_writer(&first_path);
+        let (mut second_file, mut second_writer) = create_facade_test_writer(&second_path);
+
+        first_writer
+            .add_entry(
+                &mut first_file,
+                &[b"MESSAGE=first".as_slice(), b"PRIORITY=6".as_slice()],
+                2_100,
+                21,
+            )
+            .expect("write first");
+        second_writer
+            .add_entry(
+                &mut second_file,
+                &[b"MESSAGE=second".as_slice(), b"PRIORITY=6".as_slice()],
+                2_200,
+                22,
+            )
+            .expect("write second");
+        second_writer
+            .add_entry(
+                &mut second_file,
+                &[b"MESSAGE=third".as_slice(), b"PRIORITY=3".as_slice()],
+                2_300,
+                23,
+            )
+            .expect("write third");
+        first_file.sync().expect("sync first");
+        second_file.sync().expect("sync second");
+
+        let mut reader =
+            DirectoryReader::open_files([&first_path, &second_path]).expect("open files");
+        let values = reader.query_unique("PRIORITY").expect("query unique");
+        let got: HashSet<Vec<u8>> = values.into_iter().collect();
+        let want: HashSet<Vec<u8>> = [b"3", b"6"].into_iter().map(|v| v.to_vec()).collect();
+        assert_eq!(got, want);
     }
 
     #[test]

@@ -9,13 +9,14 @@ from .binary import uuid_to_string
 from .header import (
     parse_file_header, parse_object_header,
     HEADER_MIN_SIZE, OBJECT_TYPE_ENTRY, OBJECT_TYPE_ENTRY_ARRAY,
-    OBJECT_TYPE_DATA, OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE,
+    OBJECT_TYPE_DATA, OBJECT_TYPE_FIELD, OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE,
     DATA_OBJECT_HEADER_SIZE, OFFSET_ARRAY_OBJECT_HEADER_SIZE,
     REGULAR_ENTRY_ITEM_SIZE, INCOMPATIBLE_KEYED_HASH, INCOMPATIBLE_COMPACT,
     COMPACT_OFFSET_ARRAY_ITEM_SIZE, REGULAR_OFFSET_ARRAY_ITEM_SIZE,
     INCOMPATIBLE_COMPRESSED_ZSTD, INCOMPATIBLE_COMPRESSED_XZ, INCOMPATIBLE_COMPRESSED_LZ4,
     OBJECT_COMPRESSED_ZSTD, OBJECT_COMPRESSED_XZ, OBJECT_COMPRESSED_LZ4,
     COMPACT_ENTRY_ITEM_SIZE, COMPACT_DATA_OBJECT_HEADER_SIZE,
+    FIELD_OBJECT_HEADER_SIZE, HASH_ITEM_SIZE,
 )
 from .compress import (
     _HAS_ZSTD,
@@ -26,6 +27,7 @@ from .compress import (
     decompress_lz4_sync,
     is_zst_file,
 )
+from .hash import jenkins_hash_64, sip_hash_24
 
 
 class FileReader:
@@ -473,28 +475,49 @@ class FileReader:
 
     def query_unique(self, field_name):
         raw_key = _field_name_bytes(field_name)
-        string_key = _field_name_string_or_none(field_name)
         seen = set()
         results = []
-        for off in self._entry_offsets:
-            try:
-                entry = self._read_entry_at(off)
-                if not entry:
-                    continue
-                values = entry['raw_field_values'].get(raw_key)
-                if values is None and string_key is not None:
-                    values = entry['field_values'].get(string_key)
-                if values:
-                    for v in values:
-                        key = bytes(v)
-                        if key not in seen:
-                            seen.add(key)
-                            results.append(v)
-            except Exception:
-                pass
+        offset = self._find_field_head_data_offset(raw_key)
+        while offset:
+            data_header = self._read_data_header_at(offset)
+            payload = self._read_data_payload_at(offset)
+            if len(payload) <= len(raw_key) or payload[:len(raw_key)] != raw_key or payload[len(raw_key)] != 0x3D:
+                raise ValueError(f'field data object at offset {offset} does not match requested field')
+            value = bytes(payload[len(raw_key) + 1:])
+            if value not in seen:
+                seen.add(value)
+                results.append(value)
+            offset = data_header['next_field_offset']
         return results
 
     def enumerate_fields(self):
+        try:
+            return self._enumerate_fields_indexed()
+        except Exception:
+            return self._enumerate_fields_by_entry_scan()
+
+    def _enumerate_fields_indexed(self):
+        fields = set()
+        table_offset = self._header.get('field_hash_table_offset', 0)
+        table_size = self._header.get('field_hash_table_size', 0)
+        if table_offset == 0 or table_size < HASH_ITEM_SIZE:
+            return self._enumerate_fields_by_entry_scan()
+        buckets = table_size // HASH_ITEM_SIZE
+        for bucket in range(buckets):
+            bucket_offset = table_offset + bucket * HASH_ITEM_SIZE
+            if len(self._buffer) < bucket_offset + HASH_ITEM_SIZE:
+                raise ValueError('field hash bucket exceeds buffer')
+            offset = _UNPACK_U64_FROM(self._buffer, bucket_offset)[0]
+            while offset:
+                field = self._read_field_object_at(offset)
+                try:
+                    fields.add(field['payload'].decode('utf-8'))
+                except UnicodeDecodeError:
+                    pass
+                offset = field['next_hash_offset']
+        return fields
+
+    def _enumerate_fields_by_entry_scan(self):
         fields = set()
         for off in self._entry_offsets:
             try:
@@ -686,6 +709,64 @@ class FileReader:
             return decompress_zst_sync(payload, max_output_size=MAX_UNCOMPRESSED_SIZE)
         return payload
 
+    def _read_data_header_at(self, offset):
+        buf = self._buffer
+        if len(buf) < offset + DATA_OBJECT_HEADER_SIZE:
+            raise ValueError('buffer too small for data object')
+        oh = parse_object_header(buf, offset)
+        if not oh or oh['type'] != OBJECT_TYPE_DATA or oh['size'] < self._data_payload_offset_value:
+            raise ValueError('corrupt DATA object')
+        return {
+            'hash': _UNPACK_U64_FROM(buf, offset + 16)[0],
+            'next_hash_offset': _UNPACK_U64_FROM(buf, offset + 24)[0],
+            'next_field_offset': _UNPACK_U64_FROM(buf, offset + 32)[0],
+            'entry_offset': _UNPACK_U64_FROM(buf, offset + 40)[0],
+            'entry_array_offset': _UNPACK_U64_FROM(buf, offset + 48)[0],
+            'n_entries': _UNPACK_U64_FROM(buf, offset + 56)[0],
+        }
+
+    def _read_field_object_at(self, offset):
+        buf = self._buffer
+        if len(buf) < offset + FIELD_OBJECT_HEADER_SIZE:
+            raise ValueError('buffer too small for field object')
+        oh = parse_object_header(buf, offset)
+        if not oh or oh['type'] != OBJECT_TYPE_FIELD or oh['size'] < FIELD_OBJECT_HEADER_SIZE:
+            raise ValueError('corrupt FIELD object')
+        size = oh['size']
+        if offset + size > len(buf):
+            raise ValueError(f'field object exceeds buffer at offset {offset}')
+        return {
+            'hash': _UNPACK_U64_FROM(buf, offset + 16)[0],
+            'next_hash_offset': _UNPACK_U64_FROM(buf, offset + 24)[0],
+            'head_data_offset': _UNPACK_U64_FROM(buf, offset + 32)[0],
+            'payload': bytes(buf[offset + FIELD_OBJECT_HEADER_SIZE:offset + size]),
+        }
+
+    def _find_field_head_data_offset(self, field_name):
+        table_offset = self._header.get('field_hash_table_offset', 0)
+        table_size = self._header.get('field_hash_table_size', 0)
+        if table_offset == 0 or table_size < HASH_ITEM_SIZE:
+            return 0
+        h = self._hash(field_name)
+        buckets = table_size // HASH_ITEM_SIZE
+        if buckets == 0:
+            return 0
+        bucket_offset = table_offset + (h % buckets) * HASH_ITEM_SIZE
+        if len(self._buffer) < bucket_offset + HASH_ITEM_SIZE:
+            raise ValueError('field hash bucket exceeds buffer')
+        offset = _UNPACK_U64_FROM(self._buffer, bucket_offset)[0]
+        while offset:
+            field = self._read_field_object_at(offset)
+            if field['hash'] == h and field['payload'] == field_name:
+                return field['head_data_offset']
+            offset = field['next_hash_offset']
+        return 0
+
+    def _hash(self, payload):
+        if self._header['incompatible_flags'] & INCOMPATIBLE_KEYED_HASH:
+            return sip_hash_24(self._header['file_id'], payload)
+        return jenkins_hash_64(payload)
+
     def _data_payload_offset(self):
         return self._data_payload_offset_value
 
@@ -734,15 +815,6 @@ def _field_name_bytes(field_name):
     if isinstance(field_name, (bytearray, memoryview)):
         return bytes(field_name)
     return str(field_name).encode('utf-8')
-
-
-def _field_name_string_or_none(field_name):
-    if isinstance(field_name, str):
-        return field_name
-    try:
-        return _field_name_bytes(field_name).decode('utf-8')
-    except Exception:
-        return None
 
 
 class FilterBuilder:

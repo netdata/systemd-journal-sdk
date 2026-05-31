@@ -9,15 +9,17 @@ import { readUint64LE, uuidToString } from './binary.js';
 import {
   parseFileHeader, parseObjectHeader,
   HEADER_MIN_SIZE, HEADER_SIZE, OBJECT_TYPE_ENTRY, OBJECT_TYPE_ENTRY_ARRAY,
-  OBJECT_TYPE_DATA, OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE,
+  OBJECT_TYPE_DATA, OBJECT_TYPE_FIELD, OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE,
   DATA_OBJECT_HEADER_SIZE, OFFSET_ARRAY_OBJECT_HEADER_SIZE,
   REGULAR_ENTRY_ITEM_SIZE, INCOMPATIBLE_KEYED_HASH, INCOMPATIBLE_COMPACT,
   COMPACT_OFFSET_ARRAY_ITEM_SIZE, REGULAR_OFFSET_ARRAY_ITEM_SIZE,
   INCOMPATIBLE_COMPRESSED_XZ, INCOMPATIBLE_COMPRESSED_ZSTD, INCOMPATIBLE_COMPRESSED_LZ4,
   COMPACT_ENTRY_ITEM_SIZE, COMPACT_DATA_OBJECT_HEADER_SIZE,
+  FIELD_OBJECT_HEADER_SIZE, HASH_ITEM_SIZE,
 } from './header.js';
 import { decompressZstToTemp, isZstFile } from './compress.js';
 import { parseEntryObject, parseDataPayload } from './entry.js';
+import { jenkinsHash64, sipHash24 } from './hash.js';
 
 const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
 const SUPPORTED_INCOMPATIBLE_FLAGS = INCOMPATIBLE_KEYED_HASH |
@@ -455,27 +457,62 @@ export class FileReader {
   flushMatches() { this.filter = null; }
 
   queryUnique(fieldName) {
-    const rawKey = fieldKey(fieldNameBytes(fieldName));
-    const stringKey = fieldNameStringOrNull(fieldName);
+    const field = fieldNameBytes(fieldName);
     const seen = new Set();
     const results = [];
-    for (const off of this.entryOffsets) {
-      try {
-        const entry = this._readEntryAt(off);
-        if (!entry) continue;
-        const values = entry.rawFieldValues.get(rawKey) || (stringKey !== null ? entry.fieldValues[stringKey] : null);
-        if (values) {
-          for (const v of values) {
-            const key = v.toString('base64');
-            if (!seen.has(key)) { seen.add(key); results.push(v); }
-          }
-        }
-      } catch {}
+    let offset = this._findFieldHeadDataOffset(field);
+    while (offset !== 0n) {
+      const data = this._readDataHeaderAt(offset);
+      const payload = this._readDataPayloadAt(offset);
+      if (
+        payload.length <= field.length ||
+        !payload.subarray(0, field.length).equals(field) ||
+        payload[field.length] !== 0x3d
+      ) {
+        throw new Error(`field data object at offset ${offset} does not match requested field`);
+      }
+      const value = Buffer.from(payload.subarray(field.length + 1));
+      const key = value.toString('base64');
+      if (!seen.has(key)) {
+        seen.add(key);
+        results.push(value);
+      }
+      offset = data.nextFieldOffset;
     }
     return results;
   }
 
   enumerateFields() {
+    try {
+      return this._enumerateFieldsIndexed();
+    } catch {
+      return this._enumerateFieldsByEntryScan();
+    }
+  }
+
+  _enumerateFieldsIndexed() {
+    const fields = new Set();
+    const tableOffset = this.header.field_hash_table_offset;
+    const tableSize = this.header.field_hash_table_size;
+    if (tableOffset === 0n || tableSize < BigInt(HASH_ITEM_SIZE)) return this._enumerateFieldsByEntryScan();
+    const buckets = tableSize / BigInt(HASH_ITEM_SIZE);
+    for (let bucket = 0n; bucket < buckets; bucket++) {
+      const bucketOffset = Number(tableOffset + bucket * BigInt(HASH_ITEM_SIZE));
+      if (this.buffer.length < bucketOffset + HASH_ITEM_SIZE) {
+        throw new Error('field hash bucket exceeds buffer');
+      }
+      let offset = readUint64LE(this.buffer, bucketOffset);
+      while (offset !== 0n) {
+        const field = this._readFieldObjectAt(offset);
+        const name = decodeUtf8OrNull(field.payload);
+        if (name !== null) fields.add(name);
+        offset = field.nextHashOffset;
+      }
+    }
+    return fields;
+  }
+
+  _enumerateFieldsByEntryScan() {
     const fields = new Set();
     for (const off of this.entryOffsets) {
       try {
@@ -624,6 +661,75 @@ export class FileReader {
   _readDataPayloadAt(offset) {
     return parseDataPayload(this.buffer, Number(offset), this.compact);
   }
+
+  _readDataHeaderAt(offset) {
+    const position = Number(offset);
+    if (this.buffer.length < position + DATA_OBJECT_HEADER_SIZE) {
+      throw new Error('buffer too small for data object');
+    }
+    const oh = parseObjectHeader(this.buffer, position);
+    if (!oh || oh.type !== OBJECT_TYPE_DATA || oh.size < BigInt(this.dataPayloadOffsetValue)) {
+      throw new Error('corrupt DATA object');
+    }
+    return {
+      hash: readUint64LE(this.buffer, position + 16),
+      nextHashOffset: readUint64LE(this.buffer, position + 24),
+      nextFieldOffset: readUint64LE(this.buffer, position + 32),
+      entryOffset: readUint64LE(this.buffer, position + 40),
+      entryArrayOffset: readUint64LE(this.buffer, position + 48),
+      nEntries: readUint64LE(this.buffer, position + 56),
+    };
+  }
+
+  _readFieldObjectAt(offset) {
+    const position = Number(offset);
+    if (this.buffer.length < position + FIELD_OBJECT_HEADER_SIZE) {
+      throw new Error('buffer too small for field object');
+    }
+    const oh = parseObjectHeader(this.buffer, position);
+    if (!oh || oh.type !== OBJECT_TYPE_FIELD || oh.size < BigInt(FIELD_OBJECT_HEADER_SIZE)) {
+      throw new Error('corrupt FIELD object');
+    }
+    const end = offset + oh.size;
+    if (end > BigInt(this.buffer.length)) {
+      throw new Error(`field object exceeds buffer at offset ${offset}`);
+    }
+    return {
+      hash: readUint64LE(this.buffer, position + 16),
+      nextHashOffset: readUint64LE(this.buffer, position + 24),
+      headDataOffset: readUint64LE(this.buffer, position + 32),
+      payload: this.buffer.subarray(position + FIELD_OBJECT_HEADER_SIZE, Number(end)),
+    };
+  }
+
+  _findFieldHeadDataOffset(field) {
+    const tableOffset = this.header.field_hash_table_offset;
+    const tableSize = this.header.field_hash_table_size;
+    if (tableOffset === 0n || tableSize < BigInt(HASH_ITEM_SIZE)) return 0n;
+    const h = this._hash(field);
+    const buckets = tableSize / BigInt(HASH_ITEM_SIZE);
+    if (buckets === 0n) return 0n;
+    const bucketOffset = Number(tableOffset + (h % buckets) * BigInt(HASH_ITEM_SIZE));
+    if (this.buffer.length < bucketOffset + HASH_ITEM_SIZE) {
+      throw new Error('field hash bucket exceeds buffer');
+    }
+    let offset = readUint64LE(this.buffer, bucketOffset);
+    while (offset !== 0n) {
+      const fieldObject = this._readFieldObjectAt(offset);
+      if (fieldObject.hash === h && fieldObject.payload.equals(field)) {
+        return fieldObject.headDataOffset;
+      }
+      offset = fieldObject.nextHashOffset;
+    }
+    return 0n;
+  }
+
+  _hash(payload) {
+    if (this.header.incompatible_flags & INCOMPATIBLE_KEYED_HASH) {
+      return sipHash24(this.header.file_id, payload);
+    }
+    return jenkinsHash64(payload);
+  }
 }
 
 // Match filter (mirrors Go filterBuilder).
@@ -739,11 +845,6 @@ function fieldNameBytes(fieldName) {
   if (Buffer.isBuffer(fieldName)) return fieldName;
   if (fieldName instanceof Uint8Array) return Buffer.from(fieldName.buffer, fieldName.byteOffset, fieldName.byteLength);
   return Buffer.from(String(fieldName), 'utf8');
-}
-
-function fieldNameStringOrNull(fieldName) {
-  if (typeof fieldName === 'string') return fieldName;
-  return decodeUtf8OrNull(fieldNameBytes(fieldName));
 }
 
 function fieldKey(fieldName) {

@@ -10,10 +10,41 @@ Success means:
 - SDKs write valid journal files without CGO, native Node.js runtime addon loading/linking, or external journal libraries. Dependency packages may ship native artifacts if the SDK runtime path is constrained and tested to use only non-native implementations (e.g. WASM).
 - Journal files written by one language can be read by every other language and by compatible systemd tooling where applicable.
 - The same shared conformance suite, fixtures, interoperability tests, benchmarks, and profiling workflows apply to every implementation.
+- SDK APIs exercise the journal format's native performance features. Correct output is not enough when the format has an index, hash table, object chain, offset array, mmap, or reusable object path that avoids row scans, repeated parsing, unnecessary decompression, unnecessary allocation, or avoidable syscalls.
 - journalctl rewrites exist for Rust, Go, Node.js, and Python for file-backed/query behavior.
 - Daemon-only journalctl operations are not implemented in this project.
 
 Project SOW status: initialized
+
+## Performance Contract
+
+This project is not only a compatibility clone. It is a high-performance
+journal file-format SDK. Every reader, writer, query helper, and facade must be
+designed to use the most efficient journal-native path that preserves the
+documented contract.
+
+Mandatory rules:
+
+- Prefer journal-native structures over row scans. Use FIELD/DATA hash tables,
+  FIELD DATA chains, DATA entry arrays, ENTRY arrays, offsets, sequence/time
+  metadata, and mmap-backed slices when those structures answer the request.
+- Do not implement a public API by expanding every entry when the journal format
+  can answer it through an index or object chain. For example, unfiltered unique
+  field values must walk the FIELD object's DATA chain, matching systemd, not
+  scan all entries. Field-name enumeration must walk FIELD hash tables on valid
+  indexed files, with entry-scan fallback only for documented compatibility
+  cases where the FIELD table cannot be traversed safely.
+- Avoid decoding, decompressing, copying, hashing, sorting, or allocating data
+  outside the requested scope. Compressed DATA must stay compressed unless the
+  caller needs that DATA's value for filtering, faceting, FTS, or returned-row
+  display.
+- Treat repeated parsing of reusable DATA objects as a performance bug unless a
+  SOW records evidence that the alternative is slower or unsafe.
+- Benchmark and profile hot paths before accepting performance-sensitive code.
+  Benchmarks must compare against systemd when practical and against the fastest
+  sibling implementation in this repository.
+- Any intentionally slower path must be explicit in the SOW, docs, and tests,
+  with the reason, measured cost, and the conditions where it is acceptable.
 
 ## Runtime Purity Architecture
 
