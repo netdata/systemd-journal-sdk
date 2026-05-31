@@ -65,6 +65,15 @@ All validation commands passed for all 8 generated files:
 - Rust SDK corpus digest helper;
 - Go SDK corpus digest helper.
 
+SOW-0073 added a supplemental v239 historical unkeyed/LZ4 reader matrix using
+the shared runner after it was extended to include Python and Node.js SDK
+readers. The supplemental offline and online compressed v239 files both passed:
+current stock `journalctl`, Rust, Go, Python, and Node.js all produced 7
+entries, 39 payloads, and the same current logical digest
+`af7a90eed5d9b803c411065a615a896ef263e0e421b25070cdd5e92869eae00a`.
+The v239-built `journalctl` still produced matching counts but the known legacy
+export metadata digest `0a63eb608b716ba91c4d1835702774ef6950446c44a9a554262bdc7424480c9e`.
+
 Current stock `journalctl`, Rust SDK, and Go SDK produced the same canonical
 logical digest for every file:
 

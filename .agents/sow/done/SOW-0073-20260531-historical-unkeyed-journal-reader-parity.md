@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: Go reader hotfix implemented to unblock the real-world corpus sweep; full cross-language fixture and parity work remains pending.
+Sub-state: implemented, validated, reviewed, and ready for merge.
 
 ## Requirements
 
@@ -213,18 +213,44 @@ Failure handling:
 - Kept Go writer append-open conservative: `journal.Open()` / `OpenWithOptions()` still reject unkeyed historical files because the Go writer appends keyed-hash objects and must not corrupt unkeyed historical files.
 - Validated the patched Go digest helper directly on the RHEL 8.10 host. Stock systemd 239 verified the checked file and exported 27,436 entries; patched Go opened and read 27,459 entries from the same live file. The +23 delta matches the previously identified old systemd 239 same-file duplicate suppression behavior.
 
+### 2026-06-01
+
+- Removed the same invalid reader-only keyed-hash requirement from Python and Node.js. Both reader stacks already had the unkeyed Jenkins hash branch; the bug was the header support gate rejecting valid historical files before traversal.
+- Kept writer append behavior conservative in Go, Python, and Node.js: appending to unkeyed historical files remains rejected because SDK writers append keyed-hash objects and this SOW is only about reading existing historical files.
+- Extended `tests/systemd_matrix/run_systemd_matrix.py` so reader matrix checks include Python and Node.js SDK file-backed export output in addition to stock systemd, version-built systemd, Rust, and Go.
+- Added the `--version-journalctl` option to the matrix runner so prebuilt historical `journalctl` binaries under `.local/systemd-matrix/` can be used without rebuilding systemd during focused historical-reader checks.
+- Ran the v239 historical unkeyed/LZ4 offline and online synthetic files from `.local/systemd-matrix/versions/old-enterprise/corpus/v239/`. Current stock `journalctl`, Rust, Go, Python, and Node.js all matched 7 entries, 39 payloads, and logical digest `af7a90eed5d9b803c411065a615a896ef263e0e421b25070cdd5e92869eae00a`. The v239-built `journalctl` verified both files and produced matching counts with the known legacy export metadata digest drift.
+- Updated the systemd-matrix README, old-enterprise validation report, product scope spec, and journal compatibility skill to record the historical unkeyed reader rule and validation workflow.
+
 ## Validation
 
 Acceptance criteria evidence:
 
 - Go no longer rejects historical unkeyed-hash journals solely because `HEADER_INCOMPATIBLE_KEYED_HASH` is absent. Evidence: `go/journal/format.go` no longer rejects unkeyed headers; `go/journal/format_test.go` covers an unkeyed LZ4 historical header; RHEL 8.10 real-use check opened and read an unkeyed LZ4 journal with the patched Go digest helper.
-- Full Rust, Go, Python, and Node historical fixture parity remains pending.
+- Python no longer rejects historical unkeyed-hash journals solely because `HEADER_INCOMPATIBLE_KEYED_HASH` is absent. Evidence: `python/journal/reader.py` accepts supported unkeyed incompatible flags; `python/test_all.py` covers a 240-byte unkeyed/LZ4 historical header and `FileReader.open()` on that header.
+- Node.js no longer rejects historical unkeyed-hash journals solely because `HEADER_INCOMPATIBLE_KEYED_HASH` is absent. Evidence: `node/src/lib/reader.js` accepts supported unkeyed incompatible flags; `node/test/all.js` covers `FileReader.open()` on a 240-byte unkeyed/LZ4 historical header.
+- Rust, Go, Python, and Node.js historical fixture parity passed on v239 synthetic LZ4/unkeyed offline and online files. Evidence: `.local/systemd-matrix/reports/matrix-v239-historical-unkeyed-lz4-offline.json` and `.local/systemd-matrix/reports/matrix-v239-historical-unkeyed-lz4-online.json`, plus committed summary update in `tests/systemd_matrix/old-enterprise-v219-v239.md`.
+- The fixture records old v239 CLI behavior separately as historical export metadata drift. Evidence: both v239 matrix reports record `VERSION_EXPORT_METADATA_DRIFT` as an observation, not a discrepancy.
 
 Tests or equivalent validation:
 
 - `go test ./journal`: passed.
 - `go test ./...` in the Go module: passed.
 - RHEL 8.10 real-use check with patched `go/internal/testcmd/corpus_digest`: passed open/read of the historical unkeyed LZ4 journal.
+- `PYTHONPATH=python python3` targeted historical unkeyed/LZ4 Python reader check: passed.
+- `node node/test/all.js`: passed.
+- `go test ./...` in `go/`: passed.
+- `cargo test -p journal-core sanitize_header_for_historical_size_matches_per_field_boundaries`: passed.
+- `python3 tests/systemd_matrix/run_systemd_matrix.py test --version v239 --case historical-unkeyed-lz4-offline --journal .local/systemd-matrix/versions/old-enterprise/corpus/v239/v239-compressed-offline.journal --version-journalctl .local/systemd-matrix/versions/old-enterprise/build/v239/journalctl --timeout 300`: passed with 0 discrepancies.
+- `python3 tests/systemd_matrix/run_systemd_matrix.py test --version v239 --case historical-unkeyed-lz4-online --journal .local/systemd-matrix/versions/old-enterprise/corpus/v239/v239-compressed-online.journal --version-journalctl .local/systemd-matrix/versions/old-enterprise/build/v239/journalctl --timeout 300`: passed with 0 discrepancies.
+- `python3 -m py_compile tests/systemd_matrix/run_systemd_matrix.py`: passed.
+- `python3 -m unittest tests.corpus_eval.test_canonical`: passed.
+- `git diff --check`: passed.
+- `.agents/sow/audit.sh`: passed before reviewer batch; rerun required before closing after final SOW updates.
+
+Validation note:
+
+- `python3 python/test_all.py` with `PYTHONPATH=.local/python-deps:python` did not complete within the local wait window and was stopped by targeted PID after it waited on its own `python/adapter.py run` child. The targeted Python historical reader check and the v239 systemd matrix both passed. This is recorded as a validation limitation, not as evidence of a SOW-0073 regression.
 
 Real-use evidence:
 
@@ -236,11 +262,32 @@ Real-use evidence:
 
 Reviewer findings:
 
-- Pending.
+- `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`. Non-blocking notes:
+  Python full suite timeout was already recorded; Rust writer append-open
+  uses a keyed-hash assertion on append rather than the explicit rejection
+  style used by Go, Python, and Node.js; unit tests are header-only but the
+  v239 matrix exercises real LZ4 DATA objects. Disposition: no SOW-0073 code
+  change required; Rust writer behavior is tracked separately by SOW-0077.
+- `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`. Non-blocking notes:
+  Node header refresh and Python full suite timeout. Disposition: no change;
+  targeted Python check and v239 all-reader matrix are the relevant gates for
+  this reader-only SOW.
+- `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`. Non-blocking notes:
+  `--version-journalctl` is an executable override and is not constrained by
+  `require_under()`. Disposition: accepted for this local matrix tool because
+  journal inputs remain constrained and the option is documented for
+  repository-local `.local/systemd-matrix/` binaries.
+- `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`. Non-blocking
+  note: Python full suite timeout. Disposition: no change; targeted and matrix
+  validation passed.
+- `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`. Non-blocking notes:
+  Python full suite timeout, no explicit writer negative test, and minor
+  matrix refactor opportunity. Disposition: no change; writer append behavior
+  was intentionally not expanded in this reader SOW.
 
 Same-failure scan:
 
-- Pending.
+- Source scan found reader-only keyed-hash gates in Python and Node.js and a writer append-open keyed-hash gate in Python, Node.js, and Go. Reader gates were removed. Writer append-open gates were intentionally preserved because appending keyed objects to historical unkeyed files is outside this SOW and unsafe without separate proof.
 
 Sensitive data gate:
 
@@ -248,49 +295,67 @@ Sensitive data gate:
 
 Artifact maintenance gate:
 
-- AGENTS.md: pending final review.
-- Runtime project skills: pending final review.
-- Specs: pending final review.
-- End-user/operator docs: pending final review.
-- End-user/operator skills: pending final review.
-- SOW lifecycle: in-progress in `.agents/sow/current/`. This hotfix unblocks SOW-0064; full SOW-0073 completion remains pending.
-- SOW-status.md: updated when this SOW was created.
+- AGENTS.md: no update required; repository-wide runtime purity and SOW rules did not change.
+- Runtime project skills: updated `.agents/skills/project-journal-compatibility/SKILL.md` to state that readers must not require keyed-hash for historical files and must use the unkeyed Jenkins path.
+- Specs: updated `.agents/sow/specs/product-scope.md` to state Rust, Go, Node.js, and Python reader support for historical unkeyed/LZ4 files.
+- End-user/operator docs: updated `tests/systemd_matrix/README.md` and `tests/systemd_matrix/old-enterprise-v219-v239.md` because the historical matrix runner and old-enterprise report changed.
+- End-user/operator skills: none affected; no exported operator skill changed.
+- SOW lifecycle: set to `Status: completed`; moved to `.agents/sow/done/`
+  during closure after reviewer batch and final audit pass.
+- SOW-status.md: updated for the new sub-state and validation status.
 
 Specs update:
 
-- Pending.
+- Updated `.agents/sow/specs/product-scope.md`.
 
 Project skills update:
 
-- Pending.
+- Updated `.agents/skills/project-journal-compatibility/SKILL.md`.
 
 End-user/operator docs update:
 
-- Pending.
+- Updated `tests/systemd_matrix/README.md` and `tests/systemd_matrix/old-enterprise-v219-v239.md`.
 
 End-user/operator skills update:
 
-- Pending.
+- No exported operator skill changed.
 
 Lessons:
 
-- Pending.
+- Historical reader support must treat `HEADER_INCOMPATIBLE_KEYED_HASH` as an optional feature flag, not a required baseline. Writer append-open safety is a separate contract and can remain stricter than reader open support.
 
 Follow-up mapping:
 
-- Pending.
+- Exact old systemd 239 CLI duplicate-suppression behavior is rejected for
+  core readers because current systemd and the file-format entry array expose
+  the complete entry set. If exact old CLI emulation is requested later, it
+  should be a separate optional journalctl compatibility SOW.
+- Rust writer append-open behavior for historical unkeyed files is tracked by
+  SOW-0077. It is outside this reader-only SOW, but the reviewer-discovered
+  assertion path should become a controlled error before any user-facing writer
+  contract claims graceful rejection parity.
 
 ## Outcome
 
-Pending.
+Completed.
+
+Rust, Go, Python, and Node.js readers now accept historical unkeyed/LZ4
+systemd 239-era files for the covered reader path. The v239 offline and online
+synthetic matrices pass with current stock `journalctl`, Rust, Go, Python, and
+Node.js producing the same logical digest and no discrepancies. Historical
+systemd 239 export metadata drift is recorded separately as old CLI behavior.
 
 ## Lessons Extracted
 
-Pending.
+Historical reader support must treat `HEADER_INCOMPATIBLE_KEYED_HASH` as an
+optional feature flag, not as a required baseline. Writer append safety is a
+separate contract from reader open support and needs its own tests when the SDK
+claims graceful append-open rejection.
 
 ## Followup
 
-None yet.
+- SOW-0077 tracks Rust writer append-open rejection parity for historical
+  unkeyed journals.
 
 ## Regression Log
 

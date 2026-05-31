@@ -7,11 +7,6 @@ Last updated: 2026-06-01
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
-- SOW-0073 - Historical Unkeyed Journal Reader Parity: in progress. A RHEL
-  8.10/systemd 239 check found an unkeyed LZ4 journal that stock systemd
-  verifies and reads; Go's keyed-hash header gate has been removed for readers
-  and validated against the RHEL 8.10 host. Full sanitized fixture coverage and
-  Python/Node parity remain pending.
 
 ## Pending
 
@@ -51,8 +46,21 @@ Last updated: 2026-06-01
   repeatable, feature-selected real-corpus verification pass using sanitized
   manifests and reports, so important reader/writer changes can be checked
   against real journal shapes without rerunning the full corpus every time.
+- SOW-0077 - Rust Historical Unkeyed Writer Rejection: open. Tracks the
+  SOW-0073 reviewer-discovered Rust writer append-open hardening item:
+  appending to historical unkeyed files should fail with a controlled error,
+  not an assertion panic, while SOW-0073 reader support remains unchanged.
 
 ## Recently Closed Or Completed
+- SOW-0073 - Historical Unkeyed Journal Reader Parity: completed. A RHEL
+  8.10/systemd 239 check found an unkeyed LZ4 journal that stock systemd
+  verifies and reads. Go, Python, and Node.js reader-only keyed-hash gates were
+  removed; Rust already selected keyed versus unkeyed hash by header flag. The
+  v239 synthetic unkeyed/LZ4 offline and online matrices pass with current
+  stock journalctl plus Rust, Go, Python, and Node.js matching 7 entries, 39
+  payloads, and the same logical digest. Five read-only reviewers voted
+  `PRODUCTION GRADE`; the Rust writer assertion follow-up is tracked by
+  SOW-0077.
 - SOW-0064 - Real World Journal Corpus Evaluation: completed after regression
   repair. The corpus harness, single-file repair work, focused 100-file
   real-corpus checks, raw reader/spool-writer experiments, systemd-version

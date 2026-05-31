@@ -58,6 +58,7 @@ from journal.header import (  # noqa: E402
     FILE_SIZE_INCREASE,
     HEADER_SIZE,
     INCOMPATIBLE_COMPACT,
+    INCOMPATIBLE_COMPRESSED_LZ4,
     INCOMPATIBLE_KEYED_HASH,
     JOURNAL_COMPACT_SIZE_MAX,
     OBJECT_COMPRESSED_LZ4,
@@ -377,10 +378,10 @@ def test_parse_file_header_historical_field_boundaries():
         raise AssertionError('future header with truncated known prefix should be rejected')
 
 
-def _historical_header_fixture(header_size):
+def _historical_header_fixture(header_size, incompatible_flags=INCOMPATIBLE_KEYED_HASH):
     buf = bytearray(max(HEADER_SIZE, header_size))
     buf[0:8] = b'LPKSHHRH'
-    buf[12:16] = INCOMPATIBLE_KEYED_HASH.to_bytes(4, 'little')
+    buf[12:16] = int(incompatible_flags).to_bytes(4, 'little')
     buf[88:96] = header_size.to_bytes(8, 'little')
     buf[208:216] = (11).to_bytes(8, 'little')
     buf[216:224] = (22).to_bytes(8, 'little')
@@ -394,6 +395,24 @@ def _historical_header_fixture(header_size):
     if header_size < HEADER_SIZE:
         return bytes(buf[:header_size])
     return bytes(buf)
+
+
+def test_reader_accepts_historical_unkeyed_lz4_header():
+    fixture = _historical_header_fixture(240, INCOMPATIBLE_COMPRESSED_LZ4)
+    header = parse_file_header(fixture)
+    reader_module._ensure_supported_header(header)
+    assert not (header['incompatible_flags'] & INCOMPATIBLE_KEYED_HASH)
+    assert header['incompatible_flags'] & INCOMPATIBLE_COMPRESSED_LZ4
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'unkeyed-lz4.journal')
+        with open(path, 'wb') as f:
+            f.write(fixture)
+        reader = FileReader.open(path)
+        try:
+            assert reader.header()['incompatible_flags'] == INCOMPATIBLE_COMPRESSED_LZ4
+            assert not reader.step()
+        finally:
+            reader.close()
 
 
 def test_writer_reader_and_binary_export():
@@ -3019,6 +3038,7 @@ def main():
     test_journald_field_policy_validation()
     test_live_delay_parser()
     test_parse_file_header_historical_field_boundaries()
+    test_reader_accepts_historical_unkeyed_lz4_header()
     test_writer_reader_and_binary_export()
     test_writer_head_seqnum_zero_defaults_to_one()
     test_writer_raw_backward_monotonic_pass_through_fails_verification()

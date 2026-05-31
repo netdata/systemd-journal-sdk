@@ -35,6 +35,7 @@ import {
   COMPACT_DATA_OBJECT_HEADER_SIZE,
   HEADER_SIZE,
   INCOMPATIBLE_COMPACT,
+  INCOMPATIBLE_COMPRESSED_LZ4,
   INCOMPATIBLE_COMPRESSED_XZ,
   INCOMPATIBLE_KEYED_HASH,
   OBJECT_COMPRESSED_LZ4,
@@ -173,10 +174,10 @@ function journalHasDataObjectFlag(path, flag) {
   return false;
 }
 
-function makeHistoricalHeaderFixture(headerSize) {
+function makeHistoricalHeaderFixture(headerSize, incompatibleFlags = INCOMPATIBLE_KEYED_HASH) {
   const buf = Buffer.alloc(Math.max(HEADER_SIZE, headerSize));
   buf.write('LPKSHHRH', 0, 8, 'latin1');
-  buf.writeUInt32LE(INCOMPATIBLE_KEYED_HASH, 12);
+  buf.writeUInt32LE(incompatibleFlags, 12);
   buf.writeBigUInt64LE(BigInt(headerSize), 88);
   buf.writeBigUInt64LE(11n, 208);
   buf.writeBigUInt64LE(22n, 216);
@@ -225,6 +226,20 @@ assert.throws(
   /header buffer too small/,
   'future header with truncated known prefix should be rejected',
 );
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-historical-unkeyed-'));
+  const journalPath = join(tempDir, 'unkeyed-lz4.journal');
+  try {
+    writeFileSync(journalPath, makeHistoricalHeaderFixture(240, INCOMPATIBLE_COMPRESSED_LZ4));
+    const reader = FileReader.open(journalPath);
+    assert.equal(reader.header.incompatible_flags & INCOMPATIBLE_KEYED_HASH, 0);
+    assert.ok(reader.header.incompatible_flags & INCOMPATIBLE_COMPRESSED_LZ4);
+    reader.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
 
 const jenkinsVectors = [
   ['', 0xdeadbeefdeadbeefn],

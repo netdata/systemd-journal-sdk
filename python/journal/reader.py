@@ -790,8 +790,6 @@ def _map_file_readonly(path):
 def _ensure_supported_header(header):
     if header['header_size'] < HEADER_MIN_SIZE:
         raise ValueError('unsupported journal: header size too small')
-    if not (header['incompatible_flags'] & INCOMPATIBLE_KEYED_HASH):
-        raise ValueError('unsupported journal: keyed hash required')
 
     supported = (
         INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_ZSTD |

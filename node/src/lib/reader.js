@@ -820,9 +820,6 @@ function ensureSupportedHeader(header) {
   if (header.header_size < BigInt(HEADER_MIN_SIZE)) {
     throw new Error('unsupported journal: header size too small');
   }
-  if (!(header.incompatible_flags & INCOMPATIBLE_KEYED_HASH)) {
-    throw new Error('unsupported journal: keyed hash required');
-  }
   if (header.incompatible_flags & ~SUPPORTED_INCOMPATIBLE_FLAGS) {
     throw new Error('unsupported journal: incompatible flags ' + header.incompatible_flags.toString(16));
   }

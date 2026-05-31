@@ -49,6 +49,8 @@ DISCREPANCY_CODES = {
     "STOCK_READ_FAILED": "stock journalctl export read failed",
     "RUST_READ_FAILED": "Rust SDK digest helper failed",
     "GO_READ_FAILED": "Go SDK digest helper failed",
+    "PYTHON_READ_FAILED": "Python SDK file-backed journalctl export failed",
+    "NODE_READ_FAILED": "Node.js SDK file-backed journalctl export failed",
     "DIGEST_MISMATCH": "reader logical digest differs from the selected baseline",
     "COUNT_MISMATCH": "reader logical counts differ from the selected baseline",
     "VERSION_EXPORT_METADATA_DRIFT": (
@@ -150,7 +152,9 @@ def matrix_env(out: Path) -> dict[str, str]:
             "GOPATH": str(cache / "go-path"),
             "npm_config_cache": str(cache / "npm-cache"),
             "PIP_CACHE_DIR": str(cache / "pip-cache"),
-            "PYTHONPATH": str(ROOT / "python"),
+            "PYTHONPATH": os.pathsep.join(
+                [str(ROOT / ".local" / "python-deps"), str(ROOT / "python")]
+            ),
         }
     )
     return env
@@ -314,22 +318,13 @@ def journalctl_version(journalctl: Path | str, env: dict[str, str], timeout: int
     }
 
 
-def stream_journalctl_digest(
+def stream_export_command_digest(
     label: str,
-    journalctl: Path | str,
-    journal_path: Path,
+    cmd: list[str],
     *,
     env: dict[str, str],
     timeout: int,
 ) -> tuple[dict[str, Any] | None, CommandResult]:
-    cmd = [
-        str(journalctl),
-        "--file",
-        str(journal_path),
-        "--output=export",
-        "--all",
-        "--no-pager",
-    ]
     started = time.perf_counter()
     proc = subprocess.Popen(
         cmd,
@@ -414,6 +409,29 @@ def stream_journalctl_digest(
     if not isinstance(digest, dict):
         return None, command_result
     return digest, command_result
+
+
+def stream_journalctl_digest(
+    label: str,
+    journalctl: Path | str,
+    journal_path: Path,
+    *,
+    env: dict[str, str],
+    timeout: int,
+) -> tuple[dict[str, Any] | None, CommandResult]:
+    return stream_export_command_digest(
+        label,
+        [
+            str(journalctl),
+            "--file",
+            str(journal_path),
+            "--output=export",
+            "--all",
+            "--no-pager",
+        ],
+        env=env,
+        timeout=timeout,
+    )
 
 
 def maybe_meson_option(options_text: str, name: str, value: str) -> list[str]:
@@ -991,6 +1009,27 @@ def read_with_sdk(
     return row
 
 
+def read_with_export_command(
+    role: str,
+    cmd: list[str],
+    *,
+    env: dict[str, str],
+    timeout: int,
+) -> dict[str, Any]:
+    digest, result = stream_export_command_digest(role, cmd, env=env, timeout=timeout)
+    row = {
+        "role": role,
+        "kind": "reader",
+        "status": "ok" if digest is not None and result.returncode == 0 else "failed",
+        "schema": DIGEST_SCHEMA,
+        "command": result.as_dict(),
+    }
+    if digest is not None:
+        row["logical_digest"] = digest.get("logical_digest")
+        row["counts"] = digest.get("counts")
+    return row
+
+
 def compare_readers(
     results: list[dict[str, Any]],
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], list[dict[str, Any]]]:
@@ -1048,7 +1087,8 @@ def compare_readers(
 def test_matrix(args: argparse.Namespace) -> dict[str, Any]:
     out = args.out.resolve()
     env = matrix_env(out)
-    build = ensure_build(args)
+    explicit_version_journalctl = getattr(args, "version_journalctl", None)
+    build = None if explicit_version_journalctl else ensure_build(args)
     rust_digest, go_digest, sdk_build = sdk_tool_paths(out, args.timeout)
     slug = version_slug(args.version)
     case = version_slug(args.case)
@@ -1069,7 +1109,10 @@ def test_matrix(args: argparse.Namespace) -> dict[str, Any]:
         }
 
     artifacts = build.get("artifacts", {}) if build else {}
-    version_journalctl = ROOT / artifacts["journalctl"] if artifacts.get("journalctl") else None
+    if explicit_version_journalctl:
+        version_journalctl = explicit_version_journalctl.resolve()
+    else:
+        version_journalctl = ROOT / artifacts["journalctl"] if artifacts.get("journalctl") else None
     stock_journalctl = shutil.which("journalctl")
     results: list[dict[str, Any]] = []
     discrepancies: list[dict[str, Any]] = []
@@ -1140,6 +1183,39 @@ def test_matrix(args: argparse.Namespace) -> dict[str, Any]:
         results.append(read_with_sdk("go_sdk_read", go_digest, journal_path, env=env, timeout=args.timeout))
     else:
         discrepancies.append({"code": "BUILD_FAILED", "tool": "go-corpus-digest"})
+    results.append(
+        read_with_export_command(
+            "python_sdk_read",
+            [
+                sys.executable,
+                str(ROOT / "python" / "cmd" / "journalctl.py"),
+                "--file",
+                str(journal_path),
+                "--output=export",
+            ],
+            env=env,
+            timeout=args.timeout,
+        )
+    )
+    node = shutil.which("node")
+    if node:
+        results.append(
+            read_with_export_command(
+                "node_sdk_read",
+                [
+                    node,
+                    str(ROOT / "node" / "cmd" / "journalctl" / "index.js"),
+                    "--file",
+                    str(journal_path),
+                    "--output",
+                    "export",
+                ],
+                env=env,
+                timeout=args.timeout,
+            )
+        )
+    else:
+        discrepancies.append({"code": "MISSING_TOOL", "tool": "node"})
 
     for row in results:
         if row.get("status") == "ok":
@@ -1157,6 +1233,10 @@ def test_matrix(args: argparse.Namespace) -> dict[str, Any]:
             discrepancies.append({"code": "RUST_READ_FAILED", "role": role})
         elif role == "go_sdk_read":
             discrepancies.append({"code": "GO_READ_FAILED", "role": role})
+        elif role == "python_sdk_read":
+            discrepancies.append({"code": "PYTHON_READ_FAILED", "role": role})
+        elif role == "node_sdk_read":
+            discrepancies.append({"code": "NODE_READ_FAILED", "role": role})
 
     baseline, compare_discrepancies, observations = compare_readers(results)
     discrepancies.extend(compare_discrepancies)
@@ -1165,6 +1245,8 @@ def test_matrix(args: argparse.Namespace) -> dict[str, Any]:
         "stock_journalctl_read",
         "rust_sdk_read",
         "go_sdk_read",
+        "python_sdk_read",
+        "node_sdk_read",
     }
     present_ok = {
         str(row.get("role"))
@@ -1348,6 +1430,7 @@ def build_parser() -> argparse.ArgumentParser:
     test.add_argument("--case", default="smoke")
     test.add_argument("--journal", type=Path)
     test.add_argument("--verify-key-file", type=Path)
+    test.add_argument("--version-journalctl", type=Path)
 
     smoke_cmd = sub.add_parser("smoke", help="build, generate, and test one version")
     add_common_args(smoke_cmd)

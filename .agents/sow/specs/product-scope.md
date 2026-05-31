@@ -541,6 +541,11 @@ Accepted reader API layers:
   tail seqnum, tail monotonic, and TAG/FSS HMAC corruption classes.
 - Daemon-only libsystemd/journalctl operations remain outside the SDK facade
   target and must fail with controlled unsupported behavior when exposed.
+- Rust, Go, Node.js, and Python readers accept historical unkeyed-hash journal
+  files, including systemd 239-era LZ4-compressed DATA files with
+  `header_size=240`. Core reader traversal exposes the current-systemd/file
+  format entry set, not old systemd 239 same-file duplicate suppression in its
+  CLI traversal.
 
 Current Go reader feature slice:
 
