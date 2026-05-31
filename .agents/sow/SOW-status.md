@@ -15,17 +15,16 @@ Last updated: 2026-05-30
   boot ID regeneration and active-file snapshot handling have also been
   repaired. A Go compact-zstd large-payload readback issue was found by the
   full-corpus sweep and repaired with zstd frame content-size metadata; the
-  latest 100-file real-corpus batch recorded 1,100 results and 0 discrepancies.
+  latest full-corpus sweep was paused cleanly at 20,497 completed checks, all
+  `ok`, while the Go historical unkeyed-reader gate from SOW-0073 is repaired.
+- SOW-0073 - Historical Unkeyed Journal Reader Parity: in progress. A RHEL
+  8.10/systemd 239 check found an unkeyed LZ4 journal that stock systemd
+  verifies and reads; Go's keyed-hash header gate has been removed for readers
+  and validated against the RHEL 8.10 host. Full sanitized fixture coverage and
+  Python/Node parity remain pending.
 
 ## Pending
 
-- SOW-0073 - Historical Unkeyed Journal Reader Parity: open. A RHEL
-  8.10/systemd 239 check found an unkeyed LZ4 journal that stock systemd
-  verifies and reads; current Go rejects it. Follow-up investigation showed the
-  Rust/temporary-Go extra entries are valid file-format entries exposed by
-  current systemd, while old systemd 239 `journalctl` suppresses same-file
-  duplicate-looking entries. Core reader work is to accept historical unkeyed
-  journals, not to emulate old CLI duplicate suppression.
 - SOW-0047 - Netdata NetFlow SDK Integration: open. Component integration for
   NetFlow reader and writer paths after inventory and performance gates.
 - SOW-0048 - Netdata OTEL Writer SDK Integration: open. Component integration

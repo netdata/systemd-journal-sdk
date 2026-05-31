@@ -57,6 +57,8 @@ Current reader scope:
 - `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst` files;
 - zstd-compressed fixture files and zstd, xz, and lz4-compressed DATA objects
   through pure-Go dependencies;
+- historical unkeyed-hash journal reading, including LZ4-compressed DATA
+  objects;
 - mmap-backed live reading by default on Unix, with explicit `ReadAt` access
   available through `ReaderOptions` for diagnostics or constrained
   environments. Non-Unix targets use the `ReadAt`-backed mapping fallback;

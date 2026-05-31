@@ -79,14 +79,32 @@ func TestParseHeaderRejectsTruncatedFutureHeaderPrefix(t *testing.T) {
 	}
 }
 
+func TestParseHeaderAcceptsHistoricalUnkeyedJournal(t *testing.T) {
+	buf := historicalHeaderFixtureWithFlags(240, incompatibleCompressedLZ4)
+	header, err := parseHeader(buf)
+	if err != nil {
+		t.Fatalf("parseHeader() error = %v", err)
+	}
+	if header.incompatibleFlags&incompatibleKeyedHash != 0 {
+		t.Fatalf("parseHeader() incompatible flags = %#x, want unkeyed", header.incompatibleFlags)
+	}
+	if header.incompatibleFlags&incompatibleCompressedLZ4 == 0 {
+		t.Fatalf("parseHeader() incompatible flags = %#x, want LZ4 flag", header.incompatibleFlags)
+	}
+}
+
 func historicalHeaderFixture(size int) []byte {
+	return historicalHeaderFixtureWithFlags(size, incompatibleKeyedHash)
+}
+
+func historicalHeaderFixtureWithFlags(size int, incompatibleFlags uint32) []byte {
 	bufferSize := headerSize
 	if size > bufferSize {
 		bufferSize = size
 	}
 	buf := make([]byte, bufferSize)
 	copy(buf[0:8], []byte{'L', 'P', 'K', 'S', 'H', 'H', 'R', 'H'})
-	binary.LittleEndian.PutUint32(buf[12:16], incompatibleKeyedHash)
+	binary.LittleEndian.PutUint32(buf[12:16], incompatibleFlags)
 	binary.LittleEndian.PutUint64(buf[88:96], uint64(size))
 	binary.LittleEndian.PutUint64(buf[208:216], 11)
 	binary.LittleEndian.PutUint64(buf[216:224], 22)

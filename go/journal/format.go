@@ -353,9 +353,6 @@ func parseHeader(src []byte) (journalHeader, error) {
 	if h.headerSize < headerMinSize {
 		return journalHeader{}, errUnsupportedJournal
 	}
-	if h.incompatibleFlags&incompatibleKeyedHash == 0 {
-		return journalHeader{}, errUnsupportedJournal
-	}
 	return h, nil
 }
 

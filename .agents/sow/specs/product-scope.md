@@ -538,6 +538,9 @@ Current Go reader feature slice:
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
 - whole-file zstd fixtures and zstd, xz, and lz4-compressed DATA objects
   through pure-Go dependencies;
+- historical unkeyed-hash journal reading, including LZ4-compressed DATA
+  objects, with core reader traversal exposing the file-format entry set rather
+  than old systemd 239 same-file duplicate suppression behavior;
 - directory iteration across active and archived files with stock-compatible
   root plus one machine-id subdirectory traversal and interleaved multi-file
   ordering;

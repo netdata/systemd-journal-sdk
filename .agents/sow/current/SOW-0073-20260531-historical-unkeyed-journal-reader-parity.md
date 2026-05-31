@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: open
+Status: in-progress
 
-Sub-state: root cause narrowed by local subagent; core reader gap is Go's keyed-hash rejection, while the 23-entry count difference is old systemd 239 journalctl duplicate suppression not present in systemd 260.1.
+Sub-state: Go reader hotfix implemented to unblock the real-world corpus sweep; full cross-language fixture and parity work remains pending.
 
 ## Requirements
 
@@ -37,7 +37,7 @@ Inferences:
 
 Unknowns:
 
-- Whether Python and Node have the same rejection/count behavior once the historical fixture is available.
+- Whether Python and Node have the same rejection/count behavior once the historical fixture is available. Current source inspection found explicit keyed-hash reader gates in Python and Node, so a full parity pass is still required.
 - Whether the project needs an optional `journalctl` compatibility mode for exact RHEL 8/systemd 239 CLI output.
 
 ### Acceptance Criteria
@@ -208,20 +208,31 @@ Failure handling:
 
 - Created from the RHEL 8.10/systemd 239 read check performed while SOW-0064 corpus evaluation was running.
 - Local subagent investigation found that the 23-entry difference is old RHEL 8/systemd 239 same-file duplicate suppression. Current systemd 260.1 and SDK/global entry-array traversal expose all entries. The SOW was updated so core reader acceptance targets current file-format behavior, while exact RHEL 8 CLI duplicate suppression is optional journalctl compatibility work if requested later.
+- Paused the SOW-0064 full corpus evaluator cleanly at 20,497 completed checks, all `ok`, to avoid continuing the scan with a known Go historical-reader gap.
+- Removed Go's reader/header parser requirement that `HEADER_INCOMPATIBLE_KEYED_HASH` must be present. Reader/verifier code can now parse historical unkeyed headers and use the existing unkeyed Jenkins hash branch where applicable.
+- Kept Go writer append-open conservative: `journal.Open()` / `OpenWithOptions()` still reject unkeyed historical files because the Go writer appends keyed-hash objects and must not corrupt unkeyed historical files.
+- Validated the patched Go digest helper directly on the RHEL 8.10 host. Stock systemd 239 verified the checked file and exported 27,436 entries; patched Go opened and read 27,459 entries from the same live file. The +23 delta matches the previously identified old systemd 239 same-file duplicate suppression behavior.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Pending.
+- Go no longer rejects historical unkeyed-hash journals solely because `HEADER_INCOMPATIBLE_KEYED_HASH` is absent. Evidence: `go/journal/format.go` no longer rejects unkeyed headers; `go/journal/format_test.go` covers an unkeyed LZ4 historical header; RHEL 8.10 real-use check opened and read an unkeyed LZ4 journal with the patched Go digest helper.
+- Full Rust, Go, Python, and Node historical fixture parity remains pending.
 
 Tests or equivalent validation:
 
-- Pending.
+- `go test ./journal`: passed.
+- `go test ./...` in the Go module: passed.
+- RHEL 8.10 real-use check with patched `go/internal/testcmd/corpus_digest`: passed open/read of the historical unkeyed LZ4 journal.
 
 Real-use evidence:
 
-- Pending.
+- RHEL 8.10 systemd version checked: `systemd 239 (239-82.el8_10.16)`.
+- Stock `journalctl --verify --file [redacted-host-journal]`: `PASS`.
+- Stock systemd 239 export count on the checked live file: 27,436.
+- Patched Go digest count on the same checked live file: 27,459.
+- The 23-entry difference is the previously diagnosed old systemd 239 duplicate-suppression behavior, not a Go open/read failure.
 
 Reviewer findings:
 
@@ -242,7 +253,7 @@ Artifact maintenance gate:
 - Specs: pending final review.
 - End-user/operator docs: pending final review.
 - End-user/operator skills: pending final review.
-- SOW lifecycle: open in `.agents/sow/pending/`.
+- SOW lifecycle: in-progress in `.agents/sow/current/`. This hotfix unblocks SOW-0064; full SOW-0073 completion remains pending.
 - SOW-status.md: updated when this SOW was created.
 
 Specs update:
