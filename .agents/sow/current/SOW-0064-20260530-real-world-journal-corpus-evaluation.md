@@ -483,6 +483,49 @@ Failure handling:
   minutes without a vote, then a same-scope rerun completed with
   `PRODUCTION GRADE`.
 
+### 2026-05-31
+
+- Released `v0.4.0` and `go/v0.4.0` before starting the parallel
+  certification workstreams.
+- Integrated the first systemd-version matrix workstream artifacts:
+  - reusable framework and smoke runner:
+    `tests/systemd_matrix/run_systemd_matrix.py`;
+  - operator documentation: `tests/systemd_matrix/README.md`;
+  - old enterprise summary: `tests/systemd_matrix/old-enterprise-v219-v239.md`;
+  - mid-era summary: `tests/systemd_matrix/mid-era-v246-v247.md`;
+  - format-change report:
+    `tests/systemd_matrix/format-change/worker-d-v252-v254-format-change.md`;
+  - recent/current report:
+    `tests/systemd_matrix/reports/recent-current-report.md`.
+- Version matrix evidence collected so far:
+  - `v219` and `v239`: 8 generated journals; current stock `journalctl`, Rust,
+    and Go agree on counts and logical digests. Old-version export omits
+    `__SEQNUM`, recorded as historical export drift.
+  - `v246` and `v247`: 10 generated journals; current stock `journalctl`, Rust,
+    and Go agree. Old-version export metadata drift is recorded as
+    non-blocking.
+  - `v252` and `v254`: 36 unsealed generated journals passed version
+    `journalctl --verify --file`, latest stock verify, and latest stock/Rust/Go
+    logical digest parity. Four FSS/sealed attempts remain blocked in this
+    slice.
+  - `v258.8` and `v260.2`: 48 generated journals passed version-built
+    `journalctl`, current stock `journalctl`, Rust, and Go with 0
+    discrepancies.
+- Cleanup performed before accepting the artifacts:
+  - removed workstation-specific absolute paths from durable reports and docs;
+  - changed the reusable runner pass/fail baseline to prefer modern stock
+    `journalctl`, because old `journalctl -o export` may omit metadata while
+    current stock/Rust/Go agree;
+  - added non-blocking `VERSION_EXPORT_METADATA_DRIFT` observations for those
+    historical export differences;
+  - corrected the recent/current report note now that the committed framework
+    exists while the systemd helper is still patched only into `.local` source
+    checkouts.
+- Remaining gap:
+  - systemd-generated FSS/sealed historical corpus files are not yet covered by
+    this version matrix. The current reports record this as a blocker rather
+    than treating the matrix as complete.
+
 ## Validation
 
 Acceptance criteria evidence:
@@ -560,6 +603,22 @@ Tests or equivalent validation:
   - Result: passed; verdict reported SOW initialization complete and clean.
 - Stock systemd used during smoke:
   - `journalctl --version`: `systemd 260 (260.1-2-manjaro)`.
+- Systemd-version matrix integration validation:
+  - `python -m py_compile tests/systemd_matrix/run_systemd_matrix.py`
+    - Result: passed.
+  - `python -m json.tool
+    tests/systemd_matrix/reports/recent-current-report.json`
+    - Result: passed.
+  - `python -m json.tool
+    tests/systemd_matrix/format-change/worker-d-v252-v254-format-change.json`
+    - Result: passed.
+  - `python tests/systemd_matrix/run_systemd_matrix.py test --version v260.1
+    --case smoke --systemd-src "$HOME/src/systemd.git" --timeout 1800`
+    - Result: passed, 0 discrepancies, 0 observations.
+  - Direct `compare_readers` historical-drift probe:
+    - Result: passed; modern stock `journalctl` was selected as baseline and
+      old-version digest drift with matching counts was classified as
+      `VERSION_EXPORT_METADATA_DRIFT`, not as a blocking discrepancy.
 
 Real-use evidence:
 

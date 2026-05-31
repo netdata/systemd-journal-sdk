@@ -13,7 +13,8 @@ hostnames, IPs, usernames, messages, or binary payloads.
 
 - `v219`: RHEL/CentOS 7 class.
 - `v239`: RHEL 8 class.
-- Source reference: `/home/costa/src/systemd.git`, inspected read-only.
+- Source reference: `systemd/systemd`, inspected from the local read-only
+  mirror and recorded by upstream commit in the table below.
 - Build and generated artifacts: `.local/systemd-matrix/versions/old-enterprise/`.
 - SDK implementation code was not edited.
 - Live host journal state was not touched. All stock-reader checks used

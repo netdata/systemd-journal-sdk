@@ -17,6 +17,11 @@ Last updated: 2026-05-31
   full-corpus sweep and repaired with zstd frame content-size metadata; the
   latest full-corpus sweep was paused cleanly at 20,497 completed checks, all
   `ok`, while the Go historical unkeyed-reader gate from SOW-0073 is repaired.
+  The first systemd-version matrix artifacts are integrated for v219, v239,
+  v246, v247, v252, v254, v258.8, v260.1, and v260.2; modern stock/Rust/Go
+  parity passes for generated unsealed files, old `journalctl -o export`
+  metadata drift is classified as non-blocking, and systemd-generated FSS
+  historical coverage remains an open gap.
 - SOW-0073 - Historical Unkeyed Journal Reader Parity: in progress. A RHEL
   8.10/systemd 239 check found an unkeyed LZ4 journal that stock systemd
   verifies and reads; Go's keyed-hash header gate has been removed for readers
