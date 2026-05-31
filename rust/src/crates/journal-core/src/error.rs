@@ -9,6 +9,9 @@ pub enum JournalError {
     #[error("invalid journal file state")]
     InvalidJournalFileState,
 
+    #[error("unsupported journal file")]
+    UnsupportedJournalFile,
+
     #[error("invalid object type")]
     InvalidObjectType,
 

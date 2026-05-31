@@ -49,7 +49,9 @@ Current writer scope:
 
 Deferred scope:
 
-- appending to arbitrary historical or systemd-created journal variants;
+- appending to arbitrary historical or systemd-created journal variants. In
+  particular, append-open on historical unkeyed-hash files is unsupported and
+  returns a controlled error before entry mutation;
 - full systemd object-graph verification parity beyond the current repository
   verification API.
 

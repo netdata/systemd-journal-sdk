@@ -46,12 +46,19 @@ Last updated: 2026-06-01
   repeatable, feature-selected real-corpus verification pass using sanitized
   manifests and reports, so important reader/writer changes can be checked
   against real journal shapes without rerunning the full corpus every time.
-- SOW-0077 - Rust Historical Unkeyed Writer Rejection: open. Tracks the
-  SOW-0073 reviewer-discovered Rust writer append-open hardening item:
-  appending to historical unkeyed files should fail with a controlled error,
-  not an assertion panic, while SOW-0073 reader support remains unchanged.
+- SOW-0078 - Legacy jf Writer Unkeyed Rejection: open. Tracks the legacy
+  `rust/src/crates/jf/journal_file` writer assertion path found during
+  SOW-0077 same-failure review, so the project can decide whether that public
+  legacy writer should be guarded, deprecated, or removed.
 
 ## Recently Closed Or Completed
+- SOW-0077 - Rust Historical Unkeyed Writer Rejection: completed. The current
+  Rust writer stack now rejects historical unkeyed append-open and direct
+  writer construction with `UnsupportedJournalFile` before entry mutation or
+  assertion panic. Go, Python, and Node.js already had controlled writer
+  rejection; historical reader support from SOW-0073 remains intact. Five
+  read-only reviewers voted `PRODUCTION GRADE`; the related legacy `jf` writer
+  assertion path is tracked by SOW-0078.
 - SOW-0073 - Historical Unkeyed Journal Reader Parity: completed. A RHEL
   8.10/systemd 239 check found an unkeyed LZ4 journal that stock systemd
   verifies and reads. Go, Python, and Node.js reader-only keyed-hash gates were

@@ -1289,6 +1289,9 @@ impl JournalFile<super::mmap::MmapMut> {
         }
         let sanitized_header =
             (header.header_size < header_size).then(|| sanitize_header_for_size(*header));
+        if !header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash) {
+            return Err(JournalError::UnsupportedJournalFile);
+        }
 
         let data_hash_table_map = map_hash_table(
             &fd,
@@ -2226,6 +2229,37 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o640);
+    }
+
+    #[test]
+    fn open_for_append_rejects_unkeyed_journal_without_mutation() {
+        let dir = TempDir::new().expect("create temp dir");
+        let journal_dir = dir.path().join("journals");
+        std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        let path = journal_dir.join("system.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+
+        let mut journal_file: JournalFile<crate::file::MmapMut> = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_keyed_hash(false),
+        )
+        .expect("create unkeyed journal");
+        journal_file.sync().expect("sync unkeyed journal");
+        drop(journal_file);
+
+        let before = std::fs::read(&path).expect("read journal before append-open");
+        let err =
+            match JournalFile::<crate::file::MmapMut>::open_for_append(&repo_file, 8 * 1024 * 1024)
+            {
+                Ok(_) => panic!("unkeyed journal append-open should be rejected"),
+                Err(err) => err,
+            };
+
+        assert!(matches!(err, JournalError::UnsupportedJournalFile));
+        let after = std::fs::read(&path).expect("read journal after append-open");
+        assert_eq!(after, before);
     }
 
     #[test]

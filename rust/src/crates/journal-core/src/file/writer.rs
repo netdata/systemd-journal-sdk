@@ -347,6 +347,13 @@ impl JournalWriter {
         compression: Compression,
         compress_threshold: usize,
     ) -> Result<Self> {
+        if !journal_file
+            .journal_header_ref()
+            .has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash)
+        {
+            return Err(JournalError::UnsupportedJournalFile);
+        }
+
         let append_offset = {
             let header = journal_file.journal_header_ref();
 
@@ -1690,6 +1697,7 @@ mod tests {
     use super::{
         EntryField, EntryWriteOptions, FieldNamePolicy, JournalFile, JournalWriter, StructuredField,
     };
+    use crate::error::JournalError;
     use crate::file::{
         Compression, DEFAULT_COMPRESS_THRESHOLD, HeaderCompatibleFlags, JournalFileOptions,
         MIN_COMPRESS_THRESHOLD, MmapMut, ObjectFlags, normalize_compress_threshold,
@@ -1803,6 +1811,27 @@ mod tests {
             stored_payload.object_flags(),
             ObjectFlags::CompressedZstd as u8
         );
+    }
+
+    #[test]
+    fn writer_constructor_rejects_unkeyed_journal_without_panic() {
+        let dir = TempDir::new().expect("create temp dir");
+        let path = dir.path().join("unkeyed.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+                .with_keyed_hash(false),
+        )
+        .expect("create unkeyed journal");
+
+        let err = match JournalWriter::new(&mut journal_file, 1, test_uuid(4)) {
+            Ok(_) => panic!("unkeyed journal writer construction should be rejected"),
+            Err(err) => err,
+        };
+
+        assert!(matches!(err, JournalError::UnsupportedJournalFile));
     }
 
     fn verification_key(opts: &SealOptions) -> String {

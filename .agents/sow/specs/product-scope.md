@@ -546,6 +546,9 @@ Accepted reader API layers:
   `header_size=240`. Core reader traversal exposes the current-systemd/file
   format entry set, not old systemd 239 same-file duplicate suppression in its
   CLI traversal.
+- Rust, Go, Node.js, and Python writers create keyed-hash journal files for
+  the supported writer slice. Append-open on historical unkeyed-hash files is
+  unsupported and must fail with a controlled error before entry mutation.
 
 Current Go reader feature slice:
 
