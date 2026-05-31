@@ -891,6 +891,14 @@ Discrepancy-first repair progress:
     entries.
   - raw reader hash: natural reader order, length-prefixed SHA-256, no entry
     materialization, no sorting, and no durable raw field/value output.
+- Focused Rust reader baseline modes added after the user requested a
+  stats-only mode:
+  - `--hash sha256 --binary-stats true`: current full counted/hash mode.
+  - `--hash none --binary-stats true`: disables SHA-256 but keeps the
+    byte-content scan required for `binary_payloads`.
+  - `--hash none --binary-stats false`: minimal stats mode; counts entries,
+    payload references, payload bytes, largest payload, and missing separators,
+    but discards payload bytes without hashing or binary-byte classification.
 - Focused single-file evidence:
   - report: `.local/corpus-eval/spool-experiment-single-large/report.json`
   - input files: 1
@@ -911,6 +919,20 @@ Discrepancy-first repair progress:
   - canonical logical digest after regeneration: matched original for Rust and
     Go generated files
   - discrepancies: 0
+- Focused Rust reader mode evidence on the same single real-journal payload
+  stream:
+  - report: `.local/corpus-eval/rust-reader-baseline/stats-mode-runs.json`
+  - compressed source input bytes: 134,217,728
+  - uncompressed compact regenerated input bytes: 142,606,336
+  - entries: 261,304
+  - payloads: 7,232,356
+  - payload bytes: 1,172,818,516
+  - compressed source, full hash and binary stats: median 85,771 entries/s
+  - compressed source, no hash but binary stats: median 107,092 entries/s
+  - compressed source, minimal stats: median 135,513 entries/s
+  - uncompressed compact, full hash and binary stats: median 215,834 entries/s
+  - uncompressed compact, no hash but binary stats: median 421,476 entries/s
+  - uncompressed compact, minimal stats: median 2,454,710 entries/s
 - Scope note: the one-file rates collected in this report are correctness-run
   observations only. They are not benchmark conclusions for SOW-0009 or for
   full-corpus performance.
@@ -964,6 +986,10 @@ Validation rerun for the repair:
   - Result: passed.
 - `cd rust && cargo test -p corpus_experiment -p corpus_digest`
   - Result: passed.
+- `cd go && go test ./internal/testcmd/corpus_experiment ./journal`
+  - Result: passed after adding `--hash` and `--binary-stats`.
+- `cd rust && cargo test -p corpus_experiment`
+  - Result: passed after adding `--hash` and `--binary-stats`.
 - `cd go && go test ./...`
   - Result: passed.
 - `python tests/interoperability/run_compression_matrix.py`

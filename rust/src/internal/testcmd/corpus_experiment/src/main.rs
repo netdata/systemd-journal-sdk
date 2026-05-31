@@ -51,6 +51,10 @@ struct RawReadArgs {
     access: String,
     #[arg(long, default_value_t = DEFAULT_WINDOW_SIZE)]
     window_size: u64,
+    #[arg(long, default_value = "sha256")]
+    hash: String,
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    binary_stats: bool,
 }
 
 #[derive(Args, Debug)]
@@ -112,13 +116,22 @@ fn main() -> Result<()> {
 }
 
 fn raw_read(args: RawReadArgs) -> Result<()> {
+    let hash_mode = parse_raw_hash_mode(&args.hash)?;
     let rows = input_paths(
         args.input.as_deref(),
         args.directory.as_deref(),
         args.limit_files,
     )?
     .into_iter()
-    .map(|path| raw_read_one(&path, &args.access, args.window_size))
+    .map(|path| {
+        raw_read_one(
+            &path,
+            &args.access,
+            args.window_size,
+            hash_mode,
+            args.binary_stats,
+        )
+    })
     .collect::<Vec<_>>();
     if args.output == "json" {
         println!("{}", serde_json::to_string(&rows)?);
@@ -127,7 +140,36 @@ fn raw_read(args: RawReadArgs) -> Result<()> {
     write_raw_csv(&rows)
 }
 
-fn raw_read_one(path: &Path, access: &str, window_size: u64) -> Value {
+#[derive(Clone, Copy)]
+enum RawHashMode {
+    None,
+    Sha256,
+}
+
+impl RawHashMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Sha256 => "sha256",
+        }
+    }
+}
+
+fn parse_raw_hash_mode(value: &str) -> Result<RawHashMode> {
+    match value {
+        "none" => Ok(RawHashMode::None),
+        "sha256" => Ok(RawHashMode::Sha256),
+        other => Err(anyhow!("invalid --hash: {other}")),
+    }
+}
+
+fn raw_read_one(
+    path: &Path,
+    access: &str,
+    window_size: u64,
+    hash_mode: RawHashMode,
+    binary_stats: bool,
+) -> Value {
     let started = Instant::now();
     let mmap_strategy = match access {
         "mmap" | "windowed" => ExperimentalMmapStrategy::Windowed,
@@ -144,8 +186,10 @@ fn raw_read_one(path: &Path, access: &str, window_size: u64) -> Value {
         Err(err) => return error_row(path, "open", &err.to_string()),
     };
     reader.seek_head();
-    let mut hash = Sha256::new();
-    hash.update(RAW_READER_MAGIC);
+    let mut hash = matches!(hash_mode, RawHashMode::Sha256).then(Sha256::new);
+    if let Some(hash) = &mut hash {
+        hash.update(RAW_READER_MAGIC);
+    }
     let mut counts = RawCounts::default();
     loop {
         match reader.next() {
@@ -153,19 +197,23 @@ fn raw_read_one(path: &Path, access: &str, window_size: u64) -> Value {
             Ok(false) => break,
             Err(err) => return error_row(path, "step", &err.to_string()),
         }
-        hash.update(b"E");
-        hash.update(counts.entries.to_be_bytes());
+        if let Some(hash) = &mut hash {
+            hash.update(b"E");
+            hash.update(counts.entries.to_be_bytes());
+        }
         let visit = reader.visit_entry_payloads(|payload| {
-            hash.update(b"P");
-            hash.update((payload.len() as u64).to_be_bytes());
-            hash.update(payload);
+            if let Some(hash) = &mut hash {
+                hash.update(b"P");
+                hash.update((payload.len() as u64).to_be_bytes());
+                hash.update(payload);
+            }
             counts.payloads += 1;
             counts.payload_bytes += payload.len() as u64;
             counts.largest_payload_bytes = counts.largest_payload_bytes.max(payload.len() as u64);
             if payload_name(payload).is_none() {
                 counts.payloads_without_separator += 1;
             }
-            if payload_has_binary(payload) {
+            if binary_stats && payload_has_binary(payload) {
                 counts.binary_payloads += 1;
             }
             Ok::<(), SdkError>(())
@@ -173,7 +221,9 @@ fn raw_read_one(path: &Path, access: &str, window_size: u64) -> Value {
         if let Err(err) = visit {
             return error_row(path, "payload", &err.to_string());
         }
-        hash.update(b"e");
+        if let Some(hash) = &mut hash {
+            hash.update(b"e");
+        }
         counts.entries += 1;
     }
     let elapsed = started.elapsed().as_secs_f64();
@@ -181,15 +231,17 @@ fn raw_read_one(path: &Path, access: &str, window_size: u64) -> Value {
         "schema": RAW_READER_SCHEMA,
         "driver": "rust",
         "status": "ok",
+        "hash_mode": hash_mode.as_str(),
+        "binary_stats": binary_stats,
         "file_id": sanitized_file_id(path),
         "input_bytes": file_size(path),
         "entries": counts.entries,
         "payloads": counts.payloads,
         "payload_bytes": counts.payload_bytes,
-        "binary_payloads": counts.binary_payloads,
+        "binary_payloads": if binary_stats { Some(counts.binary_payloads) } else { None },
         "payloads_without_equals": counts.payloads_without_separator,
         "largest_payload_bytes": counts.largest_payload_bytes,
-        "hash": hex::encode(hash.finalize()),
+        "hash": hash.map(|hash| hex::encode(hash.finalize())),
         "elapsed_seconds": elapsed,
         "entries_per_second": rate(counts.entries, elapsed),
         "payloads_per_second": rate(counts.payloads, elapsed),
@@ -576,6 +628,8 @@ fn write_raw_csv(rows: &[Value]) -> Result<()> {
         "payloads_without_equals",
         "largest_payload_bytes",
         "hash",
+        "hash_mode",
+        "binary_stats",
         "elapsed_seconds",
         "entries_per_second",
         "payloads_per_second",

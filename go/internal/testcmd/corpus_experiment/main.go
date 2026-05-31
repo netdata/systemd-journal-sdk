@@ -11,6 +11,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"path/filepath"
@@ -74,6 +75,8 @@ func rawRead(args []string) {
 	limit := fs.Int("limit-files", 0, "maximum discovered files to read")
 	output := fs.String("output", "csv", "output format: csv or json")
 	access := fs.String("access", "mmap", "reader access: mmap or read-at")
+	hashMode := fs.String("hash", "sha256", "payload hash mode: sha256 or none")
+	binaryStats := fs.Bool("binary-stats", true, "count payloads containing binary bytes")
 	_ = fs.Parse(args)
 
 	paths, err := inputPaths(*input, *directory, *limit)
@@ -82,7 +85,7 @@ func rawRead(args []string) {
 	}
 	rows := make([]map[string]any, 0, len(paths))
 	for _, path := range paths {
-		row := rawReadOne(path, *access)
+		row := rawReadOne(path, *access, *hashMode, *binaryStats)
 		rows = append(rows, row)
 	}
 	if *output == "json" {
@@ -92,7 +95,7 @@ func rawRead(args []string) {
 	writeRawCSV(rows)
 }
 
-func rawReadOne(path, access string) map[string]any {
+func rawReadOne(path, access, hashMode string, binaryStats bool) map[string]any {
 	started := time.Now()
 	opts := journal.DefaultReaderOptions().WithBounds(journal.ReaderBoundsSnapshot)
 	switch access {
@@ -111,8 +114,15 @@ func rawReadOne(path, access string) map[string]any {
 	if err := reader.SeekHead(); err != nil {
 		return errorRow(path, "seek", err.Error())
 	}
-	hash := sha256.New()
-	_, _ = hash.Write([]byte(rawReaderMagic))
+	var hasher hash.Hash
+	switch hashMode {
+	case "none":
+	case "sha256":
+		hasher = sha256.New()
+		_, _ = hasher.Write([]byte(rawReaderMagic))
+	default:
+		return errorRow(path, "invalid_hash", fmt.Sprintf("invalid hash mode %q", hashMode))
+	}
 	var counts rawCounts
 	var lenBuf [8]byte
 	for {
@@ -123,14 +133,18 @@ func rawReadOne(path, access string) map[string]any {
 		if !ok {
 			break
 		}
-		_, _ = hash.Write([]byte("E"))
-		binary.BigEndian.PutUint64(lenBuf[:], counts.Entries)
-		_, _ = hash.Write(lenBuf[:])
+		if hasher != nil {
+			_, _ = hasher.Write([]byte("E"))
+			binary.BigEndian.PutUint64(lenBuf[:], counts.Entries)
+			_, _ = hasher.Write(lenBuf[:])
+		}
 		err = reader.VisitEntryPayloads(func(payload []byte) error {
-			_, _ = hash.Write([]byte("P"))
-			binary.BigEndian.PutUint64(lenBuf[:], uint64(len(payload)))
-			_, _ = hash.Write(lenBuf[:])
-			_, _ = hash.Write(payload)
+			if hasher != nil {
+				_, _ = hasher.Write([]byte("P"))
+				binary.BigEndian.PutUint64(lenBuf[:], uint64(len(payload)))
+				_, _ = hasher.Write(lenBuf[:])
+				_, _ = hasher.Write(payload)
+			}
 			counts.Payloads++
 			counts.PayloadBytes += uint64(len(payload))
 			if uint64(len(payload)) > counts.LargestPayloadBytes {
@@ -139,7 +153,7 @@ func rawReadOne(path, access string) map[string]any {
 			if payloadName(payload) == nil {
 				counts.PayloadsWithoutSeparator++
 			}
-			if payloadHasBinary(payload) {
+			if binaryStats && payloadHasBinary(payload) {
 				counts.BinaryPayloads++
 			}
 			return nil
@@ -147,24 +161,36 @@ func rawReadOne(path, access string) map[string]any {
 		if err != nil {
 			return errorRow(path, "payload", err.Error())
 		}
-		_, _ = hash.Write([]byte("e"))
+		if hasher != nil {
+			_, _ = hasher.Write([]byte("e"))
+		}
 		counts.Entries++
 	}
 	elapsed := time.Since(started).Seconds()
 	inputBytes := fileSize(path)
+	var digest any
+	if hasher != nil {
+		digest = hex.EncodeToString(hasher.Sum(nil))
+	}
+	var binaryPayloads any
+	if binaryStats {
+		binaryPayloads = counts.BinaryPayloads
+	}
 	return map[string]any{
 		"schema":                   rawReaderSchema,
 		"driver":                   "go",
 		"status":                   "ok",
+		"hash_mode":                hashMode,
+		"binary_stats":             binaryStats,
 		"file_id":                  sanitizedFileID(path),
 		"input_bytes":              inputBytes,
 		"entries":                  counts.Entries,
 		"payloads":                 counts.Payloads,
 		"payload_bytes":            counts.PayloadBytes,
-		"binary_payloads":          counts.BinaryPayloads,
+		"binary_payloads":          binaryPayloads,
 		"payloads_without_equals":  counts.PayloadsWithoutSeparator,
 		"largest_payload_bytes":    counts.LargestPayloadBytes,
-		"hash":                     hex.EncodeToString(hash.Sum(nil)),
+		"hash":                     digest,
 		"elapsed_seconds":          elapsed,
 		"entries_per_second":       rate(counts.Entries, elapsed),
 		"payloads_per_second":      rate(counts.Payloads, elapsed),
@@ -503,12 +529,14 @@ func journalLike(path string) bool {
 func writeRawCSV(rows []map[string]any) {
 	w := csv.NewWriter(os.Stdout)
 	defer w.Flush()
-	header := []string{"schema", "driver", "status", "file_id", "input_bytes", "entries", "payloads", "payload_bytes", "binary_payloads", "payloads_without_equals", "largest_payload_bytes", "hash", "elapsed_seconds", "entries_per_second", "payloads_per_second", "payload_bytes_per_second", "input_bytes_per_second", "reader_path", "error_class", "error_sha256"}
+	header := []string{"schema", "driver", "status", "file_id", "input_bytes", "entries", "payloads", "payload_bytes", "binary_payloads", "payloads_without_equals", "largest_payload_bytes", "hash", "hash_mode", "binary_stats", "elapsed_seconds", "entries_per_second", "payloads_per_second", "payload_bytes_per_second", "input_bytes_per_second", "reader_path", "error_class", "error_sha256"}
 	_ = w.Write(header)
 	for _, row := range rows {
 		record := make([]string, len(header))
 		for i, key := range header {
-			record[i] = fmt.Sprint(row[key])
+			if row[key] != nil {
+				record[i] = fmt.Sprint(row[key])
+			}
 		}
 		_ = w.Write(record)
 	}
