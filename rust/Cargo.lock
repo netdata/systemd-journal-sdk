@@ -413,6 +413,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "corpus_experiment"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "hex",
+ "journal",
+ "journal-core",
+ "journal-registry",
+ "serde_json",
+ "sha2 0.10.9",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
 name = "corpus_regenerate"
 version = "0.1.0"
 dependencies = [

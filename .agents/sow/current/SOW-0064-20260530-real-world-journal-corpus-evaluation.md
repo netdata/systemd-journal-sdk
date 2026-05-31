@@ -881,6 +881,36 @@ Discrepancy-first repair progress:
   - results: 1,100
   - writer modes compared: Rust/Go regular, compact, compact zstd, compact FSS
   - discrepancies: 0
+- Focused raw-reader and spool-writer experiment added after the user requested
+  separating raw read and pure write measurements:
+  - Go helper: `go/internal/testcmd/corpus_experiment/`
+  - Rust helper: `rust/src/internal/testcmd/corpus_experiment/`
+  - runner: `tests/corpus_eval/run_spool_experiment.py`
+  - spool format: systemd Journal Export Format shape, including binary fields
+    as `FIELD\n<u64 little-endian size><bytes>\n` and blank lines between
+    entries.
+  - raw reader hash: natural reader order, length-prefixed SHA-256, no entry
+    materialization, no sorting, and no durable raw field/value output.
+- Focused single-file evidence:
+  - report: `.local/corpus-eval/spool-experiment-single-large/report.json`
+  - input files: 1
+  - input bytes: 134,217,728
+  - entries: 261,304
+  - payloads: 7,232,356
+  - payload bytes: 1,172,818,516
+  - raw readers compared: Rust and Go
+  - Rust raw reader: 83,645 entries/s and 2,315,123 payloads/s
+  - Go raw reader: 98,920 entries/s and 2,737,902 payloads/s
+  - Rust and Go raw reader hashes/counts: matched
+  - Rust and Go spool dumps: byte-identical, 1,215,588,440 bytes
+  - writer mode: compact, no compression, no FSS, offline final state,
+    `live_publish_every_entries=64`, `max_size=128MiB`
+  - Rust writer append rate from spool: 155,669 entries/s
+  - Go writer append rate from spool: 150,996 entries/s
+  - stock `journalctl --verify --file`: passed for Rust and Go generated files
+  - canonical logical digest after regeneration: matched original for Rust and
+    Go generated files
+  - discrepancies: 0
 - Scope note: the one-file rates collected in this report are correctness-run
   observations only. They are not benchmark conclusions for SOW-0009 or for
   full-corpus performance.
@@ -918,8 +948,21 @@ Validation rerun for the repair:
   compact-fss --max-files 100`
   - Result: passed, 100 files, 1,100 results, 0 discrepancies after the Go zstd
     content-size fix.
+- `python -m py_compile tests/corpus_eval/run_spool_experiment.py`
+  - Result: passed.
+- `python tests/corpus_eval/run_spool_experiment.py --input [single real
+  journal] --max-files 1 --out
+  .local/corpus-eval/spool-experiment-single-large --format compact
+  --compression none --final-state offline --live-publish-every-entries 64
+  --max-size-bytes 134217728`
+  - Result: passed, 1 file, 0 discrepancies.
 - `cd go && go test ./journal ./internal/testcmd/corpus_digest
   ./internal/testcmd/corpus_regenerate`
+  - Result: passed.
+- `cd go && go test ./internal/testcmd/corpus_experiment
+  ./internal/testcmd/corpus_digest ./journal`
+  - Result: passed.
+- `cd rust && cargo test -p corpus_experiment -p corpus_digest`
   - Result: passed.
 - `cd go && go test ./...`
   - Result: passed.

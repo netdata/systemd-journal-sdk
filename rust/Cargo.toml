@@ -27,6 +27,7 @@ members = [
     "src/internal/testcmd/reader_core_bench",
     "src/internal/testcmd/corpus_digest",
     "src/internal/testcmd/corpus_regenerate",
+    "src/internal/testcmd/corpus_experiment",
 
     # Conformance adapter
     "src/adapter",

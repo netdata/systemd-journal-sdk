@@ -20,6 +20,28 @@ Full corpus execution is intentionally guarded:
 python tests/corpus_eval/run_corpus_eval.py --mode run --allow-full-run --root /path/to/journals --out .local/corpus-eval/full
 ```
 
+Focused raw-reader and spool-writer experiments are separate from the full
+regeneration harness. They measure:
+
+- raw SDK reader throughput with no materialization beyond counts and a
+  length-prefixed hash;
+- binary-safe spool dumping in the systemd Journal Export Format shape;
+- pure writer throughput from that spool for selected output options;
+- stock `journalctl --verify --file` and canonical digest parity after
+  regeneration.
+
+Single-file smoke:
+
+```bash
+python tests/corpus_eval/run_spool_experiment.py --input /path/to/file.journal --out .local/corpus-eval/spool-experiment-single
+```
+
+Bounded batch:
+
+```bash
+python tests/corpus_eval/run_spool_experiment.py --root /path/to/journals --max-files 100 --out .local/corpus-eval/spool-experiment-100
+```
+
 Durable `report.json`, `report.md`, and `state.json` records contain sanitized
 file identifiers, counts, digests, status codes, and metrics only. They must
 not contain raw field names, field values, messages, hostnames, IP addresses,
