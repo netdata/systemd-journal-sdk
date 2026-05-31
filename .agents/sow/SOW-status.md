@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-05-31
+Last updated: 2026-06-01
 
 ## Current
 
@@ -24,6 +24,14 @@ Last updated: 2026-05-31
   packaging after reader gates.
 - SOW-0050 - Netdata Vendored Journal Removal: open. Final cleanup after all
   Netdata component integrations are complete.
+- SOW-0065 - Parallel Language Parity Closure: open. Future per-language
+  parity/performance closure after Rust is stable and corpus validation is
+  complete, using isolated worktrees and one language per authorized agent if
+  the user approves parallel implementation.
+- SOW-0066 - V1 Release And Registry Publication: open. Final `v1.0.0`
+  release, language registry/package publication, and clean consumer install
+  validation after compatibility, portability, corpus, integration, and parity
+  gates are complete.
 - SOW-0074 - Rust And Go Optimized Log Explorer Query API: open. Adds an
   SDK-native query API for high-performance log explorers: journal-native
   positive `FIELD IN [...]` and negative `FIELD NOT IN [...]` filters slice
@@ -34,6 +42,15 @@ Last updated: 2026-05-31
   display expansion is deferred to returned rows. The goal is to avoid
   decompression and repeated `FIELD=VALUE` processing for irrelevant DATA
   objects while preserving the existing libsystemd-compatible facade.
+- SOW-0075 - VM Historical systemd Validation: open. Tracks the previously
+  discussed VM-based historical systemd validation stream. Activation requires
+  explicit user approval because provisioning VMs writes outside this
+  repository; the goal is a small sanitized reality corpus from representative
+  booted distros.
+- SOW-0076 - Independent Selective Real Corpus Verification: open. Tracks a
+  repeatable, feature-selected real-corpus verification pass using sanitized
+  manifests and reports, so important reader/writer changes can be checked
+  against real journal shapes without rerunning the full corpus every time.
 
 ## Recently Closed Or Completed
 - SOW-0064 - Real World Journal Corpus Evaluation: completed after regression
