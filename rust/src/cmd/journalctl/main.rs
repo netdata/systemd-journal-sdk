@@ -5,8 +5,8 @@ use journal::{
     Entry, FacadeError, FileReader, OutputMode, SdJournal, SdJournalAddConjunction,
     SdJournalAddDisjunction, SdJournalAddMatch, SdJournalEnumerateFields, SdJournalGetEntry,
     SdJournalListBoots, SdJournalNext, SdJournalOpen, SdJournalProcessOutput, SdJournalSeekHead,
-    SdJournalSeekRealtimeUsec, SdJournalSetOutputMode, parse_match_string, verify_file,
-    verify_file_with_key,
+    SdJournalSeekRealtimeUsec, SdJournalSetOutputMode, SdJournalVisitUniqueValues,
+    parse_match_string, verify_file, verify_file_with_key,
 };
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -31,6 +31,8 @@ struct Args {
     list_boots: bool,
     #[arg(long = "fields")]
     fields: bool,
+    #[arg(short = 'F', long = "field")]
+    field: Option<String>,
     #[arg(long = "head")]
     head: Option<usize>,
     #[arg(long = "tail")]
@@ -136,6 +138,21 @@ fn run() -> Result<()> {
         for field in fields {
             println!("{field}");
         }
+        return Ok(());
+    }
+
+    if let Some(field) = args.field.as_deref() {
+        let mut stdout = std::io::stdout().lock();
+        SdJournalVisitUniqueValues(&mut journal, field, |value| {
+            stdout
+                .write_all(value)
+                .map_err(|err| FacadeError::Other(err.to_string()))?;
+            stdout
+                .write_all(b"\n")
+                .map_err(|err| FacadeError::Other(err.to_string()))?;
+            Ok(())
+        })
+        .map_err(|err| anyhow!("field: {err}"))?;
         return Ok(());
     }
 

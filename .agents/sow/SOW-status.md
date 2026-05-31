@@ -46,14 +46,15 @@ Last updated: 2026-05-31
   objects while preserving the existing libsystemd-compatible facade.
 
 ## Recently Closed Or Completed
-- SOW-0027 - Netdata Reader API And jf Facade: completed after regression
-  repair. Existing unfiltered unique-value APIs now use FIELD/DATA indexed
-  traversal on valid indexed files in Rust, Go, Node.js, and Python, and
-  field-name enumeration now uses FIELD hash traversal with a documented
-  compatibility fallback for unusable historical FIELD tables. The durable
-  performance contract is recorded in AGENTS.md, README.md, the journal
-  compatibility skill, and product scope. Filtered explorer/query APIs remain
-  tracked separately by SOW-0074.
+- SOW-0027 - Netdata Reader API And jf Facade: completed after reopening two
+  regressions. Field-name and unique-value enumeration use journal-native
+  FIELD/DATA index traversal; Rust and Go now provide streaming unique-value
+  visitor APIs used by file-backed `journalctl -F`; list-return APIs reuse the
+  streaming path; Python and Node.js no longer do redundant same-file unique
+  de-duplication; Rust's public default reader window is 32 MiB to avoid mmap
+  churn; real-corpus high-cardinality benchmarks now match or beat libsystemd,
+  and second-pass reviewers voted production-grade after the Go directory
+  error-propagation fix.
 - SOW-0055 - Rust Seek Cursor Systemd Parity: completed. Rust, Go, Python, and
   Node.js cursor conformance now covers found cursors, malformed cursor
   rejection, valid-missing cursor seek behavior, missing-cursor post-seek

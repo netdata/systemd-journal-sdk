@@ -332,11 +332,42 @@ impl SdJournal {
     }
 
     fn query_unique_values(&mut self, field: &str) -> std::result::Result<Vec<Vec<u8>>, Error> {
-        match &mut self.reader {
-            ReaderKind::File(reader) => reader.query_unique(field),
-            ReaderKind::Directory(reader) => reader.query_unique(field),
-        }
-        .map_err(map_error)
+        let mut values = Vec::new();
+        self.visit_unique_values(field, |value| {
+            values.push(value.to_vec());
+            Ok(())
+        })?;
+        Ok(values)
+    }
+
+    pub fn visit_unique_values<F>(
+        &mut self,
+        field: &str,
+        visitor: F,
+    ) -> std::result::Result<(), Error>
+    where
+        F: FnMut(&[u8]) -> std::result::Result<(), Error>,
+    {
+        let mut visitor = visitor;
+        let mut visitor_error = None;
+        let result = {
+            let mut sdk_visitor = |value: &[u8]| match visitor(value) {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    visitor_error = Some(err);
+                    Err(crate::SdkError::VerificationError(
+                        "unique value visitor failed".to_string(),
+                    ))
+                }
+            };
+            match &mut self.reader {
+                ReaderKind::File(reader) => reader.visit_unique_values(field, &mut sdk_visitor),
+                ReaderKind::Directory(reader) => {
+                    reader.visit_unique_values(field, &mut sdk_visitor)
+                }
+            }
+        };
+        result.map_err(|err| visitor_error.take().unwrap_or_else(|| map_error(err)))
     }
 
     pub fn query_unique(&mut self, field: &str) -> std::result::Result<Vec<UniqueValue>, Error> {
@@ -535,6 +566,17 @@ pub fn SdJournalQueryUnique(
     field: &str,
 ) -> std::result::Result<Vec<UniqueValue>, Error> {
     j.query_unique(field)
+}
+
+pub fn SdJournalVisitUniqueValues<F>(
+    j: &mut SdJournal,
+    field: &str,
+    visitor: F,
+) -> std::result::Result<(), Error>
+where
+    F: FnMut(&[u8]) -> std::result::Result<(), Error>,
+{
+    j.visit_unique_values(field, visitor)
 }
 
 pub fn SdJournalQueryUniqueState(j: &mut SdJournal, field: &str) -> std::result::Result<(), Error> {

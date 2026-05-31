@@ -475,7 +475,6 @@ class FileReader:
 
     def query_unique(self, field_name):
         raw_key = _field_name_bytes(field_name)
-        seen = set()
         results = []
         offset = self._find_field_head_data_offset(raw_key)
         while offset:
@@ -484,9 +483,7 @@ class FileReader:
             if len(payload) <= len(raw_key) or payload[:len(raw_key)] != raw_key or payload[len(raw_key)] != 0x3D:
                 raise ValueError(f'field data object at offset {offset} does not match requested field')
             value = bytes(payload[len(raw_key) + 1:])
-            if value not in seen:
-                seen.add(value)
-                results.append(value)
+            results.append(value)
             offset = data_header['next_field_offset']
         return results
 

@@ -31,7 +31,7 @@ pub use facade::{
     SdJournalPrevious, SdJournalPreviousSkip, SdJournalProcessOutput, SdJournalQueryUnique,
     SdJournalQueryUniqueState, SdJournalRestartData, SdJournalRestartFields,
     SdJournalRestartUnique, SdJournalSeekCursor, SdJournalSeekHead, SdJournalSeekRealtimeUsec,
-    SdJournalSeekTail, SdJournalSetOutputMode, SdJournalTestCursor,
+    SdJournalSeekTail, SdJournalSetOutputMode, SdJournalTestCursor, SdJournalVisitUniqueValues,
 };
 pub use journal_core::error::JournalError;
 use journal_core::file::file::DataPayloadReadContext;
@@ -134,6 +134,8 @@ pub enum ReaderBounds {
     Snapshot,
 }
 
+pub const DEFAULT_READER_WINDOW_SIZE: u64 = 32 * 1024 * 1024;
+
 impl Default for ReaderBounds {
     fn default() -> Self {
         Self::Live
@@ -150,7 +152,7 @@ pub struct ReaderOptions {
 impl Default for ReaderOptions {
     fn default() -> Self {
         Self {
-            window_size: 4096,
+            window_size: DEFAULT_READER_WINDOW_SIZE,
             bounds: ReaderBounds::Live,
             mmap_strategy: ExperimentalMmapStrategy::Windowed,
         }
@@ -1763,16 +1765,32 @@ impl DirectoryReader {
     }
 
     pub fn query_unique(&mut self, field_name: &str) -> Result<Vec<Vec<u8>>> {
-        let mut seen = HashSet::new();
         let mut out = Vec::new();
-        for reader in &mut self.files {
-            for value in reader.query_unique(field_name)? {
-                if seen.insert(value.clone()) {
-                    out.push(value);
-                }
-            }
-        }
+        self.visit_unique_values(field_name, |value| {
+            out.push(value.to_vec());
+            Ok(())
+        })?;
         Ok(out)
+    }
+
+    pub fn visit_unique_values<F>(&mut self, field_name: &str, mut visitor: F) -> Result<()>
+    where
+        F: FnMut(&[u8]) -> Result<()>,
+    {
+        if self.files.len() == 1 {
+            return self.files[0].visit_unique_values(field_name, visitor);
+        }
+
+        let mut seen = HashSet::new();
+        for reader in &mut self.files {
+            reader.visit_unique_values(field_name, |value| {
+                if seen.insert(value.to_vec()) {
+                    visitor(value)?;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     pub fn list_boots(&self) -> Vec<BootInfo> {
@@ -1937,10 +1955,23 @@ impl FileReader {
     }
 
     pub fn query_unique(&mut self, field_name: &str) -> Result<Vec<Vec<u8>>> {
+        let mut out = Vec::new();
+        self.visit_unique_values(field_name, |value| {
+            out.push(value.to_vec());
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    pub fn visit_unique_values<F>(&mut self, field_name: &str, visitor: F) -> Result<()>
+    where
+        F: FnMut(&[u8]) -> Result<()>,
+    {
         self.invalidate_entry_data_state();
         let decompressed = &mut self.decompressed;
-        self.inner
-            .with_file(|file| query_file_unique_indexed(file, field_name.as_bytes(), decompressed))
+        self.inner.with_file(|file| {
+            visit_file_unique_values_indexed(file, field_name.as_bytes(), decompressed, visitor)
+        })
     }
 }
 
@@ -2093,40 +2124,36 @@ fn enumerate_file_fields_by_scan(reader: &mut FileReader) -> Result<Vec<String>>
     Ok(out)
 }
 
-fn query_file_unique_indexed(
+fn visit_file_unique_values_indexed<F>(
     file: &JournalFile<Mmap>,
     field_name: &[u8],
     decompressed: &mut Vec<u8>,
-) -> Result<Vec<Vec<u8>>> {
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    let context = file.data_payload_read_context();
-
+    mut visitor: F,
+) -> Result<()>
+where
+    F: FnMut(&[u8]) -> Result<()>,
+{
     for data in file.field_data_objects(field_name)? {
         let data = data?;
-        let data_offset = data.offset();
-        drop(data);
-
-        let mut visitor_result = Ok(());
-        file.visit_data_payload_at_with_context(context, data_offset, decompressed, |payload| {
-            let Some(value) = payload
-                .strip_prefix(field_name)
-                .and_then(|rest| rest.strip_prefix(b"="))
-            else {
-                visitor_result = Err(SdkError::VerificationError(
-                    "field DATA chain object does not match requested field".to_string(),
-                ));
-                return Ok(());
-            };
-            if seen.insert(value.to_vec()) {
-                out.push(value.to_vec());
-            }
-            Ok(())
-        })?;
-        visitor_result?;
+        let payload = if data.is_compressed() {
+            decompressed.clear();
+            let len = data.decompress(decompressed)?;
+            &decompressed[..len]
+        } else {
+            data.raw_payload()
+        };
+        let Some(value) = payload
+            .strip_prefix(field_name)
+            .and_then(|rest| rest.strip_prefix(b"="))
+        else {
+            return Err(SdkError::VerificationError(
+                "field DATA chain object does not match requested field".to_string(),
+            ));
+        };
+        visitor(value)?;
     }
 
-    Ok(out)
+    Ok(())
 }
 
 fn collect_entry_metadata_and_data_offsets(
@@ -2977,6 +3004,15 @@ mod tests {
     }
 
     #[test]
+    fn default_reader_options_use_production_window_size() {
+        let options = ReaderOptions::default();
+        assert_eq!(options.bounds, ReaderBounds::Live);
+        assert_eq!(options.mmap_strategy, ExperimentalMmapStrategy::Windowed);
+        assert_eq!(options.window_size, DEFAULT_READER_WINDOW_SIZE);
+        assert_eq!(options.window_size, 32 * 1024 * 1024);
+    }
+
+    #[test]
     fn directory_reader_uses_sequential_path_for_non_overlapping_files() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let first_path = dir.path().join("journals/first.journal");
@@ -3273,6 +3309,16 @@ mod tests {
             .map(|value| value.to_vec())
             .collect();
         assert_eq!(got, want);
+
+        let mut visited = Vec::new();
+        reader
+            .visit_unique_values("PRIORITY", |value| {
+                visited.push(value.to_vec());
+                Ok(())
+            })
+            .expect("visit unique");
+        let got: HashSet<Vec<u8>> = visited.into_iter().collect();
+        assert_eq!(got, want);
     }
 
     #[test]
@@ -3315,6 +3361,16 @@ mod tests {
         let values = reader.query_unique("PRIORITY").expect("query unique");
         let got: HashSet<Vec<u8>> = values.into_iter().collect();
         let want: HashSet<Vec<u8>> = [b"3", b"6"].into_iter().map(|v| v.to_vec()).collect();
+        assert_eq!(got, want);
+
+        let mut visited = Vec::new();
+        reader
+            .visit_unique_values("PRIORITY", |value| {
+                visited.push(value.to_vec());
+                Ok(())
+            })
+            .expect("visit unique");
+        let got: HashSet<Vec<u8>> = visited.into_iter().collect();
         assert_eq!(got, want);
     }
 

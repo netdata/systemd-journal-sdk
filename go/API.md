@@ -83,6 +83,9 @@ binary-safe. `SdJournalGetData` returns the first value for a repeated field;
 callers that need all repeated values must use the restart/enumerate data API.
 Direct `SdJournalQueryUnique` returns `[]UniqueValue`, where `Field` is the
 field name and `Value` is the binary-safe raw field value.
+`Reader.VisitUnique` and `DirectoryReader.VisitUnique` stream indexed unique
+values without first materializing the full result set; use `QueryUnique` only
+when the caller needs an owned slice of all values.
 
 `DefaultReaderOptions()` uses live mmap-backed reads on Unix. Use
 `WithAccessMode(journal.ReaderAccessReadAt)` only when mmap is undesirable for

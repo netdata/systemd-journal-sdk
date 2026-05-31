@@ -1012,6 +1012,17 @@ func TestReaderUniqueFields(t *testing.T) {
 	if _, ok := fields["PRIORITY"]; !ok {
 		t.Fatalf("indexed EnumerateFields missing PRIORITY after clearing entry offsets: %#v", fields)
 	}
+
+	var visited [][]byte
+	if err := r.VisitUnique("PRIORITY", func(value []byte) error {
+		visited = append(visited, cloneBytes(value))
+		return nil
+	}); err != nil {
+		t.Fatalf("VisitUnique error: %v", err)
+	}
+	if len(visited) != 4 {
+		t.Fatalf("VisitUnique returned %d values, want 4", len(visited))
+	}
 }
 
 func TestReaderEnumerateFields(t *testing.T) {
@@ -1152,6 +1163,16 @@ func TestDirectoryReader(t *testing.T) {
 	}
 	if len(values) != 1 || string(values[0]) != "6" {
 		t.Fatalf("DirectoryReader QueryUnique PRIORITY returned %#v, want one value 6", values)
+	}
+	var visited [][]byte
+	if err := dr.VisitUnique("PRIORITY", func(value []byte) error {
+		visited = append(visited, cloneBytes(value))
+		return nil
+	}); err != nil {
+		t.Fatalf("DirectoryReader VisitUnique PRIORITY error: %v", err)
+	}
+	if len(visited) != 1 || string(visited[0]) != "6" {
+		t.Fatalf("DirectoryReader VisitUnique PRIORITY returned %#v, want one value 6", visited)
 	}
 }
 

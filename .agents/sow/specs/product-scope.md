@@ -644,9 +644,10 @@ Current Rust reader feature slice:
   size at open time for polling/query use cases that do not need to observe
   appends during the current scan;
 - `ReaderOptions` exposes windowed and whole-file mmap strategies for live and
-  snapshot readers. Default live readers remain windowed; explicit live
-  whole-file mmap is an experimental measurement/performance option and
-  increases virtual-memory pressure on large active files;
+  snapshot readers. Default Rust live readers remain windowed with a 32 MiB
+  window so indexed DATA-chain traversal does not remap per small object;
+  explicit live whole-file mmap is an experimental measurement/performance
+  option and increases virtual-memory pressure on large active files;
 - raw current-entry payload visitors on file and directory readers for
   allocation-light scans that operate on borrowed `FIELD=value` bytes;
 - byte-preserving RAW field-name representation through `Entry::raw_fields()`,

@@ -1191,6 +1191,54 @@ func (r *Reader) readDataPayload(offset uint64) ([]byte, error) {
 	return payload, nil
 }
 
+func (r *Reader) visitDataPayloadWithHeader(offset uint64, header dataHeader, visit func([]byte) error) error {
+	payloadOffset := r.dataPayloadOffset()
+	if header.object.typ != objectTypeData || header.object.size < payloadOffset {
+		return errCorruptObject
+	}
+
+	payloadLen := header.object.size - payloadOffset
+	payload, err := r.readSlice(offset+payloadOffset, payloadLen)
+	if err != nil {
+		return err
+	}
+	if header.object.flag&objectCompressedZSTD != 0 {
+		payload, err = zstdDecompress(payload)
+		if err != nil {
+			return err
+		}
+	} else if header.object.flag&objectCompressedXZ != 0 {
+		reader, err := xz.NewReader(bytes.NewReader(payload))
+		if err != nil {
+			return err
+		}
+		payload, err = readAllLimited(reader, maxUncompressedDataObjectSize)
+		if err != nil {
+			return err
+		}
+	} else if header.object.flag&objectCompressedLZ4 != 0 {
+		if len(payload) < 8 {
+			return errors.New("lz4 compressed payload too short")
+		}
+		uncompressedSize := binary.LittleEndian.Uint64(payload[:8])
+		if uncompressedSize > maxUncompressedDataObjectSize {
+			return errors.New("lz4 decompressed payload too large")
+		}
+		compressedData := payload[8:]
+		decoded := make([]byte, uncompressedSize)
+		n, err := lz4.UncompressBlock(compressedData, decoded)
+		if err != nil {
+			return err
+		}
+		if uint64(n) != uncompressedSize {
+			return errors.New("lz4 decompressed size mismatch")
+		}
+		payload = decoded
+	}
+
+	return visit(payload)
+}
+
 func (r *Reader) readDataHeaderAt(offset uint64) (dataHeader, error) {
 	buf, err := r.readSlice(offset, dataObjectHeaderSize)
 	if err != nil {
@@ -1353,38 +1401,41 @@ func (r *Reader) TestCursor(cursor string) (bool, error) {
 }
 
 func (r *Reader) QueryUnique(fieldName string) ([][]byte, error) {
-	unique := make(map[string]struct{})
 	var results [][]byte
+	err := r.VisitUnique(fieldName, func(value []byte) error {
+		results = append(results, cloneBytes(value))
+		return nil
+	})
+	return results, err
+}
+
+func (r *Reader) VisitUnique(fieldName string, visit func([]byte) error) error {
 	field := []byte(fieldName)
 
 	offset, ok, err := r.findFieldHeadDataOffset(field)
 	if err != nil || !ok {
-		return results, err
+		return err
 	}
 
 	for offset != 0 {
 		header, err := r.readDataHeaderAt(offset)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		payload, err := r.readDataPayload(offset)
+		err = r.visitDataPayloadWithHeader(offset, header, func(payload []byte) error {
+			if len(payload) <= len(field) || !bytes.Equal(payload[:len(field)], field) || payload[len(field)] != '=' {
+				return fmt.Errorf("%w: field data object at offset %d does not match %q", errCorruptObject, offset, fieldName)
+			}
+			return visit(payload[len(field)+1:])
+		})
 		if err != nil {
-			return nil, err
+			return err
 		}
-		if len(payload) <= len(field) || !bytes.Equal(payload[:len(field)], field) || payload[len(field)] != '=' {
-			return nil, fmt.Errorf("%w: field data object at offset %d does not match %q", errCorruptObject, offset, fieldName)
-		}
-		value := payload[len(field)+1:]
-		key := string(value)
-		if _, exists := unique[key]; !exists {
-			valueCopy := cloneBytes(value)
-			unique[key] = struct{}{}
-			results = append(results, valueCopy)
-		}
+
 		offset = header.nextFieldOffset
 	}
 
-	return results, nil
+	return nil
 }
 
 func (r *Reader) EnumerateFields() (map[string]struct{}, error) {
@@ -1885,24 +1936,35 @@ func (dr *DirectoryReader) TestCursor(cursor string) (bool, error) {
 }
 
 func (dr *DirectoryReader) QueryUnique(fieldName string) ([][]byte, error) {
-	unique := make(map[string]struct{})
 	var results [][]byte
+	err := dr.VisitUnique(fieldName, func(value []byte) error {
+		results = append(results, cloneBytes(value))
+		return nil
+	})
+	return results, err
+}
 
+func (dr *DirectoryReader) VisitUnique(fieldName string, visit func([]byte) error) error {
+	if len(dr.files) == 1 {
+		return dr.files[0].VisitUnique(fieldName, visit)
+	}
+
+	unique := make(map[string]struct{})
 	for _, r := range dr.files {
-		values, err := r.QueryUnique(fieldName)
-		if err != nil {
-			continue
-		}
-		for _, v := range values {
-			key := string(v)
+		err := r.VisitUnique(fieldName, func(value []byte) error {
+			key := string(value)
 			if _, exists := unique[key]; !exists {
 				unique[key] = struct{}{}
-				results = append(results, v)
+				return visit(value)
 			}
+			return nil
+		})
+		if err != nil {
+			return err
 		}
 	}
 
-	return results, nil
+	return nil
 }
 
 func (dr *DirectoryReader) EnumerateFields() (map[string]struct{}, error) {
@@ -1911,7 +1973,7 @@ func (dr *DirectoryReader) EnumerateFields() (map[string]struct{}, error) {
 	for _, r := range dr.files {
 		rFields, err := r.EnumerateFields()
 		if err != nil {
-			continue
+			return nil, err
 		}
 		for name := range rFields {
 			fields[name] = struct{}{}

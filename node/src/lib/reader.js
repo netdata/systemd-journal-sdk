@@ -458,7 +458,6 @@ export class FileReader {
 
   queryUnique(fieldName) {
     const field = fieldNameBytes(fieldName);
-    const seen = new Set();
     const results = [];
     let offset = this._findFieldHeadDataOffset(field);
     while (offset !== 0n) {
@@ -472,11 +471,7 @@ export class FileReader {
         throw new Error(`field data object at offset ${offset} does not match requested field`);
       }
       const value = Buffer.from(payload.subarray(field.length + 1));
-      const key = value.toString('base64');
-      if (!seen.has(key)) {
-        seen.add(key);
-        results.push(value);
-      }
+      results.push(value);
       offset = data.nextFieldOffset;
     }
     return results;

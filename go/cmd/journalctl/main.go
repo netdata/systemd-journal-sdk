@@ -47,6 +47,7 @@ type cliJournal interface {
 	ProcessOutput(*journal.Entry) (string, error)
 	ListBoots() ([]journal.BootInfo, error)
 	EnumerateFields() ([]string, error)
+	VisitUnique(string, func([]byte) error) error
 }
 
 type optionalStringFlag struct {
@@ -95,6 +96,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		followFlag     = fs.Bool("follow", false, "follow appended entries")
 		bootFlag       optionalStringFlag
 		fieldsFlag     = fs.Bool("fields", false, "show field names")
+		fieldFlag      = fs.String("field", "", "show values for a field")
 		headFlag       = fs.Int("head", 0, "show first N entries")
 		tailFlag       = fs.Int("tail", 0, "show last N entries")
 		sinceFlag      = fs.String("since", "", "show entries since timestamp")
@@ -109,6 +111,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	)
 	fs.Var(&bootFlag, "boot", "boot filter")
 	fs.Var(&bootFlag, "b", "boot filter")
+	fs.StringVar(fieldFlag, "F", "", "show values for a field")
 	fs.StringVar(sinceFlag, "S", "", "show entries since timestamp")
 	fs.StringVar(untilFlag, "U", "", "show entries until timestamp")
 
@@ -202,6 +205,17 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			fmt.Fprintln(stdout, f)
 		}
 		return nil
+
+	case *fieldFlag != "":
+		return j.VisitUnique(*fieldFlag, func(value []byte) error {
+			if _, err := stdout.Write(value); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintln(stdout); err != nil {
+				return err
+			}
+			return nil
+		})
 
 	case *headFlag > 0:
 		return showForward(j, *headFlag, sinceUsec, untilUsec, stdout)

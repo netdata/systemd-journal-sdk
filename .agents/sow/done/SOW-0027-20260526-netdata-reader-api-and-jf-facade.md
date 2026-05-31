@@ -4,7 +4,10 @@
 
 Status: completed
 
-Sub-state: Completed after regression repair, local validation, and whole-SOW read-only reviewer pass.
+Sub-state: Reopened on 2026-05-31 for a second regression and re-closed after
+streaming unique-value enumeration, Rust reader window repair, Go error
+propagation repair, local validation, real-corpus benchmarks, and read-only
+reviewer passes.
 
 ## Requirements
 
@@ -539,3 +542,183 @@ Close evidence:
 - The durable performance contract is recorded in `AGENTS.md`, root
   `README.md`, `.agents/skills/project-journal-compatibility/SKILL.md`, and
   `.agents/sow/specs/product-scope.md`.
+
+### Regression - 2026-05-31 - High-Cardinality Unique Enumeration Still Allocates
+
+Status: completed.
+
+Regression summary:
+
+- The first regression repair made unfiltered unique-value enumeration indexed,
+  but the public SDK implementations still materialize all values eagerly.
+- This makes high-cardinality `FIELD` value queries unacceptable for Netdata log
+  exploration and file-backed `journalctl -F FIELD` behavior.
+
+Evidence:
+
+- `systemd/systemd @ cf3156842209`
+  - `src/libsystemd/sd-journal/sd-journal.c:3352` exposes
+    `sd_journal_enumerate_unique()`.
+  - `src/libsystemd/sd-journal/sd-journal.c:3386` finds the FIELD object.
+  - `src/libsystemd/sd-journal/sd-journal.c:3396` advances
+    `data.next_field_offset`.
+  - `src/libsystemd/sd-journal/sd-journal.c:3464` returns one
+    mmap/decompressed payload at a time instead of building a result list.
+- Local real-corpus benchmark:
+  - `.local/unique-values-bench/report-v2.json`.
+  - `_SOURCE_REALTIME_TIMESTAMP`, 106,691 values: libsystemd median
+    14.5M values/s, Rust 2.0M values/s, Go 3.5M values/s.
+  - `MESSAGE`, 171,953 values: libsystemd median 2.9M values/s, Rust
+    0.66M values/s, Go 1.36M values/s.
+  - Counts, byte totals, and sanitized hashes matched libsystemd.
+- SDK source:
+  - `rust/src/journal/src/lib.rs:2096` builds a `HashSet` and output `Vec`,
+    copying every value at least once and some values twice.
+  - `go/journal/reader.go:1355` builds a string-key map and output slice,
+    copying every value at least once and some values twice.
+
+Why previous validation missed it:
+
+- The first repair tested operation shape by clearing entry offsets, proving no
+  row scan was used. It did not compare high-cardinality indexed enumeration
+  against libsystemd's streaming API.
+
+Repair plan:
+
+1. Add streaming unique-value enumeration to Rust and Go file readers. The
+   callback receives each value directly while the underlying mapped/decompressed
+   DATA payload is valid.
+2. Make Rust and Go list-return `query_unique` APIs reuse the streaming path and
+   copy each value only once.
+3. Remove per-file de-duplication from unique-value enumeration. A valid journal
+   file has one DATA object for one full `FIELD=value` payload; same-file
+   de-duplication is already a journal format property.
+4. Keep cross-file de-duplication in directory readers.
+5. Add file-backed `journalctl -F FIELD` support in Rust and Go using the
+   streaming path so command output does not need to materialize all values
+   before writing.
+6. Align Node.js and Python file-reader list APIs by removing per-file
+   de-duplication; their runtime performance is not the target for this repair.
+7. Re-run correctness tests and the real-corpus high-cardinality benchmark.
+
+Validation required before re-closing:
+
+- Rust and Go unit tests for streaming/list unique enumeration.
+- Existing Python and Node unique tests still pass.
+- Real-corpus benchmark against libsystemd for `_SOURCE_REALTIME_TIMESTAMP` and
+  `MESSAGE` high-cardinality fields.
+- File-backed Rust/Go `journalctl -F FIELD` smoke validation against stock
+  `journalctl --file -F FIELD` counts/hashes without storing raw values.
+
+Implementation update - 2026-05-31:
+
+- Added Rust `FileReader::visit_unique_values()` and
+  `DirectoryReader::visit_unique_values()` streaming APIs. `query_unique()`
+  now reuses the streaming path and copies each value only once for callers
+  that need an owned result list.
+- Added Rust facade `SdJournalVisitUniqueValues()` and routed facade
+  `query_unique_values()` through it.
+- Added Rust file-backed `journalctl -F/--field FIELD` output through the
+  streaming unique-value path.
+- Added Go `Reader.VisitUnique()` and `DirectoryReader.VisitUnique()`.
+  `QueryUnique()` now reuses the streaming path and copies each value only
+  once for callers that need an owned result list.
+- Routed Go facade unique state construction through `VisitUnique()`.
+- Added Go file-backed `journalctl -F/--field FIELD` output through the
+  streaming unique-value path.
+- Removed Python and Node.js per-file `query_unique`/`queryUnique`
+  de-duplication. Same-file uniqueness is already guaranteed by one DATA object
+  per full `FIELD=value` payload on valid journal files; directory readers keep
+  cross-file de-duplication.
+- Changed Rust public `ReaderOptions::default()` from a 4 KiB mmap window to a
+  32 MiB live/windowed mmap window. The 4 KiB default made indexed DATA-chain
+  traversal remap constantly and was the remaining Rust high-cardinality
+  regression after streaming was added. Live semantics remain unchanged.
+- Fixed Go `DirectoryReader.VisitUnique()` and `DirectoryReader.EnumerateFields()`
+  to propagate per-file read errors from already-opened readers instead of
+  silently returning partial unique-value or field-name results. `OpenDirectory`
+  still keeps its existing tolerant open-time behavior for files that cannot be
+  opened.
+- Documented the Rust/Go streaming unique APIs and Rust 32 MiB default reader
+  window in end-user docs and product scope.
+
+Performance evidence - 2026-05-31:
+
+- Scratch benchmark report:
+  `.local/unique-values-bench/report-v4.json`.
+- Benchmark shape: 5 repetitions per driver, real archived journal files,
+  counts/byte totals/xor and sum FNV hashes compared against libsystemd.
+- `_SOURCE_REALTIME_TIMESTAMP`, 106,691 values, 1,707,056 value bytes:
+  - libsystemd: median 0.007681 s, 13.89M values/s.
+  - Rust public default: median 0.006318 s, 16.89M values/s.
+  - Go public default: median 0.011593 s, 9.20M values/s.
+  - Counts and hashes matched libsystemd for Rust and Go.
+- `MESSAGE`, 171,953 values, 59,118,615 value bytes:
+  - libsystemd: median 0.059665 s, 2.88M values/s.
+  - Rust public default: median 0.056883 s, 3.02M values/s.
+  - Go public default: median 0.058379 s, 2.95M values/s.
+  - Counts and hashes matched libsystemd for Rust and Go.
+- Diagnostic benchmark before changing Rust's default window:
+  `.local/unique-values-bench/report-v3.json` showed Rust streaming still slow
+  with the 4 KiB default: 3.65M values/s for `_SOURCE_REALTIME_TIMESTAMP` and
+  1.26M values/s for `MESSAGE`.
+- `perf stat`/`perf record` on the Rust 4 KiB-window path showed time in
+  `GuardedCell::with_guarded`, `WindowManager::get_slice`, and kernel
+  `mmap`/`munmap` paths. Retesting with live/windowed 32 MiB produced
+  libsystemd-speed results without switching to snapshot or whole-file mmap.
+
+Local validation - 2026-05-31:
+
+- `cargo test --manifest-path rust/Cargo.toml -p journal -p journalctl -p adapter`:
+  passed, including unique-value and default-window regression tests.
+- `go test ./...` in `go/`: passed.
+- `PYTHONPATH=python:.local/python-deps .local/python-venv/bin/python python/test_all.py`:
+  passed.
+- `node node/test/all.js`: passed.
+- Rust/Go file-backed `journalctl -F _SOURCE_REALTIME_TIMESTAMP` on a real
+  archived journal matched stock `journalctl --file -F _SOURCE_REALTIME_TIMESTAMP
+  --all --no-pager`: 106,691 values, 1,707,056 value bytes, matching xor/sum
+  hashes for stock, Rust, and Go.
+- `git diff --check` over the touched SOW, spec, docs, and runtime files:
+  passed.
+- `go test ./...` was rerun after fixing Go directory-reader error propagation:
+  passed.
+
+Reviewer status:
+
+- First read-only review pass:
+  - `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: invalidated. The reviewer session
+    attempted to spawn sub-review agents despite the read-only prompt forbidding
+    recursion, so the orchestrator terminated its specific process group and
+    did not count its output.
+- Reviewer finding fixed:
+  - Kimi and GLM both flagged Go `DirectoryReader.VisitUnique()` silently
+    continuing on per-file errors. This was accepted and fixed by returning the
+    first per-file error from `VisitUnique()` and `EnumerateFields()`, aligning
+    Go with Rust/Python/Node behavior for already-opened readers.
+- Second read-only review pass after the Go error-propagation fix:
+  - `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/kimi-k2.6`: no second-pass vote. The session performed
+    repeated reads for more than ten minutes after the other reviewers had
+    completed and did not reach a vote; the orchestrator terminated its
+    specific process group and did not count it as approval.
+- Second-pass reviewer dispositions:
+  - Qwen noted Go `string(value)` as a binary de-dup key. Rejected as a false
+    issue because Go strings preserve arbitrary bytes and the value passed to
+    callers remains `[]byte`.
+  - GLM noted Python/Node.js still materialize list-returning unique queries
+    and re-read/decompress per DATA object. Accepted as non-blocking because
+    this regression's streaming target is Rust and Go; Python/Node.js were
+    repaired for indexed correctness and same-file de-dup removal. Follow-up
+    performance work remains tracked by SOW-0009/SOW-0065/SOW-0074.
+  - GLM noted the Rust facade uses `SdkError::VerificationError` as an internal
+    visitor-error carrier before restoring the original facade error. Rejected
+    as non-blocking: the carrier is not exposed to callers, but a future
+    cleanup can use a dedicated internal carrier if that code is revisited.
+  - Mimo found no blocking issues after the Go error-propagation fix.

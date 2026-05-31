@@ -126,6 +126,24 @@ func TestRunFieldsFlag(t *testing.T) {
 	}
 }
 
+func TestRunFieldFlag(t *testing.T) {
+	path := writeCLIJournal(t, []cliEntry{
+		{message: "alpha", priority: "3"},
+		{message: "beta", priority: "6"},
+	})
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"--file", path, "-F", "PRIORITY"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run -F error: %v; stderr=%s", err, stderr.String())
+	}
+	values := stdout.String()
+	for _, want := range []string{"3\n", "6\n"} {
+		if !strings.Contains(values, want) {
+			t.Fatalf("-F output missing %q:\n%s", want, values)
+		}
+	}
+}
+
 func TestRunRejectsInventedPlusPrefixSyntax(t *testing.T) {
 	path := writeCLIJournal(t, []cliEntry{{message: "alpha", priority: "3"}})
 

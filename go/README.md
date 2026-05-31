@@ -335,6 +335,8 @@ for {
 are zero-copy paths. In mmap mode their payload slices may alias reader storage;
 copy the slice, or use `CollectEntryPayloads` / `GetEntryPayload`, when the data
 must outlive the current reader call.
+For high-cardinality unique-value queries, prefer `VisitUnique` when the caller
+can stream results; `QueryUnique` is the owned-result convenience wrapper.
 
 File-backed journalctl:
 

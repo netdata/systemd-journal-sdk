@@ -87,6 +87,12 @@ Current reader scope:
   reusable reader-owned decompression buffer;
 - direct facade unique queries return language-native `(field, value)` pairs;
   stateful unique enumeration returns full binary-safe `FIELD=value` payloads;
+- `FileReader::visit_unique_values()` and
+  `DirectoryReader::visit_unique_values()` stream indexed unique values without
+  first materializing the full result set;
+- default reader options use live/windowed mmap with a 32 MiB window. Smaller
+  windows are available for constrained environments, but high-cardinality
+  indexed queries can become remap-bound with very small windows;
 - `--output export` uses systemd's size-prefixed binary field encoding and
   blank-line entry separator;
 - JSON output includes realtime and monotonic timestamps, preserves valid UTF-8

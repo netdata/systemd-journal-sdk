@@ -23,6 +23,7 @@ type sdReader interface {
 	GetCursor() (string, error)
 	TestCursor(string) (bool, error)
 	QueryUnique(string) ([][]byte, error)
+	VisitUnique(string, func([]byte) error) error
 	EnumerateFields() (map[string]struct{}, error)
 	AddMatch(data []byte)
 	AddDisjunction()
@@ -385,6 +386,10 @@ func (j *sdJournal) EnumerateFields() ([]string, error) {
 	return SdJournalEnumerateFields(j)
 }
 
+func (j *sdJournal) VisitUnique(field string, visit func([]byte) error) error {
+	return j.reader.VisitUnique(field, visit)
+}
+
 func SdJournalQueryUnique(j *sdJournal, field string) ([]UniqueValue, error) {
 	values, err := j.reader.QueryUnique(field)
 	if err != nil {
@@ -605,13 +610,13 @@ func SdJournalListBoots(j *sdJournal) ([]BootInfo, error) {
 }
 
 func SdJournalQueryUniqueState(j *sdJournal, field string) error {
-	values, err := j.reader.QueryUnique(field)
+	j.uniqueItems = j.uniqueItems[:0]
+	err := j.reader.VisitUnique(field, func(value []byte) error {
+		j.uniqueItems = append(j.uniqueItems, payloadFromFieldValue(field, value))
+		return nil
+	})
 	if err != nil {
 		return err
-	}
-	j.uniqueItems = make([][]byte, 0, len(values))
-	for _, value := range values {
-		j.uniqueItems = append(j.uniqueItems, payloadFromFieldValue(field, value))
 	}
 	j.uniqueIndex = 0
 	return nil
