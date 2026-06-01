@@ -1,6 +1,6 @@
 // Directory writer (Log) for managing a journal directory with rotation and retention.
 
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readSync, readdirSync, unlinkSync, statSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readSync, readdirSync, renameSync, unlinkSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { isZeroUUID, randomUUID, stringToUUID, uuidToString } from './binary.js';
 import { Writer, normalizeFieldNamePolicy, prepareFieldsForPolicy, prepareRawPayloadsForPolicy, writerPolicyForLogPolicy } from './writer.js';
@@ -115,6 +115,9 @@ export class Log {
     if (this.strictSystemdNaming && chainState.activePath) {
       this._archiveOnlineChainActive(chainState.activePath);
     }
+    if (this.strictSystemdNaming && existsSync(this._systemdActivePath())) {
+      this._attachExistingActive(this._systemdActivePath());
+    }
     if (!this.strictSystemdNaming) {
       if (chainState.activePath) this._attachExistingActive(chainState.activePath);
     }
@@ -216,33 +219,62 @@ export class Log {
 
   _openWriter(options = {}, reason = LOG_LIFECYCLE_REASON_APPEND) {
     if (!this.activePath) {
-      const headRealtime = optionUsec(options.realtimeUsec ?? options.realtime_usec, nowUsec());
-      this.activePath = this._chainPathFor(this.seqnumId, this.nextSeqnum, headRealtime);
+      if (this.strictSystemdNaming) {
+        this.activePath = this._systemdActivePath();
+      } else {
+        const headRealtime = optionUsec(options.realtimeUsec ?? options.realtime_usec, nowUsec());
+        this.activePath = this._chainPathFor(this.seqnumId, this.nextSeqnum, headRealtime);
+      }
     }
     if (existsSync(this.activePath)) {
-      this.writer = Writer.open(this.activePath, {
-        livePublishEveryEntries: this.livePublishEveryEntries,
-        fieldNamePolicy: writerPolicyForLogPolicy(this.fieldNamePolicy),
-      });
-      if (this.writer.header.n_entries === 0n) {
-        this._discardEmptyOpenedWriter();
-        if (!this.activePath) {
+      try {
+        this.writer = Writer.open(this.activePath, {
+          livePublishEveryEntries: this.livePublishEveryEntries,
+          fieldNamePolicy: writerPolicyForLogPolicy(this.fieldNamePolicy),
+        });
+      } catch (error) {
+        if (!isReplaceableActiveOpenError(error)) throw error;
+        this._replaceActiveFile(this.activePath);
+      }
+      if (this.writer) {
+        if (this.writer.header.n_entries === 0n) {
+          this._discardEmptyOpenedWriter();
+        } else {
+          this._captureWriterIdentity();
+          return;
+        }
+      }
+      if (!this.activePath) {
+        if (this.strictSystemdNaming) {
+          this.activePath = this._systemdActivePath();
+        } else {
           const headRealtime = optionUsec(options.realtimeUsec ?? options.realtime_usec, nowUsec());
           this.activePath = this._chainPathFor(this.seqnumId, this.nextSeqnum, headRealtime);
         }
-      } else {
-        this._captureWriterIdentity();
-        return;
       }
     }
 
-    if (existsSync(this.activePath)) {
-      this.writer = Writer.open(this.activePath, {
-        livePublishEveryEntries: this.livePublishEveryEntries,
-        fieldNamePolicy: writerPolicyForLogPolicy(this.fieldNamePolicy),
-      });
-      this._captureWriterIdentity();
-      return;
+    if (this.activePath && existsSync(this.activePath)) {
+      try {
+        this.writer = Writer.open(this.activePath, {
+          livePublishEveryEntries: this.livePublishEveryEntries,
+          fieldNamePolicy: writerPolicyForLogPolicy(this.fieldNamePolicy),
+        });
+      } catch (error) {
+        if (!isReplaceableActiveOpenError(error)) throw error;
+        this._replaceActiveFile(this.activePath);
+      }
+      if (this.writer) {
+        this._captureWriterIdentity();
+        return;
+      } else {
+        if (this.strictSystemdNaming) {
+          this.activePath = this._systemdActivePath();
+        } else {
+          const headRealtime = optionUsec(options.realtimeUsec ?? options.realtime_usec, nowUsec());
+          this.activePath = this._chainPathFor(this.seqnumId, this.nextSeqnum, headRealtime);
+        }
+      }
     }
 
     const opts = { headSeqnum: this.nextSeqnum, compression: this.compression, compact: this.compact };
@@ -277,10 +309,16 @@ export class Log {
 
   _attachExistingActive(path) {
     this.activePath = path;
-    this.writer = Writer.open(path, {
-      livePublishEveryEntries: this.livePublishEveryEntries,
-      fieldNamePolicy: writerPolicyForLogPolicy(this.fieldNamePolicy),
-    });
+    try {
+      this.writer = Writer.open(path, {
+        livePublishEveryEntries: this.livePublishEveryEntries,
+        fieldNamePolicy: writerPolicyForLogPolicy(this.fieldNamePolicy),
+      });
+    } catch (error) {
+      if (!isReplaceableActiveOpenError(error)) throw error;
+      this._replaceActiveFile(path);
+      return;
+    }
     if (this.writer.header.n_entries === 0n) {
       this._discardEmptyOpenedWriter();
       return;
@@ -289,13 +327,57 @@ export class Log {
   }
 
   _archiveOnlineChainActive(path) {
-    const writer = Writer.open(path);
+    let writer;
+    try {
+      writer = Writer.open(path);
+    } catch (error) {
+      if (!isReplaceableActiveOpenError(error)) throw error;
+      this._replaceActiveFile(path);
+      return;
+    }
     if (writer.header.n_entries === 0n) {
       writer.close();
       unlinkIfExists(path);
       return;
     }
     writer.archiveTo(path);
+  }
+
+  _replaceActiveFile(path) {
+    let header;
+    try {
+      header = readJournalHeader(path);
+    } catch {
+      this._disposeActiveFile(path);
+      return;
+    }
+
+    const currentTail = this.nextSeqnum > 0n ? this.nextSeqnum - 1n : 0n;
+    if (header.n_entries > 0n && header.tail_entry_seqnum >= currentTail) {
+      this.seqnumId = Buffer.from(header.seqnum_id);
+      this.nextSeqnum = header.tail_entry_seqnum + 1n;
+      if (!isZeroUUID(header.tail_entry_boot_id)) this.bootId = Buffer.from(header.tail_entry_boot_id);
+      this.lastRealtime = header.tail_entry_realtime;
+      this.lastMonotonic = header.tail_entry_monotonic;
+    }
+    this._disposeActiveFile(path);
+  }
+
+  _disposeActiveFile(path) {
+    let attempt = 0n;
+    let target = disposedJournalPath(path, attempt);
+    while (existsSync(target)) {
+      attempt += 1n;
+      target = disposedJournalPath(path, attempt);
+    }
+    try {
+      renameSync(path, target);
+    } catch (error) {
+      if (error?.code === 'ENOENT') return;
+      throw error;
+    }
+    syncDirectory(this.directory);
+    if (this.activePath === path) this.activePath = null;
   }
 
   _captureWriterIdentity() {
@@ -676,6 +758,17 @@ function unlinkIfExists(path) {
     if (error?.code !== 'ENOENT') throw error;
     return false;
   }
+}
+
+function isReplaceableActiveOpenError(error) {
+  return String(error?.message ?? error).includes('unsupported journal');
+}
+
+function disposedJournalPath(path, attempt) {
+  const stem = path.endsWith('.journal') ? path.slice(0, -'.journal'.length) : path;
+  const stamp = process.hrtime.bigint() & 0xffffffffffffffffn;
+  const suffix = BigInt(process.pid) ^ BigInt(attempt);
+  return `${stem}@${stamp.toString(16).padStart(16, '0')}-${suffix.toString(16).padStart(16, '0')}.journal~`;
 }
 
 function parseArchivedJournalName(name, source) {

@@ -58,6 +58,13 @@ Do not use this skill for:
 - Header readers must use the on-disk `header_size` when validating object and hash-table locations. Do not compare historical file offsets against the current in-memory v260 `JournalHeader` struct size, and do not expose bytes beyond the on-disk header as newer header fields.
 - Readers must not require `HEADER_INCOMPATIBLE_KEYED_HASH` for opening existing historical files. If that flag is absent, readers must use the unkeyed Jenkins lookup3 hash path and still support applicable compression flags such as LZ4. Writers may remain conservative when appending and reject unkeyed historical files unless a SOW explicitly proves safe mutation of that historical format.
 - Writer append-open rejection for historical unkeyed files must be controlled and must occur before entry mutation. Do not leave assertion panics or partial state changes as the user-facing failure mode.
+- High-level directory writers own reliable active replacement. If a low-level
+  append-open rejects an existing active file as unsupported, the directory
+  writer must follow systemd's reliable-open shape: use readable header
+  metadata to continue sequence identity where possible, move the old active
+  file out of the normal `.journal` set with a collision-safe `*.journal~`
+  disposed name, and create a fresh active file. Do not archive unsupported
+  active files into normal readable history.
 - Journal-native API performance is part of compatibility. If the format provides a hash table, FIELD/DATA chain, DATA entry array, ENTRY array, offset, or mmap-backed path for an operation, implementations must use that path instead of scanning and expanding all entries unless a SOW records measured evidence and an explicit accepted reason.
 - Field-name enumeration should use FIELD hash-table traversal on valid indexed files. A compatibility fallback to entry scanning is acceptable only when a historical or damaged FIELD table cannot be traversed safely, and that fallback must be documented in the active SOW.
 - Unfiltered unique value enumeration must match systemd's algorithmic shape: find the FIELD object and walk its DATA chain, then de-duplicate across files. It must not scan every entry or expand unrelated fields.

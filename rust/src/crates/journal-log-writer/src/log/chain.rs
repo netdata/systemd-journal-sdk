@@ -6,7 +6,9 @@ use journal_core::collections::HashMap;
 use journal_core::file::{JournalState, Mmap};
 use journal_registry::repository;
 use journal_registry::repository::{File, Source};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 #[allow(unused_imports)]
@@ -70,12 +72,45 @@ pub(super) struct RetentionOutcome {
 }
 
 struct TailState {
+    state: u8,
     seqnum_id: Uuid,
     tail_seqnum: u64,
     tail_realtime: u64,
     tail_boot_id: Uuid,
     tail_monotonic: u64,
     head_realtime: u64,
+}
+
+fn read_u64_le(buf: &[u8], offset: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(
+        buf.get(offset..offset + 8)?.try_into().ok()?,
+    ))
+}
+
+fn read_uuid(buf: &[u8], offset: usize) -> Option<Uuid> {
+    Some(Uuid::from_bytes(
+        buf.get(offset..offset + 16)?.try_into().ok()?,
+    ))
+}
+
+fn tail_state_from_raw_header(file: &repository::File) -> Option<TailState> {
+    const MIN_TAIL_HEADER_SIZE: usize = 208;
+    let mut handle = std::fs::File::open(file.path()).ok()?;
+    let mut buf = [0u8; MIN_TAIL_HEADER_SIZE];
+    handle.read_exact(&mut buf).ok()?;
+    if &buf[0..8] != b"LPKSHHRH" {
+        return None;
+    }
+
+    Some(TailState {
+        state: buf[16],
+        seqnum_id: read_uuid(&buf, 72)?,
+        tail_seqnum: read_u64_le(&buf, 160)?,
+        tail_realtime: read_u64_le(&buf, 192)?,
+        tail_boot_id: read_uuid(&buf, 56)?,
+        tail_monotonic: read_u64_le(&buf, 200)?,
+        head_realtime: read_u64_le(&buf, 184)?,
+    })
 }
 
 impl OwnedChain {
@@ -147,23 +182,39 @@ impl OwnedChain {
             }
 
             let window_size = 4096;
-            let Ok(jf) = JournalFile::<Mmap>::open(&file, window_size) else {
-                continue;
+            let candidate = match JournalFile::<Mmap>::open(&file, window_size) {
+                Ok(jf) => {
+                    let header = jf.journal_header_ref();
+                    TailState {
+                        state: header.state,
+                        seqnum_id: Uuid::from_bytes(header.seqnum_id),
+                        tail_seqnum: header.tail_entry_seqnum,
+                        tail_realtime: header.tail_entry_realtime,
+                        tail_boot_id: Uuid::from_bytes(header.tail_entry_boot_id),
+                        tail_monotonic: header.tail_entry_monotonic,
+                        head_realtime: header.head_entry_realtime,
+                    }
+                }
+                Err(_) => {
+                    let Some(raw_state) = tail_state_from_raw_header(&file) else {
+                        continue;
+                    };
+                    raw_state
+                }
             };
-            let header = jf.journal_header_ref();
-            if header.state != JournalState::Online as u8 {
+            if candidate.state != JournalState::Online as u8 {
                 continue;
             }
 
             let replace = selected
                 .as_ref()
                 .is_none_or(|(_, tail_seqnum, head_realtime)| {
-                    header.tail_entry_seqnum > *tail_seqnum
-                        || (header.tail_entry_seqnum == *tail_seqnum
-                            && header.head_entry_realtime > *head_realtime)
+                    candidate.tail_seqnum > *tail_seqnum
+                        || (candidate.tail_seqnum == *tail_seqnum
+                            && candidate.head_realtime > *head_realtime)
                 });
             if replace {
-                selected = Some((file, header.tail_entry_seqnum, header.head_entry_realtime));
+                selected = Some((file, candidate.tail_seqnum, candidate.head_realtime));
             }
         }
 
@@ -218,17 +269,25 @@ impl OwnedChain {
             }
 
             let window_size = 4096;
-            let Ok(jf) = JournalFile::<Mmap>::open(&file, window_size) else {
-                continue;
-            };
-            let header = jf.journal_header_ref();
-            let candidate = TailState {
-                seqnum_id: Uuid::from_bytes(header.seqnum_id),
-                tail_seqnum: header.tail_entry_seqnum,
-                tail_realtime: header.tail_entry_realtime,
-                tail_boot_id: Uuid::from_bytes(header.tail_entry_boot_id),
-                tail_monotonic: header.tail_entry_monotonic,
-                head_realtime: header.head_entry_realtime,
+            let candidate = match JournalFile::<Mmap>::open(&file, window_size) {
+                Ok(jf) => {
+                    let header = jf.journal_header_ref();
+                    TailState {
+                        state: header.state,
+                        seqnum_id: Uuid::from_bytes(header.seqnum_id),
+                        tail_seqnum: header.tail_entry_seqnum,
+                        tail_realtime: header.tail_entry_realtime,
+                        tail_boot_id: Uuid::from_bytes(header.tail_entry_boot_id),
+                        tail_monotonic: header.tail_entry_monotonic,
+                        head_realtime: header.head_entry_realtime,
+                    }
+                }
+                Err(_) => {
+                    let Some(raw_state) = tail_state_from_raw_header(&file) else {
+                        continue;
+                    };
+                    raw_state
+                }
             };
             let replace = selected.as_ref().is_none_or(|current: &TailState| {
                 candidate.tail_seqnum > current.tail_seqnum
@@ -264,6 +323,51 @@ impl OwnedChain {
             self.total_size = self.total_size.saturating_sub(size);
         }
         self.inner.remove_file(file);
+    }
+
+    pub(super) fn dispose_replaceable_active_file(
+        &mut self,
+        file: &repository::File,
+    ) -> Result<()> {
+        self.dispose_file(file)
+    }
+
+    fn dispose_file(&mut self, file: &repository::File) -> Result<()> {
+        let source = Path::new(file.path());
+        if !source.exists() {
+            self.remove_tracked_file(file);
+            return Ok(());
+        }
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let source_text = file.path();
+        let stem = source_text.strip_suffix(".journal").unwrap_or(source_text);
+        let mut target = PathBuf::from(format!(
+            "{stem}@{:016x}-{:016x}.journal~",
+            stamp as u64,
+            Uuid::new_v4().as_u128() as u64
+        ));
+        while target.exists() {
+            target = PathBuf::from(format!(
+                "{stem}@{:016x}-{:016x}.journal~",
+                stamp as u64,
+                Uuid::new_v4().as_u128() as u64
+            ));
+        }
+        match std::fs::rename(source, &target) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                self.remove_tracked_file(file);
+                return Ok(());
+            }
+            Err(err) => return Err(err.into()),
+        }
+        sync_directory(&self.path)?;
+        self.remove_tracked_file(file);
+        Ok(())
     }
 
     pub(super) fn create_chain_file(

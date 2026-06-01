@@ -107,6 +107,36 @@ function journalFiles(directory) {
     .map((name) => join(directory, name));
 }
 
+function disposedJournalFiles(directory) {
+  return readdirSync(directory)
+    .filter((name) => name.endsWith('.journal~'))
+    .sort()
+    .map((name) => join(directory, name));
+}
+
+function clearKeyedHashFlag(path) {
+  const flags = readFileSync(path).readUInt32LE(12);
+  const buf = Buffer.alloc(4);
+  buf.writeUInt32LE(flags & ~INCOMPATIBLE_KEYED_HASH, 0);
+  const fd = openSync(path, 'r+');
+  try {
+    writeSync(fd, buf, 0, buf.length, 12);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function writeHeaderSize(path, size) {
+  const buf = Buffer.alloc(8);
+  buf.writeBigUInt64LE(BigInt(size), 0);
+  const fd = openSync(path, 'r+');
+  try {
+    writeSync(fd, buf, 0, buf.length, 88);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function collectNullable(next) {
   const values = [];
   for (;;) {
@@ -1288,6 +1318,79 @@ for (const [length, expected] of sipVectors) {
     assert.equal(activeReader.header.tail_entry_seqnum, 3n);
     activeReader.close();
     strict.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const options = {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      maxEntries: 0,
+      maxBytes: 0,
+      maxFiles: 10,
+    };
+    const first = new Log(tempDir, options);
+    first.append([{ name: 'MESSAGE', value: 'replace-chain-0' }], { realtimeUsec: 1700002272000000n, monotonicUsec: 1n });
+    first.append([{ name: 'MESSAGE', value: 'replace-chain-1' }], { realtimeUsec: 1700002272000001n, monotonicUsec: 2n });
+    const activePath = first.activeFile();
+    first.writer.close();
+    first.writer = null;
+    first.closed = true;
+
+    clearKeyedHashFlag(activePath);
+    assert.throws(() => Writer.open(activePath), /keyed hash required/);
+
+    const second = new Log(tempDir, options);
+    assert.equal(existsSync(activePath), false);
+    assert.equal(disposedJournalFiles(second.journalDirectory()).length, 1);
+    second.append([{ name: 'MESSAGE', value: 'replace-chain-2' }], { realtimeUsec: 1700002272000002n, monotonicUsec: 3n });
+    assert.notEqual(second.activeFile(), activePath);
+    const reader = FileReader.open(second.activeFile());
+    assert.equal(reader.header.head_entry_seqnum, 3n);
+    assert.equal(reader.header.tail_entry_seqnum, 3n);
+    reader.close();
+    second.close();
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+{
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+  try {
+    const options = {
+      source: 'system',
+      machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      strictSystemdNaming: true,
+      maxEntries: 0,
+      maxBytes: 0,
+      maxFiles: 10,
+    };
+    const first = new Log(tempDir, options);
+    first.append([{ name: 'MESSAGE', value: 'replace-strict-0' }], { realtimeUsec: 1700002273000000n, monotonicUsec: 1n });
+    first.append([{ name: 'MESSAGE', value: 'replace-strict-1' }], { realtimeUsec: 1700002273000001n, monotonicUsec: 2n });
+    const activePath = first.activeFile();
+    first.writer.close();
+    first.writer = null;
+    first.closed = true;
+
+    writeHeaderSize(activePath, HEADER_SIZE - 8);
+    assert.throws(() => Writer.open(activePath), /outdated header/);
+
+    const second = new Log(tempDir, options);
+    assert.equal(existsSync(activePath), false);
+    assert.equal(disposedJournalFiles(second.journalDirectory()).length, 1);
+    second.append([{ name: 'MESSAGE', value: 'replace-strict-2' }], { realtimeUsec: 1700002273000002n, monotonicUsec: 3n });
+    assert.equal(second.activeFile(), join(second.journalDirectory(), 'system.journal'));
+    const reader = FileReader.open(second.activeFile());
+    assert.equal(reader.header.head_entry_seqnum, 3n);
+    assert.equal(reader.header.tail_entry_seqnum, 3n);
+    reader.close();
+    second.close();
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }

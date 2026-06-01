@@ -195,6 +195,10 @@ func OpenWithOptions(path string, opts Options) (*Writer, error) {
 		_ = f.Close()
 		return nil, errUnsupportedJournal
 	}
+	if header.headerSize < headerSize {
+		_ = f.Close()
+		return nil, errUnsupportedJournal
+	}
 	if header.dataHashTableOffset == 0 || header.fieldHashTableOffset == 0 || header.tailObjectOffset == 0 {
 		_ = f.Close()
 		return nil, errInvalidJournal

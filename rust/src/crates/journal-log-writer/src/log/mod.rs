@@ -464,6 +464,40 @@ impl ActiveFile {
     }
 }
 
+fn replaceable_active_open_error(err: &WriterError) -> bool {
+    matches!(
+        err,
+        WriterError::Journal(JournalError::UnsupportedJournalFile)
+    )
+}
+
+fn open_existing_active_file(
+    chain: &mut OwnedChain,
+    repository_file: repository::File,
+    boot_id: uuid::Uuid,
+) -> Result<Option<ActiveFile>> {
+    match ActiveFile::open(repository_file.clone(), boot_id) {
+        Ok(opened) => {
+            if opened.journal_file.journal_header_ref().n_entries == 0 {
+                match std::fs::remove_file(repository_file.path()) {
+                    Ok(()) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => return Err(err.into()),
+                }
+                chain.remove_tracked_file(&repository_file);
+                Ok(None)
+            } else {
+                Ok(Some(opened))
+            }
+        }
+        Err(err) if replaceable_active_open_error(&err) => {
+            chain.dispose_replaceable_active_file(&repository_file)?;
+            Ok(None)
+        }
+        Err(err) => Err(err),
+    }
+}
+
 pub struct Log {
     configured_dir: PathBuf,
     chain: OwnedChain,
@@ -679,16 +713,9 @@ impl Log {
         {
             use journal_core::file::JournalState;
 
-            let mut opened = ActiveFile::open(repository_file.clone(), boot_id)?;
-            let n_entries = opened.journal_file.journal_header_ref().n_entries;
-            if n_entries == 0 {
-                match std::fs::remove_file(repository_file.path()) {
-                    Ok(()) => {}
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(err) => return Err(err.into()),
-                }
-                chain.remove_tracked_file(&repository_file);
-            } else {
+            if let Some(mut opened) =
+                open_existing_active_file(&mut chain, repository_file.clone(), boot_id)?
+            {
                 chain.update_file_size(&repository_file, opened.current_file_size());
                 opened.journal_file.journal_header_mut().state = JournalState::Archived as u8;
                 opened.journal_file.sync()?;
@@ -700,17 +727,9 @@ impl Log {
             chain.online_chain_file()?
         };
         if let Some(repository_file) = existing_active_file {
-            let opened = ActiveFile::open(repository_file, boot_id)?;
-            let n_entries = opened.journal_file.journal_header_ref().n_entries;
-            if n_entries == 0 {
-                let repository_file = opened.repository_file.clone();
-                match std::fs::remove_file(repository_file.path()) {
-                    Ok(()) => {}
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(err) => return Err(err.into()),
-                }
-                chain.remove_tracked_file(&repository_file);
-            } else {
+            if let Some(opened) =
+                open_existing_active_file(&mut chain, repository_file.clone(), boot_id)?
+            {
                 let header = opened.journal_file.journal_header_ref();
                 boot_id = opened.writer.boot_id();
                 seqnum_id = uuid::Uuid::from_bytes(header.seqnum_id);

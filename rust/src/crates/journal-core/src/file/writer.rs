@@ -347,9 +347,10 @@ impl JournalWriter {
         compression: Compression,
         compress_threshold: usize,
     ) -> Result<Self> {
-        if !journal_file
-            .journal_header_ref()
-            .has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash)
+        let current_header_size = std::mem::size_of::<JournalHeader>() as u64;
+        let header = journal_file.journal_header_ref();
+        if !header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash)
+            || header.header_size < current_header_size
         {
             return Err(JournalError::UnsupportedJournalFile);
         }

@@ -102,6 +102,9 @@ export class Writer {
       if ((header.incompatible_flags & INCOMPATIBLE_KEYED_HASH) === 0) {
         throw new Error('unsupported journal: keyed hash required');
       }
+      if (header.header_size < BigInt(HEADER_SIZE)) {
+        throw new Error('unsupported journal: outdated header');
+      }
       if (header.data_hash_table_offset === 0n || header.field_hash_table_offset === 0n || header.tail_object_offset === 0n) {
         throw new Error('invalid journal: missing hash tables');
       }

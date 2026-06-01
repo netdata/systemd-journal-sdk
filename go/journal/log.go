@@ -321,9 +321,13 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 			l.active = activePath
 			w, err := OpenWithOptions(activePath, l.options)
 			if err != nil {
-				return nil, err
-			}
-			if w.header.nEntries == 0 {
+				if !replaceableActiveOpenError(err) {
+					return nil, err
+				}
+				if err := l.replaceActiveFile(activePath); err != nil {
+					return nil, err
+				}
+			} else if w.header.nEntries == 0 {
 				if err := l.discardEmptyOpenedWriter(w); err != nil {
 					return nil, err
 				}
@@ -354,9 +358,13 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 			l.active = state.activePath
 			w, err := OpenWithOptions(l.active, l.options)
 			if err != nil {
-				return nil, err
-			}
-			if w.header.nEntries == 0 {
+				if !replaceableActiveOpenError(err) {
+					return nil, err
+				}
+				if err := l.replaceActiveFile(l.active); err != nil {
+					return nil, err
+				}
+			} else if w.header.nEntries == 0 {
 				if err := l.discardEmptyOpenedWriter(w); err != nil {
 					return nil, err
 				}
@@ -380,6 +388,9 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 func (l *Log) archiveOnlineChainActive(path string) error {
 	w, err := OpenWithOptions(path, l.options)
 	if err != nil {
+		if replaceableActiveOpenError(err) {
+			return l.replaceActiveFile(path)
+		}
 		return err
 	}
 	if w.header.nEntries == 0 {
@@ -391,6 +402,64 @@ func (l *Log) archiveOnlineChainActive(path string) error {
 		return errors.Join(closeErr, removeErr)
 	}
 	return w.archiveTo(path)
+}
+
+func replaceableActiveOpenError(err error) bool {
+	return errors.Is(err, errUnsupportedJournal)
+}
+
+func (l *Log) replaceActiveFile(path string) error {
+	header, err := readJournalHeader(path)
+	if err != nil {
+		return l.disposeActiveFile(path)
+	}
+	currentTail := uint64(0)
+	if l.options.HeadSeqnum > 0 {
+		currentTail = l.options.HeadSeqnum - 1
+	}
+	if header.nEntries > 0 && header.tailEntrySeqnum >= currentTail {
+		l.options.SeqnumID = header.seqnumID
+		l.options.HeadSeqnum = header.tailEntrySeqnum + 1
+		if !isZeroUUID(header.tailEntryBootID) {
+			l.options.BootID = header.tailEntryBootID
+		}
+		l.lastRealtime = header.tailEntryRealtime
+		l.lastMonotonic = header.tailEntryMonotonic
+	}
+
+	return l.disposeActiveFile(path)
+}
+
+func (l *Log) disposeActiveFile(path string) error {
+	target := disposedJournalPath(path, 0)
+	for attempt := 1; ; attempt++ {
+		if _, err := os.Stat(target); errors.Is(err, os.ErrNotExist) {
+			break
+		} else if err != nil {
+			return err
+		}
+		target = disposedJournalPath(path, attempt)
+	}
+	if err := os.Rename(path, target); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if l.active == path {
+		l.active = ""
+	}
+	return syncJournalDirectory(target)
+}
+
+func disposedJournalPath(path string, attempt int) string {
+	stem := strings.TrimSuffix(path, ".journal")
+	return fmt.Sprintf(
+		"%s@%016x-%016x.journal~",
+		stem,
+		uint64(time.Now().UnixNano()),
+		uint64(os.Getpid())^uint64(attempt),
+	)
 }
 
 func (l *Log) attachOpenedWriter(w *Writer) {

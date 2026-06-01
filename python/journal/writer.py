@@ -217,6 +217,8 @@ class Writer:
                 raise ValueError(f'unsupported journal: incompatible flags 0x{flags:x}')
             if not (flags & INCOMPATIBLE_KEYED_HASH):
                 raise ValueError('unsupported journal: keyed hash required')
+            if header['header_size'] < HEADER_SIZE:
+                raise ValueError('unsupported journal: outdated header')
             if header['data_hash_table_offset'] == 0 or header['field_hash_table_offset'] == 0 or header['tail_object_offset'] == 0:
                 raise ValueError('invalid journal: missing hash tables')
             if flags & INCOMPATIBLE_COMPRESSED_XZ:

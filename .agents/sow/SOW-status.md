@@ -52,6 +52,14 @@ Last updated: 2026-06-01
   legacy writer should be guarded, deprecated, or removed.
 
 ## Recently Closed Or Completed
+- SOW-0079 - Directory Writer Reliable Active Replacement: completed. Rust,
+  Go, Python, and Node.js high-level directory writers now treat
+  append-incompatible or outdated active files like journald reliable-open:
+  move the old active file to a collision-safe disposed `*.journal~` name and
+  create a fresh active file. Low-level direct writer opens still return
+  controlled unsupported-file errors; stock directory and cross-language
+  matrices passed; five read-only reviewers voted `PRODUCTION GRADE` in the
+  second whole-SOW review batch.
 - SOW-0077 - Rust Historical Unkeyed Writer Rejection: completed. The current
   Rust writer stack now rejects historical unkeyed append-open and direct
   writer construction with `UnsupportedJournalFile` before entry mutation or

@@ -104,6 +104,28 @@ def journal_files(directory):
     )
 
 
+def disposed_journal_files(directory):
+    return sorted(
+        str(Path(directory) / name)
+        for name in os.listdir(directory)
+        if name.endswith('.journal~')
+    )
+
+
+def clear_keyed_hash_flag(path):
+    with open(path, 'r+b') as f:
+        f.seek(12)
+        flags = int.from_bytes(f.read(4), 'little')
+        f.seek(12)
+        f.write((flags & ~INCOMPATIBLE_KEYED_HASH).to_bytes(4, 'little'))
+
+
+def write_header_size(path, size):
+    with open(path, 'r+b') as f:
+        f.seek(88)
+        f.write(int(size).to_bytes(8, 'little'))
+
+
 def collect_nullable(next_func):
     values = []
     while True:
@@ -2047,6 +2069,99 @@ def test_directory_writer_strict_archives_online_chain_active():
         strict.close()
 
 
+def test_directory_writer_replaces_unsupported_chain_active():
+    with tempfile.TemporaryDirectory() as td:
+        config = {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'max_entries': 0,
+            'max_bytes': 0,
+            'max_files': 10,
+        }
+        first = Log(td, config)
+        first.append(
+            [{'name': 'MESSAGE', 'value': 'replace-chain-0'}],
+            {'realtime_usec': 1_700_002_272_000_000, 'monotonic_usec': 1},
+        )
+        first.append(
+            [{'name': 'MESSAGE', 'value': 'replace-chain-1'}],
+            {'realtime_usec': 1_700_002_272_000_001, 'monotonic_usec': 2},
+        )
+        active_path = first.active_file()
+        first._active_writer.close()
+        first._active_writer = None
+        first._closed = True
+
+        clear_keyed_hash_flag(active_path)
+        try:
+            Writer.open(active_path)
+        except ValueError as err:
+            assert 'keyed hash required' in str(err)
+        else:
+            raise AssertionError('expected unsupported chain active rejection')
+
+        second = Log(td, config)
+        assert not os.path.exists(active_path)
+        assert len(disposed_journal_files(second.journal_directory())) == 1
+        second.append(
+            [{'name': 'MESSAGE', 'value': 'replace-chain-2'}],
+            {'realtime_usec': 1_700_002_272_000_002, 'monotonic_usec': 3},
+        )
+        assert second.active_file() != active_path
+        reader = FileReader.open(second.active_file())
+        assert reader.header()['head_entry_seqnum'] == 3
+        assert reader.header()['tail_entry_seqnum'] == 3
+        reader.close()
+        second.close()
+
+
+def test_directory_writer_replaces_outdated_strict_active():
+    with tempfile.TemporaryDirectory() as td:
+        config = {
+            'source': 'system',
+            'machine_id': '00112233445566778899aabbccddeeff',
+            'strict_systemd_naming': True,
+            'max_entries': 0,
+            'max_bytes': 0,
+            'max_files': 10,
+        }
+        first = Log(td, config)
+        first.append(
+            [{'name': 'MESSAGE', 'value': 'replace-strict-0'}],
+            {'realtime_usec': 1_700_002_273_000_000, 'monotonic_usec': 1},
+        )
+        first.append(
+            [{'name': 'MESSAGE', 'value': 'replace-strict-1'}],
+            {'realtime_usec': 1_700_002_273_000_001, 'monotonic_usec': 2},
+        )
+        active_path = first.active_file()
+        first._active_writer.close()
+        first._active_writer = None
+        first._closed = True
+
+        write_header_size(active_path, HEADER_SIZE - 8)
+        try:
+            Writer.open(active_path)
+        except ValueError as err:
+            assert 'outdated header' in str(err)
+        else:
+            raise AssertionError('expected outdated active rejection')
+
+        second = Log(td, config)
+        assert not os.path.exists(active_path)
+        assert len(disposed_journal_files(second.journal_directory())) == 1
+        second.append(
+            [{'name': 'MESSAGE', 'value': 'replace-strict-2'}],
+            {'realtime_usec': 1_700_002_273_000_002, 'monotonic_usec': 3},
+        )
+        assert Path(second.active_file()).name == 'system.journal'
+        reader = FileReader.open(second.active_file())
+        assert reader.header()['head_entry_seqnum'] == 3
+        assert reader.header()['tail_entry_seqnum'] == 3
+        reader.close()
+        second.close()
+
+
 def test_directory_writer_discards_empty_online_file_and_continues_sequence():
     with tempfile.TemporaryDirectory() as td:
         config = {
@@ -3091,6 +3206,8 @@ def main():
     test_directory_writer_chain_reopens_online_file()
     test_directory_writer_auto_identity_has_boot_id_before_lazy_open()
     test_directory_writer_strict_archives_online_chain_active()
+    test_directory_writer_replaces_unsupported_chain_active()
+    test_directory_writer_replaces_outdated_strict_active()
     test_directory_writer_discards_empty_online_file_and_continues_sequence()
     test_directory_writer_zero_rotation_limits_disable_rotation()
     test_facade_unique_binary_values()

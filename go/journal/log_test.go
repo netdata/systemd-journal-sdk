@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1075,6 +1076,127 @@ func TestLogStrictSystemdNamingArchivesOnlineChainActive(t *testing.T) {
 	}
 }
 
+func TestLogReplacesUnsupportedDefaultChainActive(t *testing.T) {
+	root := t.TempDir()
+	config := LogConfig{
+		Options:        testOptions(),
+		Source:         "system",
+		RotationPolicy: RotationPolicy{}.WithMaxEntries(10),
+	}
+	first, err := NewLog(root, config)
+	if err != nil {
+		t.Fatalf("NewLog(first) error = %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := first.Append([]Field{
+			StringField("MESSAGE", fmt.Sprintf("replace-chain-%d", i)),
+		}, EntryOptions{RealtimeUsec: 1_700_002_272_000_000 + uint64(i), MonotonicUsec: uint64(i + 1)}); err != nil {
+			t.Fatalf("Append(first %d) error = %v", i, err)
+		}
+	}
+	if err := first.Sync(); err != nil {
+		t.Fatalf("Sync(first) error = %v", err)
+	}
+	activePath := first.ActivePath()
+	if err := first.writer.Close(); err != nil {
+		t.Fatalf("writer.Close(first active) error = %v", err)
+	}
+	first.writer = nil
+	first.closed = true
+
+	clearKeyedHashFlag(t, activePath)
+	if _, err := Open(activePath); !errors.Is(err, errUnsupportedJournal) {
+		t.Fatalf("Open(unkeyed active) error = %v, want errUnsupportedJournal", err)
+	}
+
+	second, err := NewLog(root, config)
+	if err != nil {
+		t.Fatalf("NewLog(second) error = %v", err)
+	}
+	if _, err := os.Stat(activePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old active stat error = %v, want not exist after replacement", err)
+	}
+	if disposed := disposedJournalFiles(t, second.JournalDirectory()); len(disposed) != 1 {
+		t.Fatalf("disposed journal count = %d, want 1; files=%v", len(disposed), disposed)
+	}
+	if err := second.Append([]Field{
+		StringField("MESSAGE", "replace-chain-2"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_272_000_002, MonotonicUsec: 3}); err != nil {
+		t.Fatalf("Append(second) error = %v", err)
+	}
+	if second.ActivePath() == activePath {
+		t.Fatalf("new active path reused unsupported active path %q", activePath)
+	}
+	snapshot := readJournalSnapshot(t, second.ActivePath())
+	if snapshot.header.headEntrySeqnum != 3 || snapshot.header.tailEntrySeqnum != 3 {
+		t.Fatalf("replacement seqnum range = [%d,%d], want [3,3]", snapshot.header.headEntrySeqnum, snapshot.header.tailEntrySeqnum)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatalf("Close(second) error = %v", err)
+	}
+}
+
+func TestLogReplacesOutdatedStrictActive(t *testing.T) {
+	root := t.TempDir()
+	config := LogConfig{
+		Options:             testOptions(),
+		Source:              "system",
+		StrictSystemdNaming: true,
+		RotationPolicy:      RotationPolicy{}.WithMaxEntries(10),
+	}
+	first, err := NewLog(root, config)
+	if err != nil {
+		t.Fatalf("NewLog(first) error = %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := first.Append([]Field{
+			StringField("MESSAGE", fmt.Sprintf("replace-strict-%d", i)),
+		}, EntryOptions{RealtimeUsec: 1_700_002_273_000_000 + uint64(i), MonotonicUsec: uint64(i + 1)}); err != nil {
+			t.Fatalf("Append(first %d) error = %v", i, err)
+		}
+	}
+	if err := first.Sync(); err != nil {
+		t.Fatalf("Sync(first) error = %v", err)
+	}
+	activePath := first.ActivePath()
+	if err := first.writer.Close(); err != nil {
+		t.Fatalf("writer.Close(first active) error = %v", err)
+	}
+	first.writer = nil
+	first.closed = true
+
+	writeHeaderSize(t, activePath, headerSize-8)
+	if _, err := Open(activePath); !errors.Is(err, errUnsupportedJournal) {
+		t.Fatalf("Open(outdated active) error = %v, want errUnsupportedJournal", err)
+	}
+
+	second, err := NewLog(root, config)
+	if err != nil {
+		t.Fatalf("NewLog(second) error = %v", err)
+	}
+	if _, err := os.Stat(activePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old strict active stat error = %v, want not exist after replacement", err)
+	}
+	if disposed := disposedJournalFiles(t, second.JournalDirectory()); len(disposed) != 1 {
+		t.Fatalf("disposed journal count = %d, want 1; files=%v", len(disposed), disposed)
+	}
+	if err := second.Append([]Field{
+		StringField("MESSAGE", "replace-strict-2"),
+	}, EntryOptions{RealtimeUsec: 1_700_002_273_000_002, MonotonicUsec: 3}); err != nil {
+		t.Fatalf("Append(second) error = %v", err)
+	}
+	if filepath.Base(second.ActivePath()) != "system.journal" {
+		t.Fatalf("strict active filename = %q, want system.journal", filepath.Base(second.ActivePath()))
+	}
+	snapshot := readJournalSnapshot(t, second.ActivePath())
+	if snapshot.header.headEntrySeqnum != 3 || snapshot.header.tailEntrySeqnum != 3 {
+		t.Fatalf("replacement seqnum range = [%d,%d], want [3,3]", snapshot.header.headEntrySeqnum, snapshot.header.tailEntrySeqnum)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatalf("Close(second) error = %v", err)
+	}
+}
+
 func TestLogDiscardsEmptyOnlineFileAndContinuesSequence(t *testing.T) {
 	root := t.TempDir()
 	config := LogConfig{
@@ -2130,6 +2252,54 @@ func journalFiles(t *testing.T, dir string) []string {
 	}
 	sort.Strings(files)
 	return files
+}
+
+func disposedJournalFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir(%s) error = %v", dir, err)
+	}
+	var files []string
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".journal~") {
+			files = append(files, filepath.Join(dir, entry.Name()))
+		}
+	}
+	sort.Strings(files)
+	return files
+}
+
+func clearKeyedHashFlag(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("OpenFile(%s) error = %v", path, err)
+	}
+	defer f.Close()
+	buf := make([]byte, 4)
+	if _, err := f.ReadAt(buf, 12); err != nil {
+		t.Fatalf("ReadAt(incompatible flags) error = %v", err)
+	}
+	flags := binary.LittleEndian.Uint32(buf)
+	binary.LittleEndian.PutUint32(buf, flags&^incompatibleKeyedHash)
+	if _, err := f.WriteAt(buf, 12); err != nil {
+		t.Fatalf("WriteAt(incompatible flags) error = %v", err)
+	}
+}
+
+func writeHeaderSize(t *testing.T, path string, size uint64) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("OpenFile(%s) error = %v", path, err)
+	}
+	defer f.Close()
+	buf := make([]byte, 8)
+	binary.LittleEndian.PutUint64(buf, size)
+	if _, err := f.WriteAt(buf, 88); err != nil {
+		t.Fatalf("WriteAt(header size) error = %v", err)
+	}
 }
 
 func equalUint64s(a, b []uint64) bool {

@@ -1287,8 +1287,9 @@ impl JournalFile<super::mmap::MmapMut> {
         if header.signature != *b"LPKSHHRH" {
             return Err(JournalError::InvalidMagicNumber);
         }
-        let sanitized_header =
-            (header.header_size < header_size).then(|| sanitize_header_for_size(*header));
+        if header.header_size < header_size {
+            return Err(JournalError::UnsupportedJournalFile);
+        }
         if !header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash) {
             return Err(JournalError::UnsupportedJournalFile);
         }
@@ -1312,7 +1313,7 @@ impl JournalFile<super::mmap::MmapMut> {
         Ok(JournalFile {
             file: file.clone(),
             header_map,
-            sanitized_header,
+            sanitized_header: None,
             data_hash_table_map,
             field_hash_table_map,
             window_manager,

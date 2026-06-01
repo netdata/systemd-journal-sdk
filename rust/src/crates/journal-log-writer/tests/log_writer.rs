@@ -21,6 +21,7 @@ use journal_log_writer::{
 };
 use journal_registry::{Origin, repository::File};
 use std::fs;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -120,6 +121,85 @@ fn journal_file_paths(dir: &TempDir) -> Vec<PathBuf> {
         .collect();
     journal_files.sort();
     journal_files
+}
+
+fn disposed_journal_paths(journal_dir: &Path) -> Vec<PathBuf> {
+    let mut journal_files: Vec<_> = fs::read_dir(journal_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(|s| s.ends_with(".journal~"))
+                .unwrap_or(false)
+        })
+        .map(|e| e.path())
+        .collect();
+    journal_files.sort();
+    journal_files
+}
+
+fn write_online_test_journal(
+    path: &Path,
+    machine_id: uuid::Uuid,
+    boot_id: uuid::Uuid,
+    seqnum_id: uuid::Uuid,
+    head_realtime: u64,
+) {
+    let file = File::from_path(path).expect("journal path should parse");
+    let options = JournalFileOptions::new(machine_id, boot_id, seqnum_id).with_keyed_hash(true);
+    let mut journal = JournalFile::<MmapMut>::create(&file, options).unwrap();
+    let mut writer = JournalWriter::new(&mut journal, 1, boot_id).unwrap();
+    writer
+        .add_entry(
+            &mut journal,
+            &[b"MESSAGE=replaceable active 0"],
+            head_realtime,
+            1,
+        )
+        .unwrap();
+    writer
+        .add_entry(
+            &mut journal,
+            &[b"MESSAGE=replaceable active 1"],
+            head_realtime + 1,
+            2,
+        )
+        .unwrap();
+    journal.sync().unwrap();
+}
+
+fn clear_keyed_hash_flag(path: &Path) {
+    const INCOMPATIBLE_FLAGS_OFFSET: u64 = 12;
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .unwrap();
+    let mut buf = [0u8; 4];
+    file.seek(SeekFrom::Start(INCOMPATIBLE_FLAGS_OFFSET))
+        .unwrap();
+    file.read_exact(&mut buf).unwrap();
+    let mut flags = u32::from_le_bytes(buf);
+    flags &= !(HeaderIncompatibleFlags::KeyedHash as u32);
+    file.seek(SeekFrom::Start(INCOMPATIBLE_FLAGS_OFFSET))
+        .unwrap();
+    file.write_all(&flags.to_le_bytes()).unwrap();
+}
+
+fn write_header_size(path: &Path, header_size: u64) {
+    const HEADER_SIZE_OFFSET: u64 = 88;
+    let mut file = fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.seek(SeekFrom::Start(HEADER_SIZE_OFFSET)).unwrap();
+    file.write_all(&header_size.to_le_bytes()).unwrap();
+}
+
+fn write_data_hash_table_offset(path: &Path, offset: u64) {
+    const DATA_HASH_TABLE_OFFSET: u64 = 104;
+    let mut file = fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.seek(SeekFrom::Start(DATA_HASH_TABLE_OFFSET)).unwrap();
+    file.write_all(&offset.to_le_bytes()).unwrap();
 }
 
 fn single_entry_payloads(path: &Path) -> Vec<Vec<u8>> {
@@ -1320,6 +1400,97 @@ fn test_strict_systemd_close_renames_and_reopen_continues_sequence() {
         }
     }
     assert_eq!(seqnums, vec![1, 2]);
+}
+
+#[test]
+fn test_default_chain_replaces_unsupported_online_active_file() {
+    let dir = TempDir::new().unwrap();
+    let machine_id = test_machine_id();
+    let journal_dir = dir.path().join(machine_id.as_simple().to_string());
+    fs::create_dir_all(&journal_dir).unwrap();
+
+    let boot_id = test_boot_id();
+    let seqnum_id = uuid::Uuid::from_u128(0x404142434445464748494a4b4c4d4e4f);
+    let head_realtime = 1_700_020_100_000_000_u64;
+    let path = journal_dir.join(format!(
+        "system@{}-{:016x}-{:016x}.journal",
+        seqnum_id.simple(),
+        1,
+        head_realtime
+    ));
+    write_online_test_journal(&path, machine_id, boot_id, seqnum_id, head_realtime);
+    clear_keyed_hash_flag(&path);
+    write_data_hash_table_offset(&path, fs::metadata(&path).unwrap().len() + 4096);
+
+    let mut log = Log::new(dir.path(), test_config()).unwrap();
+    assert!(
+        !path.exists(),
+        "unsupported online active file should be moved out of the way"
+    );
+    assert_eq!(
+        disposed_journal_paths(&journal_dir).len(),
+        1,
+        "unsupported active file should be retained as .journal~"
+    );
+    log.write_entry_with_timestamps(
+        &[b"MESSAGE=replaced default active"],
+        EntryTimestamps::default()
+            .with_entry_realtime_usec(head_realtime + 2)
+            .with_entry_monotonic_usec(3),
+    )
+    .unwrap();
+    let active = log.active_file().expect("replacement active file");
+    assert_ne!(active.path(), path.to_str().unwrap());
+
+    let file = File::from_path(Path::new(active.path())).expect("replacement journal path");
+    let journal = JournalFile::<Mmap>::open(&file, 4096).expect("open replacement journal");
+    let header = journal.journal_header_ref();
+    assert_eq!(header.head_entry_seqnum, 3);
+    assert_eq!(header.tail_entry_seqnum, 3);
+}
+
+#[test]
+fn test_strict_systemd_replaces_outdated_active_file() {
+    let dir = TempDir::new().unwrap();
+    let machine_id = test_machine_id();
+    let journal_dir = dir.path().join(machine_id.as_simple().to_string());
+    fs::create_dir_all(&journal_dir).unwrap();
+
+    let boot_id = test_boot_id();
+    let seqnum_id = uuid::Uuid::from_u128(0x505152535455565758595a5b5c5d5e5f);
+    let head_realtime = 1_700_020_200_000_000_u64;
+    let path = journal_dir.join("system.journal");
+    write_online_test_journal(&path, machine_id, boot_id, seqnum_id, head_realtime);
+    write_header_size(&path, 264);
+
+    let mut log = Log::new(dir.path(), test_config().with_strict_systemd_naming(true)).unwrap();
+    assert!(
+        !path.exists(),
+        "outdated strict active file should be moved out of the way before append"
+    );
+    assert_eq!(
+        disposed_journal_paths(&journal_dir).len(),
+        1,
+        "outdated active file should be retained as .journal~"
+    );
+    log.write_entry_with_timestamps(
+        &[b"MESSAGE=replaced strict active"],
+        EntryTimestamps::default()
+            .with_entry_realtime_usec(head_realtime + 2)
+            .with_entry_monotonic_usec(3),
+    )
+    .unwrap();
+    let active = log.active_file().expect("replacement active file");
+    assert_eq!(
+        Path::new(active.path()).file_name().unwrap(),
+        "system.journal"
+    );
+
+    let file = File::from_path(Path::new(active.path())).expect("replacement journal path");
+    let journal = JournalFile::<Mmap>::open(&file, 4096).expect("open replacement journal");
+    let header = journal.journal_header_ref();
+    assert_eq!(header.head_entry_seqnum, 3);
+    assert_eq!(header.tail_entry_seqnum, 3);
 }
 
 #[test]

@@ -172,6 +172,11 @@ active file.
 If strict naming opens a directory with a stale chain-named `ONLINE` active
 file, it archives that file before creating `<source>.journal`, so the directory
 does not keep parallel active files.
+If an existing active file is rejected by the low-level append-open path as
+unsupported, `Log` follows journald's reliable-open behavior: it uses readable
+header metadata to continue sequence identity where possible, moves the old
+active file to a collision-safe `*.journal~` disposed name, and creates a fresh
+active file. Direct low-level append-open still returns an unsupported error.
 Unset rotation and retention limits are disabled. Retention counts the tracked
 active/current file in file-count and committed-byte limits, but deletion only
 selects older unprotected files owned by the configured source; the tracked

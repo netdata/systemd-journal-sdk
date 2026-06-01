@@ -155,6 +155,8 @@ class Log:
             self._last_monotonic = chain_state['tail_monotonic']
         if self._strict_systemd_naming and chain_state['active_file'] is not None:
             self._archive_online_chain_active(chain_state['active_file'])
+        if self._strict_systemd_naming and os.path.exists(self._active_file):
+            self._attach_existing_active(self._active_file)
         if not self._strict_systemd_naming:
             if chain_state['active_file'] is not None:
                 self._attach_existing_active(chain_state['active_file'])
@@ -167,27 +169,53 @@ class Log:
         if self._active_writer:
             return
         if self._active_file is None:
-            head_realtime = opts.get('realtime_usec') or opts.get('realtimeUsec') or int(time.time() * 1_000_000)
-            self._active_file = self._chain_path_for(self._seqnum_id, self._next_seqnum, head_realtime)
+            if self._strict_systemd_naming:
+                self._active_file = self._systemd_active_path()
+            else:
+                head_realtime = opts.get('realtime_usec') or opts.get('realtimeUsec') or int(time.time() * 1_000_000)
+                self._active_file = self._chain_path_for(self._seqnum_id, self._next_seqnum, head_realtime)
         if os.path.exists(self._active_file):
-            self._active_writer = Writer.open(self._active_file, {
-                'live_publish_every_entries': self._live_publish_every_entries,
-                'field_name_policy': _writer_policy_for_log_policy(self._field_name_policy),
-            })
-            if self._active_writer._header['n_entries'] == 0:
-                self._discard_empty_opened_writer()
-                if self._active_file is None:
+            try:
+                self._active_writer = Writer.open(self._active_file, {
+                    'live_publish_every_entries': self._live_publish_every_entries,
+                    'field_name_policy': _writer_policy_for_log_policy(self._field_name_policy),
+                })
+            except Exception as err:
+                if not _is_replaceable_active_open_error(err):
+                    raise
+                self._replace_active_file(self._active_file)
+            else:
+                if self._active_writer._header['n_entries'] == 0:
+                    self._discard_empty_opened_writer()
+                    if self._active_file is None:
+                        head_realtime = int((opts or {}).get('realtime_usec') or (opts or {}).get('realtimeUsec') or time.time() * 1_000_000)
+                        self._active_file = self._chain_path_for(self._seqnum_id, self._next_seqnum, head_realtime)
+                else:
+                    self._capture_writer_identity()
+                    return
+        if self._active_file is None:
+            if self._strict_systemd_naming:
+                self._active_file = self._systemd_active_path()
+            else:
+                head_realtime = int((opts or {}).get('realtime_usec') or (opts or {}).get('realtimeUsec') or time.time() * 1_000_000)
+                self._active_file = self._chain_path_for(self._seqnum_id, self._next_seqnum, head_realtime)
+        if os.path.exists(self._active_file):
+            try:
+                self._active_writer = Writer.open(self._active_file, {
+                    'live_publish_every_entries': self._live_publish_every_entries,
+                    'field_name_policy': _writer_policy_for_log_policy(self._field_name_policy),
+                })
+            except Exception as err:
+                if not _is_replaceable_active_open_error(err):
+                    raise
+                self._replace_active_file(self._active_file)
+        if self._active_writer is None:
+            if self._active_file is None:
+                if self._strict_systemd_naming:
+                    self._active_file = self._systemd_active_path()
+                else:
                     head_realtime = int((opts or {}).get('realtime_usec') or (opts or {}).get('realtimeUsec') or time.time() * 1_000_000)
                     self._active_file = self._chain_path_for(self._seqnum_id, self._next_seqnum, head_realtime)
-            else:
-                self._capture_writer_identity()
-                return
-        if os.path.exists(self._active_file):
-            self._active_writer = Writer.open(self._active_file, {
-                'live_publish_every_entries': self._live_publish_every_entries,
-                'field_name_policy': _writer_policy_for_log_policy(self._field_name_policy),
-            })
-        else:
             opts = {
                 'head_seqnum': self._next_seqnum,
                 'machine_id': self._machine_id,
@@ -227,17 +255,29 @@ class Log:
 
     def _attach_existing_active(self, path):
         self._active_file = path
-        self._active_writer = Writer.open(path, {
-            'live_publish_every_entries': self._live_publish_every_entries,
-            'field_name_policy': _writer_policy_for_log_policy(self._field_name_policy),
-        })
+        try:
+            self._active_writer = Writer.open(path, {
+                'live_publish_every_entries': self._live_publish_every_entries,
+                'field_name_policy': _writer_policy_for_log_policy(self._field_name_policy),
+            })
+        except Exception as err:
+            if not _is_replaceable_active_open_error(err):
+                raise
+            self._replace_active_file(path)
+            return
         if self._active_writer._header['n_entries'] == 0:
             self._discard_empty_opened_writer()
             return
         self._capture_writer_identity()
 
     def _archive_online_chain_active(self, path):
-        writer = Writer.open(path)
+        try:
+            writer = Writer.open(path)
+        except Exception as err:
+            if not _is_replaceable_active_open_error(err):
+                raise
+            self._replace_active_file(path)
+            return
         if writer._header['n_entries'] == 0:
             writer.close()
             try:
@@ -246,6 +286,37 @@ class Log:
                 pass
             return
         writer.archive_to(path)
+
+    def _replace_active_file(self, path):
+        try:
+            with open(path, 'rb') as f:
+                header = parse_file_header(f.read(HEADER_SIZE))
+        except Exception:
+            self._dispose_active_file(path)
+            return
+        current_tail = max(0, int(self._next_seqnum) - 1)
+        if header['n_entries'] > 0 and int(header['tail_entry_seqnum']) >= current_tail:
+            self._seqnum_id = header['seqnum_id']
+            self._next_seqnum = int(header['tail_entry_seqnum']) + 1
+            if header['tail_entry_boot_id'] != b'\x00' * 16:
+                self._boot_id = header['tail_entry_boot_id']
+            self._last_realtime = int(header['tail_entry_realtime'])
+            self._last_monotonic = int(header['tail_entry_monotonic'])
+        self._dispose_active_file(path)
+
+    def _dispose_active_file(self, path):
+        attempt = 0
+        target = _disposed_journal_path(path, attempt)
+        while os.path.exists(target):
+            attempt += 1
+            target = _disposed_journal_path(path, attempt)
+        try:
+            os.rename(path, target)
+        except FileNotFoundError:
+            return
+        _sync_directory(self._journal_dir)
+        if self._active_file == path:
+            self._active_file = None
 
     def _capture_writer_identity(self):
         h = self._active_writer._header
@@ -757,3 +828,12 @@ def _hex64(value):
 
 def _sync_directory(path):
     return sync_directory(path)
+
+
+def _is_replaceable_active_open_error(err):
+    return 'unsupported journal' in str(err)
+
+
+def _disposed_journal_path(path, attempt):
+    stem = path[:-len('.journal')] if path.endswith('.journal') else path
+    return f'{stem}@{time.time_ns():016x}-{(os.getpid() ^ attempt):016x}.journal~'

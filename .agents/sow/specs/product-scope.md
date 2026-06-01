@@ -408,6 +408,12 @@ Current shared high-level directory writer API slice:
   Netdata chain-named `ONLINE` active file before creating `<source>.journal`,
   preserving sequence continuity without leaving parallel active files in the
   same journal directory.
+- Rust, Go, Node.js, and Python high-level directory writers treat low-level
+  append-open `unsupported journal` failures on existing active files as
+  replaceable active-file failures. They preserve sequence identity when the
+  header can still be read, move the old active file to a collision-safe
+  disposed `*.journal~` name, and create a fresh active file. Low-level direct
+  writer opens still return controlled unsupported errors.
 - Rust, Go, Node.js, and Python expose a strict identity mode requiring
   explicit machine ID and boot ID; default identity mode uses explicit IDs when
   provided, otherwise generates SDK-local IDs without probing host identity.
