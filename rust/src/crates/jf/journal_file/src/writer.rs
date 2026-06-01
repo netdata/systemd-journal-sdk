@@ -46,6 +46,9 @@ impl JournalWriter {
     pub fn new(journal_file: &mut JournalFile<MmapMut>) -> Result<Self> {
         let (append_offset, next_seqnum) = {
             let header = journal_file.journal_header_ref();
+            if !header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash) {
+                return Err(JournalError::UnsupportedJournalFile);
+            }
 
             let Some(tail_object_offset) = header.tail_object_offset else {
                 return Err(JournalError::InvalidMagicNumber);
@@ -81,7 +84,9 @@ impl JournalWriter {
         boot_id: [u8; 16],
     ) -> Result<()> {
         let header = journal_file.journal_header_ref();
-        assert!(header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash));
+        if !header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash) {
+            return Err(JournalError::UnsupportedJournalFile);
+        }
 
         // Write the data/field objects while computing the entry's xor-hash
         // and storing each data object's offset/hash
@@ -817,6 +822,70 @@ mod tests {
                 );
             }
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_writer_rejects_unkeyed_journal_on_new_without_panic() -> Result<()> {
+        let temp_file = NamedTempFile::new().map_err(JournalError::Io)?;
+        let journal_path = temp_file.path();
+
+        let options = JournalFileOptions::new(
+            generate_uuid(),
+            generate_uuid(),
+            generate_uuid(),
+            generate_uuid(),
+        )
+        .with_keyed_hash(false);
+        let mut journal_file = JournalFile::create(journal_path, options)?;
+
+        let err = match JournalWriter::new(&mut journal_file) {
+            Ok(_) => panic!("legacy writer unexpectedly accepted unkeyed journal"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, JournalError::UnsupportedJournalFile));
+        assert_eq!(journal_file.journal_header_ref().n_entries, 0);
+        assert_eq!(journal_file.journal_header_ref().tail_entry_seqnum, 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_writer_rejects_unkeyed_journal_on_add_entry_without_mutation() -> Result<()> {
+        let temp_file = NamedTempFile::new().map_err(JournalError::Io)?;
+        let journal_path = temp_file.path();
+
+        let options = JournalFileOptions::new(
+            generate_uuid(),
+            generate_uuid(),
+            generate_uuid(),
+            generate_uuid(),
+        );
+        let mut journal_file = JournalFile::create(journal_path, options)?;
+        let mut writer = JournalWriter::new(&mut journal_file)?;
+
+        journal_file.journal_header_mut().incompatible_flags &=
+            !(HeaderIncompatibleFlags::KeyedHash as u32);
+        let before_entries = journal_file.journal_header_ref().n_entries;
+        let before_tail_seqnum = journal_file.journal_header_ref().tail_entry_seqnum;
+        let before_tail_object = journal_file.journal_header_ref().tail_object_offset;
+
+        let entry_data = [b"MESSAGE=blocked".as_slice()];
+        let err = writer
+            .add_entry(&mut journal_file, &entry_data, 1000000, 500000, [1; 16])
+            .unwrap_err();
+
+        assert!(matches!(err, JournalError::UnsupportedJournalFile));
+        assert_eq!(journal_file.journal_header_ref().n_entries, before_entries);
+        assert_eq!(
+            journal_file.journal_header_ref().tail_entry_seqnum,
+            before_tail_seqnum
+        );
+        assert_eq!(
+            journal_file.journal_header_ref().tail_object_offset,
+            before_tail_object
+        );
 
         Ok(())
     }

@@ -688,7 +688,9 @@ impl JournalWriter {
         options: EntryWriteOptions,
     ) -> Result<()> {
         let header = journal_file.journal_header_ref();
-        assert!(header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash));
+        if !header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash) {
+            return Err(JournalError::UnsupportedJournalFile);
+        }
         let entry_seqnum = options.seqnum.unwrap_or(self.next_seqnum);
         if entry_seqnum == 0 || entry_seqnum == u64::MAX || entry_seqnum < self.next_seqnum {
             return Err(JournalError::InvalidField);
@@ -1700,8 +1702,9 @@ mod tests {
     };
     use crate::error::JournalError;
     use crate::file::{
-        Compression, DEFAULT_COMPRESS_THRESHOLD, HeaderCompatibleFlags, JournalFileOptions,
-        MIN_COMPRESS_THRESHOLD, MmapMut, ObjectFlags, normalize_compress_threshold,
+        Compression, DEFAULT_COMPRESS_THRESHOLD, HeaderCompatibleFlags, HeaderIncompatibleFlags,
+        JournalFileOptions, MIN_COMPRESS_THRESHOLD, MmapMut, ObjectFlags,
+        normalize_compress_threshold,
     };
     use crate::seal::SealOptions;
     #[cfg(unix)]
@@ -1833,6 +1836,47 @@ mod tests {
         };
 
         assert!(matches!(err, JournalError::UnsupportedJournalFile));
+    }
+
+    #[test]
+    fn writer_add_entry_rejects_unkeyed_journal_without_mutation() {
+        let dir = TempDir::new().expect("create temp dir");
+        let path = dir.path().join("unkeyed-after-construction.journal");
+        let repo_file =
+            crate::repository::File::from_path(&path).expect("test journal path should parse");
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3)),
+        )
+        .expect("create journal");
+        let mut writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+
+        journal_file.journal_header_mut().incompatible_flags &=
+            !(HeaderIncompatibleFlags::KeyedHash as u32);
+        let before_entries = journal_file.journal_header_ref().n_entries;
+        let before_tail_seqnum = journal_file.journal_header_ref().tail_entry_seqnum;
+        let before_tail_object = journal_file.journal_header_ref().tail_object_offset;
+
+        let err = writer
+            .add_entry(
+                &mut journal_file,
+                &[b"MESSAGE=blocked".as_slice()],
+                1_700_000_060_000_000,
+                100,
+            )
+            .unwrap_err();
+
+        assert!(matches!(err, JournalError::UnsupportedJournalFile));
+        assert_eq!(journal_file.journal_header_ref().n_entries, before_entries);
+        assert_eq!(
+            journal_file.journal_header_ref().tail_entry_seqnum,
+            before_tail_seqnum
+        );
+        assert_eq!(
+            journal_file.journal_header_ref().tail_object_offset,
+            before_tail_object
+        );
     }
 
     fn verification_key(opts: &SealOptions) -> String {

@@ -52,6 +52,12 @@ Deferred scope:
 - appending to arbitrary historical or systemd-created journal variants. In
   particular, append-open on historical unkeyed-hash files is unsupported and
   returns a controlled error before entry mutation;
+- the imported legacy `jf` `journal_file::JournalWriter` remains available for
+  compatibility with that crate's public surface, but it is not the supported
+  production writer path. It also returns a controlled unsupported-file error
+  for unkeyed append targets instead of panicking. New writer integrations
+  should use `journal_core::file::JournalWriter` or the high-level
+  `journal::Log` directory writer;
 - full systemd object-graph verification parity beyond the current repository
   verification API.
 

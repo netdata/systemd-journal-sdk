@@ -98,6 +98,9 @@ pub enum JournalError {
 
     #[error("invalid query configuration")]
     InvalidQueryConfiguration,
+
+    #[error("unsupported journal file")]
+    UnsupportedJournalFile,
 }
 
 const_assert!(std::mem::size_of::<JournalError>() <= 16);
@@ -136,6 +139,7 @@ impl JournalError {
             JournalError::DirectoryNotFound => -28,
             JournalError::NotADirectory => -29,
             JournalError::InvalidQueryConfiguration => -30,
+            JournalError::UnsupportedJournalFile => -32,
         }
     }
 }

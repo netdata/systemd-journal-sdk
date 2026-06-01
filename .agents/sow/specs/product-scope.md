@@ -207,6 +207,13 @@ Writer API hierarchy:
   field is represented as `{name, value}` / `Field{Name, Value}` without
   requiring callers to concatenate and then re-parse `KEY=value` bytes. This is
   the canonical SDK hot path for producers that already hold structured values.
+- Rust's legacy `jf` `journal_file::JournalWriter` remains a compatibility
+  surface for the imported Netdata-era crate, but it is not the supported
+  production writer path. It must not panic on unsupported append targets:
+  historical unkeyed-hash files return a controlled unsupported-file error
+  before entry mutation. New Rust writer integrations should use
+  `journal-core` direct-file writing or `journal` / `journal-log-writer`
+  directory writing.
 - Every direct-file writer and high-level directory writer exposes the same
   field-name policy layers:
   - `RAW`: accepts every field name the journal DATA structure can represent

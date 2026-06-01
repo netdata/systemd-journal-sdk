@@ -46,12 +46,14 @@ Last updated: 2026-06-01
   repeatable, feature-selected real-corpus verification pass using sanitized
   manifests and reports, so important reader/writer changes can be checked
   against real journal shapes without rerunning the full corpus every time.
-- SOW-0078 - Legacy jf Writer Unkeyed Rejection: open. Tracks the legacy
-  `rust/src/crates/jf/journal_file` writer assertion path found during
-  SOW-0077 same-failure review, so the project can decide whether that public
-  legacy writer should be guarded, deprecated, or removed.
 
 ## Recently Closed Or Completed
+- SOW-0078 - Legacy jf Writer Unkeyed Rejection: completed. The legacy Rust
+  `jf` writer remains public but now returns `UnsupportedJournalFile` before
+  mutation when asked to append to historical unkeyed journal files. The same
+  failure class found during review in the current `journal-core` append path
+  was also fixed; five second-round read-only reviewers voted
+  `PRODUCTION GRADE`.
 - SOW-0079 - Directory Writer Reliable Active Replacement: completed. Rust,
   Go, Python, and Node.js high-level directory writers now treat
   append-incompatible or outdated active files like journald reliable-open:
