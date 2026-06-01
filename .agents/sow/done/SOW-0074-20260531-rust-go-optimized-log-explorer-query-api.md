@@ -2,14 +2,14 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
 Sub-state: Rust and Go API parity, isolated comparison tools, full generated
-query suite, directory/mixed-feature coverage, benchmark harnesses, and
-docs/spec updates are implemented. Whole-SOW review and final closeout remain
-pending.
+query suite, directory/mixed-feature coverage, benchmark harnesses,
+docs/spec updates, and whole-SOW read-only reviewer validation are complete.
+Non-blocking edge hardening is tracked by SOW-0080.
 
 ## Requirements
 
@@ -57,11 +57,11 @@ Inferences:
 - There are no non-indexable fields in the journal-native filter model because the on-disk journal filter primitive is exact DATA payload membership. Regex, substring, numeric range on field values, or caller-defined predicates would be optional higher-level features outside the core optimized filter-slicing contract and would require a documented slow path.
 - The most useful Rust/Go API will likely expose both a lower-level planning/visitor primitive and a higher-level explorer query helper.
 
-Unknowns:
+Unknowns at SOW creation:
 
-- The exact public API shape, naming, and type model need implementation-time design and user approval if multiple defensible public contracts remain after code analysis.
-- The cache eviction policy and memory budget for DATA-offset/value caches need benchmarking against synthetic and real corpus workloads.
-- Historical or damaged journals may have missing or inconsistent FIELD linkage; the implementation must determine and test the correct fallback behavior.
+- The exact public API shape, naming, and type model needed implementation-time design. Resolved by the Rust-first API shape and Go parity implementation recorded in the execution log.
+- The cache eviction policy and memory budget for DATA-offset/value caches needed benchmarking. Resolved for this SOW by the no-cache-first implementation decision; future cache work requires new measured evidence.
+- Historical or damaged journals may have missing or inconsistent FIELD linkage. Resolved for this SOW by fallback materialization behavior and counters; additional edge hardening is tracked by SOW-0080 where needed.
 
 ### Acceptance Criteria
 
@@ -241,12 +241,12 @@ Validation plan:
 Artifact impact plan:
 
 - AGENTS.md: likely unaffected unless the work creates a new durable workflow rule.
-- Runtime project skills: update `project-journal-compatibility` if the new explorer API creates mandatory future validation patterns.
+- Runtime project skills: update `project-journal-compatibility` when the explorer API creates mandatory validation patterns.
 - Specs: update `.agents/sow/specs/` with the explorer/query API contract.
 - End-user/operator docs: update Rust and Go README/API docs.
 - End-user/operator skills: likely unaffected unless an output/reference skill is created for SDK consumers.
-- SOW lifecycle: keep this SOW in pending until activated; complete and move to done with implementation commit when finished.
-- SOW-status.md: update pending/current/completed state as the SOW advances.
+- SOW lifecycle: complete this SOW and move it to done with the closeout commit.
+- SOW-status.md: update current/completed state as the SOW advances.
 
 Open-source reference evidence:
 
@@ -676,6 +676,21 @@ Failure handling:
     0.027094628s, 120.98x faster, optimized materialized 200 payloads.
 - Updated product specs and Rust/Go docs with the explorer API contract and
   usage guidance.
+- Committed and pushed the Go parity implementation in `5f58107a` (`Add Go
+  explorer query API`) after local validation passed.
+- Ran the whole-SOW read-only reviewer pass over the Rust and Go explorer API
+  implementation, tests, docs, specs, and SOW evidence. All five reviewers
+  voted `PRODUCTION GRADE`:
+  - `llm-netdata-cloud/kimi-k2.6`
+  - `llm-netdata-cloud/qwen3.6-plus`
+  - `llm-netdata-cloud/glm-5.1`
+  - `llm-netdata-cloud/minimax-m2.7-coder`
+  - `llm-netdata-cloud/mimo-v2.5-pro`
+- Created SOW-0080 to track non-blocking explorer edge hardening from the
+  review pass: reserved `DataRefsReported` counter semantics, decompression
+  counter precision, directory row-order tie-break parity, expanded
+  xz/lz4/FSS explorer coverage, empty-FTS counter semantics, and optional Go
+  compressed-payload buffer reuse evaluation.
 
 ## Validation
 
@@ -695,7 +710,7 @@ Acceptance criteria evidence:
   fixtures.
 - Benchmark reports are present for Rust and Go on the generated 200k-row /
   32-field compact uncompressed corpus.
-- Whole-SOW external review remains pending before completion.
+- Whole-SOW external review passed with five `PRODUCTION GRADE` votes.
 
 Tests or equivalent validation:
 
@@ -749,13 +764,52 @@ Tests or equivalent validation:
 
 Real-use evidence:
 
-- Generated correctness and performance corpora only so far. Real-corpus
-  verification remains covered by SOW-0064/SOW-0077 follow-up work and is not
-  a completion gate for this API SOW.
+- Generated correctness and performance corpora were used for this API SOW.
+  Real-corpus verification is covered by the corpus-validation SOW track and is
+  not a completion gate for this API SOW.
 
 Reviewer findings:
 
-- Pending whole-SOW review.
+- `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+- Non-blocking finding: Rust and Go expose a `DataRefsReported` /
+  `data_refs_reported` counter in explorer reports, but the current
+  implementation does not increment it. Disposition: tracked by SOW-0080 to
+  remove, document as reserved, or wire consistently in both languages.
+- Non-blocking finding: compressed DATA decompression performed during
+  filter-planning collision verification is not represented separately from
+  selected payload decompression counters. Disposition: tracked by SOW-0080 to
+  document or split counter semantics.
+- Non-blocking finding: directory explorer row sorting currently uses
+  `(realtime, seqnum)` while existing directory readers use richer
+  tie-breakers for colliding timestamps and sequence numbers. Disposition:
+  tracked by SOW-0080 for parity tests and alignment or explicit
+  documentation.
+- Non-blocking finding: Go `VisitEntryDataRefs` resets a narrower reader state
+  flag than Rust. Disposition: rejected as a blocker because Go reloads
+  offsets for the current entry before use, and the high-level explorer APIs
+  clear state fully; SOW-0080 may still add explicit state-transition tests if
+  needed.
+- Non-blocking finding: explorer smoke coverage currently exercises zstd,
+  compact, compact+zstd, and mixed-directory fixtures, but not explicit xz,
+  lz4, or FSS fixtures. Disposition: tracked by SOW-0080.
+- Non-blocking finding: empty `FullText` counter semantics differ between the
+  isolated baseline and optimized tools, while logical outputs match.
+  Disposition: tracked by SOW-0080 because counters are report diagnostics,
+  not query-result equality.
+- Non-blocking finding: Go compressed payload materialization allocates more
+  than Rust's reusable-buffer path. Disposition: tracked by SOW-0080 for
+  measurement and possible optimization.
+- Rejected finding: one reviewer claimed structured fields without `=` cannot
+  be materialized. The SDK writer contract rejects raw DATA payloads without a
+  separator and structured append paths build full `FIELD=VALUE` DATA payloads.
+  Evidence: `.agents/skills/project-journal-compatibility/SKILL.md` documents
+  raw full-field `KEY=value` and structured `{name, value}` writer layers;
+  `.agents/sow/specs/product-scope.md` documents raw full-field payload
+  separator requirements; Go tests reject raw payloads without `=`.
 
 Same-failure scan:
 
@@ -772,17 +826,19 @@ Sensitive data gate:
 Artifact maintenance gate:
 
 - AGENTS.md: no change needed; the work did not change repo workflow rules.
-- Runtime project skills: pending final closeout decision. No new mandatory
-  compatibility workflow has been identified yet beyond using the shared
-  explorer query harness for future reader/query changes.
+- Runtime project skills: `.agents/skills/project-journal-compatibility/SKILL.md`
+  updated with explorer/query validation guidance for future reader/query
+  changes.
 - Specs: `.agents/sow/specs/product-scope.md` updated with the Rust/Go
   explorer API contract and feature-slice bullets.
 - End-user/operator docs: `rust/README.md`, `go/README.md`, `go/API.md`, and
   `tests/explorer_query/README.md` updated with explorer API behavior and
   harness usage.
 - End-user/operator skills: no current output/reference skill impact.
-- SOW lifecycle: created in `.agents/sow/pending/` with `Status: open`.
-- SOW-status.md: updated at SOW creation.
+- SOW lifecycle: this SOW is marked `Status: completed` and moved to
+  `.agents/sow/done/` in the closeout commit.
+- SOW-status.md: updated to move SOW-0074 to completed work and add SOW-0080
+  as the follow-up.
 
 Specs update:
 
@@ -791,9 +847,8 @@ Specs update:
 
 Project skills update:
 
-- Pending final closeout decision. No new mandatory workflow has been
-  identified yet beyond using the shared explorer query harness for future
-  reader/query changes.
+- `.agents/skills/project-journal-compatibility/SKILL.md` updated with
+  explorer/query validation guidance.
 
 End-user/operator docs update:
 
@@ -811,22 +866,32 @@ Lessons:
   other objects through the same guarded file map. The optimized executor must
   copy entry metadata and DATA offsets, release the guard, and then materialize
   selected DATA payloads.
+- Explorer/query diagnostic counters need exact scope names because reviewers
+  can otherwise confuse payload materialization, DATA-reference enumeration,
+  and decompression performed during planning.
 
 Follow-up mapping:
 
-- Pending implementation.
+- SOW-0080 tracks all non-blocking reviewer edge hardening. No untracked
+  deferred item remains in this SOW.
 
 ## Outcome
 
-Pending.
+Completed. Rust and Go now expose the optimized explorer query API, filtered
+unique-value API, DATA-reference visitor, isolated baseline and optimized query
+tools, generated query suite, and benchmark runners. Local validation passed,
+and all five read-only reviewers voted `PRODUCTION GRADE`.
 
 ## Lessons Extracted
 
-Pending.
+- Keep the baseline and optimized comparison CLIs isolated so benchmark wins
+  prove the public API shape instead of shared hidden execution logic.
+- Query counters must describe their exact scope; ambiguous reserved counters
+  are tracked for cleanup in SOW-0080.
 
 ## Followup
 
-None yet.
+- SOW-0080 - Explorer Query Edge Hardening.
 
 ## Regression Log
 

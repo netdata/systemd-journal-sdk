@@ -15,11 +15,6 @@ Last updated: 2026-06-01
   Builds and runs a repeatable, feature-selected real-corpus verification pass
   with read-only external corpus access, repo-local scratch outputs, and
   sanitized committed reports.
-- SOW-0074 - Rust And Go Optimized Log Explorer Query API: in-progress. Adds
-  an SDK-native query API and two isolated comparison CLIs: a baseline tool
-  using existing Netdata-like expansion APIs and an explorer tool using the new
-  optimized API. Both tools must accept the same query input and emit the same
-  output schema so validity and performance can be compared directly.
 
 ## Pending
 
@@ -40,8 +35,18 @@ Last updated: 2026-06-01
   release, language registry/package publication, and clean consumer install
   validation after compatibility, portability, corpus, integration, and parity
   gates are complete.
+- SOW-0080 - Explorer Query Edge Hardening: open. Tracks non-blocking SOW-0074
+  reviewer follow-up for explorer diagnostics, directory tie ordering,
+  xz/lz4/FSS query coverage, and measured Go compressed-payload buffer
+  optimization.
 
 ## Recently Closed Or Completed
+- SOW-0074 - Rust And Go Optimized Log Explorer Query API: completed. Rust and
+  Go now provide SDK-native explorer query APIs, filtered unique-value APIs,
+  DATA-reference visitors, isolated baseline and optimized comparison CLIs,
+  generated smoke/query suites, and benchmark runners. The 200k-row compact
+  corpus showed large optimized-vs-baseline speedups in every representative
+  query family; five read-only reviewers voted `PRODUCTION GRADE`.
 - SOW-0078 - Legacy jf Writer Unkeyed Rejection: completed. The legacy Rust
   `jf` writer remains public but now returns `UnsupportedJournalFile` before
   mutation when asked to append to historical unkeyed journal files. The same

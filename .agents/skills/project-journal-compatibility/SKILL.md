@@ -68,6 +68,7 @@ Do not use this skill for:
 - Journal-native API performance is part of compatibility. If the format provides a hash table, FIELD/DATA chain, DATA entry array, ENTRY array, offset, or mmap-backed path for an operation, implementations must use that path instead of scanning and expanding all entries unless a SOW records measured evidence and an explicit accepted reason.
 - Field-name enumeration should use FIELD hash-table traversal on valid indexed files. A compatibility fallback to entry scanning is acceptable only when a historical or damaged FIELD table cannot be traversed safely, and that fallback must be documented in the active SOW.
 - Unfiltered unique value enumeration must match systemd's algorithmic shape: find the FIELD object and walk its DATA chain, then de-duplicate across files. It must not scan every entry or expand unrelated fields.
+- Explorer/query APIs must preserve the journal-native performance model. Exact positive and negative filters should use DATA/FIELD indexes and entry arrays, selected facets should materialize only selected facet fields for candidate rows, and returned rows should be expanded only after row selection unless FTS explicitly requests all fields.
 - Avoid unnecessary DATA decompression, repeated `FIELD=value` parsing, allocation, sorting, hashing, or syscalls in reader/writer hot paths. Treat these as regressions unless tests and benchmark evidence prove they are required.
 - Smoke tests are not sufficient evidence for production compatibility. SOW validation must record exact stock systemd version, commands/helpers, stress duration, entry counts, reader counts, and failure criteria.
 - Common compression-library dependencies are allowed after dependency review. Journal parsing/writing must not depend on systemd/libjournal; CGO, native Node.js runtime addon loading, and linking to system journal libraries remain disallowed unless the user explicitly changes those separate constraints. Dependency packages may ship native artifacts if the SDK runtime path is constrained and tested to use only non-native implementations (e.g. WASM) and does not load or link native code at runtime.
@@ -126,6 +127,12 @@ Do not use this skill for:
   `--since`/`--until` realtime ranges, `--boot` descriptors, and live
   `--follow` reads from actively appended file and directory inputs, including
   no-tail, default-tail, and boot-plus-since cases.
+- For Rust or Go explorer/query API changes, run the matching
+  `tests/explorer_query/run_rust_smoke.py --suite full --keep-going` or
+  `tests/explorer_query/run_go_smoke.py --suite full --keep-going` across
+  regular, compact, zstd-compressed, compact+zstd, and mixed-directory
+  fixtures. Run the benchmark runner when the SOW makes performance claims or
+  changes planner/materialization hot paths.
 - For verifier changes, run `tests/interoperability/run_verify_matrix.py` and
   require stock `journalctl --verify --file` plus Rust, Go, Node.js, and Python
   verification paths to agree on positive regular, zstd/xz/lz4 DATA-compressed,
