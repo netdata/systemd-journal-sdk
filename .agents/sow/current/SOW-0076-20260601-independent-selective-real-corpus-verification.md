@@ -6,8 +6,8 @@ Status: in-progress
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: active implementation worker; selective real-corpus tooling and
-sanitized report generation are in progress.
+Sub-state: local implementation and verification complete; ready for
+orchestrator review/closure decision.
 
 ## Requirements
 
@@ -178,11 +178,14 @@ Open decisions:
 
 Implementer:
 
-- To be decided when activated. This SOW is suitable for a dedicated agent because it can run independently once the selection policy is fixed.
+- Implementation worker in this workspace.
 
 Reviewers:
 
-- Reviewer pool after complete implementation and local validation: minimax, kimi, qwen, glm, and mimo.
+- Reviewer pool after complete implementation and local validation: minimax,
+  kimi, qwen, glm, and mimo. This implementation worker did not run external
+  reviewers because the assigned prompt asked for implementation and validation
+  and final merge/close handoff to the orchestrator.
 
 Repository boundary block for every external-agent prompt:
 
@@ -208,39 +211,160 @@ Failure handling:
 - Created this pending SOW to track the previously discussed independent selective real-corpus verification stream.
 - Moved this SOW to `current/`, set status to `in-progress`, and recorded the
   no-VM/read-only-corpus routing decision.
+- Added `tests/corpus_eval/run_selective_real_corpus.py`.
+  - Selection uses sanitized IDs and feature classes.
+  - Raw local paths are written only to `.local/sow-0076/selective-real-corpus/path-manifest.json`.
+  - Active/online files are copied to `.local` snapshots before per-driver
+    comparisons and the snapshots are removed afterward.
+- Added unit coverage in `tests/corpus_eval/test_selective_real_corpus.py`.
+- Added sanitized report destination documentation in
+  `tests/corpus_eval/reports/README.md`.
+- Ran selection-only discovery against the local real corpus.
+  - Discovered 7,195 `.journal` files.
+  - Total input bytes: 150,558,354,944.
+  - Largest input bytes: 134,217,728.
+  - Selected 7 files by feature class.
+- Ran full selected verification.
+  - Report JSON:
+    `tests/corpus_eval/reports/selective-real-corpus-report.json`.
+  - Report Markdown:
+    `tests/corpus_eval/reports/selective-real-corpus-report.md`.
+  - Raw path manifest, not committed:
+    `.local/sow-0076/selective-real-corpus/path-manifest.json`.
+  - Verification status: `ok`.
+  - Results: 77 rows, all `ok`.
+  - Reader rows: 21.
+  - Writer rows: 56.
+  - Discrepancies: 0.
+  - Runtime: about 776 seconds.
+- Selected feature classes covered:
+  - `large-file`
+  - `compressed-data`
+  - `compact`
+  - `active-open-snapshot`
+  - `archived`
+  - `multi-boot`
+  - `high-cardinality`
+  - `high-field-count`
+- Feature classes not found in the discovered local corpus:
+  - `historical-unkeyed`
+  - `fss-sealed`
+  - `previous-bug-exposure`
+- `large-file` is marked covered by the first selected compact/compressed
+  archived file, so it is not selected as a separate extra file.
+- Python and Node.js were not included. Reason recorded in the report: the
+  existing real-corpus harness is Rust/Go/systemd focused and Python/Node
+  parity remains mapped to SOW-0065 unless a small language-specific follow-up
+  is requested.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Pending.
+- Selection policy:
+  - Implemented in `tests/corpus_eval/run_selective_real_corpus.py`.
+  - Reported in
+    `tests/corpus_eval/reports/selective-real-corpus-report.md`.
+- Sanitized manifest/report workflow:
+  - Raw path manifest stays under `.local/sow-0076/selective-real-corpus/`.
+  - Committed report uses sanitized IDs, feature classes, sizes, hashes,
+    counts, timings, memory/I/O metrics, status codes, and discrepancy codes.
+- Reader digest comparisons:
+  - systemd, Rust, and Go ran on 7 selected files.
+  - 21 reader result rows, all `ok`.
+  - For every selected file, Rust and Go logical digests matched the systemd
+    baseline.
+- Regeneration checks:
+  - Rust and Go ran `regular`, `compact`, `compact-zstd`, and `compact-fss`
+    modes on all selected files.
+  - 56 writer result rows, all `ok`.
+  - Every generated output passed stock `journalctl --verify --file`; FSS
+    outputs used `--verify-key`.
+  - Every generated output was reread through systemd and matched the original
+    logical digest.
+- Active-file snapshot handling:
+  - The selected active/online file was classified as
+    `active-open-snapshot`.
+  - The runner snapshots each selected file under `.local` before driver
+    comparisons and removes the snapshot after the case.
+- Metrics:
+  - Report includes elapsed time, row/payload counts, logical digests,
+    process wall/user/system seconds, max RSS, page faults, filesystem I/O
+    counters, footprint ratios, and I/O multiplication where available.
+- Discrepancy handling:
+  - No discrepancies were found; no follow-up SOW was created.
+- Rerun recipe:
+  - Committed report uses placeholder roots:
+    `python tests/corpus_eval/run_selective_real_corpus.py --root <journal-root> [--root <journal-root>] --run-verification`.
 
 Tests or equivalent validation:
 
-- Pending.
+- `python -m py_compile tests/corpus_eval/run_selective_real_corpus.py tests/corpus_eval/test_selective_real_corpus.py`
+  - Result: passed.
+- `python -m unittest tests.corpus_eval.test_selective_real_corpus`
+  - Result: passed, 2 tests.
+- `python tests/corpus_eval/run_selective_real_corpus.py --root [REDACTED_REAL_CORPUS_ROOT] --root [REDACTED_REAL_CORPUS_ROOT] --object-scan-limit 2000 --boot-probe-limit 64`
+  - Result: passed.
+  - Selected files: 7.
+  - Verification status: `not-run`.
+- `python tests/corpus_eval/run_selective_real_corpus.py --root [REDACTED_REAL_CORPUS_ROOT] --root [REDACTED_REAL_CORPUS_ROOT] --object-scan-limit 2000 --boot-probe-limit 64 --run-verification`
+  - Result: passed.
+  - Selected files: 7.
+  - Results: 77.
+  - Result statuses: 77 `ok`.
+  - Discrepancies: 0.
+- `python -m json.tool tests/corpus_eval/reports/selective-real-corpus-report.json`
+  - Result: passed.
+- Sensitive-marker scan:
+  - Command class: `rg` over the committed report and runner for raw journal
+    roots, raw field/message markers, host identity markers, and private path
+    markers.
+  - Result: no matches in the committed report.
 
 Real-use evidence:
 
-- Pending.
+- Real corpus discovery and selected verification ran against the local
+  workstation corpus read-only.
+- The run did not create VMs, did not modify external corpus files, did not
+  use live `journalctl` without `--file`, and did not write outside this
+  repository except normal process execution.
+- Generated outputs, snapshots, state, build caches, and raw path manifest were
+  kept under `.local/sow-0076/` and `.local/corpus-eval/` style cache paths;
+  raw generated journal files were not staged.
 
 Reviewer findings:
 
-- Pending.
+- External reviewers were not run by this implementation worker. The assigned
+  prompt asked this worker to implement and validate SOW-0076 and leave final
+  merge/close to the orchestrator unless acceptance criteria were fully
+  satisfied. Local acceptance criteria are satisfied; orchestrator may run the
+  project reviewer pool before closure.
 
 Same-failure scan:
 
-- Pending.
+- No discrepancies were found.
+- Report sanitizer scan checked for raw path and source-content leak classes
+  before SOW update.
+- The runner keeps raw paths only in `.local/sow-0076/selective-real-corpus/path-manifest.json`.
 
 Sensitive data gate:
 
-- This planning artifact contains no raw journal content, hostnames, IPs, usernames, machine IDs, boot IDs, or private paths.
+- Passed.
+- Committed artifacts contain no raw journal files, raw journal paths, raw
+  fields, raw values, hostnames, IPs, usernames, messages, machine IDs, boot
+  IDs, private paths, or binary payload dumps.
+- Raw path manifest is explicitly marked uncommitted and lives under `.local/`.
 
 Artifact maintenance gate:
 
-- AGENTS.md: no update needed for tracking.
-- Runtime project skills: no update needed for tracking.
-- Specs: no update needed until implementation changes compatibility claims.
-- End-user/operator docs: no update needed for tracking.
+- AGENTS.md: no update needed; existing repository-boundary, SOW lifecycle,
+  sensitive-data, and no-live-journal rules covered this work.
+- Runtime project skills: no update needed; this added a reusable test runner
+  but did not change the mandatory workflow for all future SOWs.
+- Specs: no update needed; no SDK API, file format, product behavior, or
+  compatibility contract changed.
+- End-user/operator docs: updated `tests/corpus_eval/reports/README.md` and
+  committed the report Markdown with a rerun recipe.
 - End-user/operator skills: no update needed for tracking.
 - SOW lifecycle: created as `Status: open` under `.agents/sow/pending/`.
 - SOW lifecycle: moved to `Status: in-progress` under `.agents/sow/current/`.
@@ -248,39 +372,56 @@ Artifact maintenance gate:
 
 Specs update:
 
-- No spec update needed for tracking only.
+- No spec update needed because this SOW adds verification tooling and a
+  sanitized report without changing public behavior or guarantees.
 
 Project skills update:
 
-- No project skill update needed for tracking only.
+- No project skill update needed. Existing project skills already cover
+  repository boundaries, read-only reviewers, sensitive corpus handling, and
+  journal compatibility validation.
 
 End-user/operator docs update:
 
-- No docs update needed for tracking only.
+- Added `tests/corpus_eval/reports/README.md`.
+- Added `tests/corpus_eval/reports/selective-real-corpus-report.md`.
 
 End-user/operator skills update:
 
-- No output/reference skill update needed.
+- No output/reference skill exists for this workflow and none was needed.
 
 Lessons:
 
 - Real-corpus confidence work needs a repeatable selective suite, not only one-off full or partial sweeps.
+- Active journals must be snapshotted even in a selective pass; otherwise
+  source mutation can create false reader or writer discrepancies.
+- A feature-based sample is only as good as the local corpus features present.
+  This corpus did not provide historical-unkeyed or sealed/FSS source files,
+  so those remain covered by systemd matrix evidence rather than this real
+  corpus pass.
 
 Follow-up mapping:
 
-- Tracked by this SOW.
+- No discrepancy follow-up was created.
+- If Python/Node selective real-corpus parity becomes required before SOW-0065,
+  create a focused follow-up SOW for a small language-specific reader-only
+  pass.
 
 ## Outcome
 
-Pending.
+Local implementation and real selective verification are complete with 0
+discrepancies. SOW remains `in-progress` for orchestrator review/closure.
 
 ## Lessons Extracted
 
-Pending.
+- Keep the raw path manifest local and make the committed rerun recipe use
+  `<journal-root>` placeholders by default.
+- Sanitize header evidence down to feature flags and counts; event timing and
+  sequence metadata are not needed in durable reports.
 
 ## Followup
 
-None yet.
+- None required from this run.
 
 ## Regression Log
 
