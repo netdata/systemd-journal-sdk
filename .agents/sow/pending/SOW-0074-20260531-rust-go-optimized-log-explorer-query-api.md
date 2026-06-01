@@ -92,6 +92,14 @@ Unknowns:
 - Instrumentation or tests prove skipped compressed non-scope fields are not decompressed.
 - Existing libsystemd-compatible facade behavior and current reader APIs remain backward compatible.
 - Public docs explain when to use the explorer API versus the facade and lower-level payload visitor.
+- Provide two isolated query comparison CLI tools:
+  - a baseline tool that uses the existing SDK/facade-style APIs and models the
+    current Netdata-like expand/filter/facet path as closely as practical;
+  - an explorer tool that uses the new optimized explorer API.
+- The two comparison tools must accept the same logical query inputs and emit
+  the same result/report schema, but their query/filter/facet implementations
+  must remain isolated so benchmark results do not accidentally benefit from
+  shared planner or hot-path code.
 
 ## Analysis
 
@@ -294,6 +302,27 @@ Open decisions:
    - Implication: this is not the same as the current libsystemd-style unfiltered `query_unique(field)` APIs. It needs the same filter planner as normal explorer queries and should use target-field DATA chains plus posting-list intersection instead of expanding all candidate rows.
    - Risk: high-cardinality target fields remain inherently expensive to enumerate completely. The public API should include limits, pagination/cursors, optional counts, and metrics/counters so callers can control cost.
 
+4. Comparison tooling must use two isolated tools.
+   - User decision: build two separate comparison CLI tools instead of one
+     CLI with `--engine baseline|explorer`.
+   - Baseline tool: use the existing APIs and model the current Netdata-like
+     row path, including expanding rows, parsing values, filtering, faceting,
+     and display expansion through the existing surfaces.
+   - Explorer tool: use only the new optimized explorer API and optimize around
+     that API's native planner/executor.
+   - Shared code allowed: argument/query specification parsing, fixture
+     selection, timing/report serialization, and schema definitions.
+   - Shared code forbidden: filter planning, candidate row enumeration, facet
+     materialization, unique-value discovery, decompression decisions, and any
+     reader hot-path logic that would let one implementation borrow the other's
+     optimization.
+   - Implication: the benchmark is a cleaner apples-to-apples product
+     comparison between today's API shape and the new API shape, at the cost of
+     maintaining more test/CLI code.
+   - Risk: output drift between tools. The mitigation is a shared report
+     schema plus correctness tests that require identical logical rows, facets,
+     unique values, and counters where applicable.
+
 Initial unresolved API-shape recommendations are recorded in the pre-implementation gate.
 
 ## Plan
@@ -313,6 +342,12 @@ Initial unresolved API-shape recommendations are recorded in the pre-implementat
 4. Cross-language validation and reporting.
    - Scope: fixture parity, mixed/compressed skip tests, benchmark reports, docs/spec updates.
    - Risk: benchmark noise; standard report format must be used.
+5. Isolated comparison CLI tools.
+   - Scope: one baseline CLI using existing APIs and one explorer CLI using the
+     new optimized API. Both accept the same logical query descriptions and
+     emit the same result/report schema.
+   - Risk: duplicated implementation can drift. Correctness tests must compare
+     both tools on identical generated and real-corpus query sets.
 
 ## Delegation Plan
 
