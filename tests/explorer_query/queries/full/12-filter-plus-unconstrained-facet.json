@@ -1,0 +1,16 @@
+{
+  "schema": "systemd-journal-sdk-explorer-query-v1",
+  "name": "filter-plus-unconstrained-facet",
+  "mode": "query",
+  "filters": [
+    {
+      "field": "LOW_CARDINALITY",
+      "op": "in",
+      "values": ["alpha"]
+    }
+  ],
+  "facets": ["PRIORITY"],
+  "display": "none",
+  "limit": 0,
+  "direction": "forward"
+}

@@ -1,0 +1,17 @@
+{
+  "schema": "systemd-journal-sdk-explorer-query-v1",
+  "name": "repeated-field",
+  "mode": "query",
+  "filters": [
+    {
+      "field": "DUPLICATE_FIELD",
+      "op": "in",
+      "values": ["first"]
+    }
+  ],
+  "facets": ["DUPLICATE_FIELD"],
+  "display": "fields",
+  "display_fields": ["DUPLICATE_FIELD"],
+  "limit": 5,
+  "direction": "forward"
+}

@@ -1,0 +1,12 @@
+[package]
+name = "explorer_query_optimized"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+explorer_query_contract = { path = "../explorer_query_contract" }
+journal = { path = "../../../journal" }

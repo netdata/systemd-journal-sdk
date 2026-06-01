@@ -1,0 +1,12 @@
+{
+  "schema": "systemd-journal-sdk-explorer-query-v1",
+  "name": "topn-time-bounded",
+  "mode": "query",
+  "facets": [],
+  "display": "fields",
+  "display_fields": ["LIVE_SEQ", "LOW_CARDINALITY"],
+  "limit": 10,
+  "direction": "forward",
+  "since_realtime_usec": 1700000000100000,
+  "until_realtime_usec": 1700000000110000
+}

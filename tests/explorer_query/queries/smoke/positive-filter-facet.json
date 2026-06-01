@@ -1,0 +1,17 @@
+{
+  "schema": "systemd-journal-sdk-explorer-query-v1",
+  "name": "positive-filter-facet-smoke",
+  "mode": "query",
+  "filters": [
+    {
+      "field": "LOW_CARDINALITY",
+      "op": "in",
+      "values": ["alpha", "beta"]
+    }
+  ],
+  "facets": ["PRIORITY"],
+  "display": "fields",
+  "display_fields": ["MESSAGE", "LOW_CARDINALITY"],
+  "limit": 5,
+  "direction": "forward"
+}

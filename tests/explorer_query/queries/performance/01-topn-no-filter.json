@@ -1,0 +1,9 @@
+{
+  "schema": "systemd-journal-sdk-explorer-query-v1",
+  "name": "perf-topn-no-filter",
+  "mode": "query",
+  "facets": [],
+  "display": "none",
+  "limit": 100,
+  "direction": "forward"
+}

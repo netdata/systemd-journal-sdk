@@ -1,0 +1,10 @@
+{
+  "schema": "systemd-journal-sdk-explorer-query-v1",
+  "name": "perf-facet-only-high-cardinality",
+  "mode": "query",
+  "filters": [],
+  "facets": ["HIGH_CARD_00"],
+  "display": "none",
+  "limit": 0,
+  "direction": "forward"
+}

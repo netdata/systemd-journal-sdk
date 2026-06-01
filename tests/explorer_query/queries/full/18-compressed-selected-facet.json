@@ -1,0 +1,10 @@
+{
+  "schema": "systemd-journal-sdk-explorer-query-v1",
+  "name": "compressed-selected-facet",
+  "mode": "query",
+  "filters": [],
+  "facets": ["LARGE_REPEAT_VALUE"],
+  "display": "none",
+  "limit": 0,
+  "direction": "forward"
+}

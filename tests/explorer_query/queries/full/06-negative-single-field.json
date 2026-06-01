@@ -1,0 +1,16 @@
+{
+  "schema": "systemd-journal-sdk-explorer-query-v1",
+  "name": "negative-single-field",
+  "mode": "query",
+  "filters": [
+    {
+      "field": "LOW_CARDINALITY",
+      "op": "not-in",
+      "values": ["delta"]
+    }
+  ],
+  "facets": [],
+  "display": "none",
+  "limit": 20,
+  "direction": "forward"
+}

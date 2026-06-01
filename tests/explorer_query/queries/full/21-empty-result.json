@@ -1,0 +1,16 @@
+{
+  "schema": "systemd-journal-sdk-explorer-query-v1",
+  "name": "empty-result",
+  "mode": "query",
+  "filters": [
+    {
+      "field": "LOW_CARDINALITY",
+      "op": "in",
+      "values": ["not-present"]
+    }
+  ],
+  "facets": ["PRIORITY"],
+  "display": "all",
+  "limit": 5,
+  "direction": "forward"
+}

@@ -6,10 +6,9 @@ Status: in-progress
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: activated for public API design and implementation. User decisions
-now require two isolated comparison tools with identical external query input
-and output contracts, plus a representative query suite covering all optimized
-and fallback paths.
+Sub-state: Rust API and isolated comparison smoke harness implemented; Go
+parity, full generated query suite, directory/mixed-feature coverage,
+benchmarks, docs/spec updates, and whole-SOW review remain pending.
 
 ## Requirements
 
@@ -411,31 +410,43 @@ Open decisions:
    - Implication: the first implementation must optimize algorithmic shape
      before adding cache complexity.
 
+8. Rust-first implementation sequencing.
+   - User decision: implement and prove the optimized explorer/query API in
+     Rust first, then port the proven API shape and behavior to Go.
+   - Implication: Rust is the reference for API semantics, counters, fixtures,
+     query comparison tooling, and performance experiments during the first
+     phase of this SOW. Go changes start only after the Rust shape is stable
+     enough to avoid parallel API churn.
+   - Risk: cross-language parity is temporarily incomplete while Rust is being
+     proven. The mitigation is that this SOW cannot close until Go is ported
+     and Rust-vs-Go parity tests pass.
+
 Initial unresolved API-shape recommendations are recorded in the pre-implementation gate.
 
 ## Plan
 
-1. Public API design and contract proof.
-   - Scope: Rust and Go query-plan types, result shape, data-reference visitor shape, cache options, and documented semantics.
+1. Rust public API design and contract proof.
+   - Scope: Rust query-plan types, result shape, data-reference visitor shape,
+     cache options, and documented semantics.
    - Risk: public API churn if implemented before the contract is clear.
    - Dependencies: current reader APIs and SOW-0064/SOW-0009 benchmark evidence.
 2. Rust implementation.
    - Scope: DATA-reference classification, lazy materialization, query executor, counters, tests, benchmarks.
    - Risk: row lifetime and mmap/decompression buffer guarantees must remain sound.
    - Dependencies: existing Rust reader hot paths and facade tests.
-3. Go implementation.
+3. Rust isolated comparison tools and representative query suite.
+   - Scope: one Rust baseline CLI using existing APIs and one Rust explorer CLI
+     using the optimized API, plus generated fixture/query specs for smoke and
+     full suites.
+   - Risk: duplicated implementation can drift. Correctness tests must compare
+     both tools on identical query specs and output schema.
+4. Go implementation.
    - Scope: API parity with Rust, mmap-backed classification, lazy materialization, query executor, counters, tests, benchmarks.
    - Risk: avoiding extra allocations while keeping API safe and idiomatic.
-   - Dependencies: existing Go reader hot paths and parity tests.
-4. Cross-language validation and reporting.
+   - Dependencies: stabilized Rust API, existing Go reader hot paths, and parity tests.
+5. Cross-language validation and reporting.
    - Scope: fixture parity, mixed/compressed skip tests, benchmark reports, docs/spec updates.
    - Risk: benchmark noise; standard report format must be used.
-5. Isolated comparison CLI tools.
-   - Scope: one baseline CLI using existing APIs and one explorer CLI using the
-     new optimized API. Both accept the same logical query descriptions and
-     emit the same result/report schema.
-   - Risk: duplicated implementation can drift. Correctness tests must compare
-     both tools on identical generated and real-corpus query sets.
 6. Representative query suite and generated benchmark corpus.
    - Scope: build generated fixtures and query specs for every family listed in
      the decisions section, plus a smoke subset for quick iteration.
@@ -493,20 +504,154 @@ Failure handling:
   external query/result contracts, representative query families, API shape,
   directory scope, constrained facet counts, no-cache-first benchmarking, and
   historical fallback behavior.
+- Implemented the Rust-first API shape:
+  - `JournalFile::field_data_offsets()` walks FIELD-to-DATA linkage without
+    materializing DATA payloads.
+  - `FileReader::visit_entry_data_refs()` exposes per-entry DATA reference
+    metadata and payload materialization on demand.
+  - `FileReader::{explorer_query, explorer_unique}` and
+    `DirectoryReader::{explorer_query, explorer_unique}` expose the first
+    high-level explorer/query API.
+  - Public query/result/counter types are re-exported from the Rust `journal`
+    crate.
+- Implemented two isolated Rust comparison tools:
+  - `explorer_query_baseline` uses existing expanded-entry APIs.
+  - `explorer_query_optimized` uses only the new explorer API.
+  - `explorer_query_contract` is limited to shared query/report schema and
+    serialization.
+- Added `tests/explorer_query/` smoke queries and
+  `tests/explorer_query/run_rust_smoke.py` to compare baseline and optimized
+  results on the generated correctness corpus.
+- Rust smoke evidence:
+  - `negative-filter-unique.json`: baseline expanded 349 entries and saw 3474
+    payloads; optimized materialized 6 payloads, used 8 FIELD-linkage hits, and
+    visited 0 candidate row DATA refs.
+  - `positive-filter-facet.json`: baseline expanded 349 entries and saw 3474
+    payloads; optimized sliced to 175 candidate entries, visited 1712
+    candidate DATA refs, materialized 175 facet values, and expanded 5 display
+    rows.
+  - `topn-no-facet.json`: baseline expanded 349 entries and saw 3474
+    payloads; optimized sliced to 88 candidate entries, visited 0 candidate
+    row DATA refs, and materialized 0 payloads.
+  - All three smoke queries produced identical rows, facets, and unique-value
+    outputs between baseline and optimized tools.
+- Expanded the Rust query suite to 21 full query families covering no-filter
+  top-N, time-bounded top-N, positive filters, OR values, AND fields, negative
+  filters, mixed filters, filter-equal-facet, low/high-cardinality facets,
+  filter plus unconstrained facets, filtered unique low/high cardinality, FTS,
+  selected display expansion, compressed irrelevant-field skip, compressed
+  selected facet expansion, binary values, repeated fields, and empty results.
+- Extended `dataset_ingester` with default-preserving `--compression` and
+  `--compress-threshold` options so the same generated corpus can produce
+  compressed explorer fixtures.
+- Fixed two Rust correctness issues exposed by the full suite:
+  - filtered unique values now sort before applying skip/limit, matching the
+    comparison contract;
+  - filter-equal-facet constrained-count fast path now proves the selected
+    values cover all candidate-row values for the facet field before skipping
+    candidate-row traversal. Repeated-field entries with extra facet values
+    correctly fall back to selected-field aggregation.
+- Fixed one Rust directory-query performance issue exposed by the mixed
+  directory suite: per-file query execution now preserves the caller's row
+  limit and performs global merge/truncate after each file contributes its own
+  limited rows, instead of expanding display rows for every row in every file.
+- Tightened the no-scan fast path for queries without FTS, unconstrained
+  facets, or time bounds: exact candidate count is computed from the entry
+  universe or candidate set, and execution stops once the requested row limit is
+  collected.
+- Full Rust comparison evidence:
+  - `python3 tests/explorer_query/run_rust_smoke.py --suite full --keep-going`:
+    passed 21/21 queries on regular uncompressed fixture.
+  - `python3 tests/explorer_query/run_rust_smoke.py --suite full --compression zstd --keep-going`:
+    passed 21/21 queries on regular zstd-compressed fixture.
+  - `python3 tests/explorer_query/run_rust_smoke.py --suite full --compact --keep-going`:
+    passed 21/21 queries on compact uncompressed fixture.
+  - `python3 tests/explorer_query/run_rust_smoke.py --suite full --compression zstd --compact --keep-going`:
+    passed 21/21 queries on compact zstd-compressed fixture.
+  - `python3 tests/explorer_query/run_rust_smoke.py --suite full --surface directory --keep-going`:
+    passed 21/21 queries on a mixed directory containing one regular
+    uncompressed file and one compact zstd-compressed file.
+  - The compressed irrelevant-field query asserted optimized
+    `payloads_decompressed=0` on compressed fixtures.
+  - The compressed selected-facet query asserted optimized
+    `payloads_decompressed>0` on compressed fixtures; current zstd fixture
+    evidence shows exactly 1 selected DATA object decompressed.
+- Added a Rust release benchmark runner,
+  `tests/explorer_query/run_rust_benchmarks.py`, using the generated
+  200k-row / 32-field mixed-cardinality performance corpus.
+- Rust benchmark smoke evidence:
+  - `python3 tests/explorer_query/run_rust_benchmarks.py --rows 1000`:
+    passed and wrote
+    `.local/explorer-query/benchmarks/rust-1000-rows-none-compact/summary.json`.
+- Rust 200k-row benchmark evidence:
+  - `python3 tests/explorer_query/run_rust_benchmarks.py`: passed and wrote
+    `.local/explorer-query/benchmarks/rust-200000-rows-none-compact/summary.json`.
+  - `perf-topn-no-filter`: baseline 1.748860276s, optimized
+    0.001060228s, 1649.51x faster, optimized materialized 0 payloads.
+  - `perf-positive-low-filter`: baseline 1.730007962s, optimized
+    0.001343645s, 1287.55x faster, optimized materialized 0 payloads.
+  - `perf-positive-and-fields`: baseline 1.659163336s, optimized
+    0.015396137s, 107.76x faster, optimized materialized 200 payloads.
+  - `perf-negative-low-filter`: baseline 1.694807514s, optimized
+    0.004505020s, 376.20x faster, optimized materialized 0 payloads.
+  - `perf-filter-plus-low-facet`: baseline 1.850020509s, optimized
+    0.011997701s, 154.20x faster, optimized materialized 12500 payloads.
+  - `perf-facet-only-high-cardinality`: baseline 1.553610854s, optimized
+    0.217537781s, 7.14x faster, optimized materialized the selected 200000
+    high-cardinality facet values.
+  - `perf-filtered-unique-high-cardinality`: baseline 1.414982411s,
+    optimized 0.016641985s, 85.02x faster, optimized materialized 12500 target
+    values.
+  - `perf-display-expanded-topn`: baseline 1.405080852s, optimized
+    0.014826306s, 94.77x faster, optimized materialized 200 payloads.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Pending implementation.
+- Partial Rust phase evidence only; this SOW is not complete until Go parity,
+  full query-family coverage, benchmark reporting, docs/spec updates, and
+  whole-SOW review are finished.
+- Rust currently provides:
+  - low-level DATA-reference visitor;
+  - FIELD-linkage DATA offset collection;
+  - high-level file and directory explorer query APIs;
+  - filtered unique-value API;
+  - no-facet fast path evidence;
+  - compressed irrelevant-field skip unit coverage;
+  - isolated baseline and optimized comparison tools with identical external
+    query/report schema.
 
 Tests or equivalent validation:
 
-- Pending implementation.
+- `cargo test -p journal explorer --manifest-path rust/Cargo.toml`: passed, 5
+  explorer tests initially; passed again after full-suite fixes with 7
+  explorer tests.
+- `cargo check -p dataset_ingester -p explorer_query_baseline -p explorer_query_optimized --manifest-path rust/Cargo.toml`:
+  passed.
+- `python3 tests/explorer_query/run_rust_smoke.py`: passed, 3/3 smoke queries
+  with matching baseline and optimized logical outputs.
+- `python3 tests/explorer_query/run_rust_smoke.py --suite full --keep-going`:
+  passed.
+- `python3 tests/explorer_query/run_rust_smoke.py --suite full --compression zstd --keep-going`:
+  passed.
+- `python3 tests/explorer_query/run_rust_smoke.py --suite full --compact --keep-going`:
+  passed.
+- `python3 tests/explorer_query/run_rust_smoke.py --suite full --compression zstd --compact --keep-going`:
+  passed.
+- `python3 tests/explorer_query/run_rust_smoke.py --suite full --surface directory --keep-going`:
+  passed.
+- `python3 -m py_compile tests/explorer_query/run_rust_smoke.py tests/explorer_query/run_rust_benchmarks.py`:
+  passed.
+- `python3 tests/explorer_query/run_rust_benchmarks.py --rows 1000`: passed.
+- `python3 tests/explorer_query/run_rust_benchmarks.py`: passed on the
+  200k-row compact uncompressed performance corpus.
+- `git diff --check` scoped to the SOW-0074 file set: passed.
 
 Real-use evidence:
 
-- Pending implementation.
+- Generated correctness corpus only so far. Real-corpus and production-style
+  benchmark evidence remain pending.
 
 Reviewer findings:
 
@@ -532,7 +677,8 @@ Artifact maintenance gate:
 
 Specs update:
 
-- Pending implementation.
+- Pending. The Rust API shape still needs to stabilize through full suite and
+  Go parity before product specs are updated.
 
 Project skills update:
 
@@ -540,7 +686,8 @@ Project skills update:
 
 End-user/operator docs update:
 
-- Pending implementation.
+- Pending. Rust and Go docs should be updated after the API shape survives the
+  full SOW validation.
 
 End-user/operator skills update:
 
@@ -548,7 +695,10 @@ End-user/operator skills update:
 
 Lessons:
 
-- Pending implementation.
+- Rust ENTRY and DATA object guards cannot be held while recursively reading
+  other objects through the same guarded file map. The optimized executor must
+  copy entry metadata and DATA offsets, release the guard, and then materialize
+  selected DATA payloads.
 
 Follow-up mapping:
 

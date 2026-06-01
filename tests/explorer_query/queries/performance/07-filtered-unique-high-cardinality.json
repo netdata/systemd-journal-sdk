@@ -1,0 +1,16 @@
+{
+  "schema": "systemd-journal-sdk-explorer-query-v1",
+  "name": "perf-filtered-unique-high-cardinality",
+  "mode": "unique",
+  "filters": [
+    {
+      "field": "LOW_CARD_00",
+      "op": "in",
+      "values": ["low-00-03"]
+    }
+  ],
+  "unique_field": "HIGH_CARD_00",
+  "unique_include_counts": false,
+  "limit": 100,
+  "direction": "forward"
+}

@@ -1,0 +1,22 @@
+{
+  "schema": "systemd-journal-sdk-explorer-query-v1",
+  "name": "mixed-positive-negative",
+  "mode": "query",
+  "filters": [
+    {
+      "field": "LOW_CARDINALITY",
+      "op": "in",
+      "values": ["alpha", "beta"]
+    },
+    {
+      "field": "PRIORITY",
+      "op": "not-in",
+      "values": ["7"]
+    }
+  ],
+  "facets": [],
+  "display": "fields",
+  "display_fields": ["LIVE_SEQ", "LOW_CARDINALITY", "PRIORITY"],
+  "limit": 20,
+  "direction": "forward"
+}

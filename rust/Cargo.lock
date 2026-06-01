@@ -652,6 +652,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "explorer_query_baseline"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "explorer_query_contract",
+ "journal",
+]
+
+[[package]]
+name = "explorer_query_contract"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "explorer_query_optimized"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "explorer_query_contract",
+ "journal",
+]
+
+[[package]]
 name = "fastant"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"

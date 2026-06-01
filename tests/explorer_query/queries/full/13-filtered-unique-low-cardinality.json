@@ -1,0 +1,16 @@
+{
+  "schema": "systemd-journal-sdk-explorer-query-v1",
+  "name": "filtered-unique-low-cardinality",
+  "mode": "unique",
+  "filters": [
+    {
+      "field": "LOW_CARDINALITY",
+      "op": "in",
+      "values": ["alpha", "beta"]
+    }
+  ],
+  "unique_field": "PRIORITY",
+  "unique_include_counts": true,
+  "limit": 20,
+  "direction": "forward"
+}

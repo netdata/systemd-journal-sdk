@@ -1,0 +1,16 @@
+{
+  "schema": "systemd-journal-sdk-explorer-query-v1",
+  "name": "topn-no-facet-smoke",
+  "mode": "query",
+  "filters": [
+    {
+      "field": "LOW_CARDINALITY",
+      "op": "in",
+      "values": ["alpha"]
+    }
+  ],
+  "facets": [],
+  "display": "none",
+  "limit": 5,
+  "direction": "forward"
+}

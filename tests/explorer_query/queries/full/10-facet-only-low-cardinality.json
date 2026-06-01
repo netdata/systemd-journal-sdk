@@ -1,0 +1,10 @@
+{
+  "schema": "systemd-journal-sdk-explorer-query-v1",
+  "name": "facet-only-low-cardinality",
+  "mode": "query",
+  "filters": [],
+  "facets": ["LOW_CARDINALITY", "PRIORITY"],
+  "display": "none",
+  "limit": 0,
+  "direction": "forward"
+}

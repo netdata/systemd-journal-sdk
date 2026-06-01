@@ -1,0 +1,22 @@
+{
+  "schema": "systemd-journal-sdk-explorer-query-v1",
+  "name": "perf-positive-and-fields",
+  "mode": "query",
+  "filters": [
+    {
+      "field": "LOW_CARD_00",
+      "op": "in",
+      "values": ["low-00-03"]
+    },
+    {
+      "field": "LOW_CARD_01",
+      "op": "in",
+      "values": ["low-01-03"]
+    }
+  ],
+  "facets": [],
+  "display": "fields",
+  "display_fields": ["LOW_CARD_00", "HIGH_CARD_00"],
+  "limit": 100,
+  "direction": "forward"
+}

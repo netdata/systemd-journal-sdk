@@ -1,0 +1,10 @@
+{
+  "schema": "systemd-journal-sdk-explorer-query-v1",
+  "name": "compressed-irrelevant-skip",
+  "mode": "query",
+  "filters": [],
+  "facets": ["LOW_CARDINALITY"],
+  "display": "none",
+  "limit": 0,
+  "direction": "forward"
+}

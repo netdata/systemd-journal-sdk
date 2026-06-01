@@ -1,0 +1,17 @@
+{
+  "schema": "systemd-journal-sdk-explorer-query-v1",
+  "name": "positive-single-field",
+  "mode": "query",
+  "filters": [
+    {
+      "field": "PRIORITY",
+      "op": "in",
+      "values": ["3"]
+    }
+  ],
+  "facets": [],
+  "display": "fields",
+  "display_fields": ["LIVE_SEQ", "PRIORITY"],
+  "limit": 10,
+  "direction": "forward"
+}
