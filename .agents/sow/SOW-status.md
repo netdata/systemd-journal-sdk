@@ -15,6 +15,11 @@ Last updated: 2026-06-01
   Builds and runs a repeatable, feature-selected real-corpus verification pass
   with read-only external corpus access, repo-local scratch outputs, and
   sanitized committed reports.
+- SOW-0074 - Rust And Go Optimized Log Explorer Query API: in-progress. Adds
+  an SDK-native query API and two isolated comparison CLIs: a baseline tool
+  using existing Netdata-like expansion APIs and an explorer tool using the new
+  optimized API. Both tools must accept the same query input and emit the same
+  output schema so validity and performance can be compared directly.
 
 ## Pending
 
@@ -35,16 +40,6 @@ Last updated: 2026-06-01
   release, language registry/package publication, and clean consumer install
   validation after compatibility, portability, corpus, integration, and parity
   gates are complete.
-- SOW-0074 - Rust And Go Optimized Log Explorer Query API: open. Adds an
-  SDK-native query API for high-performance log explorers: journal-native
-  positive `FIELD IN [...]` and negative `FIELD NOT IN [...]` filters slice
-  candidate rows through journal DATA/entry indexes, selected facet fields are
-  materialized only for candidate rows, no-facet and filter-equal-facet
-  requests bypass candidate-row field traversal, filtered unique-values use the
-  same index-backed filter plan, FTS intentionally expands all fields, and full
-  display expansion is deferred to returned rows. The goal is to avoid
-  decompression and repeated `FIELD=VALUE` processing for irrelevant DATA
-  objects while preserving the existing libsystemd-compatible facade.
 
 ## Recently Closed Or Completed
 - SOW-0078 - Legacy jf Writer Unkeyed Rejection: completed. The legacy Rust

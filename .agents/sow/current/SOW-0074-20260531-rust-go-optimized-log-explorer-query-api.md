@@ -2,11 +2,14 @@
 
 ## Status
 
-Status: open
+Status: in-progress
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: created from user requirement; awaiting activation after higher-priority active SOWs.
+Sub-state: activated for public API design and implementation. User decisions
+now require two isolated comparison tools with identical external query input
+and output contracts, plus a representative query suite covering all optimized
+and fallback paths.
 
 ## Requirements
 
@@ -100,6 +103,17 @@ Unknowns:
   the same result/report schema, but their query/filter/facet implementations
   must remain isolated so benchmark results do not accidentally benefit from
   shared planner or hot-path code.
+- The comparison tools must use the exact same external query contract and
+  result contract. Validity is checked by comparing result equality; the only
+  intended variables are the internal SDK API used and the resulting
+  performance/counters.
+- The benchmark/query suite must contain representative queries that exercise
+  every expected path: no-filter top-N, positive filters, negative filters,
+  mixed filters, no-facet fast path, filter-equal-facet fast path,
+  unconstrained facet aggregation, filtered unique values, FTS, selected-row
+  display expansion, compressed irrelevant-field skipping, compressed selected
+  facet/FTS expansion, binary values, repeated fields, empty results, and
+  single-file plus directory inputs.
 
 ## Analysis
 
@@ -143,7 +157,7 @@ Risks:
 
 ## Pre-Implementation Gate
 
-Status: needs-user-decision
+Status: ready
 
 Problem / root-cause model:
 
@@ -323,6 +337,80 @@ Open decisions:
      schema plus correctness tests that require identical logical rows, facets,
      unique values, and counters where applicable.
 
+5. Identical external query and result contract.
+   - User decision: both tools must accept the same query input and produce the
+     same output schema. Correctness is validated by comparing their outputs;
+     only the internal SDK API and performance should differ.
+   - Implication: query specification parsing and report/result schema may be
+     shared, but execution semantics must be independently implemented by each
+     tool.
+   - Risk: if shared helpers grow beyond schema/argument handling into
+     execution logic, the benchmark stops proving the API difference. Keep the
+     shared layer deliberately thin and test that each tool uses its own
+     execution package/module.
+
+6. Representative query suite.
+   - User decision: the comparison suite must exercise all paths so the project
+     can tell where the new API is better and by how much.
+   - Required query families:
+     - `topn-no-filter`: time-bounded and unbounded top-N with no filters and
+       no facets, proving returned-row-only expansion.
+     - `positive-single-field`: one field with one selected value.
+     - `positive-or-values`: one field with multiple selected values, OR within
+       the field.
+     - `positive-and-fields`: two or more positive fields, AND between fields.
+     - `negative-single-field`: one field with one excluded value.
+     - `negative-and-not-values`: one field with multiple excluded values,
+       AND-NOT semantics for every value.
+     - `mixed-positive-negative`: positive and negative filters across
+       multiple fields.
+     - `filter-equal-facet`: requested facet dimensions exactly match fully
+       constrained filters, proving the no-aggregation fast path.
+     - `facet-only-low-cardinality`: no filters, one or more low-cardinality
+       facets.
+     - `facet-only-high-cardinality`: no filters, a high-cardinality facet.
+     - `filter-plus-unconstrained-facet`: filters slice candidates, then only
+       selected facet fields are materialized.
+     - `filtered-unique-low-cardinality`: unique values for a low-cardinality
+       target field under filters.
+     - `filtered-unique-high-cardinality`: unique values for a
+       high-cardinality target field under filters, with limits/pagination.
+     - `fts-all-fields`: explicit expensive path that expands all fields.
+     - `display-expanded-topn`: display expansion only for returned rows.
+     - `compressed-irrelevant-skip`: compressed DATA exists outside filters,
+       facets, FTS, and returned rows and must not be decompressed by the
+       explorer tool.
+     - `compressed-selected-facet`: compressed selected facet values must be
+       decompressed/materialized.
+     - `binary-value`: filters/facets/display on binary-safe values.
+     - `repeated-field`: entries containing repeated field names.
+     - `empty-result`: filters that match no rows.
+     - `directory-mixed-files`: the same logical families over directory input
+       with mixed supported file features.
+   - Implication: the test fixture generator must deliberately create
+     controlled low/high cardinality, repeated fields, binary values, and
+     compressed irrelevant and selected fields. Real-corpus runs can supplement
+     but cannot replace generated coverage.
+   - Risk: too many benchmark cases can make routine runs slow. Provide a small
+     smoke subset and a full suite; standard reports must label which suite was
+     run.
+
+7. Public API, directory scope, facet-count, cache, and fallback defaults.
+   - User decision: expose both low-level DATA-reference primitives and a
+     higher-level explorer query executor.
+   - User decision: support both single-file and directory inputs in the SOW
+     target, because Netdata integration needs directory-style behavior.
+   - User decision: derive constrained facet counts from index intersections
+     where possible.
+   - User decision: start without a value/materialization cache in the
+     explorer path, measure first, and add a bounded configurable cache only if
+     profiling proves a benefit.
+   - User decision: use FIELD linkage when valid and fall back to payload
+     split/materialization for affected DATA objects when required for
+     historical or damaged compatibility, with counters exposing the fallback.
+   - Implication: the first implementation must optimize algorithmic shape
+     before adding cache complexity.
+
 Initial unresolved API-shape recommendations are recorded in the pre-implementation gate.
 
 ## Plan
@@ -348,6 +436,12 @@ Initial unresolved API-shape recommendations are recorded in the pre-implementat
      emit the same result/report schema.
    - Risk: duplicated implementation can drift. Correctness tests must compare
      both tools on identical generated and real-corpus query sets.
+6. Representative query suite and generated benchmark corpus.
+   - Scope: build generated fixtures and query specs for every family listed in
+     the decisions section, plus a smoke subset for quick iteration.
+   - Risk: generated data that is too small can hide differences; include a
+     full benchmark corpus where most fields are irrelevant to selected
+     filters/facets.
 
 ## Delegation Plan
 
@@ -390,6 +484,15 @@ Failure handling:
 - Created SOW from user requirement for a Rust and Go SDK-native optimized log explorer/query API.
 - Recorded initial format evidence from systemd and Netdata plugin/facets evidence.
 - Recorded filtered unique-values as an explicit required API: unfiltered `query_unique(field)` exists today, but filtered unique discovery under journal-native positive/negative filters does not.
+
+### 2026-06-01
+
+- Activated SOW-0074 for implementation while SOW-0075 and SOW-0076 continue
+  as delegated validation workstreams.
+- Recorded user decisions for two isolated comparison CLI tools, identical
+  external query/result contracts, representative query families, API shape,
+  directory scope, constrained facet counts, no-cache-first benchmarking, and
+  historical fallback behavior.
 
 ## Validation
 
