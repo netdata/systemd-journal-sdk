@@ -2,11 +2,12 @@
 
 ## Status
 
-Status: open
+Status: in-progress
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: tracked from the parallel validation discussion; awaiting activation after the active historical-reader gap is resolved or explicitly waived.
+Sub-state: active implementation worker; selective real-corpus tooling and
+sanitized report generation are in progress.
 
 ## Requirements
 
@@ -155,6 +156,17 @@ Open decisions:
    - Decision: create this pending SOW so independent selective corpus validation is visible in the work queue.
    - Implication: SOW-0064 remains closed, while this SOW can run later as a repeatable confidence pass.
 
+2. 2026-06-01 implementation routing decision
+   - Decision: activate SOW-0076 for delegated implementation in this
+     workspace.
+   - Decision: SOW-0076 must not create VMs, provision machines, or modify
+     external corpus files. External corpus access is read-only only.
+   - Decision: generated raw path manifests, snapshots, regenerated journals,
+     and temporary outputs stay under `.local/`; committed reports use
+     sanitized IDs and feature classes only.
+   - Implication: this SOW can run in parallel with SOW-0075 because it does
+     not share VM resources or write outside the repository.
+
 ## Plan
 
 1. Define and document selected corpus classes.
@@ -194,6 +206,8 @@ Failure handling:
 ### 2026-06-01
 
 - Created this pending SOW to track the previously discussed independent selective real-corpus verification stream.
+- Moved this SOW to `current/`, set status to `in-progress`, and recorded the
+  no-VM/read-only-corpus routing decision.
 
 ## Validation
 
@@ -229,7 +243,8 @@ Artifact maintenance gate:
 - End-user/operator docs: no update needed for tracking.
 - End-user/operator skills: no update needed for tracking.
 - SOW lifecycle: created as `Status: open` under `.agents/sow/pending/`.
-- SOW-status.md: updated to list this pending SOW.
+- SOW lifecycle: moved to `Status: in-progress` under `.agents/sow/current/`.
+- SOW-status.md: updated to list this active SOW.
 
 Specs update:
 

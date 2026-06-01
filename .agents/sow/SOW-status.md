@@ -7,6 +7,14 @@ Last updated: 2026-06-01
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
+- SOW-0075 - VM Historical systemd Validation: in-progress. Builds a small,
+  capped, sanitized validation corpus from representative booted distro
+  systemd versions. VM work is limited to at most four additive disposable
+  `sdjournal-*` domains at 1 vCPU, 1 GiB RAM, and 4 GiB disk by default.
+- SOW-0076 - Independent Selective Real Corpus Verification: in-progress.
+  Builds and runs a repeatable, feature-selected real-corpus verification pass
+  with read-only external corpus access, repo-local scratch outputs, and
+  sanitized committed reports.
 
 ## Pending
 
@@ -37,15 +45,6 @@ Last updated: 2026-06-01
   display expansion is deferred to returned rows. The goal is to avoid
   decompression and repeated `FIELD=VALUE` processing for irrelevant DATA
   objects while preserving the existing libsystemd-compatible facade.
-- SOW-0075 - VM Historical systemd Validation: open. Tracks the previously
-  discussed VM-based historical systemd validation stream. Activation requires
-  explicit user approval because provisioning VMs writes outside this
-  repository; the goal is a small sanitized reality corpus from representative
-  booted distros.
-- SOW-0076 - Independent Selective Real Corpus Verification: open. Tracks a
-  repeatable, feature-selected real-corpus verification pass using sanitized
-  manifests and reports, so important reader/writer changes can be checked
-  against real journal shapes without rerunning the full corpus every time.
 
 ## Recently Closed Or Completed
 - SOW-0078 - Legacy jf Writer Unkeyed Rejection: completed. The legacy Rust

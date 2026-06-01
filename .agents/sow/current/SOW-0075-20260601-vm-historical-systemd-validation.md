@@ -2,11 +2,12 @@
 
 ## Status
 
-Status: open
+Status: in-progress
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: tracked from the parallel validation discussion; activation requires explicit approval for VM provisioning because the work creates resources outside this repository.
+Sub-state: active implementation worker; VM provisioning is approved only under the
+strict caps recorded in `## Implications And Decisions`.
 
 ## Requirements
 
@@ -76,7 +77,7 @@ Risks:
 
 ## Pre-Implementation Gate
 
-Status: needs-user-decision
+Status: ready
 
 Problem / root-cause model:
 
@@ -105,6 +106,13 @@ Risk and blast radius:
 
 - High operational blast radius if VM provisioning is done carelessly; no VM creation should happen until activation approval records the allowed target directory, VM names, disk/network conventions, and cleanup expectations.
 - Medium compatibility blast radius if distro files expose reader/writer gaps.
+- User-approved cap: at most four new disposable `sdjournal-*` VMs, each
+  defaulting to 1 vCPU, 1 GiB RAM, and 4 GiB disk; if a target cannot work
+  under these limits, stop and report instead of increasing resources.
+- VM operations must be additive only for the explicit `sdjournal-*` domain
+  names, disks, and seed ISOs. Existing domains, networks, storage pools, host
+  services, global libvirt configuration, autostart settings, and host package
+  state must not be modified.
 
 Sensitive data handling plan:
 
@@ -115,12 +123,17 @@ Sensitive data handling plan:
 
 Implementation plan:
 
-1. Present a VM target matrix and provisioning plan for user approval.
-2. Provision approved VMs using the workstation's standard VM conventions.
-3. Generate controlled journal cases per VM.
-4. Copy outputs or compute remote digests without committing raw journals.
-5. Run stock and SDK reader validation and produce sanitized reports.
-6. Map discrepancies to follow-up SOWs.
+1. Define a capped VM target matrix with at most four `sdjournal-*` VMs and
+   official image/source evidence.
+2. Inspect host prerequisites read-only; if required tools/images are missing,
+   stop and report instead of installing packages or changing host state.
+3. Provision only targets that fit the approved 1 vCPU, 1 GiB RAM, 4 GiB disk
+   default and use additive VM artifacts only.
+4. Generate controlled journal cases per VM.
+5. Copy outputs under `.local/sow-0075/` only, or compute remote digests when
+   copying is unnecessary; do not commit raw journals.
+6. Run stock and SDK reader validation and produce sanitized reports.
+7. Map discrepancies to follow-up SOWs or regressions.
 
 Validation plan:
 
@@ -146,15 +159,39 @@ Open-source reference evidence:
 
 Open decisions:
 
-1. VM target matrix and image sources.
-2. Approval to provision VMs outside this repository.
-3. Whether to commit any generated sanitized fixture, or reports only.
+1. VM target matrix and image sources are implementation choices bounded by
+   the approved four-VM cap and official-source verification.
+2. VM provisioning outside this repository is approved only for additive
+   `sdjournal-*` VM disks, seed ISOs, and libvirt domain definitions.
+3. Durable repository artifacts must be sanitized reports/scripts only. Raw
+   VM-generated journals remain under `.local/sow-0075/` and are not staged.
 
 ## Implications And Decisions
 
 1. 2026-06-01 tracking decision
    - Decision: create this pending SOW so the VM validation stream is not forgotten.
    - Implication: implementation is not authorized yet; VM creation still requires explicit activation approval.
+
+2. 2026-06-01 implementation routing and VM cap decision
+   - Decision: activate SOW-0075 for local implementation in this workspace.
+   - Decision: allow at most four new disposable VMs with names prefixed
+     `sdjournal-`.
+   - Decision: target resources per new VM are 1 vCPU, 1 GiB RAM, and 4 GiB
+     disk by default. If a target cannot work with these limits, stop and
+     report; do not silently increase resources.
+   - Decision: do not modify, stop, reboot, destroy, undefine, reconfigure, or
+     otherwise affect any existing VM/domain, network, storage pool, or host
+     service. Do not enable autostart, make global libvirt changes, install
+     host packages, or change host configuration.
+   - Decision: outside-repository writes are allowed only for additive VM
+     artifacts for the explicit `sdjournal-*` domains: disks, seed ISOs, and
+     libvirt domain definitions.
+   - Decision: existing VM `rhel810` may be inspected over SSH read-only for
+     journal/systemd validation if reachable, but must not be modified without
+     later explicit approval.
+   - Implication: the VM plan must fit within the cap, use only official image
+     evidence, keep raw journals out of durable artifacts, and stop on missing
+     tooling or credential/image blockers.
 
 ## Plan
 
@@ -195,6 +232,8 @@ Failure handling:
 ### 2026-06-01
 
 - Created this pending SOW to track the previously discussed VM historical-systemd validation stream.
+- Moved this SOW to `current/`, set status to `in-progress`, and recorded the
+  user-approved VM routing and hard caps before provisioning or implementation.
 
 ## Validation
 
@@ -229,8 +268,8 @@ Artifact maintenance gate:
 - Specs: no update needed until implementation changes compatibility claims.
 - End-user/operator docs: no update needed for tracking.
 - End-user/operator skills: no update needed for tracking.
-- SOW lifecycle: created as `Status: open` under `.agents/sow/pending/`.
-- SOW-status.md: updated to list this pending SOW.
+- SOW lifecycle: moved to `Status: in-progress` under `.agents/sow/current/`.
+- SOW-status.md: updated to list this active SOW.
 
 Specs update:
 
