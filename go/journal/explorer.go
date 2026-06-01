@@ -2,8 +2,14 @@ package journal
 
 import (
 	"bytes"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"sort"
+
+	"github.com/klauspost/compress/zstd"
+	"github.com/pierrec/lz4/v4"
+	"github.com/ulikunitz/xz"
 )
 
 // ExplorerFilterKind controls whether a filter includes or excludes matching
@@ -117,15 +123,17 @@ type ExplorerQueryCounters struct {
 	FilterDataObjectsExamined uint64
 	CandidateEntries          uint64
 	CandidateDataRefsVisited  uint64
-	DataRefsReported          uint64
 	PayloadsMaterialized      uint64
-	PayloadsDecompressed      uint64
-	FacetValuesMaterialized   uint64
-	FTSPayloadsScanned        uint64
-	DisplayRowsExpanded       uint64
-	ConstrainedFacetCounts    uint64
-	FieldLinkageHits          uint64
-	FieldLinkageFallbacks     uint64
+	// PayloadsDecompressed counts selected payload decompressions during
+	// facet/display/FTS/unique materialization. Internal decompression for DATA
+	// hash-collision checks during filter planning is outside this diagnostic.
+	PayloadsDecompressed    uint64
+	FacetValuesMaterialized uint64
+	FTSPayloadsScanned      uint64
+	DisplayRowsExpanded     uint64
+	ConstrainedFacetCounts  uint64
+	FieldLinkageHits        uint64
+	FieldLinkageFallbacks   uint64
 }
 
 type ExplorerRow struct {
@@ -150,6 +158,16 @@ type ExplorerQueryResult struct {
 	Facets          []ExplorerFacet
 	TotalCandidates uint64
 	Counters        ExplorerQueryCounters
+}
+
+type explorerQueryResultWithKeys struct {
+	result  ExplorerQueryResult
+	rowKeys []directoryEntryKey
+}
+
+type explorerRowWithKey struct {
+	row ExplorerRow
+	key directoryEntryKey
 }
 
 type ExplorerUniqueValue struct {
@@ -262,14 +280,24 @@ func (r *Reader) ExplorerUnique(query ExplorerUniqueQuery) (ExplorerUniqueResult
 func (dr *DirectoryReader) ExplorerQuery(query ExplorerQuery) (ExplorerQueryResult, error) {
 	var combined ExplorerQueryResult
 	facetMaps := make(map[string]map[string]explorerFacetBucket)
+	var rows []explorerRowWithKey
 	for _, reader := range dr.files {
-		result, err := reader.ExplorerQuery(query)
+		perFile := query
+		perFile.Limit = nil
+		reader.clearEntryDataState()
+		fileResult, err := reader.executeExplorerQueryWithKeys(perFile)
 		if err != nil {
 			return ExplorerQueryResult{}, err
 		}
+		result := fileResult.result
+		if len(fileResult.rowKeys) != len(result.Rows) {
+			return ExplorerQueryResult{}, fmt.Errorf("%w: explorer directory row-key mismatch", errInvalidJournal)
+		}
 		mergeExplorerCounters(&combined.Counters, &result.Counters)
 		combined.TotalCandidates += result.TotalCandidates
-		combined.Rows = append(combined.Rows, result.Rows...)
+		for i, row := range result.Rows {
+			rows = append(rows, explorerRowWithKey{row: row, key: fileResult.rowKeys[i]})
+		}
 		for _, facet := range result.Facets {
 			fieldKey := string(facet.Field)
 			values := facetMaps[fieldKey]
@@ -288,7 +316,10 @@ func (dr *DirectoryReader) ExplorerQuery(query ExplorerQuery) (ExplorerQueryResu
 			}
 		}
 	}
-	sortExplorerRows(combined.Rows, query.Direction)
+	sortExplorerRows(dr, rows, query.Direction)
+	for _, item := range rows {
+		combined.Rows = append(combined.Rows, item.row)
+	}
 	if query.Limit != nil && *query.Limit < len(combined.Rows) {
 		combined.Rows = combined.Rows[:*query.Limit]
 	}
@@ -339,6 +370,14 @@ func (dr *DirectoryReader) ExplorerUnique(query ExplorerUniqueQuery) (ExplorerUn
 }
 
 func (r *Reader) executeExplorerQuery(query ExplorerQuery) (ExplorerQueryResult, error) {
+	result, err := r.executeExplorerQueryWithKeys(query)
+	if err != nil {
+		return ExplorerQueryResult{}, err
+	}
+	return result.result, nil
+}
+
+func (r *Reader) executeExplorerQueryWithKeys(query ExplorerQuery) (explorerQueryResultWithKeys, error) {
 	query = normalizeExplorerQuery(query)
 	var counters ExplorerQueryCounters
 	allOffsets := append([]uint64(nil), r.entryOffsets...)
@@ -346,7 +385,7 @@ func (r *Reader) executeExplorerQuery(query ExplorerQuery) (ExplorerQueryResult,
 
 	candidateSet, err := r.buildCandidateSet(allOffsets, query.Filters, &counters)
 	if err != nil {
-		return ExplorerQueryResult{}, err
+		return explorerQueryResultWithKeys{}, err
 	}
 	constrained := constrainedPositiveFacets(query)
 	constrainedComplete := query.FullText == nil &&
@@ -355,7 +394,7 @@ func (r *Reader) executeExplorerQuery(query ExplorerQuery) (ExplorerQueryResult,
 	if constrainedComplete {
 		constrainedComplete, err = r.constrainedFacetsCoverCandidateValues(constrained, candidateSet)
 		if err != nil {
-			return ExplorerQueryResult{}, err
+			return explorerQueryResultWithKeys{}, err
 		}
 	}
 	noScanPath := query.FullText == nil && (len(query.Facets) == 0 || constrainedComplete)
@@ -364,7 +403,7 @@ func (r *Reader) executeExplorerQuery(query ExplorerQuery) (ExplorerQueryResult,
 	if noScanPath && len(query.Facets) != 0 {
 		facetMaps, err = r.constrainedFacetCounts(query, candidateSet, &counters)
 		if err != nil {
-			return ExplorerQueryResult{}, err
+			return explorerQueryResultWithKeys{}, err
 		}
 	}
 	exactTotal, hasExactTotal := exactCandidateTotal(query, candidateSet, len(allOffsets))
@@ -373,18 +412,19 @@ func (r *Reader) executeExplorerQuery(query ExplorerQuery) (ExplorerQueryResult,
 	if !noScanPath && len(query.Facets) != 0 {
 		facetData, err = r.buildFieldDataMap(query.Facets, &counters)
 		if err != nil {
-			return ExplorerQueryResult{}, err
+			return explorerQueryResultWithKeys{}, err
 		}
 	}
 	displayData := fieldDataMap{}
 	if query.Display.Mode == ExplorerDisplayFields {
 		displayData, err = r.buildFieldDataMap(query.Display.Fields, &counters)
 		if err != nil {
-			return ExplorerQueryResult{}, err
+			return explorerQueryResultWithKeys{}, err
 		}
 	}
 
 	var rows []ExplorerRow
+	var rowKeys []directoryEntryKey
 	totalCandidates := exactTotal
 	dataOffsets := make([]uint64, 0, 64)
 	ordered := orderedExplorerOffsets(allOffsets, query.Direction)
@@ -401,7 +441,7 @@ func (r *Reader) executeExplorerQuery(query ExplorerQuery) (ExplorerQueryResult,
 		}
 		entryHdr, offsets, err := r.entryHeaderAndMaybeDataOffsets(entryOffset, needsDataOffsets, dataOffsets)
 		if err != nil {
-			return ExplorerQueryResult{}, err
+			return explorerQueryResultWithKeys{}, err
 		}
 		dataOffsets = offsets
 		if !timeMatchesExplorer(query.SinceRealtimeUsec, query.UntilRealtimeUsec, entryHdr.realtime) {
@@ -415,7 +455,7 @@ func (r *Reader) executeExplorerQuery(query ExplorerQuery) (ExplorerQueryResult,
 		if query.FullText != nil {
 			matched, err := r.entryMatchesFullText(dataOffsets, query.FullText, &counters)
 			if err != nil {
-				return ExplorerQueryResult{}, err
+				return explorerQueryResultWithKeys{}, err
 			}
 			if !matched {
 				continue
@@ -425,17 +465,25 @@ func (r *Reader) executeExplorerQuery(query ExplorerQuery) (ExplorerQueryResult,
 		if !noScanPath && len(query.Facets) != 0 {
 			counters.CandidateDataRefsVisited += uint64(len(dataOffsets))
 			if err := r.aggregateFacets(dataOffsets, facetData, facetMaps, &counters); err != nil {
-				return ExplorerQueryResult{}, err
+				return explorerQueryResultWithKeys{}, err
 			}
 		}
 
 		if query.Limit == nil || len(rows) < *query.Limit {
 			fields, err := r.materializeDisplayFields(dataOffsets, query.Display, displayData, &counters)
 			if err != nil {
-				return ExplorerQueryResult{}, err
+				return explorerQueryResultWithKeys{}, err
 			}
 			if query.Display.Mode != ExplorerDisplayNone {
 				counters.DisplayRowsExpanded++
+			}
+			key := directoryEntryKey{
+				seqnumID:  r.header.seqnumID,
+				seqnum:    entryHdr.seqnum,
+				bootID:    entryHdr.bootID,
+				monotonic: entryHdr.monotonic,
+				realtime:  entryHdr.realtime,
+				xorHash:   entryHdr.xorHash,
 			}
 			rows = append(rows, ExplorerRow{
 				Realtime: entryHdr.realtime,
@@ -443,14 +491,18 @@ func (r *Reader) executeExplorerQuery(query ExplorerQuery) (ExplorerQueryResult,
 				Cursor:   r.makeCursor(entryOffset, entryHdr),
 				Fields:   fields,
 			})
+			rowKeys = append(rowKeys, key)
 		}
 	}
 
-	return ExplorerQueryResult{
-		Rows:            rows,
-		Facets:          explorerFacetMapsToVec(facetMaps),
-		TotalCandidates: totalCandidates,
-		Counters:        counters,
+	return explorerQueryResultWithKeys{
+		result: ExplorerQueryResult{
+			Rows:            rows,
+			Facets:          explorerFacetMapsToVec(facetMaps),
+			TotalCandidates: totalCandidates,
+			Counters:        counters,
+		},
+		rowKeys: rowKeys,
 	}, nil
 }
 
@@ -811,15 +863,71 @@ func (r *Reader) materializePayload(dataOffset uint64, counters *ExplorerQueryCo
 		return nil, err
 	}
 	counters.PayloadsMaterialized++
-	if dataObjectCompressed(header) {
-		counters.PayloadsDecompressed++
+	// The returned slice is ephemeral: it may alias mmap/read buffers or
+	// reader-owned decompression scratch. Callers must consume it immediately or
+	// clone it before the next materializePayload call.
+	payloadOffset := r.dataPayloadOffset()
+	if header.object.typ != objectTypeData || header.object.size < payloadOffset {
+		return nil, errCorruptObject
 	}
-	var out []byte
-	err = r.visitDataPayloadWithHeader(dataOffset, header, func(payload []byte) error {
-		out = cloneBytes(payload)
-		return nil
-	})
-	return out, err
+	payloadLen := header.object.size - payloadOffset
+	payload, err := r.readSlice(dataOffset+payloadOffset, payloadLen)
+	if err != nil {
+		return nil, err
+	}
+	if !dataObjectCompressed(header) {
+		return payload, nil
+	}
+
+	counters.PayloadsDecompressed++
+	if header.object.flag&objectCompressedZSTD != 0 {
+		if r.explorerZstdDecoder == nil {
+			decoder, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(uint64(maxUncompressedDataObjectSize)))
+			if err != nil {
+				return nil, err
+			}
+			r.explorerZstdDecoder = decoder
+		}
+		decoded, err := r.explorerZstdDecoder.DecodeAll(payload, r.explorerDecompressScratch[:0])
+		if err != nil {
+			return nil, err
+		}
+		r.explorerDecompressScratch = decoded
+		return decoded, nil
+	}
+	if header.object.flag&objectCompressedXZ != 0 {
+		reader, err := xz.NewReader(bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		return readAllLimited(reader, maxUncompressedDataObjectSize)
+	}
+	if header.object.flag&objectCompressedLZ4 != 0 {
+		if len(payload) < 8 {
+			return nil, errors.New("lz4 compressed payload too short")
+		}
+		uncompressedSize := binary.LittleEndian.Uint64(payload[:8])
+		if uncompressedSize > maxUncompressedDataObjectSize {
+			return nil, errors.New("lz4 decompressed payload too large")
+		}
+		if uint64(int(uncompressedSize)) != uncompressedSize {
+			return nil, errors.New("lz4 decompressed payload too large for platform")
+		}
+		compressedData := payload[8:]
+		if cap(r.explorerDecompressScratch) < int(uncompressedSize) {
+			r.explorerDecompressScratch = make([]byte, int(uncompressedSize))
+		}
+		decoded := r.explorerDecompressScratch[:int(uncompressedSize)]
+		n, err := lz4.UncompressBlock(compressedData, decoded)
+		if err != nil {
+			return nil, err
+		}
+		if uint64(n) != uncompressedSize {
+			return nil, errors.New("lz4 decompressed size mismatch")
+		}
+		return decoded, nil
+	}
+	return payload, nil
 }
 
 func constrainedPositiveFacets(query ExplorerQuery) map[string][][]byte {
@@ -1009,17 +1117,12 @@ func explorerFacetMapsToVec(facetMaps map[string]map[string]explorerFacetBucket)
 	return facets
 }
 
-func sortExplorerRows(rows []ExplorerRow, direction Direction) {
+func sortExplorerRows(dr *DirectoryReader, rows []explorerRowWithKey, direction Direction) {
 	sort.Slice(rows, func(i, j int) bool {
-		left := rows[i]
-		right := rows[j]
 		if direction == DirectionBackward {
-			left, right = right, left
+			return dr.compareEntryKeys(rows[j].key, rows[i].key) < 0
 		}
-		if left.Realtime != right.Realtime {
-			return left.Realtime < right.Realtime
-		}
-		return left.Seqnum < right.Seqnum
+		return dr.compareEntryKeys(rows[i].key, rows[j].key) < 0
 	})
 }
 
@@ -1056,7 +1159,6 @@ func mergeExplorerCounters(dst, src *ExplorerQueryCounters) {
 	dst.FilterDataObjectsExamined += src.FilterDataObjectsExamined
 	dst.CandidateEntries += src.CandidateEntries
 	dst.CandidateDataRefsVisited += src.CandidateDataRefsVisited
-	dst.DataRefsReported += src.DataRefsReported
 	dst.PayloadsMaterialized += src.PayloadsMaterialized
 	dst.PayloadsDecompressed += src.PayloadsDecompressed
 	dst.FacetValuesMaterialized += src.FacetValuesMaterialized

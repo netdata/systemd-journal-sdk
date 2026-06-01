@@ -131,10 +131,12 @@ func executeReader(reader existingReader, query contract.QuerySpec) ([]contract.
 			continue
 		}
 		if query.FullText != nil {
-			if !entryMatchesFullText(entry, needle) {
-				continue
+			if len(needle) != 0 {
+				if !entryMatchesFullText(entry, needle) {
+					continue
+				}
+				counters["fts_payloads_scanned"] += uint64(len(entry.Payloads))
 			}
-			counters["fts_payloads_scanned"] += uint64(len(entry.Payloads))
 		}
 
 		for _, facet := range query.Facets {

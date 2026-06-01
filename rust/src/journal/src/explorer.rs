@@ -4,6 +4,7 @@ use super::{
     split_raw_payload,
 };
 use journal_core::file::{HashableObject, JournalFile, Mmap};
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU64;
 
@@ -95,8 +96,11 @@ pub struct ExplorerQueryCounters {
     pub filter_data_objects_examined: u64,
     pub candidate_entries: u64,
     pub candidate_data_refs_visited: u64,
-    pub data_refs_reported: u64,
     pub payloads_materialized: u64,
+    /// Selected payload decompressions during facet/display/FTS/unique materialization.
+    ///
+    /// Internal decompression for DATA hash-collision checks during filter planning
+    /// is outside this diagnostic counter.
     pub payloads_decompressed: u64,
     pub facet_values_materialized: u64,
     pub fts_payloads_scanned: u64,
@@ -132,6 +136,11 @@ pub struct ExplorerQueryResult {
     pub facets: Vec<ExplorerFacet>,
     pub total_candidates: u64,
     pub counters: ExplorerQueryCounters,
+}
+
+struct FileExplorerQueryResult {
+    result: ExplorerQueryResult,
+    row_keys: Vec<DirectoryEntryKey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,6 +208,15 @@ impl FileReader {
             .with_file(|file| execute_file_query(file, query, None))
     }
 
+    fn explorer_query_with_directory_keys(
+        &mut self,
+        query: &ExplorerQuery,
+    ) -> Result<FileExplorerQueryResult> {
+        self.invalidate_entry_data_state();
+        self.inner
+            .with_file(|file| execute_file_query_internal(file, query, None))
+    }
+
     pub fn explorer_unique(&mut self, query: &ExplorerUniqueQuery) -> Result<ExplorerUniqueResult> {
         self.invalidate_entry_data_state();
         self.inner
@@ -215,14 +233,23 @@ impl DirectoryReader {
             counters: ExplorerQueryCounters::default(),
         };
         let mut facet_maps: HashMap<Vec<u8>, HashMap<Vec<u8>, u64>> = HashMap::new();
+        let mut rows_with_keys: Vec<(ExplorerRow, DirectoryEntryKey)> = Vec::new();
 
         for reader in &mut self.files {
-            let result = reader.explorer_query(query)?;
+            let mut per_file_query = query.clone();
+            per_file_query.limit = None;
+            let file_result = reader.explorer_query_with_directory_keys(&per_file_query)?;
+            let result = file_result.result;
             merge_counters(&mut combined.counters, &result.counters);
             combined.total_candidates = combined
                 .total_candidates
                 .saturating_add(result.total_candidates);
-            combined.rows.extend(result.rows);
+            rows_with_keys.extend(
+                result
+                    .rows
+                    .into_iter()
+                    .zip(file_result.row_keys.into_iter()),
+            );
             for facet in result.facets {
                 let values = facet_maps.entry(facet.field).or_default();
                 for value in facet.values {
@@ -231,7 +258,8 @@ impl DirectoryReader {
             }
         }
 
-        sort_rows(&mut combined.rows, query.direction);
+        sort_rows_with_keys(self, &mut rows_with_keys, query.direction);
+        combined.rows = rows_with_keys.into_iter().map(|(row, _key)| row).collect();
         if let Some(limit) = query.limit {
             combined.rows.truncate(limit);
         }
@@ -285,6 +313,14 @@ fn execute_file_query(
     query: &ExplorerQuery,
     file_label: Option<&[u8]>,
 ) -> Result<ExplorerQueryResult> {
+    Ok(execute_file_query_internal(file, query, file_label)?.result)
+}
+
+fn execute_file_query_internal(
+    file: &JournalFile<Mmap>,
+    query: &ExplorerQuery,
+    file_label: Option<&[u8]>,
+) -> Result<FileExplorerQueryResult> {
     let mut counters = ExplorerQueryCounters::default();
     let all_entry_offsets = all_entry_offsets(file)?;
     counters.entry_offsets_indexed = all_entry_offsets.len() as u64;
@@ -330,6 +366,7 @@ fn execute_file_query(
     };
 
     let mut rows = Vec::new();
+    let mut row_keys = Vec::new();
     let mut total_candidates = exact_total_candidates.unwrap_or(0);
     let mut data_offsets = Vec::new();
     let mut decompressed = Vec::new();
@@ -415,27 +452,32 @@ fn execute_file_query(
             if !matches!(query.display, ExplorerDisplay::None) {
                 counters.display_rows_expanded = counters.display_rows_expanded.saturating_add(1);
             }
+            let key = DirectoryEntryKey {
+                seqnum_id: file.journal_header_ref().seqnum_id,
+                seqnum,
+                boot_id,
+                monotonic,
+                realtime,
+                xor_hash,
+            };
             rows.push(ExplorerRow {
                 realtime,
                 seqnum,
-                cursor: format_cursor_from_key(DirectoryEntryKey {
-                    seqnum_id: file.journal_header_ref().seqnum_id,
-                    seqnum,
-                    boot_id,
-                    monotonic,
-                    realtime,
-                    xor_hash,
-                }),
+                cursor: format_cursor_from_key(key),
                 fields: with_file_label(fields, file_label),
             });
+            row_keys.push(key);
         }
     }
 
-    Ok(ExplorerQueryResult {
-        rows,
-        facets: facet_maps_to_vec(facet_maps),
-        total_candidates,
-        counters,
+    Ok(FileExplorerQueryResult {
+        result: ExplorerQueryResult {
+            rows,
+            facets: facet_maps_to_vec(facet_maps),
+            total_candidates,
+            counters,
+        },
+        row_keys,
     })
 }
 
@@ -919,11 +961,23 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
-fn sort_rows(rows: &mut [ExplorerRow], direction: Direction) {
-    rows.sort_by(|a, b| match direction {
-        Direction::Forward => (a.realtime, a.seqnum).cmp(&(b.realtime, b.seqnum)),
-        Direction::Backward => (b.realtime, b.seqnum).cmp(&(a.realtime, a.seqnum)),
+fn sort_rows_with_keys(
+    reader: &DirectoryReader,
+    rows: &mut [(ExplorerRow, DirectoryEntryKey)],
+    direction: Direction,
+) {
+    rows.sort_by(|(_, a), (_, b)| match direction {
+        Direction::Forward => ordering_from_cmp(reader.compare_entry_keys(*a, *b)),
+        Direction::Backward => ordering_from_cmp(reader.compare_entry_keys(*b, *a)),
     });
+}
+
+fn ordering_from_cmp(cmp: i8) -> Ordering {
+    match cmp {
+        value if value < 0 => Ordering::Less,
+        value if value > 0 => Ordering::Greater,
+        _ => Ordering::Equal,
+    }
 }
 
 fn with_file_label(
@@ -941,7 +995,6 @@ fn merge_counters(dst: &mut ExplorerQueryCounters, src: &ExplorerQueryCounters) 
     dst.filter_data_objects_examined += src.filter_data_objects_examined;
     dst.candidate_entries += src.candidate_entries;
     dst.candidate_data_refs_visited += src.candidate_data_refs_visited;
-    dst.data_refs_reported += src.data_refs_reported;
     dst.payloads_materialized += src.payloads_materialized;
     dst.payloads_decompressed += src.payloads_decompressed;
     dst.facet_values_materialized += src.facet_values_materialized;
@@ -1255,5 +1308,74 @@ mod tests {
 
         assert_eq!(refs.len(), 4);
         assert!(refs.iter().all(|data_ref| data_ref.offset > 0));
+    }
+
+    #[test]
+    fn directory_explorer_uses_directory_reader_tie_ordering() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let journals = dir.path().join("journals");
+        let first_path = journals.join("system.journal");
+        let second_path = journals.join("user.journal");
+
+        {
+            let (mut file, mut writer) = create_writer(&first_path, None);
+            writer
+                .add_entry(
+                    &mut file,
+                    &[b"SERVICE=target".as_slice(), b"ID=seq1-late".as_slice()],
+                    2_000,
+                    1,
+                )
+                .expect("write first file");
+            file.sync().expect("sync first");
+        }
+
+        {
+            let (mut file, mut writer) = create_writer(&second_path, None);
+            writer
+                .add_entry(
+                    &mut file,
+                    &[b"SERVICE=noise".as_slice(), b"ID=ignored".as_slice()],
+                    500,
+                    1,
+                )
+                .expect("write ignored row");
+            writer
+                .add_entry(
+                    &mut file,
+                    &[b"SERVICE=target".as_slice(), b"ID=seq2-early".as_slice()],
+                    1_000,
+                    2,
+                )
+                .expect("write second file");
+            file.sync().expect("sync second");
+        }
+
+        let mut reader = DirectoryReader::open_with_options(&journals, ReaderOptions::snapshot())
+            .expect("open directory");
+        let result = reader
+            .explorer_query(&ExplorerQuery {
+                filters: vec![ExplorerFilter::field_in(
+                    b"SERVICE".to_vec(),
+                    vec![b"target".to_vec()],
+                )],
+                display: ExplorerDisplay::Fields(vec![b"ID".to_vec()]),
+                limit: Some(2),
+                ..ExplorerQuery::default()
+            })
+            .expect("query directory");
+
+        let ids: Vec<Vec<u8>> = result
+            .rows
+            .iter()
+            .map(|row| {
+                row.fields
+                    .iter()
+                    .find(|(name, _)| name == b"ID")
+                    .map(|(_, value)| value.clone())
+                    .expect("ID field")
+            })
+            .collect();
+        assert_eq!(ids, vec![b"seq1-late".to_vec(), b"seq2-early".to_vec()]);
     }
 }

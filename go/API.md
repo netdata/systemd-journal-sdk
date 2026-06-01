@@ -119,12 +119,19 @@ separate from the libsystemd-compatible facade:
   target value posting list with the filtered candidate set.
 - `ExplorerQueryCounters` exposes materialization, decompression, traversal,
   and fast-path evidence so callers can validate production query plans.
+  `PayloadsDecompressed` counts selected payload decompressions for materialized
+  facets, display fields, full-text scans, or unique values; it does not include
+  internal DATA hash-collision checks that may happen while resolving indexed
+  filter values.
 
 `DefaultReaderOptions()` uses live mmap-backed reads on Unix. Use
 `WithAccessMode(journal.ReaderAccessReadAt)` only when mmap is undesirable for
 diagnostics or a constrained environment. `ReaderBoundsLive` refreshes visible
 entries when active files grow; `ReaderBoundsSnapshot` fixes the visible file
 state at open time.
+
+`Reader` and `DirectoryReader` values are not safe for concurrent method calls.
+Use one reader per concurrent query or serialize access around a shared reader.
 
 `VisitEntryPayloads`, `EnumerateEntryPayload`, and
 `SdJournalEnumerateAvailableData` are zero-copy hot paths. Returned or callback

@@ -278,7 +278,6 @@ func countersReport(counters journal.ExplorerQueryCounters) map[string]uint64 {
 		"candidate_data_refs_visited":  counters.CandidateDataRefsVisited,
 		"candidate_entries":            counters.CandidateEntries,
 		"constrained_facet_counts":     counters.ConstrainedFacetCounts,
-		"data_refs_reported":           counters.DataRefsReported,
 		"display_rows_expanded":        counters.DisplayRowsExpanded,
 		"entry_offsets_indexed":        counters.EntryOffsetsIndexed,
 		"facet_values_materialized":    counters.FacetValuesMaterialized,

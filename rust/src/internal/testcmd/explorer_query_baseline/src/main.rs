@@ -162,16 +162,18 @@ fn execute_reader<R: ExistingReader>(
             .map(|value| value.bytes())
             .transpose()?
         {
-            if !entry
-                .payloads
-                .iter()
-                .any(|payload| contains_bytes(payload, &needle))
-            {
-                continue;
+            if !needle.is_empty() {
+                if !entry
+                    .payloads
+                    .iter()
+                    .any(|payload| contains_bytes(payload, &needle))
+                {
+                    continue;
+                }
+                *counters
+                    .entry("fts_payloads_scanned".to_string())
+                    .or_default() += entry.payloads.len() as u64;
             }
-            *counters
-                .entry("fts_payloads_scanned".to_string())
-                .or_default() += entry.payloads.len() as u64;
         }
 
         for facet in &query.facets {

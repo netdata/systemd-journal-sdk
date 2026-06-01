@@ -688,7 +688,10 @@ Current Rust reader feature slice:
   `explorer_query`, `explorer_unique`, `visit_entry_data_refs`, and
   `field_data_offsets`, with indexed positive/negative filters, selected
   facets, filtered unique values, row-display policies, compression-skip
-  counters, and no-aggregation fast paths;
+  counters, and no-aggregation fast paths. Explorer decompression counters
+  cover selected payload materialization for facets, display rows, full-text,
+  and unique values; they do not count internal DATA hash-collision verification
+  performed while resolving indexed filters;
 - configurable reader bounds through `ReaderOptions`: default `Live` mode uses
   systemd-style cached mutable bounds and refreshes file size only when a read
   would exceed the cached end of file, while `Snapshot` mode fixes the file

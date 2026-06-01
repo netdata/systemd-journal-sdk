@@ -1,0 +1,11 @@
+{
+  "schema": "systemd-journal-sdk-explorer-query-v1",
+  "name": "fts-empty",
+  "mode": "query",
+  "filters": [],
+  "facets": [],
+  "full_text": "",
+  "display": "none",
+  "limit": 10,
+  "direction": "forward"
+}

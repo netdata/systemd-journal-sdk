@@ -24,7 +24,9 @@ def run(cmd: list[str], stdout: Path | None = None) -> None:
     subprocess.run(cmd, **kwargs)
 
 
-def run_ingester(journal_path: Path, compression: str, compact: bool, output: Path) -> None:
+def run_ingester(
+    journal_path: Path, compression: str, compact: bool, sealed: bool, output: Path
+) -> None:
     cmd = [
         "cargo",
         "run",
@@ -45,14 +47,16 @@ def run_ingester(journal_path: Path, compression: str, compact: bool, output: Pa
     ]
     if compact:
         cmd.append("--compact")
+    if sealed:
+        cmd.append("--seal")
     run(cmd, output)
 
 
 def ensure_file_fixture(
-    work_dir: Path, journal_path: Path, compression: str, compact: bool
+    work_dir: Path, journal_path: Path, compression: str, compact: bool, sealed: bool
 ) -> Path:
     work_dir.mkdir(parents=True, exist_ok=True)
-    run_ingester(journal_path, compression, compact, work_dir / "ingest.json")
+    run_ingester(journal_path, compression, compact, sealed, work_dir / "ingest.json")
     return journal_path
 
 
@@ -63,13 +67,22 @@ def ensure_directory_fixture(work_dir: Path) -> Path:
         directory / "system.journal",
         "none",
         False,
+        False,
         work_dir / "ingest-regular.json",
     )
     run_ingester(
         directory / "user.journal",
         "zstd",
         True,
+        False,
         work_dir / "ingest-compact-zstd.json",
+    )
+    run_ingester(
+        directory / "sealed.journal",
+        "none",
+        False,
+        True,
+        work_dir / "ingest-sealed.json",
     )
     return directory
 
@@ -108,21 +121,24 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--suite", choices=["smoke", "full"], default="smoke")
     parser.add_argument("--surface", choices=["file", "directory"], default="file")
-    parser.add_argument("--compression", choices=["none", "zstd"], default="none")
+    parser.add_argument("--compression", choices=["none", "zstd", "xz", "lz4"], default="none")
     parser.add_argument("--compact", action="store_true")
+    parser.add_argument("--sealed", action="store_true")
     parser.add_argument("--keep-going", action="store_true")
     args = parser.parse_args()
 
     variant = f"{args.suite}-{args.surface}"
     if args.surface == "file":
         variant += f"-{args.compression}{'-compact' if args.compact else ''}"
+        if args.sealed:
+            variant += "-sealed"
     else:
         variant += "-mixed"
     work_dir = WORK_ROOT / variant
     journal_path = work_dir / "correctness.journal"
     query_dir = QUERY_ROOT / args.suite
     input_path = (
-        ensure_file_fixture(work_dir, journal_path, args.compression, args.compact)
+        ensure_file_fixture(work_dir, journal_path, args.compression, args.compact, args.sealed)
         if args.surface == "file"
         else ensure_directory_fixture(work_dir)
     )
@@ -147,6 +163,11 @@ def main() -> int:
         if query.stem in {"topn-no-filter", "topn-no-facet", "filter-equal-facet"}:
             if optimized["counters"].get("candidate_data_refs_visited", 0) != 0:
                 failure_reasons.append("fast-path-visited-candidate-data-refs")
+        if query.stem == "22-fts-empty" or query.stem == "fts-empty":
+            if baseline["counters"].get("fts_payloads_scanned", 0) != 0:
+                failure_reasons.append("baseline-empty-fts-scanned-payloads")
+            if optimized["counters"].get("fts_payloads_scanned", 0) != 0:
+                failure_reasons.append("optimized-empty-fts-scanned-payloads")
         if failure_reasons:
             failures.append(query.name)
             if not args.keep_going:

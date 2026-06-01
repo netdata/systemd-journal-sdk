@@ -139,11 +139,11 @@ func expectedRejection(input map[string]interface{}) string {
 	return ""
 }
 
-func makeWriter(path string, compact bool, maxSizeBytes uint64, compression int, compressThreshold int) (*journal.Writer, error) {
+func makeWriter(path string, compact bool, maxSizeBytes uint64, compression int, compressThreshold int, seal bool) (*journal.Writer, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	return journal.Create(path, journal.Options{
+	opts := journal.Options{
 		MachineID:              machineID,
 		BootID:                 bootID,
 		SeqnumID:               seqnumID,
@@ -153,7 +153,15 @@ func makeWriter(path string, compact bool, maxSizeBytes uint64, compression int,
 		Compression:            compression,
 		CompressThresholdBytes: compressThreshold,
 		Compact:                compact,
-	})
+	}
+	if seal {
+		opts.Seal = &journal.SealOptions{
+			Seed:         make([]byte, 12),
+			IntervalUsec: 1_000_000,
+			StartUsec:    defaultArchiveRealtime,
+		}
+	}
+	return journal.Create(path, opts)
 }
 
 func archivePathFor(output string, headRealtime uint64) string {
@@ -176,8 +184,8 @@ func finalizeWriter(w *journal.Writer, output string, finalState string, headRea
 	}
 }
 
-func ingestAccepted(dataset, output string, finalState string, compact bool, maxSizeBytes uint64, compression int, compressThreshold int) result {
-	w, err := makeWriter(output, compact, maxSizeBytes, compression, compressThreshold)
+func ingestAccepted(dataset, output string, finalState string, compact bool, maxSizeBytes uint64, compression int, compressThreshold int, seal bool) result {
+	w, err := makeWriter(output, compact, maxSizeBytes, compression, compressThreshold, seal)
 	if err != nil {
 		return result{Errors: []string{err.Error()}}
 	}
@@ -254,7 +262,7 @@ func ingestAccepted(dataset, output string, finalState string, compact bool, max
 	return res
 }
 
-func ingestRejections(dataset, output string, finalState string, compact bool, maxSizeBytes uint64, compression int, compressThreshold int) result {
+func ingestRejections(dataset, output string, finalState string, compact bool, maxSizeBytes uint64, compression int, compressThreshold int, seal bool) result {
 	file, err := os.Open(dataset)
 	if err != nil {
 		return result{Errors: []string{err.Error()}}
@@ -291,7 +299,7 @@ func ingestRejections(dataset, output string, finalState string, compact bool, m
 		}
 
 		if w == nil {
-			w, err = makeWriter(output, compact, maxSizeBytes, compression, compressThreshold)
+			w, err = makeWriter(output, compact, maxSizeBytes, compression, compressThreshold, seal)
 			if err != nil {
 				res.Errors = append(res.Errors, err.Error())
 				break
@@ -339,9 +347,10 @@ func main() {
 	maxSizeBytes := flag.Uint64("max-size-bytes", 0, "systemd max-size value used for hash table sizing; zero uses the SDK default")
 	compression := flag.String("compression", "none", "DATA object compression: none, zstd, xz, lz4")
 	compressThreshold := flag.Int("compress-threshold", 512, "minimum DATA payload bytes before compression")
+	seal := flag.Bool("seal", false, "enable deterministic Forward Secure Sealing")
 	flag.Parse()
 	if *dataset == "" || *output == "" {
-		fmt.Fprintln(os.Stderr, "usage: dataset_ingester --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived] [--compact] [--max-size-bytes BYTES] [--compression none|zstd|xz|lz4] [--compress-threshold BYTES]")
+		fmt.Fprintln(os.Stderr, "usage: dataset_ingester --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived] [--compact] [--max-size-bytes BYTES] [--compression none|zstd|xz|lz4] [--compress-threshold BYTES] [--seal]")
 		os.Exit(2)
 	}
 
@@ -352,9 +361,9 @@ func main() {
 		os.Exit(2)
 	}
 	if *rejectionMode {
-		res = ingestRejections(*dataset, *output, *finalState, *compact, *maxSizeBytes, compressionID, *compressThreshold)
+		res = ingestRejections(*dataset, *output, *finalState, *compact, *maxSizeBytes, compressionID, *compressThreshold, *seal)
 	} else {
-		res = ingestAccepted(*dataset, *output, *finalState, *compact, *maxSizeBytes, compressionID, *compressThreshold)
+		res = ingestAccepted(*dataset, *output, *finalState, *compact, *maxSizeBytes, compressionID, *compressThreshold, *seal)
 	}
 	encoded, _ := json.Marshal(res)
 	fmt.Println(string(encoded))

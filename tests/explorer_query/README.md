@@ -17,12 +17,17 @@ Run the Rust smoke suite:
 python3 tests/explorer_query/run_rust_smoke.py
 ```
 
-Run the Rust full correctness suite against uncompressed and zstd-compressed
-fixtures:
+Run the Rust full correctness suite against uncompressed, compressed, compact,
+sealed, and mixed-directory fixtures:
 
 ```bash
 python3 tests/explorer_query/run_rust_smoke.py --suite full
 python3 tests/explorer_query/run_rust_smoke.py --suite full --compression zstd
+python3 tests/explorer_query/run_rust_smoke.py --suite full --compression xz
+python3 tests/explorer_query/run_rust_smoke.py --suite full --compression lz4
+python3 tests/explorer_query/run_rust_smoke.py --suite full --compact --compression xz
+python3 tests/explorer_query/run_rust_smoke.py --suite full --compact --compression lz4
+python3 tests/explorer_query/run_rust_smoke.py --suite full --sealed
 python3 tests/explorer_query/run_rust_smoke.py --suite full --surface directory
 ```
 
@@ -39,6 +44,11 @@ Run the Go smoke/full suites:
 python3 tests/explorer_query/run_go_smoke.py
 python3 tests/explorer_query/run_go_smoke.py --suite full
 python3 tests/explorer_query/run_go_smoke.py --suite full --compression zstd
+python3 tests/explorer_query/run_go_smoke.py --suite full --compression xz
+python3 tests/explorer_query/run_go_smoke.py --suite full --compression lz4
+python3 tests/explorer_query/run_go_smoke.py --suite full --compact --compression xz
+python3 tests/explorer_query/run_go_smoke.py --suite full --compact --compression lz4
+python3 tests/explorer_query/run_go_smoke.py --suite full --sealed
 python3 tests/explorer_query/run_go_smoke.py --suite full --surface directory
 ```
 

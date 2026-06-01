@@ -130,9 +130,9 @@ Do not use this skill for:
 - For Rust or Go explorer/query API changes, run the matching
   `tests/explorer_query/run_rust_smoke.py --suite full --keep-going` or
   `tests/explorer_query/run_go_smoke.py --suite full --keep-going` across
-  regular, compact, zstd-compressed, compact+zstd, and mixed-directory
-  fixtures. Run the benchmark runner when the SOW makes performance claims or
-  changes planner/materialization hot paths.
+  regular, compact, zstd/xz/lz4-compressed DATA, compact plus compressed DATA,
+  sealed/FSS, and mixed-directory fixtures. Run the benchmark runner when the
+  SOW makes performance claims or changes planner/materialization hot paths.
 - For verifier changes, run `tests/interoperability/run_verify_matrix.py` and
   require stock `journalctl --verify --file` plus Rust, Go, Node.js, and Python
   verification paths to agree on positive regular, zstd/xz/lz4 DATA-compressed,

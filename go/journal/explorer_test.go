@@ -2,11 +2,15 @@ package journal
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func writeExplorerTestJournal(t *testing.T, path string, compression int) {
+var explorerBenchmarkSink int
+
+func writeExplorerTestJournal(t testing.TB, path string, compression int) {
 	t.Helper()
 
 	opts := testOptions()
@@ -294,6 +298,126 @@ func TestExplorerDataRefsReportOffsetsWithoutPayloadMaterialization(t *testing.T
 			t.Fatalf("invalid ref %#v", ref)
 		}
 	}
+}
+
+func TestDirectoryExplorerUsesDirectoryReaderTieOrdering(t *testing.T) {
+	dir := t.TempDir()
+	journals := filepath.Join(dir, "journals")
+	if err := os.MkdirAll(journals, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	firstPath := filepath.Join(journals, "system.journal")
+	secondPath := filepath.Join(journals, "user.journal")
+
+	first, err := Create(firstPath, testOptions())
+	if err != nil {
+		t.Fatalf("Create(first) error = %v", err)
+	}
+	if err := first.AppendRaw([][]byte{[]byte("SERVICE=target"), []byte("ID=seq1-late")}, EntryOptions{RealtimeUsec: 2_000, MonotonicUsec: 1}); err != nil {
+		t.Fatalf("AppendRaw(first) error = %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close(first) error = %v", err)
+	}
+
+	second, err := Create(secondPath, testOptions())
+	if err != nil {
+		t.Fatalf("Create(second) error = %v", err)
+	}
+	if err := second.AppendRaw([][]byte{[]byte("SERVICE=noise"), []byte("ID=ignored")}, EntryOptions{RealtimeUsec: 500, MonotonicUsec: 1}); err != nil {
+		t.Fatalf("AppendRaw(noise) error = %v", err)
+	}
+	if err := second.AppendRaw([][]byte{[]byte("SERVICE=target"), []byte("ID=seq2-early")}, EntryOptions{RealtimeUsec: 1_000, MonotonicUsec: 2}); err != nil {
+		t.Fatalf("AppendRaw(second) error = %v", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatalf("Close(second) error = %v", err)
+	}
+
+	reader, err := OpenDirectoryWithOptions(journals, DefaultReaderOptions().WithSnapshot(true))
+	if err != nil {
+		t.Fatalf("OpenDirectoryWithOptions() error = %v", err)
+	}
+	defer reader.Close()
+
+	result, err := reader.ExplorerQuery(ExplorerQuery{
+		Filters: []ExplorerFilter{FieldIn([]byte("SERVICE"), []byte("target"))},
+		Display: DisplayFields([]byte("ID")),
+		Limit:   Limit(2),
+	})
+	if err != nil {
+		t.Fatalf("ExplorerQuery() error = %v", err)
+	}
+	var ids [][]byte
+	for _, row := range result.Rows {
+		for _, field := range row.Fields {
+			if bytes.Equal(field.Name, []byte("ID")) {
+				ids = append(ids, field.Value)
+			}
+		}
+	}
+	want := [][]byte{[]byte("seq1-late"), []byte("seq2-early")}
+	if len(ids) != len(want) {
+		t.Fatalf("ids = %#v, want %#v", ids, want)
+	}
+	for i := range want {
+		if !bytes.Equal(ids[i], want[i]) {
+			t.Fatalf("ids = %#v, want %#v", ids, want)
+		}
+	}
+}
+
+func BenchmarkExplorerCompressedPayloadMaterialization(b *testing.B) {
+	path := filepath.Join(b.TempDir(), "system.journal")
+	opts := testOptions()
+	opts.Compression = CompressionZSTD
+	opts.CompressThresholdBytes = 8
+	writer, err := Create(path, opts)
+	if err != nil {
+		b.Fatalf("Create() error = %v", err)
+	}
+	if err := writer.Append([]Field{
+		StringField("MESSAGE", strings.Repeat("compressible-", 512)),
+	}, EntryOptions{RealtimeUsec: 1_000, MonotonicUsec: 1}); err != nil {
+		b.Fatalf("Append() error = %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		b.Fatalf("Close() error = %v", err)
+	}
+	reader, err := OpenFileWithOptions(path, DefaultReaderOptions().WithSnapshot(true))
+	if err != nil {
+		b.Fatalf("OpenFileWithOptions() error = %v", err)
+	}
+	defer reader.Close()
+	offsets, err := reader.FieldDataOffsets([]byte("MESSAGE"))
+	if err != nil {
+		b.Fatalf("FieldDataOffsets() error = %v", err)
+	}
+	if len(offsets) == 0 {
+		b.Fatal("no MESSAGE DATA offsets")
+	}
+
+	b.Run("generic-readDataPayload", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			payload, err := reader.readDataPayload(offsets[i%len(offsets)])
+			if err != nil {
+				b.Fatalf("readDataPayload() error = %v", err)
+			}
+			explorerBenchmarkSink += len(payload)
+		}
+	})
+	b.Run("explorer-materializePayload", func(b *testing.B) {
+		b.ReportAllocs()
+		var counters ExplorerQueryCounters
+		for i := 0; i < b.N; i++ {
+			payload, err := reader.materializePayload(offsets[i%len(offsets)], &counters)
+			if err != nil {
+				b.Fatalf("materializePayload() error = %v", err)
+			}
+			explorerBenchmarkSink += len(payload)
+		}
+	})
 }
 
 func explorerFacetValuesEqual(a, b []ExplorerFacetValue) bool {

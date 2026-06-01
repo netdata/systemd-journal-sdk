@@ -161,6 +161,9 @@ type Reader struct {
 	entryDataOffsetsEntry uint64
 	entryDataIndex        int
 	entryDataActive       bool
+
+	explorerZstdDecoder       *zstd.Decoder
+	explorerDecompressScratch []byte
 }
 
 type filterBuilder struct {
@@ -392,6 +395,10 @@ func (r *Reader) Close() error {
 	if r.mapping != nil {
 		unmapErr = r.mapping.close()
 		r.mapping = nil
+	}
+	if r.explorerZstdDecoder != nil {
+		r.explorerZstdDecoder.Close()
+		r.explorerZstdDecoder = nil
 	}
 	closeErr := closeJournalFile(r.file, r.cleanupPath)
 	return errors.Join(unmapErr, closeErr)

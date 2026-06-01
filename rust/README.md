@@ -80,7 +80,11 @@ Current reader scope:
   `field_data_offsets`. These APIs use journal DATA/FIELD indexes for exact
   positive and negative filters, materialize only selected facet/display/FTS
   payloads, expose compression-skip counters, and provide a no-aggregation
-  fast path for no-facet or fully constrained facet requests;
+  fast path for no-facet or fully constrained facet requests. The
+  `payloads_decompressed` counter reports selected payload decompressions for
+  materialized facets, display fields, full-text scans, or unique values; it
+  does not include internal hash-collision checks performed while resolving
+  filter values through DATA indexes;
 - byte-preserving RAW field-name access through `Entry::raw_fields()`,
   `Entry::get_raw()`, and `Entry::get_raw_values()`;
   `Entry.fields` and `Entry.field_values` are UTF-8 string-keyed convenience
@@ -329,6 +333,12 @@ payloads.
 
 Use `explorer_unique` to discover values of one target field under the same
 filter model without expanding unrelated fields.
+
+Explorer counters are diagnostic plan evidence. `payloads_decompressed` counts
+decompression only for selected payloads that the explorer materializes for
+facets, display fields, full-text scans, or unique values. Internal
+decompression that may happen while validating DATA hash collisions during
+filter planning is deliberately outside this counter.
 
 File-backed journalctl:
 

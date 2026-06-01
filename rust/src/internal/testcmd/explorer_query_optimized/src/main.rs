@@ -236,10 +236,6 @@ fn counters_report(counters: &ExplorerQueryCounters) -> BTreeMap<String, u64> {
             counters.constrained_facet_counts,
         ),
         (
-            "data_refs_reported".to_string(),
-            counters.data_refs_reported,
-        ),
-        (
             "display_rows_expanded".to_string(),
             counters.display_rows_expanded,
         ),
