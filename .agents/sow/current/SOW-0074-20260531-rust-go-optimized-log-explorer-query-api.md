@@ -6,9 +6,10 @@ Status: in-progress
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: Rust API and isolated comparison smoke harness implemented; Go
-parity, full generated query suite, directory/mixed-feature coverage,
-benchmarks, docs/spec updates, and whole-SOW review remain pending.
+Sub-state: Rust and Go API parity, isolated comparison tools, full generated
+query suite, directory/mixed-feature coverage, benchmark harnesses, and
+docs/spec updates are implemented. Whole-SOW review and final closeout remain
+pending.
 
 ## Requirements
 
@@ -604,15 +605,83 @@ Failure handling:
     values.
   - `perf-display-expanded-topn`: baseline 1.405080852s, optimized
     0.014826306s, 94.77x faster, optimized materialized 200 payloads.
+- Ported the proven Rust explorer API shape to Go:
+  - `Reader::ExplorerQuery` / `DirectoryReader::ExplorerQuery` expose the
+    high-level query executor.
+  - `Reader::ExplorerUnique` / `DirectoryReader::ExplorerUnique` expose
+    filtered unique-value discovery.
+  - `VisitEntryDataRefs` exposes current-entry DATA references without
+    payload materialization.
+  - `FieldDataOffsets` walks FIELD-to-DATA linkage without materializing DATA
+    payloads.
+  - Go counters mirror the Rust counter model.
+- Implemented two isolated Go comparison tools:
+  - `go/internal/testcmd/explorer_query_baseline` uses existing expanded-entry
+    APIs.
+  - `go/internal/testcmd/explorer_query_optimized` uses only the new explorer
+    API.
+  - `go/internal/testcmd/explorer_query_contract` is limited to shared
+    query/report schema and serialization.
+- Extended the Go dataset ingester with default-preserving `--compression` and
+  `--compress-threshold` options so Go can generate compressed explorer
+  fixtures.
+- Added Go explorer package tests mirroring the Rust critical paths:
+  no-facet filter fast path, selected facet materialization, repeated-field
+  constrained-facet fallback, compressed irrelevant-field skip, filtered unique
+  via FIELD chain, unique pagination ordering, and DATA-reference enumeration.
+- Go full comparison evidence:
+  - `python3 tests/explorer_query/run_go_smoke.py --suite full --keep-going`:
+    passed 21/21 queries on regular uncompressed fixture.
+  - `python3 tests/explorer_query/run_go_smoke.py --suite full --compression zstd --keep-going`:
+    passed 21/21 queries on regular zstd-compressed fixture.
+  - `python3 tests/explorer_query/run_go_smoke.py --suite full --compact --keep-going`:
+    passed 21/21 queries on compact uncompressed fixture.
+  - `python3 tests/explorer_query/run_go_smoke.py --suite full --compression zstd --compact --keep-going`:
+    passed 21/21 queries on compact zstd-compressed fixture.
+  - `python3 tests/explorer_query/run_go_smoke.py --suite full --surface directory --keep-going`:
+    passed 21/21 queries on a mixed directory containing one regular
+    uncompressed file and one compact zstd-compressed file.
+  - The compressed irrelevant-field query asserted optimized
+    `payloads_decompressed=0` on compressed fixtures.
+  - The compressed selected-facet query asserted optimized
+    `payloads_decompressed>0` on compressed fixtures; current zstd fixture
+    evidence shows exactly 1 selected DATA object decompressed.
+- Added a Go benchmark runner,
+  `tests/explorer_query/run_go_benchmarks.py`, using the generated 200k-row /
+  32-field mixed-cardinality performance corpus.
+- Go benchmark smoke evidence:
+  - `python3 tests/explorer_query/run_go_benchmarks.py --rows 1000`:
+    passed and wrote
+    `.local/explorer-query/benchmarks/go-1000-rows-none-compact/summary.json`.
+- Go 200k-row benchmark evidence:
+  - `python3 tests/explorer_query/run_go_benchmarks.py`: passed and wrote
+    `.local/explorer-query/benchmarks/go-200000-rows-none-compact/summary.json`.
+  - `perf-topn-no-filter`: baseline 2.976371541s, optimized
+    0.010982071s, 271.02x faster, optimized materialized 0 payloads.
+  - `perf-positive-low-filter`: baseline 2.945974806s, optimized
+    0.011807520s, 249.50x faster, optimized materialized 0 payloads.
+  - `perf-positive-and-fields`: baseline 2.826983729s, optimized
+    0.024741011s, 114.26x faster, optimized materialized 200 payloads.
+  - `perf-negative-low-filter`: baseline 2.930391119s, optimized
+    0.017228701s, 170.09x faster, optimized materialized 0 payloads.
+  - `perf-filter-plus-low-facet`: baseline 2.928402623s, optimized
+    0.019727040s, 148.45x faster, optimized materialized 12500 payloads.
+  - `perf-facet-only-high-cardinality`: baseline 2.980342341s, optimized
+    0.276871535s, 10.76x faster, optimized materialized the selected 200000
+    high-cardinality facet values.
+  - `perf-filtered-unique-high-cardinality`: baseline 2.934215604s,
+    optimized 0.033497930s, 87.59x faster, optimized materialized 12500 target
+    values.
+  - `perf-display-expanded-topn`: baseline 3.277959726s, optimized
+    0.027094628s, 120.98x faster, optimized materialized 200 payloads.
+- Updated product specs and Rust/Go docs with the explorer API contract and
+  usage guidance.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Partial Rust phase evidence only; this SOW is not complete until Go parity,
-  full query-family coverage, benchmark reporting, docs/spec updates, and
-  whole-SOW review are finished.
-- Rust currently provides:
+- Rust and Go now provide:
   - low-level DATA-reference visitor;
   - FIELD-linkage DATA offset collection;
   - high-level file and directory explorer query APIs;
@@ -621,6 +690,12 @@ Acceptance criteria evidence:
   - compressed irrelevant-field skip unit coverage;
   - isolated baseline and optimized comparison tools with identical external
     query/report schema.
+- Full generated query-family coverage is present for Rust and Go across
+  regular, compact, zstd DATA compression, compact+zstd, and mixed-directory
+  fixtures.
+- Benchmark reports are present for Rust and Go on the generated 200k-row /
+  32-field compact uncompressed corpus.
+- Whole-SOW external review remains pending before completion.
 
 Tests or equivalent validation:
 
@@ -646,20 +721,49 @@ Tests or equivalent validation:
 - `python3 tests/explorer_query/run_rust_benchmarks.py --rows 1000`: passed.
 - `python3 tests/explorer_query/run_rust_benchmarks.py`: passed on the
   200k-row compact uncompressed performance corpus.
-- `git diff --check` scoped to the SOW-0074 file set: passed.
+- `go -C go test ./...`: passed.
+- `python3 -m py_compile tests/explorer_query/run_go_smoke.py tests/explorer_query/run_go_benchmarks.py`:
+  passed.
+- `python3 tests/explorer_query/run_go_smoke.py`: passed, 3/3 smoke queries
+  with matching baseline and optimized logical outputs.
+- `python3 tests/explorer_query/run_go_smoke.py --suite full --keep-going`:
+  passed.
+- `python3 tests/explorer_query/run_go_smoke.py --suite full --compression zstd --keep-going`:
+  passed.
+- `python3 tests/explorer_query/run_go_smoke.py --suite full --compact --keep-going`:
+  passed.
+- `python3 tests/explorer_query/run_go_smoke.py --suite full --compression zstd --compact --keep-going`:
+  passed.
+- `python3 tests/explorer_query/run_go_smoke.py --suite full --surface directory --keep-going`:
+  passed.
+- `python3 tests/explorer_query/run_go_benchmarks.py --rows 1000`: passed.
+- `python3 tests/explorer_query/run_go_benchmarks.py`: passed on the 200k-row
+  compact uncompressed performance corpus.
+- Final local SOW-0074 validation command: `go -C go test ./... && python3 -m
+  py_compile tests/explorer_query/run_go_smoke.py
+  tests/explorer_query/run_go_benchmarks.py
+  tests/explorer_query/run_rust_smoke.py
+  tests/explorer_query/run_rust_benchmarks.py && rg -n
+  "fullTextSet|displayModeExplicit" go/journal go/internal/testcmd || true &&
+  git diff --check && .agents/sow/audit.sh`: passed.
 
 Real-use evidence:
 
-- Generated correctness corpus only so far. Real-corpus and production-style
-  benchmark evidence remain pending.
+- Generated correctness and performance corpora only so far. Real-corpus
+  verification remains covered by SOW-0064/SOW-0077 follow-up work and is not
+  a completion gate for this API SOW.
 
 Reviewer findings:
 
-- Pending implementation.
+- Pending whole-SOW review.
 
 Same-failure scan:
 
-- Pending implementation.
+- Go and Rust both include repeated-field constrained-facet fallback coverage.
+- Go and Rust both include compressed irrelevant-field skip and selected
+  compressed facet decompression coverage.
+- `rg -n "fullTextSet|displayModeExplicit" go/journal go/internal/testcmd`:
+  passed with no matches.
 
 Sensitive data gate:
 
@@ -667,27 +771,35 @@ Sensitive data gate:
 
 Artifact maintenance gate:
 
-- AGENTS.md: no change at SOW creation time; revisit after implementation if workflow guardrails change.
-- Runtime project skills: no change at SOW creation time; update after implementation if a new mandatory compatibility workflow emerges.
-- Specs: pending implementation; explorer/query API contract should be added to product specs.
-- End-user/operator docs: pending implementation; Rust and Go docs should be updated.
+- AGENTS.md: no change needed; the work did not change repo workflow rules.
+- Runtime project skills: pending final closeout decision. No new mandatory
+  compatibility workflow has been identified yet beyond using the shared
+  explorer query harness for future reader/query changes.
+- Specs: `.agents/sow/specs/product-scope.md` updated with the Rust/Go
+  explorer API contract and feature-slice bullets.
+- End-user/operator docs: `rust/README.md`, `go/README.md`, `go/API.md`, and
+  `tests/explorer_query/README.md` updated with explorer API behavior and
+  harness usage.
 - End-user/operator skills: no current output/reference skill impact.
 - SOW lifecycle: created in `.agents/sow/pending/` with `Status: open`.
 - SOW-status.md: updated at SOW creation.
 
 Specs update:
 
-- Pending. The Rust API shape still needs to stabilize through full suite and
-  Go parity before product specs are updated.
+- `.agents/sow/specs/product-scope.md` updated with the Rust/Go explorer API
+  contract and feature-slice bullets.
 
 Project skills update:
 
-- Pending implementation decision.
+- Pending final closeout decision. No new mandatory workflow has been
+  identified yet beyond using the shared explorer query harness for future
+  reader/query changes.
 
 End-user/operator docs update:
 
-- Pending. Rust and Go docs should be updated after the API shape survives the
-  full SOW validation.
+- `rust/README.md`, `go/README.md`, `go/API.md`, and
+  `tests/explorer_query/README.md` updated with explorer API behavior and
+  harness usage.
 
 End-user/operator skills update:
 

@@ -70,6 +70,12 @@ Current reader scope:
   seqnum metadata, field enumeration, unique values, binary field values,
   repeated field values, stateful current-entry data enumeration, and
   export/json/text formatting;
+- optimized explorer query APIs on file and directory readers:
+  `ExplorerQuery`, `ExplorerUnique`, `VisitEntryDataRefs`, and
+  `FieldDataOffsets`. These APIs use journal DATA/FIELD indexes for exact
+  positive and negative filters, materialize only selected facet/display/FTS
+  payloads, expose compression-skip counters, and provide a no-aggregation
+  fast path for no-facet or fully constrained facet requests;
 - libsystemd-compatible facade functions for open file/directory/files, close,
   seek head/tail/realtime/cursor, next/previous/skip, match groups,
   current-entry data enumeration, field enumeration, unique value enumeration,
@@ -342,6 +348,49 @@ copy the slice, or use `CollectEntryPayloads` / `GetEntryPayload`, when the data
 must outlive the current reader call.
 For high-cardinality unique-value queries, prefer `VisitUnique` when the caller
 can stream results; `QueryUnique` is the owned-result convenience wrapper.
+
+Explorer query API:
+
+```go
+query := journal.ExplorerQuery{
+    Filters: []journal.ExplorerFilter{
+        journal.FieldIn([]byte("PRIORITY"), []byte("3"), []byte("4")),
+        journal.FieldNotIn([]byte("SYSLOG_IDENTIFIER"), []byte("noisy-source")),
+    },
+    Facets:  [][]byte{[]byte("SYSLOG_IDENTIFIER")},
+    Display: journal.DisplayFields([]byte("MESSAGE"), []byte("PRIORITY")),
+    Limit:   journal.Limit(100),
+}
+
+result, err := r.ExplorerQuery(query)
+if err != nil {
+    return err
+}
+
+for _, row := range result.Rows {
+    _ = row.Fields
+}
+```
+
+Use `ExplorerQuery` for log-explorer paths that can express filters as exact
+journal field membership. Positive values are ORed within one field; different
+fields are ANDed. Negative values exclude entries containing any selected value
+for that field. With no facets, or with facets fully constrained by positive
+filters, the API avoids candidate-row DATA traversal and expands only returned
+rows. `FullText` is the explicit expensive mode because it scans candidate
+payloads.
+
+Use `ExplorerUnique` to discover values of one target field under the same
+filter model without expanding unrelated fields:
+
+```go
+unique, err := r.ExplorerUnique(journal.ExplorerUniqueQuery{
+    Field:         []byte("SYSLOG_IDENTIFIER"),
+    Filters:       []journal.ExplorerFilter{journal.FieldIn([]byte("PRIORITY"), []byte("3"))},
+    IncludeCounts: true,
+    Limit:         journal.Limit(1000),
+})
+```
 
 File-backed journalctl:
 

@@ -139,7 +139,7 @@ func expectedRejection(input map[string]interface{}) string {
 	return ""
 }
 
-func makeWriter(path string, compact bool, maxSizeBytes uint64) (*journal.Writer, error) {
+func makeWriter(path string, compact bool, maxSizeBytes uint64, compression int, compressThreshold int) (*journal.Writer, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
@@ -150,8 +150,8 @@ func makeWriter(path string, compact bool, maxSizeBytes uint64) (*journal.Writer
 		FileID:                 fileID,
 		HeadSeqnum:             1,
 		MaxFileSize:            maxSizeBytes,
-		Compression:            journal.CompressionNone,
-		CompressThresholdBytes: 512,
+		Compression:            compression,
+		CompressThresholdBytes: compressThreshold,
 		Compact:                compact,
 	})
 }
@@ -176,8 +176,8 @@ func finalizeWriter(w *journal.Writer, output string, finalState string, headRea
 	}
 }
 
-func ingestAccepted(dataset, output string, finalState string, compact bool, maxSizeBytes uint64) result {
-	w, err := makeWriter(output, compact, maxSizeBytes)
+func ingestAccepted(dataset, output string, finalState string, compact bool, maxSizeBytes uint64, compression int, compressThreshold int) result {
+	w, err := makeWriter(output, compact, maxSizeBytes, compression, compressThreshold)
 	if err != nil {
 		return result{Errors: []string{err.Error()}}
 	}
@@ -254,7 +254,7 @@ func ingestAccepted(dataset, output string, finalState string, compact bool, max
 	return res
 }
 
-func ingestRejections(dataset, output string, finalState string, compact bool, maxSizeBytes uint64) result {
+func ingestRejections(dataset, output string, finalState string, compact bool, maxSizeBytes uint64, compression int, compressThreshold int) result {
 	file, err := os.Open(dataset)
 	if err != nil {
 		return result{Errors: []string{err.Error()}}
@@ -291,7 +291,7 @@ func ingestRejections(dataset, output string, finalState string, compact bool, m
 		}
 
 		if w == nil {
-			w, err = makeWriter(output, compact, maxSizeBytes)
+			w, err = makeWriter(output, compact, maxSizeBytes, compression, compressThreshold)
 			if err != nil {
 				res.Errors = append(res.Errors, err.Error())
 				break
@@ -337,21 +337,43 @@ func main() {
 	finalState := flag.String("final-state", "online", "final journal state: online, offline, archived")
 	compact := flag.Bool("compact", false, "write the systemd compact journal format")
 	maxSizeBytes := flag.Uint64("max-size-bytes", 0, "systemd max-size value used for hash table sizing; zero uses the SDK default")
+	compression := flag.String("compression", "none", "DATA object compression: none, zstd, xz, lz4")
+	compressThreshold := flag.Int("compress-threshold", 512, "minimum DATA payload bytes before compression")
 	flag.Parse()
 	if *dataset == "" || *output == "" {
-		fmt.Fprintln(os.Stderr, "usage: dataset_ingester --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived] [--compact] [--max-size-bytes BYTES]")
+		fmt.Fprintln(os.Stderr, "usage: dataset_ingester --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived] [--compact] [--max-size-bytes BYTES] [--compression none|zstd|xz|lz4] [--compress-threshold BYTES]")
 		os.Exit(2)
 	}
 
 	var res result
+	compressionID, err := compressionID(*compression)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 	if *rejectionMode {
-		res = ingestRejections(*dataset, *output, *finalState, *compact, *maxSizeBytes)
+		res = ingestRejections(*dataset, *output, *finalState, *compact, *maxSizeBytes, compressionID, *compressThreshold)
 	} else {
-		res = ingestAccepted(*dataset, *output, *finalState, *compact, *maxSizeBytes)
+		res = ingestAccepted(*dataset, *output, *finalState, *compact, *maxSizeBytes, compressionID, *compressThreshold)
 	}
 	encoded, _ := json.Marshal(res)
 	fmt.Println(string(encoded))
 	if len(res.Errors) != 0 {
 		os.Exit(1)
+	}
+}
+
+func compressionID(name string) (int, error) {
+	switch name {
+	case "none":
+		return journal.CompressionNone, nil
+	case "zstd":
+		return journal.CompressionZSTD, nil
+	case "xz":
+		return journal.CompressionXZ, nil
+	case "lz4":
+		return journal.CompressionLZ4, nil
+	default:
+		return 0, fmt.Errorf("unsupported compression %q", name)
 	}
 }
