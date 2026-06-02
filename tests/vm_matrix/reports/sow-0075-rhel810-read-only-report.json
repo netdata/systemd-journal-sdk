@@ -170,7 +170,7 @@
   "python_runtime": "repo-local-python-with-lz4-4.4.5",
   "remote_journal_summary": {
     "active_files": 1,
-      "all_vm_stock_verify_ok": true,
+    "all_vm_stock_verify_ok": true,
     "archived_files": 7,
     "size_classes": [
       [

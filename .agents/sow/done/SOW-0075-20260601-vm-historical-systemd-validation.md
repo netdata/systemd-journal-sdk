@@ -2,12 +2,12 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: Ubuntu and RHEL read-only validation evidence collected; blocked on
-the Debian 11 SSH/cap decision before this SOW can be closed or reviewer-ready.
+Sub-state: Ubuntu and RHEL read-only validation evidence collected; Debian 11
+accepted as a recorded blocker; external reviewer closure gate passed.
 
 ## Requirements
 
@@ -359,6 +359,14 @@ Tests or equivalent validation:
 - `SOW0075_PYTHON="$PWD/.local/sow-0075/python-venv/bin/python" SOW0075_PYTHON_LABEL="repo-local-python-with-lz4-4.4.5" python3 tests/vm_matrix/run_vm_matrix.py validate --targets ubuntu1804 ubuntu2204 ubuntu2404 --report-json tests/vm_matrix/reports/sow-0075-vm-matrix-report.json --report-md tests/vm_matrix/reports/sow-0075-vm-matrix-report.md` completed with status `ok`.
 - RHEL 8.10 read-only archived-sample validation passed with host stock
   `journalctl --verify --file`, Rust, Go, Python with `lz4==4.4.5`, and Node.
+- `python3 -m py_compile tests/vm_matrix/run_vm_matrix.py` passed on
+  2026-06-02 after reviewer fixes.
+- `python3 -m json.tool
+  tests/vm_matrix/reports/sow-0075-rhel810-read-only-report.json` passed on
+  2026-06-02 after reviewer fixes.
+- `git diff --check` passed on 2026-06-02 after reviewer fixes.
+- `.agents/sow/audit.sh` passed on 2026-06-02 after reviewer fixes with
+  verdict `SOW initialization complete and clean`.
 
 Real-use evidence:
 
@@ -375,8 +383,43 @@ Real-use evidence:
 
 Reviewer findings:
 
-- Not run by this implementation worker. External reviewer runs were not
-  run because this SOW remains blocked on the Debian 11 user decision.
+- Round 1 external review ran on 2026-06-02 against the complete closure
+  candidate after the user accepted Debian 11 as a recorded blocker.
+- `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`; no blocking findings.
+  Non-blocking findings: Python fallback can use system `python3` if
+  `SOW0075_PYTHON` is unset; wildcard SCP also copies intentional metadata
+  files; standard lifecycle edits remain before closure.
+- `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE` with one required
+  pre-closure edit. Finding: `.agents/sow/SOW-status.md` was stale and still
+  described Python as mismatching and Debian 11 as pending user direction.
+- `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`; no blocking findings.
+  Non-blocking finding: `.agents/sow/SOW-status.md` must be updated during
+  closure.
+- `llm-netdata-cloud/minimax-m2.7-coder`: treated as `NOT PRODUCTION GRADE`
+  because the written vote was malformed but blocking intent was clear.
+  Findings: stale `.agents/sow/SOW-status.md`; cosmetic indentation issue in
+  `tests/vm_matrix/reports/sow-0075-rhel810-read-only-report.json`; lifecycle
+  edits remain before closure.
+- `llm-netdata-cloud/kimi-k2.6`: `NOT PRODUCTION GRADE`. Findings: stale
+  `.agents/sow/SOW-status.md`; missing explicit `.agents/sow/audit.sh` pass
+  record in this SOW.
+- Dispositions before round 2: `.agents/sow/SOW-status.md` was updated to
+  state Python passed with repo-local `lz4==4.4.5`, RHEL 8.10 validation
+  passed, and Debian 11 is an accepted recorded blocker; the RHEL JSON
+  indentation was normalized; `.agents/sow/audit.sh` will be rerun and recorded
+  before closure.
+- Round 2 external review ran on 2026-06-02 against the same full SOW scope
+  plus the round-1 fixes. All five reviewers voted `PRODUCTION GRADE`:
+  `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/qwen3.6-plus`,
+  `llm-netdata-cloud/glm-5.1`, `llm-netdata-cloud/minimax-m2.7-coder`, and
+  `llm-netdata-cloud/mimo-v2.5-pro`.
+- Round 2 blocking findings: none.
+- Round 2 non-blocking risks: IPv6 `scp` flag parity in the SOW-local harness,
+  coarse reboot wait heuristic, wildcard SCP copying controlled metadata files,
+  Python fallback to system `python3` when `SOW0075_PYTHON` is unset, and host
+  storage/VM cleanup operational risk. None block closure; Python
+  dependency/error-surfacing hardening remains mapped to SOW-0065, and VM
+  cleanup remains a destructive user-approved operation outside this SOW.
 
 Same-failure scan:
 
@@ -411,14 +454,14 @@ Artifact maintenance gate:
   a Debian access blocker, not new SDK behavior.
 - End-user/operator docs: no update needed; no public SDK behavior changed.
 - End-user/operator skills: no output/reference skill update needed.
-- SOW lifecycle: remains `Status: in-progress` under `.agents/sow/current/`
-  and is blocked on a user decision for Debian 11.
-- SOW-status.md: updated to list this active SOW.
+- SOW lifecycle: `Status: completed`; file moved to `.agents/sow/done/` during
+  the closure commit.
+- SOW-status.md: updated to move this SOW from current work to recently closed.
 
 Specs update:
 
-- No spec update yet because this SOW did not close and did not change public
-  compatibility claims.
+- No spec update needed because this SOW adds validation evidence and does not
+  change public compatibility claims.
 
 Project skills update:
 
@@ -458,8 +501,9 @@ Follow-up mapping:
   declared `lz4==4.4.5` dependency. Python error-surfacing hardening maps to
   SOW-0065 unless the user asks for a focused earlier SOW.
 - Debian 11 validation remains blocked by the exhausted four-new-VM cap and the
-  current VM's SSH refusal. A user decision is needed before cleanup,
-  replacement, in-VM repair, or cap increase.
+  current VM's SSH refusal. The user accepted Option D on 2026-06-02: record
+  Debian 11 as a blocker and close this SOW after external review of the
+  Ubuntu/RHEL evidence.
 
 Decision requests before SOW closure:
 
@@ -487,13 +531,20 @@ Decision requests before SOW closure:
      confidence; Option D if Ubuntu 18.04/22.04/24.04 plus RHEL 8.10 is enough
      for this SOW's historical validation purpose.
 
+Decision recorded:
+
+- 2026-06-02: The user accepted Option D. Debian 11 remains a recorded blocker;
+  no further Debian VM mutation, replacement, or cap increase is required for
+  this SOW. Closure proceeds after external review of the Ubuntu/RHEL evidence.
+
 ## Outcome
 
-Blocked on user decision. Ubuntu 18.04, Ubuntu 22.04, and Ubuntu 24.04
-VM-generated journals were validated with sanitized reports. Existing
-`rhel810` read-only archived-file validation was also collected and passed
-against stock/Rust/Go/Python/Node. The SOW remains `in-progress` because
-Debian 11 validation cannot continue without one of the recorded user decisions.
+Completed after user decision and reviewer gate. Ubuntu 18.04, Ubuntu 22.04,
+and Ubuntu 24.04 VM-generated journals were validated with sanitized reports.
+Existing `rhel810` read-only archived-file validation was also collected and
+passed against stock/Rust/Go/Python/Node. Debian 11 remains a recorded blocker
+because SSH refused connections, QEMU guest agent was unavailable, no raw
+journals were generated, and the four-new-VM cap was exhausted.
 
 ## Lessons Extracted
 
@@ -501,12 +552,11 @@ See `Lessons` under `## Validation`.
 
 ## Followup
 
-- Decide Debian 11 handling using the numbered decision request in
-  `## Validation`.
-- If the user accepts Debian 11 as a recorded blocker, run the external reviewer
-  pool against the complete SOW evidence before closure.
 - Include Python missing-dependency/error-surfacing hardening in SOW-0065 unless
   the user asks for an earlier focused Python SOW.
+- VM cleanup is not tracked as a SOW because destroy/undefine/delete operations
+  are destructive and require explicit user approval. The exact remaining VMs
+  are recorded in `tests/vm_matrix/reports/sow-0075-provisioning-report.md`.
 
 ## Regression Log
 

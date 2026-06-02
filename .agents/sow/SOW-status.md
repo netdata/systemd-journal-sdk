@@ -7,12 +7,6 @@ Last updated: 2026-06-02
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
-- SOW-0075 - VM Historical systemd Validation: in-progress. Partial VM
-  validation completed for Ubuntu 18.04/systemd 237, Ubuntu 22.04/systemd
-  249, and Ubuntu 24.04/systemd 255. Stock, Rust, Go, and Node matched all 18
-  collected files; Python mismatched two Ubuntu 18.04 archived files. Debian
-  11 consumed one capped VM slot but blocked on SSH readiness, so the
-  four-new-VM cap is exhausted pending user direction.
 
 ## Pending
 
@@ -45,6 +39,14 @@ Last updated: 2026-06-02
   strategies with break-even evidence from generated and real-corpus queries.
 
 ## Recently Closed Or Completed
+- SOW-0075 - VM Historical systemd Validation: completed. Ubuntu
+  18.04/systemd 237, Ubuntu 22.04/systemd 249, and Ubuntu 24.04/systemd 255
+  VM-generated journals passed 18/18 cases with stock, Rust, Go, Python using
+  repo-local `lz4==4.4.5`, and Node matching. RHEL 8.10/systemd 239 archived
+  read-only validation also passed. Debian 11 is an accepted recorded blocker
+  after SSH refused connections, QEMU guest agent was unavailable, no raw
+  journals were generated, and the four-new-VM cap was exhausted. Five
+  second-round read-only reviewers voted `PRODUCTION GRADE`.
 - SOW-0076 - Independent Selective Real Corpus Verification: completed. The
   selective real-corpus runner now discovers real journal files read-only,
   selects representative sanitized feature classes, snapshots active files,
