@@ -60,6 +60,8 @@ export function sipHash24(key, msg) {
 }
 
 // Jenkins lookup3 hash returning a 64-bit BigInt.
+const JENKINS_INIT = 3735928559; // 0xdeadbeef as an exact unsigned 32-bit number.
+
 export function jenkinsHash64(data) {
   if (!Buffer.isBuffer(data)) data = Buffer.from(data);
   const [a, b] = jenkinsHashLittle2(data);
@@ -68,7 +70,7 @@ export function jenkinsHash64(data) {
 
 function jenkinsHashLittle2(data) {
   const length = data.length;
-  let a = (0xdeadbeef + length) >>> 0;
+  let a = (JENKINS_INIT + length) >>> 0;
   let b = a;
   let c = a;
 
