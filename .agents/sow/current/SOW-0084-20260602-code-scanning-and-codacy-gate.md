@@ -390,6 +390,9 @@ Tests or equivalent validation:
   `test_file_reader_refresh_failure_preserves_current_mapping`, and
   `test_jf_facade_stateful_reader_operations`.
 - `npm_config_cache=.local/npm-cache npm test` in `node/`: passed.
+- `node --check node/cmd/journalctl/index.js`: passed.
+- `npm_config_cache=.local/npm-cache npm test` in `node/` after the manual
+  journalctl parser rewrite: passed.
 - `PYTHONPATH=.local/python-deps python3 - <<'PY' ...` importing
   `python/test_all.py`, replacing only `test_conformance_manifest` with a
   no-op, and running `main()`: passed.
@@ -427,8 +430,13 @@ Real-use evidence:
 - GitHub Actions workflow evidence collected from pushed commit `e4605b5`:
   - CodeQL: success, run URL
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26851168650`.
-  - Codacy SARIF: still in progress during this update, run URL
+  - Codacy SARIF: success, run URL
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26851168658`.
+- GitHub Actions workflow evidence collected from pushed commit `73210b7`:
+  - CodeQL: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26851306749`.
+  - Codacy SARIF: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26851306769`.
 - GitHub code scanning API returned 2053 open alerts after both workflows ran:
   by tool: Prospector 143, Agentlinter 240, PMD 50, lizard 955, PyLintPython3
   67, Bandit 111, Flawfinder 9, ESLint8 311, shellcheck 1, markdownlint 75,
@@ -451,6 +459,10 @@ Real-use evidence:
 - Third actionable-finding cleanup batch fixed the Node Jenkins numeric literal
   warning by replacing the hexadecimal literal with an exact unsigned decimal
   constant while preserving the existing hash-vector tests.
+- Fourth actionable-finding cleanup batch replaced Node journalctl regular
+  expression validators for limits, boot descriptors, timestamps, durations,
+  hex strings, UUID-like IDs, and all-zero boot IDs with bounded manual parsers.
+  Existing Node conformance tests passed after the rewrite.
 
 Reviewer findings:
 

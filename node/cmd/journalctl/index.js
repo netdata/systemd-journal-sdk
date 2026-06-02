@@ -59,7 +59,7 @@ function unsupported(name) {
 }
 
 function parseLimit(name, value) {
-  if (!/^[0-9]+$/.test(value)) {
+  if (!isUnsignedDecimal(value)) {
     process.stderr.write(`Error: --${name} must be a non-negative integer\n`);
     process.exit(1);
   }
@@ -159,10 +159,14 @@ function preprocessOptionalBootArg(args) {
 }
 
 function looksLikeBootDescriptor(value) {
-  return value === 'all' ||
-    /^[+-]?\d+$/.test(value) ||
-    /^[0-9a-fA-F]{32}([+-]\d+)?$/.test(value) ||
-    /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}([+-]\d+)?$/.test(value);
+  if (value === 'all') return true;
+  if (value === '') return false;
+  try {
+    parseBootDescriptor(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function parseTimestampUsec(value) {
@@ -176,7 +180,7 @@ function parseTimestampUsec(value) {
     return BigInt(d.getTime()) * 1000n;
   }
   if (text.startsWith('@')) return parseEpochTimestampUsec(text.slice(1));
-  if (/^[+-]/.test(text) && !/^[+-]\d{4}-/.test(text)) {
+  if (startsWithSign(text) && !startsWithSignedDate(text)) {
     const delta = parseDurationUsec(text.slice(1));
     const now = BigInt(Date.now()) * 1000n;
     return text[0] === '+' ? now + delta : now - delta;
@@ -187,29 +191,62 @@ function parseTimestampUsec(value) {
 }
 
 function parseEpochTimestampUsec(value) {
-  if (!/^\d+(\.\d+)?$/.test(value)) throw new Error(`failed to parse timestamp: @${value}`);
+  if (!isDecimalNumber(value)) throw new Error(`failed to parse timestamp: @${value}`);
   const [whole, frac = ''] = value.split('.');
   return BigInt(whole) * 1_000_000n + BigInt((frac + '000000').slice(0, 6));
 }
 
 function parseDateTimestamp(value) {
-  let m = value.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?)?$/);
-  if (m) {
-    const [, y, mo, d, h = '0', mi = '0', s = '0', us = '0'] = m;
-    return localDateUsec(y, mo, d, h, mi, s, us);
+  const split = splitDateTime(value);
+  if (split !== null) {
+    const time = split.timePart === '' ? ['0', '0', '0', '0'] : parseTimeParts(split.timePart);
+    if (time === null) return null;
+    return localDateUsec(...split.dateParts, ...time);
   }
-  m = value.match(/^(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?$/);
-  if (m) {
+  const time = parseTimeParts(value);
+  if (time !== null) {
     const now = new Date();
-    const [, h, mi, s = '0', us = '0'] = m;
     return localDateUsec(
       String(now.getFullYear()),
       String(now.getMonth() + 1).padStart(2, '0'),
       String(now.getDate()).padStart(2, '0'),
-      h, mi, s, us,
+      ...time,
     );
   }
   return null;
+}
+
+function splitDateTime(value) {
+  if (value.length < 10 || value[4] !== '-' || value[7] !== '-') return null;
+  const dateText = value.slice(0, 10);
+  const dateParts = parseDateParts(dateText);
+  if (dateParts === null) return null;
+  if (value.length === 10) return { dateParts, timePart: '' };
+  const separator = value[10];
+  if (separator !== ' ' && separator !== 'T') return null;
+  return { dateParts, timePart: value.slice(11) };
+}
+
+function parseDateParts(text) {
+  if (text.length !== 10 || text[4] !== '-' || text[7] !== '-') return null;
+  const y = text.slice(0, 4);
+  const mo = text.slice(5, 7);
+  const d = text.slice(8, 10);
+  if (!isNDigits(y, 4) || !isNDigits(mo, 2) || !isNDigits(d, 2)) return null;
+  return [y, mo, d];
+}
+
+function parseTimeParts(text) {
+  const dot = text.indexOf('.');
+  const main = dot < 0 ? text : text.slice(0, dot);
+  const us = dot < 0 ? '0' : text.slice(dot + 1);
+  if (dot >= 0 && !isFractionUsec(us)) return null;
+  const parts = main.split(':');
+  if (parts.length !== 2 && parts.length !== 3) return null;
+  const [h, mi, s = '0'] = parts;
+  if (!isNDigits(h, 2) || !isNDigits(mi, 2)) return null;
+  if (parts.length === 3 && !isNDigits(s, 2)) return null;
+  return [h, mi, s, us];
 }
 
 function localDateUsec(y, mo, d, h, mi, s, us) {
@@ -242,16 +279,34 @@ function parseDurationUsec(value) {
     ['d', 86_400_000_000n], ['day', 86_400_000_000n], ['days', 86_400_000_000n],
     ['w', 604_800_000_000n], ['week', 604_800_000_000n], ['weeks', 604_800_000_000n],
   ]);
-  const re = /\s*(\d+(?:\.\d+)?)(?:\s*([A-Za-z]+))?/gy;
   let total = 0n;
   let pos = 0;
-  let match;
-  while ((match = re.exec(value)) !== null) {
-    pos = re.lastIndex;
-    const unit = (match[2] || 's').toLowerCase();
+  while (pos < value.length) {
+    const whitespaceStart = pos;
+    while (pos < value.length && isWhitespace(value[pos])) pos++;
+    if (pos >= value.length) {
+      if (whitespaceStart !== pos) throw new Error(`failed to parse duration: ${value}`);
+      break;
+    }
+
+    const numberStart = pos;
+    while (pos < value.length && isDigit(value[pos])) pos++;
+    if (pos < value.length && value[pos] === '.') {
+      pos++;
+      const fractionStart = pos;
+      while (pos < value.length && isDigit(value[pos])) pos++;
+      if (pos === fractionStart) throw new Error(`failed to parse duration: ${value}`);
+    }
+    if (pos === numberStart) throw new Error(`failed to parse duration: ${value}`);
+
+    const numberText = value.slice(numberStart, pos);
+    while (pos < value.length && isWhitespace(value[pos])) pos++;
+    const unitStart = pos;
+    while (pos < value.length && isAsciiLetter(value[pos])) pos++;
+    const unit = (pos === unitStart ? 's' : value.slice(unitStart, pos)).toLowerCase();
     const multiplier = units.get(unit);
     if (!multiplier) throw new Error(`failed to parse duration: ${value}`);
-    const [whole, frac = ''] = match[1].split('.');
+    const [whole, frac = ''] = numberText.split('.');
     const scale = 10n ** BigInt(frac.length);
     total += (BigInt(whole) * scale + BigInt(frac || '0')) * multiplier / scale;
   }
@@ -293,7 +348,7 @@ function collectBoots(journal) {
     const entry = SdJournalGetEntry(journal);
     if (!entry || !entry.boot_id) continue;
     const bootId = Buffer.from(entry.boot_id).toString('hex');
-    if (!bootId || /^0+$/.test(bootId)) continue;
+    if (!bootId || isAllZeros(bootId)) continue;
     const realtime = BigInt(entry.realtime || 0n);
     const item = boots.get(bootId);
     if (item) {
@@ -335,12 +390,109 @@ function resolveBootId(journal, descriptor) {
 
 function parseBootDescriptor(descriptor) {
   if (descriptor === '') return { bootId: '', offset: 0 };
-  const m = descriptor.match(/^(([0-9A-Fa-f]{32})|([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}))?([+-]?\d+)?$/);
-  if (!m) throw new Error(`failed to parse boot descriptor: ${descriptor}`);
-  return {
-    bootId: (m[1] || '').replace(/-/g, '').toLowerCase(),
-    offset: m[4] === undefined || m[4] === '' ? 0 : Number.parseInt(m[4], 10),
-  };
+  if (isSignedDecimal(descriptor)) return { bootId: '', offset: Number.parseInt(descriptor, 10) };
+
+  const directBootId = normalizeBootIdText(descriptor);
+  if (directBootId !== null) return { bootId: directBootId, offset: 0 };
+
+  for (const idLength of [32, 36]) {
+    if (descriptor.length <= idLength) continue;
+    const sign = descriptor[idLength];
+    if (sign !== '+' && sign !== '-') continue;
+    const bootId = normalizeBootIdText(descriptor.slice(0, idLength));
+    const offsetText = descriptor.slice(idLength);
+    if (bootId !== null && isSignedDecimal(offsetText)) {
+      return { bootId, offset: Number.parseInt(offsetText, 10) };
+    }
+  }
+
+  throw new Error(`failed to parse boot descriptor: ${descriptor}`);
+}
+
+function normalizeBootIdText(text) {
+  if (text.length === 32 && isHexString(text)) return text.toLowerCase();
+  if (text.length === 36 && isUuidString(text)) return text.replaceAll('-', '').toLowerCase();
+  return null;
+}
+
+function isUnsignedDecimal(text) {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  for (let i = 0; i < text.length; i++) {
+    if (!isDigit(text[i])) return false;
+  }
+  return true;
+}
+
+function isSignedDecimal(text) {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  const start = startsWithSign(text) ? 1 : 0;
+  return start < text.length && isUnsignedDecimal(text.slice(start));
+}
+
+function isDecimalNumber(text) {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  const dot = text.indexOf('.');
+  if (dot < 0) return isUnsignedDecimal(text);
+  if (text.indexOf('.', dot + 1) >= 0) return false;
+  return dot > 0 && dot + 1 < text.length &&
+    isUnsignedDecimal(text.slice(0, dot)) &&
+    isUnsignedDecimal(text.slice(dot + 1));
+}
+
+function startsWithSign(text) {
+  return text.length > 0 && (text[0] === '+' || text[0] === '-');
+}
+
+function startsWithSignedDate(text) {
+  return text.length >= 6 && startsWithSign(text) &&
+    isNDigits(text.slice(1, 5), 4) && text[5] === '-';
+}
+
+function isNDigits(text, count) {
+  return text.length === count && isUnsignedDecimal(text);
+}
+
+function isFractionUsec(text) {
+  return text.length >= 1 && text.length <= 6 && isUnsignedDecimal(text);
+}
+
+function isDigit(ch) {
+  return ch >= '0' && ch <= '9';
+}
+
+function isAsciiLetter(ch) {
+  return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
+}
+
+function isWhitespace(ch) {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\v' || ch === '\f';
+}
+
+function isAllZeros(text) {
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '0') return false;
+  }
+  return text.length > 0;
+}
+
+function isHexString(text) {
+  for (let i = 0; i < text.length; i++) {
+    if (!isHex(text[i])) return false;
+  }
+  return text.length > 0;
+}
+
+function isUuidString(text) {
+  if (text.length !== 36) return false;
+  const hyphens = new Set([8, 13, 18, 23]);
+  for (let i = 0; i < text.length; i++) {
+    if (hyphens.has(i)) {
+      if (text[i] !== '-') return false;
+    } else if (!isHex(text[i])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function formatOffset(offset) {
@@ -532,7 +684,8 @@ function consumeHex(s, start) {
 }
 
 function isHex(ch) {
-  return typeof ch === 'string' && /^[0-9a-fA-F]$/.test(ch);
+  return typeof ch === 'string' && ch.length === 1 &&
+    ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F'));
 }
 
 function collectJournalFilesForVerify(path) {
@@ -584,7 +737,5 @@ function isJournalSubdirName(name) {
 }
 
 function id128StringValid(s) {
-  if (s.length === 32) return /^[0-9a-fA-F]{32}$/.test(s);
-  if (s.length === 36) return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(s);
-  return false;
+  return normalizeBootIdText(s) !== null;
 }
