@@ -764,6 +764,8 @@ fn test_cursor(tc: &TestCase, start: Instant) -> AdapterResult {
 }
 
 fn test_corruption(tc: &TestCase, start: Instant) -> AdapterResult {
+    // nosemgrep: rust.lang.security.current-exe.current-exe
+    // The conformance adapter re-executes this exact binary to isolate crashes from corrupted fixtures.
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
         Err(err) => {

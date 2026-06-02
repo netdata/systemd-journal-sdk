@@ -1440,6 +1440,7 @@ def test_directory_writer_open_identity_lifecycle_source_timestamp():
             raise AssertionError('expected strict identity rejection without boot id')
 
         events = []
+
         def record_lifecycle(event):
             events.append(event)
 
@@ -1578,12 +1579,15 @@ def test_directory_writer_lifecycle_delete_and_artifact_size():
             artifact_calls.append(path)
             return 4096
 
+        def record_lifecycle(event):
+            events.append(event)
+
         log = Log(td, {
             'source': 'system',
             'machine_id': '00112233445566778899aabbccddeeff',
             'max_entries': 1,
             'retention_policy': {'max_bytes': 1},
-            'lifecycle': lambda event: events.append(event),
+            'lifecycle': record_lifecycle,
             'artifact_sizer': artifact_sizer,
         })
         log.append([{'name': 'MESSAGE', 'value': 'artifact-retention-0'}])
@@ -1688,10 +1692,14 @@ def test_directory_writer_lazy_retention_runs_on_first_open():
         assert len(before) == 2
 
         events = []
+
+        def record_lifecycle(event):
+            events.append(event)
+
         second = Log(td, {
             **config,
             'max_files': 1,
-            'lifecycle': lambda event: events.append(event),
+            'lifecycle': record_lifecycle,
         })
         after = journal_files(journal_dir)
         assert after == before
@@ -1744,12 +1752,15 @@ def test_directory_writer_eager_retention_runs_on_open_for_all_policies():
                 artifact_calls.append(path)
                 return 4096
 
+            def record_lifecycle(event):
+                events.append(event)
+
             retained = Log(td, {
                 **config,
                 'max_entries': 0,
                 'open_mode': 'eager',
                 **retention_options,
-                'lifecycle': lambda event: events.append(event),
+                'lifecycle': record_lifecycle,
                 'artifact_sizer': artifact_sizer if use_artifacts else None,
             })
             assert journal_files(journal_dir) == [retained.active_file()]

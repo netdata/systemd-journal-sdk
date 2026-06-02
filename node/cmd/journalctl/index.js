@@ -19,6 +19,7 @@ import { COMPATIBLE_SEALED } from '../../src/lib/header.js';
 
 let parsed;
 let rawArgs;
+const FOLLOW_SLEEP_STATE = new Int32Array(new SharedArrayBuffer(4));
 try {
   rawArgs = preprocessOptionalBootArg(process.argv.slice(2));
   parsed = parseArgs({
@@ -97,7 +98,7 @@ try {
 
   if (values.follow) {
     const followTail = hasOption(rawArgs, 'tail') ? tailLimit : 10;
-    await runFollow(inputPath, values, positionals, sinceUsec, untilUsec, followTail);
+    runFollow(inputPath, values, positionals, sinceUsec, untilUsec, followTail);
     process.exit(0);
   }
 
@@ -469,15 +470,15 @@ function isWhitespace(ch) {
 }
 
 function isAllZeros(text) {
-  for (let i = 0; i < text.length; i++) {
-    if (text[i] !== '0') return false;
+  for (const ch of text) {
+    if (ch !== '0') return false;
   }
   return text.length > 0;
 }
 
 function isHexString(text) {
-  for (let i = 0; i < text.length; i++) {
-    if (!isHex(text[i])) return false;
+  for (const ch of text) {
+    if (!isHex(ch)) return false;
   }
   return text.length > 0;
 }
@@ -559,7 +560,11 @@ function scanFollowSnapshot(inputPath, opts, matches, sinceUsec, untilUsec) {
   }
 }
 
-async function runFollow(inputPath, opts, matches, sinceUsec, untilUsec, tailLimit) {
+function sleepMs(milliseconds) {
+  Atomics.wait(FOLLOW_SLEEP_STATE, 0, 0, milliseconds);
+}
+
+function runFollow(inputPath, opts, matches, sinceUsec, untilUsec, tailLimit) {
   const seen = new Set();
   const initial = scanFollowSnapshot(inputPath, opts, matches, sinceUsec, untilUsec);
   for (const [cursor] of initial) seen.add(cursor);
@@ -567,7 +572,7 @@ async function runFollow(inputPath, opts, matches, sinceUsec, untilUsec, tailLim
   for (const [, output] of toPrint) writeSync(1, Buffer.isBuffer(output) ? output : Buffer.from(output));
   for (;;) {
     try {
-      await new Promise(resolve => setTimeout(resolve, 100));
+      sleepMs(100);
       const snapshot = scanFollowSnapshot(inputPath, opts, matches, sinceUsec, untilUsec);
       for (const [cursor, output] of snapshot) {
         if (seen.has(cursor)) continue;

@@ -69,7 +69,7 @@ def _request_json(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as response:
+        with urllib.request.urlopen(req, timeout=60) as response:  # nosec B310 - _validate_https_url() rejects non-HTTPS schemes.
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")

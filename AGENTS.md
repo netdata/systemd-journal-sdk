@@ -71,11 +71,11 @@ This project has four separate layers. Keep them separate in every language:
    expose lock-enable options; callers acquire and release the lock helper
    separately around writer use.
 
-Core SDK runtime code must not depend on `/proc`, `/host/proc`,
-`/etc/machine-id`, platform registries, `sysctl`, `system_profiler`, `ps`, shell
-commands, subprocess APIs, or equivalent host-observation mechanisms. Tests,
-docs, and examples must use synthetic identities unless explicitly testing an
-optional helper.
+Core SDK runtime code must not depend on host-observation mechanisms.
+Prohibited sources are `/proc`, `/host/proc`, `/etc/machine-id`, platform
+registries, `sysctl`, `system_profiler`, `ps`, shell commands, and subprocess
+APIs. Tests, docs, and examples must use synthetic identities unless explicitly
+testing an optional helper.
 
 ## SOW System
 
@@ -88,7 +88,9 @@ The SOW system is self-contained in this repository. Normal SOW work must not de
 - **User responsibilities:** purpose, scope decisions, design forks, risk acceptance, destructive approvals, and final product judgment.
 - **Project manager responsibilities:** SOW creation, phase planning, prompt writing, external-agent orchestration, reviewer coordination, evidence ledgers, status reporting, and gate enforcement.
 - **Implementer agent responsibilities:** code, tests, documentation, benchmark/profiling work, and implementation evidence for the assigned SOW.
-- **Reviewer agent responsibilities:** independent technical review, regression search, security review, unwanted side-effect review, and production-grade readiness assessment.
+- **Reviewer agent responsibilities:** independently review technical behavior and search for regressions.
+- **Reviewer agents review security:** identify vulnerabilities and unwanted side effects.
+- **Reviewer agents assess readiness:** decide whether the result is production-grade.
 
 The project manager must not personally perform the terminal technical review for implementation SOWs. By default implementation can be delegated to external agents, but the current user routing decision is local implementation by the project manager with external models used as read-only reviewers only.
 
@@ -343,7 +345,7 @@ Every SOW close must explicitly record whether each durable artifact class was u
 - End-user/operator docs - README, docs site, runbooks, published guides, help text, or other human-facing documentation.
 - End-user/operator skills - output/reference skills copied or consumed outside normal repo work.
 - SOW lifecycle - split, merge, status, directory, deferred work, regression reopening, and follow-up mapping.
-- `SOW-status.md` - human-readable project status summary, updated whenever SOW state changes.
+- `.agents/sow/SOW-status.md` - human-readable project status summary, updated whenever SOW state changes.
 
 ### Specs
 

@@ -351,16 +351,18 @@ Acceptance criteria evidence:
   Codacy analyzed `045a515`, `c6068ed`, and `e3eebc8` imported 1522 quality
   issues into `.local/codacy-cloud/codacy-issues.json`; after Codacy analyzed
   `20ec32e`, the export imported 1520 quality issues; after Codacy analyzed
-  `37491aa`, the export imported 1518 quality issues. The exporter partitions
+  `37491aa`, the export imported 1518 quality issues; after Codacy analyzed
+  `9204315`, the export imported 1516 quality issues. The exporter partitions
   by language and fails if any partition reaches the CLI limit.
 - Codacy cloud security finding export initially imported 199 findings for
   `master`, the export after Codacy analyzed `057b737` imported 182 findings,
   the export after Codacy analyzed `8120b1e` imported 181 findings, and exports
   after Codacy analyzed `dea354e`, `c3853f2`, `045a515`, `c6068ed`,
   `e3eebc8`, `20ec32e`, and `37491aa` imported 179 findings into
-  `.local/codacy-cloud/codacy-findings.json`.
+  `.local/codacy-cloud/codacy-findings.json`; after Codacy analyzed `9204315`,
+  the export imported 178 findings.
 - The user-observed 3056 Codacy UI count remains unreconciled with the Codacy
-  CLI repository dashboard count of 1518. Potential causes include UI scope,
+  CLI repository dashboard count of 1516. Potential causes include UI scope,
   non-master branch scope, additional views, ignored/resolved state inclusion,
   or stale UI totals.
 - SOW-0047 through SOW-0050 remain marked as blocked by code-scanning gates in
@@ -385,7 +387,8 @@ Tests or equivalent validation:
   `e3eebc8`, exported 1522 quality issues and 179 security findings; rerun
   after Codacy analyzed `20ec32e` exported 1520 quality issues and 179 security
   findings; rerun after Codacy analyzed `37491aa` exported 1518 quality issues
-  and 179 security findings.
+  and 179 security findings; rerun after Codacy analyzed `9204315` exported
+  1516 quality issues and 178 security findings.
 - `python3 tests/code_scanning/export_codacy_issues.py --source cli --provider gh --organization netdata --repository systemd-journal-sdk --branch master --output-dir .local/codacy-cloud --skip-findings --cli-timeout 300`:
   passed, proving the timeout-backed local CLI path still exports quality
   issues.
@@ -473,6 +476,32 @@ Tests or equivalent validation:
 - `PYTHONPATH=.local/python-deps python3 - <<'PY' ...`
   `test_writer_archive_closes_before_rename_when_required()`: passed for the
   singleton cleanup batch.
+- `node --check node/cmd/journalctl/index.js`: passed for the follow-up
+  singleton cleanup batch.
+- `python3 -m py_compile python/test_all.py tests/code_scanning/export_codacy_issues.py`:
+  passed for the follow-up singleton cleanup batch.
+- `cargo check -p adapter` in `rust/`: passed for the Rust adapter suppression
+  in the follow-up singleton cleanup batch.
+- `PYTHONPATH=.local/python-deps python3 - <<'PY' ...` focused checks for
+  `test_directory_writer_lifecycle_delete_and_artifact_size`,
+  `test_directory_writer_lazy_retention_runs_on_first_open`, and
+  `test_directory_writer_eager_retention_runs_on_open_for_all_policies`:
+  passed for the follow-up lifecycle callback cleanup.
+- `node node/cmd/journalctl/index.js --file fixtures/systemd/test-data/no-rtc/system.journal.zst --head 1 --output=json`:
+  passed and returned one JSON journal entry from a compressed systemd fixture.
+- `node --input-type=module - <<'JS' ...` per-case conformance probe with a
+  15-second timeout found an unrelated hang in the Node adapter case
+  `journal-corruption-append-resilient`. Evidence: earlier conformance cases
+  passed through `journal-zstd-compressed-read`; the timed-out child was
+  `node/adapter/index.js run`, not the touched journalctl CLI path.
+- `npm_config_cache=../.local/npm-cache npm test` in `node/` for the follow-up
+  singleton cleanup batch was stopped after the exact test process tree hung in
+  the unrelated `journal-corruption-append-resilient` adapter case. The stopped
+  PIDs were the `npm test` process tree started by this validation run.
+- Local `bandit` validation for `tests/code_scanning/export_codacy_issues.py`
+  was not available (`bandit` and `python3 -m bandit` were not installed);
+  the `Bandit_B310` disposition will be verified by the next Codacy export
+  after push.
 - `PYTHONPATH=.local/python-deps python3 - <<'PY' ...` importing
   `python/test_all.py`, replacing only `test_conformance_manifest` with a
   no-op, and running `main()`: passed.
@@ -567,14 +596,19 @@ Real-use evidence:
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26853677259`.
   - Codacy SARIF: success, run URL
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26853677243`.
+- GitHub Actions workflow evidence collected from pushed commit `9204315`:
+  - CodeQL: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26854278981`.
+  - Codacy SARIF: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26854278982`.
 - GitHub code scanning API returned 2053 open alerts after both workflows ran:
   by tool: Prospector 143, Agentlinter 240, PMD 50, lizard 955, PyLintPython3
   67, Bandit 111, Flawfinder 9, ESLint8 311, shellcheck 1, markdownlint 75,
   CodeQL 91.
 - Codacy cloud issue export ran locally through the authenticated `codacy` CLI
-  after Codacy analyzed `37491aa`: 1518 quality issues on `master`.
-- Codacy security findings export ran locally after Codacy analyzed `37491aa`:
-  179 findings.
+  after Codacy analyzed `9204315`: 1516 quality issues on `master`.
+- Codacy security findings export ran locally after Codacy analyzed `9204315`:
+  178 findings.
 - GitHub workflow cloud export still skips when `CODACY_API_TOKEN` is absent;
   that only affects scheduled/headless export, not local triage.
 - First actionable-finding cleanup batch fixed concrete Python unused/undefined
@@ -628,6 +662,11 @@ Real-use evidence:
   errors explicit in the same Node journalctl path, and replaced the remaining
   `lambda` lifecycle callback in `python/test_all.py` with a named local
   function.
+- Follow-up singleton cleanup batch targets the exact remaining exported rows:
+  additional Node text parser loops, remaining Python lifecycle lambdas,
+  explicit HTTPS-only Codacy API request suppression, Rust test-adapter
+  `current_exe` suppression with local crash-probe rationale, and agent
+  instruction wording/reference cleanup.
 
 Reviewer findings:
 
@@ -696,7 +735,7 @@ Follow-up mapping:
 
 - Remaining work inside this SOW:
   - reconcile the user's observed 3056 UI count with the CLI-confirmed
-    `master` count of 1518 quality issues after commit `37491aa`;
+    `master` count of 1516 quality issues after commit `9204315`;
   - group and triage the exported `master` cloud findings;
   - fix or minimally suppress every actionable finding;
   - run GitHub workflows after push and record CodeQL/Codacy results;
