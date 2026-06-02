@@ -2,12 +2,12 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: local implementation and verification complete; ready for
-orchestrator review/closure decision.
+Sub-state: closed after orchestrator review and five read-only reviewer
+`PRODUCTION GRADE` votes.
 
 ## Requirements
 
@@ -334,11 +334,29 @@ Real-use evidence:
 
 Reviewer findings:
 
-- External reviewers were not run by this implementation worker. The assigned
-  prompt asked this worker to implement and validate SOW-0076 and leave final
-  merge/close to the orchestrator unless acceptance criteria were fully
-  satisfied. Local acceptance criteria are satisfied; orchestrator may run the
-  project reviewer pool before closure.
+- Read-only reviewer pool ran against the whole SOW and changed surface after
+  local validation:
+  - `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: `PRODUCTION GRADE`.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+- Blocking findings: none.
+- Non-blocking findings disposition:
+  - Missing `historical-unkeyed`, `fss-sealed`, and `previous-bug-exposure`
+    source feature classes are explicitly recorded in the report as not found
+    in the local corpus; historical and FSS coverage remains provided by the
+    systemd matrix and related SOWs.
+  - Python and Node.js are intentionally outside this Rust/Go/systemd selective
+    pass and remain mapped to SOW-0065.
+  - Active-file `byte_sha256` values are discovery-time source hashes. The
+    actual comparisons use per-driver active-file snapshots, so this does not
+    affect correctness; the committed report also records the
+    `active-open-snapshot` feature class.
+  - Unit tests are intentionally small because the real acceptance evidence is
+    the end-to-end selective corpus run with 77 `ok` result rows.
+  - Failure-only exception hashes may fingerprint path-bearing exceptions, but
+    this run has no failures and no plaintext error strings in durable reports.
 
 Same-failure scan:
 
@@ -368,7 +386,8 @@ Artifact maintenance gate:
 - End-user/operator skills: no update needed for tracking.
 - SOW lifecycle: created as `Status: open` under `.agents/sow/pending/`.
 - SOW lifecycle: moved to `Status: in-progress` under `.agents/sow/current/`.
-- SOW-status.md: updated to list this active SOW.
+- SOW lifecycle: completed and moved to `.agents/sow/done/`.
+- SOW-status.md: updated to list this SOW as completed.
 
 Specs update:
 
@@ -409,8 +428,8 @@ Follow-up mapping:
 
 ## Outcome
 
-Local implementation and real selective verification are complete with 0
-discrepancies. SOW remains `in-progress` for orchestrator review/closure.
+Implementation, real selective verification, and read-only reviewer closure are
+complete with 0 discrepancies. SOW is closed as `completed`.
 
 ## Lessons Extracted
 

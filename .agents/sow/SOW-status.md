@@ -13,11 +13,6 @@ Last updated: 2026-06-02
   collected files; Python mismatched two Ubuntu 18.04 archived files. Debian
   11 consumed one capped VM slot but blocked on SSH readiness, so the
   four-new-VM cap is exhausted pending user direction.
-- SOW-0076 - Independent Selective Real Corpus Verification: in-progress.
-  Local implementation and verification are complete and ready for
-  orchestrator review/closure decision. The worker produced a repeatable,
-  feature-selected real-corpus verification pass with read-only external corpus
-  access, repo-local scratch outputs, and sanitized committed reports.
 
 ## Pending
 
@@ -50,6 +45,15 @@ Last updated: 2026-06-02
   strategies with break-even evidence from generated and real-corpus queries.
 
 ## Recently Closed Or Completed
+- SOW-0076 - Independent Selective Real Corpus Verification: completed. The
+  selective real-corpus runner now discovers real journal files read-only,
+  selects representative sanitized feature classes, snapshots active files,
+  compares systemd/Rust/Go reader digests, regenerates Rust/Go outputs in
+  regular, compact, compact-zstd, and compact-fss modes, verifies generated
+  files with stock journalctl, and writes sanitized JSON/Markdown reports. The
+  recorded run selected 7 files from 7,195 discovered files and produced 77/77
+  `ok` result rows with 0 discrepancies; five read-only reviewers voted
+  `PRODUCTION GRADE`.
 - SOW-0078 - Legacy jf Writer Unkeyed Rejection: completed. The legacy Rust
   `jf` writer remains public but now returns `UnsupportedJournalFile` before
   mutation when asked to append to historical unkeyed journal files. The same
