@@ -13,7 +13,7 @@ from ._platform_io import (
     write_all_at as _write_fd_at,
 )
 from .binary import (
-    read_uint64_le, write_uint8,
+    read_uint64_le,
     align8, random_uuid, is_zero_uuid, buf_equal,
 )
 from .header import (
@@ -33,7 +33,6 @@ from .header import (
     COMPACT_DATA_TAIL_ENTRIES_OFFSET, JOURNAL_COMPACT_SIZE_MAX,
     DEFAULT_FIELD_HASH_BUCKETS, FILE_SIZE_INCREASE,
     normalize_journal_max_file_size, data_hash_buckets_for_max_file_size,
-    INITIAL_DATA_ENTRY_ARRAY_CAP,
 )
 from .hash import sip_hash_24, jenkins_hash_64
 from .compress import MAX_UNCOMPRESSED_SIZE, decompress_zst_sync, decompress_xz_sync, decompress_lz4_sync

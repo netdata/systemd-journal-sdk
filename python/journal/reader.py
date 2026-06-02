@@ -394,6 +394,8 @@ class FileReader:
             try:
                 payload = self._read_data_payload_at(data_offset)
             except Exception:
+                payload = None
+            if payload is None:
                 continue
             eq_pos = payload.find(b'=')
             if eq_pos < 0:
@@ -505,9 +507,11 @@ class FileReader:
             while offset:
                 field = self._read_field_object_at(offset)
                 try:
-                    fields.add(field['payload'].decode('utf-8'))
+                    field_name = field['payload'].decode('utf-8')
                 except UnicodeDecodeError:
-                    pass
+                    field_name = None
+                if field_name is not None:
+                    fields.add(field_name)
                 offset = field['next_hash_offset']
         return fields
 
@@ -516,10 +520,10 @@ class FileReader:
         for off in self._entry_offsets:
             try:
                 entry = self._read_entry_at(off)
-                if entry:
-                    fields.update(entry['fields'].keys())
             except Exception:
-                pass
+                entry = None
+            if entry:
+                fields.update(entry['fields'].keys())
         return fields
 
     def header(self):
@@ -538,11 +542,9 @@ class FileReader:
             finally:
                 self._fd = None
         if self._cleanup_path:
-            try:
+            with contextlib.suppress(Exception):
                 os.unlink(self._cleanup_path)
                 os.rmdir(os.path.dirname(self._cleanup_path))
-            except Exception:
-                pass
             self._cleanup_path = None
         self._buffer = None
 
