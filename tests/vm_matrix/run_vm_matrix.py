@@ -91,17 +91,17 @@ TARGETS: dict[str, Target] = {
         checksum="f6729b53d930d7f0c6691eb553cfa6be7109de9412125bf1bf2dc6747de8a44d",
         source_note="official Ubuntu jammy cloud image current release build",
     ),
-    "debian13": Target(
-        alias="debian13",
-        name="sdjournal-debian13",
-        distro="Debian 13 trixie",
-        expected_systemd="257-era",
-        osinfo="debian13",
-        image_url="https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2",
-        checksum_url="https://cloud.debian.org/images/cloud/trixie/latest/SHA512SUMS",
-        checksum_algorithm="sha512",
-        checksum="23999f64d896af10a8c12bc391856ffb2982d459c3e4c987c241cca920920c6d0fbdccab389fbb37aeecb2e21145f60d9d50bf317bdf47f7bc1388cd945aa1da",
-        source_note="official Debian trixie genericcloud image",
+    "ubuntu2404": Target(
+        alias="ubuntu2404",
+        name="sdjournal-ubuntu2404",
+        distro="Ubuntu 24.04 LTS",
+        expected_systemd="255-era",
+        osinfo="ubuntu24.04",
+        image_url="https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img",
+        checksum_url="https://cloud-images.ubuntu.com/releases/noble/release/SHA256SUMS",
+        checksum_algorithm="sha256",
+        checksum="53fdde898feed8b027d94baa9cfe8229867f330a1d9c49dc7d84465ee7f229f7",
+        source_note="official Ubuntu noble cloud image current release build",
     ),
 }
 
@@ -462,8 +462,12 @@ def wait_for_ip(target: Target, timeout: int = 240) -> str:
             if "lladdr" in fields:
                 mac_index = fields.index("lladdr") + 1
                 if mac_index < len(fields) and fields[mac_index].lower() == mac:
+                    if ":" in fields[0] and fields[0].startswith("fe80:"):
+                        return fields[0] + "%br0"
                     return fields[0]
             if len(fields) >= 5 and fields[4].lower() == mac:
+                if ":" in fields[0] and fields[0].startswith("fe80:"):
+                    return fields[0] + "%br0"
                 return fields[0]
         time.sleep(5)
     raise RuntimeError(f"timed out waiting for IP for {target.name}")
@@ -471,7 +475,7 @@ def wait_for_ip(target: Target, timeout: int = 240) -> str:
 
 def ssh_base(ip: str) -> list[str]:
     ensure_local_dirs()
-    return [
+    cmd = [
         "ssh",
         "-o",
         "BatchMode=yes",
@@ -483,11 +487,14 @@ def ssh_base(ip: str) -> list[str]:
         "GlobalKnownHostsFile=/dev/null",
         f"user@{ip}",
     ]
+    if ":" in ip:
+        cmd.insert(1, "-6")
+    return cmd
 
 
 def scp_base() -> list[str]:
     ensure_local_dirs()
-    return [
+    cmd = [
         "scp",
         "-o",
         "BatchMode=yes",
@@ -498,6 +505,13 @@ def scp_base() -> list[str]:
         "-o",
         "GlobalKnownHostsFile=/dev/null",
     ]
+    return cmd
+
+
+def scp_remote(ip: str, remote_path: str) -> str:
+    if ":" in ip:
+        return f"user@[{ip}]:{remote_path}"
+    return f"user@{ip}:{remote_path}"
 
 
 def wait_for_ssh(target: Target, ip: str, timeout: int = 300) -> None:
@@ -640,7 +654,7 @@ def collect_one(target: Target) -> dict[str, Any]:
     if local_raw.exists():
         shutil.rmtree(local_raw)
     local_raw.mkdir(parents=True)
-    run(scp_base() + [f"user@{ip}:/home/user/sdjournal-out/*", str(local_raw) + "/"], timeout=600)
+    run(scp_base() + [scp_remote(ip, "/home/user/sdjournal-out/*"), str(local_raw) + "/"], timeout=600)
     journal_count = len(list(local_raw.glob("*.journal")))
     return {"alias": target.alias, "status": "ok", "journal_files": journal_count}
 
@@ -811,7 +825,7 @@ def validate_one(target: Target, helpers: dict[str, Path | None]) -> dict[str, A
             if digest is None:
                 discrepancies.append(f"{driver.upper()}_READ_FAILED")
             elif baseline and digest.get("logical_digest") != baseline:
-                discrepancies.append("DIGEST_MISMATCH")
+                discrepancies.append(f"{driver.upper()}_DIGEST_MISMATCH")
         vm_row = vm_verify.get(case_id)
         if vm_row and int(vm_row.get("returncode", 1)) != 0:
             discrepancies.append("VM_STOCK_VERIFY_FAILED")

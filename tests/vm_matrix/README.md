@@ -12,7 +12,7 @@ generation is limited to disposable `sdjournal-*` guests created for this SOW.
 ## Safety Contract
 
 - VM names are fixed and project-scoped: `sdjournal-ubuntu1804`,
-  `sdjournal-debian11`, `sdjournal-ubuntu2204`, and `sdjournal-debian13`.
+  `sdjournal-debian11`, `sdjournal-ubuntu2204`, and `sdjournal-ubuntu2404`.
 - Each new VM is capped at 1 vCPU, 1 GiB RAM, and 4 GiB disk.
 - Existing domains, networks, storage pools, host services, autostart settings,
   and host package state must not be modified.
@@ -85,4 +85,5 @@ Discrepancy codes:
 - `GO_READ_FAILED`: Go digest helper failed.
 - `PYTHON_READ_FAILED`: Python file-backed export failed.
 - `NODE_READ_FAILED`: Node file-backed export failed.
-- `DIGEST_MISMATCH`: a reader digest differs from the host stock baseline.
+- `<READER>_DIGEST_MISMATCH`: a reader digest differs from the host stock
+  baseline.

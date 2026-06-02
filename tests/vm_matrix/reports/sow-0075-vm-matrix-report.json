@@ -1,0 +1,2759 @@
+{
+  "canonical_digest_schema": "systemd-journal-sdk-corpus-logical-v1",
+  "caps": {
+    "disk_gib": 4,
+    "max_new_vms": 4,
+    "memory_mib": 1024,
+    "name_prefix": "sdjournal-",
+    "vcpus": 1
+  },
+  "discrepancies": [
+    "PYTHON_DIGEST_MISMATCH"
+  ],
+  "generated_at_unix": 1780310533,
+  "kind": "vm-reader-matrix",
+  "schema": "systemd-journal-sdk-vm-matrix-v1",
+  "status": "discrepancy",
+  "targets": [
+    {
+      "alias": "ubuntu1804",
+      "binary_field_ingestion": "logger-journald-text-fields",
+      "cases": [
+        {
+          "case_id": "compress-off-active",
+          "discrepancies": [],
+          "file": {
+            "bytes": 8388608,
+            "sha256": "7577b9ca9e0978f4d92c1ef39e4fb21fd846106fce57b57b9a0dc8d03ac495e7"
+          },
+          "host_stock_verify": {
+            "command_sha256": "bb9ec4871b56bf3f21e5efc43e3144efd3c17f22281557e302e72e98ef77680e",
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "575564a5dd671b30e418b0047efe679ef1287247a2cdd64d53183a9710e3ab01",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "readers": {
+            "go": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 108,
+                  "entries": 108,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 94,
+                  "payload_bytes": 95401,
+                  "payloads": 3471,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "go",
+                "elapsed_seconds": 0.004137357,
+                "input_bytes": 8388608,
+                "logical_digest": "5e6c6db6e5b99d94a3068e9b9c11b090e653d662c2b4c324c52b0035ac6b8149",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "e99a4f69186de519109ef116d87d0b84fa9efd525ed7a1b6bbe486d6d156694b",
+                "elapsed_seconds": 0.005899,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "857ec26423513441bb8f9536d92f49cc9b55b1ce0675bb8380c5f30e04dd5775"
+              }
+            },
+            "node": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 108,
+                  "entries": 108,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 94,
+                  "payload_bytes": 95401,
+                  "payloads": 3471,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "node",
+                "logical_digest": "5e6c6db6e5b99d94a3068e9b9c11b090e653d662c2b4c324c52b0035ac6b8149",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "e7e173e766483ddeb2902f546bdda21ac59b408f8e313f9ca1e604316b832599",
+                "elapsed_seconds": 0.063089,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "python": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 108,
+                  "entries": 108,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 94,
+                  "payload_bytes": 95401,
+                  "payloads": 3471,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "python",
+                "logical_digest": "5e6c6db6e5b99d94a3068e9b9c11b090e653d662c2b4c324c52b0035ac6b8149",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "3cdffa40178b4735982d9f9e64a56a232e0444969a4ae6dd8a520873e59b5ad4",
+                "elapsed_seconds": 0.058473,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "rust": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 108,
+                  "entries": 108,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 94,
+                  "payload_bytes": 95401,
+                  "payloads": 3471,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "rust",
+                "elapsed_seconds": 0.002313465,
+                "input_bytes": 8388608,
+                "logical_digest": "5e6c6db6e5b99d94a3068e9b9c11b090e653d662c2b4c324c52b0035ac6b8149",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "0298d001e53bb3cfa87f0a44d83f5b4fdedeffc029018601230582c7a0ac85da",
+                "elapsed_seconds": 0.003639,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "a76775f061e27f020fb7668b5774fbe3ad351db735a77ef2d859087b2bc1952d"
+              }
+            },
+            "stock": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 108,
+                  "entries": 108,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 94,
+                  "payload_bytes": 95401,
+                  "payloads": 3471,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "stock",
+                "logical_digest": "5e6c6db6e5b99d94a3068e9b9c11b090e653d662c2b4c324c52b0035ac6b8149",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "d68fb84b2f64c5f442a22e26e7624324af70b2d69b7c4b7244da836e3fe851f0",
+                "elapsed_seconds": 0.013135,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            }
+          },
+          "status": "ok",
+          "vm_stock_verify": {
+            "case_id": "compress-off-active",
+            "returncode": 0,
+            "stderr_sha256": "a07213f8435fa2604ff5718a25f320ac3063d8ef7a97d49b642b378c30caf68a",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "case_id": "compress-off-archived",
+          "discrepancies": [
+            "PYTHON_DIGEST_MISMATCH"
+          ],
+          "file": {
+            "bytes": 8388608,
+            "sha256": "bbf9fd0dc9176ad086eaf157d3a245c2f21f120aff4ff1f8187220ecbe39483d"
+          },
+          "host_stock_verify": {
+            "command_sha256": "139f3ebfddba6b4e7c5486ba219df003e53d6a4dc71fe240581e4d8c058eb0e8",
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "e2e89c0d874d4e8b9322d5bb94f06293987ada424fc63b863506f662a31fd9b8",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "readers": {
+            "go": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 49,
+                  "entries": 63,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 4164,
+                  "payload_bytes": 120414,
+                  "payloads": 1361,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "go",
+                "elapsed_seconds": 0.001191763,
+                "input_bytes": 8388608,
+                "logical_digest": "9d20ef436a20b381841c45bd552b3fb284fa563c59be600c681235244e1eb35c",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "6420cb383242ac42fc858ba317b17e2b94b0d7fa194cf6bf7e5400f2fe25c02d",
+                "elapsed_seconds": 0.002719,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "8a12db9f8267b690170fb8443ff691c51ab239b0ba95d30a8a05a1907366c8c1"
+              }
+            },
+            "node": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 49,
+                  "entries": 63,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 4164,
+                  "payload_bytes": 120414,
+                  "payloads": 1361,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "node",
+                "logical_digest": "9d20ef436a20b381841c45bd552b3fb284fa563c59be600c681235244e1eb35c",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "2db0326bef1482177a35389a01b3c4888b77381b129f1eb214202193e79e70d7",
+                "elapsed_seconds": 0.057775,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "python": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 49,
+                  "entries": 63,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 263,
+                  "payload_bytes": 37134,
+                  "payloads": 1341,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "python",
+                "logical_digest": "6b6ed8ddf37b2254cc7aff9a506fdda86bbc06a9e668c996648a75990775b4e8",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "67d31f702710f894743d127d711e00e030a0b3b070ac425091c855d325ab9a90",
+                "elapsed_seconds": 0.047652,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "rust": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 49,
+                  "entries": 63,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 4164,
+                  "payload_bytes": 120414,
+                  "payloads": 1361,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "rust",
+                "elapsed_seconds": 0.000864381,
+                "input_bytes": 8388608,
+                "logical_digest": "9d20ef436a20b381841c45bd552b3fb284fa563c59be600c681235244e1eb35c",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "35172b63da43bf0fcc14e3deed52e77b1f0f0d439fd6994b095a9664bbbd7689",
+                "elapsed_seconds": 0.001636,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "cf3767ad026f677d250ea09d92b4bb02ad6ad86b66030c5b361c03a7685bf702"
+              }
+            },
+            "stock": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 49,
+                  "entries": 63,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 4164,
+                  "payload_bytes": 120414,
+                  "payloads": 1361,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "stock",
+                "logical_digest": "9d20ef436a20b381841c45bd552b3fb284fa563c59be600c681235244e1eb35c",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "6a579ea092a329916adf9756314b1fd2232ba69e3c127ad70cc1c7da63e42c73",
+                "elapsed_seconds": 0.005497,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            }
+          },
+          "status": "discrepancy",
+          "vm_stock_verify": {
+            "case_id": "compress-off-archived",
+            "returncode": 0,
+            "stderr_sha256": "ad838683e44f9202ed2c76d3a729ed65595d701344936154a99de6ab6fdfc173",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "case_id": "compress-on-active",
+          "discrepancies": [],
+          "file": {
+            "bytes": 8388608,
+            "sha256": "7577b9ca9e0978f4d92c1ef39e4fb21fd846106fce57b57b9a0dc8d03ac495e7"
+          },
+          "host_stock_verify": {
+            "command_sha256": "120d8a7afaa2fb3ccc5b2bc3e056986f0e3a28e2b1adc095f21be53352204c32",
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "92c59ef8ccd9f464efe44e3849e321471c0098cac271a98ccb415f18f936c869",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "readers": {
+            "go": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 108,
+                  "entries": 108,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 94,
+                  "payload_bytes": 95401,
+                  "payloads": 3471,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "go",
+                "elapsed_seconds": 0.003837665,
+                "input_bytes": 8388608,
+                "logical_digest": "5e6c6db6e5b99d94a3068e9b9c11b090e653d662c2b4c324c52b0035ac6b8149",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "1e20395346a48eaf4834967f6801c0a4c820e9181b491a83ae116b94c915d11e",
+                "elapsed_seconds": 0.006013,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "ee3b4bca2ab1ccf2c91a07a52833fb31860b152844f3be11719a529ea52bc0d8"
+              }
+            },
+            "node": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 108,
+                  "entries": 108,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 94,
+                  "payload_bytes": 95401,
+                  "payloads": 3471,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "node",
+                "logical_digest": "5e6c6db6e5b99d94a3068e9b9c11b090e653d662c2b4c324c52b0035ac6b8149",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "f9704030e9fbfeddcbe4ded3cc11a898fe1ea69f59622eb48878611263607c2a",
+                "elapsed_seconds": 0.067569,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "python": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 108,
+                  "entries": 108,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 94,
+                  "payload_bytes": 95401,
+                  "payloads": 3471,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "python",
+                "logical_digest": "5e6c6db6e5b99d94a3068e9b9c11b090e653d662c2b4c324c52b0035ac6b8149",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "957e8beb8e12b90828c39d55938756bd712838c6ec13e2279647585945b4456e",
+                "elapsed_seconds": 0.064214,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "rust": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 108,
+                  "entries": 108,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 94,
+                  "payload_bytes": 95401,
+                  "payloads": 3471,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "rust",
+                "elapsed_seconds": 0.002087943,
+                "input_bytes": 8388608,
+                "logical_digest": "5e6c6db6e5b99d94a3068e9b9c11b090e653d662c2b4c324c52b0035ac6b8149",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "9a2148e56584a0a9984b0875b188f975cc530dc19f9df95221c21f123009686c",
+                "elapsed_seconds": 0.002959,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "f4df81f953029875d0fd28763d4f4c1415d761c61c93e49eaebc072c80e66c7e"
+              }
+            },
+            "stock": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 108,
+                  "entries": 108,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 94,
+                  "payload_bytes": 95401,
+                  "payloads": 3471,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "stock",
+                "logical_digest": "5e6c6db6e5b99d94a3068e9b9c11b090e653d662c2b4c324c52b0035ac6b8149",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "bc739041857838ab51c0bbaf01d2fe23234e92e4373648de4df9f2de3486c304",
+                "elapsed_seconds": 0.012123,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            }
+          },
+          "status": "ok",
+          "vm_stock_verify": {
+            "case_id": "compress-on-active",
+            "returncode": 0,
+            "stderr_sha256": "1b1e83e11a34a26ac66517a3d5e560e1874e87298ca1f821f4e82d1fe94c879b",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "case_id": "compress-on-archived",
+          "discrepancies": [
+            "PYTHON_DIGEST_MISMATCH"
+          ],
+          "file": {
+            "bytes": 8388608,
+            "sha256": "bb1504a670680a03a8bbc5786c8cc6c4210143ba7d02421628fccbf63e0b0ae5"
+          },
+          "host_stock_verify": {
+            "command_sha256": "7b6a3ae3fd3990f1c1cf67f7e809edcfa8e76e31a4b930bf0197636820ccacb8",
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "552676c12b65e00c8440c9f850a4ac35fb96f75b0919f420ca933bdd76ae21cf",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "readers": {
+            "go": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 612,
+                  "entries": 1409,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 4163,
+                  "payload_bytes": 670573,
+                  "payloads": 21788,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "go",
+                "elapsed_seconds": 0.014618959,
+                "input_bytes": 8388608,
+                "logical_digest": "69932af7bb536a048e52c11b3a50f9948fa98522f1ef1d24cbe34388069409f9",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "94bb0fd6793937c9f29155f07e81e2842e09f6952887a15c45f4cda200767781",
+                "elapsed_seconds": 0.016426,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "7c2a55c6ceb20a1ed41265c605391c39c8f3769729d68dd789875875e27c9b69"
+              }
+            },
+            "node": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 612,
+                  "entries": 1409,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 4163,
+                  "payload_bytes": 670573,
+                  "payloads": 21788,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "node",
+                "logical_digest": "69932af7bb536a048e52c11b3a50f9948fa98522f1ef1d24cbe34388069409f9",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "91f14e52304874f1b28d195030179e37d2353827bcd12f2aed8f33536ed4279f",
+                "elapsed_seconds": 0.127437,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "python": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 611,
+                  "entries": 1409,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 452,
+                  "payload_bytes": 584259,
+                  "payloads": 21766,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "python",
+                "logical_digest": "12499bae7d6d586367a54da9512a8770dafdb5d3d48348517975a287021b6ad9",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "5ccca4450aa7822b1985590e51b43820dbc82bc449caf95d03a493d92c22f5a2",
+                "elapsed_seconds": 0.116367,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "rust": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 612,
+                  "entries": 1409,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 4163,
+                  "payload_bytes": 670573,
+                  "payloads": 21788,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "rust",
+                "elapsed_seconds": 0.00999751,
+                "input_bytes": 8388608,
+                "logical_digest": "69932af7bb536a048e52c11b3a50f9948fa98522f1ef1d24cbe34388069409f9",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "671f69077f4c9b4d64ca838dd8188b24b1fdd97f84a028b9643be3ee446d701e",
+                "elapsed_seconds": 0.01093,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "19eda214de7fa92566882e00f8764e2c4ed15fb3871f6e5d80a4690c244bfdf0"
+              }
+            },
+            "stock": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 612,
+                  "entries": 1409,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 4163,
+                  "payload_bytes": 670573,
+                  "payloads": 21788,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "stock",
+                "logical_digest": "69932af7bb536a048e52c11b3a50f9948fa98522f1ef1d24cbe34388069409f9",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "8cccf4d2038cd85db3facbc9933c0b78d33a27e81ce9b9a0c18487ac2366dbdf",
+                "elapsed_seconds": 0.049312,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            }
+          },
+          "status": "discrepancy",
+          "vm_stock_verify": {
+            "case_id": "compress-on-archived",
+            "returncode": 0,
+            "stderr_sha256": "484e823649c79e0a120d386eeee5a54552e8ade4deac8230eba94f3de73b9896",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "case_id": "post-reboot-active",
+          "discrepancies": [],
+          "file": {
+            "bytes": 8388608,
+            "sha256": "87381f363894be2d221c3698c216f102a8ea5fc1a3fc2789f2f495aeb31ee957"
+          },
+          "host_stock_verify": {
+            "command_sha256": "37c04c430cb6e24e73d1302b8b7b96644c40b4911b6ac7a771e9e3d8e15b4773",
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "3990ab83e97d307b224cb42dec45e9f919c73042822bddf545dc716503a34820",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "readers": {
+            "go": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 231,
+                  "entries": 232,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 94,
+                  "payload_bytes": 204522,
+                  "payloads": 7441,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "go",
+                "elapsed_seconds": 0.005977129,
+                "input_bytes": 8388608,
+                "logical_digest": "d2c7e347b689ba659770f6863e77cff176d5b332f69814c6fa8a1a9b1a7257ba",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "62a557ac3f66a02a245ca2b3443d93ddf03f14d22550f0677e0fa7fb130ffd9b",
+                "elapsed_seconds": 0.007407,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "fad1137d640b2461bf144c172fdbc06a3ebc4fdd2b1dd2dec4ec54bc657d7475"
+              }
+            },
+            "node": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 231,
+                  "entries": 232,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 94,
+                  "payload_bytes": 204522,
+                  "payloads": 7441,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "node",
+                "logical_digest": "d2c7e347b689ba659770f6863e77cff176d5b332f69814c6fa8a1a9b1a7257ba",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "a4f533f09cb20de7bc499a4914f564bce6323a939e88458bcba63c052ff81392",
+                "elapsed_seconds": 0.094525,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "python": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 231,
+                  "entries": 232,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 94,
+                  "payload_bytes": 204522,
+                  "payloads": 7441,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "python",
+                "logical_digest": "d2c7e347b689ba659770f6863e77cff176d5b332f69814c6fa8a1a9b1a7257ba",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "cfef5524d8e63748ea8bed84e357faf7908584e01f32eb07301c1e63ca31df15",
+                "elapsed_seconds": 0.075163,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "rust": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 231,
+                  "entries": 232,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 94,
+                  "payload_bytes": 204522,
+                  "payloads": 7441,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "rust",
+                "elapsed_seconds": 0.003879366,
+                "input_bytes": 8388608,
+                "logical_digest": "d2c7e347b689ba659770f6863e77cff176d5b332f69814c6fa8a1a9b1a7257ba",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "15953acb8a0729d6277739714eb0c70b51053febc42ab779f011f9f12d8e8f5a",
+                "elapsed_seconds": 0.00476,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "ad3c157a7792258f3af8ed1ddbf58d53564af04161e444f1063fbcdffd657f33"
+              }
+            },
+            "stock": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 231,
+                  "entries": 232,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 94,
+                  "payload_bytes": 204522,
+                  "payloads": 7441,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "stock",
+                "logical_digest": "d2c7e347b689ba659770f6863e77cff176d5b332f69814c6fa8a1a9b1a7257ba",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "78d1cfd71435f471078c6761dd951ccef5093c72becc9538989b15d009ede7d9",
+                "elapsed_seconds": 0.01588,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            }
+          },
+          "status": "ok",
+          "vm_stock_verify": {
+            "case_id": "post-reboot-active",
+            "returncode": 0,
+            "stderr_sha256": "2cb7f7b001bcb8e1ebfe39a121e1ebbe84737032cb711f4f8e176676e31dfde3",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "case_id": "post-reboot-archived",
+          "discrepancies": [],
+          "file": {
+            "bytes": 8388608,
+            "sha256": "d2a0e26ad2e27b46136260fc94555fcda938762a0dfa8ad088cf5f560b871fdc"
+          },
+          "host_stock_verify": {
+            "command_sha256": "f1d7d65beb7063cdd6f8923a94181a3bd33117d78bc27d045d0392a5b2803b91",
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "46f2364707039c9b236f0bca95c24e982cf878bc31f0d417ef3fcdfed8c9fd00",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "readers": {
+            "go": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 231,
+                  "entries": 232,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 94,
+                  "payload_bytes": 204522,
+                  "payloads": 7441,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "go",
+                "elapsed_seconds": 0.005140033,
+                "input_bytes": 8388608,
+                "logical_digest": "d2c7e347b689ba659770f6863e77cff176d5b332f69814c6fa8a1a9b1a7257ba",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "0cf7340351a9d101806630e963e80cffedf60ec840e1bf4eced91a0f0d4e5dd5",
+                "elapsed_seconds": 0.006548,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "7453ec071cb9c5429bc66b047c86536f145f1711b2d55348d946a3d440e6e5ab"
+              }
+            },
+            "node": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 231,
+                  "entries": 232,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 94,
+                  "payload_bytes": 204522,
+                  "payloads": 7441,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "node",
+                "logical_digest": "d2c7e347b689ba659770f6863e77cff176d5b332f69814c6fa8a1a9b1a7257ba",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "9ea23e1456b94b4bb4e452e120b67ec17238cdf09327d9da3f9be26ed525e22b",
+                "elapsed_seconds": 0.094253,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "python": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 231,
+                  "entries": 232,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 94,
+                  "payload_bytes": 204522,
+                  "payloads": 7441,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "python",
+                "logical_digest": "d2c7e347b689ba659770f6863e77cff176d5b332f69814c6fa8a1a9b1a7257ba",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "d9153c7c59ff801f14ca199f6a1f0faa1db4697d78272b22120c4b800f49e523",
+                "elapsed_seconds": 0.070346,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "rust": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 231,
+                  "entries": 232,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 94,
+                  "payload_bytes": 204522,
+                  "payloads": 7441,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "rust",
+                "elapsed_seconds": 0.003789904,
+                "input_bytes": 8388608,
+                "logical_digest": "d2c7e347b689ba659770f6863e77cff176d5b332f69814c6fa8a1a9b1a7257ba",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "b857dd74dec305cf2faa682099c47e72922d7d77cd60508e6bf76c89bd058840",
+                "elapsed_seconds": 0.004751,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "811493458934c981de4ae2ee36ff0e888c0d269a3303fd04cc54bf08df6ce4c5"
+              }
+            },
+            "stock": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 231,
+                  "entries": 232,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 94,
+                  "payload_bytes": 204522,
+                  "payloads": 7441,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "stock",
+                "logical_digest": "d2c7e347b689ba659770f6863e77cff176d5b332f69814c6fa8a1a9b1a7257ba",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "3099378f95c0c195d7a9afc1b2e2be9c7dd935207e8ac6658e39b7845a2305ca",
+                "elapsed_seconds": 0.015569,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            }
+          },
+          "status": "ok",
+          "vm_stock_verify": {
+            "case_id": "post-reboot-archived",
+            "returncode": 0,
+            "stderr_sha256": "1d64caf9a570995a6b0990dd3caa63d1fbd803920249e9ef06a15b4067f97fbb",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        }
+      ],
+      "distro": "Ubuntu 18.04 LTS",
+      "expected_systemd": "237-era",
+      "observed_os_release": "ubuntu 18.04",
+      "observed_systemd": "systemd 237",
+      "status": "discrepancy",
+      "vm_name": "sdjournal-ubuntu1804"
+    },
+    {
+      "alias": "ubuntu2204",
+      "binary_field_ingestion": "logger-journald-text-fields",
+      "cases": [
+        {
+          "case_id": "compress-off-active",
+          "discrepancies": [],
+          "file": {
+            "bytes": 8388608,
+            "sha256": "8e2a5a24d2f530842ad3de544a552a6d11fb9f38fc00499ef357003178f17acc"
+          },
+          "host_stock_verify": {
+            "command_sha256": "f3f4321ce83e38b0f3902e788895afb624db6107f039b7bc77d103602a8f22ea",
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "f2da5edcd0bc0fe84ff91333ca3d14f79979ef96a34c31bbf543ed5b519587ad",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "readers": {
+            "go": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 47,
+                  "entries": 54,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 4164,
+                  "payload_bytes": 117619,
+                  "payloads": 1252,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "go",
+                "elapsed_seconds": 0.001240215,
+                "input_bytes": 8388608,
+                "logical_digest": "3625dea9ee2908770fbafb7ce02112a52d7dc1462716e7fa84649eebf371a099",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "72d2d3578312910482fda38581efa8a57f0ab25afbeb28537fc3af3d7e50c945",
+                "elapsed_seconds": 0.004296,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "64208bf1c9cba466c2207ccd22f8b01be152e04c41efd0e098ed1fabd431d881"
+              }
+            },
+            "node": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 47,
+                  "entries": 54,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 4164,
+                  "payload_bytes": 117619,
+                  "payloads": 1252,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "node",
+                "logical_digest": "3625dea9ee2908770fbafb7ce02112a52d7dc1462716e7fa84649eebf371a099",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "ae144add19bcbb49eb753a333e5ca87ca5c5c5c3f883a4b37e6f93f60a16388b",
+                "elapsed_seconds": 0.053653,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "python": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 47,
+                  "entries": 54,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 4164,
+                  "payload_bytes": 117619,
+                  "payloads": 1252,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "python",
+                "logical_digest": "3625dea9ee2908770fbafb7ce02112a52d7dc1462716e7fa84649eebf371a099",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "e4291a888d94336b8049d91e58c2a71a9c07e49418f21d07b352344b36b3a549",
+                "elapsed_seconds": 0.061012,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "rust": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 47,
+                  "entries": 54,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 4164,
+                  "payload_bytes": 117619,
+                  "payloads": 1252,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "rust",
+                "elapsed_seconds": 0.001161623,
+                "input_bytes": 8388608,
+                "logical_digest": "3625dea9ee2908770fbafb7ce02112a52d7dc1462716e7fa84649eebf371a099",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "9acd1845bb7f6998dbfce1c9a733a942e2d567442a00b6a8e9e1866205d73759",
+                "elapsed_seconds": 0.002127,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "e6e957d146bff28fc3f3a9fbb1c98f79014ef5227b9997160381a06569bd1d46"
+              }
+            },
+            "stock": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 47,
+                  "entries": 54,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 4164,
+                  "payload_bytes": 117619,
+                  "payloads": 1252,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "stock",
+                "logical_digest": "3625dea9ee2908770fbafb7ce02112a52d7dc1462716e7fa84649eebf371a099",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "d36d554abef0a188c4113ed11a2405b76d5c573c2090216049d5e91c3aabc97a",
+                "elapsed_seconds": 0.007372,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            }
+          },
+          "status": "ok",
+          "vm_stock_verify": {
+            "case_id": "compress-off-active",
+            "returncode": 0,
+            "stderr_sha256": "a07213f8435fa2604ff5718a25f320ac3063d8ef7a97d49b642b378c30caf68a",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "case_id": "compress-off-archived",
+          "discrepancies": [],
+          "file": {
+            "bytes": 8388608,
+            "sha256": "d67002135cf05f34a223ea65c72926c917b84912bebab43ec358f6f7f11b3850"
+          },
+          "host_stock_verify": {
+            "command_sha256": "8f190c0fd22a3e6a497a4c3eee99c461d786e525bb731bbe687f42d00eb6ff7b",
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "b51e9be11c8316e4f4462a5a1da3af06a1f0eb7f196f5e17a6468b4bd6d451a3",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "readers": {
+            "go": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 96,
+                  "entries": 96,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 82924,
+                  "payloads": 3183,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "go",
+                "elapsed_seconds": 0.002276435,
+                "input_bytes": 8388608,
+                "logical_digest": "b45fe7255cd85cca128aa6adb5ae2317b1930c289b152ba9dc49268c3a123d5e",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "b8fc148c1cfa94a244eb4acb807f246333464268f6b43b5c14479be9ce77f023",
+                "elapsed_seconds": 0.003938,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "f1ccfc70392310b58844572676b49096f8cb600694a29e48b9fe16fb3845cfce"
+              }
+            },
+            "node": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 96,
+                  "entries": 96,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 82924,
+                  "payloads": 3183,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "node",
+                "logical_digest": "b45fe7255cd85cca128aa6adb5ae2317b1930c289b152ba9dc49268c3a123d5e",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "5b7d5b2ea2ba9a6dddc11ce510a5b2147d610df8691764bbcba69a3df993dfb9",
+                "elapsed_seconds": 0.05793,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "python": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 96,
+                  "entries": 96,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 82924,
+                  "payloads": 3183,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "python",
+                "logical_digest": "b45fe7255cd85cca128aa6adb5ae2317b1930c289b152ba9dc49268c3a123d5e",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "18df86173374c4a1881c25515cf8d384c20b18372a7b0675d7c385db25eaf633",
+                "elapsed_seconds": 0.05792,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "rust": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 96,
+                  "entries": 96,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 82924,
+                  "payloads": 3183,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "rust",
+                "elapsed_seconds": 0.002118197,
+                "input_bytes": 8388608,
+                "logical_digest": "b45fe7255cd85cca128aa6adb5ae2317b1930c289b152ba9dc49268c3a123d5e",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "03c5895ed6542b5d852dffab639d6b9994a145749166c7cbdfce0ea0ae7a29a3",
+                "elapsed_seconds": 0.003332,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "e7f01541a5c439384d280c1d7b609651e06aaaddd4e6d76b3a89410eb9fc2f52"
+              }
+            },
+            "stock": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 96,
+                  "entries": 96,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 82924,
+                  "payloads": 3183,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "stock",
+                "logical_digest": "b45fe7255cd85cca128aa6adb5ae2317b1930c289b152ba9dc49268c3a123d5e",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "3b443e03a66132e747bbfb8c8e4cf7e407dc8721f54536d96b57a3737713a4ac",
+                "elapsed_seconds": 0.007618,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            }
+          },
+          "status": "ok",
+          "vm_stock_verify": {
+            "case_id": "compress-off-archived",
+            "returncode": 0,
+            "stderr_sha256": "ad838683e44f9202ed2c76d3a729ed65595d701344936154a99de6ab6fdfc173",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "case_id": "compress-on-active",
+          "discrepancies": [],
+          "file": {
+            "bytes": 8388608,
+            "sha256": "b152a1fb3e838168e519fd65904512dd556863b56a6298629da9231bccdd184b"
+          },
+          "host_stock_verify": {
+            "command_sha256": "b92349c39953d009f684592e4a2f9ba41baf4641c6abdcce3e4ad7373a6bef02",
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "06bc6e8d6145df28ce39d104306d840f622e133342eb338a087e71c76f235984",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "readers": {
+            "go": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 96,
+                  "entries": 96,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 82924,
+                  "payloads": 3183,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "go",
+                "elapsed_seconds": 0.002260866,
+                "input_bytes": 8388608,
+                "logical_digest": "b45fe7255cd85cca128aa6adb5ae2317b1930c289b152ba9dc49268c3a123d5e",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "9f8a68a832094d6d2a3c902ab676fc7510f59ea7813534c89789c3d8f96e5e7a",
+                "elapsed_seconds": 0.003579,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "7b749af97bff2c623db44f7c8cd34a165a5a7bdd1ce489d08ee214dc7374a6b4"
+              }
+            },
+            "node": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 96,
+                  "entries": 96,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 82924,
+                  "payloads": 3183,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "node",
+                "logical_digest": "b45fe7255cd85cca128aa6adb5ae2317b1930c289b152ba9dc49268c3a123d5e",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "e65c389079d964e2d04a15a9c921d8e856157bfd55195a071ff415a4436e2159",
+                "elapsed_seconds": 0.063357,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "python": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 96,
+                  "entries": 96,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 82924,
+                  "payloads": 3183,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "python",
+                "logical_digest": "b45fe7255cd85cca128aa6adb5ae2317b1930c289b152ba9dc49268c3a123d5e",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "fd296c7d69db3a32f8d6ca3f0f9c7134f8152c1b8cbd6ca02b9993ff526c6f3f",
+                "elapsed_seconds": 0.050597,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "rust": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 96,
+                  "entries": 96,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 82924,
+                  "payloads": 3183,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "rust",
+                "elapsed_seconds": 0.00168631,
+                "input_bytes": 8388608,
+                "logical_digest": "b45fe7255cd85cca128aa6adb5ae2317b1930c289b152ba9dc49268c3a123d5e",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "f835fa3cb33b432c8aa4ce20a7cbb2195ccee37e31c1b317e1eb8d5c37d26217",
+                "elapsed_seconds": 0.002484,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "2954728c707adf00c19fcafc36c82ba104c9e7ccdd471cf67b444ac7d31e37c0"
+              }
+            },
+            "stock": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 96,
+                  "entries": 96,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 82924,
+                  "payloads": 3183,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "stock",
+                "logical_digest": "b45fe7255cd85cca128aa6adb5ae2317b1930c289b152ba9dc49268c3a123d5e",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "4843baf5901dd8adc7522697f1f0a967632ce4addfdd8ab87571ba52b331ce26",
+                "elapsed_seconds": 0.007338,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            }
+          },
+          "status": "ok",
+          "vm_stock_verify": {
+            "case_id": "compress-on-active",
+            "returncode": 0,
+            "stderr_sha256": "1b1e83e11a34a26ac66517a3d5e560e1874e87298ca1f821f4e82d1fe94c879b",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "case_id": "compress-on-archived",
+          "discrepancies": [],
+          "file": {
+            "bytes": 8388608,
+            "sha256": "d67002135cf05f34a223ea65c72926c917b84912bebab43ec358f6f7f11b3850"
+          },
+          "host_stock_verify": {
+            "command_sha256": "41231f6c3640831837ba6089358792c4b3d3233406087fa8f7cbe2c1f3bd1dd7",
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "6bc3e3330afdfc0b98c8743db72d3cf1b694d63afa5534544296c139472b2a2e",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "readers": {
+            "go": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 96,
+                  "entries": 96,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 82924,
+                  "payloads": 3183,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "go",
+                "elapsed_seconds": 0.002268876,
+                "input_bytes": 8388608,
+                "logical_digest": "b45fe7255cd85cca128aa6adb5ae2317b1930c289b152ba9dc49268c3a123d5e",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "f7710548a86e11bc64ba849eb1a89bacf11f6a109867f649bb078e21f64be6f4",
+                "elapsed_seconds": 0.003839,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "e9ebb31456680fe41f7424a93322896924c34196614e19984286dbdacc882f7e"
+              }
+            },
+            "node": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 96,
+                  "entries": 96,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 82924,
+                  "payloads": 3183,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "node",
+                "logical_digest": "b45fe7255cd85cca128aa6adb5ae2317b1930c289b152ba9dc49268c3a123d5e",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "6aba4bd9ac17ff861aa788b468b0ad2897b1ea3ed86c8644163fb01fa86af21f",
+                "elapsed_seconds": 0.056259,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "python": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 96,
+                  "entries": 96,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 82924,
+                  "payloads": 3183,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "python",
+                "logical_digest": "b45fe7255cd85cca128aa6adb5ae2317b1930c289b152ba9dc49268c3a123d5e",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "7777931498b5881c5d4704914e3892139496ada78cd6eede6aa012cc6e0c3d78",
+                "elapsed_seconds": 0.05284,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "rust": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 96,
+                  "entries": 96,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 82924,
+                  "payloads": 3183,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "rust",
+                "elapsed_seconds": 0.002092999,
+                "input_bytes": 8388608,
+                "logical_digest": "b45fe7255cd85cca128aa6adb5ae2317b1930c289b152ba9dc49268c3a123d5e",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "48215304489fde4686f760634a6094a7480752d0d3422fe6b57b2f9abeb2e76a",
+                "elapsed_seconds": 0.00302,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "89bf37d7fd36660c7c5cc30293ea3736ef3853943e6fab9ca9f7ac9ceea1d72f"
+              }
+            },
+            "stock": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 96,
+                  "entries": 96,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 82924,
+                  "payloads": 3183,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "stock",
+                "logical_digest": "b45fe7255cd85cca128aa6adb5ae2317b1930c289b152ba9dc49268c3a123d5e",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "2c9953af84ae652c120638a53fc2084e22bccc3b9bc609b2fc648942589344a0",
+                "elapsed_seconds": 0.007711,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            }
+          },
+          "status": "ok",
+          "vm_stock_verify": {
+            "case_id": "compress-on-archived",
+            "returncode": 0,
+            "stderr_sha256": "484e823649c79e0a120d386eeee5a54552e8ade4deac8230eba94f3de73b9896",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "case_id": "post-reboot-active",
+          "discrepancies": [],
+          "file": {
+            "bytes": 8388608,
+            "sha256": "98c0d69c0c94ed8646eb5d20d524495d9a71cdcb43cc97be3d47d61123753753"
+          },
+          "host_stock_verify": {
+            "command_sha256": "200b915baba3e5e11bbd9fce2fc47f450ca00a44548c3ff1503b5cddcb210a5f",
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "03e15179d0cdc0f591f2f690ba428fc69853dc847311cac5c82835e5a7fa67e2",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "readers": {
+            "go": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 49,
+                  "entries": 52,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 41755,
+                  "payloads": 1592,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "go",
+                "elapsed_seconds": 0.00096779,
+                "input_bytes": 8388608,
+                "logical_digest": "511d1fbeeed0854b38ab5ba9ee61946cfedb5a9118ca841aba126e772d03d2c8",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "85869d608f1e1656b565160602397fe95ba983e0de4ac9126e84317db1feb6cb",
+                "elapsed_seconds": 0.002084,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "b1d9a591d64bf6c854065d9d3aa03e5d275cb59921d8120d17373cc9fc8a6443"
+              }
+            },
+            "node": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 49,
+                  "entries": 52,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 41755,
+                  "payloads": 1592,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "node",
+                "logical_digest": "511d1fbeeed0854b38ab5ba9ee61946cfedb5a9118ca841aba126e772d03d2c8",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "120c1122b826d38df055345e526e50d03c66f704195ec558b5c0cb6a12853ed0",
+                "elapsed_seconds": 0.050105,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "python": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 49,
+                  "entries": 52,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 41755,
+                  "payloads": 1592,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "python",
+                "logical_digest": "511d1fbeeed0854b38ab5ba9ee61946cfedb5a9118ca841aba126e772d03d2c8",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "32a6849cf1e5ac1aa682b45f6d207fdb9bfe233f9e5c93f17445c2d86870fd72",
+                "elapsed_seconds": 0.045277,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "rust": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 49,
+                  "entries": 52,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 41755,
+                  "payloads": 1592,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "rust",
+                "elapsed_seconds": 0.000899393,
+                "input_bytes": 8388608,
+                "logical_digest": "511d1fbeeed0854b38ab5ba9ee61946cfedb5a9118ca841aba126e772d03d2c8",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "2b8eacc64b739650c7642c3462c5c5d190b07ed600e53c01099f90a4a3d7b01f",
+                "elapsed_seconds": 0.001665,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "79073f118377a8259a0df33a8bf932c5b420a6a484b18848bc72d7b4663c7c05"
+              }
+            },
+            "stock": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 49,
+                  "entries": 52,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 41755,
+                  "payloads": 1592,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "stock",
+                "logical_digest": "511d1fbeeed0854b38ab5ba9ee61946cfedb5a9118ca841aba126e772d03d2c8",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "e6370af1040f5e63ea9578f3c9321be314a4697ccc876cbdaf618062aec8ed08",
+                "elapsed_seconds": 0.004492,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            }
+          },
+          "status": "ok",
+          "vm_stock_verify": {
+            "case_id": "post-reboot-active",
+            "returncode": 0,
+            "stderr_sha256": "2cb7f7b001bcb8e1ebfe39a121e1ebbe84737032cb711f4f8e176676e31dfde3",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "case_id": "post-reboot-archived",
+          "discrepancies": [],
+          "file": {
+            "bytes": 8388608,
+            "sha256": "1d6a0000f811469e325d73e09286ab49333c65195f2030875f617a977c47b6d9"
+          },
+          "host_stock_verify": {
+            "command_sha256": "b9b6f9e2eb9c44c36bec2516e98da31a81da2f975b6c8501716b00017f129069",
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "1b5d52af139e0984e531daaf7d199525960142ed6ddd55650f02b8425fe2309a",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "readers": {
+            "go": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 49,
+                  "entries": 52,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 41755,
+                  "payloads": 1592,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "go",
+                "elapsed_seconds": 0.001127174,
+                "input_bytes": 8388608,
+                "logical_digest": "511d1fbeeed0854b38ab5ba9ee61946cfedb5a9118ca841aba126e772d03d2c8",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "54e77ec0ff3ad3e0801a093634a04f3a6d29124542135c10d9d516e6e77cd6ab",
+                "elapsed_seconds": 0.002517,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "8424a8b78712f6e1d7b88cd4e25584e8f4c6fca5834942dd298baa750333524e"
+              }
+            },
+            "node": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 49,
+                  "entries": 52,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 41755,
+                  "payloads": 1592,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "node",
+                "logical_digest": "511d1fbeeed0854b38ab5ba9ee61946cfedb5a9118ca841aba126e772d03d2c8",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "9d046ca3fddf145a500971e1fdd9ad0fdde2f4fcff95821665abda272ded3629",
+                "elapsed_seconds": 0.051228,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "python": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 49,
+                  "entries": 52,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 41755,
+                  "payloads": 1592,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "python",
+                "logical_digest": "511d1fbeeed0854b38ab5ba9ee61946cfedb5a9118ca841aba126e772d03d2c8",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "08fa97f08f5576bba7c7ca2caa6eddcd70a1895a0518fb2d09e3b5d607a297c8",
+                "elapsed_seconds": 0.049626,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "rust": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 49,
+                  "entries": 52,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 41755,
+                  "payloads": 1592,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "rust",
+                "elapsed_seconds": 0.000916218,
+                "input_bytes": 8388608,
+                "logical_digest": "511d1fbeeed0854b38ab5ba9ee61946cfedb5a9118ca841aba126e772d03d2c8",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "ef7694f57e1d3c62c75bab0a1140682ea58ffd691076fe943eadd5b6b395c871",
+                "elapsed_seconds": 0.001789,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "267432b474a1e71afd7fbfe3ca7652b35c5cdb1998ab13e173ef627d4d64b6c3"
+              }
+            },
+            "stock": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 49,
+                  "entries": 52,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 101,
+                  "payload_bytes": 41755,
+                  "payloads": 1592,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "stock",
+                "logical_digest": "511d1fbeeed0854b38ab5ba9ee61946cfedb5a9118ca841aba126e772d03d2c8",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "7b309dbd75d075a9bc22855033e57199c533056ce6809f946099b3191198acb7",
+                "elapsed_seconds": 0.007606,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            }
+          },
+          "status": "ok",
+          "vm_stock_verify": {
+            "case_id": "post-reboot-archived",
+            "returncode": 0,
+            "stderr_sha256": "1d64caf9a570995a6b0990dd3caa63d1fbd803920249e9ef06a15b4067f97fbb",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        }
+      ],
+      "distro": "Ubuntu 22.04 LTS",
+      "expected_systemd": "249-era",
+      "observed_os_release": "ubuntu 22.04",
+      "observed_systemd": "systemd 249 (249.11-0ubuntu3.20)",
+      "status": "ok",
+      "vm_name": "sdjournal-ubuntu2204"
+    },
+    {
+      "alias": "ubuntu2404",
+      "binary_field_ingestion": "logger-journald-text-fields",
+      "cases": [
+        {
+          "case_id": "compress-off-active",
+          "discrepancies": [],
+          "file": {
+            "bytes": 8388608,
+            "sha256": "2ac12959c6c7781c1c12a7551993570af244a667a8fe3d8cac5f9703c62995a4"
+          },
+          "host_stock_verify": {
+            "command_sha256": "f621fceb72eb268f8cebdf42e99651ef8fde22cb499c27dfb08a5ee064661ed8",
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "bf6c7fc11794eb62b61c946f58c1d63b0fae1069e09e7280c1af59c4285cca84",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "readers": {
+            "go": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 50,
+                  "entries": 57,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 4164,
+                  "payload_bytes": 120701,
+                  "payloads": 1364,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "go",
+                "elapsed_seconds": 0.001190679,
+                "input_bytes": 8388608,
+                "logical_digest": "255d347de071c8c1d4f38f8183aa9bbb67103ef554f8a273aeb4b2e83aa34227",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "f885f7cc555d58817d0017e0b6f4311e7b00f0781bb35dfe51ed3134a265a7bc",
+                "elapsed_seconds": 0.002592,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "ab5c0bbd7bf4c4a6f48e865db2e612ebc0937b2d3fc666d770e96df18508ceb6"
+              }
+            },
+            "node": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 50,
+                  "entries": 57,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 4164,
+                  "payload_bytes": 120701,
+                  "payloads": 1364,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "node",
+                "logical_digest": "255d347de071c8c1d4f38f8183aa9bbb67103ef554f8a273aeb4b2e83aa34227",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "9c87fd7691e93a7c9538016fda1b7d0656505a5ea10162d1422ad980ba412dfc",
+                "elapsed_seconds": 0.063055,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "python": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 50,
+                  "entries": 57,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 4164,
+                  "payload_bytes": 120701,
+                  "payloads": 1364,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "python",
+                "logical_digest": "255d347de071c8c1d4f38f8183aa9bbb67103ef554f8a273aeb4b2e83aa34227",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "67ee1ffb8049a1528d4be24e9c55da3a88ea5efd65add6fe91a6bb1fb3d6ed65",
+                "elapsed_seconds": 0.051283,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "rust": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 50,
+                  "entries": 57,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 4164,
+                  "payload_bytes": 120701,
+                  "payloads": 1364,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "rust",
+                "elapsed_seconds": 0.001273788,
+                "input_bytes": 8388608,
+                "logical_digest": "255d347de071c8c1d4f38f8183aa9bbb67103ef554f8a273aeb4b2e83aa34227",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "8834b59de67ea405c34c5584a0402c3803005e5c0583b3c06882793a32d5aa1c",
+                "elapsed_seconds": 0.002101,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "d9bab915bc5150a05ffdbba61206697ec62d992f3059d3dfa09187e55d8db683"
+              }
+            },
+            "stock": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 50,
+                  "entries": 57,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 4164,
+                  "payload_bytes": 120701,
+                  "payloads": 1364,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "stock",
+                "logical_digest": "255d347de071c8c1d4f38f8183aa9bbb67103ef554f8a273aeb4b2e83aa34227",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "b0cc5ff3f595774b43e6ecacf35c315a4dab073feea3b1b170a358b3e6444919",
+                "elapsed_seconds": 0.005903,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            }
+          },
+          "status": "ok",
+          "vm_stock_verify": {
+            "case_id": "compress-off-active",
+            "returncode": 0,
+            "stderr_sha256": "a07213f8435fa2604ff5718a25f320ac3063d8ef7a97d49b642b378c30caf68a",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "case_id": "compress-off-archived",
+          "discrepancies": [],
+          "file": {
+            "bytes": 8388608,
+            "sha256": "7afa0035a975aa339e587cd241c8dabae84b1b89c01330e18ceb82ddebe6ade8"
+          },
+          "host_stock_verify": {
+            "command_sha256": "4a27355e7d70121cb28b3e1f45b1c20571a3c07f6beeb9eb464c43f3e425682c",
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "3be82616d5d9c69b5de4e680964e275b8268a667d103d5fd05d52a6cd9a7df44",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "readers": {
+            "go": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 70,
+                  "entries": 70,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 121,
+                  "payload_bytes": 62061,
+                  "payloads": 2347,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "go",
+                "elapsed_seconds": 0.001622211,
+                "input_bytes": 8388608,
+                "logical_digest": "5008723bdbdafd6238acb4127f26192bc50ef403b0f9da36fd101f633e5e1900",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "4c8a553b3416d0d8923a2a14b6d98dbd14db23a937b240e3c0304ff7652fec09",
+                "elapsed_seconds": 0.003283,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "8823d207c2173ba32234bf46a6521c7b682f76cac5bfb6c934db19d7294e89e6"
+              }
+            },
+            "node": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 70,
+                  "entries": 70,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 121,
+                  "payload_bytes": 62061,
+                  "payloads": 2347,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "node",
+                "logical_digest": "5008723bdbdafd6238acb4127f26192bc50ef403b0f9da36fd101f633e5e1900",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "b23d1e14872a462fe7ff1119f7eba4848ae550097ce3142291801400577ab035",
+                "elapsed_seconds": 0.058225,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "python": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 70,
+                  "entries": 70,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 121,
+                  "payload_bytes": 62061,
+                  "payloads": 2347,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "python",
+                "logical_digest": "5008723bdbdafd6238acb4127f26192bc50ef403b0f9da36fd101f633e5e1900",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "a7605b9006bd27f0c6ad6958a1501d13a6d7646051479e432c9ec371dcb672cf",
+                "elapsed_seconds": 0.049589,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "rust": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 70,
+                  "entries": 70,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 121,
+                  "payload_bytes": 62061,
+                  "payloads": 2347,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "rust",
+                "elapsed_seconds": 0.00129067,
+                "input_bytes": 8388608,
+                "logical_digest": "5008723bdbdafd6238acb4127f26192bc50ef403b0f9da36fd101f633e5e1900",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "f21fec15245a1fde67a0e45c94c7a105f01f3500dec90c40991f406b9c9a1337",
+                "elapsed_seconds": 0.002264,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "33e97d3f1cbb8dd367aceab7be937543a580aeeed6d38ac35367ae6c8b65c3d6"
+              }
+            },
+            "stock": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 70,
+                  "entries": 70,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 121,
+                  "payload_bytes": 62061,
+                  "payloads": 2347,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "stock",
+                "logical_digest": "5008723bdbdafd6238acb4127f26192bc50ef403b0f9da36fd101f633e5e1900",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "2ec295a6060dc0797c2b76b3b07592f4e5997bbfe3c7ff6db642dbb11df10c51",
+                "elapsed_seconds": 0.007972,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            }
+          },
+          "status": "ok",
+          "vm_stock_verify": {
+            "case_id": "compress-off-archived",
+            "returncode": 0,
+            "stderr_sha256": "ad838683e44f9202ed2c76d3a729ed65595d701344936154a99de6ab6fdfc173",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "case_id": "compress-on-active",
+          "discrepancies": [],
+          "file": {
+            "bytes": 8388608,
+            "sha256": "031ce2978643d6841d3b5fefc91b98f276f5bcfe5c50b756735d47d6799ca5e8"
+          },
+          "host_stock_verify": {
+            "command_sha256": "0ac8164cf0e1f60eaee27d69fb5531f38b61ab104c9304991eba307451b5fd17",
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "b6cbfc3c20e1f38652401a19455789297666acb9f804c7c3a9a3d287663f9f95",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "readers": {
+            "go": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 70,
+                  "entries": 70,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 121,
+                  "payload_bytes": 62061,
+                  "payloads": 2347,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "go",
+                "elapsed_seconds": 0.001544809,
+                "input_bytes": 8388608,
+                "logical_digest": "5008723bdbdafd6238acb4127f26192bc50ef403b0f9da36fd101f633e5e1900",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "4c763cc916a4001476554dfc0634008f449d84f56e8ef497b05800c84b38d162",
+                "elapsed_seconds": 0.003038,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "2e1472895a34aa2546bee343ea8820b1a5fb1c9a0ec9416c3776117fa49507de"
+              }
+            },
+            "node": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 70,
+                  "entries": 70,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 121,
+                  "payload_bytes": 62061,
+                  "payloads": 2347,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "node",
+                "logical_digest": "5008723bdbdafd6238acb4127f26192bc50ef403b0f9da36fd101f633e5e1900",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "d0d83aa14fbf7374f776c325934870fab916458d230e052f86aabecd99fd89b2",
+                "elapsed_seconds": 0.051838,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "python": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 70,
+                  "entries": 70,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 121,
+                  "payload_bytes": 62061,
+                  "payloads": 2347,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "python",
+                "logical_digest": "5008723bdbdafd6238acb4127f26192bc50ef403b0f9da36fd101f633e5e1900",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "8b63d71dec815939b1a30c3208b6b2246c2bf2e75d4cf5b9d5c32f215774ac27",
+                "elapsed_seconds": 0.053256,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "rust": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 70,
+                  "entries": 70,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 121,
+                  "payload_bytes": 62061,
+                  "payloads": 2347,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "rust",
+                "elapsed_seconds": 0.001549957,
+                "input_bytes": 8388608,
+                "logical_digest": "5008723bdbdafd6238acb4127f26192bc50ef403b0f9da36fd101f633e5e1900",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "9c91e85dfca35c7b9ea95f6d98b3feaba70a463433f9965d7080a9432e5a3492",
+                "elapsed_seconds": 0.002482,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "199bfa2dc076c064a5f23513c37f3d5a5ededed5b68f892bed973c8a3e743e47"
+              }
+            },
+            "stock": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 70,
+                  "entries": 70,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 121,
+                  "payload_bytes": 62061,
+                  "payloads": 2347,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "stock",
+                "logical_digest": "5008723bdbdafd6238acb4127f26192bc50ef403b0f9da36fd101f633e5e1900",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "62994fa7930a89f3a917b790e0de8ede23aad51ee7a8fc558d4bf9b5d06899b5",
+                "elapsed_seconds": 0.006395,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            }
+          },
+          "status": "ok",
+          "vm_stock_verify": {
+            "case_id": "compress-on-active",
+            "returncode": 0,
+            "stderr_sha256": "1b1e83e11a34a26ac66517a3d5e560e1874e87298ca1f821f4e82d1fe94c879b",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "case_id": "compress-on-archived",
+          "discrepancies": [],
+          "file": {
+            "bytes": 8388608,
+            "sha256": "7afa0035a975aa339e587cd241c8dabae84b1b89c01330e18ceb82ddebe6ade8"
+          },
+          "host_stock_verify": {
+            "command_sha256": "203e8adc9d2085d4e8d7a0e78e7d9f8b381159c463d0088ae4b996422e52d485",
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "b973e1fafb562daa37bfbeec21afe46f0d7a6f07ddd1b6a053f1d6138b304452",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "readers": {
+            "go": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 70,
+                  "entries": 70,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 121,
+                  "payload_bytes": 62061,
+                  "payloads": 2347,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "go",
+                "elapsed_seconds": 0.001594075,
+                "input_bytes": 8388608,
+                "logical_digest": "5008723bdbdafd6238acb4127f26192bc50ef403b0f9da36fd101f633e5e1900",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "30d65729e3fa86214899babb1e3acc4a59b9060a55d1779261566b1544a9ded9",
+                "elapsed_seconds": 0.002915,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "4ad22870fc36f70c9e49248678c70be48c1d670fa97c4edb313a76cf66974927"
+              }
+            },
+            "node": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 70,
+                  "entries": 70,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 121,
+                  "payload_bytes": 62061,
+                  "payloads": 2347,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "node",
+                "logical_digest": "5008723bdbdafd6238acb4127f26192bc50ef403b0f9da36fd101f633e5e1900",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "9982fe98b0b29e3a267900a9c959da990ecd0e33cf3bad28776e82378935359a",
+                "elapsed_seconds": 0.052416,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "python": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 70,
+                  "entries": 70,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 121,
+                  "payload_bytes": 62061,
+                  "payloads": 2347,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "python",
+                "logical_digest": "5008723bdbdafd6238acb4127f26192bc50ef403b0f9da36fd101f633e5e1900",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "7d34659d60b84b7679720d089e6c8eb274d9c0c32f3c2e32e7bea3711e99f622",
+                "elapsed_seconds": 0.053371,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "rust": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 70,
+                  "entries": 70,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 121,
+                  "payload_bytes": 62061,
+                  "payloads": 2347,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "rust",
+                "elapsed_seconds": 0.001283061,
+                "input_bytes": 8388608,
+                "logical_digest": "5008723bdbdafd6238acb4127f26192bc50ef403b0f9da36fd101f633e5e1900",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "8846ee8a72480bfef8bea282e893e1c3c58b58cb715fdc91a1ab128445523659",
+                "elapsed_seconds": 0.002187,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "8e8c92fa25a6aa7c35e49c55274b41f7fcea338a5efb30f88cc46a6053c72fbb"
+              }
+            },
+            "stock": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 70,
+                  "entries": 70,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 121,
+                  "payload_bytes": 62061,
+                  "payloads": 2347,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "stock",
+                "logical_digest": "5008723bdbdafd6238acb4127f26192bc50ef403b0f9da36fd101f633e5e1900",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "58cc89d3c174dcacb6a06dd3f9a751044ec3c69ad9181fc771bc7bfbf5ba8124",
+                "elapsed_seconds": 0.006147,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            }
+          },
+          "status": "ok",
+          "vm_stock_verify": {
+            "case_id": "compress-on-archived",
+            "returncode": 0,
+            "stderr_sha256": "484e823649c79e0a120d386eeee5a54552e8ade4deac8230eba94f3de73b9896",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "case_id": "post-reboot-active",
+          "discrepancies": [],
+          "file": {
+            "bytes": 8388608,
+            "sha256": "199890f90f4b2ddc7530983041b015e100124f21acba40ad50772abc748c6179"
+          },
+          "host_stock_verify": {
+            "command_sha256": "a03b6dc9935c71f5519346a4bff58d0830a802ae271b6a15a43b5483c0db7e0a",
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "b21928753ec919c39c26f8c275a366fba1a75d139528f2582e4657f7d4494b49",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "readers": {
+            "go": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 29,
+                  "entries": 29,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 121,
+                  "payload_bytes": 24850,
+                  "payloads": 935,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "go",
+                "elapsed_seconds": 0.000750546,
+                "input_bytes": 8388608,
+                "logical_digest": "224fd54aa2956bf21d27c4cb45fd933fef49314170239097209cd9b7f196e799",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "50d3ec8dfa0286ba2f25c2734b8d7c2c295c5d41850d5b56de1d271187e14450",
+                "elapsed_seconds": 0.001946,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "07268bc88eafbe5c8c6fb54aff69b15590266c176511d480662880c10d5b0578"
+              }
+            },
+            "node": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 29,
+                  "entries": 29,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 121,
+                  "payload_bytes": 24850,
+                  "payloads": 935,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "node",
+                "logical_digest": "224fd54aa2956bf21d27c4cb45fd933fef49314170239097209cd9b7f196e799",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "bb0236d4ad818d22064e631c24a042fb1ea4f42cc64289121ccf731a5963c341",
+                "elapsed_seconds": 0.05186,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "python": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 29,
+                  "entries": 29,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 121,
+                  "payload_bytes": 24850,
+                  "payloads": 935,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "python",
+                "logical_digest": "224fd54aa2956bf21d27c4cb45fd933fef49314170239097209cd9b7f196e799",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "f7b93118fe8f82da06f985552dc0b07ba738407928a119428bd34ee255a31d0a",
+                "elapsed_seconds": 0.046291,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "rust": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 29,
+                  "entries": 29,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 121,
+                  "payload_bytes": 24850,
+                  "payloads": 935,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "rust",
+                "elapsed_seconds": 0.000541384,
+                "input_bytes": 8388608,
+                "logical_digest": "224fd54aa2956bf21d27c4cb45fd933fef49314170239097209cd9b7f196e799",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "813d176427f00202bd5d05790acff8b01bba604d7e86d1ce9f2dd8fba8af5af4",
+                "elapsed_seconds": 0.001414,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "d55abd41748a4879f00372bdb5c5c74b6fe54f4c62fc9c1f54900c4fb6c5d4b8"
+              }
+            },
+            "stock": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 29,
+                  "entries": 29,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 121,
+                  "payload_bytes": 24850,
+                  "payloads": 935,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "stock",
+                "logical_digest": "224fd54aa2956bf21d27c4cb45fd933fef49314170239097209cd9b7f196e799",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "96200baee8b3eefec6ed71bdaa43590ebaad3826a41917341c79cbee8996ad8b",
+                "elapsed_seconds": 0.004184,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            }
+          },
+          "status": "ok",
+          "vm_stock_verify": {
+            "case_id": "post-reboot-active",
+            "returncode": 0,
+            "stderr_sha256": "2cb7f7b001bcb8e1ebfe39a121e1ebbe84737032cb711f4f8e176676e31dfde3",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        {
+          "case_id": "post-reboot-archived",
+          "discrepancies": [],
+          "file": {
+            "bytes": 8388608,
+            "sha256": "16c93fcfd279d93142cc386134497630a5acfddcadb9ebdb1ee60b4c9f9712ea"
+          },
+          "host_stock_verify": {
+            "command_sha256": "63014d340f2ee7573fd3a5f47c6a39597934482063c0523aac177c32a48b6299",
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "1ea7a9d3907eee1a2ae5b1e7ddd3153ef5eb5e85b70115866d0b8e56da76039b",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          "readers": {
+            "go": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 28,
+                  "entries": 30,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 115,
+                  "payload_bytes": 24796,
+                  "payloads": 940,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "go",
+                "elapsed_seconds": 0.000942627,
+                "input_bytes": 8388608,
+                "logical_digest": "fedde285790fc3c01e75e1149147964364690b0d4251521d49321f4a5ddb2078",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "6316e7c753bad010bec173b18a192b15852cc3a8e030676a3b4a82694ee32a22",
+                "elapsed_seconds": 0.003004,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "5ec2030442198f14901e0ee8f398d2c9e418c55358001f7e32437a519f041e88"
+              }
+            },
+            "node": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 28,
+                  "entries": 30,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 115,
+                  "payload_bytes": 24796,
+                  "payloads": 940,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "node",
+                "logical_digest": "fedde285790fc3c01e75e1149147964364690b0d4251521d49321f4a5ddb2078",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "b46d7f4a00191bbc916166dd1eb48a93c160213127bbaf9e93bea5468a610e90",
+                "elapsed_seconds": 0.045397,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "python": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 28,
+                  "entries": 30,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 115,
+                  "payload_bytes": 24796,
+                  "payloads": 940,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "python",
+                "logical_digest": "fedde285790fc3c01e75e1149147964364690b0d4251521d49321f4a5ddb2078",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "b0f626f36e3636dac4524133463eef0ff5e4266bb9e7eb7c468ef87a5ba253ea",
+                "elapsed_seconds": 0.04539,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            },
+            "rust": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 28,
+                  "entries": 30,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 115,
+                  "payload_bytes": 24796,
+                  "payloads": 940,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "rust",
+                "elapsed_seconds": 0.000573329,
+                "input_bytes": 8388608,
+                "logical_digest": "fedde285790fc3c01e75e1149147964364690b0d4251521d49321f4a5ddb2078",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "ed1cf7442b5fd2dced9ed50151bd33c1a8e91e4d51254e08c8c0607e9aa7179e",
+                "elapsed_seconds": 0.001487,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "stdout_sha256": "26bb5a31ba89940e7162662d7796ef0ae98814acc9e91eea107f158c32e9ff4f"
+              }
+            },
+            "stock": {
+              "digest": {
+                "counts": {
+                  "binary_payloads": 28,
+                  "entries": 30,
+                  "entries_with_repeated_field_names": 0,
+                  "largest_payload_bytes": 115,
+                  "payload_bytes": 24796,
+                  "payloads": 940,
+                  "payloads_without_separator": 0,
+                  "repeated_field_name_occurrences": 0
+                },
+                "driver": "stock",
+                "logical_digest": "fedde285790fc3c01e75e1149147964364690b0d4251521d49321f4a5ddb2078",
+                "schema": "systemd-journal-sdk-corpus-logical-v1"
+              },
+              "stats": {
+                "command_sha256": "d30cac1895fdd4fb67c18df96214d90ecb3f0315978d8974b47921e6613b7339",
+                "elapsed_seconds": 0.003456,
+                "returncode": 0,
+                "status": "ok",
+                "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+              }
+            }
+          },
+          "status": "ok",
+          "vm_stock_verify": {
+            "case_id": "post-reboot-archived",
+            "returncode": 0,
+            "stderr_sha256": "e717dc0919c994335ec0f32fc9b0f61ba1791e8b6ea963431e767d34bcd1ebb7",
+            "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        }
+      ],
+      "distro": "Ubuntu 24.04 LTS",
+      "expected_systemd": "255-era",
+      "observed_os_release": "ubuntu 24.04",
+      "observed_systemd": "systemd 255 (255.4-1ubuntu8.15)",
+      "status": "ok",
+      "vm_name": "sdjournal-ubuntu2404"
+    }
+  ]
+}

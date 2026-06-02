@@ -6,8 +6,8 @@ Status: in-progress
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: active implementation worker; VM provisioning is approved only under the
-strict caps recorded in `## Implications And Decisions`.
+Sub-state: partial validation complete; blocked on the exhausted four-new-VM cap
+and an optional Python-reader discrepancy from Ubuntu 18.04 archived files.
 
 ## Requirements
 
@@ -64,9 +64,16 @@ Sources checked:
 
 Current state:
 
-- No pending SOW previously tracked the VM validation stream.
-- No VM provisioning for this purpose has been started under this SOW.
-- Existing source-built systemd matrix reports are useful but not a replacement for distro/runtime validation.
+- SOW-0075 is active in `current/`.
+- Four new `sdjournal-*` VMs were created, exhausting the approved cap.
+- Three VMs produced sanitized validation results: Ubuntu 18.04, Ubuntu 22.04,
+  and Ubuntu 24.04.
+- Debian 11 was created but blocked before validation because SSH service was
+  not reachable under the minimal no-package VM profile.
+- Existing `rhel810` was inspected only at the libvirt/SSH-auth level; SSH key
+  authentication failed for checked users, and no modification was made.
+- Existing source-built systemd matrix reports remain useful but not a
+  replacement for distro/runtime validation.
 
 Risks:
 
@@ -74,6 +81,11 @@ Risks:
 - Enterprise images may require credentials, subscriptions, or manual download steps.
 - Raw VM journals can still contain sensitive data, even when generated from disposable systems.
 - Distro-patched systemd behavior may expose real discrepancies requiring follow-up SOWs rather than quick fixes.
+- The default libvirt image path was observed on a filesystem above the 90%
+  usage safety rail before provisioning, although the created VM disks stayed
+  at the approved 4 GiB cap.
+- The four-new-VM cap is exhausted; no replacement target can be created unless
+  the user explicitly approves cleanup/replacement or raises the cap.
 
 ## Pre-Implementation Gate
 
@@ -193,6 +205,22 @@ Open decisions:
      evidence, keep raw journals out of durable artifacts, and stop on missing
      tooling or credential/image blockers.
 
+3. 2026-06-01 capped target matrix
+   - Decision: use a production-oriented spread that fits the 4 GiB disk cap:
+     Ubuntu 18.04 LTS (`systemd 237` target), Debian 11 bullseye (`systemd
+     247` target), Ubuntu 22.04 LTS (`systemd 249` target), and Ubuntu 24.04
+     LTS (`systemd 255` target).
+   - Evidence: official image URLs and checksums are recorded in
+     `tests/vm_matrix/run_vm_matrix.py` and summarized in
+     `tests/vm_matrix/reports/sow-0075-provisioning-report.md`.
+   - Decision: exclude Rocky Linux 8 because the official checked image has a
+     10 GiB virtual disk, violating the approved 4 GiB disk cap.
+   - Decision: exclude Debian 13 after Debian 11 consumed one VM slot and
+     blocked; replacing Debian 13 would exceed the four-new-VM cap.
+   - Implication: this SOW provides strong Ubuntu distro coverage plus a
+     blocked Debian attempt, but it does not complete the intended Debian/RHEL
+     clone validation without a user decision on cleanup/replacement.
+
 ## Plan
 
 1. Define VM targets and approval checklist.
@@ -234,54 +262,116 @@ Failure handling:
 - Created this pending SOW to track the previously discussed VM historical-systemd validation stream.
 - Moved this SOW to `current/`, set status to `in-progress`, and recorded the
   user-approved VM routing and hard caps before provisioning or implementation.
+- Added `tests/vm_matrix/run_vm_matrix.py`, a repo-local VM matrix harness that
+  keeps raw journals under `.local/sow-0075/` and emits sanitized reports under
+  `tests/vm_matrix/reports/`.
+- Verified host prerequisites read-only: required tools were present, `br0` was
+  up, target `sdjournal-*` names were initially unused, and existing `rhel810`
+  was running.
+- Verified official image availability and checksums for Ubuntu 18.04, Debian
+  11, Ubuntu 22.04, Ubuntu 24.04, Debian 13, and Rocky Linux 8 candidates.
+- Created four new VMs, all with 1 vCPU, 1 GiB RAM, 4 GiB disk, and autostart
+  disabled: `sdjournal-ubuntu1804`, `sdjournal-debian11`,
+  `sdjournal-ubuntu2204`, and `sdjournal-ubuntu2404`.
+- Generated controlled journal cases on Ubuntu 18.04, Ubuntu 22.04, and Ubuntu
+  24.04: compression on/off, active/open snapshots, archived/rotated files,
+  and post-reboot active/archived files.
+- Debian 11 blocked before journal generation because SSH service was not
+  reachable under the minimal no-package VM profile; no further VM was created
+  because the four-new-VM cap was exhausted.
+- Existing `rhel810` read-only SSH metadata check was attempted; SSH key
+  authentication failed for checked users, and no modification was made.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Pending.
+- Target matrix recorded in
+  `tests/vm_matrix/reports/sow-0075-provisioning-report.md`.
+- Provisioned only user-approved disposable `sdjournal-*` VMs, capped at
+  1 vCPU, 1 GiB RAM, and 4 GiB disk. Autostart is disabled for all four.
+- Generated journals from three reachable VMs, six files per VM:
+  `compress-on-active`, `compress-on-archived`, `compress-off-active`,
+  `compress-off-archived`, `post-reboot-active`, and
+  `post-reboot-archived`.
+- VM stock `journalctl --verify --file` and host stock
+  `journalctl --verify --file` passed for all 18 collected files.
+- Host stock, Rust, Go, and Node reader logical digests matched for all 18
+  collected files.
+- Python reader logical digests matched 16/18 files and mismatched only two
+  Ubuntu 18.04 archived files. The discrepancy code is
+  `PYTHON_DIGEST_MISMATCH`.
+- Raw VM journals are under `.local/sow-0075/raw/` only and were not staged.
+- Debian 11 and `rhel810` blockers are recorded in the provisioning report.
 
 Tests or equivalent validation:
 
-- Pending.
+- `python3 -m py_compile tests/vm_matrix/run_vm_matrix.py` passed.
+- `python3 tests/vm_matrix/run_vm_matrix.py preflight` passed before initial
+  provisioning. A second scoped preflight passed for the Ubuntu 22.04 and
+  Ubuntu 24.04 replacement path.
+- `python3 tests/vm_matrix/run_vm_matrix.py collect --targets ubuntu1804 ubuntu2204 ubuntu2404` passed and copied 18 raw journal files under `.local/`.
+- `python3 tests/vm_matrix/run_vm_matrix.py validate --targets ubuntu1804 ubuntu2204 ubuntu2404 --report-json tests/vm_matrix/reports/sow-0075-vm-matrix-report.json --report-md tests/vm_matrix/reports/sow-0075-vm-matrix-report.md` completed with status `discrepancy` and discrepancy `PYTHON_DIGEST_MISMATCH`.
 
 Real-use evidence:
 
-- Pending.
+- Booted distro-generated files were collected from:
+  - Ubuntu 18.04 LTS, observed `systemd 237`.
+  - Ubuntu 22.04 LTS, observed `systemd 249 (249.11-0ubuntu3.20)`.
+  - Ubuntu 24.04 LTS, observed `systemd 255 (255.4-1ubuntu8.15)`.
+- Each reachable VM generated active/open and rotated archived files before and
+  after a reboot.
+- Stock VM-side and host-side `journalctl --verify --file` passed for each
+  collected file.
 
 Reviewer findings:
 
-- Pending.
+- Not run by this implementation worker. External reviewer runs were not
+  explicitly requested for this worker turn, and this SOW remains
+  `in-progress` due blockers/discrepancy.
 
 Same-failure scan:
 
-- Pending.
+- Same-failure search in the generated report found the Python mismatch only on
+  Ubuntu 18.04 `compress-on-archived` and `compress-off-archived`; Ubuntu
+  18.04 active/post-reboot files and all Ubuntu 22.04/24.04 files passed.
 
 Sensitive data gate:
 
-- This planning artifact contains no raw VM logs, credentials, hostnames, IPs, machine IDs, boot IDs, or journal payloads.
+- Durable artifacts were checked for VM IP addresses and raw generated payload
+  content. Reports contain sanitized aliases, versions, counts, hashes, status
+  codes, and discrepancy codes only.
+- Raw copied VM journals remain under `.local/sow-0075/raw/` and are not
+  staged.
+- SSH known-hosts data and state with encoded IPs remain under
+  `.local/sow-0075/` and are not staged.
 
 Artifact maintenance gate:
 
-- AGENTS.md: no update needed for tracking.
-- Runtime project skills: no update needed for tracking.
-- Specs: no update needed until implementation changes compatibility claims.
-- End-user/operator docs: no update needed for tracking.
-- End-user/operator skills: no update needed for tracking.
-- SOW lifecycle: moved to `Status: in-progress` under `.agents/sow/current/`.
+- AGENTS.md: no update needed; the VM cap was SOW-specific and does not change
+  project-wide guardrails.
+- Runtime project skills: no update needed yet; the harness is SOW-local and
+  not yet a mandatory reusable workflow.
+- Specs: no compatibility claim is changed while `PYTHON_DIGEST_MISMATCH` and
+  Debian/RHEL blockers remain open.
+- End-user/operator docs: no update needed; no public SDK behavior changed.
+- End-user/operator skills: no output/reference skill update needed.
+- SOW lifecycle: remains `Status: in-progress` under `.agents/sow/current/`.
 - SOW-status.md: updated to list this active SOW.
 
 Specs update:
 
-- No spec update needed for tracking only.
+- No spec update yet because this SOW did not close and did not change public
+  compatibility claims.
 
 Project skills update:
 
-- No project skill update needed for tracking only.
+- No project skill update yet. If this VM matrix becomes a reusable release
+  gate, update a project skill after the blockers are resolved.
 
 End-user/operator docs update:
 
-- No docs update needed for tracking only.
+- No docs update needed; no public SDK usage changed.
 
 End-user/operator skills update:
 
@@ -290,22 +380,41 @@ End-user/operator skills update:
 Lessons:
 
 - Follow-up work that is only mentioned in a completed SOW can be missed; it needs its own pending SOW or explicit rejection.
+- Minimal no-package cloud-init is enough for Ubuntu cloud images but was not
+  enough for Debian 11 SSH access in this environment. A future Debian target
+  needs either an image/profile that proves SSH readiness under the cap or an
+  explicit user decision to allow package installation inside the VM.
+- Some cloud images expose only IPv6 link-local addresses on `br0`; the harness
+  now supports `fe80::*%br0` SSH/SCP paths.
+- Official image virtual disk size matters, not only download size. Rocky Linux
+  8 was excluded because its official image was 10 GiB virtual size.
 
 Follow-up mapping:
 
-- Tracked by this SOW.
+- `PYTHON_DIGEST_MISMATCH` on Ubuntu 18.04 archived files maps to SOW-0065
+  unless the user asks to open a focused Python historical-archived-reader SOW.
+- Debian 11 and RHEL/RHEL-clone VM validation remains blocked by the exhausted
+  four-new-VM cap and missing SSH access. A user decision is needed before
+  cleanup/replacement or cap increase.
 
 ## Outcome
 
-Pending.
+Partial. Ubuntu 18.04, Ubuntu 22.04, and Ubuntu 24.04 VM-generated journals were
+validated with sanitized reports. The SOW remains `in-progress` because Debian
+11 blocked, `rhel810` SSH auth failed read-only inspection, and Python reader
+parity has a historical archived-file discrepancy.
 
 ## Lessons Extracted
 
-Pending.
+See `Lessons` under `## Validation`.
 
 ## Followup
 
-None yet.
+- Resolve or explicitly defer `PYTHON_DIGEST_MISMATCH`.
+- Decide whether to clean up/recreate the blocked Debian 11 VM or raise/adjust
+  the four-new-VM cap for Debian/RHEL-family coverage.
+- Decide whether existing `rhel810` can be accessed with an approved key/user or
+  whether RHEL 8 coverage should use a new approved disposable target later.
 
 ## Regression Log
 
