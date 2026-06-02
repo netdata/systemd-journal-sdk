@@ -3,7 +3,7 @@
 ## Current
 
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
-- `SOW-0064-20260530-real-world-journal-corpus-evaluation.md` - reopened. The harness implementation was merged, but the full local 100+ GiB corpus regeneration/evaluation requested by the user was not run before closure.
+- `SOW-0075-20260601-vm-historical-systemd-validation.md` - in-progress. Ubuntu 18.04/22.04/24.04 VM validation and RHEL 8.10 read-only archived validation passed with sanitized reports; Debian 11 remains blocked because the created VM refuses SSH on port 22 and the four-new-VM cap is exhausted.
 
 ## Pending
 
@@ -16,6 +16,8 @@
 
 ## Done
 
+- `SOW-0076-20260601-independent-selective-real-corpus-verification.md`
+- `SOW-0064-20260530-real-world-journal-corpus-evaluation.md`
 - `SOW-0055-20260529-rust-seek-cursor-systemd-parity.md`
 - `SOW-0026-20260526-netdata-sdk-integration.md`
 - `SOW-0063-20260530-cross-platform-portability.md`
@@ -89,7 +91,7 @@
 - SOW-0032 completed live feature compatibility validation. `run_live_matrix.py` now validates regular, zstd/xz/lz4 DATA-compressed, compact, compact plus DATA-compressed, and sealed/FSS active journal files across Go, Rust, Node.js, and Python writers; stock `journalctl --file`; stock libsystemd; Go/Rust/Node.js/Python readers; final `journalctl --verify --file`; sealed `--verify-key`; and structural feature checks. The default run passed 36/36 on `systemd 260 (260.1-2-manjaro)`.
 - SOW-0033 completed full verification parity for the supported fixture envelope. `run_verify_matrix.py` passes against stock `journalctl --verify --file` and Rust, Go, Node.js, and Python verification paths for 9 positive files and 12 negative corruption classes on `systemd 260 (260.1-2-manjaro)`.
 - SOW-0063 tracks mandatory cross-platform SDK support for Linux, FreeBSD, macOS, and Windows. Stock systemd validation remains Linux-based; files generated on non-Linux targets must be validated on Linux with stock systemd tooling after transfer.
-- SOW-0064 is reopened after an incorrect closure. The harness exists, but the required real-corpus evaluation against the workstation's journal files must still run and produce sanitized hashes, counts, performance, memory, I/O, footprint, and discrepancy results.
+- SOW-0064 is closed. SOW-0076 independently repeated selective real-corpus verification after SOW-0064 and is also closed.
 - SOW-0065 tracks the future parallel language parity/performance closure phase after Rust, portability, corpus, and integration gates are stable. Actual git worktree creation and external implementer routing still require explicit user approval at activation time.
 - SOW-0066 tracks the final `v1.0.0` release and language registry publication. Registry credentials must never be written to durable artifacts.
 - Byte-for-byte writer identity is the target for deterministic uncompressed journals. Any feature slice that cannot be made byte-identical must return with evidence before the acceptance condition is changed.

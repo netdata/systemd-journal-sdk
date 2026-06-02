@@ -803,7 +803,7 @@ def validate_one(target: Target, helpers: dict[str, Path | None]) -> dict[str, A
                 continue
             digest, stats = run_json_digest(driver, exe, path)
             readers[driver] = {"digest": digest, "stats": stats}
-        py = which("python3")
+        py = os.environ.get("SOW0075_PYTHON") or which("python3")
         if py:
             digest, stats = digest_export_command(
                 "python",
@@ -869,6 +869,7 @@ def validate(targets: list[Target], report_json: Path, report_md: Path) -> dict[
         "kind": "vm-reader-matrix",
         "generated_at_unix": int(time.time()),
         "canonical_digest_schema": SCHEMA_VERSION,
+        "python_runtime": os.environ.get("SOW0075_PYTHON_LABEL", "python3"),
         "caps": {"max_new_vms": 4, "name_prefix": "sdjournal-", "vcpus": 1, "memory_mib": 1024, "disk_gib": 4},
         "targets": target_reports,
         "status": "ok" if not discrepancies and all(t["status"] == "ok" for t in target_reports) else "discrepancy",
@@ -887,6 +888,7 @@ def markdown_report(report: dict[str, Any]) -> str:
         f"- Schema: `{report['schema']}`",
         f"- Status: `{report['status']}`",
         f"- Canonical digest schema: `{report['canonical_digest_schema']}`",
+        f"- Python runtime: `{report.get('python_runtime', 'python3')}`",
         f"- Discrepancies: `{', '.join(report['discrepancies']) if report['discrepancies'] else 'none'}`",
         "",
         "| target | observed systemd | cases | status | discrepancy codes |",

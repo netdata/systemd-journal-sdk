@@ -6,8 +6,8 @@ Status: in-progress
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: partial validation complete; blocked on the exhausted four-new-VM cap
-and an optional Python-reader discrepancy from Ubuntu 18.04 archived files.
+Sub-state: Ubuntu and RHEL read-only validation evidence collected; blocked on
+the Debian 11 SSH/cap decision before this SOW can be closed or reviewer-ready.
 
 ## Requirements
 
@@ -69,11 +69,24 @@ Current state:
 - Three VMs produced sanitized validation results: Ubuntu 18.04, Ubuntu 22.04,
   and Ubuntu 24.04.
 - Debian 11 was created but blocked before validation because SSH service was
-  not reachable under the minimal no-package VM profile.
-- Existing `rhel810` was inspected only at the libvirt/SSH-auth level; SSH key
-  authentication failed for checked users, and no modification was made.
+  not reachable under the minimal no-package VM profile. Re-check on
+  2026-06-02 found bridge-neighbor IP discovery working, SSH to the seeded
+  `user` account returning connection refused on port 22, no saved harness IP
+  state, and QEMU guest agent not connected.
+- Existing `rhel810` was reachable through the configured SSH alias on
+  2026-06-02. Direct generic cloud-user checks still failed public-key
+  authentication, but the alias path allowed read-only systemd/journal
+  validation without modification.
 - Existing source-built systemd matrix reports remain useful but not a
   replacement for distro/runtime validation.
+- The original Python reader digest mismatch was caused by the validation
+  environment missing the Python SDK's declared `lz4==4.4.5` dependency. With a
+  repo-local `.local/sow-0075/python-venv` created from
+  `python/requirements.txt`, Python matched stock/Rust/Go/Node on the
+  previously failing Ubuntu 18.04 archived files and on the RHEL 8.10 archived
+  sample. The high-level Python entry path still silently skips payloads when
+  decompression raises, so SOW-0065 should include dependency/error-surfacing
+  hardening during Python parity closure.
 
 Risks:
 
@@ -282,6 +295,26 @@ Failure handling:
 - Existing `rhel810` read-only SSH metadata check was attempted; SSH key
   authentication failed for checked users, and no modification was made.
 
+### 2026-06-02
+
+- Re-checked all `sdjournal-*` domains: all four are running, persistent,
+  capped at 1 vCPU, 1 GiB RAM, 4 GiB disk, and autostart disabled.
+- Re-checked Debian 11: bridge-neighbor IP discovery works, SSH to the seeded
+  `user` account returns connection refused on port 22, QEMU guest agent is not
+  connected, and no raw journals were generated.
+- Re-checked `rhel810`: the configured SSH alias works and sudo is available
+  for read-only journal commands; direct generic cloud-user checks still fail
+  public-key authentication.
+- Copied one RHEL 8.10 active snapshot and one archived sample under
+  `.local/sow-0075/raw/rhel810/`. The active snapshot failed host-side verify
+  after copy and is treated only as live-copy limitation evidence. The archived
+  sample passed host stock, Rust, Go, Python, and Node parity.
+- Diagnosed the Python mismatch: system `python3` lacked the SDK's declared
+  `lz4==4.4.5` dependency, causing LZ4 DATA decompression errors and skipped
+  payloads. A repo-local `.local/sow-0075/python-venv` created from
+  `python/requirements.txt` made Python parity pass on all Ubuntu VM cases and
+  the RHEL archived sample.
+
 ## Validation
 
 Acceptance criteria evidence:
@@ -290,19 +323,31 @@ Acceptance criteria evidence:
   `tests/vm_matrix/reports/sow-0075-provisioning-report.md`.
 - Provisioned only user-approved disposable `sdjournal-*` VMs, capped at
   1 vCPU, 1 GiB RAM, and 4 GiB disk. Autostart is disabled for all four.
+- Current libvirt state was re-checked on 2026-06-02: all four `sdjournal-*`
+  VMs are running, persistent, 1 vCPU, 1 GiB RAM, 4 GiB virtual disk, and
+  autostart disabled. The libvirt image filesystem remains at 95% usage.
 - Generated journals from three reachable VMs, six files per VM:
   `compress-on-active`, `compress-on-archived`, `compress-off-active`,
   `compress-off-archived`, `post-reboot-active`, and
   `post-reboot-archived`.
 - VM stock `journalctl --verify --file` and host stock
-  `journalctl --verify --file` passed for all 18 collected files.
-- Host stock, Rust, Go, and Node reader logical digests matched for all 18
-  collected files.
-- Python reader logical digests matched 16/18 files and mismatched only two
-  Ubuntu 18.04 archived files. The discrepancy code is
-  `PYTHON_DIGEST_MISMATCH`.
+  `journalctl --verify --file` passed for all 18 collected Ubuntu files.
+- Host stock, Rust, Go, Python, and Node reader logical digests matched for all
+  18 collected Ubuntu files when Python used the repo-local runtime with
+  `lz4==4.4.5` from `python/requirements.txt`.
+- Existing `rhel810` read-only validation is recorded in
+  `tests/vm_matrix/reports/sow-0075-rhel810-read-only-report.md`:
+  observed `systemd 239 (239-82.el8_10.16)`, 8 remote journal files, VM-side
+  stock verify passing on all 8, and host stock/Rust/Go/Python/Node parity
+  passing on a copied archived sample. A copied active snapshot failed host
+  stock verify and is recorded only as a live-copy limitation, not as reader
+  evidence.
+- Debian 11 remains unvalidated: bridge-neighbor IP discovery works, SSH to the
+  seeded `user` account returns connection refused on port 22, QEMU guest agent
+  is not connected, and the four-new-VM cap is exhausted.
 - Raw VM journals are under `.local/sow-0075/raw/` only and were not staged.
-- Debian 11 and `rhel810` blockers are recorded in the provisioning report.
+- Debian 11 blocker and RHEL 8.10 read-only results are recorded in the
+  provisioning/RHEL reports.
 
 Tests or equivalent validation:
 
@@ -311,7 +356,9 @@ Tests or equivalent validation:
   provisioning. A second scoped preflight passed for the Ubuntu 22.04 and
   Ubuntu 24.04 replacement path.
 - `python3 tests/vm_matrix/run_vm_matrix.py collect --targets ubuntu1804 ubuntu2204 ubuntu2404` passed and copied 18 raw journal files under `.local/`.
-- `python3 tests/vm_matrix/run_vm_matrix.py validate --targets ubuntu1804 ubuntu2204 ubuntu2404 --report-json tests/vm_matrix/reports/sow-0075-vm-matrix-report.json --report-md tests/vm_matrix/reports/sow-0075-vm-matrix-report.md` completed with status `discrepancy` and discrepancy `PYTHON_DIGEST_MISMATCH`.
+- `SOW0075_PYTHON="$PWD/.local/sow-0075/python-venv/bin/python" SOW0075_PYTHON_LABEL="repo-local-python-with-lz4-4.4.5" python3 tests/vm_matrix/run_vm_matrix.py validate --targets ubuntu1804 ubuntu2204 ubuntu2404 --report-json tests/vm_matrix/reports/sow-0075-vm-matrix-report.json --report-md tests/vm_matrix/reports/sow-0075-vm-matrix-report.md` completed with status `ok`.
+- RHEL 8.10 read-only archived-sample validation passed with host stock
+  `journalctl --verify --file`, Rust, Go, Python with `lz4==4.4.5`, and Node.
 
 Real-use evidence:
 
@@ -323,18 +370,23 @@ Real-use evidence:
   after a reboot.
 - Stock VM-side and host-side `journalctl --verify --file` passed for each
   collected file.
+- Existing `rhel810` provided read-only historical enterprise coverage for
+  RHEL 8.10/systemd 239 archived journals. No VM mutation was performed.
 
 Reviewer findings:
 
 - Not run by this implementation worker. External reviewer runs were not
-  explicitly requested for this worker turn, and this SOW remains
-  `in-progress` due blockers/discrepancy.
+  run because this SOW remains blocked on the Debian 11 user decision.
 
 Same-failure scan:
 
-- Same-failure search in the generated report found the Python mismatch only on
-  Ubuntu 18.04 `compress-on-archived` and `compress-off-archived`; Ubuntu
-  18.04 active/post-reboot files and all Ubuntu 22.04/24.04 files passed.
+- Same-failure search showed the original Python mismatch on Ubuntu 18.04
+  archived files and RHEL 8.10 archived files only when system `python3` lacked
+  `lz4`. The same files passed when Python used the declared `lz4==4.4.5`
+  dependency.
+- The remaining same-failure class is Debian 11 SSH access: IP discovery works,
+  port 22 refuses connections, QEMU guest agent is unavailable, and no
+  approved access path exists without a user decision.
 
 Sensitive data gate:
 
@@ -345,6 +397,9 @@ Sensitive data gate:
   staged.
 - SSH known-hosts data and state with encoded IPs remain under
   `.local/sow-0075/` and are not staged.
+- The RHEL 8.10 raw copied samples remain under `.local/sow-0075/raw/rhel810/`
+  only. Durable RHEL reports do not include raw filenames, IP addresses,
+  hostnames, usernames, machine IDs, boot IDs, private paths, or payloads.
 
 Artifact maintenance gate:
 
@@ -352,11 +407,12 @@ Artifact maintenance gate:
   project-wide guardrails.
 - Runtime project skills: no update needed yet; the harness is SOW-local and
   not yet a mandatory reusable workflow.
-- Specs: no compatibility claim is changed while `PYTHON_DIGEST_MISMATCH` and
-  Debian/RHEL blockers remain open.
+- Specs: no compatibility claim changed; this SOW adds validation evidence and
+  a Debian access blocker, not new SDK behavior.
 - End-user/operator docs: no update needed; no public SDK behavior changed.
 - End-user/operator skills: no output/reference skill update needed.
-- SOW lifecycle: remains `Status: in-progress` under `.agents/sow/current/`.
+- SOW lifecycle: remains `Status: in-progress` under `.agents/sow/current/`
+  and is blocked on a user decision for Debian 11.
 - SOW-status.md: updated to list this active SOW.
 
 Specs update:
@@ -388,21 +444,56 @@ Lessons:
   now supports `fe80::*%br0` SSH/SCP paths.
 - Official image virtual disk size matters, not only download size. Rocky Linux
   8 was excluded because its official image was 10 GiB virtual size.
+- Python historical archived-file validation must run with the declared
+  `lz4==4.4.5` dependency when historical files contain LZ4 DATA objects.
+  Missing decompression dependencies can otherwise look like reader digest
+  mismatches.
+- The Python high-level entry path currently skips payloads whose DATA
+  decompression raises. That was exposed by missing `lz4`; it should be
+  hardened during SOW-0065 Python parity closure.
 
 Follow-up mapping:
 
-- `PYTHON_DIGEST_MISMATCH` on Ubuntu 18.04 archived files maps to SOW-0065
-  unless the user asks to open a focused Python historical-archived-reader SOW.
-- Debian 11 and RHEL/RHEL-clone VM validation remains blocked by the exhausted
-  four-new-VM cap and missing SSH access. A user decision is needed before
-  cleanup/replacement or cap increase.
+- Original `PYTHON_DIGEST_MISMATCH` is resolved for this SOW by using the
+  declared `lz4==4.4.5` dependency. Python error-surfacing hardening maps to
+  SOW-0065 unless the user asks for a focused earlier SOW.
+- Debian 11 validation remains blocked by the exhausted four-new-VM cap and the
+  current VM's SSH refusal. A user decision is needed before cleanup,
+  replacement, in-VM repair, or cap increase.
+
+Decision requests before SOW closure:
+
+1. Debian 11 handling
+   - Evidence: `sdjournal-debian11` is running with 1 vCPU, 1 GiB RAM, 4 GiB
+     disk and autostart disabled; bridge-neighbor IP discovery works; SSH to
+     the seeded `user` account returns connection refused on port 22; QEMU
+     guest agent is not connected; no raw journals were generated.
+   - Option A: approve console/offline repair of the existing
+     `sdjournal-debian11` VM only enough to enable SSH and run the SOW
+     validation. Benefit: preserves the consumed VM slot. Risk: mutates the VM
+     disk and may hide the exact minimal-image behavior that caused the block.
+   - Option B: approve destroying/recreating only `sdjournal-debian11` with a
+     Debian profile that installs/enables SSH during provisioning. Benefit:
+     clean validation target. Risk: requires explicit destructive approval and
+     temporary host storage pressure remains high.
+   - Option C: approve replacing Debian 11 with another target within a raised
+     cap or after cleanup. Benefit: may get broader coverage. Risk: changes the
+     accepted matrix and consumes more host/storage operational risk.
+   - Option D: accept Debian 11 as a recorded blocker and close this SOW after
+     external review of the Ubuntu/RHEL evidence. Benefit: no further VM
+     mutation. Risk: Debian 11/systemd 247 booted-distro validation remains
+     unproven.
+   - Recommendation: Option B if Debian 11 coverage is required for release
+     confidence; Option D if Ubuntu 18.04/22.04/24.04 plus RHEL 8.10 is enough
+     for this SOW's historical validation purpose.
 
 ## Outcome
 
-Partial. Ubuntu 18.04, Ubuntu 22.04, and Ubuntu 24.04 VM-generated journals were
-validated with sanitized reports. The SOW remains `in-progress` because Debian
-11 blocked, `rhel810` SSH auth failed read-only inspection, and Python reader
-parity has a historical archived-file discrepancy.
+Blocked on user decision. Ubuntu 18.04, Ubuntu 22.04, and Ubuntu 24.04
+VM-generated journals were validated with sanitized reports. Existing
+`rhel810` read-only archived-file validation was also collected and passed
+against stock/Rust/Go/Python/Node. The SOW remains `in-progress` because
+Debian 11 validation cannot continue without one of the recorded user decisions.
 
 ## Lessons Extracted
 
@@ -410,11 +501,12 @@ See `Lessons` under `## Validation`.
 
 ## Followup
 
-- Resolve or explicitly defer `PYTHON_DIGEST_MISMATCH`.
-- Decide whether to clean up/recreate the blocked Debian 11 VM or raise/adjust
-  the four-new-VM cap for Debian/RHEL-family coverage.
-- Decide whether existing `rhel810` can be accessed with an approved key/user or
-  whether RHEL 8 coverage should use a new approved disposable target later.
+- Decide Debian 11 handling using the numbered decision request in
+  `## Validation`.
+- If the user accepts Debian 11 as a recorded blocker, run the external reviewer
+  pool against the complete SOW evidence before closure.
+- Include Python missing-dependency/error-surfacing hardening in SOW-0065 unless
+  the user asks for an earlier focused Python SOW.
 
 ## Regression Log
 

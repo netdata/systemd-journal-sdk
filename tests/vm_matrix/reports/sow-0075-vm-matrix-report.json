@@ -7,13 +7,12 @@
     "name_prefix": "sdjournal-",
     "vcpus": 1
   },
-  "discrepancies": [
-    "PYTHON_DIGEST_MISMATCH"
-  ],
-  "generated_at_unix": 1780310533,
+  "discrepancies": [],
+  "generated_at_unix": 1780374260,
   "kind": "vm-reader-matrix",
+  "python_runtime": "repo-local-python-with-lz4-4.4.5",
   "schema": "systemd-journal-sdk-vm-matrix-v1",
-  "status": "discrepancy",
+  "status": "ok",
   "targets": [
     {
       "alias": "ubuntu1804",
@@ -47,18 +46,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "go",
-                "elapsed_seconds": 0.004137357,
+                "elapsed_seconds": 0.004087401,
                 "input_bytes": 8388608,
                 "logical_digest": "5e6c6db6e5b99d94a3068e9b9c11b090e653d662c2b4c324c52b0035ac6b8149",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "e99a4f69186de519109ef116d87d0b84fa9efd525ed7a1b6bbe486d6d156694b",
-                "elapsed_seconds": 0.005899,
+                "elapsed_seconds": 0.005657,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "857ec26423513441bb8f9536d92f49cc9b55b1ce0675bb8380c5f30e04dd5775"
+                "stdout_sha256": "3608e66f3e39b2c5b474cab449872ec618efe1869af5ac44fdd5ed86043c9e1e"
               }
             },
             "node": {
@@ -79,7 +78,7 @@
               },
               "stats": {
                 "command_sha256": "e7e173e766483ddeb2902f546bdda21ac59b408f8e313f9ca1e604316b832599",
-                "elapsed_seconds": 0.063089,
+                "elapsed_seconds": 0.075509,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -102,8 +101,8 @@
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
-                "command_sha256": "3cdffa40178b4735982d9f9e64a56a232e0444969a4ae6dd8a520873e59b5ad4",
-                "elapsed_seconds": 0.058473,
+                "command_sha256": "268d832ea9a57acb1c2a3ab18fb228b81b314033a0b6f347f666fa30495c7129",
+                "elapsed_seconds": 0.060004,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -122,18 +121,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "rust",
-                "elapsed_seconds": 0.002313465,
+                "elapsed_seconds": 0.001883323,
                 "input_bytes": 8388608,
                 "logical_digest": "5e6c6db6e5b99d94a3068e9b9c11b090e653d662c2b4c324c52b0035ac6b8149",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "0298d001e53bb3cfa87f0a44d83f5b4fdedeffc029018601230582c7a0ac85da",
-                "elapsed_seconds": 0.003639,
+                "elapsed_seconds": 0.002877,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "a76775f061e27f020fb7668b5774fbe3ad351db735a77ef2d859087b2bc1952d"
+                "stdout_sha256": "111b189abb74fd31c47b04f60f57ebfb00e0e3929a523e8400d4508d31a92295"
               }
             },
             "stock": {
@@ -154,7 +153,7 @@
               },
               "stats": {
                 "command_sha256": "d68fb84b2f64c5f442a22e26e7624324af70b2d69b7c4b7244da836e3fe851f0",
-                "elapsed_seconds": 0.013135,
+                "elapsed_seconds": 0.008609,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -171,9 +170,7 @@
         },
         {
           "case_id": "compress-off-archived",
-          "discrepancies": [
-            "PYTHON_DIGEST_MISMATCH"
-          ],
+          "discrepancies": [],
           "file": {
             "bytes": 8388608,
             "sha256": "bbf9fd0dc9176ad086eaf157d3a245c2f21f120aff4ff1f8187220ecbe39483d"
@@ -199,18 +196,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "go",
-                "elapsed_seconds": 0.001191763,
+                "elapsed_seconds": 0.001541227,
                 "input_bytes": 8388608,
                 "logical_digest": "9d20ef436a20b381841c45bd552b3fb284fa563c59be600c681235244e1eb35c",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "6420cb383242ac42fc858ba317b17e2b94b0d7fa194cf6bf7e5400f2fe25c02d",
-                "elapsed_seconds": 0.002719,
+                "elapsed_seconds": 0.005343,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "8a12db9f8267b690170fb8443ff691c51ab239b0ba95d30a8a05a1907366c8c1"
+                "stdout_sha256": "2a006c32996368ee34f26a49e2b9a8fe60caf1d75cd0fcb0940df567832562b5"
               }
             },
             "node": {
@@ -231,7 +228,7 @@
               },
               "stats": {
                 "command_sha256": "2db0326bef1482177a35389a01b3c4888b77381b129f1eb214202193e79e70d7",
-                "elapsed_seconds": 0.057775,
+                "elapsed_seconds": 0.357772,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -243,19 +240,19 @@
                   "binary_payloads": 49,
                   "entries": 63,
                   "entries_with_repeated_field_names": 0,
-                  "largest_payload_bytes": 263,
-                  "payload_bytes": 37134,
-                  "payloads": 1341,
+                  "largest_payload_bytes": 4164,
+                  "payload_bytes": 120414,
+                  "payloads": 1361,
                   "payloads_without_separator": 0,
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "python",
-                "logical_digest": "6b6ed8ddf37b2254cc7aff9a506fdda86bbc06a9e668c996648a75990775b4e8",
+                "logical_digest": "9d20ef436a20b381841c45bd552b3fb284fa563c59be600c681235244e1eb35c",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
-                "command_sha256": "67d31f702710f894743d127d711e00e030a0b3b070ac425091c855d325ab9a90",
-                "elapsed_seconds": 0.047652,
+                "command_sha256": "17644512ea162dbc698c117d24c494018c4f1a65a03221a6b2960eb21ccdfa70",
+                "elapsed_seconds": 0.273978,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -274,18 +271,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "rust",
-                "elapsed_seconds": 0.000864381,
+                "elapsed_seconds": 0.001110414,
                 "input_bytes": 8388608,
                 "logical_digest": "9d20ef436a20b381841c45bd552b3fb284fa563c59be600c681235244e1eb35c",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "35172b63da43bf0fcc14e3deed52e77b1f0f0d439fd6994b095a9664bbbd7689",
-                "elapsed_seconds": 0.001636,
+                "elapsed_seconds": 0.00244,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "cf3767ad026f677d250ea09d92b4bb02ad6ad86b66030c5b361c03a7685bf702"
+                "stdout_sha256": "f99f61e279f549750be6cda563e1658fe5f033c7b82bebd0da1912bac9a358ae"
               }
             },
             "stock": {
@@ -306,14 +303,14 @@
               },
               "stats": {
                 "command_sha256": "6a579ea092a329916adf9756314b1fd2232ba69e3c127ad70cc1c7da63e42c73",
-                "elapsed_seconds": 0.005497,
+                "elapsed_seconds": 0.010835,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
               }
             }
           },
-          "status": "discrepancy",
+          "status": "ok",
           "vm_stock_verify": {
             "case_id": "compress-off-archived",
             "returncode": 0,
@@ -349,18 +346,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "go",
-                "elapsed_seconds": 0.003837665,
+                "elapsed_seconds": 0.012385536,
                 "input_bytes": 8388608,
                 "logical_digest": "5e6c6db6e5b99d94a3068e9b9c11b090e653d662c2b4c324c52b0035ac6b8149",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "1e20395346a48eaf4834967f6801c0a4c820e9181b491a83ae116b94c915d11e",
-                "elapsed_seconds": 0.006013,
+                "elapsed_seconds": 0.023125,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "ee3b4bca2ab1ccf2c91a07a52833fb31860b152844f3be11719a529ea52bc0d8"
+                "stdout_sha256": "e8bbc78022f1b2165c0ba6d6386b4cd50730a47a1b964715dc54504912936815"
               }
             },
             "node": {
@@ -381,7 +378,7 @@
               },
               "stats": {
                 "command_sha256": "f9704030e9fbfeddcbe4ded3cc11a898fe1ea69f59622eb48878611263607c2a",
-                "elapsed_seconds": 0.067569,
+                "elapsed_seconds": 0.285975,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -404,8 +401,8 @@
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
-                "command_sha256": "957e8beb8e12b90828c39d55938756bd712838c6ec13e2279647585945b4456e",
-                "elapsed_seconds": 0.064214,
+                "command_sha256": "b4c0115487d2d59f9d1bd936abdbf6ded67778158018f8a58b92955948e715cc",
+                "elapsed_seconds": 0.295203,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -424,18 +421,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "rust",
-                "elapsed_seconds": 0.002087943,
+                "elapsed_seconds": 0.004537907,
                 "input_bytes": 8388608,
                 "logical_digest": "5e6c6db6e5b99d94a3068e9b9c11b090e653d662c2b4c324c52b0035ac6b8149",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "9a2148e56584a0a9984b0875b188f975cc530dc19f9df95221c21f123009686c",
-                "elapsed_seconds": 0.002959,
+                "elapsed_seconds": 0.010969,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "f4df81f953029875d0fd28763d4f4c1415d761c61c93e49eaebc072c80e66c7e"
+                "stdout_sha256": "9ce4cdfd484566a9f2392a148d9605c68b3ff18ffc60f1a5d230848e777d0c3c"
               }
             },
             "stock": {
@@ -456,7 +453,7 @@
               },
               "stats": {
                 "command_sha256": "bc739041857838ab51c0bbaf01d2fe23234e92e4373648de4df9f2de3486c304",
-                "elapsed_seconds": 0.012123,
+                "elapsed_seconds": 0.032602,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -473,9 +470,7 @@
         },
         {
           "case_id": "compress-on-archived",
-          "discrepancies": [
-            "PYTHON_DIGEST_MISMATCH"
-          ],
+          "discrepancies": [],
           "file": {
             "bytes": 8388608,
             "sha256": "bb1504a670680a03a8bbc5786c8cc6c4210143ba7d02421628fccbf63e0b0ae5"
@@ -501,18 +496,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "go",
-                "elapsed_seconds": 0.014618959,
+                "elapsed_seconds": 0.086955013,
                 "input_bytes": 8388608,
                 "logical_digest": "69932af7bb536a048e52c11b3a50f9948fa98522f1ef1d24cbe34388069409f9",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "94bb0fd6793937c9f29155f07e81e2842e09f6952887a15c45f4cda200767781",
-                "elapsed_seconds": 0.016426,
+                "elapsed_seconds": 0.096382,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "7c2a55c6ceb20a1ed41265c605391c39c8f3769729d68dd789875875e27c9b69"
+                "stdout_sha256": "270d3d7bfa574cc9dac33f14a0de702cd652517e9503bb170a14e358f36d8177"
               }
             },
             "node": {
@@ -533,7 +528,7 @@
               },
               "stats": {
                 "command_sha256": "91f14e52304874f1b28d195030179e37d2353827bcd12f2aed8f33536ed4279f",
-                "elapsed_seconds": 0.127437,
+                "elapsed_seconds": 0.568632,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -542,22 +537,22 @@
             "python": {
               "digest": {
                 "counts": {
-                  "binary_payloads": 611,
+                  "binary_payloads": 612,
                   "entries": 1409,
                   "entries_with_repeated_field_names": 0,
-                  "largest_payload_bytes": 452,
-                  "payload_bytes": 584259,
-                  "payloads": 21766,
+                  "largest_payload_bytes": 4163,
+                  "payload_bytes": 670573,
+                  "payloads": 21788,
                   "payloads_without_separator": 0,
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "python",
-                "logical_digest": "12499bae7d6d586367a54da9512a8770dafdb5d3d48348517975a287021b6ad9",
+                "logical_digest": "69932af7bb536a048e52c11b3a50f9948fa98522f1ef1d24cbe34388069409f9",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
-                "command_sha256": "5ccca4450aa7822b1985590e51b43820dbc82bc449caf95d03a493d92c22f5a2",
-                "elapsed_seconds": 0.116367,
+                "command_sha256": "10e161c6ee0b6e3b7d683a23459901ecbad56d8ac6bd8c9f125d5eeaf4029423",
+                "elapsed_seconds": 0.493644,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -576,18 +571,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "rust",
-                "elapsed_seconds": 0.00999751,
+                "elapsed_seconds": 0.029439649,
                 "input_bytes": 8388608,
                 "logical_digest": "69932af7bb536a048e52c11b3a50f9948fa98522f1ef1d24cbe34388069409f9",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "671f69077f4c9b4d64ca838dd8188b24b1fdd97f84a028b9643be3ee446d701e",
-                "elapsed_seconds": 0.01093,
+                "elapsed_seconds": 0.035335,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "19eda214de7fa92566882e00f8764e2c4ed15fb3871f6e5d80a4690c244bfdf0"
+                "stdout_sha256": "e85e2b492a8b58e4e5e56ef0451ab1edaa5fda6bc2f4f87298958b5d4355ea8a"
               }
             },
             "stock": {
@@ -608,14 +603,14 @@
               },
               "stats": {
                 "command_sha256": "8cccf4d2038cd85db3facbc9933c0b78d33a27e81ce9b9a0c18487ac2366dbdf",
-                "elapsed_seconds": 0.049312,
+                "elapsed_seconds": 0.237967,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
               }
             }
           },
-          "status": "discrepancy",
+          "status": "ok",
           "vm_stock_verify": {
             "case_id": "compress-on-archived",
             "returncode": 0,
@@ -651,18 +646,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "go",
-                "elapsed_seconds": 0.005977129,
+                "elapsed_seconds": 0.042645927,
                 "input_bytes": 8388608,
                 "logical_digest": "d2c7e347b689ba659770f6863e77cff176d5b332f69814c6fa8a1a9b1a7257ba",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "62a557ac3f66a02a245ca2b3443d93ddf03f14d22550f0677e0fa7fb130ffd9b",
-                "elapsed_seconds": 0.007407,
+                "elapsed_seconds": 0.052897,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "fad1137d640b2461bf144c172fdbc06a3ebc4fdd2b1dd2dec4ec54bc657d7475"
+                "stdout_sha256": "d47ebd0bc94b3be0653b79af294db592efbd3df545a9ad125950f8e99d4adbe5"
               }
             },
             "node": {
@@ -683,7 +678,7 @@
               },
               "stats": {
                 "command_sha256": "a4f533f09cb20de7bc499a4914f564bce6323a939e88458bcba63c052ff81392",
-                "elapsed_seconds": 0.094525,
+                "elapsed_seconds": 0.402433,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -706,8 +701,8 @@
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
-                "command_sha256": "cfef5524d8e63748ea8bed84e357faf7908584e01f32eb07301c1e63ca31df15",
-                "elapsed_seconds": 0.075163,
+                "command_sha256": "13795504fd67d72348e63dfe1c1f6666a1e4a445d1a057c1fd57a9da6caf431e",
+                "elapsed_seconds": 0.213325,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -726,18 +721,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "rust",
-                "elapsed_seconds": 0.003879366,
+                "elapsed_seconds": 0.015571996,
                 "input_bytes": 8388608,
                 "logical_digest": "d2c7e347b689ba659770f6863e77cff176d5b332f69814c6fa8a1a9b1a7257ba",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "15953acb8a0729d6277739714eb0c70b51053febc42ab779f011f9f12d8e8f5a",
-                "elapsed_seconds": 0.00476,
+                "elapsed_seconds": 0.021216,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "ad3c157a7792258f3af8ed1ddbf58d53564af04161e444f1063fbcdffd657f33"
+                "stdout_sha256": "b9e17fa75de25b279f2120441437785ce10aaaa59be5a5e7754c05d3b9d68ad0"
               }
             },
             "stock": {
@@ -758,7 +753,7 @@
               },
               "stats": {
                 "command_sha256": "78d1cfd71435f471078c6761dd951ccef5093c72becc9538989b15d009ede7d9",
-                "elapsed_seconds": 0.01588,
+                "elapsed_seconds": 0.158307,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -801,18 +796,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "go",
-                "elapsed_seconds": 0.005140033,
+                "elapsed_seconds": 0.034283505,
                 "input_bytes": 8388608,
                 "logical_digest": "d2c7e347b689ba659770f6863e77cff176d5b332f69814c6fa8a1a9b1a7257ba",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "0cf7340351a9d101806630e963e80cffedf60ec840e1bf4eced91a0f0d4e5dd5",
-                "elapsed_seconds": 0.006548,
+                "elapsed_seconds": 0.040799,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "7453ec071cb9c5429bc66b047c86536f145f1711b2d55348d946a3d440e6e5ab"
+                "stdout_sha256": "5c7b580eab77617487b4edd3e0aeb9d4bff24225d72f23007fd08088491fe96b"
               }
             },
             "node": {
@@ -833,7 +828,7 @@
               },
               "stats": {
                 "command_sha256": "9ea23e1456b94b4bb4e452e120b67ec17238cdf09327d9da3f9be26ed525e22b",
-                "elapsed_seconds": 0.094253,
+                "elapsed_seconds": 0.538375,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -856,8 +851,8 @@
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
-                "command_sha256": "d9153c7c59ff801f14ca199f6a1f0faa1db4697d78272b22120c4b800f49e523",
-                "elapsed_seconds": 0.070346,
+                "command_sha256": "1a61b73f8c06aa844a6c8a997edee304808217c33d41151761c6e362bfe62de5",
+                "elapsed_seconds": 0.392274,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -876,18 +871,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "rust",
-                "elapsed_seconds": 0.003789904,
+                "elapsed_seconds": 0.014154324,
                 "input_bytes": 8388608,
                 "logical_digest": "d2c7e347b689ba659770f6863e77cff176d5b332f69814c6fa8a1a9b1a7257ba",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "b857dd74dec305cf2faa682099c47e72922d7d77cd60508e6bf76c89bd058840",
-                "elapsed_seconds": 0.004751,
+                "elapsed_seconds": 0.022299,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "811493458934c981de4ae2ee36ff0e888c0d269a3303fd04cc54bf08df6ce4c5"
+                "stdout_sha256": "bb47490660a0f8a33540ba4d10ef3fc288e9ce46952a2862b44041d7df3c6e5f"
               }
             },
             "stock": {
@@ -908,7 +903,7 @@
               },
               "stats": {
                 "command_sha256": "3099378f95c0c195d7a9afc1b2e2be9c7dd935207e8ac6658e39b7845a2305ca",
-                "elapsed_seconds": 0.015569,
+                "elapsed_seconds": 0.065763,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -928,7 +923,7 @@
       "expected_systemd": "237-era",
       "observed_os_release": "ubuntu 18.04",
       "observed_systemd": "systemd 237",
-      "status": "discrepancy",
+      "status": "ok",
       "vm_name": "sdjournal-ubuntu1804"
     },
     {
@@ -963,18 +958,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "go",
-                "elapsed_seconds": 0.001240215,
+                "elapsed_seconds": 0.001294399,
                 "input_bytes": 8388608,
                 "logical_digest": "3625dea9ee2908770fbafb7ce02112a52d7dc1462716e7fa84649eebf371a099",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "72d2d3578312910482fda38581efa8a57f0ab25afbeb28537fc3af3d7e50c945",
-                "elapsed_seconds": 0.004296,
+                "elapsed_seconds": 0.004956,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "64208bf1c9cba466c2207ccd22f8b01be152e04c41efd0e098ed1fabd431d881"
+                "stdout_sha256": "ecff86b383741d10decc3f923a887c32c163b2841d1fedd4bddaeac996e214e9"
               }
             },
             "node": {
@@ -995,7 +990,7 @@
               },
               "stats": {
                 "command_sha256": "ae144add19bcbb49eb753a333e5ca87ca5c5c5c3f883a4b37e6f93f60a16388b",
-                "elapsed_seconds": 0.053653,
+                "elapsed_seconds": 0.293357,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1018,8 +1013,8 @@
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
-                "command_sha256": "e4291a888d94336b8049d91e58c2a71a9c07e49418f21d07b352344b36b3a549",
-                "elapsed_seconds": 0.061012,
+                "command_sha256": "84989a827df1ba24f8c83ab65a0ce8759f753ae2062acb0a8a2c76041916f89c",
+                "elapsed_seconds": 0.126401,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1038,18 +1033,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "rust",
-                "elapsed_seconds": 0.001161623,
+                "elapsed_seconds": 0.001633529,
                 "input_bytes": 8388608,
                 "logical_digest": "3625dea9ee2908770fbafb7ce02112a52d7dc1462716e7fa84649eebf371a099",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "9acd1845bb7f6998dbfce1c9a733a942e2d567442a00b6a8e9e1866205d73759",
-                "elapsed_seconds": 0.002127,
+                "elapsed_seconds": 0.004462,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "e6e957d146bff28fc3f3a9fbb1c98f79014ef5227b9997160381a06569bd1d46"
+                "stdout_sha256": "ee3c0e51b5732de344a77ec29682af0273ea84a14703dd7a58159fb02235b751"
               }
             },
             "stock": {
@@ -1070,7 +1065,7 @@
               },
               "stats": {
                 "command_sha256": "d36d554abef0a188c4113ed11a2405b76d5c573c2090216049d5e91c3aabc97a",
-                "elapsed_seconds": 0.007372,
+                "elapsed_seconds": 0.02503,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1113,18 +1108,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "go",
-                "elapsed_seconds": 0.002276435,
+                "elapsed_seconds": 0.00732438,
                 "input_bytes": 8388608,
                 "logical_digest": "b45fe7255cd85cca128aa6adb5ae2317b1930c289b152ba9dc49268c3a123d5e",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "b8fc148c1cfa94a244eb4acb807f246333464268f6b43b5c14479be9ce77f023",
-                "elapsed_seconds": 0.003938,
+                "elapsed_seconds": 0.019381,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "f1ccfc70392310b58844572676b49096f8cb600694a29e48b9fe16fb3845cfce"
+                "stdout_sha256": "bf65e5335413abe8240052186d51197872b000c76d4637c56e6eeef4245afe78"
               }
             },
             "node": {
@@ -1145,7 +1140,7 @@
               },
               "stats": {
                 "command_sha256": "5b7d5b2ea2ba9a6dddc11ce510a5b2147d610df8691764bbcba69a3df993dfb9",
-                "elapsed_seconds": 0.05793,
+                "elapsed_seconds": 0.273261,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1168,8 +1163,8 @@
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
-                "command_sha256": "18df86173374c4a1881c25515cf8d384c20b18372a7b0675d7c385db25eaf633",
-                "elapsed_seconds": 0.05792,
+                "command_sha256": "fbaa886258ebb7c97aa6e3ce032d68e11d3588026de144bf6adac5f336cb4e98",
+                "elapsed_seconds": 0.286928,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1188,18 +1183,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "rust",
-                "elapsed_seconds": 0.002118197,
+                "elapsed_seconds": 0.002490042,
                 "input_bytes": 8388608,
                 "logical_digest": "b45fe7255cd85cca128aa6adb5ae2317b1930c289b152ba9dc49268c3a123d5e",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "03c5895ed6542b5d852dffab639d6b9994a145749166c7cbdfce0ea0ae7a29a3",
-                "elapsed_seconds": 0.003332,
+                "elapsed_seconds": 0.008976,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "e7f01541a5c439384d280c1d7b609651e06aaaddd4e6d76b3a89410eb9fc2f52"
+                "stdout_sha256": "9c1faa92c46a8853b18a03f30393b229f8121ddbe934639b3e50011fb023b58b"
               }
             },
             "stock": {
@@ -1220,7 +1215,7 @@
               },
               "stats": {
                 "command_sha256": "3b443e03a66132e747bbfb8c8e4cf7e407dc8721f54536d96b57a3737713a4ac",
-                "elapsed_seconds": 0.007618,
+                "elapsed_seconds": 0.018465,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1263,18 +1258,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "go",
-                "elapsed_seconds": 0.002260866,
+                "elapsed_seconds": 0.007086547,
                 "input_bytes": 8388608,
                 "logical_digest": "b45fe7255cd85cca128aa6adb5ae2317b1930c289b152ba9dc49268c3a123d5e",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "9f8a68a832094d6d2a3c902ab676fc7510f59ea7813534c89789c3d8f96e5e7a",
-                "elapsed_seconds": 0.003579,
+                "elapsed_seconds": 0.014456,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "7b749af97bff2c623db44f7c8cd34a165a5a7bdd1ce489d08ee214dc7374a6b4"
+                "stdout_sha256": "b7ee682225c4524bc000d9e4b6b08ceeb8099bf911eff3ac9dbd32f13642cc93"
               }
             },
             "node": {
@@ -1295,7 +1290,7 @@
               },
               "stats": {
                 "command_sha256": "e65c389079d964e2d04a15a9c921d8e856157bfd55195a071ff415a4436e2159",
-                "elapsed_seconds": 0.063357,
+                "elapsed_seconds": 0.305798,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1318,8 +1313,8 @@
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
-                "command_sha256": "fd296c7d69db3a32f8d6ca3f0f9c7134f8152c1b8cbd6ca02b9993ff526c6f3f",
-                "elapsed_seconds": 0.050597,
+                "command_sha256": "9aeb4ef18a4eadb9ba5eb8955074038e6a36bbfb0319acd8349cdf777bd93917",
+                "elapsed_seconds": 0.273666,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1338,18 +1333,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "rust",
-                "elapsed_seconds": 0.00168631,
+                "elapsed_seconds": 0.002303306,
                 "input_bytes": 8388608,
                 "logical_digest": "b45fe7255cd85cca128aa6adb5ae2317b1930c289b152ba9dc49268c3a123d5e",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "f835fa3cb33b432c8aa4ce20a7cbb2195ccee37e31c1b317e1eb8d5c37d26217",
-                "elapsed_seconds": 0.002484,
+                "elapsed_seconds": 0.008779,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "2954728c707adf00c19fcafc36c82ba104c9e7ccdd471cf67b444ac7d31e37c0"
+                "stdout_sha256": "838a3de619bca234f6e023cb45a366fc59e9a7fe2e14808b535b5149f71a34d8"
               }
             },
             "stock": {
@@ -1370,7 +1365,7 @@
               },
               "stats": {
                 "command_sha256": "4843baf5901dd8adc7522697f1f0a967632ce4addfdd8ab87571ba52b331ce26",
-                "elapsed_seconds": 0.007338,
+                "elapsed_seconds": 0.028833,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1413,18 +1408,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "go",
-                "elapsed_seconds": 0.002268876,
+                "elapsed_seconds": 0.00787588,
                 "input_bytes": 8388608,
                 "logical_digest": "b45fe7255cd85cca128aa6adb5ae2317b1930c289b152ba9dc49268c3a123d5e",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "f7710548a86e11bc64ba849eb1a89bacf11f6a109867f649bb078e21f64be6f4",
-                "elapsed_seconds": 0.003839,
+                "elapsed_seconds": 0.014405,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "e9ebb31456680fe41f7424a93322896924c34196614e19984286dbdacc882f7e"
+                "stdout_sha256": "be71c175eaf7bb58b8b33b31d55a758ae36281215b1eb88b1b681122b8aacdcc"
               }
             },
             "node": {
@@ -1445,7 +1440,7 @@
               },
               "stats": {
                 "command_sha256": "6aba4bd9ac17ff861aa788b468b0ad2897b1ea3ed86c8644163fb01fa86af21f",
-                "elapsed_seconds": 0.056259,
+                "elapsed_seconds": 0.259006,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1468,8 +1463,8 @@
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
-                "command_sha256": "7777931498b5881c5d4704914e3892139496ada78cd6eede6aa012cc6e0c3d78",
-                "elapsed_seconds": 0.05284,
+                "command_sha256": "3e670c0c146cebe15a85b4b880b974ad6cb26c04bb176592d65a8864dfe163ba",
+                "elapsed_seconds": 0.176287,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1488,18 +1483,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "rust",
-                "elapsed_seconds": 0.002092999,
+                "elapsed_seconds": 0.002575526,
                 "input_bytes": 8388608,
                 "logical_digest": "b45fe7255cd85cca128aa6adb5ae2317b1930c289b152ba9dc49268c3a123d5e",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "48215304489fde4686f760634a6094a7480752d0d3422fe6b57b2f9abeb2e76a",
-                "elapsed_seconds": 0.00302,
+                "elapsed_seconds": 0.005028,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "89bf37d7fd36660c7c5cc30293ea3736ef3853943e6fab9ca9f7ac9ceea1d72f"
+                "stdout_sha256": "05e603115ac725adaca1a49d0f3533dd0df335b86d4d84aa20579abf315480be"
               }
             },
             "stock": {
@@ -1520,7 +1515,7 @@
               },
               "stats": {
                 "command_sha256": "2c9953af84ae652c120638a53fc2084e22bccc3b9bc609b2fc648942589344a0",
-                "elapsed_seconds": 0.007711,
+                "elapsed_seconds": 0.01534,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1563,18 +1558,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "go",
-                "elapsed_seconds": 0.00096779,
+                "elapsed_seconds": 0.002915493,
                 "input_bytes": 8388608,
                 "logical_digest": "511d1fbeeed0854b38ab5ba9ee61946cfedb5a9118ca841aba126e772d03d2c8",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "85869d608f1e1656b565160602397fe95ba983e0de4ac9126e84317db1feb6cb",
-                "elapsed_seconds": 0.002084,
+                "elapsed_seconds": 0.013446,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "b1d9a591d64bf6c854065d9d3aa03e5d275cb59921d8120d17373cc9fc8a6443"
+                "stdout_sha256": "ad166415eb93cf8859522052aa74c60de065d394d31d16d30aee6bc0de392472"
               }
             },
             "node": {
@@ -1595,7 +1590,7 @@
               },
               "stats": {
                 "command_sha256": "120c1122b826d38df055345e526e50d03c66f704195ec558b5c0cb6a12853ed0",
-                "elapsed_seconds": 0.050105,
+                "elapsed_seconds": 0.108539,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1618,8 +1613,8 @@
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
-                "command_sha256": "32a6849cf1e5ac1aa682b45f6d207fdb9bfe233f9e5c93f17445c2d86870fd72",
-                "elapsed_seconds": 0.045277,
+                "command_sha256": "fbf716a564d4b9b692185bd750cd2881773867249e601a49c51e6859beb072b1",
+                "elapsed_seconds": 0.107254,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1638,18 +1633,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "rust",
-                "elapsed_seconds": 0.000899393,
+                "elapsed_seconds": 0.001358057,
                 "input_bytes": 8388608,
                 "logical_digest": "511d1fbeeed0854b38ab5ba9ee61946cfedb5a9118ca841aba126e772d03d2c8",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "2b8eacc64b739650c7642c3462c5c5d190b07ed600e53c01099f90a4a3d7b01f",
-                "elapsed_seconds": 0.001665,
+                "elapsed_seconds": 0.005426,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "79073f118377a8259a0df33a8bf932c5b420a6a484b18848bc72d7b4663c7c05"
+                "stdout_sha256": "1b2857190334812c2a321f4a8e6302eb65b466507955316a8fcb1468ac03cec1"
               }
             },
             "stock": {
@@ -1670,7 +1665,7 @@
               },
               "stats": {
                 "command_sha256": "e6370af1040f5e63ea9578f3c9321be314a4697ccc876cbdaf618062aec8ed08",
-                "elapsed_seconds": 0.004492,
+                "elapsed_seconds": 0.013658,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1713,18 +1708,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "go",
-                "elapsed_seconds": 0.001127174,
+                "elapsed_seconds": 0.001744232,
                 "input_bytes": 8388608,
                 "logical_digest": "511d1fbeeed0854b38ab5ba9ee61946cfedb5a9118ca841aba126e772d03d2c8",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "54e77ec0ff3ad3e0801a093634a04f3a6d29124542135c10d9d516e6e77cd6ab",
-                "elapsed_seconds": 0.002517,
+                "elapsed_seconds": 0.004187,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "8424a8b78712f6e1d7b88cd4e25584e8f4c6fca5834942dd298baa750333524e"
+                "stdout_sha256": "7989df1a30aa8c1dc95897d9ef474861d1288c279bb9cddca7a85dfdbdd918ed"
               }
             },
             "node": {
@@ -1745,7 +1740,7 @@
               },
               "stats": {
                 "command_sha256": "9d046ca3fddf145a500971e1fdd9ad0fdde2f4fcff95821665abda272ded3629",
-                "elapsed_seconds": 0.051228,
+                "elapsed_seconds": 0.10376,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1768,8 +1763,8 @@
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
-                "command_sha256": "08fa97f08f5576bba7c7ca2caa6eddcd70a1895a0518fb2d09e3b5d607a297c8",
-                "elapsed_seconds": 0.049626,
+                "command_sha256": "7b5803adfdca8a3a556d8f2816a8b7500fc49305d480ff130557e3e763ff0023",
+                "elapsed_seconds": 0.104537,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1788,18 +1783,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "rust",
-                "elapsed_seconds": 0.000916218,
+                "elapsed_seconds": 0.001323426,
                 "input_bytes": 8388608,
                 "logical_digest": "511d1fbeeed0854b38ab5ba9ee61946cfedb5a9118ca841aba126e772d03d2c8",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "ef7694f57e1d3c62c75bab0a1140682ea58ffd691076fe943eadd5b6b395c871",
-                "elapsed_seconds": 0.001789,
+                "elapsed_seconds": 0.003241,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "267432b474a1e71afd7fbfe3ca7652b35c5cdb1998ab13e173ef627d4d64b6c3"
+                "stdout_sha256": "d315eb144ea92893dfd62107e5294988f974cba569f0e3864ed9d1d665968d48"
               }
             },
             "stock": {
@@ -1820,7 +1815,7 @@
               },
               "stats": {
                 "command_sha256": "7b309dbd75d075a9bc22855033e57199c533056ce6809f946099b3191198acb7",
-                "elapsed_seconds": 0.007606,
+                "elapsed_seconds": 0.010748,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1875,18 +1870,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "go",
-                "elapsed_seconds": 0.001190679,
+                "elapsed_seconds": 0.002402432,
                 "input_bytes": 8388608,
                 "logical_digest": "255d347de071c8c1d4f38f8183aa9bbb67103ef554f8a273aeb4b2e83aa34227",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "f885f7cc555d58817d0017e0b6f4311e7b00f0781bb35dfe51ed3134a265a7bc",
-                "elapsed_seconds": 0.002592,
+                "elapsed_seconds": 0.004522,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "ab5c0bbd7bf4c4a6f48e865db2e612ebc0937b2d3fc666d770e96df18508ceb6"
+                "stdout_sha256": "23a89eca1ed66e82169819625b6719ffcd8115bf500d0953c0da76cf70d2ac61"
               }
             },
             "node": {
@@ -1907,7 +1902,7 @@
               },
               "stats": {
                 "command_sha256": "9c87fd7691e93a7c9538016fda1b7d0656505a5ea10162d1422ad980ba412dfc",
-                "elapsed_seconds": 0.063055,
+                "elapsed_seconds": 0.101956,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1930,8 +1925,8 @@
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
-                "command_sha256": "67ee1ffb8049a1528d4be24e9c55da3a88ea5efd65add6fe91a6bb1fb3d6ed65",
-                "elapsed_seconds": 0.051283,
+                "command_sha256": "d88deaaa61804a239e7a03f3733addc020c546d658aba08e5afc418889141584",
+                "elapsed_seconds": 0.087058,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -1950,18 +1945,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "rust",
-                "elapsed_seconds": 0.001273788,
+                "elapsed_seconds": 0.002063392,
                 "input_bytes": 8388608,
                 "logical_digest": "255d347de071c8c1d4f38f8183aa9bbb67103ef554f8a273aeb4b2e83aa34227",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "8834b59de67ea405c34c5584a0402c3803005e5c0583b3c06882793a32d5aa1c",
-                "elapsed_seconds": 0.002101,
+                "elapsed_seconds": 0.004082,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "d9bab915bc5150a05ffdbba61206697ec62d992f3059d3dfa09187e55d8db683"
+                "stdout_sha256": "e478fb69735e6c0fdcf1370e7d7e6f684b3a28a0156a3fa5eecb27bef3d1fb55"
               }
             },
             "stock": {
@@ -1982,7 +1977,7 @@
               },
               "stats": {
                 "command_sha256": "b0cc5ff3f595774b43e6ecacf35c315a4dab073feea3b1b170a358b3e6444919",
-                "elapsed_seconds": 0.005903,
+                "elapsed_seconds": 0.011371,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -2025,18 +2020,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "go",
-                "elapsed_seconds": 0.001622211,
+                "elapsed_seconds": 0.003963913,
                 "input_bytes": 8388608,
                 "logical_digest": "5008723bdbdafd6238acb4127f26192bc50ef403b0f9da36fd101f633e5e1900",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "4c8a553b3416d0d8923a2a14b6d98dbd14db23a937b240e3c0304ff7652fec09",
-                "elapsed_seconds": 0.003283,
+                "elapsed_seconds": 0.007265,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "8823d207c2173ba32234bf46a6521c7b682f76cac5bfb6c934db19d7294e89e6"
+                "stdout_sha256": "2d03d3e2e736bdbb6ce1aff53d5c268b4256e23e6aaa196001fb503fcfb32887"
               }
             },
             "node": {
@@ -2057,7 +2052,7 @@
               },
               "stats": {
                 "command_sha256": "b23d1e14872a462fe7ff1119f7eba4848ae550097ce3142291801400577ab035",
-                "elapsed_seconds": 0.058225,
+                "elapsed_seconds": 0.108843,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -2080,8 +2075,8 @@
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
-                "command_sha256": "a7605b9006bd27f0c6ad6958a1501d13a6d7646051479e432c9ec371dcb672cf",
-                "elapsed_seconds": 0.049589,
+                "command_sha256": "aa396ac41574d32b38625a7fa2c330e14b42e1da9e6f0a41d7d57cd89e4b1951",
+                "elapsed_seconds": 0.083505,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -2100,18 +2095,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "rust",
-                "elapsed_seconds": 0.00129067,
+                "elapsed_seconds": 0.001858807,
                 "input_bytes": 8388608,
                 "logical_digest": "5008723bdbdafd6238acb4127f26192bc50ef403b0f9da36fd101f633e5e1900",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "f21fec15245a1fde67a0e45c94c7a105f01f3500dec90c40991f406b9c9a1337",
-                "elapsed_seconds": 0.002264,
+                "elapsed_seconds": 0.005061,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "33e97d3f1cbb8dd367aceab7be937543a580aeeed6d38ac35367ae6c8b65c3d6"
+                "stdout_sha256": "b3273e37646ed33ce3de7385aa8b6243f279c7b79ac5df9d50086d96f50ea132"
               }
             },
             "stock": {
@@ -2132,7 +2127,7 @@
               },
               "stats": {
                 "command_sha256": "2ec295a6060dc0797c2b76b3b07592f4e5997bbfe3c7ff6db642dbb11df10c51",
-                "elapsed_seconds": 0.007972,
+                "elapsed_seconds": 0.016683,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -2175,18 +2170,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "go",
-                "elapsed_seconds": 0.001544809,
+                "elapsed_seconds": 0.003176478,
                 "input_bytes": 8388608,
                 "logical_digest": "5008723bdbdafd6238acb4127f26192bc50ef403b0f9da36fd101f633e5e1900",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "4c763cc916a4001476554dfc0634008f449d84f56e8ef497b05800c84b38d162",
-                "elapsed_seconds": 0.003038,
+                "elapsed_seconds": 0.007564,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "2e1472895a34aa2546bee343ea8820b1a5fb1c9a0ec9416c3776117fa49507de"
+                "stdout_sha256": "ae0fb9a9c36e62cfe05a102d5e32cfc9da3af8a0f59c0f8784d5a3bc32c5ae3f"
               }
             },
             "node": {
@@ -2207,7 +2202,7 @@
               },
               "stats": {
                 "command_sha256": "d0d83aa14fbf7374f776c325934870fab916458d230e052f86aabecd99fd89b2",
-                "elapsed_seconds": 0.051838,
+                "elapsed_seconds": 0.084936,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -2230,8 +2225,8 @@
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
-                "command_sha256": "8b63d71dec815939b1a30c3208b6b2246c2bf2e75d4cf5b9d5c32f215774ac27",
-                "elapsed_seconds": 0.053256,
+                "command_sha256": "3f49ff9576562f68f6ee5f301e5ce5f88aa3f84318cb02dc362c4f9e83d73a27",
+                "elapsed_seconds": 0.06838,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -2250,18 +2245,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "rust",
-                "elapsed_seconds": 0.001549957,
+                "elapsed_seconds": 0.002879115,
                 "input_bytes": 8388608,
                 "logical_digest": "5008723bdbdafd6238acb4127f26192bc50ef403b0f9da36fd101f633e5e1900",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "9c91e85dfca35c7b9ea95f6d98b3feaba70a463433f9965d7080a9432e5a3492",
-                "elapsed_seconds": 0.002482,
+                "elapsed_seconds": 0.006433,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "199bfa2dc076c064a5f23513c37f3d5a5ededed5b68f892bed973c8a3e743e47"
+                "stdout_sha256": "eb7020a1fbaacdf6a5fe826627d078cf119ca83a8baa5f6ed2732d303bc6222a"
               }
             },
             "stock": {
@@ -2282,7 +2277,7 @@
               },
               "stats": {
                 "command_sha256": "62994fa7930a89f3a917b790e0de8ede23aad51ee7a8fc558d4bf9b5d06899b5",
-                "elapsed_seconds": 0.006395,
+                "elapsed_seconds": 0.01348,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -2325,18 +2320,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "go",
-                "elapsed_seconds": 0.001594075,
+                "elapsed_seconds": 0.002116915,
                 "input_bytes": 8388608,
                 "logical_digest": "5008723bdbdafd6238acb4127f26192bc50ef403b0f9da36fd101f633e5e1900",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "30d65729e3fa86214899babb1e3acc4a59b9060a55d1779261566b1544a9ded9",
-                "elapsed_seconds": 0.002915,
+                "elapsed_seconds": 0.0042,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "4ad22870fc36f70c9e49248678c70be48c1d670fa97c4edb313a76cf66974927"
+                "stdout_sha256": "36f4094cf152a15d699d0a99be98226bfd56c3185e1922ada8edf3a392951771"
               }
             },
             "node": {
@@ -2357,7 +2352,7 @@
               },
               "stats": {
                 "command_sha256": "9982fe98b0b29e3a267900a9c959da990ecd0e33cf3bad28776e82378935359a",
-                "elapsed_seconds": 0.052416,
+                "elapsed_seconds": 0.075666,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -2380,8 +2375,8 @@
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
-                "command_sha256": "7d34659d60b84b7679720d089e6c8eb274d9c0c32f3c2e32e7bea3711e99f622",
-                "elapsed_seconds": 0.053371,
+                "command_sha256": "d6b7657f256f9409e9d3b44a0c37c8a2879b68cef1983875346348e040e47f42",
+                "elapsed_seconds": 0.080363,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -2400,18 +2395,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "rust",
-                "elapsed_seconds": 0.001283061,
+                "elapsed_seconds": 0.001831039,
                 "input_bytes": 8388608,
                 "logical_digest": "5008723bdbdafd6238acb4127f26192bc50ef403b0f9da36fd101f633e5e1900",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "8846ee8a72480bfef8bea282e893e1c3c58b58cb715fdc91a1ab128445523659",
-                "elapsed_seconds": 0.002187,
+                "elapsed_seconds": 0.003214,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "8e8c92fa25a6aa7c35e49c55274b41f7fcea338a5efb30f88cc46a6053c72fbb"
+                "stdout_sha256": "ca28d1dcc3a1ef6e3c049e3422c2c7daa65e050b2110a026333112253c13de74"
               }
             },
             "stock": {
@@ -2432,7 +2427,7 @@
               },
               "stats": {
                 "command_sha256": "58cc89d3c174dcacb6a06dd3f9a751044ec3c69ad9181fc771bc7bfbf5ba8124",
-                "elapsed_seconds": 0.006147,
+                "elapsed_seconds": 0.009883,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -2475,18 +2470,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "go",
-                "elapsed_seconds": 0.000750546,
+                "elapsed_seconds": 0.00122277,
                 "input_bytes": 8388608,
                 "logical_digest": "224fd54aa2956bf21d27c4cb45fd933fef49314170239097209cd9b7f196e799",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "50d3ec8dfa0286ba2f25c2734b8d7c2c295c5d41850d5b56de1d271187e14450",
-                "elapsed_seconds": 0.001946,
+                "elapsed_seconds": 0.003565,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "07268bc88eafbe5c8c6fb54aff69b15590266c176511d480662880c10d5b0578"
+                "stdout_sha256": "9d24ab1915287b8272cfd67e63b853f8f03a524316ab1c5a82a26def4caf1376"
               }
             },
             "node": {
@@ -2507,7 +2502,7 @@
               },
               "stats": {
                 "command_sha256": "bb0236d4ad818d22064e631c24a042fb1ea4f42cc64289121ccf731a5963c341",
-                "elapsed_seconds": 0.05186,
+                "elapsed_seconds": 0.063443,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -2530,8 +2525,8 @@
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
-                "command_sha256": "f7b93118fe8f82da06f985552dc0b07ba738407928a119428bd34ee255a31d0a",
-                "elapsed_seconds": 0.046291,
+                "command_sha256": "115e80fd84ea02173419559bcb480d02cca68e6d36fe37a16b577886665eccd3",
+                "elapsed_seconds": 0.078761,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -2550,18 +2545,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "rust",
-                "elapsed_seconds": 0.000541384,
+                "elapsed_seconds": 0.000722504,
                 "input_bytes": 8388608,
                 "logical_digest": "224fd54aa2956bf21d27c4cb45fd933fef49314170239097209cd9b7f196e799",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "813d176427f00202bd5d05790acff8b01bba604d7e86d1ce9f2dd8fba8af5af4",
-                "elapsed_seconds": 0.001414,
+                "elapsed_seconds": 0.008675,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "d55abd41748a4879f00372bdb5c5c74b6fe54f4c62fc9c1f54900c4fb6c5d4b8"
+                "stdout_sha256": "da3f717af26553b6449024185305e97927b01c0fcf0660acf375067ec354e1ed"
               }
             },
             "stock": {
@@ -2582,7 +2577,7 @@
               },
               "stats": {
                 "command_sha256": "96200baee8b3eefec6ed71bdaa43590ebaad3826a41917341c79cbee8996ad8b",
-                "elapsed_seconds": 0.004184,
+                "elapsed_seconds": 0.006523,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -2625,18 +2620,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "go",
-                "elapsed_seconds": 0.000942627,
+                "elapsed_seconds": 0.001044202,
                 "input_bytes": 8388608,
                 "logical_digest": "fedde285790fc3c01e75e1149147964364690b0d4251521d49321f4a5ddb2078",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "6316e7c753bad010bec173b18a192b15852cc3a8e030676a3b4a82694ee32a22",
-                "elapsed_seconds": 0.003004,
+                "elapsed_seconds": 0.00304,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "5ec2030442198f14901e0ee8f398d2c9e418c55358001f7e32437a519f041e88"
+                "stdout_sha256": "1caec9218b49a9cc35582ac9f4f1d5330b91f642e82167142f5ea90a9c948f0a"
               }
             },
             "node": {
@@ -2657,7 +2652,7 @@
               },
               "stats": {
                 "command_sha256": "b46d7f4a00191bbc916166dd1eb48a93c160213127bbaf9e93bea5468a610e90",
-                "elapsed_seconds": 0.045397,
+                "elapsed_seconds": 0.07213,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -2680,8 +2675,8 @@
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
-                "command_sha256": "b0f626f36e3636dac4524133463eef0ff5e4266bb9e7eb7c468ef87a5ba253ea",
-                "elapsed_seconds": 0.04539,
+                "command_sha256": "806dda41a4ab6d00f2e5c54fa9774734b3d708fb10261c3221d8d9311f00bb87",
+                "elapsed_seconds": 0.061433,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -2700,18 +2695,18 @@
                   "repeated_field_name_occurrences": 0
                 },
                 "driver": "rust",
-                "elapsed_seconds": 0.000573329,
+                "elapsed_seconds": 0.000718027,
                 "input_bytes": 8388608,
                 "logical_digest": "fedde285790fc3c01e75e1149147964364690b0d4251521d49321f4a5ddb2078",
                 "schema": "systemd-journal-sdk-corpus-logical-v1"
               },
               "stats": {
                 "command_sha256": "ed1cf7442b5fd2dced9ed50151bd33c1a8e91e4d51254e08c8c0607e9aa7179e",
-                "elapsed_seconds": 0.001487,
+                "elapsed_seconds": 0.002188,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "stdout_sha256": "26bb5a31ba89940e7162662d7796ef0ae98814acc9e91eea107f158c32e9ff4f"
+                "stdout_sha256": "934f1e1fca435f23b17da5ad3cac04e48b807c6a8819fd9ce94213469379b4fe"
               }
             },
             "stock": {
@@ -2732,7 +2727,7 @@
               },
               "stats": {
                 "command_sha256": "d30cac1895fdd4fb67c18df96214d90ecb3f0315978d8974b47921e6613b7339",
-                "elapsed_seconds": 0.003456,
+                "elapsed_seconds": 0.006676,
                 "returncode": 0,
                 "status": "ok",
                 "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"

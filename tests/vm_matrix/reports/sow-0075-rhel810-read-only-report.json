@@ -1,0 +1,200 @@
+{
+  "generated_at_unix": 1780374031,
+  "host_stock_systemd": "systemd 260 (260.1-2-manjaro)",
+  "kind": "rhel810-read-only-validation",
+  "local_samples": [
+    {
+      "bytes": 8388608,
+      "case_id": "active",
+      "host_stock_verify": {
+        "command_sha256": "54d048d0c05b95544c7b2d2f9552158dc9aea2fdb878bf4fb1de205f6f2397a7",
+        "returncode": 1,
+        "status": "failed",
+        "stderr_sha256": "d527d4010295c3d45fd7eb7665141c9af6b4be01f5ceafe25b5c07ee8759b7ef",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "sha256": "99e6a07101e5efa957ec97c773c29822237344a0aa0d5e51449aaafe5283e1bd"
+    },
+    {
+      "bytes": 50446336,
+      "case_id": "archived",
+      "host_stock_verify": {
+        "command_sha256": "34a8c7453a58ef2883db86a22b39fd0dd6c0b74b1accbecec0d794c02aac9cef",
+        "returncode": 0,
+        "status": "ok",
+        "stderr_sha256": "299730841f5f7d666c6b2270fe849268016cd8aec5336145f0464658765ad938",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "reader_parity": {
+        "go": true,
+        "node": true,
+        "python": true,
+        "rust": true,
+        "stock": true
+      },
+      "readers": {
+        "go": {
+          "digest": {
+            "counts": {
+              "binary_payloads": 7173,
+              "entries": 54113,
+              "entries_with_repeated_field_names": 0,
+              "largest_payload_bytes": 1984,
+              "payload_bytes": 38302579,
+              "payloads": 1139583,
+              "payloads_without_separator": 0,
+              "repeated_field_name_occurrences": 0
+            },
+            "driver": "go",
+            "elapsed_seconds": 0.889223282,
+            "input_bytes": 50446336,
+            "logical_digest": "37fdb188381c828cafa07718149132fac3d7a721f674ddfee58f1b833ec5fd98",
+            "schema": "systemd-journal-sdk-corpus-logical-v1"
+          },
+          "stats": {
+            "command_sha256": "6152ef728bdbf9f4e6afbcddda9172f4958ccc5e8513953cba9f7b9d5f28f998",
+            "elapsed_seconds": 0.891265,
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "d20410b669b0201ea99332df89a7e7bdb1aa1522418d3b4ffeab4b65868801f6"
+          }
+        },
+        "node": {
+          "digest": {
+            "counts": {
+              "binary_payloads": 7173,
+              "entries": 54113,
+              "entries_with_repeated_field_names": 0,
+              "largest_payload_bytes": 1984,
+              "payload_bytes": 38302579,
+              "payloads": 1139583,
+              "payloads_without_separator": 0,
+              "repeated_field_name_occurrences": 0
+            },
+            "driver": "node",
+            "logical_digest": "37fdb188381c828cafa07718149132fac3d7a721f674ddfee58f1b833ec5fd98",
+            "schema": "systemd-journal-sdk-corpus-logical-v1"
+          },
+          "stats": {
+            "command_sha256": "60dccc593c2b1469d558c5642ff66a946539735460689f4fc755ab0460cc6ecf",
+            "elapsed_seconds": 2.746342,
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        "python": {
+          "digest": {
+            "counts": {
+              "binary_payloads": 7173,
+              "entries": 54113,
+              "entries_with_repeated_field_names": 0,
+              "largest_payload_bytes": 1984,
+              "payload_bytes": 38302579,
+              "payloads": 1139583,
+              "payloads_without_separator": 0,
+              "repeated_field_name_occurrences": 0
+            },
+            "driver": "python",
+            "logical_digest": "37fdb188381c828cafa07718149132fac3d7a721f674ddfee58f1b833ec5fd98",
+            "schema": "systemd-journal-sdk-corpus-logical-v1"
+          },
+          "stats": {
+            "command_sha256": "010249f98f864664212001c549835bdc4bde5bae9c855237e3903cfc6d9554b3",
+            "elapsed_seconds": 3.281225,
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        },
+        "rust": {
+          "digest": {
+            "counts": {
+              "binary_payloads": 7173,
+              "entries": 54113,
+              "entries_with_repeated_field_names": 0,
+              "largest_payload_bytes": 1984,
+              "payload_bytes": 38302579,
+              "payloads": 1139583,
+              "payloads_without_separator": 0,
+              "repeated_field_name_occurrences": 0
+            },
+            "driver": "rust",
+            "elapsed_seconds": 0.583988428,
+            "input_bytes": 50446336,
+            "logical_digest": "37fdb188381c828cafa07718149132fac3d7a721f674ddfee58f1b833ec5fd98",
+            "schema": "systemd-journal-sdk-corpus-logical-v1"
+          },
+          "stats": {
+            "command_sha256": "9eb1ae6e93dac5f2dcb1553aeb1eac1e1375d7303efd8831cc42d4d43481130b",
+            "elapsed_seconds": 0.58554,
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stdout_sha256": "e1cfe117fa54f7777563d44d9ca47cd0a4651f6b074c41e6befddac3814f34c2"
+          }
+        },
+        "stock": {
+          "digest": {
+            "counts": {
+              "binary_payloads": 7173,
+              "entries": 54113,
+              "entries_with_repeated_field_names": 0,
+              "largest_payload_bytes": 1984,
+              "payload_bytes": 38302579,
+              "payloads": 1139583,
+              "payloads_without_separator": 0,
+              "repeated_field_name_occurrences": 0
+            },
+            "driver": "stock",
+            "logical_digest": "37fdb188381c828cafa07718149132fac3d7a721f674ddfee58f1b833ec5fd98",
+            "schema": "systemd-journal-sdk-corpus-logical-v1"
+          },
+          "stats": {
+            "command_sha256": "103661568e0621d5d793bc041e311c7cb575b874f7c4a1f055dfb2ee17ef851c",
+            "elapsed_seconds": 2.668112,
+            "returncode": 0,
+            "status": "ok",
+            "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        }
+      },
+      "sha256": "baf2638508257a4babfb0ab7858bb41e4f92e187b758d0f4e8a74b3ce6a9929c"
+    }
+  ],
+  "notes": [
+    "The active sample was copied from a live journal and is recorded only as a snapshot limitation if local verify fails.",
+    "The archived sample is the local reader-parity evidence because it is stable and host stock verify passed."
+  ],
+  "python_runtime": "repo-local-python-with-lz4-4.4.5",
+  "remote_journal_summary": {
+    "active_files": 1,
+      "all_vm_stock_verify_ok": true,
+    "archived_files": 7,
+    "size_classes": [
+      [
+        "active",
+        8388608
+      ],
+      [
+        "archived",
+        50331648
+      ],
+      [
+        "archived",
+        50446336
+      ]
+    ],
+    "total_files": 8
+  },
+  "schema": "systemd-journal-sdk-vm-matrix-v1",
+  "status": "ok",
+  "target": {
+    "access": "read-only ssh alias",
+    "alias": "rhel810",
+    "distro": "RHEL 8.10",
+    "observed_os_release": "rhel 8.10",
+    "observed_systemd": "systemd 239 (239-82.el8_10.16)"
+  }
+}
