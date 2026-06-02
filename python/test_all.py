@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Package-level tests for the pure-Python journal SDK slice."""
 
+import importlib.util
 import json
 import os
 import shutil
@@ -140,11 +141,7 @@ def journalctl_available():
 
 
 def zstd_available():
-    try:
-        import compression.zstd  # noqa: F401
-    except ModuleNotFoundError:
-        return False
-    return True
+    return importlib.util.find_spec('compression.zstd') is not None
 
 
 def verify_journal_file_if_available(path):
