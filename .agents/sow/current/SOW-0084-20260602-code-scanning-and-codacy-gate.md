@@ -343,15 +343,16 @@ Acceptance criteria evidence:
   scanning.
 - Raw SARIF and Codacy exports are written under `.local/codacy/` in local
   commands and `.local/codacy/` in workflow runner workspace only.
-- Codacy cloud issue export imported 1599 quality issues for `master` into
-  `.local/codacy-cloud/codacy-issues.json`. The exporter partitions by language
-  and fails if any partition reaches the CLI limit.
-- Codacy cloud security finding export imported 199 security findings for
-  `master` into `.local/codacy-cloud/codacy-findings.json`. Evidence indicates
-  these are a security-focused view of issues already present in the 1599
-  quality issue set.
+- Codacy cloud issue export initially imported 1599 quality issues for
+  `master`, and the latest export after Codacy analyzed `057b737` imported
+  1535 quality issues into `.local/codacy-cloud/codacy-issues.json`. The
+  exporter partitions by language and fails if any partition reaches the CLI
+  limit.
+- Codacy cloud security finding export initially imported 199 findings for
+  `master`, and the latest export after Codacy analyzed `057b737` imported 182
+  findings into `.local/codacy-cloud/codacy-findings.json`.
 - The user-observed 3056 Codacy UI count remains unreconciled with the Codacy
-  CLI repository dashboard count of 1599. Potential causes include UI scope,
+  CLI repository dashboard count of 1535. Potential causes include UI scope,
   non-master branch scope, additional views, ignored/resolved state inclusion,
   or stale UI totals.
 - SOW-0047 through SOW-0050 remain marked as blocked by code-scanning gates in
@@ -366,14 +367,17 @@ Tests or equivalent validation:
   failed cleanly with `CODACY_API_TOKEN is not set` and did not print a token.
 - `python3 tests/code_scanning/export_codacy_issues.py --source cli --provider gh --organization netdata --repository systemd-journal-sdk --branch master --output-dir .local/codacy-cloud`:
   passed, exported 1599 quality issues and 199 security findings through the
-  authenticated `codacy` CLI.
+  authenticated `codacy` CLI before the first cleanup batch; rerun after
+  Codacy analyzed `057b737` exported 1535 quality issues and 182 security
+  findings.
 - `python3 tests/code_scanning/export_codacy_issues.py --source cli --provider gh --organization netdata --repository systemd-journal-sdk --branch master --output-dir .local/codacy-cloud --skip-findings --cli-timeout 300`:
   passed, proving the timeout-backed local CLI path still exports quality
   issues.
 - `python3 tests/code_scanning/summarize_findings.py --codacy-issues .local/codacy-cloud/codacy-issues.json --codacy-findings .local/codacy-cloud/codacy-findings.json --json-output .local/codacy-cloud/summary.json --markdown-output .local/codacy-cloud/summary.md`:
-  passed, summarized 1798 exported Codacy records. The 1798 includes 1599
-  quality issues plus the 199 security-finding view and must not be interpreted
-  as 1798 distinct source locations.
+  passed, summarized 1798 exported Codacy records before the first cleanup
+  batch and 1717 exported Codacy records after Codacy analyzed `057b737`. The
+  totals include quality issues plus the security-finding view and must not be
+  interpreted as distinct source locations.
 - Python compile check for edited Python helper/SDK/test files: passed.
 - Python compile check for the second Python cleanup batch passed for:
   `python/cmd/livewriter.py`, `python/journal/facade.py`,
@@ -397,6 +401,15 @@ Tests or equivalent validation:
   passed.
 - `npm_config_cache=.local/npm-cache npm test` in `node/` after dynamic-key
   hardening: passed.
+- `python3 -m py_compile python/adapter.py python/journal/writer.py python/journal/reader.py`:
+  passed for the sixth cleanup batch.
+- `PYTHONPATH=.local/python-deps python3 - <<'PY' ...` focused checks for
+  `test_jf_facade_stateful_reader_operations` and
+  `test_file_reader_refresh_failure_preserves_current_mapping`: passed for the
+  sixth cleanup batch.
+- `node --check node/src/lib/hash.js`: passed for the sixth cleanup batch.
+- `npm_config_cache=../.local/npm-cache npm test` in `node/`: passed for the
+  sixth cleanup batch.
 - `PYTHONPATH=.local/python-deps python3 - <<'PY' ...` importing
   `python/test_all.py`, replacing only `test_conformance_manifest` with a
   no-op, and running `main()`: passed.
@@ -444,17 +457,21 @@ Real-use evidence:
 - GitHub Actions workflow evidence collected from pushed commit `0ce9d5c`:
   - CodeQL: success, run URL
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26851504233`.
-  - Codacy SARIF: still in progress during this update, run URL
+  - Codacy SARIF: success, run URL
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26851504221`.
+- GitHub Actions workflow evidence collected from pushed commit `057b737`:
+  - CodeQL: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26851647593`.
+  - Codacy SARIF: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26851647599`.
 - GitHub code scanning API returned 2053 open alerts after both workflows ran:
   by tool: Prospector 143, Agentlinter 240, PMD 50, lizard 955, PyLintPython3
   67, Bandit 111, Flawfinder 9, ESLint8 311, shellcheck 1, markdownlint 75,
   CodeQL 91.
-- Codacy cloud issue export ran locally through the authenticated `codacy` CLI:
-  1599 quality issues on `master`. The Codacy repository command also reports
-  `issuesCount: 1599` for last analyzed commit `dc8637af`.
-- Codacy security findings export ran locally: 199 findings, matching the
-  Codacy quality issue `Security` category total.
+- Codacy cloud issue export ran locally through the authenticated `codacy` CLI
+  after Codacy analyzed `057b737`: 1535 quality issues on `master`.
+- Codacy security findings export ran locally after Codacy analyzed `057b737`:
+  182 findings.
 - GitHub workflow cloud export still skips when `CODACY_API_TOKEN` is absent;
   that only affects scheduled/headless export, not local triage.
 - First actionable-finding cleanup batch fixed concrete Python unused/undefined
@@ -476,6 +493,12 @@ Real-use evidence:
   using null-prototype objects for JSON results and test field maps, safe
   `Object.hasOwn()` checks for fixture lookup and JSON accumulation, and
   null-prototype argument maps in Node benchmark/ingester CLIs.
+- Sixth actionable-finding cleanup batch removed the remaining known Python
+  Pyflakes unused imports, replaced a cursor rejection `try/except/pass` with
+  explicit rejection state, made Python refresh cleanup best-effort suppression
+  explicit, preserved reverse-step corruption skip behavior without
+  `try/except/continue`, and replaced the Node Jenkins seed decimal literal
+  with a parsed base-16 constant.
 
 Reviewer findings:
 
@@ -544,7 +567,7 @@ Follow-up mapping:
 
 - Remaining work inside this SOW:
   - reconcile the user's observed 3056 UI count with the CLI-confirmed
-    `master` count of 1599 quality issues;
+    `master` count of 1535 quality issues after commit `057b737`;
   - group and triage the exported `master` cloud findings;
   - fix or minimally suppress every actionable finding;
   - run GitHub workflows after push and record CodeQL/Codacy results;

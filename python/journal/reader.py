@@ -2,6 +2,7 @@
 # Reads .journal, .journal~, .journal.zst, .journal~.zst files.
 # Uses entry-array-based iteration.
 
+import contextlib
 import mmap
 import os
 import struct
@@ -217,15 +218,11 @@ class FileReader:
                 self._mmap = old_mmap
                 self._buffer = old_buffer
                 if new_mmap is not None:
-                    try:
+                    with contextlib.suppress(Exception):
                         new_mmap.close()
-                    except Exception:
-                        pass
                 if new_fd is not None:
-                    try:
+                    with contextlib.suppress(Exception):
                         os.close(new_fd)
-                    except Exception:
-                        pass
             self._header = old_header
             self._compact = old_compact
             self._entry_item_size = old_entry_item_size
@@ -373,7 +370,7 @@ class FileReader:
             try:
                 entry = self.get_entry()
             except Exception:
-                continue
+                entry = None
             if entry and self._filter.matches(entry):
                 return True
         return False

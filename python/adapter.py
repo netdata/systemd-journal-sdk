@@ -11,7 +11,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from journal import (
     FileReader, DirectoryReader, Writer, SdJournalOpen,
-    SdJournalAddDisjunction, SdJournalListBoots,
+    SdJournalListBoots,
     SdJournalEnumerateFields, SdJournalSeekHead, SdJournalNext,
     SdJournalGetEntry, SdJournalProcessOutput, SdJournalSeekTail,
     SdJournalPrevious, SdJournalGetCursor, SdJournalTestCursor,
@@ -355,11 +355,13 @@ def run_cursor_test(tc):
         cursor_realtime = SdJournalGetRealtimeUsec(r)
         if SdJournalTestCursor(r, 'invalid-cursor'):
             return {'status': 'FAIL', 'error': 'invalid cursor matched current position'}
+        invalid_seek_rejected = False
         try:
             SdJournalSeekCursor(r, 'invalid-cursor')
-            return {'status': 'FAIL', 'error': 'invalid seek cursor was accepted'}
         except Exception:
-            pass
+            invalid_seek_rejected = True
+        if not invalid_seek_rejected:
+            return {'status': 'FAIL', 'error': 'invalid seek cursor was accepted'}
         SdJournalSeekCursor(r, cursor)
         if 'n=' not in cursor:
             return {'status': 'FAIL', 'error': 'cursor missing seqnum segment'}
