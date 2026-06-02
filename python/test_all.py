@@ -1440,13 +1440,16 @@ def test_directory_writer_open_identity_lifecycle_source_timestamp():
             raise AssertionError('expected strict identity rejection without boot id')
 
         events = []
+        def record_lifecycle(event):
+            events.append(event)
+
         log = Log(td, {
             'source': 'system',
             'open_mode': 'eager',
             'identity_mode': 'strict',
             'machine_id': machine_id,
             'boot_id': boot_id,
-            'lifecycle': lambda event: events.append(event),
+            'lifecycle': record_lifecycle,
         })
         assert log.configured_directory() == td
         assert log.journal_directory() == os.path.join(td, '00112233445566778899aabbccddeeff')

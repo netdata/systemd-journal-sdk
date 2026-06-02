@@ -235,9 +235,14 @@ static int set_payload(struct iovec *iov, const char *name, const char *value) {
         return 0;
 }
 
+static void free_iovec_payloads(struct iovec *iovecs, size_t count) {
+        for (size_t i = 0; i < count; i++)
+                free(iovecs[i].iov_base);
+}
+
 static int build_rows(size_t rows, BenchRows *ret) {
         struct iovec *iovecs;
-        int err = -ENOMEM;
+        size_t total_iovecs;
         static const char *fixed_names[] = {
                 "TEST_ID",
                 "PERF_PROFILE",
@@ -254,7 +259,8 @@ static int build_rows(size_t rows, BenchRows *ret) {
         if (rows > SIZE_MAX / FIELDS_PER_ROW)
                 return -EOVERFLOW;
 
-        iovecs = calloc(rows * FIELDS_PER_ROW, sizeof(struct iovec));
+        total_iovecs = rows * FIELDS_PER_ROW;
+        iovecs = calloc(total_iovecs, sizeof(struct iovec));
         if (!iovecs)
                 return -ENOMEM;
 
@@ -265,8 +271,9 @@ static int build_rows(size_t rows, BenchRows *ret) {
                 for (size_t i = 0; i < 4; i++) {
                         int r = set_payload(&record[pos++], fixed_names[i], fixed_values[i]);
                         if (r < 0) {
-                                err = r;
-                                goto fail;
+                                free_iovec_payloads(iovecs, total_iovecs);
+                                free(iovecs);
+                                return r;
                         }
                 }
                 for (size_t offset = 0; offset < 12; offset++) {
@@ -275,8 +282,9 @@ static int build_rows(size_t rows, BenchRows *ret) {
                         snprintf(value, sizeof(value), "low-%02zu-%02zu", offset, row % 16);
                         int r = set_payload(&record[pos++], name, value);
                         if (r < 0) {
-                                err = r;
-                                goto fail;
+                                free_iovec_payloads(iovecs, total_iovecs);
+                                free(iovecs);
+                                return r;
                         }
                 }
                 for (size_t offset = 0; offset < 8; offset++) {
@@ -285,8 +293,9 @@ static int build_rows(size_t rows, BenchRows *ret) {
                         snprintf(value, sizeof(value), "medium-%02zu-%04zu", offset, row % 2048);
                         int r = set_payload(&record[pos++], name, value);
                         if (r < 0) {
-                                err = r;
-                                goto fail;
+                                free_iovec_payloads(iovecs, total_iovecs);
+                                free(iovecs);
+                                return r;
                         }
                 }
                 for (size_t offset = 0; offset < 8; offset++) {
@@ -295,8 +304,9 @@ static int build_rows(size_t rows, BenchRows *ret) {
                         snprintf(value, sizeof(value), "high-%02zu-%06zu", offset, row);
                         int r = set_payload(&record[pos++], name, value);
                         if (r < 0) {
-                                err = r;
-                                goto fail;
+                                free_iovec_payloads(iovecs, total_iovecs);
+                                free(iovecs);
+                                return r;
                         }
                 }
         }
@@ -306,19 +316,12 @@ static int build_rows(size_t rows, BenchRows *ret) {
                 .rows = rows,
         };
         return 0;
-
-fail:
-        for (size_t i = 0; i < rows * FIELDS_PER_ROW; i++)
-                free(iovecs[i].iov_base);
-        free(iovecs);
-        return err;
 }
 
 static void free_rows(BenchRows *rows) {
         if (!rows || !rows->iovecs)
                 return;
-        for (size_t i = 0; i < rows->rows * FIELDS_PER_ROW; i++)
-                free(rows->iovecs[i].iov_base);
+        free_iovec_payloads(rows->iovecs, rows->rows * FIELDS_PER_ROW);
         free(rows->iovecs);
         rows->iovecs = NULL;
         rows->rows = 0;

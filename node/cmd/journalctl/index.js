@@ -417,8 +417,8 @@ function normalizeBootIdText(text) {
 
 function isUnsignedDecimal(text) {
   if (typeof text !== 'string' || text.length === 0) return false;
-  for (let i = 0; i < text.length; i++) {
-    if (!isDigit(text[i])) return false;
+  for (const ch of text) {
+    if (!isDigit(ch)) return false;
   }
   return true;
 }
@@ -566,12 +566,17 @@ async function runFollow(inputPath, opts, matches, sinceUsec, untilUsec, tailLim
   const toPrint = opts['no-tail'] || sinceUsec !== null ? initial : initial.slice(-tailLimit);
   for (const [, output] of toPrint) writeSync(1, Buffer.isBuffer(output) ? output : Buffer.from(output));
   for (;;) {
-    await new Promise(resolve => setTimeout(resolve, 100));
-    const snapshot = scanFollowSnapshot(inputPath, opts, matches, sinceUsec, untilUsec);
-    for (const [cursor, output] of snapshot) {
-      if (seen.has(cursor)) continue;
-      seen.add(cursor);
-      writeSync(1, Buffer.isBuffer(output) ? output : Buffer.from(output));
+    try {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const snapshot = scanFollowSnapshot(inputPath, opts, matches, sinceUsec, untilUsec);
+      for (const [cursor, output] of snapshot) {
+        if (seen.has(cursor)) continue;
+        seen.add(cursor);
+        writeSync(1, Buffer.isBuffer(output) ? output : Buffer.from(output));
+      }
+    } catch (err) {
+      process.stderr.write(`Error: follow: ${err.message}\n`);
+      process.exit(1);
     }
   }
 }
