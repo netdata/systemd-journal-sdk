@@ -300,6 +300,17 @@ Failure handling:
   and tool errors were present, while still producing SARIF. This validates the
   report-only workflow behavior: existing findings should not fail the job, but
   missing SARIF should.
+- Committed and pushed the workflow/triage setup as `f6f864c`.
+- First GitHub workflow runs for `f6f864c`:
+  - CodeQL run `26846315080`: completed successfully. Rust, Go,
+    JavaScript/TypeScript, and Python jobs all succeeded.
+  - Codacy SARIF run `26846315043`: completed successfully. SARIF upload
+    succeeded; Codacy cloud issue export skipped because `CODACY_API_TOKEN` was
+    empty.
+- GitHub code scanning API reported 2053 open alerts after the first CodeQL and
+  Codacy SARIF runs: 91 CodeQL alerts and 1962 Codacy SARIF alerts. The 2053
+  GitHub alerts do not replace the user's Codacy cloud count of 3056; the cloud
+  export/token is still required to reconcile the full Codacy issue set.
 
 ## Validation
 
@@ -307,8 +318,10 @@ Acceptance criteria evidence:
 
 - GitHub-native code scanning workflow added as `.github/workflows/codeql.yml`.
   GitHub API reported default CodeQL setup was `not-configured` before this
-  workflow was added.
+  workflow was added. First pushed run completed successfully.
 - Codacy SARIF workflow added as `.github/workflows/codacy-sarif.yml`.
+  First pushed run completed successfully and uploaded SARIF to GitHub code
+  scanning.
 - Raw SARIF and Codacy exports are written under `.local/codacy/` in local
   commands and `.local/codacy/` in workflow runner workspace only.
 - The current 3056 cloud Codacy findings are not imported yet because
@@ -338,9 +351,15 @@ Tests or equivalent validation:
 
 Real-use evidence:
 
-- GitHub Actions workflows have not run on GitHub yet in this SOW. They require
-  commit/push before GitHub code scanning and SARIF upload evidence can be
-  collected.
+- GitHub Actions workflow evidence collected from pushed commit `f6f864c`:
+  - CodeQL: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26846315080`.
+  - Codacy SARIF: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26846315043`.
+- GitHub code scanning API returned 2053 open alerts after both workflows ran:
+  by tool: Prospector 143, Agentlinter 240, PMD 50, lizard 955, PyLintPython3
+  67, Bandit 111, Flawfinder 9, ESLint8 311, shellcheck 1, markdownlint 75,
+  CodeQL 91.
 - Codacy cloud issue export has not run yet because no Codacy token is present
   in the local environment. The workflow skips cloud export when the secret is
   missing and records that skip in the job summary.
