@@ -13,7 +13,7 @@ from journal import (
     FileReader, DirectoryReader, Writer, SdJournalOpen,
     SdJournalSeekHead, SdJournalNext,
     SdJournalGetCursor, SdJournalTestCursor,
-    SdJournalSeekCursor, SdJournalGetRealtimeUsec, export_entry, json_entry,
+    SdJournalSeekCursor, SdJournalGetRealtimeUsec, export_entry,
 )
 from journal.compress import _HAS_ZSTD
 from journal.hash import parse_match_string
