@@ -479,26 +479,6 @@ Accepted reader API layers:
   across files. This matches systemd's `sd_journal_query_unique()` /
   `sd_journal_enumerate_unique()` algorithmic contract and avoids expanding
   unrelated entries or fields.
-- Rust and Go expose an SDK-native optimized explorer query API for file and
-  directory readers. This API is separate from the libsystemd-compatible
-  facade. It accepts exact positive `FIELD IN [values]` filters, exact
-  negative `FIELD NOT IN [values]` filters, facet fields, optional full-text
-  search, display expansion policy, direction, row limits, and realtime bounds.
-- Explorer filters are resolved through journal DATA/FIELD indexes and
-  posting-list intersections/exclusions. Positive values are ORed within one
-  field and different fields are ANDed. Negative values are excluded as
-  AND-NOT predicates for that field.
-- Explorer queries with no facets, or with all requested facets fully
-  constrained by positive indexed filters, use a no-aggregation fast path that
-  avoids candidate-row DATA traversal and expands only returned display rows.
-- Explorer facet aggregation materializes only requested facet fields for rows
-  that survive index slicing. Full-text search is the explicit expensive mode
-  and expands candidate-row payloads. Compressed DATA outside filters, selected
-  facets, full-text search, and returned display rows must not be decompressed.
-- Explorer unique-value discovery is a filtered index operation: readers walk
-  the target FIELD object's DATA chain, intersect each target value's posting
-  list with the filtered candidate set, and materialize only surviving target
-  values. It supports optional counts and pagination/limits.
 - Performance-sensitive readers should use the raw current-entry payload
   visitor/enumeration APIs when they already need byte-level `FIELD=value`
   payloads. Convenience entry materialization APIs may build maps, repeated
@@ -598,11 +578,6 @@ Current Go reader feature slice:
 - forward/backward iteration, cursors, realtime and monotonic timestamps,
   seqnum metadata, binary field values, repeated field values, field
   enumeration, current-entry data enumeration, and unique value enumeration;
-- optimized explorer query APIs on file and directory readers:
-  `ExplorerQuery`, `ExplorerUnique`, `VisitEntryDataRefs`, and
-  `FieldDataOffsets`, with indexed positive/negative filters, selected facets,
-  filtered unique values, row-display policies, compression-skip counters, and
-  no-aggregation fast paths;
 - systemd-compatible export output for binary fields using size-prefixed field
   values and blank-line entry separators;
 - systemd-compatible JSON output for duplicate fields and binary values;
@@ -684,14 +659,6 @@ Current Rust reader feature slice:
   seqnum metadata, binary field values, repeated field values, field
   enumeration, current-entry data enumeration, unique value enumeration, and
   systemd-compatible export/json/text formatting;
-- optimized explorer query APIs on file and directory readers:
-  `explorer_query`, `explorer_unique`, `visit_entry_data_refs`, and
-  `field_data_offsets`, with indexed positive/negative filters, selected
-  facets, filtered unique values, row-display policies, compression-skip
-  counters, and no-aggregation fast paths. Explorer decompression counters
-  cover selected payload materialization for facets, display rows, full-text,
-  and unique values; they do not count internal DATA hash-collision verification
-  performed while resolving indexed filters;
 - configurable reader bounds through `ReaderOptions`: default `Live` mode uses
   systemd-style cached mutable bounds and refreshes file size only when a read
   would exceed the cached end of file, while `Snapshot` mode fixes the file

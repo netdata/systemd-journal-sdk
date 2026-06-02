@@ -1,20 +1,23 @@
 # SOW Status
 
-Last updated: 2026-06-01
+Last updated: 2026-06-02
 
 ## Current
 
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
-- SOW-0075 - VM Historical systemd Validation: in-progress. Builds a small,
-  capped, sanitized validation corpus from representative booted distro
-  systemd versions. VM work is limited to at most four additive disposable
-  `sdjournal-*` domains at 1 vCPU, 1 GiB RAM, and 4 GiB disk by default.
+- SOW-0075 - VM Historical systemd Validation: in-progress. Partial VM
+  validation completed for Ubuntu 18.04/systemd 237, Ubuntu 22.04/systemd
+  249, and Ubuntu 24.04/systemd 255. Stock, Rust, Go, and Node matched all 18
+  collected files; Python mismatched two Ubuntu 18.04 archived files. Debian
+  11 consumed one capped VM slot but blocked on SSH readiness, so the
+  four-new-VM cap is exhausted pending user direction.
 - SOW-0076 - Independent Selective Real Corpus Verification: in-progress.
-  Builds and runs a repeatable, feature-selected real-corpus verification pass
-  with read-only external corpus access, repo-local scratch outputs, and
-  sanitized committed reports.
+  Local implementation and verification are complete and ready for
+  orchestrator review/closure decision. The worker produced a repeatable,
+  feature-selected real-corpus verification pass with read-only external corpus
+  access, repo-local scratch outputs, and sanitized committed reports.
 
 ## Pending
 
@@ -35,20 +38,18 @@ Last updated: 2026-06-01
   release, language registry/package publication, and clean consumer install
   validation after compatibility, portability, corpus, integration, and parity
   gates are complete.
+- SOW-0081 - systemd-journal Plugin And Facets Specification: open. Documents
+  Netdata `systemd-journal.plugin` and facets behavior in full detail before a
+  replacement API is implemented.
+- SOW-0082 - Rust Optimized Journal Explorer API: open. Depends on SOW-0081;
+  implements a legacy-like optimized Rust API that fixes unnecessary
+  compressed-DATA decompression, unnecessary field traversal, and repeated
+  processing of deduplicated DATA objects.
+- SOW-0083 - Index-Derived Facet And Histogram Optimization: open. Depends on
+  SOW-0082; measures and implements optional index-derived facet and histogram
+  strategies with break-even evidence from generated and real-corpus queries.
 
 ## Recently Closed Or Completed
-- SOW-0080 - Explorer Query Edge Hardening: completed. Rust and Go explorer
-  APIs now merge directory results with existing directory reader comparators,
-  have consistent empty-FTS and decompression diagnostics, validate
-  xz/lz4/compact+compression/sealed/mixed-directory fixtures, and use measured
-  Go zstd/lz4 compressed-payload reuse on the explorer hot path. Five
-  read-only reviewers voted `PRODUCTION GRADE`.
-- SOW-0074 - Rust And Go Optimized Log Explorer Query API: completed. Rust and
-  Go now provide SDK-native explorer query APIs, filtered unique-value APIs,
-  DATA-reference visitors, isolated baseline and optimized comparison CLIs,
-  generated smoke/query suites, and benchmark runners. The 200k-row compact
-  corpus showed large optimized-vs-baseline speedups in every representative
-  query family; five read-only reviewers voted `PRODUCTION GRADE`.
 - SOW-0078 - Legacy jf Writer Unkeyed Rejection: completed. The legacy Rust
   `jf` writer remains public but now returns `UnsupportedJournalFile` before
   mutation when asked to append to historical unkeyed journal files. The same

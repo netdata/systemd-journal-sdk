@@ -1,9 +1,0 @@
-{
-  "schema": "systemd-journal-sdk-explorer-query-v1",
-  "name": "topn-no-filter",
-  "mode": "query",
-  "facets": [],
-  "display": "none",
-  "limit": 10,
-  "direction": "forward"
-}

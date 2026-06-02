@@ -5,7 +5,6 @@
 //! the imported implementation and adds byte-safe entries, directory reading,
 //! export/JSON formatting, and a libsystemd-style facade.
 
-mod explorer;
 mod facade;
 mod verify_graph;
 
@@ -20,11 +19,6 @@ use std::io::Read;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 
-pub use explorer::{
-    EntryDataRef, ExplorerDisplay, ExplorerFacet, ExplorerFacetValue, ExplorerFilter,
-    ExplorerFilterKind, ExplorerQuery, ExplorerQueryCounters, ExplorerQueryResult, ExplorerRow,
-    ExplorerUniqueQuery, ExplorerUniqueResult, ExplorerUniqueValue,
-};
 pub use facade::{
     ERR_END_OF_ENTRIES, ERR_INVALID_CURSOR, ERR_NO_ENTRY, ERR_UNSUPPORTED, Error as FacadeError,
     OutputMode, SdJournal, SdJournalAddConjunction, SdJournalAddDisjunction, SdJournalAddMatch,

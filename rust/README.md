@@ -75,16 +75,6 @@ Current reader scope:
   seqnum metadata, field enumeration, binary field values, repeated field
   values, stateful current-entry data enumeration, unique value enumeration,
   and export/json/text formatting;
-- optimized explorer query APIs on file and directory readers:
-  `explorer_query`, `explorer_unique`, `visit_entry_data_refs`, and
-  `field_data_offsets`. These APIs use journal DATA/FIELD indexes for exact
-  positive and negative filters, materialize only selected facet/display/FTS
-  payloads, expose compression-skip counters, and provide a no-aggregation
-  fast path for no-facet or fully constrained facet requests. The
-  `payloads_decompressed` counter reports selected payload decompressions for
-  materialized facets, display fields, full-text scans, or unique values; it
-  does not include internal hash-collision checks performed while resolving
-  filter values through DATA indexes;
 - byte-preserving RAW field-name access through `Entry::raw_fields()`,
   `Entry::get_raw()`, and `Entry::get_raw_values()`;
   `Entry.fields` and `Entry.field_values` are UTF-8 string-keyed convenience
@@ -294,51 +284,6 @@ for field in entry.raw_fields() {
     let value_bytes = field.value;
 }
 ```
-
-Explorer query API:
-
-```rust
-use journal::{
-    ExplorerDisplay, ExplorerFilter, ExplorerQuery, FileReader, ReaderOptions,
-};
-
-let mut reader = FileReader::open_with_options(
-    "/path/to/system.journal",
-    ReaderOptions::snapshot(),
-)?;
-
-let result = reader.explorer_query(&ExplorerQuery {
-    filters: vec![
-        ExplorerFilter::field_in(b"PRIORITY".to_vec(), vec![b"3".to_vec(), b"4".to_vec()]),
-        ExplorerFilter::field_not_in(
-            b"SYSLOG_IDENTIFIER".to_vec(),
-            vec![b"noisy-source".to_vec()],
-        ),
-    ],
-    facets: vec![b"SYSLOG_IDENTIFIER".to_vec()],
-    display: ExplorerDisplay::Fields(vec![b"MESSAGE".to_vec(), b"PRIORITY".to_vec()]),
-    limit: Some(100),
-    ..ExplorerQuery::default()
-})?;
-# Ok::<(), Box<dyn std::error::Error>>(())
-```
-
-Use `explorer_query` for log-explorer paths that can express filters as exact
-journal field membership. Positive values are ORed within one field; different
-fields are ANDed. Negative values exclude entries containing any selected value
-for that field. With no facets, or with facets fully constrained by positive
-filters, the API avoids candidate-row DATA traversal and expands only returned
-rows. `full_text` is the explicit expensive mode because it scans candidate
-payloads.
-
-Use `explorer_unique` to discover values of one target field under the same
-filter model without expanding unrelated fields.
-
-Explorer counters are diagnostic plan evidence. `payloads_decompressed` counts
-decompression only for selected payloads that the explorer materializes for
-facets, display fields, full-text scans, or unique values. Internal
-decompression that may happen while validating DATA hash collisions during
-filter planning is deliberately outside this counter.
 
 File-backed journalctl:
 

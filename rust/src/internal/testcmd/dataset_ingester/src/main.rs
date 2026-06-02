@@ -5,7 +5,6 @@ use journal_core::file::{
     Compression, DEFAULT_COMPRESS_THRESHOLD, JournalFile, JournalFileOptions, JournalState,
     JournalWriter, MmapMut,
 };
-use journal_core::seal::SealOptions;
 use journal_registry::repository::File as RepositoryFile;
 use serde::Deserialize;
 use serde_json::json;
@@ -32,14 +31,8 @@ struct Args {
     final_state: String,
     #[arg(long)]
     compact: bool,
-    #[arg(long, default_value = "none")]
-    compression: String,
-    #[arg(long, default_value_t = DEFAULT_COMPRESS_THRESHOLD)]
-    compress_threshold: usize,
     #[arg(long)]
     max_size_bytes: Option<u64>,
-    #[arg(long)]
-    seal: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,17 +75,13 @@ fn main() -> Result<()> {
     if !matches!(args.final_state.as_str(), "online" | "offline" | "archived") {
         return Err(anyhow!("invalid final state: {}", args.final_state));
     }
-    let compression = parse_compression(&args.compression)?;
     let result = if args.rejection_mode {
         ingest_rejections(
             &args.dataset,
             &args.output,
             &args.final_state,
             args.compact,
-            compression,
-            args.compress_threshold,
             args.max_size_bytes,
-            args.seal,
         )?
     } else {
         ingest_accepted(
@@ -100,10 +89,7 @@ fn main() -> Result<()> {
             &args.output,
             &args.final_state,
             args.compact,
-            compression,
-            args.compress_threshold,
             args.max_size_bytes,
-            args.seal,
         )?
     };
     println!("{}", serde_json::to_string(&result)?);
@@ -131,10 +117,7 @@ fn absolute_path(path: &Path) -> Result<PathBuf> {
 fn create_writer(
     path: &Path,
     compact: bool,
-    compression: Compression,
-    compress_threshold: usize,
     max_size_bytes: Option<u64>,
-    seal: bool,
 ) -> Result<(JournalFile<MmapMut>, JournalWriter)> {
     let path = absolute_path(path)?;
     if let Some(parent) = path.parent() {
@@ -143,40 +126,23 @@ fn create_writer(
     let repo_file = RepositoryFile::from_path(&path)
         .ok_or_else(|| anyhow!("journal path must be absolute and end in .journal"))?;
     let boot_id = uuid(BOOT_ID)?;
-    let mut options = JournalFileOptions::new(uuid(MACHINE_ID)?, boot_id, uuid(SEQNUM_ID)?)
+    let options = JournalFileOptions::new(uuid(MACHINE_ID)?, boot_id, uuid(SEQNUM_ID)?)
         .with_file_id(uuid(FILE_ID)?)
         .with_window_size(8 * 1024 * 1024)
         .with_keyed_hash(true)
-        .with_compression(compression)
-        .with_compress_threshold(compress_threshold)
+        .with_compression(Compression::None)
+        .with_compress_threshold(DEFAULT_COMPRESS_THRESHOLD)
         .with_compact(compact)
         .with_optimized_buckets(None, max_size_bytes);
-    if seal {
-        options = options.with_seal(SealOptions::new(
-            [0u8; 12],
-            1_000_000,
-            DEFAULT_ARCHIVE_REALTIME,
-        ));
-    }
     let mut journal_file = JournalFile::<MmapMut>::create(&repo_file, options)?;
     let writer = JournalWriter::new_with_compression(
         &mut journal_file,
         1,
         boot_id,
-        compression,
-        compress_threshold,
+        Compression::None,
+        DEFAULT_COMPRESS_THRESHOLD,
     )?;
     Ok((journal_file, writer))
-}
-
-fn parse_compression(name: &str) -> Result<Compression> {
-    match name {
-        "none" => Ok(Compression::None),
-        "zstd" => Ok(Compression::Zstd),
-        "xz" => Ok(Compression::Xz),
-        "lz4" => Ok(Compression::Lz4),
-        other => Err(anyhow!("unsupported compression: {other}")),
-    }
 }
 
 fn archive_path_for(output: &Path, head_realtime: u64) -> PathBuf {
@@ -280,19 +246,9 @@ fn ingest_accepted(
     output: &Path,
     final_state: &str,
     compact: bool,
-    compression: Compression,
-    compress_threshold: usize,
     max_size_bytes: Option<u64>,
-    seal: bool,
 ) -> Result<serde_json::Value> {
-    let (mut journal_file, mut writer) = create_writer(
-        output,
-        compact,
-        compression,
-        compress_threshold,
-        max_size_bytes,
-        seal,
-    )?;
+    let (mut journal_file, mut writer) = create_writer(output, compact, max_size_bytes)?;
     let reader = BufReader::new(File::open(dataset)?);
     let mut records = 0usize;
     let mut errors = Vec::new();
@@ -371,10 +327,7 @@ fn ingest_rejections(
     output: &Path,
     final_state: &str,
     compact: bool,
-    compression: Compression,
-    compress_threshold: usize,
     max_size_bytes: Option<u64>,
-    seal: bool,
 ) -> Result<serde_json::Value> {
     let reader = BufReader::new(File::open(dataset)?);
     let mut writer_state: Option<(JournalFile<MmapMut>, JournalWriter)> = None;
@@ -405,14 +358,7 @@ fn ingest_rejections(
         }
 
         if writer_state.is_none() {
-            writer_state = Some(create_writer(
-                output,
-                compact,
-                compression,
-                compress_threshold,
-                max_size_bytes,
-                seal,
-            )?);
+            writer_state = Some(create_writer(output, compact, max_size_bytes)?);
         }
         let value: ValueDescriptor = serde_json::from_value(record.input["value"].clone())?;
         let mut payload = record.input["field_name"]

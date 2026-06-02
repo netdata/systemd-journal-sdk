@@ -1207,36 +1207,6 @@ impl<M: MemoryMap> JournalFile<M> {
         })
     }
 
-    /// Collect all DATA object offsets linked from the specified FIELD object.
-    ///
-    /// This is the index-native form of [`Self::field_data_objects`]. It lets
-    /// higher-level query engines classify DATA references by field without
-    /// decompressing or parsing DATA payloads first.
-    pub fn field_data_offsets(
-        &self,
-        field_name: &[u8],
-        offsets: &mut Vec<NonZeroU64>,
-    ) -> Result<()> {
-        offsets.clear();
-
-        let field_hash = self.hash(field_name);
-        let Some(field_offset) = self.find_field_offset(field_hash, field_name)? else {
-            return Ok(());
-        };
-
-        let field_guard = self.field_ref(field_offset)?;
-        let mut current_data_offset = field_guard.header.head_data_offset;
-        drop(field_guard);
-
-        while let Some(data_offset) = current_data_offset {
-            offsets.push(data_offset);
-            let data_guard = self.data_ref(data_offset)?;
-            current_data_offset = data_guard.header.next_field_offset;
-        }
-
-        Ok(())
-    }
-
     /// Creates an iterator over all DATA objects for a specific entry
     pub fn entry_data_objects(&self, entry_offset: NonZeroU64) -> Result<EntryDataIterator<'_, M>> {
         // Get the entry object to determine how many data items it has

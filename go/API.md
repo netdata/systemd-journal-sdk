@@ -45,16 +45,6 @@ should require a new minor release tag and an explicit SOW decision:
   `(*journal.Reader).GetEntryPayload`, `(*journal.Reader).GetRaw`,
   `(*journal.Reader).GetRawValues`, `(*journal.Reader).EntryDataRestart`,
   and `(*journal.Reader).EnumerateEntryPayload`
-- `journal.ExplorerQuery`, `journal.ExplorerUniqueQuery`,
-  `journal.ExplorerFilter`, `journal.ExplorerDisplay`, explorer result and
-  counter types, `journal.FieldIn`, `journal.FieldNotIn`,
-  `journal.DisplayNone`, `journal.DisplayAll`, `journal.DisplayFields`,
-  `journal.Limit`, `(*journal.Reader).ExplorerQuery`,
-  `(*journal.Reader).ExplorerUnique`, `(*journal.Reader).VisitEntryDataRefs`,
-  `(*journal.Reader).FieldDataOffsets`,
-  `(*journal.DirectoryReader).ExplorerQuery`,
-  `(*journal.DirectoryReader).ExplorerUnique`, and
-  `(*journal.DirectoryReader).VisitEntryDataRefs`
 - lifecycle and artifact-size callback interfaces
 - lifecycle event type and reason constants
 - exported sentinel errors
@@ -97,41 +87,11 @@ field name and `Value` is the binary-safe raw field value.
 values without first materializing the full result set; use `QueryUnique` only
 when the caller needs an owned slice of all values.
 
-The SDK-native explorer API is the preferred surface for log-explorer style
-queries that can express filters as exact journal field membership. It is
-separate from the libsystemd-compatible facade:
-
-- `ExplorerQuery` supports positive `FIELD IN [values]` filters, negative
-  `FIELD NOT IN [values]` filters, selected facet fields, optional full-text
-  search, selected display expansion, direction, limits, and realtime bounds.
-- Positive values are ORed within one field. Different fields are ANDed.
-  Negative values are excluded as AND-NOT predicates for that field.
-- Filters use DATA/FIELD indexes and posting lists. Filter values are not
-  materialized during candidate-row traversal.
-- Requests with no facets, or with all facets fully constrained by positive
-  indexed filters, use a no-aggregation fast path and expand only returned
-  display rows.
-- Facet aggregation materializes only requested facet fields for candidate
-  rows. `FullText` is the explicit expensive mode and scans candidate
-  payloads.
-- `ExplorerUnique` discovers values of one target field under the same filter
-  model by walking the target FIELD object's DATA chain and intersecting each
-  target value posting list with the filtered candidate set.
-- `ExplorerQueryCounters` exposes materialization, decompression, traversal,
-  and fast-path evidence so callers can validate production query plans.
-  `PayloadsDecompressed` counts selected payload decompressions for materialized
-  facets, display fields, full-text scans, or unique values; it does not include
-  internal DATA hash-collision checks that may happen while resolving indexed
-  filter values.
-
 `DefaultReaderOptions()` uses live mmap-backed reads on Unix. Use
 `WithAccessMode(journal.ReaderAccessReadAt)` only when mmap is undesirable for
 diagnostics or a constrained environment. `ReaderBoundsLive` refreshes visible
 entries when active files grow; `ReaderBoundsSnapshot` fixes the visible file
 state at open time.
-
-`Reader` and `DirectoryReader` values are not safe for concurrent method calls.
-Use one reader per concurrent query or serialize access around a shared reader.
 
 `VisitEntryPayloads`, `EnumerateEntryPayload`, and
 `SdJournalEnumerateAvailableData` are zero-copy hot paths. Returned or callback

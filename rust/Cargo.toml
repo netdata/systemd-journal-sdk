@@ -28,9 +28,6 @@ members = [
     "src/internal/testcmd/corpus_digest",
     "src/internal/testcmd/corpus_regenerate",
     "src/internal/testcmd/corpus_experiment",
-    "src/internal/testcmd/explorer_query_contract",
-    "src/internal/testcmd/explorer_query_baseline",
-    "src/internal/testcmd/explorer_query_optimized",
 
     # Conformance adapter
     "src/adapter",
