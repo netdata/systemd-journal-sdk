@@ -375,6 +375,20 @@ Tests or equivalent validation:
   quality issues plus the 199 security-finding view and must not be interpreted
   as 1798 distinct source locations.
 - Python compile check for edited Python helper/SDK/test files: passed.
+- Python compile check for the second Python cleanup batch passed for:
+  `python/cmd/livewriter.py`, `python/journal/facade.py`,
+  `python/journal/directory_reader.py`, `python/cmd/writer_core_bench.py`,
+  `python/journal/writer.py`, `python/journal/reader.py`,
+  `python/adapter.py`, `python/journal/directory_writer.py`,
+  `tests/interoperability/run_live_matrix.py`,
+  `tests/conformance/live/run_live_concurrency.py`,
+  `tests/interoperability/run_lock_matrix.py`, and `python/test_all.py`.
+- Focused Python runtime checks passed for:
+  `test_writer_sealed_basic`, `test_zstd_data_object_parse`,
+  `test_xz_and_lz4_data_object_parse`,
+  `test_directory_writer_replaces_unsupported_chain_active`,
+  `test_file_reader_refresh_failure_preserves_current_mapping`, and
+  `test_jf_facade_stateful_reader_operations`.
 - `PYTHONPATH=.local/python-deps python3 - <<'PY' ...` importing
   `python/test_all.py`, replacing only `test_conformance_manifest` with a
   no-op, and running `main()`: passed.
@@ -402,6 +416,13 @@ Real-use evidence:
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26846315080`.
   - Codacy SARIF: success, run URL
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26846315043`.
+- GitHub Actions workflow evidence collected from pushed commit `0e6f47a3`:
+  - Dependency Graph: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26850887403`.
+  - CodeQL: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26850885618`.
+  - Codacy SARIF: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26850885608`.
 - GitHub code scanning API returned 2053 open alerts after both workflows ran:
   by tool: Prospector 143, Agentlinter 240, PMD 50, lizard 955, PyLintPython3
   67, Bandit 111, Flawfinder 9, ESLint8 311, shellcheck 1, markdownlint 75,
@@ -417,6 +438,10 @@ Real-use evidence:
   findings and the Go stdlib vulnerability metadata finding by setting
   `go/go.mod` to `go 1.26.3`. The Codacy cloud issue count will not reflect
   these fixes until this commit is pushed and Codacy reanalyzes `master`.
+- Second actionable-finding cleanup batch fixed the remaining known Pyflakes
+  unused imports and several Codacy-reported Python `try/except/pass` or
+  `try/except/continue` paths by making best-effort cleanup and fallback
+  behavior explicit.
 
 Reviewer findings:
 

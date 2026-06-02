@@ -433,6 +433,8 @@ class Log:
                 with open(path, 'rb') as f:
                     header = parse_file_header(f.read(HEADER_SIZE))
             except Exception:
+                header = None
+            if header is None:
                 continue
             if int(header['tail_entry_seqnum']) > state['tail_seqnum']:
                 state['tail_seqnum'] = int(header['tail_entry_seqnum'])

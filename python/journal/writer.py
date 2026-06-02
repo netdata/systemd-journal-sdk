@@ -522,29 +522,20 @@ class Writer:
         object_payload = payload
         compression_flag = 0
         if self._compression == COMPRESSION_ZSTD and len(payload) >= self._compress_threshold:
-            try:
-                compressed = _zstd_compress(payload)
-                if len(compressed) < len(payload):
-                    object_payload = compressed
-                    compression_flag = OBJECT_COMPRESSED_ZSTD
-            except Exception:
-                pass
+            compressed = _best_effort_compress(_zstd_compress, payload)
+            if compressed is not None and len(compressed) < len(payload):
+                object_payload = compressed
+                compression_flag = OBJECT_COMPRESSED_ZSTD
         elif self._compression == COMPRESSION_XZ and len(payload) >= self._compress_threshold and len(payload) >= 80:
-            try:
-                compressed = _xz_compress(payload)
-                if len(compressed) < len(payload):
-                    object_payload = compressed
-                    compression_flag = OBJECT_COMPRESSED_XZ
-            except Exception:
-                pass
+            compressed = _best_effort_compress(_xz_compress, payload)
+            if compressed is not None and len(compressed) < len(payload):
+                object_payload = compressed
+                compression_flag = OBJECT_COMPRESSED_XZ
         elif self._compression == COMPRESSION_LZ4 and len(payload) >= self._compress_threshold and len(payload) >= 9:
-            try:
-                compressed = _lz4_compress(payload)
-                if len(compressed) < len(payload):
-                    object_payload = compressed
-                    compression_flag = OBJECT_COMPRESSED_LZ4
-            except Exception:
-                pass
+            compressed = _best_effort_compress(_lz4_compress, payload)
+            if compressed is not None and len(compressed) < len(payload):
+                object_payload = compressed
+                compression_flag = OBJECT_COMPRESSED_LZ4
 
         payload_offset = self._data_payload_offset()
         size = payload_offset + len(object_payload)
@@ -1332,6 +1323,13 @@ def _lz4_compress(payload):
     compressed = lz4.block.compress(payload, store_size=False)
     size_prefix = struct.pack('<Q', len(payload))
     return size_prefix + compressed
+
+
+def _best_effort_compress(compressor, payload):
+    try:
+        return compressor(payload)
+    except Exception:
+        return None
 
 
 def _ensure_zstd_available():

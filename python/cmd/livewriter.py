@@ -165,23 +165,22 @@ def main():
         writer.close()
     except Exception as e:
         if writer is not None:
-            try:
-                writer.close()
-            except Exception:
-                pass
-        try:
-            lock.release()
-        except Exception:
-            pass
+            _best_effort(writer.close)
+        _best_effort(lock.release)
         print(str(e), file=sys.stderr)
         sys.exit(1)
     finally:
-        try:
-            lock.release()
-        except Exception:
-            pass
+        _best_effort(lock.release)
 
     sys.exit(0)
+
+
+def _best_effort(callback):
+    try:
+        callback()
+        return True
+    except Exception:
+        return False
 
 
 if __name__ == '__main__':

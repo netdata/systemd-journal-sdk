@@ -53,10 +53,8 @@ def export_entry(entry):
             continue
         try:
             name.decode('utf-8')
-            continue
-        except Exception:
-            pass
-        byte_name_fields.append((name, value))
+        except UnicodeDecodeError:
+            byte_name_fields.append((name, value))
     byte_name_fields.sort(key=lambda item: (item[0], item[1]))
     for name, value in byte_name_fields:
         parts.append(_format_export_field_bytes(name, value))

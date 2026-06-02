@@ -265,8 +265,8 @@ def main() -> int:
         result["errors"].append(str(err))  # type: ignore[index]
         try:
             writer.close()
-        except Exception:
-            pass
+        except Exception as close_err:
+            result["errors"].append(f"close after error failed: {close_err}")  # type: ignore[index]
 
     print(json.dumps(result, sort_keys=True))
     return 0 if not result["errors"] and result["records"] == args.rows else 1

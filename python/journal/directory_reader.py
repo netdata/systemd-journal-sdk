@@ -36,9 +36,11 @@ class DirectoryReader:
         readers = []
         for journal_path in _collect_journal_files(path):
             try:
-                readers.append(FileReader.open(journal_path))
+                reader = FileReader.open(journal_path)
             except Exception:
-                pass
+                reader = None
+            if reader is not None:
+                readers.append(reader)
 
         return DirectoryReader.from_readers(path, readers, allow_empty=True)
 

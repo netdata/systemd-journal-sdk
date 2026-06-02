@@ -93,18 +93,18 @@ class FileReader:
                 try:
                     mapped.close()
                 except Exception:
-                    pass
+                    mapped = None
             if fd is not None:
                 try:
                     os.close(fd)
                 except Exception:
-                    pass
+                    fd = None
             if cleanup_path:
                 try:
                     os.unlink(cleanup_path)
                     os.rmdir(os.path.dirname(cleanup_path))
                 except Exception:
-                    pass
+                    cleanup_path = None
             raise
 
     def _load_entry_array(self):
@@ -361,7 +361,7 @@ class FileReader:
             try:
                 entry = self.get_entry()
             except Exception:
-                continue
+                entry = None
             if entry and self._filter.matches(entry):
                 return True
         return False

@@ -230,8 +230,8 @@ def journalctl_follow_reader(reader_id, args, stop_event, writer_done):
                     if not chunk:
                         try:
                             sel.unregister(key.fileobj)
-                        except Exception:
-                            pass
+                        except Exception as unregister_error:
+                            stderr_buffer += f"\nunregister failed: {unregister_error}".encode()
                         continue
                     if key.data == "stderr":
                         stderr_buffer += chunk

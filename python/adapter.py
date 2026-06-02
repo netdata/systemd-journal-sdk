@@ -277,8 +277,8 @@ def test_match_boolean_logic():
     finally:
         try:
             os.unlink(path)
-        except Exception:
-            pass
+        except OSError:
+            path = ''
 
 
 def _add_systemd_complex_match_expression(r):

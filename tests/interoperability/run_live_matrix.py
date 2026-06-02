@@ -575,8 +575,14 @@ def run_one_live(
                 result = f.result(timeout=10)
                 with lock:
                     results_active.append(result)
-            except Exception:
-                pass
+            except Exception as error:
+                with lock:
+                    results_active.append({
+                        "reader": "poll-unknown",
+                        "started_while_active": True,
+                        "status": "FAIL",
+                        "error": str(error),
+                    })
 
         for f in as_completed(libsystemd_futures):
             try:

@@ -2997,7 +2997,6 @@ def _tamper_data_payload(path, expected_payload):
 
 def test_writer_sealed_basic():
     from journal.writer import Writer
-    from journal.seal import SealOptions
     import tempfile
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / 'test.journal'

@@ -20,7 +20,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from run_live_matrix import BIN_DIR, LOCAL_DIR, REPO_ROOT, build_tools, require_ok, run, systemd_version
+from run_live_matrix import BIN_DIR, LOCAL_DIR, REPO_ROOT, build_tools, run, systemd_version
 
 
 WRITERS = ("go", "rust", "node", "python")
