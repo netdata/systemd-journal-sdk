@@ -162,7 +162,7 @@ function readFacade(inputs, surface, mode, direction) {
 }
 
 function parseArgs(argv) {
-  const args = {
+  const args = Object.assign(Object.create(null), {
     inputs: [],
     mode: 'sdk-payloads',
     surface: 'file',
@@ -170,7 +170,7 @@ function parseArgs(argv) {
     windowSize: '0',
     bounds: 'live',
     mmapStrategy: 'buffer',
-  };
+  });
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
     const next = () => {

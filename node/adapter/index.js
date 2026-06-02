@@ -59,7 +59,7 @@ function fixtureBase() {
 }
 
 function resolveFixture(tc, key) {
-  if (!tc.fixtures || !tc.fixtures[key]) return '';
+  if (!tc.fixtures || !Object.hasOwn(tc.fixtures, key)) return '';
   return join(fixtureBase(), tc.fixtures[key].path);
 }
 
@@ -228,7 +228,7 @@ function testMatchBooleanLogic() {
     const matched = [];
     while (r.step()) {
       const entry = r.getEntry();
-      const fields = {};
+      const fields = Object.create(null);
       for (const [k, v] of Object.entries(entry.fields)) fields[k] = v.toString('utf8');
       matched.push(fields);
     }

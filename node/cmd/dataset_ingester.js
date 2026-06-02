@@ -155,7 +155,11 @@ function ingestRejections(dataset, output, finalState, compact, maxSizeBytes) {
 }
 
 function parseArgs(argv) {
-  const args = { finalState: 'online', rejectionMode: false, compact: false };
+  const args = Object.assign(Object.create(null), {
+    finalState: 'online',
+    rejectionMode: false,
+    compact: false,
+  });
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--rejection-mode') args.rejectionMode = true;

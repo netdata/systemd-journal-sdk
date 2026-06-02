@@ -393,6 +393,10 @@ Tests or equivalent validation:
 - `node --check node/cmd/journalctl/index.js`: passed.
 - `npm_config_cache=.local/npm-cache npm test` in `node/` after the manual
   journalctl parser rewrite: passed.
+- `node --check node/src/facade.js node/adapter/index.js node/cmd/dataset_ingester.js node/cmd/reader_core_bench.js`:
+  passed.
+- `npm_config_cache=.local/npm-cache npm test` in `node/` after dynamic-key
+  hardening: passed.
 - `PYTHONPATH=.local/python-deps python3 - <<'PY' ...` importing
   `python/test_all.py`, replacing only `test_conformance_manifest` with a
   no-op, and running `main()`: passed.
@@ -437,6 +441,11 @@ Real-use evidence:
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26851306749`.
   - Codacy SARIF: success, run URL
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26851306769`.
+- GitHub Actions workflow evidence collected from pushed commit `0ce9d5c`:
+  - CodeQL: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26851504233`.
+  - Codacy SARIF: still in progress during this update, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26851504221`.
 - GitHub code scanning API returned 2053 open alerts after both workflows ran:
   by tool: Prospector 143, Agentlinter 240, PMD 50, lizard 955, PyLintPython3
   67, Bandit 111, Flawfinder 9, ESLint8 311, shellcheck 1, markdownlint 75,
@@ -463,6 +472,10 @@ Real-use evidence:
   expression validators for limits, boot descriptors, timestamps, durations,
   hex strings, UUID-like IDs, and all-zero boot IDs with bounded manual parsers.
   Existing Node conformance tests passed after the rewrite.
+- Fifth actionable-finding cleanup batch hardened Node dynamic-key writes by
+  using null-prototype objects for JSON results and test field maps, safe
+  `Object.hasOwn()` checks for fixture lookup and JSON accumulation, and
+  null-prototype argument maps in Node benchmark/ingester CLIs.
 
 Reviewer findings:
 

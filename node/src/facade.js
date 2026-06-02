@@ -80,7 +80,7 @@ function formatExportRawField(name, value) {
 
 // Format an entry as JSON object.
 export function jsonEntry(entry) {
-  const result = {};
+  const result = Object.create(null);
   const written = new Set();
 
   if (entry.cursor) { result['__CURSOR'] = entry.cursor; written.add('__CURSOR'); }
@@ -101,7 +101,7 @@ export function jsonEntry(entry) {
 
 function addJsonValue(result, name, value) {
   const encoded = isPrintable(value, true) ? value.toString('utf8') : Array.from(value);
-  if (result[name] !== undefined) {
+  if (Object.hasOwn(result, name)) {
     if (Array.isArray(result[name])) result[name].push(encoded);
     else result[name] = [result[name], encoded];
   } else {
