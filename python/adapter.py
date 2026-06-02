@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from journal import (
     FileReader, DirectoryReader, Writer, SdJournalOpen,
     SdJournalSeekHead, SdJournalNext,
-    SdJournalProcessOutput, SdJournalSeekTail,
+    SdJournalSeekTail,
     SdJournalPrevious, SdJournalGetCursor, SdJournalTestCursor,
     SdJournalSeekCursor, SdJournalGetRealtimeUsec, export_entry, json_entry,
 )

@@ -347,16 +347,17 @@ Acceptance criteria evidence:
   `master`, the export after Codacy analyzed `057b737` imported 1535 quality
   issues, and the latest export after Codacy analyzed `8120b1e` imported 1533
   quality issues. The export after Codacy analyzed `dea354e`, and again after
-  Codacy analyzed `c3853f2`, imported 1528 quality issues into
+  Codacy analyzed `c3853f2`, imported 1528 quality issues. The export after
+  Codacy analyzed `045a515` imported 1522 quality issues into
   `.local/codacy-cloud/codacy-issues.json`. The exporter partitions by language
   and fails if any partition reaches the CLI limit.
 - Codacy cloud security finding export initially imported 199 findings for
   `master`, the export after Codacy analyzed `057b737` imported 182 findings,
   the export after Codacy analyzed `8120b1e` imported 181 findings, and exports
-  after Codacy analyzed `dea354e` and `c3853f2` imported 179 findings into
-  `.local/codacy-cloud/codacy-findings.json`.
+  after Codacy analyzed `dea354e`, `c3853f2`, and `045a515` imported 179
+  findings into `.local/codacy-cloud/codacy-findings.json`.
 - The user-observed 3056 Codacy UI count remains unreconciled with the Codacy
-  CLI repository dashboard count of 1528. Potential causes include UI scope,
+  CLI repository dashboard count of 1522. Potential causes include UI scope,
   non-master branch scope, additional views, ignored/resolved state inclusion,
   or stale UI totals.
 - SOW-0047 through SOW-0050 remain marked as blocked by code-scanning gates in
@@ -376,7 +377,9 @@ Tests or equivalent validation:
   findings; rerun after Codacy analyzed `8120b1e` exported 1533 quality issues
   and 181 security findings; rerun after Codacy analyzed `dea354e` exported
   1528 quality issues and 179 security findings; rerun after Codacy analyzed
-  `c3853f2` exported 1528 quality issues and 179 security findings.
+  `c3853f2` exported 1528 quality issues and 179 security findings; rerun after
+  Codacy analyzed `045a515` exported 1522 quality issues and 179 security
+  findings.
 - `python3 tests/code_scanning/export_codacy_issues.py --source cli --provider gh --organization netdata --repository systemd-journal-sdk --branch master --output-dir .local/codacy-cloud --skip-findings --cli-timeout 300`:
   passed, proving the timeout-backed local CLI path still exports quality
   issues.
@@ -441,6 +444,8 @@ Tests or equivalent validation:
   `test_jf_facade_stateful_reader_operations`, and
   `test_file_reader_refresh_failure_preserves_current_mapping`: passed for the
   Python import/reimport cleanup.
+- `python3 -m py_compile python/adapter.py`: passed for the final adapter
+  unused-import cleanup.
 - `PYTHONPATH=.local/python-deps python3 - <<'PY' ...` importing
   `python/test_all.py`, replacing only `test_conformance_manifest` with a
   no-op, and running `main()`: passed.
@@ -510,13 +515,18 @@ Real-use evidence:
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26852585443`.
   - Codacy SARIF: success, run URL
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26852585460`.
+- GitHub Actions workflow evidence collected from pushed commit `045a515`:
+  - CodeQL: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26852839121`.
+  - Codacy SARIF: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26852839114`.
 - GitHub code scanning API returned 2053 open alerts after both workflows ran:
   by tool: Prospector 143, Agentlinter 240, PMD 50, lizard 955, PyLintPython3
   67, Bandit 111, Flawfinder 9, ESLint8 311, shellcheck 1, markdownlint 75,
   CodeQL 91.
 - Codacy cloud issue export ran locally through the authenticated `codacy` CLI
-  after Codacy analyzed `c3853f2`: 1528 quality issues on `master`.
-- Codacy security findings export ran locally after Codacy analyzed `c3853f2`:
+  after Codacy analyzed `045a515`: 1522 quality issues on `master`.
+- Codacy security findings export ran locally after Codacy analyzed `045a515`:
   179 findings.
 - GitHub workflow cloud export still skips when `CODACY_API_TOKEN` is absent;
   that only affects scheduled/headless export, not local triage.
@@ -555,6 +565,8 @@ Real-use evidence:
 - Python import/reimport cleanup removed the remaining unused adapter
   `SdJournalGetEntry` import and local duplicate imports of symbols already
   imported at module scope.
+- Final adapter cleanup removed the remaining unused `SdJournalProcessOutput`
+  import from `python/adapter.py`.
 
 Reviewer findings:
 
@@ -623,7 +635,7 @@ Follow-up mapping:
 
 - Remaining work inside this SOW:
   - reconcile the user's observed 3056 UI count with the CLI-confirmed
-    `master` count of 1528 quality issues after commit `dea354e`;
+    `master` count of 1522 quality issues after commit `045a515`;
   - group and triage the exported `master` cloud findings;
   - fix or minimally suppress every actionable finding;
   - run GitHub workflows after push and record CodeQL/Codacy results;
