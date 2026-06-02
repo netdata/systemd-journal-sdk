@@ -28,7 +28,6 @@ MAX_U64 = (1 << 64) - 1
 
 class VerificationError(Exception):
     """Raised when a journal file fails structural integrity verification."""
-    pass
 
 
 def verify_file(path, verify_key=None):
