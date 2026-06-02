@@ -7,16 +7,21 @@ Last updated: 2026-06-02
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
+- SOW-0084 - Code Scanning And Codacy Gate: in-progress. Advanced GitHub
+  CodeQL, Codacy SARIF upload, and Codacy issue triage scaffolding are being
+  added as a reporting-only gate before the current 3056 Codacy findings are
+  fixed or dispositioned.
 
 ## Pending
 
 - SOW-0047 - Netdata NetFlow SDK Integration: open. Component integration for
-  NetFlow reader and writer paths after inventory and performance gates.
+  NetFlow reader and writer paths after inventory, performance, and
+  code-scanning gates.
 - SOW-0048 - Netdata OTEL Writer SDK Integration: open. Component integration
-  for OTEL writer paths after inventory and writer gates.
+  for OTEL writer paths after inventory, writer, and code-scanning gates.
 - SOW-0049 - Netdata Reader Plugin SDK Integration: open. Component integration
   for OTEL signal viewer, no-libsystemd systemd journal reading, and static
-  packaging after reader gates.
+  packaging after reader and code-scanning gates.
 - SOW-0050 - Netdata Vendored Journal Removal: open. Final cleanup after all
   Netdata component integrations are complete.
 - SOW-0065 - Parallel Language Parity Closure: open. Future per-language

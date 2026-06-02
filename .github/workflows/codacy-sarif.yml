@@ -1,0 +1,110 @@
+name: Codacy SARIF
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+env:
+  CODACY_ANALYSIS_CLI_VERSION: "0.8.1"
+  CODACY_CLOUD_CLI_VERSION: "1.1.1"
+  NPM_CONFIG_REGISTRY: "https://registry.npmjs.org"
+
+jobs:
+  codacy-sarif:
+    name: Generate and upload Codacy SARIF
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "26"
+
+      - name: Generate Codacy SARIF
+        id: analyze
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p .local/codacy "${RUNNER_TEMP}/codacy-home" "${RUNNER_TEMP}/npm-cache"
+          export HOME="${RUNNER_TEMP}/codacy-home"
+          export npm_config_cache="${RUNNER_TEMP}/npm-cache"
+
+          npm exec --yes --package "@codacy/analysis-cli@${CODACY_ANALYSIS_CLI_VERSION}" -- \
+            codacy-analysis init --default .
+
+          set +e
+          npm exec --yes --package "@codacy/analysis-cli@${CODACY_ANALYSIS_CLI_VERSION}" -- \
+            codacy-analysis analyze . \
+              --install-dependencies \
+              --output-format sarif \
+              --output .local/codacy/codacy-analysis.sarif \
+              --parallel-tools 4
+          codacy_status=$?
+          set -e
+
+          if [ ! -s .local/codacy/codacy-analysis.sarif ]; then
+            echo "Codacy analysis did not produce a SARIF file." >&2
+            exit 1
+          fi
+
+          echo "codacy_status=${codacy_status}" >> "${GITHUB_OUTPUT}"
+          python3 tests/code_scanning/summarize_findings.py \
+            --sarif .local/codacy/codacy-analysis.sarif \
+            --json-output .local/codacy/codacy-analysis-summary.json \
+            --markdown-output .local/codacy/codacy-analysis-summary.md
+
+          cat .local/codacy/codacy-analysis-summary.md >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload Codacy SARIF to GitHub code scanning
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: .local/codacy/codacy-analysis.sarif
+          category: codacy-analysis-cli
+
+      - name: Export Codacy cloud issues when token is available
+        shell: bash
+        env:
+          CODACY_API_TOKEN: ${{ secrets.CODACY_API_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${CODACY_API_TOKEN:-}" ]; then
+            {
+              echo
+              echo "## Codacy cloud export"
+              echo
+              echo "Skipped: \`CODACY_API_TOKEN\` secret is not configured."
+            } >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          python3 tests/code_scanning/export_codacy_issues.py \
+            --provider gh \
+            --organization netdata \
+            --repository systemd-journal-sdk \
+            --branch master \
+            --output-dir .local/codacy
+
+          python3 tests/code_scanning/summarize_findings.py \
+            --codacy-issues .local/codacy/codacy-issues.json \
+            --json-output .local/codacy/codacy-cloud-summary.json \
+            --markdown-output .local/codacy/codacy-cloud-summary.md
+
+          cat .local/codacy/codacy-cloud-summary.md >> "${GITHUB_STEP_SUMMARY}"

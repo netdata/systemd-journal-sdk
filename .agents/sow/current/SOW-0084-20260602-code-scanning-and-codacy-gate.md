@@ -1,0 +1,435 @@
+# SOW-0084 - Code Scanning And Codacy Gate
+
+## Status
+
+Status: in-progress
+
+`completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
+
+Sub-state: decisions recorded; scanner workflow and triage scaffold in progress.
+
+## Requirements
+
+### Purpose
+
+Make this repository safe enough for Netdata integration by enabling GitHub-native code scanning and Codacy SARIF/static-analysis reporting, then triaging and resolving every actionable finding before Netdata consumes the SDK.
+
+### User Request
+
+The user requested enabling GitHub native code scanning and Codacy SARIF for maximum static code analysis and security insight before merging into Netdata. The user then reported Codacy is enabled and currently shows 3056 issues.
+
+### Assistant Understanding
+
+Facts:
+
+- The repository is `netdata/systemd-journal-sdk`, public, with default branch `master`.
+- The repository currently has no `.github/` workflow directory.
+- The repository currently has no committed `.codacy/` configuration.
+- GitHub commit check-run/status APIs did not expose Codacy checks for the current commit during initial investigation.
+- Codacy is enabled externally and reports 3056 issues, according to the user.
+- The SDK contains Rust, Go, Node.js, and Python code, plus tests, generated reports, fixtures, and SOW/docs.
+
+Inferences:
+
+- This must be a separate release/integration gate before SOW-0047 through SOW-0050 start.
+- The first implementation step should be workflow/tooling and machine-readable issue export, not editing thousands of findings manually.
+- "Address all findings" needs a precise policy for true positives, false positives, generated/vendor/test fixtures, and tool configuration.
+- GitHub-native CodeQL and Codacy serve different purposes: CodeQL creates GitHub code scanning alerts directly; Codacy provides its own analysis and can also produce/upload SARIF if configured through CLI/workflows.
+
+Unknowns:
+
+- Whether the repository has GitHub CodeQL default setup enabled in GitHub settings outside committed workflows.
+- Whether the user wants committed advanced CodeQL workflow-as-code or GitHub default setup managed through settings.
+- Whether Codacy issue data will be fetched through a token/API/CLI, exported manually from Codacy, or read from GitHub checks if Codacy posts them later.
+- Whether a Codacy project token or API token is already available as a GitHub secret.
+- Whether findings in generated fixtures, benchmark artifacts, vendored WASM assets, SOW files, or test corpus artifacts should be excluded, suppressed with evidence, or fixed.
+
+### Acceptance Criteria
+
+- GitHub-native code scanning is enabled and produces code scanning alerts for supported languages in this repository.
+- Codacy analysis is connected to the repository and either:
+  - uploads SARIF into GitHub code scanning, or
+  - produces a machine-readable issue export that is stored only as sanitized evidence under `.local/` and summarized in durable reports.
+- The SOW records the exact scanner configuration, permissions, secret names, schedules, and branch/PR triggers.
+- The 3056 Codacy findings are imported or exported into a machine-readable local triage dataset under `.local/`.
+- Findings are grouped by tool, language, severity, category, path class, and fix strategy before bulk edits start.
+- Every actionable finding is fixed.
+- Every non-actionable finding is explicitly dispositioned as false positive, generated artifact, vendor artifact, test fixture, or accepted limitation with evidence and the least-broad suppression practical.
+- Final GitHub code scanning and Codacy runs have no unresolved actionable findings under the agreed policy.
+- CI/workflows fail only on the agreed gate after the initial baseline/triage phase.
+- No secrets, Codacy tokens, raw SARIF with source contents, private URLs, or sensitive issue payloads are committed.
+- SOW-0047 through SOW-0050 remain blocked until this SOW completes or the user explicitly waives it.
+
+## Analysis
+
+Sources checked:
+
+- `AGENTS.md` and project SOW rules.
+- `.agents/skills/project-agent-orchestration/SKILL.md`.
+- `.agents/sow/SOW-status.md`.
+- GitHub repository metadata from `gh repo view netdata/systemd-journal-sdk`.
+- GitHub Docs, "Uploading a SARIF file to GitHub": SARIF upload uses `github/codeql-action/upload-sarif`, requires `security-events: write`, and supports categories for multiple SARIF sets.
+- GitHub Docs, "Workflow configuration options for code scanning": advanced CodeQL setup supports workflow-as-code, push/PR/schedule triggers, language matrix, and `security-extended` query configuration.
+- GitHub Docs, "Configuring default setup for code scanning": default setup can be enabled through repository settings and may override advanced workflow/API upload behavior.
+- Codacy CLI v2 documentation: CLI supports `analyze --format sarif`, `-o` output files, and `upload -s <sarif> ...` to Codacy; install/configuration can create `.codacy/`.
+- Codacy supported-language documentation: Codacy provides static analysis, duplication, complexity, secret detection, and dependency vulnerability scanning across many languages.
+
+Current state:
+
+- No `.github/` workflows exist.
+- No committed `.codacy/` directory exists.
+- `.gitignore` ignores `.local/` but not `.codacy/`.
+- `gh secret list --repo netdata/systemd-journal-sdk` returned no visible secrets during initial investigation.
+- GitHub check runs/status APIs did not return Codacy checks for current commit `c7ace5a4b41fb532c768d64ac399fb6d66c6498c`.
+- SOW-0047 through SOW-0050 are pending Netdata integration/removal work and should now depend on this static-analysis gate.
+
+Risks:
+
+- Running scanners without a baseline plan can produce thousands of noisy changes and obscure real security defects.
+- Default CodeQL setup in GitHub settings may conflict with committed advanced CodeQL workflows or block SARIF/API uploads.
+- Codacy CLI setup can download tools/runtimes and write generated configuration; it must be constrained to this repository and `.local/` caches.
+- SARIF can include source snippets or absolute local paths if generated with unsafe options.
+- Strictly failing CI on day one can block all work before the 3056 findings are triaged.
+- Over-broad exclusions can hide real security issues in tests, fixtures, or generated assets.
+- Some Codacy findings may be style/complexity findings that require design decisions rather than mechanical edits.
+
+## Pre-Implementation Gate
+
+Status: passed
+
+Problem / root-cause model:
+
+- The repository is about to become a Netdata dependency. Static-analysis and security visibility must be enabled before integration, but the current repo has no in-repo GitHub code scanning workflows and Codacy reports 3056 issues outside the repo. The immediate problem is not just code quality; it is establishing a reproducible, reviewable gate that can distinguish actionable findings from scanner noise and prevent regressions later.
+
+Evidence reviewed:
+
+- `.agents/sow/SOW-status.md`: Netdata integration SOWs 0047-0050 remain pending.
+- GitHub repo metadata: public repository, default branch `master`.
+- GitHub docs for CodeQL default setup, advanced setup, and SARIF upload.
+- Codacy CLI v2 docs and Codacy supported-language docs.
+- Local repository scan: no `.github/` workflow directory and no `.codacy/` configuration.
+
+Affected contracts and surfaces:
+
+- GitHub Actions workflows and permissions.
+- GitHub code scanning alerts.
+- Codacy project configuration and issue data.
+- Rust, Go, Node.js, Python SDK source.
+- Tests, fixtures, reports, docs, and SOW files that scanners may analyze.
+- Netdata integration readiness gates.
+- Release readiness and future v1.0.0 publication confidence.
+
+Existing patterns to reuse:
+
+- SOW review and whole-SOW reviewer gate.
+- `.local/` for scratch scan outputs and exported issue datasets.
+- Explicit path staging and no-secret durable artifact rules.
+- Existing language-specific test and interoperability validation after code changes.
+
+Risk and blast radius:
+
+- High code churn risk if 3056 issues are handled without categorization.
+- High false-positive risk if scanner defaults analyze generated reports, fixtures, or intentionally low-level parsing code without context.
+- Medium CI disruption risk if all findings fail status checks before triage.
+- Medium security risk if SARIF or Codacy exports are committed with raw source snippets, local paths, or sensitive data.
+- Medium supply-chain risk from adding third-party GitHub Actions or installing Codacy tools without version pinning and cache constraints.
+
+Sensitive data handling plan:
+
+- Do not commit Codacy API tokens, project tokens, or GitHub tokens.
+- Use only GitHub secrets for credentials if workflow upload to Codacy is selected.
+- Keep raw SARIF, Codacy issue exports, scanner logs, and local triage databases under `.local/`.
+- Durable reports may include counts, tool names, rule IDs, severities, categories, sanitized path prefixes, and remediation summaries, but not raw source snippets when snippets might include fixture payloads or sensitive local paths.
+- If SARIF upload to GitHub is enabled, configure tools to avoid embedding source contents where possible.
+
+Implementation plan:
+
+1. Record user decisions for CodeQL mode, Codacy SARIF/export path, gating policy, suppression policy, and action pinning.
+2. Add or configure GitHub workflow files under `.github/workflows/` for the selected CodeQL and Codacy/SARIF approach.
+3. Add committed Codacy configuration only if the selected path requires it and only after reviewing generated content.
+4. Obtain machine-readable Codacy findings through API/CLI/export and store raw data under `.local/`.
+5. Build or use a triage summarizer that groups findings by language/tool/rule/path/severity and produces sanitized durable reports.
+6. Fix findings in prioritized batches, validating language tests and scanner deltas after each batch.
+7. Re-run GitHub/Codacy scans until no unresolved actionable findings remain under the agreed policy.
+8. Switch CI from reporting-only to the agreed enforcement gate, if selected.
+
+Validation plan:
+
+- Validate workflow YAML syntax and permissions.
+- Run local dry-run/static checks where possible without requiring secrets.
+- Trigger GitHub Actions on a branch/PR or `workflow_dispatch` and inspect CodeQL/Codacy/SARIF results.
+- Verify Codacy issue count decreases to the agreed target.
+- Run affected language tests after code fixes.
+- Run `.agents/sow/audit.sh`, `git diff --check`, and external reviewer pool against the complete SOW.
+
+Artifact impact plan:
+
+- AGENTS.md: may need update to require code-scanning gate before Netdata integration and release.
+- Runtime project skills: may need update if scanning workflow becomes a mandatory pre-integration/release workflow.
+- Specs: likely no SDK behavior spec update unless code fixes change public contracts.
+- End-user/operator docs: may need README badge/status documentation after workflows are stable.
+- End-user/operator skills: likely unaffected unless a reusable scan/triage skill is produced.
+- SOW lifecycle: this SOW blocks Netdata integration SOWs until completed or waived.
+- SOW-status.md: update to add SOW-0084 and mark Netdata integration blocked by it.
+
+Open-source reference evidence:
+
+- No local mirrored OSS references were checked yet. This SOW primarily relies on official GitHub and Codacy documentation at creation time; implementation may inspect mature multi-language repositories if workflow design needs examples.
+
+Open decisions:
+
+1. GitHub CodeQL/code scanning mode:
+   - Option A: GitHub default setup in repository settings. Fast and simple, but less visible in git history and may block advanced SARIF/API uploads depending on configuration.
+   - Option B: Committed advanced CodeQL workflow under `.github/workflows/`. More maintainable and reviewable, supports explicit languages/query suites/schedule, and fits repo-as-code. Recommended.
+   - Option C: Both default setup and committed workflows. Not recommended because GitHub documents conflict/override behavior when switching modes.
+2. Codacy result path:
+   - Option A: Use Codacy cloud UI/checks only, and export issues manually when needed. Lowest repo complexity but not reproducible enough.
+   - Option B: Use Codacy CLI v2 in GitHub Actions to generate SARIF, upload SARIF to GitHub code scanning, and optionally upload to Codacy using a GitHub secret. Recommended if a token/secret is available.
+   - Option C: Use Codacy API/CLI locally only for triage, keep GitHub SARIF upload limited to CodeQL/other tools. Lower CI complexity but weaker GitHub visibility.
+3. Initial CI behavior:
+   - Option A: Reporting-only while the 3056 existing issues are triaged, then switch to failing on new/actionable findings after baseline reaches zero. Recommended.
+   - Option B: Fail immediately on any Codacy/CodeQL finding. Strong but likely blocks all work until thousands of findings are resolved.
+   - Option C: Fail only on high/critical security findings immediately, report the rest. Balanced but requires reliable severity mapping.
+4. Finding disposition policy:
+   - Option A: "All findings" means every scanner issue must either be fixed or suppressed with rule/path evidence and minimal scope. Recommended.
+   - Option B: Fix only security/correctness findings and accept style/complexity debt. Not aligned with the user's "all findings" wording.
+   - Option C: Exclude broad directories such as tests/fixtures/SOWs/reports up front. Faster but risks hiding real parser/security problems.
+5. Third-party action pinning:
+   - Option A: Major-version tags for official GitHub actions and Codacy action/CLI version pinning. Maintains update path and follows GitHub examples. Recommended.
+   - Option B: Full SHA pinning for every action. Stronger supply-chain control but higher maintenance and frequent update churn.
+
+## Implications And Decisions
+
+User decisions recorded on 2026-06-02:
+
+1. GitHub CodeQL/code scanning mode: Option B. Use committed advanced CodeQL
+   workflow-as-code under `.github/workflows/`.
+2. Codacy result path: Option B. Use Codacy Analysis CLI in GitHub Actions to
+   generate SARIF and upload it to GitHub code scanning. Use Codacy API or CLI
+   export for cloud issue triage when credentials are available.
+3. Initial CI behavior: Option A. Keep the gate reporting-only while the
+   existing 3056 findings are triaged and fixed. Switch to failing after the
+   actionable baseline reaches zero or a later user decision changes the gate.
+4. Finding disposition policy: Option A. Every scanner finding must be fixed or
+   minimally suppressed with rule/path evidence and a recorded disposition.
+5. Third-party action pinning: Option A. Use current major-version tags for
+   official GitHub actions plus explicit npm package versions for Codacy tools.
+6. Codacy credentials: Option A. Use a GitHub secret or local environment
+   variable for the Codacy API token. No token value may be written to this SOW,
+   workflows, logs, reports, or any committed artifact.
+
+Implementation implications:
+
+- The first workflow pass must not fail pull requests just because existing
+  findings are present.
+- Infrastructure errors such as missing SARIF output should still fail the
+  workflow, because otherwise the repository would appear scanned while no
+  data was produced.
+- Raw Codacy exports, SARIF payloads, and local scanner logs remain under
+  `.local/` only.
+- Durable reports may contain aggregate counts, tool IDs, rule IDs, severities,
+  categories, path prefixes, and fix/disposition summaries.
+
+## Plan
+
+1. Decide scanner architecture and gate policy.
+2. Implement GitHub CodeQL/code-scanning workflow.
+3. Implement Codacy SARIF/export workflow or local import path.
+4. Import and summarize the 3056 Codacy findings.
+5. Triage by language/tool/rule/path/severity.
+6. Fix findings in batches with tests.
+7. Re-run scanners and close the gate.
+
+## Delegation Plan
+
+Implementer:
+
+- Local implementation by the project manager unless the user explicitly re-enables external implementer agents for this SOW.
+
+Reviewers:
+
+- Read-only reviewer pool after complete SOW implementation: `llm-netdata-cloud/minimax-m2.7-coder`, `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/qwen3.6-plus`, `llm-netdata-cloud/glm-5.1`, and `llm-netdata-cloud/mimo-v2.5-pro`.
+
+Repository boundary block for every external-agent prompt:
+
+```text
+CRITICAL REPOSITORY BOUNDARY:
+- DO NOT MAKE CHANGES OUTSIDE THIS REPOSITORY FOR ANY REASON.
+- Repository path: current repository root.
+- You may inspect external references read-only when the task requires it.
+- Write, edit, delete, move, reset, checkout, install, generate, cache, or format nothing outside this repository.
+- The only write exception outside the repository is /tmp.
+- Prefer .local/ inside this repository for scratch work, generated temporary files, cloned references, logs, and working notes.
+```
+
+Failure handling:
+
+- If Codacy token access is missing, record the blocker and use manual export or reporting-only workflow as the fallback.
+- If GitHub code scanning rejects SARIF upload, record the exact GitHub error and repair workflow permissions/configuration before proceeding.
+- If scanner findings require product/API decisions, stop and present numbered options before code changes.
+
+## Execution Log
+
+### 2026-06-02
+
+- Created SOW after the user reported Codacy is enabled and shows 3056 issues.
+- Verified no `.github/` workflow directory and no committed `.codacy/` configuration.
+- Verified repository is public and default branch is `master`.
+- User accepted recommended decisions for advanced CodeQL, Codacy SARIF,
+  reporting-only initial gate, fix-or-minimal-suppression policy, major-version
+  action pinning, and secret-backed Codacy API access.
+- Verified GitHub CodeQL default setup is `not-configured` via GitHub API.
+- Verified `CODACY_API_TOKEN` is not present in the local shell.
+- Verified local Codacy CLI commands are installed, but public npm has newer
+  Codacy package versions than the globally installed workstation binaries.
+- Added GitHub workflows:
+  - `.github/workflows/codeql.yml` for advanced CodeQL.
+  - `.github/workflows/codacy-sarif.yml` for Codacy Analysis CLI SARIF upload
+    plus optional Codacy cloud issue export when `CODACY_API_TOKEN` exists.
+- Added sanitized local triage tooling under `tests/code_scanning/`.
+- Added operator documentation in `documentation/code-scanning.md`.
+- Local Codacy SARIF smoke using pinned `@codacy/analysis-cli@0.8.1` generated
+  `.local/codacy-local-smoke/codacy-analysis.sarif` and summarized 725 findings
+  from the locally runnable tool subset. This is not the cloud baseline; the
+  cloud baseline remains 3056 findings from the user's Codacy UI report.
+- Local Codacy tool availability after `init --default`: 9 ready local tools,
+  5 unavailable optional tools before dependency installation. Ready local
+  tools included Jackson, markdownlint, ShellCheck, Cppcheck, Trivy, Semgrep,
+  ESLint 8, Flawfinder, and Agentlinter.
+- Local Codacy smoke produced a non-zero Codacy exit status because findings
+  and tool errors were present, while still producing SARIF. This validates the
+  report-only workflow behavior: existing findings should not fail the job, but
+  missing SARIF should.
+
+## Validation
+
+Acceptance criteria evidence:
+
+- GitHub-native code scanning workflow added as `.github/workflows/codeql.yml`.
+  GitHub API reported default CodeQL setup was `not-configured` before this
+  workflow was added.
+- Codacy SARIF workflow added as `.github/workflows/codacy-sarif.yml`.
+- Raw SARIF and Codacy exports are written under `.local/codacy/` in local
+  commands and `.local/codacy/` in workflow runner workspace only.
+- The current 3056 cloud Codacy findings are not imported yet because
+  `CODACY_API_TOKEN` is not present in the local shell. The workflow and helper
+  support token-backed import once the GitHub secret or local environment
+  variable is available.
+- SOW-0047 through SOW-0050 remain marked as blocked by code-scanning gates in
+  `.agents/sow/SOW-status.md`.
+
+Tests or equivalent validation:
+
+- `python3 -m pytest tests/code_scanning/test_summarize_findings.py`: passed,
+  3 tests.
+- `python3 tests/code_scanning/summarize_findings.py --json-output .local/codacy/empty-summary.json --markdown-output .local/codacy/empty-summary.md`:
+  passed and produced a zero-finding sanitized summary.
+- `python3 tests/code_scanning/export_codacy_issues.py --output-dir .local/codacy-token-missing-check`:
+  failed cleanly with `CODACY_API_TOKEN is not set` and did not print a token.
+- Python compile check for new helper scripts: passed.
+- Workflow YAML parse check using Python `yaml.safe_load`: passed for both new
+  workflow files.
+- `actionlint .github/workflows/codeql.yml .github/workflows/codacy-sarif.yml`:
+  passed with no findings.
+- Local pinned Codacy package smoke:
+  `@codacy/analysis-cli@0.8.1` installed under `.local/codacy-cli-test`;
+  `codacy-analysis init --default .` succeeded; `codacy-analysis analyze .`
+  produced SARIF and the summarizer produced a sanitized 725-finding summary.
+
+Real-use evidence:
+
+- GitHub Actions workflows have not run on GitHub yet in this SOW. They require
+  commit/push before GitHub code scanning and SARIF upload evidence can be
+  collected.
+- Codacy cloud issue export has not run yet because no Codacy token is present
+  in the local environment. The workflow skips cloud export when the secret is
+  missing and records that skip in the job summary.
+
+Reviewer findings:
+
+- Pending. The current SOW is not ready for terminal reviewer review because
+  the 3056 cloud findings remain unresolved.
+
+Same-failure scan:
+
+- The local Codacy SARIF smoke found 725 findings in the locally runnable
+  Codacy tool subset, including Node.js, root instruction files, `.agents`,
+  Rust, tests, and Python path classes. This confirms the reported large cloud
+  issue count is plausible and needs grouped triage.
+
+Sensitive data gate:
+
+- No Codacy token is present locally.
+- No token values were written to workflows, docs, scripts, or SOW artifacts.
+- Raw SARIF and JSON issue exports are generated only under `.local/`, which is
+  ignored by `.gitignore`.
+- Durable summaries intentionally include only counts, tools, rules, severity,
+  categories, and path classes/prefixes.
+
+Artifact maintenance gate:
+
+- AGENTS.md: updated with the pre-Netdata-integration/pre-release scanning
+  gate and raw-output handling rule.
+- Runtime project skills: no update yet. Existing orchestration skill already
+  covers whole-SOW review, repository boundaries, and raw artifact discipline.
+- Specs: no SDK behavior spec update needed for workflow scaffolding.
+- End-user/operator docs: added `documentation/code-scanning.md`.
+- End-user/operator skills: no output/reference skill produced.
+- SOW lifecycle: moved to `.agents/sow/current/` and marked `in-progress`.
+- SOW-status.md: updated to list SOW-0084 under current work and keep Netdata
+  integration SOWs blocked by the code-scanning gate.
+
+Specs update:
+
+- No product behavior spec update needed yet. Static-analysis workflow setup
+  does not change SDK public API or journal file behavior.
+
+Project skills update:
+
+- No project skill update needed yet. If SOW-0084 produces a recurring
+  scan/triage workflow after the 3056 findings are resolved, update
+  `project-agent-orchestration` or create a project code-scanning skill then.
+
+End-user/operator docs update:
+
+- Added `documentation/code-scanning.md`.
+
+End-user/operator skills update:
+
+- Not applicable; no external operator skill is published by this change.
+
+Lessons:
+
+- Local Codacy Analysis CLI can produce a useful SARIF subset, but Codacy cloud
+  remains the authoritative source for the 3056 reported findings.
+- The report-only phase is necessary because the scanner command exits non-zero
+  for existing findings even when SARIF is produced successfully.
+
+Follow-up mapping:
+
+- Remaining work inside this SOW:
+  - configure `CODACY_API_TOKEN` or provide a Codacy export so the 3056 cloud
+    findings can be imported into `.local/`;
+  - group and triage the cloud findings;
+  - fix or minimally suppress every actionable finding;
+  - run GitHub workflows after push and record CodeQL/Codacy results;
+  - switch from reporting-only to enforcement after the actionable baseline is
+    zero or after a later user decision.
+
+## Outcome
+
+Pending.
+
+## Lessons Extracted
+
+Pending.
+
+## Followup
+
+Pending.
+
+## Regression Log
+
+None yet.
+
+Append regression entries here only after this SOW was completed or closed and later testing or use found broken behavior. Use a dated `## Regression - YYYY-MM-DD` heading at the end of the file. Never prepend regression content above the original SOW narrative.
