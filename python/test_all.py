@@ -340,8 +340,6 @@ def test_journald_field_policy_validation():
 
 
 def test_live_delay_parser():
-    import importlib.util
-
     path = PYTHON_ROOT / 'cmd/livewriter.py'
     spec = importlib.util.spec_from_file_location('livewriter_for_tests', path)
     module = importlib.util.module_from_spec(spec)
@@ -2884,7 +2882,6 @@ def test_journalctl_verify():
 
     # --verify sealed file without key (key required)
     from journal.compress import decompress_zst_sync
-    from journal.header import COMPATIBLE_SEALED
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir) / 'sealed.journal'
         with open(valid_path, 'rb') as f:
@@ -2909,7 +2906,6 @@ def test_journalctl_verify():
 
         # --verify-key with real sealed file
         seal_opts = _test_seal_opts()
-        from journal.writer import Writer
         sealed_path = Path(tmpdir) / 'sealed-real.journal'
         w = Writer.create(str(sealed_path), opts={'seal': seal_opts})
         w.append([{'name': 'MESSAGE', 'value': b'sealed verify'}], {'realtime_usec': 1500000})
@@ -2993,8 +2989,6 @@ def _tamper_data_payload(path, expected_payload):
 
 
 def test_writer_sealed_basic():
-    from journal.writer import Writer
-    import tempfile
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / 'test.journal'
         opts = {'seal': _test_seal_opts()}
@@ -3007,7 +3001,6 @@ def test_writer_sealed_basic():
 
 
 def test_writer_sealed_interval_crossing():
-    from journal.writer import Writer
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / 'test.journal'
         opts = {'seal': _test_seal_opts()}
@@ -3021,7 +3014,6 @@ def test_writer_sealed_interval_crossing():
 
 
 def test_writer_sealed_first_entry_future_epoch():
-    from journal.writer import Writer
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / 'test.journal'
         opts = {'seal': _test_seal_opts()}
@@ -3034,7 +3026,6 @@ def test_writer_sealed_first_entry_future_epoch():
 
 
 def test_writer_sealed_entry_before_start_rejected():
-    from journal.writer import Writer
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / 'test.journal'
         opts = {'seal': _test_seal_opts()}
@@ -3050,7 +3041,6 @@ def test_writer_sealed_entry_before_start_rejected():
 
 
 def test_writer_sealed_multi_interval_gap():
-    from journal.writer import Writer
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / 'test.journal'
         opts = {'seal': _test_seal_opts()}
@@ -3063,7 +3053,6 @@ def test_writer_sealed_multi_interval_gap():
 
 
 def test_writer_sealed_empty_file_stock_verify():
-    from journal.writer import Writer
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / 'test.journal'
         opts = {'seal': _test_seal_opts()}
@@ -3074,7 +3063,6 @@ def test_writer_sealed_empty_file_stock_verify():
 
 
 def test_writer_sealed_wrong_key_fails():
-    from journal.writer import Writer
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / 'test.journal'
         opts = {'seal': _test_seal_opts()}
@@ -3086,7 +3074,6 @@ def test_writer_sealed_wrong_key_fails():
 
 
 def test_writer_sealed_tampered_data_fails():
-    from journal.writer import Writer
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / 'test.journal'
         opts = {'seal': _test_seal_opts()}
@@ -3100,7 +3087,6 @@ def test_writer_sealed_tampered_data_fails():
 
 
 def test_writer_unsealed_does_not_set_sealed_flags():
-    from journal.writer import Writer
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / 'test.journal'
         w = Writer.create(str(path))
@@ -3116,7 +3102,6 @@ def test_writer_unsealed_does_not_set_sealed_flags():
 
 
 def test_writer_file_permissions():
-    from journal.writer import Writer
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / 'test.journal'
         w = Writer.create(str(path))
@@ -3128,7 +3113,6 @@ def test_writer_file_permissions():
 
 
 def test_compact_sealed_writer_stock_verify():
-    from journal.writer import Writer
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / 'test.journal'
         opts = {'seal': _test_seal_opts(), 'compact': True}

@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from journal import (
     FileReader, DirectoryReader, Writer, SdJournalOpen,
     SdJournalSeekHead, SdJournalNext,
-    SdJournalGetEntry, SdJournalProcessOutput, SdJournalSeekTail,
+    SdJournalProcessOutput, SdJournalSeekTail,
     SdJournalPrevious, SdJournalGetCursor, SdJournalTestCursor,
     SdJournalSeekCursor, SdJournalGetRealtimeUsec, export_entry, json_entry,
 )
@@ -511,9 +511,7 @@ def run_corruption_test(tc):
 
 def run_verification_test(tc):
     if tc.get('test_name') == 'journal-verify-sealed':
-        from journal.writer import Writer
         from journal.seal import SealOptions
-        import tempfile
         import shutil
         tmp = tempfile.mkdtemp(prefix='adapter-verify-sealed-')
         try:
