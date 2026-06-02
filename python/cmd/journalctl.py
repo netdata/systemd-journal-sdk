@@ -13,13 +13,12 @@ from journal import (
     SdJournalOpen, SdJournalAddMatch, SdJournalAddDisjunction,
     SdJournalAddConjunction, SdJournalListBoots, SdJournalEnumerateFields, SdJournalSeekHead,
     SdJournalNext, SdJournalGetEntry, SdJournalProcessOutput,
-    SdJournalSetOutputMode, SdJournalSeekRealtimeUsec,
+    SdJournalSeekRealtimeUsec,
     OUTPUT_MODE_DEFAULT, OUTPUT_MODE_JSON, OUTPUT_MODE_EXPORT,
 )
 from journal.reader import FileReader
 from journal.directory_reader import _collect_journal_files
 from journal.verify import verify_file, verify_file_with_key, VerificationError
-from journal.compress import is_journal_file_name
 from journal.header import COMPATIBLE_SEALED
 
 

@@ -1,17 +1,10 @@
 """Optional platform adapters for lock and host-identity helpers."""
 
+import errno
 import os
 import sys
 import time
 import uuid
-
-from ._platform_io import (
-    read_at,
-    rename_requires_closed_file,
-    sync_directory,
-    sync_parent_directory,
-    write_all_at,
-)
 
 
 _IS_WINDOWS = os.name == 'nt'

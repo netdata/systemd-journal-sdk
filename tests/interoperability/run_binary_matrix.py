@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -553,7 +552,7 @@ def main() -> int:
     result_path = LOCAL_DIR / f"binary-matrix-results-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
     result_path.write_text(json.dumps(payload, indent=2) + "\n")
 
-    print(f"\n=== SUMMARY ===", flush=True)
+    print("\n=== SUMMARY ===", flush=True)
     print(f"systemd: {payload['systemd_version']}", flush=True)
     print(f"writers: {', '.join([w.name for w in writer_specs])}", flush=True)
     print(f"total: {len(all_checks)}, passed: {passed}, failed: {failed}", flush=True)

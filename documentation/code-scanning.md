@@ -21,8 +21,8 @@ dispositioned.
 Raw Codacy exports must stay under `.local/`.
 
 ```bash
-export CODACY_API_TOKEN=...
 python3 tests/code_scanning/export_codacy_issues.py \
+  --source cli \
   --provider gh \
   --organization netdata \
   --repository systemd-journal-sdk \
@@ -34,6 +34,10 @@ python3 tests/code_scanning/summarize_findings.py \
   --json-output .local/codacy/codacy-cloud-summary.json \
   --markdown-output .local/codacy/codacy-cloud-summary.md
 ```
+
+The local export path uses the authenticated `codacy` CLI. GitHub Actions uses
+the API-token path because hosted runners do not have access to local Codacy
+credentials.
 
 ## Local SARIF Summary
 

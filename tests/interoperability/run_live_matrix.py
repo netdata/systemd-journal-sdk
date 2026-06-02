@@ -400,7 +400,7 @@ def run_one_live(
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         if writer_proc.poll() is not None:
-            stdout, stderr = writer_proc.communicate(timeout=1)
+            _stdout, stderr = writer_proc.communicate(timeout=1)
             raise RuntimeError(
                 f"writer {writer_spec.name}/{feature_spec.name} exited early with {writer_proc.returncode}; "
                 f"stderr={stderr[-500:]}"
@@ -559,7 +559,7 @@ def run_one_live(
 
         # Wait for writer to finish
         try:
-            writer_stdout, writer_stderr = writer_proc.communicate(timeout=90)
+            _writer_stdout, writer_stderr = writer_proc.communicate(timeout=90)
         except subprocess.TimeoutExpired:
             writer_proc.terminate()
             writer_proc.wait(timeout=5)
@@ -840,7 +840,7 @@ def main() -> int:
     result_path = LOCAL_DIR / f"live-feature-matrix-results-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
     result_path.write_text(json.dumps(payload, indent=2) + "\n")
 
-    print(f"\n=== SUMMARY ===", flush=True)
+    print("\n=== SUMMARY ===", flush=True)
     print(f"systemd: {payload['systemd_version']}", flush=True)
     print(f"features: {', '.join([feature.name for feature in feature_specs])}", flush=True)
     print(f"writers: {', '.join([ws.name for ws in writer_specs])}", flush=True)

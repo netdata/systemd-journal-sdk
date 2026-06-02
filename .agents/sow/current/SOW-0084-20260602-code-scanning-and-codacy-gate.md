@@ -311,6 +311,25 @@ Failure handling:
   Codacy SARIF runs: 91 CodeQL alerts and 1962 Codacy SARIF alerts. The 2053
   GitHub alerts do not replace the user's Codacy cloud count of 3056; the cloud
   export/token is still required to reconcile the full Codacy issue set.
+- The user clarified that the local `codacy` CLI was already authenticated.
+  Verified that authenticated CLI export works without a new local token.
+- Exported Codacy cloud quality issues to `.local/codacy-cloud/codacy-issues.json`
+  through language partitions to avoid the CLI 1000-item cap. Exported count:
+  1599 issues, matching the repository dashboard `issuesCount`.
+- Exported Codacy security findings to
+  `.local/codacy-cloud/codacy-findings.json`. Exported count: 199 findings.
+  Finding detail inspection showed a security finding points back to a Codacy
+  quality issue through `itemSourceId` / `resultDataId`, so the 199 findings
+  are the security view of the quality issue set, not an additional 199 code
+  locations.
+- Reconciled current known counts:
+  - Codacy repository quality issues on `master`: 1599.
+  - Codacy security findings on `master`: 199, included in the 1599 quality
+    issue set as the `Security` category.
+  - GitHub code scanning alerts after CodeQL + Codacy SARIF: 2053.
+  - User-observed Codacy UI count: 3056. This still needs UI-scope
+    reconciliation; current CLI repository dashboard does not report 3056 for
+    `master`.
 
 ## Validation
 
@@ -324,26 +343,53 @@ Acceptance criteria evidence:
   scanning.
 - Raw SARIF and Codacy exports are written under `.local/codacy/` in local
   commands and `.local/codacy/` in workflow runner workspace only.
-- The current 3056 cloud Codacy findings are not imported yet because
-  `CODACY_API_TOKEN` is not present in the local shell. The workflow and helper
-  support token-backed import once the GitHub secret or local environment
-  variable is available.
+- Codacy cloud issue export imported 1599 quality issues for `master` into
+  `.local/codacy-cloud/codacy-issues.json`. The exporter partitions by language
+  and fails if any partition reaches the CLI limit.
+- Codacy cloud security finding export imported 199 security findings for
+  `master` into `.local/codacy-cloud/codacy-findings.json`. Evidence indicates
+  these are a security-focused view of issues already present in the 1599
+  quality issue set.
+- The user-observed 3056 Codacy UI count remains unreconciled with the Codacy
+  CLI repository dashboard count of 1599. Potential causes include UI scope,
+  non-master branch scope, additional views, ignored/resolved state inclusion,
+  or stale UI totals.
 - SOW-0047 through SOW-0050 remain marked as blocked by code-scanning gates in
   `.agents/sow/SOW-status.md`.
 
 Tests or equivalent validation:
 
-- `python3 -m pytest tests/code_scanning/test_summarize_findings.py`: passed,
-  3 tests.
+- `python3 -m pytest tests/code_scanning`: passed, 6 tests.
 - `python3 tests/code_scanning/summarize_findings.py --json-output .local/codacy/empty-summary.json --markdown-output .local/codacy/empty-summary.md`:
   passed and produced a zero-finding sanitized summary.
 - `python3 tests/code_scanning/export_codacy_issues.py --output-dir .local/codacy-token-missing-check`:
   failed cleanly with `CODACY_API_TOKEN is not set` and did not print a token.
-- Python compile check for new helper scripts: passed.
+- `python3 tests/code_scanning/export_codacy_issues.py --source cli --provider gh --organization netdata --repository systemd-journal-sdk --branch master --output-dir .local/codacy-cloud`:
+  passed, exported 1599 quality issues and 199 security findings through the
+  authenticated `codacy` CLI.
+- `python3 tests/code_scanning/export_codacy_issues.py --source cli --provider gh --organization netdata --repository systemd-journal-sdk --branch master --output-dir .local/codacy-cloud --skip-findings --cli-timeout 300`:
+  passed, proving the timeout-backed local CLI path still exports quality
+  issues.
+- `python3 tests/code_scanning/summarize_findings.py --codacy-issues .local/codacy-cloud/codacy-issues.json --codacy-findings .local/codacy-cloud/codacy-findings.json --json-output .local/codacy-cloud/summary.json --markdown-output .local/codacy-cloud/summary.md`:
+  passed, summarized 1798 exported Codacy records. The 1798 includes 1599
+  quality issues plus the 199 security-finding view and must not be interpreted
+  as 1798 distinct source locations.
+- Python compile check for edited Python helper/SDK/test files: passed.
+- `PYTHONPATH=.local/python-deps python3 - <<'PY' ...` importing
+  `python/test_all.py`, replacing only `test_conformance_manifest` with a
+  no-op, and running `main()`: passed.
+- Manifest adapter cases run one-by-one with 20 second timeouts: passed for all
+  cases except `journal-corruption-append-resilient`, which was skipped as a
+  known timeout. A direct reproduction shows that case can spin in
+  `FileReader` on corrupted zstd input; this is a separate test harness/parser
+  robustness issue, not caused by this static-analysis cleanup.
+- `go test ./...` in `go/`: passed.
 - Workflow YAML parse check using Python `yaml.safe_load`: passed for both new
   workflow files.
 - `actionlint .github/workflows/codeql.yml .github/workflows/codacy-sarif.yml`:
   passed with no findings.
+- `git diff --check`: passed.
+- `.agents/sow/audit.sh`: passed.
 - Local pinned Codacy package smoke:
   `@codacy/analysis-cli@0.8.1` installed under `.local/codacy-cli-test`;
   `codacy-analysis init --default .` succeeded; `codacy-analysis analyze .`
@@ -360,9 +406,17 @@ Real-use evidence:
   by tool: Prospector 143, Agentlinter 240, PMD 50, lizard 955, PyLintPython3
   67, Bandit 111, Flawfinder 9, ESLint8 311, shellcheck 1, markdownlint 75,
   CodeQL 91.
-- Codacy cloud issue export has not run yet because no Codacy token is present
-  in the local environment. The workflow skips cloud export when the secret is
-  missing and records that skip in the job summary.
+- Codacy cloud issue export ran locally through the authenticated `codacy` CLI:
+  1599 quality issues on `master`. The Codacy repository command also reports
+  `issuesCount: 1599` for last analyzed commit `dc8637af`.
+- Codacy security findings export ran locally: 199 findings, matching the
+  Codacy quality issue `Security` category total.
+- GitHub workflow cloud export still skips when `CODACY_API_TOKEN` is absent;
+  that only affects scheduled/headless export, not local triage.
+- First actionable-finding cleanup batch fixed concrete Python unused/undefined
+  findings and the Go stdlib vulnerability metadata finding by setting
+  `go/go.mod` to `go 1.26.3`. The Codacy cloud issue count will not reflect
+  these fixes until this commit is pushed and Codacy reanalyzes `master`.
 
 Reviewer findings:
 
@@ -378,7 +432,8 @@ Same-failure scan:
 
 Sensitive data gate:
 
-- No Codacy token is present locally.
+- Codacy CLI is authenticated locally; no token value was printed or written to
+  committed artifacts.
 - No token values were written to workflows, docs, scripts, or SOW artifacts.
 - Raw SARIF and JSON issue exports are generated only under `.local/`, which is
   ignored by `.gitignore`.
@@ -420,16 +475,18 @@ End-user/operator skills update:
 Lessons:
 
 - Local Codacy Analysis CLI can produce a useful SARIF subset, but Codacy cloud
-  remains the authoritative source for the 3056 reported findings.
+  remains the authoritative issue source.
+- The authenticated `codacy` CLI is sufficient for immediate local triage. A
+  GitHub secret is only needed for scheduled/headless cloud export in Actions.
 - The report-only phase is necessary because the scanner command exits non-zero
   for existing findings even when SARIF is produced successfully.
 
 Follow-up mapping:
 
 - Remaining work inside this SOW:
-  - configure `CODACY_API_TOKEN` or provide a Codacy export so the 3056 cloud
-    findings can be imported into `.local/`;
-  - group and triage the cloud findings;
+  - reconcile the user's observed 3056 UI count with the CLI-confirmed
+    `master` count of 1599 quality issues;
+  - group and triage the exported `master` cloud findings;
   - fix or minimally suppress every actionable finding;
   - run GitHub workflows after push and record CodeQL/Codacy results;
   - switch from reporting-only to enforcement after the actionable baseline is

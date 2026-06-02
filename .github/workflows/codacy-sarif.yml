@@ -96,6 +96,7 @@ jobs:
           fi
 
           python3 tests/code_scanning/export_codacy_issues.py \
+            --source api \
             --provider gh \
             --organization netdata \
             --repository systemd-journal-sdk \

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Export Codacy cloud issues into `.local/` for offline triage."""
+"""Export Codacy cloud issues into `.local/` for offline triage.
+
+The default local path uses the authenticated `codacy` CLI. The API-token path
+is retained for GitHub Actions and non-interactive environments.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +11,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -16,9 +21,42 @@ from typing import Any
 
 
 DEFAULT_API_BASE = "https://app.codacy.com/api/v3"
+DEFAULT_LANGUAGES = ("C", "Go", "Javascript", "Markdown", "Python", "Rust", "Shell")
+DEFAULT_CLI_TIMEOUT_SECONDS = 300
+
+
+def parse_codacy_json(raw: str) -> dict[str, Any]:
+    """Parse Codacy CLI JSON after stripping progress lines."""
+    for marker in ("{", "["):
+        index = raw.find(marker)
+        if index >= 0:
+            parsed = json.loads(raw[index:])
+            if isinstance(parsed, dict):
+                return parsed
+            return {"data": parsed}
+    raise RuntimeError("Codacy CLI output did not include JSON")
+
+
+def run_codacy(args: list[str], timeout: int = DEFAULT_CLI_TIMEOUT_SECONDS) -> dict[str, Any]:
+    command = ["codacy", *args, "-o", "json"]
+    completed = subprocess.run(
+        command,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=timeout,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"Codacy CLI failed with exit code {completed.returncode}: "
+            f"{completed.stdout[:500]}"
+        )
+    return parse_codacy_json(completed.stdout)
 
 
 def _request_json(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+    _validate_https_url(url)
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -38,6 +76,14 @@ def _request_json(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError(
             f"Codacy API request failed with HTTP {error.code}: {detail[:500]}"
         ) from error
+
+
+def _validate_https_url(url: str) -> None:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https":
+        raise RuntimeError(f"Codacy API URL must use https, got {parsed.scheme or '<empty>'}")
+    if not parsed.netloc:
+        raise RuntimeError("Codacy API URL must include a host")
 
 
 def _next_cursor(payload: dict[str, Any]) -> str | None:
@@ -104,6 +150,126 @@ def export_issues(args: argparse.Namespace) -> dict[str, Any]:
             }
 
 
+def export_issues_with_cli(args: argparse.Namespace) -> dict[str, Any]:
+    """Export quality issues using language partitions to avoid CLI caps."""
+    overview = run_codacy(
+        [
+            "issues",
+            args.provider,
+            args.organization,
+            args.repository,
+            "--branch",
+            args.branch,
+            "--overview",
+        ],
+        timeout=args.cli_timeout,
+    )
+
+    overview_languages = (
+        overview.get("overview", {}).get("languages", [])
+        if isinstance(overview.get("overview"), dict)
+        else []
+    )
+    languages = [
+        item["name"]
+        for item in overview_languages
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    ]
+    if not languages:
+        languages = list(DEFAULT_LANGUAGES)
+
+    deduped: dict[str, dict[str, Any]] = {}
+    partitions: list[dict[str, Any]] = []
+    for language in languages:
+        payload = run_codacy(
+            [
+                "issues",
+                args.provider,
+                args.organization,
+                args.repository,
+                "--branch",
+                args.branch,
+                "--languages",
+                language,
+                "--limit",
+                str(args.limit),
+            ],
+            timeout=args.cli_timeout,
+        )
+        issues = payload.get("issues", [])
+        if not isinstance(issues, list):
+            raise RuntimeError(f"Codacy CLI response for {language} did not include issues")
+        partitions.append({"language": language, "count": len(issues)})
+        if len(issues) >= args.limit:
+            raise RuntimeError(
+                f"Codacy CLI language partition {language} reached the {args.limit} limit; "
+                "add a narrower partition before trusting the export"
+            )
+        for issue in issues:
+            if not isinstance(issue, dict):
+                continue
+            key = str(
+                issue.get("resultDataId")
+                or (
+                    issue.get("filePath"),
+                    issue.get("lineNumber"),
+                    issue.get("message"),
+                    issue.get("patternInfo", {}).get("id")
+                    if isinstance(issue.get("patternInfo"), dict)
+                    else None,
+                )
+            )
+            deduped[key] = issue
+
+    return {
+        "provider": args.provider,
+        "organization": args.organization,
+        "repository": args.repository,
+        "branch": args.branch,
+        "fetched_at": dt.datetime.now(dt.UTC).isoformat(),
+        "source": "codacy-cli",
+        "overview": overview.get("overview", {}),
+        "partitions": partitions,
+        "count": len(deduped),
+        "data": list(deduped.values()),
+    }
+
+
+def export_findings_with_cli(args: argparse.Namespace) -> dict[str, Any]:
+    payload = run_codacy(
+        [
+            "findings",
+            args.provider,
+            args.organization,
+            args.repository,
+            "--statuses",
+            args.finding_statuses,
+            "--limit",
+            str(args.limit),
+        ],
+        timeout=args.cli_timeout,
+    )
+    findings = payload.get("findings", [])
+    if not isinstance(findings, list):
+        raise RuntimeError("Codacy CLI findings response did not include findings")
+    if len(findings) >= args.limit:
+        raise RuntimeError(
+            f"Codacy CLI findings export reached the {args.limit} limit; "
+            "add narrower severity/status partitions before trusting the export"
+        )
+    return {
+        "provider": args.provider,
+        "organization": args.organization,
+        "repository": args.repository,
+        "branch": args.branch,
+        "fetched_at": dt.datetime.now(dt.UTC).isoformat(),
+        "source": "codacy-cli",
+        "statuses": args.finding_statuses,
+        "count": len(findings),
+        "data": findings,
+    }
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--provider", default="gh")
@@ -112,7 +278,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--branch", default="master")
     parser.add_argument("--api-base", default=DEFAULT_API_BASE)
     parser.add_argument("--limit", type=int, default=1000)
+    parser.add_argument("--cli-timeout", type=int, default=DEFAULT_CLI_TIMEOUT_SECONDS)
     parser.add_argument("--output-dir", default=".local/codacy")
+    parser.add_argument("--source", choices=("cli", "api"), default="cli")
+    parser.add_argument("--skip-findings", action="store_true")
+    parser.add_argument(
+        "--finding-statuses",
+        default="Overdue,OnTrack,DueSoon",
+        help="comma-separated Codacy security finding statuses for CLI export",
+    )
     return parser.parse_args(argv)
 
 
@@ -120,14 +294,24 @@ def main(argv: list[str]) -> int:
     args = parse_args(argv)
     if not (1 <= args.limit <= 1000):
         raise SystemExit("--limit must be between 1 and 1000")
+    if args.cli_timeout <= 0:
+        raise SystemExit("--cli-timeout must be positive")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "codacy-issues.json"
 
-    payload = export_issues(args)
+    payload = export_issues_with_cli(args) if args.source == "cli" else export_issues(args)
     output_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     print(f"wrote {payload['count']} Codacy issues to {output_path}")
+    if args.source == "cli" and not args.skip_findings:
+        findings_payload = export_findings_with_cli(args)
+        findings_path = output_dir / "codacy-findings.json"
+        findings_path.write_text(
+            json.dumps(findings_payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        print(f"wrote {findings_payload['count']} Codacy findings to {findings_path}")
     return 0
 
 

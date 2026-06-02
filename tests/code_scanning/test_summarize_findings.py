@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from tests.code_scanning.summarize_findings import (
     build_summary,
     findings_from_codacy_issues,
+    findings_from_codacy_security,
     findings_from_sarif,
     path_class,
     path_prefix,
 )
+from tests.code_scanning.export_codacy_issues import parse_codacy_json, _validate_https_url
 
 
 def test_path_grouping_is_sanitized() -> None:
@@ -95,4 +99,44 @@ def test_codacy_issue_summary_handles_cloud_shape(tmp_path) -> None:
     assert summary["by_tool"] == [{"tool": "Ruff", "count": 2}]
     assert summary["by_rule"] == [
         {"tool": "Ruff", "rule": "F401", "severity": "Medium", "count": 2}
+    ]
+
+
+def test_codacy_cli_json_parser_ignores_progress_lines() -> None:
+    payload = parse_codacy_json('- Fetching issues...\n{"issues": [{"resultDataId": 1}]}')
+    assert payload == {"issues": [{"resultDataId": 1}]}
+
+
+def test_codacy_api_url_requires_https() -> None:
+    _validate_https_url("https://app.codacy.com/api/v3")
+    with pytest.raises(RuntimeError):
+        _validate_https_url("http://app.codacy.com/api/v3")
+
+
+def test_codacy_security_summary_handles_findings_shape(tmp_path) -> None:
+    export = {
+        "data": [
+            {
+                "priority": "Critical",
+                "securityCategory": "CommandInjection",
+                "scanType": "SAST",
+                "filePath": "tests/corpus_eval/run_corpus_eval.py",
+            }
+        ]
+    }
+    path = tmp_path / "codacy-findings.json"
+    path.write_text(json.dumps(export), encoding="utf-8")
+
+    findings = findings_from_codacy_security(path)
+    summary = build_summary(findings, limit=10)
+
+    assert summary["total"] == 1
+    assert summary["by_tool"] == [{"tool": "SAST", "count": 1}]
+    assert summary["by_rule"] == [
+        {
+            "tool": "SAST",
+            "rule": "CommandInjection",
+            "severity": "Critical",
+            "count": 1,
+        }
     ]

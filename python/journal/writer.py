@@ -5,6 +5,7 @@ import os
 import struct
 import lzma
 import mmap
+import importlib.util
 from ._platform_io import (
     read_at as _read_fd_at,
     rename_requires_closed_file,
@@ -12,7 +13,7 @@ from ._platform_io import (
     write_all_at as _write_fd_at,
 )
 from .binary import (
-    read_uint64_le, write_uint64_le, write_uint32_le, write_uint8,
+    read_uint64_le, write_uint32_le, write_uint8,
     align8, random_uuid, is_zero_uuid, buf_equal,
 )
 from .header import (
@@ -30,13 +31,13 @@ from .header import (
     COMPACT_ENTRY_ITEM_SIZE, COMPACT_OFFSET_ARRAY_ITEM_SIZE, REGULAR_OFFSET_ARRAY_ITEM_SIZE,
     COMPACT_DATA_OBJECT_HEADER_SIZE, COMPACT_DATA_TAIL_OFFSET_OFFSET,
     COMPACT_DATA_TAIL_ENTRIES_OFFSET, JOURNAL_COMPACT_SIZE_MAX,
-    DEFAULT_DATA_HASH_BUCKETS, DEFAULT_FIELD_HASH_BUCKETS, FILE_SIZE_INCREASE,
+    DEFAULT_FIELD_HASH_BUCKETS, FILE_SIZE_INCREASE,
     normalize_journal_max_file_size, data_hash_buckets_for_max_file_size,
     INITIAL_ENTRY_ARRAY_CAP, INITIAL_DATA_ENTRY_ARRAY_CAP,
 )
 from .hash import sip_hash_24, jenkins_hash_64
 from .compress import MAX_UNCOMPRESSED_SIZE, decompress_zst_sync, decompress_xz_sync, decompress_lz4_sync
-from .seal import SealOptions, SealState, TAG_LENGTH, OBJECT_TYPE_TAG, COMPATIBLE_SEALED, COMPATIBLE_SEALED_CONTINUOUS
+from .seal import SealState, TAG_LENGTH, OBJECT_TYPE_TAG, COMPATIBLE_SEALED, COMPATIBLE_SEALED_CONTINUOUS
 
 COMPRESSION_NONE = 0
 COMPRESSION_ZSTD = 1
@@ -1334,12 +1335,22 @@ def _lz4_compress(payload):
 
 
 def _ensure_zstd_available():
-    import compression.zstd
+    if not _module_available('compression.zstd'):
+        raise ImportError('compression.zstd is required for zstd journal compression')
 
 
 def _ensure_xz_available():
-    import lzma
+    if not _module_available('lzma'):
+        raise ImportError('lzma is required for xz journal compression')
 
 
 def _ensure_lz4_available():
-    import lz4.block
+    if not _module_available('lz4.block'):
+        raise ImportError('lz4.block is required for lz4 journal compression')
+
+
+def _module_available(name):
+    try:
+        return importlib.util.find_spec(name) is not None
+    except ModuleNotFoundError:
+        return False

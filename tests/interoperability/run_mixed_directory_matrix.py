@@ -33,7 +33,6 @@ sys.path.insert(0, str(REPO_ROOT / "python"))
 from journal import Writer  # noqa: E402
 from journal.header import (  # noqa: E402
     HEADER_MIN_SIZE,
-    HEADER_SIZE,
     INCOMPATIBLE_COMPRESSED_XZ,
     INCOMPATIBLE_COMPRESSED_LZ4,
     INCOMPATIBLE_KEYED_HASH,

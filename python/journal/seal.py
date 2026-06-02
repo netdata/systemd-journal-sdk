@@ -4,7 +4,6 @@ Implements file-format sealing with deterministic synthetic keys,
 matching systemd v260.1 HMAC byte ranges and tag object layout.
 """
 
-import struct
 import hmac
 import hashlib
 from .fss import gen_mk, gen_state0, get_epoch, evolve, RECOMMENDED_SECPAR, RECOMMENDED_SEEDLEN

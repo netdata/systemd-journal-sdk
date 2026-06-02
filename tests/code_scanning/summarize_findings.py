@@ -81,6 +81,30 @@ def _nested_string(payload: dict[str, Any], *path: str) -> str | None:
     return current if isinstance(current, str) and current else None
 
 
+def tool_from_rule(rule_id: str | None) -> str | None:
+    if not rule_id:
+        return None
+    known_prefixes = (
+        "Agentlinter",
+        "Bandit",
+        "ESLint8",
+        "Lizard",
+        "PMD",
+        "Prospector",
+        "PyLintPython3",
+        "Semgrep",
+        "Trivy",
+        "cppcheck",
+        "flawfinder",
+        "markdownlint",
+        "shellcheck",
+    )
+    for prefix in known_prefixes:
+        if rule_id == prefix or rule_id.startswith(f"{prefix}_"):
+            return prefix
+    return rule_id.split("_", 1)[0] if "_" in rule_id else None
+
+
 def findings_from_sarif(path: Path) -> list[dict[str, str]]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     findings: list[dict[str, str]] = []
@@ -153,16 +177,21 @@ def findings_from_codacy_issues(path: Path) -> list[dict[str, str]]:
             _nested_string(item, "location", "path"),
             default="unknown",
         )
+        rule_id = _first_string(
+            pattern.get("id"),
+            pattern.get("patternId"),
+            item.get("patternId"),
+            item.get("ruleId"),
+        )
         findings.append(
             {
                 "source": path.name,
-                "tool": _first_string(tool.get("name"), item.get("toolName")),
-                "rule": _first_string(
-                    pattern.get("id"),
-                    pattern.get("patternId"),
-                    item.get("patternId"),
-                    item.get("ruleId"),
+                "tool": _first_string(
+                    tool.get("name"),
+                    item.get("toolName"),
+                    tool_from_rule(rule_id),
                 ),
+                "rule": rule_id,
                 "severity": _first_string(
                     item.get("severity"),
                     pattern.get("severityLevel"),
@@ -173,6 +202,37 @@ def findings_from_codacy_issues(path: Path) -> list[dict[str, str]]:
                     pattern.get("category"),
                     pattern.get("categoryName"),
                 ),
+                "path_class": path_class(file_path),
+                "path_prefix": path_prefix(file_path),
+            }
+        )
+    return findings
+
+
+def findings_from_codacy_security(path: Path) -> list[dict[str, str]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    findings: list[dict[str, str]] = []
+    for item in _as_list(payload):
+        if not isinstance(item, dict):
+            continue
+        file_path = _first_string(
+            item.get("filePath"),
+            item.get("filename"),
+            item.get("path"),
+            _nested_string(item, "location", "path"),
+            default="unknown",
+        )
+        findings.append(
+            {
+                "source": path.name,
+                "tool": _first_string(item.get("scanType"), item.get("toolName")),
+                "rule": _first_string(
+                    item.get("securityCategory"),
+                    item.get("category"),
+                    item.get("title"),
+                ),
+                "severity": _first_string(item.get("priority"), item.get("severity")),
+                "category": _first_string(item.get("securityCategory"), item.get("category")),
                 "path_class": path_class(file_path),
                 "path_prefix": path_prefix(file_path),
             }
@@ -253,6 +313,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=[],
         help="Codacy cloud issue export JSON to summarize",
     )
+    parser.add_argument(
+        "--codacy-findings",
+        action="append",
+        default=[],
+        help="Codacy security finding export JSON to summarize",
+    )
     parser.add_argument("--json-output", required=True)
     parser.add_argument("--markdown-output", required=True)
     parser.add_argument("--limit", type=int, default=25)
@@ -267,6 +333,8 @@ def main(argv: list[str]) -> int:
         findings.extend(findings_from_sarif(Path(sarif)))
     for codacy_issues in args.codacy_issues:
         findings.extend(findings_from_codacy_issues(Path(codacy_issues)))
+    for codacy_findings in args.codacy_findings:
+        findings.extend(findings_from_codacy_security(Path(codacy_findings)))
 
     summary = build_summary(findings, args.limit)
     json_path = Path(args.json_output)

@@ -3,7 +3,7 @@
 
 import struct
 
-from .binary import read_uint64_le, write_uint64_le, write_uint32_le, write_uint8
+from .binary import read_uint64_le, write_uint64_le, write_uint32_le
 
 HEADER_MIN_SIZE = 208
 HEADER_SIZE = 272  # v260+ writer header size

@@ -182,7 +182,7 @@ def parse_match_string(s):
         raise ValueError('EINVAL: field name too long')
     if field[0] >= '0' and field[0] <= '9':
         raise ValueError(f'EINVAL: invalid field name "{field}"')
-    for i, c in enumerate(field):
+    for c in field:
         code = ord(c)
         if code != 0x5F and not (0x41 <= code <= 0x5A) and not (0x30 <= code <= 0x39):
             raise ValueError(f'EINVAL: invalid field name "{field}"')

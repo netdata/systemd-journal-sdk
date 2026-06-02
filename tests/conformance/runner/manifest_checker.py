@@ -15,7 +15,6 @@ Usage:
 
 import json
 import sys
-import os
 import argparse
 from pathlib import Path
 
@@ -279,7 +278,6 @@ def dry_run(manifest_path, adapter_cmd=None, test_name=None):
         category = tc.get("category")
         expected = tc.get("expected", {})
         result_format = expected.get("result_format")
-        fixtures = tc.get("fixtures", {})
         tags = tc.get("tags", [])
 
         print(f"[DRY RUN] Would run: {tn}")
@@ -287,7 +285,7 @@ def dry_run(manifest_path, adapter_cmd=None, test_name=None):
         print(f"         format   : {result_format}")
         print(f"         tags     : {tags}")
 
-        fixture_status, fixture_missing = check_fixtures(tc)
+        fixture_status, _fixture_missing = check_fixtures(tc)
         for status, name, msg in fixture_status:
             print(f"         fixture  [{status}] {name}: {msg}")
 
