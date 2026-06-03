@@ -572,6 +572,9 @@ Tests or equivalent validation:
   the touched Markdown files found no headings without a blank line below after
   the `markdownlint_MD022`/`markdownlint_MD032` cleanup.
 - `git diff --check`: passed after the Markdown blank-line cleanup.
+- `git diff --check`: passed after the AGENTS scanner exception-path cleanup.
+- `.agents/sow/audit.sh`: passed after the AGENTS scanner exception-path
+  cleanup.
 - Local pinned Codacy package smoke:
   `@codacy/analysis-cli@0.8.1` installed under `.local/codacy-cli-test`;
   `codacy-analysis init --default .` succeeded; `codacy-analysis analyze .`
@@ -792,6 +795,11 @@ Real-use evidence:
 - Local Markdown blank-line cleanup targets `markdownlint_MD022` and
   `markdownlint_MD032` by adding required blank lines around headings and lists
   in SOW/status/docs files without changing their content.
+- Local AGENTS scanner wording cleanup targets
+  `Agentlinter_clarity_escape-hatch-missing` by changing absolute policy
+  wording to explicit contracts with user-approved SOW exception paths. The
+  cleanup preserves the performance, runtime-purity, SOW, and worktree
+  requirements while making the approved override path visible.
 
 Reviewer findings:
 

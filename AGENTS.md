@@ -29,9 +29,9 @@ Project SOW status: initialized
 ## Performance Contract
 
 This project is not only a compatibility clone. It is a high-performance
-journal file-format SDK. Every reader, writer, query helper, and facade must be
-designed to use the most efficient journal-native path that preserves the
-documented contract.
+journal file-format SDK. Design every reader, writer, query helper, and facade
+to use the most efficient journal-native path that preserves the documented
+contract. Any deviation needs active-SOW evidence and an explicit user decision.
 
 Mandatory rules:
 
@@ -39,9 +39,10 @@ Mandatory rules:
   FIELD DATA chains, DATA entry arrays, ENTRY arrays, offsets, sequence/time
   metadata, and mmap-backed slices when those structures answer the request.
 - Do not implement a public API by expanding every entry when the journal format
-  can answer it through an index or object chain. For example, unfiltered unique
-  field values must walk the FIELD object's DATA chain, matching systemd, not
-  scan all entries. Field-name enumeration must walk FIELD hash tables on valid
+  can answer it through an index or object chain, unless active-SOW evidence
+  proves the indexed path is unsafe or slower. For example, unfiltered unique
+  field values walk the FIELD object's DATA chain, matching systemd, and do not
+  scan all entries. Field-name enumeration walks FIELD hash tables on valid
   indexed files, with entry-scan fallback only for documented compatibility
   cases where the FIELD table cannot be traversed safely.
 - Avoid decoding, decompressing, copying, hashing, sorting, or allocating data
@@ -51,25 +52,28 @@ Mandatory rules:
 - Treat repeated parsing of reusable DATA objects as a performance bug unless a
   SOW records evidence that the alternative is slower or unsafe.
 - Benchmark and profile hot paths before accepting performance-sensitive code.
-  Benchmarks must compare against systemd when practical and against the fastest
-  sibling implementation in this repository.
-- Any intentionally slower path must be explicit in the SOW, docs, and tests,
-  with the reason, measured cost, and the conditions where it is acceptable.
+  Compare benchmarks against systemd when practical and against the fastest
+  sibling implementation in this repository; record why if a comparison cannot
+  run.
+- Record any intentionally slower path in the SOW, docs, and tests, with the
+  reason, measured cost, and the conditions where it is acceptable.
 
 ## Runtime Purity Architecture
 
 This project has four separate layers. Keep them separate in every language:
 
 1. **Core journal file-format SDK** - reads and writes journal files only. Core
-   readers and writers must not execute external programs, probe host identity
+   readers and writers do not execute external programs, probe host identity
    sources, read OS-specific identity files or registries, or enforce writer
    locks by default. They operate only on caller-provided paths, bytes, options,
-   timestamps, machine IDs, boot IDs, seqnum IDs, and related metadata.
+   timestamps, machine IDs, boot IDs, seqnum IDs, and related metadata. Any
+   exception belongs in an explicit optional helper or needs a user-approved SOW
+   contract change.
 2. **Systemd/journald compatibility layer** - applies journald-compatible field
    naming, metadata, and API conventions. It may require caller-provided machine
-   and boot identity. It must not silently discover host identity. If callers
-   want automatic identity discovery, they must explicitly invoke an optional
-   identity helper and pass the result in.
+   and boot identity. It does not silently discover host identity. Callers that
+   want automatic identity discovery explicitly invoke an optional identity
+   helper and pass the result in.
 3. **Optional identity helper service** - discovers host machine/boot identity
    when a caller explicitly opts in. This helper is outside the core
    file-format SDK contract.
@@ -77,12 +81,13 @@ This project has four separate layers. Keep them separate in every language:
    exclusion when a caller explicitly opts in. This helper is independent from
    systemd compatibility. The journal file format requires one writer per file
    as an operational contract, but systemd does not define or enforce a portable
-   lock protocol in the journal file format. Core writer constructors must not
+   lock protocol in the journal file format. Core writer constructors do not
    expose lock-enable options; callers acquire and release the lock helper
    separately around writer use.
 
-Core SDK runtime code must not read host identity or process state from these
-inputs:
+Core SDK runtime code reads host identity or process state only inside explicit
+optional helper implementations. Core reader and writer paths do not read from
+these inputs:
 
 - `/proc`
 - `/host/proc`
@@ -101,7 +106,10 @@ testing an optional helper.
 
 This project uses a local Statement of Work system.
 
-The SOW system is self-contained in this repository. Normal SOW work must not depend on `~/.agents`, `~/.AGENTS.md`, global templates, or global scripts. Use this `AGENTS.md`, project-local SOW files, project-local specs, project-local skills, and the active SOW.
+The SOW system is self-contained in this repository. Normal SOW work depends on
+this `AGENTS.md`, project-local SOW files, project-local specs, project-local
+skills, and the active SOW. Use global templates or scripts only when the user
+explicitly asks to repair or upgrade the SOW framework.
 
 ### Roles
 
@@ -132,7 +140,7 @@ Before non-trivial work:
 
 ### Git Worktrees
 
-Assistants must not create git worktrees on their own. Create a git worktree only when the user explicitly asks for it or approves it.
+Create a git worktree only when the user explicitly asks for it or approves it.
 
 ### Repository Boundary
 
