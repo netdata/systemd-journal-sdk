@@ -217,6 +217,13 @@ User decisions recorded on 2026-06-02:
 6. Codacy credentials: Option A. Use a GitHub secret or local environment
    variable for the Codacy API token. No token value may be written to this SOW,
    workflows, logs, reports, or any committed artifact.
+7. Lizard critical complexity baseline: Option B. User decision on
+   2026-06-03: do not baseline or waive the 380 remaining critical complexity
+   findings just because SDK adoption is still early. Deal with the problem
+   now, while the SDK has limited use, because later refactors would be
+   significantly riskier. Narrow non-code/generated-artifact dispositions remain
+   allowed only when refactoring would be meaningless, for example generated
+   lockfiles.
 
 Implementation implications:
 
@@ -1089,6 +1096,32 @@ Real-use evidence:
   review-cadence bullet in `AGENTS.md` into two explicit bullets. The expected
   remaining Codacy Cloud baseline after the next analysis is 380 Lizard
   critical complexity findings and 0 security findings.
+- User decision on 2026-06-03: the remaining critical Lizard complexity
+  findings must be dealt with now, while SDK use is still limited, rather than
+  baselined for later. The cleanup may disposition generated/non-code artifacts
+  only when refactoring would be meaningless; runtime, test, harness, and CLI
+  complexity remain in scope.
+- Current Lizard remediation inventory from
+  `.local/codacy-cloud/lizard-inventory.csv`: 380 total Lizard findings; 193
+  runtime, 169 test/harness, 17 other Rust engine/index/query code, and 1
+  generated `rust/Cargo.lock` finding. Pattern split: 277
+  `Lizard_ccn-critical`, 76 `Lizard_nloc-critical`, 23
+  `Lizard_file-nloc-critical`, and 4 `Lizard_parameter-count-critical`.
+
+Complexity remediation batches:
+
+1. Disposition generated/non-actionable artifacts with narrow scope, currently
+   `rust/Cargo.lock`.
+2. Refactor runtime SDK and CLI complexity by language, starting with the
+   highest-density files: Go reader/log/writer, Rust core writer/reader/verify
+   graph, Python writer/verify/directory writer, and Node writer/directory
+   writer/verify graph.
+3. Refactor test and harness complexity without weakening compatibility
+   coverage. Preserve existing test scenarios and split helpers, not assertions.
+4. Refactor the Rust engine/index/query "other" group or move it to the same
+   runtime policy if it is product code.
+5. Re-export Codacy findings after each meaningful batch and keep the local
+   Lizard inventory under `.local/` as the working ledger.
 
 Reviewer findings:
 
