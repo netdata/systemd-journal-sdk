@@ -45,125 +45,174 @@ static void print_escaped_json_string(FILE *out, const char *s) {
         fprintf(out, "\"");
 }
 
-static int run_seed(FILE *out, const uint8_t *seed, const char *seed_desc) {
+typedef struct FsprgBuffers {
+        size_t msklen;
+        size_t mpklen;
+        size_t statelen;
+        size_t hexbuf_len;
+        uint8_t *msk;
+        uint8_t *mpk;
+        uint8_t *state0;
+        uint8_t *key;
+        uint8_t *evolved_state;
+        uint8_t *seek_state;
+        char *hex;
+} FsprgBuffers;
+
+static void init_buffer_lengths(FsprgBuffers *buffers) {
         size_t msklen = FSPRG_mskinbytes(SECPAR);
         size_t mpklen = FSPRG_mpkinbytes(SECPAR);
         size_t statelen = FSPRG_stateinbytes(SECPAR);
         size_t hexbuf_len = (msklen > mpklen ? msklen : mpklen);
         if (statelen > hexbuf_len)
                 hexbuf_len = statelen;
-        hexbuf_len = hexbuf_len * 2 + 1;
+        buffers->msklen = msklen;
+        buffers->mpklen = mpklen;
+        buffers->statelen = statelen;
+        buffers->hexbuf_len = hexbuf_len * 2 + 1;
+}
 
-        uint8_t *msk = malloc(msklen);
-        uint8_t *mpk = malloc(mpklen);
-        uint8_t *state0 = malloc(statelen);
-        uint8_t *key = malloc(KEYLEN);
-        uint8_t *evolved_state = malloc(statelen);
-        uint8_t *seek_state = malloc(statelen);
-        char *hex = malloc(hexbuf_len);
-        int r = 0;
+static int alloc_buffers(FsprgBuffers *buffers) {
+        init_buffer_lengths(buffers);
+        buffers->msk = malloc(buffers->msklen);
+        buffers->mpk = malloc(buffers->mpklen);
+        buffers->state0 = malloc(buffers->statelen);
+        buffers->key = malloc(KEYLEN);
+        buffers->evolved_state = malloc(buffers->statelen);
+        buffers->seek_state = malloc(buffers->statelen);
+        buffers->hex = malloc(buffers->hexbuf_len);
+        return buffers->msk && buffers->mpk && buffers->state0 &&
+               buffers->key && buffers->evolved_state &&
+               buffers->seek_state && buffers->hex ? 0 : -ENOMEM;
+}
 
-        if (!msk || !mpk || !state0 || !key || !evolved_state || !seek_state || !hex) {
-                r = -ENOMEM;
-                goto finish;
-        }
+static void free_buffers(FsprgBuffers *buffers) {
+        free(buffers->msk);
+        free(buffers->mpk);
+        free(buffers->state0);
+        free(buffers->key);
+        free(buffers->evolved_state);
+        free(buffers->seek_state);
+        free(buffers->hex);
+}
 
-        r = FSPRG_GenMK(msk, mpk, seed, SEEDLEN, SECPAR);
+static int generate_seed_material(FsprgBuffers *buffers, const uint8_t *seed) {
+        int r = FSPRG_GenMK(buffers->msk, buffers->mpk, seed, SEEDLEN, SECPAR);
         if (r < 0)
-                goto finish;
+                return r;
+        return FSPRG_GenState0(buffers->state0, buffers->mpk, seed, SEEDLEN);
+}
 
-        r = FSPRG_GenState0(state0, mpk, seed, SEEDLEN);
-        if (r < 0)
-                goto finish;
-
+static void print_seed_header(FILE *out, FsprgBuffers *buffers, const uint8_t *seed, const char *seed_desc) {
         fprintf(out, "    {\n");
         fprintf(out, "      \"seed_desc\": ");
         print_escaped_json_string(out, seed_desc);
         fprintf(out, ",\n");
 
-        hex_encode(hex, seed, SEEDLEN);
-        fprintf(out, "      \"seed_hex\": \"%s\",\n", hex);
+        hex_encode(buffers->hex, seed, SEEDLEN);
+        fprintf(out, "      \"seed_hex\": \"%s\",\n", buffers->hex);
 
-        hex_encode(hex, msk, msklen);
-        fprintf(out, "      \"msk_hex\": \"%s\",\n", hex);
+        hex_encode(buffers->hex, buffers->msk, buffers->msklen);
+        fprintf(out, "      \"msk_hex\": \"%s\",\n", buffers->hex);
 
-        hex_encode(hex, mpk, mpklen);
-        fprintf(out, "      \"mpk_hex\": \"%s\",\n", hex);
+        hex_encode(buffers->hex, buffers->mpk, buffers->mpklen);
+        fprintf(out, "      \"mpk_hex\": \"%s\",\n", buffers->hex);
 
-        hex_encode(hex, state0, statelen);
-        fprintf(out, "      \"state0_hex\": \"%s\",\n", hex);
-
+        hex_encode(buffers->hex, buffers->state0, buffers->statelen);
+        fprintf(out, "      \"state0_hex\": \"%s\",\n", buffers->hex);
         fprintf(out, "      \"epochs\": [\n");
+}
 
-        uint64_t epochs[] = {0, 1, 2, 3, 17};
-        size_t n_epochs = sizeof(epochs) / sizeof(epochs[0]);
-
-        for (size_t e = 0; e < n_epochs; e++) {
-                memcpy(evolved_state, state0, statelen);
-                memcpy(seek_state, state0, statelen);
-
-                /* Evolve from state0 to target epoch */
-                uint64_t current = FSPRG_GetEpoch(evolved_state);
-                while (current < epochs[e]) {
-                        r = FSPRG_Evolve(evolved_state);
-                        if (r < 0)
-                                goto finish;
-                        current = FSPRG_GetEpoch(evolved_state);
-                }
-
-                /* Seek directly to target epoch from state0 using msk+seed */
-                r = FSPRG_Seek(seek_state, epochs[e], msk, seed, SEEDLEN);
+static int evolve_to_epoch(uint8_t *state, uint64_t epoch) {
+        uint64_t current = FSPRG_GetEpoch(state);
+        while (current < epoch) {
+                int r = FSPRG_Evolve(state);
                 if (r < 0)
-                        goto finish;
+                        return r;
+                current = FSPRG_GetEpoch(state);
+        }
+        return 0;
+}
 
-                /* Cross-check: seek and evolve must produce identical state */
-                if (memcmp(evolved_state, seek_state, statelen) != 0) {
-                        fprintf(stderr, "FSPRG_Seek mismatch at epoch %llu\n",
-                                (unsigned long long) epochs[e]);
-                        r = -EIO;
-                        goto finish;
-                }
+static int derive_epoch_states(FsprgBuffers *buffers, const uint8_t *seed, uint64_t epoch) {
+        memcpy(buffers->evolved_state, buffers->state0, buffers->statelen);
+        memcpy(buffers->seek_state, buffers->state0, buffers->statelen);
+        int r = evolve_to_epoch(buffers->evolved_state, epoch);
+        if (r < 0)
+                return r;
+        r = FSPRG_Seek(buffers->seek_state, epoch, buffers->msk, seed, SEEDLEN);
+        if (r < 0)
+                return r;
+        if (memcmp(buffers->evolved_state, buffers->seek_state, buffers->statelen) != 0) {
+                fprintf(stderr, "FSPRG_Seek mismatch at epoch %llu\n", (unsigned long long) epoch);
+                return -EIO;
+        }
+        return 0;
+}
 
-                hex_encode(hex, evolved_state, statelen);
-                fprintf(out, "        {\n");
-                fprintf(out, "          \"epoch\": %llu,\n", (unsigned long long) epochs[e]);
-                fprintf(out, "          \"state_hex\": \"%s\",\n", hex);
-
-                hex_encode(hex, seek_state, statelen);
-                fprintf(out, "          \"seek_state_hex\": \"%s\",\n", hex);
-                fprintf(out, "          \"seek_matches_evolved\": true,\n");
-
-                fprintf(out, "          \"keys\": [\n");
-
-                for (uint32_t idx = 0; idx <= 1; idx++) {
-                        r = FSPRG_GetKey(evolved_state, key, KEYLEN, idx);
-                        if (r < 0)
-                                goto finish;
-                        hex_encode(hex, key, KEYLEN);
-                        fprintf(out, "            {\"idx\": %u, \"keylen\": %u, \"key_hex\": \"%s\"}", idx, (unsigned) KEYLEN, hex);
-                        if (idx < 1)
-                                fprintf(out, ",");
-                        fprintf(out, "\n");
-                }
-
-                fprintf(out, "          ]\n");
-                fprintf(out, "        }");
-                if (e + 1 < n_epochs)
+static int print_epoch_keys(FILE *out, FsprgBuffers *buffers) {
+        fprintf(out, "          \"keys\": [\n");
+        for (uint32_t idx = 0; idx <= 1; idx++) {
+                int r = FSPRG_GetKey(buffers->evolved_state, buffers->key, KEYLEN, idx);
+                if (r < 0)
+                        return r;
+                hex_encode(buffers->hex, buffers->key, KEYLEN);
+                fprintf(out, "            {\"idx\": %u, \"keylen\": %u, \"key_hex\": \"%s\"}",
+                        idx, (unsigned) KEYLEN, buffers->hex);
+                if (idx < 1)
                         fprintf(out, ",");
                 fprintf(out, "\n");
         }
+        fprintf(out, "          ]\n");
+        return 0;
+}
 
-        fprintf(out, "      ]\n");
-        fprintf(out, "    }");
+static int print_epoch(FILE *out, FsprgBuffers *buffers, const uint8_t *seed, uint64_t epoch, int needs_comma) {
+        int r = derive_epoch_states(buffers, seed, epoch);
+        if (r < 0)
+                return r;
+        hex_encode(buffers->hex, buffers->evolved_state, buffers->statelen);
+        fprintf(out, "        {\n");
+        fprintf(out, "          \"epoch\": %llu,\n", (unsigned long long) epoch);
+        fprintf(out, "          \"state_hex\": \"%s\",\n", buffers->hex);
+        hex_encode(buffers->hex, buffers->seek_state, buffers->statelen);
+        fprintf(out, "          \"seek_state_hex\": \"%s\",\n", buffers->hex);
+        fprintf(out, "          \"seek_matches_evolved\": true,\n");
+        r = print_epoch_keys(out, buffers);
+        if (r < 0)
+                return r;
+        fprintf(out, "        }");
+        if (needs_comma)
+                fprintf(out, ",");
+        fprintf(out, "\n");
+        return 0;
+}
 
-finish:
-        free(msk);
-        free(mpk);
-        free(state0);
-        free(key);
-        free(evolved_state);
-        free(seek_state);
-        free(hex);
+static int print_epochs(FILE *out, FsprgBuffers *buffers, const uint8_t *seed) {
+        uint64_t epochs[] = {0, 1, 2, 3, 17};
+        size_t n_epochs = sizeof(epochs) / sizeof(epochs[0]);
+        for (size_t i = 0; i < n_epochs; i++) {
+                int r = print_epoch(out, buffers, seed, epochs[i], i + 1 < n_epochs);
+                if (r < 0)
+                        return r;
+        }
+        return 0;
+}
+
+static int run_seed(FILE *out, const uint8_t *seed, const char *seed_desc) {
+        FsprgBuffers buffers = {0};
+        int r = alloc_buffers(&buffers);
+        if (r == 0)
+                r = generate_seed_material(&buffers, seed);
+        if (r == 0) {
+                print_seed_header(out, &buffers, seed, seed_desc);
+                r = print_epochs(out, &buffers, seed);
+        }
+        if (r == 0) {
+                fprintf(out, "      ]\n");
+                fprintf(out, "    }");
+        }
+        free_buffers(&buffers);
         return r;
 }
 

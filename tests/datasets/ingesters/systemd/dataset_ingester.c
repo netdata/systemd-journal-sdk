@@ -93,62 +93,114 @@ static size_t cstring_len(const char *s) {
         return n;
 }
 
-static int parse_args(int argc, char **argv) {
-        for (int i = 1; i < argc; i++) {
-                if (streq(argv[i], "--dataset") && i + 1 < argc)
-                        arg_dataset = argv[++i];
-                else if (streq(argv[i], "--output") && i + 1 < argc)
-                        arg_output = argv[++i];
-                else if (streq(argv[i], "--rejection-mode"))
-                        arg_rejection_mode = true;
-                else if (streq(argv[i], "--final-state") && i + 1 < argc) {
-                        const char *state = argv[++i];
+static void usage(const char *argv0) {
+        fprintf(stderr, "usage: %s --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived] [--compact] [--sealed --fss-root PATH] [--max-size-bytes BYTES]\n", argv0);
+}
 
-                        if (streq(state, "online"))
-                                arg_final_state = FINAL_STATE_ONLINE;
-                        else if (streq(state, "offline"))
-                                arg_final_state = FINAL_STATE_OFFLINE;
-                        else if (streq(state, "archived"))
-                                arg_final_state = FINAL_STATE_ARCHIVED;
-                        else {
-                                fprintf(stderr, "invalid final state: %s\n", state);
-                                return -EINVAL;
-                        }
-                }
-                else if (streq(argv[i], "--compact"))
-                        arg_compact = true;
-                else if (streq(argv[i], "--sealed"))
-                        arg_sealed = true;
-                else if (streq(argv[i], "--fss-root") && i + 1 < argc)
-                        arg_fss_root = argv[++i];
-                else if (streq(argv[i], "--max-size-bytes") && i + 1 < argc) {
-                        char *end = NULL;
-                        unsigned long long v;
-
-                        errno = 0;
-                        v = strtoull(argv[++i], &end, 10);
-                        if (errno != 0 || !end || *end != '\0' || v == 0) {
-                                fprintf(stderr, "invalid max size: %s\n", argv[i]);
-                                return -EINVAL;
-                        }
-                        arg_max_size = (uint64_t) v;
-                }
-                else {
-                        fprintf(stderr, "usage: %s --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived] [--compact] [--sealed --fss-root PATH] [--max-size-bytes BYTES]\n", argv[0]);
-                        return -EINVAL;
-                }
+static int parse_final_state(const char *state) {
+        if (streq(state, "online")) {
+                arg_final_state = FINAL_STATE_ONLINE;
+                return 0;
         }
+        if (streq(state, "offline")) {
+                arg_final_state = FINAL_STATE_OFFLINE;
+                return 0;
+        }
+        if (streq(state, "archived")) {
+                arg_final_state = FINAL_STATE_ARCHIVED;
+                return 0;
+        }
+        fprintf(stderr, "invalid final state: %s\n", state);
+        return -EINVAL;
+}
 
+static int parse_max_size(const char *text) {
+        char *end = NULL;
+        errno = 0;
+        unsigned long long value = strtoull(text, &end, 10);
+        if (errno != 0 || !end || *end != '\0' || value == 0) {
+                fprintf(stderr, "invalid max size: %s\n", text);
+                return -EINVAL;
+        }
+        arg_max_size = (uint64_t) value;
+        return 0;
+}
+
+static int parse_string_arg(const char *arg, const char *value) {
+        if (streq(arg, "--dataset")) {
+                arg_dataset = value;
+                return 1;
+        }
+        if (streq(arg, "--output")) {
+                arg_output = value;
+                return 1;
+        }
+        if (streq(arg, "--fss-root")) {
+                arg_fss_root = value;
+                return 1;
+        }
+        return 0;
+}
+
+static int parse_flag_arg(const char *arg) {
+        if (streq(arg, "--rejection-mode")) {
+                arg_rejection_mode = true;
+                return 1;
+        }
+        if (streq(arg, "--compact")) {
+                arg_compact = true;
+                return 1;
+        }
+        if (streq(arg, "--sealed")) {
+                arg_sealed = true;
+                return 1;
+        }
+        return 0;
+}
+
+static int parse_value_arg(int argc, char **argv, int *idx) {
+        const char *arg = argv[*idx];
+        if (*idx + 1 >= argc)
+                return -EINVAL;
+        const char *value = argv[++(*idx)];
+        if (parse_string_arg(arg, value))
+                return 0;
+        if (streq(arg, "--final-state"))
+                return parse_final_state(value);
+        if (streq(arg, "--max-size-bytes"))
+                return parse_max_size(value);
+        return -EINVAL;
+}
+
+static int parse_one_arg(int argc, char **argv, int *idx) {
+        if (parse_flag_arg(argv[*idx]))
+                return 0;
+        return parse_value_arg(argc, argv, idx);
+}
+
+static int validate_args(void) {
         if (!arg_dataset || !arg_output) {
-                fprintf(stderr, "usage: %s --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived] [--compact] [--sealed --fss-root PATH] [--max-size-bytes BYTES]\n", argv[0]);
                 return -EINVAL;
         }
         if (arg_sealed && !arg_fss_root) {
                 fprintf(stderr, "--sealed requires --fss-root\n");
                 return -EINVAL;
         }
-
         return 0;
+}
+
+static int parse_args(int argc, char **argv) {
+        for (int i = 1; i < argc; i++) {
+                int r = parse_one_arg(argc, argv, &i);
+                if (r < 0) {
+                        usage(argv[0]);
+                        return r;
+                }
+        }
+        int r = validate_args();
+        if (r < 0)
+                usage(argv[0]);
+        return r;
 }
 
 static int id128_from_string(const char *s, sd_id128_t *ret) {
@@ -264,6 +316,94 @@ static int format_verification_key(
         return 0;
 }
 
+#if HAVE_GCRYPT
+static int synthetic_fss_ids(sd_id128_t *machine, sd_id128_t *boot) {
+        int r = sd_id128_get_machine(machine);
+        if (r < 0)
+                return r;
+        return id128_from_string("0123456789abcdef0123456789abcdef", boot);
+}
+
+static int make_synthetic_fss_paths(char **ret_machine_path, char **ret_fss_path, sd_id128_t machine) {
+        char *machine_path = NULL;
+        char *fss_path = NULL;
+
+        if (asprintf(&machine_path, "%s/" SD_ID128_FORMAT_STR,
+                     arg_fss_root, SD_ID128_FORMAT_VAL(machine)) < 0)
+                return -ENOMEM;
+        if (asprintf(&fss_path, "%s/fss", machine_path) < 0) {
+                free(machine_path);
+                return -ENOMEM;
+        }
+
+        *ret_machine_path = machine_path;
+        *ret_fss_path = fss_path;
+        return 0;
+}
+
+static void fill_synthetic_seed(uint8_t *seed, size_t seed_size) {
+        for (size_t i = 0; i < seed_size; i++)
+                seed[i] = (uint8_t) (3 + i * 17);
+}
+
+static int generate_synthetic_fss_state(
+                uint8_t *mpk,
+                uint8_t *seed,
+                size_t seed_size,
+                uint8_t *state) {
+
+#if MATRIX_FSPRG_RETURNS_INT
+        int r = FSPRG_GenMK(NULL, mpk, seed, seed_size, FSPRG_RECOMMENDED_SECPAR);
+        if (r < 0)
+                return r;
+        return FSPRG_GenState0(state, mpk, seed, seed_size);
+#else
+        FSPRG_GenMK(NULL, mpk, seed, seed_size, FSPRG_RECOMMENDED_SECPAR);
+        FSPRG_GenState0(state, mpk, seed, seed_size);
+        return 0;
+#endif
+}
+
+static struct FSSHeader synthetic_fss_header(
+                sd_id128_t machine,
+                sd_id128_t boot,
+                uint64_t start_usec,
+                uint64_t interval,
+                size_t state_size) {
+
+        return (struct FSSHeader) {
+                .signature = { 'K', 'S', 'H', 'H', 'R', 'H', 'L', 'P' },
+                .machine_id = machine,
+                .boot_id = boot,
+                .header_size = htole64(sizeof(struct FSSHeader)),
+                .start_usec = htole64(start_usec),
+                .interval_usec = htole64(interval),
+                .fsprg_secpar = htole16(FSPRG_RECOMMENDED_SECPAR),
+                .fsprg_state_size = htole64(state_size),
+        };
+}
+
+static int write_synthetic_fss_file(
+                const char *fss_path,
+                const struct FSSHeader *header,
+                const uint8_t *state,
+                size_t state_size) {
+
+        int fd = open(fss_path, O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, 0600);
+        if (fd < 0)
+                return -errno;
+
+        int r = write_all_fd(fd, header, sizeof(*header));
+        if (r >= 0)
+                r = write_all_fd(fd, state, state_size);
+        if (r >= 0 && fsync(fd) < 0)
+                r = -errno;
+        if (close(fd) < 0 && r >= 0)
+                r = -errno;
+        return r;
+}
+#endif
+
 static int setup_synthetic_fss(char **ret_verification_key) {
 #if HAVE_GCRYPT
         const uint64_t interval = 15ULL * 60ULL * 1000ULL * 1000ULL;
@@ -274,23 +414,16 @@ static int setup_synthetic_fss(char **ret_verification_key) {
         size_t mpk_size, seed_size, state_size;
         uint8_t *mpk, *seed, *state;
         struct FSSHeader h = {};
-        int fd = -1, r;
+        int r;
 
         assert(ret_verification_key);
 
-        r = sd_id128_get_machine(&machine);
+        r = synthetic_fss_ids(&machine, &boot);
         if (r < 0)
                 return r;
-        r = id128_from_string("0123456789abcdef0123456789abcdef", &boot);
+        r = make_synthetic_fss_paths(&machine_path, &fss_path, machine);
         if (r < 0)
                 return r;
-
-        if (asprintf(&machine_path, "%s/" SD_ID128_FORMAT_STR,
-                     arg_fss_root, SD_ID128_FORMAT_VAL(machine)) < 0)
-                return -ENOMEM;
-        if (asprintf(&fss_path, "%s/fss", machine_path) < 0)
-                return -ENOMEM;
-
         r = mkdir_p_simple(machine_path);
         if (r < 0)
                 return r;
@@ -300,46 +433,17 @@ static int setup_synthetic_fss(char **ret_verification_key) {
 
         seed_size = FSPRG_RECOMMENDED_SEEDLEN;
         seed = alloca_safe(seed_size);
-        for (size_t i = 0; i < seed_size; i++)
-                seed[i] = (uint8_t) (3 + i * 17);
+        fill_synthetic_seed(seed, seed_size);
 
         state_size = FSPRG_stateinbytes(FSPRG_RECOMMENDED_SECPAR);
         state = alloca_safe(state_size);
 
-#if MATRIX_FSPRG_RETURNS_INT
-        r = FSPRG_GenMK(NULL, mpk, seed, seed_size, FSPRG_RECOMMENDED_SECPAR);
+        r = generate_synthetic_fss_state(mpk, seed, seed_size, state);
         if (r < 0)
                 return r;
-        r = FSPRG_GenState0(state, mpk, seed, seed_size);
-        if (r < 0)
-                return r;
-#else
-        FSPRG_GenMK(NULL, mpk, seed, seed_size, FSPRG_RECOMMENDED_SECPAR);
-        FSPRG_GenState0(state, mpk, seed, seed_size);
-#endif
 
-        h = (struct FSSHeader) {
-                .signature = { 'K', 'S', 'H', 'H', 'R', 'H', 'L', 'P' },
-                .machine_id = machine,
-                .boot_id = boot,
-                .header_size = htole64(sizeof(h)),
-                .start_usec = htole64(start * interval),
-                .interval_usec = htole64(interval),
-                .fsprg_secpar = htole16(FSPRG_RECOMMENDED_SECPAR),
-                .fsprg_state_size = htole64(state_size),
-        };
-
-        fd = open(fss_path, O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, 0600);
-        if (fd < 0)
-                return -errno;
-
-        r = write_all_fd(fd, &h, sizeof(h));
-        if (r >= 0)
-                r = write_all_fd(fd, state, state_size);
-        if (r >= 0 && fsync(fd) < 0)
-                r = -errno;
-        if (close(fd) < 0 && r >= 0)
-                r = -errno;
+        h = synthetic_fss_header(machine, boot, start * interval, interval, state_size);
+        r = write_synthetic_fss_file(fss_path, &h, state, state_size);
         if (r < 0)
                 return r;
 
@@ -460,71 +564,67 @@ static int unsigned_by_key(MatrixJsonVariant *v, const char *key, uint64_t *ret)
         return 0;
 }
 
-static int materialize_value(MatrixJsonVariant *value, void **ret, size_t *ret_size) {
-        const char *kind;
-        int r;
+static int materialize_utf8_value(MatrixJsonVariant *value, void **ret, size_t *ret_size) {
+        const char *text = string_by_key(value, "text");
+        if (!text)
+                return -EINVAL;
+        char *copy = strdup(text);
+        if (!copy)
+                return -ENOMEM;
+        *ret = copy;
+        *ret_size = cstring_len(text);
+        return 0;
+}
 
+static int materialize_bytes_value(MatrixJsonVariant *value, void **ret, size_t *ret_size) {
+        MatrixJsonVariant *base64 = by_key(value, "base64");
+        uint64_t expected = 0;
+        if (!base64 || !matrix_json_variant_is_string(base64))
+                return -EINVAL;
+        int r = matrix_json_variant_unbase64(base64, ret, ret_size);
+        if (r < 0)
+                return r;
+        r = unsigned_by_key(value, "size", &expected);
+        if (r >= 0 && *ret_size != expected) {
+                free(*ret);
+                *ret = NULL;
+                return -EBADMSG;
+        }
+        return 0;
+}
+
+static int materialize_repeat_value(MatrixJsonVariant *value, void **ret, size_t *ret_size) {
+        uint64_t byte, size;
+        int r = unsigned_by_key(value, "byte", &byte);
+        if (r < 0)
+                return r;
+        r = unsigned_by_key(value, "size", &size);
+        if (r < 0)
+                return r;
+        if (byte > 255 || size > SIZE_MAX)
+                return -EINVAL;
+        void *p = malloc((size_t) size);
+        if (!p && size > 0)
+                return -ENOMEM;
+        memset(p, (uint8_t) byte, (size_t) size);
+        *ret = p;
+        *ret_size = (size_t) size;
+        return 0;
+}
+
+static int materialize_value(MatrixJsonVariant *value, void **ret, size_t *ret_size) {
         assert(value);
         assert(ret);
         assert(ret_size);
-
-        kind = string_by_key(value, "kind");
+        const char *kind = string_by_key(value, "kind");
         if (!kind)
                 return -EINVAL;
-
-        if (streq(kind, "utf8")) {
-                const char *text = string_by_key(value, "text");
-                char *copy;
-
-                if (!text)
-                        return -EINVAL;
-                copy = strdup(text);
-                if (!copy)
-                        return -ENOMEM;
-                *ret = copy;
-                *ret_size = cstring_len(text);
-                return 0;
-        }
-
-        if (streq(kind, "bytes")) {
-                MatrixJsonVariant *base64 = by_key(value, "base64");
-                uint64_t expected = 0;
-
-                if (!base64 || !matrix_json_variant_is_string(base64))
-                        return -EINVAL;
-                r = matrix_json_variant_unbase64(base64, ret, ret_size);
-                if (r < 0)
-                        return r;
-                r = unsigned_by_key(value, "size", &expected);
-                if (r >= 0 && *ret_size != expected) {
-                        free(*ret);
-                        *ret = NULL;
-                        return -EBADMSG;
-                }
-                return 0;
-        }
-
-        if (streq(kind, "repeat")) {
-                uint64_t byte, size;
-                void *p;
-
-                r = unsigned_by_key(value, "byte", &byte);
-                if (r < 0)
-                        return r;
-                r = unsigned_by_key(value, "size", &size);
-                if (r < 0)
-                        return r;
-                if (byte > 255 || size > SIZE_MAX)
-                        return -EINVAL;
-                p = malloc((size_t) size);
-                if (!p && size > 0)
-                        return -ENOMEM;
-                memset(p, (uint8_t) byte, (size_t) size);
-                *ret = p;
-                *ret_size = (size_t) size;
-                return 0;
-        }
-
+        if (streq(kind, "utf8"))
+                return materialize_utf8_value(value, ret, ret_size);
+        if (streq(kind, "bytes"))
+                return materialize_bytes_value(value, ret, ret_size);
+        if (streq(kind, "repeat"))
+                return materialize_repeat_value(value, ret, ret_size);
         return -EINVAL;
 }
 
@@ -583,56 +683,86 @@ static void free_iovecs(struct iovec *iov, size_t n) {
         free(iov);
 }
 
+static int accepted_record_fields(MatrixJsonVariant *record, MatrixJsonVariant **ret_fields, size_t *ret_n_fields) {
+        MatrixJsonVariant *fields = by_key(record, "fields");
+
+        if (!fields || !matrix_json_variant_is_array(fields))
+                return -EINVAL;
+
+        size_t n_fields = matrix_json_variant_elements(fields);
+        if (n_fields == 0)
+                return -EINVAL;
+
+        *ret_fields = fields;
+        *ret_n_fields = n_fields;
+        return 0;
+}
+
+static int build_field_iovec(MatrixJsonVariant *field, struct iovec *ret) {
+        const char *name = string_by_key(field, "name");
+        MatrixJsonVariant *value = by_key(field, "value");
+        void *value_data = NULL;
+        size_t value_size = 0;
+        int r;
+
+        if (!name || !value)
+                return -EINVAL;
+
+        r = materialize_value(value, &value_data, &value_size);
+        if (r < 0)
+                return r;
+
+        r = make_payload(name, value_data, value_size, ret);
+        free(value_data);
+        return r;
+}
+
+static int accepted_record_timestamp(MatrixJsonVariant *record, struct dual_timestamp *ret) {
+        int r = unsigned_by_key(record, "realtime_usec", &ret->realtime);
+        if (r < 0)
+                return r;
+        return unsigned_by_key(record, "monotonic_usec", &ret->monotonic);
+}
+
+static int accepted_record_boot_id(sd_id128_t *ret) {
+        return id128_from_string("0123456789abcdef0123456789abcdef", ret);
+}
+
+static int build_accepted_iovecs(MatrixJsonVariant *fields, struct iovec *iov, size_t n_fields) {
+        for (size_t i = 0; i < n_fields; i++) {
+                MatrixJsonVariant *field = matrix_json_variant_by_index(fields, i);
+                int r = build_field_iovec(field, &iov[i]);
+                if (r < 0)
+                        return r;
+        }
+        return 0;
+}
+
 static int append_accepted_record(JournalFile *file, MatrixJsonVariant *record, uint64_t *seqnum, sd_id128_t *seqnum_id) {
-        MatrixJsonVariant *fields;
+        MatrixJsonVariant *fields = NULL;
         struct iovec *iov = NULL;
-        size_t n_fields;
+        size_t n_fields = 0;
         struct dual_timestamp ts;
         sd_id128_t boot_id;
         int r;
 
-        fields = by_key(record, "fields");
-        if (!fields || !matrix_json_variant_is_array(fields))
-                return -EINVAL;
-
-        n_fields = matrix_json_variant_elements(fields);
-        if (n_fields == 0)
-                return -EINVAL;
+        r = accepted_record_fields(record, &fields, &n_fields);
+        if (r < 0)
+                return r;
 
         iov = calloc(n_fields, sizeof(struct iovec));
         if (!iov)
                 return -ENOMEM;
 
-        for (size_t i = 0; i < n_fields; i++) {
-                MatrixJsonVariant *field = matrix_json_variant_by_index(fields, i);
-                const char *name = string_by_key(field, "name");
-                MatrixJsonVariant *value = by_key(field, "value");
-                void *value_data = NULL;
-                size_t value_size = 0;
-
-                if (!name || !value) {
-                        r = -EINVAL;
-                        goto finish;
-                }
-
-                r = materialize_value(value, &value_data, &value_size);
-                if (r < 0)
-                        goto finish;
-
-                r = make_payload(name, value_data, value_size, &iov[i]);
-                free(value_data);
-                if (r < 0)
-                        goto finish;
-        }
-
-        r = unsigned_by_key(record, "realtime_usec", &ts.realtime);
-        if (r < 0)
-                goto finish;
-        r = unsigned_by_key(record, "monotonic_usec", &ts.monotonic);
+        r = build_accepted_iovecs(fields, iov, n_fields);
         if (r < 0)
                 goto finish;
 
-        r = id128_from_string("0123456789abcdef0123456789abcdef", &boot_id);
+        r = accepted_record_timestamp(record, &ts);
+        if (r < 0)
+                goto finish;
+
+        r = accepted_record_boot_id(&boot_id);
         if (r < 0)
                 goto finish;
 
@@ -690,189 +820,283 @@ static const char *classify_error(int r) {
         return "EINVAL";
 }
 
-static int run_accepted(void) {
-        MMapCache *cache = NULL;
-        JournalFile *file = NULL;
-        FILE *input = NULL;
-        char *line = NULL;
-        char *verification_key = NULL;
-        size_t line_alloc = 0, records = 0, errors = 0;
-        uint64_t seqnum = 0;
-        sd_id128_t seqnum_id = SD_ID128_NULL;
+typedef struct AcceptedRun {
+        MMapCache *cache;
+        JournalFile *file;
+        FILE *input;
+        char *line;
+        char *verification_key;
+        size_t line_alloc;
+        size_t records;
+        size_t errors;
+        uint64_t seqnum;
+        sd_id128_t seqnum_id;
+} AcceptedRun;
+
+static void accepted_run_free(AcceptedRun *run) {
+        free(run->line);
+        if (run->input)
+                fclose(run->input);
+        free(run->verification_key);
+}
+
+static int accepted_run_close_journal(AcceptedRun *run, int status) {
+        int close_r = close_journal(run->cache, run->file);
+        run->cache = NULL;
+        run->file = NULL;
+        if (status >= 0 && close_r < 0)
+                return close_r;
+        return status;
+}
+
+static int accepted_run_open(AcceptedRun *run) {
         int r;
 
         if (arg_sealed) {
-                r = setup_synthetic_fss(&verification_key);
+                r = setup_synthetic_fss(&run->verification_key);
                 if (r < 0) {
                         fprintf(stderr, "setup synthetic FSS failed: %s\n", strerror(-r));
                         return r;
                 }
         }
 
-        r = open_journal(arg_output, arg_max_size, &cache, &file);
+        r = open_journal(arg_output, arg_max_size, &run->cache, &run->file);
         if (r < 0) {
                 fprintf(stderr, "open journal failed: %s\n", strerror(-r));
-                free(verification_key);
                 return r;
         }
 
-        input = fopen(arg_dataset, "re");
-        if (!input) {
-                r = -errno;
-                goto finish;
+        run->input = fopen(arg_dataset, "re");
+        return run->input ? 0 : -errno;
+}
+
+static bool is_record_type(MatrixJsonVariant *record, const char *expected) {
+        const char *record_type = string_by_key(record, "record_type");
+        return record_type && streq(record_type, expected);
+}
+
+static void accepted_run_append_record(AcceptedRun *run, MatrixJsonVariant *record) {
+        int r = append_accepted_record(run->file, record, &run->seqnum, &run->seqnum_id);
+
+        if (r < 0) {
+                const char *entry_id = string_by_key(record, "entry_id");
+                fprintf(stderr, "%s: append failed: %s\n", entry_id ?: "record", strerror(-r));
+                run->errors++;
+                return;
         }
+        run->records++;
+}
 
-        while (getline(&line, &line_alloc, input) >= 0) {
-                MatrixJsonVariant *record = NULL;
-                const char *record_type;
+static void accepted_run_process_line(AcceptedRun *run, const char *line) {
+        MatrixJsonVariant *record = NULL;
+        int r = matrix_json_parse(line, 0, &record, NULL, NULL);
 
-                r = matrix_json_parse(line, 0, &record, NULL, NULL);
-                if (r < 0) {
-                        errors++;
-                        continue;
-                }
-
-                record_type = string_by_key(record, "record_type");
-                if (record_type && streq(record_type, "accepted")) {
-                        r = append_accepted_record(file, record, &seqnum, &seqnum_id);
-                        if (r < 0) {
-                                const char *entry_id = string_by_key(record, "entry_id");
-                                fprintf(stderr, "%s: append failed: %s\n", entry_id ?: "record", strerror(-r));
-                                errors++;
-                        } else
-                                records++;
-                }
-                matrix_json_variant_unref(record);
+        if (r < 0) {
+                run->errors++;
+                return;
         }
+        if (is_record_type(record, "accepted"))
+                accepted_run_append_record(run, record);
+        matrix_json_variant_unref(record);
+}
 
-        r = errors == 0 ? 0 : -EINVAL;
+static void accepted_run_process_dataset(AcceptedRun *run) {
+        while (getline(&run->line, &run->line_alloc, run->input) >= 0)
+                accepted_run_process_line(run, run->line);
+}
 
-finish:
-        free(line);
-        if (input)
-                fclose(input);
-        {
-                int close_r = close_journal(cache, file);
-                if (r >= 0 && close_r < 0)
-                        r = close_r;
-        }
-        if (r < 0)
+static void accepted_run_print_result(const AcceptedRun *run, int status) {
+        const char *sealed = arg_sealed ? "true" : "false";
+
+        if (status < 0)
                 printf("{\"records\":%zu,\"sealed\":%s,\"errors\":[\"failed\"]}\n",
-                       records, arg_sealed ? "true" : "false");
-        else if (verification_key)
+                       run->records, sealed);
+        else if (run->verification_key)
                 printf("{\"records\":%zu,\"sealed\":true,\"verification_key\":\"%s\",\"errors\":[]}\n",
-                       records, verification_key);
+                       run->records, run->verification_key);
         else
-                printf("{\"records\":%zu,\"sealed\":false,\"errors\":[]}\n", records);
-        free(verification_key);
+                printf("{\"records\":%zu,\"sealed\":false,\"errors\":[]}\n", run->records);
+}
+
+static int run_accepted(void) {
+        AcceptedRun run = {
+                .seqnum_id = SD_ID128_NULL,
+        };
+
+        int r = accepted_run_open(&run);
+        if (r >= 0) {
+                accepted_run_process_dataset(&run);
+                r = run.errors == 0 ? 0 : -EINVAL;
+        }
+        r = accepted_run_close_journal(&run, r);
+        accepted_run_print_result(&run, r);
+        accepted_run_free(&run);
         return r;
 }
 
-static int run_rejections(void) {
-        MMapCache *cache = NULL;
-        JournalFile *file = NULL;
-        FILE *input = NULL;
-        char *line = NULL;
-        size_t line_alloc = 0, records = 0, errors = 0;
-        uint64_t seqnum = 0;
-        sd_id128_t seqnum_id = SD_ID128_NULL;
-        int r;
+typedef struct RejectionRun {
+        MMapCache *cache;
+        JournalFile *file;
+        FILE *input;
+        char *line;
+        size_t line_alloc;
+        size_t records;
+        size_t errors;
+        uint64_t seqnum;
+        sd_id128_t seqnum_id;
+} RejectionRun;
 
-        r = open_journal(arg_output, 1024ULL * 1024ULL, &cache, &file);
+static void rejection_run_free(RejectionRun *run) {
+        free(run->line);
+        if (run->input)
+                fclose(run->input);
+}
+
+static int rejection_run_close_journal(RejectionRun *run, int status) {
+        int close_r = close_journal(run->cache, run->file);
+        run->cache = NULL;
+        run->file = NULL;
+        if (status >= 0 && close_r < 0)
+                return close_r;
+        return status;
+}
+
+static int rejection_run_open(RejectionRun *run) {
+        int r = open_journal(arg_output, 1024ULL * 1024ULL, &run->cache, &run->file);
         if (r < 0) {
                 fprintf(stderr, "open journal failed: %s\n", strerror(-r));
                 return r;
         }
 
-        input = fopen(arg_dataset, "re");
-        if (!input) {
-                r = -errno;
-                goto finish;
+        run->input = fopen(arg_dataset, "re");
+        return run->input ? 0 : -errno;
+}
+
+static bool repeat_value_too_large(MatrixJsonVariant *value) {
+        uint64_t size = 0;
+
+        return matrix_json_variant_is_object(value) &&
+               streq_ptr(string_by_key(value, "kind"), "repeat") &&
+               unsigned_by_key(value, "size", &size) >= 0 &&
+               size > 4ULL * 1024ULL * 1024ULL;
+}
+
+static int append_rejection_raw_payload(
+                RejectionRun *run,
+                const char *raw_payload) {
+
+        const char *eq = strchr(raw_payload, '=');
+        if (!eq || eq == raw_payload)
+                return -EINVAL;
+        return append_raw_payload(run->file, raw_payload, &run->seqnum, &run->seqnum_id);
+}
+
+static int append_rejection_field_payload(
+                RejectionRun *run,
+                const char *field_name,
+                MatrixJsonVariant *input_object) {
+
+        MatrixJsonVariant *value = by_key(input_object, "value");
+
+        if (!value || matrix_json_variant_is_null(value))
+                return -EINVAL;
+        if (repeat_value_too_large(value))
+                return -E2BIG;
+        return append_field_payload(run->file, field_name, value, &run->seqnum, &run->seqnum_id);
+}
+
+static int append_rejection_input(RejectionRun *run, MatrixJsonVariant *input_object) {
+        const char *raw_payload = string_by_key(input_object, "raw_payload");
+        const char *field_name = string_by_key(input_object, "field_name");
+
+        if (raw_payload)
+                return append_rejection_raw_payload(run, raw_payload);
+        if (field_name)
+                return append_rejection_field_payload(run, field_name, input_object);
+        return -EINVAL;
+}
+
+static void rejection_run_record_result(
+                RejectionRun *run,
+                const char *case_id,
+                const char *expected,
+                int got) {
+
+        if (got >= 0) {
+                fprintf(stderr, "%s: unexpectedly accepted\n", case_id);
+                run->errors++;
+        } else if (streq(classify_error(got), expected))
+                run->records++;
+        else {
+                fprintf(stderr, "%s: got %s, expected %s\n", case_id, classify_error(got), expected);
+                run->errors++;
+        }
+}
+
+static bool rejection_record_payload(
+                MatrixJsonVariant *record,
+                const char **ret_case_id,
+                const char **ret_expected,
+                MatrixJsonVariant **ret_input) {
+
+        *ret_case_id = string_by_key(record, "case_id");
+        *ret_expected = string_by_key(record, "expected_error");
+        *ret_input = by_key(record, "input");
+        return *ret_case_id && *ret_expected && *ret_input;
+}
+
+static void rejection_run_process_record(RejectionRun *run, MatrixJsonVariant *record) {
+        MatrixJsonVariant *input_object = NULL;
+        const char *case_id = NULL;
+        const char *expected = NULL;
+
+        if (!rejection_record_payload(record, &case_id, &expected, &input_object)) {
+                run->errors++;
+                return;
         }
 
-        while (getline(&line, &line_alloc, input) >= 0) {
-                MatrixJsonVariant *record = NULL, *input_object;
-                const char *record_type, *case_id, *expected, *raw_payload, *field_name;
-                int got;
+        int got = append_rejection_input(run, input_object);
+        rejection_run_record_result(run, case_id, expected, got);
+}
 
-                r = matrix_json_parse(line, 0, &record, NULL, NULL);
-                if (r < 0) {
-                        errors++;
-                        continue;
-                }
+static void rejection_run_process_line(RejectionRun *run, const char *line) {
+        MatrixJsonVariant *record = NULL;
+        int r = matrix_json_parse(line, 0, &record, NULL, NULL);
 
-                record_type = string_by_key(record, "record_type");
-                if (!record_type || !streq(record_type, "rejected")) {
-                        matrix_json_variant_unref(record);
-                        continue;
-                }
-
-                case_id = string_by_key(record, "case_id");
-                expected = string_by_key(record, "expected_error");
-                input_object = by_key(record, "input");
-                if (!case_id || !expected || !input_object) {
-                        errors++;
-                        matrix_json_variant_unref(record);
-                        continue;
-                }
-
-                raw_payload = string_by_key(input_object, "raw_payload");
-                field_name = string_by_key(input_object, "field_name");
-
-                if (raw_payload) {
-                        const char *eq = strchr(raw_payload, '=');
-
-                        if (!eq || eq == raw_payload)
-                                got = -EINVAL;
-                        else
-                                got = append_raw_payload(file, raw_payload, &seqnum, &seqnum_id);
-                }
-                else if (field_name) {
-                        MatrixJsonVariant *value = by_key(input_object, "value");
-
-                        if (!value || matrix_json_variant_is_null(value))
-                                got = -EINVAL;
-                        else if (matrix_json_variant_is_object(value) &&
-                                 streq_ptr(string_by_key(value, "kind"), "repeat")) {
-                                uint64_t size = 0;
-
-                                if (unsigned_by_key(value, "size", &size) >= 0 && size > 4ULL * 1024ULL * 1024ULL)
-                                        got = -E2BIG;
-                                else
-                                        got = append_field_payload(file, field_name, value, &seqnum, &seqnum_id);
-                        } else
-                                got = append_field_payload(file, field_name, value, &seqnum, &seqnum_id);
-                } else
-                        got = -EINVAL;
-
-                if (got >= 0) {
-                        fprintf(stderr, "%s: unexpectedly accepted\n", case_id);
-                        errors++;
-                } else if (streq(classify_error(got), expected))
-                        records++;
-                else {
-                        fprintf(stderr, "%s: got %s, expected %s\n", case_id, classify_error(got), expected);
-                        errors++;
-                }
-
-                matrix_json_variant_unref(record);
+        if (r < 0) {
+                run->errors++;
+                return;
         }
+        if (is_record_type(record, "rejected"))
+                rejection_run_process_record(run, record);
+        matrix_json_variant_unref(record);
+}
 
-        r = errors == 0 ? 0 : -EINVAL;
+static void rejection_run_process_dataset(RejectionRun *run) {
+        while (getline(&run->line, &run->line_alloc, run->input) >= 0)
+                rejection_run_process_line(run, run->line);
+}
 
-finish:
-        free(line);
-        if (input)
-                fclose(input);
-        {
-                int close_r = close_journal(cache, file);
-                if (r >= 0 && close_r < 0)
-                        r = close_r;
-        }
-        if (r < 0)
-                printf("{\"records\":%zu,\"errors\":[\"failed\"]}\n", records);
+static void rejection_run_print_result(const RejectionRun *run, int status) {
+        if (status < 0)
+                printf("{\"records\":%zu,\"errors\":[\"failed\"]}\n", run->records);
         else
-                printf("{\"records\":%zu,\"errors\":[]}\n", records);
+                printf("{\"records\":%zu,\"errors\":[]}\n", run->records);
+}
+
+static int run_rejections(void) {
+        RejectionRun run = {
+                .seqnum_id = SD_ID128_NULL,
+        };
+
+        int r = rejection_run_open(&run);
+        if (r >= 0) {
+                rejection_run_process_dataset(&run);
+                r = run.errors == 0 ? 0 : -EINVAL;
+        }
+        r = rejection_run_close_journal(&run, r);
+        rejection_run_print_result(&run, r);
+        rejection_run_free(&run);
         return r;
 }
 

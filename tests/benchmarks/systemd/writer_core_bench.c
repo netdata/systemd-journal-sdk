@@ -49,57 +49,110 @@ static double elapsed_seconds(struct timespec start, struct timespec end) {
                (double) (end.tv_nsec - start.tv_nsec) / 1000000000.0;
 }
 
-static int parse_args(int argc, char **argv) {
-        for (int i = 1; i < argc; i++) {
-                if (streq(argv[i], "--output") && i + 1 < argc)
-                        arg_output = argv[++i];
-                else if (streq(argv[i], "--rows") && i + 1 < argc) {
-                        char *end = NULL;
-                        unsigned long long value;
+static int parse_positive_ull(const char *text, unsigned long long *ret) {
+        char *end = NULL;
+        errno = 0;
+        unsigned long long value = strtoull(text, &end, 10);
+        if (errno != 0 || !end || *end != '\0' || value == 0)
+                return -EINVAL;
+        *ret = value;
+        return 0;
+}
 
-                        errno = 0;
-                        value = strtoull(argv[++i], &end, 10);
-                        if (errno != 0 || !end || *end != '\0' || value == 0)
-                                return -EINVAL;
-                        arg_rows = (size_t) value;
-                } else if (streq(argv[i], "--format") && i + 1 < argc)
-                        arg_format = argv[++i];
-                else if (streq(argv[i], "--final-state") && i + 1 < argc)
-                        arg_final_state = argv[++i];
-                else if (streq(argv[i], "--max-size-bytes") && i + 1 < argc) {
-                        char *end = NULL;
-                        unsigned long long value;
+static int parse_unsigned_ull(const char *text, unsigned long long *ret) {
+        char *end = NULL;
+        errno = 0;
+        unsigned long long value = strtoull(text, &end, 10);
+        if (errno != 0 || !end || *end != '\0')
+                return -EINVAL;
+        *ret = value;
+        return 0;
+}
 
-                        errno = 0;
-                        value = strtoull(argv[++i], &end, 10);
-                        if (errno != 0 || !end || *end != '\0' || value == 0)
-                                return -EINVAL;
-                        arg_max_size = (uint64_t) value;
-                } else if (streq(argv[i], "--rotation-max-size-bytes") && i + 1 < argc) {
-                        char *end = NULL;
-                        unsigned long long value;
+static int parse_rows_value(const char *text) {
+        unsigned long long value;
+        int r = parse_positive_ull(text, &value);
+        if (r < 0)
+                return r;
+        arg_rows = (size_t) value;
+        return 0;
+}
 
-                        errno = 0;
-                        value = strtoull(argv[++i], &end, 10);
-                        if (errno != 0 || !end || *end != '\0' || value == 0)
-                                return -EINVAL;
-                        arg_rotation_max_size = (uint64_t) value;
-                } else if (streq(argv[i], "--surface") && i + 1 < argc)
-                        arg_surface = argv[++i];
-                else if (streq(argv[i], "--api-mode") && i + 1 < argc) {
-                        if (!streq(argv[++i], "raw-payload"))
-                                return -EINVAL;
-                } else if (streq(argv[i], "--live-publish-every-entries") && i + 1 < argc) {
-                        char *end = NULL;
+static int parse_max_size_value(const char *text, uint64_t *target) {
+        unsigned long long value;
+        int r = parse_positive_ull(text, &value);
+        if (r < 0)
+                return r;
+        *target = (uint64_t) value;
+        return 0;
+}
 
-                        errno = 0;
-                        (void) strtoull(argv[++i], &end, 10);
-                        if (errno != 0 || !end || *end != '\0')
-                                return -EINVAL;
-                } else
-                        return -EINVAL;
+static int parse_ignored_live_publish_value(const char *text) {
+        unsigned long long value;
+        return parse_unsigned_ull(text, &value);
+}
+
+static int parse_string_arg(const char *arg, const char *value) {
+        if (streq(arg, "--output")) {
+                arg_output = value;
+                return 1;
         }
+        if (streq(arg, "--format")) {
+                arg_format = value;
+                return 1;
+        }
+        if (streq(arg, "--final-state")) {
+                arg_final_state = value;
+                return 1;
+        }
+        if (streq(arg, "--surface")) {
+                arg_surface = value;
+                return 1;
+        }
+        return 0;
+}
 
+static int parse_api_mode_arg(const char *value) {
+        return streq(value, "raw-payload") ? 0 : -EINVAL;
+}
+
+static int parse_option_with_value(int argc, char **argv, int *idx, int (*handler)(const char *)) {
+        if (*idx + 1 >= argc)
+                return -EINVAL;
+        return handler(argv[++(*idx)]);
+}
+
+static int parse_max_size_arg(const char *text);
+static int parse_rotation_max_size_arg(const char *text);
+
+static int parse_one_arg(int argc, char **argv, int *idx) {
+        const char *arg = argv[*idx];
+        if (*idx + 1 < argc && parse_string_arg(arg, argv[*idx + 1])) {
+                (*idx)++;
+                return 0;
+        }
+        if (streq(arg, "--rows"))
+                return parse_option_with_value(argc, argv, idx, parse_rows_value);
+        if (streq(arg, "--max-size-bytes"))
+                return parse_option_with_value(argc, argv, idx, parse_max_size_arg);
+        if (streq(arg, "--rotation-max-size-bytes"))
+                return parse_option_with_value(argc, argv, idx, parse_rotation_max_size_arg);
+        if (streq(arg, "--api-mode"))
+                return parse_option_with_value(argc, argv, idx, parse_api_mode_arg);
+        if (streq(arg, "--live-publish-every-entries"))
+                return parse_option_with_value(argc, argv, idx, parse_ignored_live_publish_value);
+        return -EINVAL;
+}
+
+static int parse_max_size_arg(const char *text) {
+        return parse_max_size_value(text, &arg_max_size);
+}
+
+static int parse_rotation_max_size_arg(const char *text) {
+        return parse_max_size_value(text, &arg_rotation_max_size);
+}
+
+static int validate_args(void) {
         if (!arg_output)
                 return -EINVAL;
         if (!streq(arg_format, "compact") && !streq(arg_format, "regular"))
@@ -109,6 +162,15 @@ static int parse_args(int argc, char **argv) {
         if (!streq(arg_surface, "direct") && !streq(arg_surface, "directory"))
                 return -EINVAL;
         return 0;
+}
+
+static int parse_args(int argc, char **argv) {
+        for (int i = 1; i < argc; i++) {
+                int r = parse_one_arg(argc, argv, &i);
+                if (r < 0)
+                        return r;
+        }
+        return validate_args();
 }
 
 static int id128_from_string(const char *s, sd_id128_t *ret) {
@@ -528,224 +590,260 @@ static void print_journal_files_json(const char *dir) {
         putchar(']');
 }
 
-static int run_directory_mode(BenchRows *rows, double precompute_seconds) {
-        MMapCache *cache = NULL;
-        JournalFile *file = NULL;
-        sd_id128_t boot_id, seqnum_id = SD_ID128_NULL;
-        uint64_t seqnum = 0, journal_size = 0;
-        size_t records = 0, file_count = 0;
-        char journal_dir[PATH_MAX] = "", current_path[PATH_MAX] = "";
-        struct timespec append_start, append_end, close_start, close_end;
-        double append_seconds = 0, close_seconds = 0;
-        int r;
+typedef struct DirectoryRun {
+        MMapCache *cache;
+        JournalFile *file;
+        sd_id128_t boot_id;
+        sd_id128_t seqnum_id;
+        uint64_t seqnum;
+        uint64_t journal_size;
+        size_t records;
+        size_t file_count;
+        char journal_dir[PATH_MAX];
+        char current_path[PATH_MAX];
+        double append_seconds;
+        double close_seconds;
+} DirectoryRun;
 
-        r = id128_from_string("0123456789abcdef0123456789abcdef", &boot_id);
+static int setup_directory_run(DirectoryRun *run) {
+        run->seqnum_id = SD_ID128_NULL;
+        int r = id128_from_string("0123456789abcdef0123456789abcdef", &run->boot_id);
         if (r < 0)
-                goto finish;
+                return r;
         r = mkdir_if_needed(arg_output);
         if (r < 0)
-                goto finish;
-        r = make_directory_path(journal_dir, sizeof(journal_dir));
+                return r;
+        r = make_directory_path(run->journal_dir, sizeof(run->journal_dir));
         if (r < 0)
-                goto finish;
-        r = mkdir_if_needed(journal_dir);
+                return r;
+        r = mkdir_if_needed(run->journal_dir);
         if (r < 0)
-                goto finish;
-        r = make_active_path(current_path, sizeof(current_path));
+                return r;
+        r = make_active_path(run->current_path, sizeof(run->current_path));
         if (r < 0)
-                goto finish;
-        r = open_journal(current_path, arg_rotation_max_size, &cache, &file);
+                return r;
+        return open_journal(run->current_path, arg_rotation_max_size, &run->cache, &run->file);
+}
+
+static int reopen_directory_journal(DirectoryRun *run) {
+        (void) close_archived_journal(run->cache, run->file);
+        run->cache = NULL;
+        run->file = NULL;
+        int r = make_active_path(run->current_path, sizeof(run->current_path));
         if (r < 0)
-                goto finish;
+                return r;
+        r = open_journal(run->current_path, arg_rotation_max_size, &run->cache, &run->file);
+        if (r < 0)
+                return r;
+        return configure_header(run->file);
+}
 
-        (void) clock_gettime(CLOCK_MONOTONIC, &append_start);
-        for (size_t row = 0; row < rows->rows; row++) {
-                struct dual_timestamp ts = {
-                        .realtime = base_realtime_usec + row * 500ULL,
-                        .monotonic = base_monotonic_usec + row * 50ULL,
-                };
-                bool retried_after_rotation = false;
+static int rotate_directory_if_needed(DirectoryRun *run) {
+        if (run->records == 0 || active_logical_size(run->file) < arg_rotation_max_size)
+                return 0;
+        return reopen_directory_journal(run);
+}
 
-                if (records > 0 && active_logical_size(file) >= arg_rotation_max_size) {
-                        int close_r;
+static int append_directory_entry(DirectoryRun *run, BenchRows *rows, size_t row) {
+        struct dual_timestamp ts = {
+                .realtime = base_realtime_usec + row * 500ULL,
+                .monotonic = base_monotonic_usec + row * 50ULL,
+        };
+        return journal_file_append_entry(
+                        run->file,
+                        &ts,
+                        &run->boot_id,
+                        rows->iovecs + row * FIELDS_PER_ROW,
+                        FIELDS_PER_ROW,
+                        &run->seqnum,
+                        &run->seqnum_id,
+                        NULL,
+                        NULL);
+}
 
-                        (void) close_archived_journal(cache, file);
-                        cache = NULL;
-                        file = NULL;
-                        r = make_active_path(current_path, sizeof(current_path));
-                        if (r < 0)
-                                break;
-                        r = open_journal(current_path, arg_rotation_max_size, &cache, &file);
-                        if (r < 0)
-                                break;
-                        close_r = configure_header(file);
-                        if (close_r < 0) {
-                                r = close_r;
-                                break;
-                        }
-                }
-
-retry_append:
-                r = journal_file_append_entry(
-                                file,
-                                &ts,
-                                &boot_id,
-                                rows->iovecs + row * FIELDS_PER_ROW,
-                                FIELDS_PER_ROW,
-                                &seqnum,
-                                &seqnum_id,
-                                NULL,
-                                NULL);
-                if (r < 0 && records > 0 && !retried_after_rotation) {
-                        int close_r;
-
-                        (void) close_archived_journal(cache, file);
-                        cache = NULL;
-                        file = NULL;
-                        r = make_active_path(current_path, sizeof(current_path));
-                        if (r < 0)
-                                break;
-                        r = open_journal(current_path, arg_rotation_max_size, &cache, &file);
-                        if (r < 0)
-                                break;
-                        close_r = configure_header(file);
-                        if (close_r < 0) {
-                                r = close_r;
-                                break;
-                        }
-                        retried_after_rotation = true;
-                        goto retry_append;
-                }
+static int append_directory_row(DirectoryRun *run, BenchRows *rows, size_t row) {
+        bool retried_after_rotation = false;
+        for (;;) {
+                int r = rotate_directory_if_needed(run);
                 if (r < 0)
-                        break;
-                records++;
+                        return r;
+                r = append_directory_entry(run, rows, row);
+                if (r >= 0) {
+                        run->records++;
+                        return 0;
+                }
+                if (run->records == 0 || retried_after_rotation)
+                        return r;
+                r = reopen_directory_journal(run);
+                if (r < 0)
+                        return r;
+                retried_after_rotation = true;
         }
-        (void) clock_gettime(CLOCK_MONOTONIC, &append_end);
-        append_seconds = elapsed_seconds(append_start, append_end);
+}
 
-        (void) clock_gettime(CLOCK_MONOTONIC, &close_start);
-        if (file) {
-                int close_r = close_archived_journal(cache, file);
-                cache = NULL;
-                file = NULL;
-                if (r >= 0 && close_r < 0)
-                        r = close_r;
+static int append_directory_rows(DirectoryRun *run, BenchRows *rows) {
+        for (size_t row = 0; row < rows->rows; row++) {
+                int r = append_directory_row(run, rows, row);
+                if (r < 0)
+                        return r;
         }
-        (void) clock_gettime(CLOCK_MONOTONIC, &close_end);
-        close_seconds = elapsed_seconds(close_start, close_end);
+        return 0;
+}
 
-        if (r >= 0)
-                r = count_journal_files(journal_dir, &journal_size, &file_count);
+static int close_directory_run(DirectoryRun *run) {
+        if (!run->file)
+                return 0;
+        int r = close_archived_journal(run->cache, run->file);
+        run->cache = NULL;
+        run->file = NULL;
+        return r;
+}
 
-finish:
+static int measure_directory_append(DirectoryRun *run, BenchRows *rows) {
+        struct timespec start, end;
+        (void) clock_gettime(CLOCK_MONOTONIC, &start);
+        int r = append_directory_rows(run, rows);
+        (void) clock_gettime(CLOCK_MONOTONIC, &end);
+        run->append_seconds = elapsed_seconds(start, end);
+        return r;
+}
+
+static int measure_directory_close(DirectoryRun *run) {
+        struct timespec start, end;
+        (void) clock_gettime(CLOCK_MONOTONIC, &start);
+        int r = close_directory_run(run);
+        (void) clock_gettime(CLOCK_MONOTONIC, &end);
+        run->close_seconds = elapsed_seconds(start, end);
+        return r;
+}
+
+static void print_directory_result(const DirectoryRun *run, double precompute_seconds, int status) {
         printf("{\"records\":%zu,\"fields_per_row\":%u,\"surface\":\"directory\",\"append_seconds\":%.9f,\"append_rows_per_second\":%.9f,\"close_seconds\":%.9f,\"total_writer_seconds\":%.9f,\"precompute_seconds\":%.9f,\"journal_size_bytes\":%" PRIu64 ",\"journal_path\":",
-               records,
+               run->records,
                FIELDS_PER_ROW,
-               append_seconds,
-               append_seconds > 0 ? (double) records / append_seconds : 0,
-               close_seconds,
-               append_seconds + close_seconds,
+               run->append_seconds,
+               run->append_seconds > 0 ? (double) run->records / run->append_seconds : 0,
+               run->close_seconds,
+               run->append_seconds + run->close_seconds,
                precompute_seconds,
-               journal_size);
-        print_json_string(journal_dir);
+               run->journal_size);
+        print_json_string(run->journal_dir);
         printf(",\"journal_directory\":");
-        print_json_string(journal_dir);
+        print_json_string(run->journal_dir);
         printf(",\"journal_files\":");
-        print_journal_files_json(journal_dir);
+        print_journal_files_json(run->journal_dir);
         printf(",\"journal_file_count\":%zu,\"format\":\"%s\",\"compression\":\"none\",\"fss\":false,\"api_mode\":\"raw-payload\",\"live_publication\":\"systemd-default\",\"live_publish_every_entries\":1,\"data_hash_table_buckets\":%" PRIu64 ",\"field_hash_table_buckets\":1023,\"max_size_bytes\":%" PRIu64 ",\"rotation_max_size_bytes\":%" PRIu64 ",\"append_timer_excludes\":[\"row generation\",\"writer creation\",\"final close/sync\",\"journal verification\"],\"final_state\":\"archived\",\"errors\":%s}\n",
-               file_count,
+               run->file_count,
                arg_format,
                data_hash_buckets_for_max_size(arg_rotation_max_size),
                arg_rotation_max_size,
                arg_rotation_max_size,
-               r < 0 ? "[\"failed\"]" : "[]");
-
-        if (file || cache)
-                (void) close_archived_journal(cache, file);
-        return r < 0 || records != rows->rows ? EXIT_FAILURE : EXIT_SUCCESS;
+               status < 0 ? "[\"failed\"]" : "[]");
 }
 
-int main(int argc, char **argv) {
-        BenchRows rows = {};
-        MMapCache *cache = NULL;
-        JournalFile *file = NULL;
-        sd_id128_t boot_id, seqnum_id = SD_ID128_NULL;
-        uint64_t seqnum = 0;
-        size_t records = 0;
-        struct timespec precompute_start, precompute_end, append_start, append_end, close_start, close_end;
-        double precompute_seconds = 0, append_seconds = 0, close_seconds = 0;
-        int r;
+static int run_directory_mode(BenchRows *rows, double precompute_seconds) {
+        DirectoryRun run = {};
+        int r = setup_directory_run(&run);
+        if (r >= 0)
+                r = measure_directory_append(&run, rows);
+        int close_r = measure_directory_close(&run);
+        if (r >= 0 && close_r < 0)
+                r = close_r;
+        if (r >= 0)
+                r = count_journal_files(run.journal_dir, &run.journal_size, &run.file_count);
+        print_directory_result(&run, precompute_seconds, r);
+        if (run.file || run.cache)
+                (void) close_archived_journal(run.cache, run.file);
+        return r < 0 || run.records != rows->rows ? EXIT_FAILURE : EXIT_SUCCESS;
+}
 
-        r = parse_args(argc, argv);
-        if (r < 0) {
-                fprintf(stderr, "usage: %s --output PATH [--rows N] [--format compact|regular] [--final-state online|offline|archived] [--max-size-bytes BYTES]\n", argv[0]);
-                return EXIT_FAILURE;
-        }
+typedef struct DirectRun {
+        MMapCache *cache;
+        JournalFile *file;
+        sd_id128_t boot_id;
+        sd_id128_t seqnum_id;
+        uint64_t seqnum;
+        size_t records;
+        double append_seconds;
+        double close_seconds;
+} DirectRun;
 
-        r = id128_from_string("0123456789abcdef0123456789abcdef", &boot_id);
+static void usage(const char *argv0) {
+        fprintf(stderr, "usage: %s --output PATH [--rows N] [--format compact|regular] [--final-state online|offline|archived] [--max-size-bytes BYTES]\n", argv0);
+}
+
+static int build_bench_rows(BenchRows *rows, double *precompute_seconds) {
+        struct timespec start, end;
+        (void) clock_gettime(CLOCK_MONOTONIC, &start);
+        int r = build_rows(arg_rows, rows);
+        (void) clock_gettime(CLOCK_MONOTONIC, &end);
+        *precompute_seconds = elapsed_seconds(start, end);
+        return r;
+}
+
+static int setup_direct_run(DirectRun *run) {
+        run->seqnum_id = SD_ID128_NULL;
+        int r = id128_from_string("0123456789abcdef0123456789abcdef", &run->boot_id);
         if (r < 0)
-                goto finish;
+                return r;
+        return open_journal(arg_output, arg_max_size, &run->cache, &run->file);
+}
 
-        (void) clock_gettime(CLOCK_MONOTONIC, &precompute_start);
-        r = build_rows(arg_rows, &rows);
-        (void) clock_gettime(CLOCK_MONOTONIC, &precompute_end);
-        precompute_seconds = elapsed_seconds(precompute_start, precompute_end);
-        if (r < 0)
-                goto finish;
+static int append_direct_entry(DirectRun *run, BenchRows *rows, size_t row) {
+        struct dual_timestamp ts = {
+                .realtime = base_realtime_usec + row * 500ULL,
+                .monotonic = base_monotonic_usec + row * 50ULL,
+        };
+        return journal_file_append_entry(
+                        run->file,
+                        &ts,
+                        &run->boot_id,
+                        rows->iovecs + row * FIELDS_PER_ROW,
+                        FIELDS_PER_ROW,
+                        &run->seqnum,
+                        &run->seqnum_id,
+                        NULL,
+                        NULL);
+}
 
-        if (streq(arg_surface, "directory")) {
-                int ret = run_directory_mode(&rows, precompute_seconds);
-                free_rows(&rows);
-                return ret;
-        }
-
-        r = open_journal(arg_output, arg_max_size, &cache, &file);
-        if (r < 0)
-                goto finish;
-
-        (void) clock_gettime(CLOCK_MONOTONIC, &append_start);
-        for (size_t row = 0; row < rows.rows; row++) {
-                struct dual_timestamp ts = {
-                        .realtime = base_realtime_usec + row * 500ULL,
-                        .monotonic = base_monotonic_usec + row * 50ULL,
-                };
-
-                r = journal_file_append_entry(
-                                file,
-                                &ts,
-                                &boot_id,
-                                rows.iovecs + row * FIELDS_PER_ROW,
-                                FIELDS_PER_ROW,
-                                &seqnum,
-                                &seqnum_id,
-                                NULL,
-                                NULL);
+static int append_direct_rows(DirectRun *run, BenchRows *rows) {
+        for (size_t row = 0; row < rows->rows; row++) {
+                int r = append_direct_entry(run, rows, row);
                 if (r < 0)
-                        break;
-                records++;
+                        return r;
+                run->records++;
         }
-        (void) clock_gettime(CLOCK_MONOTONIC, &append_end);
-        append_seconds = elapsed_seconds(append_start, append_end);
+        return 0;
+}
 
-        (void) clock_gettime(CLOCK_MONOTONIC, &close_start);
-        {
-                int close_r = close_journal(cache, file);
-                cache = NULL;
-                file = NULL;
-                if (r >= 0 && close_r < 0)
-                        r = close_r;
-        }
-        (void) clock_gettime(CLOCK_MONOTONIC, &close_end);
-        close_seconds = elapsed_seconds(close_start, close_end);
+static int measure_direct_append(DirectRun *run, BenchRows *rows) {
+        struct timespec start, end;
+        (void) clock_gettime(CLOCK_MONOTONIC, &start);
+        int r = append_direct_rows(run, rows);
+        (void) clock_gettime(CLOCK_MONOTONIC, &end);
+        run->append_seconds = elapsed_seconds(start, end);
+        return r;
+}
 
-finish:
+static int measure_direct_close(DirectRun *run) {
+        struct timespec start, end;
+        (void) clock_gettime(CLOCK_MONOTONIC, &start);
+        int r = close_journal(run->cache, run->file);
+        run->cache = NULL;
+        run->file = NULL;
+        (void) clock_gettime(CLOCK_MONOTONIC, &end);
+        run->close_seconds = elapsed_seconds(start, end);
+        return r;
+}
+
+static void print_direct_result(const DirectRun *run, double precompute_seconds, int status) {
         printf("{\"records\":%zu,\"fields_per_row\":%u,\"append_seconds\":%.9f,\"append_rows_per_second\":%.9f,\"close_seconds\":%.9f,\"total_writer_seconds\":%.9f,\"precompute_seconds\":%.9f,\"journal_size_bytes\":%" PRIu64 ",\"journal_path\":\"%s\",\"format\":\"%s\",\"compression\":\"none\",\"fss\":false,\"api_mode\":\"raw-payload\",\"live_publication\":\"systemd-default\",\"live_publish_every_entries\":1,\"data_hash_table_buckets\":%" PRIu64 ",\"field_hash_table_buckets\":1023,\"max_size_bytes\":%" PRIu64 ",\"append_timer_excludes\":[\"row generation\",\"writer creation\",\"final close/sync\",\"journal verification\"],\"final_state\":\"%s\",\"errors\":%s}\n",
-               records,
+               run->records,
                FIELDS_PER_ROW,
-               append_seconds,
-               append_seconds > 0 ? (double) records / append_seconds : 0,
-               close_seconds,
-               append_seconds + close_seconds,
+               run->append_seconds,
+               run->append_seconds > 0 ? (double) run->records / run->append_seconds : 0,
+               run->close_seconds,
+               run->append_seconds + run->close_seconds,
                precompute_seconds,
                file_size_or_zero(journal_path_after_close()),
                journal_path_after_close(),
@@ -753,10 +851,46 @@ finish:
                data_hash_buckets_for_max_size(arg_max_size),
                arg_max_size,
                arg_final_state,
-               r < 0 ? "[\"failed\"]" : "[]");
+               status < 0 ? "[\"failed\"]" : "[]");
+}
 
-        if (file || cache)
-                (void) close_journal(cache, file);
+static int run_direct_mode(BenchRows *rows, double precompute_seconds) {
+        DirectRun run = {};
+        int r = setup_direct_run(&run);
+        if (r >= 0)
+                r = measure_direct_append(&run, rows);
+        {
+                int close_r = measure_direct_close(&run);
+                if (r >= 0 && close_r < 0)
+                        r = close_r;
+        }
+        print_direct_result(&run, precompute_seconds, r);
+        if (run.file || run.cache)
+                (void) close_journal(run.cache, run.file);
+        return r < 0 || run.records != rows->rows ? EXIT_FAILURE : EXIT_SUCCESS;
+}
+
+static int run_selected_surface(BenchRows *rows, double precompute_seconds) {
+        if (streq(arg_surface, "directory"))
+                return run_directory_mode(rows, precompute_seconds);
+        return run_direct_mode(rows, precompute_seconds);
+}
+
+int main(int argc, char **argv) {
+        BenchRows rows = {};
+        double precompute_seconds = 0;
+        int r = parse_args(argc, argv);
+        if (r < 0) {
+                usage(argv[0]);
+                return EXIT_FAILURE;
+        }
+
+        r = build_bench_rows(&rows, &precompute_seconds);
+        if (r < 0) {
+                DirectRun failed = {};
+                print_direct_result(&failed, precompute_seconds, r);
+        } else
+                r = run_selected_surface(&rows, precompute_seconds);
         free_rows(&rows);
-        return r < 0 || records != arg_rows ? EXIT_FAILURE : EXIT_SUCCESS;
+        return r < 0 ? EXIT_FAILURE : r;
 }

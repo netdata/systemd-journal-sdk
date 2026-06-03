@@ -48,37 +48,73 @@ static void record_marker(Counts *counts, uint64_t value) {
         counts->checksum ^= value;
 }
 
+static int parse_string_option(const char *arg, const char *value) {
+        if (strcmp(arg, "--mode") == 0) {
+                arg_mode = value;
+                return 1;
+        }
+        if (strcmp(arg, "--surface") == 0) {
+                arg_surface = value;
+                return 1;
+        }
+        if (strcmp(arg, "--direction") == 0) {
+                arg_direction = value;
+                return 1;
+        }
+        return 0;
+}
+
+static int parse_one_arg(int argc, char **argv, int *idx) {
+        if (strcmp(argv[*idx], "--input") == 0 && *idx + 1 < argc) {
+                arg_inputs[arg_inputs_count++] = argv[++(*idx)];
+                return 1;
+        }
+        if (*idx + 1 >= argc)
+                return 0;
+        const char *arg = argv[*idx];
+        const char *value = argv[++(*idx)];
+        return parse_string_option(arg, value);
+}
+
+static int valid_mode(void) {
+        return strcmp(arg_mode, "next") == 0 || strcmp(arg_mode, "data") == 0;
+}
+
+static int valid_surface(void) {
+        return strcmp(arg_surface, "file") == 0 ||
+               strcmp(arg_surface, "open-files") == 0 ||
+               strcmp(arg_surface, "directory") == 0;
+}
+
+static int valid_direction(void) {
+        return strcmp(arg_direction, "forward") == 0 || strcmp(arg_direction, "backward") == 0;
+}
+
+static int valid_input_count(void) {
+        if (arg_inputs_count == 0)
+                return 0;
+        if (strcmp(arg_surface, "file") == 0 && arg_inputs_count != 1)
+                return 0;
+        if (strcmp(arg_surface, "directory") == 0 && arg_inputs_count != 1)
+                return 0;
+        return 1;
+}
+
+static int validate_args(void) {
+        return valid_input_count() && valid_mode() && valid_surface() && valid_direction();
+}
+
 static int parse_args(int argc, char **argv) {
         arg_inputs = calloc((size_t) argc + 1, sizeof(char *));
         if (!arg_inputs)
                 return -ENOMEM;
 
         for (int i = 1; i < argc; i++) {
-                if (strcmp(argv[i], "--input") == 0 && i + 1 < argc)
-                        arg_inputs[arg_inputs_count++] = argv[++i];
-                else if (strcmp(argv[i], "--mode") == 0 && i + 1 < argc)
-                        arg_mode = argv[++i];
-                else if (strcmp(argv[i], "--surface") == 0 && i + 1 < argc)
-                        arg_surface = argv[++i];
-                else if (strcmp(argv[i], "--direction") == 0 && i + 1 < argc)
-                        arg_direction = argv[++i];
-                else
+                if (!parse_one_arg(argc, argv, &i))
                         return -EINVAL;
         }
 
-        if (arg_inputs_count == 0)
-                return -EINVAL;
-        if (strcmp(arg_mode, "next") != 0 && strcmp(arg_mode, "data") != 0)
-                return -EINVAL;
-        if (strcmp(arg_surface, "file") != 0 &&
-            strcmp(arg_surface, "open-files") != 0 &&
-            strcmp(arg_surface, "directory") != 0)
-                return -EINVAL;
-        if (strcmp(arg_direction, "forward") != 0 && strcmp(arg_direction, "backward") != 0)
-                return -EINVAL;
-        if (strcmp(arg_surface, "file") == 0 && arg_inputs_count != 1)
-                return -EINVAL;
-        if (strcmp(arg_surface, "directory") == 0 && arg_inputs_count != 1)
+        if (!validate_args())
                 return -EINVAL;
 
         return 0;

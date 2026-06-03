@@ -1914,6 +1914,70 @@ Batch 26:
     `tests/benchmarks/systemd`: 4, `tests/datasets`: 6,
     `tests/conformance`: 2, and `tests/fss`: 1.
 
+Batch 27:
+
+- Scope: C systemd helper harnesses under `tests/conformance/`,
+  `tests/fss/`, `tests/benchmarks/systemd/`, and
+  `tests/datasets/ingesters/systemd/`.
+- Changes:
+  - Refactored `tests/conformance/live/libsystemd_live_reader.c` by
+    extracting configuration parsing, journal setup, sequence parsing,
+    expected-sequence validation, polling-loop helpers, and cleanup helpers.
+  - Refactored `tests/conformance/binary/libsystemd_binary_field_reader.c`
+    by extracting argument parsing, journal open/configuration, match setup,
+    seek setup, read execution, and payload verification helpers.
+  - Refactored `tests/fss/fsprg_vector_generator.c` by extracting buffer
+    lifecycle, deterministic seed material generation, header rendering, epoch
+    state derivation, key rendering, and epoch rendering helpers.
+  - Refactored `tests/benchmarks/systemd/reader_core_bench.c` by extracting
+    option parsing and validation helpers for input count, mode, surface, and
+    direction.
+  - Refactored `tests/benchmarks/systemd/writer_core_bench.c` by extracting
+    option parsing, direct-writer lifecycle, directory-writer lifecycle,
+    append loops, measurement, and result rendering helpers. Preserved
+    `--live-publish-every-entries 0` as a valid value.
+  - Refactored `tests/datasets/ingesters/systemd/dataset_ingester.c` by
+    extracting argument parsing, FSS setup, value materialization,
+    accepted-record iovec construction, accepted dataset processing, rejection
+    input classification, rejection dataset processing, and result rendering
+    helpers.
+- Validation:
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for
+    `tests/conformance`, `tests/fss`, `tests/benchmarks/systemd`, and
+    `tests/datasets/ingesters/systemd`.
+  - `tests/fss/run_vectors.sh` passed and confirmed the regenerated FSS vector
+    fixture matches the committed fixture.
+  - `tests/benchmarks/systemd/build_reader_core_bench.sh` passed.
+  - `tests/benchmarks/systemd/build_writer_core_bench.sh` passed.
+  - `cc tests/conformance/live/libsystemd_live_reader.c -o
+    .local/sow-0084-bin/libsystemd_live_reader.check -lsystemd` passed.
+  - `gcc -o .local/sow-0084-bin/libsystemd_binary_field_reader.check
+    tests/conformance/binary/libsystemd_binary_field_reader.c
+    -Wl,--no-as-needed -lsystemd -lm -lpthread` passed.
+  - `python3 tests/datasets/ingesters/run_dataset_ingesters.py --language
+    systemd --both --final-state online --max-size-bytes 67108864` passed:
+    dataset validation passed, accepted records `349`, rejection records `9`,
+    and stock `journalctl --verify --file` passed for the generated systemd
+    accepted journal.
+  - Full deterministic ingester smoke with `PYTHONPATH=.local/python-deps
+    npm_config_cache=.local/npm-cache python3
+    tests/datasets/ingesters/run_dataset_ingesters.py --both --final-state
+    online --max-size-bytes 67108864` passed for systemd, Rust, Go, Node.js,
+    and Python. Each language wrote `349` accepted records, rejected `9`
+    rejection cases, and stock `journalctl --verify --file` passed for each
+    accepted journal.
+  - Systemd writer helper smoke passed:
+    `.local/systemd-v260.1-build/test-writer-core-bench --output
+    .local/sow-0084-bench/systemd-smoke.journal --rows 5 --format compact
+    --final-state online --max-size-bytes 8388608` wrote 5 records with empty
+    errors.
+  - Systemd reader helper smoke passed:
+    `.local/benchmarks/bin/systemd-reader-core-bench --input
+    .local/sow-0084-bench/systemd-smoke.journal --surface file --mode data
+    --direction forward` read 5 records and 160 fields with empty errors.
+  - Refreshed full `tests/` Lizard inventory now reports 10 critical findings:
+    `tests/systemd_matrix`: 6 and `tests/vm_matrix`: 4.
+
 Reviewer findings:
 
 - Pending. The current SOW is not ready for terminal reviewer review because
@@ -1983,7 +2047,9 @@ Follow-up mapping:
   - reconcile the user's observed 3056 UI count with the CLI-confirmed
     `master` count of 1502 quality issues after commit `99d2b08`;
   - group and triage the exported `master` cloud findings;
-  - fix or minimally suppress every actionable finding;
+  - continue complexity remediation for the remaining `tests/systemd_matrix`
+    and `tests/vm_matrix` scanner findings;
+  - fix or minimally suppress every actionable non-complexity finding;
   - run GitHub workflows after push and record CodeQL/Codacy results;
   - switch from reporting-only to enforcement after the actionable baseline is
     zero or after a later user decision.

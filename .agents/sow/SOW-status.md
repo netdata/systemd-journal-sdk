@@ -107,7 +107,14 @@ Last updated: 2026-06-03
   cases. The refreshed full `tests/` Lizard inventory now reports 23 critical
   findings: `tests/systemd_matrix`: 6, `tests/vm_matrix`: 4,
   `tests/benchmarks/systemd`: 4, `tests/datasets`: 6,
-  `tests/conformance`: 2, and `tests/fss`: 1.
+  `tests/conformance`: 2, and `tests/fss`: 1. Batch 27 made the C systemd
+  helper harnesses under `tests/conformance`, `tests/fss`,
+  `tests/benchmarks/systemd`, and `tests/datasets/ingesters/systemd` locally
+  Lizard-clean, passed FSS vector regeneration, systemd benchmark helper
+  builds and smokes, direct conformance helper builds, and deterministic
+  ingester validation across systemd, Rust, Go, Node.js, and Python. The
+  refreshed full `tests/` Lizard inventory now reports 10 critical findings:
+  `tests/systemd_matrix`: 6 and `tests/vm_matrix`: 4.
   Remaining work is to continue complexity remediation, record final scanner
   results, and complete whole-SOW review.
 
