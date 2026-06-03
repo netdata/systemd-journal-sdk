@@ -29,7 +29,7 @@ def run(cmd: list[str], *, cwd: Path = ROOT, env: dict[str, str] | None = None) 
         merged_env.update(env)
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
-    proc = subprocess.run(cmd, cwd=cwd, env=merged_env, text=True, capture_output=True)  # nosec B603 - harness uses shell=False command vectors.
+    proc = subprocess.run(cmd, cwd=cwd, env=merged_env, text=True, capture_output=True)  # nosec B603 - harness uses shell=False command vectors.  # nosemgrep
     return {
         "cmd": cmd,
         "cwd": str(cwd),

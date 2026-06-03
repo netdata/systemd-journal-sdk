@@ -88,7 +88,7 @@ def start_holder(name: str, tools: dict[str, str], path: Path, ready: Path, entr
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
     return subprocess.Popen(  # nosec B603 - harness uses shell=False command vectors.
-        cmd,
+        cmd,  # nosemgrep
         cwd=str(REPO_ROOT),
         text=True,
         stdout=subprocess.PIPE,

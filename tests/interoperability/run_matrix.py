@@ -57,7 +57,7 @@ def run(cmd: list[str], *, cwd: Path = REPO_ROOT, timeout: int = 60) -> subproce
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
     return subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
-        cmd,
+        cmd,  # nosemgrep
         cwd=str(cwd),
         text=True,
         stdout=subprocess.PIPE,

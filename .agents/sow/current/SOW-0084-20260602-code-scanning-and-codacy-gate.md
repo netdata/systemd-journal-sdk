@@ -646,6 +646,10 @@ Tests or equivalent validation:
   `.agents/sow/audit.sh`, and a focused `rg` check showing the vague host
   identity sentence is gone and the explicit `/etc/machine-id` and
   `/var/lib/dbus/machine-id` bullets remain.
+- Local follow-up Python Semgrep subprocess cleanup validation passed a focused
+  scan of the 20 Codacy-reported command-argument lines showing same-line
+  `# nosemgrep` coverage, line-length scan, `python3 -m py_compile` for every
+  touched harness file, and `git diff --check`.
 
 Real-use evidence:
 
@@ -981,6 +985,12 @@ Real-use evidence:
   analyzed `484bcfe`: the root instruction now names `/etc/machine-id` and
   `/var/lib/dbus/machine-id` directly instead of saying "host identity files
   used by systemd."
+- Codacy cloud export after `398e34e` reported 838 quality issues on `master`.
+  The Rust unsafe, Bandit `B603`, and Bandit `B404` groups are gone. The 20
+  remaining Python Semgrep subprocess rows are on command argument lines such
+  as `cmd,` and `actual,`, so the local follow-up cleanup adds same-line
+  `# nosemgrep` suppressions to those exact argument sites while preserving the
+  existing harness-only rationale comments.
 
 Reviewer findings:
 

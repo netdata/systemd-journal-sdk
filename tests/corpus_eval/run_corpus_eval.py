@@ -341,7 +341,7 @@ def run_json_driver(
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
     result = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
-        actual,
+        actual,  # nosemgrep
         cwd=str(ROOT),
         env=env,
         stdout=subprocess.PIPE,
@@ -618,7 +618,7 @@ def verify_generated(
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
     result = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
-        cmd,
+        cmd,  # nosemgrep
         cwd=str(ROOT),
         env=env,
         stdout=subprocess.PIPE,

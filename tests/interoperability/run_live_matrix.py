@@ -393,7 +393,7 @@ def run_one_live(
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
     writer_proc = subprocess.Popen(  # nosec B603 - harness uses shell=False command vectors.
-        cmd,
+        cmd,  # nosemgrep
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -652,7 +652,7 @@ def run_one_live(
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
     vp = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
-        vcmd,
+        vcmd,  # nosemgrep
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

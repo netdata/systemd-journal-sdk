@@ -122,7 +122,7 @@ def run(
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
     result = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
-        cmd,
+        cmd,  # nosemgrep
         cwd=cwd,
         env=env,
         input=input_bytes,
@@ -735,7 +735,12 @@ def run_json_digest(driver: str, exe: Path, path: Path) -> tuple[dict[str, Any] 
 def digest_export_command(driver: str, cmd: list[str]) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
-    proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)  # nosec B603 - harness uses shell=False command vectors.
+    proc = subprocess.Popen(  # nosec B603 - harness uses shell=False command vectors.
+        cmd,  # nosemgrep
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
     assert proc.stdout is not None
     started = time.perf_counter()
     try:

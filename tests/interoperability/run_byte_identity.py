@@ -81,7 +81,7 @@ def run(cmd: list[str]) -> dict:
         # nosemgrep
         # subprocess is required by this harness; commands are shell=False vectors.
         proc = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
-            cmd,
+            cmd,  # nosemgrep
             cwd=ROOT,
             text=True,
             capture_output=True,
