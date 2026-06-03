@@ -95,24 +95,10 @@ impl Chain {
             return;
         }
 
-        const USEC_PER_SEC: u64 = std::time::Duration::from_secs(1).as_micros() as u64;
-        let start = start.0 as u64 * USEC_PER_SEC;
-        let end = end.0 as u64 * USEC_PER_SEC;
-
-        let pos = self
-            .files
-            .partition_point(|f| match f.status() {
-                Status::Active => false,
-                Status::Archived { head_realtime, .. } => *head_realtime < start,
-                Status::Disposed { .. } => true,
-            })
-            .saturating_sub(1);
-
-        let mut prev_head_realtime = match self.files.get(pos).map(|f| f.status()) {
-            Some(Status::Archived { head_realtime, .. }) => Some(*head_realtime),
-            _ => None,
-        };
-
+        let start = seconds_to_microseconds(start);
+        let end = seconds_to_microseconds(end);
+        let pos = self.first_range_candidate_position(start);
+        let mut prev_head_realtime = self.archived_head_at(pos);
         let mut iter = self.files.iter().skip(pos).peekable();
 
         while let Some(file) = iter.next() {
@@ -122,66 +108,68 @@ impl Chain {
                         break;
                     }
 
-                    // Peek at the next file to determine tail_realtime
-                    let tail_realtime = if let Some(next_file) = iter.peek() {
-                        match next_file.status() {
-                            Status::Active => {
-                                // We don't know the tail_realtime of the active file
-                                u64::MAX
-                            }
-                            Status::Archived {
-                                head_realtime: tail_realtime,
-                                ..
-                            } => *tail_realtime,
-                            Status::Disposed { .. } => {
-                                // This violates chain ordering invariant (disposed should be at front)
-                                // Cannot determine where current archived file ends, so treat as unbounded
-                                // to avoid excluding valid data from the current file
-                                error!(
-                                    "Disposed file found after archived file, violating chain ordering: {:?}",
-                                    next_file.path()
-                                );
-                                u64::MAX
-                            }
-                        }
-                    } else {
-                        // This is the last file and it's archived
-                        u64::MAX
-                    };
-
-                    // Check if [head_realtime, tail_realtime) overlaps with [start, end)
-                    // Overlap occurs when: head_realtime < end && tail_realtime > start
-                    if *head_realtime < end && tail_realtime > start {
+                    let tail_realtime = next_file_tail_realtime(iter.peek().copied());
+                    if range_overlaps(*head_realtime, tail_realtime, start, end) {
                         files.extend(std::iter::once(file.clone()));
                     }
-
-                    // Remember this head_realtime for potential active file
                     prev_head_realtime = Some(*head_realtime);
                 }
                 Status::Active => {
-                    // For active files:
-                    // - tail_realtime is assumed to be u64::MAX (still being written)
-                    // - head_realtime is either the previous archived file's head_realtime or u64::MIN
-
                     let head_realtime = prev_head_realtime.unwrap_or(u64::MIN);
-                    let tail_realtime = u64::MAX;
-
-                    // Check overlap: active_head < end && active_tail > start
-                    if head_realtime < end && tail_realtime > start {
+                    if range_overlaps(head_realtime, u64::MAX, start, end) {
                         files.extend(std::iter::once(file.clone()));
                     }
-
-                    // There should only be one active file at the end
                     break;
                 }
                 Status::Disposed { .. } => {
-                    // This might happen if the partition point moved
-                    // us in a disposed file position.
                     continue;
                 }
             }
         }
     }
+
+    fn first_range_candidate_position(&self, start: u64) -> usize {
+        self.files
+            .partition_point(|f| match f.status() {
+                Status::Active => false,
+                Status::Archived { head_realtime, .. } => *head_realtime < start,
+                Status::Disposed { .. } => true,
+            })
+            .saturating_sub(1)
+    }
+
+    fn archived_head_at(&self, pos: usize) -> Option<u64> {
+        match self.files.get(pos).map(|f| f.status()) {
+            Some(Status::Archived { head_realtime, .. }) => Some(*head_realtime),
+            _ => None,
+        }
+    }
+}
+
+fn seconds_to_microseconds(seconds: Seconds) -> u64 {
+    const USEC_PER_SEC: u64 = std::time::Duration::from_secs(1).as_micros() as u64;
+    seconds.0 as u64 * USEC_PER_SEC
+}
+
+fn next_file_tail_realtime(next_file: Option<&File>) -> u64 {
+    let Some(next_file) = next_file else {
+        return u64::MAX;
+    };
+    match next_file.status() {
+        Status::Archived { head_realtime, .. } => *head_realtime,
+        Status::Active => u64::MAX,
+        Status::Disposed { .. } => {
+            error!(
+                "Disposed file found after archived file, violating chain ordering: {:?}",
+                next_file.path()
+            );
+            u64::MAX
+        }
+    }
+}
+
+fn range_overlaps(head_realtime: u64, tail_realtime: u64, start: u64, end: u64) -> bool {
+    head_realtime < end && tail_realtime > start
 }
 
 #[derive(Default, Debug)]

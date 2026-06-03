@@ -87,47 +87,44 @@ impl Status {
     /// Parse the journal file status from the end of the path, returning the status and the remaining path
     pub(super) fn parse(path: &str) -> Option<(Self, &str)> {
         if let Some(stem) = path.strip_suffix(".journal") {
-            // Check if it's archived (has @ suffix) or active
-            if let Some((prefix, suffix)) = stem.rsplit_once('@') {
-                // Parse archived format: @seqnum_id-head_seqnum-head_realtime
-                let mut parts = suffix.split('-');
-
-                let seqnum_id = parts.next()?;
-                let head_seqnum = parts.next()?;
-                let head_realtime = parts.next()?;
-
-                if parts.next().is_some() {
-                    return None; // Too many parts
-                }
-
-                let seqnum_id = Uuid::try_parse(seqnum_id).ok()?;
-                let head_seqnum = u64::from_str_radix(head_seqnum, 16).ok()?;
-                let head_realtime = u64::from_str_radix(head_realtime, 16).ok()?;
-
-                Some((
-                    Status::Archived {
-                        seqnum_id,
-                        head_seqnum,
-                        head_realtime,
-                    },
-                    prefix,
-                ))
-            } else {
-                // Active journal
-                Some((Status::Active, stem))
-            }
-        } else if let Some(stem) = path.strip_suffix(".journal~") {
-            // Disposed format: @timestamp-number.journal~
-            let (prefix, suffix) = stem.rsplit_once('@')?;
-            let (timestamp, number) = suffix.rsplit_once('-')?;
-
-            let timestamp = u64::from_str_radix(timestamp, 16).ok()?;
-            let number = u64::from_str_radix(number, 16).ok()?;
-
-            Some((Status::Disposed { timestamp, number }, prefix))
-        } else {
-            None
+            return Self::parse_journal_stem(stem);
         }
+        let stem = path.strip_suffix(".journal~")?;
+        Self::parse_disposed_stem(stem)
+    }
+
+    fn parse_journal_stem(stem: &str) -> Option<(Self, &str)> {
+        if let Some((prefix, suffix)) = stem.rsplit_once('@') {
+            return Self::parse_archived_suffix(prefix, suffix);
+        }
+        Some((Status::Active, stem))
+    }
+
+    fn parse_archived_suffix<'a>(prefix: &'a str, suffix: &str) -> Option<(Self, &'a str)> {
+        let mut parts = suffix.split('-');
+        let seqnum_id = Uuid::try_parse(parts.next()?).ok()?;
+        let head_seqnum = u64::from_str_radix(parts.next()?, 16).ok()?;
+        let head_realtime = u64::from_str_radix(parts.next()?, 16).ok()?;
+        if parts.next().is_some() {
+            return None;
+        }
+
+        Some((
+            Status::Archived {
+                seqnum_id,
+                head_seqnum,
+                head_realtime,
+            },
+            prefix,
+        ))
+    }
+
+    fn parse_disposed_stem(stem: &str) -> Option<(Self, &str)> {
+        let (prefix, suffix) = stem.rsplit_once('@')?;
+        let (timestamp, number) = suffix.rsplit_once('-')?;
+        let timestamp = u64::from_str_radix(timestamp, 16).ok()?;
+        let number = u64::from_str_radix(number, 16).ok()?;
+        Some((Status::Disposed { timestamp, number }, prefix))
     }
 }
 

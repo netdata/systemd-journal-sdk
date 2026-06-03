@@ -1292,6 +1292,23 @@ Complexity remediation evidence:
     Go, Rust, Node.js, and Python verifiers: 9 positive fixture classes, 12
     negative corruption classes, and 0 failures.
   - `git diff --check` passed.
+- Batch 8, legacy Rust `jf` and journal registry runtime internals:
+  - Ported the validated cursor, offset-array partitioning, and DATA
+    decompression refactor shape from `journal-core` to the legacy
+    `rust/src/crates/jf/journal_file` compatibility copy.
+  - Refactored legacy `jf` writer ENTRY_ARRAY append bookkeeping into
+    initial-array, tail-offset, tail-entry-count, append-existing-tail, and
+    append-new-tail helpers without changing array growth policy or header tail
+    metadata publication.
+  - Refactored `journal-registry` status parsing, time-range file selection,
+    and filesystem event processing into smaller helpers without changing
+    active/archived/disposed ordering, active-file open-ended range behavior,
+    or log-and-continue event error handling.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no runtime findings for
+    the touched `jf` and `journal-registry` files. The remaining touched-file
+    row is the pre-existing legacy `test_write_and_read_journal_entries` test.
+  - `cargo test -p journal-registry -p journal_file --lib` passed: 13
+    `journal-registry` tests and 16 `journal_file` tests.
 
 Reviewer findings:
 

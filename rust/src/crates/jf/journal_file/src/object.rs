@@ -848,6 +848,70 @@ fn read_limited_to_end_with_cap<R: std::io::Read>(
     }
 }
 
+fn clear_decompression_error<T>(buf: &mut Vec<u8>) -> Result<T> {
+    *buf = Vec::new();
+    Err(JournalError::DecompressorError)
+}
+
+fn clear_compression_error<T>(buf: &mut Vec<u8>, err: JournalError) -> Result<T> {
+    *buf = Vec::new();
+    Err(err)
+}
+
+fn lz4_uncompressed_size(payload: &[u8]) -> Result<usize> {
+    if payload.len() < 8 {
+        return Err(JournalError::DecompressorError);
+    }
+    let size_bytes: [u8; 8] = payload[..8]
+        .try_into()
+        .map_err(|_| JournalError::DecompressorError)?;
+    let uncompressed_size = usize::try_from(u64::from_le_bytes(size_bytes))
+        .map_err(|_| JournalError::DecompressorError)?;
+    if uncompressed_size > MAX_UNCOMPRESSED_DATA_OBJECT_SIZE {
+        return Err(JournalError::DecompressorError);
+    }
+    Ok(uncompressed_size)
+}
+
+fn prepare_lz4_output_buffer(buf: &mut Vec<u8>, uncompressed_size: usize) -> Result<()> {
+    buf.clear();
+    if uncompressed_size > buf.capacity() && buf.try_reserve_exact(uncompressed_size).is_err() {
+        return Err(JournalError::DecompressorError);
+    }
+    buf.resize(uncompressed_size, 0);
+    Ok(())
+}
+
+fn decompress_zstd_payload(payload: &[u8], buf: &mut Vec<u8>) -> Result<usize> {
+    use ruzstd::decoding::StreamingDecoder;
+
+    let decoder = StreamingDecoder::new(payload).map_err(|_| JournalError::DecompressorError)?;
+    read_limited_to_end(decoder, buf)
+}
+
+fn decompress_lz4_payload(payload: &[u8], buf: &mut Vec<u8>) -> Result<usize> {
+    let uncompressed_size = match lz4_uncompressed_size(payload) {
+        Ok(size) => size,
+        Err(_) => return clear_decompression_error(buf),
+    };
+    if prepare_lz4_output_buffer(buf, uncompressed_size).is_err() {
+        return clear_decompression_error(buf);
+    }
+
+    let compressed_data = &payload[8..];
+    match lz4_flex::block::decompress_into(compressed_data, buf) {
+        Ok(len) if len == uncompressed_size => Ok(len),
+        Ok(_) | Err(_) => clear_decompression_error(buf),
+    }
+}
+
+fn decompress_xz_payload(payload: &[u8], buf: &mut Vec<u8>) -> Result<usize> {
+    use lzma_rust2::XzReader;
+
+    let decoder = XzReader::new(payload, false);
+    read_limited_to_end(decoder, buf)
+}
+
 impl<B: ByteSlice> std::fmt::Debug for DataObject<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DataObject")
@@ -943,72 +1007,13 @@ impl<B: ByteSlice> DataObject<B> {
         debug_assert!(self.is_compressed());
 
         if self.zstd_compressed() {
-            use ruzstd::decoding::StreamingDecoder;
-
-            let payload = self.payload_bytes();
-            let decoder = match StreamingDecoder::new(payload) {
-                Ok(decoder) => decoder,
-                Err(_) => {
-                    *buf = Vec::new();
-                    return Err(JournalError::DecompressorError);
-                }
-            };
-
-            read_limited_to_end(decoder, buf)
+            decompress_zstd_payload(self.payload_bytes(), buf)
         } else if self.lz4_compressed() {
-            let payload = self.payload_bytes();
-
-            if payload.len() < 8 {
-                *buf = Vec::new();
-                return Err(JournalError::DecompressorError);
-            }
-
-            let size_bytes = match payload[..8].try_into() {
-                Ok(size_bytes) => size_bytes,
-                Err(_) => {
-                    *buf = Vec::new();
-                    return Err(JournalError::DecompressorError);
-                }
-            };
-            let uncompressed_size = match usize::try_from(u64::from_le_bytes(size_bytes)) {
-                Ok(uncompressed_size) => uncompressed_size,
-                Err(_) => {
-                    *buf = Vec::new();
-                    return Err(JournalError::DecompressorError);
-                }
-            };
-            if uncompressed_size > MAX_UNCOMPRESSED_DATA_OBJECT_SIZE {
-                *buf = Vec::new();
-                return Err(JournalError::DecompressorError);
-            }
-            let compressed_data = &payload[8..];
-
-            buf.clear();
-            if uncompressed_size > buf.capacity() {
-                if buf.try_reserve_exact(uncompressed_size).is_err() {
-                    *buf = Vec::new();
-                    return Err(JournalError::DecompressorError);
-                }
-            }
-            buf.resize(uncompressed_size, 0);
-
-            match lz4_flex::block::decompress_into(compressed_data, buf) {
-                Ok(len) if len == uncompressed_size => Ok(len),
-                Ok(_) | Err(_) => {
-                    *buf = Vec::new();
-                    Err(JournalError::DecompressorError)
-                }
-            }
+            decompress_lz4_payload(self.payload_bytes(), buf)
         } else if self.xz_compressed() {
-            use lzma_rust2::XzReader;
-
-            let payload = self.payload_bytes();
-            let decoder = XzReader::new(payload, false);
-
-            read_limited_to_end(decoder, buf)
+            decompress_xz_payload(self.payload_bytes(), buf)
         } else {
-            *buf = Vec::new();
-            Err(JournalError::UnknownCompressionMethod)
+            clear_compression_error(buf, JournalError::UnknownCompressionMethod)
         }
     }
 }
@@ -1016,20 +1021,7 @@ impl<B: ByteSlice> DataObject<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{self, Read};
-
-    struct FixedSizeReader {
-        remaining: usize,
-    }
-
-    impl Read for FixedSizeReader {
-        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            let len = self.remaining.min(buf.len());
-            buf[..len].fill(b'x');
-            self.remaining -= len;
-            Ok(len)
-        }
-    }
+    use std::io::Read;
 
     fn data_object_bytes(payload: &[u8], flags: u8) -> Vec<u8> {
         let header = DataObjectHeader {
@@ -1129,7 +1121,7 @@ mod tests {
         let mut buf = b"stale".to_vec();
 
         assert!(matches!(
-            read_limited_to_end_with_cap(FixedSizeReader { remaining: 5 }, &mut buf, 4),
+            read_limited_to_end_with_cap(std::io::repeat(b'x').take(5), &mut buf, 4),
             Err(JournalError::DecompressorError)
         ));
         assert!(buf.is_empty());

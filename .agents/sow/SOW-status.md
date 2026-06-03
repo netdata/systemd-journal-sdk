@@ -27,9 +27,11 @@ Last updated: 2026-06-03
   access runtime locally Lizard-clean and passed journal-core plus writer
   interoperability validation. Batch 7 made the remaining Rust core/log-writer
   runtime files locally Lizard-clean and passed journal-core, journal-log-writer,
-  journal/adapter, writer-reader, directory, and verifier validation. Remaining
-  work is to continue complexity remediation, record final scanner results, and
-  complete whole-SOW review.
+  journal/adapter, writer-reader, directory, and verifier validation. Batch 8
+  made the legacy Rust `jf` compatibility copy and `journal-registry` runtime
+  touched files locally Lizard-clean, with affected crate tests passing.
+  Remaining work is to continue complexity remediation, record final scanner
+  results, and complete whole-SOW review.
 
 ## Pending
 

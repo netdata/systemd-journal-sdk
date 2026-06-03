@@ -16,6 +16,7 @@ use notify::{
     event::{EventKind, ModifyKind, RenameMode},
 };
 use parking_lot::RwLock;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{error, info, trace, warn};
 
@@ -227,56 +228,16 @@ impl Registry {
         match event.kind {
             EventKind::Create(_) => {
                 for path in &event.paths {
-                    trace!("adding file to repository: {:?}", path);
-
-                    if let Some(file) = File::from_path(path) {
-                        if let Err(e) = inner.repository.insert(file) {
-                            error!("failed to insert file: {}", e);
-                        }
-                    } else {
-                        warn!("path is not a valid journal file: {:?}", path);
-                    }
+                    Self::insert_event_path(&mut inner, path);
                 }
             }
             EventKind::Remove(_) => {
                 for path in &event.paths {
-                    trace!("removing file from repository: {:?}", path);
-
-                    if let Some(file) = File::from_path(path) {
-                        if let Err(e) = inner.repository.remove(&file) {
-                            error!("failed to remove file: {}", e);
-                        }
-                    } else {
-                        warn!("path is not a valid journal file: {:?}", path);
-                    }
+                    Self::remove_event_path(&mut inner, path);
                 }
             }
             EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => {
-                // Handle renames: remove old, add new
-                if event.paths.len() >= 2 {
-                    let old_path = &event.paths[0];
-                    let new_path = &event.paths[1];
-                    info!("rename event: {:?} -> {:?}", old_path, new_path);
-
-                    if let Some(old_file) = File::from_path(old_path) {
-                        info!("removing old file: {:?}", old_file.path());
-                        if let Err(e) = inner.repository.remove(&old_file) {
-                            error!("failed to remove old file: {}", e);
-                        }
-                    }
-
-                    if let Some(new_file) = File::from_path(new_path) {
-                        info!("inserting new file: {:?}", new_file.path());
-                        if let Err(e) = inner.repository.insert(new_file) {
-                            error!("failed to insert new file: {}", e);
-                        }
-                    }
-                } else {
-                    error!(
-                        "rename event with unexpected path count: {:#?}",
-                        event.paths
-                    );
-                }
+                Self::process_rename_event(&mut inner, &event.paths);
             }
             EventKind::Modify(ModifyKind::Name(rename_mode)) => {
                 info!(
@@ -289,6 +250,58 @@ impl Registry {
             _ => {}
         }
         Ok(())
+    }
+
+    fn insert_event_path(inner: &mut RegistryInner, path: &Path) {
+        trace!("adding file to repository: {:?}", path);
+        let Some(file) = File::from_path(path) else {
+            warn!("path is not a valid journal file: {:?}", path);
+            return;
+        };
+        if let Err(e) = inner.repository.insert(file) {
+            error!("failed to insert file: {}", e);
+        }
+    }
+
+    fn remove_event_path(inner: &mut RegistryInner, path: &Path) {
+        trace!("removing file from repository: {:?}", path);
+        let Some(file) = File::from_path(path) else {
+            warn!("path is not a valid journal file: {:?}", path);
+            return;
+        };
+        if let Err(e) = inner.repository.remove(&file) {
+            error!("failed to remove file: {}", e);
+        }
+    }
+
+    fn process_rename_event(inner: &mut RegistryInner, paths: &[PathBuf]) {
+        let Some((old_path, new_path)) = paths.first().zip(paths.get(1)) else {
+            error!("rename event with unexpected path count: {:#?}", paths);
+            return;
+        };
+        info!("rename event: {:?} -> {:?}", old_path, new_path);
+        Self::remove_renamed_old_path(inner, old_path);
+        Self::insert_renamed_new_path(inner, new_path);
+    }
+
+    fn remove_renamed_old_path(inner: &mut RegistryInner, old_path: &Path) {
+        let Some(old_file) = File::from_path(old_path) else {
+            return;
+        };
+        info!("removing old file: {:?}", old_file.path());
+        if let Err(e) = inner.repository.remove(&old_file) {
+            error!("failed to remove old file: {}", e);
+        }
+    }
+
+    fn insert_renamed_new_path(inner: &mut RegistryInner, new_path: &Path) {
+        let Some(new_file) = File::from_path(new_path) else {
+            return;
+        };
+        info!("inserting new file: {:?}", new_file.path());
+        if let Err(e) = inner.repository.insert(new_file) {
+            error!("failed to insert new file: {}", e);
+        }
     }
 
     /// Find files overlapping with a time range
