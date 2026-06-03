@@ -445,7 +445,8 @@ Output/reference skills:
 - Before Netdata integration or stable release work advances, GitHub code scanning and Codacy analysis findings must be fixed or explicitly dispositioned under the active SOW policy. Raw SARIF, Codacy exports, and scanner logs must stay under `.local/`; durable artifacts may contain only sanitized aggregate summaries and evidence.
 - Current implementation routing: do implementation locally in this repository; do not run external implementer agents unless the user explicitly changes this decision.
 - Reviewer pool: `llm-netdata-cloud/minimax-m2.7-coder`, `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/qwen3.6-plus`, `llm-netdata-cloud/glm-5.1`, and `llm-netdata-cloud/mimo-v2.5-pro`.
-- Current review cadence: finish the complete active SOW locally first, including local validation and SOW evidence, then run the reviewer pool against the entire SOW and changed surface as one batch. Do not run reviewers after every small edit.
+- Current review cadence: finish the complete active SOW locally first, including local validation and SOW evidence.
+- After local validation, run the reviewer pool against the entire SOW and changed surface as one batch. Do not run reviewers after every small edit.
 - A phase cannot advance until the local implementation or explicitly approved implementer run has completed the active SOW and reviewer findings have been resolved or explicitly dispositioned in the SOW.
 - After each verified chunk, prefer committing the chunk before starting the next work chunk, using explicit path staging only.
 - If the user re-enables external implementers, record the routing decision in the active SOW before running them.

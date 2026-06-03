@@ -1078,6 +1078,17 @@ Real-use evidence:
   Agentlinter patterns are disabled.
 - Local workflow validation passed YAML parsing for
   `.github/workflows/codacy-sarif.yml` and `.github/workflows/codeql.yml`.
+- GitHub workflow runs for `c83e718` both completed successfully after the
+  Codacy SARIF workflow started using remote Cloud configuration: CodeQL run
+  `26858909104` and Codacy SARIF run `26858909102`.
+- Stabilized Codacy Cloud export after the tuned policy wrote 381 quality
+  issues and 0 security findings to `.local/codacy-cloud/`: 380 Lizard
+  critical complexity findings plus one `Agentlinter_clarity_compound-instruction`
+  row in `AGENTS.md`.
+- The remaining Agentlinter row was fixed locally by splitting the compound
+  review-cadence bullet in `AGENTS.md` into two explicit bullets. The expected
+  remaining Codacy Cloud baseline after the next analysis is 380 Lizard
+  critical complexity findings and 0 security findings.
 
 Reviewer findings:
 

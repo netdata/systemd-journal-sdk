@@ -11,8 +11,8 @@ Last updated: 2026-06-02
   CodeQL and Codacy SARIF reporting are active; the Codacy SARIF workflow now
   uses tuned Cloud configuration when `CODACY_API_TOKEN` is available. Security
   findings are cleared in the latest direct Codacy export; remaining work is
-  to finish the configured static-analysis baseline, record final scanner
-  results, and complete whole-SOW review.
+  to decide how to handle the 380 Lizard critical complexity findings, record
+  final scanner results, and complete whole-SOW review.
 
 ## Pending
 
