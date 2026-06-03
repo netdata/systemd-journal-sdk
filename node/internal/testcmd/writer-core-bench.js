@@ -31,7 +31,7 @@ function parseArgs(argv) {
     apiMode: 'raw-payload',
   };
   for (let i = 2; i < argv.length; i++) {
-    const arg = argv[i];
+    const arg = argv.at(i);
     i = parseWriterBenchArg(args, argv, i, arg);
   }
   return args;
@@ -102,7 +102,7 @@ function makeRows(rows) {
     Array.from({ length: 2048 }, (_, value) => Buffer.from(`medium-${offset.toString().padStart(2, '0')}-${value.toString().padStart(4, '0')}`))
   );
 
-  const all = new Array(rows);
+  const all = [];
   for (let row = 0; row < rows; row++) {
     const fields = fixed.slice();
     for (let offset = 0; offset < 12; offset++) {
@@ -123,10 +123,10 @@ function makeRows(rows) {
         Buffer.from(`high-${offset.toString().padStart(2, '0')}-${row.toString().padStart(6, '0')}`),
       ));
     }
-    all[row] = {
+    all.push({
       fields: fields.map((item) => item.field),
       payloads: fields.map((item) => item.payload),
-    };
+    });
   }
   return all;
 }

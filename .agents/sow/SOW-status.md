@@ -201,11 +201,18 @@ Last updated: 2026-06-03
   security findings. Batch 45 routed Node tests through the same filesystem
   boundary and removed remaining scanner-sensitive Node bracket access from
   runtime code and internal test drivers; Node syntax checks, full Node tests,
-  diff check, and SOW audit passed. Remaining work is to push Batch 45, verify
-  Codacy/GitHub code scanning has analyzed it, decide or disposition the
-  cross-language `0640` journal file permission finding, address residual
-  current-commit findings, record final scanner results, and complete
-  whole-SOW review.
+  diff check, and SOW audit passed. Batch 45 was pushed as `5533029`; CodeQL
+  and Codacy SARIF passed, GitHub current alerts dropped to 21, dynamic
+  filesystem-path alerts dropped to zero, object-injection alerts dropped to
+  5, and Codacy Cloud still showed 8 quality issues with 0 security findings.
+  Batch 46 fixed those 5 remaining Node object-injection current alerts by
+  removing the final scanner-sensitive bracket reads/writes in Node runtime,
+  internal benchmark, live-writer helper, and sealed-file test code; Node syntax
+  checks, targeted survivor search, full Node tests, diff check, and SOW audit
+  passed locally. Remaining work is to push Batch 46, verify Codacy/GitHub code
+  scanning has analyzed it, decide or disposition the cross-language `0640`
+  journal file permission finding, address residual current-commit findings,
+  record final scanner results, and complete whole-SOW review.
 
 ## Pending
 

@@ -2579,6 +2579,39 @@ Batch 45:
   - `git diff --check` passed.
   - `.agents/sow/audit.sh` passed.
 - Post-push scanner result:
+  - GitHub CodeQL workflow passed for Python, Go, JavaScript/TypeScript, and
+    Rust.
+  - GitHub Codacy SARIF workflow passed.
+  - GitHub code scanning showed 21 current alerts for `5533029`, down from 92
+    for `7237ab0`.
+  - GitHub dynamic filesystem-path alerts dropped from 48 to 0.
+  - GitHub object-injection alerts dropped from 28 to 5.
+  - Codacy Cloud export still showed 8 quality issues and 0 security findings;
+    all 8 were file-size findings.
+
+Batch 46:
+
+- Scope: the five remaining Node object-injection current alerts after
+  `5533029`.
+- Evidence:
+  - GitHub current alerts for `5533029` listed five
+    `ESLint8_security_detect-object-injection` findings:
+    `node/test/all.js:2925`, `node/internal/testcmd/writer-core-bench.js:34`,
+    `node/internal/testcmd/livewriter.js:30`, `node/src/lib/reader.js:386`,
+    and `node/internal/testcmd/writer-core-bench.js:126`.
+- Changes:
+  - Replaced the remaining scanner-sensitive bracket reads with `.at()`.
+  - Replaced sparse benchmark row assignment with `push()` and a normal array.
+  - Replaced the sealed-test byte mutation with Buffer `readUInt8()` /
+    `writeUInt8()`.
+- Validation:
+  - `node --check node/internal/testcmd/livewriter.js node/internal/testcmd/writer-core-bench.js node/src/lib/reader.js node/test/all.js`
+    passed.
+  - A targeted `rg` for the five survivor patterns returned no matches.
+  - `npm_config_cache=../.local/npm-cache npm test` in `node/` passed.
+  - `git diff --check` passed.
+  - `.agents/sow/audit.sh` passed.
+- Post-push scanner result:
   - Pending for this batch.
 
 Reviewer findings:

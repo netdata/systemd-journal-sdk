@@ -27,7 +27,7 @@ function parseArgs(argv) {
   };
 
   for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
+    const arg = argv.at(i);
     i = parseLiveWriterArg(args, argv, i, arg);
   }
 

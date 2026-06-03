@@ -383,7 +383,7 @@ export class FileReader {
   }
 
   _entryRealtimeAtIndex(index) {
-    const offset = this.entryOffsets[index];
+    const offset = this.entryOffsets.at(index);
     return readUint64LE(this.buffer, Number(offset) + OBJECT_HEADER_SIZE + 8);
   }
 

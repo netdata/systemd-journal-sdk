@@ -2922,7 +2922,7 @@ function tamperDataPayload(path, expectedPayload) {
   if (targetObjectOffset >= secondTagOffset) {
     throw new Error(`DATA object ${targetObjectOffset} is not covered by second TAG ${secondTagOffset}`);
   }
-  buf[targetPayloadOffset] ^= 0x01;
+  buf.writeUInt8(buf.readUInt8(targetPayloadOffset) ^ 0x01, targetPayloadOffset);
   safeWriteFileSync(path, buf);
 }
 
