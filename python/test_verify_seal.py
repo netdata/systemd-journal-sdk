@@ -1,4 +1,35 @@
-from test_support import *
+from test_support import (
+    COMPACT_DATA_OBJECT_HEADER_SIZE,
+    COMPATIBLE_SEALED,
+    COMPATIBLE_SEALED_CONTINUOUS,
+    DATA_OBJECT_HEADER_SIZE,
+    FileReader,
+    INCOMPATIBLE_COMPACT,
+    OBJECT_TYPE_DATA,
+    OBJECT_TYPE_TAG,
+    PYTHON_ROOT,
+    Path,
+    REPO_ROOT,
+    VALID_FSS_VERIFICATION_KEY,
+    Writer,
+    evolve,
+    gen_mk,
+    gen_state0,
+    get_epoch,
+    get_key,
+    json,
+    os,
+    parse_file_header,
+    run,
+    seek,
+    stat,
+    subprocess,
+    sys,
+    tempfile,
+    verify_journal_file_with_key_fails_if_available,
+    verify_journal_file_with_key_if_available,
+    zstd_available,
+)
 
 def test_fsprg_vectors():
     vectors_path = REPO_ROOT / 'tests/fss/fixtures/fsprg-vectors-v01.json'

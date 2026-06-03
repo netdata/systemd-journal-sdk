@@ -8,7 +8,6 @@ from . import writer_policy as _writer_policy
 from ._platform_io import (
     read_at as _read_fd_at,
     rename_requires_closed_file,
-    sync_parent_directory,
     write_all_at as _write_fd_at,
 )
 from .binary import (
@@ -16,7 +15,7 @@ from .binary import (
     align8, random_uuid, is_zero_uuid, buf_equal,
 )
 from .header import (
-    serialize_file_header, parse_file_header, parse_object_header, write_object_header,
+    serialize_file_header, parse_object_header, write_object_header,
     HEADER_SIZE, OBJECT_TYPE_DATA, OBJECT_TYPE_ENTRY,
     OBJECT_TYPE_DATA_HASH_TABLE, OBJECT_TYPE_FIELD_HASH_TABLE,
     OBJECT_TYPE_ENTRY_ARRAY, OBJECT_TYPE_FIELD,
@@ -35,7 +34,7 @@ from .header import (
 )
 from .hash import sip_hash_24, jenkins_hash_64
 from .compress import MAX_UNCOMPRESSED_SIZE, decompress_zst_sync, decompress_xz_sync, decompress_lz4_sync
-from .seal import SealState, TAG_LENGTH, OBJECT_TYPE_TAG, COMPATIBLE_SEALED, COMPATIBLE_SEALED_CONTINUOUS
+from .seal import SealState, COMPATIBLE_SEALED, COMPATIBLE_SEALED_CONTINUOUS
 from .writer_arena import _FileArena, _MappedArena
 from .writer_compression import (
     COMPRESSION_NONE, COMPRESSION_ZSTD, COMPRESSION_XZ, COMPRESSION_LZ4,
@@ -52,12 +51,8 @@ from .writer_options import (
     _current_time_ms, _dedupe_entry_items, _normalize_live_publish_every_entries,
     _uuid_option,
 )
-from .writer_file_mode import DEFAULT_JOURNAL_FILE_MODE, _normalize_file_mode
-from .writer_open import (
-    _append_header_missing_hash_tables, _compression_from_append_header,
-    _configure_opened_writer, _read_append_header, _read_object_size_from_fd,
-    _sync_parent_directory, _validate_append_header_flags,
-)
+from .writer_file_mode import _normalize_file_mode
+from .writer_open import _configure_opened_writer, _read_append_header, _sync_parent_directory
 from .writer_sealing import _WriterSealingMixin
 MIN_COMPRESS_THRESHOLD = _writer_compression.MIN_COMPRESS_THRESHOLD
 FIELD_NAME_POLICY_JOURNALD = _writer_policy.FIELD_NAME_POLICY_JOURNALD

@@ -1,7 +1,7 @@
 import * as support from '../support.js';
 
 export async function run() {
-  const { closeSync, mkdtempSync, rmSync, writeSync, createRequire, tmpdir, basename, dirname, join, relative, resolve, fileURLToPath, spawnSync, zstdCompressSync, createHash, assert, jenkinsHash64, sipHash24, uuidToString, DEFAULT_COMPRESS_THRESHOLD, FIELD_NAME_POLICY_JOURNAL_APP, FIELD_NAME_POLICY_RAW, MIN_COMPRESS_THRESHOLD, Writer, Log, FileReader, DirectoryReader, parseDataObject, parseEntryObject, exportEntry, jsonEntry, SdJournalOpen, SdJournalOpenFiles, SdJournalQueryUnique, SdJournalNext, SdJournalPrevious, SdJournalSeekRealtimeUsec, SdJournalSeekCursor, SdJournalGetEntry, SdJournalGetCursor, SdJournalTestCursor, SdJournalGetSeqnum, SdJournalGetMonotonicUsec, SdJournalRestartData, SdJournalEnumerateAvailableData, SdJournalGetData, SdJournalQueryUniqueState, SdJournalEnumerateAvailableUnique, SdJournalRestartFields, SdJournalEnumerateField, DATA_OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE, COMPACT_DATA_OBJECT_HEADER_SIZE, HEADER_SIZE, INCOMPATIBLE_COMPACT, INCOMPATIBLE_COMPRESSED_LZ4, INCOMPATIBLE_COMPRESSED_XZ, INCOMPATIBLE_KEYED_HASH, OBJECT_COMPRESSED_LZ4, OBJECT_COMPRESSED_XZ, OBJECT_COMPRESSED_ZSTD, OBJECT_TYPE_DATA, OBJECT_TYPE_ENTRY, OBJECT_TYPE_TAG, FILE_SIZE_INCREASE, JOURNAL_COMPACT_SIZE_MAX, STATE_ARCHIVED, DEFAULT_FIELD_HASH_BUCKETS, dataHashBucketsForMaxFileSize, parseFileHeader, parseObjectHeader, writeObjectHeader, compressLz4DataPayload, compressXzDataPayload, decompressXzDataPayload, decompressZstSync, fsprgGenMK, fsprgGenState0, fsprgEvolve, fsprgSeek, fsprgGetKey, fsprgGetEpoch, verifyFile, verifyFileWithKey, VerificationError, SealOptions, COMPATIBLE_SEALED, COMPATIBLE_SEALED_CONTINUOUS, WriterLock, UNKNOWN_PROCESS_START_TIME, lockOwnerIsActive, parseLinuxProcStatStartTime, readHostBootId, readHostBootIdText, safeExistsSync, safeMkdirSync, safeOpenSync, safeReadFileSync, safeReaddirSync, safeStatSync, safeSymlinkSync, safeWriteFileSync, here, packageRoot, repoRoot, validFSSVerificationKey, listJavaScriptFiles, run, journalFiles, disposedJournalFiles, clearKeyedHashFlag, writeHeaderSize, collectNullable, journalctlAvailable, verifyJournalFileIfAvailable, verifyJournalFileFailsIfAvailable, journalctlDirectoryRowsIfAvailable, verifyJournalFileWithKeyIfAvailable, verifyJournalFileWithKeyFailsIfAvailable, journalHasDataObjectFlag, makeHistoricalHeaderFixture } = support;
+  const { mkdtempSync, rmSync, tmpdir, join, relative, spawnSync, zstdCompressSync, assert, Writer, DATA_OBJECT_HEADER_SIZE, COMPACT_DATA_OBJECT_HEADER_SIZE, INCOMPATIBLE_COMPACT, OBJECT_TYPE_DATA, OBJECT_TYPE_TAG, parseObjectHeader, decompressZstSync, verifyFileWithKey, VerificationError, SealOptions, COMPATIBLE_SEALED, COMPATIBLE_SEALED_CONTINUOUS, safeExistsSync, safeMkdirSync, safeReadFileSync, safeStatSync, safeSymlinkSync, safeWriteFileSync, packageRoot, repoRoot, validFSSVerificationKey, run, verifyJournalFileWithKeyIfAvailable, verifyJournalFileWithKeyFailsIfAvailable } = support;
   // journalctl command verify tests
   {
     const validPath = join(repoRoot, 'fixtures/systemd/test-data/no-rtc/system.journal.zst');
@@ -204,44 +204,57 @@ export async function run() {
     const headerSize = Number(buf.readBigUInt64LE(88));
     const tailObjectOffset = Number(buf.readBigUInt64LE(136));
     const compact = (buf.readUInt32LE(12) & INCOMPATIBLE_COMPACT) !== 0;
+    const scan = scanTamperTarget(buf, headerSize, tailObjectOffset, compact, expectedPayload);
+
+    assert.notEqual(scan.targetPayloadOffset, 0, `payload not found: ${expectedPayload}`);
+    assert.notEqual(scan.secondTagOffset, 0, 'second TAG not found');
+    assert.ok(
+      scan.targetObjectOffset < scan.secondTagOffset,
+      `DATA object ${scan.targetObjectOffset} is not covered by second TAG ${scan.secondTagOffset}`,
+    );
+    buf.writeUInt8(buf.readUInt8(scan.targetPayloadOffset) ^ 0x01, scan.targetPayloadOffset);
+    safeWriteFileSync(path, buf);
+  }
+
+  function scanTamperTarget(buf, headerSize, tailObjectOffset, compact, expectedPayload) {
     let offset = headerSize;
-    let tagCount = 0;
-    let secondTagOffset = 0;
-    let targetPayloadOffset = 0;
-    let targetObjectOffset = 0;
-
+    const scan = {
+      secondTagOffset: 0,
+      tagCount: 0,
+      targetObjectOffset: 0,
+      targetPayloadOffset: 0,
+    };
     while (offset + 16 <= buf.length) {
-      const header = parseObjectHeader(buf, offset);
-      if (!header || header.size < 16n) throw new Error(`invalid object at ${offset}`);
-      const aligned = Number(((header.size + 7n) / 8n) * 8n);
-      if (offset + aligned > buf.length) throw new Error(`object at ${offset} exceeds file`);
-
-      if (header.type === OBJECT_TYPE_TAG) {
-        tagCount += 1;
-        if (tagCount === 2) secondTagOffset = offset;
-      } else if (header.type === OBJECT_TYPE_DATA) {
-        const payloadOffset = compact ? COMPACT_DATA_OBJECT_HEADER_SIZE : DATA_OBJECT_HEADER_SIZE;
-        if (header.size > BigInt(payloadOffset)) {
-          const start = offset + payloadOffset;
-          const end = offset + Number(header.size);
-          if (buf.slice(start, end).equals(expectedPayload)) {
-            targetPayloadOffset = start;
-            targetObjectOffset = offset;
-          }
-        }
-      }
-
+      const { aligned, header } = readTamperObjectHeader(buf, offset);
+      updateTamperScan(scan, buf, offset, header, compact, expectedPayload);
       if (offset === tailObjectOffset) break;
       offset += aligned;
     }
+    return scan;
+  }
 
-    if (targetPayloadOffset === 0) throw new Error(`payload not found: ${expectedPayload}`);
-    if (secondTagOffset === 0) throw new Error('second TAG not found');
-    if (targetObjectOffset >= secondTagOffset) {
-      throw new Error(`DATA object ${targetObjectOffset} is not covered by second TAG ${secondTagOffset}`);
+  function readTamperObjectHeader(buf, offset) {
+    const header = parseObjectHeader(buf, offset);
+    if (!header || header.size < 16n) throw new Error(`invalid object at ${offset}`);
+    const aligned = Number(((header.size + 7n) / 8n) * 8n);
+    if (offset + aligned > buf.length) throw new Error(`object at ${offset} exceeds file`);
+    return { aligned, header };
+  }
+
+  function updateTamperScan(scan, buf, offset, header, compact, expectedPayload) {
+    if (header.type === OBJECT_TYPE_TAG) {
+      scan.tagCount += 1;
+      if (scan.tagCount === 2) scan.secondTagOffset = offset;
+      return;
     }
-    buf.writeUInt8(buf.readUInt8(targetPayloadOffset) ^ 0x01, targetPayloadOffset);
-    safeWriteFileSync(path, buf);
+    if (header.type !== OBJECT_TYPE_DATA) return;
+    const payloadOffset = compact ? COMPACT_DATA_OBJECT_HEADER_SIZE : DATA_OBJECT_HEADER_SIZE;
+    if (header.size <= BigInt(payloadOffset)) return;
+    const start = offset + payloadOffset;
+    const end = offset + Number(header.size);
+    if (!buf.slice(start, end).equals(expectedPayload)) return;
+    scan.targetPayloadOffset = start;
+    scan.targetObjectOffset = offset;
   }
 
   // Sealed verification API validates HMACs and keeps structural verification.

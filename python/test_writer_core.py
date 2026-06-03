@@ -1,4 +1,37 @@
-from test_support import *
+from test_support import (
+    DATA_OBJECT_HEADER_SIZE,
+    FIELD_NAME_POLICY_JOURNAL_APP,
+    FILE_SIZE_INCREASE,
+    FileReader,
+    HEADER_SIZE,
+    INCOMPATIBLE_COMPACT,
+    INCOMPATIBLE_COMPRESSED_LZ4,
+    INCOMPATIBLE_KEYED_HASH,
+    OBJECT_COMPRESSED_LZ4,
+    OBJECT_COMPRESSED_XZ,
+    OBJECT_COMPRESSED_ZSTD,
+    OBJECT_TYPE_DATA,
+    PYTHON_ROOT,
+    Path,
+    STATE_ARCHIVED,
+    Writer,
+    export_entry,
+    importlib,
+    journal_has_data_object_flag,
+    journalctl_file_rows_if_available,
+    json_entry,
+    os,
+    parse_data_object,
+    parse_file_header,
+    parse_match_string,
+    reader_module,
+    sip_hash_24,
+    tempfile,
+    verify_journal_file_fails_if_available,
+    verify_journal_file_if_available,
+    write_object_header,
+    zstd_available,
+)
 
 def test_match_validation():
     for item in ('foobar', '', '=', '=xxxxx'):

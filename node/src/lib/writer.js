@@ -148,13 +148,38 @@ export class Writer {
   }
 
   _initialize(opts) {
+    const layout = this._initialLayout(opts);
+    const ids = this._initialIds(opts);
+    this.header = this._initialHeader(layout, ids);
+
+    this.bootId = Buffer.from(ids.bootId);
+    this.appendOffset = layout.appendOffset;
+    this.nextSeqnum = opts.headSeqnum ? BigInt(opts.headSeqnum) : 1n;
+
+    ftruncateSync(this.fd, Number(layout.fileSize));
+    this._writeHeader();
+
+    // systemd writes FIELD hash table first, then DATA hash table
+    const fhtBuf = Buffer.alloc(OBJECT_HEADER_SIZE);
+    writeObjectHeader(fhtBuf, 0, OBJECT_TYPE_FIELD_HASH_TABLE, 0, BigInt(OBJECT_HEADER_SIZE) + layout.fieldSize);
+    writeSync(this.fd, fhtBuf, 0, OBJECT_HEADER_SIZE, Number(layout.fieldObjOffset));
+
+    // Data hash table object header
+    const dhtBuf = Buffer.alloc(OBJECT_HEADER_SIZE);
+    writeObjectHeader(dhtBuf, 0, OBJECT_TYPE_DATA_HASH_TABLE, 0, BigInt(OBJECT_HEADER_SIZE) + layout.dataSize);
+    writeSync(this.fd, dhtBuf, 0, OBJECT_HEADER_SIZE, Number(layout.dataObjOffset));
+
+    if (this.seal) {
+      this._appendFirstTag();
+    }
+  }
+
+  _initialLayout(opts) {
     const maxFileSize = normalizeJournalMaxFileSize(opts.maxFileSize ?? opts.max_file_size, this.compact);
     const dataBuckets = opts.dataHashTableBuckets || opts.data_hash_table_buckets || dataHashBucketsForMaxFileSize(maxFileSize);
     const fieldBuckets = opts.fieldHashTableBuckets || opts.field_hash_table_buckets || DEFAULT_FIELD_HASH_BUCKETS;
-
     const dataSize = BigInt(dataBuckets * HASH_ITEM_SIZE);
     const fieldSize = BigInt(fieldBuckets * HASH_ITEM_SIZE);
-    // systemd creates FIELD_HASH_TABLE first, then DATA_HASH_TABLE
     const fieldObjOffset = BigInt(HEADER_SIZE);
     const fieldOffset = fieldObjOffset + BigInt(OBJECT_HEADER_SIZE);
     const dataObjOffset = align8(fieldOffset + fieldSize);
@@ -162,49 +187,62 @@ export class Writer {
     const appendOffset = align8(dataOffset + dataSize);
     const increment = BigInt(FILE_SIZE_INCREASE);
     const fileSize = ((appendOffset + increment - 1n) / increment) * increment;
+    this._validateInitialFileSize(fileSize);
+    return { appendOffset, dataObjOffset, dataOffset, dataSize, fieldObjOffset, fieldOffset, fieldSize, fileSize };
+  }
+
+  _validateInitialFileSize(fileSize) {
     if (this.compact && fileSize > JOURNAL_COMPACT_SIZE_MAX) {
       throw new Error('compact journal cannot exceed 4 GiB');
     }
     if (fileSize > BigInt(Number.MAX_SAFE_INTEGER)) {
       throw new Error('journal file offset exceeds JavaScript safe integer range');
     }
+  }
 
-    const fileId = uuidOption(opts.fileId ?? opts.file_id, 'file id') || randomUUID();
-    const machineId = uuidOption(opts.machineId ?? opts.machine_id, 'machine id') || randomUUID();
-    const bootId = uuidOption(opts.bootId ?? opts.boot_id, 'boot id') || randomUUID();
-    const seqnumId = uuidOption(opts.seqnumId ?? opts.seqnum_id, 'seqnum id') || randomUUID();
+  _initialIds(opts) {
+    return {
+      bootId: uuidOption(opts.bootId ?? opts.boot_id, 'boot id') || randomUUID(),
+      fileId: uuidOption(opts.fileId ?? opts.file_id, 'file id') || randomUUID(),
+      machineId: uuidOption(opts.machineId ?? opts.machine_id, 'machine id') || randomUUID(),
+      seqnumId: uuidOption(opts.seqnumId ?? opts.seqnum_id, 'seqnum id') || randomUUID(),
+    };
+  }
 
-    let incFlags = INCOMPATIBLE_KEYED_HASH;
-    if (this.compression === COMPRESSION_XZ) {
-      incFlags |= INCOMPATIBLE_COMPRESSED_XZ;
-    } else if (this.compression === COMPRESSION_ZSTD) {
-      incFlags |= INCOMPATIBLE_COMPRESSED_ZSTD;
-    } else if (this.compression === COMPRESSION_LZ4) {
-      incFlags |= INCOMPATIBLE_COMPRESSED_LZ4;
-    }
-    if (this.compact) incFlags |= INCOMPATIBLE_COMPACT;
+  _initialIncompatibleFlags() {
+    const compressionFlags = {
+      [COMPRESSION_LZ4]: INCOMPATIBLE_COMPRESSED_LZ4,
+      [COMPRESSION_XZ]: INCOMPATIBLE_COMPRESSED_XZ,
+      [COMPRESSION_ZSTD]: INCOMPATIBLE_COMPRESSED_ZSTD,
+    };
+    let flags = INCOMPATIBLE_KEYED_HASH | (compressionFlags[this.compression] || 0);
+    if (this.compact) flags |= INCOMPATIBLE_COMPACT;
+    return flags;
+  }
 
-    let compatibleFlags = COMPATIBLE_TAIL_ENTRY_BOOT_ID;
-    if (this.seal) {
-      compatibleFlags |= COMPATIBLE_SEALED | COMPATIBLE_SEALED_CONTINUOUS;
-    }
+  _initialCompatibleFlags() {
+    let flags = COMPATIBLE_TAIL_ENTRY_BOOT_ID;
+    if (this.seal) flags |= COMPATIBLE_SEALED | COMPATIBLE_SEALED_CONTINUOUS;
+    return flags;
+  }
 
-    this.header = {
+  _initialHeader(layout, ids) {
+    return {
       signature: 'LPKSHHRH',
-      compatible_flags: compatibleFlags,
-      incompatible_flags: incFlags,
+      compatible_flags: this._initialCompatibleFlags(),
+      incompatible_flags: this._initialIncompatibleFlags(),
       state: STATE_ONLINE,
-      file_id: fileId,
-      machine_id: machineId,
+      file_id: ids.fileId,
+      machine_id: ids.machineId,
       tail_entry_boot_id: Buffer.alloc(16),
-      seqnum_id: seqnumId,
+      seqnum_id: ids.seqnumId,
       header_size: BigInt(HEADER_SIZE),
-      arena_size: fileSize - BigInt(HEADER_SIZE),
-      data_hash_table_offset: dataOffset,
-      data_hash_table_size: dataSize,
-      field_hash_table_offset: fieldOffset,
-      field_hash_table_size: fieldSize,
-      tail_object_offset: dataObjOffset,
+      arena_size: layout.fileSize - BigInt(HEADER_SIZE),
+      data_hash_table_offset: layout.dataOffset,
+      data_hash_table_size: layout.dataSize,
+      field_hash_table_offset: layout.fieldOffset,
+      field_hash_table_size: layout.fieldSize,
+      tail_object_offset: layout.dataObjOffset,
       n_objects: 2n,
       n_entries: 0n,
       tail_entry_seqnum: 0n,
@@ -223,27 +261,6 @@ export class Writer {
       tail_entry_array_n_entries: 0,
       tail_entry_offset: 0n,
     };
-
-    this.bootId = Buffer.from(bootId);
-    this.appendOffset = appendOffset;
-    this.nextSeqnum = opts.headSeqnum ? BigInt(opts.headSeqnum) : 1n;
-
-    ftruncateSync(this.fd, Number(fileSize));
-    this._writeHeader();
-
-    // systemd writes FIELD hash table first, then DATA hash table
-    const fhtBuf = Buffer.alloc(OBJECT_HEADER_SIZE);
-    writeObjectHeader(fhtBuf, 0, OBJECT_TYPE_FIELD_HASH_TABLE, 0, BigInt(OBJECT_HEADER_SIZE) + fieldSize);
-    writeSync(this.fd, fhtBuf, 0, OBJECT_HEADER_SIZE, Number(fieldObjOffset));
-
-    // Data hash table object header
-    const dhtBuf = Buffer.alloc(OBJECT_HEADER_SIZE);
-    writeObjectHeader(dhtBuf, 0, OBJECT_TYPE_DATA_HASH_TABLE, 0, BigInt(OBJECT_HEADER_SIZE) + dataSize);
-    writeSync(this.fd, dhtBuf, 0, OBJECT_HEADER_SIZE, Number(dataObjOffset));
-
-    if (this.seal) {
-      this._appendFirstTag();
-    }
   }
 
   _writeHeader() {
@@ -296,6 +313,16 @@ export class Writer {
   _appendPayloads(payloads, opts = {}) {
     if (payloads.length === 0) throw new Error('empty entry');
 
+    const { bootId, monotonic, realtime } = this._entryMetadata(opts);
+    this._maybeAppendTag(realtime);
+    const { deduped, xorHash } = this._entryDataItems(payloads);
+    const entryOffset = this._writeEntryObject(deduped, xorHash, realtime, monotonic, bootId);
+    this._commitEntry(entryOffset, deduped, realtime, monotonic, bootId);
+
+    return { realtime, seqnum: this.nextSeqnum - 1n };
+  }
+
+  _entryMetadata(opts) {
     const now = Date.now();
     const hasRealtime = Object.prototype.hasOwnProperty.call(opts, 'realtimeUsec');
     const hasMonotonic = Object.prototype.hasOwnProperty.call(opts, 'monotonicUsec');
@@ -303,10 +330,10 @@ export class Writer {
     const monotonic = hasMonotonic ? BigInt(opts.monotonicUsec) : BigInt((now - this.started) * 1000);
     const explicitBootId = uuidOption(opts.bootId ?? opts.boot_id, 'entry boot id');
     const bootId = explicitBootId && !isZeroUUID(explicitBootId) ? explicitBootId : this.bootId;
+    return { bootId, monotonic, realtime };
+  }
 
-    this._maybeAppendTag(realtime);
-
-    // Write data objects, compute items and xor hash
+  _entryDataItems(payloads) {
     const items = [];
     let xorHash = 0n;
     for (const payload of payloads) {
@@ -314,61 +341,54 @@ export class Writer {
       items.push({ offset, hash });
       xorHash ^= jenkinsHash64(payload);
     }
+    return { deduped: dedupeEntryItems(items), xorHash };
+  }
 
-    // Sort by offset, dedupe
-    items.sort((a, b) => (a.offset < b.offset ? -1 : a.offset > b.offset ? 1 : 0));
-    const [firstItem, ...remainingItems] = items;
-    const deduped = [firstItem];
-    let lastOffset = firstItem.offset;
-    for (const item of remainingItems) {
-      if (item.offset !== lastOffset) {
-        deduped.push(item);
-        lastOffset = item.offset;
-      }
-    }
-
-    // Write entry object
+  _writeEntryObject(deduped, xorHash, realtime, monotonic, bootId) {
     const entryOffset = this.appendOffset;
     const entryItemSize = this._entryItemSize();
     const entrySize = BigInt(ENTRY_OBJECT_HEADER_SIZE + deduped.length * entryItemSize);
     this._ensureCompactObjectFits(entryOffset, entrySize);
-    const alignedSize = align8(entrySize);
-    const entryBuf = Buffer.alloc(Number(alignedSize));
+    const entryBuf = Buffer.alloc(Number(align8(entrySize)));
     writeObjectHeader(entryBuf, 0, OBJECT_TYPE_ENTRY, 0, entrySize);
     writeUint64LE(entryBuf, 16, this.nextSeqnum);
     writeUint64LE(entryBuf, 24, realtime);
     writeUint64LE(entryBuf, 32, monotonic);
     bootId.copy(entryBuf, 40);
     writeUint64LE(entryBuf, 56, xorHash);
+    this._writeEntryItems(entryBuf, deduped, entryItemSize);
+    writeSync(this.fd, entryBuf, 0, entryBuf.length, Number(entryOffset));
+    this._objectAdded(entryOffset, entrySize);
+    return entryOffset;
+  }
+
+  _writeEntryItems(entryBuf, deduped, entryItemSize) {
     let itemIndex = 0;
     for (const item of deduped) {
       const off = ENTRY_OBJECT_HEADER_SIZE + itemIndex * entryItemSize;
-      if (this.compact) {
-        this._ensureCompactOffset(item.offset);
-        entryBuf.writeUInt32LE(Number(item.offset), off);
-      } else {
-        writeUint64LE(entryBuf, off, item.offset);
-        writeUint64LE(entryBuf, off + 8, item.hash);
-      }
+      this._writeEntryItem(entryBuf, off, item);
       itemIndex += 1;
     }
-    writeSync(this.fd, entryBuf, 0, entryBuf.length, Number(this.appendOffset));
-    this._objectAdded(entryOffset, entrySize);
+  }
 
-    // Publish object reachability before entry count
+  _writeEntryItem(entryBuf, off, item) {
+    if (this.compact) {
+      this._ensureCompactOffset(item.offset);
+      entryBuf.writeUInt32LE(Number(item.offset), off);
+      return;
+    }
+    writeUint64LE(entryBuf, off, item.offset);
+    writeUint64LE(entryBuf, off + 8, item.hash);
+  }
+
+  _commitEntry(entryOffset, deduped, realtime, monotonic, bootId) {
     this._publishObjectMetadata();
     this._hmacPutObject(entryOffset, OBJECT_TYPE_ENTRY);
-
-    // Append to entry array and link data
     this._appendToEntryArray(entryOffset);
     for (const item of deduped) this._linkDataToEntry(item.offset, entryOffset);
-
-    // Commit entry metadata last (so live readers see complete rows)
     this._entryAdded(entryOffset, realtime, monotonic, bootId);
     this._publishEntryMetadata();
     this._publishAfterEntry();
-
-    return { realtime, seqnum: this.nextSeqnum - 1n };
   }
 
   // Append a string-valued map with sorted keys.
@@ -1053,6 +1073,20 @@ function openedCompressionFromHeader(header) {
   if ((header.incompatible_flags & INCOMPATIBLE_COMPRESSED_LZ4) !== 0) return COMPRESSION_LZ4;
   if ((header.incompatible_flags & INCOMPATIBLE_COMPRESSED_ZSTD) !== 0) return COMPRESSION_ZSTD;
   return COMPRESSION_NONE;
+}
+
+function dedupeEntryItems(items) {
+  items.sort((a, b) => (a.offset < b.offset ? -1 : a.offset > b.offset ? 1 : 0));
+  const [firstItem, ...remainingItems] = items;
+  const deduped = [firstItem];
+  let lastOffset = firstItem.offset;
+  for (const item of remainingItems) {
+    if (item.offset !== lastOffset) {
+      deduped.push(item);
+      lastOffset = item.offset;
+    }
+  }
+  return deduped;
 }
 
 function normalizeCompression(value) {

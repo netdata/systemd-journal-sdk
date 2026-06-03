@@ -1,4 +1,20 @@
-from test_support import *
+from test_support import (
+    DEFAULT_FIELD_HASH_BUCKETS,
+    DirectoryReader,
+    FIELD_NAME_POLICY_JOURNAL_APP,
+    FIELD_NAME_POLICY_RAW,
+    FileReader,
+    JOURNAL_COMPACT_SIZE_MAX,
+    Log,
+    Path,
+    Writer,
+    data_hash_buckets_for_max_file_size,
+    journalctl_directory_rows_if_available,
+    os,
+    tempfile,
+    time,
+    verify_journal_file_if_available,
+)
 
 def test_directory_writer_rotation():
     with tempfile.TemporaryDirectory() as td:

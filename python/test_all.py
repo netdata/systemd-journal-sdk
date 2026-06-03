@@ -1,12 +1,118 @@
 #!/usr/bin/env python3
 """Package-level tests for the pure-Python journal SDK slice."""
 
-from test_support import *
-from test_writer_core import *
-from test_directory_writer_basic import *
-from test_directory_writer_lifecycle import *
-from test_reader_facade import *
-from test_verify_seal import *
+from test_support import (
+    PYTHON_ROOT,
+    Path,
+    REPO_ROOT,
+    run,
+    sys,
+    test_windows_import_safety_without_fcntl,
+)
+from test_directory_writer_basic import (
+    test_directory_writer_append_raw_injects_metadata_and_filters_callers,
+    test_directory_writer_derived_duration_rotates_from_retention,
+    test_directory_writer_derived_rotation_compact_max_file_size_clamp,
+    test_directory_writer_derived_rotation_small_retention_clamps_to_minimum,
+    test_directory_writer_derived_size_rotates_from_retention,
+    test_directory_writer_derives_rotation_defaults_from_retention,
+    test_directory_writer_duration_rotation,
+    test_directory_writer_explicit_rotation_overrides_retention_defaults,
+    test_directory_writer_journal_app_policy_drops_invalid_fields,
+    test_directory_writer_journald_policy_preserves_protected_fields,
+    test_directory_writer_raw_policy_allows_structure_only_field_names,
+    test_directory_writer_rotation,
+    test_writer_append_raw_matches_structured_bytes,
+    test_writer_append_raw_policies_and_binary_payloads,
+    test_writer_field_name_policies,
+)
+from test_directory_writer_lifecycle import (
+    test_directory_writer_auto_identity_has_boot_id_before_lazy_open,
+    test_directory_writer_chain_reopen_continues_sequence,
+    test_directory_writer_chain_reopens_online_file,
+    test_directory_writer_close_cleans_up_after_archive_error,
+    test_directory_writer_custom_source_naming,
+    test_directory_writer_default_system_chain_naming,
+    test_directory_writer_different_boot_does_not_seed_monotonic_clamp_from_previous_tail,
+    test_directory_writer_discards_empty_online_file_and_continues_sequence,
+    test_directory_writer_eager_retention_runs_on_open_for_all_policies,
+    test_directory_writer_enforce_retention_deletes_files_by_age_without_append,
+    test_directory_writer_enforce_retention_protects_active_file_by_age,
+    test_directory_writer_explicit_policy_validation,
+    test_directory_writer_keeps_chain_named_active_during_retention,
+    test_directory_writer_lazy_retention_runs_on_first_open,
+    test_directory_writer_lifecycle_delete_and_artifact_size,
+    test_directory_writer_open_identity_lifecycle_source_timestamp,
+    test_directory_writer_rejects_empty_entry_without_creating_file,
+    test_directory_writer_replaces_outdated_strict_active,
+    test_directory_writer_replaces_unsupported_chain_active,
+    test_directory_writer_rotation_cleans_up_after_archive_error,
+    test_directory_writer_strict_archives_online_chain_active,
+    test_directory_writer_strict_close_protects_current_archive_from_byte_retention,
+    test_directory_writer_strict_reopen_continues_sequence,
+    test_directory_writer_strict_systemd_naming,
+    test_directory_writer_zero_rotation_limits_disable_rotation,
+)
+from test_reader_facade import (
+    test_directory_reader_query_unique_deduplicates_indexed_values_across_files,
+    test_facade_compressed_mixed_data_payloads_remain_valid_for_current_row,
+    test_facade_data_payloads_remain_valid_for_current_row,
+    test_facade_unique_binary_values,
+    test_file_reader_refresh_failure_preserves_current_mapping,
+    test_file_reader_refreshes_published_appends,
+    test_file_reader_rejects_entry_object_extending_past_buffer,
+    test_jf_facade_stateful_reader_operations,
+    test_python_resource_close_hardening,
+    test_python_resource_context_managers_and_bytes_facade_payloads,
+    test_query_unique_uses_field_index_without_entry_offsets,
+    test_reader_preserves_raw_byte_field_names,
+    test_reader_rejects_non_utf8_match_field_names,
+)
+from test_verify_seal import (
+    test_compact_sealed_writer_stock_verify,
+    test_conformance_manifest,
+    test_fsprg_vectors,
+    test_journalctl_verify,
+    test_verify_file_detects_corruption,
+    test_verify_file_passes_on_valid_fixture,
+    test_verify_file_with_key_sealed,
+    test_writer_file_permissions,
+    test_writer_file_permissions_override,
+    test_writer_sealed_basic,
+    test_writer_sealed_empty_file_stock_verify,
+    test_writer_sealed_entry_before_start_rejected,
+    test_writer_sealed_first_entry_future_epoch,
+    test_writer_sealed_interval_crossing,
+    test_writer_sealed_multi_interval_gap,
+    test_writer_sealed_tampered_data_fails,
+    test_writer_sealed_wrong_key_fails,
+    test_writer_unsealed_does_not_set_sealed_flags,
+)
+from test_writer_core import (
+    test_compact_writer_grows_arena_past_initial_allocation,
+    test_compact_writer_reader_and_stock_verify,
+    test_compression_threshold_systemd_policy,
+    test_journald_field_policy_validation,
+    test_live_delay_parser,
+    test_live_publish_every_entries_preserves_closed_file_bytes,
+    test_match_validation,
+    test_parse_file_header_historical_field_boundaries,
+    test_platform_directory_sync_skips_windows_directory_handles,
+    test_platform_positional_io_fallback_without_pread_pwrite,
+    test_reader_accepts_historical_unkeyed_lz4_header,
+    test_siphash_masks_long_message_length,
+    test_writer_archive_closes_before_rename_when_required,
+    test_writer_exclusive_lock,
+    test_writer_file_arena_fallback_without_mmap,
+    test_writer_head_seqnum_zero_defaults_to_one,
+    test_writer_initial_arena_covers_large_hash_tables,
+    test_writer_lock_portable_owner_without_proc,
+    test_writer_raw_backward_monotonic_pass_through_fails_verification,
+    test_writer_raw_explicit_zero_monotonic_pass_through,
+    test_writer_reader_and_binary_export,
+    test_xz_and_lz4_data_object_parse,
+    test_zstd_data_object_parse,
+)
 
 def main():
     run([sys.executable, '-m', 'compileall', str(PYTHON_ROOT)])

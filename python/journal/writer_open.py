@@ -1,12 +1,11 @@
 import os
 
 from ._platform_io import read_at as _read_fd_at, sync_parent_directory
-from .binary import align8, buf_equal, is_zero_uuid, read_uint64_le
-from .compress import MAX_UNCOMPRESSED_SIZE
+from .binary import align8, is_zero_uuid, read_uint64_le
 from .header import (
     HEADER_SIZE, INCOMPATIBLE_COMPACT, INCOMPATIBLE_COMPRESSED_LZ4,
     INCOMPATIBLE_COMPRESSED_XZ, INCOMPATIBLE_COMPRESSED_ZSTD,
-    INCOMPATIBLE_KEYED_HASH, STATE_ONLINE, parse_file_header, parse_object_header,
+    INCOMPATIBLE_KEYED_HASH, STATE_ONLINE, parse_file_header,
 )
 from .writer_compression import (
     COMPRESSION_LZ4, COMPRESSION_NONE, COMPRESSION_XZ, COMPRESSION_ZSTD,

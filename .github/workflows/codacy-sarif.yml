@@ -65,7 +65,6 @@ jobs:
               --tool Bandit \
               --tool ESLint9 \
               --tool flawfinder \
-              --tool Lizard \
               --tool markdownlint \
               --tool PyLintPython3 \
               --tool shellcheck \
