@@ -1635,6 +1635,45 @@ Complexity remediation evidence:
   - Refreshed local all-tracked-file Lizard inventory now reports 129 critical
     findings, down from 160 after Batch 17. Remaining critical findings are
     `rust: 53` and `tests: 76`.
+- Batch 19, Rust internal benchmark and corpus helper findings:
+  - Refactored `rust/src/internal/testcmd/livewriter/src/main.rs` into
+    compression parsing, directory configuration, directory append/progress,
+    file writer options, file append/progress, and crash/sleep helpers while
+    preserving livewriter CLI behavior, fixture payloads, ready-file
+    publication, sync cadence, and crash behavior.
+  - Refactored `rust/src/internal/testcmd/reader_core_bench/src/main.rs` into
+    read configuration, core offset/payload counters, SDK file/directory
+    step/mode helpers, facade open/seek/step/mode helpers, and dispatch
+    helpers while preserving benchmark modes and output keys.
+  - Refactored `rust/src/internal/testcmd/corpus_experiment/src/main.rs` into
+    raw-read access/hash setup, raw payload scan accounting, dump-spool entry
+    output, write-spool writer creation, spool append accounting, spool report,
+    and binary/text spool parser helpers while preserving raw-read schemas,
+    error classes, hash framing, spool format, and writer options.
+  - Refactored `rust/src/internal/testcmd/corpus_regenerate/src/main.rs` into
+    snapshot-reader opening, first-entry metadata helpers, append accounting,
+    and report construction while preserving regeneration output keys and
+    deterministic synthetic identities.
+  - Refactored `rust/src/internal/testcmd/dataset_ingester/src/main.rs` into
+    accepted/rejected record parsing, field materialization, append, expected
+    rejection, writer rejection, and stats helpers while preserving accepted
+    and rejected corpus semantics.
+  - Refactored `rust/src/internal/testcmd/writer_core_bench/src/main.rs` into
+    directory run configuration, directory append/report helpers, direct run
+    configuration, direct append/report helpers, and a report struct while
+    preserving benchmark modes, fixed identities, timer exclusions, mmap
+    reporting, and JSON result keys.
+  - `cargo fmt --manifest-path rust/Cargo.toml` ran for the affected helper
+    packages.
+  - `cargo check --manifest-path rust/Cargo.toml -p corpus_experiment -p
+    corpus_regenerate -p dataset_ingester -p writer_core_bench -p
+    reader_core_bench -p livewriter` passed.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for the
+    touched Rust internal helper files.
+  - Refreshed local all-tracked-file Lizard inventory now reports 114 critical
+    findings, down from 129 after Batch 18. Remaining critical findings are
+    `rust: 38` and `tests: 76`; Rust internal helper files have no remaining
+    critical Lizard findings.
 
 Reviewer findings:
 

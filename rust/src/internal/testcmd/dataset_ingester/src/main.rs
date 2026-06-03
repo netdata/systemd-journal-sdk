@@ -70,6 +70,13 @@ struct RejectedRecord {
     input: serde_json::Value,
 }
 
+struct IngestOptions<'a> {
+    output: &'a Path,
+    final_state: &'a str,
+    compact: bool,
+    max_size_bytes: Option<u64>,
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
     if !matches!(args.final_state.as_str(), "online" | "offline" | "archived") {
@@ -248,78 +255,42 @@ fn ingest_accepted(
     compact: bool,
     max_size_bytes: Option<u64>,
 ) -> Result<serde_json::Value> {
-    let (mut journal_file, mut writer) = create_writer(output, compact, max_size_bytes)?;
+    let options = IngestOptions {
+        output,
+        final_state,
+        compact,
+        max_size_bytes,
+    };
+    let (mut journal_file, mut writer) =
+        create_writer(options.output, options.compact, options.max_size_bytes)?;
     let reader = BufReader::new(File::open(dataset)?);
-    let mut records = 0usize;
-    let mut errors = Vec::new();
+    let mut stats = IngestStats::default();
     let mut head_realtime = 0;
 
     for (index, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
+        let Some(record) = parse_accepted_line(line?)? else {
             continue;
-        }
-        let record: AcceptedRecord = serde_json::from_str(&line)?;
-        if record.record_type != "accepted" {
-            continue;
-        }
-        let mut fields = Vec::with_capacity(record.fields.len());
-        let mut bad_record = false;
-        for field in &record.fields {
-            match materialize_value(&field.value) {
-                Ok(value) => {
-                    let mut payload = field.name.as_bytes().to_vec();
-                    payload.push(b'=');
-                    payload.extend_from_slice(&value);
-                    fields.push(payload);
-                }
-                Err(err) => {
-                    errors.push(format!("line {} {}: {err}", index + 1, record.entry_id));
-                    bad_record = true;
-                }
-            }
-        }
-        if bad_record {
-            continue;
-        }
-        let field_refs: Vec<&[u8]> = fields.iter().map(Vec::as_slice).collect();
-        let entry_boot_id = record.boot_id.as_deref().unwrap_or(BOOT_ID);
-        let original_boot_id = writer.boot_id();
-        if entry_boot_id != BOOT_ID {
-            return Err(anyhow!("dataset boot ID mismatch"));
-        }
-        if original_boot_id != uuid(BOOT_ID)? {
-            return Err(anyhow!("writer boot ID mismatch"));
-        }
-        if let Err(err) = writer.add_entry(
+        };
+        append_accepted_record(
+            index,
+            &record,
             &mut journal_file,
-            &field_refs,
-            record.realtime_usec,
-            record.monotonic_usec,
-        ) {
-            errors.push(format!(
-                "line {} {}: append failed: {err}",
-                index + 1,
-                record.entry_id
-            ));
-        } else {
-            if head_realtime == 0 {
-                head_realtime = record.realtime_usec;
-            }
-            records += 1;
-        }
+            &mut writer,
+            &mut stats,
+            &mut head_realtime,
+        )?;
     }
     finalize_journal_file(
         &mut journal_file,
-        output,
-        final_state,
+        options.output,
+        options.final_state,
         if head_realtime == 0 {
             DEFAULT_ARCHIVE_REALTIME
         } else {
             head_realtime
         },
     )?;
-    Ok(json!({ "records": records, "errors": errors }))
+    Ok(json!({ "records": stats.records, "errors": stats.errors }))
 }
 
 fn ingest_rejections(
@@ -329,73 +300,200 @@ fn ingest_rejections(
     compact: bool,
     max_size_bytes: Option<u64>,
 ) -> Result<serde_json::Value> {
+    let options = IngestOptions {
+        output,
+        final_state,
+        compact,
+        max_size_bytes,
+    };
     let reader = BufReader::new(File::open(dataset)?);
     let mut writer_state: Option<(JournalFile<MmapMut>, JournalWriter)> = None;
-    let mut records = 0usize;
-    let mut errors = Vec::new();
+    let mut stats = IngestStats::default();
 
     for (index, line) in reader.lines().enumerate() {
-        let line = line?;
-        if line.trim().is_empty() {
+        let Some(record) = parse_rejected_line(line?)? else {
             continue;
-        }
-        let record: RejectedRecord = serde_json::from_str(&line)?;
-        if record.record_type != "rejected" {
-            continue;
-        }
-        if let Some(got) = expected_rejection(&record.input) {
-            if got == record.expected_error {
-                records += 1;
-            } else {
-                errors.push(format!(
-                    "line {} {}: got {got}, expected {}",
-                    index + 1,
-                    record.case_id,
-                    record.expected_error
-                ));
-            }
-            continue;
-        }
-
-        if writer_state.is_none() {
-            writer_state = Some(create_writer(output, compact, max_size_bytes)?);
-        }
-        let value: ValueDescriptor = serde_json::from_value(record.input["value"].clone())?;
-        let mut payload = record.input["field_name"]
-            .as_str()
-            .unwrap()
-            .as_bytes()
-            .to_vec();
-        payload.push(b'=');
-        payload.extend_from_slice(&materialize_value(&value)?);
-        let (journal_file, writer) = writer_state.as_mut().unwrap();
-        match writer.add_entry(
-            journal_file,
-            &[payload.as_slice()],
-            1_700_000_000_000_000,
-            50_000_000,
-        ) {
-            Ok(()) => errors.push(format!(
-                "line {} {}: unexpectedly accepted",
-                index + 1,
-                record.case_id
-            )),
-            Err(_) if record.expected_error == "EINVAL" => records += 1,
-            Err(_) => errors.push(format!(
-                "line {} {}: rejected as EINVAL, expected {}",
-                index + 1,
-                record.case_id,
-                record.expected_error
-            )),
-        }
+        };
+        process_rejection_record(index, &record, &options, &mut writer_state, &mut stats)?;
     }
     if let Some((mut journal_file, _writer)) = writer_state {
         finalize_journal_file(
             &mut journal_file,
-            output,
-            final_state,
+            options.output,
+            options.final_state,
             DEFAULT_ARCHIVE_REALTIME,
         )?;
     }
-    Ok(json!({ "records": records, "errors": errors }))
+    Ok(json!({ "records": stats.records, "errors": stats.errors }))
+}
+
+#[derive(Default)]
+struct IngestStats {
+    records: usize,
+    errors: Vec<String>,
+}
+
+fn parse_accepted_line(line: String) -> Result<Option<AcceptedRecord>> {
+    if line.trim().is_empty() {
+        return Ok(None);
+    }
+    let record: AcceptedRecord = serde_json::from_str(&line)?;
+    Ok((record.record_type == "accepted").then_some(record))
+}
+
+fn parse_rejected_line(line: String) -> Result<Option<RejectedRecord>> {
+    if line.trim().is_empty() {
+        return Ok(None);
+    }
+    let record: RejectedRecord = serde_json::from_str(&line)?;
+    Ok((record.record_type == "rejected").then_some(record))
+}
+
+fn append_accepted_record(
+    index: usize,
+    record: &AcceptedRecord,
+    journal_file: &mut JournalFile<MmapMut>,
+    writer: &mut JournalWriter,
+    stats: &mut IngestStats,
+    head_realtime: &mut u64,
+) -> Result<()> {
+    let Some(fields) = build_payloads(record, index, &mut stats.errors)? else {
+        return Ok(());
+    };
+    validate_accepted_boot(record, writer)?;
+    let field_refs: Vec<&[u8]> = fields.iter().map(Vec::as_slice).collect();
+    match writer.add_entry(
+        journal_file,
+        &field_refs,
+        record.realtime_usec,
+        record.monotonic_usec,
+    ) {
+        Ok(()) => {
+            if *head_realtime == 0 {
+                *head_realtime = record.realtime_usec;
+            }
+            stats.records += 1;
+        }
+        Err(err) => stats.errors.push(format!(
+            "line {} {}: append failed: {err}",
+            index + 1,
+            record.entry_id
+        )),
+    }
+    Ok(())
+}
+
+fn build_payloads(
+    record: &AcceptedRecord,
+    index: usize,
+    errors: &mut Vec<String>,
+) -> Result<Option<Vec<Vec<u8>>>> {
+    let mut fields = Vec::with_capacity(record.fields.len());
+    for field in &record.fields {
+        match accepted_payload(field) {
+            Ok(payload) => fields.push(payload),
+            Err(err) => {
+                errors.push(format!("line {} {}: {err}", index + 1, record.entry_id));
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some(fields))
+}
+
+fn accepted_payload(field: &FieldRecord) -> Result<Vec<u8>> {
+    let value = materialize_value(&field.value)?;
+    let mut payload = field.name.as_bytes().to_vec();
+    payload.push(b'=');
+    payload.extend_from_slice(&value);
+    Ok(payload)
+}
+
+fn validate_accepted_boot(record: &AcceptedRecord, writer: &JournalWriter) -> Result<()> {
+    let entry_boot_id = record.boot_id.as_deref().unwrap_or(BOOT_ID);
+    if entry_boot_id != BOOT_ID {
+        return Err(anyhow!("dataset boot ID mismatch"));
+    }
+    if writer.boot_id() != uuid(BOOT_ID)? {
+        return Err(anyhow!("writer boot ID mismatch"));
+    }
+    Ok(())
+}
+
+fn process_rejection_record(
+    index: usize,
+    record: &RejectedRecord,
+    options: &IngestOptions<'_>,
+    writer_state: &mut Option<(JournalFile<MmapMut>, JournalWriter)>,
+    stats: &mut IngestStats,
+) -> Result<()> {
+    if let Some(got) = expected_rejection(&record.input) {
+        record_expected_rejection(index, record, got, stats);
+        return Ok(());
+    }
+    let payload = rejected_payload(record)?;
+    if writer_state.is_none() {
+        *writer_state = Some(create_writer(
+            options.output,
+            options.compact,
+            options.max_size_bytes,
+        )?);
+    }
+    let (journal_file, writer) = writer_state.as_mut().expect("writer state initialized");
+    record_writer_rejection(index, record, journal_file, writer, &payload, stats);
+    Ok(())
+}
+
+fn record_expected_rejection(
+    index: usize,
+    record: &RejectedRecord,
+    got: &str,
+    stats: &mut IngestStats,
+) {
+    if got == record.expected_error {
+        stats.records += 1;
+    } else {
+        stats.errors.push(format!(
+            "line {} {}: got {got}, expected {}",
+            index + 1,
+            record.case_id,
+            record.expected_error
+        ));
+    }
+}
+
+fn rejected_payload(record: &RejectedRecord) -> Result<Vec<u8>> {
+    let value: ValueDescriptor = serde_json::from_value(record.input["value"].clone())?;
+    let mut payload = record.input["field_name"]
+        .as_str()
+        .ok_or_else(|| anyhow!("rejection record missing field_name"))?
+        .as_bytes()
+        .to_vec();
+    payload.push(b'=');
+    payload.extend_from_slice(&materialize_value(&value)?);
+    Ok(payload)
+}
+
+fn record_writer_rejection(
+    index: usize,
+    record: &RejectedRecord,
+    journal_file: &mut JournalFile<MmapMut>,
+    writer: &mut JournalWriter,
+    payload: &[u8],
+    stats: &mut IngestStats,
+) {
+    match writer.add_entry(journal_file, &[payload], 1_700_000_000_000_000, 50_000_000) {
+        Ok(()) => stats.errors.push(format!(
+            "line {} {}: unexpectedly accepted",
+            index + 1,
+            record.case_id
+        )),
+        Err(_) if record.expected_error == "EINVAL" => stats.records += 1,
+        Err(_) => stats.errors.push(format!(
+            "line {} {}: rejected as EINVAL, expected {}",
+            index + 1,
+            record.case_id,
+            record.expected_error
+        )),
+    }
 }

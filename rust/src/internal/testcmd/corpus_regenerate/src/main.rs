@@ -81,6 +81,14 @@ fn parse_compression(value: &str) -> Result<Compression> {
     }
 }
 
+fn parse_format(value: &str) -> Result<bool> {
+    match value {
+        "regular" => Ok(false),
+        "compact" => Ok(true),
+        other => Err(anyhow!("invalid --format: {other}")),
+    }
+}
+
 fn create_writer(
     output: &Path,
     boot_id: uuid::Uuid,
@@ -160,43 +168,23 @@ fn finalize(
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let compact = match args.format.as_str() {
-        "regular" => false,
-        "compact" => true,
-        other => return Err(anyhow!("invalid --format: {other}")),
-    };
+    let report = run(args)?;
+    println!("{}", serde_json::to_string(&report)?);
+    Ok(())
+}
+
+fn run(args: Args) -> Result<serde_json::Value> {
+    let compact = parse_format(&args.format)?;
     let compression = parse_compression(&args.compression)?;
     let input_metadata = fs::metadata(&args.input)?;
     let output = absolute_path(&args.output)?;
-    match fs::remove_file(&output) {
-        Ok(()) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(err.into()),
-    }
+    remove_existing_file(&output)?;
 
-    let reader_options = ReaderOptions {
-        window_size: args.window_size,
-        bounds: ReaderBounds::Snapshot,
-        mmap_strategy: ExperimentalMmapStrategy::Windowed,
-    };
-    let mut reader = FileReader::open_with_options(&args.input, reader_options)
-        .with_context(|| format!("failed to open {}", args.input.display()))?;
-    reader.seek_head();
-    let has_first = reader.next()?;
-    let first = if has_first {
-        Some(reader.get_entry()?)
-    } else {
-        None
-    };
-    let boot_id = first
-        .as_ref()
-        .map(|entry| uuid_from_bytes(entry.boot_id))
-        .unwrap_or(uuid(FALLBACK_BOOT_ID)?);
+    let mut reader = open_snapshot_reader(&args.input, args.window_size)?;
+    let first = read_first_entry(&mut reader)?;
+    let boot_id = first_boot_id(&first)?;
     let head_seqnum = first.as_ref().map(|entry| entry.seqnum).unwrap_or(1);
-    let fss_start = first
-        .as_ref()
-        .map(|entry| systemd_fss_start_usec(entry.realtime, args.fss_interval_usec))
-        .unwrap_or(args.fss_interval_usec);
+    let fss_start = first_fss_start(&first, args.fss_interval_usec);
 
     let (mut journal_file, mut writer) = create_writer(
         &output,
@@ -213,85 +201,186 @@ fn main() -> Result<()> {
 
     let write_options = EntryWriteOptions::default().field_name_policy(FieldNamePolicy::Raw);
     let append_start = Instant::now();
-    let mut records = 0u64;
-    let mut payloads = 0u64;
-    let mut payload_bytes = 0u64;
-    if let Some(entry) = first {
-        let fields: Vec<EntryField<'_>> = entry
-            .payloads
-            .iter()
-            .map(|payload| EntryField::raw(payload.as_slice()))
-            .collect();
-        writer.add_entry_fields_with_options(
-            &mut journal_file,
-            fields.iter().copied(),
-            entry.realtime,
-            entry.monotonic,
-            write_options
-                .seqnum(entry.seqnum)
-                .boot_id(uuid_from_bytes(entry.boot_id)),
-        )?;
-        records += 1;
-        payloads += entry.payloads.len() as u64;
-        payload_bytes += entry
-            .payloads
-            .iter()
-            .map(|payload| payload.len() as u64)
-            .sum::<u64>();
-    }
-    while reader.next()? {
-        let entry = reader.get_entry()?;
-        let fields: Vec<EntryField<'_>> = entry
-            .payloads
-            .iter()
-            .map(|payload| EntryField::raw(payload.as_slice()))
-            .collect();
-        writer.add_entry_fields_with_options(
-            &mut journal_file,
-            fields.iter().copied(),
-            entry.realtime,
-            entry.monotonic,
-            write_options
-                .seqnum(entry.seqnum)
-                .boot_id(uuid_from_bytes(entry.boot_id)),
-        )?;
-        records += 1;
-        payloads += entry.payloads.len() as u64;
-        payload_bytes += entry
-            .payloads
-            .iter()
-            .map(|payload| payload.len() as u64)
-            .sum::<u64>();
-    }
+    let stats = append_entries(
+        &mut reader,
+        first,
+        &mut journal_file,
+        &mut writer,
+        write_options,
+    )?;
     let append_seconds = append_start.elapsed().as_secs_f64();
+
     let close_start = Instant::now();
     let final_path = finalize(&mut journal_file, &output, &args.final_state)?;
     let close_seconds = close_start.elapsed().as_secs_f64();
     let output_size = fs::metadata(&final_path)
         .map(|metadata| metadata.len())
         .unwrap_or(0);
-    println!(
-        "{}",
-        serde_json::to_string(&json!({
-            "driver": "rust",
-            "records": records,
-            "payloads": payloads,
-            "payload_bytes": payload_bytes,
-            "input_bytes": input_metadata.len(),
-            "generated_bytes": output_size,
-            "generated_path": final_path,
-            "format": args.format,
-            "compression": args.compression,
-            "fss": args.fss,
-            "fss_start_usec": if args.fss { Some(fss_start) } else { None },
-            "fss_interval_usec": if args.fss { Some(args.fss_interval_usec) } else { None },
-            "final_state": args.final_state,
-            "append_seconds": append_seconds,
-            "close_seconds": close_seconds,
-            "total_writer_seconds": append_seconds + close_seconds,
-            "live_publish_every_entries": args.live_publish_every_entries,
-            "errors": [],
-        }))?
-    );
+    Ok(regenerate_report(RegenerateReport {
+        args: &args,
+        stats,
+        input_bytes: input_metadata.len(),
+        output_size,
+        final_path,
+        fss_start,
+        append_seconds,
+        close_seconds,
+    }))
+}
+
+fn open_snapshot_reader(input: &Path, window_size: u64) -> Result<FileReader> {
+    let reader_options = ReaderOptions {
+        window_size,
+        bounds: ReaderBounds::Snapshot,
+        mmap_strategy: ExperimentalMmapStrategy::Windowed,
+    };
+    let mut reader = FileReader::open_with_options(input, reader_options)
+        .with_context(|| format!("failed to open {}", input.display()))?;
+    reader.seek_head();
+    Ok(reader)
+}
+
+struct RegenerateReport<'a> {
+    args: &'a Args,
+    stats: AppendStats,
+    input_bytes: u64,
+    output_size: u64,
+    final_path: PathBuf,
+    fss_start: u64,
+    append_seconds: f64,
+    close_seconds: f64,
+}
+
+fn regenerate_report(report: RegenerateReport<'_>) -> serde_json::Value {
+    json!({
+        "driver": "rust",
+        "records": report.stats.records,
+        "payloads": report.stats.payloads,
+        "payload_bytes": report.stats.payload_bytes,
+        "input_bytes": report.input_bytes,
+        "generated_bytes": report.output_size,
+        "generated_path": report.final_path,
+        "format": report.args.format,
+        "compression": report.args.compression,
+        "fss": report.args.fss,
+        "fss_start_usec": report.args.fss.then_some(report.fss_start),
+        "fss_interval_usec": report.args.fss.then_some(report.args.fss_interval_usec),
+        "final_state": report.args.final_state,
+        "append_seconds": report.append_seconds,
+        "close_seconds": report.close_seconds,
+        "total_writer_seconds": report.append_seconds + report.close_seconds,
+        "live_publish_every_entries": report.args.live_publish_every_entries,
+        "errors": [],
+    })
+}
+
+fn remove_existing_file(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn read_first_entry(reader: &mut FileReader) -> Result<Option<journal::Entry>> {
+    if reader.next()? {
+        Ok(Some(reader.get_entry()?))
+    } else {
+        Ok(None)
+    }
+}
+
+fn first_boot_id(first: &Option<journal::Entry>) -> Result<uuid::Uuid> {
+    first
+        .as_ref()
+        .map(|entry| uuid_from_bytes(entry.boot_id))
+        .map(Ok)
+        .unwrap_or_else(|| uuid(FALLBACK_BOOT_ID))
+}
+
+fn first_fss_start(first: &Option<journal::Entry>, interval_usec: u64) -> u64 {
+    first
+        .as_ref()
+        .map(|entry| systemd_fss_start_usec(entry.realtime, interval_usec))
+        .unwrap_or(interval_usec)
+}
+
+#[derive(Default)]
+struct AppendStats {
+    records: u64,
+    payloads: u64,
+    payload_bytes: u64,
+}
+
+fn append_entries(
+    reader: &mut FileReader,
+    first: Option<journal::Entry>,
+    journal_file: &mut JournalFile<MmapMut>,
+    writer: &mut JournalWriter,
+    write_options: EntryWriteOptions,
+) -> Result<AppendStats> {
+    let mut records = 0u64;
+    let mut payloads = 0u64;
+    let mut payload_bytes = 0u64;
+    if let Some(entry) = first {
+        append_entry(
+            journal_file,
+            writer,
+            &entry,
+            write_options,
+            &mut records,
+            &mut payloads,
+            &mut payload_bytes,
+        )?;
+    }
+    while reader.next()? {
+        let entry = reader.get_entry()?;
+        append_entry(
+            journal_file,
+            writer,
+            &entry,
+            write_options,
+            &mut records,
+            &mut payloads,
+            &mut payload_bytes,
+        )?;
+    }
+    Ok(AppendStats {
+        records,
+        payloads,
+        payload_bytes,
+    })
+}
+
+fn append_entry(
+    journal_file: &mut JournalFile<MmapMut>,
+    writer: &mut JournalWriter,
+    entry: &journal::Entry,
+    write_options: EntryWriteOptions,
+    records: &mut u64,
+    payloads: &mut u64,
+    payload_bytes: &mut u64,
+) -> Result<()> {
+    let fields: Vec<EntryField<'_>> = entry
+        .payloads
+        .iter()
+        .map(|payload| EntryField::raw(payload.as_slice()))
+        .collect();
+    writer.add_entry_fields_with_options(
+        journal_file,
+        fields.iter().copied(),
+        entry.realtime,
+        entry.monotonic,
+        write_options
+            .seqnum(entry.seqnum)
+            .boot_id(uuid_from_bytes(entry.boot_id)),
+    )?;
+    *records += 1;
+    *payloads += entry.payloads.len() as u64;
+    *payload_bytes += entry
+        .payloads
+        .iter()
+        .map(|payload| payload.len() as u64)
+        .sum::<u64>();
     Ok(())
 }

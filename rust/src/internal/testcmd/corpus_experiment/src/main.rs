@@ -149,6 +149,13 @@ enum RawHashMode {
     Sha256,
 }
 
+#[derive(Clone, Copy)]
+struct RawReadSettings {
+    hash_mode: RawHashMode,
+    binary_stats: bool,
+    separator_stats: bool,
+}
+
 impl RawHashMode {
     fn as_str(self) -> &'static str {
         match self {
@@ -175,76 +182,154 @@ fn raw_read_one(
     separator_stats: bool,
 ) -> Value {
     let started = Instant::now();
-    let mmap_strategy = match access {
-        "mmap" | "windowed" => ExperimentalMmapStrategy::Windowed,
-        "whole-file" => ExperimentalMmapStrategy::WholeFile,
-        other => return error_row(path, "invalid_access", &format!("invalid access {other}")),
+    let settings = RawReadSettings {
+        hash_mode,
+        binary_stats,
+        separator_stats,
     };
-    let options = ReaderOptions {
-        window_size,
-        bounds: ReaderBounds::Snapshot,
-        mmap_strategy,
-    };
-    let mut reader = match FileReader::open_with_options(path, options) {
+    let mut reader = match open_raw_reader(path, access, window_size) {
         Ok(reader) => reader,
         Err(err) => return error_row(path, "open", &err.to_string()),
     };
-    reader.seek_head();
-    let mut hash = matches!(hash_mode, RawHashMode::Sha256).then(Sha256::new);
-    if let Some(hash) = &mut hash {
-        hash.update(RAW_READER_MAGIC);
-    }
+    let mut hash = raw_hash(settings.hash_mode);
     let mut counts = RawCounts::default();
-    loop {
-        match reader.next() {
-            Ok(true) => {}
-            Ok(false) => break,
-            Err(err) => return error_row(path, "step", &err.to_string()),
-        }
-        if let Some(hash) = &mut hash {
-            hash.update(b"E");
-            hash.update(counts.entries.to_be_bytes());
-        }
-        let visit = reader.visit_entry_payloads(|payload| {
-            if let Some(hash) = &mut hash {
-                hash.update(b"P");
-                hash.update((payload.len() as u64).to_be_bytes());
-                hash.update(payload);
-            }
-            counts.payloads += 1;
-            counts.payload_bytes += payload.len() as u64;
-            counts.largest_payload_bytes = counts.largest_payload_bytes.max(payload.len() as u64);
-            if separator_stats && payload_name(payload).is_none() {
-                counts.payloads_without_separator += 1;
-            }
-            if binary_stats && payload_has_binary(payload) {
-                counts.binary_payloads += 1;
-            }
-            Ok::<(), SdkError>(())
-        });
-        if let Err(err) = visit {
-            return error_row(path, "payload", &err.to_string());
-        }
-        if let Some(hash) = &mut hash {
-            hash.update(b"e");
-        }
+    if let Err(err) = scan_raw_reader(&mut reader, settings, &mut hash, &mut counts) {
+        return error_row(path, err.class, &err.message);
+    }
+    raw_ok_row(
+        path,
+        settings,
+        counts,
+        hash,
+        started.elapsed().as_secs_f64(),
+    )
+}
+
+fn open_raw_reader(path: &Path, access: &str, window_size: u64) -> Result<FileReader> {
+    let options = ReaderOptions {
+        window_size,
+        bounds: ReaderBounds::Snapshot,
+        mmap_strategy: parse_access_strategy(access)?,
+    };
+    let mut reader = FileReader::open_with_options(path, options)?;
+    reader.seek_head();
+    Ok(reader)
+}
+
+fn parse_access_strategy(access: &str) -> Result<ExperimentalMmapStrategy> {
+    match access {
+        "mmap" | "windowed" => Ok(ExperimentalMmapStrategy::Windowed),
+        "whole-file" => Ok(ExperimentalMmapStrategy::WholeFile),
+        other => Err(anyhow!("invalid access {other}")),
+    }
+}
+
+fn raw_hash(hash_mode: RawHashMode) -> Option<Sha256> {
+    let mut hash = matches!(hash_mode, RawHashMode::Sha256).then(Sha256::new)?;
+    hash.update(RAW_READER_MAGIC);
+    Some(hash)
+}
+
+struct RawScanError {
+    class: &'static str,
+    message: String,
+}
+
+fn scan_raw_reader(
+    reader: &mut FileReader,
+    settings: RawReadSettings,
+    hash: &mut Option<Sha256>,
+    counts: &mut RawCounts,
+) -> std::result::Result<(), RawScanError> {
+    while raw_next(reader)? {
+        hash_entry_start(hash, counts.entries);
+        visit_raw_payloads(reader, settings, hash, counts)?;
+        hash_entry_end(hash);
         counts.entries += 1;
     }
-    let elapsed = started.elapsed().as_secs_f64();
+    Ok(())
+}
+
+fn raw_next(reader: &mut FileReader) -> std::result::Result<bool, RawScanError> {
+    reader.next().map_err(|err| RawScanError {
+        class: "step",
+        message: err.to_string(),
+    })
+}
+
+fn visit_raw_payloads(
+    reader: &mut FileReader,
+    settings: RawReadSettings,
+    hash: &mut Option<Sha256>,
+    counts: &mut RawCounts,
+) -> std::result::Result<(), RawScanError> {
+    reader
+        .visit_entry_payloads(|payload| {
+            record_raw_payload(payload, settings, hash, counts);
+            Ok::<(), SdkError>(())
+        })
+        .map_err(|err| RawScanError {
+            class: "payload",
+            message: err.to_string(),
+        })
+}
+
+fn hash_entry_start(hash: &mut Option<Sha256>, entry_index: u64) {
+    if let Some(hash) = hash {
+        hash.update(b"E");
+        hash.update(entry_index.to_be_bytes());
+    }
+}
+
+fn hash_entry_end(hash: &mut Option<Sha256>) {
+    if let Some(hash) = hash {
+        hash.update(b"e");
+    }
+}
+
+fn record_raw_payload(
+    payload: &[u8],
+    settings: RawReadSettings,
+    hash: &mut Option<Sha256>,
+    counts: &mut RawCounts,
+) {
+    if let Some(hash) = hash {
+        hash.update(b"P");
+        hash.update((payload.len() as u64).to_be_bytes());
+        hash.update(payload);
+    }
+    counts.payloads += 1;
+    counts.payload_bytes += payload.len() as u64;
+    counts.largest_payload_bytes = counts.largest_payload_bytes.max(payload.len() as u64);
+    if settings.separator_stats && payload_name(payload).is_none() {
+        counts.payloads_without_separator += 1;
+    }
+    if settings.binary_stats && payload_has_binary(payload) {
+        counts.binary_payloads += 1;
+    }
+}
+
+fn raw_ok_row(
+    path: &Path,
+    settings: RawReadSettings,
+    counts: RawCounts,
+    hash: Option<Sha256>,
+    elapsed: f64,
+) -> Value {
     json!({
         "schema": RAW_READER_SCHEMA,
         "driver": "rust",
         "status": "ok",
-        "hash_mode": hash_mode.as_str(),
-        "binary_stats": binary_stats,
-        "separator_stats": separator_stats,
+        "hash_mode": settings.hash_mode.as_str(),
+        "binary_stats": settings.binary_stats,
+        "separator_stats": settings.separator_stats,
         "file_id": sanitized_file_id(path),
         "input_bytes": file_size(path),
         "entries": counts.entries,
         "payloads": counts.payloads,
         "payload_bytes": counts.payload_bytes,
-        "binary_payloads": if binary_stats { Some(counts.binary_payloads) } else { None },
-        "payloads_without_equals": if separator_stats { Some(counts.payloads_without_separator) } else { None },
+        "binary_payloads": if settings.binary_stats { Some(counts.binary_payloads) } else { None },
+        "payloads_without_equals": if settings.separator_stats { Some(counts.payloads_without_separator) } else { None },
         "largest_payload_bytes": counts.largest_payload_bytes,
         "hash": hash.map(|hash| hex::encode(hash.finalize())),
         "elapsed_seconds": elapsed,
@@ -252,99 +337,136 @@ fn raw_read_one(
         "payloads_per_second": rate(counts.payloads, elapsed),
         "payload_bytes_per_second": rate(counts.payload_bytes, elapsed),
         "input_bytes_per_second": rate(file_size(path), elapsed),
-        "reader_path": raw_reader_path(hash_mode, binary_stats, separator_stats),
+        "reader_path": raw_reader_path(settings.hash_mode, settings.binary_stats, settings.separator_stats),
     })
 }
 
 fn dump_spool(args: DumpSpoolArgs) -> Result<()> {
+    let mut reader = open_dump_reader(&args.input)?;
+    let mut writer = BufWriter::new(open_dump_output(&args.output)?);
+    while reader.next()? {
+        dump_spool_entry(&args.input, &mut reader, &mut writer)?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+fn open_dump_reader(input: &Path) -> Result<FileReader> {
     let mut reader = FileReader::open_with_options(
-        &args.input,
+        input,
         ReaderOptions {
             window_size: DEFAULT_WINDOW_SIZE,
             bounds: ReaderBounds::Snapshot,
             mmap_strategy: ExperimentalMmapStrategy::Windowed,
         },
     )
-    .with_context(|| format!("failed to open {}", args.input.display()))?;
+    .with_context(|| format!("failed to open {}", input.display()))?;
     reader.seek_head();
-    let output: Box<dyn Write> = if args.output == "-" {
-        Box::new(io::stdout().lock())
+    Ok(reader)
+}
+
+fn open_dump_output(output: &str) -> Result<Box<dyn Write>> {
+    if output == "-" {
+        Ok(Box::new(io::stdout().lock()))
     } else {
-        Box::new(fs::File::create(&args.output)?)
-    };
-    let mut writer = BufWriter::new(output);
-    while reader.next()? {
-        let entry = reader.get_entry()?;
-        write_text_field(
-            &mut writer,
-            b"__REALTIME_TIMESTAMP",
-            entry.realtime.to_string().as_bytes(),
-        )?;
-        write_text_field(
-            &mut writer,
-            b"__MONOTONIC_TIMESTAMP",
-            entry.monotonic.to_string().as_bytes(),
-        )?;
-        write_text_field(
-            &mut writer,
-            b"__SEQNUM",
-            entry.seqnum.to_string().as_bytes(),
-        )?;
-        write_text_field(
-            &mut writer,
-            b"__BOOT_ID",
-            hex::encode(entry.boot_id).as_bytes(),
-        )?;
-        for payload in entry.payloads {
-            let (name, value) = split_payload(&payload).ok_or_else(|| {
-                anyhow!(
-                    "payload without '=' in sanitized input {}",
-                    sanitized_file_id(&args.input)
-                )
-            })?;
-            write_export_field(&mut writer, name, value)?;
-        }
-        writer.write_all(b"\n")?;
+        Ok(Box::new(fs::File::create(output)?))
     }
-    writer.flush()?;
+}
+
+fn dump_spool_entry(input: &Path, reader: &mut FileReader, writer: &mut dyn Write) -> Result<()> {
+    let entry = reader.get_entry()?;
+    write_spool_metadata(writer, &entry)?;
+    for payload in entry.payloads {
+        let (name, value) = split_payload(&payload).ok_or_else(|| {
+            anyhow!(
+                "payload without '=' in sanitized input {}",
+                sanitized_file_id(input)
+            )
+        })?;
+        write_export_field(writer, name, value)?;
+    }
+    writer.write_all(b"\n")?;
+    Ok(())
+}
+
+fn write_spool_metadata(writer: &mut dyn Write, entry: &journal::Entry) -> Result<()> {
+    write_text_field(
+        writer,
+        b"__REALTIME_TIMESTAMP",
+        entry.realtime.to_string().as_bytes(),
+    )?;
+    write_text_field(
+        writer,
+        b"__MONOTONIC_TIMESTAMP",
+        entry.monotonic.to_string().as_bytes(),
+    )?;
+    write_text_field(writer, b"__SEQNUM", entry.seqnum.to_string().as_bytes())?;
+    write_text_field(writer, b"__BOOT_ID", hex::encode(entry.boot_id).as_bytes())?;
     Ok(())
 }
 
 fn write_spool(args: WriteSpoolArgs) -> Result<()> {
-    let compact = match args.format.as_str() {
-        "regular" => false,
-        "compact" => true,
-        other => return Err(anyhow!("invalid --format: {other}")),
-    };
+    let compact = parse_format(&args.format)?;
     let compression = parse_compression(&args.compression)?;
-    let input: Box<dyn Read> = if args.input == "-" {
-        Box::new(io::stdin().lock())
-    } else {
-        Box::new(fs::File::open(&args.input)?)
-    };
+    let input = open_spool_input(&args.input)?;
     let mut parser = SpoolParser::new(input);
+    let (first, mut parse_seconds) = read_first_spool_entry(&mut parser)?;
+    prepare_spool_output(&args.output)?;
+    let (mut journal_file, mut writer, create_seconds) =
+        open_spool_writer(&args, &first, compact, compression)?;
+    let mut append_seconds = 0.0;
+    let mut stats = SpoolWriteStats::default();
+    append_entry(
+        &mut journal_file,
+        &mut writer,
+        &first,
+        &mut stats,
+        &mut append_seconds,
+    )?;
+    parse_seconds += append_remaining_spool_entries(
+        &mut parser,
+        &mut journal_file,
+        &mut writer,
+        &mut stats,
+        &mut append_seconds,
+    )?;
+    let close_started = Instant::now();
+    finalize(&mut journal_file, &args.output, &args.final_state)?;
+    let close_seconds = close_started.elapsed().as_secs_f64();
+    let total = parse_seconds + create_seconds + append_seconds + close_seconds;
+    println!(
+        "{}",
+        serde_json::to_string(&spool_write_report(
+            &args,
+            &stats,
+            parse_seconds,
+            create_seconds,
+            append_seconds,
+            close_seconds,
+            total,
+        ))?
+    );
+    Ok(())
+}
+
+fn read_first_spool_entry<R: Read>(parser: &mut SpoolParser<R>) -> Result<(SpoolEntry, f64)> {
     let parse_started = Instant::now();
     let first = parser
         .next_entry()?
         .ok_or_else(|| anyhow!("spool contains no entries"))?;
-    let mut parse_seconds = parse_started.elapsed().as_secs_f64();
-    if let Some(parent) = args.output.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    match fs::remove_file(&args.output) {
-        Ok(()) => {}
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-        Err(err) => return Err(err.into()),
-    }
-    let boot_id = if first.boot_id.is_nil() {
-        uuid(FALLBACK_BOOT_ID)?
-    } else {
-        first.boot_id
-    };
+    Ok((first, parse_started.elapsed().as_secs_f64()))
+}
+
+fn open_spool_writer(
+    args: &WriteSpoolArgs,
+    first: &SpoolEntry,
+    compact: bool,
+    compression: Compression,
+) -> Result<(JournalFile<MmapMut>, JournalWriter, f64)> {
     let create_started = Instant::now();
-    let (mut journal_file, mut writer) = create_writer(
+    let (journal_file, mut writer) = create_writer(
         &args.output,
-        boot_id,
+        spool_boot_id(first)?,
         first.seqnum.max(1),
         compact,
         compression,
@@ -354,20 +476,59 @@ fn write_spool(args: WriteSpoolArgs) -> Result<()> {
         args.fss_interval_usec,
     )?;
     writer.set_live_publish_every_entries(args.live_publish_every_entries);
-    let create_seconds = create_started.elapsed().as_secs_f64();
-    let mut records = 0u64;
-    let mut payloads = 0u64;
-    let mut payload_bytes = 0u64;
-    let mut append_seconds = 0.0;
-    append_entry(
-        &mut journal_file,
-        &mut writer,
-        &first,
-        &mut records,
-        &mut payloads,
-        &mut payload_bytes,
-        &mut append_seconds,
-    )?;
+    Ok((journal_file, writer, create_started.elapsed().as_secs_f64()))
+}
+
+fn spool_boot_id(first: &SpoolEntry) -> Result<uuid::Uuid> {
+    if first.boot_id.is_nil() {
+        uuid(FALLBACK_BOOT_ID)
+    } else {
+        Ok(first.boot_id)
+    }
+}
+
+fn parse_format(value: &str) -> Result<bool> {
+    match value {
+        "regular" => Ok(false),
+        "compact" => Ok(true),
+        other => Err(anyhow!("invalid --format: {other}")),
+    }
+}
+
+fn open_spool_input(input: &str) -> Result<Box<dyn Read>> {
+    if input == "-" {
+        Ok(Box::new(io::stdin().lock()))
+    } else {
+        Ok(Box::new(fs::File::open(input)?))
+    }
+}
+
+fn prepare_spool_output(output: &Path) -> Result<()> {
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match fs::remove_file(output) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err.into()),
+    }
+}
+
+#[derive(Default)]
+struct SpoolWriteStats {
+    records: u64,
+    payloads: u64,
+    payload_bytes: u64,
+}
+
+fn append_remaining_spool_entries<R: Read>(
+    parser: &mut SpoolParser<R>,
+    journal_file: &mut JournalFile<MmapMut>,
+    writer: &mut JournalWriter,
+    stats: &mut SpoolWriteStats,
+    append_seconds: &mut f64,
+) -> Result<f64> {
+    let mut parse_seconds = 0.0;
     loop {
         let started = Instant::now();
         let Some(entry) = parser.next_entry()? else {
@@ -375,46 +536,42 @@ fn write_spool(args: WriteSpoolArgs) -> Result<()> {
             break;
         };
         parse_seconds += started.elapsed().as_secs_f64();
-        append_entry(
-            &mut journal_file,
-            &mut writer,
-            &entry,
-            &mut records,
-            &mut payloads,
-            &mut payload_bytes,
-            &mut append_seconds,
-        )?;
+        append_entry(journal_file, writer, &entry, stats, append_seconds)?;
     }
-    let close_started = Instant::now();
-    finalize(&mut journal_file, &args.output, &args.final_state)?;
-    let close_seconds = close_started.elapsed().as_secs_f64();
-    let total = parse_seconds + create_seconds + append_seconds + close_seconds;
-    println!(
-        "{}",
-        serde_json::to_string(&json!({
-            "schema": SPOOL_SCHEMA,
-            "driver": "rust",
-            "status": "ok",
-            "records": records,
-            "payloads": payloads,
-            "payload_bytes": payload_bytes,
-            "generated_bytes": file_size(&args.output),
-            "format": args.format,
-            "compression": args.compression,
-            "fss": args.fss,
-            "final_state": args.final_state,
-            "parse_seconds": parse_seconds,
-            "create_seconds": create_seconds,
-            "append_seconds": append_seconds,
-            "close_seconds": close_seconds,
-            "total_seconds": total,
-            "append_entries_per_second": rate(records, append_seconds),
-            "total_entries_per_second": rate(records, total),
-            "append_payloads_per_second": rate(payloads, append_seconds),
-            "append_payload_bytes_per_sec": rate(payload_bytes, append_seconds),
-        }))?
-    );
-    Ok(())
+    Ok(parse_seconds)
+}
+
+fn spool_write_report(
+    args: &WriteSpoolArgs,
+    stats: &SpoolWriteStats,
+    parse_seconds: f64,
+    create_seconds: f64,
+    append_seconds: f64,
+    close_seconds: f64,
+    total: f64,
+) -> Value {
+    json!({
+        "schema": SPOOL_SCHEMA,
+        "driver": "rust",
+        "status": "ok",
+        "records": stats.records,
+        "payloads": stats.payloads,
+        "payload_bytes": stats.payload_bytes,
+        "generated_bytes": file_size(&args.output),
+        "format": args.format,
+        "compression": args.compression,
+        "fss": args.fss,
+        "final_state": args.final_state,
+        "parse_seconds": parse_seconds,
+        "create_seconds": create_seconds,
+        "append_seconds": append_seconds,
+        "close_seconds": close_seconds,
+        "total_seconds": total,
+        "append_entries_per_second": rate(stats.records, append_seconds),
+        "total_entries_per_second": rate(stats.records, total),
+        "append_payloads_per_second": rate(stats.payloads, append_seconds),
+        "append_payload_bytes_per_sec": rate(stats.payload_bytes, append_seconds),
+    })
 }
 
 struct SpoolParser<R: Read> {
@@ -432,55 +589,82 @@ impl<R: Read> SpoolParser<R> {
         let mut entry = SpoolEntry::default();
         let mut line = Vec::new();
         loop {
-            line.clear();
-            let read = self.reader.read_until(b'\n', &mut line)?;
-            if read == 0 {
-                return Ok((!entry.payloads.is_empty()).then_some(entry));
-            }
-            if line == b"\n" {
-                if !entry.payloads.is_empty() {
-                    return Ok(Some(entry));
+            match self.read_spool_line(&mut line)? {
+                SpoolLine::Eof => {
+                    return Ok((!entry.payloads.is_empty()).then_some(entry));
                 }
-                continue;
-            }
-            if !line.ends_with(b"\n") {
-                return Err(anyhow!("truncated spool field line"));
-            }
-            line.pop();
-            let (name, value) = if let Some(eq) = line.iter().position(|byte| *byte == b'=') {
-                (line[..eq].to_vec(), line[eq + 1..].to_vec())
-            } else {
-                let name = line.clone();
-                let mut size_raw = [0u8; 8];
-                self.reader.read_exact(&mut size_raw)?;
-                let size = u64::from_le_bytes(size_raw);
-                if size > 768 * 1024 * 1024 {
-                    return Err(anyhow!("spool field exceeds journal DATA size limit"));
-                }
-                let mut value = vec![0u8; size as usize];
-                self.reader.read_exact(&mut value)?;
-                let mut trailer = [0u8; 1];
-                self.reader.read_exact(&mut trailer)?;
-                if trailer[0] != b'\n' {
-                    return Err(anyhow!("spool binary field missing newline trailer"));
-                }
-                (name, value)
-            };
-            match name.as_slice() {
-                b"__REALTIME_TIMESTAMP" => entry.realtime = parse_u64(&value),
-                b"__MONOTONIC_TIMESTAMP" => entry.monotonic = parse_u64(&value),
-                b"__SEQNUM" => entry.seqnum = parse_u64(&value),
-                b"__BOOT_ID" => entry.boot_id = uuid(std::str::from_utf8(&value)?)?,
-                _ => {
-                    let mut payload = Vec::with_capacity(name.len() + 1 + value.len());
-                    payload.extend_from_slice(&name);
-                    payload.push(b'=');
-                    payload.extend_from_slice(&value);
-                    entry.payloads.push(payload);
-                }
+                SpoolLine::EntryEnd if !entry.payloads.is_empty() => return Ok(Some(entry)),
+                SpoolLine::EntryEnd => continue,
+                SpoolLine::Field => self.apply_spool_line(&line, &mut entry)?,
             }
         }
     }
+
+    fn read_spool_line(&mut self, line: &mut Vec<u8>) -> Result<SpoolLine> {
+        line.clear();
+        let read = self.reader.read_until(b'\n', line)?;
+        if read == 0 {
+            return Ok(SpoolLine::Eof);
+        }
+        if line == b"\n" {
+            return Ok(SpoolLine::EntryEnd);
+        }
+        if !line.ends_with(b"\n") {
+            return Err(anyhow!("truncated spool field line"));
+        }
+        line.pop();
+        Ok(SpoolLine::Field)
+    }
+
+    fn apply_spool_line(&mut self, line: &[u8], entry: &mut SpoolEntry) -> Result<()> {
+        let (name, value) = self.parse_spool_field(line)?;
+        match name.as_slice() {
+            b"__REALTIME_TIMESTAMP" => entry.realtime = parse_u64(&value),
+            b"__MONOTONIC_TIMESTAMP" => entry.monotonic = parse_u64(&value),
+            b"__SEQNUM" => entry.seqnum = parse_u64(&value),
+            b"__BOOT_ID" => entry.boot_id = uuid(std::str::from_utf8(&value)?)?,
+            _ => entry.payloads.push(payload_from_parts(&name, &value)),
+        }
+        Ok(())
+    }
+
+    fn parse_spool_field(&mut self, line: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+        if let Some(eq) = line.iter().position(|byte| *byte == b'=') {
+            return Ok((line[..eq].to_vec(), line[eq + 1..].to_vec()));
+        }
+        Ok((line.to_vec(), self.read_binary_spool_value()?))
+    }
+
+    fn read_binary_spool_value(&mut self) -> Result<Vec<u8>> {
+        let mut size_raw = [0u8; 8];
+        self.reader.read_exact(&mut size_raw)?;
+        let size = u64::from_le_bytes(size_raw);
+        if size > 768 * 1024 * 1024 {
+            return Err(anyhow!("spool field exceeds journal DATA size limit"));
+        }
+        let mut value = vec![0u8; size as usize];
+        self.reader.read_exact(&mut value)?;
+        let mut trailer = [0u8; 1];
+        self.reader.read_exact(&mut trailer)?;
+        if trailer[0] != b'\n' {
+            return Err(anyhow!("spool binary field missing newline trailer"));
+        }
+        Ok(value)
+    }
+}
+
+enum SpoolLine {
+    Eof,
+    EntryEnd,
+    Field,
+}
+
+fn payload_from_parts(name: &[u8], value: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(name.len() + 1 + value.len());
+    payload.extend_from_slice(name);
+    payload.push(b'=');
+    payload.extend_from_slice(value);
+    payload
 }
 
 fn create_writer(
@@ -529,9 +713,7 @@ fn append_entry(
     journal_file: &mut JournalFile<MmapMut>,
     writer: &mut JournalWriter,
     entry: &SpoolEntry,
-    records: &mut u64,
-    payloads: &mut u64,
-    payload_bytes: &mut u64,
+    stats: &mut SpoolWriteStats,
     append_seconds: &mut f64,
 ) -> Result<()> {
     let fields = entry
@@ -555,9 +737,9 @@ fn append_entry(
         options,
     )?;
     *append_seconds += started.elapsed().as_secs_f64();
-    *records += 1;
-    *payloads += entry.payloads.len() as u64;
-    *payload_bytes += entry
+    stats.records += 1;
+    stats.payloads += entry.payloads.len() as u64;
+    stats.payload_bytes += entry
         .payloads
         .iter()
         .map(|payload| payload.len() as u64)

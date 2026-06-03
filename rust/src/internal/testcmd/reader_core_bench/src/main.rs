@@ -8,6 +8,7 @@ use journal::{
 use journal_core::file::{ExperimentalMmapStrategy, HashableObject};
 use serde_json::{Value, json};
 use std::hint::black_box;
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -50,6 +51,15 @@ impl Counts {
         self.records = self.records.saturating_add(1);
         self.checksum = self.checksum.rotate_left(7) ^ value;
     }
+}
+
+struct ReadConfig<'a> {
+    mode: &'a str,
+    surface: &'a str,
+    direction: Direction,
+    bounds: &'a str,
+    strategy: ExperimentalMmapStrategy,
+    window_size: u64,
 }
 
 fn checksum_payload(mut checksum: u64, payload: &[u8]) -> u64 {
@@ -121,17 +131,10 @@ fn open_core(
     result.with_context(|| format!("failed to open journal file {}", path.display()))
 }
 
-fn read_core(
-    path: &Path,
-    mode: &str,
-    direction: Direction,
-    window_size: u64,
-    bounds: &str,
-    strategy: ExperimentalMmapStrategy,
-) -> Result<Counts> {
-    let file = open_core(path, window_size, bounds, strategy)?;
+fn read_core(path: &Path, cfg: &ReadConfig<'_>) -> Result<Counts> {
+    let file = open_core(path, cfg.window_size, cfg.bounds, cfg.strategy)?;
     let mut reader = JournalReader::default();
-    reader.set_location(match direction {
+    reader.set_location(match cfg.direction {
         Direction::Forward => journal::Location::Head,
         Direction::Backward => journal::Location::Tail,
     });
@@ -139,42 +142,73 @@ fn read_core(
     let mut offsets = Vec::new();
     let mut decompressed = Vec::new();
 
-    loop {
-        if !reader.step(&file, direction)? {
-            break;
-        }
+    while reader.step(&file, cfg.direction)? {
         let realtime = reader.get_realtime_usec(&file)?;
         counts.add_record_marker(realtime);
-
-        match mode {
-            "core-next" => {}
-            "core-offsets" => {
-                offsets.clear();
-                reader.entry_data_offsets(&file, &mut offsets)?;
-                counts.fields = counts.fields.saturating_add(offsets.len() as u64);
-                counts.checksum ^= offsets.len() as u64;
-            }
-            "core-payloads" => {
-                offsets.clear();
-                reader.entry_data_offsets(&file, &mut offsets)?;
-                for offset in offsets.iter().copied() {
-                    let data = file.data_ref(offset)?;
-                    let payload = if data.is_compressed() {
-                        decompressed.clear();
-                        data.decompress(&mut decompressed)?;
-                        decompressed.as_slice()
-                    } else {
-                        data.raw_payload()
-                    };
-                    counts.add_payload(black_box(payload));
-                }
-            }
-            other => return Err(anyhow!("invalid core mode for file surface: {other}")),
-        }
+        record_core_mode(
+            cfg.mode,
+            &file,
+            &reader,
+            &mut counts,
+            &mut offsets,
+            &mut decompressed,
+        )?;
     }
 
     black_box(counts.checksum);
     Ok(counts)
+}
+
+fn record_core_mode(
+    mode: &str,
+    file: &JournalFile<Mmap>,
+    reader: &JournalReader<'_, Mmap>,
+    counts: &mut Counts,
+    offsets: &mut Vec<NonZeroU64>,
+    decompressed: &mut Vec<u8>,
+) -> Result<()> {
+    match mode {
+        "core-next" => Ok(()),
+        "core-offsets" => record_core_offsets(file, reader, counts, offsets),
+        "core-payloads" => record_core_payloads(file, reader, counts, offsets, decompressed),
+        other => Err(anyhow!("invalid core mode for file surface: {other}")),
+    }
+}
+
+fn record_core_offsets(
+    file: &JournalFile<Mmap>,
+    reader: &JournalReader<'_, Mmap>,
+    counts: &mut Counts,
+    offsets: &mut Vec<NonZeroU64>,
+) -> Result<()> {
+    offsets.clear();
+    reader.entry_data_offsets(file, offsets)?;
+    counts.fields = counts.fields.saturating_add(offsets.len() as u64);
+    counts.checksum ^= offsets.len() as u64;
+    Ok(())
+}
+
+fn record_core_payloads(
+    file: &JournalFile<Mmap>,
+    reader: &JournalReader<'_, Mmap>,
+    counts: &mut Counts,
+    offsets: &mut Vec<NonZeroU64>,
+    decompressed: &mut Vec<u8>,
+) -> Result<()> {
+    offsets.clear();
+    reader.entry_data_offsets(file, offsets)?;
+    for offset in offsets.iter().copied() {
+        let data = file.data_ref(offset)?;
+        let payload = if data.is_compressed() {
+            decompressed.clear();
+            data.decompress(decompressed)?;
+            decompressed.as_slice()
+        } else {
+            data.raw_payload()
+        };
+        counts.add_payload(black_box(payload));
+    }
+    Ok(())
 }
 
 fn reader_options(
@@ -194,63 +228,49 @@ fn reader_options(
     })
 }
 
-fn read_sdk_file(
-    path: &Path,
-    mode: &str,
-    direction: Direction,
-    bounds: &str,
-    strategy: ExperimentalMmapStrategy,
-    window_size: u64,
-) -> Result<Counts> {
-    let options = reader_options(bounds, strategy, window_size)?;
+fn read_sdk_file(path: &Path, cfg: &ReadConfig<'_>) -> Result<Counts> {
+    let options = reader_options(cfg.bounds, cfg.strategy, cfg.window_size)?;
     let mut reader = FileReader::open_with_options(path, options)
         .with_context(|| format!("failed to open SDK file reader for {}", path.display()))?;
-    match direction {
+    match cfg.direction {
         Direction::Forward => reader.seek_head(),
         Direction::Backward => reader.seek_tail(),
     }
     let mut counts = Counts::default();
-    loop {
-        let advanced = match direction {
-            Direction::Forward => reader.next()?,
-            Direction::Backward => reader.previous()?,
-        };
-        if !advanced {
-            break;
-        }
-        match mode {
-            "sdk-entry" => {
-                let entry = reader.get_entry()?;
-                counts.add_record_marker(entry.realtime);
-                for payload in &entry.payloads {
-                    counts.add_payload(black_box(payload));
-                }
-            }
-            "sdk-payloads" => {
-                counts.add_record_marker(reader.get_realtime_usec()?);
-                reader.visit_entry_payloads(|payload| {
-                    counts.add_payload(black_box(payload));
-                    Ok(())
-                })?;
-            }
-            other => return Err(anyhow!("invalid SDK file mode: {other}")),
-        }
+    while step_file_reader(&mut reader, cfg.direction)? {
+        record_file_reader_mode(cfg.mode, &mut reader, &mut counts)?;
     }
     black_box(counts.checksum);
     Ok(counts)
 }
 
-fn read_sdk_directory(
-    inputs: &[PathBuf],
-    surface: &str,
-    mode: &str,
-    direction: Direction,
-    bounds: &str,
-    strategy: ExperimentalMmapStrategy,
-    window_size: u64,
-) -> Result<Counts> {
-    let options = reader_options(bounds, strategy, window_size)?;
-    let mut reader = match surface {
+fn step_file_reader(reader: &mut FileReader, direction: Direction) -> Result<bool> {
+    Ok(match direction {
+        Direction::Forward => reader.next(),
+        Direction::Backward => reader.previous(),
+    }?)
+}
+
+fn record_file_reader_mode(mode: &str, reader: &mut FileReader, counts: &mut Counts) -> Result<()> {
+    match mode {
+        "sdk-entry" => {
+            let entry = reader.get_entry()?;
+            counts.add_record_marker(entry.realtime);
+            for payload in &entry.payloads {
+                counts.add_payload(black_box(payload));
+            }
+            Ok(())
+        }
+        "sdk-payloads" => record_payload_visitor(reader.get_realtime_usec()?, counts, |visitor| {
+            reader.visit_entry_payloads(visitor)
+        }),
+        other => Err(anyhow!("invalid SDK file mode: {other}")),
+    }
+}
+
+fn read_sdk_directory(inputs: &[PathBuf], cfg: &ReadConfig<'_>) -> Result<Counts> {
+    let options = reader_options(cfg.bounds, cfg.strategy, cfg.window_size)?;
+    let mut reader = match cfg.surface {
         "directory" => {
             if inputs.len() != 1 {
                 return Err(anyhow!("directory surface requires exactly one --input"));
@@ -260,164 +280,188 @@ fn read_sdk_directory(
         "open-files" => DirectoryReader::open_files_with_options(inputs.iter(), options)?,
         other => return Err(anyhow!("invalid SDK directory surface: {other}")),
     };
-    match direction {
+    match cfg.direction {
         Direction::Forward => reader.seek_head(),
         Direction::Backward => reader.seek_tail(),
     }
     let mut counts = Counts::default();
-    loop {
-        let advanced = match direction {
-            Direction::Forward => reader.next()?,
-            Direction::Backward => reader.previous()?,
-        };
-        if !advanced {
-            break;
-        }
-        match mode {
-            "sdk-entry" => {
-                let entry = reader.get_entry()?;
-                counts.add_record_marker(entry.realtime);
-                for payload in &entry.payloads {
-                    counts.add_payload(black_box(payload));
-                }
-            }
-            "sdk-payloads" => {
-                counts.add_record_marker(reader.get_realtime_usec()?);
-                reader.visit_entry_payloads(|payload| {
-                    counts.add_payload(black_box(payload));
-                    Ok(())
-                })?;
-            }
-            other => return Err(anyhow!("invalid SDK directory mode: {other}")),
-        }
+    while step_directory_reader(&mut reader, cfg.direction)? {
+        record_directory_reader_mode(cfg.mode, &mut reader, &mut counts)?;
     }
     black_box(counts.checksum);
     Ok(counts)
 }
 
-fn read_facade(
-    inputs: &[PathBuf],
-    surface: &str,
+fn step_directory_reader(reader: &mut DirectoryReader, direction: Direction) -> Result<bool> {
+    Ok(match direction {
+        Direction::Forward => reader.next(),
+        Direction::Backward => reader.previous(),
+    }?)
+}
+
+fn record_directory_reader_mode(
     mode: &str,
-    direction: Direction,
-    bounds: &str,
-    strategy: ExperimentalMmapStrategy,
-    window_size: u64,
-) -> Result<Counts> {
-    let options = reader_options(bounds, strategy, window_size)?;
+    reader: &mut DirectoryReader,
+    counts: &mut Counts,
+) -> Result<()> {
+    match mode {
+        "sdk-entry" => {
+            let entry = reader.get_entry()?;
+            counts.add_record_marker(entry.realtime);
+            for payload in &entry.payloads {
+                counts.add_payload(black_box(payload));
+            }
+            Ok(())
+        }
+        "sdk-payloads" => record_payload_visitor(reader.get_realtime_usec()?, counts, |visitor| {
+            reader.visit_entry_payloads(visitor)
+        }),
+        other => Err(anyhow!("invalid SDK directory mode: {other}")),
+    }
+}
+
+fn record_payload_visitor<F>(realtime: u64, counts: &mut Counts, visit: F) -> Result<()>
+where
+    F: FnOnce(&mut dyn FnMut(&[u8]) -> journal::Result<()>) -> journal::Result<()>,
+{
+    counts.add_record_marker(realtime);
+    visit(&mut |payload| {
+        counts.add_payload(black_box(payload));
+        Ok(())
+    })?;
+    Ok(())
+}
+
+fn read_facade(inputs: &[PathBuf], cfg: &ReadConfig<'_>) -> Result<Counts> {
+    let options = reader_options(cfg.bounds, cfg.strategy, cfg.window_size)?;
+    let owned_paths = utf8_input_paths(inputs)?;
+    let borrowed_paths = borrowed_input_paths(&owned_paths);
+    let mut journal = open_facade_reader(&borrowed_paths, cfg.surface, options)?;
+    seek_facade_reader(&mut journal, cfg.direction);
+
+    let mut counts = Counts::default();
+    while step_facade_reader(&mut journal, cfg.direction)? {
+        record_facade_mode(cfg.mode, &mut journal, &mut counts)?;
+    }
+    black_box(counts.checksum);
+    Ok(counts)
+}
+
+fn utf8_input_paths(inputs: &[PathBuf]) -> Result<Vec<String>> {
     let mut owned_paths = Vec::with_capacity(inputs.len());
     for input in inputs {
-        owned_paths.push(
-            input
-                .to_str()
-                .ok_or_else(|| anyhow!("input path is not UTF-8: {}", input.display()))?
-                .to_string(),
-        );
+        let path = input
+            .to_str()
+            .ok_or_else(|| anyhow!("input path is not UTF-8: {}", input.display()))?;
+        owned_paths.push(path.to_string());
     }
-    let borrowed_paths: Vec<&str> = owned_paths.iter().map(String::as_str).collect();
-    let mut journal = match surface {
-        "file" | "open-files" => SdJournalOpenFilesWithOptions(&borrowed_paths, 0, options)?,
+    Ok(owned_paths)
+}
+
+fn borrowed_input_paths(owned_paths: &[String]) -> Vec<&str> {
+    owned_paths.iter().map(String::as_str).collect()
+}
+
+fn open_facade_reader(
+    paths: &[&str],
+    surface: &str,
+    options: ReaderOptions,
+) -> Result<journal::SdJournal> {
+    match surface {
+        "file" | "open-files" => Ok(SdJournalOpenFilesWithOptions(paths, 0, options)?),
         "directory" => {
-            if borrowed_paths.len() != 1 {
+            if paths.len() != 1 {
                 return Err(anyhow!("directory surface requires exactly one --input"));
             }
-            SdJournalOpenDirectoryWithOptions(borrowed_paths[0], 0, options)?
+            Ok(SdJournalOpenDirectoryWithOptions(paths[0], 0, options)?)
         }
-        other => return Err(anyhow!("invalid facade surface: {other}")),
-    };
+        other => Err(anyhow!("invalid facade surface: {other}")),
+    }
+}
 
+fn seek_facade_reader(journal: &mut journal::SdJournal, direction: Direction) {
     if direction == Direction::Backward {
         journal.seek_tail();
     } else {
         journal.seek_head();
     }
+}
 
-    let mut counts = Counts::default();
-    loop {
-        let advanced = match direction {
-            Direction::Forward => SdJournalNext(&mut journal)?,
-            Direction::Backward => journal.previous()?,
-        };
-        if advanced == 0 {
-            break;
+fn step_facade_reader(journal: &mut journal::SdJournal, direction: Direction) -> Result<bool> {
+    let advanced = match direction {
+        Direction::Forward => SdJournalNext(journal)?,
+        Direction::Backward => journal.previous()?,
+    };
+    Ok(advanced != 0)
+}
+
+fn record_facade_mode(
+    mode: &str,
+    journal: &mut journal::SdJournal,
+    counts: &mut Counts,
+) -> Result<()> {
+    match mode {
+        "facade-next" => {
+            counts.add_record_marker(journal.get_realtime_usec()?);
+            Ok(())
         }
-        match mode {
-            "facade-next" => {
-                counts.add_record_marker(journal.get_realtime_usec()?);
+        "facade-data" => {
+            counts.add_record_marker(journal.get_realtime_usec()?);
+            SdJournalRestartData(journal)?;
+            while let Some(payload) = SdJournalEnumerateAvailableData(journal)? {
+                counts.add_payload(black_box(payload));
             }
-            "facade-data" => {
-                let realtime = journal.get_realtime_usec()?;
-                counts.add_record_marker(realtime);
-                SdJournalRestartData(&mut journal)?;
-                while let Some(payload) = SdJournalEnumerateAvailableData(&mut journal)? {
-                    counts.add_payload(black_box(payload));
-                }
-            }
-            other => return Err(anyhow!("invalid facade mode: {other}")),
+            Ok(())
         }
+        other => Err(anyhow!("invalid facade mode: {other}")),
     }
-    black_box(counts.checksum);
-    Ok(counts)
 }
 
 fn run(args: &Args) -> Result<(Counts, f64, Value, Value)> {
-    let direction = parse_direction(&args.direction)?;
-    let mmap_strategy = parse_mmap_strategy(&args.mmap_strategy)?;
+    let cfg = ReadConfig {
+        mode: &args.mode,
+        surface: &args.surface,
+        direction: parse_direction(&args.direction)?,
+        bounds: &args.bounds,
+        strategy: parse_mmap_strategy(&args.mmap_strategy)?,
+        window_size: args.window_size,
+    };
     let status_before = process_status_kb();
     let started = Instant::now();
-    let counts = match args.mode.as_str() {
-        "core-next" | "core-offsets" | "core-payloads" => {
-            if args.surface != "file" || args.inputs.len() != 1 {
-                return Err(anyhow!("core modes require --surface file and one --input"));
-            }
-            read_core(
-                &args.inputs[0],
-                &args.mode,
-                direction,
-                args.window_size,
-                &args.bounds,
-                mmap_strategy,
-            )?
-        }
-        "sdk-entry" | "sdk-payloads" => match args.surface.as_str() {
-            "file" => {
-                if args.inputs.len() != 1 {
-                    return Err(anyhow!("file surface requires exactly one --input"));
-                }
-                read_sdk_file(
-                    &args.inputs[0],
-                    &args.mode,
-                    direction,
-                    &args.bounds,
-                    mmap_strategy,
-                    args.window_size,
-                )?
-            }
-            "directory" | "open-files" => read_sdk_directory(
-                &args.inputs,
-                &args.surface,
-                &args.mode,
-                direction,
-                &args.bounds,
-                mmap_strategy,
-                args.window_size,
-            )?,
-            other => return Err(anyhow!("invalid --surface for SDK mode: {other}")),
-        },
-        "facade-next" | "facade-data" => read_facade(
-            &args.inputs,
-            &args.surface,
-            &args.mode,
-            direction,
-            &args.bounds,
-            mmap_strategy,
-            args.window_size,
-        )?,
-        other => return Err(anyhow!("invalid --mode: {other}")),
-    };
+    let counts = dispatch_read(&args.inputs, &cfg)?;
     let elapsed_seconds = started.elapsed().as_secs_f64();
     let status_after = process_status_kb();
     Ok((counts, elapsed_seconds, status_before, status_after))
+}
+
+fn dispatch_read(inputs: &[PathBuf], cfg: &ReadConfig<'_>) -> Result<Counts> {
+    match cfg.mode {
+        "core-next" | "core-offsets" | "core-payloads" => {
+            require_single_file_input(inputs, cfg.surface, "core modes")?;
+            read_core(&inputs[0], cfg)
+        }
+        "sdk-entry" | "sdk-payloads" => dispatch_sdk_read(inputs, cfg),
+        "facade-next" | "facade-data" => read_facade(inputs, cfg),
+        other => Err(anyhow!("invalid --mode: {other}")),
+    }
+}
+
+fn dispatch_sdk_read(inputs: &[PathBuf], cfg: &ReadConfig<'_>) -> Result<Counts> {
+    match cfg.surface {
+        "file" => {
+            require_single_file_input(inputs, cfg.surface, "file surface")?;
+            read_sdk_file(&inputs[0], cfg)
+        }
+        "directory" | "open-files" => read_sdk_directory(inputs, cfg),
+        other => Err(anyhow!("invalid --surface for SDK mode: {other}")),
+    }
+}
+
+fn require_single_file_input(inputs: &[PathBuf], surface: &str, context: &str) -> Result<()> {
+    if surface != "file" || inputs.len() != 1 {
+        return Err(anyhow!("{context} require --surface file and one --input"));
+    }
+    Ok(())
 }
 
 fn main() -> Result<()> {

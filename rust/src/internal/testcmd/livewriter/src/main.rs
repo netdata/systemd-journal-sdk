@@ -66,13 +66,7 @@ fn run() -> Result<()> {
         return Err(anyhow!("entries must be positive"));
     }
 
-    let compression = match args.compression.as_str() {
-        "none" => Compression::None,
-        "xz" => Compression::Xz,
-        "lz4" => Compression::Lz4,
-        "zstd" => Compression::Zstd,
-        other => return Err(anyhow!("unknown compression: {other}")),
-    };
+    let compression = parse_compression(&args.compression)?;
     let delay = parse_duration(&args.delay)?;
     if let Some(path) = &args.path {
         return run_file_writer(&args, path, delay, compression);
@@ -83,21 +77,48 @@ fn run() -> Result<()> {
     if args.seal {
         return Err(anyhow!("--seal requires --path in livewriter"));
     }
+    run_directory_writer(&args, dir, delay, compression)
+}
+
+fn parse_compression(value: &str) -> Result<Compression> {
+    match value {
+        "none" => Ok(Compression::None),
+        "xz" => Ok(Compression::Xz),
+        "lz4" => Ok(Compression::Lz4),
+        "zstd" => Ok(Compression::Zstd),
+        other => Err(anyhow!("unknown compression: {other}")),
+    }
+}
+
+fn run_directory_writer(
+    args: &Args,
+    dir: &PathBuf,
+    delay: Duration,
+    compression: Compression,
+) -> Result<()> {
+    let mut log = Log::new(dir, directory_config(args, compression))?;
+    write_log_entries(args, &mut log, delay)?;
+    log.sync()?;
+    Ok(())
+}
+
+fn directory_config(args: &Args, compression: Compression) -> Config {
     let origin = Origin {
         machine_id: None,
         namespace: None,
         source: Source::System,
     };
-    let config = Config::new(
+    Config::new(
         origin,
         RotationPolicy::default(),
         RetentionPolicy::default(),
     )
     .with_compression(compression)
     .with_compression_threshold(args.compression_threshold)
-    .with_compact(args.compact);
-    let mut log = Log::new(dir, config)?;
+    .with_compact(args.compact)
+}
 
+fn write_log_entries(args: &Args, log: &mut Log, delay: Duration) -> Result<()> {
     const REALTIME_BASE: u64 = 1_700_001_000_000_000;
     for i in 0..args.entries {
         let fields = fields_for_entry(
@@ -118,25 +139,31 @@ fn run() -> Result<()> {
             },
         )?;
 
-        if i == 0 {
-            log.sync()?;
-            log.active_file()
-                .ok_or_else(|| anyhow!("active journal file missing after first write"))?;
-            fs::write(&args.ready_file, b"ready\n")?;
-        } else if args.sync_every > 0 && (i + 1) % args.sync_every == 0 {
-            log.sync()?;
-        }
-
-        if args.crash_after > 0 && i + 1 >= args.crash_after {
-            std::process::exit(17);
-        }
-        if !delay.is_zero() {
-            std::thread::sleep(delay);
-        }
+        publish_log_progress(args, log, i)?;
+        crash_or_sleep(args, i, delay);
     }
-
-    log.sync()?;
     Ok(())
+}
+
+fn publish_log_progress(args: &Args, log: &mut Log, index: usize) -> Result<()> {
+    if index == 0 {
+        log.sync()?;
+        log.active_file()
+            .ok_or_else(|| anyhow!("active journal file missing after first write"))?;
+        fs::write(&args.ready_file, b"ready\n")?;
+    } else if args.sync_every > 0 && (index + 1) % args.sync_every == 0 {
+        log.sync()?;
+    }
+    Ok(())
+}
+
+fn crash_or_sleep(args: &Args, index: usize, delay: Duration) {
+    if args.crash_after > 0 && index + 1 >= args.crash_after {
+        std::process::exit(17);
+    }
+    if !delay.is_zero() {
+        std::thread::sleep(delay);
+    }
 }
 
 fn run_file_writer(
@@ -154,6 +181,27 @@ fn run_file_writer(
     let machine_id = uuid::Uuid::new_v4();
     let boot_id = uuid::Uuid::new_v4();
     let seqnum_id = uuid::Uuid::new_v4();
+    let options = file_writer_options(args, machine_id, boot_id, seqnum_id, compression)?;
+    let mut journal_file = JournalFile::<MmapMut>::create(&repo_file, options)?;
+    let mut writer = JournalWriter::new_with_compression(
+        &mut journal_file,
+        1,
+        boot_id,
+        compression,
+        args.compression_threshold,
+    )?;
+    write_file_entries(args, &mut journal_file, &mut writer, delay)?;
+    journal_file.sync()?;
+    Ok(())
+}
+
+fn file_writer_options(
+    args: &Args,
+    machine_id: uuid::Uuid,
+    boot_id: uuid::Uuid,
+    seqnum_id: uuid::Uuid,
+    compression: Compression,
+) -> Result<JournalFileOptions> {
     let mut options = JournalFileOptions::new(machine_id, boot_id, seqnum_id)
         .with_window_size(8 * 1024 * 1024)
         .with_keyed_hash(true)
@@ -170,15 +218,15 @@ fn run_file_writer(
             args.seal_start_usec,
         ));
     }
-    let mut journal_file = JournalFile::<MmapMut>::create(&repo_file, options)?;
-    let mut writer = JournalWriter::new_with_compression(
-        &mut journal_file,
-        1,
-        boot_id,
-        compression,
-        args.compression_threshold,
-    )?;
+    Ok(options)
+}
 
+fn write_file_entries(
+    args: &Args,
+    journal_file: &mut JournalFile<MmapMut>,
+    writer: &mut JournalWriter,
+    delay: Duration,
+) -> Result<()> {
     const REALTIME_BASE: u64 = 1_700_001_000_000_000;
     for i in 0..args.entries {
         let fields = fields_for_entry(
@@ -191,28 +239,29 @@ fn run_file_writer(
 
         let fields_refs: Vec<&[u8]> = fields.iter().map(|v| v.as_slice()).collect();
         writer.add_entry(
-            &mut journal_file,
+            journal_file,
             &fields_refs,
             REALTIME_BASE + i as u64,
             i as u64 + 1,
         )?;
 
-        if i == 0 {
-            journal_file.sync()?;
-            fs::write(&args.ready_file, b"ready\n")?;
-        } else if args.sync_every > 0 && (i + 1) % args.sync_every == 0 {
-            journal_file.sync()?;
-        }
-
-        if args.crash_after > 0 && i + 1 >= args.crash_after {
-            std::process::exit(17);
-        }
-        if !delay.is_zero() {
-            std::thread::sleep(delay);
-        }
+        publish_file_progress(args, journal_file, i)?;
+        crash_or_sleep(args, i, delay);
     }
+    Ok(())
+}
 
-    journal_file.sync()?;
+fn publish_file_progress(
+    args: &Args,
+    journal_file: &mut JournalFile<MmapMut>,
+    index: usize,
+) -> Result<()> {
+    if index == 0 {
+        journal_file.sync()?;
+        fs::write(&args.ready_file, b"ready\n")?;
+    } else if args.sync_every > 0 && (index + 1) % args.sync_every == 0 {
+        journal_file.sync()?;
+    }
     Ok(())
 }
 

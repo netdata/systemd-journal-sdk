@@ -62,6 +62,11 @@ Last updated: 2026-06-03
   `go test ./...`, and reduced the refreshed local all-tracked-file Lizard
   inventory to 129 critical findings. Go has no remaining critical Lizard
   findings; remaining critical findings are `rust: 53` and `tests: 76`.
+  Batch 19 made Rust internal benchmark and corpus helper files locally
+  Lizard-clean, passed affected Rust helper package checks, and reduced the
+  refreshed local all-tracked-file Lizard inventory to 114 critical findings.
+  Rust internal helper files have no remaining critical Lizard findings;
+  remaining critical findings are `rust: 38` and `tests: 76`.
   Remaining work is to continue complexity remediation, record final scanner
   results, and complete whole-SOW review.
 
