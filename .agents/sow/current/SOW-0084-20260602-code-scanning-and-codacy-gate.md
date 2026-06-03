@@ -2245,6 +2245,41 @@ Batch 35:
   - Local Lizard with `-C 12 -L 100 -a 12 -w` reported no warnings for the
     changed Node.js and Python runtime writer files.
 
+Batch 36:
+
+- Scope: remaining oversized Python harness entrypoints visible in the local
+  critical-complexity inventory after the runtime writer splits.
+- Changes:
+  - Split live-matrix assessment and console reporting helpers into
+    `tests/interoperability/live_matrix_reporting.py`, keeping the live matrix
+    subprocess/build/reader orchestration in the original entrypoint.
+  - Split systemd-matrix command, digest, and systemd source patch/build
+    helpers into `tests/systemd_matrix/systemd_matrix_runtime.py` and
+    `tests/systemd_matrix/systemd_matrix_source.py`, keeping the original
+    command-line entrypoint and report schema stable.
+  - Split corpus-evaluation discovery, runtime, state-key, and tool-build
+    helpers into `tests/corpus_eval/corpus_eval_runtime.py`, leaving the
+    streaming digest/regeneration logic in the entrypoint for a lower-risk
+    batch.
+- Validation:
+  - `python3 -m py_compile` passed for all changed Python harness entrypoints
+    and new helper modules.
+  - CLI help smoke checks passed for `run_live_matrix.py`,
+    `run_systemd_matrix.py`, and `run_corpus_eval.py`.
+  - `python3 -m unittest tests.corpus_eval.test_canonical` passed.
+  - A 20-entry Go/stock live-matrix smoke passed with regular format and one
+    polling reader per language.
+  - A systemd-matrix summarize smoke passed against an existing repo-local
+    report.
+  - A corpus-evaluation dry-run smoke passed with `--max-files 1` and wrote
+    only `.local/` reports.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reported no warnings for the
+    changed harness files.
+  - Local whole-repository Lizard with `-C 12 -L 100 -a 12 -w .` completed
+    with no warnings.
+  - `git diff --check` passed.
+  - `.agents/sow/audit.sh` passed.
+
 Reviewer findings:
 
 - Pending. The current SOW is not ready for terminal reviewer review because
@@ -2314,14 +2349,10 @@ Follow-up mapping:
   - reconcile the user's observed 3056 UI count with the CLI-confirmed
     `master` count of 1502 quality issues after commit `99d2b08`;
   - group and triage the exported `master` cloud findings;
-  - trigger Codacy reanalysis after Batch 29 and verify the non-file-size
-    findings are gone;
-  - push Batch 34 and verify Codacy no longer reports Go file-size findings;
-  - push Batch 35 and verify Codacy no longer reports Node.js/Python runtime
-    writer file-size findings;
-  - address the remaining Rust, Node.js/Python test, and Python harness
-    file-size findings by splitting files or recording an explicit user
-    decision for generated/vendor/test exceptions;
+  - push Batch 36 and verify Codacy no longer reports stale Go, Node.js,
+    Python, Rust, or harness file-size findings against the current commit;
+  - address any remaining current-commit Codacy findings that are not explained
+    by stale cloud analysis or narrow generated-artifact exclusions;
   - run GitHub workflows after push and record CodeQL/Codacy results;
   - switch from reporting-only to enforcement after the actionable baseline is
     zero or after a later user decision.

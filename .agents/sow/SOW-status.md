@@ -153,11 +153,16 @@ Last updated: 2026-06-03
   writer import paths, passed Node.js and Python package tests, confirmed
   `node/src/lib/writer.js` and `python/journal/writer.py` are below 1000
   non-comment/non-blank lines, and passed local Lizard on the changed runtime
-  writer files. Remaining work is to push Batch 35, verify Codacy no longer
-  reports Go/Node.js/Python runtime writer file-size findings, split or
-  disposition the remaining Rust, Node.js/Python test, and Python harness
-  file-size findings, record final scanner results, and complete whole-SOW
-  review.
+  writer files. Batch 36 split the remaining oversized Python harness
+  entrypoints by moving live-matrix reporting, systemd-matrix runtime/source
+  helpers, and corpus-evaluation runtime/discovery/build helpers into focused
+  modules. Syntax checks, CLI help smokes, corpus canonical unit tests, a
+  20-entry Go/stock live-matrix smoke, a systemd-matrix summarize smoke, a
+  corpus dry-run smoke, targeted Lizard, and whole-repository Lizard all
+  passed with no local Lizard warnings. Remaining work is to push Batch 36,
+  verify Codacy has analyzed the current commit instead of stale cloud
+  snapshots, address any residual current-commit findings, record final scanner
+  results, and complete whole-SOW review.
 
 ## Pending
 
