@@ -581,7 +581,11 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "created_at": utc_now(),
         "purpose": "repeatable feature-selected real-corpus verification without a full corpus run",
         "runtime_seconds": time.perf_counter() - started,
-        "sensitive_data_policy": "committed artifacts contain sanitized IDs, classes, sizes, hashes, counts, timings, resource metrics, status codes, and discrepancy codes only",
+        "sensitive_data_policy": (
+            "committed artifacts contain sanitized IDs, classes, sizes, hashes, "
+            "counts, timings, resource metrics, status codes, and discrepancy "
+            "codes only"
+        ),
         "raw_path_manifest": {
             "location": str(path_manifest.relative_to(ROOT)),
             "committed": False,
@@ -589,7 +593,12 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         },
         "python_node_scope": {
             "included": False,
-            "reason": "not included in this selective run because the existing real-corpus harness is Rust/Go/systemd focused and Python/Node are mapped to SOW-0065 parity closure unless a small language-specific follow-up is requested",
+            "reason": (
+                "not included in this selective run because the existing "
+                "real-corpus harness is Rust/Go/systemd focused and "
+                "Python/Node are mapped to SOW-0065 parity closure unless a "
+                "small language-specific follow-up is requested"
+            ),
         },
         "selection_policy": [
             {"feature_class": feature, "reason": reason}

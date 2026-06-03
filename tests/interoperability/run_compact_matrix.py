@@ -421,7 +421,14 @@ def check_reader_export(reader: ReaderSpec, tools: dict[str, str], journal_path:
     cmd = _reader_export_cmd(reader, tools, journal_path)
     result = run(cmd, timeout=30, binary=True)
     if result.returncode != 0:
-        return {"writer": writer_name, "reader": reader.name, "test": "export", "command": shell_join(cmd), "status": "FAIL", "error": text_tail(result.stderr)}
+        return {
+            "writer": writer_name,
+            "reader": reader.name,
+            "test": "export",
+            "command": shell_join(cmd),
+            "status": "FAIL",
+            "error": text_tail(result.stderr),
+        }
     validation = _validate_export_output_bytes(result.stdout, "export", cmd)
     validation["writer"] = writer_name
     validation["reader"] = reader.name

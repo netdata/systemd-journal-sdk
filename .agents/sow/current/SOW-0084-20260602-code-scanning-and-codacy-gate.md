@@ -614,6 +614,12 @@ Tests or equivalent validation:
   cleanup.
 - `git diff --check`: passed after the timestamp/glossary cleanup.
 - `.agents/sow/audit.sh`: passed after the timestamp/glossary cleanup.
+- Targeted Python line-length scan of the files reported by
+  `Prospector_pycodestyle`: passed with no line over 159 characters.
+- `python3 -m py_compile` passed for all Python files touched by the
+  line-length cleanup.
+- `git diff --check`: passed after the Python line-length cleanup.
+- `.agents/sow/audit.sh`: passed after the Python line-length cleanup.
 - Local pinned Codacy package smoke:
   `@codacy/analysis-cli@0.8.1` installed under `.local/codacy-cli-test`;
   `codacy-analysis init --default .` succeeded; `codacy-analysis analyze .`
@@ -728,6 +734,11 @@ Real-use evidence:
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26856479837`.
   - Codacy SARIF: success, run URL
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26856479848`.
+- GitHub Actions workflow evidence collected from pushed commit `8a0d2f2`:
+  - CodeQL: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26856816110`.
+  - Codacy SARIF: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26856816181`.
 - GitHub code scanning API returned 2053 open alerts after both workflows ran:
   by tool: Prospector 143, Agentlinter 240, PMD 50, lizard 955, PyLintPython3
   67, Bandit 111, Flawfinder 9, ESLint8 311, shellcheck 1, markdownlint 75,
@@ -871,6 +882,11 @@ Real-use evidence:
   `strftime()` calls from report timestamp helpers, and
   `Agentlinter_clarity_undefined-term` by adding glossary entries for the
   remaining uppercase prompt terms.
+- Codacy cloud export after `8a0d2f2` reported 1374 quality issues and 144
+  security findings on `master`. The hardcoded `strftime` rule is now 0.
+- Local Python line-length cleanup targets `Prospector_pycodestyle` E501 rows
+  by wrapping long command arrays, metrics format strings, report text, and test
+  dictionaries without changing values or execution order.
 
 Reviewer findings:
 

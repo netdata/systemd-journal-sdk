@@ -272,7 +272,9 @@ def correctness_records() -> list[dict[str, object]]:
             7,
             collision_fields,
             ["hash-collision-chain", "new-field-objects", "new-data-objects"],
-            "Deterministic DATA hash-bucket collision chain: bucket 85984, 4 unique colliding payloads, next_hash_offset chain traversal, data_hash_chain_depth publication.",
+            "Deterministic DATA hash-bucket collision chain: bucket 85984, "
+            "4 unique colliding payloads, next_hash_offset chain traversal, "
+            "data_hash_chain_depth publication.",
         )
     )
 

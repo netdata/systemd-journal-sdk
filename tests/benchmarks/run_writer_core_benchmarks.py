@@ -179,7 +179,13 @@ def timed_run(cmd: list[str], stats_path: Path, env: dict[str, str]) -> subproce
             [
                 time_bin,
                 "-f",
-                '{"process_wall_seconds":%e,"process_user_seconds":%U,"process_system_seconds":%S,"max_rss_kb":%M,"minor_page_faults":%R,"major_page_faults":%F,"voluntary_context_switches":%w,"involuntary_context_switches":%c}',
+                (
+                    '{"process_wall_seconds":%e,"process_user_seconds":%U,'
+                    '"process_system_seconds":%S,"max_rss_kb":%M,'
+                    '"minor_page_faults":%R,"major_page_faults":%F,'
+                    '"voluntary_context_switches":%w,'
+                    '"involuntary_context_switches":%c}'
+                ),
                 "-o",
                 str(stats_path),
                 *cmd,

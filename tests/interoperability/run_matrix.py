@@ -124,9 +124,31 @@ def writer_command(writer: WriterSpec, tools: dict[str, str], target: Path, read
     if writer.name == "rust":
         return [tools["rust_livewriter"], "--dir", str(target), "--ready-file", str(ready), "--entries", str(entries), "--delay", "1ms"]
     if writer.name == "node":
-        return ["node", str(REPO_ROOT / "node/internal/testcmd/livewriter.js"), "--path", str(target), "--ready-file", str(ready), "--entries", str(entries), "--delay", "1ms"]
+        return [
+            "node",
+            str(REPO_ROOT / "node/internal/testcmd/livewriter.js"),
+            "--path",
+            str(target),
+            "--ready-file",
+            str(ready),
+            "--entries",
+            str(entries),
+            "--delay",
+            "1ms",
+        ]
     if writer.name == "python":
-        return ["python3", str(REPO_ROOT / "python/cmd/livewriter.py"), "--path", str(target), "--ready-file", str(ready), "--entries", str(entries), "--delay", "1ms"]
+        return [
+            "python3",
+            str(REPO_ROOT / "python/cmd/livewriter.py"),
+            "--path",
+            str(target),
+            "--ready-file",
+            str(ready),
+            "--entries",
+            str(entries),
+            "--delay",
+            "1ms",
+        ]
     raise ValueError(writer.name)
 
 

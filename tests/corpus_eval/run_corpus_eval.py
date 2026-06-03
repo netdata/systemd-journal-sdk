@@ -652,7 +652,11 @@ def run_regenerator(
             "mode": mode,
             "status": "unsupported",
             "file_id": case.file_id,
-            "reason": "systemd public regeneration requires journal export plus systemd-journal-remote; this harness records the limitation unless an installed remote helper is explicitly enabled later",
+            "reason": (
+                "systemd public regeneration requires journal export plus "
+                "systemd-journal-remote; this harness records the limitation "
+                "unless an installed remote helper is explicitly enabled later"
+            ),
         }
 
     generated_path = output

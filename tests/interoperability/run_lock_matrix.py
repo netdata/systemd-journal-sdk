@@ -33,9 +33,31 @@ def writer_cmd(name: str, tools: dict[str, str], path: Path, ready: Path, entrie
     elif name == "rust":
         cmd = [tools["rust_livewriter"], "--path", str(path), "--ready-file", str(ready), "--entries", str(entries), "--delay", delay]
     elif name == "node":
-        cmd = ["node", str(REPO_ROOT / "node/internal/testcmd/livewriter.js"), "--path", str(path), "--ready-file", str(ready), "--entries", str(entries), "--delay", delay]
+        cmd = [
+            "node",
+            str(REPO_ROOT / "node/internal/testcmd/livewriter.js"),
+            "--path",
+            str(path),
+            "--ready-file",
+            str(ready),
+            "--entries",
+            str(entries),
+            "--delay",
+            delay,
+        ]
     elif name == "python":
-        cmd = ["python3", str(REPO_ROOT / "python/cmd/livewriter.py"), "--path", str(path), "--ready-file", str(ready), "--entries", str(entries), "--delay", delay]
+        cmd = [
+            "python3",
+            str(REPO_ROOT / "python/cmd/livewriter.py"),
+            "--path",
+            str(path),
+            "--ready-file",
+            str(ready),
+            "--entries",
+            str(entries),
+            "--delay",
+            delay,
+        ]
     else:
         raise ValueError(name)
     if crash_after > 0:

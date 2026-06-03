@@ -153,9 +153,33 @@ def writer_command(writer: WriterSpec, tools: dict[str, str], target: Path, read
     if writer.name == "rust":
         return [tools["rust_livewriter"], "--dir", str(target), "--ready-file", str(ready), "--entries", str(entries), "--delay", "1ms", "--binary-fixture"]
     if writer.name == "node":
-        return ["node", str(REPO_ROOT / "node/internal/testcmd/livewriter.js"), "--path", str(target), "--ready-file", str(ready), "--entries", str(entries), "--delay", "1ms", "--binary-fixture"]
+        return [
+            "node",
+            str(REPO_ROOT / "node/internal/testcmd/livewriter.js"),
+            "--path",
+            str(target),
+            "--ready-file",
+            str(ready),
+            "--entries",
+            str(entries),
+            "--delay",
+            "1ms",
+            "--binary-fixture",
+        ]
     if writer.name == "python":
-        return ["python3", str(REPO_ROOT / "python/cmd/livewriter.py"), "--path", str(target), "--ready-file", str(ready), "--entries", str(entries), "--delay", "1ms", "--binary-fixture"]
+        return [
+            "python3",
+            str(REPO_ROOT / "python/cmd/livewriter.py"),
+            "--path",
+            str(target),
+            "--ready-file",
+            str(ready),
+            "--entries",
+            str(entries),
+            "--delay",
+            "1ms",
+            "--binary-fixture",
+        ]
     raise ValueError(writer.name)
 
 
@@ -412,7 +436,14 @@ def check_reader_json(reader: ReaderSpec, tools: dict[str, str], journal_path: s
     except Exception as e:
         return {"writer": writer_name, "reader": reader.name, "test": "json", "command": shell_join(cmd), "status": "FAIL", "error": f"JSON parse error: {e}"}
     if len(entries) != 1:
-        return {"writer": writer_name, "reader": reader.name, "test": "json", "command": shell_join(cmd), "status": "FAIL", "error": f"expected 1 entry, got {len(entries)}"}
+        return {
+            "writer": writer_name,
+            "reader": reader.name,
+            "test": "json",
+            "command": shell_join(cmd),
+            "status": "FAIL",
+            "error": f"expected 1 entry, got {len(entries)}",
+        }
     field_errors = validate_binary_json_entry(entries[0])
     if field_errors:
         return {"writer": writer_name, "reader": reader.name, "test": "json", "command": shell_join(cmd), "status": "FAIL", "error": "; ".join(field_errors)}
@@ -423,7 +454,14 @@ def check_reader_export(reader: ReaderSpec, tools: dict[str, str], journal_path:
     cmd = _reader_export_cmd(reader, tools, journal_path)
     result = run(cmd, timeout=30, binary=True)
     if result.returncode != 0:
-        return {"writer": writer_name, "reader": reader.name, "test": "export", "command": shell_join(cmd), "status": "FAIL", "error": text_tail(result.stderr)}
+        return {
+            "writer": writer_name,
+            "reader": reader.name,
+            "test": "export",
+            "command": shell_join(cmd),
+            "status": "FAIL",
+            "error": text_tail(result.stderr),
+        }
     validation = _validate_export_output_bytes(result.stdout, f"{writer_name}-{reader.name}-export", cmd)
     validation["writer"] = writer_name
     validation["reader"] = reader.name
