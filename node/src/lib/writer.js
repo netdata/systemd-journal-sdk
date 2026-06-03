@@ -2,7 +2,6 @@
 // Default options are compatible with stock journalctl readers during live append.
 
 import { openSync, writeSync, readSync, closeSync, ftruncateSync, fsyncSync, renameSync } from 'node:fs';
-import { dirname } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
 import { readUint64LE, writeUint64LE, writeUint32LE, writeUint8, align8, randomUUID, isZeroUUID, bufEqual, stringToUUID } from './binary.js';
 import {
@@ -29,6 +28,23 @@ import { sipHash24, jenkinsHash64 } from './hash.js';
 import { decompressZstdDataPayload } from './compress.js';
 import { compressLz4DataPayload, decompressLz4DataPayload } from './lz4-block.js';
 import { compressXzDataPayload, decompressXzDataPayload } from './xz-block.js';
+import {
+  fieldCacheKey,
+  openedMonotonicBaseMs,
+  readAppendHeaderFromFd,
+  readObjectHeaderFromFd,
+  readObjectSizeFromFd,
+  syncParentDirectory,
+  validateAppendHeaderForWrite,
+} from './writer-file.js';
+import {
+  FIELD_NAME_POLICY_JOURNALD,
+  FIELD_NAME_POLICY_RAW,
+  fieldNameBytes,
+  normalizeFieldNamePolicy,
+  prepareFieldsForPolicy,
+  prepareRawPayloadsForPolicy,
+} from './writer-policy.js';
 
 export const COMPRESSION_NONE = 0;
 export const COMPRESSION_ZSTD = 1;
@@ -36,11 +52,18 @@ export const COMPRESSION_XZ = 2;
 export const COMPRESSION_LZ4 = 3;
 export const DEFAULT_COMPRESS_THRESHOLD = 512;
 export const MIN_COMPRESS_THRESHOLD = 8;
-export const FIELD_NAME_POLICY_JOURNALD = 'journald';
-export const FIELD_NAME_POLICY_RAW = 'raw';
-export const FIELD_NAME_POLICY_JOURNAL_APP = 'journal-app';
+export {
+  FIELD_NAME_POLICY_JOURNALD,
+  FIELD_NAME_POLICY_RAW,
+  FIELD_NAME_POLICY_JOURNAL_APP,
+  fieldNameBytes,
+  normalizeFieldNamePolicy,
+  prepareFieldsForPolicy,
+  prepareRawPayloadsForPolicy,
+  validateFieldNameForPolicy,
+  writerPolicyForLogPolicy,
+} from './writer-policy.js';
 const FIELD_CACHE_MAX_ENTRIES = 1024;
-const FIELD_CACHE_MAX_PAYLOAD_LEN = 128;
 
 export class Writer {
   constructor(fd, path) {
@@ -1018,71 +1041,11 @@ export class Writer {
   }
 }
 
-function readAppendHeaderFromFd(fd) {
-  const headerBuf = Buffer.alloc(HEADER_SIZE);
-  const bytesRead = readSync(fd, headerBuf, 0, HEADER_SIZE, 0);
-  if (bytesRead < HEADER_SIZE) throw new Error('cannot read journal header');
-  return parseFileHeader(headerBuf);
-}
-
-function validateAppendHeaderForWrite(header) {
-  const supportedWriterIncompatible = INCOMPATIBLE_KEYED_HASH |
-    INCOMPATIBLE_COMPRESSED_XZ |
-    INCOMPATIBLE_COMPRESSED_ZSTD |
-    INCOMPATIBLE_COMPRESSED_LZ4 |
-    INCOMPATIBLE_COMPACT;
-  if ((header.incompatible_flags & ~supportedWriterIncompatible) !== 0) {
-    throw new Error('unsupported journal: incompatible flags');
-  }
-  if ((header.incompatible_flags & INCOMPATIBLE_KEYED_HASH) === 0) {
-    throw new Error('unsupported journal: keyed hash required');
-  }
-  if (header.header_size < BigInt(HEADER_SIZE)) {
-    throw new Error('unsupported journal: outdated header');
-  }
-  if (header.data_hash_table_offset === 0n || header.field_hash_table_offset === 0n || header.tail_object_offset === 0n) {
-    throw new Error('invalid journal: missing hash tables');
-  }
-}
-
-function openedMonotonicBaseMs(header) {
-  return header.tail_entry_monotonic > 0n ? Number(header.tail_entry_monotonic / 1000n) : 0;
-}
-
 function openedCompressionFromHeader(header) {
   if ((header.incompatible_flags & INCOMPATIBLE_COMPRESSED_XZ) !== 0) return COMPRESSION_XZ;
   if ((header.incompatible_flags & INCOMPATIBLE_COMPRESSED_LZ4) !== 0) return COMPRESSION_LZ4;
   if ((header.incompatible_flags & INCOMPATIBLE_COMPRESSED_ZSTD) !== 0) return COMPRESSION_ZSTD;
   return COMPRESSION_NONE;
-}
-
-// Read object size (uint64 at offset+8) from an fd.
-function readObjectSizeFromFd(fd, offset) {
-  const buf = Buffer.alloc(8);
-  readSync(fd, buf, 0, 8, Number(offset) + 8);
-  return readUint64LE(buf, 0);
-}
-
-function readObjectHeaderFromFd(fd, offset) {
-  const buf = Buffer.alloc(OBJECT_HEADER_SIZE);
-  readSync(fd, buf, 0, OBJECT_HEADER_SIZE, Number(offset));
-  return parseObjectHeader(buf, 0);
-}
-
-function fieldCacheKey(payload) {
-  if (payload.length > FIELD_CACHE_MAX_PAYLOAD_LEN) return null;
-  return payload.toString('base64');
-}
-
-function syncParentDirectory(path) {
-  if (process.platform === 'win32') return false;
-  const dirFd = openSync(dirname(path), 'r');
-  try {
-    fsyncSync(dirFd);
-    return true;
-  } finally {
-    closeSync(dirFd);
-  }
 }
 
 function normalizeCompression(value) {
@@ -1117,14 +1080,6 @@ function normalizeLivePublishEveryEntries(value) {
   return value;
 }
 
-export function normalizeFieldNamePolicy(value) {
-  if (value === undefined || value === null || value === '') return FIELD_NAME_POLICY_JOURNALD;
-  if (value === FIELD_NAME_POLICY_JOURNALD) return FIELD_NAME_POLICY_JOURNALD;
-  if (value === FIELD_NAME_POLICY_RAW) return FIELD_NAME_POLICY_RAW;
-  if (value === FIELD_NAME_POLICY_JOURNAL_APP) return FIELD_NAME_POLICY_JOURNAL_APP;
-  throw new Error(`unsupported field name policy: ${value}`);
-}
-
 function uuidOption(value, label) {
   if (value === undefined || value === null) return null;
   let out;
@@ -1137,111 +1092,4 @@ function uuidOption(value, label) {
   }
   if (out.length !== 16) throw new Error(`${label} must be 16 bytes or 32 hex characters`);
   return out;
-}
-
-export function writerPolicyForLogPolicy(policy) {
-  // Log applies JOURNAL-APP filtering before injecting SDK-owned protected fields.
-  // The underlying writer must therefore accept those trusted metadata fields.
-  return normalizeFieldNamePolicy(policy) === FIELD_NAME_POLICY_RAW
-    ? FIELD_NAME_POLICY_RAW
-    : FIELD_NAME_POLICY_JOURNALD;
-}
-
-export function prepareFieldsForPolicy(fields, policy) {
-  const normalized = normalizeFieldNamePolicy(policy);
-  if (!Array.isArray(fields) || fields.length === 0) throw new Error('empty entry');
-  if (normalized === FIELD_NAME_POLICY_JOURNAL_APP) {
-    const filtered = fields.filter((field) => {
-      try {
-        validateFieldNameForPolicy(field.name, normalized);
-        return true;
-      } catch {
-        return false;
-      }
-    });
-    if (filtered.length === 0) throw new Error('empty entry');
-    return filtered;
-  }
-  for (const field of fields) validateFieldNameForPolicy(field.name, normalized);
-  return fields;
-}
-
-export function prepareRawPayloadsForPolicy(payloads, policy) {
-  const normalized = normalizeFieldNamePolicy(policy);
-  if (!Array.isArray(payloads) || payloads.length === 0) throw new Error('empty entry');
-  const prepared = payloads.map(rawPayloadBytes);
-  for (const payload of prepared) {
-    const separator = payload.indexOf(0x3d);
-    if (separator <= 0) throw new Error('invalid raw field payload: missing field name separator');
-  }
-  if (normalized === FIELD_NAME_POLICY_JOURNAL_APP) {
-    const filtered = prepared.filter((payload) => {
-      try {
-        validateFieldNameForPolicy(payload.subarray(0, payload.indexOf(0x3d)), normalized);
-        return true;
-      } catch {
-        return false;
-      }
-    });
-    if (filtered.length === 0) throw new Error('empty entry');
-    return filtered;
-  }
-  for (const payload of prepared) {
-    validateFieldNameForPolicy(payload.subarray(0, payload.indexOf(0x3d)), normalized);
-  }
-  return prepared;
-}
-
-export function validateFieldNameForPolicy(name, policy = FIELD_NAME_POLICY_JOURNALD) {
-  const normalized = normalizeFieldNamePolicy(policy);
-  if (normalized === FIELD_NAME_POLICY_RAW) return validateRawFieldName(name);
-  return validateJournaldFieldName(name, normalized === FIELD_NAME_POLICY_JOURNALD);
-}
-
-function rawPayloadBytes(payload) {
-  if (Buffer.isBuffer(payload)) return payload;
-  if (payload instanceof Uint8Array) return Buffer.from(payload);
-  if (typeof payload === 'string') return Buffer.from(payload, 'utf8');
-  return Buffer.from(payload);
-}
-
-export function fieldNameBytes(name) {
-  if (Buffer.isBuffer(name)) return name;
-  if (name instanceof Uint8Array) return Buffer.from(name);
-  return Buffer.from(String(name), 'utf8');
-}
-
-function fieldNameForError(name) {
-  if (Buffer.isBuffer(name) || name instanceof Uint8Array) return Buffer.from(name).toString('utf8');
-  return String(name);
-}
-
-function validateRawFieldName(name) {
-  const bytes = fieldNameBytes(name);
-  if (bytes.length === 0) throw new Error('invalid field name: empty');
-  for (let i = 0; i < bytes.length; i++) {
-    if (bytes[i] === 0x3d) throw new Error(`invalid field name: contains '=': ${fieldNameForError(name)}`);
-  }
-}
-
-function validateJournaldFieldName(name, allowProtected) {
-  const bytes = fieldNameBytes(name);
-  const display = fieldNameForError(name);
-  if (bytes.length === 0) throw new Error('invalid field name: empty');
-  if (bytes.length > 64) throw new Error(`invalid field name: too long (${bytes.length})`);
-  if (!allowProtected && bytes[0] === 0x5f) throw new Error(`invalid field name: protected: ${display}`);
-  if (bytes[0] >= 0x30 && bytes[0] <= 0x39) throw new Error(`invalid field name: starts with digit: ${display}`);
-  validateJournaldFieldNameBytes(bytes, display);
-}
-
-function validateJournaldFieldNameBytes(bytes, display) {
-  for (let i = 0; i < bytes.length; i++) {
-    if (!isJournaldFieldNameByte(bytes[i])) {
-      throw new Error(`invalid field name: bad char at ${i}: ${display}`);
-    }
-  }
-}
-
-function isJournaldFieldNameByte(c) {
-  return c === 0x5f || (c >= 0x41 && c <= 0x5a) || (c >= 0x30 && c <= 0x39);
 }

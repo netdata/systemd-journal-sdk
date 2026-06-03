@@ -148,10 +148,16 @@ Last updated: 2026-06-03
   affected by Codacy file-size findings into focused package-local files, kept
   APIs and test behavior unchanged, passed `go test ./...`, confirmed no
   tracked Go file remains at or above 1000 non-comment/non-blank lines, and
-  passed local Lizard on the changed Go files. Remaining work is to push Batch
-  34, verify Codacy no longer reports Go file-size findings, split or
-  disposition the remaining non-Go file-size findings, record final scanner
-  results, and complete whole-SOW review.
+  passed local Lizard on the changed Go files. Batch 35 split the Node.js and
+  Python runtime writer helper code into focused modules, preserved public
+  writer import paths, passed Node.js and Python package tests, confirmed
+  `node/src/lib/writer.js` and `python/journal/writer.py` are below 1000
+  non-comment/non-blank lines, and passed local Lizard on the changed runtime
+  writer files. Remaining work is to push Batch 35, verify Codacy no longer
+  reports Go/Node.js/Python runtime writer file-size findings, split or
+  disposition the remaining Rust, Node.js/Python test, and Python harness
+  file-size findings, record final scanner results, and complete whole-SOW
+  review.
 
 ## Pending
 

@@ -2222,6 +2222,29 @@ Batch 34:
   - Local Lizard with `-C 12 -L 100 -a 12 -w` reported no warnings for the
     changed Go files.
 
+Batch 35:
+
+- Scope: Codacy `Lizard_file-nloc-critical` file-size findings in the Node.js
+  and Python runtime writer files.
+- Changes:
+  - Split Node.js writer field policy helpers into `writer-policy.js` and
+    writer file/open/cache helpers into `writer-file.js`, while re-exporting
+    the same public writer symbols from `writer.js`.
+  - Split Python writer field policy helpers into `writer_policy.py`,
+    compression helpers into `writer_compression.py`, mmap/file arena helpers
+    into `writer_arena.py`, and option/time/dedup helpers into
+    `writer_options.py`, while keeping imports from `journal.writer`
+    compatible for current callers.
+- Validation:
+  - `npm_config_cache=../.local/npm-cache npm test` passed for the Node.js
+    package after the split.
+  - `python3 -m py_compile` passed for the changed Python writer modules.
+  - `.local/python-venv/bin/python python/test_all.py` passed after the split.
+  - A tracked-file NLOC check confirmed `node/src/lib/writer.js` and
+    `python/journal/writer.py` are below 1000 non-comment, non-blank lines.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reported no warnings for the
+    changed Node.js and Python runtime writer files.
+
 Reviewer findings:
 
 - Pending. The current SOW is not ready for terminal reviewer review because
@@ -2294,8 +2317,11 @@ Follow-up mapping:
   - trigger Codacy reanalysis after Batch 29 and verify the non-file-size
     findings are gone;
   - push Batch 34 and verify Codacy no longer reports Go file-size findings;
-  - address the remaining non-Go file-size findings by splitting files or
-    recording an explicit user decision for generated/vendor/test exceptions;
+  - push Batch 35 and verify Codacy no longer reports Node.js/Python runtime
+    writer file-size findings;
+  - address the remaining Rust, Node.js/Python test, and Python harness
+    file-size findings by splitting files or recording an explicit user
+    decision for generated/vendor/test exceptions;
   - run GitHub workflows after push and record CodeQL/Codacy results;
   - switch from reporting-only to enforcement after the actionable baseline is
     zero or after a later user decision.

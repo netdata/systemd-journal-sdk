@@ -3,9 +3,6 @@
 
 import os
 import struct
-import lzma
-import mmap
-import importlib.util
 from ._platform_io import (
     read_at as _read_fd_at,
     rename_requires_closed_file,
@@ -37,100 +34,26 @@ from .header import (
 from .hash import sip_hash_24, jenkins_hash_64
 from .compress import MAX_UNCOMPRESSED_SIZE, decompress_zst_sync, decompress_xz_sync, decompress_lz4_sync
 from .seal import SealState, TAG_LENGTH, OBJECT_TYPE_TAG, COMPATIBLE_SEALED, COMPATIBLE_SEALED_CONTINUOUS
-
-COMPRESSION_NONE = 0
-COMPRESSION_ZSTD = 1
-COMPRESSION_XZ = 2
-COMPRESSION_LZ4 = 3
-DEFAULT_COMPRESS_THRESHOLD = 512
-MIN_COMPRESS_THRESHOLD = 8
-FIELD_NAME_POLICY_JOURNALD = 'journald'
-FIELD_NAME_POLICY_RAW = 'raw'
-FIELD_NAME_POLICY_JOURNAL_APP = 'journal-app'
+from .writer_arena import _FileArena, _MappedArena
+from .writer_compression import (
+    COMPRESSION_NONE, COMPRESSION_ZSTD, COMPRESSION_XZ, COMPRESSION_LZ4,
+    DEFAULT_COMPRESS_THRESHOLD, MIN_COMPRESS_THRESHOLD,
+    _compressed_payload, _ensure_lz4_available, _ensure_xz_available,
+    _ensure_zstd_available, _lz4_compress, _normalize_compress_threshold,
+    _normalize_compression, _xz_compress, _zstd_compress,
+)
+from .writer_policy import (
+    FIELD_NAME_POLICY_JOURNALD, FIELD_NAME_POLICY_RAW, FIELD_NAME_POLICY_JOURNAL_APP,
+    _field_name_bytes, _normalize_field_name_policy, _prepare_fields_for_policy,
+    _prepare_raw_payloads_for_policy, _validate_field_name_for_policy,
+    _writer_policy_for_log_policy,
+)
+from .writer_options import (
+    _current_time_ms, _dedupe_entry_items, _normalize_live_publish_every_entries,
+    _uuid_option,
+)
 FIELD_CACHE_MAX_ENTRIES = 1024
 FIELD_CACHE_MAX_PAYLOAD_LEN = 128
-
-
-class _MappedArena:
-    def __init__(self, fd, size):
-        self._fd = fd
-        self._mmap = None
-        self._size = 0
-        self.resize(size)
-
-    def resize(self, size):
-        size = int(size)
-        if size <= 0:
-            raise ValueError('mapped arena size must be positive')
-        if self._mmap is not None and size == self._size:
-            return
-        os.ftruncate(self._fd, size)
-        if self._mmap is None:
-            self._mmap = mmap.mmap(self._fd, size, access=mmap.ACCESS_WRITE)
-        elif size != self._size:
-            try:
-                self._mmap.resize(size)
-            except Exception:
-                self._mmap.flush()
-                self._mmap.close()
-                self._mmap = None
-                self._mmap = mmap.mmap(self._fd, size, access=mmap.ACCESS_WRITE)
-        self._size = size
-
-    def read_at(self, offset, size):
-        end = int(offset) + int(size)
-        if offset < 0 or size < 0 or end > self._size:
-            raise ValueError('mapped arena read out of bounds')
-        return self._mmap[offset:end]
-
-    def write_at(self, offset, data):
-        end = int(offset) + len(data)
-        if offset < 0 or end > self._size:
-            raise ValueError('mapped arena write out of bounds')
-        self._mmap[offset:end] = data
-
-    def flush(self):
-        if self._mmap is not None:
-            self._mmap.flush()
-
-    def close(self):
-        if self._mmap is None:
-            return
-        self._mmap.close()
-        self._mmap = None
-
-
-class _FileArena:
-    def __init__(self, fd, size):
-        self._fd = fd
-        self._size = 0
-        self.resize(size)
-
-    def resize(self, size):
-        size = int(size)
-        if size <= 0:
-            raise ValueError('file arena size must be positive')
-        if size != self._size:
-            os.ftruncate(self._fd, size)
-            self._size = size
-
-    def read_at(self, offset, size):
-        end = int(offset) + int(size)
-        if offset < 0 or size < 0 or end > self._size:
-            raise ValueError('file arena read out of bounds')
-        return _read_fd_at(self._fd, size, offset)
-
-    def write_at(self, offset, data):
-        end = int(offset) + len(data)
-        if offset < 0 or end > self._size:
-            raise ValueError('file arena write out of bounds')
-        _write_fd_at(self._fd, data, offset)
-
-    def flush(self):
-        return None
-
-    def close(self):
-        return None
 
 
 class Writer:
@@ -1202,235 +1125,3 @@ def _opened_writer_monotonic_base(header):
     if header['tail_entry_monotonic'] > 0:
         return header['tail_entry_monotonic'] // 1000
     return 0
-
-
-def _dedupe_entry_items(items):
-    deduped = [items[0]]
-    for i in range(1, len(items)):
-        if items[i]['offset'] != deduped[-1]['offset']:
-            deduped.append(items[i])
-    return deduped
-
-
-def _compressed_payload(payload, compressor, compression_flag):
-    compressed = _best_effort_compress(compressor, payload)
-    if compressed is not None and len(compressed) < len(payload):
-        return compressed, compression_flag
-    return payload, 0
-
-
-def _current_time_ms():
-    import time
-    return int(time.time() * 1000)
-
-
-def _normalize_field_name_policy(value):
-    if value is None or value == '':
-        return FIELD_NAME_POLICY_JOURNALD
-    if value == FIELD_NAME_POLICY_JOURNALD:
-        return FIELD_NAME_POLICY_JOURNALD
-    if value == FIELD_NAME_POLICY_RAW:
-        return FIELD_NAME_POLICY_RAW
-    if value == FIELD_NAME_POLICY_JOURNAL_APP:
-        return FIELD_NAME_POLICY_JOURNAL_APP
-    raise ValueError(f'unsupported field name policy: {value}')
-
-
-def _writer_policy_for_log_policy(policy):
-    return FIELD_NAME_POLICY_RAW if _normalize_field_name_policy(policy) == FIELD_NAME_POLICY_RAW else FIELD_NAME_POLICY_JOURNALD
-
-
-def _prepare_fields_for_policy(fields, policy):
-    policy = _normalize_field_name_policy(policy)
-    if not fields:
-        raise ValueError('empty entry')
-    if policy == FIELD_NAME_POLICY_JOURNAL_APP:
-        filtered = []
-        for field in fields:
-            try:
-                _validate_field_name_for_policy(field['name'], policy)
-            except ValueError:
-                continue
-            filtered.append(field)
-        if not filtered:
-            raise ValueError('empty entry')
-        return filtered
-    for field in fields:
-        _validate_field_name_for_policy(field['name'], policy)
-    return fields
-
-
-def _prepare_raw_payloads_for_policy(payloads, policy):
-    policy = _normalize_field_name_policy(policy)
-    if not payloads:
-        raise ValueError('empty entry')
-    prepared = []
-    for payload in payloads:
-        payload = _raw_payload_bytes(payload)
-        field_name = _raw_payload_field_name(payload)
-        if policy == FIELD_NAME_POLICY_JOURNAL_APP:
-            try:
-                _validate_field_name_for_policy(field_name, policy)
-            except ValueError:
-                continue
-        else:
-            _validate_field_name_for_policy(field_name, policy)
-        prepared.append(payload)
-    if not prepared:
-        raise ValueError('empty entry')
-    return prepared
-
-
-def _raw_payload_bytes(payload):
-    if isinstance(payload, bytes):
-        return payload
-    if isinstance(payload, (bytearray, memoryview)):
-        return bytes(payload)
-    if isinstance(payload, str):
-        return payload.encode('utf-8')
-    return bytes(payload)
-
-
-def _raw_payload_field_name(payload):
-    eq = payload.find(b'=')
-    if eq < 0:
-        raise ValueError('invalid raw payload: missing field separator')
-    if eq == 0:
-        raise ValueError('invalid field name: empty')
-    return payload[:eq]
-
-
-def _validate_field_name_for_policy(name, policy=FIELD_NAME_POLICY_JOURNALD):
-    policy = _normalize_field_name_policy(policy)
-    if policy == FIELD_NAME_POLICY_RAW:
-        return _validate_raw_field_name(name)
-    return _validate_journald_field_name(name, allow_protected=(policy == FIELD_NAME_POLICY_JOURNALD))
-
-
-def _field_name_bytes(name):
-    if isinstance(name, bytes):
-        return name
-    if isinstance(name, (bytearray, memoryview)):
-        return bytes(name)
-    return str(name).encode('utf-8')
-
-
-def _field_name_for_error(name):
-    if isinstance(name, (bytes, bytearray, memoryview)):
-        return bytes(name).decode('utf-8', errors='replace')
-    return str(name)
-
-
-def _validate_raw_field_name(name):
-    data = _field_name_bytes(name)
-    if len(data) == 0:
-        raise ValueError('invalid field name: empty')
-    if b'=' in data:
-        raise ValueError(f"invalid field name: contains '=': {_field_name_for_error(name)}")
-
-
-def _validate_journald_field_name(name, allow_protected=True):
-    data = _field_name_bytes(name)
-    display = _field_name_for_error(name)
-    if len(data) == 0:
-        raise ValueError('invalid field name: empty')
-    if len(data) > 64:
-        raise ValueError(f'invalid field name: too long ({len(data)})')
-    if not allow_protected and data[0] == 0x5F:
-        raise ValueError(f'invalid field name: protected: {display}')
-    if 0x30 <= data[0] <= 0x39:
-        raise ValueError(f'invalid field name: starts with digit: {display}')
-    for i, code in enumerate(data):
-        if code != 0x5F and not (0x41 <= code <= 0x5A) and not (0x30 <= code <= 0x39):
-            raise ValueError(f'invalid field name: bad char at {i}: {display}')
-
-
-def _uuid_option(value, fallback):
-    if value is None:
-        return fallback
-    if isinstance(value, str):
-        value = value.replace('-', '')
-        return bytes.fromhex(value)
-    if isinstance(value, bytearray):
-        value = bytes(value)
-    if not isinstance(value, bytes) or len(value) != 16:
-        raise ValueError('uuid options must be 16 bytes or 32 hex characters')
-    return value
-
-
-def _normalize_compression(value):
-    if value is None or value == COMPRESSION_NONE or value == 'none':
-        return COMPRESSION_NONE
-    if value == COMPRESSION_ZSTD or value == 'zstd':
-        return COMPRESSION_ZSTD
-    if value == COMPRESSION_XZ or value == 'xz':
-        return COMPRESSION_XZ
-    if value == COMPRESSION_LZ4 or value == 'lz4':
-        return COMPRESSION_LZ4
-    raise ValueError(f'unsupported compression: {value}')
-
-
-def _normalize_compress_threshold(value):
-    if value is None:
-        return DEFAULT_COMPRESS_THRESHOLD
-    threshold = int(value)
-    return max(MIN_COMPRESS_THRESHOLD, threshold)
-
-
-def _normalize_live_publish_every_entries(value):
-    if value is None:
-        return 1
-    entries = int(value)
-    if entries < 0:
-        raise ValueError(f'invalid live_publish_every_entries: {value}')
-    return entries
-
-
-def _zstd_compress(payload):
-    import compression.zstd
-    return compression.zstd.compress(payload)
-
-
-def _xz_compress(payload):
-    return lzma.compress(
-        payload,
-        format=lzma.FORMAT_XZ,
-        check=lzma.CHECK_NONE,
-        filters=[{'id': lzma.FILTER_LZMA2, 'preset': 0}],
-    )
-
-
-def _lz4_compress(payload):
-    import lz4.block
-    compressed = lz4.block.compress(payload, store_size=False)
-    size_prefix = struct.pack('<Q', len(payload))
-    return size_prefix + compressed
-
-
-def _best_effort_compress(compressor, payload):
-    try:
-        return compressor(payload)
-    except Exception:
-        return None
-
-
-def _ensure_zstd_available():
-    if not _module_available('compression.zstd'):
-        raise ImportError('compression.zstd is required for zstd journal compression')
-
-
-def _ensure_xz_available():
-    if not _module_available('lzma'):
-        raise ImportError('lzma is required for xz journal compression')
-
-
-def _ensure_lz4_available():
-    if not _module_available('lz4.block'):
-        raise ImportError('lz4.block is required for lz4 journal compression')
-
-
-def _module_available(name):
-    try:
-        return importlib.util.find_spec(name) is not None
-    except ModuleNotFoundError:
-        return False
