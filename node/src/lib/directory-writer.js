@@ -30,6 +30,23 @@ export class Log {
   constructor(directory, options = {}) {
     if (!directory) throw new Error('invalid journal directory');
     this.rootDirectory = directory;
+    this._configureGeneralOptions(options);
+    this._configureRotation(options);
+    this._configureRetention(options);
+    this._deriveRotationFromRetention();
+    this._initializeRuntimeState(options);
+    this._initializeIdentity(options);
+
+    this._ensureDirectory();
+    this._attachExistingChainState(options);
+    this._findOrCreateActiveFile();
+    if (this.openMode === LOG_OPEN_EAGER && !this.writer) {
+      this._openWriter({ realtimeUsec: nowUsec() }, LOG_LIFECYCLE_REASON_EAGER_OPEN);
+    }
+    this._applyRetentionOnOpen();
+  }
+
+  _configureGeneralOptions(options) {
     this.source = options.source || 'system';
     validateJournalSource(this.source);
     this.strictSystemdNaming = options.strictSystemdNaming === true || options.strict_systemd_naming === true;
@@ -43,37 +60,23 @@ export class Log {
     this.compact = options.compact === true || options.format === 'compact';
     this.livePublishEveryEntries = optionValue(options, 'livePublishEveryEntries', 'live_publish_every_entries');
     this.fieldNamePolicy = normalizeFieldNamePolicy(optionValue(options, 'fieldNamePolicy', 'field_name_policy'));
+  }
 
+  _configureRotation(options) {
     const rotationPolicy = optionValue(options, 'rotationPolicy', 'rotation_policy');
+    this.maxEntries = policyNumber(rotationPolicy, options, ['maxEntries', 'max_entries'], ['maxEntries', 'max_entries'], 'rotation max entries', DEFAULT_MAX_ENTRIES);
+    this.maxBytes = policyNumber(rotationPolicy, options, ['maxBytes', 'maxFileSize', 'max_file_size', 'max_bytes'], ['maxBytes', 'max_bytes'], 'rotation max file size', DEFAULT_MAX_BYTES);
+    this.maxDurationUsec = policyUsec(rotationPolicy, options, ['maxDurationUsec', 'maxDuration', 'max_duration_usec', 'max_duration'], ['maxDurationUsec', 'max_duration_usec'], 'rotation max duration', DEFAULT_MAX_DURATION_USEC);
+  }
+
+  _configureRetention(options) {
     const retentionPolicy = optionValue(options, 'retentionPolicy', 'retention_policy');
+    this.maxFiles = policyNumber(retentionPolicy, options, ['maxFiles', 'max_files'], ['maxFiles', 'max_files'], 'retention max files', DEFAULT_MAX_FILES);
+    this.maxRetentionBytes = policyNumber(retentionPolicy, options, ['maxBytes', 'maxRetentionBytes', 'max_bytes', 'max_retention_bytes'], ['maxRetentionBytes', 'max_retention_bytes'], 'retention max bytes', DEFAULT_RETENTION_BYTES);
+    this.maxRetentionAgeUsec = policyUsec(retentionPolicy, options, ['maxAgeUsec', 'maxRetentionAgeUsec', 'maxAge', 'max_age_usec', 'max_retention_age_usec', 'max_age'], ['maxRetentionAgeUsec', 'max_retention_age_usec'], 'retention max age', DEFAULT_RETENTION_AGE_USEC);
+  }
 
-    // Rotation policy
-    this.maxEntries = rotationPolicy
-      ? positiveOptionalNumber(optionValue(rotationPolicy, 'maxEntries', 'max_entries'), 'rotation max entries', DEFAULT_MAX_ENTRIES)
-      : options.maxEntries ?? options.max_entries ?? DEFAULT_MAX_ENTRIES;
-    this.maxBytes = rotationPolicy
-      ? positiveOptionalNumber(optionValue(rotationPolicy, 'maxBytes', 'maxFileSize', 'max_file_size', 'max_bytes'), 'rotation max file size', DEFAULT_MAX_BYTES)
-      : options.maxBytes ?? options.max_bytes ?? DEFAULT_MAX_BYTES;
-    this.maxDurationUsec = rotationPolicy
-      ? positiveOptionalUsec(optionValue(rotationPolicy, 'maxDurationUsec', 'maxDuration', 'max_duration_usec', 'max_duration'), 'rotation max duration', DEFAULT_MAX_DURATION_USEC)
-      : optionUsec(
-        options.maxDurationUsec ?? options.max_duration_usec,
-        DEFAULT_MAX_DURATION_USEC,
-      );
-
-    // Retention policy
-    this.maxFiles = retentionPolicy
-      ? positiveOptionalNumber(optionValue(retentionPolicy, 'maxFiles', 'max_files'), 'retention max files', DEFAULT_MAX_FILES)
-      : options.maxFiles ?? options.max_files ?? DEFAULT_MAX_FILES;
-    this.maxRetentionBytes = retentionPolicy
-      ? positiveOptionalNumber(optionValue(retentionPolicy, 'maxBytes', 'maxRetentionBytes', 'max_bytes', 'max_retention_bytes'), 'retention max bytes', DEFAULT_RETENTION_BYTES)
-      : options.maxRetentionBytes ?? options.max_retention_bytes ?? DEFAULT_RETENTION_BYTES;
-    this.maxRetentionAgeUsec = retentionPolicy
-      ? positiveOptionalUsec(optionValue(retentionPolicy, 'maxAgeUsec', 'maxRetentionAgeUsec', 'maxAge', 'max_age_usec', 'max_retention_age_usec', 'max_age'), 'retention max age', DEFAULT_RETENTION_AGE_USEC)
-      : optionUsec(
-        options.maxRetentionAgeUsec ?? options.max_retention_age_usec,
-        DEFAULT_RETENTION_AGE_USEC,
-    );
+  _deriveRotationFromRetention() {
     if (this.maxBytes === DEFAULT_MAX_BYTES && this.maxRetentionBytes > 0) {
       this.maxBytes = normalizeJournalMaxFileSize(Math.max(1, Math.floor(this.maxRetentionBytes / DERIVED_ROTATION_FRACTION)), this.compact);
     }
@@ -82,7 +85,9 @@ export class Log {
       this.maxDurationUsec = (this.maxRetentionAgeUsec + fraction - 1n) / fraction;
       if (this.maxDurationUsec <= 0n) this.maxDurationUsec = 1n;
     }
+  }
 
+  _initializeRuntimeState(options) {
     this.activePath = null;
     this.writer = null;
     this.closed = false;
@@ -92,6 +97,9 @@ export class Log {
     this.lastMonotonic = 0n;
     const headSeqnumOption = optionValue(options, 'headSeqnum', 'head_seqnum');
     this.nextSeqnum = headSeqnumOption ? BigInt(headSeqnumOption) : 1n;
+  }
+
+  _initializeIdentity(options) {
     const seqnumIdOption = optionValue(options, 'seqnumId', 'seqnum_id');
     const bootIdOption = optionValue(options, 'bootId', 'boot_id');
     const machineIdOption = optionValue(options, 'machineId', 'machine_id');
@@ -103,15 +111,30 @@ export class Log {
     this.bootId = uuidOption(bootIdOption, 'boot id') || randomUUID();
     this.machineId = uuidOption(machineIdOption, 'machine id') || randomUUID();
     this.directory = join(this.rootDirectory, uuidToString(this.machineId));
+  }
 
-    this._ensureDirectory();
+  _attachExistingChainState(options) {
     const chainState = this._scanChainState();
+    this._applyChainSequenceState(chainState, options);
+    this._applyChainTimestampState(chainState);
+    this._attachChainActive(chainState);
+  }
+
+  _applyChainSequenceState(chainState, options) {
+    const headSeqnumOption = optionValue(options, 'headSeqnum', 'head_seqnum');
+    const seqnumIdOption = optionValue(options, 'seqnumId', 'seqnum_id');
     if (headSeqnumOption === undefined && chainState.tailSeqnum > 0n) this.nextSeqnum = chainState.tailSeqnum + 1n;
     if (seqnumIdOption === undefined && chainState.seqnumId) this.seqnumId = Buffer.from(chainState.seqnumId);
+  }
+
+  _applyChainTimestampState(chainState) {
     this.lastRealtime = chainState.tailRealtime;
     if (chainState.tailBootId && chainState.tailBootId.equals(this.bootId)) {
       this.lastMonotonic = chainState.tailMonotonic;
     }
+  }
+
+  _attachChainActive(chainState) {
     if (this.strictSystemdNaming && chainState.activePath) {
       this._archiveOnlineChainActive(chainState.activePath);
     }
@@ -121,11 +144,6 @@ export class Log {
     if (!this.strictSystemdNaming) {
       if (chainState.activePath) this._attachExistingActive(chainState.activePath);
     }
-    this._findOrCreateActiveFile();
-    if (this.openMode === LOG_OPEN_EAGER && !this.writer) {
-      this._openWriter({ realtimeUsec: nowUsec() }, LOG_LIFECYCLE_REASON_EAGER_OPEN);
-    }
-    this._applyRetentionOnOpen();
   }
 
   _ensureDirectory() {
@@ -218,65 +236,55 @@ export class Log {
   }
 
   _openWriter(options = {}, reason = LOG_LIFECYCLE_REASON_APPEND) {
-    if (!this.activePath) {
-      if (this.strictSystemdNaming) {
-        this.activePath = this._systemdActivePath();
-      } else {
-        const headRealtime = optionUsec(options.realtimeUsec ?? options.realtime_usec, nowUsec());
-        this.activePath = this._chainPathFor(this.seqnumId, this.nextSeqnum, headRealtime);
-      }
-    }
-    if (existsSync(this.activePath)) {
-      try {
-        this.writer = Writer.open(this.activePath, {
-          livePublishEveryEntries: this.livePublishEveryEntries,
-          fieldNamePolicy: writerPolicyForLogPolicy(this.fieldNamePolicy),
-        });
-      } catch (error) {
-        if (!isReplaceableActiveOpenError(error)) throw error;
-        this._replaceActiveFile(this.activePath);
-      }
-      if (this.writer) {
-        if (this.writer.header.n_entries === 0n) {
-          this._discardEmptyOpenedWriter();
-        } else {
-          this._captureWriterIdentity();
-          return;
-        }
-      }
-      if (!this.activePath) {
-        if (this.strictSystemdNaming) {
-          this.activePath = this._systemdActivePath();
-        } else {
-          const headRealtime = optionUsec(options.realtimeUsec ?? options.realtime_usec, nowUsec());
-          this.activePath = this._chainPathFor(this.seqnumId, this.nextSeqnum, headRealtime);
-        }
-      }
-    }
+    this._ensureActivePath(options);
+    if (this._openExistingActive(options)) return;
+    this._createActiveWriter(reason);
+  }
 
-    if (this.activePath && existsSync(this.activePath)) {
-      try {
-        this.writer = Writer.open(this.activePath, {
-          livePublishEveryEntries: this.livePublishEveryEntries,
-          fieldNamePolicy: writerPolicyForLogPolicy(this.fieldNamePolicy),
-        });
-      } catch (error) {
-        if (!isReplaceableActiveOpenError(error)) throw error;
-        this._replaceActiveFile(this.activePath);
-      }
-      if (this.writer) {
-        this._captureWriterIdentity();
-        return;
-      } else {
-        if (this.strictSystemdNaming) {
-          this.activePath = this._systemdActivePath();
-        } else {
-          const headRealtime = optionUsec(options.realtimeUsec ?? options.realtime_usec, nowUsec());
-          this.activePath = this._chainPathFor(this.seqnumId, this.nextSeqnum, headRealtime);
-        }
-      }
+  _ensureActivePath(options) {
+    if (this.activePath) return;
+    if (this.strictSystemdNaming) {
+      this.activePath = this._systemdActivePath();
+      return;
     }
+    const headRealtime = optionUsec(options.realtimeUsec ?? options.realtime_usec, nowUsec());
+    this.activePath = this._chainPathFor(this.seqnumId, this.nextSeqnum, headRealtime);
+  }
 
+  _openExistingActive(options) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (!this.activePath || !existsSync(this.activePath)) return false;
+      const opened = this._tryOpenExistingActive(this.activePath, true);
+      if (opened) return true;
+      this._ensureActivePath(options);
+    }
+    return false;
+  }
+
+  _tryOpenExistingActive(path, discardEmpty) {
+    try {
+      this.writer = Writer.open(path, this._openWriterOptions());
+    } catch (error) {
+      if (!isReplaceableActiveOpenError(error)) throw error;
+      this._replaceActiveFile(path);
+      return false;
+    }
+    if (discardEmpty && this.writer.header.n_entries === 0n) {
+      this._discardEmptyOpenedWriter();
+      return false;
+    }
+    this._captureWriterIdentity();
+    return true;
+  }
+
+  _openWriterOptions() {
+    return {
+      livePublishEveryEntries: this.livePublishEveryEntries,
+      fieldNamePolicy: writerPolicyForLogPolicy(this.fieldNamePolicy),
+    };
+  }
+
+  _createActiveWriter(reason) {
     const opts = { headSeqnum: this.nextSeqnum, compression: this.compression, compact: this.compact };
     if (this.maxBytes > 0) opts.maxFileSize = this.maxBytes;
     if (this.compressionThresholdBytes !== undefined) {
@@ -309,21 +317,7 @@ export class Log {
 
   _attachExistingActive(path) {
     this.activePath = path;
-    try {
-      this.writer = Writer.open(path, {
-        livePublishEveryEntries: this.livePublishEveryEntries,
-        fieldNamePolicy: writerPolicyForLogPolicy(this.fieldNamePolicy),
-      });
-    } catch (error) {
-      if (!isReplaceableActiveOpenError(error)) throw error;
-      this._replaceActiveFile(path);
-      return;
-    }
-    if (this.writer.header.n_entries === 0n) {
-      this._discardEmptyOpenedWriter();
-      return;
-    }
-    this._captureWriterIdentity();
+    this._tryOpenExistingActive(path, true);
   }
 
   _archiveOnlineChainActive(path) {
@@ -444,92 +438,104 @@ export class Log {
   }
 
   _applyRetention(protectedPath = this.activePath) {
-    const entries = readdirSync(this.directory);
-    const archives = [];
-    for (const entry of entries) {
-      const parsed = parseArchivedJournalName(entry, this.source);
-      if (!parsed) continue;
-      const fullPath = join(this.directory, parsed.name);
-      try {
-        const stat = statSync(fullPath);
-        archives.push({
-          name: parsed.name,
-          path: fullPath,
-          size: this._retainedSize(fullPath, stat.size),
-          headSeqnum: parsed.headSeqnum,
-          headRealtime: parsed.headRealtime,
-        });
-      } catch {}
-    }
-    archives.sort((a, b) => {
-        if (a.headRealtime !== b.headRealtime) return a.headRealtime < b.headRealtime ? -1 : 1;
-        if (a.headSeqnum !== b.headSeqnum) return a.headSeqnum < b.headSeqnum ? -1 : 1;
-        return a.path.localeCompare(b.path);
-      });
-
-    const activePath = protectedPath;
-    let activeInArchives = false;
-    let totalBytes = 0;
-    for (const archive of archives) {
-      if (activePath && archive.path === activePath) activeInArchives = true;
-      totalBytes += archive.size;
-    }
-    let activeExtraFile = false;
-    try {
-      if (activePath && !activeInArchives) {
-        const stat = statSync(activePath);
-        totalBytes += this._retainedSize(activePath, stat.size);
-        activeExtraFile = true;
-      }
-    } catch {}
-
-    // Remove excess files beyond maxFiles
-    let fileCount = archives.length + (activeExtraFile ? 1 : 0);
-    const deletedPaths = [];
-    while (this.maxFiles > 0 && fileCount > this.maxFiles) {
-      const oldestIndex = archives.findIndex((archive) => !activePath || archive.path !== activePath);
-      if (oldestIndex === -1) break;
-      const [oldest] = archives.splice(oldestIndex, 1);
-      if (unlinkIfExists(oldest.path)) {
-        totalBytes = Math.max(0, totalBytes - oldest.size);
-        fileCount--;
-        deletedPaths.push(oldest.path);
-      }
-    }
-
-    // Check active plus archived size and remove oldest archives if over maxRetentionBytes.
-    while (this.maxRetentionBytes > 0 && totalBytes > this.maxRetentionBytes && archives.length > 0) {
-      const oldestIndex = archives.findIndex((archive) => !activePath || archive.path !== activePath);
-      if (oldestIndex === -1) break;
-      const [oldest] = archives.splice(oldestIndex, 1);
-      if (unlinkIfExists(oldest.path)) {
-        totalBytes = Math.max(0, totalBytes - oldest.size);
-        deletedPaths.push(oldest.path);
-      }
-    }
-    if (this.maxRetentionAgeUsec > 0n) {
-      const cutoff = saturatingSubBigInt(nowUsec(), this.maxRetentionAgeUsec);
-      while (archives.length > 0) {
-        const oldestIndex = archives.findIndex((archive) => {
-          if (archive.headRealtime > cutoff) return false;
-          return !activePath || archive.path !== activePath;
-        });
-        if (oldestIndex === -1) break;
-        const [oldest] = archives.splice(oldestIndex, 1);
-        if (unlinkIfExists(oldest.path)) {
-          totalBytes = Math.max(0, totalBytes - oldest.size);
-          deletedPaths.push(oldest.path);
-        }
-      }
-    }
+    const state = this._retentionState(protectedPath);
+    this._deleteByMaxFiles(state);
+    this._deleteByMaxBytes(state);
+    this._deleteByMaxAge(state);
     syncDirectory(this.directory);
-    if (deletedPaths.length > 0) {
+    if (state.deletedPaths.length > 0) {
       this._emitLifecycle({
         type: LOG_LIFECYCLE_DELETED,
         reason: LOG_LIFECYCLE_REASON_RETENTION,
-        deletedPaths,
+        deletedPaths: state.deletedPaths,
       });
     }
+  }
+
+  _retentionState(activePath) {
+    const archives = this._collectRetentionArchives();
+    const state = { activePath, archives, totalBytes: 0, fileCount: archives.length, deletedPaths: [] };
+    const activeInArchives = archives.some((archive) => activePath && archive.path === activePath);
+    for (const archive of archives) state.totalBytes += archive.size;
+    if (activePath && !activeInArchives) this._addActiveRetentionSize(state);
+    return state;
+  }
+
+  _collectRetentionArchives() {
+    const archives = [];
+    for (const entry of readdirSync(this.directory)) {
+      const archive = this._retentionArchiveForEntry(entry);
+      if (archive) archives.push(archive);
+    }
+    archives.sort(compareRetentionArchives);
+    return archives;
+  }
+
+  _retentionArchiveForEntry(entry) {
+    const parsed = parseArchivedJournalName(entry, this.source);
+    if (!parsed) return null;
+    const fullPath = join(this.directory, parsed.name);
+    try {
+      const stat = statSync(fullPath);
+      return {
+        name: parsed.name,
+        path: fullPath,
+        size: this._retainedSize(fullPath, stat.size),
+        headSeqnum: parsed.headSeqnum,
+        headRealtime: parsed.headRealtime,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  _addActiveRetentionSize(state) {
+    try {
+      const stat = statSync(state.activePath);
+      state.totalBytes += this._retainedSize(state.activePath, stat.size);
+      state.fileCount += 1;
+    } catch {}
+  }
+
+  _deleteByMaxFiles(state) {
+    while (this.maxFiles > 0 && state.fileCount > this.maxFiles) {
+      if (!this._deleteOldestRetainableArchive(state, true)) break;
+    }
+  }
+
+  _deleteByMaxBytes(state) {
+    while (this.maxRetentionBytes > 0 && state.totalBytes > this.maxRetentionBytes && state.archives.length > 0) {
+      if (!this._deleteOldestRetainableArchive(state, false)) break;
+    }
+  }
+
+  _deleteByMaxAge(state) {
+    if (this.maxRetentionAgeUsec <= 0n) return;
+    const cutoff = saturatingSubBigInt(nowUsec(), this.maxRetentionAgeUsec);
+    while (state.archives.length > 0) {
+      const index = state.archives.findIndex((archive) => archive.headRealtime <= cutoff && this._canDeleteArchive(archive, state.activePath));
+      if (index === -1) break;
+      this._deleteArchiveAt(state, index, false);
+    }
+  }
+
+  _deleteOldestRetainableArchive(state, decrementCount) {
+    const index = state.archives.findIndex((archive) => this._canDeleteArchive(archive, state.activePath));
+    if (index === -1) return false;
+    this._deleteArchiveAt(state, index, decrementCount);
+    return true;
+  }
+
+  _deleteArchiveAt(state, index, decrementCount) {
+    const [oldest] = state.archives.splice(index, 1);
+    if (!unlinkIfExists(oldest.path)) return;
+    state.totalBytes = Math.max(0, state.totalBytes - oldest.size);
+    if (decrementCount) state.fileCount--;
+    state.deletedPaths.push(oldest.path);
+  }
+
+  _canDeleteArchive(archive, activePath) {
+    return !activePath || archive.path !== activePath;
   }
 
   enforceRetention() {
@@ -787,6 +793,12 @@ function parseArchivedJournalName(name, source) {
   };
 }
 
+function compareRetentionArchives(a, b) {
+  if (a.headRealtime !== b.headRealtime) return a.headRealtime < b.headRealtime ? -1 : 1;
+  if (a.headSeqnum !== b.headSeqnum) return a.headSeqnum < b.headSeqnum ? -1 : 1;
+  return a.path.localeCompare(b.path);
+}
+
 function hex64(value) {
   return BigInt(value).toString(16).padStart(16, '0');
 }
@@ -850,6 +862,16 @@ function positiveOptionalUsec(value, label, fallback) {
   const usec = BigInt(value);
   if (usec <= 0n) throw new Error(`${label} must be greater than 0`);
   return usec;
+}
+
+function policyNumber(policy, options, policyNames, optionNames, label, fallback) {
+  if (policy) return positiveOptionalNumber(optionValue(policy, ...policyNames), label, fallback);
+  return optionValue(options, ...optionNames) ?? fallback;
+}
+
+function policyUsec(policy, options, policyNames, optionNames, label, fallback) {
+  if (policy) return positiveOptionalUsec(optionValue(policy, ...policyNames), label, fallback);
+  return optionUsec(optionValue(options, ...optionNames), fallback);
 }
 
 function normalizeLifecycle(value) {

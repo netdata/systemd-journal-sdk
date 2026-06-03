@@ -95,44 +95,50 @@ export class FileReader {
       return [];
     }
 
-    const offsets = [];
-    let offset = this.header.entry_array_offset;
-    let remaining = this.header.n_entries;
+    const state = {
+      offsets: [],
+      offset: this.header.entry_array_offset,
+      remaining: this.header.n_entries,
+    };
 
-    while (offset !== 0n && remaining > 0n) {
-      const oh = parseObjectHeader(this.buffer, Number(offset));
-      if (!oh || oh.type !== OBJECT_TYPE_ENTRY_ARRAY) {
-        break;
-      }
-      const objSize = oh.size;
-      if (objSize < BigInt(OFFSET_ARRAY_OBJECT_HEADER_SIZE)) {
-        break;
-      }
-      const nextOffset = readUint64LE(this.buffer, Number(offset) + 16);
-      const itemSize = this.offsetArrayItemSizeValue;
-      if ((objSize - BigInt(OFFSET_ARRAY_OBJECT_HEADER_SIZE)) % BigInt(itemSize) !== 0n) {
-        throw new Error('entry array item payload has invalid compact alignment');
-      }
-      const capacity = Number((objSize - BigInt(OFFSET_ARRAY_OBJECT_HEADER_SIZE)) / BigInt(itemSize));
-
-      const toRead = Number(remaining < BigInt(capacity) ? remaining : BigInt(capacity));
-      const dataStart = Number(offset) + OFFSET_ARRAY_OBJECT_HEADER_SIZE;
-
-      for (let i = 0; i < toRead; i++) {
-        const itemOffset = dataStart + i * itemSize;
-        const entryOff = this._isCompact()
-          ? BigInt(this.buffer.readUInt32LE(itemOffset))
-          : readUint64LE(this.buffer, itemOffset);
-        if (entryOff !== 0n && this._validEntryOffset(entryOff)) {
-          offsets.push(entryOff);
-        }
-      }
-
-      remaining -= BigInt(toRead);
-      offset = nextOffset;
+    while (state.offset !== 0n && state.remaining > 0n) {
+      const segment = this._readEntryArraySegment(state.offset, state.remaining);
+      if (!segment) break;
+      this._appendEntryArraySegmentOffsets(state.offsets, segment);
+      state.remaining -= BigInt(segment.toRead);
+      state.offset = segment.nextOffset;
     }
 
-    return offsets;
+    return state.offsets;
+  }
+
+  _readEntryArraySegment(offset, remaining) {
+    const oh = parseObjectHeader(this.buffer, Number(offset));
+    if (!oh || oh.type !== OBJECT_TYPE_ENTRY_ARRAY) return null;
+    const objSize = oh.size;
+    if (objSize < BigInt(OFFSET_ARRAY_OBJECT_HEADER_SIZE)) return null;
+    const itemSize = this.offsetArrayItemSizeValue;
+    const payloadSize = objSize - BigInt(OFFSET_ARRAY_OBJECT_HEADER_SIZE);
+    if (payloadSize % BigInt(itemSize) !== 0n) {
+      throw new Error('entry array item payload has invalid compact alignment');
+    }
+    const capacity = Number(payloadSize / BigInt(itemSize));
+    return {
+      dataStart: Number(offset) + OFFSET_ARRAY_OBJECT_HEADER_SIZE,
+      itemSize,
+      nextOffset: readUint64LE(this.buffer, Number(offset) + 16),
+      toRead: Number(remaining < BigInt(capacity) ? remaining : BigInt(capacity)),
+    };
+  }
+
+  _appendEntryArraySegmentOffsets(offsets, segment) {
+    for (let i = 0; i < segment.toRead; i++) {
+      const itemOffset = segment.dataStart + i * segment.itemSize;
+      const entryOff = this._isCompact()
+        ? BigInt(this.buffer.readUInt32LE(itemOffset))
+        : readUint64LE(this.buffer, itemOffset);
+      if (entryOff !== 0n && this._validEntryOffset(entryOff)) offsets.push(entryOff);
+    }
   }
 
   refresh() {
@@ -142,36 +148,50 @@ export class FileReader {
   _refreshEntryOffsets() {
     if (this.cleanupPath) return false;
 
-    let newHeader = null;
-    let newSize = 0;
-    try {
-      const stat = statSync(this.path);
-      if (!stat.isFile() || stat.size <= 0) return false;
-      newSize = stat.size;
-      newHeader = this._readCurrentHeader();
-    } catch {
-      return false;
-    }
+    const snapshot = this._readRefreshSnapshot();
+    if (!snapshot) return false;
 
-    const sameHeaderState =
-      newSize === this.buffer.length &&
-      newHeader.n_entries === this.header.n_entries &&
-      newHeader.tail_entry_array_offset === this.header.tail_entry_array_offset &&
-      newHeader.tail_entry_array_n_entries === this.header.tail_entry_array_n_entries;
-    if (sameHeaderState) {
-      this.header = newHeader;
+    if (!this._refreshSnapshotChanged(snapshot)) {
+      this.header = snapshot.header;
       this.entryIndex = Math.min(this.entryIndex, this.entryOffsets.length);
       return false;
     }
 
-    const oldBuffer = this.buffer;
-    const oldHeader = this.header;
-    const oldOffsets = this.entryOffsets;
-    const oldIndex = this.entryIndex;
-    const oldCompact = this.compact;
-    const oldEntryItemSize = this.entryItemSize;
-    const oldOffsetArrayItemSize = this.offsetArrayItemSizeValue;
-    const oldDataPayloadOffset = this.dataPayloadOffsetValue;
+    return this._reloadEntryOffsetsFromDisk();
+  }
+
+  _readRefreshSnapshot() {
+    try {
+      const stat = statSync(this.path);
+      if (!stat.isFile() || stat.size <= 0) return null;
+      return { size: stat.size, header: this._readCurrentHeader() };
+    } catch {
+      return null;
+    }
+  }
+
+  _refreshSnapshotChanged(snapshot) {
+    return snapshot.size !== this.buffer.length ||
+      snapshot.header.n_entries !== this.header.n_entries ||
+      snapshot.header.tail_entry_array_offset !== this.header.tail_entry_array_offset ||
+      snapshot.header.tail_entry_array_n_entries !== this.header.tail_entry_array_n_entries;
+  }
+
+  _readerStateSnapshot() {
+    return {
+      buffer: this.buffer,
+      header: this.header,
+      offsets: this.entryOffsets,
+      index: this.entryIndex,
+      compact: this.compact,
+      entryItemSize: this.entryItemSize,
+      offsetArrayItemSize: this.offsetArrayItemSizeValue,
+      dataPayloadOffset: this.dataPayloadOffsetValue,
+    };
+  }
+
+  _reloadEntryOffsetsFromDisk() {
+    const oldState = this._readerStateSnapshot();
 
     try {
       const buffer = readFileSync(this.path);
@@ -182,28 +202,32 @@ export class FileReader {
       this.header = header;
       this._updateLayoutCache();
       this.entryOffsets = this._readEntryArrayOffsets();
-      this.entryIndex = Math.min(oldIndex, this.entryOffsets.length);
+      this.entryIndex = Math.min(oldState.index, this.entryOffsets.length);
       this._resetCachedEntryDataState();
       return (
-        this.entryOffsets.length !== oldOffsets.length ||
+        this.entryOffsets.length !== oldState.offsets.length ||
         (
           this.entryOffsets.length > 0 &&
-          oldOffsets.length > 0 &&
-          this.entryOffsets[this.entryOffsets.length - 1] !== oldOffsets[oldOffsets.length - 1]
+          oldState.offsets.length > 0 &&
+          this.entryOffsets[this.entryOffsets.length - 1] !== oldState.offsets[oldState.offsets.length - 1]
         )
       );
     } catch {
-      this.buffer = oldBuffer;
-      this.header = oldHeader;
-      this.entryOffsets = oldOffsets;
-      this.entryIndex = Math.min(oldIndex, this.entryOffsets.length);
-      this.compact = oldCompact;
-      this.entryItemSize = oldEntryItemSize;
-      this.offsetArrayItemSizeValue = oldOffsetArrayItemSize;
-      this.dataPayloadOffsetValue = oldDataPayloadOffset;
+      this._restoreReaderState(oldState);
       this._resetCachedEntryDataState();
       return false;
     }
+  }
+
+  _restoreReaderState(state) {
+    this.buffer = state.buffer;
+    this.header = state.header;
+    this.entryOffsets = state.offsets;
+    this.entryIndex = Math.min(state.index, this.entryOffsets.length);
+    this.compact = state.compact;
+    this.entryItemSize = state.entryItemSize;
+    this.offsetArrayItemSizeValue = state.offsetArrayItemSize;
+    this.dataPayloadOffsetValue = state.dataPayloadOffset;
   }
 
   _readCurrentHeader() {

@@ -167,52 +167,57 @@ function parseVerificationKey(key) {
   if (typeof key !== 'string') {
     throw new VerificationError('invalid verification key: not a string');
   }
-  const seed = Buffer.alloc(12);
-  let i = 0;
-  for (let c = 0; c < 12; c++) {
-    while (i < key.length && key[i] === '-') i++;
-    if (i + 2 > key.length) {
-      throw new VerificationError('invalid verification key: seed too short');
-    }
-    const pair = key.slice(i, i + 2);
-    if (!/^[0-9a-fA-F]{2}$/.test(pair)) {
-      throw new VerificationError('invalid verification key: bad seed hex');
-    }
-    const b = parseInt(pair, 16);
-    seed[c] = b;
-    i += 2;
-  }
-  if (i >= key.length || key[i] !== '/') {
+  const { seed, next } = parseVerificationSeed(key);
+  if (next >= key.length || key[next] !== '/') {
     throw new VerificationError('invalid verification key: missing / separator');
   }
-  i++;
-
-  const startResult = consumeHex(key, i);
-  if (!startResult.ok || startResult.next >= key.length || key[startResult.next] !== '-') {
+  const start = parseKeyU64Part(key, next + 1, 'start');
+  if (start.next >= key.length || key[start.next] !== '-') {
     throw new VerificationError('invalid verification key: bad start hex');
   }
-  const startEpoch = BigInt(`0x${key.slice(i, startResult.next)}`);
-  if (startEpoch < 0n || startEpoch > MAX_U64) {
-    throw new VerificationError('invalid verification key: bad start hex');
-  }
-
-  i = startResult.next + 1;
-  const intervalResult = consumeHex(key, i);
-  if (!intervalResult.ok) {
-    throw new VerificationError('invalid verification key: bad interval hex');
-  }
-  const intervalUsec = BigInt(`0x${key.slice(i, intervalResult.next)}`);
-  if (intervalResult.next !== key.length) {
+  const interval = parseKeyU64Part(key, start.next + 1, 'interval');
+  if (interval.next !== key.length) {
     throw new VerificationError('invalid verification key: trailing data');
   }
-  if (intervalUsec === 0n) {
+  if (interval.value === 0n) {
     throw new VerificationError('invalid verification key: zero interval');
   }
-  if (intervalUsec < 0n || intervalUsec > MAX_U64) {
-    throw new VerificationError('invalid verification key: bad interval hex');
-  }
 
-  return { seed, startEpoch, intervalUsec };
+  return { seed, startEpoch: start.value, intervalUsec: interval.value };
+}
+
+function parseVerificationSeed(key) {
+  const seed = Buffer.alloc(12);
+  let i = 0;
+  for (let c = 0; c < seed.length; c++) {
+    while (i < key.length && key[i] === '-') i++;
+    seed[c] = parseSeedByte(key, i);
+    i += 2;
+  }
+  return { seed, next: i };
+}
+
+function parseSeedByte(key, offset) {
+  if (offset + 2 > key.length) {
+    throw new VerificationError('invalid verification key: seed too short');
+  }
+  const pair = key.slice(offset, offset + 2);
+  if (!/^[0-9a-fA-F]{2}$/.test(pair)) {
+    throw new VerificationError('invalid verification key: bad seed hex');
+  }
+  return parseInt(pair, 16);
+}
+
+function parseKeyU64Part(key, start, label) {
+  const result = consumeHex(key, start);
+  if (!result.ok) {
+    throw new VerificationError(`invalid verification key: bad ${label} hex`);
+  }
+  const value = BigInt(`0x${key.slice(start, result.next)}`);
+  if (value < 0n || value > MAX_U64) {
+    throw new VerificationError(`invalid verification key: bad ${label} hex`);
+  }
+  return { value, next: result.next };
 }
 
 function consumeHex(s, start) {
@@ -230,242 +235,287 @@ function align8(v) {
 }
 
 function verifySealed(data, header, seed, startEpoch, intervalUsec) {
-  const isCompact = (header.incompatible_flags & INCOMPATIBLE_COMPACT) !== 0;
+  const context = createSealVerificationContext(data, header, seed);
+  const state = createSealVerificationState(context.headerSize);
 
+  while (true) {
+    if (context.tailObjectOffset === 0n) break;
+    const frame = readSealObjectFrame(data, context, state.offset);
+    validateSealObjectFlags(frame, header);
+    state.nObjects++;
+    processSealedObject(data, header, context, state, frame, seed, startEpoch, intervalUsec);
+    if (BigInt(state.offset) === context.tailObjectOffset) break;
+    state.offset += frame.alignedSizeNumber;
+  }
+
+  validateSealCounts(state, header);
+}
+
+function createSealVerificationContext(data, header, seed) {
   const { msk, mpk } = fsprgGenMK(seed, RECOMMENDED_SECPAR);
-  const state0 = fsprgGenState0(mpk, seed);
-
   const headerSize = u64ToNumber(header.header_size, 'header_size');
-  const tailObjectOffset = header.tail_object_offset;
-  const fileSize = data.length;
-  if (headerSize < HEADER_MIN_SIZE || headerSize > fileSize) {
+  if (headerSize < HEADER_MIN_SIZE || headerSize > data.length) {
     throw new VerificationError(`invalid header_size ${header.header_size}`);
   }
+  return {
+    msk,
+    state0: fsprgGenState0(mpk, seed),
+    isCompact: (header.incompatible_flags & INCOMPATIBLE_COMPACT) !== 0,
+    headerSize,
+    tailObjectOffset: header.tail_object_offset,
+    fileSize: data.length,
+  };
+}
 
-  let nObjects = 0n;
-  let nEntries = 0n;
-  let nTags = 0n;
-  let lastTagEnd = 0;
-  let lastEpoch = 0n;
-  let lastTagRealtime = 0n;
-  let entrySeqnum = 0n;
-  let entrySeqnumSet = false;
-  let entryMonotonic = 0n;
-  let entryMonotonicSet = false;
-  let entryBootID = Buffer.alloc(16);
-  let entryRealtime = 0n;
-  let entryRealtimeSet = false;
-  let maxEntryRealtime = 0n;
-  let minEntryRealtime = null;
+function createSealVerificationState(headerSize) {
+  return {
+    offset: headerSize,
+    nObjects: 0n,
+    nEntries: 0n,
+    nTags: 0n,
+    lastTagEnd: 0,
+    lastEpoch: 0n,
+    lastTagRealtime: 0n,
+    entrySeqnum: 0n,
+    entrySeqnumSet: false,
+    entryMonotonic: 0n,
+    entryMonotonicSet: false,
+    entryBootID: Buffer.alloc(16),
+    entryRealtime: 0n,
+    entryRealtimeSet: false,
+    maxEntryRealtime: 0n,
+    minEntryRealtime: null,
+  };
+}
 
-  let p = headerSize;
-  while (true) {
-    if (tailObjectOffset === 0n) break;
-    if (BigInt(p) > tailObjectOffset) {
-      throw new VerificationError(`object offset ${p} exceeds tail_object_offset ${tailObjectOffset}`);
-    }
-    if (p + OBJECT_HEADER_SIZE > fileSize) {
-      throw new VerificationError(`object header at offset ${p} exceeds file bounds`);
-    }
-
-    const typ = data[p];
-    const flags = data[p + 1];
-    const size = data.readBigUInt64LE(p + 8);
-    const alignedSize = align8(size);
-
-    if (size < BigInt(OBJECT_HEADER_SIZE)) {
-      throw new VerificationError(`object size ${size} too small at offset ${p}`);
-    }
-    if (BigInt(p) + alignedSize > BigInt(fileSize)) {
-      throw new VerificationError(`object at offset ${p} with aligned size ${alignedSize} exceeds file bounds`);
-    }
-    const alignedSizeNumber = u64ToNumber(alignedSize, `aligned object size at offset ${p}`);
-
-    let compressionFlags = 0;
-    if (flags & OBJECT_COMPRESSED_XZ) compressionFlags++;
-    if (flags & OBJECT_COMPRESSED_LZ4) compressionFlags++;
-    if (flags & OBJECT_COMPRESSED_ZSTD) compressionFlags++;
-    if (compressionFlags > 1) {
-      throw new VerificationError(`multiple compression flags at offset ${p}`);
-    }
-    if ((flags & OBJECT_COMPRESSED_XZ) && !(header.incompatible_flags & INCOMPATIBLE_COMPRESSED_XZ)) {
-      throw new VerificationError(`XZ object in file without XZ support at offset ${p}`);
-    }
-    if ((flags & OBJECT_COMPRESSED_LZ4) && !(header.incompatible_flags & INCOMPATIBLE_COMPRESSED_LZ4)) {
-      throw new VerificationError(`LZ4 object in file without LZ4 support at offset ${p}`);
-    }
-    if ((flags & OBJECT_COMPRESSED_ZSTD) && !(header.incompatible_flags & INCOMPATIBLE_COMPRESSED_ZSTD)) {
-      throw new VerificationError(`ZSTD object in file without ZSTD support at offset ${p}`);
-    }
-    if (flags & ~(OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4 | OBJECT_COMPRESSED_ZSTD)) {
-      throw new VerificationError(`unknown object flags 0x${flags.toString(16)} at offset ${p}`);
-    }
-    if (typ !== OBJECT_TYPE_DATA && flags !== 0) {
-      throw new VerificationError(`object type ${typ} at offset ${p} has compression flags`);
-    }
-
-    nObjects++;
-
-    switch (typ) {
-      case OBJECT_TYPE_DATA:
-        break;
-      case OBJECT_TYPE_FIELD:
-        break;
-      case OBJECT_TYPE_ENTRY:
-        if (nTags === 0n) {
-          throw new VerificationError(`first entry before first tag at offset ${p}`);
-        }
-        {
-          const eSeqnum = data.readBigUInt64LE(p + 16);
-          const eRealtime = data.readBigUInt64LE(p + 24);
-          const eMonotonic = data.readBigUInt64LE(p + 32);
-          const eBootID = data.slice(p + 40, p + 56);
-
-          if (entryRealtimeSet && eRealtime < lastTagRealtime) {
-            throw new VerificationError(`older entry after newer tag at offset ${p}`);
-          }
-          if (!entrySeqnumSet) {
-            if (eSeqnum !== header.head_entry_seqnum) {
-              throw new VerificationError(`head entry seqnum mismatch at offset ${p}`);
-            }
-          } else {
-            if (entrySeqnum >= eSeqnum) {
-              throw new VerificationError(`entry seqnum out of sync at offset ${p}`);
-            }
-          }
-          entrySeqnum = eSeqnum;
-          entrySeqnumSet = true;
-
-          if (entryMonotonicSet && eBootID.equals(entryBootID) && entryMonotonic > eMonotonic) {
-            throw new VerificationError(`entry monotonic out of sync at offset ${p}`);
-          }
-          entryMonotonic = eMonotonic;
-          entryBootID = eBootID;
-          entryMonotonicSet = true;
-
-          if (!entryRealtimeSet) {
-            if (eRealtime !== header.head_entry_realtime) {
-              throw new VerificationError(`head entry realtime mismatch at offset ${p}`);
-            }
-          }
-          entryRealtime = eRealtime;
-          entryRealtimeSet = true;
-
-          if (eRealtime > maxEntryRealtime) maxEntryRealtime = eRealtime;
-          if (minEntryRealtime === null || eRealtime < minEntryRealtime) minEntryRealtime = eRealtime;
-
-          nEntries++;
-        }
-        break;
-      case OBJECT_TYPE_DATA_HASH_TABLE:
-        break;
-      case OBJECT_TYPE_FIELD_HASH_TABLE:
-        break;
-      case OBJECT_TYPE_ENTRY_ARRAY:
-        break;
-      case OBJECT_TYPE_TAG:
-        if (size !== BigInt(OBJECT_HEADER_SIZE + 8 + 8 + TAG_LENGTH)) {
-          throw new VerificationError(`invalid tag object size ${size} at offset ${p}`);
-        }
-        {
-          const seqnum = data.readBigUInt64LE(p + 16);
-          const epoch = data.readBigUInt64LE(p + 24);
-
-          if (seqnum !== nTags + 1n) {
-            throw new VerificationError(`tag seqnum mismatch: got ${seqnum}, want ${nTags + 1n} at offset ${p}`);
-          }
-
-          const sealedContinuous = (header.compatible_flags & COMPATIBLE_SEALED_CONTINUOUS) !== 0;
-          if (sealedContinuous) {
-            const ok = nTags === 0n || (nTags === 1n && epoch === lastEpoch) || epoch === lastEpoch + 1n;
-            if (!ok) {
-              throw new VerificationError(`epoch not continuous: got ${epoch}, last ${lastEpoch} at offset ${p}`);
-            }
-          } else {
-            if (epoch < lastEpoch) {
-              throw new VerificationError(`epoch out of sync: got ${epoch}, last ${lastEpoch} at offset ${p}`);
-            }
-          }
-
-          const { rt, rtEnd } = tagRealtimeRange(startEpoch, epoch, intervalUsec);
-
-          if (entryRealtimeSet && entryRealtime >= rtEnd) {
-            throw new VerificationError(`entry realtime ${entryRealtime} too late for tag end ${rtEnd} at offset ${p}`);
-          }
-          if (maxEntryRealtime >= rtEnd) {
-            throw new VerificationError(`max entry realtime ${maxEntryRealtime} too late for tag end ${rtEnd} at offset ${p}`);
-          }
-          if (minEntryRealtime !== null && minEntryRealtime < rt) {
-            throw new VerificationError(`entry realtime ${minEntryRealtime} too early for tag start ${rt} at offset ${p}`);
-          }
-
-          // Compute HMAC
-          const state = fsprgSeek(state0, epoch, msk, seed);
-          const key = fsprgGetKey(state, TAG_LENGTH, 0);
-          const hm = createHmac('sha256', key);
-
-          if (nTags === 0n) {
-            hm.update(data.slice(0, 16));
-            hm.update(data.slice(24, 56));
-            hm.update(data.slice(72, 96));
-            hm.update(data.slice(104, 136));
-          }
-
-          let q = lastTagEnd;
-          if (nTags === 0n) {
-            q = headerSize;
-          }
-
-          while (q <= p) {
-            if (q + OBJECT_HEADER_SIZE > fileSize) {
-              throw new VerificationError(`object header at offset ${q} exceeds file bounds`);
-            }
-            const qTyp = data[q];
-            const qSize = data.readBigUInt64LE(q + 8);
-            if (qSize < BigInt(OBJECT_HEADER_SIZE)) {
-              throw new VerificationError(`HMAC object size ${qSize} too small at offset ${q}`);
-            }
-            const qAlignedSize = align8(qSize);
-            if (qAlignedSize < qSize || qAlignedSize === 0n) {
-              throw new VerificationError(`HMAC object size ${qSize} overflows alignment at offset ${q}`);
-            }
-            if (BigInt(q) + qAlignedSize > BigInt(fileSize)) {
-              throw new VerificationError(`HMAC object at offset ${q} with aligned size ${qAlignedSize} exceeds file bounds`);
-            }
-            const qAlignedSizeNumber = u64ToNumber(qAlignedSize, `aligned object size at offset ${q}`);
-            hmacObject(hm, data, q, qTyp, qSize, isCompact);
-            q += qAlignedSizeNumber;
-          }
-
-          const computed = hm.digest();
-          const stored = data.slice(p + 32, p + 32 + TAG_LENGTH);
-          if (stored.length !== TAG_LENGTH || !timingSafeEqual(computed, stored)) {
-            throw new VerificationError(`tag failed verification at offset ${p}`);
-          }
-
-          nTags++;
-          lastTagEnd = p + alignedSizeNumber;
-          lastEpoch = epoch;
-          lastTagRealtime = rt;
-          minEntryRealtime = null;
-        }
-        break;
-      default:
-        throw new VerificationError(`unknown object type ${typ} at offset ${p}`);
-    }
-
-    if (BigInt(p) === tailObjectOffset) break;
-    p += alignedSizeNumber;
+function readSealObjectFrame(data, context, offset) {
+  if (BigInt(offset) > context.tailObjectOffset) {
+    throw new VerificationError(`object offset ${offset} exceeds tail_object_offset ${context.tailObjectOffset}`);
   }
+  if (offset + OBJECT_HEADER_SIZE > context.fileSize) {
+    throw new VerificationError(`object header at offset ${offset} exceeds file bounds`);
+  }
+  const size = data.readBigUInt64LE(offset + 8);
+  const alignedSize = align8(size);
+  if (size < BigInt(OBJECT_HEADER_SIZE)) {
+    throw new VerificationError(`object size ${size} too small at offset ${offset}`);
+  }
+  if (BigInt(offset) + alignedSize > BigInt(context.fileSize)) {
+    throw new VerificationError(`object at offset ${offset} with aligned size ${alignedSize} exceeds file bounds`);
+  }
+  return {
+    offset,
+    typ: data[offset],
+    flags: data[offset + 1],
+    size,
+    alignedSizeNumber: u64ToNumber(alignedSize, `aligned object size at offset ${offset}`),
+  };
+}
 
-  if (nObjects !== header.n_objects) {
-    throw new VerificationError(`object count mismatch: got ${nObjects}, want ${header.n_objects}`);
+function validateSealObjectFlags(frame, header) {
+  if (sealCompressionFlagCount(frame.flags) > 1) {
+    throw new VerificationError(`multiple compression flags at offset ${frame.offset}`);
   }
-  if (nEntries !== header.n_entries) {
-    throw new VerificationError(`entry count mismatch: got ${nEntries}, want ${header.n_entries}`);
+  if ((frame.flags & OBJECT_COMPRESSED_XZ) && !(header.incompatible_flags & INCOMPATIBLE_COMPRESSED_XZ)) {
+    throw new VerificationError(`XZ object in file without XZ support at offset ${frame.offset}`);
   }
-  if (nTags !== header.n_tags) {
-    throw new VerificationError(`tag count mismatch: got ${nTags}, want ${header.n_tags}`);
+  if ((frame.flags & OBJECT_COMPRESSED_LZ4) && !(header.incompatible_flags & INCOMPATIBLE_COMPRESSED_LZ4)) {
+    throw new VerificationError(`LZ4 object in file without LZ4 support at offset ${frame.offset}`);
+  }
+  if ((frame.flags & OBJECT_COMPRESSED_ZSTD) && !(header.incompatible_flags & INCOMPATIBLE_COMPRESSED_ZSTD)) {
+    throw new VerificationError(`ZSTD object in file without ZSTD support at offset ${frame.offset}`);
+  }
+  if (frame.flags & ~(OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4 | OBJECT_COMPRESSED_ZSTD)) {
+    throw new VerificationError(`unknown object flags 0x${frame.flags.toString(16)} at offset ${frame.offset}`);
+  }
+  if (frame.typ !== OBJECT_TYPE_DATA && frame.flags !== 0) {
+    throw new VerificationError(`object type ${frame.typ} at offset ${frame.offset} has compression flags`);
+  }
+}
+
+function processSealedObject(data, header, context, state, frame, seed, startEpoch, intervalUsec) {
+  switch (frame.typ) {
+    case OBJECT_TYPE_DATA:
+    case OBJECT_TYPE_FIELD:
+    case OBJECT_TYPE_DATA_HASH_TABLE:
+    case OBJECT_TYPE_FIELD_HASH_TABLE:
+    case OBJECT_TYPE_ENTRY_ARRAY:
+      return;
+    case OBJECT_TYPE_ENTRY:
+      validateSealedEntry(data, header, state, frame);
+      return;
+    case OBJECT_TYPE_TAG:
+      validateSealedTag(data, header, context, state, frame, seed, startEpoch, intervalUsec);
+      return;
+    default:
+      throw new VerificationError(`unknown object type ${frame.typ} at offset ${frame.offset}`);
+  }
+}
+
+function validateSealedEntry(data, header, state, frame) {
+  if (state.nTags === 0n) {
+    throw new VerificationError(`first entry before first tag at offset ${frame.offset}`);
+  }
+  const entry = readSealEntry(data, frame.offset);
+  if (state.entryRealtimeSet && entry.realtime < state.lastTagRealtime) {
+    throw new VerificationError(`older entry after newer tag at offset ${frame.offset}`);
+  }
+  validateSealedEntrySeqnum(entry.seqnum, header, state, frame.offset);
+  validateSealedEntryMonotonic(entry, state, frame.offset);
+  if (!state.entryRealtimeSet && entry.realtime !== header.head_entry_realtime) {
+    throw new VerificationError(`head entry realtime mismatch at offset ${frame.offset}`);
+  }
+  state.entryRealtime = entry.realtime;
+  state.entryRealtimeSet = true;
+  if (entry.realtime > state.maxEntryRealtime) state.maxEntryRealtime = entry.realtime;
+  if (state.minEntryRealtime === null || entry.realtime < state.minEntryRealtime) state.minEntryRealtime = entry.realtime;
+  state.nEntries++;
+}
+
+function readSealEntry(data, offset) {
+  return {
+    seqnum: data.readBigUInt64LE(offset + 16),
+    realtime: data.readBigUInt64LE(offset + 24),
+    monotonic: data.readBigUInt64LE(offset + 32),
+    bootID: data.slice(offset + 40, offset + 56),
+  };
+}
+
+function validateSealedEntrySeqnum(seqnum, header, state, offset) {
+  if (!state.entrySeqnumSet && seqnum !== header.head_entry_seqnum) {
+    throw new VerificationError(`head entry seqnum mismatch at offset ${offset}`);
+  }
+  if (state.entrySeqnumSet && state.entrySeqnum >= seqnum) {
+    throw new VerificationError(`entry seqnum out of sync at offset ${offset}`);
+  }
+  state.entrySeqnum = seqnum;
+  state.entrySeqnumSet = true;
+}
+
+function validateSealedEntryMonotonic(entry, state, offset) {
+  if (state.entryMonotonicSet && entry.bootID.equals(state.entryBootID) && state.entryMonotonic > entry.monotonic) {
+    throw new VerificationError(`entry monotonic out of sync at offset ${offset}`);
+  }
+  state.entryMonotonic = entry.monotonic;
+  state.entryBootID = entry.bootID;
+  state.entryMonotonicSet = true;
+}
+
+function validateSealedTag(data, header, context, state, frame, seed, startEpoch, intervalUsec) {
+  if (frame.size !== BigInt(OBJECT_HEADER_SIZE + 8 + 8 + TAG_LENGTH)) {
+    throw new VerificationError(`invalid tag object size ${frame.size} at offset ${frame.offset}`);
+  }
+  const seqnum = data.readBigUInt64LE(frame.offset + 16);
+  const epoch = data.readBigUInt64LE(frame.offset + 24);
+  if (seqnum !== state.nTags + 1n) {
+    throw new VerificationError(`tag seqnum mismatch: got ${seqnum}, want ${state.nTags + 1n} at offset ${frame.offset}`);
+  }
+  validateSealedTagEpoch(epoch, header, state, frame.offset);
+  const { rt, rtEnd } = tagRealtimeRange(startEpoch, epoch, intervalUsec);
+  validateSealedTagRealtimeWindow(state, frame.offset, rt, rtEnd);
+  verifyTagHmac(data, context, state, frame, seed, epoch);
+  state.nTags++;
+  state.lastTagEnd = frame.offset + frame.alignedSizeNumber;
+  state.lastEpoch = epoch;
+  state.lastTagRealtime = rt;
+  state.minEntryRealtime = null;
+}
+
+function validateSealedTagEpoch(epoch, header, state, offset) {
+  const sealedContinuous = (header.compatible_flags & COMPATIBLE_SEALED_CONTINUOUS) !== 0;
+  if (sealedContinuous) {
+    const ok = state.nTags === 0n || (state.nTags === 1n && epoch === state.lastEpoch) || epoch === state.lastEpoch + 1n;
+    if (!ok) throw new VerificationError(`epoch not continuous: got ${epoch}, last ${state.lastEpoch} at offset ${offset}`);
+    return;
+  }
+  if (epoch < state.lastEpoch) {
+    throw new VerificationError(`epoch out of sync: got ${epoch}, last ${state.lastEpoch} at offset ${offset}`);
+  }
+}
+
+function validateSealedTagRealtimeWindow(state, offset, rt, rtEnd) {
+  if (state.entryRealtimeSet && state.entryRealtime >= rtEnd) {
+    throw new VerificationError(`entry realtime ${state.entryRealtime} too late for tag end ${rtEnd} at offset ${offset}`);
+  }
+  if (state.maxEntryRealtime >= rtEnd) {
+    throw new VerificationError(`max entry realtime ${state.maxEntryRealtime} too late for tag end ${rtEnd} at offset ${offset}`);
+  }
+  if (state.minEntryRealtime !== null && state.minEntryRealtime < rt) {
+    throw new VerificationError(`entry realtime ${state.minEntryRealtime} too early for tag start ${rt} at offset ${offset}`);
+  }
+}
+
+function verifyTagHmac(data, context, state, frame, seed, epoch) {
+  const hm = createTagHmac(data, context, state, seed, epoch);
+  hmacSealedObjectRange(hm, data, context, state, frame.offset);
+  const computed = hm.digest();
+  const stored = data.slice(frame.offset + 32, frame.offset + 32 + TAG_LENGTH);
+  if (stored.length !== TAG_LENGTH || !timingSafeEqual(computed, stored)) {
+    throw new VerificationError(`tag failed verification at offset ${frame.offset}`);
+  }
+}
+
+function createTagHmac(data, context, state, seed, epoch) {
+  const fssState = fsprgSeek(context.state0, epoch, context.msk, seed);
+  const key = fsprgGetKey(fssState, TAG_LENGTH, 0);
+  const hm = createHmac('sha256', key);
+  if (state.nTags === 0n) {
+    hm.update(data.slice(0, 16));
+    hm.update(data.slice(24, 56));
+    hm.update(data.slice(72, 96));
+    hm.update(data.slice(104, 136));
+  }
+  return hm;
+}
+
+function hmacSealedObjectRange(hm, data, context, state, tagOffset) {
+  let q = state.nTags === 0n ? context.headerSize : state.lastTagEnd;
+  while (q <= tagOffset) {
+    const frame = readHmacObjectFrame(data, context, q);
+    hmacObject(hm, data, q, frame.typ, frame.size, context.isCompact);
+    q += frame.alignedSizeNumber;
+  }
+}
+
+function readHmacObjectFrame(data, context, offset) {
+  if (offset + OBJECT_HEADER_SIZE > context.fileSize) {
+    throw new VerificationError(`object header at offset ${offset} exceeds file bounds`);
+  }
+  const size = data.readBigUInt64LE(offset + 8);
+  if (size < BigInt(OBJECT_HEADER_SIZE)) {
+    throw new VerificationError(`HMAC object size ${size} too small at offset ${offset}`);
+  }
+  const alignedSize = align8(size);
+  if (alignedSize < size || alignedSize === 0n) {
+    throw new VerificationError(`HMAC object size ${size} overflows alignment at offset ${offset}`);
+  }
+  if (BigInt(offset) + alignedSize > BigInt(context.fileSize)) {
+    throw new VerificationError(`HMAC object at offset ${offset} with aligned size ${alignedSize} exceeds file bounds`);
+  }
+  return {
+    typ: data[offset],
+    size,
+    alignedSizeNumber: u64ToNumber(alignedSize, `aligned object size at offset ${offset}`),
+  };
+}
+
+function sealCompressionFlagCount(flags) {
+  let count = 0;
+  if (flags & OBJECT_COMPRESSED_XZ) count++;
+  if (flags & OBJECT_COMPRESSED_LZ4) count++;
+  if (flags & OBJECT_COMPRESSED_ZSTD) count++;
+  return count;
+}
+
+function validateSealCounts(state, header) {
+  if (state.nObjects !== header.n_objects) {
+    throw new VerificationError(`object count mismatch: got ${state.nObjects}, want ${header.n_objects}`);
+  }
+  if (state.nEntries !== header.n_entries) {
+    throw new VerificationError(`entry count mismatch: got ${state.nEntries}, want ${header.n_entries}`);
+  }
+  if (state.nTags !== header.n_tags) {
+    throw new VerificationError(`tag count mismatch: got ${state.nTags}, want ${header.n_tags}`);
   }
 }
 

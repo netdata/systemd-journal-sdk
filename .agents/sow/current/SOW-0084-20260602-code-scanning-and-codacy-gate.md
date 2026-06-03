@@ -1497,6 +1497,35 @@ Complexity remediation evidence:
     passed.
   - Refreshed local all-tracked-file Lizard inventory now reports 199 critical
     findings, down from 203 after Batch 13.
+- Batch 15, remaining Node.js core runtime findings:
+  - Refactored `node/src/lib/directory-writer.js` constructor, append-open,
+    and retention paths into option, identity, chain-state, active-open, and
+    deletion helpers without changing rotation/retention semantics.
+  - Refactored `node/src/lib/reader.js` entry-array loading and live refresh
+    into segment, snapshot, reload, and restore helpers while preserving the
+    previous rollback-on-partial-refresh behavior.
+  - Refactored `node/src/lib/verify-graph.js` object graph walking, DATA
+    metadata validation, tail metadata validation, and entry-array chain
+    traversal into focused helpers without changing object ordering, hash, or
+    compression validation rules.
+  - Refactored `node/src/lib/verify.js` verification-key parsing and sealed
+    TAG/HMAC verification into frame, epoch, realtime-window, and HMAC-range
+    helpers without changing the protected byte ranges.
+  - Refactored `node/src/lib/writer.js` append-open header validation and
+    journald field-name byte validation into focused helpers without changing
+    unsupported-file rejection or field-name policy rules.
+  - `node --check node/src/lib/directory-writer.js node/src/lib/reader.js
+    node/src/lib/verify-graph.js node/src/lib/verify.js node/src/lib/writer.js`
+    passed.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for
+    `node/src/lib/directory-writer.js`, `node/src/lib/reader.js`,
+    `node/src/lib/verify-graph.js`, `node/src/lib/verify.js`, and
+    `node/src/lib/writer.js`.
+  - `npm_config_cache=../.local/npm-cache timeout 300 npm test` in `node/`
+    passed.
+  - Refreshed local all-tracked-file Lizard inventory now reports 186 critical
+    findings, down from 199 after Batch 14. `node/src/lib/*` has no remaining
+    critical Lizard findings.
 
 Reviewer findings:
 

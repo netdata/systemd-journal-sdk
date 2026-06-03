@@ -90,49 +90,11 @@ export class Writer {
     let fd;
     try {
       fd = openSync(path, 'r+');
-      const headerBuf = Buffer.alloc(HEADER_SIZE);
-      const bytesRead = readSync(fd, headerBuf, 0, HEADER_SIZE, 0);
-      if (bytesRead < HEADER_SIZE) throw new Error('cannot read journal header');
-
-      const header = parseFileHeader(headerBuf);
-      const supportedWriterIncompatible = INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_XZ | INCOMPATIBLE_COMPRESSED_ZSTD | INCOMPATIBLE_COMPRESSED_LZ4 | INCOMPATIBLE_COMPACT;
-      if ((header.incompatible_flags & ~supportedWriterIncompatible) !== 0) {
-        throw new Error('unsupported journal: incompatible flags');
-      }
-      if ((header.incompatible_flags & INCOMPATIBLE_KEYED_HASH) === 0) {
-        throw new Error('unsupported journal: keyed hash required');
-      }
-      if (header.header_size < BigInt(HEADER_SIZE)) {
-        throw new Error('unsupported journal: outdated header');
-      }
-      if (header.data_hash_table_offset === 0n || header.field_hash_table_offset === 0n || header.tail_object_offset === 0n) {
-        throw new Error('invalid journal: missing hash tables');
-      }
-
+      const header = readAppendHeaderFromFd(fd);
+      validateAppendHeaderForWrite(header);
       const tailSize = readObjectSizeFromFd(fd, header.tail_object_offset);
-      const now = Date.now();
-      const monotonicBase = header.tail_entry_monotonic > 0n
-        ? Number(header.tail_entry_monotonic / 1000n)
-        : 0;
-
       const w = new Writer(fd, path);
-      w.header = header;
-      w.appendOffset = align8(header.tail_object_offset + tailSize);
-      w.nextSeqnum = header.tail_entry_seqnum + 1n;
-      w.bootId = Buffer.from(header.tail_entry_boot_id);
-      const explicitBootId = uuidOption(opts.bootId ?? opts.boot_id, 'boot id');
-      if (isZeroUUID(w.bootId)) w.bootId = explicitBootId && !isZeroUUID(explicitBootId) ? explicitBootId : Buffer.from(header.file_id);
-      w.started = now - monotonicBase;
-      w.compression = (header.incompatible_flags & INCOMPATIBLE_COMPRESSED_XZ) !== 0
-        ? COMPRESSION_XZ
-        : (header.incompatible_flags & INCOMPATIBLE_COMPRESSED_LZ4) !== 0
-        ? COMPRESSION_LZ4
-        : ((header.incompatible_flags & INCOMPATIBLE_COMPRESSED_ZSTD) !== 0 ? COMPRESSION_ZSTD : COMPRESSION_NONE);
-      w.compressThreshold = DEFAULT_COMPRESS_THRESHOLD;
-      w.compact = (header.incompatible_flags & INCOMPATIBLE_COMPACT) !== 0;
-      w.livePublishEveryEntries = normalizeLivePublishEveryEntries(opts.livePublishEveryEntries ?? opts.live_publish_every_entries);
-      w.fieldNamePolicy = normalizeFieldNamePolicy(opts.fieldNamePolicy ?? opts.field_name_policy);
-
+      w._configureOpenAppendState(header, opts, tailSize);
       w.header.state = STATE_ONLINE;
       w._writeHeader();
       return w;
@@ -140,6 +102,26 @@ export class Writer {
       if (fd !== undefined) closeSync(fd);
       throw error;
     }
+  }
+
+  _configureOpenAppendState(header, opts, tailSize) {
+    this.header = header;
+    this.appendOffset = align8(header.tail_object_offset + tailSize);
+    this.nextSeqnum = header.tail_entry_seqnum + 1n;
+    this.bootId = this._openedBootId(header, opts);
+    this.started = Date.now() - openedMonotonicBaseMs(header);
+    this.compression = openedCompressionFromHeader(header);
+    this.compressThreshold = DEFAULT_COMPRESS_THRESHOLD;
+    this.compact = (header.incompatible_flags & INCOMPATIBLE_COMPACT) !== 0;
+    this.livePublishEveryEntries = normalizeLivePublishEveryEntries(opts.livePublishEveryEntries ?? opts.live_publish_every_entries);
+    this.fieldNamePolicy = normalizeFieldNamePolicy(opts.fieldNamePolicy ?? opts.field_name_policy);
+  }
+
+  _openedBootId(header, opts) {
+    const bootId = Buffer.from(header.tail_entry_boot_id);
+    if (!isZeroUUID(bootId)) return bootId;
+    const explicitBootId = uuidOption(opts.bootId ?? opts.boot_id, 'boot id');
+    return explicitBootId && !isZeroUUID(explicitBootId) ? explicitBootId : Buffer.from(header.file_id);
   }
 
   _initialize(opts) {
@@ -1036,6 +1018,44 @@ export class Writer {
   }
 }
 
+function readAppendHeaderFromFd(fd) {
+  const headerBuf = Buffer.alloc(HEADER_SIZE);
+  const bytesRead = readSync(fd, headerBuf, 0, HEADER_SIZE, 0);
+  if (bytesRead < HEADER_SIZE) throw new Error('cannot read journal header');
+  return parseFileHeader(headerBuf);
+}
+
+function validateAppendHeaderForWrite(header) {
+  const supportedWriterIncompatible = INCOMPATIBLE_KEYED_HASH |
+    INCOMPATIBLE_COMPRESSED_XZ |
+    INCOMPATIBLE_COMPRESSED_ZSTD |
+    INCOMPATIBLE_COMPRESSED_LZ4 |
+    INCOMPATIBLE_COMPACT;
+  if ((header.incompatible_flags & ~supportedWriterIncompatible) !== 0) {
+    throw new Error('unsupported journal: incompatible flags');
+  }
+  if ((header.incompatible_flags & INCOMPATIBLE_KEYED_HASH) === 0) {
+    throw new Error('unsupported journal: keyed hash required');
+  }
+  if (header.header_size < BigInt(HEADER_SIZE)) {
+    throw new Error('unsupported journal: outdated header');
+  }
+  if (header.data_hash_table_offset === 0n || header.field_hash_table_offset === 0n || header.tail_object_offset === 0n) {
+    throw new Error('invalid journal: missing hash tables');
+  }
+}
+
+function openedMonotonicBaseMs(header) {
+  return header.tail_entry_monotonic > 0n ? Number(header.tail_entry_monotonic / 1000n) : 0;
+}
+
+function openedCompressionFromHeader(header) {
+  if ((header.incompatible_flags & INCOMPATIBLE_COMPRESSED_XZ) !== 0) return COMPRESSION_XZ;
+  if ((header.incompatible_flags & INCOMPATIBLE_COMPRESSED_LZ4) !== 0) return COMPRESSION_LZ4;
+  if ((header.incompatible_flags & INCOMPATIBLE_COMPRESSED_ZSTD) !== 0) return COMPRESSION_ZSTD;
+  return COMPRESSION_NONE;
+}
+
 // Read object size (uint64 at offset+8) from an fd.
 function readObjectSizeFromFd(fd, offset) {
   const buf = Buffer.alloc(8);
@@ -1211,10 +1231,17 @@ function validateJournaldFieldName(name, allowProtected) {
   if (bytes.length > 64) throw new Error(`invalid field name: too long (${bytes.length})`);
   if (!allowProtected && bytes[0] === 0x5f) throw new Error(`invalid field name: protected: ${display}`);
   if (bytes[0] >= 0x30 && bytes[0] <= 0x39) throw new Error(`invalid field name: starts with digit: ${display}`);
+  validateJournaldFieldNameBytes(bytes, display);
+}
+
+function validateJournaldFieldNameBytes(bytes, display) {
   for (let i = 0; i < bytes.length; i++) {
-    const c = bytes[i];
-    if (c !== 0x5f && !(c >= 0x41 && c <= 0x5a) && !(c >= 0x30 && c <= 0x39)) {
+    if (!isJournaldFieldNameByte(bytes[i])) {
       throw new Error(`invalid field name: bad char at ${i}: ${display}`);
     }
   }
+}
+
+function isJournaldFieldNameByte(c) {
+  return c === 0x5f || (c >= 0x41 && c <= 0x5a) || (c >= 0x30 && c <= 0x39);
 }

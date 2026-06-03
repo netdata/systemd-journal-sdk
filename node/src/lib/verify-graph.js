@@ -127,178 +127,247 @@ class GraphVerifier {
 
   walkObjects() {
     const tail = this.hnum('tail_object_offset');
+    if (!this.validateObjectWalkTail(tail)) return;
+    const state = this.newObjectWalkState();
+    let offset = this.hnum('header_size');
+
+    for (;;) {
+      const frame = this.readObjectFrame(offset, tail);
+      this.recordObjectFrame(frame);
+      this.validateObjectCompression(frame);
+      this.processObjectFrame(frame, state);
+
+      if (offset === tail) break;
+      offset = frame.end;
+    }
+
+    this.validateObjectWalkCompletion(tail, state);
+  }
+
+  validateObjectWalkTail(tail) {
     if (tail === 0) {
       if (this.header.n_objects !== 0n) {
         throw new ObjectGraphVerificationError('tail_object_offset is zero with objects recorded');
       }
-      return;
+      return false;
     }
     if (tail < this.hnum('header_size')) {
       throw new ObjectGraphVerificationError('tail_object_offset is before header_size');
     }
+    return true;
+  }
 
-    let offset = this.hnum('header_size');
-    let entrySeqnum = 0n;
-    let entrySeqnumSet = false;
-    let entryMonotonic = 0n;
-    let entryMonotonicSet = false;
-    let entryBootID = Buffer.alloc(16);
-    let entryRealtime = 0n;
-    let entryRealtimeSet = false;
-    let lastTagRealtime = 0n;
+  newObjectWalkState() {
+    return {
+      entrySeqnum: 0n,
+      entrySeqnumSet: false,
+      entryMonotonic: 0n,
+      entryMonotonicSet: false,
+      entryBootID: Buffer.alloc(16),
+      entryRealtime: 0n,
+      entryRealtimeSet: false,
+      lastTagRealtime: 0n,
+    };
+  }
 
-    for (;;) {
-      if (offset > tail) {
-        throw new ObjectGraphVerificationError('object walk skipped past tail_object_offset');
-      }
-      if (offset + OBJECT_HEADER_SIZE > this.data.length) {
-        throw new ObjectGraphVerificationError(`object header at offset ${offset} exceeds file bounds`);
-      }
-
-      const typ = this.data[offset];
-      const flags = this.data[offset + 1];
-      const size = this.u64(offset + 8);
-      const alignedSize = align8(size);
-      const alignedSizeNumber = u64ToNumber(alignedSize, `aligned size at offset ${offset}`);
-      const end = offset + alignedSizeNumber;
-
-      if (typ === 0 && size === 0n) throw new ObjectGraphVerificationError(`zero object before tail at ${offset}`);
-      if (!OBJECT_TYPES.has(typ)) throw new ObjectGraphVerificationError(`unknown object type ${typ} at offset ${offset}`);
-      if (size < BigInt(OBJECT_HEADER_SIZE)) {
-        throw new ObjectGraphVerificationError(`object size ${size} too small at offset ${offset}`);
-      }
-      if (alignedSize < size || alignedSize === 0n || end > this.data.length) {
-        throw new ObjectGraphVerificationError(`object at offset ${offset} exceeds file bounds`);
-      }
-      if (offset % 8 !== 0) throw new ObjectGraphVerificationError(`object offset ${offset} is not aligned`);
-
-      this.spans.set(offset, { typ, flags, size, end });
-      this.order.push(offset);
-      this.counts.set(typ, (this.counts.get(typ) || 0n) + 1n);
-
-      if (flags & ~OBJECT_COMPRESSED_MASK) {
-        throw new ObjectGraphVerificationError(`object at offset ${offset} has unknown flags 0x${flags.toString(16)}`);
-      }
-      if (flagCount(flags & OBJECT_COMPRESSED_MASK) > 1) {
-        throw new ObjectGraphVerificationError(`object at offset ${offset} has multiple compression flags`);
-      }
-      if (typ !== OBJECT_TYPE_DATA && flags !== 0) {
-        throw new ObjectGraphVerificationError(`${OBJECT_TYPES.get(typ)} object at offset ${offset} has compression flags`);
-      }
-      if ((flags & OBJECT_COMPRESSED_XZ) && !(this.header.incompatible_flags & INCOMPATIBLE_COMPRESSED_XZ)) {
-        throw new ObjectGraphVerificationError(`XZ DATA object without matching header flag at offset ${offset}`);
-      }
-      if ((flags & OBJECT_COMPRESSED_LZ4) && !(this.header.incompatible_flags & INCOMPATIBLE_COMPRESSED_LZ4)) {
-        throw new ObjectGraphVerificationError(`LZ4 DATA object without matching header flag at offset ${offset}`);
-      }
-      if ((flags & OBJECT_COMPRESSED_ZSTD) && !(this.header.incompatible_flags & INCOMPATIBLE_COMPRESSED_ZSTD)) {
-        throw new ObjectGraphVerificationError(`ZSTD DATA object without matching header flag at offset ${offset}`);
-      }
-
-      if (typ === OBJECT_TYPE_DATA) {
-        this.parseData(offset, flags, size);
-      } else if (typ === OBJECT_TYPE_FIELD) {
-        this.parseField(offset, size);
-      } else if (typ === OBJECT_TYPE_ENTRY) {
-        const entry = this.parseEntry(offset, size);
-        if ((this.header.compatible_flags & COMPATIBLE_SEALED) && this.count(OBJECT_TYPE_TAG) <= 0n) {
-          throw new ObjectGraphVerificationError(`first entry before first tag at offset ${offset}`);
-        }
-        if (entry.realtime < lastTagRealtime) throw new ObjectGraphVerificationError(`older entry after newer tag at offset ${offset}`);
-        if (!entrySeqnumSet && entry.seqnum !== this.header.head_entry_seqnum) {
-          throw new ObjectGraphVerificationError(`head entry seqnum mismatch at offset ${offset}`);
-        }
-        if (entrySeqnumSet && entrySeqnum >= entry.seqnum) {
-          throw new ObjectGraphVerificationError(`entry seqnum out of sync at offset ${offset}`);
-        }
-        entrySeqnum = entry.seqnum;
-        entrySeqnumSet = true;
-        if (entryMonotonicSet && entry.boot_id.equals(entryBootID) && entryMonotonic > entry.monotonic) {
-          throw new ObjectGraphVerificationError(`entry monotonic out of sync at offset ${offset}`);
-        }
-        entryMonotonic = entry.monotonic;
-        entryBootID = entry.boot_id;
-        entryMonotonicSet = true;
-        if (!entryRealtimeSet && entry.realtime !== this.header.head_entry_realtime) {
-          throw new ObjectGraphVerificationError(`head entry realtime mismatch at offset ${offset}`);
-        }
-        entryRealtime = entry.realtime;
-        entryRealtimeSet = true;
-      } else if (typ === OBJECT_TYPE_DATA_HASH_TABLE || typ === OBJECT_TYPE_FIELD_HASH_TABLE) {
-        this.parseHashTable(offset, typ, size);
-      } else if (typ === OBJECT_TYPE_ENTRY_ARRAY) {
-        this.parseEntryArray(offset, size);
-        if (BigInt(offset) === this.header.entry_array_offset) {
-          if (this.mainEntryArrayFound) throw new ObjectGraphVerificationError('more than one main entry array');
-          this.mainEntryArrayFound = true;
-        }
-      } else if (typ === OBJECT_TYPE_TAG) {
-        if (!(this.header.compatible_flags & COMPATIBLE_SEALED)) throw new ObjectGraphVerificationError('TAG object in unsealed file');
-        if (size !== BigInt(TAG_OBJECT_SIZE)) throw new ObjectGraphVerificationError(`invalid TAG size at offset ${offset}`);
-        const seqnum = this.u64(offset + 16);
-        if (seqnum !== this.count(OBJECT_TYPE_TAG)) throw new ObjectGraphVerificationError(`TAG seqnum mismatch at offset ${offset}`);
-        if (entryRealtimeSet) lastTagRealtime = entryRealtime;
-      }
-
-      if (offset === tail) break;
-      offset = end;
+  readObjectFrame(offset, tail) {
+    if (offset > tail) throw new ObjectGraphVerificationError('object walk skipped past tail_object_offset');
+    if (offset + OBJECT_HEADER_SIZE > this.data.length) {
+      throw new ObjectGraphVerificationError(`object header at offset ${offset} exceeds file bounds`);
     }
+    const typ = this.data[offset];
+    const flags = this.data[offset + 1];
+    const size = this.u64(offset + 8);
+    const alignedSize = align8(size);
+    const alignedSizeNumber = u64ToNumber(alignedSize, `aligned size at offset ${offset}`);
+    const end = offset + alignedSizeNumber;
+    this.validateObjectFrame(offset, typ, size, alignedSize, end);
+    return { offset, typ, flags, size, end };
+  }
 
+  validateObjectFrame(offset, typ, size, alignedSize, end) {
+    if (typ === 0 && size === 0n) throw new ObjectGraphVerificationError(`zero object before tail at ${offset}`);
+    if (!OBJECT_TYPES.has(typ)) throw new ObjectGraphVerificationError(`unknown object type ${typ} at offset ${offset}`);
+    if (size < BigInt(OBJECT_HEADER_SIZE)) {
+      throw new ObjectGraphVerificationError(`object size ${size} too small at offset ${offset}`);
+    }
+    if (alignedSize < size || alignedSize === 0n || end > this.data.length) {
+      throw new ObjectGraphVerificationError(`object at offset ${offset} exceeds file bounds`);
+    }
+    if (offset % 8 !== 0) throw new ObjectGraphVerificationError(`object offset ${offset} is not aligned`);
+  }
+
+  recordObjectFrame(frame) {
+    this.spans.set(frame.offset, { typ: frame.typ, flags: frame.flags, size: frame.size, end: frame.end });
+    this.order.push(frame.offset);
+    this.counts.set(frame.typ, (this.counts.get(frame.typ) || 0n) + 1n);
+  }
+
+  validateObjectCompression(frame) {
+    const { offset, typ, flags } = frame;
+    if (flags & ~OBJECT_COMPRESSED_MASK) {
+      throw new ObjectGraphVerificationError(`object at offset ${offset} has unknown flags 0x${flags.toString(16)}`);
+    }
+    if (flagCount(flags & OBJECT_COMPRESSED_MASK) > 1) {
+      throw new ObjectGraphVerificationError(`object at offset ${offset} has multiple compression flags`);
+    }
+    if (typ !== OBJECT_TYPE_DATA && flags !== 0) {
+      throw new ObjectGraphVerificationError(`${OBJECT_TYPES.get(typ)} object at offset ${offset} has compression flags`);
+    }
+    this.validateCompressionHeaderFlags(frame);
+  }
+
+  validateCompressionHeaderFlags(frame) {
+    const { offset, flags } = frame;
+    if ((flags & OBJECT_COMPRESSED_XZ) && !(this.header.incompatible_flags & INCOMPATIBLE_COMPRESSED_XZ)) {
+      throw new ObjectGraphVerificationError(`XZ DATA object without matching header flag at offset ${offset}`);
+    }
+    if ((flags & OBJECT_COMPRESSED_LZ4) && !(this.header.incompatible_flags & INCOMPATIBLE_COMPRESSED_LZ4)) {
+      throw new ObjectGraphVerificationError(`LZ4 DATA object without matching header flag at offset ${offset}`);
+    }
+    if ((flags & OBJECT_COMPRESSED_ZSTD) && !(this.header.incompatible_flags & INCOMPATIBLE_COMPRESSED_ZSTD)) {
+      throw new ObjectGraphVerificationError(`ZSTD DATA object without matching header flag at offset ${offset}`);
+    }
+  }
+
+  processObjectFrame(frame, state) {
+    if (frame.typ === OBJECT_TYPE_DATA) return this.parseData(frame.offset, frame.flags, frame.size);
+    if (frame.typ === OBJECT_TYPE_FIELD) return this.parseField(frame.offset, frame.size);
+    if (frame.typ === OBJECT_TYPE_ENTRY) return this.processEntryFrame(frame, state);
+    if (frame.typ === OBJECT_TYPE_DATA_HASH_TABLE || frame.typ === OBJECT_TYPE_FIELD_HASH_TABLE) {
+      return this.parseHashTable(frame.offset, frame.typ, frame.size);
+    }
+    if (frame.typ === OBJECT_TYPE_ENTRY_ARRAY) return this.processEntryArrayFrame(frame);
+    if (frame.typ === OBJECT_TYPE_TAG) return this.processTagFrame(frame, state);
+    return undefined;
+  }
+
+  processEntryFrame(frame, state) {
+    const entry = this.parseEntry(frame.offset, frame.size);
+    if ((this.header.compatible_flags & COMPATIBLE_SEALED) && this.count(OBJECT_TYPE_TAG) <= 0n) {
+      throw new ObjectGraphVerificationError(`first entry before first tag at offset ${frame.offset}`);
+    }
+    if (entry.realtime < state.lastTagRealtime) {
+      throw new ObjectGraphVerificationError(`older entry after newer tag at offset ${frame.offset}`);
+    }
+    this.validateEntrySeqnum(frame.offset, entry, state);
+    this.validateEntryMonotonic(frame.offset, entry, state);
+    if (!state.entryRealtimeSet && entry.realtime !== this.header.head_entry_realtime) {
+      throw new ObjectGraphVerificationError(`head entry realtime mismatch at offset ${frame.offset}`);
+    }
+    state.entryRealtime = entry.realtime;
+    state.entryRealtimeSet = true;
+  }
+
+  validateEntrySeqnum(offset, entry, state) {
+    if (!state.entrySeqnumSet && entry.seqnum !== this.header.head_entry_seqnum) {
+      throw new ObjectGraphVerificationError(`head entry seqnum mismatch at offset ${offset}`);
+    }
+    if (state.entrySeqnumSet && state.entrySeqnum >= entry.seqnum) {
+      throw new ObjectGraphVerificationError(`entry seqnum out of sync at offset ${offset}`);
+    }
+    state.entrySeqnum = entry.seqnum;
+    state.entrySeqnumSet = true;
+  }
+
+  validateEntryMonotonic(offset, entry, state) {
+    if (state.entryMonotonicSet && entry.boot_id.equals(state.entryBootID) && state.entryMonotonic > entry.monotonic) {
+      throw new ObjectGraphVerificationError(`entry monotonic out of sync at offset ${offset}`);
+    }
+    state.entryMonotonic = entry.monotonic;
+    state.entryBootID = entry.boot_id;
+    state.entryMonotonicSet = true;
+  }
+
+  processEntryArrayFrame(frame) {
+    this.parseEntryArray(frame.offset, frame.size);
+    if (BigInt(frame.offset) !== this.header.entry_array_offset) return;
+    if (this.mainEntryArrayFound) throw new ObjectGraphVerificationError('more than one main entry array');
+    this.mainEntryArrayFound = true;
+  }
+
+  processTagFrame(frame, state) {
+    if (!(this.header.compatible_flags & COMPATIBLE_SEALED)) throw new ObjectGraphVerificationError('TAG object in unsealed file');
+    if (frame.size !== BigInt(TAG_OBJECT_SIZE)) throw new ObjectGraphVerificationError(`invalid TAG size at offset ${frame.offset}`);
+    const seqnum = this.u64(frame.offset + 16);
+    if (seqnum !== this.count(OBJECT_TYPE_TAG)) throw new ObjectGraphVerificationError(`TAG seqnum mismatch at offset ${frame.offset}`);
+    if (state.entryRealtimeSet) state.lastTagRealtime = state.entryRealtime;
+  }
+
+  validateObjectWalkCompletion(tail, state) {
     if (this.order[this.order.length - 1] !== tail) {
       throw new ObjectGraphVerificationError('tail_object_offset does not point to walked tail');
     }
-    if (entrySeqnumSet && entrySeqnum !== this.header.tail_entry_seqnum) {
+    if (state.entrySeqnumSet && state.entrySeqnum !== this.header.tail_entry_seqnum) {
       throw new ObjectGraphVerificationError('tail_entry_seqnum mismatch');
     }
-    if (
-      entryMonotonicSet &&
-      (this.header.compatible_flags & COMPATIBLE_TAIL_ENTRY_BOOT_ID) &&
-      entryBootID.equals(this.header.tail_entry_boot_id) &&
-      entryMonotonic !== this.header.tail_entry_monotonic
-    ) {
+    if (this.tailEntryMonotonicMismatch(state)) {
       throw new ObjectGraphVerificationError('tail_entry_monotonic mismatch');
     }
-    if (entryRealtimeSet && entryRealtime !== this.header.tail_entry_realtime) {
+    if (state.entryRealtimeSet && state.entryRealtime !== this.header.tail_entry_realtime) {
       throw new ObjectGraphVerificationError('tail_entry_realtime mismatch');
     }
   }
 
+  tailEntryMonotonicMismatch(state) {
+    return state.entryMonotonicSet &&
+      (this.header.compatible_flags & COMPATIBLE_TAIL_ENTRY_BOOT_ID) &&
+      state.entryBootID.equals(this.header.tail_entry_boot_id) &&
+      state.entryMonotonic !== this.header.tail_entry_monotonic;
+  }
+
   parseData(offset, flags, size) {
     const payloadOffset = this.compact ? COMPACT_DATA_OBJECT_HEADER_SIZE : DATA_OBJECT_HEADER_SIZE;
-    if (size <= BigInt(payloadOffset)) throw new ObjectGraphVerificationError(`DATA object at offset ${offset} has no payload`);
+    this.validateDataPayloadSize(offset, size, payloadOffset);
     const sizeNumber = u64ToNumber(size, `DATA size at offset ${offset}`);
     const storedPayload = this.data.subarray(offset + payloadOffset, offset + sizeNumber);
-    const hashPayload = flags ? this.decompressPayload(flags, storedPayload, offset) : storedPayload;
+    const hashPayload = this.dataHashPayload(flags, storedPayload, offset);
     const storedHash = this.u64(offset + 16);
     const computedHash = this.hash(hashPayload);
     if (storedHash !== computedHash) {
       throw new ObjectGraphVerificationError(`DATA hash mismatch at offset ${offset}`);
     }
-    const entryOffset = this.u64n(offset + 40, 'DATA entry_offset');
-    const nEntries = this.u64(offset + 56);
-    if ((entryOffset === 0) !== (nEntries === 0n)) {
-      throw new ObjectGraphVerificationError(`DATA object at offset ${offset} has bad n_entries`);
+    const obj = this.readDataMetadata(offset, storedHash);
+    this.validateDataMetadata(offset, obj);
+    this.dataObjects.set(offset, obj);
+  }
+
+  validateDataPayloadSize(offset, size, payloadOffset) {
+    if (size <= BigInt(payloadOffset)) {
+      throw new ObjectGraphVerificationError(`DATA object at offset ${offset} has no payload`);
     }
-    const obj = {
+  }
+
+  dataHashPayload(flags, storedPayload, offset) {
+    return flags ? this.decompressPayload(flags, storedPayload, offset) : storedPayload;
+  }
+
+  readDataMetadata(offset, storedHash) {
+    return {
       hash: storedHash,
       next_hash_offset: this.u64n(offset + 24, 'DATA next_hash_offset'),
       next_field_offset: this.u64n(offset + 32, 'DATA next_field_offset'),
-      entry_offset: entryOffset,
+      entry_offset: this.u64n(offset + 40, 'DATA entry_offset'),
       entry_array_offset: this.u64n(offset + 48, 'DATA entry_array_offset'),
-      n_entries: nEntries,
+      n_entries: this.u64(offset + 56),
       tail_entry_array_offset: this.compact ? this.data.readUInt32LE(offset + 64) : 0,
       tail_entry_array_n_entries: this.compact ? this.data.readUInt32LE(offset + 68) : 0,
     };
+  }
+
+  validateDataMetadata(offset, obj) {
+    if ((obj.entry_offset === 0) !== (obj.n_entries === 0n)) {
+      throw new ObjectGraphVerificationError(`DATA object at offset ${offset} has bad n_entries`);
+    }
     for (const field of ['next_hash_offset', 'next_field_offset', 'entry_offset', 'entry_array_offset']) {
       this.validOffset(obj[field], `DATA ${offset} ${field}`);
     }
-    if (nEntries < 2n && obj.entry_array_offset !== 0) {
+    if (obj.n_entries < 2n && obj.entry_array_offset !== 0) {
       throw new ObjectGraphVerificationError(`DATA object at offset ${offset} has unexpected entry array`);
     }
-    if (nEntries >= 2n && obj.entry_array_offset === 0) {
+    if (obj.n_entries >= 2n && obj.entry_array_offset === 0) {
       throw new ObjectGraphVerificationError(`DATA object at offset ${offset} is missing entry array`);
     }
-    this.dataObjects.set(offset, obj);
   }
 
   parseField(offset, size) {
@@ -440,18 +509,33 @@ class GraphVerifier {
     const entries = Array.from(this.entryObjects.entries()).sort((a, b) => compareBigInt(a[1].seqnum, b[1].seqnum));
     const [headOffset, head] = entries[0];
     const [tailOffset, tail] = entries[entries.length - 1];
+    this.validateHeadTailSeqnum(head, tail);
+    this.validateHeadTailRealtime(head, tail);
+    this.validateTailBootMetadata(tail);
+    this.validateTailEntryOffset(tailOffset);
+    if (headOffset === 0) throw new ObjectGraphVerificationError('head entry offset is zero');
+  }
+
+  validateHeadTailSeqnum(head, tail) {
     if (this.header.head_entry_seqnum !== head.seqnum) throw new ObjectGraphVerificationError('head_entry_seqnum mismatch');
     if (this.header.tail_entry_seqnum !== tail.seqnum) throw new ObjectGraphVerificationError('tail_entry_seqnum mismatch');
+  }
+
+  validateHeadTailRealtime(head, tail) {
     if (this.header.head_entry_realtime !== head.realtime) throw new ObjectGraphVerificationError('head_entry_realtime mismatch');
     if (this.header.tail_entry_realtime !== tail.realtime) throw new ObjectGraphVerificationError('tail_entry_realtime mismatch');
-    if (this.header.compatible_flags & COMPATIBLE_TAIL_ENTRY_BOOT_ID) {
-      if (this.header.tail_entry_monotonic !== tail.monotonic) throw new ObjectGraphVerificationError('tail_entry_monotonic mismatch');
-      if (!this.header.tail_entry_boot_id.equals(tail.boot_id)) throw new ObjectGraphVerificationError('tail_entry_boot_id mismatch');
-    }
+  }
+
+  validateTailBootMetadata(tail) {
+    if (!(this.header.compatible_flags & COMPATIBLE_TAIL_ENTRY_BOOT_ID)) return;
+    if (this.header.tail_entry_monotonic !== tail.monotonic) throw new ObjectGraphVerificationError('tail_entry_monotonic mismatch');
+    if (!this.header.tail_entry_boot_id.equals(tail.boot_id)) throw new ObjectGraphVerificationError('tail_entry_boot_id mismatch');
+  }
+
+  validateTailEntryOffset(tailOffset) {
     if (this.headerHas(272) && this.header.tail_entry_offset !== BigInt(tailOffset)) {
       throw new ObjectGraphVerificationError('tail_entry_offset mismatch');
     }
-    if (headOffset === 0) throw new ObjectGraphVerificationError('head entry offset is zero');
   }
 
   validateGlobalEntryArray() {
@@ -541,26 +625,36 @@ class GraphVerifier {
     let current = startOffset;
     const seen = new Set();
     while (remaining > 0) {
-      if (seen.has(current)) throw new ObjectGraphVerificationError(`${label} has a cycle`);
-      seen.add(current);
-      const array = this.entryArrays.get(current);
-      if (!array) throw new ObjectGraphVerificationError(`${label} references missing ENTRY_ARRAY`);
-      if (array.next !== 0 && array.next <= current) {
-        throw new ObjectGraphVerificationError(`${label} next pointer is not increasing`);
-      }
-      const usedHere = Math.min(remaining, array.items.length);
-      for (let i = 0; i < usedHere; i++) {
-        const item = array.items[i];
-        if (item === 0) throw new ObjectGraphVerificationError(`${label} has zero used item`);
-        if (!this.entryObjects.has(item)) throw new ObjectGraphVerificationError(`${label} references missing ENTRY`);
-        entries.push(item);
-      }
+      const array = this.readEntryArrayChainNode(current, label, seen);
+      const usedHere = this.appendEntryArrayChainItems(entries, array, remaining, label);
       remaining -= usedHere;
       if (remaining === 0) break;
       if (array.next === 0) throw new ObjectGraphVerificationError(`${label} ended early`);
       current = array.next;
     }
     return entries;
+  }
+
+  readEntryArrayChainNode(current, label, seen) {
+    if (seen.has(current)) throw new ObjectGraphVerificationError(`${label} has a cycle`);
+    seen.add(current);
+    const array = this.entryArrays.get(current);
+    if (!array) throw new ObjectGraphVerificationError(`${label} references missing ENTRY_ARRAY`);
+    if (array.next !== 0 && array.next <= current) {
+      throw new ObjectGraphVerificationError(`${label} next pointer is not increasing`);
+    }
+    return array;
+  }
+
+  appendEntryArrayChainItems(entries, array, remaining, label) {
+    const usedHere = Math.min(remaining, array.items.length);
+    for (let i = 0; i < usedHere; i++) {
+      const item = array.items[i];
+      if (item === 0) throw new ObjectGraphVerificationError(`${label} has zero used item`);
+      if (!this.entryObjects.has(item)) throw new ObjectGraphVerificationError(`${label} references missing ENTRY`);
+      entries.push(item);
+    }
+    return usedHere;
   }
 
   dataObjectInHashTable(dataOffset, dataHash) {
