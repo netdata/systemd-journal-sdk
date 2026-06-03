@@ -726,11 +726,25 @@ export default Log;
 function validateJournalSource(source) {
   if (source === '' || source === '.' || source === '..') throw new Error('invalid journal source');
   for (let i = 0; i < source.length; i++) {
-    const c = source.charCodeAt(i);
-    const ok = (c >= 0x61 && c <= 0x7a) || (c >= 0x41 && c <= 0x5a) ||
-      (c >= 0x30 && c <= 0x39) || c === 0x5f || c === 0x2d || c === 0x2e;
-    if (!ok) throw new Error('invalid journal source');
+    if (!isJournalSourceCodePoint(source.charCodeAt(i))) throw new Error('invalid journal source');
   }
+}
+
+function isJournalSourceCodePoint(c) {
+  return isLowerAsciiLetter(c) || isUpperAsciiLetter(c) || isAsciiDigit(c) ||
+    c === 0x5f || c === 0x2d || c === 0x2e;
+}
+
+function isLowerAsciiLetter(c) {
+  return c >= 0x61 && c <= 0x7a;
+}
+
+function isUpperAsciiLetter(c) {
+  return c >= 0x41 && c <= 0x5a;
+}
+
+function isAsciiDigit(c) {
+  return c >= 0x30 && c <= 0x39;
 }
 
 function readJournalHeader(path) {

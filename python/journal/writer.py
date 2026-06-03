@@ -52,16 +52,22 @@ from .writer_options import (
     _current_time_ms, _dedupe_entry_items, _normalize_live_publish_every_entries,
     _uuid_option,
 )
+from .writer_file_mode import DEFAULT_JOURNAL_FILE_MODE, _normalize_file_mode
+from .writer_open import (
+    _append_header_missing_hash_tables, _compression_from_append_header,
+    _configure_opened_writer, _read_append_header, _read_object_size_from_fd,
+    _sync_parent_directory, _validate_append_header_flags,
+)
+from .writer_sealing import _WriterSealingMixin
 MIN_COMPRESS_THRESHOLD = _writer_compression.MIN_COMPRESS_THRESHOLD
 FIELD_NAME_POLICY_JOURNALD = _writer_policy.FIELD_NAME_POLICY_JOURNALD
 FIELD_NAME_POLICY_RAW = _writer_policy.FIELD_NAME_POLICY_RAW
 FIELD_NAME_POLICY_JOURNAL_APP = _writer_policy.FIELD_NAME_POLICY_JOURNAL_APP
-DEFAULT_JOURNAL_FILE_MODE = 0o640
 FIELD_CACHE_MAX_ENTRIES = 1024
 FIELD_CACHE_MAX_PAYLOAD_LEN = 128
 
 
-class Writer:
+class Writer(_WriterSealingMixin):
     def __init__(self, fd, path):
         self._fd = fd
         self._path = path
@@ -948,201 +954,3 @@ class Writer:
         return self._append_offset
 
     # Sealing methods
-
-    def _append_tag(self):
-        if self._seal is None:
-            return
-        self._seal.hmac_start()
-        offset = self._append_offset
-        size = OBJECT_HEADER_SIZE + 8 + 8 + TAG_LENGTH
-        seqnum = self._header['n_tags'] + 1
-        epoch = self._seal.get_epoch()
-        self._ensure_arena_size(offset + align8(size))
-        buf = bytearray(align8(size))
-        write_object_header(buf, 0, OBJECT_TYPE_TAG, 0, size)
-        struct.pack_into('<Q', buf, OBJECT_HEADER_SIZE, seqnum)
-        struct.pack_into('<Q', buf, OBJECT_HEADER_SIZE + 8, epoch)
-        self._seal.hmac_write(bytes(buf[:OBJECT_HEADER_SIZE + 16]))
-        buf[OBJECT_HEADER_SIZE + 16:OBJECT_HEADER_SIZE + 16 + TAG_LENGTH] = self._seal.hmac_sum()
-        self._write_at(offset, buf)
-        self._object_added(offset, size)
-        self._header['n_tags'] = seqnum
-        self._seal.hmac_reset()
-
-    def _append_first_tag(self):
-        if self._seal is None:
-            return
-        self._hmac_put_header()
-        self._hmac_put_hash_table_object(self._header['field_hash_table_offset'] - OBJECT_HEADER_SIZE)
-        self._hmac_put_hash_table_object(self._header['data_hash_table_offset'] - OBJECT_HEADER_SIZE)
-        self._append_tag()
-
-    def _maybe_append_tag(self, realtime):
-        if self._seal is None:
-            return
-        need = self._seal.need_evolve(realtime)
-        if not need:
-            return
-        self._append_tag()
-        while True:
-            goal = self._seal.get_goal_epoch(realtime)
-            epoch = self._seal.get_epoch()
-            if epoch >= goal:
-                break
-            self._seal.evolve_state()
-            if self._seal.get_epoch() < goal:
-                self._append_tag()
-
-    def _hmac_put_header(self):
-        if self._seal is None:
-            return
-        self._seal.hmac_start()
-        header_buf = bytearray(HEADER_SIZE)
-        serialize_file_header(header_buf, self._header)
-        self._seal.hmac_write(bytes(header_buf[0:16]))
-        self._seal.hmac_write(bytes(header_buf[24:56]))
-        self._seal.hmac_write(bytes(header_buf[72:96]))
-        self._seal.hmac_write(bytes(header_buf[104:136]))
-
-    def _hmac_put_hash_table_object(self, object_start):
-        if self._seal is None:
-            return
-        self._seal.hmac_start()
-        buf = self._read_at(object_start, OBJECT_HEADER_SIZE)
-        self._seal.hmac_write(buf)
-
-    def _hmac_put_object(self, object_start, typ):
-        if self._seal is None:
-            return
-        self._seal.hmac_start()
-        buf = self._read_at(object_start, OBJECT_HEADER_SIZE)
-        self._seal.hmac_write(buf)
-        obj_size = struct.unpack_from('<Q', buf, 8)[0]
-        if typ == OBJECT_TYPE_DATA:
-            hash_buf = self._read_at(object_start + 16, 8)
-            self._seal.hmac_write(hash_buf)
-            payload_offset = self._data_payload_offset()
-            payload_size = obj_size - payload_offset
-            if payload_size > 0:
-                payload = self._read_at(object_start + payload_offset, payload_size)
-                self._seal.hmac_write(payload)
-        elif typ == OBJECT_TYPE_FIELD:
-            hash_buf = self._read_at(object_start + 16, 8)
-            self._seal.hmac_write(hash_buf)
-            payload_size = obj_size - FIELD_OBJECT_HEADER_SIZE
-            if payload_size > 0:
-                payload = self._read_at(object_start + FIELD_OBJECT_HEADER_SIZE, payload_size)
-                self._seal.hmac_write(payload)
-        elif typ == OBJECT_TYPE_ENTRY:
-            rest_size = obj_size - OBJECT_HEADER_SIZE
-            if rest_size > 0:
-                rest = self._read_at(object_start + OBJECT_HEADER_SIZE, rest_size)
-                self._seal.hmac_write(rest)
-        elif typ in (OBJECT_TYPE_DATA_HASH_TABLE, OBJECT_TYPE_FIELD_HASH_TABLE, OBJECT_TYPE_ENTRY_ARRAY):
-            pass
-        elif typ == OBJECT_TYPE_TAG:
-            meta = self._read_at(object_start + OBJECT_HEADER_SIZE, 16)
-            self._seal.hmac_write(meta)
-
-
-def _read_object_size_from_fd(fd, offset):
-    buf = _read_fd_at(fd, 8, offset + 8)
-    return read_uint64_le(buf, 0)
-
-
-def _sync_parent_directory(path):
-    return sync_parent_directory(path)
-
-
-def _read_append_header(fd):
-    header_buf = os.read(fd, HEADER_SIZE)
-    if len(header_buf) < HEADER_SIZE:
-        raise ValueError('cannot read journal header')
-    header = parse_file_header(header_buf)
-    return header, _compression_from_append_header(header)
-
-
-def _compression_from_append_header(header):
-    flags = header['incompatible_flags']
-    _validate_append_header_flags(header, flags)
-    if flags & INCOMPATIBLE_COMPRESSED_XZ:
-        _ensure_xz_available()
-        return COMPRESSION_XZ
-    if flags & INCOMPATIBLE_COMPRESSED_LZ4:
-        _ensure_lz4_available()
-        return COMPRESSION_LZ4
-    if flags & INCOMPATIBLE_COMPRESSED_ZSTD:
-        _ensure_zstd_available()
-        return COMPRESSION_ZSTD
-    return COMPRESSION_NONE
-
-
-def _validate_append_header_flags(header, flags):
-    supported = (
-        INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_ZSTD |
-        INCOMPATIBLE_COMPRESSED_XZ | INCOMPATIBLE_COMPRESSED_LZ4 |
-        INCOMPATIBLE_COMPACT
-    )
-    if flags & ~supported:
-        raise ValueError(f'unsupported journal: incompatible flags 0x{flags:x}')
-    if not (flags & INCOMPATIBLE_KEYED_HASH):
-        raise ValueError('unsupported journal: keyed hash required')
-    if header['header_size'] < HEADER_SIZE:
-        raise ValueError('unsupported journal: outdated header')
-    if _append_header_missing_hash_tables(header):
-        raise ValueError('invalid journal: missing hash tables')
-
-
-def _append_header_missing_hash_tables(header):
-    return (
-        header['data_hash_table_offset'] == 0 or
-        header['field_hash_table_offset'] == 0 or
-        header['tail_object_offset'] == 0
-    )
-
-
-def _configure_opened_writer(writer, fd, header, compression, opts):
-    tail_size = _read_object_size_from_fd(fd, header['tail_object_offset'])
-    writer._header = header
-    writer._append_offset = align8(header['tail_object_offset'] + tail_size)
-    writer._next_seqnum = header['tail_entry_seqnum'] + 1
-    writer._boot_id = _opened_writer_boot_id(header, opts)
-    writer._started = _current_time_ms() - _opened_writer_monotonic_base(header)
-    writer._compression = compression
-    writer._compress_threshold = DEFAULT_COMPRESS_THRESHOLD
-    writer._compact = bool(header['incompatible_flags'] & INCOMPATIBLE_COMPACT)
-    writer._live_publish_every_entries = _normalize_live_publish_every_entries(
-        opts.get('live_publish_every_entries', opts.get('livePublishEveryEntries'))
-    )
-    writer._field_name_policy = _normalize_field_name_policy(
-        opts.get('field_name_policy', opts.get('fieldNamePolicy'))
-    )
-    writer._map_arena(max(os.fstat(fd).st_size, header['header_size'] + header['arena_size']))
-    writer._header['state'] = STATE_ONLINE
-    writer._write_header()
-
-
-def _normalize_file_mode(opts):
-    value = opts.get('file_mode')
-    if value is None:
-        value = opts.get('fileMode')
-    if value is None:
-        return DEFAULT_JOURNAL_FILE_MODE
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise ValueError(f'invalid journal file mode: {value!r}')
-    if value < 0 or value > 0o777:
-        raise ValueError(f'invalid journal file mode: {value!r}')
-    return value
-
-
-def _opened_writer_boot_id(header, opts):
-    boot_id = header['tail_entry_boot_id']
-    if is_zero_uuid(boot_id):
-        return _uuid_option(opts.get('boot_id', opts.get('bootId')), header['file_id'])
-    return boot_id
-
-
-def _opened_writer_monotonic_base(header):
-    if header['tail_entry_monotonic'] > 0:
-        return header['tail_entry_monotonic'] // 1000
-    return 0

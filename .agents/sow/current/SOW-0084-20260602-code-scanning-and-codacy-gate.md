@@ -2709,6 +2709,104 @@ Batch 48:
     `Lizard_file-nloc-critical`, 4 `Lizard_ccn-critical`, and 3 Agentlinter
     instruction-file findings. There were no open CodeQL current alerts.
 
+Batch 49:
+
+- Scope: current-head scanner reconciliation and user policy update after the
+  user reported 196 total GitHub findings and requested a clean scanner signal.
+- User decision:
+  - The target is zero open findings on the default branch.
+  - Scanner rules that are pure noise for this repository may be disabled or
+    excluded with evidence.
+  - Rules that help identify real correctness, maintainability, or security
+    issues must stay enabled and their findings must be fixed or narrowly
+    dispositioned.
+- Evidence:
+  - `codacy issues gh netdata systemd-journal-sdk --branch master --output
+    json` reported 10 Codacy Cloud issues on `master`, all
+    `Lizard_file-nloc-critical`.
+  - GitHub code-scanning API for `refs/heads/master` reported 196 open alerts
+    after commit `7be10a27`: 3 Agentlinter instruction-file alerts, 85 Bandit
+    subprocess alerts, 5 ESLint object-injection alerts, 9 Flawfinder
+    `strlen` alerts, 49 PMD JavaScript codestyle/vendor alerts, 3 Python
+    unused-import alerts, 14 Lizard complexity/size alerts, 27 markdownlint
+    inline-HTML alerts in the SOW template, and 1 ShellCheck alert.
+  - `.github/workflows/codacy-sarif.yml` currently initializes Codacy Analysis
+    CLI with remote config when a token is available, otherwise with default
+    config. Because the repository has no committed `.codacy` configuration,
+    the GitHub SARIF upload can drift from the Codacy Cloud project view and
+    produce noisy tool findings that Codacy Cloud does not report.
+- Implementation direction:
+  - Commit repository-owned scanner configuration and update the SARIF workflow
+    so committed config is authoritative when present.
+  - Disable or exclude only noisy patterns/tools with recorded evidence.
+  - Fix actionable findings in code/tests/docs instead of suppressing them.
+  - Refactor Lizard file-size and function-complexity findings where practical,
+    because those are maintainability signals for this SDK.
+
+Batch 50:
+
+- Scope: current-head noise pruning plus actionable maintainability fixes.
+- Rule dispositions:
+  - Kept Lizard size/complexity enabled. These findings exposed real
+    maintainability debt in large source and test modules.
+  - Kept ESLint, Flawfinder, PyLint, markdownlint, shellcheck, CodeQL, and
+    Codacy quality/security scanning enabled. They still identify useful bug,
+    security, or documentation issues for this repository.
+  - Removed PMD JavaScript from the GitHub SARIF workflow. Evidence: the open
+    PMD findings were JavaScript codestyle/vendor-style noise from a Java
+    analyzer family and were not present in the Codacy Cloud `master` issue
+    export.
+  - Removed Agentlinter from the GitHub SARIF workflow. Evidence: the open
+    findings were against repository instruction files, not SDK runtime code or
+    user-facing behavior, and Codacy Cloud did not report them on `master`.
+  - Kept Bandit enabled but skipped `B404` and `B603` in `.bandit`. Evidence:
+    the open findings were import-only and `shell=False` subprocess calls in
+    repository test/benchmark/scanner harnesses. They do not distinguish unsafe
+    shell execution from expected vectorized test command execution, while the
+    rest of Bandit remains useful.
+- Workflow/config changes:
+  - Updated GitHub Codacy SARIF workflow package pins to the latest checked npm
+    releases available during implementation:
+    `@codacy/analysis-cli@0.9.0` and `@codacy/codacy-cloud-cli@1.2.0`.
+  - Restricted the SARIF workflow to the useful scanner set: Bandit, ESLint9,
+    flawfinder, Lizard, markdownlint, PyLintPython3, and shellcheck.
+  - The workflow now prefers a committed `.codacy/codacy.config.json` if one is
+    added later; otherwise it initializes default Codacy Analysis configuration
+    before running the restricted useful tool set.
+- Maintainability fixes:
+  - Split oversized Rust modules:
+    `rust/src/journal/src/lib.rs`,
+    `rust/src/journal/src/verify_graph.rs`,
+    `rust/src/crates/jf/journal_file/src/file.rs`,
+    `rust/src/crates/journal-log-writer/src/log/mod.rs`,
+    `rust/src/crates/journal-log-writer/tests/log_writer.rs`, and
+    `rust/src/adapter/main.rs`.
+  - Split oversized Go writer tests from `go/journal/writer_test.go`.
+  - Split oversized Python writer/test modules from `python/journal/writer.py`
+    and `python/test_all.py`.
+  - Split oversized Node package tests from `node/test/all.js`.
+  - Reduced Node directory-writer journal-source validation complexity by
+    extracting character-class helpers.
+  - Ran a local effective-NLOC guardrail over Rust, Go, Node, and Python source
+    and test files; no checked file under the scanned source/test roots exceeded
+    1000 effective non-comment lines after the split.
+- Validation:
+  - `git diff --check` passed.
+  - `cargo test -p journal -p journal-log-writer -p journal_file -p adapter`
+    in `rust/` passed.
+  - `go test ./...` in `go/` passed.
+  - `.local/python-venv/bin/python python/test_all.py` passed.
+  - `NODE_OPTIONS=--max-old-space-size=8192
+    npm_config_cache=../.local/npm-cache npm test` in `node/` passed.
+  - `.agents/sow/audit.sh` passed.
+  - Local effective-NLOC guardrail reported `large_count 0` for the scanned
+    Rust, Go, Node, and Python source/test roots excluding `.local`.
+- Remaining gate:
+  - Push is still required before GitHub CodeQL/Codacy SARIF can close stale
+    alerts and before Codacy Cloud can re-evaluate the default branch.
+  - External reviewer review is still pending for the complete SOW because the
+    post-push scanner state is not available yet.
+
 Reviewer findings:
 
 - Pending. The current SOW is not ready for terminal reviewer review because
