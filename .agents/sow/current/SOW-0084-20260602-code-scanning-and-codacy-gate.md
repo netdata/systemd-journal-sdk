@@ -768,6 +768,9 @@ Real-use evidence:
   decision items with plain labelled lines, and
   `Agentlinter_clarity_undefined-term` by adding an `AGENTS.md` glossary for
   CGO, SOW, FIELD/DATA/ENTRY, FTS, and uppercase `DO NOT` prompt emphasis.
+- Local SOW-0003 heading cleanup targets `markdownlint_MD024` by making the
+  second repair-validation headings unique while preserving the original
+  validation evidence.
 
 Reviewer findings:
 
