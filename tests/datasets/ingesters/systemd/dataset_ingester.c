@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
+// cppcheck-suppress-file missingIncludeSystem
 #include <errno.h>
 #include <assert.h>
 #include <fcntl.h>

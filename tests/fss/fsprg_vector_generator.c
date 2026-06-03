@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later */
 
+// cppcheck-suppress-file missingIncludeSystem
 #define _GNU_SOURCE
 
 #include <stdio.h>

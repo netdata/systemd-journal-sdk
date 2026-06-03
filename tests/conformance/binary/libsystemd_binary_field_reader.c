@@ -4,6 +4,7 @@
 // libsystemd. This is intentionally a standalone validation helper, not an SDK
 // dependency.
 
+// cppcheck-suppress-file missingIncludeSystem
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>

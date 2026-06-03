@@ -1,3 +1,4 @@
+// cppcheck-suppress-file missingIncludeSystem
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>

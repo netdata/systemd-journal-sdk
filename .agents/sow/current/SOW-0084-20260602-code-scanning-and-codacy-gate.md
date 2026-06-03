@@ -650,6 +650,19 @@ Tests or equivalent validation:
   scan of the 20 Codacy-reported command-argument lines showing same-line
   `# nosemgrep` coverage, line-length scan, `python3 -m py_compile` for every
   touched harness file, and `git diff --check`.
+- Local Codacy/Cppcheck configuration cleanup validation passed YAML parsing of
+  `.codacy.yaml`, local Codacy Analysis CLI `--help` inspection, Cppcheck
+  `--enable=all --inline-suppr` scan showing no `missingIncludeSystem` or
+  unmatched-suppression output for the six C helper files, systemd helper build
+  scripts for writer-core, dataset-ingester, and FSPRG vector generator, direct
+  builds for the binary-field and live libsystemd helper programs, `git diff
+  --check`, and `.agents/sow/audit.sh`.
+- Current Codacy documentation states that `.codacy.yml` or `.codacy.yaml` must
+  start with `---`, supports repository-level `exclude_paths`, and supports
+  `engines.cppcheck.language` for C/C++ analysis. The locally installed
+  Codacy Analysis CLI binary does not expose the documented
+  `validate-configuration` command, so validation used YAML parsing and will
+  rely on the next cloud analysis as the authoritative configuration check.
 
 Real-use evidence:
 
@@ -991,6 +1004,17 @@ Real-use evidence:
   as `cmd,` and `actual,`, so the local follow-up cleanup adds same-line
   `# nosemgrep` suppressions to those exact argument sites while preserving the
   existing harness-only rationale comments.
+- Local Codacy/Cppcheck configuration cleanup targets two scanner-environment
+  groups from the `398e34e` cloud export:
+  - `Agentlinter_consistency_no-duplicate-instructions` reports `AGENTS.md`
+    duplicates against `CLAUDE.md`, which is an intentional tool bridge symlink
+    to `AGENTS.md`. `.codacy.yaml` excludes only `CLAUDE.md` and `GEMINI.md`,
+    leaving canonical `AGENTS.md` scanned.
+  - `cppcheck_missingIncludeSystem` reports missing standard or systemd headers
+    in six C helper files under Codacy's analysis environment. The files build
+    locally and through the existing systemd helper scripts, so the C helpers
+    now use file-level `missingIncludeSystem` suppressions instead of changing
+    valid include lists.
 
 Reviewer findings:
 
