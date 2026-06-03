@@ -144,9 +144,14 @@ Last updated: 2026-06-03
   remaining live-matrix reader/verify subprocess calls through the wrapper, and
   documented a narrow Semgrep suppression at the single audited subprocess
   boundary; local Semgrep, syntax, Lizard, diff, and the 20-entry Go live-matrix
-  smoke passed. Remaining work is to re-run Codacy after Batch 33, split the
-  remaining file-size findings, record final scanner results, and complete
-  whole-SOW review.
+  smoke passed. Batch 34 split the Go SDK source and Go test files still
+  affected by Codacy file-size findings into focused package-local files, kept
+  APIs and test behavior unchanged, passed `go test ./...`, confirmed no
+  tracked Go file remains at or above 1000 non-comment/non-blank lines, and
+  passed local Lizard on the changed Go files. Remaining work is to push Batch
+  34, verify Codacy no longer reports Go file-size findings, split or
+  disposition the remaining non-Go file-size findings, record final scanner
+  results, and complete whole-SOW review.
 
 ## Pending
 

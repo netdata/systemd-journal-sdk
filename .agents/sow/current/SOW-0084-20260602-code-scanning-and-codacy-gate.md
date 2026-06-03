@@ -2201,6 +2201,27 @@ Batch 33:
     --writers go --readers go --poll-readers 1 --libsystemd-readers 1
     --poll-interval 0.02 --writer-delay-ms 5`.
 
+Batch 34:
+
+- Scope: Codacy `Lizard_file-nloc-critical` file-size findings in the Go SDK
+  source and Go test files.
+- Changes:
+  - Split oversized Go reader, writer, high-level log, adapter, and test files
+    into focused package-local files by behavior area: reader filters, entry
+    access, unique values, directory reading, output helpers, writer
+    initialization, object/array/compression helpers, writer compression tests,
+    snapshot/journalctl helpers, directory reader tests, parser tests, zstd
+    fixture tests, log retention internals, log rotation policy tests,
+    retention policy tests, field policy tests, and log helpers.
+  - Kept the Go package API and test logic unchanged; moved top-level
+    declarations only.
+- Validation:
+  - `go test ./...` passed for the whole Go module after the split.
+  - A tracked-file NLOC check over `git ls-files go/*.go go/**/*.go` reported
+    no Go file at or above 1000 non-comment, non-blank lines.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reported no warnings for the
+    changed Go files.
+
 Reviewer findings:
 
 - Pending. The current SOW is not ready for terminal reviewer review because
@@ -2272,7 +2293,8 @@ Follow-up mapping:
   - group and triage the exported `master` cloud findings;
   - trigger Codacy reanalysis after Batch 29 and verify the non-file-size
     findings are gone;
-  - address the remaining file-size complexity findings by splitting files or
+  - push Batch 34 and verify Codacy no longer reports Go file-size findings;
+  - address the remaining non-Go file-size findings by splitting files or
     recording an explicit user decision for generated/vendor/test exceptions;
   - run GitHub workflows after push and record CodeQL/Codacy results;
   - switch from reporting-only to enforcement after the actionable baseline is
