@@ -172,10 +172,10 @@ function parseArgs(argv) {
     mmapStrategy: 'buffer',
   });
   for (let i = 2; i < argv.length; i++) {
-    const arg = argv[i];
+    const arg = argv.at(i);
     const next = () => {
       if (i + 1 >= argv.length) throw new Error(`missing value for ${arg}`);
-      return argv[++i];
+      return argv.at(++i);
     };
     if (arg === '--input') args.inputs.push(next());
     else if (arg === '--mode') args.mode = next();

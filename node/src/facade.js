@@ -25,18 +25,21 @@ export function exportEntryBuffer(entry) {
   const preferred = ['_MACHINE_ID', '_HOSTNAME', 'PRIORITY', '_TRANSPORT'];
   const written = new Set(['_BOOT_ID', '__CURSOR', '__REALTIME_TIMESTAMP', '__MONOTONIC_TIMESTAMP', '__SEQNUM', '__SEQNUM_ID']);
   for (const name of preferred) {
-    if (entry.fields[name] && !written.has(name)) {
-      parts.push(formatExportField(name, entry.fields[name]));
+    const value = getOwnValue(entry.fields, name);
+    if (value && !written.has(name)) {
+      parts.push(formatExportField(name, value));
       written.add(name);
     }
   }
 
   const remaining = Object.keys(entry.fields).filter(k => !written.has(k)).sort();
   for (const name of remaining) {
-    if (entry.fieldValues[name]) {
-      for (const v of entry.fieldValues[name]) parts.push(formatExportField(name, v));
-    } else if (entry.fields[name]) {
-      parts.push(formatExportField(name, entry.fields[name]));
+    const values = getOwnValue(entry.fieldValues, name);
+    if (values) {
+      for (const v of values) parts.push(formatExportField(name, v));
+    } else {
+      const value = getOwnValue(entry.fields, name);
+      if (value) parts.push(formatExportField(name, value));
     }
   }
   for (const [name, value] of entry.rawFields || []) {
@@ -92,7 +95,9 @@ export function jsonEntry(entry) {
 
   const remaining = Object.keys(entry.fields).filter(k => !written.has(k)).sort();
   for (const name of remaining) {
-    const values = entry.fieldValues[name] || (entry.fields[name] ? [entry.fields[name]] : []);
+    const fieldValues = getOwnValue(entry.fieldValues, name);
+    const fieldValue = getOwnValue(entry.fields, name);
+    const values = fieldValues || (fieldValue ? [fieldValue] : []);
     for (const v of values) addJsonValue(result, name, v);
   }
   return result;
@@ -100,11 +105,12 @@ export function jsonEntry(entry) {
 
 function addJsonValue(result, name, value) {
   const encoded = isPrintable(value, true) ? value.toString('utf8') : Array.from(value);
-  if (Object.hasOwn(result, name)) {
-    if (Array.isArray(result[name])) result[name].push(encoded);
-    else result[name] = [result[name], encoded];
+  const current = getOwnValue(result, name);
+  if (current !== undefined) {
+    if (Array.isArray(current)) current.push(encoded);
+    else setOwnValue(result, name, [current, encoded]);
   } else {
-    result[name] = encoded;
+    setOwnValue(result, name, encoded);
   }
 }
 
@@ -299,10 +305,11 @@ export class SdJournal {
       const rawValues = entry.rawFieldValues.get(nameBytes.toString('hex'));
       if (rawValues && rawValues.length > 0) return payloadFromFieldValue(nameBytes, rawValues[0]);
     }
-    if (!entry || key === null || !entry.fieldValues[key] || entry.fieldValues[key].length === 0) {
+    const values = entry && key !== null ? getOwnValue(entry.fieldValues, key) : undefined;
+    if (!entry || key === null || !values || values.length === 0) {
       throw new Error('data field not found');
     }
-    return payloadFromFieldValue(key, entry.fieldValues[key][0]);
+    return payloadFromFieldValue(key, values[0]);
   }
 
   processOutput(entry) {
@@ -531,9 +538,20 @@ function fieldNameBytes(fieldName) {
 function payloadsFromEntry(entry) {
   const payloads = [];
   for (const name of Object.keys(entry.fieldValues || {}).sort()) {
-    for (const value of entry.fieldValues[name]) {
+    for (const value of getOwnValue(entry.fieldValues, name) || []) {
       payloads.push(payloadFromFieldValue(name, value));
     }
   }
   return payloads;
+}
+
+function getOwnValue(object, key) {
+  if (!object || !Object.hasOwn(object, key)) return undefined;
+  // eslint-disable-next-line security/detect-object-injection -- journal field names are data; callers must be able to read arbitrary own fields from null-prototype maps.
+  return object[key];
+}
+
+function setOwnValue(object, key, value) {
+  // eslint-disable-next-line security/detect-object-injection -- journal field names are data; JSON/export output must preserve arbitrary own field names.
+  object[key] = value;
 }

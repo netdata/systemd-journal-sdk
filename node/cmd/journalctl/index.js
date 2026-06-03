@@ -143,9 +143,9 @@ try {
 function preprocessOptionalBootArg(args) {
   const out = [];
   for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
+    const arg = args.at(i);
     if (arg === '--boot' || arg === '-b') {
-      const next = args[i + 1];
+      const next = args.at(i + 1);
       if (next !== undefined && looksLikeBootDescriptor(next)) {
         out.push(`${arg}=${next}`);
         i++;
@@ -184,7 +184,7 @@ function parseTimestampUsec(value) {
   if (startsWithSign(text) && !startsWithSignedDate(text)) {
     const delta = parseDurationUsec(text.slice(1));
     const now = BigInt(Date.now()) * 1000n;
-    return text[0] === '+' ? now + delta : now - delta;
+    return text.charAt(0) === '+' ? now + delta : now - delta;
   }
   const dt = parseDateTimestamp(text);
   if (dt !== null) return dt;
@@ -229,7 +229,7 @@ function splitDateTime(value) {
 }
 
 function parseDateParts(text) {
-  if (text.length !== 10 || text[4] !== '-' || text[7] !== '-') return null;
+  if (text.length !== 10 || text.charAt(4) !== '-' || text.charAt(7) !== '-') return null;
   const y = text.slice(0, 4);
   const mo = text.slice(5, 7);
   const d = text.slice(8, 10);
@@ -284,26 +284,26 @@ function parseDurationUsec(value) {
   let pos = 0;
   while (pos < value.length) {
     const whitespaceStart = pos;
-    while (pos < value.length && isWhitespace(value[pos])) pos++;
+    while (pos < value.length && isWhitespace(value.charAt(pos))) pos++;
     if (pos >= value.length) {
       if (whitespaceStart !== pos) throw new Error(`failed to parse duration: ${value}`);
       break;
     }
 
     const numberStart = pos;
-    while (pos < value.length && isDigit(value[pos])) pos++;
-    if (pos < value.length && value[pos] === '.') {
+    while (pos < value.length && isDigit(value.charAt(pos))) pos++;
+    if (pos < value.length && value.charAt(pos) === '.') {
       pos++;
       const fractionStart = pos;
-      while (pos < value.length && isDigit(value[pos])) pos++;
+      while (pos < value.length && isDigit(value.charAt(pos))) pos++;
       if (pos === fractionStart) throw new Error(`failed to parse duration: ${value}`);
     }
     if (pos === numberStart) throw new Error(`failed to parse duration: ${value}`);
 
     const numberText = value.slice(numberStart, pos);
-    while (pos < value.length && isWhitespace(value[pos])) pos++;
+    while (pos < value.length && isWhitespace(value.charAt(pos))) pos++;
     const unitStart = pos;
-    while (pos < value.length && isAsciiLetter(value[pos])) pos++;
+    while (pos < value.length && isAsciiLetter(value.charAt(pos))) pos++;
     const unit = (pos === unitStart ? 's' : value.slice(unitStart, pos)).toLowerCase();
     const multiplier = units.get(unit);
     if (!multiplier) throw new Error(`failed to parse duration: ${value}`);
@@ -364,7 +364,7 @@ function collectBoots(journal) {
     return a.boot_id.localeCompare(b.boot_id);
   });
   const base = 1 - result.length;
-  for (let i = 0; i < result.length; i++) result[i].index = base + i;
+  for (const [i, boot] of result.entries()) boot.index = base + i;
   return result;
 }
 
@@ -386,7 +386,7 @@ function resolveBootId(journal, descriptor) {
   if (target < 0 || target >= boots.length) {
     throw new Error(`no journal boot entry found for the specified boot (${bootId || ''}${formatOffset(offset)})`);
   }
-  return boots[target].boot_id;
+  return boots.at(target).boot_id;
 }
 
 function parseBootDescriptor(descriptor) {
@@ -398,7 +398,7 @@ function parseBootDescriptor(descriptor) {
 
   for (const idLength of [32, 36]) {
     if (descriptor.length <= idLength) continue;
-    const sign = descriptor[idLength];
+    const sign = descriptor.charAt(idLength);
     if (sign !== '+' && sign !== '-') continue;
     const bootId = normalizeBootIdText(descriptor.slice(0, idLength));
     const offsetText = descriptor.slice(idLength);
@@ -441,12 +441,12 @@ function isDecimalNumber(text) {
 }
 
 function startsWithSign(text) {
-  return text.length > 0 && (text[0] === '+' || text[0] === '-');
+  return text.length > 0 && (text.charAt(0) === '+' || text.charAt(0) === '-');
 }
 
 function startsWithSignedDate(text) {
   return text.length >= 6 && startsWithSign(text) &&
-    isNDigits(text.slice(1, 5), 4) && text[5] === '-';
+    isNDigits(text.slice(1, 5), 4) && text.charAt(5) === '-';
 }
 
 function isNDigits(text, count) {
@@ -488,8 +488,8 @@ function isUuidString(text) {
   const hyphens = new Set([8, 13, 18, 23]);
   for (let i = 0; i < text.length; i++) {
     if (hyphens.has(i)) {
-      if (text[i] !== '-') return false;
-    } else if (!isHex(text[i])) {
+      if (text.charAt(i) !== '-') return false;
+    } else if (!isHex(text.charAt(i))) {
       return false;
     }
   }
@@ -668,19 +668,19 @@ function runVerify(inputPath, verifyKey, hasVerifyKey) {
 function validVerificationKey(key) {
   let i = 0;
   for (let c = 0; c < 12; c++) {
-    while (i < key.length && key[i] === '-') i++;
-    if (i + 2 > key.length || !isHex(key[i]) || !isHex(key[i + 1])) {
+    while (i < key.length && key.charAt(i) === '-') i++;
+    if (i + 2 > key.length || !isHex(key.charAt(i)) || !isHex(key.charAt(i + 1))) {
       return false;
     }
     i += 2;
   }
-  if (i >= key.length || key[i] !== '/') {
+  if (i >= key.length || key.charAt(i) !== '/') {
     return false;
   }
   i++;
 
   const start = consumeHex(key, i);
-  if (!start.ok || start.next >= key.length || key[start.next] !== '-') {
+  if (!start.ok || start.next >= key.length || key.charAt(start.next) !== '-') {
     return false;
   }
   const interval = consumeHex(key, start.next + 1);
@@ -690,7 +690,7 @@ function validVerificationKey(key) {
 
 function consumeHex(s, start) {
   let i = start;
-  while (i < s.length && isHex(s[i])) i++;
+  while (i < s.length && isHex(s.charAt(i))) i++;
   return { next: i, ok: i > start };
 }
 

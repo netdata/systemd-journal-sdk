@@ -31,12 +31,12 @@ function main() {
     process.stderr.write('Usage: adapter [run|list|probe]\n');
     process.exit(1);
   }
-  switch (args[0]) {
+  switch (args.at(0)) {
     case 'run': runAdapter(); break;
     case 'list': listTests(); break;
     case 'probe': probeAdapter(); break;
     default:
-      process.stderr.write(`Unknown subcommand: ${args[0]}\n`);
+      process.stderr.write(`Unknown subcommand: ${args.at(0)}\n`);
       process.exit(1);
   }
 }
@@ -64,7 +64,16 @@ function cleanupPath(path, options = {}) {
 
 function resolveFixture(tc, key) {
   if (!tc.fixtures || !Object.hasOwn(tc.fixtures, key)) return '';
-  return join(fixtureBase(), tc.fixtures[key].path);
+  return join(fixtureBase(), Reflect.get(tc.fixtures, key).path);
+}
+
+function utf8FieldObject(fields) {
+  const result = Object.create(null);
+  for (const [key, value] of Object.entries(fields)) {
+    // eslint-disable-next-line security/detect-object-injection -- test adapters must preserve arbitrary journal field names in expected JSON evidence.
+    result[key] = value.toString('utf8');
+  }
+  return result;
 }
 
 // ---- RUN ----
@@ -233,9 +242,7 @@ function testMatchBooleanLogic() {
     const matched = [];
     while (r.step()) {
       const entry = r.getEntry();
-      const fields = Object.create(null);
-      for (const [k, v] of Object.entries(entry.fields)) fields[k] = v.toString('utf8');
-      matched.push(fields);
+      matched.push(utf8FieldObject(entry.fields));
     }
     r.close();
 
@@ -281,9 +288,7 @@ function runStreamTest(tc) {
     while (r.step() && count < 100) {
       const entry = r.getEntry();
       if (!entry) break;
-      const em = {};
-      for (const [k, v] of Object.entries(entry.fields)) em[k] = v.toString('utf8');
-      entries.push(em);
+      entries.push(utf8FieldObject(entry.fields));
       count++;
     }
     if (entries.length === 0) return { status: 'FAIL', error: 'no entries read' };

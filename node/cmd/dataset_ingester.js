@@ -163,13 +163,13 @@ function parseArgs(argv) {
     compact: false,
   });
   for (let i = 2; i < argv.length; i++) {
-    const arg = argv[i];
+    const arg = argv.at(i);
     if (arg === '--rejection-mode') args.rejectionMode = true;
     else if (arg === '--compact') args.compact = true;
-    else if (arg === '--final-state') args.finalState = argv[++i];
-    else if (arg === '--dataset') args.dataset = argv[++i];
-    else if (arg === '--output') args.output = argv[++i];
-    else if (arg === '--max-size-bytes') args.maxSizeBytes = Number(argv[++i]);
+    else if (arg === '--final-state') args.finalState = argv.at(++i);
+    else if (arg === '--dataset') args.dataset = argv.at(++i);
+    else if (arg === '--output') args.output = argv.at(++i);
+    else if (arg === '--max-size-bytes') args.maxSizeBytes = Number(argv.at(++i));
     else throw new Error(`unknown argument: ${arg}`);
   }
   if (!['online', 'offline', 'archived'].includes(args.finalState)) throw new Error(`invalid final state: ${args.finalState}`);

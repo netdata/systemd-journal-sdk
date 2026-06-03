@@ -909,6 +909,21 @@ Real-use evidence:
 - Local validation for the template/instruction cleanup passed
   `rg -n "DO NOT MAKE CHANGES OUTSIDE THIS REPOSITORY|<[^>]+>"` on the edited
   durable artifacts, `git diff --check`, and `.agents/sow/audit.sh`.
+- Local Node security cleanup targets the 31 current
+  `ESLint8_security_detect-object-injection` rows by replacing parser and argv
+  bracket indexing with `.charAt()` / `.at()` / iterator forms, using
+  `Reflect.get()` after `Object.hasOwn()` for manifest fixture lookup, and
+  centralizing dynamic journal-field object access behind own-property helpers
+  with narrow `security/detect-object-injection` suppressions where arbitrary
+  journal field names are required output data.
+- Local validation for the Node security cleanup passed `node --check` for all
+  five touched Node files; direct Node adapter execution for
+  `journal-match-boolean-logic`, `journal-stream-directory-iteration`,
+  `journal-export-format`, and `journal-list-boots`; Node journalctl
+  `--directory ... --list-boots`; Node journalctl `--boot=0 --head 1
+  --output=json`; Node `reader_core_bench.js` on the no-rtc fixture; a focused
+  same-pattern `rg` scan showing only the deliberately suppressed adapter
+  helper assignment remains; and `git diff --check`.
 
 Reviewer findings:
 
