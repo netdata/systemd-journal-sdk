@@ -6,13 +6,17 @@
 //! export/JSON formatting, and a libsystemd-style facade.
 
 mod facade;
+mod parse;
 mod verify_graph;
 
+pub use parse::{ParseError, ParsedCursor, parse_cursor, parse_match_bytes, parse_match_string};
+
+use hmac::{Hmac, Mac};
 use journal_core::fss::{RECOMMENDED_SECPAR, gen_mk, gen_state0, get_key, seek};
 use journal_core::seal::TAG_LENGTH;
 use ouroboros::self_referencing;
+use sha2::Sha256;
 use std::collections::{HashMap, HashSet};
-use std::error::Error;
 use std::fmt;
 use std::fs::File;
 use std::io::Read;
@@ -848,49 +852,65 @@ fn read_journal_file_for_verify(path: &Path) -> std::io::Result<Vec<u8>> {
 }
 
 fn parse_verification_key(key: &str) -> std::result::Result<([u8; 12], u64, u64), String> {
-    let mut seed = [0u8; 12];
-    let mut i = 0;
     let bytes = key.as_bytes();
-    for c in 0..12 {
-        while i < bytes.len() && bytes[i] == b'-' {
-            i += 1;
-        }
-        if i + 2 > bytes.len() {
-            return Err("seed too short".into());
-        }
-        let val = u8::from_str_radix(std::str::from_utf8(&bytes[i..i + 2]).unwrap_or("xx"), 16)
-            .map_err(|_| "bad seed hex".to_string())?;
-        seed[c] = val;
-        i += 2;
-    }
-    if i >= bytes.len() || bytes[i] != b'/' {
+    let (seed, slash_offset) = parse_verification_seed(bytes)?;
+    if slash_offset >= bytes.len() || bytes[slash_offset] != b'/' {
         return Err("missing / separator".into());
     }
-    i += 1;
-
-    let (next, ok) = consume_hex(bytes, i);
-    if !ok || next >= bytes.len() || bytes[next] != b'-' {
+    let (start_usec, dash_offset) = parse_verification_hex_value(bytes, slash_offset + 1, "start")?;
+    if dash_offset >= bytes.len() || bytes[dash_offset] != b'-' {
         return Err("bad start hex".into());
     }
-    let start_usec = u64::from_str_radix(std::str::from_utf8(&bytes[i..next]).unwrap_or("0"), 16)
-        .map_err(|_| "bad start hex".to_string())?;
-
-    i = next + 1;
-    let (next, ok) = consume_hex(bytes, i);
-    if !ok {
-        return Err("bad interval hex".into());
-    }
-    let interval_usec =
-        u64::from_str_radix(std::str::from_utf8(&bytes[i..next]).unwrap_or("0"), 16)
-            .map_err(|_| "bad interval hex".to_string())?;
-    if next != bytes.len() {
+    let (interval_usec, end_offset) =
+        parse_verification_hex_value(bytes, dash_offset + 1, "interval")?;
+    if end_offset != bytes.len() {
         return Err("trailing data".into());
     }
     if interval_usec == 0 {
         return Err("zero interval".into());
     }
-
     Ok((seed, start_usec, interval_usec))
+}
+
+fn parse_verification_seed(bytes: &[u8]) -> std::result::Result<([u8; 12], usize), String> {
+    let mut seed = [0u8; 12];
+    let mut i = 0;
+    for c in 0..12 {
+        let (next, val) = parse_verification_seed_byte(bytes, i)?;
+        seed[c] = val;
+        i = next;
+    }
+    Ok((seed, i))
+}
+
+fn parse_verification_seed_byte(
+    bytes: &[u8],
+    start: usize,
+) -> std::result::Result<(usize, u8), String> {
+    let mut i = start;
+    while i < bytes.len() && bytes[i] == b'-' {
+        i += 1;
+    }
+    if i + 2 > bytes.len() {
+        return Err("seed too short".into());
+    }
+    let val = u8::from_str_radix(std::str::from_utf8(&bytes[i..i + 2]).unwrap_or("xx"), 16)
+        .map_err(|_| "bad seed hex".to_string())?;
+    Ok((i + 2, val))
+}
+
+fn parse_verification_hex_value(
+    bytes: &[u8],
+    start: usize,
+    label: &str,
+) -> std::result::Result<(u64, usize), String> {
+    let (next, ok) = consume_hex(bytes, start);
+    if !ok {
+        return Err(format!("bad {label} hex"));
+    }
+    let value = u64::from_str_radix(std::str::from_utf8(&bytes[start..next]).unwrap_or("0"), 16)
+        .map_err(|_| format!("bad {label} hex"))?;
+    Ok((value, next))
 }
 
 fn consume_hex(bytes: &[u8], start: usize) -> (usize, bool) {
@@ -944,6 +964,58 @@ const OBJECT_COMPRESSED_XZ: u8 = 1 << 0;
 const OBJECT_COMPRESSED_LZ4: u8 = 1 << 1;
 const OBJECT_COMPRESSED_ZSTD: u8 = 1 << 2;
 
+#[derive(Clone, Copy)]
+struct SealedVerifyObject {
+    offset: u64,
+    typ: u8,
+    flags: u8,
+    size: u64,
+    aligned_size: u64,
+}
+
+#[derive(Clone, Copy)]
+struct SealedVerifyEntry {
+    seqnum: u64,
+    realtime: u64,
+    monotonic: u64,
+    boot_id: [u8; 16],
+}
+
+struct SealedVerifyState<'a> {
+    data: &'a [u8],
+    compatible_flags: u32,
+    incompatible_flags: u32,
+    seed: [u8; 12],
+    msk: Vec<u8>,
+    state0: Vec<u8>,
+    start_epoch: u64,
+    interval_usec: u64,
+    is_compact: bool,
+    header_size: u64,
+    tail_object_offset: u64,
+    file_size: u64,
+    head_entry_seqnum: u64,
+    head_entry_realtime: u64,
+    n_objects_header: u64,
+    n_entries_header: u64,
+    n_tags_header: u64,
+    n_objects: u64,
+    n_entries: u64,
+    n_tags: u64,
+    last_tag_end: u64,
+    last_epoch: u64,
+    last_tag_realtime: u64,
+    entry_seqnum: u64,
+    entry_seqnum_set: bool,
+    entry_monotonic: u64,
+    entry_monotonic_set: bool,
+    entry_boot_id: [u8; 16],
+    entry_realtime: u64,
+    entry_realtime_set: bool,
+    max_entry_realtime: u64,
+    min_entry_realtime: u64,
+}
+
 fn verify_sealed(
     data: &[u8],
     compatible_flags: u32,
@@ -952,342 +1024,497 @@ fn verify_sealed(
     start_epoch: u64,
     interval_usec: u64,
 ) -> Result<()> {
-    use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-    type HmacSha256 = Hmac<Sha256>;
+    SealedVerifyState::new(
+        data,
+        compatible_flags,
+        incompatible_flags,
+        seed,
+        start_epoch,
+        interval_usec,
+    )?
+    .run()
+}
 
-    let is_compact = (incompatible_flags & INCOMPATIBLE_COMPACT) != 0;
-
-    let (msk, mpk) = gen_mk(&seed, RECOMMENDED_SECPAR);
-    let state0 = gen_state0(&mpk, &seed);
-
-    let header_size = read_u64_for_verify(data, 88, "header_size")?;
-    let tail_object_offset = read_u64_for_verify(data, 136, "tail_object_offset")?;
-    let file_size = data.len() as u64;
-    if header_size < HEADER_MIN_SIZE || header_size > file_size {
-        return Err(SdkError::VerificationError(format!(
-            "invalid header_size {header_size}"
-        )));
+impl<'a> SealedVerifyState<'a> {
+    fn new(
+        data: &'a [u8],
+        compatible_flags: u32,
+        incompatible_flags: u32,
+        seed: [u8; 12],
+        start_epoch: u64,
+        interval_usec: u64,
+    ) -> Result<Self> {
+        let header_size = read_u64_for_verify(data, 88, "header_size")?;
+        let file_size = data.len() as u64;
+        if header_size < HEADER_MIN_SIZE || header_size > file_size {
+            return Err(SdkError::VerificationError(format!(
+                "invalid header_size {header_size}"
+            )));
+        }
+        let (msk, mpk) = gen_mk(&seed, RECOMMENDED_SECPAR);
+        let n_tags_header = if header_size >= 232 && data.len() >= 232 {
+            read_u64_for_verify(data, 224, "n_tags")?
+        } else {
+            0
+        };
+        Ok(Self {
+            data,
+            compatible_flags,
+            incompatible_flags,
+            seed,
+            msk,
+            state0: gen_state0(&mpk, &seed),
+            start_epoch,
+            interval_usec,
+            is_compact: (incompatible_flags & INCOMPATIBLE_COMPACT) != 0,
+            header_size,
+            tail_object_offset: read_u64_for_verify(data, 136, "tail_object_offset")?,
+            file_size,
+            head_entry_seqnum: read_u64_for_verify(data, 168, "head_entry_seqnum")?,
+            head_entry_realtime: read_u64_for_verify(data, 184, "head_entry_realtime")?,
+            n_objects_header: read_u64_for_verify(data, 144, "n_objects")?,
+            n_entries_header: read_u64_for_verify(data, 152, "n_entries")?,
+            n_tags_header,
+            n_objects: 0,
+            n_entries: 0,
+            n_tags: 0,
+            last_tag_end: 0,
+            last_epoch: 0,
+            last_tag_realtime: 0,
+            entry_seqnum: 0,
+            entry_seqnum_set: false,
+            entry_monotonic: 0,
+            entry_monotonic_set: false,
+            entry_boot_id: [0; 16],
+            entry_realtime: 0,
+            entry_realtime_set: false,
+            max_entry_realtime: 0,
+            min_entry_realtime: u64::MAX,
+        })
     }
 
-    let mut n_objects: u64 = 0;
-    let mut n_entries: u64 = 0;
-    let mut n_tags: u64 = 0;
-    let mut last_tag_end: u64 = 0;
-    let mut last_epoch: u64 = 0;
-    let mut last_tag_realtime: u64 = 0;
-    let mut entry_seqnum: u64 = 0;
-    let mut entry_seqnum_set = false;
-    let mut entry_monotonic: u64 = 0;
-    let mut entry_monotonic_set = false;
-    let mut entry_boot_id = [0u8; 16];
-    let mut entry_realtime: u64 = 0;
-    let mut entry_realtime_set = false;
-    let mut max_entry_realtime: u64 = 0;
-    let mut min_entry_realtime: u64 = u64::MAX;
-
-    let head_entry_seqnum = read_u64_for_verify(data, 168, "head_entry_seqnum")?;
-    let head_entry_realtime = read_u64_for_verify(data, 184, "head_entry_realtime")?;
-    let n_objects_header = read_u64_for_verify(data, 144, "n_objects")?;
-    let n_entries_header = read_u64_for_verify(data, 152, "n_entries")?;
-    let n_tags_header = if header_size >= 232 && data.len() >= 232 {
-        read_u64_for_verify(data, 224, "n_tags")?
-    } else {
-        0
-    };
-
-    let mut p = header_size;
-    loop {
-        if tail_object_offset == 0 {
-            break;
+    fn run(mut self) -> Result<()> {
+        let mut offset = self.header_size;
+        while self.tail_object_offset != 0 {
+            let obj = self.read_object(offset)?;
+            self.verify_object(obj)?;
+            if offset == self.tail_object_offset {
+                break;
+            }
+            offset += obj.aligned_size;
         }
-        if p > tail_object_offset {
+        self.verify_final_counts()
+    }
+
+    fn read_object(&self, offset: u64) -> Result<SealedVerifyObject> {
+        if offset > self.tail_object_offset {
             return Err(SdkError::VerificationError(format!(
-                "object offset {p} exceeds tail_object_offset {tail_object_offset}"
+                "object offset {offset} exceeds tail_object_offset {}",
+                self.tail_object_offset
             )));
         }
-        if p > file_size - OBJECT_HEADER_SIZE {
+        if offset > self.file_size - OBJECT_HEADER_SIZE {
             return Err(SdkError::VerificationError(format!(
-                "object header at offset {p} exceeds file bounds"
+                "object header at offset {offset} exceeds file bounds"
             )));
         }
+        let obj = SealedVerifyObject {
+            offset,
+            typ: self.data[offset as usize],
+            flags: self.data[offset as usize + 1],
+            size: read_u64_for_verify(self.data, offset as usize + 8, "object size")?,
+            aligned_size: 0,
+        };
+        let obj = SealedVerifyObject {
+            aligned_size: align8(obj.size),
+            ..obj
+        };
+        self.verify_object_envelope(obj)?;
+        self.verify_object_flags(obj)?;
+        Ok(obj)
+    }
 
-        let typ = data[p as usize];
-        let flags = data[p as usize + 1];
-        let size = read_u64_for_verify(data, p as usize + 8, "object size")?;
+    fn verify_object_envelope(&self, obj: SealedVerifyObject) -> Result<()> {
+        if obj.size < OBJECT_HEADER_SIZE {
+            return Err(SdkError::VerificationError(format!(
+                "object size {} too small at offset {}",
+                obj.size, obj.offset
+            )));
+        }
+        if obj.aligned_size < obj.size || obj.aligned_size == 0 {
+            return Err(SdkError::VerificationError(format!(
+                "object size {} overflows alignment at offset {}",
+                obj.size, obj.offset
+            )));
+        }
+        if obj.aligned_size > self.file_size - obj.offset {
+            return Err(SdkError::VerificationError(format!(
+                "object at offset {} with aligned size {} exceeds file bounds",
+                obj.offset, obj.aligned_size
+            )));
+        }
+        Ok(())
+    }
+
+    fn verify_object_flags(&self, obj: SealedVerifyObject) -> Result<()> {
+        if object_compression_flag_count(obj.flags) > 1 {
+            return Err(SdkError::VerificationError(format!(
+                "multiple compression flags at offset {}",
+                obj.offset
+            )));
+        }
+        self.verify_enabled_compression_flag(obj)?;
+        if obj.flags & !(OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4 | OBJECT_COMPRESSED_ZSTD) != 0
+        {
+            return Err(SdkError::VerificationError(format!(
+                "unknown object flags 0x{:02x} at offset {}",
+                obj.flags, obj.offset
+            )));
+        }
+        if obj.typ != OBJECT_TYPE_DATA && obj.flags != 0 {
+            return Err(SdkError::VerificationError(format!(
+                "object type {} at offset {} has compression flags",
+                obj.typ, obj.offset
+            )));
+        }
+        Ok(())
+    }
+
+    fn verify_enabled_compression_flag(&self, obj: SealedVerifyObject) -> Result<()> {
+        if obj.flags & OBJECT_COMPRESSED_XZ != 0
+            && self.incompatible_flags & INCOMPATIBLE_COMPRESSED_XZ == 0
+        {
+            return Err(SdkError::VerificationError(format!(
+                "XZ object in file without XZ support at offset {}",
+                obj.offset
+            )));
+        }
+        if obj.flags & OBJECT_COMPRESSED_LZ4 != 0
+            && self.incompatible_flags & INCOMPATIBLE_COMPRESSED_LZ4 == 0
+        {
+            return Err(SdkError::VerificationError(format!(
+                "LZ4 object in file without LZ4 support at offset {}",
+                obj.offset
+            )));
+        }
+        if obj.flags & OBJECT_COMPRESSED_ZSTD != 0
+            && self.incompatible_flags & INCOMPATIBLE_COMPRESSED_ZSTD == 0
+        {
+            return Err(SdkError::VerificationError(format!(
+                "ZSTD object in file without ZSTD support at offset {}",
+                obj.offset
+            )));
+        }
+        Ok(())
+    }
+
+    fn verify_object(&mut self, obj: SealedVerifyObject) -> Result<()> {
+        self.n_objects += 1;
+        match obj.typ {
+            OBJECT_TYPE_DATA
+            | OBJECT_TYPE_FIELD
+            | OBJECT_TYPE_DATA_HASH_TABLE
+            | OBJECT_TYPE_FIELD_HASH_TABLE
+            | OBJECT_TYPE_ENTRY_ARRAY => Ok(()),
+            OBJECT_TYPE_ENTRY => self.verify_entry_object(obj),
+            OBJECT_TYPE_TAG => self.verify_tag_object(obj),
+            _ => Err(SdkError::VerificationError(format!(
+                "unknown object type {} at offset {}",
+                obj.typ, obj.offset
+            ))),
+        }
+    }
+
+    fn verify_entry_object(&mut self, obj: SealedVerifyObject) -> Result<()> {
+        if self.n_tags == 0 {
+            return Err(SdkError::VerificationError(format!(
+                "first entry before first tag at offset {}",
+                obj.offset
+            )));
+        }
+        let entry = self.read_entry(obj.offset)?;
+        self.verify_entry_realtime_floor(obj, entry)?;
+        self.verify_entry_seqnum(obj, entry.seqnum)?;
+        self.verify_entry_monotonic(obj, entry)?;
+        self.verify_entry_realtime_head(obj, entry.realtime)?;
+        self.record_entry_realtime(entry.realtime);
+        self.n_entries += 1;
+        Ok(())
+    }
+
+    fn read_entry(&self, offset: u64) -> Result<SealedVerifyEntry> {
+        let mut boot_id = [0u8; 16];
+        let boot_id_bytes = verify_slice(self.data, offset as usize + 40, 16, "entry boot_id")?;
+        boot_id.copy_from_slice(boot_id_bytes);
+        Ok(SealedVerifyEntry {
+            seqnum: read_u64_for_verify(self.data, offset as usize + 16, "entry seqnum")?,
+            realtime: read_u64_for_verify(self.data, offset as usize + 24, "entry realtime")?,
+            monotonic: read_u64_for_verify(self.data, offset as usize + 32, "entry monotonic")?,
+            boot_id,
+        })
+    }
+
+    fn verify_entry_realtime_floor(
+        &self,
+        obj: SealedVerifyObject,
+        entry: SealedVerifyEntry,
+    ) -> Result<()> {
+        if self.entry_realtime_set && entry.realtime < self.last_tag_realtime {
+            return Err(SdkError::VerificationError(format!(
+                "older entry after newer tag at offset {}",
+                obj.offset
+            )));
+        }
+        Ok(())
+    }
+
+    fn verify_entry_seqnum(&mut self, obj: SealedVerifyObject, seqnum: u64) -> Result<()> {
+        if !self.entry_seqnum_set && seqnum != self.head_entry_seqnum {
+            return Err(SdkError::VerificationError(format!(
+                "head entry seqnum mismatch at offset {}",
+                obj.offset
+            )));
+        }
+        if self.entry_seqnum_set && self.entry_seqnum >= seqnum {
+            return Err(SdkError::VerificationError(format!(
+                "entry seqnum out of sync at offset {}",
+                obj.offset
+            )));
+        }
+        self.entry_seqnum = seqnum;
+        self.entry_seqnum_set = true;
+        Ok(())
+    }
+
+    fn verify_entry_monotonic(
+        &mut self,
+        obj: SealedVerifyObject,
+        entry: SealedVerifyEntry,
+    ) -> Result<()> {
+        if self.entry_monotonic_set
+            && entry.boot_id == self.entry_boot_id
+            && self.entry_monotonic > entry.monotonic
+        {
+            return Err(SdkError::VerificationError(format!(
+                "entry monotonic out of sync at offset {}",
+                obj.offset
+            )));
+        }
+        self.entry_monotonic = entry.monotonic;
+        self.entry_boot_id = entry.boot_id;
+        self.entry_monotonic_set = true;
+        Ok(())
+    }
+
+    fn verify_entry_realtime_head(&mut self, obj: SealedVerifyObject, realtime: u64) -> Result<()> {
+        if !self.entry_realtime_set && realtime != self.head_entry_realtime {
+            return Err(SdkError::VerificationError(format!(
+                "head entry realtime mismatch at offset {}",
+                obj.offset
+            )));
+        }
+        self.entry_realtime = realtime;
+        self.entry_realtime_set = true;
+        Ok(())
+    }
+
+    fn record_entry_realtime(&mut self, realtime: u64) {
+        self.max_entry_realtime = self.max_entry_realtime.max(realtime);
+        self.min_entry_realtime = self.min_entry_realtime.min(realtime);
+    }
+
+    fn verify_tag_object(&mut self, obj: SealedVerifyObject) -> Result<()> {
+        if obj.size != OBJECT_HEADER_SIZE + 8 + 8 + TAG_LENGTH as u64 {
+            return Err(SdkError::VerificationError(format!(
+                "invalid tag object size {} at offset {}",
+                obj.size, obj.offset
+            )));
+        }
+        let seqnum = read_u64_for_verify(self.data, obj.offset as usize + 16, "tag seqnum")?;
+        let epoch = read_u64_for_verify(self.data, obj.offset as usize + 24, "tag epoch")?;
+        self.verify_tag_seqnum(obj, seqnum)?;
+        self.verify_tag_epoch(obj, epoch)?;
+        let rt = self.verify_tag_realtime_window(obj, epoch)?;
+        self.verify_tag_hmac(obj, epoch)?;
+        self.record_tag(obj, epoch, rt);
+        Ok(())
+    }
+
+    fn verify_tag_seqnum(&self, obj: SealedVerifyObject, seqnum: u64) -> Result<()> {
+        if seqnum != self.n_tags + 1 {
+            return Err(SdkError::VerificationError(format!(
+                "tag seqnum mismatch: got {seqnum}, want {} at offset {}",
+                self.n_tags + 1,
+                obj.offset
+            )));
+        }
+        Ok(())
+    }
+
+    fn verify_tag_epoch(&self, obj: SealedVerifyObject, epoch: u64) -> Result<()> {
+        if self.compatible_flags & COMPATIBLE_SEALED_CONTINUOUS != 0 {
+            return self.verify_continuous_tag_epoch(obj, epoch);
+        }
+        if epoch < self.last_epoch {
+            return Err(SdkError::VerificationError(format!(
+                "epoch out of sync: got {epoch}, last {} at offset {}",
+                self.last_epoch, obj.offset
+            )));
+        }
+        Ok(())
+    }
+
+    fn verify_continuous_tag_epoch(&self, obj: SealedVerifyObject, epoch: u64) -> Result<()> {
+        let ok = self.n_tags == 0
+            || (self.n_tags == 1 && epoch == self.last_epoch)
+            || epoch == self.last_epoch + 1;
+        if !ok {
+            return Err(SdkError::VerificationError(format!(
+                "epoch not continuous: got {epoch}, last {} at offset {}",
+                self.last_epoch, obj.offset
+            )));
+        }
+        Ok(())
+    }
+
+    fn verify_tag_realtime_window(&self, obj: SealedVerifyObject, epoch: u64) -> Result<u64> {
+        let (rt, rt_end) = tag_realtime_range(self.start_epoch, epoch, self.interval_usec)?;
+        if self.entry_realtime_set && self.entry_realtime >= rt_end {
+            return Err(SdkError::VerificationError(format!(
+                "entry realtime {} too late for tag end {rt_end} at offset {}",
+                self.entry_realtime, obj.offset
+            )));
+        }
+        if self.max_entry_realtime >= rt_end {
+            return Err(SdkError::VerificationError(format!(
+                "max entry realtime {} too late for tag end {rt_end} at offset {}",
+                self.max_entry_realtime, obj.offset
+            )));
+        }
+        if self.min_entry_realtime < rt {
+            return Err(SdkError::VerificationError(format!(
+                "entry realtime {} too early for tag start {rt} at offset {}",
+                self.min_entry_realtime, obj.offset
+            )));
+        }
+        Ok(rt)
+    }
+
+    fn verify_tag_hmac(&self, obj: SealedVerifyObject, epoch: u64) -> Result<()> {
+        let mut hm = self.new_tag_hmac(epoch);
+        if self.n_tags == 0 {
+            self.write_first_tag_header_hmac(&mut hm);
+        }
+        self.write_tag_object_hmacs(&mut hm, obj.offset)?;
+        let stored =
+            &self.data[(obj.offset as usize + 32)..(obj.offset as usize + 32 + TAG_LENGTH)];
+        if hm.verify_slice(stored).is_err() {
+            return Err(SdkError::VerificationError(format!(
+                "tag failed verification at offset {}",
+                obj.offset
+            )));
+        }
+        Ok(())
+    }
+
+    fn new_tag_hmac(&self, epoch: u64) -> Hmac<Sha256> {
+        let state = seek(&self.state0, epoch, &self.msk, &self.seed);
+        let key = get_key(&state, TAG_LENGTH, 0);
+        Hmac::<Sha256>::new_from_slice(&key).expect("HMAC key length valid")
+    }
+
+    fn write_first_tag_header_hmac(&self, hm: &mut Hmac<Sha256>) {
+        hm.update(&self.data[0..16]);
+        hm.update(&self.data[24..56]);
+        hm.update(&self.data[72..96]);
+        hm.update(&self.data[104..136]);
+    }
+
+    fn write_tag_object_hmacs(&self, hm: &mut Hmac<Sha256>, tag_offset: u64) -> Result<()> {
+        let mut offset = self.last_tag_end;
+        if self.n_tags == 0 {
+            offset = self.header_size;
+        }
+        while offset <= tag_offset {
+            let obj = self.read_hmac_object(offset)?;
+            hmac_object(hm, self.data, offset, obj.typ, obj.size, self.is_compact);
+            offset += obj.aligned_size;
+        }
+        Ok(())
+    }
+
+    fn read_hmac_object(&self, offset: u64) -> Result<SealedVerifyObject> {
+        if offset > self.file_size - OBJECT_HEADER_SIZE {
+            return Err(SdkError::VerificationError(format!(
+                "HMAC object header at offset {offset} exceeds file bounds"
+            )));
+        }
+        let size = read_u64_for_verify(self.data, offset as usize + 8, "HMAC object size")?;
         let aligned_size = align8(size);
-
         if size < OBJECT_HEADER_SIZE {
             return Err(SdkError::VerificationError(format!(
-                "object size {size} too small at offset {p}"
+                "HMAC object size {size} too small at offset {offset}"
             )));
         }
         if aligned_size < size || aligned_size == 0 {
             return Err(SdkError::VerificationError(format!(
-                "object size {size} overflows alignment at offset {p}"
+                "HMAC object size {size} overflows alignment at offset {offset}"
             )));
         }
-        if aligned_size > file_size - p {
+        if aligned_size > self.file_size - offset {
             return Err(SdkError::VerificationError(format!(
-                "object at offset {p} with aligned size {aligned_size} exceeds file bounds"
+                "HMAC object at offset {offset} with aligned size {aligned_size} exceeds file bounds"
             )));
         }
-
-        let mut compression_flags = 0;
-        if flags & OBJECT_COMPRESSED_XZ != 0 {
-            compression_flags += 1;
-        }
-        if flags & OBJECT_COMPRESSED_LZ4 != 0 {
-            compression_flags += 1;
-        }
-        if flags & OBJECT_COMPRESSED_ZSTD != 0 {
-            compression_flags += 1;
-        }
-        if compression_flags > 1 {
-            return Err(SdkError::VerificationError(format!(
-                "multiple compression flags at offset {p}"
-            )));
-        }
-        if flags & OBJECT_COMPRESSED_XZ != 0 && incompatible_flags & INCOMPATIBLE_COMPRESSED_XZ == 0
-        {
-            return Err(SdkError::VerificationError(format!(
-                "XZ object in file without XZ support at offset {p}"
-            )));
-        }
-        if flags & OBJECT_COMPRESSED_LZ4 != 0
-            && incompatible_flags & INCOMPATIBLE_COMPRESSED_LZ4 == 0
-        {
-            return Err(SdkError::VerificationError(format!(
-                "LZ4 object in file without LZ4 support at offset {p}"
-            )));
-        }
-        if flags & OBJECT_COMPRESSED_ZSTD != 0
-            && incompatible_flags & INCOMPATIBLE_COMPRESSED_ZSTD == 0
-        {
-            return Err(SdkError::VerificationError(format!(
-                "ZSTD object in file without ZSTD support at offset {p}"
-            )));
-        }
-        if flags & !(OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4 | OBJECT_COMPRESSED_ZSTD) != 0 {
-            return Err(SdkError::VerificationError(format!(
-                "unknown object flags 0x{flags:02x} at offset {p}"
-            )));
-        }
-        if typ != OBJECT_TYPE_DATA && flags != 0 {
-            return Err(SdkError::VerificationError(format!(
-                "object type {typ} at offset {p} has compression flags"
-            )));
-        }
-
-        n_objects += 1;
-
-        match typ {
-            OBJECT_TYPE_DATA => {}
-            OBJECT_TYPE_FIELD => {}
-            OBJECT_TYPE_ENTRY => {
-                if n_tags == 0 {
-                    return Err(SdkError::VerificationError(format!(
-                        "first entry before first tag at offset {p}"
-                    )));
-                }
-                let e_seqnum = read_u64_for_verify(data, p as usize + 16, "entry seqnum")?;
-                let e_realtime = read_u64_for_verify(data, p as usize + 24, "entry realtime")?;
-                let e_monotonic = read_u64_for_verify(data, p as usize + 32, "entry monotonic")?;
-                let mut e_boot_id = [0u8; 16];
-                let boot_id = verify_slice(data, p as usize + 40, 16, "entry boot_id")?;
-                e_boot_id.copy_from_slice(boot_id);
-
-                if entry_realtime_set && e_realtime < last_tag_realtime {
-                    return Err(SdkError::VerificationError(format!(
-                        "older entry after newer tag at offset {p}"
-                    )));
-                }
-                if !entry_seqnum_set {
-                    if e_seqnum != head_entry_seqnum {
-                        return Err(SdkError::VerificationError(format!(
-                            "head entry seqnum mismatch at offset {p}"
-                        )));
-                    }
-                } else if entry_seqnum >= e_seqnum {
-                    return Err(SdkError::VerificationError(format!(
-                        "entry seqnum out of sync at offset {p}"
-                    )));
-                }
-                entry_seqnum = e_seqnum;
-                entry_seqnum_set = true;
-
-                if entry_monotonic_set
-                    && e_boot_id == entry_boot_id
-                    && entry_monotonic > e_monotonic
-                {
-                    return Err(SdkError::VerificationError(format!(
-                        "entry monotonic out of sync at offset {p}"
-                    )));
-                }
-                entry_monotonic = e_monotonic;
-                entry_boot_id = e_boot_id;
-                entry_monotonic_set = true;
-
-                if !entry_realtime_set {
-                    if e_realtime != head_entry_realtime {
-                        return Err(SdkError::VerificationError(format!(
-                            "head entry realtime mismatch at offset {p}"
-                        )));
-                    }
-                }
-                entry_realtime = e_realtime;
-                entry_realtime_set = true;
-
-                if e_realtime > max_entry_realtime {
-                    max_entry_realtime = e_realtime;
-                }
-                if e_realtime < min_entry_realtime {
-                    min_entry_realtime = e_realtime;
-                }
-
-                n_entries += 1;
-            }
-            OBJECT_TYPE_DATA_HASH_TABLE => {}
-            OBJECT_TYPE_FIELD_HASH_TABLE => {}
-            OBJECT_TYPE_ENTRY_ARRAY => {}
-            OBJECT_TYPE_TAG => {
-                if size != OBJECT_HEADER_SIZE + 8 + 8 + TAG_LENGTH as u64 {
-                    return Err(SdkError::VerificationError(format!(
-                        "invalid tag object size {size} at offset {p}"
-                    )));
-                }
-                let seqnum = read_u64_for_verify(data, p as usize + 16, "tag seqnum")?;
-                let epoch = read_u64_for_verify(data, p as usize + 24, "tag epoch")?;
-
-                if seqnum != n_tags + 1 {
-                    return Err(SdkError::VerificationError(format!(
-                        "tag seqnum mismatch: got {seqnum}, want {} at offset {p}",
-                        n_tags + 1
-                    )));
-                }
-
-                let sealed_continuous = (compatible_flags & COMPATIBLE_SEALED_CONTINUOUS) != 0;
-                if sealed_continuous {
-                    let ok = n_tags == 0
-                        || (n_tags == 1 && epoch == last_epoch)
-                        || epoch == last_epoch + 1;
-                    if !ok {
-                        return Err(SdkError::VerificationError(format!(
-                            "epoch not continuous: got {epoch}, last {last_epoch} at offset {p}"
-                        )));
-                    }
-                } else if epoch < last_epoch {
-                    return Err(SdkError::VerificationError(format!(
-                        "epoch out of sync: got {epoch}, last {last_epoch} at offset {p}"
-                    )));
-                }
-
-                let (rt, rt_end) = tag_realtime_range(start_epoch, epoch, interval_usec)?;
-
-                if entry_realtime_set && entry_realtime >= rt_end {
-                    return Err(SdkError::VerificationError(format!(
-                        "entry realtime {entry_realtime} too late for tag end {rt_end} at offset {p}"
-                    )));
-                }
-                if max_entry_realtime >= rt_end {
-                    return Err(SdkError::VerificationError(format!(
-                        "max entry realtime {max_entry_realtime} too late for tag end {rt_end} at offset {p}"
-                    )));
-                }
-                if min_entry_realtime < rt {
-                    return Err(SdkError::VerificationError(format!(
-                        "entry realtime {min_entry_realtime} too early for tag start {rt} at offset {p}"
-                    )));
-                }
-
-                // Compute HMAC
-                let state = seek(&state0, epoch, &msk, &seed);
-                let key = get_key(&state, TAG_LENGTH, 0);
-                let mut hm = HmacSha256::new_from_slice(&key).expect("HMAC key length valid");
-
-                if n_tags == 0 {
-                    hm.update(&data[0..16]);
-                    hm.update(&data[24..56]);
-                    hm.update(&data[72..96]);
-                    hm.update(&data[104..136]);
-                }
-
-                let mut q = last_tag_end;
-                if n_tags == 0 {
-                    q = header_size;
-                }
-
-                while q <= p {
-                    if q > file_size - OBJECT_HEADER_SIZE {
-                        return Err(SdkError::VerificationError(format!(
-                            "HMAC object header at offset {q} exceeds file bounds"
-                        )));
-                    }
-                    let q_typ = data[q as usize];
-                    let q_size = read_u64_for_verify(data, q as usize + 8, "HMAC object size")?;
-                    if q_size < OBJECT_HEADER_SIZE {
-                        return Err(SdkError::VerificationError(format!(
-                            "HMAC object size {q_size} too small at offset {q}"
-                        )));
-                    }
-                    let q_aligned_size = align8(q_size);
-                    if q_aligned_size < q_size || q_aligned_size == 0 {
-                        return Err(SdkError::VerificationError(format!(
-                            "HMAC object size {q_size} overflows alignment at offset {q}"
-                        )));
-                    }
-                    if q_aligned_size > file_size - q {
-                        return Err(SdkError::VerificationError(format!(
-                            "HMAC object at offset {q} with aligned size {q_aligned_size} exceeds file bounds"
-                        )));
-                    }
-                    hmac_object(&mut hm, data, q, q_typ, q_size, is_compact);
-                    q += q_aligned_size;
-                }
-
-                let stored = &data[(p as usize + 32)..(p as usize + 32 + TAG_LENGTH)];
-                if hm.verify_slice(stored).is_err() {
-                    return Err(SdkError::VerificationError(format!(
-                        "tag failed verification at offset {p}"
-                    )));
-                }
-
-                n_tags += 1;
-                last_tag_end = p + aligned_size;
-                last_epoch = epoch;
-                last_tag_realtime = rt;
-                min_entry_realtime = u64::MAX;
-            }
-            _ => {
-                return Err(SdkError::VerificationError(format!(
-                    "unknown object type {typ} at offset {p}"
-                )));
-            }
-        }
-
-        if p == tail_object_offset {
-            break;
-        }
-        p += aligned_size;
+        Ok(SealedVerifyObject {
+            offset,
+            typ: self.data[offset as usize],
+            flags: 0,
+            size,
+            aligned_size,
+        })
     }
 
-    if n_objects != n_objects_header {
-        return Err(SdkError::VerificationError(format!(
-            "object count mismatch: got {n_objects}, want {n_objects_header}"
-        )));
-    }
-    if n_entries != n_entries_header {
-        return Err(SdkError::VerificationError(format!(
-            "entry count mismatch: got {n_entries}, want {n_entries_header}"
-        )));
-    }
-    if n_tags != n_tags_header {
-        return Err(SdkError::VerificationError(format!(
-            "tag count mismatch: got {n_tags}, want {n_tags_header}"
-        )));
+    fn record_tag(&mut self, obj: SealedVerifyObject, epoch: u64, realtime: u64) {
+        self.n_tags += 1;
+        self.last_tag_end = obj.offset + obj.aligned_size;
+        self.last_epoch = epoch;
+        self.last_tag_realtime = realtime;
+        self.min_entry_realtime = u64::MAX;
     }
 
-    Ok(())
+    fn verify_final_counts(&self) -> Result<()> {
+        if self.n_objects != self.n_objects_header {
+            return Err(SdkError::VerificationError(format!(
+                "object count mismatch: got {}, want {}",
+                self.n_objects, self.n_objects_header
+            )));
+        }
+        if self.n_entries != self.n_entries_header {
+            return Err(SdkError::VerificationError(format!(
+                "entry count mismatch: got {}, want {}",
+                self.n_entries, self.n_entries_header
+            )));
+        }
+        if self.n_tags != self.n_tags_header {
+            return Err(SdkError::VerificationError(format!(
+                "tag count mismatch: got {}, want {}",
+                self.n_tags, self.n_tags_header
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn object_compression_flag_count(flags: u8) -> u32 {
+    [
+        OBJECT_COMPRESSED_XZ,
+        OBJECT_COMPRESSED_LZ4,
+        OBJECT_COMPRESSED_ZSTD,
+    ]
+    .iter()
+    .filter(|flag| flags & **flag != 0)
+    .count() as u32
 }
 
 fn tag_realtime_range(start_epoch: u64, epoch: u64, interval_usec: u64) -> Result<(u64, u64)> {
@@ -1579,33 +1806,51 @@ impl DirectoryReader {
         }
 
         loop {
-            let advanced = match direction {
-                Direction::Forward => self.files[reader_index].next()?,
-                Direction::Backward => self.files[reader_index].previous()?,
-            };
-            if !advanced {
+            if !self.advance_candidate_reader(reader_index, direction)? {
                 return Ok(());
             }
-
             let key = self.files[reader_index].current_directory_entry_key()?;
-            if let Some((usec, seek_direction)) = self.realtime_seek_bound {
-                if (seek_direction == Direction::Forward && key.realtime < usec)
-                    || (seek_direction == Direction::Backward && key.realtime > usec)
-                {
-                    continue;
-                }
+            if !self.candidate_matches_realtime_bound(key) {
+                continue;
             }
-            if let Some(current) = self.current_key {
-                let cmp = self.compare_entry_keys(key, current);
-                if (direction == Direction::Forward && cmp <= 0)
-                    || (direction == Direction::Backward && cmp >= 0)
-                {
-                    continue;
-                }
+            if !self.candidate_is_after_current(key, direction) {
+                continue;
             }
 
             self.candidates[reader_index] = Some(DirectoryCandidate { reader_index, key });
             return Ok(());
+        }
+    }
+
+    fn advance_candidate_reader(
+        &mut self,
+        reader_index: usize,
+        direction: Direction,
+    ) -> Result<bool> {
+        match direction {
+            Direction::Forward => self.files[reader_index].next(),
+            Direction::Backward => self.files[reader_index].previous(),
+        }
+    }
+
+    fn candidate_matches_realtime_bound(&self, key: DirectoryEntryKey) -> bool {
+        let Some((usec, seek_direction)) = self.realtime_seek_bound else {
+            return true;
+        };
+        match seek_direction {
+            Direction::Forward => key.realtime >= usec,
+            Direction::Backward => key.realtime <= usec,
+        }
+    }
+
+    fn candidate_is_after_current(&self, key: DirectoryEntryKey, direction: Direction) -> bool {
+        let Some(current) = self.current_key else {
+            return true;
+        };
+        let cmp = self.compare_entry_keys(key, current);
+        match direction {
+            Direction::Forward => cmp > 0,
+            Direction::Backward => cmp < 0,
         }
     }
 
@@ -1878,67 +2123,80 @@ impl DirectoryReader {
 
     fn step_sequential(&mut self, direction: Direction) -> Result<bool> {
         if self.files.is_empty() {
-            self.index = usize::MAX;
-            self.current_key = None;
+            self.clear_current_directory_entry();
             return Ok(false);
         }
 
         if self.direction != Some(direction) {
-            match direction {
-                Direction::Forward => {
-                    for reader in &mut self.files {
-                        reader.seek_head();
-                    }
-                    self.index = 0;
-                }
-                Direction::Backward => {
-                    for reader in &mut self.files {
-                        reader.seek_tail();
-                    }
-                    self.index = self.files.len() - 1;
-                }
-            }
-            self.reset_candidates();
-            self.current_key = None;
-            self.realtime_seek_bound = None;
-            self.direction = Some(direction);
+            self.reset_sequential_direction(direction);
         }
 
         match direction {
+            Direction::Forward => self.step_sequential_forward(),
+            Direction::Backward => self.step_sequential_backward(),
+        }
+    }
+
+    fn reset_sequential_direction(&mut self, direction: Direction) {
+        match direction {
             Direction::Forward => {
-                if self.index == usize::MAX {
-                    self.index = 0;
+                for reader in &mut self.files {
+                    reader.seek_head();
                 }
-                while self.index < self.files.len() {
-                    if self.files[self.index].next()? {
-                        self.current_key =
-                            Some(self.files[self.index].current_directory_entry_key()?);
-                        return Ok(true);
-                    }
-                    self.index += 1;
-                }
+                self.index = 0;
             }
             Direction::Backward => {
-                if self.index >= self.files.len() {
-                    self.index = self.files.len() - 1;
+                for reader in &mut self.files {
+                    reader.seek_tail();
                 }
-                loop {
-                    if self.files[self.index].previous()? {
-                        self.current_key =
-                            Some(self.files[self.index].current_directory_entry_key()?);
-                        return Ok(true);
-                    }
-                    if self.index == 0 {
-                        break;
-                    }
-                    self.index -= 1;
-                }
+                self.index = self.files.len() - 1;
             }
         }
+        self.reset_candidates();
+        self.current_key = None;
+        self.realtime_seek_bound = None;
+        self.direction = Some(direction);
+    }
 
+    fn step_sequential_forward(&mut self) -> Result<bool> {
+        if self.index == usize::MAX {
+            self.index = 0;
+        }
+        while self.index < self.files.len() {
+            if self.files[self.index].next()? {
+                self.current_key = Some(self.files[self.index].current_directory_entry_key()?);
+                return Ok(true);
+            }
+            self.index += 1;
+        }
+        self.finish_sequential_end()
+    }
+
+    fn step_sequential_backward(&mut self) -> Result<bool> {
+        if self.index >= self.files.len() {
+            self.index = self.files.len() - 1;
+        }
+        loop {
+            if self.files[self.index].previous()? {
+                self.current_key = Some(self.files[self.index].current_directory_entry_key()?);
+                return Ok(true);
+            }
+            if self.index == 0 {
+                break;
+            }
+            self.index -= 1;
+        }
+        self.finish_sequential_end()
+    }
+
+    fn finish_sequential_end(&mut self) -> Result<bool> {
+        self.clear_current_directory_entry();
+        Ok(false)
+    }
+
+    fn clear_current_directory_entry(&mut self) {
         self.index = usize::MAX;
         self.current_key = None;
-        Ok(false)
     }
 }
 
@@ -2606,65 +2864,6 @@ pub fn format_entry_text(entry: &Entry) -> Vec<u8> {
     }
     out.push(b'\n');
     out
-}
-
-pub fn parse_match_string(s: &str) -> std::result::Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
-    parse_match_bytes(s.as_bytes())
-}
-
-pub fn parse_match_bytes(
-    data: &[u8],
-) -> std::result::Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
-    let Some(eq) = data.iter().position(|byte| *byte == b'=') else {
-        return Err("EINVAL: missing '=' separator".into());
-    };
-    let key = &data[..eq];
-    if key.is_empty()
-        || key[0].is_ascii_digit()
-        || !key
-            .iter()
-            .copied()
-            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
-    {
-        return Err("EINVAL: invalid field name".into());
-    }
-    Ok(data.to_vec())
-}
-
-pub fn parse_cursor(
-    cursor: &str,
-) -> std::result::Result<(String, String, u64, u64), Box<dyn Error + Send + Sync>> {
-    let mut seqnum_id = String::new();
-    let mut boot_id = String::new();
-    let mut realtime = None;
-    let mut seqnum = None;
-
-    for part in cursor.split(';') {
-        let Some((key, value)) = part.split_once('=') else {
-            return Err("invalid cursor: malformed segment".into());
-        };
-        if key.is_empty() {
-            return Err("invalid cursor: empty key".into());
-        }
-        match key {
-            "s" => seqnum_id = value.to_string(),
-            "j" => boot_id = value.to_string(),
-            "c" => realtime = Some(u64::from_str_radix(value, 16)?),
-            "n" => seqnum = Some(value.parse()?),
-            _ => {}
-        }
-    }
-
-    if seqnum_id.is_empty() || boot_id.is_empty() {
-        return Err("invalid cursor: missing id".into());
-    }
-
-    Ok((
-        seqnum_id,
-        boot_id,
-        realtime.ok_or("invalid cursor: missing realtime")?,
-        seqnum.ok_or("invalid cursor: missing seqnum")?,
-    ))
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-06-02
+Last updated: 2026-06-03
 
 ## Current
 
@@ -16,7 +16,10 @@ Last updated: 2026-06-02
   Batch 1 made the Go reader/verifier touched files locally Lizard-clean.
   Batch 2 made all non-test Go runtime files under `go/journal/*.go` and
   `go/cmd/journalctl/*.go` locally Lizard-clean and passed Go tests plus
-  matrix, directory, and full verifier interoperability checks. Remaining work
+  matrix, directory, and full verifier interoperability checks. Batch 3 cleared
+  the touched Rust public reader/verifier runtime findings in
+  `rust/src/journal/src/lib.rs` and `rust/src/journal/src/parse.rs`, preserving
+  parser APIs and passing Rust plus interoperability validation. Remaining work
   is to continue complexity remediation, record final scanner results, and
   complete whole-SOW review.
 

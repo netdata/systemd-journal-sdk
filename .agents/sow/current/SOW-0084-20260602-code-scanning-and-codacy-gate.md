@@ -1180,6 +1180,34 @@ Complexity remediation evidence:
     corruption classes, and 0 failures.
   - `git diff --check` passed.
   - `.agents/sow/audit.sh` passed with a clean verdict.
+- Batch 3, Rust public reader/verifier runtime internals:
+  - Moved Rust public match/cursor parsing helpers from
+    `rust/src/journal/src/lib.rs` into `rust/src/journal/src/parse.rs`, then
+    re-exported the same public names from `lib.rs` to preserve the existing
+    API surface.
+  - Refactored Rust verification-key parsing into seed-byte and hex-value
+    helpers without changing accepted or rejected key syntax.
+  - Refactored Rust sealed-journal verification from one large stateful routine
+    into an explicit sealed-verifier state with object, entry, tag, HMAC
+    replay, and final-count helpers.
+  - Refactored Rust directory reader candidate filling and sequential stepping
+    into direction-specific helpers without changing reader ordering or cursor
+    behavior.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for the new
+    parser module and no runtime findings for the touched Rust reader/verifier
+    code in `rust/src/journal/src/lib.rs`. The remaining rows in `lib.rs` are
+    two large test functions and stay in scope for the later test/harness
+    cleanup batch.
+  - `cargo test -p journal -p adapter` passed.
+  - `tests/interoperability/run_verify_matrix.py` passed with stock, Go, Rust,
+    Node.js, and Python verifiers: 9 positive fixture classes, 12 negative
+    corruption classes, and 0 failures.
+  - `tests/interoperability/run_directory_matrix.py --readers rust stock`
+    passed 22/22 directory checks against systemd 260.1.
+  - `tests/interoperability/run_matrix.py --writers rust go --readers rust
+    stock --entries 20` passed 22/22 checks against systemd 260.1.
+  - `git diff --check` passed.
+  - `.agents/sow/audit.sh` passed with a clean verdict.
 
 Reviewer findings:
 
