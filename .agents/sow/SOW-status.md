@@ -169,9 +169,12 @@ Last updated: 2026-06-03
   Python cleanup handlers and dead assignments, Go/Node Jenkins hash discarded
   assignments, Rust closure/captured-format variable-use reports, and benchmark
   stdout summary logging; affected Python, Go, Node.js, Rust, corpus, format,
-  diff, and SOW-audit validation passed. Remaining work is to push Batch 38,
-  verify Codacy/GitHub code scanning has analyzed the current commit instead of
-  stale snapshots, decide or disposition the cross-language `0640` journal file
+  diff, and SOW-audit validation passed. Batch 39 fixed the current-commit
+  survivor findings for Python writer private helper re-exports, Rust
+  `verify_slice` label use, and benchmark stdout status sanitization after
+  CodeQL/Codacy analyzed `15c2355`. Remaining work is to push Batch 39, verify
+  Codacy/GitHub code scanning has analyzed the current commit instead of stale
+  snapshots, decide or disposition the cross-language `0640` journal file
   permission finding, address residual current-commit findings, record final
   scanner results, and complete whole-SOW review.
 

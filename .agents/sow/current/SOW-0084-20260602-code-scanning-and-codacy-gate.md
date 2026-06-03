@@ -2358,6 +2358,39 @@ Batch 38:
     scanner evidence. Scanner evidence for this batch must come from the next
     pushed GitHub CodeQL/Codacy SARIF run.
 
+Batch 39:
+
+- Scope: current-commit survivors after GitHub CodeQL/Codacy SARIF analyzed
+  `15c2355`.
+- Evidence:
+  - GitHub CodeQL run `26897835729`: success for JavaScript/TypeScript,
+    Python, Go, and Rust.
+  - Codacy SARIF run `26897835737`: success.
+  - GitHub code-scanning export for `15c2355`: 220 current alerts, with the
+    remaining direct Batch 38 survivors including Python writer unused private
+    helper imports, Rust `verify_slice` label use, benchmark stdout logging,
+    and the deliberate `0640` journal file permission finding.
+  - Codacy cloud export for `15c2355`: 9 quality issues and 0 security
+    findings. The 9 issues were 7 file-size findings plus the 2 Python writer
+    unused-import findings.
+- Changes:
+  - Preserved `journal.writer._validate_field_name_for_policy` and
+    `journal.writer._writer_policy_for_log_policy` compatibility names by
+    assigning them from the already-imported `writer_policy` module, removing
+    direct unused imports.
+  - Made Rust `verify_slice` use `label` outside `format!` so CodeQL does not
+    report a false unused-variable finding.
+  - Sanitized benchmark stdout status to the fixed strings `ok` or `fail`;
+    full metrics continue to be written to `report.json`.
+- Validation:
+  - `python3 -m py_compile python/journal/writer.py tests/benchmarks/run_writer_core_benchmarks.py tests/benchmarks/run_writer_directory_benchmarks.py`
+    passed.
+  - Focused Python checks for `test_journald_field_policy_validation()` and
+    `test_writer_sealed_basic()` passed.
+  - `cargo fmt --all --check` and
+    `cargo test -p journal verify_file_detects_corruption` passed.
+  - `git diff --check` passed.
+
 Reviewer findings:
 
 - Pending. The current SOW is not ready for terminal reviewer review because
@@ -2427,9 +2460,9 @@ Follow-up mapping:
   - reconcile the user's observed 3056 UI count with the CLI-confirmed
     `master` count of 1502 quality issues after commit `99d2b08`;
   - group and triage the exported `master` cloud findings;
-  - push Batch 38 and verify GitHub CodeQL/Codacy SARIF no longer report the
-    fixed current-commit dead-code, empty-except, useless-assignment, and
-    benchmark stdout findings;
+  - push Batch 39 and verify GitHub CodeQL/Codacy SARIF no longer report the
+    fixed current-commit Python unused-import, Rust unused-label, and benchmark
+    stdout findings;
   - address any remaining current-commit Codacy findings that are not explained
     by stale cloud analysis or narrow generated-artifact exclusions;
   - run GitHub workflows after push and record CodeQL/Codacy results;

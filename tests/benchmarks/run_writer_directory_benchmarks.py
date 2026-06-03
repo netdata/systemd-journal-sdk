@@ -489,11 +489,15 @@ def write_report(output_dir: Path, report: dict[str, Any]) -> Path:
 def print_report_summary(report: dict[str, Any], report_path: Path) -> None:
     print(
         json.dumps(
-            {"status": report["status"], "report": _display_report_path(report_path)},
+            {"status": _public_report_status(report), "report": _display_report_path(report_path)},
             indent=2,
             sort_keys=True,
         )
     )
+
+
+def _public_report_status(report: dict[str, Any]) -> str:
+    return "ok" if report.get("status") == "ok" else "fail"
 
 
 def _display_report_path(report_path: Path) -> str:
