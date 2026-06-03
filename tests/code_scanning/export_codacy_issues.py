@@ -167,40 +167,10 @@ def export_issues_with_cli(args: argparse.Namespace) -> dict[str, Any]:
         timeout=args.cli_timeout,
     )
 
-    overview_languages = (
-        overview.get("overview", {}).get("languages", [])
-        if isinstance(overview.get("overview"), dict)
-        else []
-    )
-    languages = [
-        item["name"]
-        for item in overview_languages
-        if isinstance(item, dict) and isinstance(item.get("name"), str)
-    ]
-    if not languages:
-        languages = list(DEFAULT_LANGUAGES)
-
     deduped: dict[str, dict[str, Any]] = {}
     partitions: list[dict[str, Any]] = []
-    for language in languages:
-        payload = run_codacy(
-            [
-                "issues",
-                args.provider,
-                args.organization,
-                args.repository,
-                "--branch",
-                args.branch,
-                "--languages",
-                language,
-                "--limit",
-                str(args.limit),
-            ],
-            timeout=args.cli_timeout,
-        )
-        issues = payload.get("issues", [])
-        if not isinstance(issues, list):
-            raise RuntimeError(f"Codacy CLI response for {language} did not include issues")
+    for language in codacy_overview_languages(overview):
+        issues = fetch_language_issues(args, language)
         partitions.append({"language": language, "count": len(issues)})
         if len(issues) >= args.limit:
             raise RuntimeError(
@@ -210,18 +180,7 @@ def export_issues_with_cli(args: argparse.Namespace) -> dict[str, Any]:
         for issue in issues:
             if not isinstance(issue, dict):
                 continue
-            key = str(
-                issue.get("resultDataId")
-                or (
-                    issue.get("filePath"),
-                    issue.get("lineNumber"),
-                    issue.get("message"),
-                    issue.get("patternInfo", {}).get("id")
-                    if isinstance(issue.get("patternInfo"), dict)
-                    else None,
-                )
-            )
-            deduped[key] = issue
+            deduped[codacy_issue_key(issue)] = issue
 
     return {
         "provider": args.provider,
@@ -235,6 +194,59 @@ def export_issues_with_cli(args: argparse.Namespace) -> dict[str, Any]:
         "count": len(deduped),
         "data": list(deduped.values()),
     }
+
+
+def codacy_overview_languages(overview: dict[str, Any]) -> list[str]:
+    overview_payload = overview.get("overview")
+    overview_languages = (
+        overview_payload.get("languages", [])
+        if isinstance(overview_payload, dict)
+        else []
+    )
+    languages = [
+        item["name"]
+        for item in overview_languages
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    ]
+    return languages or list(DEFAULT_LANGUAGES)
+
+
+def fetch_language_issues(args: argparse.Namespace, language: str) -> list[Any]:
+    payload = run_codacy(
+        [
+            "issues",
+            args.provider,
+            args.organization,
+            args.repository,
+            "--branch",
+            args.branch,
+            "--languages",
+            language,
+            "--limit",
+            str(args.limit),
+        ],
+        timeout=args.cli_timeout,
+    )
+    issues = payload.get("issues", [])
+    if not isinstance(issues, list):
+        raise RuntimeError(f"Codacy CLI response for {language} did not include issues")
+    return issues
+
+
+def codacy_issue_key(issue: dict[str, Any]) -> str:
+    result_id = issue.get("resultDataId")
+    if result_id:
+        return str(result_id)
+    pattern = issue.get("patternInfo")
+    pattern_id = pattern.get("id") if isinstance(pattern, dict) else None
+    return str(
+        (
+            issue.get("filePath"),
+            issue.get("lineNumber"),
+            issue.get("message"),
+            pattern_id,
+        )
+    )
 
 
 def export_findings_with_cli(args: argparse.Namespace) -> dict[str, Any]:

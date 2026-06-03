@@ -194,7 +194,53 @@ def journalctl_poll_reader(reader_id, args, stop_event, writer_done):
 
 
 def journalctl_follow_reader(reader_id, args, stop_event, writer_done):
-    command = [
+    command = journalctl_follow_command(args)
+    deadline = time.monotonic() + args.reader_timeout_sec
+    transient_retries = 0
+    last_count = 0
+
+    while time.monotonic() < deadline:
+        active_at_start = not writer_done.is_set()
+        attempt = run_journalctl_follow_attempt(
+            command,
+            reader_id,
+            args,
+            stop_event,
+            writer_done,
+            deadline,
+            active_at_start,
+        )
+
+        if attempt["complete"]:
+            return {
+                "reader": "journalctl-follow",
+                "id": reader_id,
+                "entries": attempt["count"],
+                "exit": attempt["exit"],
+                "transient_retries": transient_retries,
+            }
+
+        last_count = max(last_count, attempt["count"])
+        stderr_text = attempt["stderr"].decode(errors="replace")
+        if should_retry_follow_attempt(active_at_start, attempt, stderr_text):
+            transient_retries += 1
+            time.sleep(0.02)
+            continue
+        if attempt["stderr"]:
+            raise RuntimeError(
+                f"journalctl follow reader {reader_id} wrote stderr: "
+                f"{stderr_text}"
+            )
+        break
+
+    raise RuntimeError(
+        f"journalctl follow reader {reader_id} observed {last_count} entries, "
+        f"expected {args.expected_entries}"
+    )
+
+
+def journalctl_follow_command(args):
+    return [
         "journalctl",
         "--file",
         args.journal,
@@ -208,107 +254,108 @@ def journalctl_follow_reader(reader_id, args, stop_event, writer_done):
         "--no-pager",
         args.match,
     ]
-    deadline = time.monotonic() + args.reader_timeout_sec
-    transient_retries = 0
-    last_count = 0
 
-    while time.monotonic() < deadline:
-        active_at_start = not writer_done.is_set()
-        # nosemgrep
-        # subprocess is required by this harness; commands are shell=False vectors.
-        proc = subprocess.Popen(  # nosec B603 - harness uses shell=False command vectors.
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        sel = selectors.DefaultSelector()
-        sel.register(proc.stdout, selectors.EVENT_READ, "stdout")
-        sel.register(proc.stderr, selectors.EVENT_READ, "stderr")
-        stdout_buffer = b""
-        stderr_buffer = b""
-        count = 0
-        transient_error = False
 
-        try:
-            while time.monotonic() < deadline:
-                for key, _ in sel.select(timeout=0.1):
-                    chunk = os.read(key.fileobj.fileno(), 4096)
-                    if not chunk:
-                        try:
-                            sel.unregister(key.fileobj)
-                        except Exception as unregister_error:
-                            stderr_buffer += f"\nunregister failed: {unregister_error}".encode()
-                        continue
-                    if key.data == "stderr":
-                        stderr_buffer += chunk
-                        continue
+def run_journalctl_follow_attempt(
+    command,
+    reader_id,
+    args,
+    stop_event,
+    writer_done,
+    deadline,
+    active_at_start,
+):
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    proc = subprocess.Popen(  # nosec B603 - harness uses shell=False command vectors.
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    selector = selectors.DefaultSelector()
+    selector.register(proc.stdout, selectors.EVENT_READ, "stdout")
+    selector.register(proc.stderr, selectors.EVENT_READ, "stderr")
+    state = {"stdout": b"", "stderr": b"", "count": 0, "transient_error": False}
 
-                    stdout_buffer += chunk
-                    while b"\n" in stdout_buffer:
-                        line, stdout_buffer = stdout_buffer.split(b"\n", 1)
-                        if not line.strip():
-                            continue
-                        try:
-                            rows = parse_json_lines(
-                                line.decode(errors="replace"),
-                                f"journalctl follow {reader_id}",
-                            )
-                            if len(rows) != 1:
-                                raise RuntimeError(f"journalctl follow {reader_id}: expected one JSON row")
-                            sequence = row_sequence(
-                                rows[0],
-                                args.sequence_field,
-                                f"journalctl follow {reader_id}",
-                            )
-                            if sequence != count:
-                                raise RuntimeError(
-                                    f"journalctl follow {reader_id}: out-of-order "
-                                    f"{args.sequence_field}: got {sequence}, expected {count}"
-                                )
-                        except RuntimeError:
-                            if active_at_start:
-                                transient_error = True
-                                break
-                            raise
-                        count += 1
-                    if transient_error:
-                        break
+    try:
+        while time.monotonic() < deadline:
+            for key, _ in selector.select(timeout=0.1):
+                process_follow_event(key, selector, state, reader_id, args, active_at_start)
+            if follow_attempt_done(proc, selector, state, args, stop_event, writer_done):
+                break
+    finally:
+        exit_code = proc.poll()
+        terminate_process(proc)
 
-                if transient_error:
-                    break
-                if count >= args.expected_entries:
-                    return {
-                        "reader": "journalctl-follow",
-                        "id": reader_id,
-                        "entries": count,
-                        "exit": proc.poll(),
-                        "transient_retries": transient_retries,
-                    }
-                if proc.poll() is not None and len(sel.get_map()) == 0:
-                    break
-                if stop_event.is_set() and writer_done.is_set() and count >= args.expected_entries:
-                    break
-        finally:
-            terminate_process(proc)
+    return {
+        "count": state["count"],
+        "stderr": state["stderr"],
+        "transient_error": state["transient_error"],
+        "complete": state["count"] >= args.expected_entries,
+        "exit": exit_code,
+    }
 
-        last_count = max(last_count, count)
-        stderr_text = stderr_buffer.decode(errors="replace")
-        if active_at_start and (
-            transient_error or ("No data available" in stderr_text and count == 0)
-        ):
-            transient_retries += 1
-            time.sleep(0.02)
+
+def process_follow_event(key, selector, state, reader_id, args, active_at_start):
+    chunk = os.read(key.fileobj.fileno(), 4096)
+    if not chunk:
+        unregister_follow_stream(selector, key, state)
+        return
+    if key.data == "stderr":
+        state["stderr"] += chunk
+        return
+    state["stdout"] += chunk
+    consume_follow_stdout_lines(state, reader_id, args, active_at_start)
+
+
+def unregister_follow_stream(selector, key, state):
+    try:
+        selector.unregister(key.fileobj)
+    except Exception as unregister_error:
+        state["stderr"] += f"\nunregister failed: {unregister_error}".encode()
+
+
+def consume_follow_stdout_lines(state, reader_id, args, active_at_start):
+    while b"\n" in state["stdout"]:
+        line, state["stdout"] = state["stdout"].split(b"\n", 1)
+        if not line.strip():
             continue
-        if stderr_buffer:
-            raise RuntimeError(
-                f"journalctl follow reader {reader_id} wrote stderr: "
-                f"{stderr_text}"
-            )
-        break
+        try:
+            validate_follow_line(line, reader_id, args, state["count"])
+        except RuntimeError:
+            if active_at_start:
+                state["transient_error"] = True
+                return
+            raise
+        state["count"] += 1
 
-    raise RuntimeError(
-        f"journalctl follow reader {reader_id} observed {last_count} entries, "
-        f"expected {args.expected_entries}"
+
+def validate_follow_line(line, reader_id, args, expected_sequence):
+    source = f"journalctl follow {reader_id}"
+    rows = parse_json_lines(line.decode(errors="replace"), source)
+    if len(rows) != 1:
+        raise RuntimeError(f"{source}: expected one JSON row")
+    sequence = row_sequence(rows[0], args.sequence_field, source)
+    if sequence != expected_sequence:
+        raise RuntimeError(
+            f"{source}: out-of-order {args.sequence_field}: "
+            f"got {sequence}, expected {expected_sequence}"
+        )
+
+
+def follow_attempt_done(proc, selector, state, args, stop_event, writer_done):
+    if state["transient_error"]:
+        return True
+    if state["count"] >= args.expected_entries:
+        return True
+    if proc.poll() is not None and len(selector.get_map()) == 0:
+        return True
+    return stop_event.is_set() and writer_done.is_set() and state["count"] >= args.expected_entries
+
+
+def should_retry_follow_attempt(active_at_start, attempt, stderr_text):
+    return active_at_start and (
+        attempt["transient_error"] or ("No data available" in stderr_text and attempt["count"] == 0)
     )
 
 

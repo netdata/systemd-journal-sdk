@@ -111,50 +111,78 @@ def findings_from_sarif(path: Path) -> list[dict[str, str]]:
     for run in payload.get("runs", []):
         if not isinstance(run, dict):
             continue
-        tool = _nested_string(run, "tool", "driver", "name") or "sarif"
-        rules = {
-            rule.get("id"): rule
-            for rule in run.get("tool", {}).get("driver", {}).get("rules", [])
-            if isinstance(rule, dict) and isinstance(rule.get("id"), str)
-        }
+        tool = sarif_tool_name(run)
+        rules = sarif_rules(run)
         for result in run.get("results", []):
             if not isinstance(result, dict):
                 continue
-            rule_id = _first_string(result.get("ruleId"))
-            rule = rules.get(rule_id, {})
-            properties = rule.get("properties", {}) if isinstance(rule, dict) else {}
-            locations = result.get("locations") or []
-            uri = None
-            if locations and isinstance(locations[0], dict):
-                uri = _nested_string(
-                    locations[0],
-                    "physicalLocation",
-                    "artifactLocation",
-                    "uri",
-                )
-            severity = _first_string(
-                result.get("level"),
-                properties.get("problem.severity") if isinstance(properties, dict) else None,
-                properties.get("security-severity") if isinstance(properties, dict) else None,
-            )
-            category = _first_string(
-                properties.get("tags", [None])[0]
-                if isinstance(properties.get("tags"), list) and properties.get("tags")
-                else None,
-                default="unknown",
-            )
-            findings.append(
-                {
-                    "source": path.name,
-                    "tool": tool,
-                    "rule": rule_id,
-                    "severity": severity,
-                    "category": category,
-                    "path_class": path_class(uri),
-                    "path_prefix": path_prefix(uri),
-                }
-            )
+            findings.append(sarif_result_finding(path.name, tool, rules, result))
     return findings
+
+
+def sarif_tool_name(run: dict[str, Any]) -> str:
+    return _nested_string(run, "tool", "driver", "name") or "sarif"
+
+
+def sarif_rules(run: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    driver = run.get("tool", {}).get("driver", {})
+    rules = driver.get("rules", []) if isinstance(driver, dict) else []
+    return {
+        rule["id"]: rule
+        for rule in rules
+        if isinstance(rule, dict) and isinstance(rule.get("id"), str)
+    }
+
+
+def sarif_result_uri(result: dict[str, Any]) -> str | None:
+    locations = result.get("locations") or []
+    if locations and isinstance(locations[0], dict):
+        return _nested_string(
+            locations[0],
+            "physicalLocation",
+            "artifactLocation",
+            "uri",
+        )
+    return None
+
+
+def sarif_rule_properties(
+    rules: dict[str, dict[str, Any]],
+    rule_id: str,
+) -> dict[str, Any]:
+    rule = rules.get(rule_id, {})
+    properties = rule.get("properties", {})
+    return properties if isinstance(properties, dict) else {}
+
+
+def sarif_result_category(properties: dict[str, Any]) -> str:
+    tags = properties.get("tags")
+    first_tag = tags[0] if isinstance(tags, list) and tags else None
+    return _first_string(first_tag, default="unknown")
+
+
+def sarif_result_finding(
+    source: str,
+    tool: str,
+    rules: dict[str, dict[str, Any]],
+    result: dict[str, Any],
+) -> dict[str, str]:
+    rule_id = _first_string(result.get("ruleId"))
+    properties = sarif_rule_properties(rules, rule_id)
+    uri = sarif_result_uri(result)
+    return {
+        "source": source,
+        "tool": tool,
+        "rule": rule_id,
+        "severity": _first_string(
+            result.get("level"),
+            properties.get("problem.severity"),
+            properties.get("security-severity"),
+        ),
+        "category": sarif_result_category(properties),
+        "path_class": path_class(uri),
+        "path_prefix": path_prefix(uri),
+    }
 
 
 def findings_from_codacy_issues(path: Path) -> list[dict[str, str]]:

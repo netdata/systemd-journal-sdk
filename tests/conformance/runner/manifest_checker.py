@@ -27,6 +27,18 @@ except ImportError:
 REPO_ROOT = Path(__file__).parent.parent.parent.parent
 FIXTURES_BASE = REPO_ROOT
 
+VALID_CATEGORIES = {
+    "file-format", "entry-parse", "entry-write", "matching",
+    "enumeration", "verification", "sealing", "compression",
+    "corruption-resilience", "cursor-navigation", "stream",
+    "import-export", "journalctl-cli", "live-concurrency",
+}
+VALID_RESULT_FORMATS = {
+    "entry-list", "cursor-list", "field-list", "export",
+    "count", "boolean", "error",
+}
+VALID_FIXTURE_TYPES = {"file", "inline", "generated", "external"}
+
 
 def load_schema():
     schema_path = Path(__file__).parent.parent / "manifest-schema.json"
@@ -48,18 +60,28 @@ def stdlib_validate_manifest(data, schema):
     - error_contains is non-empty for result_format: error
     """
     errors = []
-
-    # Root level
-    for field in ("manifest_version", "test_suite"):
-        if field not in data:
-            errors.append(f"root: missing required field '{field}'")
-
+    validate_manifest_root(errors, data)
     suite = data.get("test_suite", {})
     if not isinstance(suite, dict):
         errors.append("test_suite: expected object")
         return errors
+    validate_suite_fields(errors, suite)
+    test_cases = suite.get("test_cases", [])
+    if not isinstance(test_cases, list):
+        errors.append("test_suite.test_cases: expected array")
+        return errors
+    for index, test_case in enumerate(test_cases):
+        validate_test_case(errors, index, test_case)
+    return errors
 
-    # Test suite level
+
+def validate_manifest_root(errors, data):
+    for field in ("manifest_version", "test_suite"):
+        if field not in data:
+            errors.append(f"root: missing required field '{field}'")
+
+
+def validate_suite_fields(errors, suite):
     for field in ("suite_name", "systemd_baseline", "test_cases"):
         if field not in suite:
             errors.append(f"test_suite: missing required field '{field}'")
@@ -70,114 +92,108 @@ def stdlib_validate_manifest(data, schema):
             if field not in baseline:
                 errors.append(f"test_suite.systemd_baseline: missing required field '{field}'")
 
-    # Test cases
-    test_cases = suite.get("test_cases", [])
-    if not isinstance(test_cases, list):
-        errors.append("test_suite.test_cases: expected array")
-        return errors
 
-    valid_categories = {
-        "file-format", "entry-parse", "entry-write", "matching",
-        "enumeration", "verification", "sealing", "compression",
-        "corruption-resilience", "cursor-navigation", "stream",
-        "import-export", "journalctl-cli", "live-concurrency",
-    }
-    valid_result_formats = {
-        "entry-list", "cursor-list", "field-list", "export",
-        "count", "boolean", "error",
-    }
-    valid_fixture_types = {"file", "inline", "generated", "external"}
+def validate_test_case(errors, index, test_case):
+    prefix = f"test_suite.test_cases[{index}]"
+    if not isinstance(test_case, dict):
+        errors.append(f"{prefix}: expected object")
+        return
 
-    for i, tc in enumerate(test_cases):
-        prefix = f"test_suite.test_cases[{i}]"
-        if not isinstance(tc, dict):
-            errors.append(f"{prefix}: expected object")
-            continue
+    for field in ("test_name", "category", "fixtures", "adapter_cmd", "expected"):
+        if field not in test_case:
+            errors.append(f"{prefix}: missing required field '{field}'")
 
-        # Required test case fields
-        for field in ("test_name", "category", "fixtures", "adapter_cmd", "expected"):
-            if field not in tc:
-                errors.append(f"{prefix}: missing required field '{field}'")
+    test_name = test_case.get("test_name", f"<unnamed index {index}>")
+    validate_test_case_category(errors, prefix, test_name, test_case)
+    validate_test_case_fixtures(errors, prefix, test_name, test_case.get("fixtures", {}))
+    validate_expected(errors, prefix, test_name, test_case.get("expected", {}))
+    adapter_cmd = test_case.get("adapter_cmd")
+    if adapter_cmd is not None and not isinstance(adapter_cmd, list):
+        errors.append(f"{prefix} ({test_name}): adapter_cmd must be array")
 
-        tc_name = tc.get("test_name", f"<unnamed index {i}>")
 
-        # Category validation
-        category = tc.get("category")
-        if category and category not in valid_categories:
-            errors.append(f"{prefix} ({tc_name}): invalid category '{category}'")
+def validate_test_case_category(errors, prefix, test_name, test_case):
+    category = test_case.get("category")
+    if category and category not in VALID_CATEGORIES:
+        errors.append(f"{prefix} ({test_name}): invalid category '{category}'")
 
-        # Fixtures validation
-        fixtures = tc.get("fixtures", {})
-        if not isinstance(fixtures, dict):
-            errors.append(f"{prefix} ({tc_name}): fixtures must be object")
-        else:
-            for fname, ref in fixtures.items():
-                if not isinstance(ref, dict):
-                    errors.append(f"{prefix} ({tc_name}).fixtures.{fname}: expected object")
-                    continue
-                if "type" not in ref:
-                    errors.append(f"{prefix} ({tc_name}).fixtures.{fname}: missing 'type'")
-                elif ref["type"] not in valid_fixture_types:
-                    errors.append(f"{prefix} ({tc_name}).fixtures.{fname}: invalid type '{ref['type']}'")
-                if "path" not in ref:
-                    errors.append(f"{prefix} ({tc_name}).fixtures.{fname}: missing 'path'")
 
-                ftype = ref.get("type")
-                fpath = ref.get("path")
+def validate_test_case_fixtures(errors, prefix, test_name, fixtures):
+    if not isinstance(fixtures, dict):
+        errors.append(f"{prefix} ({test_name}): fixtures must be object")
+        return
+    for name, ref in fixtures.items():
+        validate_fixture_ref(errors, prefix, test_name, name, ref)
 
-                # Check type:file fixture existence (file or directory)
-                if ftype == "file" and fpath:
-                    full = FIXTURES_BASE / fpath
-                    if not full.exists():
-                        errors.append(f"{prefix} ({tc_name}).fixtures.{fname}: not found: {fpath}")
 
-                # Check type:generated fixtures have committed source inputs
-                if ftype == "generated":
-                    source_path = ref.get("source_path")
-                    if not source_path:
-                        errors.append(
-                            f"{prefix} ({tc_name}).fixtures.{fname}: "
-                            f"type:generated must have 'source_path' pointing to committed source inputs, or 'daemon-required' if a live daemon is needed"
-                        )
-                    elif source_path != "daemon-required":
-                        full_source = FIXTURES_BASE / source_path
-                        if not full_source.exists():
-                            errors.append(
-                                f"{prefix} ({tc_name}).fixtures.{fname}: "
-                                f"source_path not found: {source_path}"
-                            )
+def validate_fixture_ref(errors, prefix, test_name, name, ref):
+    ref_prefix = f"{prefix} ({test_name}).fixtures.{name}"
+    if not isinstance(ref, dict):
+        errors.append(f"{ref_prefix}: expected object")
+        return
+    validate_fixture_type_and_path(errors, ref_prefix, ref)
+    validate_file_fixture_exists(errors, ref_prefix, ref)
+    validate_generated_fixture_source(errors, ref_prefix, ref)
 
-        # Expected validation
-        expected = tc.get("expected", {})
-        if not isinstance(expected, dict):
-            errors.append(f"{prefix} ({tc_name}): expected must be object")
-        else:
-            if "result_format" not in expected:
-                errors.append(f"{prefix} ({tc_name}).expected: missing required field 'result_format'")
-            elif expected["result_format"] not in valid_result_formats:
-                errors.append(f"{prefix} ({tc_name}).expected: invalid result_format '{expected['result_format']}'")
-            if "entries_match" not in expected:
-                errors.append(f"{prefix} ({tc_name}).expected: missing required field 'entries_match'")
 
-            # error_contains must be non-empty for error results
-            if expected.get("result_format") == "error":
-                error_contains = expected.get("error_contains")
-                if error_contains is None:
-                    errors.append(
-                        f"{prefix} ({tc_name}).expected: "
-                        "missing required field 'error_contains' for result_format: error"
-                    )
-                elif error_contains == "":
-                    errors.append(
-                        f"{prefix} ({tc_name}).expected: error_contains must not be empty for result_format: error"
-                    )
+def validate_fixture_type_and_path(errors, ref_prefix, ref):
+    if "type" not in ref:
+        errors.append(f"{ref_prefix}: missing 'type'")
+    elif ref["type"] not in VALID_FIXTURE_TYPES:
+        errors.append(f"{ref_prefix}: invalid type '{ref['type']}'")
+    if "path" not in ref:
+        errors.append(f"{ref_prefix}: missing 'path'")
 
-        # adapter_cmd validation
-        adapter_cmd = tc.get("adapter_cmd")
-        if adapter_cmd is not None and not isinstance(adapter_cmd, list):
-            errors.append(f"{prefix} ({tc_name}): adapter_cmd must be array")
 
-    return errors
+def validate_file_fixture_exists(errors, ref_prefix, ref):
+    if ref.get("type") != "file" or not ref.get("path"):
+        return
+    path = FIXTURES_BASE / ref.get("path")
+    if not path.exists():
+        errors.append(f"{ref_prefix}: not found: {ref.get('path')}")
+
+
+def validate_generated_fixture_source(errors, ref_prefix, ref):
+    if ref.get("type") != "generated":
+        return
+    source_path = ref.get("source_path")
+    if not source_path:
+        errors.append(
+            f"{ref_prefix}: type:generated must have 'source_path' pointing to committed source inputs, or 'daemon-required' if a live daemon is needed"
+        )
+        return
+    if source_path != "daemon-required" and not (FIXTURES_BASE / source_path).exists():
+        errors.append(f"{ref_prefix}: source_path not found: {source_path}")
+
+
+def validate_expected(errors, prefix, test_name, expected):
+    expected_prefix = f"{prefix} ({test_name}).expected"
+    if not isinstance(expected, dict):
+        errors.append(f"{prefix} ({test_name}): expected must be object")
+        return
+    validate_expected_result_format(errors, expected_prefix, expected)
+    if "entries_match" not in expected:
+        errors.append(f"{expected_prefix}: missing required field 'entries_match'")
+    validate_error_expected(errors, expected_prefix, expected)
+
+
+def validate_expected_result_format(errors, expected_prefix, expected):
+    if "result_format" not in expected:
+        errors.append(f"{expected_prefix}: missing required field 'result_format'")
+    elif expected["result_format"] not in VALID_RESULT_FORMATS:
+        errors.append(f"{expected_prefix}: invalid result_format '{expected['result_format']}'")
+
+
+def validate_error_expected(errors, expected_prefix, expected):
+    if expected.get("result_format") != "error":
+        return
+    error_contains = expected.get("error_contains")
+    if error_contains is None:
+        errors.append(
+            f"{expected_prefix}: missing required field 'error_contains' for result_format: error"
+        )
+    elif error_contains == "":
+        errors.append(f"{expected_prefix}: error_contains must not be empty for result_format: error")
 
 
 def validate_manifest(manifest_path):

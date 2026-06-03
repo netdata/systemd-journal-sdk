@@ -1765,6 +1765,42 @@ Complexity remediation evidence:
   - Refreshed local all-tracked-file Lizard inventory now reports 63 critical
     findings, down from 82 after Batch 21. Remaining critical findings are
     all under `tests/`; Rust, Go, Node.js, and Python are at zero.
+- Batch 23, Python utility harness findings:
+  - Refactored `tests/datasets/generate.py` by extracting the deterministic
+    correctness corpus seed records, special-case records, hash-shape records,
+    and growth-record appenders while preserving record order and counts.
+  - Refactored `tests/datasets/validate.py` by extracting value-kind
+    validators and per-record/per-field correctness validators.
+  - Refactored `tests/code_scanning/export_codacy_issues.py` by extracting
+    Codacy overview language discovery, per-language issue fetching, and issue
+    dedupe-key generation.
+  - Refactored `tests/code_scanning/summarize_findings.py` by extracting SARIF
+    tool, rule, URI, properties, category, and finding-shaping helpers.
+  - Refactored `tests/conformance/runner/manifest_checker.py` into focused
+    root, suite, test-case, fixture, expected-result, and generated-source
+    validators.
+  - Refactored `tests/conformance/live/run_live_concurrency.py`
+    `journalctl --follow` streaming into command, attempt, selector-event,
+    line-validation, completion, and retry helpers while preserving the same
+    subprocess command vector and transient active-writer retry policy.
+  - `python3 -m py_compile` passed for all six touched Python files.
+  - `python3 tests/datasets/validate.py` passed and reported
+    `correctness_records=349`, `rejection_records=9`,
+    `performance_records=200000`, and performance SHA256
+    `44040c1c922b544db549158eb0b971911b7e71d3b0b59debed86cf9cdd128bbc`.
+  - `python3 -m pytest tests/code_scanning/test_summarize_findings.py` passed
+    6 tests.
+  - `python3 tests/conformance/runner/manifest_checker.py validate
+    tests/conformance/manifests/conformance-v01.json` passed.
+  - `python3 tests/conformance/runner/manifest_checker.py validate-files
+    tests/conformance/manifests/conformance-v01.json` passed.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for the six
+    touched Python files.
+  - Refreshed local all-tracked test-file Lizard inventory now reports 56
+    critical findings, down from 63 after Batch 22. Remaining groups are:
+    `tests/interoperability`: 21, `tests/benchmarks`: 13,
+    `tests/corpus_eval`: 12, `tests/systemd_matrix`: 6, and
+    `tests/vm_matrix`: 4.
 
 Reviewer findings:
 

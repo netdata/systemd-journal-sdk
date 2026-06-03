@@ -80,7 +80,14 @@ Last updated: 2026-06-03
   Lizard-clean, passed its full integration test file, and reduced the
   refreshed local all-tracked-file Lizard inventory to 63 critical findings.
   All remaining critical findings are under `tests/`; Rust, Go, Node.js, and
-  Python are at zero.
+  Python are at zero. Batch 23 made dataset, code-scanning, conformance
+  manifest, and live concurrency utility harness files locally Lizard-clean,
+  passed dataset validation, code-scanning pytest coverage, conformance
+  manifest validation, and reduced the refreshed local test-file Lizard
+  inventory to 56 critical findings. Remaining groups are
+  `tests/interoperability`: 21, `tests/benchmarks`: 13,
+  `tests/corpus_eval`: 12, `tests/systemd_matrix`: 6, and
+  `tests/vm_matrix`: 4.
   Remaining work is to continue complexity remediation, record final scanner
   results, and complete whole-SOW review.
 

@@ -73,23 +73,37 @@ def validate_value(value: object) -> None:
         raise ValueError("field value must be an object")
     kind = value.get("kind")
     if kind == "utf8":
-        if not isinstance(value.get("text"), str):
-            raise ValueError("utf8 value requires text")
+        validate_utf8_value(value)
     elif kind == "bytes":
-        raw = value.get("base64")
-        size = value.get("size")
-        if not isinstance(raw, str) or not isinstance(size, int):
-            raise ValueError("bytes value requires base64 and size")
-        decoded = base64.b64decode(raw.encode("ascii"))
-        if len(decoded) != size:
-            raise ValueError("bytes value size does not match decoded base64")
+        validate_bytes_value(value)
     elif kind == "repeat":
-        byte = value.get("byte")
-        size = value.get("size")
-        if not isinstance(byte, int) or not 0 <= byte <= 255 or not isinstance(size, int) or size < 0:
-            raise ValueError("repeat value requires byte 0..255 and non-negative size")
+        validate_repeat_value(value)
     else:
         raise ValueError(f"unsupported value kind: {kind}")
+
+
+def validate_utf8_value(value: dict[str, object]) -> None:
+    if not isinstance(value.get("text"), str):
+        raise ValueError("utf8 value requires text")
+
+
+def validate_bytes_value(value: dict[str, object]) -> None:
+    raw = value.get("base64")
+    size = value.get("size")
+    if not isinstance(raw, str) or not isinstance(size, int):
+        raise ValueError("bytes value requires base64 and size")
+    decoded = base64.b64decode(raw.encode("ascii"))
+    if len(decoded) != size:
+        raise ValueError("bytes value size does not match decoded base64")
+
+
+def validate_repeat_value(value: dict[str, object]) -> None:
+    byte = value.get("byte")
+    size = value.get("size")
+    byte_is_valid = isinstance(byte, int) and 0 <= byte <= 255
+    size_is_valid = isinstance(size, int) and size >= 0
+    if not byte_is_valid or not size_is_valid:
+        raise ValueError("repeat value requires byte 0..255 and non-negative size")
 
 
 def validate_correctness(records: list[dict[str, object]], manifest: dict[str, object]) -> None:
@@ -100,26 +114,36 @@ def validate_correctness(records: list[dict[str, object]], manifest: dict[str, o
         raise ValueError(f"correctness count mismatch: {len(records)} != {expected_count}")
 
     for expected_index, record in enumerate(records):
-        if record.get("record_type") != "accepted":
-            raise ValueError(f"correctness record {expected_index} is not accepted")
-        if record.get("entry_index") != expected_index:
-            raise ValueError(f"correctness record index mismatch at {expected_index}")
-        if record.get("expected_outcome") != "accept":
-            raise ValueError(f"correctness record {expected_index} does not expect accept")
-        fields = record.get("fields")
-        if not isinstance(fields, list) or not fields:
-            raise ValueError(f"correctness record {expected_index} has no fields")
-        for item in fields:
-            if not isinstance(item, dict):
-                raise ValueError(f"correctness record {expected_index} field is not an object")
-            name = item.get("name")
-            if not isinstance(name, str) or not FIELD_RE.match(name):
-                raise ValueError(f"correctness record {expected_index} has invalid accepted field name: {name!r}")
-            validate_value(item.get("value"))
+        validate_correctness_record(expected_index, record)
 
     missing = set(manifest["coverage"]["correctness_required"]) - all_coverage(records)
     if missing:
         raise ValueError(f"correctness corpus missing coverage tags: {sorted(missing)}")
+
+
+def validate_correctness_record(expected_index: int, record: dict[str, object]) -> None:
+    if record.get("record_type") != "accepted":
+        raise ValueError(f"correctness record {expected_index} is not accepted")
+    if record.get("entry_index") != expected_index:
+        raise ValueError(f"correctness record index mismatch at {expected_index}")
+    if record.get("expected_outcome") != "accept":
+        raise ValueError(f"correctness record {expected_index} does not expect accept")
+    fields = record.get("fields")
+    if not isinstance(fields, list) or not fields:
+        raise ValueError(f"correctness record {expected_index} has no fields")
+    for item in fields:
+        validate_correctness_field(expected_index, item)
+
+
+def validate_correctness_field(expected_index: int, item: object) -> None:
+    if not isinstance(item, dict):
+        raise ValueError(f"correctness record {expected_index} field is not an object")
+    name = item.get("name")
+    if not isinstance(name, str) or not FIELD_RE.match(name):
+        raise ValueError(
+            f"correctness record {expected_index} has invalid accepted field name: {name!r}"
+        )
+    validate_value(item.get("value"))
 
 
 def validate_rejections(records: list[dict[str, object]], manifest: dict[str, object]) -> None:

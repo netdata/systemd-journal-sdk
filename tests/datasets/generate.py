@@ -148,9 +148,16 @@ def base_fields(index: int) -> list[dict[str, object]]:
 
 
 def correctness_records() -> list[dict[str, object]]:
-    records: list[dict[str, object]] = []
+    records = seed_correctness_records()
+    records.extend(hash_shape_records())
+    next_index = 9
+    next_index = append_field_growth_records(records, next_index)
+    append_data_array_growth_records(records, next_index)
+    return records
 
-    records.append(
+
+def seed_correctness_records() -> list[dict[str, object]]:
+    return [
         entry(
             0,
             base_fields(0)
@@ -166,10 +173,7 @@ def correctness_records() -> list[dict[str, object]]:
                 "high-cardinality-fields",
             ],
             "Initial entry creates common FIELD and DATA objects.",
-        )
-    )
-
-    records.append(
+        ),
         entry(
             1,
             base_fields(1)
@@ -184,68 +188,75 @@ def correctness_records() -> list[dict[str, object]]:
                 "duplicate-values-across-entries",
             ],
             "Reuses field names while introducing new DATA objects.",
-        )
+        ),
+        duplicate_field_record(),
+        binary_value_record(),
+        large_value_record(),
+        sorted_order_record(),
+    ]
+
+
+def duplicate_field_record() -> dict[str, object]:
+    return entry(
+        2,
+        base_fields(2)
+        + [
+            field("DUPLICATE_FIELD", utf8("first"), "medium"),
+            field("DUPLICATE_FIELD", utf8("second"), "medium"),
+            field("DUPLICATE_FIELD", utf8("first"), "medium"),
+        ],
+        ["duplicate-fields-in-entry", "reused-data-objects"],
+        "Three same-name fields in one entry, including a repeated same DATA value.",
     )
 
-    records.append(
-        entry(
-            2,
-            base_fields(2)
-            + [
-                field("DUPLICATE_FIELD", utf8("first"), "medium"),
-                field("DUPLICATE_FIELD", utf8("second"), "medium"),
-                field("DUPLICATE_FIELD", utf8("first"), "medium"),
-            ],
-            ["duplicate-fields-in-entry", "reused-data-objects"],
-            "Three same-name fields in one entry, including a repeated same DATA value.",
-        )
+
+def binary_value_record() -> dict[str, object]:
+    return entry(
+        3,
+        base_fields(3)
+        + [
+            field("BINARY_PAYLOAD", raw_bytes(bytes([0, 1, 2, 65, 10, 127, 128, 255])), "medium"),
+            field("BINARY_WITH_NUL", raw_bytes(b"left\x00middle\x00right"), "medium"),
+            field("EMPTY_BINARY", raw_bytes(b""), "low"),
+            field("EMPTY_TEXT", utf8(""), "low"),
+        ],
+        ["binary-field-values", "embedded-nul-value", "zero-length-value"],
+        "Binary payloads, embedded NUL bytes, and zero-length values.",
     )
 
-    records.append(
-        entry(
-            3,
-            base_fields(3)
-            + [
-                field("BINARY_PAYLOAD", raw_bytes(bytes([0, 1, 2, 65, 10, 127, 128, 255])), "medium"),
-                field("BINARY_WITH_NUL", raw_bytes(b"left\x00middle\x00right"), "medium"),
-                field("EMPTY_BINARY", raw_bytes(b""), "low"),
-                field("EMPTY_TEXT", utf8(""), "low"),
-            ],
-            ["binary-field-values", "embedded-nul-value", "zero-length-value"],
-            "Binary payloads, embedded NUL bytes, and zero-length values.",
-        )
+
+def large_value_record() -> dict[str, object]:
+    return entry(
+        4,
+        base_fields(4)
+        + [
+            field("LARGE_REPEAT_VALUE", repeat(ord("L"), 65_536), "medium"),
+            field("NEAR_THRESHOLD_511", repeat(ord("A"), 511), "medium"),
+            field("NEAR_THRESHOLD_512", repeat(ord("B"), 512), "medium"),
+            field("NEAR_THRESHOLD_513", repeat(ord("C"), 513), "medium"),
+            field("COMPRESSIBLE_4096", repeat(ord("Z"), 4_096), "medium"),
+        ],
+        ["large-value", "compression-threshold-values"],
+        "Repeat descriptors keep the committed corpus compact while forcing ingesters to materialize large values.",
     )
 
-    records.append(
-        entry(
-            4,
-            base_fields(4)
-            + [
-                field("LARGE_REPEAT_VALUE", repeat(ord("L"), 65_536), "medium"),
-                field("NEAR_THRESHOLD_511", repeat(ord("A"), 511), "medium"),
-                field("NEAR_THRESHOLD_512", repeat(ord("B"), 512), "medium"),
-                field("NEAR_THRESHOLD_513", repeat(ord("C"), 513), "medium"),
-                field("COMPRESSIBLE_4096", repeat(ord("Z"), 4_096), "medium"),
-            ],
-            ["large-value", "compression-threshold-values"],
-            "Repeat descriptors keep the committed corpus compact while forcing ingesters to materialize large values.",
-        )
+
+def sorted_order_record() -> dict[str, object]:
+    return entry(
+        5,
+        [
+            field("ZZZ_ORDER_PROBE", utf8("input-first"), "medium"),
+            field("AAA_ORDER_PROBE", utf8("input-second"), "medium"),
+            field("MMM_ORDER_PROBE", utf8("input-third"), "medium"),
+            *base_fields(5),
+        ],
+        ["sorted-entry-item-ordering"],
+        "Input order is intentionally not lexicographic; later byte-identity tests compare systemd entry-item ordering.",
     )
 
-    records.append(
-        entry(
-            5,
-            [
-                field("ZZZ_ORDER_PROBE", utf8("input-first"), "medium"),
-                field("AAA_ORDER_PROBE", utf8("input-second"), "medium"),
-                field("MMM_ORDER_PROBE", utf8("input-third"), "medium"),
-                *base_fields(5),
-            ],
-            ["sorted-entry-item-ordering"],
-            "Input order is intentionally not lexicographic; later byte-identity tests compare systemd entry-item ordering.",
-        )
-    )
 
+def hash_shape_records() -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
     pressure_fields = base_fields(6)
     for i in range(64):
         pressure_fields.append(field(f"HASH_PRESSURE_{i:02d}", utf8(f"bucket-pressure-{i:02d}"), "high"))
@@ -292,8 +303,10 @@ def correctness_records() -> list[dict[str, object]]:
             "Duplicate of AA=cv-0299 after chain is established: lookup traversal updates data_hash_chain_depth to the chain depth.",
         )
     )
+    return records
 
-    next_index = 9
+
+def append_field_growth_records(records: list[dict[str, object]], next_index: int) -> int:
     for i in range(80):
         records.append(
             entry(
@@ -313,7 +326,10 @@ def correctness_records() -> list[dict[str, object]]:
             )
         )
         next_index += 1
+    return next_index
 
+
+def append_data_array_growth_records(records: list[dict[str, object]], next_index: int) -> None:
     for i in range(260):
         records.append(
             entry(
@@ -336,8 +352,6 @@ def correctness_records() -> list[dict[str, object]]:
             )
         )
         next_index += 1
-
-    return records
 
 
 def rejection_records() -> list[dict[str, object]]:
