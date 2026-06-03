@@ -119,41 +119,56 @@ impl fmt::Display for Table {
         }
 
         let widths = self.calculate_column_widths();
-        let total_width: usize = widths.iter().sum::<usize>() + (widths.len() - 1) * 3 + 2;
+        write_table_border(f, &widths)?;
+        write_table_header(f, &self.columns, &widths)?;
+        write_table_border(f, &widths)?;
+        write_table_rows(f, &self.data, &widths)?;
+        write_table_border(f, &widths)?;
+        Ok(())
+    }
+}
 
-        // Print top border
-        writeln!(f, "{}", "=".repeat(total_width))?;
+fn table_total_width(widths: &[usize]) -> usize {
+    widths.iter().sum::<usize>() + (widths.len() - 1) * 3 + 2
+}
 
-        // Print header
+fn write_table_border(f: &mut fmt::Formatter<'_>, widths: &[usize]) -> fmt::Result {
+    writeln!(f, "{}", "=".repeat(table_total_width(widths)))
+}
+
+fn write_table_header(
+    f: &mut fmt::Formatter<'_>,
+    columns: &[ColumnInfo],
+    widths: &[usize],
+) -> fmt::Result {
+    write!(f, "|")?;
+    for (col, width) in columns.iter().zip(widths) {
+        write!(f, " {:<width$} |", col.name, width = width)?;
+    }
+    writeln!(f)
+}
+
+fn write_table_rows(
+    f: &mut fmt::Formatter<'_>,
+    rows: &[Vec<CellValue>],
+    widths: &[usize],
+) -> fmt::Result {
+    for row in rows {
         write!(f, "|")?;
-        for (col, width) in self.columns.iter().zip(&widths) {
-            write!(f, " {:<width$} |", col.name, width = width)?;
+        for (cell, width) in row.iter().zip(widths) {
+            write_table_cell(f, cell, *width)?;
         }
         writeln!(f)?;
+    }
+    Ok(())
+}
 
-        // Print separator
-        writeln!(f, "{}", "=".repeat(total_width))?;
-
-        // Print rows
-        for row in &self.data {
-            write!(f, "|")?;
-            for (cell, width) in row.iter().zip(&widths) {
-                let display = cell.display.as_deref().unwrap_or("-");
-                // Truncate if the value is longer than the column width
-                if display.len() > *width {
-                    let truncated = &display[..*width];
-                    write!(f, " {:<width$} |", truncated, width = width)?;
-                } else {
-                    write!(f, " {:<width$} |", display, width = width)?;
-                }
-            }
-            writeln!(f)?;
-        }
-
-        // Print bottom border
-        writeln!(f, "{}", "=".repeat(total_width))?;
-
-        Ok(())
+fn write_table_cell(f: &mut fmt::Formatter<'_>, cell: &CellValue, width: usize) -> fmt::Result {
+    let display = cell.display.as_deref().unwrap_or("-");
+    if display.len() > width {
+        write!(f, " {:<width$} |", &display[..width], width = width)
+    } else {
+        write!(f, " {:<width$} |", display, width = width)
     }
 }
 

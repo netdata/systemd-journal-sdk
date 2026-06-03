@@ -9,7 +9,7 @@ use crate::{
     error::{EngineError, Result},
     query_time_range::QueryTimeRange,
 };
-use journal_index::{FileIndex, FileIndexer, IndexingLimits};
+use journal_index::{FileIndex, FileIndexer, IndexingLimits, Seconds};
 use journal_registry::Registry;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -201,7 +201,40 @@ pub async fn batch_compute_file_indexes(
     progress_counter: Option<Arc<AtomicUsize>>,
 ) -> Result<Vec<(FileIndexKey, FileIndex)>> {
     let bucket_duration = time_range.bucket_duration_seconds();
-    // Phase 1: Batch check cache for all keys upfront
+    let cache_lookup_results = lookup_cached_indexes(cache, &keys, &cancellation).await?;
+    let CachePartition {
+        mut responses,
+        keys_to_compute,
+        stats,
+    } = partition_cache_results(cache_lookup_results, keys.len(), bucket_duration);
+
+    if cancellation.is_cancelled() {
+        return Err(EngineError::Cancelled);
+    }
+
+    trace!(
+        "phase 2 summary: hits={}, misses={}, stale={}, incompatible_bucket={}",
+        stats.cache_hits, stats.cache_misses, stats.stale_entries, stats.incompatible_bucket
+    );
+
+    let computed_results = compute_missing_indexes(
+        keys_to_compute,
+        bucket_duration,
+        cancellation.clone(),
+        indexing_limits,
+        progress_counter,
+    )
+    .await?;
+
+    store_computed_indexes(registry, cache, &mut responses, computed_results);
+    Ok(responses)
+}
+
+async fn lookup_cached_indexes(
+    cache: &FileIndexCache,
+    keys: &[FileIndexKey],
+    cancellation: &CancellationToken,
+) -> Result<Vec<(FileIndexKey, Result<Option<FileIndex>>)>> {
     let cache_lookup_futures = keys.iter().map(|key| {
         let key_clone = key.clone();
         async move {
@@ -214,155 +247,227 @@ pub async fn batch_compute_file_indexes(
         }
     });
 
-    let cache_lookup_results: Vec<(FileIndexKey, Result<Option<FileIndex>>)> = tokio::select! {
-        results = futures::future::join_all(cache_lookup_futures) => results,
-        _ = cancellation.cancelled() => return Err(EngineError::Cancelled),
+    tokio::select! {
+        results = futures::future::join_all(cache_lookup_futures) => Ok(results),
+        _ = cancellation.cancelled() => Err(EngineError::Cancelled),
+    }
+}
+
+#[derive(Default)]
+struct CacheStats {
+    cache_hits: usize,
+    cache_misses: usize,
+    stale_entries: usize,
+    incompatible_bucket: usize,
+}
+
+struct CachePartition {
+    responses: Vec<(FileIndexKey, FileIndex)>,
+    keys_to_compute: Vec<FileIndexKey>,
+    stats: CacheStats,
+}
+
+fn partition_cache_results(
+    cache_lookup_results: Vec<(FileIndexKey, Result<Option<FileIndex>>)>,
+    key_count: usize,
+    bucket_duration: Seconds,
+) -> CachePartition {
+    let mut partition = CachePartition {
+        responses: Vec::with_capacity(key_count),
+        keys_to_compute: Vec::new(),
+        stats: CacheStats::default(),
     };
 
-    // Phase 2: Separate cache hits from misses, check freshness and compatibility
-    let mut responses = Vec::with_capacity(keys.len());
-    let mut keys_to_compute = Vec::new();
-    let mut cache_hits = 0;
-    let mut cache_misses = 0;
-    let mut stale_entries = 0;
-    let mut incompatible_bucket = 0;
-
     for (key, cache_lookup_result) in cache_lookup_results {
-        match cache_lookup_result {
-            Ok(Some(file_index)) => {
-                let fresh = file_index.is_fresh();
-                let bucket_ok = file_index.bucket_duration() <= bucket_duration
-                    && bucket_duration.is_multiple_of(file_index.bucket_duration());
+        partition_cache_result(key, cache_lookup_result, bucket_duration, &mut partition);
+    }
 
-                if fresh && bucket_ok {
-                    // Cache hit with fresh data and compatible granularity
-                    cache_hits += 1;
-                    responses.push((key, file_index));
-                } else {
-                    if !fresh {
-                        stale_entries += 1;
-                    }
-                    if !bucket_ok {
-                        incompatible_bucket += 1;
-                    }
-                    keys_to_compute.push(key);
-                }
-            }
-            Ok(None) => {
-                // Cache miss - need to compute
-                cache_misses += 1;
-                keys_to_compute.push(key);
-            }
-            Err(e) => {
-                error!("cached file index lookup error {}", e);
-            }
+    partition
+}
+
+fn partition_cache_result(
+    key: FileIndexKey,
+    cache_lookup_result: Result<Option<FileIndex>>,
+    bucket_duration: Seconds,
+    partition: &mut CachePartition,
+) {
+    match cache_lookup_result {
+        Ok(Some(file_index)) => partition_cached_index(key, file_index, bucket_duration, partition),
+        Ok(None) => {
+            partition.stats.cache_misses += 1;
+            partition.keys_to_compute.push(key);
+        }
+        Err(e) => {
+            error!("cached file index lookup error {}", e);
         }
     }
+}
 
-    if cancellation.is_cancelled() {
-        return Err(EngineError::Cancelled);
+fn partition_cached_index(
+    key: FileIndexKey,
+    file_index: FileIndex,
+    bucket_duration: Seconds,
+    partition: &mut CachePartition,
+) {
+    let fresh = file_index.is_fresh();
+    let bucket_ok = compatible_bucket_duration(&file_index, bucket_duration);
+
+    if fresh && bucket_ok {
+        partition.stats.cache_hits += 1;
+        partition.responses.push((key, file_index));
+        return;
     }
 
-    trace!(
-        "phase 2 summary: hits={}, misses={}, stale={}, incompatible_bucket={}",
-        cache_hits, cache_misses, stale_entries, incompatible_bucket
-    );
+    if !fresh {
+        partition.stats.stale_entries += 1;
+    }
+    if !bucket_ok {
+        partition.stats.incompatible_bucket += 1;
+    }
+    partition.keys_to_compute.push(key);
+}
 
-    // Phase 3: Spawn single blocking task with rayon for parallel computation
-    //
-    // The cancellation token is cloned into the blocking task so that cancellation
-    // is visible to the per-file check.
-    let cancellation_for_blocking = cancellation.clone();
-    let compute_threads = keys_to_compute.len().max(1).min(
+fn compatible_bucket_duration(file_index: &FileIndex, bucket_duration: Seconds) -> bool {
+    file_index.bucket_duration() <= bucket_duration
+        && bucket_duration.is_multiple_of(file_index.bucket_duration())
+}
+
+async fn compute_missing_indexes(
+    keys_to_compute: Vec<FileIndexKey>,
+    bucket_duration: Seconds,
+    cancellation: CancellationToken,
+    indexing_limits: IndexingLimits,
+    progress_counter: Option<Arc<AtomicUsize>>,
+) -> Result<Vec<(FileIndexKey, Result<FileIndex>)>> {
+    let compute_threads = compute_thread_count(keys_to_compute.len());
+    let cancellation_for_select = cancellation.clone();
+    let compute_task = tokio::task::spawn_blocking(move || {
+        compute_missing_indexes_blocking(
+            keys_to_compute,
+            bucket_duration,
+            cancellation,
+            indexing_limits,
+            progress_counter,
+            compute_threads,
+        )
+    });
+
+    tokio::select! {
+        result = compute_task => match result {
+            Ok(result) => result,
+            Err(e) => Err(EngineError::Io(std::io::Error::other(format!(
+                "Blocking task panicked: {}",
+                e
+            )))),
+        },
+        _ = cancellation_for_select.cancelled() => Err(EngineError::Cancelled),
+    }
+}
+
+fn compute_thread_count(key_count: usize) -> usize {
+    key_count.max(1).min(
         std::thread::available_parallelism()
             .map(|value| value.get())
             .unwrap_or(1)
             .min(MAX_BATCH_INDEX_THREADS),
-    );
+    )
+}
 
-    let compute_task = tokio::task::spawn_blocking(move || {
-        use rayon::prelude::*;
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
+fn compute_missing_indexes_blocking(
+    keys_to_compute: Vec<FileIndexKey>,
+    bucket_duration: Seconds,
+    cancellation: CancellationToken,
+    indexing_limits: IndexingLimits,
+    progress_counter: Option<Arc<AtomicUsize>>,
+    compute_threads: usize,
+) -> Result<Vec<(FileIndexKey, Result<FileIndex>)>> {
+    use rayon::prelude::*;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
-        let cancelled = Arc::new(AtomicBool::new(false));
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let thread_pool = build_index_thread_pool(compute_threads)?;
 
-        // Build a bounded local pool per call instead of using Rayon’s global pool.
-        // The global pool previously stayed alive after rebuild/indexing and kept a
-        // full worker set plus allocator arenas resident in the plugin process.
-        let thread_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(compute_threads)
-            .build()
-            .map_err(|err| {
-                EngineError::Io(std::io::Error::other(format!(
-                    "failed to build rayon index pool: {}",
-                    err
-                )))
-            })?;
+    Ok(thread_pool.install(|| {
+        keys_to_compute
+            .into_par_iter()
+            .map(|key| {
+                compute_one_index(
+                    key,
+                    bucket_duration,
+                    &cancellation,
+                    indexing_limits,
+                    progress_counter.as_ref(),
+                    &cancelled,
+                )
+            })
+            .collect::<Vec<(FileIndexKey, Result<FileIndex>)>>()
+    }))
+}
 
-        Ok::<_, EngineError>(thread_pool.install(|| {
-            keys_to_compute
-                .into_par_iter()
-                .map(|key| {
-                    if cancellation_for_blocking.is_cancelled() || cancelled.load(Ordering::Relaxed)
-                    {
-                        cancelled.store(true, Ordering::Relaxed);
-                        return (key, Err(EngineError::Cancelled));
-                    }
+fn build_index_thread_pool(compute_threads: usize) -> Result<rayon::ThreadPool> {
+    // Build a bounded local pool per call instead of using Rayon’s global pool.
+    // The global pool previously stayed alive after rebuild/indexing and kept a
+    // full worker set plus allocator arenas resident in the plugin process.
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(compute_threads)
+        .build()
+        .map_err(|err| {
+            EngineError::Io(std::io::Error::other(format!(
+                "failed to build rayon index pool: {}",
+                err
+            )))
+        })
+}
 
-                    let mut file_indexer = FileIndexer::new(indexing_limits);
-                    let result = file_indexer
-                        .index(
-                            &key.file,
-                            key.source_timestamp_field.as_ref(),
-                            key.facets.as_slice(),
-                            bucket_duration,
-                        )
-                        .map_err(|e| e.into());
+fn compute_one_index(
+    key: FileIndexKey,
+    bucket_duration: Seconds,
+    cancellation: &CancellationToken,
+    indexing_limits: IndexingLimits,
+    progress_counter: Option<&Arc<AtomicUsize>>,
+    cancelled: &std::sync::atomic::AtomicBool,
+) -> (FileIndexKey, Result<FileIndex>) {
+    if cancellation.is_cancelled() || cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+        cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+        return (key, Err(EngineError::Cancelled));
+    }
 
-                    if result.is_ok()
-                        && let Some(ref counter) = progress_counter
-                    {
-                        counter.fetch_add(1, Ordering::Relaxed);
-                    }
+    let result = index_one_file(&key, bucket_duration, indexing_limits);
+    if result.is_ok()
+        && let Some(counter) = progress_counter
+    {
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
 
-                    (key, result)
-                })
-                .collect::<Vec<(FileIndexKey, Result<FileIndex>)>>()
-        }))
-    });
+    (key, result)
+}
 
-    let computed_results = tokio::select! {
-        result = compute_task => {
-            match result {
-                Ok(Ok(results)) => results,
-                Ok(Err(err)) => return Err(err),
-                Err(e) => {
-                    return Err(EngineError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("Blocking task panicked: {}", e),
-                    )));
-                }
-            }
-        }
-        _ = cancellation.cancelled() => {
-            return Err(EngineError::Cancelled);
-        }
-    };
+fn index_one_file(
+    key: &FileIndexKey,
+    bucket_duration: Seconds,
+    indexing_limits: IndexingLimits,
+) -> Result<FileIndex> {
+    FileIndexer::new(indexing_limits)
+        .index(
+            &key.file,
+            key.source_timestamp_field.as_ref(),
+            key.facets.as_slice(),
+            bucket_duration,
+        )
+        .map_err(|e| e.into())
+}
 
-    // Phase 4: Update registry and cache, then collect responses
+fn store_computed_indexes(
+    registry: &Registry,
+    cache: &FileIndexCache,
+    responses: &mut Vec<(FileIndexKey, FileIndex)>,
+    computed_results: Vec<(FileIndexKey, Result<FileIndex>)>,
+) {
     for (key, response) in computed_results {
         match response {
             Ok(index) => {
-                // Update registry and cache on success
-                registry.update_time_range(
-                    &key.file,
-                    index.start_time(),
-                    index.end_time(),
-                    index.indexed_at(),
-                    index.online(),
-                );
-
+                update_registry_time_range(registry, &key, &index);
                 cache.insert(key.clone(), index.clone());
                 responses.push((key, index));
             }
@@ -375,6 +480,14 @@ pub async fn batch_compute_file_indexes(
             }
         }
     }
+}
 
-    Ok(responses)
+fn update_registry_time_range(registry: &Registry, key: &FileIndexKey, index: &FileIndex) {
+    registry.update_time_range(
+        &key.file,
+        index.start_time(),
+        index.end_time(),
+        index.indexed_at(),
+        index.online(),
+    );
 }

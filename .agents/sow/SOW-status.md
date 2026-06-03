@@ -29,9 +29,11 @@ Last updated: 2026-06-03
   runtime files locally Lizard-clean and passed journal-core, journal-log-writer,
   journal/adapter, writer-reader, directory, and verifier validation. Batch 8
   made the legacy Rust `jf` compatibility copy and `journal-registry` runtime
-  touched files locally Lizard-clean, with affected crate tests passing.
-  Remaining work is to continue complexity remediation, record final scanner
-  results, and complete whole-SOW review.
+  touched files locally Lizard-clean, with affected crate tests passing. Batch
+  9 made Rust `journal-engine` and `journal-index` query/index runtime files
+  locally Lizard-clean, with full affected crate tests passing. Remaining work
+  is to continue complexity remediation, record final scanner results, and
+  complete whole-SOW review.
 
 ## Pending
 

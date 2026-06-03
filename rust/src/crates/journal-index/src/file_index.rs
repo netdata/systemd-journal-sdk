@@ -548,260 +548,246 @@ impl FileIndex {
         file: &File,
         params: &LogQueryParams,
     ) -> Result<Vec<LogEntryId>> {
-        // Resolve anchor to concrete timestamp
-        // For single file queries, Head uses file start time and Tail uses file end time
-        let anchor_usec = match params.anchor() {
-            Anchor::Timestamp(ts) => ts,
-            Anchor::Head => self.start_time().to_microseconds(),
-            Anchor::Tail => self.end_time().to_microseconds(),
-        };
-
-        // Use filter's bitmap or one that fully covers all entries
-        let bitmap = params
-            .filter()
-            .map(|f| f.evaluate(self))
-            .unwrap_or_else(|| Bitmap::insert_range(0..self.entry_offsets.len() as u32));
+        let anchor_usec = self.query_anchor_usec(params);
+        let bitmap = self.query_bitmap(params);
 
         if bitmap.is_empty() {
-            // Nothing matches
             return Ok(Vec::new());
         }
 
         let window_size = 32 * 1024 * 1024;
         let journal_file = JournalFile::open(file, window_size)?;
+        let entry_offsets = self.candidate_entry_offsets(&bitmap);
+        let limit = query_limit(params.limit(), entry_offsets.len());
 
-        // Collect the entry offsets in the bitmap
-        // TODO: How should we handle zero offsets?
-        let entry_offsets: Vec<_> = bitmap
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        EntryScanner::new(self, &journal_file, params, anchor_usec, limit).collect(&entry_offsets)
+    }
+
+    fn query_anchor_usec(&self, params: &LogQueryParams) -> Microseconds {
+        match params.anchor() {
+            Anchor::Timestamp(ts) => ts,
+            Anchor::Head => self.start_time().to_microseconds(),
+            Anchor::Tail => self.end_time().to_microseconds(),
+        }
+    }
+
+    fn query_bitmap(&self, params: &LogQueryParams) -> Bitmap {
+        params
+            .filter()
+            .map(|f| f.evaluate(self))
+            .unwrap_or_else(|| Bitmap::insert_range(0..self.entry_offsets.len() as u32))
+    }
+
+    fn candidate_entry_offsets(&self, bitmap: &Bitmap) -> Vec<NonZeroU64> {
+        bitmap
             .iter()
             .map(|idx| self.entry_offsets[idx as usize])
             .filter(|offset| *offset != 0)
-            .map(|x| NonZeroU64::new(x as u64).expect("non-zero offset"))
-            .collect();
+            .map(|offset| NonZeroU64::new(offset as u64).expect("non-zero offset"))
+            .collect()
+    }
+}
 
-        // Figure out what the limit should be
-        if let Some(limit) = params.limit() {
-            if limit == 0 {
-                return Ok(Vec::new());
-            }
-        }
-        let limit = params.limit().unwrap_or(entry_offsets.len());
+fn query_limit(limit: Option<usize>, candidate_count: usize) -> usize {
+    limit.unwrap_or(candidate_count)
+}
 
-        let mut log_entry_ids = Vec::with_capacity(limit.min(entry_offsets.len()));
+enum BoundaryDecision {
+    Include,
+    Skip,
+    Stop,
+}
 
-        // Cache for regex matching. We use a scratch buffer for collecting
-        // the data offsets of an entry, and a hash map that stores the
-        // evaluation of each data object against the provided regex. This
-        // ensures that we will evaluate each data object only once.
-        let mut data_offsets_scratch = Vec::new();
-        let mut data_match_cache = HashMap::default();
+fn forward_boundary_decision(timestamp: u64, params: &LogQueryParams) -> BoundaryDecision {
+    if params.after().is_some_and(|after| timestamp < after.get()) {
+        return BoundaryDecision::Skip;
+    }
+    if params
+        .before()
+        .is_some_and(|before| timestamp >= before.get())
+    {
+        return BoundaryDecision::Stop;
+    }
+    BoundaryDecision::Include
+}
 
-        // Log if regex filtering is active
-        let mut regex_filtered_count = 0usize;
+fn backward_boundary_decision(timestamp: u64, params: &LogQueryParams) -> BoundaryDecision {
+    if params
+        .before()
+        .is_some_and(|before| timestamp >= before.get())
+    {
+        return BoundaryDecision::Skip;
+    }
+    if params.after().is_some_and(|after| timestamp < after.get()) {
+        return BoundaryDecision::Stop;
+    }
+    BoundaryDecision::Include
+}
+
+struct EntryScanner<'a> {
+    file_index: &'a FileIndex,
+    journal_file: &'a JournalFile<Mmap>,
+    params: &'a LogQueryParams,
+    anchor_usec: Microseconds,
+    limit: usize,
+    data_offsets_scratch: Vec<NonZeroU64>,
+    data_match_cache: HashMap<NonZeroU64, bool>,
+    scratch_buffer: Vec<u8>,
+    regex_filtered_count: usize,
+}
+
+impl<'a> EntryScanner<'a> {
+    fn new(
+        file_index: &'a FileIndex,
+        journal_file: &'a JournalFile<Mmap>,
+        params: &'a LogQueryParams,
+        anchor_usec: Microseconds,
+        limit: usize,
+    ) -> Self {
         if params.regex().is_some() {
-            trace!(
-                "regex filtering enabled for query, will filter {} candidate entries",
-                entry_offsets.len()
-            );
+            trace!("regex filtering enabled for query");
         }
 
-        // Scratch buffer for compressed payloads of data objects
-        let mut scratch_buffer = Vec::new();
+        Self {
+            file_index,
+            journal_file,
+            params,
+            anchor_usec,
+            limit,
+            data_offsets_scratch: Vec::new(),
+            data_match_cache: HashMap::default(),
+            scratch_buffer: Vec::new(),
+            regex_filtered_count: 0,
+        }
+    }
 
-        match params.direction() {
-            Direction::Forward => {
-                // Determine starting index: use resume_position or binary search
-                let start_idx = if let Some(resume_pos) = params.resume_position() {
-                    // Resume from next position after the last returned entry
-                    resume_pos + 1
-                } else {
-                    // Find the partition point: first index where timestamp >= anchor_timestamp
-                    // Predicate returns true while timestamp < anchor_timestamp
-                    // Result is the index of the first entry with timestamp >= anchor_timestamp
-                    partition_point_entries(
-                        &entry_offsets,
-                        0,
-                        entry_offsets.len(),
-                        |entry_offset| {
-                            let entry_timestamp = get_entry_timestamp(
-                                &journal_file,
-                                params.source_timestamp_field(),
-                                entry_offset,
-                            )?;
-                            Ok(entry_timestamp < anchor_usec.get())
-                        },
-                    )?
-                };
+    fn collect(mut self, entry_offsets: &[NonZeroU64]) -> Result<Vec<LogEntryId>> {
+        let entries = match self.params.direction() {
+            Direction::Forward => self.collect_forward(entry_offsets)?,
+            Direction::Backward => self.collect_backward(entry_offsets)?,
+        };
+        self.trace_regex_result(entries.len());
+        Ok(entries)
+    }
 
-                // Edge cases for forward iteration:
-                // - start_idx == 0: anchor is <= all entries, start from first entry
-                // - start_idx == len: anchor is > all entries, no results
-                // - Otherwise: start from entry at start_idx (first entry >= anchor)
+    fn collect_forward(&mut self, entry_offsets: &[NonZeroU64]) -> Result<Vec<LogEntryId>> {
+        let mut entries = Vec::with_capacity(self.limit.min(entry_offsets.len()));
+        let Some(start_idx) = self.forward_start_index(entry_offsets)? else {
+            return Ok(entries);
+        };
 
-                // Check bounds before slicing to avoid panic
-                if start_idx >= entry_offsets.len() {
-                    // No entries to return
-                    return Ok(log_entry_ids);
-                }
-
-                for (idx, &entry_offset) in entry_offsets[start_idx..].iter().enumerate() {
-                    let timestamp = get_entry_timestamp(
-                        &journal_file,
-                        params.source_timestamp_field(),
-                        entry_offset,
-                    )?;
-
-                    // Enforce time boundaries
-                    if let Some(after) = params.after() {
-                        if timestamp < after.get() {
-                            continue;
-                        }
-                    }
-                    if let Some(before) = params.before() {
-                        if timestamp >= before.get() {
-                            break; // Stop when we hit or exceed upper boundary
-                        }
-                    }
-
-                    // Check regex filter if present
-                    if let Some(regex) = params.regex() {
-                        if !entry_matches_regex(
-                            &journal_file,
-                            entry_offset,
-                            regex,
-                            &mut data_match_cache,
-                            &mut data_offsets_scratch,
-                            &mut scratch_buffer,
-                        )? {
-                            regex_filtered_count += 1;
-                            continue;
-                        }
-                    }
-
-                    log_entry_ids.push(LogEntryId {
-                        file: self.file.clone(),
-                        offset: entry_offset.get(),
-                        timestamp: Microseconds(timestamp),
-                        position: start_idx + idx,
-                    });
-
-                    // Stop when we reach the limit
-                    if log_entry_ids.len() >= limit {
-                        break;
-                    }
-                }
+        for (idx, &entry_offset) in entry_offsets[start_idx..].iter().enumerate() {
+            let timestamp = self.entry_timestamp(entry_offset)?;
+            match forward_boundary_decision(timestamp, self.params) {
+                BoundaryDecision::Include => {}
+                BoundaryDecision::Skip => continue,
+                BoundaryDecision::Stop => break,
             }
-            Direction::Backward => {
-                // Determine starting index: use resume_position or binary search
-                let start_idx = if let Some(resume_pos) = params.resume_position() {
-                    // Resume from previous position before the last returned entry
-                    if resume_pos == 0 {
-                        // No more entries to return
-                        return Ok(log_entry_ids);
-                    }
-                    // Check if resume_pos is out of bounds
-                    if resume_pos >= entry_offsets.len() {
-                        // Resume position is beyond valid range
-                        return Ok(log_entry_ids);
-                    }
-                    resume_pos - 1
-                } else {
-                    // Find the partition point: first index where timestamp > anchor_timestamp
-                    // We want the LAST entry with timestamp <= anchor_timestamp
-                    // which is at index (partition_point - 1)
-                    let partition_idx = partition_point_entries(
-                        &entry_offsets,
-                        0,
-                        entry_offsets.len(),
-                        |entry_offset| {
-                            let entry_timestamp = get_entry_timestamp(
-                                &journal_file,
-                                params.source_timestamp_field(),
-                                entry_offset,
-                            )?;
-                            Ok(entry_timestamp <= anchor_usec.get())
-                        },
-                    )?;
+            if !self.matches_regex(entry_offset)? {
+                continue;
+            }
 
-                    // Edge cases for backward iteration:
-                    // - partition_idx == 0: all entries are > anchor, no results
-                    // - partition_idx == len: anchor is >= all entries, start from last entry
-                    // - Otherwise: start from entry at (partition_idx - 1), last entry <= anchor
-
-                    if partition_idx == 0 {
-                        // All entries have timestamp > anchor, no results
-                        return Ok(log_entry_ids);
-                    }
-
-                    // Start from the last entry <= anchor (at partition_idx - 1)
-                    partition_idx - 1
-                };
-
-                // Check bounds before slicing to avoid panic
-                if start_idx >= entry_offsets.len() {
-                    // No entries to return
-                    return Ok(log_entry_ids);
-                }
-
-                // Iterate backwards: from start_idx down to 0
-                for (idx, &entry_offset) in entry_offsets[..=start_idx].iter().rev().enumerate() {
-                    let timestamp = get_entry_timestamp(
-                        &journal_file,
-                        params.source_timestamp_field(),
-                        entry_offset,
-                    )?;
-
-                    // Enforce time boundaries
-                    if let Some(before) = params.before() {
-                        if timestamp >= before.get() {
-                            continue;
-                        }
-                    }
-                    if let Some(after) = params.after() {
-                        if timestamp < after.get() {
-                            break; // Stop when we go below lower boundary
-                        }
-                    }
-
-                    // Check regex filter if present
-                    if let Some(regex) = params.regex() {
-                        if !entry_matches_regex(
-                            &journal_file,
-                            entry_offset,
-                            regex,
-                            &mut data_match_cache,
-                            &mut data_offsets_scratch,
-                            &mut scratch_buffer,
-                        )? {
-                            regex_filtered_count += 1;
-                            continue;
-                        }
-                    }
-
-                    log_entry_ids.push(LogEntryId {
-                        file: self.file.clone(),
-                        offset: entry_offset.get(),
-                        timestamp: Microseconds(timestamp),
-                        position: start_idx - idx,
-                    });
-
-                    // Stop when we reach the limit
-                    if log_entry_ids.len() >= limit {
-                        break;
-                    }
-                }
+            entries.push(self.log_entry(entry_offset, timestamp, start_idx + idx));
+            if entries.len() >= self.limit {
+                break;
             }
         }
+        Ok(entries)
+    }
 
-        // Log regex filtering statistics if regex was used
-        if params.regex().is_some() {
+    fn collect_backward(&mut self, entry_offsets: &[NonZeroU64]) -> Result<Vec<LogEntryId>> {
+        let mut entries = Vec::with_capacity(self.limit.min(entry_offsets.len()));
+        let Some(start_idx) = self.backward_start_index(entry_offsets)? else {
+            return Ok(entries);
+        };
+
+        for (idx, &entry_offset) in entry_offsets[..=start_idx].iter().rev().enumerate() {
+            let timestamp = self.entry_timestamp(entry_offset)?;
+            match backward_boundary_decision(timestamp, self.params) {
+                BoundaryDecision::Include => {}
+                BoundaryDecision::Skip => continue,
+                BoundaryDecision::Stop => break,
+            }
+            if !self.matches_regex(entry_offset)? {
+                continue;
+            }
+
+            entries.push(self.log_entry(entry_offset, timestamp, start_idx - idx));
+            if entries.len() >= self.limit {
+                break;
+            }
+        }
+        Ok(entries)
+    }
+
+    fn forward_start_index(&self, entry_offsets: &[NonZeroU64]) -> Result<Option<usize>> {
+        let start_idx = if let Some(resume_pos) = self.params.resume_position() {
+            resume_pos + 1
+        } else {
+            partition_point_entries(entry_offsets, 0, entry_offsets.len(), |entry_offset| {
+                Ok(self.entry_timestamp(entry_offset)? < self.anchor_usec.get())
+            })?
+        };
+        Ok((start_idx < entry_offsets.len()).then_some(start_idx))
+    }
+
+    fn backward_start_index(&self, entry_offsets: &[NonZeroU64]) -> Result<Option<usize>> {
+        if let Some(resume_pos) = self.params.resume_position() {
+            return Ok((resume_pos > 0 && resume_pos < entry_offsets.len()).then(|| resume_pos - 1));
+        }
+
+        let partition_idx =
+            partition_point_entries(entry_offsets, 0, entry_offsets.len(), |entry_offset| {
+                Ok(self.entry_timestamp(entry_offset)? <= self.anchor_usec.get())
+            })?;
+        Ok((partition_idx > 0).then(|| partition_idx - 1))
+    }
+
+    fn entry_timestamp(&self, entry_offset: NonZeroU64) -> Result<u64> {
+        get_entry_timestamp(
+            self.journal_file,
+            self.params.source_timestamp_field(),
+            entry_offset,
+        )
+    }
+
+    fn matches_regex(&mut self, entry_offset: NonZeroU64) -> Result<bool> {
+        let Some(regex) = self.params.regex() else {
+            return Ok(true);
+        };
+        let matches = entry_matches_regex(
+            self.journal_file,
+            entry_offset,
+            regex,
+            &mut self.data_match_cache,
+            &mut self.data_offsets_scratch,
+            &mut self.scratch_buffer,
+        )?;
+        if !matches {
+            self.regex_filtered_count += 1;
+        }
+        Ok(matches)
+    }
+
+    fn log_entry(&self, entry_offset: NonZeroU64, timestamp: u64, position: usize) -> LogEntryId {
+        LogEntryId {
+            file: self.file_index.file.clone(),
+            offset: entry_offset.get(),
+            timestamp: Microseconds(timestamp),
+            position,
+        }
+    }
+
+    fn trace_regex_result(&self, matched_count: usize) {
+        if self.params.regex().is_some() {
             trace!(
                 "regex filtering complete: {} entries matched, {} entries filtered out",
-                log_entry_ids.len(),
-                regex_filtered_count
+                matched_count, self.regex_filtered_count
             );
         }
-
-        Ok(log_entry_ids)
     }
 }

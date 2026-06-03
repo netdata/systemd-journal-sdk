@@ -1309,6 +1309,54 @@ Complexity remediation evidence:
     row is the pre-existing legacy `test_write_and_read_journal_entries` test.
   - `cargo test -p journal-registry -p journal_file --lib` passed: 13
     `journal-registry` tests and 16 `journal_file` tests.
+- Batch 9, Rust `journal-engine` and `journal-index` query/index runtime
+  internals:
+  - Refactored `rust/src/crates/journal-engine/src/logs/query.rs`
+    multi-file query orchestration, resume-param construction, pagination
+    state updates, and projected field extraction into smaller helpers without
+    changing pagination, pruning, projection, cancellation, or data
+    decompression behavior.
+  - Refactored `rust/src/crates/journal-engine/src/histogram.rs` bucket
+    request creation, cache lookup, cacheable response storage, overlap checks,
+    total counting, unindexed-field reporting, and field-value counting without
+    changing bucket boundaries, online-file cache suppression, filter bitmap
+    semantics, or count aggregation.
+  - Refactored `rust/src/crates/journal-engine/src/indexing.rs` cache lookup,
+    cache-hit partitioning, bounded Rayon index computation, cancellation, and
+    registry/cache update phases while preserving prompt cancellation via
+    `tokio::select!` and the bounded local Rayon pool.
+  - Refactored `rust/src/crates/journal-index/src/file_index.rs` indexed
+    single-file query traversal into an `EntryScanner` helper without changing
+    filter bitmap use, timestamp-field fallback, regex matching, time-boundary
+    semantics, direction, anchor, resume-position, or limit behavior.
+  - Refactored `rust/src/crates/journal-index/src/file_indexer.rs` per-field
+    bitmap construction into field-level helpers while preserving cardinality
+    limits, compressed/large-payload skips, snapshot tail filtering, bitmap
+    optimization, and warning/log levels.
+  - During validation, `test_multi_file_pagination_with_filter` caught a
+    temporary guard-lifetime regression in the refactored `file_indexer.rs`
+    path: the DATA object view was still held while collecting entry-array
+    offsets. The final code restores the previous scoped view lifetime before
+    cursor traversal.
+  - Refactored `rust/src/crates/journal-index/src/filter.rs` and
+    `rust/src/crates/journal-engine/src/logs/table.rs` display formatting into
+    focused writers without changing rendered output intent.
+  - Moved the large `ERRNO` and `MESSAGE_ID` transformation maps in
+    `rust/src/crates/journal-engine/src/logs/transformations.rs` to static
+    lookup tables; the `MESSAGE_ID` table was mechanically extracted from the
+    existing 133 match arms and compiled after formatting.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for the
+    touched Rust `journal-engine` and `journal-index` runtime files.
+  - `cargo test -p journal-engine -p journal-index --lib` passed: 8
+    `journal-engine` tests and 38 `journal-index` tests.
+  - `cargo test -p journal-engine --test multi_file_pagination
+    test_multi_file_pagination_with_filter -- --nocapture` passed after the
+    guard-lifetime fix.
+  - `cargo test -p journal-engine -p journal-index` passed: 8
+    `journal-engine` unit tests, 19 multi-file pagination tests, 38
+    `journal-index` unit tests, 12 filter-evaluation tests, 15 pagination
+    tests, 2 runnable `journal-engine` doc tests, and 1 `journal-index` doc
+    test.
 
 Reviewer findings:
 

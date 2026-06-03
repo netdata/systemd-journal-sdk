@@ -254,44 +254,9 @@ fn retrieve_log_entries(
         return (Vec::new(), PaginationState::default());
     }
 
-    // Resolve anchor to concrete timestamp for multi-file queries
-    let anchor_usec = match params.anchor() {
-        Anchor::Timestamp(ts) => ts.get(),
-        Anchor::Head => {
-            // For Head: use minimum start time across all files
-            file_indexes
-                .iter()
-                .map(|fi| fi.start_time().to_microseconds().get())
-                .min()
-                .unwrap_or(0)
-        }
-        Anchor::Tail => {
-            // For Tail: use maximum end time across all files
-            file_indexes
-                .iter()
-                .map(|fi| fi.end_time().to_microseconds().get())
-                .max()
-                .unwrap_or(0)
-        }
-    };
-
-    // Filter to FileIndex instances that could contain relevant entries
-    let mut relevant_indexes: Vec<&FileIndex> = match params.direction() {
-        Direction::Forward => {
-            // For forward: end timestamp must be at or after the anchor
-            file_indexes
-                .iter()
-                .filter(|fi| fi.end_time().to_microseconds().get() >= anchor_usec)
-                .collect()
-        }
-        Direction::Backward => {
-            // For backward: start timestamp must be at or before the anchor
-            file_indexes
-                .iter()
-                .filter(|fi| fi.start_time().to_microseconds().get() <= anchor_usec)
-                .collect()
-        }
-    };
+    let anchor_usec = multi_file_anchor_usec(&file_indexes, params.anchor());
+    let mut relevant_indexes =
+        relevant_file_indexes(&file_indexes, params.direction(), anchor_usec);
 
     if let Some(counter) = progress {
         let filtered = file_indexes.len() - relevant_indexes.len();
@@ -302,119 +267,184 @@ fn retrieve_log_entries(
         return (Vec::new(), PaginationState::default());
     }
 
-    // Sort files to process them in temporal order
-    match params.direction() {
-        Direction::Forward => {
-            // Sort by start timestamp ascending to process files in temporal order
-            relevant_indexes.sort_by_key(|fi| fi.start_time());
-        }
-        Direction::Backward => {
-            // Sort by end timestamp descending to process files in reverse temporal order
-            relevant_indexes.sort_by_key(|fi| std::cmp::Reverse(fi.end_time()));
-        }
-    }
+    sort_relevant_indexes(&mut relevant_indexes, params.direction());
 
-    // Initialize result vector with capacity for efficiency
-    let (limit, mut collected_entries) = match params.limit() {
-        Some(limit) => (limit, Vec::with_capacity(limit)),
-        None => (usize::MAX, Vec::with_capacity(200)),
-    };
-
-    // Track the new pagination state, starting from the previous state if available
+    let (limit, mut collected_entries) = collection_limit_and_buffer(params.limit());
     let mut new_state = state.cloned().unwrap_or_default();
 
     for file_index in relevant_indexes {
-        // Check cancellation before processing each file
-        if let Some(token) = cancellation {
-            if token.is_cancelled() {
-                warn!(
-                    "log query cancelled after processing {} files, returning partial results",
-                    new_state.file_positions.len()
-                );
-                break;
-            }
+        if query_cancelled(cancellation, &new_state) {
+            break;
         }
 
-        if let Some(counter) = progress {
-            counter.fetch_add(1, Ordering::Relaxed);
+        mark_file_processed(progress);
+
+        if should_prune_file(file_index, &collected_entries, limit, params.direction()) {
+            break;
         }
 
-        // Pruning optimization: if we have a full result set, check if we can skip
-        // remaining files based on their time ranges
-        if collected_entries.len() >= limit {
-            if let Some(should_break) =
-                can_prune_file(file_index, &collected_entries, params.direction())
-            {
-                if should_break {
-                    break;
-                }
-            }
-        }
-
-        // Perform I/O to retrieve entries from this FileIndex
-        let file = file_index.file();
-
-        // Check if we have a resume position for this file
-        let resume_position = state.and_then(|s| s.file_positions.get(file).copied());
-
-        // Create params with resume position if available
-        let file_params = if let Some(pos) = resume_position {
-            let mut builder = LogQueryParamsBuilder::new(params.anchor(), params.direction());
-            if let Some(limit) = params.limit() {
-                builder = builder.with_limit(limit);
-            }
-            if let Some(field) = params.source_timestamp_field() {
-                builder = builder.with_source_timestamp_field(Some(field.clone()));
-            }
-            if let Some(filter) = params.filter() {
-                builder = builder.with_filter(filter.clone());
-            }
-            if let Some(after) = params.after() {
-                builder = builder.with_after(after);
-            }
-            if let Some(before) = params.before() {
-                builder = builder.with_before(before);
-            }
-            if let Some(regex) = params.regex() {
-                builder = builder.with_regex(regex.as_str());
-            }
-            builder = builder.with_resume_position(pos);
-            builder.build().unwrap() // Safe because we're copying from valid params
-        } else {
-            params.clone()
-        };
-
-        let new_entries = match file_index.find_log_entries(file, &file_params) {
-            Ok(entries) => entries,
-            Err(e) => {
-                warn!(file = file.path(), "failed to retrieve log entries: {e}");
-                continue;
-            }
-        };
-
-        if !new_entries.is_empty() {
+        if let Some(new_entries) = query_file_entries(file_index, &params, state) {
             collected_entries =
                 merge_log_entries(collected_entries, new_entries, limit, params.direction());
         }
     }
 
-    // Update pagination state based on the last position for each file in collected_entries
-    // For forward direction: track the maximum position (we're progressing upward)
-    // For backward direction: track the minimum position (we're progressing downward)
-    for entry in &collected_entries {
-        new_state
+    update_pagination_state(&mut new_state, &collected_entries, params.direction());
+
+    (collected_entries, new_state)
+}
+
+fn multi_file_anchor_usec(file_indexes: &[FileIndex], anchor: Anchor) -> u64 {
+    match anchor {
+        Anchor::Timestamp(ts) => ts.get(),
+        Anchor::Head => file_indexes
+            .iter()
+            .map(|fi| fi.start_time().to_microseconds().get())
+            .min()
+            .unwrap_or(0),
+        Anchor::Tail => file_indexes
+            .iter()
+            .map(|fi| fi.end_time().to_microseconds().get())
+            .max()
+            .unwrap_or(0),
+    }
+}
+
+fn relevant_file_indexes(
+    file_indexes: &[FileIndex],
+    direction: Direction,
+    anchor_usec: u64,
+) -> Vec<&FileIndex> {
+    file_indexes
+        .iter()
+        .filter(|fi| file_can_contain_anchor(fi, direction, anchor_usec))
+        .collect()
+}
+
+fn file_can_contain_anchor(file_index: &FileIndex, direction: Direction, anchor_usec: u64) -> bool {
+    match direction {
+        Direction::Forward => file_index.end_time().to_microseconds().get() >= anchor_usec,
+        Direction::Backward => file_index.start_time().to_microseconds().get() <= anchor_usec,
+    }
+}
+
+fn sort_relevant_indexes(file_indexes: &mut [&FileIndex], direction: Direction) {
+    match direction {
+        Direction::Forward => file_indexes.sort_by_key(|fi| fi.start_time()),
+        Direction::Backward => file_indexes.sort_by_key(|fi| std::cmp::Reverse(fi.end_time())),
+    }
+}
+
+fn collection_limit_and_buffer(limit: Option<usize>) -> (usize, Vec<LogEntryId>) {
+    match limit {
+        Some(limit) => (limit, Vec::with_capacity(limit)),
+        None => (usize::MAX, Vec::with_capacity(200)),
+    }
+}
+
+fn query_cancelled(cancellation: Option<&CancellationToken>, state: &PaginationState) -> bool {
+    let Some(token) = cancellation else {
+        return false;
+    };
+    if !token.is_cancelled() {
+        return false;
+    }
+    warn!(
+        "log query cancelled after processing {} files, returning partial results",
+        state.file_positions.len()
+    );
+    true
+}
+
+fn mark_file_processed(progress: Option<&Arc<AtomicUsize>>) {
+    if let Some(counter) = progress {
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn should_prune_file(
+    file_index: &FileIndex,
+    collected_entries: &[LogEntryId],
+    limit: usize,
+    direction: Direction,
+) -> bool {
+    collected_entries.len() >= limit
+        && can_prune_file(file_index, collected_entries, direction).unwrap_or(false)
+}
+
+fn query_file_entries(
+    file_index: &FileIndex,
+    params: &LogQueryParams,
+    state: Option<&PaginationState>,
+) -> Option<Vec<LogEntryId>> {
+    let file = file_index.file();
+    let file_params = params_for_file(file_index, params, state);
+    match file_index.find_log_entries(file, &file_params) {
+        Ok(entries) if entries.is_empty() => None,
+        Ok(entries) => Some(entries),
+        Err(e) => {
+            warn!(file = file.path(), "failed to retrieve log entries: {e}");
+            None
+        }
+    }
+}
+
+fn params_for_file(
+    file_index: &FileIndex,
+    params: &LogQueryParams,
+    state: Option<&PaginationState>,
+) -> LogQueryParams {
+    let Some(pos) = state.and_then(|s| s.file_positions.get(file_index.file()).copied()) else {
+        return params.clone();
+    };
+
+    let mut builder = LogQueryParamsBuilder::new(params.anchor(), params.direction());
+    if let Some(limit) = params.limit() {
+        builder = builder.with_limit(limit);
+    }
+    if let Some(field) = params.source_timestamp_field() {
+        builder = builder.with_source_timestamp_field(Some(field.clone()));
+    }
+    if let Some(filter) = params.filter() {
+        builder = builder.with_filter(filter.clone());
+    }
+    if let Some(after) = params.after() {
+        builder = builder.with_after(after);
+    }
+    if let Some(before) = params.before() {
+        builder = builder.with_before(before);
+    }
+    if let Some(regex) = params.regex() {
+        builder = builder.with_regex(regex.as_str());
+    }
+
+    builder
+        .with_resume_position(pos)
+        .build()
+        .expect("resume params copied from validated query params")
+}
+
+fn update_pagination_state(
+    state: &mut PaginationState,
+    entries: &[LogEntryId],
+    direction: Direction,
+) {
+    for entry in entries {
+        state
             .file_positions
             .entry(entry.file.clone())
             .and_modify(|pos| {
-                *pos = match params.direction() {
-                    Direction::Forward => (*pos).max(entry.position),
-                    Direction::Backward => (*pos).min(entry.position),
-                }
+                *pos = next_resume_position(*pos, entry.position, direction);
             })
             .or_insert(entry.position);
     }
+}
 
-    (collected_entries, new_state)
+fn next_resume_position(current: usize, candidate: usize, direction: Direction) -> usize {
+    match direction {
+        Direction::Forward => current.max(candidate),
+        Direction::Backward => current.min(candidate),
+    }
 }
 
 /// Check if we can prune (skip) a file based on its time range and current results.
@@ -537,59 +567,22 @@ fn extract_entry_data(
     log_entries: &[LogEntryId],
     output_fields: Option<&HashSet<String>>,
 ) -> Result<Vec<LogEntryData>> {
-    // Group entries by file to minimize file open/close operations
-    let mut entries_by_file: HashMap<&File, Vec<(usize, &LogEntryId)>> = HashMap::new();
-    for (idx, entry) in log_entries.iter().enumerate() {
-        entries_by_file
-            .entry(&entry.file)
-            .or_default()
-            .push((idx, entry));
-    }
-
-    // Pre-allocate result vector with exact capacity
+    let entries_by_file = entries_grouped_by_file(log_entries);
     let mut result = vec![None; log_entries.len()];
-
-    // Scratch buffer to keep any decompressed payload of data objects.
     let mut decompress_buf = Vec::new();
 
-    // Process each file's entries
     for (file, file_entries) in entries_by_file {
         let journal_file = JournalFile::<Mmap>::open(file, 8 * 1024 * 1024)?;
-
         let mut data_offsets = Vec::new();
 
         for (original_idx, entry) in file_entries {
-            // Read the entry at the specified offset
-            let entry_offset =
-                NonZeroU64::new(entry.offset).ok_or(journal_core::JournalError::InvalidOffset)?;
-            let entry_guard = journal_file.entry_ref(entry_offset)?;
-
-            // Collect all data object offsets for this entry
-            data_offsets.clear();
-            entry_guard.collect_offsets(&mut data_offsets)?;
-            drop(entry_guard);
-
-            // Extract all field=value pairs.
-            let mut fields = Vec::new();
-            for data_offset in data_offsets.iter().copied() {
-                let data_guard = journal_file.data_ref(data_offset)?;
-                let payload_bytes = if data_guard.is_compressed() {
-                    data_guard.decompress(&mut decompress_buf)?;
-                    &decompress_buf[..]
-                } else {
-                    data_guard.raw_payload()
-                };
-
-                let payload_str = String::from_utf8_lossy(payload_bytes);
-
-                if let Some(pair) = FieldValuePair::parse(&payload_str) {
-                    let raw_field_name = pair.field();
-                    if is_projected(raw_field_name, output_fields) {
-                        fields.push(pair);
-                    }
-                }
-            }
-
+            let fields = read_entry_fields(
+                &journal_file,
+                entry,
+                output_fields,
+                &mut data_offsets,
+                &mut decompress_buf,
+            )?;
             result[original_idx] = Some(LogEntryData {
                 timestamp: entry.timestamp.get(),
                 fields,
@@ -598,6 +591,73 @@ fn extract_entry_data(
     }
 
     Ok(result.into_iter().flatten().collect())
+}
+
+fn entries_grouped_by_file(
+    log_entries: &[LogEntryId],
+) -> HashMap<&File, Vec<(usize, &LogEntryId)>> {
+    let mut entries_by_file: HashMap<&File, Vec<(usize, &LogEntryId)>> = HashMap::new();
+    for (idx, entry) in log_entries.iter().enumerate() {
+        entries_by_file
+            .entry(&entry.file)
+            .or_default()
+            .push((idx, entry));
+    }
+    entries_by_file
+}
+
+fn read_entry_fields(
+    journal_file: &JournalFile<Mmap>,
+    entry: &LogEntryId,
+    output_fields: Option<&HashSet<String>>,
+    data_offsets: &mut Vec<NonZeroU64>,
+    decompress_buf: &mut Vec<u8>,
+) -> Result<Vec<FieldValuePair>> {
+    let entry_offset =
+        NonZeroU64::new(entry.offset).ok_or(journal_core::JournalError::InvalidOffset)?;
+    collect_entry_data_offsets(journal_file, entry_offset, data_offsets)?;
+
+    let mut fields = Vec::new();
+    for data_offset in data_offsets.iter().copied() {
+        if let Some(pair) =
+            read_projected_pair(journal_file, data_offset, output_fields, decompress_buf)?
+        {
+            fields.push(pair);
+        }
+    }
+    Ok(fields)
+}
+
+fn collect_entry_data_offsets(
+    journal_file: &JournalFile<Mmap>,
+    entry_offset: NonZeroU64,
+    data_offsets: &mut Vec<NonZeroU64>,
+) -> Result<()> {
+    data_offsets.clear();
+    let entry_guard = journal_file.entry_ref(entry_offset)?;
+    entry_guard.collect_offsets(data_offsets)?;
+    Ok(())
+}
+
+fn read_projected_pair(
+    journal_file: &JournalFile<Mmap>,
+    data_offset: NonZeroU64,
+    output_fields: Option<&HashSet<String>>,
+    decompress_buf: &mut Vec<u8>,
+) -> Result<Option<FieldValuePair>> {
+    let data_guard = journal_file.data_ref(data_offset)?;
+    let payload_bytes = if data_guard.is_compressed() {
+        data_guard.decompress(decompress_buf)?;
+        &decompress_buf[..]
+    } else {
+        data_guard.raw_payload()
+    };
+
+    let payload_str = String::from_utf8_lossy(payload_bytes);
+    let Some(pair) = FieldValuePair::parse(&payload_str) else {
+        return Ok(None);
+    };
+    Ok(is_projected(pair.field(), output_fields).then_some(pair))
 }
 
 #[cfg(test)]

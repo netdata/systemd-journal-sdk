@@ -220,183 +220,245 @@ impl HistogramEngine {
         facets: &[String],
         filter_expr: &Filter,
     ) -> Result<Histogram> {
-        // Generate bucket requests from time range
         let facets = Facets::new(facets);
-        let bucket_requests: Vec<BucketRequest> = time_range
-            .buckets()
-            .map(|(start, end)| BucketRequest {
-                start: Seconds(start),
-                end: Seconds(end),
-                facets: facets.clone(),
-                filter_expr: filter_expr.clone(),
+        let bucket_requests = bucket_requests_for(time_range, &facets, filter_expr);
+        let buckets_to_compute = self.buckets_to_compute(&bucket_requests);
+
+        if buckets_to_compute.is_empty() {
+            return Ok(self.histogram_from_cache(bucket_requests));
+        }
+
+        let (new_responses, bucket_cacheable) =
+            compute_bucket_responses(indexed_files, &buckets_to_compute);
+        self.cache_computed_responses(&new_responses, &bucket_cacheable);
+
+        Ok(self.histogram_from_responses(bucket_requests, &new_responses))
+    }
+
+    fn buckets_to_compute(&self, bucket_requests: &[BucketRequest]) -> Vec<BucketRequest> {
+        let responses = self.responses.read();
+        bucket_requests
+            .iter()
+            .filter(|br| !responses.contains(br))
+            .cloned()
+            .collect()
+    }
+
+    fn cache_computed_responses(
+        &self,
+        new_responses: &HashMap<BucketRequest, BucketResponse>,
+        bucket_cacheable: &HashMap<BucketRequest, bool>,
+    ) {
+        let mut responses_guard = self.responses.write();
+        for (bucket_request, response) in new_responses {
+            if bucket_cacheable
+                .get(bucket_request)
+                .copied()
+                .unwrap_or(false)
+            {
+                responses_guard.put(bucket_request.clone(), response.clone());
+            }
+        }
+    }
+
+    fn histogram_from_responses(
+        &self,
+        bucket_requests: Vec<BucketRequest>,
+        new_responses: &HashMap<BucketRequest, BucketResponse>,
+    ) -> Histogram {
+        let mut responses_guard = self.responses.write();
+        let buckets = bucket_requests
+            .into_iter()
+            .filter_map(|bucket_request| {
+                responses_guard
+                    .get(&bucket_request)
+                    .cloned()
+                    .or_else(|| new_responses.get(&bucket_request).cloned())
+                    .map(|response| (bucket_request, response))
             })
             .collect();
 
-        // Find buckets that need computation
-        let buckets_to_compute: Vec<BucketRequest> = {
-            let responses = self.responses.read();
+        Histogram { buckets }
+    }
 
-            bucket_requests
-                .iter()
-                .filter(|br| !responses.contains(br))
-                .cloned()
-                .collect()
+    fn histogram_from_cache(&self, bucket_requests: Vec<BucketRequest>) -> Histogram {
+        let mut responses = self.responses.write();
+        let buckets = bucket_requests
+            .into_iter()
+            .filter_map(|bucket_request| {
+                responses
+                    .get(&bucket_request)
+                    .map(|response| (bucket_request, response.clone()))
+            })
+            .collect();
+
+        Histogram { buckets }
+    }
+}
+
+fn bucket_requests_for(
+    time_range: &crate::QueryTimeRange,
+    facets: &Facets,
+    filter_expr: &Filter,
+) -> Vec<BucketRequest> {
+    time_range
+        .buckets()
+        .map(|(start, end)| BucketRequest {
+            start: Seconds(start),
+            end: Seconds(end),
+            facets: facets.clone(),
+            filter_expr: filter_expr.clone(),
+        })
+        .collect()
+}
+
+fn compute_bucket_responses(
+    indexed_files: &[(FileIndexKey, FileIndex)],
+    buckets_to_compute: &[BucketRequest],
+) -> (
+    HashMap<BucketRequest, BucketResponse>,
+    HashMap<BucketRequest, bool>,
+) {
+    let mut new_responses = empty_bucket_responses(buckets_to_compute);
+    let mut bucket_cacheable = initially_cacheable_buckets(buckets_to_compute);
+
+    for (_, file_index) in indexed_files {
+        process_file_buckets(
+            file_index,
+            buckets_to_compute,
+            &mut new_responses,
+            &mut bucket_cacheable,
+        );
+    }
+
+    (new_responses, bucket_cacheable)
+}
+
+fn empty_bucket_responses(
+    bucket_requests: &[BucketRequest],
+) -> HashMap<BucketRequest, BucketResponse> {
+    bucket_requests
+        .iter()
+        .map(|br| (br.clone(), BucketResponse::new()))
+        .collect()
+}
+
+fn initially_cacheable_buckets(bucket_requests: &[BucketRequest]) -> HashMap<BucketRequest, bool> {
+    bucket_requests
+        .iter()
+        .map(|br| (br.clone(), true))
+        .collect()
+}
+
+fn process_file_buckets(
+    file_index: &FileIndex,
+    bucket_requests: &[BucketRequest],
+    responses: &mut HashMap<BucketRequest, BucketResponse>,
+    bucket_cacheable: &mut HashMap<BucketRequest, bool>,
+) {
+    for bucket_request in bucket_requests {
+        let Some(response) = responses.get_mut(bucket_request) else {
+            continue;
         };
-
-        if !buckets_to_compute.is_empty() {
-            // Initialize responses for buckets we need to compute
-            let mut new_responses: HashMap<BucketRequest, BucketResponse> = buckets_to_compute
-                .iter()
-                .map(|br| (br.clone(), BucketResponse::new()))
-                .collect();
-
-            // Track which buckets can be cached (no online file contributions)
-            let mut bucket_cacheable: HashMap<BucketRequest, bool> = buckets_to_compute
-                .iter()
-                .map(|br| (br.clone(), true))
-                .collect();
-
-            // Process all file indexes and update responses
-            for (_, file_index) in indexed_files {
-                let is_online = file_index.online();
-                // Get file's time range from the index
-                let file_start = file_index.start_time();
-                let file_end = file_index.end_time();
-
-                // Find all bucket requests that need data from this file
-                for bucket_request in &buckets_to_compute {
-                    let response = match new_responses.get_mut(bucket_request) {
-                        Some(r) => r,
-                        None => continue,
-                    };
-
-                    // Skip if file's time range doesn't overlap with bucket's time range
-                    if file_start >= bucket_request.end || file_end <= bucket_request.start {
-                        continue;
-                    }
-
-                    // If this file is online and overlaps with the bucket, mark bucket as non-cacheable
-                    if is_online {
-                        bucket_cacheable.insert(bucket_request.clone(), false);
-                    }
-
-                    // Evaluate filter to bitmap
-                    let filter_bitmap = if !bucket_request.filter_expr.is_none() {
-                        Some(bucket_request.filter_expr.evaluate(file_index))
-                    } else {
-                        None
-                    };
-
-                    // Count total entries in this file for this bucket's time range
-                    let all_entries = Bitmap::insert_range(0..file_index.total_entries() as u32);
-                    let unfiltered_total = file_index
-                        .count_entries_in_time_range(
-                            &all_entries,
-                            bucket_request.start,
-                            bucket_request.end,
-                        )
-                        .unwrap_or(0);
-
-                    let filtered_total = if let Some(ref filter_bitmap) = filter_bitmap {
-                        file_index
-                            .count_entries_in_time_range(
-                                filter_bitmap,
-                                bucket_request.start,
-                                bucket_request.end,
-                            )
-                            .unwrap_or(0)
-                    } else {
-                        unfiltered_total
-                    };
-
-                    response.total_entries.0 += unfiltered_total;
-                    response.total_entries.1 += filtered_total;
-
-                    // Track unindexed fields
-                    for field in file_index.fields() {
-                        if !file_index.is_indexed(field) {
-                            if let Some(field_name) = FieldName::new(field) {
-                                response.unindexed_fields.insert(field_name);
-                            }
-                        }
-                    }
-
-                    // Count field=value pairs in this file for this bucket's time range
-                    for (indexed_field, field_bitmap) in file_index.bitmaps() {
-                        let unfiltered_count = file_index
-                            .count_entries_in_time_range(
-                                field_bitmap,
-                                bucket_request.start,
-                                bucket_request.end,
-                            )
-                            .unwrap_or(0);
-
-                        let filtered_count = if let Some(ref filter_bitmap) = filter_bitmap {
-                            let filtered_bitmap = field_bitmap & filter_bitmap;
-                            file_index
-                                .count_entries_in_time_range(
-                                    &filtered_bitmap,
-                                    bucket_request.start,
-                                    bucket_request.end,
-                                )
-                                .unwrap_or(0)
-                        } else {
-                            unfiltered_count
-                        };
-
-                        // Update counts
-                        if let Some(pair) = FieldValuePair::parse(indexed_field) {
-                            let counts = response.fv_counts.entry(pair).or_insert((0, 0));
-                            counts.0 += unfiltered_count;
-                            counts.1 += filtered_count;
-                        }
-                    }
-                }
-            }
-
-            // Cache only the responses that are safe to cache (no online file contributions)
-            let mut responses_guard = self.responses.write();
-            for (bucket_request, response) in &new_responses {
-                if bucket_cacheable
-                    .get(bucket_request)
-                    .copied()
-                    .unwrap_or(false)
-                {
-                    responses_guard.put(bucket_request.clone(), response.clone());
-                }
-            }
-            drop(responses_guard);
-
-            // Build histogram from all responses (cached + newly computed non-cacheable)
-            let mut responses_guard = self.responses.write();
-            let buckets = bucket_requests
-                .into_iter()
-                .filter_map(|bucket_request| {
-                    // Try to get from cache first (updates LRU), then from newly computed responses
-                    let response = responses_guard
-                        .get(&bucket_request)
-                        .cloned()
-                        .or_else(|| new_responses.get(&bucket_request).cloned());
-
-                    response.map(|r| (bucket_request, r))
-                })
-                .collect();
-
-            Ok(Histogram { buckets })
-        } else {
-            // All buckets were cached, just build histogram from cache
-            let mut responses = self.responses.write();
-            let buckets = bucket_requests
-                .into_iter()
-                .filter_map(|bucket_request| {
-                    // Use get() to update LRU order for accessed entries
-                    responses
-                        .get(&bucket_request)
-                        .map(|response| (bucket_request, response.clone()))
-                })
-                .collect();
-
-            Ok(Histogram { buckets })
+        if !file_overlaps_bucket(file_index, bucket_request) {
+            continue;
         }
+        if file_index.online() {
+            bucket_cacheable.insert(bucket_request.clone(), false);
+        }
+
+        let filter_bitmap = filter_bitmap_for_bucket(file_index, bucket_request);
+        update_bucket_totals(file_index, bucket_request, filter_bitmap.as_ref(), response);
+        record_unindexed_fields(file_index, response);
+        count_indexed_field_values(file_index, bucket_request, filter_bitmap.as_ref(), response);
+    }
+}
+
+fn file_overlaps_bucket(file_index: &FileIndex, bucket_request: &BucketRequest) -> bool {
+    file_index.start_time() < bucket_request.end && file_index.end_time() > bucket_request.start
+}
+
+fn filter_bitmap_for_bucket(
+    file_index: &FileIndex,
+    bucket_request: &BucketRequest,
+) -> Option<Bitmap> {
+    (!bucket_request.filter_expr.is_none()).then(|| bucket_request.filter_expr.evaluate(file_index))
+}
+
+fn update_bucket_totals(
+    file_index: &FileIndex,
+    bucket_request: &BucketRequest,
+    filter_bitmap: Option<&Bitmap>,
+    response: &mut BucketResponse,
+) {
+    let all_entries = Bitmap::insert_range(0..file_index.total_entries() as u32);
+    let unfiltered_total = count_entries(file_index, &all_entries, bucket_request);
+    let filtered_total = filter_bitmap
+        .map(|bitmap| count_entries(file_index, bitmap, bucket_request))
+        .unwrap_or(unfiltered_total);
+
+    response.total_entries.0 += unfiltered_total;
+    response.total_entries.1 += filtered_total;
+}
+
+fn count_entries(file_index: &FileIndex, bitmap: &Bitmap, bucket_request: &BucketRequest) -> usize {
+    file_index
+        .count_entries_in_time_range(bitmap, bucket_request.start, bucket_request.end)
+        .unwrap_or(0)
+}
+
+fn record_unindexed_fields(file_index: &FileIndex, response: &mut BucketResponse) {
+    for field in file_index.fields() {
+        if !file_index.is_indexed(field)
+            && let Some(field_name) = FieldName::new(field)
+        {
+            response.unindexed_fields.insert(field_name);
+        }
+    }
+}
+
+fn count_indexed_field_values(
+    file_index: &FileIndex,
+    bucket_request: &BucketRequest,
+    filter_bitmap: Option<&Bitmap>,
+    response: &mut BucketResponse,
+) {
+    for (indexed_field, field_bitmap) in file_index.bitmaps() {
+        let unfiltered_count = count_entries(file_index, field_bitmap, bucket_request);
+        let filtered_count = filtered_field_count(
+            file_index,
+            bucket_request,
+            field_bitmap,
+            filter_bitmap,
+            unfiltered_count,
+        );
+        add_field_counts(response, indexed_field, unfiltered_count, filtered_count);
+    }
+}
+
+fn filtered_field_count(
+    file_index: &FileIndex,
+    bucket_request: &BucketRequest,
+    field_bitmap: &Bitmap,
+    filter_bitmap: Option<&Bitmap>,
+    unfiltered_count: usize,
+) -> usize {
+    let Some(filter_bitmap) = filter_bitmap else {
+        return unfiltered_count;
+    };
+    let filtered_bitmap = field_bitmap & filter_bitmap;
+    count_entries(file_index, &filtered_bitmap, bucket_request)
+}
+
+fn add_field_counts(
+    response: &mut BucketResponse,
+    indexed_field: &FieldValuePair,
+    unfiltered_count: usize,
+    filtered_count: usize,
+) {
+    if let Some(pair) = FieldValuePair::parse(indexed_field) {
+        let counts = response.fv_counts.entry(pair).or_insert((0, 0));
+        counts.0 += unfiltered_count;
+        counts.1 += filtered_count;
     }
 }

@@ -237,32 +237,33 @@ impl std::fmt::Display for FilterExpr<FilterTarget> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FilterExpr::None => write!(f, "None"),
-            FilterExpr::Match(target) => match target {
-                FilterTarget::Field(name) => write!(f, "{}", name),
-                FilterTarget::Pair(pair) => write!(f, "{}", pair),
-            },
-            FilterExpr::Conjunction(filters) => {
-                write!(f, "(")?;
-                for (i, filter) in filters.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " AND ")?;
-                    }
-                    write!(f, "{}", filter)?;
-                }
-                write!(f, ")")
-            }
-            FilterExpr::Disjunction(filters) => {
-                write!(f, "(")?;
-                for (i, filter) in filters.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, " OR ")?;
-                    }
-                    write!(f, "{}", filter)?;
-                }
-                write!(f, ")")
-            }
+            FilterExpr::Match(target) => write_filter_target(f, target),
+            FilterExpr::Conjunction(filters) => write_filter_list(f, filters, " AND "),
+            FilterExpr::Disjunction(filters) => write_filter_list(f, filters, " OR "),
         }
     }
+}
+
+fn write_filter_target(f: &mut std::fmt::Formatter<'_>, target: &FilterTarget) -> std::fmt::Result {
+    match target {
+        FilterTarget::Field(name) => write!(f, "{}", name),
+        FilterTarget::Pair(pair) => write!(f, "{}", pair),
+    }
+}
+
+fn write_filter_list(
+    f: &mut std::fmt::Formatter<'_>,
+    filters: &[FilterExpr<FilterTarget>],
+    separator: &str,
+) -> std::fmt::Result {
+    write!(f, "(")?;
+    for (i, filter) in filters.iter().enumerate() {
+        if i > 0 {
+            write!(f, "{separator}")?;
+        }
+        write!(f, "{}", filter)?;
+    }
+    write!(f, ")")
 }
 
 impl FilterExpr<Bitmap> {

@@ -243,154 +243,115 @@ impl FileIndexer {
         was_online: bool,
     ) -> Result<HashMap<FieldValuePair, Bitmap>> {
         let mut entries_index = HashMap::default();
-        let mut truncated_fields: Vec<&FieldName> = Vec::new();
-        let mut fields_with_large_payloads: Vec<&FieldName> = Vec::new();
+        let mut issues = FieldIndexIssues::default();
 
         for field_name in field_names {
-            // Get the data object iterator for this field
-            let field_data_iterator = match journal_file.field_data_objects(field_name.as_bytes()) {
-                Ok(field_data_iterator) => field_data_iterator,
-                Err(e) => {
-                    warn!(
-                        "failed to iterate field data objects for field '{}' in file {}: {:#?}",
-                        field_name,
-                        journal_file.file().path(),
-                        e
-                    );
+            self.index_field_values(
+                journal_file,
+                field_name,
+                tail_object_offset,
+                &mut entries_index,
+                &mut issues,
+            )?;
+        }
+
+        issues.log(journal_file, self.limits, was_online);
+        Ok(entries_index)
+    }
+
+    fn index_field_values<'a>(
+        &mut self,
+        journal_file: &JournalFile<Mmap>,
+        field_name: &'a FieldName,
+        tail_object_offset: NonZeroU64,
+        entries_index: &mut HashMap<FieldValuePair, Bitmap>,
+        issues: &mut FieldIndexIssues<'a>,
+    ) -> Result<()> {
+        let field_data_iterator = match journal_file.field_data_objects(field_name.as_bytes()) {
+            Ok(field_data_iterator) => field_data_iterator,
+            Err(e) => {
+                warn!(
+                    "failed to iterate field data objects for field '{}' in file {}: {:#?}",
+                    field_name,
+                    journal_file.file().path(),
+                    e
+                );
+                return Ok(());
+            }
+        };
+        let mut state = FieldIndexState::default();
+        for data_object in field_data_iterator {
+            if state.unique_values_count >= self.limits.max_unique_values_per_field {
+                state.was_truncated = true;
+                break;
+            }
+
+            let (data_payload, inlined_cursor) = {
+                let Ok(data_object) = data_object else {
+                    continue;
+                };
+                if data_object.raw_payload().len() >= self.limits.max_field_payload_size
+                    || data_object.is_compressed()
+                {
+                    state.ignored_large_payloads += 1;
                     continue;
                 }
+
+                let data_payload = String::from_utf8_lossy(data_object.raw_payload()).into_owned();
+                let Some(inlined_cursor) = data_object.inlined_cursor() else {
+                    continue;
+                };
+                (data_payload, inlined_cursor)
             };
 
-            // Track the number of unique values indexed for this field
-            let mut unique_values_count: usize = 0;
-            let mut ignored_large_payloads: usize = 0;
-            let mut was_truncated = false;
-
-            for data_object in field_data_iterator {
-                // Check cardinality limit before processing this value
-                if unique_values_count >= self.limits.max_unique_values_per_field {
-                    was_truncated = true;
-                    break;
-                }
-
-                // Get the payload and the inlined cursor for this data object
-                let (data_payload, inlined_cursor) = {
-                    let Ok(data_object) = data_object else {
-                        continue;
-                    };
-
-                    // Do not create indexes with fields that contain large payloads.
-                    if data_object.raw_payload().len() >= self.limits.max_field_payload_size
-                        || data_object.is_compressed()
-                    {
-                        ignored_large_payloads += 1;
-                        continue;
-                    }
-
-                    let data_payload =
-                        String::from_utf8_lossy(data_object.raw_payload()).into_owned();
-                    let Some(inlined_cursor) = data_object.inlined_cursor() else {
-                        continue;
-                    };
-
-                    (data_payload, inlined_cursor)
-                };
-
-                // Parse the payload into a FieldValuePair (format is "FIELD=value")
-                let Some(pair) = FieldValuePair::parse(&data_payload) else {
-                    warn!("Invalid field=value format: {}", data_payload);
-                    continue;
-                };
-
-                // Collect the offset of entries where this data object appears
-                self.entry_offsets.clear();
-                if inlined_cursor
-                    .collect_offsets(journal_file, &mut self.entry_offsets)
-                    .is_err()
-                {
-                    continue;
-                }
-
-                // Map entry offsets where this data object appears to entry indices.
-                // Filter out any offsets that are beyond our initial snapshot's maximum.
-                self.entry_indices.clear();
-                for entry_offset in self
-                    .entry_offsets
-                    .iter()
-                    .copied()
-                    .filter(|offset| *offset <= tail_object_offset)
-                {
-                    let Some(entry_index) = self.entry_offset_index.get(&entry_offset) else {
-                        // This should never happen given that we filter by the tail object offset.
-                        panic!(
-                            "missing entry offset {} from index (total offsets: {})",
-                            entry_offset,
-                            self.entry_offset_index.len()
-                        );
-                    };
-                    self.entry_indices.push(*entry_index as u32);
-                }
-                if self.entry_indices.is_empty() {
-                    continue;
-                }
-                self.entry_indices.sort_unstable();
-
-                // Create the bitmap for the entry indices
-                let mut bitmap = Bitmap::from_sorted_iter(self.entry_indices.iter().copied())
-                    .expect("sorted entry indices");
-                bitmap.optimize();
-
-                let field_name = FieldName::new_unchecked(field_name);
-                let k = FieldValuePair::new_unchecked(field_name, String::from(pair.value()));
-                entries_index.insert(k, bitmap);
-
-                unique_values_count += 1;
-            }
-
-            // Track fields that were truncated or had large payloads skipped
-            if was_truncated {
-                truncated_fields.push(field_name);
-            }
-            if ignored_large_payloads > 0 {
-                fields_with_large_payloads.push(field_name);
+            let Some(pair) = FieldValuePair::parse(&data_payload) else {
+                warn!("Invalid field=value format: {}", data_payload);
+                continue;
+            };
+            if self.collect_data_entry_indices(journal_file, inlined_cursor, tail_object_offset)? {
+                insert_field_bitmap(entries_index, field_name, pair.value(), &self.entry_indices);
+                state.unique_values_count += 1;
             }
         }
 
-        // Log summary of indexing issues.
-        if !truncated_fields.is_empty() {
-            let field_names: Vec<&str> = truncated_fields.iter().map(|f| f.as_str()).collect();
-            let msg = format!(
-                "File '{}': {} field(s) truncated due to cardinality limit ({}): {:?}",
-                journal_file.file().path(),
-                truncated_fields.len(),
-                self.limits.max_unique_values_per_field,
-                field_names
-            );
-            if was_online {
-                trace!("{msg}");
-            } else {
-                warn!("{msg}");
-            }
-        }
-        if !fields_with_large_payloads.is_empty() {
-            let field_names: Vec<&str> = fields_with_large_payloads
-                .iter()
-                .map(|f| f.as_str())
-                .collect();
-            let msg = format!(
-                "File '{}': {} field(s) had values skipped due to large payloads: {:?}",
-                journal_file.file().path(),
-                fields_with_large_payloads.len(),
-                field_names
-            );
-            if was_online {
-                trace!("{msg}");
-            } else {
-                tracing::info!("{msg}");
-            }
+        issues.record(field_name, state);
+        Ok(())
+    }
+
+    fn collect_data_entry_indices(
+        &mut self,
+        journal_file: &JournalFile<Mmap>,
+        inlined_cursor: InlinedCursor,
+        tail_object_offset: NonZeroU64,
+    ) -> Result<bool> {
+        self.entry_offsets.clear();
+        if let Err(err) = inlined_cursor.collect_offsets(journal_file, &mut self.entry_offsets) {
+            warn!("failed to collect entry offsets from DATA object index: {err:?}");
+            return Ok(false);
         }
 
-        Ok(entries_index)
+        self.entry_indices.clear();
+        for entry_offset in self
+            .entry_offsets
+            .iter()
+            .copied()
+            .filter(|offset| *offset <= tail_object_offset)
+        {
+            let Some(entry_index) = self.entry_offset_index.get(&entry_offset) else {
+                panic!(
+                    "missing entry offset {} from index (total offsets: {})",
+                    entry_offset,
+                    self.entry_offset_index.len()
+                );
+            };
+            self.entry_indices.push(*entry_index as u32);
+        }
+
+        if self.entry_indices.is_empty() {
+            return Ok(false);
+        }
+        self.entry_indices.sort_unstable();
+        Ok(true)
     }
 
     /// Collect timestamp information from a source timestamp field.
@@ -585,4 +546,96 @@ impl FileIndexer {
             self.source_timestamp_entry_offset_pairs.as_slice(),
         )
     }
+}
+
+#[derive(Default)]
+struct FieldIndexState {
+    unique_values_count: usize,
+    ignored_large_payloads: usize,
+    was_truncated: bool,
+}
+
+#[derive(Default)]
+struct FieldIndexIssues<'a> {
+    truncated_fields: Vec<&'a FieldName>,
+    fields_with_large_payloads: Vec<&'a FieldName>,
+}
+
+impl<'a> FieldIndexIssues<'a> {
+    fn record(&mut self, field_name: &'a FieldName, state: FieldIndexState) {
+        if state.was_truncated {
+            self.truncated_fields.push(field_name);
+        }
+        if state.ignored_large_payloads > 0 {
+            self.fields_with_large_payloads.push(field_name);
+        }
+    }
+
+    fn log(&self, journal_file: &JournalFile<Mmap>, limits: IndexingLimits, was_online: bool) {
+        self.log_truncated_fields(journal_file, limits, was_online);
+        self.log_large_payload_fields(journal_file, was_online);
+    }
+
+    fn log_truncated_fields(
+        &self,
+        journal_file: &JournalFile<Mmap>,
+        limits: IndexingLimits,
+        was_online: bool,
+    ) {
+        if self.truncated_fields.is_empty() {
+            return;
+        }
+
+        let field_names: Vec<&str> = self.truncated_fields.iter().map(|f| f.as_str()).collect();
+        let msg = format!(
+            "File '{}': {} field(s) truncated due to cardinality limit ({}): {:?}",
+            journal_file.file().path(),
+            self.truncated_fields.len(),
+            limits.max_unique_values_per_field,
+            field_names
+        );
+        if was_online {
+            trace!("{msg}");
+        } else {
+            warn!("{msg}");
+        }
+    }
+
+    fn log_large_payload_fields(&self, journal_file: &JournalFile<Mmap>, was_online: bool) {
+        if self.fields_with_large_payloads.is_empty() {
+            return;
+        }
+
+        let field_names: Vec<&str> = self
+            .fields_with_large_payloads
+            .iter()
+            .map(|f| f.as_str())
+            .collect();
+        let msg = format!(
+            "File '{}': {} field(s) had values skipped due to large payloads: {:?}",
+            journal_file.file().path(),
+            self.fields_with_large_payloads.len(),
+            field_names
+        );
+        if was_online {
+            trace!("{msg}");
+        } else {
+            tracing::info!("{msg}");
+        }
+    }
+}
+
+fn insert_field_bitmap(
+    entries_index: &mut HashMap<FieldValuePair, Bitmap>,
+    field_name: &FieldName,
+    value: &str,
+    entry_indices: &[u32],
+) {
+    let mut bitmap =
+        Bitmap::from_sorted_iter(entry_indices.iter().copied()).expect("sorted entry indices");
+    bitmap.optimize();
+
+    let field_name = FieldName::new_unchecked(field_name);
+    let key = FieldValuePair::new_unchecked(field_name, value.to_string());
+    entries_index.insert(key, bitmap);
 }
