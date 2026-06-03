@@ -927,11 +927,12 @@ fn align8(v: u64) -> u64 {
 
 fn verify_slice<'a>(data: &'a [u8], offset: usize, len: usize, label: &str) -> Result<&'a [u8]> {
     let end = offset.checked_add(len).ok_or_else(|| {
-        SdkError::VerificationError(format!("{label} read at offset {offset} overflows"))
+        SdkError::VerificationError(format!("{} read at offset {} overflows", label, offset))
     })?;
     data.get(offset..end).ok_or_else(|| {
         SdkError::VerificationError(format!(
-            "{label} read at offset {offset} exceeds file bounds"
+            "{} read at offset {} exceeds file bounds",
+            label, offset
         ))
     })
 }

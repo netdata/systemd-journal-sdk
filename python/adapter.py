@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import tempfile
+from contextlib import suppress
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from journal import (
@@ -65,7 +66,6 @@ def run_adapter():
         sys.exit(1)
 
     start = time.time()
-    result = {'test_name': tc.get('test_name', ''), 'result_format': tc.get('expected', {}).get('result_format', '')}
 
     try:
         result = _run_adapter_category(tc)
@@ -273,10 +273,8 @@ def test_match_boolean_logic():
             return {'status': 'FAIL', 'actual': matched, 'error': f'matched {len(matched)}, want 2'}
         return {'status': 'PASS', 'actual': matched}
     finally:
-        try:
+        with suppress(OSError):
             os.unlink(path)
-        except OSError:
-            path = ''
 
 
 def _add_systemd_complex_match_expression(r):

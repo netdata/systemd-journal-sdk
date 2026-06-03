@@ -489,11 +489,18 @@ def write_report(output_dir: Path, report: dict[str, Any]) -> Path:
 def print_report_summary(report: dict[str, Any], report_path: Path) -> None:
     print(
         json.dumps(
-            {"status": report["status"], "report": str(report_path), "summary": report["summary"]},
+            {"status": report["status"], "report": _display_report_path(report_path)},
             indent=2,
             sort_keys=True,
         )
     )
+
+
+def _display_report_path(report_path: Path) -> str:
+    try:
+        return str(report_path.relative_to(ROOT))
+    except ValueError:
+        return str(report_path)
 
 
 def main() -> int:

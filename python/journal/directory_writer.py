@@ -3,6 +3,7 @@
 import os
 import re
 import time
+from contextlib import suppress
 
 from ._platform_io import sync_directory
 from .binary import random_uuid, uuid_to_string
@@ -273,10 +274,8 @@ class Log:
 
     def _discard_empty_opened_writer(self):
         self._active_writer.close()
-        try:
+        with suppress(FileNotFoundError):
             os.unlink(self._active_file)
-        except FileNotFoundError:
-            pass
         self._active_writer = None
         if not self._strict_systemd_naming:
             self._active_file = None
@@ -308,10 +307,8 @@ class Log:
             return
         if writer._header['n_entries'] == 0:
             writer.close()
-            try:
+            with suppress(FileNotFoundError):
                 os.unlink(path)
-            except FileNotFoundError:
-                pass
             return
         writer.archive_to(path)
 
@@ -702,10 +699,8 @@ class Log:
             if self._active_writer._header['n_entries'] == 0 and self._strict_systemd_naming:
                 try:
                     self._active_writer.close()
-                    try:
+                    with suppress(FileNotFoundError):
                         os.unlink(self._active_file)
-                    except FileNotFoundError:
-                        pass
                 except Exception:
                     if self._active_writer._closed:
                         self._active_writer = None

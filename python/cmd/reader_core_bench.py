@@ -72,7 +72,7 @@ def process_status_kb():
             try:
                 out[f'{key}_kb'] = int(parts[0])
             except ValueError:
-                pass
+                continue
     return out
 
 

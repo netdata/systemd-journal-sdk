@@ -85,7 +85,7 @@ func jenkinsHashLittle2(data []byte) (uint32, uint32) {
 	b += jenkinsTailWord(k, 4)
 	c += jenkinsTailWord(k, 8)
 
-	a, b, c = jenkinsFinal(a, b, c)
+	_, b, c = jenkinsFinal(a, b, c)
 	return c, b
 }
 

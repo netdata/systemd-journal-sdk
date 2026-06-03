@@ -42,10 +42,12 @@ def verify_file(path, verify_key=None):
     require cryptographic verification should call verify_file_with_key().
     """
     if verify_key is not None:
-        return verify_file_with_key(path, verify_key)
+        verify_file_with_key(path, verify_key)
+        return None
 
     _verify_object_graph_bytes(_read_journal_file_bytes(path))
     _verify_reader_entry_payloads(path)
+    return None
 
 
 def _verify_object_graph_bytes(data):
@@ -60,18 +62,13 @@ def _verify_object_graph_bytes(data):
 
 
 def _verify_reader_entry_payloads(path):
-    r = None
     try:
-        r = FileReader.open(path)
+        with FileReader.open(path) as reader:
+            _verify_reader_entry_offsets(reader)
     except Exception as err:
         raise VerificationError(
             f"journal verification failed: corrupt or unreadable file: {err}"
         ) from err
-
-    try:
-        _verify_reader_entry_offsets(r)
-    finally:
-        r.close()
 
 
 def _verify_reader_entry_offsets(reader):

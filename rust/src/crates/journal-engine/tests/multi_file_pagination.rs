@@ -137,6 +137,7 @@ fn same_timestamp_entries(
 }
 
 fn level_entries(file_label: &str, level: &str, start: u64, end: u64) -> Vec<TestEntry> {
+    let file_label = file_label.to_string();
     let level_lower = level.to_ascii_lowercase();
     (start..end)
         .map(|i| {

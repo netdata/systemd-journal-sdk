@@ -1053,18 +1053,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == "build":
-        report = build_systemd(args)
-    elif args.command == "generate":
-        report = generate_corpus(args)
-    elif args.command == "test":
-        report = test_matrix(args)
-    elif args.command == "smoke":
-        report = smoke(args)
-    elif args.command == "summarize":
-        report = summarize_report(args)
-    else:  # pragma: no cover - argparse enforces choices.
+    handlers = {
+        "build": build_systemd,
+        "generate": generate_corpus,
+        "test": test_matrix,
+        "smoke": smoke,
+        "summarize": summarize_report,
+    }
+    handler = handlers.get(args.command)
+    if handler is None:  # pragma: no cover - argparse enforces choices.
         parser.error(f"unsupported command: {args.command}")
+    report = handler(args)
     print(
         json.dumps(
             {

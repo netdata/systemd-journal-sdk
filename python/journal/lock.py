@@ -1,5 +1,6 @@
 import os
 import time
+from contextlib import suppress
 
 from ._platform import (
     boot_id_string,
@@ -35,26 +36,19 @@ class WriterLock:
                 stale, holder = _lock_file_is_stale(lock_path)
                 if not stale:
                     raise BlockingIOError(f'journal writer lock held by {holder}')
-                try:
+                with suppress(FileNotFoundError):
                     os.unlink(lock_path)
-                except FileNotFoundError:
-                    pass
                 continue
             try:
                 lock_fd_exclusive(fd)
                 _write_owner(fd, owner)
                 return WriterLock(lock_path, owner, fd)
             except Exception:
-                try:
-                    if fd is not None:
+                if fd is not None:
+                    with suppress(OSError):
                         os.close(fd)
-                except OSError:
-                    pass
-                finally:
-                    try:
-                        os.unlink(lock_path)
-                    except FileNotFoundError:
-                        pass
+                with suppress(FileNotFoundError):
+                    os.unlink(lock_path)
                 raise
 
     def release(self):
@@ -71,10 +65,8 @@ class WriterLock:
             should_unlink = True
         self._close_fd()
         if should_unlink:
-            try:
+            with suppress(FileNotFoundError):
                 os.unlink(self.path)
-            except FileNotFoundError:
-                pass
         self.path = None
 
     def _close_fd(self):

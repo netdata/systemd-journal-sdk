@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -179,10 +180,8 @@ def snapshot_case(case: JournalCase, work_dir: Path) -> JournalCase:
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     suffix = ".journal.zst" if case.suffix == ".journal.zst" else ".journal"
     snapshot = snapshot_dir / f"{case.file_id}{suffix}"
-    try:
+    with contextlib.suppress(FileNotFoundError):
         snapshot.unlink()
-    except FileNotFoundError:
-        pass
     shutil.copyfile(case.path, snapshot)
     stat = snapshot.stat()
     return JournalCase(

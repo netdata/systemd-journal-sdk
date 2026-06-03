@@ -703,7 +703,7 @@ def test_writer_exclusive_lock():
             try:
                 other = WriterLock.acquire(path)
             except BlockingIOError:
-                other = None
+                pass
             else:
                 other.release()
                 raise AssertionError('expected second writer lock acquire to fail while first lock is held')
@@ -736,7 +736,7 @@ def test_writer_lock_portable_owner_without_proc():
                 try:
                     other = lock_module.WriterLock.acquire(path)
                 except BlockingIOError:
-                    other = None
+                    pass
                 else:
                     other.release()
                     raise AssertionError('expected portable lock owner to block a second writer')
@@ -2596,23 +2596,30 @@ def test_python_resource_close_hardening():
     assert first.closed is True
     assert second.closed is True
 
+    def expect_exception(exc_type, callback):
+        try:
+            callback()
+        except exc_type as err:
+            return err
+        raise AssertionError(f'expected {exc_type.__name__}')
+
     reader = FileReader.__new__(FileReader)
-    reader.close = lambda: (_ for _ in ()).throw(RuntimeError('close failed'))
-    try:
+
+    def close_with_failure():
+        raise RuntimeError('close failed')
+
+    reader.close = close_with_failure
+
+    def enter_with_body_failure():
         with reader:
             raise ValueError('body failed')
-    except ValueError as e:
-        assert str(e) == 'body failed'
-    else:
-        raise AssertionError('expected body exception to be preserved')
 
-    try:
+    def enter_without_body_failure():
         with reader:
             pass
-    except RuntimeError as e:
-        assert str(e) == 'close failed'
-    else:
-        raise AssertionError('expected close exception without body exception')
+
+    assert str(expect_exception(ValueError, enter_with_body_failure)) == 'body failed'
+    assert str(expect_exception(RuntimeError, enter_without_body_failure)) == 'close failed'
 
 
 def test_file_reader_refresh_failure_preserves_current_mapping():

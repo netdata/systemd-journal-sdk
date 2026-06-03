@@ -165,10 +165,15 @@ Last updated: 2026-06-03
   file-size findings by splitting core object/file/writer helpers and tests
   into focused modules. `journal-core` tests, Python writer compile, full
   Python package tests, targeted Lizard, workflow lint, diff check, and SOW
-  audit passed. Remaining work is to push Batch 37, verify Codacy has analyzed
-  the current commit instead of stale cloud snapshots, address any residual
-  current-commit findings, record final scanner results, and complete
-  whole-SOW review.
+  audit passed. Batch 38 fixed current-commit low-risk scanner findings for
+  Python cleanup handlers and dead assignments, Go/Node Jenkins hash discarded
+  assignments, Rust closure/captured-format variable-use reports, and benchmark
+  stdout summary logging; affected Python, Go, Node.js, Rust, corpus, format,
+  diff, and SOW-audit validation passed. Remaining work is to push Batch 38,
+  verify Codacy/GitHub code scanning has analyzed the current commit instead of
+  stale snapshots, decide or disposition the cross-language `0640` journal file
+  permission finding, address residual current-commit findings, record final
+  scanner results, and complete whole-SOW review.
 
 ## Pending
 

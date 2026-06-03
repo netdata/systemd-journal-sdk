@@ -2312,6 +2312,52 @@ Batch 37:
   - `git diff --check` passed.
   - `.agents/sow/audit.sh` passed.
 
+Batch 38:
+
+- Scope: current commit GitHub code-scanning findings for low-risk dead code,
+  empty cleanup handlers, local variable initialization, benchmark stdout
+  hygiene, and scanner-visible Rust closure/captured-format false positives.
+- Changes:
+  - Preserved Python writer public constants while removing scanner-visible
+    unused import aliases.
+  - Removed Go and Node.js Jenkins final-hash assignments to discarded values.
+  - Replaced Python cleanup-only empty `except` handlers with explicit
+    `contextlib.suppress(...)` blocks.
+  - Made Python verifier reader closing explicit with `with FileReader.open(...)`
+    and made `verify_file()` returns explicit.
+  - Removed Python test and adapter dummy assignments reported as unused or
+    redefined before use.
+  - Rewrote the systemd-matrix CLI dispatch so `report` is initialized on one
+    path.
+  - Changed writer benchmark stdout summaries to print status plus report path
+    only; full metrics remain in `report.json`.
+  - Rewrote Rust test/helper values used inside closures or captured format
+    strings so CodeQL sees the values as used without changing runtime journal
+    behavior.
+- Explicit non-change:
+  - Did not change the `0640` journal file permission default in this batch.
+    Rust, Node.js, and Python intentionally create journal files as `0640`, and
+    Python/Rust tests assert this behavior. The CodeQL
+    `py/overly-permissive-file` finding requires a cross-language policy
+    disposition or cross-language default-mode change.
+- Validation:
+  - Python compile check passed for all touched Python files.
+  - `.local/python-venv/bin/python python/test_all.py` passed.
+  - `python3 -m unittest tests.corpus_eval.test_canonical` passed.
+  - `go test ./...` in `go/` passed.
+  - `npm_config_cache=../.local/npm-cache npm test` in `node/` passed.
+  - `cargo test -p journal-core -p journal -p journal-engine -p journal_file -p corpus_experiment`
+    in `rust/` passed.
+  - `cargo fmt --all --check` in `rust/` passed after applying rustfmt.
+  - `node --check node/src/lib/hash.js` passed.
+  - `git diff --check` passed.
+  - `.agents/sow/audit.sh` passed.
+  - Local `codacy-analysis analyze --files ...` was attempted with `HOME`
+    redirected under `.local/codacy-home`; it did not run tools because no
+    local `.codacy/codacy.config.json` exists. This command is not counted as
+    scanner evidence. Scanner evidence for this batch must come from the next
+    pushed GitHub CodeQL/Codacy SARIF run.
+
 Reviewer findings:
 
 - Pending. The current SOW is not ready for terminal reviewer review because
@@ -2381,8 +2427,9 @@ Follow-up mapping:
   - reconcile the user's observed 3056 UI count with the CLI-confirmed
     `master` count of 1502 quality issues after commit `99d2b08`;
   - group and triage the exported `master` cloud findings;
-  - push Batch 36 and verify Codacy no longer reports stale Go, Node.js,
-    Python, Rust, or harness file-size findings against the current commit;
+  - push Batch 38 and verify GitHub CodeQL/Codacy SARIF no longer report the
+    fixed current-commit dead-code, empty-except, useless-assignment, and
+    benchmark stdout findings;
   - address any remaining current-commit Codacy findings that are not explained
     by stale cloud analysis or narrow generated-artifact exclusions;
   - run GitHub workflows after push and record CodeQL/Codacy results;

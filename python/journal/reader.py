@@ -91,21 +91,15 @@ class FileReader:
             return FileReader(buffer, header, path, cleanup_path, fd, mapped)
         except Exception:
             if mapped is not None:
-                try:
+                with contextlib.suppress(Exception):
                     mapped.close()
-                except Exception:
-                    mapped = None
             if fd is not None:
-                try:
+                with contextlib.suppress(Exception):
                     os.close(fd)
-                except Exception:
-                    fd = None
             if cleanup_path:
-                try:
+                with contextlib.suppress(Exception):
                     os.unlink(cleanup_path)
                     os.rmdir(os.path.dirname(cleanup_path))
-                except Exception:
-                    cleanup_path = None
             raise
 
     def _load_entry_array(self):

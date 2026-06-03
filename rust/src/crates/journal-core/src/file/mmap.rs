@@ -677,6 +677,7 @@ mod tests {
 
     impl MemoryMap for FailingMmap {
         fn create(_file: &File, _offset: u64, size: u64) -> Result<Self> {
+            let mmap_size = size as usize;
             MOCK_CONTROLLER.with(|ctrl| {
                 if ctrl.should_fail() {
                     return Err(JournalError::Io(std::io::Error::new(
@@ -686,7 +687,7 @@ mod tests {
                 }
                 // Create a mock mmap with zeros
                 Ok(FailingMmap {
-                    data: vec![0u8; size as usize],
+                    data: vec![0u8; mmap_size],
                 })
             })
         }

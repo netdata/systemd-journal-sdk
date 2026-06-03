@@ -76,8 +76,8 @@ function jenkinsHashLittle2(data) {
   [a, b, c, data] = jenkinsProcess12ByteBlocks(data, a, b, c);
   if (data.length === 0) return [c >>> 0, b >>> 0];
   [a, b, c] = jenkinsAddTailWords(data, a, b, c);
-  [a, b, c] = jenkinsFinal(a, b, c);
-  return [c >>> 0, b >>> 0];
+  const [, finalB, finalC] = jenkinsFinal(a, b, c);
+  return [finalC >>> 0, finalB >>> 0];
 }
 
 function jenkinsProcess12ByteBlocks(data, a, b, c) {

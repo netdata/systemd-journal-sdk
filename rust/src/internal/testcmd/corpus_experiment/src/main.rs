@@ -374,15 +374,12 @@ fn open_dump_output(output: &str) -> Result<Box<dyn Write>> {
 }
 
 fn dump_spool_entry(input: &Path, reader: &mut FileReader, writer: &mut dyn Write) -> Result<()> {
+    let input_id = sanitized_file_id(input);
     let entry = reader.get_entry()?;
     write_spool_metadata(writer, &entry)?;
     for payload in entry.payloads {
-        let (name, value) = split_payload(&payload).ok_or_else(|| {
-            anyhow!(
-                "payload without '=' in sanitized input {}",
-                sanitized_file_id(input)
-            )
-        })?;
+        let (name, value) = split_payload(&payload)
+            .ok_or_else(|| anyhow!("payload without '=' in sanitized input {}", input_id))?;
         write_export_field(writer, name, value)?;
     }
     writer.write_all(b"\n")?;

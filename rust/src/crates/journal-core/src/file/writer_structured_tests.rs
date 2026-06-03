@@ -426,16 +426,17 @@ fn create_policy_writer(
 }
 
 fn first_entry_payloads(journal_file: &JournalFile<MmapMut>, label: &str) -> Vec<Vec<u8>> {
+    let label = label.to_string();
     let mut entry_offsets = Vec::new();
     journal_file
         .entry_offsets(&mut entry_offsets)
-        .unwrap_or_else(|_| panic!("collect {label} entry offsets"));
+        .unwrap_or_else(|_| panic!("collect {} entry offsets", label));
     journal_file
         .entry_data_objects(entry_offsets[0])
-        .unwrap_or_else(|_| panic!("{label} entry data iterator"))
+        .unwrap_or_else(|_| panic!("{} entry data iterator", label))
         .map(|item| item.map(|object| object.raw_payload().to_vec()))
         .collect::<crate::error::Result<Vec<_>>>()
-        .unwrap_or_else(|_| panic!("read {label} payloads"))
+        .unwrap_or_else(|_| panic!("read {} payloads", label))
 }
 
 fn assert_raw_policy_payloads(journal_file: &JournalFile<MmapMut>) {
