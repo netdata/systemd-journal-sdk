@@ -23,44 +23,70 @@ def _is_printable(buf, allow_newline=False):
 
 def export_entry(entry):
     parts = []
-    if entry.get('cursor'):
-        parts.append(f"__CURSOR={entry['cursor']}\n".encode('utf-8'))
-    if entry.get('realtime'):
-        parts.append(f"__REALTIME_TIMESTAMP={entry['realtime']}\n".encode('utf-8'))
-    if entry.get('monotonic'):
-        parts.append(f"__MONOTONIC_TIMESTAMP={entry['monotonic']}\n".encode('utf-8'))
-    if entry.get('seqnum'):
-        parts.append(f"__SEQNUM={entry['seqnum']}\n".encode('utf-8'))
+    written = _append_export_metadata(parts, entry)
+    _append_preferred_export_fields(parts, entry, written)
+    _append_remaining_export_fields(parts, entry, written)
+    _append_byte_name_export_fields(parts, entry)
+    parts.append(b'\n')
+    return b''.join(parts)
+
+
+def _append_export_metadata(parts, entry):
+    written = {'_BOOT_ID', '__CURSOR', '__REALTIME_TIMESTAMP', '__MONOTONIC_TIMESTAMP', '__SEQNUM'}
+    for key, field in _export_metadata_fields(entry):
+        parts.append(f'{field}={entry[key]}\n'.encode('utf-8'))
     if entry.get('boot_id'):
         parts.append(f"_BOOT_ID={uuid_to_string(entry['boot_id'])}\n".encode('utf-8'))
+    return written
 
-    preferred = ['_MACHINE_ID', '_HOSTNAME', 'PRIORITY', '_TRANSPORT']
-    written = {'_BOOT_ID', '__CURSOR', '__REALTIME_TIMESTAMP', '__MONOTONIC_TIMESTAMP', '__SEQNUM'}
-    for name in preferred:
+
+def _export_metadata_fields(entry):
+    fields = [
+        ('cursor', '__CURSOR'),
+        ('realtime', '__REALTIME_TIMESTAMP'),
+        ('monotonic', '__MONOTONIC_TIMESTAMP'),
+        ('seqnum', '__SEQNUM'),
+    ]
+    return [(key, field) for key, field in fields if entry.get(key)]
+
+
+def _append_preferred_export_fields(parts, entry, written):
+    for name in ['_MACHINE_ID', '_HOSTNAME', 'PRIORITY', '_TRANSPORT']:
         if name in entry['fields'] and name not in written:
             parts.append(_format_export_field(name, entry['fields'][name]))
             written.add(name)
 
-    remaining = sorted(k for k in entry['fields'] if k not in written)
-    for name in remaining:
-        vals = entry['field_values'].get(name, [entry['fields'][name]])
-        for v in vals:
-            parts.append(_format_export_field(name, v))
 
-    byte_name_fields = []
-    for name, value in entry.get('raw_fields', []):
-        if name == b'_BOOT_ID':
-            continue
-        try:
-            name.decode('utf-8')
-        except UnicodeDecodeError:
-            byte_name_fields.append((name, value))
-    byte_name_fields.sort(key=lambda item: (item[0], item[1]))
-    for name, value in byte_name_fields:
+def _append_remaining_export_fields(parts, entry, written):
+    for name in sorted(k for k in entry['fields'] if k not in written):
+        for value in _entry_field_values(entry, name):
+            parts.append(_format_export_field(name, value))
+
+
+def _entry_field_values(entry, name):
+    return entry['field_values'].get(name, [entry['fields'][name]])
+
+
+def _append_byte_name_export_fields(parts, entry):
+    for name, value in _sorted_non_utf8_raw_fields(entry):
         parts.append(_format_export_field_bytes(name, value))
 
-    parts.append(b'\n')
-    return b''.join(parts)
+
+def _sorted_non_utf8_raw_fields(entry):
+    fields = [
+        (name, value)
+        for name, value in entry.get('raw_fields', [])
+        if name != b'_BOOT_ID' and not _raw_field_name_is_utf8(name)
+    ]
+    return sorted(fields, key=lambda item: (item[0], item[1]))
+
+
+def _raw_field_name_is_utf8(name):
+    try:
+        name.decode('utf-8')
+        return True
+    except UnicodeDecodeError:
+        return False
 
 
 def _format_export_field(name, value):

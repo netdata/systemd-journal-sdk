@@ -72,40 +72,53 @@ def _read_compressed_input(input_data):
 
 
 def _zstd_frame_content_size(src):
+    header = _zstd_frame_header(src)
+    if header is None:
+        return None
+    pos = _zstd_frame_content_size_offset(src, header)
+    if pos is None:
+        return None
+    return _read_zstd_frame_content_size(src, pos, header['fcs_flag'], header['single_segment'])
+
+
+def _zstd_frame_header(src):
     if len(src) < 6 or src[:4] != b'\x28\xb5\x2f\xfd':
         return None
-
     descriptor = src[4]
-    fcs_flag = descriptor >> 6
-    single_segment = bool(descriptor & 0x20)
-    dictionary_id_flag = descriptor & 0x03
-    pos = 5
+    return {
+        'fcs_flag': descriptor >> 6,
+        'single_segment': bool(descriptor & 0x20),
+        'dictionary_id_flag': descriptor & 0x03,
+    }
 
-    if not single_segment:
-        pos += 1
+
+def _zstd_frame_content_size_offset(src, header):
+    pos = 5 + (0 if header['single_segment'] else 1)
     if pos > len(src):
         return None
-
     dict_id_sizes = (0, 1, 2, 4)
-    pos += dict_id_sizes[dictionary_id_flag]
+    pos += dict_id_sizes[header['dictionary_id_flag']]
     if pos > len(src):
         return None
+    return pos
 
-    if fcs_flag == 0:
-        if not single_segment or pos + 1 > len(src):
-            return None
-        return src[pos]
-    if fcs_flag == 1:
-        if pos + 2 > len(src):
-            return None
-        return int.from_bytes(src[pos:pos + 2], 'little') + 256
-    if fcs_flag == 2:
-        if pos + 4 > len(src):
-            return None
-        return int.from_bytes(src[pos:pos + 4], 'little')
-    if pos + 8 > len(src):
+
+def _read_zstd_frame_content_size(src, pos, fcs_flag, single_segment):
+    size_len = _zstd_frame_content_size_len(fcs_flag, single_segment)
+    if size_len == 0 or pos + size_len > len(src):
         return None
-    return int.from_bytes(src[pos:pos + 8], 'little')
+    value = int.from_bytes(src[pos:pos + size_len], 'little')
+    return value + 256 if fcs_flag == 1 else value
+
+
+def _zstd_frame_content_size_len(fcs_flag, single_segment):
+    if fcs_flag == 0:
+        return 1 if single_segment else 0
+    if fcs_flag == 1:
+        return 2
+    if fcs_flag == 2:
+        return 4
+    return 8
 
 
 def decompress_zst_to_temp(input_path, prefix='python-journal'):

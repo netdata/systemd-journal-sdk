@@ -77,46 +77,43 @@ def _jenkins_hash_little_2(data):
     a = (0xDEADBEEF + length) & 0xFFFFFFFF
     b = a
     c = a
-
-    i = 0
-    while i + 12 <= length:
-        a = (a + (data[i] | (data[i + 1] << 8) | (data[i + 2] << 16) | (data[i + 3] << 24))) & 0xFFFFFFFF
-        b = (b + (data[i + 4] | (data[i + 5] << 8) | (data[i + 6] << 16) | (data[i + 7] << 24))) & 0xFFFFFFFF
-        c = (c + (data[i + 8] | (data[i + 9] << 8) | (data[i + 10] << 16) | (data[i + 11] << 24))) & 0xFFFFFFFF
-        a, b, c = _jenkins_mix(a, b, c)
-        i += 12
-
-    k = data[i:]
-    if len(k) == 0:
+    a, b, c, i = _jenkins_process_12_byte_blocks(data, a, b, c)
+    if i == length:
         return c & 0xFFFFFFFF, b & 0xFFFFFFFF
-
-    if len(k) >= 12:
-        c = (c + (k[11] << 24)) & 0xFFFFFFFF
-    if len(k) >= 11:
-        c = (c + (k[10] << 16)) & 0xFFFFFFFF
-    if len(k) >= 10:
-        c = (c + (k[9] << 8)) & 0xFFFFFFFF
-    if len(k) >= 9:
-        c = (c + k[8]) & 0xFFFFFFFF
-    if len(k) >= 8:
-        b = (b + (k[7] << 24)) & 0xFFFFFFFF
-    if len(k) >= 7:
-        b = (b + (k[6] << 16)) & 0xFFFFFFFF
-    if len(k) >= 6:
-        b = (b + (k[5] << 8)) & 0xFFFFFFFF
-    if len(k) >= 5:
-        b = (b + k[4]) & 0xFFFFFFFF
-    if len(k) >= 4:
-        a = (a + (k[3] << 24)) & 0xFFFFFFFF
-    if len(k) >= 3:
-        a = (a + (k[2] << 16)) & 0xFFFFFFFF
-    if len(k) >= 2:
-        a = (a + (k[1] << 8)) & 0xFFFFFFFF
-    if len(k) >= 1:
-        a = (a + k[0]) & 0xFFFFFFFF
-
+    a, b, c = _jenkins_add_tail_words(data[i:], a, b, c)
     a, b, c = _jenkins_final(a, b, c)
     return c & 0xFFFFFFFF, b & 0xFFFFFFFF
+
+
+def _jenkins_process_12_byte_blocks(data, a, b, c):
+    length = len(data)
+    i = 0
+    while i + 12 <= length:
+        a = (a + _u32le_at(data, i)) & 0xFFFFFFFF
+        b = (b + _u32le_at(data, i + 4)) & 0xFFFFFFFF
+        c = (c + _u32le_at(data, i + 8)) & 0xFFFFFFFF
+        a, b, c = _jenkins_mix(a, b, c)
+        i += 12
+    return a, b, c, i
+
+
+def _jenkins_add_tail_words(tail, a, b, c):
+    a = (a + _tail_word(tail, 0)) & 0xFFFFFFFF
+    b = (b + _tail_word(tail, 4)) & 0xFFFFFFFF
+    c = (c + _tail_word(tail, 8)) & 0xFFFFFFFF
+    return a, b, c
+
+
+def _u32le_at(data, offset):
+    return int.from_bytes(data[offset:offset + 4], 'little')
+
+
+def _tail_word(tail, start):
+    word = 0
+    stop = min(start + 4, len(tail))
+    for pos in range(start, stop):
+        word |= tail[pos] << (8 * (pos - start))
+    return word
 
 
 def _jenkins_mix(a, b, c):
@@ -164,26 +161,43 @@ def _rotl32(v, n):
 
 
 def parse_match_string(s):
+    field = _match_field_name(s)
+    _validate_match_field_name(field)
+    return s.encode('latin1')
+
+
+def _match_field_name(s):
+    _validate_match_shape(s)
+    return s[:s.find('=')]
+
+
+def _validate_match_shape(s):
     if s == '':
         raise ValueError('EINVAL: empty match string')
     if s == '=':
         raise ValueError('EINVAL: missing field name')
     if s.startswith('='):
         raise ValueError('EINVAL: field name cannot start with =')
-
-    eq = s.find('=')
-    if eq < 0:
+    if s.find('=') < 0:
         raise ValueError('EINVAL: missing = separator')
 
-    field = s[:eq]
+
+def _validate_match_field_name(field):
     if field == '':
         raise ValueError('EINVAL: empty field name')
     if len(field) > 64:
         raise ValueError('EINVAL: field name too long')
-    if field[0] >= '0' and field[0] <= '9':
+    if _field_starts_with_digit(field):
         raise ValueError(f'EINVAL: invalid field name "{field}"')
     for c in field:
-        code = ord(c)
-        if code != 0x5F and not (0x41 <= code <= 0x5A) and not (0x30 <= code <= 0x39):
+        if not _valid_field_name_char(c):
             raise ValueError(f'EINVAL: invalid field name "{field}"')
-    return s.encode('latin1')
+
+
+def _field_starts_with_digit(field):
+    return '0' <= field[0] <= '9'
+
+
+def _valid_field_name_char(c):
+    code = ord(c)
+    return code == 0x5F or (0x41 <= code <= 0x5A) or (0x30 <= code <= 0x39)

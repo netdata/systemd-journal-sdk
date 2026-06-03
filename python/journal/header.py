@@ -94,12 +94,24 @@ def write_object_header(buf, offset, obj_type, flags, size):
 
 
 def parse_file_header(buf):
+    sig = _validate_file_header_prefix(buf)
+    header = _parse_file_header_base(buf, sig)
+    _validate_file_header_declared_size(buf, header)
+    _parse_file_header_optional_fields(buf, header)
+    return header
+
+
+def _validate_file_header_prefix(buf):
     if len(buf) < HEADER_MIN_SIZE:
         raise ValueError(f'header buffer too small: {len(buf)} < {HEADER_MIN_SIZE}')
     sig = buf[0:8].decode('latin1')
     if sig != 'LPKSHHRH':
         raise ValueError('invalid journal signature')
-    header = {
+    return sig
+
+
+def _parse_file_header_base(buf, sig):
+    return {
         'signature': sig,
         'compatible_flags': int.from_bytes(buf[8:12], 'little'),
         'incompatible_flags': int.from_bytes(buf[12:16], 'little'),
@@ -133,28 +145,46 @@ def parse_file_header(buf):
         'tail_entry_array_n_entries': 0,
         'tail_entry_offset': 0,
     }
+
+
+def _validate_file_header_declared_size(buf, header):
     required_header_size = min(header['header_size'], HEADER_SIZE)
     if len(buf) < required_header_size:
         raise ValueError(f'header buffer too small: {len(buf)} < {required_header_size}')
-    if header_contains_field(buf, header['header_size'], 216):
-        header['n_data'] = read_uint64_le(buf, 208)
-    if header_contains_field(buf, header['header_size'], 224):
-        header['n_fields'] = read_uint64_le(buf, 216)
-    if header_contains_field(buf, header['header_size'], 232):
-        header['n_tags'] = read_uint64_le(buf, 224)
-    if header_contains_field(buf, header['header_size'], 240):
-        header['n_entry_arrays'] = read_uint64_le(buf, 232)
-    if header_contains_field(buf, header['header_size'], 248):
-        header['data_hash_chain_depth'] = read_uint64_le(buf, 240)
-    if header_contains_field(buf, header['header_size'], 256):
-        header['field_hash_chain_depth'] = read_uint64_le(buf, 248)
-    if header_contains_field(buf, header['header_size'], 260):
-        header['tail_entry_array_offset'] = int.from_bytes(buf[256:260], 'little')
-    if header_contains_field(buf, header['header_size'], 264):
-        header['tail_entry_array_n_entries'] = int.from_bytes(buf[260:264], 'little')
-    if header_contains_field(buf, header['header_size'], 272):
-        header['tail_entry_offset'] = read_uint64_le(buf, 264)
-    return header
+
+
+def _parse_file_header_optional_fields(buf, header):
+    _parse_file_header_optional_u64_fields(buf, header)
+    _parse_file_header_optional_u32_fields(buf, header)
+
+
+def _parse_file_header_optional_u64_fields(buf, header):
+    for name, offset, end in _OPTIONAL_U64_HEADER_FIELDS:
+        if header_contains_field(buf, header['header_size'], end):
+            header[name] = read_uint64_le(buf, offset)
+
+
+def _parse_file_header_optional_u32_fields(buf, header):
+    for name, offset, end in _OPTIONAL_U32_HEADER_FIELDS:
+        if header_contains_field(buf, header['header_size'], end):
+            header[name] = int.from_bytes(buf[offset:end], 'little')
+
+
+_OPTIONAL_U64_HEADER_FIELDS = (
+    ('n_data', 208, 216),
+    ('n_fields', 216, 224),
+    ('n_tags', 224, 232),
+    ('n_entry_arrays', 232, 240),
+    ('data_hash_chain_depth', 240, 248),
+    ('field_hash_chain_depth', 248, 256),
+    ('tail_entry_offset', 264, 272),
+)
+
+
+_OPTIONAL_U32_HEADER_FIELDS = (
+    ('tail_entry_array_offset', 256, 260),
+    ('tail_entry_array_n_entries', 260, 264),
+)
 
 
 def header_contains_field(buf, header_size, end):

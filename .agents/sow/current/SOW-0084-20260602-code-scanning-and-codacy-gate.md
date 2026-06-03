@@ -1416,6 +1416,36 @@ Complexity remediation evidence:
     findings, down from 227 after Batch 10. Remaining Python runtime findings
     are limited to `compress.py`, `directory_reader.py`, `facade.py`,
     `hash.py`, and `header.py`.
+- Batch 12, remaining Python core runtime internals:
+  - Refactored `python/journal/compress.py` zstd frame-content-size parsing
+    into descriptor, offset, length, and decode helpers without changing the
+    bounded decompression pre-check.
+  - Refactored `python/journal/directory_reader.py` multi-file candidate
+    selection and entry-key ordering into next-key, realtime-bound,
+    current-key, seqnum, boot, realtime, and hash comparison helpers without
+    changing forward/backward merge order.
+  - Refactored `python/journal/facade.py` export formatting into metadata,
+    preferred-field, remaining-field, and non-UTF8 raw-field helpers without
+    changing export order or binary export representation.
+  - Refactored `python/journal/hash.py` Jenkins lookup3 hashing into
+    12-byte-block and tail-word helpers and split `parse_match_string()` field
+    validation without changing error classes or accepted field-name rules.
+  - Refactored `python/journal/header.py` file-header parsing into prefix,
+    base-header, declared-size, and optional-field table helpers without
+    changing historical-header field interpretation.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for
+    `python/journal/compress.py`, `python/journal/directory_reader.py`,
+    `python/journal/facade.py`, `python/journal/hash.py`, and
+    `python/journal/header.py`.
+  - `python3 -m py_compile python/journal/compress.py
+    python/journal/directory_reader.py python/journal/facade.py
+    python/journal/hash.py python/journal/header.py` passed.
+  - `PYTHONPATH=python .local/python-venv/bin/python python/test_all.py`
+    passed.
+  - Refreshed local all-tracked-file Lizard inventory now reports 213 critical
+    findings, down from 220 after Batch 11. No `python/journal/*` core runtime
+    findings remain; the 10 remaining Python findings are in `python/adapter.py`,
+    Python CLI helpers, and `python/test_all.py`.
 
 Reviewer findings:
 

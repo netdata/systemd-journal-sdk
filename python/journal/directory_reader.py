@@ -152,57 +152,58 @@ class DirectoryReader:
         if self._candidates[reader_index] is not None:
             return
         reader = self._readers[reader_index]
-
         while True:
-            ok = reader.step() if direction == 0 else reader.step_back()
-            if not ok:
-                return
-            key = reader.current_entry_key()
+            key = self._next_candidate_key(reader, direction)
             if key is None:
-                continue
-            if self._realtime_seek_bound is not None:
-                usec, seek_direction = self._realtime_seek_bound
-                if (seek_direction == 0 and key['realtime'] < usec) or (
-                    seek_direction == 1 and key['realtime'] > usec
-                ):
-                    continue
-            if self._current_key is not None:
-                cmp = self._compare_entry_keys(key, self._current_key)
-                if (direction == 0 and cmp <= 0) or (direction == 1 and cmp >= 0):
-                    continue
+                return
+            if self._candidate_key_is_eligible(key, direction):
+                self._candidates[reader_index] = {'reader_index': reader_index, 'key': key}
+                return
 
-            self._candidates[reader_index] = {'reader_index': reader_index, 'key': key}
-            return
+    def _next_candidate_key(self, reader, direction):
+        ok = reader.step() if direction == 0 else reader.step_back()
+        if not ok:
+            return None
+        return reader.current_entry_key()
+
+    def _candidate_key_is_eligible(self, key, direction):
+        if key is None:
+            return False
+        return (
+            self._key_matches_realtime_bound(key) and
+            self._key_is_after_current(key, direction)
+        )
+
+    def _key_matches_realtime_bound(self, key):
+        if self._realtime_seek_bound is None:
+            return True
+        usec, seek_direction = self._realtime_seek_bound
+        if seek_direction == 0:
+            return key['realtime'] >= usec
+        return key['realtime'] <= usec
+
+    def _key_is_after_current(self, key, direction):
+        if self._current_key is None:
+            return True
+        cmp = self._compare_entry_keys(key, self._current_key)
+        if direction == 0:
+            return cmp > 0
+        return cmp < 0
 
     def _compare_entry_keys(self, a, b):
-        if (
-            a['boot_id'] == b['boot_id'] and
-            a['monotonic'] == b['monotonic'] and
-            a['realtime'] == b['realtime'] and
-            a['xor_hash'] == b['xor_hash'] and
-            a['seqnum_id'] == b['seqnum_id'] and
-            a['seqnum'] == b['seqnum']
-        ):
+        if _entry_keys_equal(a, b):
             return 0
+        return _first_nonzero_cmp(
+            _compare_seqnum_order(a, b),
+            self._compare_boot_order(a, b),
+            _cmp_int(a['realtime'], b['realtime']),
+            _cmp_int(a['xor_hash'], b['xor_hash']),
+        )
 
-        if a['seqnum_id'] == b['seqnum_id']:
-            cmp = _cmp_int(a['seqnum'], b['seqnum'])
-            if cmp != 0:
-                return cmp
-
+    def _compare_boot_order(self, a, b):
         if a['boot_id'] == b['boot_id']:
-            cmp = _cmp_int(a['monotonic'], b['monotonic'])
-            if cmp != 0:
-                return cmp
-        else:
-            cmp = self._compare_boot_ids(a['boot_id'], b['boot_id'])
-            if cmp != 0:
-                return cmp
-
-        cmp = _cmp_int(a['realtime'], b['realtime'])
-        if cmp != 0:
-            return cmp
-        return _cmp_int(a['xor_hash'], b['xor_hash'])
+            return _cmp_int(a['monotonic'], b['monotonic'])
+        return self._compare_boot_ids(a['boot_id'], b['boot_id'])
 
     def _compare_boot_ids(self, a, b):
         a_newest = self._boot_newest.get(a)
@@ -441,3 +442,27 @@ def _build_boot_newest(readers):
 
 def _cmp_int(a, b):
     return (a > b) - (a < b)
+
+
+def _entry_keys_equal(a, b):
+    return (
+        a['boot_id'] == b['boot_id'] and
+        a['monotonic'] == b['monotonic'] and
+        a['realtime'] == b['realtime'] and
+        a['xor_hash'] == b['xor_hash'] and
+        a['seqnum_id'] == b['seqnum_id'] and
+        a['seqnum'] == b['seqnum']
+    )
+
+
+def _compare_seqnum_order(a, b):
+    if a['seqnum_id'] != b['seqnum_id']:
+        return 0
+    return _cmp_int(a['seqnum'], b['seqnum'])
+
+
+def _first_nonzero_cmp(*values):
+    for value in values:
+        if value != 0:
+            return value
+    return 0

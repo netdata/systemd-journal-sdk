@@ -38,6 +38,9 @@ Last updated: 2026-06-03
   locally Lizard-clean, fixed a temporary DATA/FIELD linking regression found
   during diff review, passed the full Python package test suite, and reduced
   the refreshed local all-tracked-file Lizard inventory to 220 critical
+  findings. Batch 12 made all remaining `python/journal/*` core runtime files
+  locally Lizard-clean, passed the full Python package test suite, and reduced
+  the refreshed local all-tracked-file Lizard inventory to 213 critical
   findings. Remaining work is to continue complexity remediation, record final
   scanner results, and complete whole-SOW review.
 
