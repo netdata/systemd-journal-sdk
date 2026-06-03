@@ -2702,7 +2702,12 @@ Batch 48:
   - CodeQL and Codacy SARIF workflows both passed for `918b915`.
   - GitHub code scanning still reported the same CodeQL alert at
     `python/journal/writer.py:104`.
-  - Final disposition through GitHub code-scanning dismissal is pending.
+  - CodeQL and Codacy SARIF workflows both passed for `3201e14`.
+  - GitHub code-scanning alert `2702` was dismissed as `false positive` with
+    the recorded systemd-compatible explicit-override rationale.
+  - Post-dismiss open-current export for `3201e14` reported 17 alerts: 10
+    `Lizard_file-nloc-critical`, 4 `Lizard_ccn-critical`, and 3 Agentlinter
+    instruction-file findings. There were no open CodeQL current alerts.
 
 Reviewer findings:
 

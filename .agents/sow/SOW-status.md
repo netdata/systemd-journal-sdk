@@ -219,9 +219,12 @@ Last updated: 2026-06-03
   updated for new-file-only mode and umask behavior. Go tests, affected Rust
   tests, Python package tests, a targeted Node file-mode smoke, and the full
   Node package suite with an explicit 8 GB V8 heap passed. Remaining work is
-  to dismiss the intentional Python file-mode override CodeQL alert with the
-  recorded systemd evidence, record post-disposition scanner results, address
-  residual current-commit findings, and complete whole-SOW review.
+  Batch 48 confirmed in-source CodeQL suppression was not honored, dismissed
+  the intentional Python file-mode override alert as a false positive with the
+  recorded systemd evidence, and reduced open current alerts to 17: 10 Lizard
+  file-size findings, 4 Lizard CCN findings, and 3 Agentlinter instruction-file
+  findings. Remaining work is to address or disposition those residual
+  findings and complete whole-SOW review.
 
 ## Pending
 
