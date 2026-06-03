@@ -413,7 +413,7 @@ static int setup_synthetic_fss(char **ret_verification_key) {
         sd_id128_t machine, boot;
         size_t mpk_size, seed_size, state_size;
         uint8_t *mpk, *seed, *state;
-        struct FSSHeader h = {};
+        struct FSSHeader h;
         int r;
 
         assert(ret_verification_key);
@@ -438,9 +438,13 @@ static int setup_synthetic_fss(char **ret_verification_key) {
         state_size = FSPRG_stateinbytes(FSPRG_RECOMMENDED_SECPAR);
         state = alloca_safe(state_size);
 
+#if MATRIX_FSPRG_RETURNS_INT
         r = generate_synthetic_fss_state(mpk, seed, seed_size, state);
         if (r < 0)
                 return r;
+#else
+        (void) generate_synthetic_fss_state(mpk, seed, seed_size, state);
+#endif
 
         h = synthetic_fss_header(machine, boot, start * interval, interval, state_size);
         r = write_synthetic_fss_file(fss_path, &h, state, state_size);

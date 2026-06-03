@@ -2080,6 +2080,40 @@ Batch 29:
     .local/sow-0084-benchmark-dir-fix-smoke --skip-verify --max-size-bytes
     8388608 --rotation-max-size-bytes 8388608`.
 
+Batch 30:
+
+- Scope: actionable Codacy cloud finding after commit
+  `e9e244b9ecf68d06f1afbf99920ae9b25480fd29`.
+- Cloud evidence:
+  - `codacy repository gh netdata systemd-journal-sdk --output json` reported
+    `lastAnalysedCommit.sha=e9e244b9ecf68d06f1afbf99920ae9b25480fd29` and
+    5 quality issues.
+  - `codacy issues gh netdata systemd-journal-sdk --branch master --output
+    json` exported 5 quality issues under `.local/codacy/`.
+  - `codacy findings gh netdata systemd-journal-sdk --output json` exported
+    0 security findings under `.local/codacy/`.
+  - Remaining patterns were one `cppcheck_knownConditionTrueFalse` in
+    `tests/datasets/ingesters/systemd/dataset_ingester.c` and four
+    `Lizard_file-nloc-critical` file-size findings.
+- Changes:
+  - Fixed the Cppcheck finding by making the systemd FSS compatibility helper
+    check negative FSS return values only when compiling against systemd
+    versions whose FSS helpers return `int`. Newer void-return FSS helper
+    builds still generate the synthetic FSS state, but no longer run a
+    meaningless `r < 0` check against a helper path that cannot fail.
+  - Removed a redundant `struct FSSHeader` zero-initialization reported by
+    local Cppcheck while validating the same function.
+- Validation:
+  - Local Cppcheck on
+    `tests/datasets/ingesters/systemd/dataset_ingester.c` reported no
+    remaining warnings after the cleanup.
+  - `tests/datasets/ingesters/systemd/build.sh` rebuilt
+    `test-dataset-ingester` against repo-local systemd v260.1 successfully.
+  - `PYTHONPATH=.local/python-deps python3
+    tests/datasets/ingesters/run_dataset_ingesters.py --language systemd
+    --both` passed: 349 accepted records, 9 rejection records, and stock
+    `journalctl --verify --file` passed for the generated correctness journal.
+
 Reviewer findings:
 
 - Pending. The current SOW is not ready for terminal reviewer review because
