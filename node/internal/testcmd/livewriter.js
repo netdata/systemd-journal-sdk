@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
-import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { SealOptions } from '../../src/lib/seal.js';
 import { Writer } from '../../src/lib/writer.js';
 import { WriterLock } from '../../src/lib/lock.js';
+import { safeMkdirSync, safeWriteFileSync } from '../../src/lib/fs-safe.js';
 
 function parseArgs(argv) {
   const args = {
@@ -120,8 +120,8 @@ function sleep(ms) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  mkdirSync(dirname(args.path), { recursive: true });
-  mkdirSync(dirname(args.readyFile), { recursive: true });
+  safeMkdirSync(dirname(args.path), { recursive: true });
+  safeMkdirSync(dirname(args.readyFile), { recursive: true });
 
   const lock = WriterLock.acquire(args.path);
   let writer;
@@ -178,7 +178,7 @@ const appendLiveEntries = async (writer, args) => {
 async function handleLiveAppendSideEffects(writer, args, index) {
   if (index === 0) {
     writer.sync();
-    writeFileSync(args.readyFile, 'ready\n', { mode: 0o600 });
+    safeWriteFileSync(args.readyFile, 'ready\n', { mode: 0o600 });
   } else if (args.syncEvery > 0 && (index + 1) % args.syncEvery === 0) {
     writer.sync();
   }

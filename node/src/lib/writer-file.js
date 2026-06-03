@@ -1,6 +1,7 @@
-import { closeSync, fsyncSync, openSync, readSync } from 'node:fs';
+import { closeSync, fsyncSync, readSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { readUint64LE } from './binary.js';
+import { safeOpenSync } from './fs-safe.js';
 import {
   HEADER_SIZE,
   OBJECT_HEADER_SIZE,
@@ -65,7 +66,7 @@ export function fieldCacheKey(payload) {
 
 export function syncParentDirectory(path) {
   if (process.platform === 'win32') return false;
-  const dirFd = openSync(dirname(path), 'r');
+  const dirFd = safeOpenSync(dirname(path), 'r');
   try {
     fsyncSync(dirFd);
     return true;

@@ -2,10 +2,11 @@
 // Reads .journal, .journal~, .journal.zst, .journal~.zst files.
 // Uses entry-array-based iteration (matching Go/Rust).
 
-import { readFileSync, openSync, readSync, closeSync, statSync, unlinkSync, rmdirSync } from 'node:fs';
+import { readSync, closeSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { TextDecoder } from 'node:util';
 import { readUint64LE, uuidToString } from './binary.js';
+import { safeOpenSync, safeReadFileSync, safeRmdirSync, safeStatSync, safeUnlinkSync } from './fs-safe.js';
 import {
   parseFileHeader, parseObjectHeader,
   HEADER_MIN_SIZE, HEADER_SIZE, OBJECT_TYPE_ENTRY, OBJECT_TYPE_ENTRY_ARRAY,
@@ -80,9 +81,9 @@ export class FileReader {
     try {
       if (isZstFile(path)) {
         cleanupPath = decompressZstToTemp(path, 'node-sdk-journal');
-        buffer = readFileSync(cleanupPath);
+        buffer = safeReadFileSync(cleanupPath);
       } else {
-        buffer = readFileSync(path);
+        buffer = safeReadFileSync(path);
       }
 
       if (buffer.length < HEADER_MIN_SIZE) {
@@ -96,10 +97,10 @@ export class FileReader {
       return new FileReader(buffer, header, path, cleanupPath);
     } catch (err) {
       if (cleanupPath) {
-        try { unlinkSync(cleanupPath); } catch {
+        try { safeUnlinkSync(cleanupPath); } catch {
           // Best-effort cleanup while preserving the original open failure.
         }
-        try { rmdirSync(dirname(cleanupPath)); } catch {
+        try { safeRmdirSync(dirname(cleanupPath)); } catch {
           // Best-effort cleanup while preserving the original open failure.
         }
       }
@@ -185,7 +186,7 @@ export class FileReader {
 
   _readRefreshSnapshot() {
     try {
-      const stat = statSync(this.path);
+      const stat = safeStatSync(this.path);
       if (!stat.isFile() || stat.size <= 0) return null;
       return { size: stat.size, header: this._readCurrentHeader() };
     } catch {
@@ -217,7 +218,7 @@ export class FileReader {
     const oldState = this._readerStateSnapshot();
 
     try {
-      const buffer = readFileSync(this.path);
+      const buffer = safeReadFileSync(this.path);
       if (buffer.length < HEADER_MIN_SIZE) throw new Error('file too small for journal header');
       const header = parseFileHeader(buffer);
       ensureSupportedHeader(header);
@@ -254,7 +255,7 @@ export class FileReader {
   }
 
   _readCurrentHeader() {
-    const fd = openSync(this.path, 'r');
+    const fd = safeOpenSync(this.path, 'r');
     try {
       const headerBuf = Buffer.alloc(HEADER_SIZE);
       const bytesRead = readSync(fd, headerBuf, 0, HEADER_SIZE, 0);
@@ -569,10 +570,10 @@ export class FileReader {
   close() {
     this._resetCachedEntryDataState();
     if (this.cleanupPath) {
-      try { unlinkSync(this.cleanupPath); } catch {
+      try { safeUnlinkSync(this.cleanupPath); } catch {
         // Best-effort cleanup on reader close.
       }
-      try { rmdirSync(dirname(this.cleanupPath)); } catch {
+      try { safeRmdirSync(dirname(this.cleanupPath)); } catch {
         // Best-effort cleanup on reader close.
       }
       this.cleanupPath = null;

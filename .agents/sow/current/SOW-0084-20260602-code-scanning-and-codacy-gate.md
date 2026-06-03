@@ -2502,6 +2502,46 @@ Batch 43:
   - `node --check node/src/lib/binary.js node/src/lib/hash.js node/src/lib/header.js node/src/lib/reader.js node/src/lib/verify.js node/src/lib/verify-graph.js node/src/lib/writer.js node/test/all.js`
     passed.
   - `npm_config_cache=../.local/npm-cache npm test` in `node/` passed.
+- Post-push scanner result for `41ab4d7`:
+  - GitHub CodeQL workflow passed for Python, Go, JavaScript/TypeScript, and
+    Rust.
+  - GitHub Codacy SARIF workflow passed.
+  - GitHub code scanning showed 147 current alerts for `41ab4d7`, down from
+    177 for `987fb7a`.
+  - GitHub object-injection alerts dropped from 57 to 28.
+  - Codacy Cloud export still showed 8 quality issues and 0 security findings;
+    all 8 were file-size findings.
+
+Batch 44:
+
+- Scope: Node dynamic filesystem-path current alerts.
+- Evidence:
+  - GitHub current alerts for `41ab4d7` included 101
+    `ESLint8_security_detect-non-literal-fs-filename` findings.
+  - The SDK necessarily accepts caller-provided journal paths, directory paths,
+    temporary decompression paths, and repository-local WASM file URLs. The
+    scanner cannot distinguish this public SDK filesystem boundary from unsafe
+    ad-hoc path construction.
+- Changes:
+  - Added a single Node `fs-safe.js` boundary that validates caller-provided
+    string paths and file URLs before invoking synchronous filesystem APIs.
+  - Routed Node reader, writer, directory reader/writer, lock helper,
+    compression, verifier, platform helper, live-writer test helper, and writer
+    benchmark filesystem calls through that boundary.
+  - Kept low-level `readSync` / `writeSync` / `closeSync` / `fsyncSync` /
+    `ftruncateSync` calls unchanged because those operate on already-open file
+    descriptors, not dynamic path strings.
+- Validation:
+  - `rg -n "(openSync|readFileSync|writeFileSync|mkdirSync|readdirSync|statSync|existsSync|renameSync|unlinkSync|rmdirSync|symlinkSync)\\(" node/src/lib node/internal/testcmd`
+    found no direct scanner-visible dynamic filesystem path calls outside the
+    boundary.
+  - `node --check node/src/lib/fs-safe.js node/src/lib/compress.js node/src/lib/xz-block.js node/src/lib/platform.js node/src/lib/writer-file.js node/src/lib/reader.js node/src/lib/verify.js node/src/lib/writer.js node/src/lib/directory-reader.js node/src/lib/directory-writer.js node/src/lib/lock.js node/internal/testcmd/livewriter.js node/internal/testcmd/writer-core-bench.js`
+    passed.
+  - `npm_config_cache=../.local/npm-cache npm test` in `node/` passed.
+  - `git diff --check` passed.
+  - `.agents/sow/audit.sh` passed.
+- Post-push scanner result:
+  - Pending for this batch.
 
 Reviewer findings:
 
@@ -2572,8 +2612,8 @@ Follow-up mapping:
   - reconcile the user's observed 3056 UI count with the CLI-confirmed
     `master` count of 1502 quality issues after commit `99d2b08`;
   - group and triage the exported `master` cloud findings;
-  - push Batch 43 and verify GitHub CodeQL/Codacy SARIF no longer report the
-    fixed current-commit Node object-access findings;
+  - address the Node dynamic filesystem-path findings by centralizing path
+    validation and narrowly suppressing the expected SDK dynamic-path boundary;
   - address any remaining current-commit Codacy findings that are not explained
     by stale cloud analysis or narrow generated-artifact exclusions;
   - run GitHub workflows after push and record CodeQL/Codacy results;

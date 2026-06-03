@@ -1,9 +1,10 @@
 // Journal file writer. Creates regular-by-default keyed-hash journal files.
 // Default options are compatible with stock journalctl readers during live append.
 
-import { openSync, writeSync, readSync, closeSync, ftruncateSync, fsyncSync, renameSync } from 'node:fs';
+import { writeSync, readSync, closeSync, ftruncateSync, fsyncSync } from 'node:fs';
 import { zstdCompressSync } from 'node:zlib';
 import { readUint64LE, writeUint64LE, writeUint32LE, align8, randomUUID, isZeroUUID, bufEqual, stringToUUID } from './binary.js';
+import { safeOpenSync, safeRenameSync } from './fs-safe.js';
 import {
   serializeFileHeader, parseObjectHeader, writeObjectHeader,
   HEADER_SIZE, OBJECT_TYPE_DATA, OBJECT_TYPE_ENTRY,
@@ -87,7 +88,7 @@ export class Writer {
   static create(path, opts = {}) {
     let fd;
     try {
-      fd = openSync(path, 'w+', 0o640);
+      fd = safeOpenSync(path, 'w+', 0o640);
       ftruncateSync(fd, 0);
       const w = new Writer(fd, path);
       w.compression = normalizeCompression(opts.compression);
@@ -110,7 +111,7 @@ export class Writer {
   static open(path, opts = {}) {
     let fd;
     try {
-      fd = openSync(path, 'r+');
+      fd = safeOpenSync(path, 'r+');
       const header = readAppendHeaderFromFd(fd);
       validateAppendHeaderForWrite(header);
       const tailSize = readObjectSizeFromFd(fd, header.tail_object_offset);
@@ -891,7 +892,7 @@ export class Writer {
     fsyncSync(this.fd);
     try {
       if (this.path !== path) {
-        renameSync(this.path, path);
+        safeRenameSync(this.path, path);
       }
       this.path = path;
       let closeError = null;

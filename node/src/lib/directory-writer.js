@@ -1,10 +1,19 @@
 // Directory writer (Log) for managing a journal directory with rotation and retention.
 
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readSync, readdirSync, renameSync, unlinkSync, statSync } from 'node:fs';
+import { closeSync, fsyncSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { isZeroUUID, randomUUID, stringToUUID, uuidToString } from './binary.js';
 import { Writer, normalizeFieldNamePolicy, prepareFieldsForPolicy, prepareRawPayloadsForPolicy, writerPolicyForLogPolicy } from './writer.js';
 import { HEADER_SIZE, STATE_ONLINE, parseFileHeader, parseObjectHeader, normalizeJournalMaxFileSize } from './header.js';
+import {
+  safeExistsSync,
+  safeMkdirSync,
+  safeOpenSync,
+  safeReaddirSync,
+  safeRenameSync,
+  safeStatSync,
+  safeUnlinkSync,
+} from './fs-safe.js';
 
 const DEFAULT_MAX_ENTRIES = 0;
 const DEFAULT_MAX_BYTES = 0;
@@ -138,7 +147,7 @@ export class Log {
     if (this.strictSystemdNaming && chainState.activePath) {
       this._archiveOnlineChainActive(chainState.activePath);
     }
-    if (this.strictSystemdNaming && existsSync(this._systemdActivePath())) {
+    if (this.strictSystemdNaming && safeExistsSync(this._systemdActivePath())) {
       this._attachExistingActive(this._systemdActivePath());
     }
     if (!this.strictSystemdNaming) {
@@ -147,7 +156,7 @@ export class Log {
   }
 
   _ensureDirectory() {
-    mkdirSync(this.directory, { recursive: true });
+    safeMkdirSync(this.directory, { recursive: true });
   }
 
   _findOrCreateActiveFile() {
@@ -253,7 +262,7 @@ export class Log {
 
   _openExistingActive(options) {
     for (let attempt = 0; attempt < 2; attempt++) {
-      if (!this.activePath || !existsSync(this.activePath)) return false;
+      if (!this.activePath || !safeExistsSync(this.activePath)) return false;
       const opened = this._tryOpenExistingActive(this.activePath, true);
       if (opened) return true;
       this._ensureActivePath(options);
@@ -360,12 +369,12 @@ export class Log {
   _disposeActiveFile(path) {
     let attempt = 0n;
     let target = disposedJournalPath(path, attempt);
-    while (existsSync(target)) {
+    while (safeExistsSync(target)) {
       attempt += 1n;
       target = disposedJournalPath(path, attempt);
     }
     try {
-      renameSync(path, target);
+      safeRenameSync(path, target);
     } catch (error) {
       if (error?.code === 'ENOENT') return;
       throw error;
@@ -409,7 +418,7 @@ export class Log {
       tailMonotonic: 0n,
       tailBootId: null,
     };
-    for (const name of readdirSync(this.directory)) {
+    for (const name of safeReaddirSync(this.directory)) {
       if (!parseArchivedJournalName(name, this.source)) continue;
       const path = join(this.directory, name);
       try {
@@ -465,7 +474,7 @@ export class Log {
 
   _collectRetentionArchives() {
     const archives = [];
-    for (const entry of readdirSync(this.directory)) {
+    for (const entry of safeReaddirSync(this.directory)) {
       const archive = this._retentionArchiveForEntry(entry);
       if (archive) archives.push(archive);
     }
@@ -478,7 +487,7 @@ export class Log {
     if (!parsed) return null;
     const fullPath = join(this.directory, parsed.name);
     try {
-      const stat = statSync(fullPath);
+      const stat = safeStatSync(fullPath);
       return {
         name: parsed.name,
         path: fullPath,
@@ -493,7 +502,7 @@ export class Log {
 
   _addActiveRetentionSize(state) {
     try {
-      const stat = statSync(state.activePath);
+      const stat = safeStatSync(state.activePath);
       state.totalBytes += this._retainedSize(state.activePath, stat.size);
       state.fileCount += 1;
     } catch {
@@ -723,7 +732,7 @@ function validateJournalSource(source) {
 }
 
 function readJournalHeader(path) {
-  const fd = openSync(path, 'r');
+  const fd = safeOpenSync(path, 'r');
   try {
     const headerBuf = Buffer.alloc(HEADER_SIZE);
     const bytesRead = readSync(fd, headerBuf, 0, HEADER_SIZE, 0);
@@ -735,7 +744,7 @@ function readJournalHeader(path) {
 }
 
 function committedJournalSize(path, fallback) {
-  const fd = openSync(path, 'r');
+  const fd = safeOpenSync(path, 'r');
   try {
     const headerBuf = Buffer.alloc(HEADER_SIZE);
     const bytesRead = readSync(fd, headerBuf, 0, HEADER_SIZE, 0);
@@ -762,7 +771,7 @@ function align8BigInt(value) {
 
 function unlinkIfExists(path) {
   try {
-    unlinkSync(path);
+    safeUnlinkSync(path);
     return true;
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error;
@@ -900,7 +909,7 @@ function saturatingSubBigInt(value, amount) {
 
 function syncDirectory(path) {
   if (process.platform === 'win32') return false;
-  const fd = openSync(path, 'r');
+  const fd = safeOpenSync(path, 'r');
   try {
     fsyncSync(fd);
     return true;

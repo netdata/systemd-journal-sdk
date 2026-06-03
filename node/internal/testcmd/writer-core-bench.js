@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
-import { mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { Log, LOG_IDENTITY_STRICT, Writer } from '../../src/index.js';
+import { safeMkdirSync, safeReaddirSync, safeStatSync } from '../../src/lib/fs-safe.js';
 
 const BASE_REALTIME_USEC = 1700000000000000n;
 const BASE_MONOTONIC_USEC = 50000000n;
@@ -151,9 +152,9 @@ function collectJournalFiles(root) {
   const files = [];
   let total = 0;
   const walk = (dir) => {
-    for (const name of readdirSync(dir)) {
+    for (const name of safeReaddirSync(dir)) {
       const path = join(dir, name);
-      const st = statSync(path);
+      const st = safeStatSync(path);
       if (st.isDirectory()) {
         walk(path);
       } else if (name.endsWith('.journal')) {
@@ -274,7 +275,7 @@ try {
     emit(result, result.records === args.rows && result.errors.length === 0 ? 0 : 1);
   }
 
-  mkdirSync(dirname(args.output), { recursive: true });
+  safeMkdirSync(dirname(args.output), { recursive: true });
   rmSync(args.output, { force: true });
   const writer = Writer.create(args.output, {
     machineId: MACHINE_ID,
@@ -314,7 +315,7 @@ try {
   result.close_seconds = (performance.now() - closeStart) / 1000;
   result.total_writer_seconds = result.append_seconds + result.close_seconds;
   result.journal_path = journalPath;
-  result.journal_size_bytes = statSync(journalPath).size;
+  result.journal_size_bytes = safeStatSync(journalPath).size;
   emit(result, result.records === args.rows ? 0 : 1);
 } catch (error) {
   emit({

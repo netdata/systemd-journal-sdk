@@ -2,10 +2,10 @@
 // Validates structural integrity of unsealed journal files.
 // Sealed FSS tag/HMAC verification is implemented for sealed files with a key.
 
-import { readFileSync, unlinkSync, rmdirSync } from 'node:fs';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { dirname } from 'node:path';
 import { FileReader } from './reader.js';
+import { safeReadFileSync, safeRmdirSync, safeUnlinkSync } from './fs-safe.js';
 import { parseEntryObject, parseDataObject } from './entry.js';
 import {
   INCOMPATIBLE_COMPACT, INCOMPATIBLE_COMPRESSED_XZ, INCOMPATIBLE_COMPRESSED_LZ4,
@@ -152,15 +152,15 @@ function readJournalFileForVerify(path) {
   try {
     if (isZstFile(path)) {
       cleanupPath = decompressZstToTemp(path, 'node-sdk-verify');
-      return readFileSync(cleanupPath);
+      return safeReadFileSync(cleanupPath);
     }
-    return readFileSync(path);
+    return safeReadFileSync(path);
   } finally {
     if (cleanupPath) {
-      try { unlinkSync(cleanupPath); } catch {
+      try { safeUnlinkSync(cleanupPath); } catch {
         // Best-effort cleanup while preserving the verification result.
       }
-      try { rmdirSync(dirname(cleanupPath)); } catch {
+      try { safeRmdirSync(dirname(cleanupPath)); } catch {
         // Best-effort cleanup while preserving the verification result.
       }
     }

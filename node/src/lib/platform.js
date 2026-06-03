@@ -1,12 +1,12 @@
 import { randomFillSync } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { safeReadFileSync } from './fs-safe.js';
 
 export const UNKNOWN_PROCESS_START_TIME = 'unavailable';
 
 export function readHostBootIdText() {
   if (process.platform !== 'linux') return '';
   try {
-    const text = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim().toLowerCase();
+    const text = safeReadFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim().toLowerCase();
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(text)) {
       return text;
     }
@@ -57,7 +57,7 @@ export function processStartTime(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   if (process.platform !== 'linux') return null;
   try {
-    return parseLinuxProcStatStartTime(readFileSync(`/proc/${pid}/stat`, 'utf8'));
+    return parseLinuxProcStatStartTime(safeReadFileSync(`/proc/${pid}/stat`, 'utf8'));
   } catch {
     return null;
   }

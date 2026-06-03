@@ -1,17 +1,19 @@
 import {
   closeSync,
   constants,
-  existsSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  statSync,
-  unlinkSync,
   writeSync,
   fsyncSync,
 } from 'node:fs';
 import { dirname } from 'node:path';
 import { createLockOwner, lockOwnerIsActive } from './platform.js';
+import {
+  safeExistsSync,
+  safeMkdirSync,
+  safeOpenSync,
+  safeReadFileSync,
+  safeStatSync,
+  safeUnlinkSync,
+} from './fs-safe.js';
 
 const LOCK_VERSION = 'systemd-journal-sdk-lock-v1';
 const STALE_GRACE_MS = 2000;
@@ -27,16 +29,16 @@ export class WriterLock {
     const owner = createLockOwner();
 
     for (;;) {
-      mkdirSync(dirname(lockPath), { recursive: true, mode: 0o750 });
+      safeMkdirSync(dirname(lockPath), { recursive: true, mode: 0o750 });
       let fd;
       try {
-        fd = openSync(lockPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+        fd = safeOpenSync(lockPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
       } catch (error) {
         if (error.code !== 'EEXIST') throw error;
         const { stale, holder } = lockFileIsStale(lockPath);
         if (!stale) throw new Error(`journal writer lock held by ${holder}`);
         try {
-          unlinkSync(lockPath);
+          safeUnlinkSync(lockPath);
         } catch (unlinkError) {
           if (unlinkError.code !== 'ENOENT') throw unlinkError;
         }
@@ -54,7 +56,7 @@ export class WriterLock {
           // Preserve the original error.
         }
         try {
-          unlinkSync(lockPath);
+          safeUnlinkSync(lockPath);
         } catch {
           // Best effort cleanup.
         }
@@ -77,7 +79,7 @@ export class WriterLock {
     }
     if (sameOwner(owner, this.owner)) {
       try {
-        unlinkSync(this.path);
+        safeUnlinkSync(this.path);
       } catch (error) {
         if (error.code !== 'ENOENT') throw error;
       }
@@ -105,7 +107,7 @@ function lockFileIsStale(path) {
   try {
     owner = readLockOwner(path);
   } catch {
-    if (existsSync(path) && Date.now() - statSync(path).mtimeMs <= STALE_GRACE_MS) {
+    if (safeExistsSync(path) && Date.now() - safeStatSync(path).mtimeMs <= STALE_GRACE_MS) {
       return { stale: false, holder: 'partially-created lock' };
     }
     return { stale: true, holder: 'malformed stale lock' };
@@ -116,7 +118,7 @@ function lockFileIsStale(path) {
 }
 
 function readLockOwner(path) {
-  const lines = readFileSync(path, 'utf8').trim().split('\n');
+  const lines = safeReadFileSync(path, 'utf8').trim().split('\n');
   if (lines.length < 4 || lines[0] !== LOCK_VERSION) {
     throw new Error('invalid lock metadata');
   }

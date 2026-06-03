@@ -1,15 +1,16 @@
 // Compression support and journal file name helpers.
 
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
+import { safeReadFileSync, safeWriteFileSync } from './fs-safe.js';
 
 export const MAX_UNCOMPRESSED_DATA_OBJECT_SIZE = 768 * 1024 * 1024;
 
 // Decompress zstd bytes or file path to a Buffer.
 export function decompressZstSync(input) {
-  const src = Buffer.isBuffer(input) ? input : readFileSync(input);
+  const src = Buffer.isBuffer(input) ? input : safeReadFileSync(input);
   return zstdDecompressSync(src);
 }
 
@@ -22,7 +23,7 @@ export function decompressZstdDataPayload(payload) {
 export function decompressZstToTemp(inputPath, prefix = 'node-journal') {
   const tempDir = mkdtempSync(join(tmpdir(), `${prefix}-`));
   const tempPath = join(tempDir, 'decompressed.journal');
-  writeFileSync(tempPath, decompressZstSync(inputPath), { flag: 'wx', mode: 0o600 });
+  safeWriteFileSync(tempPath, decompressZstSync(inputPath), { flag: 'wx', mode: 0o600 });
   return tempPath;
 }
 

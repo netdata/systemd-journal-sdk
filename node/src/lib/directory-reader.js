@@ -1,10 +1,10 @@
 // Directory reader for iterating across multiple journal files.
 
-import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { isJournalFileName } from './compress.js';
 import { FileReader, FilterBuilder } from './reader.js';
 import { uuidToString } from './binary.js';
+import { safeReaddirSync, safeStatSync } from './fs-safe.js';
 
 export class DirectoryReader {
   constructor() {
@@ -409,7 +409,7 @@ export class DirectoryReader {
 
 function collectJournalFiles(path) {
   const files = [];
-  const entries = readdirSync(path, { withFileTypes: true });
+  const entries = safeReaddirSync(path, { withFileTypes: true });
 
   for (const entry of entries) {
     const fullPath = join(path, entry.name);
@@ -435,7 +435,7 @@ function collectJournalFiles(path) {
 
 function isRegularFile(path) {
   try {
-    return statSync(path).isFile();
+    return safeStatSync(path).isFile();
   } catch {
     return false;
   }
@@ -443,7 +443,7 @@ function isRegularFile(path) {
 
 function isDirectory(path) {
   try {
-    return statSync(path).isDirectory();
+    return safeStatSync(path).isDirectory();
   } catch {
     return false;
   }
@@ -451,7 +451,7 @@ function isDirectory(path) {
 
 function readDirEntries(path) {
   try {
-    return readdirSync(path, { withFileTypes: true });
+    return safeReaddirSync(path, { withFileTypes: true });
   } catch {
     return [];
   }
