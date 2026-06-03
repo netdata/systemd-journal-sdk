@@ -159,10 +159,16 @@ Last updated: 2026-06-03
   modules. Syntax checks, CLI help smokes, corpus canonical unit tests, a
   20-entry Go/stock live-matrix smoke, a systemd-matrix summarize smoke, a
   corpus dry-run smoke, targeted Lizard, and whole-repository Lizard all
-  passed with no local Lizard warnings. Remaining work is to push Batch 36,
-  verify Codacy has analyzed the current commit instead of stale cloud
-  snapshots, address any residual current-commit findings, record final scanner
-  results, and complete whole-SOW review.
+  passed with no local Lizard warnings. Batch 37 addressed the current Codacy
+  cloud generated-lockfile exclusion, Python writer unused-public-import
+  warnings, Codacy Analysis CLI version drift, and Rust `journal-core`
+  file-size findings by splitting core object/file/writer helpers and tests
+  into focused modules. `journal-core` tests, Python writer compile, full
+  Python package tests, targeted Lizard, workflow lint, diff check, and SOW
+  audit passed. Remaining work is to push Batch 37, verify Codacy has analyzed
+  the current commit instead of stale cloud snapshots, address any residual
+  current-commit findings, record final scanner results, and complete
+  whole-SOW review.
 
 ## Pending
 

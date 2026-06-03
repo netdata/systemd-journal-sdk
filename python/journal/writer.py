@@ -37,13 +37,13 @@ from .seal import SealState, TAG_LENGTH, OBJECT_TYPE_TAG, COMPATIBLE_SEALED, COM
 from .writer_arena import _FileArena, _MappedArena
 from .writer_compression import (
     COMPRESSION_NONE, COMPRESSION_ZSTD, COMPRESSION_XZ, COMPRESSION_LZ4,
-    DEFAULT_COMPRESS_THRESHOLD, MIN_COMPRESS_THRESHOLD,
+    DEFAULT_COMPRESS_THRESHOLD, MIN_COMPRESS_THRESHOLD as _MIN_COMPRESS_THRESHOLD,
     _compressed_payload, _ensure_lz4_available, _ensure_xz_available,
     _ensure_zstd_available, _lz4_compress, _normalize_compress_threshold,
     _normalize_compression, _xz_compress, _zstd_compress,
 )
 from .writer_policy import (
-    FIELD_NAME_POLICY_JOURNALD, FIELD_NAME_POLICY_RAW, FIELD_NAME_POLICY_JOURNAL_APP,
+    FIELD_NAME_POLICY_JOURNALD, FIELD_NAME_POLICY_RAW as _FIELD_NAME_POLICY_RAW, FIELD_NAME_POLICY_JOURNAL_APP,
     _field_name_bytes, _normalize_field_name_policy, _prepare_fields_for_policy,
     _prepare_raw_payloads_for_policy, _validate_field_name_for_policy,
     _writer_policy_for_log_policy,
@@ -52,6 +52,8 @@ from .writer_options import (
     _current_time_ms, _dedupe_entry_items, _normalize_live_publish_every_entries,
     _uuid_option,
 )
+MIN_COMPRESS_THRESHOLD = _MIN_COMPRESS_THRESHOLD
+FIELD_NAME_POLICY_RAW = _FIELD_NAME_POLICY_RAW
 FIELD_CACHE_MAX_ENTRIES = 1024
 FIELD_CACHE_MAX_PAYLOAD_LEN = 128
 

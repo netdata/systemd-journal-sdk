@@ -2280,6 +2280,38 @@ Batch 36:
   - `git diff --check` passed.
   - `.agents/sow/audit.sh` passed.
 
+Batch 37:
+
+- Scope: current Codacy cloud findings after commit `7e3b3a6` for generated
+  lockfile exclusion, Python writer unused-public-import warnings, and Rust
+  `journal-core` file-size findings.
+- Changes:
+  - Added a narrow `.codacy.yml` exclusion for generated `rust/Cargo.lock`.
+    This avoids rewriting generated dependency lock data to satisfy a source
+    file-size rule.
+  - Corrected `.github/workflows/codacy-sarif.yml` to use the current npm
+    `@codacy/analysis-cli` package version.
+  - Preserved `journal.writer` compatibility exports while making the Python
+    writer constants explicit aliases, removing the Codacy/Pyflakes unused
+    import reports without hiding the public compatibility surface.
+  - Split Rust `journal-core` file-format internals into focused modules:
+    object compression, object hash/table traits, file iterators, file payload
+    helpers, mutable file creation/access helpers, writer entry-array helpers,
+    writer FSS/HMAC helpers, and writer/file test modules.
+  - Kept the existing public Rust import paths for `JournalFile` iterators and
+    DATA payload read context by re-exporting moved types.
+- Validation:
+  - `cargo test --manifest-path rust/Cargo.toml -p journal-core` passed.
+  - `python3 -m py_compile python/journal/writer.py` passed.
+  - `.local/python-venv/bin/python python/test_all.py` passed.
+  - Local non-comment line counts for the touched Rust core modules are below
+    1000, including `file.rs` 749, `object.rs` 775, and `writer.rs` 838.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reported no warnings for the
+    changed Rust core modules and `python/journal/writer.py`.
+  - `actionlint .github/workflows/codacy-sarif.yml` passed when available.
+  - `git diff --check` passed.
+  - `.agents/sow/audit.sh` passed.
+
 Reviewer findings:
 
 - Pending. The current SOW is not ready for terminal reviewer review because

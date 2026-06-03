@@ -1,17 +1,24 @@
 // Modules - keep some public for advanced usage
 pub mod cursor;
 pub mod file;
+mod file_iterators;
+mod file_mut;
+mod file_payload;
 pub mod filter;
 mod guarded_cell;
 pub mod hash;
 pub mod lock;
 pub mod mmap;
 mod object;
+mod object_compression;
+mod object_hash;
 pub mod offset_array;
 pub mod reader;
 pub mod sigbus;
 mod value_guard;
 pub mod writer;
+mod writer_entry_arrays;
+mod writer_seal;
 
 // Core functionality
 pub use file::{

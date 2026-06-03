@@ -17,7 +17,7 @@ permissions:
   security-events: write
 
 env:
-  CODACY_ANALYSIS_CLI_VERSION: "0.8.1"
+  CODACY_ANALYSIS_CLI_VERSION: "0.8.0"
   CODACY_CLOUD_CLI_VERSION: "1.1.1"
   NPM_CONFIG_REGISTRY: "https://registry.npmjs.org"
 
