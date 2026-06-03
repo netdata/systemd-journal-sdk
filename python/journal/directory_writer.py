@@ -43,6 +43,20 @@ class Log:
         config = config or {}
         if not path:
             raise ValueError('invalid journal directory')
+        self._configure_base_options(path, config)
+        self._configure_rotation_policy(config)
+        self._configure_retention_policy(config)
+        self._derive_rotation_defaults()
+        self._configure_identity(config)
+        self._initialize_paths_and_state()
+
+        os.makedirs(self._journal_dir, exist_ok=True)
+        chain_state = self._scan_chain_state()
+        self._resume_chain_state(chain_state, config)
+        self._open_initial_writer(chain_state)
+        self._apply_retention_on_open()
+
+    def _configure_base_options(self, path, config):
         self._root_path = path
         self._source = config.get('source', 'system')
         _validate_journal_source(self._source)
@@ -61,9 +75,8 @@ class Log:
         self._live_publish_every_entries = _option(config, 'live_publish_every_entries', 'livePublishEveryEntries')
         self._field_name_policy = _normalize_field_name_policy(_option(config, 'field_name_policy', 'fieldNamePolicy'))
 
+    def _configure_rotation_policy(self, config):
         rotation_policy = _option(config, 'rotation_policy', 'rotationPolicy')
-        retention_policy = _option(config, 'retention_policy', 'retentionPolicy')
-
         if rotation_policy is not None:
             self._max_entries = _positive_optional_number(
                 _option(rotation_policy, 'max_entries', 'maxEntries'),
@@ -87,6 +100,8 @@ class Log:
                 config.get('max_duration_usec', config.get('maxDurationUsec', DEFAULT_MAX_DURATION_USEC))
             )
 
+    def _configure_retention_policy(self, config):
+        retention_policy = _option(config, 'retention_policy', 'retentionPolicy')
         if retention_policy is not None:
             self._max_files = _positive_optional_number(
                 _option(retention_policy, 'max_files', 'maxFiles'),
@@ -112,6 +127,8 @@ class Log:
                     config.get('maxRetentionAgeUsec', DEFAULT_RETENTION_AGE_USEC),
                 )
             )
+
+    def _derive_rotation_defaults(self):
         if self._max_bytes == DEFAULT_MAX_BYTES and self._max_retention_bytes > 0:
             self._max_bytes = normalize_journal_max_file_size(
                 max(1, self._max_retention_bytes // DERIVED_ROTATION_FRACTION),
@@ -123,6 +140,7 @@ class Log:
                 (self._max_retention_age_usec + DERIVED_ROTATION_FRACTION - 1) // DERIVED_ROTATION_FRACTION,
             )
 
+    def _configure_identity(self, config):
         head_seqnum_option = _option(config, 'head_seqnum', 'headSeqnum')
         seqnum_id_option = _option(config, 'seqnum_id', 'seqnumId')
         boot_id_option = _option(config, 'boot_id', 'bootId')
@@ -136,6 +154,8 @@ class Log:
         self._seqnum_id = _uuid_from_config(seqnum_id_option) or random_uuid()
         self._boot_id = _uuid_from_config(boot_id_option) or random_uuid()
         self._machine_id = _uuid_from_config(machine_id_option) or random_uuid()
+
+    def _initialize_paths_and_state(self):
         self._journal_dir = os.path.join(self._root_path, uuid_to_string(self._machine_id))
         self._active_file = self._systemd_active_path() if self._strict_systemd_naming else None
         self._active_writer = None
@@ -144,8 +164,9 @@ class Log:
         self._last_realtime = 0
         self._last_monotonic = 0
 
-        os.makedirs(self._journal_dir, exist_ok=True)
-        chain_state = self._scan_chain_state()
+    def _resume_chain_state(self, chain_state, config):
+        head_seqnum_option = _option(config, 'head_seqnum', 'headSeqnum')
+        seqnum_id_option = _option(config, 'seqnum_id', 'seqnumId')
         if head_seqnum_option is None and chain_state['tail_seqnum'] > 0:
             self._next_seqnum = chain_state['tail_seqnum'] + 1
         if seqnum_id_option is None and chain_state['seqnum_id'] is not None:
@@ -153,6 +174,8 @@ class Log:
         self._last_realtime = chain_state['tail_realtime']
         if chain_state['tail_boot_id'] == self._boot_id:
             self._last_monotonic = chain_state['tail_monotonic']
+
+    def _open_initial_writer(self, chain_state):
         if self._strict_systemd_naming and chain_state['active_file'] is not None:
             self._archive_online_chain_active(chain_state['active_file'])
         if self._strict_systemd_naming and os.path.exists(self._active_file):
@@ -162,86 +185,91 @@ class Log:
                 self._attach_existing_active(chain_state['active_file'])
         if self._open_mode == LOG_OPEN_EAGER and self._active_writer is None:
             self._open_writer({'realtime_usec': int(time.time() * 1_000_000)}, LOG_LIFECYCLE_REASON_EAGER_OPEN)
-        self._apply_retention_on_open()
 
     def _open_writer(self, opts=None, reason=LOG_LIFECYCLE_REASON_APPEND):
         opts = opts or {}
         if self._active_writer:
             return
-        if self._active_file is None:
-            if self._strict_systemd_naming:
-                self._active_file = self._systemd_active_path()
-            else:
-                head_realtime = opts.get('realtime_usec') or opts.get('realtimeUsec') or int(time.time() * 1_000_000)
-                self._active_file = self._chain_path_for(self._seqnum_id, self._next_seqnum, head_realtime)
-        if os.path.exists(self._active_file):
-            try:
-                self._active_writer = Writer.open(self._active_file, {
-                    'live_publish_every_entries': self._live_publish_every_entries,
-                    'field_name_policy': _writer_policy_for_log_policy(self._field_name_policy),
-                })
-            except Exception as err:
-                if not _is_replaceable_active_open_error(err):
-                    raise
-                self._replace_active_file(self._active_file)
-            else:
-                if self._active_writer._header['n_entries'] == 0:
-                    self._discard_empty_opened_writer()
-                    if self._active_file is None:
-                        head_realtime = int((opts or {}).get('realtime_usec') or (opts or {}).get('realtimeUsec') or time.time() * 1_000_000)
-                        self._active_file = self._chain_path_for(self._seqnum_id, self._next_seqnum, head_realtime)
-                else:
-                    self._capture_writer_identity()
-                    return
-        if self._active_file is None:
-            if self._strict_systemd_naming:
-                self._active_file = self._systemd_active_path()
-            else:
-                head_realtime = int((opts or {}).get('realtime_usec') or (opts or {}).get('realtimeUsec') or time.time() * 1_000_000)
-                self._active_file = self._chain_path_for(self._seqnum_id, self._next_seqnum, head_realtime)
-        if os.path.exists(self._active_file):
-            try:
-                self._active_writer = Writer.open(self._active_file, {
-                    'live_publish_every_entries': self._live_publish_every_entries,
-                    'field_name_policy': _writer_policy_for_log_policy(self._field_name_policy),
-                })
-            except Exception as err:
-                if not _is_replaceable_active_open_error(err):
-                    raise
-                self._replace_active_file(self._active_file)
+        self._ensure_active_file_for_open(opts)
+        if self._try_attach_active_file_for_open():
+            return
+
+        self._ensure_active_file_for_open(opts)
+        if self._try_attach_active_file_for_open():
+            return
+
         if self._active_writer is None:
-            if self._active_file is None:
-                if self._strict_systemd_naming:
-                    self._active_file = self._systemd_active_path()
-                else:
-                    head_realtime = int((opts or {}).get('realtime_usec') or (opts or {}).get('realtimeUsec') or time.time() * 1_000_000)
-                    self._active_file = self._chain_path_for(self._seqnum_id, self._next_seqnum, head_realtime)
-            opts = {
-                'head_seqnum': self._next_seqnum,
-                'machine_id': self._machine_id,
-                'compression': self._compression,
-                'compact': self._compact,
-            }
-            if self._max_bytes > 0:
-                opts['max_file_size'] = self._max_bytes
-            if self._compression_threshold_bytes is not None:
-                opts['compression_threshold_bytes'] = self._compression_threshold_bytes
-            if self._seqnum_id:
-                opts['seqnum_id'] = self._seqnum_id
-            if self._boot_id:
-                opts['boot_id'] = self._boot_id
-            if self._live_publish_every_entries is not None:
-                opts['live_publish_every_entries'] = self._live_publish_every_entries
-            opts['field_name_policy'] = _writer_policy_for_log_policy(self._field_name_policy)
-            self._active_writer = Writer.create(self._active_file, opts)
+            self._ensure_active_file_for_open(opts)
+            self._active_writer = Writer.create(self._active_file, self._create_writer_options())
         self._capture_writer_identity()
-        if reason != LOG_LIFECYCLE_REASON_ROTATION:
-            self._emit_lifecycle({
-                'type': LOG_LIFECYCLE_CREATED,
-                'reason': reason,
-                'active_path': self._active_file,
-                'activePath': self._active_file,
-            })
+        self._emit_created_lifecycle(reason)
+
+    def _ensure_active_file_for_open(self, opts):
+        if self._active_file is not None:
+            return
+        if self._strict_systemd_naming:
+            self._active_file = self._systemd_active_path()
+            return
+        self._active_file = self._chain_path_for(
+            self._seqnum_id,
+            self._next_seqnum,
+            self._head_realtime_for_open(opts),
+        )
+
+    def _head_realtime_for_open(self, opts):
+        return int(opts.get('realtime_usec') or opts.get('realtimeUsec') or time.time() * 1_000_000)
+
+    def _try_attach_active_file_for_open(self):
+        if self._active_file is None or not os.path.exists(self._active_file):
+            return False
+        try:
+            self._active_writer = Writer.open(self._active_file, self._open_writer_options())
+        except Exception as err:
+            if not _is_replaceable_active_open_error(err):
+                raise
+            self._replace_active_file(self._active_file)
+            return False
+        if self._active_writer._header['n_entries'] == 0:
+            self._discard_empty_opened_writer()
+            return False
+        self._capture_writer_identity()
+        return True
+
+    def _open_writer_options(self):
+        return {
+            'live_publish_every_entries': self._live_publish_every_entries,
+            'field_name_policy': _writer_policy_for_log_policy(self._field_name_policy),
+        }
+
+    def _create_writer_options(self):
+        opts = {
+            'head_seqnum': self._next_seqnum,
+            'machine_id': self._machine_id,
+            'compression': self._compression,
+            'compact': self._compact,
+            'field_name_policy': _writer_policy_for_log_policy(self._field_name_policy),
+        }
+        if self._max_bytes > 0:
+            opts['max_file_size'] = self._max_bytes
+        if self._compression_threshold_bytes is not None:
+            opts['compression_threshold_bytes'] = self._compression_threshold_bytes
+        if self._seqnum_id:
+            opts['seqnum_id'] = self._seqnum_id
+        if self._boot_id:
+            opts['boot_id'] = self._boot_id
+        if self._live_publish_every_entries is not None:
+            opts['live_publish_every_entries'] = self._live_publish_every_entries
+        return opts
+
+    def _emit_created_lifecycle(self, reason):
+        if reason == LOG_LIFECYCLE_REASON_ROTATION:
+            return
+        self._emit_lifecycle({
+            'type': LOG_LIFECYCLE_CREATED,
+            'reason': reason,
+            'active_path': self._active_file,
+            'activePath': self._active_file,
+        })
 
     def _discard_empty_opened_writer(self):
         self._active_writer.close()
@@ -459,85 +487,119 @@ class Log:
         return state
 
     def _apply_retention(self, protected_file=None):
+        archives = self._retention_archives()
+        active_file = self._active_file if protected_file is None else protected_file
+        accounting = self._retention_accounting(archives, active_file)
+        deleted_paths = []
+        accounting = self._delete_until_file_count(archives, active_file, accounting, deleted_paths)
+        accounting = self._delete_until_total_bytes(archives, active_file, accounting, deleted_paths)
+        self._delete_until_retention_age(archives, active_file, accounting, deleted_paths)
+        _sync_directory(self._journal_dir)
+        self._emit_retention_deletions(deleted_paths)
+
+    def _retention_archives(self):
         archives = []
         for name in os.listdir(self._journal_dir):
-            parsed = _parse_archive_name(name, self._source)
-            if parsed is None:
-                continue
-            path = os.path.join(self._journal_dir, name)
-            try:
-                stat = os.stat(path)
-            except FileNotFoundError:
-                continue
-            archives.append({
-                'path': path,
-                'size': self._retained_size(path, stat.st_size),
-                'head_seqnum': parsed['head_seqnum'],
-                'head_realtime': parsed['head_realtime'],
-            })
-
+            archive = self._retention_archive_from_name(name)
+            if archive is not None:
+                archives.append(archive)
         archives.sort(key=lambda f: (f['head_realtime'], f['head_seqnum'], f['path']))
-        active_file = self._active_file if protected_file is None else protected_file
-        active_in_archives = False
-        total_bytes = 0
-        for file in archives:
-            if active_file and file['path'] == active_file:
-                active_in_archives = True
-            total_bytes += file['size']
-        active_extra_file = False
+        return archives
+
+    def _retention_archive_from_name(self, name):
+        parsed = _parse_archive_name(name, self._source)
+        if parsed is None:
+            return None
+        path = os.path.join(self._journal_dir, name)
         try:
-            if active_file and not active_in_archives:
-                total_bytes += self._retained_size(active_file, os.stat(active_file).st_size)
-                active_extra_file = True
+            stat = os.stat(path)
         except FileNotFoundError:
-            pass
+            return None
+        return {
+            'path': path,
+            'size': self._retained_size(path, stat.st_size),
+            'head_seqnum': parsed['head_seqnum'],
+            'head_realtime': parsed['head_realtime'],
+        }
 
-        file_count = len(archives) + (1 if active_extra_file else 0)
-        deleted_paths = []
-        while self._max_files > 0 and file_count > self._max_files:
-            delete_index = next((idx for idx, file in enumerate(archives)
-                                 if not active_file or file['path'] != active_file), None)
+    def _retention_accounting(self, archives, active_file):
+        active_in_archives = any(file['path'] == active_file for file in archives)
+        total_bytes = sum(file['size'] for file in archives)
+        active_extra_size = self._active_retention_extra_size(active_file, active_in_archives)
+        return {
+            'file_count': len(archives) + (1 if active_extra_size is not None else 0),
+            'total_bytes': total_bytes + (active_extra_size or 0),
+        }
+
+    def _active_retention_extra_size(self, active_file, active_in_archives):
+        if not active_file or active_in_archives:
+            return None
+        try:
+            stat = os.stat(active_file)
+        except FileNotFoundError:
+            return None
+        return self._retained_size(active_file, stat.st_size)
+
+    def _delete_until_file_count(self, archives, active_file, accounting, deleted_paths):
+        while self._max_files > 0 and accounting['file_count'] > self._max_files:
+            reclaimed = self._delete_oldest_retention_archive(archives, active_file, deleted_paths)
+            if reclaimed is None:
+                break
+            if reclaimed > 0:
+                accounting['total_bytes'] = max(0, accounting['total_bytes'] - reclaimed)
+                accounting['file_count'] -= 1
+        return accounting
+
+    def _delete_until_total_bytes(self, archives, active_file, accounting, deleted_paths):
+        while self._max_retention_bytes > 0 and accounting['total_bytes'] > self._max_retention_bytes:
+            reclaimed = self._delete_oldest_retention_archive(archives, active_file, deleted_paths)
+            if reclaimed is None:
+                break
+            if reclaimed > 0:
+                accounting['total_bytes'] = max(0, accounting['total_bytes'] - reclaimed)
+        return accounting
+
+    def _delete_until_retention_age(self, archives, active_file, accounting, deleted_paths):
+        if self._max_retention_age_usec <= 0:
+            return accounting
+        cutoff = max(0, int(time.time() * 1_000_000) - self._max_retention_age_usec)
+        while archives:
+            delete_index = self._retention_age_delete_index(archives, active_file, cutoff)
             if delete_index is None:
                 break
-            oldest = archives.pop(delete_index)
-            try:
-                os.unlink(oldest['path'])
-                deleted_paths.append(oldest['path'])
-                total_bytes = max(0, total_bytes - oldest['size'])
-                file_count -= 1
-            except FileNotFoundError:
-                pass
+            reclaimed = self._delete_retention_archive_at(archives, delete_index, deleted_paths)
+            if reclaimed > 0:
+                accounting['total_bytes'] = max(0, accounting['total_bytes'] - reclaimed)
+        return accounting
 
-        while self._max_retention_bytes > 0 and total_bytes > self._max_retention_bytes and archives:
-            delete_index = next((idx for idx, file in enumerate(archives)
-                                 if not active_file or file['path'] != active_file), None)
-            if delete_index is None:
-                break
-            oldest = archives.pop(delete_index)
-            try:
-                os.unlink(oldest['path'])
-                deleted_paths.append(oldest['path'])
-                total_bytes = max(0, total_bytes - oldest['size'])
-            except FileNotFoundError:
-                pass
+    def _delete_oldest_retention_archive(self, archives, active_file, deleted_paths):
+        delete_index = self._retention_delete_index(archives, active_file)
+        if delete_index is None:
+            return None
+        return self._delete_retention_archive_at(archives, delete_index, deleted_paths)
 
-        if self._max_retention_age_usec > 0:
-            cutoff = max(0, int(time.time() * 1_000_000) - self._max_retention_age_usec)
-            while archives:
-                delete_index = next((idx for idx, file in enumerate(archives)
-                                     if file['head_realtime'] <= cutoff and
-                                     (not active_file or file['path'] != active_file)), None)
-                if delete_index is None:
-                    break
-                oldest = archives.pop(delete_index)
-                try:
-                    os.unlink(oldest['path'])
-                    deleted_paths.append(oldest['path'])
-                    total_bytes = max(0, total_bytes - oldest['size'])
-                except FileNotFoundError:
-                    pass
+    def _retention_delete_index(self, archives, active_file):
+        for idx, file in enumerate(archives):
+            if not active_file or file['path'] != active_file:
+                return idx
+        return None
 
-        _sync_directory(self._journal_dir)
+    def _retention_age_delete_index(self, archives, active_file, cutoff):
+        for idx, file in enumerate(archives):
+            if file['head_realtime'] <= cutoff and (not active_file or file['path'] != active_file):
+                return idx
+        return None
+
+    def _delete_retention_archive_at(self, archives, delete_index, deleted_paths):
+        oldest = archives.pop(delete_index)
+        try:
+            os.unlink(oldest['path'])
+        except FileNotFoundError:
+            return 0
+        deleted_paths.append(oldest['path'])
+        return oldest['size']
+
+    def _emit_retention_deletions(self, deleted_paths):
         if deleted_paths:
             self._emit_lifecycle({
                 'type': LOG_LIFECYCLE_DELETED,

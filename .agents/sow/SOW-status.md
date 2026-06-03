@@ -34,8 +34,12 @@ Last updated: 2026-06-03
   locally Lizard-clean, with full affected crate tests passing. Batch 10 made
   Python verifier and reader touched runtime files locally Lizard-clean, fixed
   a corrupted ENTRY_ARRAY hang, and passed the full Python package test suite.
-  Remaining work is to continue complexity remediation, record final scanner
-  results, and complete whole-SOW review.
+  Batch 11 made Python writer and directory-writer touched runtime files
+  locally Lizard-clean, fixed a temporary DATA/FIELD linking regression found
+  during diff review, passed the full Python package test suite, and reduced
+  the refreshed local all-tracked-file Lizard inventory to 220 critical
+  findings. Remaining work is to continue complexity remediation, record final
+  scanner results, and complete whole-SOW review.
 
 ## Pending
 

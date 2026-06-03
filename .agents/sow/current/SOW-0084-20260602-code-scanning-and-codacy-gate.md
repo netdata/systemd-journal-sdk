@@ -1388,6 +1388,34 @@ Complexity remediation evidence:
     corrupted AFL fixture as a read error.
   - `PYTHONPATH=python .local/python-venv/bin/python python/test_all.py`
     passed.
+- Batch 11, Python writer and directory-writer runtime internals:
+  - Refactored `python/journal/writer.py` append-open validation,
+    ENTRY-object assembly, DATA-object creation/compression, DATA-to-FIELD
+    chain linking, and archive close/rename handling into smaller helpers
+    without changing public writer APIs or the journal object publication
+    order.
+  - During review of the refactor diff, found and fixed a temporary
+    DATA/FIELD linking regression: the new helper had added an extra FIELD
+    hash-table insertion while linking DATA to an existing FIELD object. The
+    final code preserves the original behavior: DATA hash insertion happens
+    for new DATA objects, FIELD hash insertion happens only when a new FIELD
+    object is created, and DATA-to-FIELD linking updates only the FIELD data
+    chain.
+  - Refactored `python/journal/directory_writer.py` constructor setup,
+    reliable active open/replace, writer-option construction, and retention
+    deletion into smaller helpers without changing rotation defaults,
+    retention-on-open, protected active-file handling, deletion order, or
+    lifecycle event shape.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for
+    `python/journal/writer.py` and `python/journal/directory_writer.py`.
+  - `python3 -m py_compile python/journal/writer.py
+    python/journal/directory_writer.py` passed.
+  - `PYTHONPATH=python .local/python-venv/bin/python python/test_all.py`
+    passed.
+  - Refreshed local all-tracked-file Lizard inventory now reports 220 critical
+    findings, down from 227 after Batch 10. Remaining Python runtime findings
+    are limited to `compress.py`, `directory_reader.py`, `facade.py`,
+    `hash.py`, and `header.py`.
 
 Reviewer findings:
 

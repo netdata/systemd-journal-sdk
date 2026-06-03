@@ -202,66 +202,14 @@ class Writer:
         opts = opts or {}
         fd = os.open(path, os.O_RDWR)
         try:
-            header_buf = os.read(fd, HEADER_SIZE)
-            if len(header_buf) < HEADER_SIZE:
-                raise ValueError('cannot read journal header')
-
-            header = parse_file_header(header_buf)
-            flags = header['incompatible_flags']
-            supported_writer_incompatible = (
-                INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_ZSTD |
-                INCOMPATIBLE_COMPRESSED_XZ | INCOMPATIBLE_COMPRESSED_LZ4 |
-                INCOMPATIBLE_COMPACT
-            )
-            if flags & ~supported_writer_incompatible:
-                raise ValueError(f'unsupported journal: incompatible flags 0x{flags:x}')
-            if not (flags & INCOMPATIBLE_KEYED_HASH):
-                raise ValueError('unsupported journal: keyed hash required')
-            if header['header_size'] < HEADER_SIZE:
-                raise ValueError('unsupported journal: outdated header')
-            if header['data_hash_table_offset'] == 0 or header['field_hash_table_offset'] == 0 or header['tail_object_offset'] == 0:
-                raise ValueError('invalid journal: missing hash tables')
-            if flags & INCOMPATIBLE_COMPRESSED_XZ:
-                compression = COMPRESSION_XZ
-                _ensure_xz_available()
-            elif flags & INCOMPATIBLE_COMPRESSED_LZ4:
-                compression = COMPRESSION_LZ4
-                _ensure_lz4_available()
-            elif flags & INCOMPATIBLE_COMPRESSED_ZSTD:
-                compression = COMPRESSION_ZSTD
-                _ensure_zstd_available()
-            else:
-                compression = COMPRESSION_NONE
+            header, compression = _read_append_header(fd)
         except Exception:
             os.close(fd)
             raise
 
         try:
-            tail_size = _read_object_size_from_fd(fd, header['tail_object_offset'])
-            now_ms = _current_time_ms()
-            monotonic_base = header['tail_entry_monotonic'] // 1000 if header['tail_entry_monotonic'] > 0 else 0
-
             w = Writer(fd, path)
-            w._header = header
-            w._append_offset = align8(header['tail_object_offset'] + tail_size)
-            w._next_seqnum = header['tail_entry_seqnum'] + 1
-            w._boot_id = header['tail_entry_boot_id']
-            if is_zero_uuid(w._boot_id):
-                w._boot_id = _uuid_option(opts.get('boot_id', opts.get('bootId')), header['file_id'])
-            w._started = now_ms - monotonic_base
-            w._compression = compression
-            w._compress_threshold = DEFAULT_COMPRESS_THRESHOLD
-            w._compact = bool(flags & INCOMPATIBLE_COMPACT)
-            w._live_publish_every_entries = _normalize_live_publish_every_entries(
-                opts.get('live_publish_every_entries', opts.get('livePublishEveryEntries'))
-            )
-            w._field_name_policy = _normalize_field_name_policy(
-                opts.get('field_name_policy', opts.get('fieldNamePolicy'))
-            )
-            w._map_arena(max(os.fstat(fd).st_size, header['header_size'] + header['arena_size']))
-
-            w._header['state'] = STATE_ONLINE
-            w._write_header()
+            _configure_opened_writer(w, fd, header, compression, opts)
             return w
         except Exception:
             os.close(fd)
@@ -446,6 +394,23 @@ class Writer:
         opts = opts or {}
         if len(payloads) == 0:
             raise ValueError('empty entry')
+        realtime, monotonic, boot_id = self._entry_time_and_boot(opts)
+
+        self._maybe_append_tag(realtime)
+        deduped, xor_hash = self._entry_data_items(payloads)
+        entry_offset = self._write_entry_object(deduped, realtime, monotonic, boot_id, xor_hash)
+
+        self._publish_object_metadata()
+        self._append_to_entry_array(entry_offset)
+        self._link_entry_data(deduped, entry_offset)
+
+        self._entry_added(entry_offset, realtime, monotonic, boot_id)
+        self._publish_entry_metadata()
+        self._publish_after_entry()
+
+        return {'realtime': realtime, 'seqnum': self._next_seqnum - 1}
+
+    def _entry_time_and_boot(self, opts):
         now_ms = _current_time_ms()
         realtime = opts['realtime_usec'] if 'realtime_usec' in opts else now_ms * 1000
         monotonic = opts['monotonic_usec'] if 'monotonic_usec' in opts else (now_ms - self._started) * 1000
@@ -454,28 +419,40 @@ class Writer:
             boot_id = self._boot_id
         if isinstance(boot_id, str):
             boot_id = bytes.fromhex(boot_id)
+        return realtime, monotonic, boot_id
 
-        self._maybe_append_tag(realtime)
-
+    def _entry_data_items(self, payloads):
         items = []
         xor_hash = 0
         for payload in payloads:
             off, h = self._add_data(payload)
             items.append({'offset': off, 'hash': h})
             xor_hash ^= jenkins_hash_64(payload)
-
         items.sort(key=lambda x: x['offset'])
-        deduped = [items[0]]
-        for i in range(1, len(items)):
-            if items[i]['offset'] != deduped[-1]['offset']:
-                deduped.append(items[i])
+        return _dedupe_entry_items(items), xor_hash
 
+    def _write_entry_object(self, deduped, realtime, monotonic, boot_id, xor_hash):
         entry_offset = self._append_offset
         entry_item_size = self._entry_item_size()
         entry_size = ENTRY_OBJECT_HEADER_SIZE + len(deduped) * entry_item_size
         self._ensure_compact_object_fits(entry_offset, entry_size)
+        entry_buf = self._build_entry_object_buffer(
+            deduped,
+            entry_size,
+            entry_item_size,
+            realtime,
+            monotonic,
+            boot_id,
+            xor_hash,
+        )
+        self._write_at(entry_offset, entry_buf)
+        self._object_added(entry_offset, entry_size)
+        self._hmac_put_object(entry_offset, OBJECT_TYPE_ENTRY)
+        return entry_offset
+
+    def _build_entry_object_buffer(self, deduped, entry_size, entry_item_size, realtime, monotonic, boot_id, xor_hash):
         aligned_size = align8(entry_size)
-        self._ensure_arena_size(entry_offset + aligned_size)
+        self._ensure_arena_size(self._append_offset + aligned_size)
         entry_buf = bytearray(aligned_size)
         write_object_header(entry_buf, 0, OBJECT_TYPE_ENTRY, 0, entry_size)
         struct.pack_into('<Q', entry_buf, 16, self._next_seqnum)
@@ -483,6 +460,10 @@ class Writer:
         struct.pack_into('<Q', entry_buf, 32, monotonic)
         entry_buf[40:56] = boot_id
         struct.pack_into('<Q', entry_buf, 56, xor_hash)
+        self._pack_entry_items(entry_buf, deduped, entry_item_size)
+        return entry_buf
+
+    def _pack_entry_items(self, entry_buf, deduped, entry_item_size):
         for i, item in enumerate(deduped):
             off = ENTRY_OBJECT_HEADER_SIZE + i * entry_item_size
             if self._compact:
@@ -491,21 +472,10 @@ class Writer:
             else:
                 struct.pack_into('<Q', entry_buf, off, item['offset'])
                 struct.pack_into('<Q', entry_buf, off + 8, item['hash'])
-        self._write_at(entry_offset, entry_buf)
-        self._object_added(entry_offset, entry_size)
 
-        self._hmac_put_object(entry_offset, OBJECT_TYPE_ENTRY)
-
-        self._publish_object_metadata()
-        self._append_to_entry_array(entry_offset)
+    def _link_entry_data(self, deduped, entry_offset):
         for item in deduped:
             self._link_data_to_entry(item['offset'], entry_offset)
-
-        self._entry_added(entry_offset, realtime, monotonic, boot_id)
-        self._publish_entry_metadata()
-        self._publish_after_entry()
-
-        return {'realtime': realtime, 'seqnum': self._next_seqnum - 1}
 
     def _hash(self, payload):
         return sip_hash_24(self._header['file_id'], payload)
@@ -517,25 +487,23 @@ class Writer:
             return existing, h
 
         offset = self._append_offset
+        object_payload, compression_flag = self._data_object_payload(payload)
+        self._write_data_object(offset, h, object_payload, compression_flag)
+        self._append_data_hash_item(h, offset)
+        self._hmac_put_object(offset, OBJECT_TYPE_DATA)
+        self._link_data_field(payload, offset)
+        return offset, h
 
-        object_payload = payload
-        compression_flag = 0
+    def _data_object_payload(self, payload):
         if self._compression == COMPRESSION_ZSTD and len(payload) >= self._compress_threshold:
-            compressed = _best_effort_compress(_zstd_compress, payload)
-            if compressed is not None and len(compressed) < len(payload):
-                object_payload = compressed
-                compression_flag = OBJECT_COMPRESSED_ZSTD
-        elif self._compression == COMPRESSION_XZ and len(payload) >= self._compress_threshold and len(payload) >= 80:
-            compressed = _best_effort_compress(_xz_compress, payload)
-            if compressed is not None and len(compressed) < len(payload):
-                object_payload = compressed
-                compression_flag = OBJECT_COMPRESSED_XZ
-        elif self._compression == COMPRESSION_LZ4 and len(payload) >= self._compress_threshold and len(payload) >= 9:
-            compressed = _best_effort_compress(_lz4_compress, payload)
-            if compressed is not None and len(compressed) < len(payload):
-                object_payload = compressed
-                compression_flag = OBJECT_COMPRESSED_LZ4
+            return _compressed_payload(payload, _zstd_compress, OBJECT_COMPRESSED_ZSTD)
+        if self._compression == COMPRESSION_XZ and len(payload) >= self._compress_threshold and len(payload) >= 80:
+            return _compressed_payload(payload, _xz_compress, OBJECT_COMPRESSED_XZ)
+        if self._compression == COMPRESSION_LZ4 and len(payload) >= self._compress_threshold and len(payload) >= 9:
+            return _compressed_payload(payload, _lz4_compress, OBJECT_COMPRESSED_LZ4)
+        return payload, 0
 
+    def _write_data_object(self, offset, data_hash, object_payload, compression_flag):
         payload_offset = self._data_payload_offset()
         size = payload_offset + len(object_payload)
         self._ensure_compact_object_fits(offset, size)
@@ -543,28 +511,27 @@ class Writer:
         self._ensure_arena_size(offset + aligned_size)
         buf = bytearray(aligned_size)
         write_object_header(buf, 0, OBJECT_TYPE_DATA, compression_flag, size)
-        struct.pack_into('<Q', buf, 16, h)
+        struct.pack_into('<Q', buf, 16, data_hash)
         buf[payload_offset:payload_offset + len(object_payload)] = object_payload
         self._write_at(offset, buf)
         self._object_added(offset, size)
 
+    def _append_data_hash_item(self, data_hash, offset):
         self._append_hash_item(
             self._header['data_hash_table_offset'],
             self._header['data_hash_table_size'],
-            OBJECT_TYPE_DATA, h, offset)
+            OBJECT_TYPE_DATA, data_hash, offset)
         self._header['n_data'] += 1
 
-        self._hmac_put_object(offset, OBJECT_TYPE_DATA)
-
+    def _link_data_field(self, payload, offset):
         eq_pos = payload.find(b'=')
-        if eq_pos > 0:
-            field_payload = payload[:eq_pos]
-            field_offset = self._add_field(field_payload)
-            field_head_data = self._read_field_head_data_offset(field_offset)
-            self._write_uint64_at(offset + 32, field_head_data)
-            self._write_uint64_at(field_offset + 32, offset)
-
-        return offset, h
+        if eq_pos <= 0:
+            return
+        field_payload = payload[:eq_pos]
+        field_offset = self._add_field(field_payload)
+        field_head_data = self._read_field_head_data_offset(field_offset)
+        self._write_uint64_at(offset + 32, field_head_data)
+        self._write_uint64_at(field_offset + 32, offset)
 
     def _add_field(self, payload):
         cached = self._field_cache.get(payload)
@@ -961,47 +928,67 @@ class Writer:
     def archive_to(self, path):
         if self._closed:
             raise ValueError('writer closed')
+        self._publish_archive_state()
+        if rename_requires_closed_file() and self._path != path:
+            self._archive_to_after_closing(path)
+            return
+        try:
+            self._rename_archive_path(path)
+            self._close_archived_writer(path)
+        except Exception:
+            if self._closed:
+                raise
+            self._restore_online_after_archive_failure()
+            raise
+
+    def _publish_archive_state(self):
         self._header['state'] = STATE_ARCHIVED
         self._write_header()
         if self._arena is not None:
             self._arena.flush()
         os.fsync(self._fd)
-        if rename_requires_closed_file() and self._path != path:
-            self._archive_to_after_closing(path)
-            return
+
+    def _rename_archive_path(self, path):
+        if self._path != path:
+            os.rename(self._path, path)
+        self._path = path
+
+    def _close_archived_writer(self, path):
+        close_err = None
         try:
-            if self._path != path:
-                os.rename(self._path, path)
-            self._path = path
-            close_err = None
-            try:
-                _sync_parent_directory(path)
-            except Exception as e:
-                close_err = e
-            try:
-                if self._arena is not None:
-                    self._arena.close()
-                    self._arena = None
-            except Exception as e:
-                if not close_err:
-                    close_err = e
-            try:
-                os.close(self._fd)
-                self._closed = True
-            except Exception as e:
-                if not close_err:
-                    close_err = e
-            if close_err:
-                raise close_err
-        except Exception:
-            if self._closed:
-                raise
-            self._header['state'] = STATE_ONLINE
-            self._write_header()
+            _sync_parent_directory(path)
+        except Exception as e:
+            close_err = e
+        close_err = self._close_arena_for_archive(close_err)
+        close_err = self._close_fd_for_archive(close_err)
+        if close_err:
+            raise close_err
+
+    def _close_arena_for_archive(self, close_err):
+        try:
             if self._arena is not None:
-                self._arena.flush()
-            os.fsync(self._fd)
-            raise
+                self._arena.close()
+                self._arena = None
+        except Exception as e:
+            if not close_err:
+                close_err = e
+        return close_err
+
+    def _close_fd_for_archive(self, close_err):
+        try:
+            os.close(self._fd)
+            self._closed = True
+        except Exception as e:
+            if not close_err:
+                close_err = e
+        return close_err
+
+    def _restore_online_after_archive_failure(self):
+        self._header['state'] = STATE_ONLINE
+        self._write_header()
+        if self._arena is not None:
+            self._arena.flush()
+        os.fsync(self._fd)
 
     def _archive_to_after_closing(self, path):
         close_err = None
@@ -1134,6 +1121,102 @@ def _read_object_size_from_fd(fd, offset):
 
 def _sync_parent_directory(path):
     return sync_parent_directory(path)
+
+
+def _read_append_header(fd):
+    header_buf = os.read(fd, HEADER_SIZE)
+    if len(header_buf) < HEADER_SIZE:
+        raise ValueError('cannot read journal header')
+    header = parse_file_header(header_buf)
+    return header, _compression_from_append_header(header)
+
+
+def _compression_from_append_header(header):
+    flags = header['incompatible_flags']
+    _validate_append_header_flags(header, flags)
+    if flags & INCOMPATIBLE_COMPRESSED_XZ:
+        _ensure_xz_available()
+        return COMPRESSION_XZ
+    if flags & INCOMPATIBLE_COMPRESSED_LZ4:
+        _ensure_lz4_available()
+        return COMPRESSION_LZ4
+    if flags & INCOMPATIBLE_COMPRESSED_ZSTD:
+        _ensure_zstd_available()
+        return COMPRESSION_ZSTD
+    return COMPRESSION_NONE
+
+
+def _validate_append_header_flags(header, flags):
+    supported = (
+        INCOMPATIBLE_KEYED_HASH | INCOMPATIBLE_COMPRESSED_ZSTD |
+        INCOMPATIBLE_COMPRESSED_XZ | INCOMPATIBLE_COMPRESSED_LZ4 |
+        INCOMPATIBLE_COMPACT
+    )
+    if flags & ~supported:
+        raise ValueError(f'unsupported journal: incompatible flags 0x{flags:x}')
+    if not (flags & INCOMPATIBLE_KEYED_HASH):
+        raise ValueError('unsupported journal: keyed hash required')
+    if header['header_size'] < HEADER_SIZE:
+        raise ValueError('unsupported journal: outdated header')
+    if _append_header_missing_hash_tables(header):
+        raise ValueError('invalid journal: missing hash tables')
+
+
+def _append_header_missing_hash_tables(header):
+    return (
+        header['data_hash_table_offset'] == 0 or
+        header['field_hash_table_offset'] == 0 or
+        header['tail_object_offset'] == 0
+    )
+
+
+def _configure_opened_writer(writer, fd, header, compression, opts):
+    tail_size = _read_object_size_from_fd(fd, header['tail_object_offset'])
+    writer._header = header
+    writer._append_offset = align8(header['tail_object_offset'] + tail_size)
+    writer._next_seqnum = header['tail_entry_seqnum'] + 1
+    writer._boot_id = _opened_writer_boot_id(header, opts)
+    writer._started = _current_time_ms() - _opened_writer_monotonic_base(header)
+    writer._compression = compression
+    writer._compress_threshold = DEFAULT_COMPRESS_THRESHOLD
+    writer._compact = bool(header['incompatible_flags'] & INCOMPATIBLE_COMPACT)
+    writer._live_publish_every_entries = _normalize_live_publish_every_entries(
+        opts.get('live_publish_every_entries', opts.get('livePublishEveryEntries'))
+    )
+    writer._field_name_policy = _normalize_field_name_policy(
+        opts.get('field_name_policy', opts.get('fieldNamePolicy'))
+    )
+    writer._map_arena(max(os.fstat(fd).st_size, header['header_size'] + header['arena_size']))
+    writer._header['state'] = STATE_ONLINE
+    writer._write_header()
+
+
+def _opened_writer_boot_id(header, opts):
+    boot_id = header['tail_entry_boot_id']
+    if is_zero_uuid(boot_id):
+        return _uuid_option(opts.get('boot_id', opts.get('bootId')), header['file_id'])
+    return boot_id
+
+
+def _opened_writer_monotonic_base(header):
+    if header['tail_entry_monotonic'] > 0:
+        return header['tail_entry_monotonic'] // 1000
+    return 0
+
+
+def _dedupe_entry_items(items):
+    deduped = [items[0]]
+    for i in range(1, len(items)):
+        if items[i]['offset'] != deduped[-1]['offset']:
+            deduped.append(items[i])
+    return deduped
+
+
+def _compressed_payload(payload, compressor, compression_flag):
+    compressed = _best_effort_compress(compressor, payload)
+    if compressed is not None and len(compressed) < len(payload):
+        return compressed, compression_flag
+    return payload, 0
 
 
 def _current_time_ms():
