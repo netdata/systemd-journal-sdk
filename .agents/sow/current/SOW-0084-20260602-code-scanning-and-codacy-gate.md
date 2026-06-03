@@ -620,6 +620,8 @@ Tests or equivalent validation:
   line-length cleanup.
 - `git diff --check`: passed after the Python line-length cleanup.
 - `.agents/sow/audit.sh`: passed after the Python line-length cleanup.
+- `git diff --check`: passed after the AGENTS clarity cleanup.
+- `.agents/sow/audit.sh`: passed after the AGENTS clarity cleanup.
 - Local pinned Codacy package smoke:
   `@codacy/analysis-cli@0.8.1` installed under `.local/codacy-cli-test`;
   `codacy-analysis init --default .` succeeded; `codacy-analysis analyze .`
@@ -887,6 +889,12 @@ Real-use evidence:
 - Local Python line-length cleanup targets `Prospector_pycodestyle` E501 rows
   by wrapping long command arrays, metrics format strings, report text, and test
   dictionaries without changing values or execution order.
+- Local AGENTS clarity cleanup targets the remaining current
+  `Agentlinter_clarity_undefined-term`,
+  `Agentlinter_clarity_escape-hatch-missing`,
+  `Agentlinter_clarity_no-vague-instructions`, and
+  `Agentlinter_clarity_naked-conditional` rows by adding glossary entries,
+  making exception paths explicit, and replacing vague host-identity wording.
 
 Reviewer findings:
 

@@ -8,9 +8,11 @@
 - FIELD: systemd journal file object type for a field name.
 - SOW: Statement of Work.
 - FTS: full-text search.
+- IP: Internet Protocol.
 - SNMP: Simple Network Management Protocol.
 - THIS: uppercase English pronoun used in repository-boundary prompt emphasis.
 - DO: uppercase English verb used in repository-boundary prompt emphasis.
+- FOR: uppercase English preposition used in repository-boundary prompt emphasis.
 - MAKE: uppercase English verb used in repository-boundary prompt emphasis.
 - WASM: WebAssembly.
 - DO NOT: uppercase emphasis in agent prompt blocks.
@@ -98,7 +100,7 @@ these inputs:
 
 - `/proc`
 - `/host/proc`
-- Linux machine-id files such as `/etc/machine-id`
+- Linux machine-id identity files, including `/etc/machine-id`
 - platform registries
 - `sysctl`
 - `system_profiler`
@@ -127,7 +129,8 @@ explicitly asks to repair or upgrade the SOW framework.
 - **Reviewer agents review security:** identify vulnerabilities and unwanted side effects.
 - **Reviewer agents assess readiness:** decide whether the result is production-grade.
 
-The project manager must not personally perform the terminal technical review for implementation SOWs.
+The project manager does not personally perform the terminal technical review for implementation SOWs.
+Any exception needs an explicit user routing decision recorded in the active SOW.
 By default implementation can be delegated to external agents.
 The current user routing decision is local implementation by the project manager, with external models used as read-only reviewers only.
 
@@ -171,13 +174,19 @@ Rules:
 - Write, edit, delete, move, reset, checkout, install, generate, cache, or format nothing outside this repository.
 - The only write exception is `/tmp`.
 - Prefer `.local/` inside this repository for scratch work, generated temporary files, cloned references, logs, and external-agent working notes.
-- Every external-agent prompt must include the canonical external-agent prompt block verbatim.
+- Include the canonical external-agent prompt block verbatim in every external-agent prompt.
+  Any exception needs an explicit user decision recorded in the active SOW first.
 
 ### Sensitive Data In Durable Artifacts
 
-SOWs, specs, documentation, project skills, agent instructions, and code comments are commit-ready artifacts. Treat them as public unless a repository-specific policy explicitly says otherwise.
+Treat SOWs, specs, documentation, project skills, agent instructions, and code comments as commit-ready artifacts.
+Treat them as public by default.
+A repository-specific policy may mark a listed artifact class private.
 
-CRITICAL: Never write raw sensitive data to durable artifacts. This includes passwords, API keys, bearer tokens, SNMP communities, private keys, connection strings with embedded credentials, session cookies, community member names, customer names, customer identifiers, personal data, non-private IP addresses that can identify customers, private endpoints, account IDs, and proprietary incident details.
+CRITICAL: Never write raw sensitive data to durable artifacts.
+Secure handling exception: if raw sensitive data is required to continue, stop and ask the user for a secure handling path before writing anything.
+This includes passwords, API keys, bearer tokens, SNMP communities, private keys, and connection strings with embedded credentials.
+It also includes session cookies, community member names, customer names, customer identifiers, personal data, customer-identifying public IP addresses, private endpoints, account IDs, and proprietary incident details.
 
 Write only sanitized evidence:
 
