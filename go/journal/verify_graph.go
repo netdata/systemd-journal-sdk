@@ -38,6 +38,17 @@ type graphEntryArray struct {
 	items []uint64
 }
 
+type graphWalkState struct {
+	entrySeqnum       uint64
+	entryMonotonic    uint64
+	entryRealtime     uint64
+	lastTagRealtime   uint64
+	entryBootID       UUID
+	entrySeqnumSet    bool
+	entryMonotonicSet bool
+	entryRealtimeSet  bool
+}
+
 type graphVerifier struct {
 	data                []byte
 	header              journalHeader
@@ -93,10 +104,32 @@ func (v *graphVerifier) readHeader() error {
 	}
 	v.header = header
 	v.compacted = header.isCompact()
+	return v.validateHeader()
+}
 
+func (v *graphVerifier) validateHeader() error {
 	if v.header.headerSize < headerMinSize {
 		return fmt.Errorf("invalid header_size %d", v.header.headerSize)
 	}
+	if err := v.validateHeaderBounds(); err != nil {
+		return err
+	}
+	if v.header.state != stateOffline && v.header.state != stateOnline && v.header.state != stateArchived {
+		return fmt.Errorf("invalid journal state %d", v.header.state)
+	}
+	if v.header.compatibleFlags&^compatibleSupportedMask != 0 {
+		return fmt.Errorf("unsupported compatible flags 0x%x", v.header.compatibleFlags)
+	}
+	if err := v.validateReservedHeaderBytes(); err != nil {
+		return err
+	}
+	if v.compacted && uint64(len(v.data)) > journalCompactSizeMax {
+		return fmt.Errorf("compact journal exceeds 32-bit size limit")
+	}
+	return nil
+}
+
+func (v *graphVerifier) validateHeaderBounds() error {
 	if v.header.headerSize > uint64(len(v.data)) {
 		return fmt.Errorf("header_size %d exceeds file size", v.header.headerSize)
 	}
@@ -106,165 +139,36 @@ func (v *graphVerifier) readHeader() error {
 	if v.header.arenaSize > uint64(len(v.data))-v.header.headerSize {
 		return fmt.Errorf("header_size + arena_size exceeds file size")
 	}
-	if v.header.state != stateOffline && v.header.state != stateOnline && v.header.state != stateArchived {
-		return fmt.Errorf("invalid journal state %d", v.header.state)
-	}
-	if v.header.compatibleFlags&^compatibleSupportedMask != 0 {
-		return fmt.Errorf("unsupported compatible flags 0x%x", v.header.compatibleFlags)
-	}
+	return nil
+}
+
+func (v *graphVerifier) validateReservedHeaderBytes() error {
 	for i := 17; i < 24; i++ {
 		if v.data[i] != 0 {
 			return fmt.Errorf("reserved header bytes are non-zero")
 		}
 	}
-	if v.compacted && uint64(len(v.data)) > journalCompactSizeMax {
-		return fmt.Errorf("compact journal exceeds 32-bit size limit")
-	}
 	return nil
 }
 
 func (v *graphVerifier) walkObjects() error {
-	tail := v.header.tailObjectOffset
-	if tail == 0 {
-		if v.header.nObjects != 0 {
-			return fmt.Errorf("tail_object_offset is zero with objects recorded")
-		}
-		return nil
-	}
-	if tail < v.header.headerSize {
-		return fmt.Errorf("tail_object_offset is before header_size")
+	tail, done, err := v.objectWalkBounds()
+	if err != nil || done {
+		return err
 	}
 
 	offset := v.header.headerSize
-	var entrySeqnum, entryMonotonic, entryRealtime, lastTagRealtime uint64
-	var entryBootID UUID
-	entrySeqnumSet := false
-	entryMonotonicSet := false
-	entryRealtimeSet := false
+	state := graphWalkState{}
 
 	for {
-		if offset > tail {
-			return fmt.Errorf("object walk skipped past tail_object_offset")
-		}
-		if offset > uint64(len(v.data))-objectHeaderSize {
-			return fmt.Errorf("object header at offset %d exceeds file bounds", offset)
+		obj, alignedSize, err := v.readGraphObject(offset, tail)
+		if err != nil {
+			return err
 		}
 
-		flags := v.data[offset+1]
-		obj := objectHeader{
-			typ:  v.data[offset],
-			flag: flags,
-			size: binary.LittleEndian.Uint64(v.data[offset+8 : offset+16]),
-		}
-		alignedSize := align8(obj.size)
-		if obj.typ == graphInvalidObjectType && obj.size == 0 {
-			return fmt.Errorf("zero object before tail at offset %d", offset)
-		}
-		if obj.typ < objectTypeData || obj.typ > graphMaxSupportedObjectID {
-			return fmt.Errorf("unknown object type %d at offset %d", obj.typ, offset)
-		}
-		if obj.size < objectHeaderSize {
-			return fmt.Errorf("object size %d too small at offset %d", obj.size, offset)
-		}
-		if alignedSize < obj.size || alignedSize == 0 {
-			return fmt.Errorf("object size %d overflows alignment at offset %d", obj.size, offset)
-		}
-		if alignedSize > uint64(len(v.data))-offset {
-			return fmt.Errorf("object at offset %d exceeds file bounds", offset)
-		}
-		if offset%objectAlignment != 0 {
-			return fmt.Errorf("object offset %d is not aligned", offset)
-		}
-		if flags&^objectCompressedMask != 0 {
-			return fmt.Errorf("object at offset %d has unknown flags 0x%x", offset, flags)
-		}
-		if bits.OnesCount8(flags&objectCompressedMask) > 1 {
-			return fmt.Errorf("object at offset %d has multiple compression flags", offset)
-		}
-		if obj.typ != objectTypeData && flags != 0 {
-			return fmt.Errorf("object type %d at offset %d has compression flags", obj.typ, offset)
-		}
-		if flags&objectCompressedXZ != 0 && v.header.incompatibleFlags&incompatibleCompressedXZ == 0 {
-			return fmt.Errorf("XZ DATA object without matching header flag at offset %d", offset)
-		}
-		if flags&objectCompressedLZ4 != 0 && v.header.incompatibleFlags&incompatibleCompressedLZ4 == 0 {
-			return fmt.Errorf("LZ4 DATA object without matching header flag at offset %d", offset)
-		}
-		if flags&objectCompressedZSTD != 0 && v.header.incompatibleFlags&incompatibleCompressedZSTD == 0 {
-			return fmt.Errorf("ZSTD DATA object without matching header flag at offset %d", offset)
-		}
-
-		v.spans[offset] = obj
-		v.order = append(v.order, offset)
-		v.counts[obj.typ]++
-
-		switch obj.typ {
-		case objectTypeData:
-			if err := v.parseData(offset, obj); err != nil {
-				return err
-			}
-		case objectTypeField:
-			if err := v.parseField(offset, obj); err != nil {
-				return err
-			}
-		case objectTypeEntry:
-			entry, err := v.parseEntry(offset, obj)
-			if err != nil {
-				return err
-			}
-			if v.header.compatibleFlags&compatibleSealed != 0 && v.counts[objectTypeTag] == 0 {
-				return fmt.Errorf("first entry before first tag at offset %d", offset)
-			}
-			if entry.realtime < lastTagRealtime {
-				return fmt.Errorf("older entry after newer tag at offset %d", offset)
-			}
-			if !entrySeqnumSet && entry.seqnum != v.header.headEntrySeqnum {
-				return fmt.Errorf("head entry seqnum mismatch at offset %d", offset)
-			}
-			if entrySeqnumSet && entrySeqnum >= entry.seqnum {
-				return fmt.Errorf("entry seqnum out of sync at offset %d", offset)
-			}
-			entrySeqnum = entry.seqnum
-			entrySeqnumSet = true
-			if entryMonotonicSet && entry.bootID == entryBootID && entryMonotonic > entry.monotonic {
-				return fmt.Errorf("entry monotonic out of sync at offset %d", offset)
-			}
-			entryMonotonic = entry.monotonic
-			entryBootID = entry.bootID
-			entryMonotonicSet = true
-			if !entryRealtimeSet && entry.realtime != v.header.headEntryRealtime {
-				return fmt.Errorf("head entry realtime mismatch at offset %d", offset)
-			}
-			entryRealtime = entry.realtime
-			entryRealtimeSet = true
-		case objectTypeDataHashTable, objectTypeFieldHashTable:
-			if err := v.parseHashTable(offset, obj); err != nil {
-				return err
-			}
-		case objectTypeEntryArray:
-			if err := v.parseEntryArray(offset, obj); err != nil {
-				return err
-			}
-			if offset == v.header.entryArrayOffset {
-				if v.mainEntryArrayFound {
-					return fmt.Errorf("more than one main entry array")
-				}
-				v.mainEntryArrayFound = true
-			}
-		case objectTypeTag:
-			if v.header.compatibleFlags&compatibleSealed == 0 {
-				return fmt.Errorf("TAG object in unsealed file")
-			}
-			if obj.size != graphTagObjectSize {
-				return fmt.Errorf("invalid TAG size at offset %d", offset)
-			}
-			seqnum := binary.LittleEndian.Uint64(v.data[offset+16 : offset+24])
-			if seqnum != v.counts[objectTypeTag] {
-				return fmt.Errorf("TAG seqnum mismatch at offset %d", offset)
-			}
-			if entryRealtimeSet {
-				lastTagRealtime = entryRealtime
-			}
+		v.recordObject(offset, obj)
+		if err := v.processGraphObject(offset, obj, &state); err != nil {
+			return err
 		}
 
 		if offset == tail {
@@ -273,49 +177,250 @@ func (v *graphVerifier) walkObjects() error {
 		offset += alignedSize
 	}
 
+	return v.validateWalkResult(tail, state)
+}
+
+func (v *graphVerifier) objectWalkBounds() (uint64, bool, error) {
+	tail := v.header.tailObjectOffset
+	if tail == 0 {
+		if v.header.nObjects != 0 {
+			return 0, false, fmt.Errorf("tail_object_offset is zero with objects recorded")
+		}
+		return 0, true, nil
+	}
+	if tail < v.header.headerSize {
+		return 0, false, fmt.Errorf("tail_object_offset is before header_size")
+	}
+	return tail, false, nil
+}
+
+func (v *graphVerifier) readGraphObject(offset uint64, tail uint64) (objectHeader, uint64, error) {
+	if offset > tail {
+		return objectHeader{}, 0, fmt.Errorf("object walk skipped past tail_object_offset")
+	}
+	if offset > uint64(len(v.data))-objectHeaderSize {
+		return objectHeader{}, 0, fmt.Errorf("object header at offset %d exceeds file bounds", offset)
+	}
+	obj := objectHeader{
+		typ:  v.data[offset],
+		flag: v.data[offset+1],
+		size: binary.LittleEndian.Uint64(v.data[offset+8 : offset+16]),
+	}
+	alignedSize := align8(obj.size)
+	if err := v.validateGraphObject(offset, obj, alignedSize); err != nil {
+		return objectHeader{}, 0, err
+	}
+	return obj, alignedSize, nil
+}
+
+func (v *graphVerifier) validateGraphObject(offset uint64, obj objectHeader, alignedSize uint64) error {
+	if obj.typ == graphInvalidObjectType && obj.size == 0 {
+		return fmt.Errorf("zero object before tail at offset %d", offset)
+	}
+	if obj.typ < objectTypeData || obj.typ > graphMaxSupportedObjectID {
+		return fmt.Errorf("unknown object type %d at offset %d", obj.typ, offset)
+	}
+	if obj.size < objectHeaderSize {
+		return fmt.Errorf("object size %d too small at offset %d", obj.size, offset)
+	}
+	if alignedSize < obj.size || alignedSize == 0 {
+		return fmt.Errorf("object size %d overflows alignment at offset %d", obj.size, offset)
+	}
+	if alignedSize > uint64(len(v.data))-offset {
+		return fmt.Errorf("object at offset %d exceeds file bounds", offset)
+	}
+	if offset%objectAlignment != 0 {
+		return fmt.Errorf("object offset %d is not aligned", offset)
+	}
+	return v.validateGraphObjectFlags(offset, obj)
+}
+
+func (v *graphVerifier) validateGraphObjectFlags(offset uint64, obj objectHeader) error {
+	flags := obj.flag
+	if flags&^objectCompressedMask != 0 {
+		return fmt.Errorf("object at offset %d has unknown flags 0x%x", offset, flags)
+	}
+	if bits.OnesCount8(flags&objectCompressedMask) > 1 {
+		return fmt.Errorf("object at offset %d has multiple compression flags", offset)
+	}
+	if obj.typ != objectTypeData && flags != 0 {
+		return fmt.Errorf("object type %d at offset %d has compression flags", obj.typ, offset)
+	}
+	return v.validateGraphCompressionFlag(offset, flags)
+}
+
+func (v *graphVerifier) validateGraphCompressionFlag(offset uint64, flags uint8) error {
+	if flags&objectCompressedXZ != 0 && v.header.incompatibleFlags&incompatibleCompressedXZ == 0 {
+		return fmt.Errorf("XZ DATA object without matching header flag at offset %d", offset)
+	}
+	if flags&objectCompressedLZ4 != 0 && v.header.incompatibleFlags&incompatibleCompressedLZ4 == 0 {
+		return fmt.Errorf("LZ4 DATA object without matching header flag at offset %d", offset)
+	}
+	if flags&objectCompressedZSTD != 0 && v.header.incompatibleFlags&incompatibleCompressedZSTD == 0 {
+		return fmt.Errorf("ZSTD DATA object without matching header flag at offset %d", offset)
+	}
+	return nil
+}
+
+func (v *graphVerifier) recordObject(offset uint64, obj objectHeader) {
+	v.spans[offset] = obj
+	v.order = append(v.order, offset)
+	v.counts[obj.typ]++
+}
+
+func (v *graphVerifier) processGraphObject(offset uint64, obj objectHeader, state *graphWalkState) error {
+	switch obj.typ {
+	case objectTypeData:
+		return v.parseData(offset, obj)
+	case objectTypeField:
+		return v.parseField(offset, obj)
+	case objectTypeEntry:
+		return v.processEntryObject(offset, obj, state)
+	case objectTypeDataHashTable, objectTypeFieldHashTable:
+		return v.parseHashTable(offset, obj)
+	case objectTypeEntryArray:
+		return v.processEntryArrayObject(offset, obj)
+	case objectTypeTag:
+		return v.processTagObject(offset, obj, state)
+	}
+	return nil
+}
+
+func (v *graphVerifier) processEntryObject(offset uint64, obj objectHeader, state *graphWalkState) error {
+	entry, err := v.parseEntry(offset, obj)
+	if err != nil {
+		return err
+	}
+	if v.header.compatibleFlags&compatibleSealed != 0 && v.counts[objectTypeTag] == 0 {
+		return fmt.Errorf("first entry before first tag at offset %d", offset)
+	}
+	if entry.realtime < state.lastTagRealtime {
+		return fmt.Errorf("older entry after newer tag at offset %d", offset)
+	}
+	return v.updateEntryWalkState(offset, entry, state)
+}
+
+func (v *graphVerifier) updateEntryWalkState(offset uint64, entry graphEntryObject, state *graphWalkState) error {
+	if !state.entrySeqnumSet && entry.seqnum != v.header.headEntrySeqnum {
+		return fmt.Errorf("head entry seqnum mismatch at offset %d", offset)
+	}
+	if state.entrySeqnumSet && state.entrySeqnum >= entry.seqnum {
+		return fmt.Errorf("entry seqnum out of sync at offset %d", offset)
+	}
+	state.entrySeqnum = entry.seqnum
+	state.entrySeqnumSet = true
+	if state.entryMonotonicSet && entry.bootID == state.entryBootID && state.entryMonotonic > entry.monotonic {
+		return fmt.Errorf("entry monotonic out of sync at offset %d", offset)
+	}
+	state.entryMonotonic = entry.monotonic
+	state.entryBootID = entry.bootID
+	state.entryMonotonicSet = true
+	if !state.entryRealtimeSet && entry.realtime != v.header.headEntryRealtime {
+		return fmt.Errorf("head entry realtime mismatch at offset %d", offset)
+	}
+	state.entryRealtime = entry.realtime
+	state.entryRealtimeSet = true
+	return nil
+}
+
+func (v *graphVerifier) processEntryArrayObject(offset uint64, obj objectHeader) error {
+	if err := v.parseEntryArray(offset, obj); err != nil {
+		return err
+	}
+	if offset != v.header.entryArrayOffset {
+		return nil
+	}
+	if v.mainEntryArrayFound {
+		return fmt.Errorf("more than one main entry array")
+	}
+	v.mainEntryArrayFound = true
+	return nil
+}
+
+func (v *graphVerifier) processTagObject(offset uint64, obj objectHeader, state *graphWalkState) error {
+	if v.header.compatibleFlags&compatibleSealed == 0 {
+		return fmt.Errorf("TAG object in unsealed file")
+	}
+	if obj.size != graphTagObjectSize {
+		return fmt.Errorf("invalid TAG size at offset %d", offset)
+	}
+	seqnum := binary.LittleEndian.Uint64(v.data[offset+16 : offset+24])
+	if seqnum != v.counts[objectTypeTag] {
+		return fmt.Errorf("TAG seqnum mismatch at offset %d", offset)
+	}
+	if state.entryRealtimeSet {
+		state.lastTagRealtime = state.entryRealtime
+	}
+	return nil
+}
+
+func (v *graphVerifier) validateWalkResult(tail uint64, state graphWalkState) error {
 	if len(v.order) == 0 || v.order[len(v.order)-1] != tail {
 		return fmt.Errorf("tail_object_offset does not point to walked tail")
 	}
-	if entrySeqnumSet && entrySeqnum != v.header.tailEntrySeqnum {
+	if state.entrySeqnumSet && state.entrySeqnum != v.header.tailEntrySeqnum {
 		return fmt.Errorf("tail_entry_seqnum mismatch")
 	}
-	if entryMonotonicSet &&
+	if state.entryMonotonicSet &&
 		v.header.compatibleFlags&compatibleTailEntryBootID != 0 &&
-		entryBootID == v.header.tailEntryBootID &&
-		entryMonotonic != v.header.tailEntryMonotonic {
+		state.entryBootID == v.header.tailEntryBootID &&
+		state.entryMonotonic != v.header.tailEntryMonotonic {
 		return fmt.Errorf("tail_entry_monotonic mismatch")
 	}
-	if entryRealtimeSet && entryRealtime != v.header.tailEntryRealtime {
+	if state.entryRealtimeSet && state.entryRealtime != v.header.tailEntryRealtime {
 		return fmt.Errorf("tail_entry_realtime mismatch")
 	}
 	return nil
 }
 
 func (v *graphVerifier) parseData(offset uint64, obj objectHeader) error {
-	payloadOffset := uint64(dataObjectHeaderSize)
-	if v.compacted {
-		payloadOffset = compactDataObjectHeaderSize
-	}
+	payloadOffset := v.dataObjectPayloadOffset()
 	if obj.size <= payloadOffset {
 		return fmt.Errorf("DATA object at offset %d has no payload", offset)
 	}
 	payload := v.data[offset+payloadOffset : offset+obj.size]
-	hashPayload := payload
-	if obj.flag != 0 {
-		var err error
-		hashPayload, err = decompressGraphPayload(obj.flag, payload)
-		if err != nil {
-			return fmt.Errorf("DATA decompression failed at offset %d: %w", offset, err)
-		}
+	hashPayload, err := v.dataHashPayload(offset, obj.flag, payload)
+	if err != nil {
+		return err
 	}
 	storedHash := binary.LittleEndian.Uint64(v.data[offset+16 : offset+24])
 	if computedHash := v.hash(hashPayload); storedHash != computedHash {
 		return fmt.Errorf("DATA hash mismatch at offset %d: %#x != %#x", offset, storedHash, computedHash)
 	}
+	data, err := v.readGraphDataObject(offset, storedHash)
+	if err != nil {
+		return err
+	}
+	if err := v.validateDataObject(offset, data); err != nil {
+		return err
+	}
+	v.dataObjects[offset] = data
+	return nil
+}
+
+func (v *graphVerifier) dataObjectPayloadOffset() uint64 {
+	if v.compacted {
+		return compactDataObjectHeaderSize
+	}
+	return dataObjectHeaderSize
+}
+
+func (v *graphVerifier) dataHashPayload(offset uint64, flags uint8, payload []byte) ([]byte, error) {
+	if flags == 0 {
+		return payload, nil
+	}
+	hashPayload, err := decompressDataPayload(flags, payload)
+	if err != nil {
+		return nil, fmt.Errorf("DATA decompression failed at offset %d: %w", offset, err)
+	}
+	return hashPayload, nil
+}
+
+func (v *graphVerifier) readGraphDataObject(offset uint64, storedHash uint64) (graphDataObject, error) {
 	entryOffset := binary.LittleEndian.Uint64(v.data[offset+40 : offset+48])
 	nEntries := binary.LittleEndian.Uint64(v.data[offset+56 : offset+64])
 	if (entryOffset == 0) != (nEntries == 0) {
-		return fmt.Errorf("DATA object at offset %d has bad n_entries", offset)
+		return graphDataObject{}, fmt.Errorf("DATA object at offset %d has bad n_entries", offset)
 	}
 	data := graphDataObject{
 		hash:             storedHash,
@@ -329,6 +434,10 @@ func (v *graphVerifier) parseData(offset uint64, obj objectHeader) error {
 		data.tailEntryArrayOffset = binary.LittleEndian.Uint32(v.data[offset+64 : offset+68])
 		data.tailEntryArrayNEntries = binary.LittleEndian.Uint32(v.data[offset+68 : offset+72])
 	}
+	return data, nil
+}
+
+func (v *graphVerifier) validateDataObject(offset uint64, data graphDataObject) error {
 	if err := v.validOffset(data.nextHashOffset, fmt.Sprintf("DATA %d next_hash_offset", offset)); err != nil {
 		return err
 	}
@@ -341,13 +450,12 @@ func (v *graphVerifier) parseData(offset uint64, obj objectHeader) error {
 	if err := v.validOffset(data.entryArrayOffset, fmt.Sprintf("DATA %d entry_array_offset", offset)); err != nil {
 		return err
 	}
-	if nEntries < 2 && data.entryArrayOffset != 0 {
+	if data.nEntries < 2 && data.entryArrayOffset != 0 {
 		return fmt.Errorf("DATA object at offset %d has unexpected entry array", offset)
 	}
-	if nEntries >= 2 && data.entryArrayOffset == 0 {
+	if data.nEntries >= 2 && data.entryArrayOffset == 0 {
 		return fmt.Errorf("DATA object at offset %d is missing entry array", offset)
 	}
-	v.dataObjects[offset] = data
 	return nil
 }
 
@@ -539,6 +647,20 @@ func (v *graphVerifier) validateTailMetadata() error {
 		}
 		return nil
 	}
+	headOffset, tailOffset, head, tail := v.headTailEntries()
+	if err := v.validateHeadTailEntries(head, tail); err != nil {
+		return err
+	}
+	if headerContainsField(v.data, v.header.headerSize, 272) && v.header.tailEntryOffset != tailOffset {
+		return fmt.Errorf("tail_entry_offset mismatch")
+	}
+	if headOffset == 0 {
+		return fmt.Errorf("head entry offset is zero")
+	}
+	return nil
+}
+
+func (v *graphVerifier) headTailEntries() (uint64, uint64, graphEntryObject, graphEntryObject) {
 	var headOffset, tailOffset uint64
 	var head, tail graphEntryObject
 	for offset, entry := range v.entryObjects {
@@ -551,6 +673,10 @@ func (v *graphVerifier) validateTailMetadata() error {
 			tail = entry
 		}
 	}
+	return headOffset, tailOffset, head, tail
+}
+
+func (v *graphVerifier) validateHeadTailEntries(head, tail graphEntryObject) error {
 	if v.header.headEntrySeqnum != head.seqnum {
 		return fmt.Errorf("head_entry_seqnum mismatch")
 	}
@@ -563,19 +689,18 @@ func (v *graphVerifier) validateTailMetadata() error {
 	if v.header.tailEntryRealtime != tail.realtime {
 		return fmt.Errorf("tail_entry_realtime mismatch")
 	}
-	if v.header.compatibleFlags&compatibleTailEntryBootID != 0 {
-		if v.header.tailEntryMonotonic != tail.monotonic {
-			return fmt.Errorf("tail_entry_monotonic mismatch")
-		}
-		if v.header.tailEntryBootID != tail.bootID {
-			return fmt.Errorf("tail_entry_boot_id mismatch")
-		}
+	return v.validateTailEntryBootMetadata(tail)
+}
+
+func (v *graphVerifier) validateTailEntryBootMetadata(tail graphEntryObject) error {
+	if v.header.compatibleFlags&compatibleTailEntryBootID == 0 {
+		return nil
 	}
-	if headerContainsField(v.data, v.header.headerSize, 272) && v.header.tailEntryOffset != tailOffset {
-		return fmt.Errorf("tail_entry_offset mismatch")
+	if v.header.tailEntryMonotonic != tail.monotonic {
+		return fmt.Errorf("tail_entry_monotonic mismatch")
 	}
-	if headOffset == 0 {
-		return fmt.Errorf("head entry offset is zero")
+	if v.header.tailEntryBootID != tail.bootID {
+		return fmt.Errorf("tail_entry_boot_id mismatch")
 	}
 	return nil
 }
@@ -691,44 +816,26 @@ func (v *graphVerifier) validateDataEntryArray(dataOffset uint64, data graphData
 }
 
 func (v *graphVerifier) walkEntryArrayChain(startOffset, usedCount uint64, label string) ([]uint64, error) {
-	if usedCount == 0 {
-		if startOffset != 0 {
-			return nil, fmt.Errorf("%s has start offset with zero entries", label)
-		}
-		return nil, nil
-	}
-	if startOffset == 0 {
-		return nil, fmt.Errorf("%s is missing", label)
+	done, err := validateEntryArrayChainStart(startOffset, usedCount, label)
+	if err != nil || done {
+		return nil, err
 	}
 	var entries []uint64
 	remaining := usedCount
 	current := startOffset
 	seen := make(map[uint64]struct{})
 	for remaining > 0 {
-		if _, ok := seen[current]; ok {
-			return nil, fmt.Errorf("%s has a cycle", label)
-		}
-		seen[current] = struct{}{}
-		array, ok := v.entryArrays[current]
-		if !ok {
-			return nil, fmt.Errorf("%s references missing ENTRY_ARRAY", label)
-		}
-		if array.next != 0 && array.next <= current {
-			return nil, fmt.Errorf("%s next pointer is not increasing", label)
+		array, err := v.nextEntryArrayChainObject(current, seen, label)
+		if err != nil {
+			return nil, err
 		}
 		usedHere := uint64(len(array.items))
 		if remaining < usedHere {
 			usedHere = remaining
 		}
-		for i := uint64(0); i < usedHere; i++ {
-			item := array.items[i]
-			if item == 0 {
-				return nil, fmt.Errorf("%s has zero used item", label)
-			}
-			if _, ok := v.entryObjects[item]; !ok {
-				return nil, fmt.Errorf("%s references missing ENTRY", label)
-			}
-			entries = append(entries, item)
+		entries, err = v.appendEntryArrayChainItems(entries, array, usedHere, label)
+		if err != nil {
+			return nil, err
 		}
 		remaining -= usedHere
 		if remaining == 0 {
@@ -738,6 +845,48 @@ func (v *graphVerifier) walkEntryArrayChain(startOffset, usedCount uint64, label
 			return nil, fmt.Errorf("%s ended early", label)
 		}
 		current = array.next
+	}
+	return entries, nil
+}
+
+func validateEntryArrayChainStart(startOffset, usedCount uint64, label string) (bool, error) {
+	if usedCount == 0 {
+		if startOffset != 0 {
+			return false, fmt.Errorf("%s has start offset with zero entries", label)
+		}
+		return true, nil
+	}
+	if startOffset == 0 {
+		return false, fmt.Errorf("%s is missing", label)
+	}
+	return false, nil
+}
+
+func (v *graphVerifier) nextEntryArrayChainObject(current uint64, seen map[uint64]struct{}, label string) (graphEntryArray, error) {
+	if _, ok := seen[current]; ok {
+		return graphEntryArray{}, fmt.Errorf("%s has a cycle", label)
+	}
+	seen[current] = struct{}{}
+	array, ok := v.entryArrays[current]
+	if !ok {
+		return graphEntryArray{}, fmt.Errorf("%s references missing ENTRY_ARRAY", label)
+	}
+	if array.next != 0 && array.next <= current {
+		return graphEntryArray{}, fmt.Errorf("%s next pointer is not increasing", label)
+	}
+	return array, nil
+}
+
+func (v *graphVerifier) appendEntryArrayChainItems(entries []uint64, array graphEntryArray, usedHere uint64, label string) ([]uint64, error) {
+	for i := uint64(0); i < usedHere; i++ {
+		item := array.items[i]
+		if item == 0 {
+			return nil, fmt.Errorf("%s has zero used item", label)
+		}
+		if _, ok := v.entryObjects[item]; !ok {
+			return nil, fmt.Errorf("%s references missing ENTRY", label)
+		}
+		entries = append(entries, item)
 	}
 	return entries, nil
 }
@@ -808,7 +957,7 @@ func (v *graphVerifier) hash(payload []byte) uint64 {
 	return jenkinsHash64(payload)
 }
 
-func decompressGraphPayload(flags uint8, payload []byte) ([]byte, error) {
+func decompressDataPayload(flags uint8, payload []byte) ([]byte, error) {
 	switch {
 	case flags&objectCompressedZSTD != 0:
 		return zstdDecompress(payload)

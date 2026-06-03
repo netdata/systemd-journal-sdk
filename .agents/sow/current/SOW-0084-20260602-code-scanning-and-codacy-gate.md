@@ -1102,11 +1102,12 @@ Real-use evidence:
   only when refactoring would be meaningless; runtime, test, harness, and CLI
   complexity remain in scope.
 - Current Lizard remediation inventory from
-  `.local/codacy-cloud/lizard-inventory.csv`: 380 total Lizard findings; 193
-  runtime, 169 test/harness, 17 other Rust engine/index/query code, and 1
-  generated `rust/Cargo.lock` finding. Pattern split: 277
-  `Lizard_ccn-critical`, 76 `Lizard_nloc-critical`, 23
-  `Lizard_file-nloc-critical`, and 4 `Lizard_parameter-count-critical`.
+  `.local/codacy-cloud/lizard-inventory.csv`: 380 total Lizard findings; 161
+  runtime, 201 test/harness, 17 other Rust engine/index/query code, and 1
+  generated `rust/Cargo.lock` finding after correcting `_test.go`
+  classification. Pattern split: 277 `Lizard_ccn-critical`, 76
+  `Lizard_nloc-critical`, 23 `Lizard_file-nloc-critical`, and 4
+  `Lizard_parameter-count-critical`.
 
 Complexity remediation batches:
 
@@ -1130,6 +1131,22 @@ Generated artifact disposition:
   was imported from the current remote config with one additional exclude:
   `rust/Cargo.lock`. The import preserved the 14 enabled tools and 1523 enabled
   patterns, then Codacy reanalysis was requested.
+
+Complexity remediation evidence:
+
+- Batch 1, Go reader/verifier internals:
+  - Refactored `go/journal/reader.go` live refresh, entry-array loading,
+    forward iteration, directory-reader ordering, export formatting, match
+    parsing, and compressed DATA reading into smaller helpers without changing
+    public APIs.
+  - Refactored `go/journal/verify_graph.go` header validation, graph object
+    walking, DATA validation, tail metadata validation, entry-array chain
+    walking, and compressed DATA hash payload handling into smaller helpers.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for the two
+    touched files.
+  - `go test ./...` passed from `go/`.
+  - `tests/interoperability/run_matrix.py --writers go rust --readers go stock
+    --entries 20` passed 22/22 checks against systemd 260.1.
 
 Reviewer findings:
 

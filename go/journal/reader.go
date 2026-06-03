@@ -16,8 +16,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/klauspost/compress/zstd"
-	"github.com/pierrec/lz4/v4"
-	"github.com/ulikunitz/xz"
 )
 
 var (
@@ -161,6 +159,14 @@ type Reader struct {
 	entryDataOffsetsEntry uint64
 	entryDataIndex        int
 	entryDataActive       bool
+}
+
+type readerRefreshSnapshot struct {
+	header   journalHeader
+	offsets  []uint64
+	index    int
+	fileSize uint64
+	mapping  *readOnlyMapping
 }
 
 type filterBuilder struct {
@@ -562,62 +568,84 @@ func (r *Reader) refreshEntryOffsets() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	sameHeaderState := size == r.fileSize &&
-		header.nEntries == r.header.nEntries &&
-		header.tailEntryArrayOffset == r.header.tailEntryArrayOffset &&
-		header.tailEntryArrayNEntries == r.header.tailEntryArrayNEntries
-	if sameHeaderState {
+	if r.sameEntryArrayState(header, size) {
 		r.header = header
 		r.configureLayout()
-		if r.entryIndex > len(r.entryOffsets) {
-			r.entryIndex = len(r.entryOffsets)
-		}
+		r.clampEntryIndex()
 		return false, nil
 	}
 
-	oldHeader := r.header
-	oldOffsets := r.entryOffsets
-	oldIndex := r.entryIndex
-	oldFileSize := r.fileSize
-	var oldMapping *readOnlyMapping
-	var newMapping *readOnlyMapping
-	if r.options.AccessMode == ReaderAccessMmap {
-		oldMapping = r.mapping
-		newMapping, err = newReadOnlyMapping(r.file)
-		if err != nil {
-			return false, nil
-		}
+	snapshot := r.refreshSnapshot()
+	newMapping, err := r.newRefreshMapping()
+	if err != nil {
+		return false, nil
 	}
 
-	r.header = header
-	r.configureLayout()
-	r.fileSize = size
-	if newMapping != nil {
-		r.mapping = newMapping
-		r.fileSize = newMapping.size
-	}
+	r.applyRefreshState(header, size, newMapping)
 	r.clearCurrentEntryState()
 	if err := r.loadEntryArray(); err != nil {
 		if newMapping != nil {
 			_ = newMapping.close()
 		}
-		r.header = oldHeader
-		r.configureLayout()
-		r.entryOffsets = oldOffsets
-		r.entryIndex = oldIndex
-		r.fileSize = oldFileSize
-		r.mapping = oldMapping
-		r.clearCurrentEntryState()
+		r.restoreRefreshSnapshot(snapshot)
 		return false, nil
 	}
-	r.entryIndex = oldIndex
-	if oldMapping != nil {
-		_ = oldMapping.close()
+	r.entryIndex = snapshot.index
+	if snapshot.mapping != nil {
+		_ = snapshot.mapping.close()
 	}
+	r.clampEntryIndex()
+	return true, nil
+}
+
+func (r *Reader) sameEntryArrayState(header journalHeader, size uint64) bool {
+	return size == r.fileSize &&
+		header.nEntries == r.header.nEntries &&
+		header.tailEntryArrayOffset == r.header.tailEntryArrayOffset &&
+		header.tailEntryArrayNEntries == r.header.tailEntryArrayNEntries
+}
+
+func (r *Reader) clampEntryIndex() {
 	if r.entryIndex > len(r.entryOffsets) {
 		r.entryIndex = len(r.entryOffsets)
 	}
-	return true, nil
+}
+
+func (r *Reader) refreshSnapshot() readerRefreshSnapshot {
+	return readerRefreshSnapshot{
+		header:   r.header,
+		offsets:  r.entryOffsets,
+		index:    r.entryIndex,
+		fileSize: r.fileSize,
+		mapping:  r.mapping,
+	}
+}
+
+func (r *Reader) newRefreshMapping() (*readOnlyMapping, error) {
+	if r.options.AccessMode != ReaderAccessMmap {
+		return nil, nil
+	}
+	return newReadOnlyMapping(r.file)
+}
+
+func (r *Reader) applyRefreshState(header journalHeader, size uint64, mapping *readOnlyMapping) {
+	r.header = header
+	r.configureLayout()
+	r.fileSize = size
+	if mapping != nil {
+		r.mapping = mapping
+		r.fileSize = mapping.size
+	}
+}
+
+func (r *Reader) restoreRefreshSnapshot(snapshot readerRefreshSnapshot) {
+	r.header = snapshot.header
+	r.configureLayout()
+	r.entryOffsets = snapshot.offsets
+	r.entryIndex = snapshot.index
+	r.fileSize = snapshot.fileSize
+	r.mapping = snapshot.mapping
+	r.clearCurrentEntryState()
 }
 
 func (r *Reader) loadEntryArray() error {
@@ -630,48 +658,11 @@ func (r *Reader) loadEntryArray() error {
 	offset := r.header.entryArrayOffset
 	remaining := r.header.nEntries
 	for offset != 0 && remaining > 0 {
-		header, capacity, err := r.readOffsetArrayHeader(offset)
+		header, chunkOffsets, toRead, err := r.readEntryArrayChunk(offset, remaining)
 		if err != nil {
 			return err
 		}
-		toRead := capacity
-		if remaining < toRead {
-			toRead = remaining
-		}
-		itemSize := r.offsetArrayItemSize()
-		dataOffset := offset + offsetArrayObjectHeaderSize
-		dataSize := toRead * itemSize
-		buf := make([]byte, dataSize)
-		if err := r.readAt(buf, dataOffset); err != nil {
-			return err
-		}
-		if itemSize == compactOffsetArrayItemSize {
-			for pos := 0; pos < len(buf); pos += compactOffsetArrayItemSize {
-				off := uint64(binary.LittleEndian.Uint32(buf[pos : pos+compactOffsetArrayItemSize]))
-				if off != 0 {
-					valid, err := r.validEntryObjectOffset(off)
-					if err != nil {
-						return err
-					}
-					if valid {
-						offsets = append(offsets, off)
-					}
-				}
-			}
-		} else {
-			for pos := 0; pos < len(buf); pos += regularOffsetArrayItemSize {
-				off := binary.LittleEndian.Uint64(buf[pos : pos+regularOffsetArrayItemSize])
-				if off != 0 {
-					valid, err := r.validEntryObjectOffset(off)
-					if err != nil {
-						return err
-					}
-					if valid {
-						offsets = append(offsets, off)
-					}
-				}
-			}
-		}
+		offsets = append(offsets, chunkOffsets...)
 		remaining -= toRead
 		offset = header.nextArrayOffset
 	}
@@ -679,6 +670,56 @@ func (r *Reader) loadEntryArray() error {
 	r.entryOffsets = offsets
 	r.entryIndex = -1
 	return nil
+}
+
+func (r *Reader) readEntryArrayChunk(offset uint64, remaining uint64) (offsetArrayHeader, []uint64, uint64, error) {
+	header, capacity, err := r.readOffsetArrayHeader(offset)
+	if err != nil {
+		return offsetArrayHeader{}, nil, 0, err
+	}
+	toRead := minUint64(remaining, capacity)
+	itemSize := r.offsetArrayItemSize()
+	buf := make([]byte, toRead*itemSize)
+	if err := r.readAt(buf, offset+offsetArrayObjectHeaderSize); err != nil {
+		return offsetArrayHeader{}, nil, 0, err
+	}
+	offsets, err := r.validEntryOffsetsFromArray(buf, itemSize)
+	if err != nil {
+		return offsetArrayHeader{}, nil, 0, err
+	}
+	return header, offsets, toRead, nil
+}
+
+func minUint64(a, b uint64) uint64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func (r *Reader) validEntryOffsetsFromArray(buf []byte, itemSize uint64) ([]uint64, error) {
+	offsets := make([]uint64, 0, len(buf)/int(itemSize))
+	for pos := 0; pos < len(buf); pos += int(itemSize) {
+		off := entryOffsetArrayItem(buf[pos:], itemSize)
+		if off == 0 {
+			continue
+		}
+		valid, err := r.validEntryObjectOffset(off)
+		if err != nil {
+			return nil, err
+		}
+		if valid {
+			offsets = append(offsets, off)
+		}
+	}
+	return offsets, nil
+}
+
+func entryOffsetArrayItem(src []byte, itemSize uint64) uint64 {
+	if itemSize == compactOffsetArrayItemSize {
+		return uint64(binary.LittleEndian.Uint32(src[:compactOffsetArrayItemSize]))
+	}
+	return binary.LittleEndian.Uint64(src[:regularOffsetArrayItemSize])
 }
 
 func (r *Reader) validEntryObjectOffset(offset uint64) (bool, error) {
@@ -722,29 +763,7 @@ func (r *Reader) readOffsetArrayHeader(offset uint64) (offsetArrayHeader, uint64
 func (r *Reader) Next() error {
 	r.clearCurrentEntryState()
 	if r.realtimeSeek != nil {
-		usec := *r.realtimeSeek
-		idx, err := r.firstRealtimeIndexAtOrAfter(usec)
-		r.realtimeSeek = nil
-		if err != nil {
-			return err
-		}
-		r.direction = DirectionForward
-		if idx >= len(r.entryOffsets) {
-			if changed, err := r.refreshEntryOffsets(); err != nil {
-				return err
-			} else if changed {
-				idx, err = r.firstRealtimeIndexAtOrAfter(usec)
-				if err != nil {
-					return err
-				}
-			}
-		}
-		if idx >= len(r.entryOffsets) {
-			r.entryIndex = len(r.entryOffsets)
-			return errEndOfEntries
-		}
-		r.entryIndex = idx
-		return nil
+		return r.nextFromRealtimeSeek()
 	}
 	if r.entryIndex < -1 {
 		r.entryIndex = -1
@@ -753,21 +772,58 @@ func (r *Reader) Next() error {
 	r.direction = DirectionForward
 
 	if r.entryIndex >= len(r.entryOffsets) {
-		oldLen := len(r.entryOffsets)
-		if changed, err := r.refreshEntryOffsets(); err != nil {
-			return err
-		} else if changed && oldLen < len(r.entryOffsets) {
-			if r.entryIndex > oldLen {
-				r.entryIndex = oldLen
-			}
-			if r.entryIndex < len(r.entryOffsets) {
-				return nil
-			}
-		}
+		return r.nextAfterTailRefresh()
+	}
+	return nil
+}
+
+func (r *Reader) nextFromRealtimeSeek() error {
+	usec := *r.realtimeSeek
+	idx, err := r.firstRealtimeIndexAtOrAfter(usec)
+	r.realtimeSeek = nil
+	if err != nil {
+		return err
+	}
+	r.direction = DirectionForward
+	idx, err = r.refreshRealtimeSeekIndex(usec, idx)
+	if err != nil {
+		return err
+	}
+	if idx >= len(r.entryOffsets) {
 		r.entryIndex = len(r.entryOffsets)
 		return errEndOfEntries
 	}
+	r.entryIndex = idx
 	return nil
+}
+
+func (r *Reader) refreshRealtimeSeekIndex(usec uint64, idx int) (int, error) {
+	if idx < len(r.entryOffsets) {
+		return idx, nil
+	}
+	changed, err := r.refreshEntryOffsets()
+	if err != nil || !changed {
+		return idx, err
+	}
+	return r.firstRealtimeIndexAtOrAfter(usec)
+}
+
+func (r *Reader) nextAfterTailRefresh() error {
+	oldLen := len(r.entryOffsets)
+	changed, err := r.refreshEntryOffsets()
+	if err != nil {
+		return err
+	}
+	if changed && oldLen < len(r.entryOffsets) {
+		if r.entryIndex > oldLen {
+			r.entryIndex = oldLen
+		}
+		if r.entryIndex < len(r.entryOffsets) {
+			return nil
+		}
+	}
+	r.entryIndex = len(r.entryOffsets)
+	return errEndOfEntries
 }
 
 func (r *Reader) Previous() error {
@@ -1152,43 +1208,7 @@ func (r *Reader) readDataPayload(offset uint64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if objHdr.flag&objectCompressedZSTD != 0 {
-		decoded, err := zstdDecompress(payload)
-		if err != nil {
-			return nil, err
-		}
-		payload = decoded
-	} else if objHdr.flag&objectCompressedXZ != 0 {
-		r, err := xz.NewReader(bytes.NewReader(payload))
-		if err != nil {
-			return nil, err
-		}
-		decoded, err := readAllLimited(r, maxUncompressedDataObjectSize)
-		if err != nil {
-			return nil, err
-		}
-		payload = decoded
-	} else if objHdr.flag&objectCompressedLZ4 != 0 {
-		if len(payload) < 8 {
-			return nil, errors.New("lz4 compressed payload too short")
-		}
-		uncompressedSize := binary.LittleEndian.Uint64(payload[:8])
-		if uncompressedSize > maxUncompressedDataObjectSize {
-			return nil, errors.New("lz4 decompressed payload too large")
-		}
-		compressedData := payload[8:]
-		decoded := make([]byte, uncompressedSize)
-		n, err := lz4.UncompressBlock(compressedData, decoded)
-		if err != nil {
-			return nil, err
-		}
-		if uint64(n) != uncompressedSize {
-			return nil, errors.New("lz4 decompressed size mismatch")
-		}
-		payload = decoded
-	}
-
-	return payload, nil
+	return decompressDataPayload(objHdr.flag, payload)
 }
 
 func (r *Reader) visitDataPayloadWithHeader(offset uint64, header dataHeader, visit func([]byte) error) error {
@@ -1202,38 +1222,9 @@ func (r *Reader) visitDataPayloadWithHeader(offset uint64, header dataHeader, vi
 	if err != nil {
 		return err
 	}
-	if header.object.flag&objectCompressedZSTD != 0 {
-		payload, err = zstdDecompress(payload)
-		if err != nil {
-			return err
-		}
-	} else if header.object.flag&objectCompressedXZ != 0 {
-		reader, err := xz.NewReader(bytes.NewReader(payload))
-		if err != nil {
-			return err
-		}
-		payload, err = readAllLimited(reader, maxUncompressedDataObjectSize)
-		if err != nil {
-			return err
-		}
-	} else if header.object.flag&objectCompressedLZ4 != 0 {
-		if len(payload) < 8 {
-			return errors.New("lz4 compressed payload too short")
-		}
-		uncompressedSize := binary.LittleEndian.Uint64(payload[:8])
-		if uncompressedSize > maxUncompressedDataObjectSize {
-			return errors.New("lz4 decompressed payload too large")
-		}
-		compressedData := payload[8:]
-		decoded := make([]byte, uncompressedSize)
-		n, err := lz4.UncompressBlock(compressedData, decoded)
-		if err != nil {
-			return err
-		}
-		if uint64(n) != uncompressedSize {
-			return errors.New("lz4 decompressed size mismatch")
-		}
-		payload = decoded
+	payload, err = decompressDataPayload(header.object.flag, payload)
+	if err != nil {
+		return err
 	}
 
 	return visit(payload)
@@ -2076,76 +2067,92 @@ func (dr *DirectoryReader) canStepSequential(direction Direction, applyFilter bo
 
 func (dr *DirectoryReader) stepSequential(direction Direction) (bool, error) {
 	if len(dr.files) == 0 {
-		dr.index = -1
-		dr.currentKey = nil
+		dr.clearDirectoryPosition()
 		return false, nil
 	}
 	if !dr.hasDirection || dr.direction != direction {
-		for _, r := range dr.files {
-			if direction == DirectionForward {
-				if err := r.SeekHead(); err != nil {
-					return false, err
-				}
-			} else if err := r.SeekTail(); err != nil {
-				return false, err
-			}
+		if err := dr.resetSequentialDirection(direction); err != nil {
+			return false, err
 		}
-		if direction == DirectionForward {
-			dr.index = 0
-		} else {
-			dr.index = len(dr.files) - 1
-		}
-		dr.resetCandidates()
-		dr.currentKey = nil
-		dr.realtimeSeekBound = nil
-		dr.direction = direction
-		dr.hasDirection = true
 	}
 	if direction == DirectionForward {
-		if dr.index < 0 {
-			dr.index = 0
-		}
-		for dr.index < len(dr.files) {
-			ok, err := stepReaderRaw(dr.files[dr.index], direction)
-			if err != nil {
-				return false, err
-			}
-			if ok {
-				key, err := dr.files[dr.index].currentDirectoryEntryKey()
-				if err != nil {
-					return false, err
-				}
-				dr.currentKey = &key
-				return true, nil
-			}
-			dr.index++
-		}
-		dr.index = -1
-		dr.currentKey = nil
-		return false, nil
+		return dr.stepSequentialForward()
 	}
+	return dr.stepSequentialBackward()
+}
 
+func (dr *DirectoryReader) clearDirectoryPosition() {
+	dr.index = -1
+	dr.currentKey = nil
+}
+
+func (dr *DirectoryReader) resetSequentialDirection(direction Direction) error {
+	for _, r := range dr.files {
+		if err := seekReaderBoundary(r, direction); err != nil {
+			return err
+		}
+	}
+	if direction == DirectionForward {
+		dr.index = 0
+	} else {
+		dr.index = len(dr.files) - 1
+	}
+	dr.resetCandidates()
+	dr.currentKey = nil
+	dr.realtimeSeekBound = nil
+	dr.direction = direction
+	dr.hasDirection = true
+	return nil
+}
+
+func seekReaderBoundary(r *Reader, direction Direction) error {
+	if direction == DirectionForward {
+		return r.SeekHead()
+	}
+	return r.SeekTail()
+}
+
+func (dr *DirectoryReader) stepSequentialForward() (bool, error) {
+	if dr.index < 0 {
+		dr.index = 0
+	}
+	for dr.index < len(dr.files) {
+		ok, err := dr.stepSequentialReader(DirectionForward)
+		if err != nil || ok {
+			return ok, err
+		}
+		dr.index++
+	}
+	dr.clearDirectoryPosition()
+	return false, nil
+}
+
+func (dr *DirectoryReader) stepSequentialBackward() (bool, error) {
 	if dr.index >= len(dr.files) {
 		dr.index = len(dr.files) - 1
 	}
 	for dr.index >= 0 {
-		ok, err := stepReaderRaw(dr.files[dr.index], direction)
-		if err != nil {
-			return false, err
-		}
-		if ok {
-			key, err := dr.files[dr.index].currentDirectoryEntryKey()
-			if err != nil {
-				return false, err
-			}
-			dr.currentKey = &key
-			return true, nil
+		ok, err := dr.stepSequentialReader(DirectionBackward)
+		if err != nil || ok {
+			return ok, err
 		}
 		dr.index--
 	}
-	dr.index = -1
-	dr.currentKey = nil
+	dr.clearDirectoryPosition()
 	return false, nil
+}
+
+func (dr *DirectoryReader) stepSequentialReader(direction Direction) (bool, error) {
+	ok, err := stepReaderRaw(dr.files[dr.index], direction)
+	if err != nil || !ok {
+		return ok, err
+	}
+	key, err := dr.files[dr.index].currentDirectoryEntryKey()
+	if err != nil {
+		return false, err
+	}
+	dr.currentKey = &key
+	return true, nil
 }
 
 func (dr *DirectoryReader) prepareMergeDirection(direction Direction) error {
@@ -2156,10 +2163,8 @@ func (dr *DirectoryReader) prepareMergeDirection(direction Direction) error {
 	if dr.realtimeSeek != nil {
 		usec := *dr.realtimeSeek
 		dr.realtimeSeek = nil
-		for _, r := range dr.files {
-			if err := r.SeekRealtimeUsec(usec); err != nil {
-				return err
-			}
+		if err := dr.seekAllRealtime(usec); err != nil {
+			return err
 		}
 		dr.resetCandidates()
 		dr.realtimeSeekBound = &directoryRealtimeSeekBound{usec: usec, direction: direction}
@@ -2173,28 +2178,34 @@ func (dr *DirectoryReader) prepareMergeDirection(direction Direction) error {
 	}
 
 	if dr.currentKey != nil {
-		for _, r := range dr.files {
-			if err := r.SeekRealtimeUsec(dr.currentKey.realtime); err != nil {
-				return err
-			}
+		if err := dr.seekAllRealtime(dr.currentKey.realtime); err != nil {
+			return err
 		}
-	} else if direction == DirectionForward {
-		for _, r := range dr.files {
-			if err := r.SeekHead(); err != nil {
-				return err
-			}
-		}
-	} else {
-		for _, r := range dr.files {
-			if err := r.SeekTail(); err != nil {
-				return err
-			}
-		}
+	} else if err := dr.seekAllBoundary(direction); err != nil {
+		return err
 	}
 
 	dr.resetCandidates()
 	dr.direction = direction
 	dr.hasDirection = true
+	return nil
+}
+
+func (dr *DirectoryReader) seekAllRealtime(usec uint64) error {
+	for _, r := range dr.files {
+		if err := r.SeekRealtimeUsec(usec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (dr *DirectoryReader) seekAllBoundary(direction Direction) error {
+	for _, r := range dr.files {
+		if err := seekReaderBoundary(r, direction); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -2213,32 +2224,23 @@ func (dr *DirectoryReader) fillCandidate(readerIndex int, direction Direction, a
 			return nil
 		}
 
-		if applyFilter && dr.filter != nil {
-			entry, err := r.GetEntry()
-			if err != nil {
-				return err
-			}
-			if !dr.filter.matches(entry) {
-				continue
-			}
+		matches, err := dr.readerEntryMatches(r, applyFilter)
+		if err != nil {
+			return err
+		}
+		if !matches {
+			continue
 		}
 
 		key, err := r.currentDirectoryEntryKey()
 		if err != nil {
 			return err
 		}
-		if dr.realtimeSeekBound != nil {
-			bound := dr.realtimeSeekBound
-			if (bound.direction == DirectionForward && key.realtime < bound.usec) ||
-				(bound.direction == DirectionBackward && key.realtime > bound.usec) {
-				continue
-			}
+		if !dr.keyPassesRealtimeBound(key) {
+			continue
 		}
-		if dr.currentKey != nil {
-			cmp := dr.compareEntryKeys(key, *dr.currentKey)
-			if (direction == DirectionForward && cmp <= 0) || (direction == DirectionBackward && cmp >= 0) {
-				continue
-			}
+		if !dr.keyPassesCurrentPosition(key, direction) {
+			continue
 		}
 
 		dr.candidates[readerIndex] = &directoryCandidate{
@@ -2247,6 +2249,39 @@ func (dr *DirectoryReader) fillCandidate(readerIndex int, direction Direction, a
 		}
 		return nil
 	}
+}
+
+func (dr *DirectoryReader) readerEntryMatches(r *Reader, applyFilter bool) (bool, error) {
+	if !applyFilter || dr.filter == nil {
+		return true, nil
+	}
+	entry, err := r.GetEntry()
+	if err != nil {
+		return false, err
+	}
+	return dr.filter.matches(entry), nil
+}
+
+func (dr *DirectoryReader) keyPassesRealtimeBound(key directoryEntryKey) bool {
+	if dr.realtimeSeekBound == nil {
+		return true
+	}
+	bound := dr.realtimeSeekBound
+	if bound.direction == DirectionForward {
+		return key.realtime >= bound.usec
+	}
+	return key.realtime <= bound.usec
+}
+
+func (dr *DirectoryReader) keyPassesCurrentPosition(key directoryEntryKey, direction Direction) bool {
+	if dr.currentKey == nil {
+		return true
+	}
+	cmp := dr.compareEntryKeys(key, *dr.currentKey)
+	if direction == DirectionForward {
+		return cmp > 0
+	}
+	return cmp < 0
 }
 
 func stepReaderRaw(r *Reader, direction Direction) (bool, error) {
@@ -2286,33 +2321,43 @@ func (r *Reader) currentDirectoryEntryKey() (directoryEntryKey, error) {
 }
 
 func (dr *DirectoryReader) compareEntryKeys(a, b directoryEntryKey) int {
-	if a.bootID == b.bootID &&
-		a.monotonic == b.monotonic &&
-		a.realtime == b.realtime &&
-		a.xorHash == b.xorHash &&
-		a.seqnumID == b.seqnumID &&
-		a.seqnum == b.seqnum {
+	if sameDirectoryEntryKey(a, b) {
 		return 0
 	}
 
-	if a.seqnumID == b.seqnumID {
-		if cmp := cmpUint64(a.seqnum, b.seqnum); cmp != 0 {
-			return cmp
-		}
-	}
-
-	if a.bootID == b.bootID {
-		if cmp := cmpUint64(a.monotonic, b.monotonic); cmp != 0 {
-			return cmp
-		}
-	} else if cmp := dr.compareBootIDs(a.bootID, b.bootID); cmp != 0 {
+	if cmp := compareSharedSeqnum(a, b); cmp != 0 {
 		return cmp
 	}
-
+	if cmp := dr.compareBootAndMonotonic(a, b); cmp != 0 {
+		return cmp
+	}
 	if cmp := cmpUint64(a.realtime, b.realtime); cmp != 0 {
 		return cmp
 	}
 	return cmpUint64(a.xorHash, b.xorHash)
+}
+
+func sameDirectoryEntryKey(a, b directoryEntryKey) bool {
+	return a.bootID == b.bootID &&
+		a.monotonic == b.monotonic &&
+		a.realtime == b.realtime &&
+		a.xorHash == b.xorHash &&
+		a.seqnumID == b.seqnumID &&
+		a.seqnum == b.seqnum
+}
+
+func compareSharedSeqnum(a, b directoryEntryKey) int {
+	if a.seqnumID != b.seqnumID {
+		return 0
+	}
+	return cmpUint64(a.seqnum, b.seqnum)
+}
+
+func (dr *DirectoryReader) compareBootAndMonotonic(a, b directoryEntryKey) int {
+	if a.bootID != b.bootID {
+		return dr.compareBootIDs(a.bootID, b.bootID)
+	}
+	return cmpUint64(a.monotonic, b.monotonic)
 }
 
 func (dr *DirectoryReader) compareBootIDs(a, b UUID) int {
@@ -2425,37 +2470,52 @@ type BootInfo struct {
 func ExportEntry(entry *Entry) string {
 	var buf bytes.Buffer
 
+	writeExportMetadata(&buf, entry)
+	written := writePreferredExportFields(&buf, entry)
+	writeRemainingExportFields(&buf, entry, written)
+	writeNonUTF8RawExportFields(&buf, entry)
+
+	buf.WriteByte('\n')
+	return buf.String()
+}
+
+func writeExportMetadata(buf *bytes.Buffer, entry *Entry) {
 	if entry.Cursor != "" {
-		writeExportField(&buf, "__CURSOR", []byte(entry.Cursor))
+		writeExportField(buf, "__CURSOR", []byte(entry.Cursor))
 	}
 
 	if entry.Realtime != 0 {
-		writeExportField(&buf, "__REALTIME_TIMESTAMP", []byte(strconv.FormatUint(entry.Realtime, 10)))
+		writeExportField(buf, "__REALTIME_TIMESTAMP", []byte(strconv.FormatUint(entry.Realtime, 10)))
 	}
 
 	if entry.Monotonic != 0 {
-		writeExportField(&buf, "__MONOTONIC_TIMESTAMP", []byte(strconv.FormatUint(entry.Monotonic, 10)))
+		writeExportField(buf, "__MONOTONIC_TIMESTAMP", []byte(strconv.FormatUint(entry.Monotonic, 10)))
 	}
 
 	if entry.Seqnum != 0 {
-		writeExportField(&buf, "__SEQNUM", []byte(strconv.FormatUint(entry.Seqnum, 10)))
+		writeExportField(buf, "__SEQNUM", []byte(strconv.FormatUint(entry.Seqnum, 10)))
 	}
 
 	if seqnumID, _, _, _, err := ParseCursor(entry.Cursor); err == nil && seqnumID != "" {
-		writeExportField(&buf, "__SEQNUM_ID", []byte(seqnumID))
+		writeExportField(buf, "__SEQNUM_ID", []byte(seqnumID))
 	}
 
-	writeExportField(&buf, "_BOOT_ID", []byte(entry.BootID.String()))
+	writeExportField(buf, "_BOOT_ID", []byte(entry.BootID.String()))
+}
 
+func writePreferredExportFields(buf *bytes.Buffer, entry *Entry) map[string]struct{} {
 	preferred := []string{"_MACHINE_ID", "_HOSTNAME", "PRIORITY", "_TRANSPORT"}
 	written := map[string]struct{}{"_BOOT_ID": {}}
 	for _, name := range preferred {
 		for _, value := range entryValues(entry, name) {
-			writeExportField(&buf, name, value)
+			writeExportField(buf, name, value)
 		}
 		written[name] = struct{}{}
 	}
+	return written
+}
 
+func writeRemainingExportFields(buf *bytes.Buffer, entry *Entry, written map[string]struct{}) {
 	var keys []string
 	for _, k := range entryFieldNames(entry) {
 		if _, ok := written[k]; ok {
@@ -2467,18 +2527,18 @@ func ExportEntry(entry *Entry) string {
 
 	for _, k := range keys {
 		for _, value := range entryValues(entry, k) {
-			writeExportField(&buf, k, value)
+			writeExportField(buf, k, value)
 		}
 	}
+}
+
+func writeNonUTF8RawExportFields(buf *bytes.Buffer, entry *Entry) {
 	for _, field := range entry.RawFields {
 		if utf8.Valid(field.Name) {
 			continue
 		}
-		writeExportRawField(&buf, field.Name, field.Value)
+		writeExportRawField(buf, field.Name, field.Value)
 	}
-
-	buf.WriteByte('\n')
-	return buf.String()
 }
 
 func JSONEntry(entry *Entry) (map[string]interface{}, error) {
@@ -2619,42 +2679,52 @@ func journalBytesPrintable(value []byte, allowNewline bool) bool {
 }
 
 func ParseMatchString(s string) ([]byte, error) {
-	if s == "" {
-		return nil, errors.New("empty match string")
+	field, err := parseMatchField(s)
+	if err != nil {
+		return nil, err
 	}
-	if s == "=" {
-		return nil, errors.New("invalid match: missing field name")
+	if err := validateMatchFieldName(field); err != nil {
+		return nil, err
 	}
-	if strings.HasPrefix(s, "=") {
-		return nil, errors.New("invalid match: field name cannot start with =")
-	}
+	return []byte(s), nil
+}
 
+func parseMatchField(s string) (string, error) {
+	switch {
+	case s == "":
+		return "", errors.New("empty match string")
+	case s == "=":
+		return "", errors.New("invalid match: missing field name")
+	case strings.HasPrefix(s, "="):
+		return "", errors.New("invalid match: field name cannot start with =")
+	}
 	eq := strings.IndexByte(s, '=')
 	if eq < 0 {
-		return nil, errors.New("invalid match: missing '=' separator")
+		return "", errors.New("invalid match: missing '=' separator")
 	}
+	return s[:eq], nil
+}
 
-	field := s[:eq]
-
+func validateMatchFieldName(field string) error {
 	if field == "" {
-		return nil, errors.New("invalid match: empty field name")
+		return errors.New("invalid match: empty field name")
 	}
 
 	if len(field) > 64 {
-		return nil, errors.New("invalid match: field name too long")
+		return errors.New("invalid match: field name too long")
 	}
 
 	if field[0] >= '0' && field[0] <= '9' {
-		return nil, fmt.Errorf("invalid field name %q", field)
+		return fmt.Errorf("invalid field name %q", field)
 	}
 	for _, c := range field {
 		if c == '_' || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
 			continue
 		}
-		return nil, fmt.Errorf("invalid field name %q", field)
+		return fmt.Errorf("invalid field name %q", field)
 	}
 
-	return []byte(s), nil
+	return nil
 }
 
 func ParseCursor(cursor string) (seqnumID string, bootID string, realtime uint64, seqnum uint64, err error) {

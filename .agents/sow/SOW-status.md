@@ -10,9 +10,12 @@ Last updated: 2026-06-02
 - SOW-0084 - Code Scanning And Codacy Gate: in-progress. Advanced GitHub
   CodeQL and Codacy SARIF reporting are active; the Codacy SARIF workflow now
   uses tuned Cloud configuration when `CODACY_API_TOKEN` is available. Security
-  findings are cleared in the latest direct Codacy export; remaining work is
-  to remediate the 380 Lizard critical complexity findings now, record final
-  scanner results, and complete whole-SOW review.
+  findings are cleared in the latest direct Codacy export. The generated
+  `rust/Cargo.lock` Lizard finding is excluded in Codacy Cloud, the corrected
+  actionable inventory is 161 runtime, 201 test/harness, and 17 other findings,
+  and Batch 1 made the Go reader/verifier touched files locally Lizard-clean.
+  Remaining work is to continue complexity remediation, record final scanner
+  results, and complete whole-SOW review.
 
 ## Pending
 
