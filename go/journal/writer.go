@@ -60,6 +60,9 @@ type Options struct {
 	// FieldNamePolicy controls validation for caller-provided fields. The zero
 	// value is FieldNamePolicyJournald.
 	FieldNamePolicy FieldNamePolicy
+	// FileMode controls permissions for newly created journal files on platforms
+	// that support POSIX file modes. Nil uses systemd journald's 0640 default.
+	FileMode *os.FileMode
 }
 
 // EntryOptions controls timestamps and boot ID for one appended entry.
@@ -121,6 +124,18 @@ func PublishEveryEntries(entries uint64) *uint64 {
 	return &entries
 }
 
+// JournalFileMode returns a pointer suitable for Options.FileMode.
+func JournalFileMode(mode os.FileMode) *os.FileMode {
+	return &mode
+}
+
+func validateFileMode(mode *os.FileMode) error {
+	if mode == nil || *mode&^os.ModePerm == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: journal file mode must contain only permission bits", errInvalidJournal)
+}
+
 // Create creates or truncates a journal file.
 func Create(path string, opts Options) (*Writer, error) {
 	opts = normalizeOptions(opts)
@@ -130,8 +145,11 @@ func Create(path string, opts Options) (*Writer, error) {
 	if err := validateFieldNamePolicy(opts.FieldNamePolicy); err != nil {
 		return nil, err
 	}
+	if err := validateFileMode(opts.FileMode); err != nil {
+		return nil, err
+	}
 
-	f, err := openWriterFile(path, true, 0o640)
+	f, err := openWriterFile(path, true, *opts.FileMode)
 	if err != nil {
 		return nil, err
 	}

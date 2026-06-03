@@ -56,6 +56,7 @@ MIN_COMPRESS_THRESHOLD = _writer_compression.MIN_COMPRESS_THRESHOLD
 FIELD_NAME_POLICY_JOURNALD = _writer_policy.FIELD_NAME_POLICY_JOURNALD
 FIELD_NAME_POLICY_RAW = _writer_policy.FIELD_NAME_POLICY_RAW
 FIELD_NAME_POLICY_JOURNAL_APP = _writer_policy.FIELD_NAME_POLICY_JOURNAL_APP
+DEFAULT_JOURNAL_FILE_MODE = 0o640
 FIELD_CACHE_MAX_ENTRIES = 1024
 FIELD_CACHE_MAX_PAYLOAD_LEN = 128
 
@@ -96,7 +97,7 @@ class Writer:
         opts = opts or {}
         fd = None
         try:
-            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o640)
+            fd = os.open(path, os.O_RDWR | os.O_CREAT, _normalize_file_mode(opts))
             os.ftruncate(fd, 0)
             w = Writer(fd, path)
             w._compression = _normalize_compression(opts.get('compression', COMPRESSION_NONE))
@@ -1116,6 +1117,19 @@ def _configure_opened_writer(writer, fd, header, compression, opts):
     writer._map_arena(max(os.fstat(fd).st_size, header['header_size'] + header['arena_size']))
     writer._header['state'] = STATE_ONLINE
     writer._write_header()
+
+
+def _normalize_file_mode(opts):
+    value = opts.get('file_mode')
+    if value is None:
+        value = opts.get('fileMode')
+    if value is None:
+        return DEFAULT_JOURNAL_FILE_MODE
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f'invalid journal file mode: {value!r}')
+    if value < 0 or value > 0o777:
+        raise ValueError(f'invalid journal file mode: {value!r}')
+    return value
 
 
 def _opened_writer_boot_id(header, opts):

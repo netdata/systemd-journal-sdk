@@ -365,6 +365,7 @@ impl ActiveFile {
         compact: bool,
         strict_systemd_naming: bool,
         live_publish_every_entries: u64,
+        file_mode: u32,
     ) -> Result<Self> {
         let head_seqnum = next_seqnum;
 
@@ -380,6 +381,7 @@ impl ActiveFile {
             .with_optimized_buckets(None, max_file_size)
             .with_keyed_hash(true)
             .with_compression(compression)
+            .with_file_mode(file_mode)
             .with_compress_threshold(compression_threshold);
 
         let mut journal_file = JournalFile::create(&repository_file, options)?;
@@ -409,6 +411,7 @@ impl ActiveFile {
         compression_threshold: usize,
         strict_systemd_naming: bool,
         live_publish_every_entries: u64,
+        file_mode: u32,
     ) -> Result<Self> {
         let next_seqnum = self.writer.next_seqnum();
         let boot_id = self.writer.boot_id();
@@ -423,8 +426,11 @@ impl ActiveFile {
         };
 
         let old_journal_file = self.journal_file;
-        let mut journal_file =
-            old_journal_file.create_successor(&repository_file, max_file_size)?;
+        let mut journal_file = old_journal_file.create_successor_with_file_mode(
+            &repository_file,
+            max_file_size,
+            file_mode,
+        )?;
         let mut writer = JournalWriter::new_with_compression(
             &mut journal_file,
             head_seqnum,
@@ -1355,6 +1361,7 @@ impl Log {
             self.config.compression_threshold,
             self.config.strict_systemd_naming,
             self.config.live_publish_every_entries,
+            self.config.file_mode,
         )?;
         let active = new_file.repository_file.clone();
         Ok((new_file, LogLifecycleEvent::Rotated { archived, active }))
@@ -1378,6 +1385,7 @@ impl Log {
             self.config.compact,
             self.config.strict_systemd_naming,
             self.config.live_publish_every_entries,
+            self.config.file_mode,
         )?;
         let active = new_file.repository_file.clone();
         Ok((new_file, LogLifecycleEvent::Created { active, reason }))

@@ -1,5 +1,6 @@
 use journal_core::file::{
-    Compression, DEFAULT_COMPRESS_THRESHOLD, FieldNamePolicy, normalize_compress_threshold,
+    Compression, DEFAULT_COMPRESS_THRESHOLD, DEFAULT_JOURNAL_FILE_MODE, FieldNamePolicy,
+    normalize_compress_threshold,
 };
 use journal_registry::Origin;
 use std::time::Duration;
@@ -132,6 +133,10 @@ pub struct Config {
     pub live_publish_every_entries: u64,
     /// Field-name policy for caller-provided fields.
     pub field_name_policy: FieldNamePolicy,
+    /// Permission bits for newly created journal files on Unix platforms.
+    ///
+    /// The default follows systemd journald's 0640 journal-file mode.
+    pub file_mode: u32,
 }
 
 impl Config {
@@ -154,6 +159,7 @@ impl Config {
             strict_systemd_naming: false,
             live_publish_every_entries: 1,
             field_name_policy: FieldNamePolicy::Journald,
+            file_mode: DEFAULT_JOURNAL_FILE_MODE,
         }
     }
 
@@ -211,6 +217,15 @@ impl Config {
 
     pub fn with_field_name_policy(mut self, policy: FieldNamePolicy) -> Self {
         self.field_name_policy = policy;
+        self
+    }
+
+    pub fn with_file_mode(mut self, mode: u32) -> Self {
+        assert!(
+            mode <= 0o777,
+            "journal file mode must contain only permission bits"
+        );
+        self.file_mode = mode;
         self
     }
 }

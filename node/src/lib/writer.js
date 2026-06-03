@@ -49,6 +49,7 @@ export const COMPRESSION_NONE = 0;
 export const COMPRESSION_ZSTD = 1;
 export const COMPRESSION_XZ = 2;
 export const COMPRESSION_LZ4 = 3;
+export const DEFAULT_JOURNAL_FILE_MODE = 0o640;
 export const DEFAULT_COMPRESS_THRESHOLD = 512;
 export const MIN_COMPRESS_THRESHOLD = 8;
 export {
@@ -88,7 +89,7 @@ export class Writer {
   static create(path, opts = {}) {
     let fd;
     try {
-      fd = safeOpenSync(path, 'w+', 0o640);
+      fd = safeOpenSync(path, 'w+', normalizeFileMode(opts.fileMode ?? opts.file_mode));
       ftruncateSync(fd, 0);
       const w = new Writer(fd, path);
       w.compression = normalizeCompression(opts.compression);
@@ -1076,6 +1077,14 @@ function normalizeCompressThreshold(value) {
     throw new Error(`invalid compression threshold: ${value}`);
   }
   return Math.max(MIN_COMPRESS_THRESHOLD, value);
+}
+
+export function normalizeFileMode(value) {
+  if (value === undefined || value === null) return DEFAULT_JOURNAL_FILE_MODE;
+  if (!Number.isInteger(value) || value < 0 || value > 0o777) {
+    throw new Error(`invalid journal file mode: ${value}`);
+  }
+  return value;
 }
 
 function normalizeLivePublishEveryEntries(value) {

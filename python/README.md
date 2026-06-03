@@ -200,6 +200,21 @@ w = Writer.create('/path/to/plugin.journal', {
 live publication for poll/snapshot consumers. `N > 1` publishes after every
 `N` entries. This is not an `fsync` or durability setting.
 
+Journal files are created with systemd journald's `0640` default permissions.
+Use `file_mode` when a consumer needs a different mode:
+
+```python
+w = Writer.create('/path/to/private.journal', {
+    'file_mode': 0o600,
+})
+```
+
+The same option is accepted by `Log` for newly-created active files. The
+override applies only to newly-created files; existing files keep their current
+filesystem permissions. POSIX modes remain subject to the process umask,
+matching systemd/open semantics. Non-POSIX platforms may ignore POSIX mode
+bits.
+
 ## Directory Writer Usage
 
 ```python

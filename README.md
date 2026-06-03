@@ -36,6 +36,10 @@ explicit accepted reason.
 
 - Core readers and writers operate on explicit caller-provided paths, bytes,
   timestamps, IDs, and options.
+- Writers use journald's `0640` file permission default for newly-created
+  journal files and expose explicit per-language overrides for consumers that
+  need a different mode. POSIX creation modes remain subject to the caller's
+  process umask, matching normal systemd/open semantics.
 - Core runtime paths do not discover host identity, execute external programs,
   or acquire writer locks implicitly.
 - Systemd/journald compatibility policy, optional host identity discovery, and

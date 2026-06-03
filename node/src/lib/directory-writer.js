@@ -3,7 +3,7 @@
 import { closeSync, fsyncSync, readSync } from 'node:fs';
 import { join } from 'node:path';
 import { isZeroUUID, randomUUID, stringToUUID, uuidToString } from './binary.js';
-import { Writer, normalizeFieldNamePolicy, prepareFieldsForPolicy, prepareRawPayloadsForPolicy, writerPolicyForLogPolicy } from './writer.js';
+import { Writer, normalizeFieldNamePolicy, normalizeFileMode, prepareFieldsForPolicy, prepareRawPayloadsForPolicy, writerPolicyForLogPolicy } from './writer.js';
 import { HEADER_SIZE, STATE_ONLINE, parseFileHeader, parseObjectHeader, normalizeJournalMaxFileSize } from './header.js';
 import {
   safeExistsSync,
@@ -69,6 +69,7 @@ export class Log {
     this.compact = options.compact === true || options.format === 'compact';
     this.livePublishEveryEntries = optionValue(options, 'livePublishEveryEntries', 'live_publish_every_entries');
     this.fieldNamePolicy = normalizeFieldNamePolicy(optionValue(options, 'fieldNamePolicy', 'field_name_policy'));
+    this.fileMode = normalizeFileMode(optionValue(options, 'fileMode', 'file_mode'));
   }
 
   _configureRotation(options) {
@@ -302,6 +303,7 @@ export class Log {
     if (this.livePublishEveryEntries !== undefined) {
       opts.livePublishEveryEntries = this.livePublishEveryEntries;
     }
+    opts.fileMode = this.fileMode;
     opts.fieldNamePolicy = writerPolicyForLogPolicy(this.fieldNamePolicy);
     if (this.seqnumId) opts.seqnumId = this.seqnumId;
     if (this.bootId) opts.bootId = this.bootId;

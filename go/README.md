@@ -174,6 +174,20 @@ w, err := journal.Create("/path/to/plugin.journal", journal.Options{
 `N > 1` publishes after every `N` entries. This is not an `fsync` or durability
 setting.
 
+Journal files are created with systemd journald's `0640` default permissions.
+Use `Options.FileMode` when a consumer needs a different mode:
+
+```go
+w, err := journal.Create("/path/to/private.journal", journal.Options{
+    FileMode: journal.JournalFileMode(0o600),
+})
+```
+
+The override applies only to newly-created files; existing files keep their
+current filesystem permissions. POSIX modes remain subject to the process
+umask, matching systemd/open semantics. Non-POSIX platforms may ignore POSIX
+mode bits.
+
 Directory writer with rotation and retention:
 
 ```go

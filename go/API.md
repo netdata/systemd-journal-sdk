@@ -176,6 +176,18 @@ This is not a durability sync or `fsync` cadence. Modes other than `1` must not
 be claimed as stock `journalctl --follow` compatible unless their own live
 matrix has been validated.
 
+## Journal File Mode
+
+`Options.FileMode` controls the POSIX permissions used when a writer creates a
+new journal file. Leave it nil to use systemd journald's `0640` default. Use
+`journal.JournalFileMode(0o600)` or another permission-only value when a
+consumer needs a different mode.
+
+The mode applies only to newly-created files. Opening an existing journal keeps
+its current filesystem permissions. POSIX modes remain subject to the process
+umask, matching systemd/open semantics. Non-POSIX platforms may ignore POSIX
+mode bits.
+
 ## Rotation And Retention
 
 Rotation and retention limits are optional. Use builder methods to enable a

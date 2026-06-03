@@ -3199,6 +3199,17 @@ def test_writer_file_permissions():
             assert stat.S_IMODE(path.stat().st_mode) == 0o640
 
 
+def test_writer_file_permissions_override():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / 'test.journal'
+        w = Writer.create(str(path), {'file_mode': 0o600})
+        w.close()
+        if os.name == 'nt' or sys.platform.startswith(('win', 'msys', 'cygwin')):
+            assert path.exists()
+        else:
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
 def test_compact_sealed_writer_stock_verify():
     with tempfile.TemporaryDirectory() as tmpdir:
         path = Path(tmpdir) / 'test.journal'
@@ -3305,6 +3316,7 @@ def main():
     test_writer_sealed_tampered_data_fails()
     test_writer_unsealed_does_not_set_sealed_flags()
     test_writer_file_permissions()
+    test_writer_file_permissions_override()
     test_compact_sealed_writer_stock_verify()
     test_conformance_manifest()
     print(f'PASS python package tests ({Path(__file__).relative_to(REPO_ROOT)})')

@@ -16,6 +16,9 @@ Current writer scope:
 - byte-safe field values through `&[u8]` field payloads;
 - direct-file writing through `journal_core`;
 - high-level directory writing through `journal::Log`;
+- systemd-compatible `0640` journal file permissions by default, configurable
+  for newly-created files through `JournalFileOptions::with_file_mode()` and
+  `Config::with_file_mode()`;
 - chain active naming by default, with
   `Config::with_strict_systemd_naming(true)` available for strict systemd
   `<source>.journal` active naming;
@@ -228,6 +231,14 @@ when no caller fields remain. `FieldNamePolicy::Raw` accepts any non-empty
 field name that does not contain `=`, but RAW-mode files are not guaranteed to
 be accepted by stock systemd tooling. Producer-specific field transformations
 belong outside the SDK.
+
+Journal files are created with systemd journald's `0640` default permissions.
+Use `JournalFileOptions::with_file_mode()` for direct-file writers or
+`Config::with_file_mode()` for directory writers when a consumer needs another
+mode. The override applies only to newly-created files; existing files keep
+their current filesystem permissions. POSIX modes remain subject to the
+process umask, matching systemd/open semantics. Non-POSIX platforms may ignore
+POSIX mode bits.
 
 Live-reader publication can be tuned when the consumer does not need immediate
 stock follow-reader wakeups:

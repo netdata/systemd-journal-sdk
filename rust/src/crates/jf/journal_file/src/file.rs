@@ -10,6 +10,8 @@ use std::marker::PhantomData;
 use std::num::NonZero;
 use std::num::NonZeroI128;
 use std::num::NonZeroU64;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use window_manager::{MemoryMap, MemoryMapMut, WindowManager};
 use zerocopy::{ByteSlice, FromBytes, SplitByteSlice, SplitByteSliceMut};
@@ -21,6 +23,7 @@ use crate::value_guard::ValueGuard;
 
 // Size to pad objects to (8 bytes)
 const OBJECT_ALIGNMENT: u64 = 8;
+pub const DEFAULT_JOURNAL_FILE_MODE: u32 = 0o640;
 
 pub trait BucketVisitor<'a> {
     type Object: JournalObject<&'a [u8]> + HashableObject;
@@ -120,6 +123,7 @@ pub struct JournalFileOptions {
     data_hash_table_buckets: usize,
     field_hash_table_buckets: usize,
     enable_keyed_hash: bool,
+    file_mode: u32,
 }
 
 impl JournalFileOptions {
@@ -137,6 +141,7 @@ impl JournalFileOptions {
             data_hash_table_buckets: 116_508,
             field_hash_table_buckets: 1_023,
             enable_keyed_hash: true,
+            file_mode: DEFAULT_JOURNAL_FILE_MODE,
         }
     }
 
@@ -161,6 +166,15 @@ impl JournalFileOptions {
 
     pub fn with_keyed_hash(mut self, enabled: bool) -> Self {
         self.enable_keyed_hash = enabled;
+        self
+    }
+
+    pub fn with_file_mode(mut self, mode: u32) -> Self {
+        assert!(
+            mode <= 0o777,
+            "journal file mode must contain only permission bits"
+        );
+        self.file_mode = mode;
         self
     }
 
@@ -658,13 +672,12 @@ enum HashTableKind {
     Field,
 }
 
-fn create_backing_file(path: impl AsRef<Path>) -> Result<File> {
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .read(true)
-        .write(true)
-        .open(path)?;
+fn create_backing_file(path: impl AsRef<Path>, mode: u32) -> Result<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(true).read(true).write(true);
+    #[cfg(unix)]
+    options.mode(mode);
+    let file = options.open(path)?;
     file.set_len(INITIAL_FILE_SIZE)?;
     Ok(file)
 }
@@ -743,7 +756,7 @@ fn hash_table_object_location(header: &JournalHeader, kind: HashTableKind) -> (N
 
 impl<M: MemoryMapMut> JournalFile<M> {
     pub fn create(path: impl AsRef<Path>, options: JournalFileOptions) -> Result<Self> {
-        let file = create_backing_file(path)?;
+        let file = create_backing_file(path, options.file_mode)?;
         let layout = HashTableLayout::from_options(&options);
         let header = initial_header(&options, &layout);
         let data_hash_table_map = map_created_hash_table(&file, &header, HashTableKind::Data)?;
@@ -1403,6 +1416,26 @@ mod tests {
 
         let mut matcher = DataPayloadMatcher::new(payload, 0);
         assert!(matcher.payload_matches(&object).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn create_uses_configured_file_mode() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_file = tempfile::NamedTempFile::new().map_err(JournalError::Io)?;
+        let options =
+            JournalFileOptions::new([1; 16], [2; 16], [3; 16], [4; 16]).with_file_mode(0o600);
+        let journal_file = JournalFile::<memmap2::MmapMut>::create(temp_file.path(), options)?;
+        drop(journal_file);
+
+        let mode = std::fs::metadata(temp_file.path())
+            .map_err(JournalError::Io)?
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+        Ok(())
     }
 
     #[test]

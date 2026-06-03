@@ -117,6 +117,15 @@ impl<M: MemoryMapMut> JournalFile<M> {
         file: &crate::repository::File,
         max_file_size: Option<u64>,
     ) -> Result<Self> {
+        self.create_successor_with_file_mode(file, max_file_size, self.current_file_mode())
+    }
+
+    pub fn create_successor_with_file_mode(
+        &self,
+        file: &crate::repository::File,
+        max_file_size: Option<u64>,
+        file_mode: u32,
+    ) -> Result<Self> {
         let header = self.journal_header_ref();
         let bucket_utilization = self.bucket_utilization();
 
@@ -128,6 +137,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
         .with_window_size(8 * 1024 * 1024)
         .with_keyed_hash(header.has_incompatible_flag(HeaderIncompatibleFlags::KeyedHash))
         .with_compact(header.has_incompatible_flag(HeaderIncompatibleFlags::Compact))
+        .with_file_mode(file_mode)
         .with_optimized_buckets(bucket_utilization, max_file_size);
 
         let options = if header.has_incompatible_flag(HeaderIncompatibleFlags::CompressedZstd) {
@@ -144,7 +154,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
     }
 
     pub fn create(file: &crate::repository::File, options: JournalFileOptions) -> Result<Self> {
-        let fd = Self::open_new_file(file)?;
+        let fd = Self::open_new_file(file, options.file_mode)?;
         let layout = Self::create_layout(&options)?;
         if options.compact && layout.file_size > JOURNAL_COMPACT_SIZE_MAX {
             return Err(JournalError::ObjectExceedsFileBounds);
@@ -186,7 +196,18 @@ impl<M: MemoryMapMut> JournalFile<M> {
         Ok(jf)
     }
 
-    fn open_new_file(file: &crate::repository::File) -> Result<File> {
+    fn current_file_mode(&self) -> u32 {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(metadata) = std::fs::metadata(self.file.path()) {
+                return metadata.permissions().mode() & 0o777;
+            }
+        }
+        super::file::DEFAULT_JOURNAL_FILE_MODE
+    }
+
+    fn open_new_file(file: &crate::repository::File, mode: u32) -> Result<File> {
         let mut open_options = OpenOptions::new();
         open_options
             .create(true)
@@ -194,7 +215,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
             .read(true)
             .write(true);
         #[cfg(unix)]
-        open_options.mode(0o640);
+        open_options.mode(mode);
         Ok(open_options.open(file.path())?)
     }
 

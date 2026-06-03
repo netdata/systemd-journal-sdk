@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+const defaultJournalFileMode os.FileMode = 0o640
+
 func normalizeOptions(opts Options) Options {
 	if isZeroUUID(opts.MachineID) {
 		opts.MachineID = mustRandomUUID()
@@ -37,6 +39,9 @@ func normalizeOptions(opts Options) Options {
 		opts.CompressThresholdBytes = defaultCompressThreshold
 	} else if opts.CompressThresholdBytes < minCompressThreshold {
 		opts.CompressThresholdBytes = minCompressThreshold
+	}
+	if opts.FileMode == nil {
+		opts.FileMode = JournalFileMode(defaultJournalFileMode)
 	}
 	return opts
 }

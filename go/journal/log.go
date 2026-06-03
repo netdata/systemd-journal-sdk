@@ -312,6 +312,9 @@ func validateNewLogConfig(dir string, config LogConfig) error {
 	if err := validateFieldNamePolicy(config.Options.FieldNamePolicy); err != nil {
 		return err
 	}
+	if err := validateFileMode(config.Options.FileMode); err != nil {
+		return err
+	}
 	if err := validateJournalSource(normalizedLogSource(config.Source)); err != nil {
 		return err
 	}

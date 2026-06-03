@@ -11,6 +11,7 @@ from .header import HEADER_SIZE, OBJECT_HEADER_SIZE, STATE_ONLINE, parse_file_he
 from .header import normalize_journal_max_file_size
 from .writer import (
     Writer,
+    _normalize_file_mode,
     _normalize_field_name_policy,
     _prepare_fields_for_policy,
     _prepare_raw_payloads_for_policy,
@@ -75,6 +76,7 @@ class Log:
         self._compact = config.get('compact') is True or config.get('format') == 'compact'
         self._live_publish_every_entries = _option(config, 'live_publish_every_entries', 'livePublishEveryEntries')
         self._field_name_policy = _normalize_field_name_policy(_option(config, 'field_name_policy', 'fieldNamePolicy'))
+        self._file_mode = _normalize_file_mode(config)
 
     def _configure_rotation_policy(self, config):
         rotation_policy = _option(config, 'rotation_policy', 'rotationPolicy')
@@ -249,6 +251,7 @@ class Log:
             'compression': self._compression,
             'compact': self._compact,
             'field_name_policy': _writer_policy_for_log_policy(self._field_name_policy),
+            'file_mode': self._file_mode,
         }
         if self._max_bytes > 0:
             opts['max_file_size'] = self._max_bytes

@@ -22,8 +22,9 @@ mod writer_seal;
 
 // Core functionality
 pub use file::{
-    BucketUtilization, Compression, DEFAULT_COMPRESS_THRESHOLD, JournalFile, JournalFileOptions,
-    MIN_COMPRESS_THRESHOLD, PayloadParts, normalize_compress_threshold,
+    BucketUtilization, Compression, DEFAULT_COMPRESS_THRESHOLD, DEFAULT_JOURNAL_FILE_MODE,
+    JournalFile, JournalFileOptions, MIN_COMPRESS_THRESHOLD, PayloadParts,
+    normalize_compress_threshold,
 };
 pub use reader::JournalReader;
 pub use writer::{EntryField, EntryWriteOptions, FieldNamePolicy, JournalWriter, StructuredField};

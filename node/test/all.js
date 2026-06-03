@@ -73,6 +73,7 @@ import {
   safeOpenSync,
   safeReadFileSync,
   safeReaddirSync,
+  safeStatSync,
   safeSymlinkSync,
   safeWriteFileSync,
 } from '../src/lib/fs-safe.js';
@@ -3014,6 +3015,24 @@ function tamperDataPayload(path, expectedPayload) {
     if (compatibleFlags & COMPATIBLE_SEALED_CONTINUOUS) {
       throw new Error('unsealed writer set COMPATIBLE_SEALED_CONTINUOUS flag');
     }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+// Writer file permissions follow systemd defaults and support override
+if (process.platform !== 'win32') {
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-file-mode-'));
+  try {
+    const defaultPath = join(tempDir, 'default.journal');
+    const defaultWriter = Writer.create(defaultPath);
+    defaultWriter.close();
+    assert.equal(safeStatSync(defaultPath).mode & 0o777, 0o640);
+
+    const overridePath = join(tempDir, 'override.journal');
+    const overrideWriter = Writer.create(overridePath, { fileMode: 0o600 });
+    overrideWriter.close();
+    assert.equal(safeStatSync(overridePath).mode & 0o777, 0o600);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }

@@ -225,6 +225,14 @@ User decisions recorded on 2026-06-02:
    significantly riskier. Narrow non-code/generated-artifact dispositions remain
    allowed only when refactoring would be meaningless, for example generated
    lockfiles.
+8. Journal file mode scanner finding: follow current systemd journald defaults,
+   but expose an explicit SDK override for consumers. Evidence rechecked after
+   the user updated the local systemd checkout: `systemd/systemd @
+   88b9acbc2b6a`, `src/journal/journald-manager.c:292-307` and
+   `src/journal/journald-manager.c:671-677` pass `0640` for journald-created
+   journal files; `src/libsystemd/sd-journal/journal-file.h:140-150` exposes a
+   caller-provided `mode_t mode`; `src/libsystemd/sd-journal/journal-file.c`
+   stores the mode and passes it to `openat_report_new()` for new files.
 
 Implementation implications:
 
@@ -2623,6 +2631,49 @@ Batch 46:
     CodeQL `py/overly-permissive-file` finding.
   - Codacy Cloud export still showed 8 quality issues and 0 security findings;
     all 8 were file-size findings.
+
+Batch 47:
+
+- Scope: the remaining CodeQL `py/overly-permissive-file` alert for journal
+  file creation mode, plus cross-language API parity for consumer override.
+- Evidence:
+  - GitHub current alerts for `27c5b6c` included one CodeQL
+    `py/overly-permissive-file` finding at `python/journal/writer.py`.
+  - Current systemd evidence after the user refreshed the local checkout:
+    `systemd/systemd @ 88b9acbc2b6a`,
+    `src/journal/journald-manager.c:292-307` and
+    `src/journal/journald-manager.c:671-677` still pass `0640` for
+    journald-created journal files.
+  - The same systemd source exposes the low-level override:
+    `src/libsystemd/sd-journal/journal-file.h:140-150` includes
+    `mode_t mode`, and `src/libsystemd/sd-journal/journal-file.c` stores that
+    mode and passes it to the file open path for newly created files.
+- Changes:
+  - Preserved the systemd-compatible default journal file mode `0640` in Rust,
+    Go, Node.js, Python, and the legacy Rust `jf` compatibility copy.
+  - Added explicit file-mode override options to each writer creation path.
+  - Threaded the override through high-level directory/log writers so rotated
+    and newly-created active files use the configured mode.
+  - Kept the override scoped to newly-created files; opening an existing file
+    preserves the existing filesystem permissions.
+  - On non-POSIX platforms the mode option is accepted for API parity, but the
+    platform file-open implementation may ignore POSIX permission bits.
+  - Updated the root and language README/API documentation to explain the
+    default, override, new-file-only scope, non-POSIX behavior, and normal
+    POSIX umask interaction.
+- Validation:
+  - `go test ./...` in `go/` passed.
+  - `cargo test -p journal-core -p journal-log-writer -p journal_file` in
+    `rust/` passed.
+  - `.local/python-venv/bin/python python/test_all.py` passed.
+  - Targeted Node file-mode smoke passed for default `0640` and override
+    `0600`.
+  - `NODE_OPTIONS=--max-old-space-size=8192 npm_config_cache=../.local/npm-cache
+    npm test` in `node/` passed.
+  - A default-heap `npm_config_cache=../.local/npm-cache npm test` run failed
+    with V8 heap exhaustion inside the conformance manifest adapter loop after
+    the new permission test had already run. The failure was not a file-mode
+    assertion, and the same suite passed with the explicit heap limit above.
 
 Reviewer findings:
 

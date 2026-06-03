@@ -30,6 +30,7 @@ const DEFAULT_DATA_HASH_TABLE_SIZE: usize = 2047;
 const DEFAULT_FIELD_HASH_TABLE_SIZE: usize = 1023;
 pub const DEFAULT_COMPRESS_THRESHOLD: usize = 512;
 pub const MIN_COMPRESS_THRESHOLD: usize = 8;
+pub const DEFAULT_JOURNAL_FILE_MODE: u32 = 0o640;
 
 pub fn normalize_compress_threshold(threshold: usize) -> usize {
     threshold.max(MIN_COMPRESS_THRESHOLD)
@@ -240,6 +241,7 @@ pub struct JournalFileOptions {
     pub(super) compression: Compression,
     pub(super) compress_threshold: usize,
     pub(super) compact: bool,
+    pub(super) file_mode: u32,
     pub(super) experimental_mmap_strategy: ExperimentalMmapStrategy,
     pub seal: Option<crate::seal::SealOptions>,
 }
@@ -259,6 +261,7 @@ impl JournalFileOptions {
             compression: Compression::None,
             compress_threshold: DEFAULT_COMPRESS_THRESHOLD,
             compact: false,
+            file_mode: DEFAULT_JOURNAL_FILE_MODE,
             experimental_mmap_strategy: ExperimentalMmapStrategy::Windowed,
             seal: None,
         }
@@ -322,6 +325,15 @@ impl JournalFileOptions {
         self
     }
 
+    pub fn with_file_mode(mut self, mode: u32) -> Self {
+        assert!(
+            mode <= 0o777,
+            "journal file mode must contain only permission bits"
+        );
+        self.file_mode = mode;
+        self
+    }
+
     #[doc(hidden)]
     pub fn with_experimental_mmap_strategy(mut self, strategy: ExperimentalMmapStrategy) -> Self {
         self.experimental_mmap_strategy = strategy;
@@ -343,6 +355,10 @@ impl JournalFileOptions {
 
     pub fn compact(&self) -> bool {
         self.compact
+    }
+
+    pub fn file_mode(&self) -> u32 {
+        self.file_mode
     }
 
     pub fn create<M: MemoryMapMut>(self, file: &crate::repository::File) -> Result<JournalFile<M>> {

@@ -212,9 +212,15 @@ Last updated: 2026-06-03
   passed locally. Batch 46 was pushed as `27c5b6c`; CodeQL and Codacy SARIF
   passed, GitHub current alerts dropped to 16, object-injection alerts dropped
   to zero, and Codacy Cloud still showed 8 quality issues with 0 security
-  findings. Remaining work is to decide or disposition the cross-language
-  `0640` journal file permission finding, address residual current-commit
-  findings, record final scanner results, and complete whole-SOW review.
+  findings. Batch 47 rechecked current systemd after the local checkout was
+  updated, kept the journald-compatible default journal file mode `0640`, and
+  added explicit writer file-mode overrides across Rust, Go, Node.js, Python,
+  and the legacy Rust `jf` compatibility copy, with root and language docs
+  updated for new-file-only mode and umask behavior. Go tests, affected Rust
+  tests, Python package tests, a targeted Node file-mode smoke, and the full
+  Node package suite with an explicit 8 GB V8 heap passed. Remaining work is
+  to push Batch 47, record post-push scanner results, address residual
+  current-commit findings, and complete whole-SOW review.
 
 ## Pending
 

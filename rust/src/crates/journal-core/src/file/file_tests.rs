@@ -322,6 +322,22 @@ fn create_uses_journal_file_permissions() {
         .mode()
         & 0o777;
     assert_eq!(mode, 0o640);
+
+    let override_path = journal_dir.join("override.journal");
+    let override_file =
+        crate::repository::File::from_path(&override_path).expect("test journal path should parse");
+    let _journal_file: JournalFile<crate::file::MmapMut> = JournalFile::create(
+        &override_file,
+        JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3)).with_file_mode(0o600),
+    )
+    .expect("create journal with override mode");
+
+    let override_mode = std::fs::metadata(&override_path)
+        .expect("stat override journal")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(override_mode, 0o600);
 }
 
 #[test]
