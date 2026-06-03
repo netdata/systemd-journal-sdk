@@ -1747,6 +1747,24 @@ Complexity remediation evidence:
   - Refreshed local all-tracked-file Lizard inventory now reports 82 critical
     findings, down from 103 after Batch 20. Remaining critical findings are
     `rust: 19` and `tests: 63`; Go, Node.js, and Python remain at zero.
+- Batch 22, remaining Rust `journal-engine` multi-file pagination test
+  findings:
+  - Refactored `rust/src/crates/journal-engine/tests/multi_file_pagination.rs`
+    into reusable entry-generation, indexed-file fixture, page execution,
+    ordering, timestamp, entry-id, filter, boundary, and scenario helpers.
+  - Replaced the long multi-file pagination scenario bodies with concise
+    scenario declarations for non-overlap, overlap, same timestamp,
+    small-limit, limit-one, empty-file, reverse-order, timestamp-anchor,
+    bounded-time, filtered, and exact file-boundary behavior while preserving
+    the original expected counts, timestamps, ID prefixes, and empty-page
+    checks.
+  - `cargo test --manifest-path rust/Cargo.toml -p journal-engine --test
+    multi_file_pagination --no-fail-fast` passed.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for
+    `rust/src/crates/journal-engine/tests/multi_file_pagination.rs`.
+  - Refreshed local all-tracked-file Lizard inventory now reports 63 critical
+    findings, down from 82 after Batch 21. Remaining critical findings are
+    all under `tests/`; Rust, Go, Node.js, and Python are at zero.
 
 Reviewer findings:
 

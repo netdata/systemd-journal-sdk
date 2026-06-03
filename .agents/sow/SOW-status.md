@@ -75,7 +75,12 @@ Last updated: 2026-06-03
   journal-index pagination test files locally Lizard-clean, passed affected
   Rust tests, and reduced the refreshed local all-tracked-file Lizard inventory
   to 82 critical findings. Remaining critical findings are `rust: 19` and
-  `tests: 63`; Go, Node.js, and Python remain at zero.
+  `tests: 63`; Go, Node.js, and Python remain at zero. Batch 22 made the
+  remaining Rust `journal-engine` multi-file pagination test file locally
+  Lizard-clean, passed its full integration test file, and reduced the
+  refreshed local all-tracked-file Lizard inventory to 63 critical findings.
+  All remaining critical findings are under `tests/`; Rust, Go, Node.js, and
+  Python are at zero.
   Remaining work is to continue complexity remediation, record final scanner
   results, and complete whole-SOW review.
 
