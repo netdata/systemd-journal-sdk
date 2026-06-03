@@ -353,7 +353,8 @@ Acceptance criteria evidence:
   `20ec32e`, the export imported 1520 quality issues; after Codacy analyzed
   `37491aa`, the export imported 1518 quality issues; after Codacy analyzed
   `9204315`, the export imported 1516 quality issues; after Codacy analyzed
-  `bf8f4b9`, the export imported 1509 quality issues. The exporter partitions
+  `bf8f4b9`, the export imported 1509 quality issues; after Codacy analyzed
+  `e80bf79`, the export imported 1508 quality issues. The exporter partitions
   by language and fails if any partition reaches the CLI limit.
 - Codacy cloud security finding export initially imported 199 findings for
   `master`, the export after Codacy analyzed `057b737` imported 182 findings,
@@ -362,9 +363,10 @@ Acceptance criteria evidence:
   `e3eebc8`, `20ec32e`, and `37491aa` imported 179 findings into
   `.local/codacy-cloud/codacy-findings.json`; after Codacy analyzed `9204315`,
   the export imported 178 findings; after Codacy analyzed `bf8f4b9`, the
-  export imported 174 findings.
+  export imported 174 findings; after Codacy analyzed `e80bf79`, the export
+  imported 173 findings.
 - The user-observed 3056 Codacy UI count remains unreconciled with the Codacy
-  CLI repository dashboard count of 1509. Potential causes include UI scope,
+  CLI repository dashboard count of 1508. Potential causes include UI scope,
   non-master branch scope, additional views, ignored/resolved state inclusion,
   or stale UI totals.
 - SOW-0047 through SOW-0050 remain marked as blocked by code-scanning gates in
@@ -391,7 +393,9 @@ Tests or equivalent validation:
   findings; rerun after Codacy analyzed `37491aa` exported 1518 quality issues
   and 179 security findings; rerun after Codacy analyzed `9204315` exported
   1516 quality issues and 178 security findings; rerun after Codacy analyzed
-  `bf8f4b9` exported 1509 quality issues and 174 security findings.
+  `bf8f4b9` exported 1509 quality issues and 174 security findings; rerun
+  after Codacy analyzed `e80bf79` exported 1508 quality issues and 173
+  security findings.
 - `python3 tests/code_scanning/export_codacy_issues.py --source cli --provider gh --organization netdata --repository systemd-journal-sdk --branch master --output-dir .local/codacy-cloud --skip-findings --cli-timeout 300`:
   passed, proving the timeout-backed local CLI path still exports quality
   issues.
@@ -619,14 +623,19 @@ Real-use evidence:
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26855119033`.
   - Codacy SARIF: success, run URL
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26855119029`.
+- GitHub Actions workflow evidence collected from pushed commit `e80bf79`:
+  - CodeQL: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26855333850`.
+  - Codacy SARIF: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26855333773`.
 - GitHub code scanning API returned 2053 open alerts after both workflows ran:
   by tool: Prospector 143, Agentlinter 240, PMD 50, lizard 955, PyLintPython3
   67, Bandit 111, Flawfinder 9, ESLint8 311, shellcheck 1, markdownlint 75,
   CodeQL 91.
 - Codacy cloud issue export ran locally through the authenticated `codacy` CLI
-  after Codacy analyzed `bf8f4b9`: 1509 quality issues on `master`.
-- Codacy security findings export ran locally after Codacy analyzed `bf8f4b9`:
-  174 findings.
+  after Codacy analyzed `e80bf79`: 1508 quality issues on `master`.
+- Codacy security findings export ran locally after Codacy analyzed `e80bf79`:
+  173 findings.
 - GitHub workflow cloud export still skips when `CODACY_API_TOKEN` is absent;
   that only affects scheduled/headless export, not local triage.
 - First actionable-finding cleanup batch fixed concrete Python unused/undefined
@@ -691,6 +700,12 @@ Real-use evidence:
   suppression was separated from the flagged line by a reason comment, and
   `Agentlinter_clarity_no-vague-instructions` for the AGENTS prohibited-source
   sentence. The local survivor cleanup fixes those exact two rows.
+- Codacy export after `e80bf79` confirmed both survivor rows are gone:
+  `Semgrep_rust.lang.security.current-exe.current-exe` count is 0 and
+  `Agentlinter_clarity_no-vague-instructions` count is 0. The next smallest
+  exported groups are two `Bandit_B108` findings, two `markdownlint_MD012`
+  findings, three `Agentlinter_clarity_sentence-complexity` findings, and three
+  `ESLint8_no-empty` findings.
 
 Reviewer findings:
 
@@ -759,7 +774,7 @@ Follow-up mapping:
 
 - Remaining work inside this SOW:
   - reconcile the user's observed 3056 UI count with the CLI-confirmed
-    `master` count of 1509 quality issues after commit `bf8f4b9`;
+    `master` count of 1508 quality issues after commit `e80bf79`;
   - group and triage the exported `master` cloud findings;
   - fix or minimally suppress every actionable finding;
   - run GitHub workflows after push and record CodeQL/Codacy results;
