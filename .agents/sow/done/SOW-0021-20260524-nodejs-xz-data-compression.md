@@ -147,12 +147,13 @@ Open decisions:
    - Risk: opencode may create or update runtime metadata outside the repository while executing the implementer run.
 
 3. Node.js XZ dependency policy clarification
-   - Decision: choose option B and accept `node-liblzma@5.0.1` as the Node.js XZ dependency.
-   - Clarified requirement: the Node.js SDK must not load or link native code at runtime. A dependency package may ship native artifacts if the SDK runtime path is constrained and tested to use only the WASM implementation.
-   - Reason: the package-managed dependency keeps maintainability, update visibility, lockfile integrity, scanner visibility, and upstream provenance. Vendoring the WASM artifacts would reduce maintainability and can create a false sense of security because the WASM remains compiled compression code that still needs advisory tracking and updates.
-   - Boundary: Node.js XZ code must import/use the WASM path only; it must not import the default native entrypoint or load `.node` files.
-   - Required validation: add or preserve a guard/test proving the runtime path is WASM-only and that emitted XZ streams use `CHECK_NONE`.
-  - Risk accepted: dependency scanners and strict environments may flag native artifacts, `hasInstallScript: true`, `node-gyp-build`, and `.node` files in `node-liblzma` even though this SDK does not load them at runtime.
+
+Decision: choose option B and accept `node-liblzma@5.0.1` as the Node.js XZ dependency.
+Clarified requirement: the Node.js SDK must not load or link native code at runtime. A dependency package may ship native artifacts if the SDK runtime path is constrained and tested to use only the WASM implementation.
+Reason: the package-managed dependency keeps maintainability, update visibility, lockfile integrity, scanner visibility, and upstream provenance. Vendoring the WASM artifacts would reduce maintainability and can create a false sense of security because the WASM remains compiled compression code that still needs advisory tracking and updates.
+Boundary: Node.js XZ code must import/use the WASM path only; it must not import the default native entrypoint or load `.node` files.
+Required validation: add or preserve a guard/test proving the runtime path is WASM-only and that emitted XZ streams use `CHECK_NONE`.
+Risk accepted: dependency scanners and strict environments may flag native artifacts, `hasInstallScript: true`, `node-gyp-build`, and `.node` files in `node-liblzma` even though this SDK does not load them at runtime.
 
 ## Plan
 

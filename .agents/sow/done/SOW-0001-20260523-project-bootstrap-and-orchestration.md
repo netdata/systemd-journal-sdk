@@ -204,15 +204,17 @@ Open decisions:
    - Role separation: the project manager maintains SOWs, phase plans, prompts, evidence ledgers, status, and gate decisions, but does not personally code or perform the technical review.
 
 9. Repository boundary for all agents
-   - Decision: no assistant or delegated agent may make changes outside this repository.
-   - Exception: `/tmp` may be used for scratch work, but `.local/` inside this repository is preferred.
-   - Implication: external references may be inspected read-only, but no external repository, home directory, system path, package cache, or service may be edited by any agent.
-   - Risk: prompts must repeat this rule because implementers and reviewers may otherwise modify nearby source checkouts or dependency caches.
+
+Decision: no assistant or delegated agent may make changes outside this repository.
+Exception: `/tmp` may be used for scratch work, but `.local/` inside this repository is preferred.
+Implication: external references may be inspected read-only, but no external repository, home directory, system path, package cache, or service may be edited by any agent.
+Risk: prompts must repeat this rule because implementers and reviewers may otherwise modify nearby source checkouts or dependency caches.
 
 10. Chunk commit discipline
-   - Decision: after each implementation chunk/SOW is implemented, reviewed, and verified, prefer committing that chunk before starting the next chunk.
-   - Implication: the project keeps rollback points before later external-agent work can introduce regressions.
-   - Risk: commits must be intentionally staged with explicit paths only; broad staging commands are not allowed.
+
+Decision: after each implementation chunk/SOW is implemented, reviewed, and verified, prefer committing that chunk before starting the next chunk.
+Implication: the project keeps rollback points before later external-agent work can introduce regressions.
+Risk: commits must be intentionally staged with explicit paths only; broad staging commands are not allowed.
 
 ## Open Decisions
 

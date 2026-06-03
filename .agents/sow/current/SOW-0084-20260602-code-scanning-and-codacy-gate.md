@@ -558,6 +558,8 @@ Tests or equivalent validation:
 - `cargo test -p journal-registry from_path_parses_native_absolute_paths` and
   `cargo test -p journal-registry from_raw_path_accepts_native_absolute_paths`:
   passed, covering the registry test temp-dir replacement.
+- `git diff --check`: passed after the markdown indentation and AGENTS glossary
+  cleanup.
 - Local pinned Codacy package smoke:
   `@codacy/analysis-cli@0.8.1` installed under `.local/codacy-cli-test`;
   `codacy-analysis init --default .` succeeded; `codacy-analysis analyze .`
@@ -761,6 +763,11 @@ Real-use evidence:
   `Semgrep_rust.lang.security.args.args` rows are minimally suppressed on CLI,
   example, and conformance-adapter argv parsing sites because they parse command
   line arguments and do not perform authorization.
+- Local markdown/AGENTS cleanup targets the next small documentation groups:
+  `markdownlint_MD007` by replacing nested unordered bullets under ordered SOW
+  decision items with plain labelled lines, and
+  `Agentlinter_clarity_undefined-term` by adding an `AGENTS.md` glossary for
+  CGO, SOW, FIELD/DATA/ENTRY, FTS, and uppercase `DO NOT` prompt emphasis.
 
 Reviewer findings:
 

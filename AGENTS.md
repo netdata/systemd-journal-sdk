@@ -1,5 +1,13 @@
 # systemd Journal SDK Project Instructions
 
+## Glossary
+
+- CGO: Go's C interoperability mechanism.
+- SOW: Statement of Work.
+- FIELD, DATA, and ENTRY: systemd journal file object types.
+- FTS: full-text search.
+- DO NOT: uppercase emphasis in agent prompt blocks.
+
 ## Goals
 
 This project produces pure SDKs for reading and writing systemd journal files in Rust, Go, Node.js, and Python.
