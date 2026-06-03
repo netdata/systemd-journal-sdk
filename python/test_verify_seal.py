@@ -190,7 +190,7 @@ def test_journalctl_verify():
 def _run_journalctl_verify_cmd(script, *args):
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
-    return subprocess.run(  # nosec B603
+    return subprocess.run(
         [sys.executable, str(script), *[str(arg) for arg in args]],
         capture_output=True,
         text=True,
@@ -522,5 +522,4 @@ def test_compact_sealed_writer_stock_verify():
         w.close()
         key = _test_verification_key(opts['seal'])
         verify_journal_file_with_key_if_available(path, key, 'journalctl verify compact+sealed')
-
 

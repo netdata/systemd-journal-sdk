@@ -14,7 +14,7 @@ import json
 import os
 import shutil
 import statistics
-import subprocess  # nosec B404 - subprocess is required by harnesses.
+import subprocess  # nosec B404
 import sys
 import time
 from datetime import datetime, timezone
@@ -130,7 +130,7 @@ def run(
         merged.update(env)
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
-    return subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
+    return subprocess.run(  # nosec B603
         cmd,  # nosemgrep
         cwd=str(cwd),
         env=merged,

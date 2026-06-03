@@ -50,12 +50,15 @@ jobs:
 
           if [ -f .codacy/codacy.config.json ]; then
             echo "Using committed Codacy configuration."
+            echo "codacy_enforce=true" >> "${GITHUB_OUTPUT}"
           elif [ -n "${CODACY_API_TOKEN:-}" ]; then
             npm exec --yes --package "@codacy/analysis-cli@${CODACY_ANALYSIS_CLI_VERSION}" -- \
               codacy-analysis init --remote gh netdata systemd-journal-sdk
+            echo "codacy_enforce=true" >> "${GITHUB_OUTPUT}"
           else
             npm exec --yes --package "@codacy/analysis-cli@${CODACY_ANALYSIS_CLI_VERSION}" -- \
               codacy-analysis init --default .
+            echo "codacy_enforce=false" >> "${GITHUB_OUTPUT}"
           fi
 
           set +e
@@ -124,3 +127,12 @@ jobs:
             --markdown-output .local/codacy/codacy-cloud-summary.md
 
           cat .local/codacy/codacy-cloud-summary.md >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Fail on Codacy analysis findings
+        if: ${{ steps.analyze.outputs.codacy_enforce == 'true' && steps.analyze.outputs.codacy_status != '0' }}
+        shell: bash
+        env:
+          CODACY_STATUS: ${{ steps.analyze.outputs.codacy_status }}
+        run: |
+          echo "Codacy Analysis CLI reported findings or failed with exit ${CODACY_STATUS} after producing SARIF. The SARIF has been uploaded to GitHub code scanning." >&2
+          exit 1

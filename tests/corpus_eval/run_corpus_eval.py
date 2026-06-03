@@ -8,7 +8,7 @@ import hashlib
 import json
 import os
 import shutil
-import subprocess  # nosec B404 - subprocess is required by harnesses.
+import subprocess  # nosec B404
 import sys
 import threading
 import time
@@ -117,7 +117,7 @@ def run_json_driver(
     started = time.perf_counter()
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
-    result = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
+    result = subprocess.run(  # nosec B603
         actual,  # nosemgrep
         cwd=str(ROOT),
         env=env,
@@ -185,7 +185,7 @@ def start_systemd_export(
 ) -> subprocess.Popen[bytes]:
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
-    return subprocess.Popen(  # nosec B603 - harness uses shell=False command vectors.
+    return subprocess.Popen(  # nosec B603
         actual,  # nosemgrep
         cwd=str(ROOT),
         env=env,
@@ -453,7 +453,7 @@ def verify_generated(
         cmd = [tools.journalctl, "--verify", "--verify-key", verify_key, "--file", str(path)]
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
-    result = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
+    result = subprocess.run(  # nosec B603
         cmd,  # nosemgrep
         cwd=str(ROOT),
         env=env,

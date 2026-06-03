@@ -415,8 +415,11 @@ development guard; package correctness does not rely on it.
 The adapter passes the shared conformance test manifest:
 
 ```bash
-npm test
+NODE_OPTIONS=--max-old-space-size=8192 npm test
 ```
 
 `npm test` syntax-checks the package, verifies the SDK entry point can be
 imported, and runs every case in `../tests/conformance/manifests/conformance-v01.json`.
+The full conformance manifest can exceed Node.js's default V8 heap on this
+repository's larger fixtures, so local full-suite runs should use the heap flag
+shown above.

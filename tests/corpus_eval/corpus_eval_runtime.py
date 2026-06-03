@@ -8,7 +8,7 @@ import hashlib
 import json
 import os
 import shutil
-import subprocess  # nosec B404 - subprocess is required by harnesses.
+import subprocess  # nosec B404
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -248,7 +248,7 @@ def run_build_command(label: str, cmd: list[str], cwd: Path, env: dict[str, str]
     started = time.perf_counter()
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
-    result = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
+    result = subprocess.run(  # nosec B603
         cmd,
         cwd=str(cwd),
         env=env,

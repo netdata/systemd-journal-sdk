@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import shutil
-import subprocess  # nosec B404 - subprocess is required by harnesses.
+import subprocess  # nosec B404
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +36,7 @@ def resolve_systemd_ref(systemd_src: Path, version: str, explicit_ref: str | Non
     cmd = ["git", "-C", str(systemd_src), "rev-parse", f"{ref}^{{commit}}"]
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
-    proc = subprocess.run(cmd, cwd=str(ROOT), text=True, capture_output=True, check=False)  # nosec B603 - harness uses shell=False command vectors.
+    proc = subprocess.run(cmd, cwd=str(ROOT), text=True, capture_output=True, check=False)  # nosec B603
     if proc.returncode != 0:
         raise RuntimeError(f"could not resolve systemd ref {ref!r} from {systemd_src}")
     return proc.stdout.strip()

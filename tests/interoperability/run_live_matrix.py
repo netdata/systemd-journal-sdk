@@ -24,7 +24,7 @@ import argparse
 import json
 import os
 import shutil
-import subprocess  # nosec B404 - subprocess is required by harnesses.
+import subprocess  # nosec B404
 import sys
 import threading
 import time
@@ -161,7 +161,7 @@ def run(
     validate_command_vector(cmd)
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
-    return subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
+    return subprocess.run(  # nosec B603
         # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
         cmd,  # validate_command_vector() allowlists executables; shell=False is required.
         cwd=str(cwd),
@@ -428,7 +428,7 @@ def prepare_live_workspace(
 def start_writer(cmd: list[str], env: dict[str, str]) -> subprocess.Popen[str]:
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
-    return subprocess.Popen(  # nosec B603 - harness uses shell=False command vectors.
+    return subprocess.Popen(  # nosec B603
         cmd,  # nosemgrep
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

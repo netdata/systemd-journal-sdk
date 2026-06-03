@@ -13,7 +13,7 @@ import argparse
 import hashlib
 import json
 import shutil
-import subprocess  # nosec B404 - subprocess is required by harnesses.
+import subprocess  # nosec B404
 import sys
 import time
 from dataclasses import dataclass, field
@@ -418,7 +418,7 @@ def probe_boot_count(path: Path, timeout: int) -> int | None:
     try:
         # nosemgrep
         # subprocess is required by this harness; commands are shell=False vectors.
-        proc = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
+        proc = subprocess.run(  # nosec B603
             cmd,
             cwd=str(ROOT),
             stdout=subprocess.PIPE,

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess  # nosec B404 - subprocess is required by harnesses.
+import subprocess  # nosec B404
 import sys
 import time
 from datetime import datetime
@@ -87,7 +87,7 @@ def start_holder(name: str, tools: dict[str, str], path: Path, ready: Path, entr
     cmd = writer_cmd(name, tools, path, ready, entries, delay_ms)
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
-    return subprocess.Popen(  # nosec B603 - harness uses shell=False command vectors.
+    return subprocess.Popen(  # nosec B603
         cmd,  # nosemgrep
         cwd=str(REPO_ROOT),
         text=True,

@@ -5,7 +5,7 @@ import argparse
 import json
 import os
 import selectors
-import subprocess  # nosec B404 - subprocess is required by harnesses.
+import subprocess  # nosec B404
 import sys
 import threading
 import time
@@ -49,7 +49,7 @@ def systemd_version():
     try:
         # nosemgrep
         # subprocess is required by this harness; commands are shell=False vectors.
-        result = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
+        result = subprocess.run(  # nosec B603
             ["journalctl", "--version"],
             check=True,
             stdout=subprocess.PIPE,
@@ -267,7 +267,7 @@ def run_journalctl_follow_attempt(
 ):
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
-    proc = subprocess.Popen(  # nosec B603 - harness uses shell=False command vectors.
+    proc = subprocess.Popen(  # nosec B603
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -449,7 +449,7 @@ def main():
 
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
-    writer = subprocess.Popen(  # nosec B603 - harness uses shell=False command vectors.
+    writer = subprocess.Popen(  # nosec B603
         args.writer_cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

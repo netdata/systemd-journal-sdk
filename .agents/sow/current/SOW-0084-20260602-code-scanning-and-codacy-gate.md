@@ -6,8 +6,8 @@ Status: in-progress
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: decisions recorded; scanner workflow active; critical complexity
-remediation in progress.
+Sub-state: scanner workflow implemented; actionable findings cleared; Batch 53
+hardening reviewed; post-push scanner confirmation pending before closeout.
 
 ## Requirements
 
@@ -2906,10 +2906,106 @@ Batch 52:
   - Codacy Cloud issue export reported `codacy_issue_count=0` for `master`.
   - Codacy Cloud security finding export reported `codacy_finding_count=0`.
 
+Batch 53:
+
+- Trigger:
+  - Whole-SOW reviewers agreed the scanner/code cleanup was production-grade,
+    but identified three useful closeout hardening items:
+    - `.bandit` skipped B404/B603 globally, which was broader than needed;
+    - the Codacy SARIF workflow remained report-only after the zero baseline;
+    - the Node package test heap requirement was recorded in SOW evidence but
+      not in the Node README.
+- Rule disposition:
+  - Removed the global Bandit B404/B603 skip instead of accepting the broad
+    suppression. The rules now remain enabled globally; approved harness
+    subprocess imports/calls carry inline `# nosec` markers where Bandit
+    reports B404/B603.
+  - Kept Codacy Cloud as the authoritative complexity/rule source. Did not
+    commit the exported Cloud config because the current export includes Cloud
+    metadata and tool IDs that do not exactly match the SARIF tool set.
+  - Changed Codacy SARIF from report-only to an enforcing gate when a tuned
+    configuration is available through either committed config or
+    `CODACY_API_TOKEN`. No-token default-config runs still upload SARIF for
+    visibility but do not fail the job because they are not the tuned project
+    policy.
+- Fixes:
+  - `.bandit` now has `skips: []` and documents that subprocess rules stay
+    enabled globally, with inline suppressions only where Bandit reports
+    B404/B603.
+  - Normalized Python harness `# nosec B404/B603` comments so Bandit does not
+    parse explanatory prose as bogus test IDs.
+  - Added a Codacy SARIF fail step after SARIF upload and Codacy Cloud export.
+    New findings under the tuned config now fail the workflow while preserving
+    uploaded SARIF visibility.
+  - Documented the Node full-suite heap requirement in `node/README.md`.
+- Local validation:
+  - `actionlint .github/workflows/codacy-sarif.yml
+    .github/workflows/codeql.yml` passed.
+  - `PYTHONPATH=.local/bandit-py python3 -m bandit -r python tests
+    -c .bandit -t B404,B603 -f json
+    -o .local/code-scanning/bandit-b404-b603-after-subprocess-rules.json`
+    exited 0 with zero B404/B603 findings.
+  - `python3 -m py_compile python/test_verify_seal.py
+    tests/systemd_matrix/systemd_matrix_source.py
+    tests/code_scanning/export_codacy_issues.py` passed.
+  - `PYTHONPATH=.local/bandit-py python3 -m bandit
+    python/test_verify_seal.py -c .bandit -t B603 -f json` exited 0 with
+    zero findings and zero skipped tests, confirming that restoring the removed
+    `# nosec B603` marker there would add suppression noise.
+  - `NODE_OPTIONS=--max-old-space-size=8192
+    npm_config_cache=../.local/npm-cache npm test` in `node/` passed.
+  - `git diff --check` passed.
+  - `.agents/sow/audit.sh` passed.
+
 Reviewer findings:
 
-- Pending terminal reviewer review. The scanner gate is locally and remotely
-  clean, and the next step is the whole-SOW read-only reviewer pool.
+- Round 1 whole-SOW reviewer votes:
+  - `llm-netdata-cloud/glm-5.1`: PRODUCTION GRADE.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: PRODUCTION GRADE.
+  - `llm-netdata-cloud/minimax-m2.7-coder`: PRODUCTION GRADE.
+  - `llm-netdata-cloud/kimi-k2.6`: PRODUCTION GRADE.
+  - `llm-netdata-cloud/qwen3.6-plus`: PRODUCTION GRADE.
+- Round 1 blocking findings: none.
+- Round 1 non-blocking findings and dispositions:
+  - Broad `.bandit` B404/B603 skip: fixed in Batch 53 by re-enabling these
+    rules globally and relying on inline harness suppressions where Bandit
+    reports B404/B603.
+  - Codacy SARIF report-only behavior after zero baseline: fixed in Batch 53 by
+    failing tuned-config runs after SARIF upload when the analyzer reports
+    findings.
+  - Node full-suite heap requirement was SOW-only: fixed in Batch 53 by
+    documenting the required `NODE_OPTIONS` in `node/README.md`.
+  - Codacy Cloud config is not committed: accepted for this SOW. The exported
+    config is retained under `.local/`; committing a generated Cloud export
+    with metadata and mismatched SARIF tool IDs would create a different
+    reproducibility risk. The workflow uses the remote tuned config when
+    `CODACY_API_TOKEN` is available.
+- Round 2 whole-SOW reviewer votes after Batch 53:
+  - `llm-netdata-cloud/mimo-v2.5-pro`: PRODUCTION GRADE.
+  - `llm-netdata-cloud/kimi-k2.6`: PRODUCTION GRADE.
+  - `llm-netdata-cloud/qwen3.6-plus`: PRODUCTION GRADE.
+  - `minimax-coding-plan/MiniMax-M3`: PRODUCTION GRADE.
+  - `llm-netdata-cloud/glm-5.1`: PRODUCTION GRADE.
+- Round 2 blocking findings: none.
+- Round 2 non-blocking findings and dispositions:
+  - `python/test_verify_seal.py` no longer carries `# nosec B603` on the
+    `_run_journalctl_verify_cmd()` call. Disposition: accepted intentionally.
+    Local Bandit 1.9.4 does not report B603 at that call site because
+    `subprocess` is imported through the local test-support module, and adding
+    the marker produces suppression noise instead of preserving a useful rule.
+  - `.bandit` uses bare YAML-style `skips: []` instead of an INI section.
+    Disposition: accepted intentionally. Local Bandit 1.9.4 accepts the bare
+    form and rejects `[bandit]` plus `skips: []`; the current file was validated
+    by the B404/B603 run above.
+  - Codacy SARIF enforcement fails for both analyzer findings and analyzer
+    infrastructure failures. Disposition: accepted intentionally. The workflow
+    message says "reported findings or failed", and this matches the SOW
+    decision that infrastructure failures should not silently pass after the
+    baseline is clean.
+  - Codacy Cloud configuration is not committed. Disposition: accepted for this
+    SOW. Cloud configuration remains authoritative; the local generated export
+    includes metadata/tool-ID differences that would make a committed config
+    less reliable than remote tuned config plus post-push evidence.
 
 Same-failure scan:
 
@@ -2971,17 +3067,22 @@ Lessons:
 
 Follow-up mapping:
 
-- Remaining work inside this SOW:
-  - reconcile the user's observed 3056 UI count with the CLI-confirmed
-    `master` count of 1502 quality issues after commit `99d2b08`;
-  - group and triage the exported `master` cloud findings;
-  - address the Node dynamic filesystem-path findings by centralizing path
-    validation and narrowly suppressing the expected SDK dynamic-path boundary;
-  - address any remaining current-commit Codacy findings that are not explained
-    by stale cloud analysis or narrow generated-artifact exclusions;
-  - run GitHub workflows after push and record CodeQL/Codacy results;
-  - switch from reporting-only to enforcement after the actionable baseline is
-    zero or after a later user decision.
+- The 3056 UI count was superseded by authenticated CLI exports and post-push
+  scanner evidence. The durable contract is now current-head GitHub code
+  scanning plus Codacy Cloud issue/finding counts, not a stale UI snapshot.
+- Grouping and triage are complete for the current actionable scanner surface:
+  every current-head Codacy and GitHub code-scanning finding was fixed,
+  minimally suppressed, or explicitly dispositioned with rule evidence above.
+- Node dynamic filesystem-path findings were handled by centralizing expected
+  dynamic path boundaries and using narrow suppressions where the SDK must
+  accept caller-provided paths.
+- The report-only phase is complete. Batch 53 switches Codacy SARIF to
+  enforcement when a tuned configuration is available, while preserving
+  visibility-only behavior for no-token/default-config runs.
+- Remaining work inside this SOW: commit and push Batch 53, wait for GitHub
+  CodeQL/Codacy SARIF and Codacy Cloud analysis on that pushed commit, record
+  zero-finding evidence, then move this SOW to `done/` with final outcome and
+  status updates.
 
 ## Outcome
 

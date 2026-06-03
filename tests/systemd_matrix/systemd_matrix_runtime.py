@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import subprocess  # nosec B404 - subprocess is required by harnesses.
+import subprocess  # nosec B404
 import threading
 import time
 from dataclasses import dataclass
@@ -131,7 +131,7 @@ def run_capture(
     try:
         # nosemgrep
         # subprocess is required by this harness; commands are shell=False vectors.
-        proc = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
+        proc = subprocess.run(  # nosec B603
             cmd,
             cwd=str(cwd),
             env=env,
@@ -412,7 +412,7 @@ def stream_export_command_digest(
     started = time.perf_counter()
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
-    proc = subprocess.Popen(  # nosec B603 - harness uses shell=False command vectors.
+    proc = subprocess.Popen(  # nosec B603
         cmd,
         cwd=str(ROOT),
         env=env,

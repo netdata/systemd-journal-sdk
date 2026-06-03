@@ -6,7 +6,7 @@ import json
 import os
 import shutil
 import stat
-import subprocess  # nosec B404 - subprocess is required by harnesses.
+import subprocess  # nosec B404
 import sys
 import tempfile
 import time
@@ -82,7 +82,7 @@ from journal.fss import gen_mk, gen_state0, evolve, seek, get_key, get_epoch  # 
 def run(args, *, input_data=None, cwd=REPO_ROOT):
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
-    result = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
+    result = subprocess.run(  # nosec B603
         args,
         input=input_data,
         cwd=cwd,

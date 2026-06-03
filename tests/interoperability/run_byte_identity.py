@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess  # nosec B404 - subprocess is required by harnesses.
+import subprocess  # nosec B404
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,7 +80,7 @@ def run(cmd: list[str]) -> dict:
     try:
         # nosemgrep
         # subprocess is required by this harness; commands are shell=False vectors.
-        proc = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
+        proc = subprocess.run(  # nosec B603
             cmd,  # nosemgrep
             cwd=ROOT,
             text=True,

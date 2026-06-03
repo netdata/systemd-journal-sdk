@@ -7,7 +7,7 @@ import argparse
 import hashlib
 import json
 import shutil
-import subprocess  # nosec B404 - subprocess is required by harnesses.
+import subprocess  # nosec B404
 import sys
 import time
 from dataclasses import dataclass
@@ -66,7 +66,7 @@ def run_json(
     started = time.perf_counter()
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
-    result = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
+    result = subprocess.run(  # nosec B603
         actual,
         cwd=str(cwd),
         env=env,

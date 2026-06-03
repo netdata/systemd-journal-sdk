@@ -1,2 +1,3 @@
-[bandit]
-skips: B404,B603
+# Keep subprocess checks enabled globally. Approved harness subprocess imports
+# and calls use inline `# nosec` annotations where Bandit reports B404/B603.
+skips: []

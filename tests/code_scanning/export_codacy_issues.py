@@ -11,7 +11,7 @@ import argparse
 import datetime as dt
 import json
 import os
-import subprocess  # nosec B404 - subprocess is required by harnesses.
+import subprocess  # nosec B404
 import sys
 import urllib.error
 import urllib.parse
@@ -41,7 +41,7 @@ def run_codacy(args: list[str], timeout: int = DEFAULT_CLI_TIMEOUT_SECONDS) -> d
     command = ["codacy", *args, "-o", "json"]
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
-    completed = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
+    completed = subprocess.run(  # nosec B603
         command,
         check=False,
         text=True,
@@ -71,7 +71,7 @@ def _request_json(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as response:  # nosec B310 - _validate_https_url() rejects non-HTTPS schemes.
+        with urllib.request.urlopen(req, timeout=60) as response:  # nosec B310
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")
