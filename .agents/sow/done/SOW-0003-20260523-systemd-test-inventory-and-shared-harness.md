@@ -219,7 +219,7 @@ python3 tests/conformance/runner/manifest_checker.py dry-run tests/conformance/m
 - `fixtures/systemd/test-data/journal-1.txt` - OK (copied from systemd v260.1 test/journal-data/)
 - `fixtures/systemd/test-data/journal-2.txt` - OK (copied from systemd v260.1 test/journal-data/)
 
-### Sensitive Data Scan
+### Repair Sensitive Data Pattern Scan
 
 ```
 Checked durable artifact files: no sensitive-data patterns found.
@@ -328,7 +328,7 @@ python3 tests/conformance/runner/manifest_checker.py validate-files tests/confor
 -> OK: All type:file fixtures exist (0 missing)
 ```
 
-### Dry-Run Simulation
+### Final Dry-Run Simulation
 
 ```
 python3 tests/conformance/runner/manifest_checker.py dry-run tests/conformance/manifests/conformance-v01.json

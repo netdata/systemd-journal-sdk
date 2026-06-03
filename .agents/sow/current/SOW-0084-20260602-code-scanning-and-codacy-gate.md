@@ -575,6 +575,21 @@ Tests or equivalent validation:
 - `git diff --check`: passed after the AGENTS scanner exception-path cleanup.
 - `.agents/sow/audit.sh`: passed after the AGENTS scanner exception-path
   cleanup.
+- `python3` targeted markdown sanity check for duplicate headings in SOW-0003
+  and the SOW-0001 ordered-list marker: passed after the small-rule cleanup.
+- `flawfinder --columns tests/benchmarks/systemd/writer_core_bench.c tests/conformance/binary/libsystemd_binary_field_reader.c tests/conformance/live/libsystemd_live_reader.c tests/datasets/ingesters/systemd/dataset_ingester.c`:
+  passed for the targeted `strlen` group, reporting `Hits@level = [0] 63 [1]
+  0 [2] 15 [3] 0 [4] 1 [5] 0`.
+- `gcc -o .local/sow-0084-bin/libsystemd_binary_field_reader tests/conformance/binary/libsystemd_binary_field_reader.c -Wl,--no-as-needed -lsystemd -lm -lpthread`:
+  passed after the C helper cleanup.
+- `cc tests/conformance/live/libsystemd_live_reader.c -o .local/sow-0084-bin/libsystemd_live_reader -lsystemd`:
+  passed after the C helper cleanup.
+- `tests/benchmarks/systemd/build_writer_core_bench.sh`: passed after the C
+  helper cleanup.
+- `tests/datasets/ingesters/systemd/build.sh`: passed after the C helper
+  cleanup.
+- `git diff --check`: passed after the small-rule cleanup.
+- `.agents/sow/audit.sh`: passed after the small-rule cleanup.
 - Local pinned Codacy package smoke:
   `@codacy/analysis-cli@0.8.1` installed under `.local/codacy-cli-test`;
   `codacy-analysis init --default .` succeeded; `codacy-analysis analyze .`
@@ -679,6 +694,11 @@ Real-use evidence:
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26855684948`.
   - Codacy SARIF: success, run URL
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26855684967`.
+- GitHub Actions workflow evidence collected from pushed commit `c925f70`:
+  - CodeQL: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26856262152`.
+  - Codacy SARIF: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26856262128`.
 - GitHub code scanning API returned 2053 open alerts after both workflows ran:
   by tool: Prospector 143, Agentlinter 240, PMD 50, lizard 955, PyLintPython3
   67, Bandit 111, Flawfinder 9, ESLint8 311, shellcheck 1, markdownlint 75,
@@ -800,6 +820,15 @@ Real-use evidence:
   wording to explicit contracts with user-approved SOW exception paths. The
   cleanup preserves the performance, runtime-purity, SOW, and worktree
   requirements while making the approved override path visible.
+- Codacy cloud export after `c925f70` reported 1447 quality issues and 153
+  security findings on `master`.
+- Local small-rule cleanup targets the next exact exported rows:
+  `markdownlint_MD024`, `markdownlint_MD029`,
+  `Agentlinter_clarity_undefined-term`, and `flawfinder_strlen`. The markdown
+  fixes only rename duplicate historical SOW headings and normalize the ordered
+  list marker. The C fixes remove direct `strlen` calls in systemd helper code
+  by carrying generated lengths or using a local C-string length helper for
+  argv/static-string inputs.
 
 Reviewer findings:
 

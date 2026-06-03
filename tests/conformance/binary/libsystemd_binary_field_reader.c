@@ -10,6 +10,14 @@
 #include <string.h>
 #include <systemd/sd-journal.h>
 
+static size_t cstring_len(const char *s) {
+        size_t n = 0;
+
+        while (s[n] != '\0')
+                n++;
+        return n;
+}
+
 static int hex_value(char c) {
         if (c >= '0' && c <= '9')
                 return c - '0';
@@ -21,7 +29,7 @@ static int hex_value(char c) {
 }
 
 static int parse_hex(const char *hex, uint8_t **ret, size_t *ret_len) {
-        size_t n = strlen(hex);
+        size_t n = cstring_len(hex);
         uint8_t *buf;
 
         if (n % 2 != 0)
@@ -63,7 +71,7 @@ int main(int argc, char **argv) {
                 return 2;
         }
 
-        field_len = strlen(argv[2]);
+        field_len = cstring_len(argv[2]);
         if (field_len == 0) {
                 fprintf(stderr, "field name must not be empty\n");
                 return 2;
@@ -92,7 +100,7 @@ int main(int argc, char **argv) {
         }
 
         for (int i = 4; i < argc; i++) {
-                r = sd_journal_add_match(j, argv[i], strlen(argv[i]));
+                r = sd_journal_add_match(j, argv[i], cstring_len(argv[i]));
                 if (r < 0) {
                         fprintf(stderr, "sd_journal_add_match(%s) failed: %d\n", argv[i], r);
                         sd_journal_close(j);

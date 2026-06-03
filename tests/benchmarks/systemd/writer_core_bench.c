@@ -212,25 +212,27 @@ static int close_journal(MMapCache *cache, JournalFile *file) {
         return r;
 }
 
-static int make_payload(char **ret, const char *name, const char *value) {
+static int make_payload(char **ret, size_t *ret_size, const char *name, const char *value) {
         int r;
 
         r = asprintf(ret, "%s=%s", name, value);
         if (r < 0)
                 return -ENOMEM;
+        *ret_size = (size_t) r;
         return 0;
 }
 
 static int set_payload(struct iovec *iov, const char *name, const char *value) {
         char *payload = NULL;
+        size_t payload_size = 0;
         int r;
 
-        r = make_payload(&payload, name, value);
+        r = make_payload(&payload, &payload_size, name, value);
         if (r < 0)
                 return r;
         *iov = (struct iovec) {
                 .iov_base = payload,
-                .iov_len = strlen(payload),
+                .iov_len = payload_size,
         };
         return 0;
 }
@@ -342,9 +344,11 @@ static const char *journal_path_after_close(void) {
                 return arg_output;
 
         suffix = endswith(arg_archived_output, ".journal");
-        if (suffix)
+        if (suffix) {
                 *suffix = '\0';
-        prefix_len = strlen(arg_archived_output);
+                prefix_len = (size_t) (suffix - arg_archived_output);
+        } else
+                prefix_len = (size_t) n;
         n = snprintf(arg_archived_output + prefix_len,
                      sizeof(arg_archived_output) - prefix_len,
                      "@%s-%016" PRIx64 "-%016" PRIx64 ".journal",

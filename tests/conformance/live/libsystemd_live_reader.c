@@ -7,6 +7,14 @@
 
 #include <systemd/sd-journal.h>
 
+static size_t cstring_len(const char *s) {
+    size_t n = 0;
+
+    while (s[n] != '\0')
+        n++;
+    return n;
+}
+
 static double monotonic_seconds(void) {
     struct timespec ts;
 
@@ -91,7 +99,7 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    const size_t sequence_field_len = strlen(sequence_field);
+    const size_t sequence_field_len = cstring_len(sequence_field);
     char *sequence_prefix = malloc(sequence_field_len + 2);
     if (!sequence_prefix) {
         fprintf(stderr, "malloc(sequence_prefix): %s\n", strerror(errno));

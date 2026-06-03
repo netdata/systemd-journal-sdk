@@ -3,9 +3,13 @@
 ## Glossary
 
 - CGO: Go's C interoperability mechanism.
+- DATA: systemd journal file object type for a stored field/value payload.
+- ENTRY: systemd journal file object type for a journal row.
+- FIELD: systemd journal file object type for a field name.
 - SOW: Statement of Work.
-- FIELD, DATA, and ENTRY: systemd journal file object types.
 - FTS: full-text search.
+- MAKE: uppercase English verb used in repository-boundary prompt emphasis.
+- WASM: WebAssembly.
 - DO NOT: uppercase emphasis in agent prompt blocks.
 
 ## Goals

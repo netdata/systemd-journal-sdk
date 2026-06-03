@@ -210,7 +210,7 @@ Exception: `/tmp` may be used for scratch work, but `.local/` inside this reposi
 Implication: external references may be inspected read-only, but no external repository, home directory, system path, package cache, or service may be edited by any agent.
 Risk: prompts must repeat this rule because implementers and reviewers may otherwise modify nearby source checkouts or dependency caches.
 
-10. Chunk commit discipline
+1. Chunk commit discipline
 
 Decision: after each implementation chunk/SOW is implemented, reviewed, and verified, prefer committing that chunk before starting the next chunk.
 Implication: the project keeps rollback points before later external-agent work can introduce regressions.

@@ -84,6 +84,14 @@ static enum {
         FINAL_STATE_ARCHIVED,
 } arg_final_state = FINAL_STATE_ONLINE;
 
+static size_t cstring_len(const char *s) {
+        size_t n = 0;
+
+        while (s[n] != '\0')
+                n++;
+        return n;
+}
+
 static int parse_args(int argc, char **argv) {
         for (int i = 1; i < argc; i++) {
                 if (streq(argv[i], "--dataset") && i + 1 < argc)
@@ -473,7 +481,7 @@ static int materialize_value(MatrixJsonVariant *value, void **ret, size_t *ret_s
                 if (!copy)
                         return -ENOMEM;
                 *ret = copy;
-                *ret_size = strlen(text);
+                *ret_size = cstring_len(text);
                 return 0;
         }
 
@@ -526,7 +534,7 @@ static int make_payload(const char *name, const void *value, size_t value_size, 
         assert(name);
         assert(ret);
 
-        name_size = strlen(name);
+        name_size = cstring_len(name);
         if (name_size > SIZE_MAX - 1 || name_size + 1 > SIZE_MAX - value_size)
                 return -EOVERFLOW;
 
@@ -652,7 +660,7 @@ static int append_payload(JournalFile *file, const void *payload, size_t payload
 }
 
 static int append_raw_payload(JournalFile *file, const char *payload, uint64_t *seqnum, sd_id128_t *seqnum_id) {
-        return append_payload(file, payload, strlen(payload), seqnum, seqnum_id);
+        return append_payload(file, payload, cstring_len(payload), seqnum, seqnum_id);
 }
 
 static int append_field_payload(JournalFile *file, const char *name, MatrixJsonVariant *value, uint64_t *seqnum, sd_id128_t *seqnum_id) {
