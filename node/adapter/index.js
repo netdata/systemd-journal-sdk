@@ -2,7 +2,7 @@
 // Node.js conformance adapter: run, list, probe.
 // All output is synchronous JSON on stdout.
 
-import { readFileSync, writeFileSync, unlinkSync, statSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { FileReader } from '../src/lib/reader.js';
@@ -51,10 +51,18 @@ function fixtureBase() {
   if (base) return base;
   let dir = process.cwd();
   for (;;) {
-    try { statSync(join(dir, 'tests', 'conformance', 'manifests', 'conformance-v01.json')); return dir; } catch {}
+    if (existsSync(join(dir, 'tests', 'conformance', 'manifests', 'conformance-v01.json'))) return dir;
     const parent = resolve(dir, '..');
     if (parent === dir) return process.cwd();
     dir = parent;
+  }
+}
+
+function cleanupPath(path, options = {}) {
+  try {
+    rmSync(path, { force: true, ...options });
+  } catch (err) {
+    if (process.env.ADAPTER_STRICT_CLEANUP === '1') throw err;
   }
 }
 
@@ -236,7 +244,7 @@ function testMatchBooleanLogic() {
 
     if (matched.length !== 2) return { status: 'FAIL', actual: matched, error: `matched ${matched.length}, want 2` };
     return { status: 'PASS', actual: matched };
-  } finally { try { unlinkSync(path); } catch {} }
+  } finally { cleanupPath(path); }
 }
 
 function addSystemdComplexMatchExpression(r) {
@@ -458,7 +466,7 @@ function runVerificationTest(tc) {
         return { status: 'FAIL', actual: false, error: err.message };
       }
     } finally {
-      try { rmSync(tmp, { recursive: true, force: true }); } catch {}
+      cleanupPath(tmp, { recursive: true });
     }
   }
   return { status: 'SKIP', note: `unsupported verification test: ${tc.test_name}` };

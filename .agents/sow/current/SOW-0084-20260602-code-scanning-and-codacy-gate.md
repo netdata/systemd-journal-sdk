@@ -534,6 +534,18 @@ Tests or equivalent validation:
   passed with no findings.
 - `git diff --check`: passed.
 - `.agents/sow/audit.sh`: passed.
+- `node --check node/adapter/index.js`: passed after replacing the Node adapter
+  empty-catch cleanup paths.
+- `node node/adapter/index.js list | python3 -c ...`: passed and returned 15
+  conformance adapter test names.
+- Targeted Node adapter conformance runs passed for
+  `journal-match-boolean-logic` and `journal-verify-sealed`, covering the two
+  cleanup paths touched by the `ESLint8_no-empty` fix.
+- `python3 -m py_compile tests/vm_matrix/run_vm_matrix.py`: passed after moving
+  default VM image/seed scratch paths under `.local/sow-0075/`.
+- `python3 tests/vm_matrix/run_vm_matrix.py preflight`: ran successfully and
+  reported `status=blocked` only because the four capped VM domains already
+  exist; required tool discovery and target enumeration completed.
 - Local pinned Codacy package smoke:
   `@codacy/analysis-cli@0.8.1` installed under `.local/codacy-cli-test`;
   `codacy-analysis init --default .` succeeded; `codacy-analysis analyze .`
@@ -706,6 +718,14 @@ Real-use evidence:
   exported groups are two `Bandit_B108` findings, two `markdownlint_MD012`
   findings, three `Agentlinter_clarity_sentence-complexity` findings, and three
   `ESLint8_no-empty` findings.
+- Local cleanup for the next small exported groups fixes the exact baseline
+  rows: `Bandit_B108` in `tests/vm_matrix/run_vm_matrix.py` by defaulting
+  generated VM image/seed scratch paths to repo-local `.local/sow-0075/`;
+  `markdownlint_MD012` by removing the two duplicate blank lines reported in the
+  VM matrix report and SOW-0003; `ESLint8_no-empty` by replacing empty cleanup
+  and probe catches in `node/adapter/index.js`; and
+  `Agentlinter_clarity_sentence-complexity` by splitting the three flagged
+  `AGENTS.md` sentences without changing policy.
 
 Reviewer findings:
 

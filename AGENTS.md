@@ -10,7 +10,9 @@ Success means:
 - SDKs write valid journal files without CGO, native Node.js runtime addon loading/linking, or external journal libraries. Dependency packages may ship native artifacts if the SDK runtime path is constrained and tested to use only non-native implementations (e.g. WASM).
 - Journal files written by one language can be read by every other language and by compatible systemd tooling where applicable.
 - The same shared conformance suite, fixtures, interoperability tests, benchmarks, and profiling workflows apply to every implementation.
-- SDK APIs exercise the journal format's native performance features. Correct output is not enough when the format has an index, hash table, object chain, offset array, mmap, or reusable object path that avoids row scans, repeated parsing, unnecessary decompression, unnecessary allocation, or avoidable syscalls.
+- SDK APIs exercise the journal format's native performance features.
+- Correct output is not enough when the format has an index, hash table, object chain, offset array, mmap, or reusable object path.
+- Use those structures to avoid row scans, repeated parsing, unnecessary decompression, unnecessary allocation, or avoidable syscalls.
 - journalctl rewrites exist for Rust, Go, Node.js, and Python for file-backed/query behavior.
 - Daemon-only journalctl operations are not implemented in this project.
 
@@ -102,9 +104,13 @@ The SOW system is self-contained in this repository. Normal SOW work must not de
 - **Reviewer agents review security:** identify vulnerabilities and unwanted side effects.
 - **Reviewer agents assess readiness:** decide whether the result is production-grade.
 
-The project manager must not personally perform the terminal technical review for implementation SOWs. By default implementation can be delegated to external agents, but the current user routing decision is local implementation by the project manager with external models used as read-only reviewers only.
+The project manager must not personally perform the terminal technical review for implementation SOWs.
+By default implementation can be delegated to external agents.
+The current user routing decision is local implementation by the project manager, with external models used as read-only reviewers only.
 
-Current review cadence: implement the whole active SOW locally, finish local validation, then run external reviewers against the complete SOW as one meaningful batch. Do not run external reviewers after small local edits or partial fixes unless the user explicitly asks for early review, or unless a blocking design/security/compatibility decision needs an independent read-only opinion before implementation can continue.
+Current review cadence: implement the whole active SOW locally, finish local validation, then run external reviewers against the complete SOW as one meaningful batch.
+Do not run external reviewers after small local edits or partial fixes unless the user explicitly asks for early review.
+An exception is allowed when a blocking design, security, or compatibility decision needs an independent read-only opinion before implementation can continue.
 
 ### Required First Checks
 

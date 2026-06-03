@@ -267,7 +267,6 @@ Required repair disposition:
 - Add or defer conformance cases for `test-journal-interleaving.c` behavior explicitly.
 - Address reviewer non-blocking findings where low-risk, including meaningful corruption error expectations, explicit handling for ancillary `sd-journal` tests (`test-catalog.c`, `test-mmap-cache.c`, `test-audit-type.c`), and an Artifact Maintenance Gate before close.
 
-
 ## External Review Round 1 Repair Execution Log
 
 - 2026-05-23: Fallback repair pass using qwen3.6-plus after preferred implementer failed two passes and four reviewers rejected as NOT PRODUCTION GRADE.

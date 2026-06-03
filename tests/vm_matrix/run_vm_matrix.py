@@ -34,8 +34,8 @@ RAW_DIR = LOCAL / "raw"
 STATE_DIR = LOCAL / "state"
 BIN_DIR = LOCAL / "bin"
 KNOWN_HOSTS = LOCAL / "known_hosts"
-IMAGE_CACHE = Path("/tmp/sow-0075-vm-images")
-SEED_WORK = Path("/tmp/sow-0075-vm-seeds")
+IMAGE_CACHE = Path(os.environ.get("SOW_0075_IMAGE_CACHE", str(LOCAL / "images")))
+SEED_WORK = Path(os.environ.get("SOW_0075_SEED_WORK", str(LOCAL / "seeds")))
 LIBVIRT_IMAGES = Path("/var/lib/libvirt/images")
 DISK_CAP_BYTES = 4 * 1024 * 1024 * 1024
 
