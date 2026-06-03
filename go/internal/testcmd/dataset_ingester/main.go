@@ -60,6 +60,22 @@ type result struct {
 	Errors  []string `json:"errors"`
 }
 
+type acceptedIngestState struct {
+	writer       *journal.Writer
+	result       result
+	headRealtime uint64
+}
+
+type rejectionIngestState struct {
+	writer       *journal.Writer
+	result       result
+	headRealtime uint64
+	output       string
+	finalState   string
+	compact      bool
+	maxSizeBytes uint64
+}
+
 func mustUUID(s string) journal.UUID {
 	b, err := hex.DecodeString(s)
 	if err != nil || len(b) != 16 {
@@ -189,8 +205,7 @@ func ingestAccepted(dataset, output string, finalState string, compact bool, max
 	}
 	defer file.Close()
 
-	res := result{Errors: []string{}}
-	headRealtime := uint64(0)
+	state := acceptedIngestState{writer: w, result: result{Errors: []string{}}}
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
 	lineNo := 0
@@ -200,58 +215,69 @@ func ingestAccepted(dataset, output string, finalState string, compact bool, max
 		if line == "" {
 			continue
 		}
-		var rec acceptedRecord
-		if err := json.Unmarshal([]byte(line), &rec); err != nil {
-			res.Errors = append(res.Errors, fmt.Sprintf("line %d: decode failed: %v", lineNo, err))
-			continue
-		}
-		if rec.RecordType != "accepted" {
-			continue
-		}
-		fields := make([]journal.Field, 0, len(rec.Fields))
-		bad := false
-		for _, f := range rec.Fields {
-			value, err := materializeValue(f.Value)
-			if err != nil {
-				res.Errors = append(res.Errors, fmt.Sprintf("line %d %s: %v", lineNo, rec.EntryID, err))
-				bad = true
-				break
-			}
-			fields = append(fields, journal.Field{Name: f.Name, Value: value})
-		}
-		if bad {
-			continue
-		}
-		entryBootID := bootID
-		if rec.BootID != "" {
-			entryBootID = mustUUID(rec.BootID)
-		}
-		if err := w.Append(fields, journal.EntryOptions{
-			RealtimeUsec:  rec.RealtimeUsec,
-			MonotonicUsec: rec.MonotonicUsec,
-			BootID:        entryBootID,
-		}); err != nil {
-			res.Errors = append(res.Errors, fmt.Sprintf("line %d %s: append failed: %v", lineNo, rec.EntryID, err))
-			continue
-		}
-		if headRealtime == 0 {
-			headRealtime = rec.RealtimeUsec
-		}
-		res.Records++
+		handleAcceptedLine(lineNo, line, &state)
 	}
 	if err := scanner.Err(); err != nil {
-		res.Errors = append(res.Errors, err.Error())
+		state.result.Errors = append(state.result.Errors, err.Error())
 	}
 	if err := w.Sync(); err != nil {
-		res.Errors = append(res.Errors, err.Error())
+		state.result.Errors = append(state.result.Errors, err.Error())
 	}
-	if headRealtime == 0 {
-		headRealtime = defaultArchiveRealtime
+	if state.headRealtime == 0 {
+		state.headRealtime = defaultArchiveRealtime
 	}
-	if err := finalizeWriter(w, output, finalState, headRealtime); err != nil {
-		res.Errors = append(res.Errors, err.Error())
+	if err := finalizeWriter(w, output, finalState, state.headRealtime); err != nil {
+		state.result.Errors = append(state.result.Errors, err.Error())
 	}
-	return res
+	return state.result
+}
+
+func handleAcceptedLine(lineNo int, line string, state *acceptedIngestState) {
+	var rec acceptedRecord
+	if err := json.Unmarshal([]byte(line), &rec); err != nil {
+		state.result.Errors = append(state.result.Errors, fmt.Sprintf("line %d: decode failed: %v", lineNo, err))
+		return
+	}
+	if rec.RecordType != "accepted" {
+		return
+	}
+	fields, ok := materializeFields(rec, lineNo, &state.result)
+	if !ok {
+		return
+	}
+	if err := appendAcceptedRecord(state.writer, rec, fields); err != nil {
+		state.result.Errors = append(state.result.Errors, fmt.Sprintf("line %d %s: append failed: %v", lineNo, rec.EntryID, err))
+		return
+	}
+	if state.headRealtime == 0 {
+		state.headRealtime = rec.RealtimeUsec
+	}
+	state.result.Records++
+}
+
+func materializeFields(rec acceptedRecord, lineNo int, res *result) ([]journal.Field, bool) {
+	fields := make([]journal.Field, 0, len(rec.Fields))
+	for _, f := range rec.Fields {
+		value, err := materializeValue(f.Value)
+		if err != nil {
+			res.Errors = append(res.Errors, fmt.Sprintf("line %d %s: %v", lineNo, rec.EntryID, err))
+			return nil, false
+		}
+		fields = append(fields, journal.Field{Name: f.Name, Value: value})
+	}
+	return fields, true
+}
+
+func appendAcceptedRecord(w *journal.Writer, rec acceptedRecord, fields []journal.Field) error {
+	entryBootID := bootID
+	if rec.BootID != "" {
+		entryBootID = mustUUID(rec.BootID)
+	}
+	return w.Append(fields, journal.EntryOptions{
+		RealtimeUsec:  rec.RealtimeUsec,
+		MonotonicUsec: rec.MonotonicUsec,
+		BootID:        entryBootID,
+	})
 }
 
 func ingestRejections(dataset, output string, finalState string, compact bool, maxSizeBytes uint64) result {
@@ -261,9 +287,14 @@ func ingestRejections(dataset, output string, finalState string, compact bool, m
 	}
 	defer file.Close()
 
-	var w *journal.Writer
-	headRealtime := uint64(defaultArchiveRealtime)
-	res := result{Errors: []string{}}
+	state := rejectionIngestState{
+		result:       result{Errors: []string{}},
+		headRealtime: defaultArchiveRealtime,
+		output:       output,
+		finalState:   finalState,
+		compact:      compact,
+		maxSizeBytes: maxSizeBytes,
+	}
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
 	lineNo := 0
@@ -273,61 +304,85 @@ func ingestRejections(dataset, output string, finalState string, compact bool, m
 		if line == "" {
 			continue
 		}
-		var rec rejectedRecord
-		if err := json.Unmarshal([]byte(line), &rec); err != nil {
-			res.Errors = append(res.Errors, fmt.Sprintf("line %d: decode failed: %v", lineNo, err))
-			continue
-		}
-		if rec.RecordType != "rejected" {
-			continue
-		}
-		if got := expectedRejection(rec.Input); got != "" {
-			if got == rec.ExpectedError {
-				res.Records++
-			} else {
-				res.Errors = append(res.Errors, fmt.Sprintf("line %d %s: got %s, expected %s", lineNo, rec.CaseID, got, rec.ExpectedError))
-			}
-			continue
-		}
-
-		if w == nil {
-			w, err = makeWriter(output, compact, maxSizeBytes)
-			if err != nil {
-				res.Errors = append(res.Errors, err.Error())
-				break
-			}
-			defer w.Close()
-		}
-		valueBytes, _ := json.Marshal(rec.Input["value"])
-		var value valueDescriptor
-		if err := json.Unmarshal(valueBytes, &value); err != nil {
-			res.Errors = append(res.Errors, fmt.Sprintf("line %d %s: %v", lineNo, rec.CaseID, err))
-			continue
-		}
-		fieldValue, err := materializeValue(value)
-		if err != nil {
-			res.Errors = append(res.Errors, fmt.Sprintf("line %d %s: %v", lineNo, rec.CaseID, err))
-			continue
-		}
-		err = w.Append([]journal.Field{{Name: rec.Input["field_name"].(string), Value: fieldValue}}, journal.EntryOptions{BootID: bootID})
-		if err == nil {
-			headRealtime = defaultArchiveRealtime
-			res.Errors = append(res.Errors, fmt.Sprintf("line %d %s: unexpectedly accepted", lineNo, rec.CaseID))
-		} else if rec.ExpectedError == "EINVAL" {
-			res.Records++
-		} else {
-			res.Errors = append(res.Errors, fmt.Sprintf("line %d %s: rejected as EINVAL, expected %s", lineNo, rec.CaseID, rec.ExpectedError))
-		}
+		handleRejectedLine(lineNo, line, &state)
 	}
 	if err := scanner.Err(); err != nil {
-		res.Errors = append(res.Errors, err.Error())
+		state.result.Errors = append(state.result.Errors, err.Error())
 	}
-	if w != nil {
-		if err := finalizeWriter(w, output, finalState, headRealtime); err != nil {
-			res.Errors = append(res.Errors, err.Error())
+	if state.writer != nil {
+		if err := finalizeWriter(state.writer, output, finalState, state.headRealtime); err != nil {
+			state.result.Errors = append(state.result.Errors, err.Error())
 		}
 	}
-	return res
+	return state.result
+}
+
+func handleRejectedLine(lineNo int, line string, state *rejectionIngestState) {
+	var rec rejectedRecord
+	if err := json.Unmarshal([]byte(line), &rec); err != nil {
+		state.result.Errors = append(state.result.Errors, fmt.Sprintf("line %d: decode failed: %v", lineNo, err))
+		return
+	}
+	if rec.RecordType != "rejected" {
+		return
+	}
+	if expected := expectedRejection(rec.Input); expected != "" {
+		recordExpectedRejection(lineNo, rec, expected, &state.result)
+		return
+	}
+	if err := ensureRejectionWriter(state); err != nil {
+		state.result.Errors = append(state.result.Errors, err.Error())
+		return
+	}
+	fieldValue, err := rejectionFieldValue(rec)
+	if err != nil {
+		state.result.Errors = append(state.result.Errors, fmt.Sprintf("line %d %s: %v", lineNo, rec.CaseID, err))
+		return
+	}
+	err = state.writer.Append([]journal.Field{{Name: rec.Input["field_name"].(string), Value: fieldValue}}, journal.EntryOptions{BootID: bootID})
+	recordWriterRejection(lineNo, rec, err, state)
+}
+
+func recordExpectedRejection(lineNo int, rec rejectedRecord, got string, res *result) {
+	if got == rec.ExpectedError {
+		res.Records++
+		return
+	}
+	res.Errors = append(res.Errors, fmt.Sprintf("line %d %s: got %s, expected %s", lineNo, rec.CaseID, got, rec.ExpectedError))
+}
+
+func ensureRejectionWriter(state *rejectionIngestState) error {
+	if state.writer != nil {
+		return nil
+	}
+	w, err := makeWriter(state.output, state.compact, state.maxSizeBytes)
+	if err != nil {
+		return err
+	}
+	state.writer = w
+	return nil
+}
+
+func rejectionFieldValue(rec rejectedRecord) ([]byte, error) {
+	valueBytes, _ := json.Marshal(rec.Input["value"])
+	var value valueDescriptor
+	if err := json.Unmarshal(valueBytes, &value); err != nil {
+		return nil, err
+	}
+	return materializeValue(value)
+}
+
+func recordWriterRejection(lineNo int, rec rejectedRecord, err error, state *rejectionIngestState) {
+	if err == nil {
+		state.headRealtime = defaultArchiveRealtime
+		state.result.Errors = append(state.result.Errors, fmt.Sprintf("line %d %s: unexpectedly accepted", lineNo, rec.CaseID))
+		return
+	}
+	if rec.ExpectedError == "EINVAL" {
+		state.result.Records++
+		return
+	}
+	state.result.Errors = append(state.result.Errors, fmt.Sprintf("line %d %s: rejected as EINVAL, expected %s", lineNo, rec.CaseID, rec.ExpectedError))
 }
 
 func main() {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"math/bits"
@@ -34,6 +35,20 @@ type counts struct {
 	fields   uint64
 	bytes    uint64
 	checksum uint64
+}
+
+type benchConfig struct {
+	inputs       []string
+	mode         string
+	surface      string
+	direction    string
+	bounds       string
+	mmapStrategy string
+	windowSize   uint64
+	cpuProfile   string
+	memProfile   string
+	loops        int
+	options      journal.ReaderOptions
 }
 
 func (c *counts) addRun(other counts) {
@@ -115,7 +130,7 @@ func processStatusKB() map[string]uint64 {
 	return out
 }
 
-func openSDKReader(surface string, inputs []string, opts journal.ReaderOptions) (interface {
+type sdkReader interface {
 	Close() error
 	SeekHead() error
 	SeekTail() error
@@ -124,7 +139,9 @@ func openSDKReader(surface string, inputs []string, opts journal.ReaderOptions) 
 	GetEntry() (*journal.Entry, error)
 	GetRealtimeUsec() (uint64, error)
 	VisitEntryPayloads(func([]byte) error) error
-}, error) {
+}
+
+func openSDKReader(surface string, inputs []string, opts journal.ReaderOptions) (sdkReader, error) {
 	switch surface {
 	case "file":
 		if len(inputs) != 1 {
@@ -143,30 +160,57 @@ func openSDKReader(surface string, inputs []string, opts journal.ReaderOptions) 
 	}
 }
 
+func seekSDKReader(reader sdkReader, direction string) error {
+	if direction == "backward" {
+		return reader.SeekTail()
+	}
+	return reader.SeekHead()
+}
+
+func stepSDKReader(reader sdkReader, direction string) (bool, error) {
+	if direction == "backward" {
+		return reader.StepBack()
+	}
+	return reader.Step()
+}
+
+func addSDKEntry(result *counts, reader sdkReader) error {
+	entry, err := reader.GetEntry()
+	if err != nil {
+		return err
+	}
+	result.addRecordMarker(entry.Realtime)
+	for _, payload := range entry.Payloads {
+		result.addPayload(payload)
+	}
+	return nil
+}
+
+func addSDKPayloads(result *counts, reader sdkReader) error {
+	realtime, err := reader.GetRealtimeUsec()
+	if err != nil {
+		return err
+	}
+	result.addRecordMarker(realtime)
+	return reader.VisitEntryPayloads(func(payload []byte) error {
+		result.addPayload(payload)
+		return nil
+	})
+}
+
 func readSDK(surface, mode, direction string, inputs []string, opts journal.ReaderOptions) (counts, error) {
 	reader, err := openSDKReader(surface, inputs, opts)
 	if err != nil {
 		return counts{}, err
 	}
 	defer reader.Close()
-	if direction == "backward" {
-		if err := reader.SeekTail(); err != nil {
-			return counts{}, err
-		}
-	} else {
-		if err := reader.SeekHead(); err != nil {
-			return counts{}, err
-		}
+	if err := seekSDKReader(reader, direction); err != nil {
+		return counts{}, err
 	}
 
 	var result counts
 	for {
-		var ok bool
-		if direction == "backward" {
-			ok, err = reader.StepBack()
-		} else {
-			ok, err = reader.Step()
-		}
+		ok, err := stepSDKReader(reader, direction)
 		if err != nil {
 			return counts{}, err
 		}
@@ -175,28 +219,14 @@ func readSDK(surface, mode, direction string, inputs []string, opts journal.Read
 		}
 		switch mode {
 		case "sdk-entry":
-			entry, err := reader.GetEntry()
-			if err != nil {
-				return counts{}, err
-			}
-			result.addRecordMarker(entry.Realtime)
-			for _, payload := range entry.Payloads {
-				result.addPayload(payload)
-			}
+			err = addSDKEntry(&result, reader)
 		case "sdk-payloads":
-			realtime, err := reader.GetRealtimeUsec()
-			if err != nil {
-				return counts{}, err
-			}
-			result.addRecordMarker(realtime)
-			if err := reader.VisitEntryPayloads(func(payload []byte) error {
-				result.addPayload(payload)
-				return nil
-			}); err != nil {
-				return counts{}, err
-			}
+			err = addSDKPayloads(&result, reader)
 		default:
 			return counts{}, fmt.Errorf("invalid SDK mode: %s", mode)
+		}
+		if err != nil {
+			return counts{}, err
 		}
 	}
 	return result, nil
@@ -213,7 +243,7 @@ type facadeHandle interface {
 	EnumerateAvailableData() ([]byte, bool, error)
 }
 
-func readFacade(surface, mode, direction string, inputs []string, opts journal.ReaderOptions) (counts, error) {
+func openFacade(surface string, inputs []string, opts journal.ReaderOptions) (facadeHandle, error) {
 	var (
 		j   facadeHandle
 		err error
@@ -223,34 +253,67 @@ func readFacade(surface, mode, direction string, inputs []string, opts journal.R
 		j, err = journal.SdJournalOpenFilesWithOptions(inputs, 0, opts)
 	case "directory":
 		if len(inputs) != 1 {
-			return counts{}, fmt.Errorf("directory surface requires exactly one --input")
+			return nil, fmt.Errorf("directory surface requires exactly one --input")
 		}
 		j, err = journal.SdJournalOpenDirectoryWithOptions(inputs[0], 0, opts)
 	default:
-		return counts{}, fmt.Errorf("invalid --surface: %s", surface)
+		return nil, fmt.Errorf("invalid --surface: %s", surface)
 	}
+	return j, err
+}
+
+func seekFacade(j facadeHandle, direction string) error {
+	if direction == "backward" {
+		return j.SeekTail()
+	}
+	return j.SeekHead()
+}
+
+func stepFacade(j facadeHandle, direction string) (int, error) {
+	if direction == "backward" {
+		return j.Previous()
+	}
+	return j.Next()
+}
+
+func addFacadeNext(result *counts, j facadeHandle) error {
+	realtime, err := j.GetRealtimeUsec()
+	if err != nil {
+		return err
+	}
+	result.addRecordMarker(realtime)
+	return nil
+}
+
+func addFacadeData(result *counts, j facadeHandle) error {
+	if err := addFacadeNext(result, j); err != nil {
+		return err
+	}
+	if err := j.RestartData(); err != nil {
+		return err
+	}
+	for {
+		payload, ok, err := j.EnumerateAvailableData()
+		if err != nil || !ok {
+			return err
+		}
+		result.addPayload(payload)
+	}
+}
+
+func readFacade(surface, mode, direction string, inputs []string, opts journal.ReaderOptions) (counts, error) {
+	j, err := openFacade(surface, inputs, opts)
 	if err != nil {
 		return counts{}, err
 	}
 	defer j.Close()
-	if direction == "backward" {
-		if err := j.SeekTail(); err != nil {
-			return counts{}, err
-		}
-	} else {
-		if err := j.SeekHead(); err != nil {
-			return counts{}, err
-		}
+	if err := seekFacade(j, direction); err != nil {
+		return counts{}, err
 	}
 
 	var result counts
 	for {
-		var n int
-		if direction == "backward" {
-			n, err = j.Previous()
-		} else {
-			n, err = j.Next()
-		}
+		n, err := stepFacade(j, direction)
 		if err != nil {
 			return counts{}, err
 		}
@@ -259,38 +322,20 @@ func readFacade(surface, mode, direction string, inputs []string, opts journal.R
 		}
 		switch mode {
 		case "facade-next":
-			realtime, err := j.GetRealtimeUsec()
-			if err != nil {
-				return counts{}, err
-			}
-			result.addRecordMarker(realtime)
+			err = addFacadeNext(&result, j)
 		case "facade-data":
-			realtime, err := j.GetRealtimeUsec()
-			if err != nil {
-				return counts{}, err
-			}
-			result.addRecordMarker(realtime)
-			if err := j.RestartData(); err != nil {
-				return counts{}, err
-			}
-			for {
-				payload, ok, err := j.EnumerateAvailableData()
-				if err != nil {
-					return counts{}, err
-				}
-				if !ok {
-					break
-				}
-				result.addPayload(payload)
-			}
+			err = addFacadeData(&result, j)
 		default:
 			return counts{}, fmt.Errorf("invalid facade mode: %s", mode)
+		}
+		if err != nil {
+			return counts{}, err
 		}
 	}
 	return result, nil
 }
 
-func main() {
+func parseBenchConfig() (benchConfig, error) {
 	var inputs inputsFlag
 	mode := flag.String("mode", "sdk-payloads", "")
 	surface := flag.String("surface", "file", "")
@@ -304,27 +349,42 @@ func main() {
 	flag.Var(&inputs, "input", "")
 	flag.Parse()
 	if len(inputs) == 0 {
-		fmt.Fprintln(os.Stderr, "missing --input")
-		os.Exit(2)
+		return benchConfig{}, errors.New("missing --input")
 	}
 	if *direction != "forward" && *direction != "backward" {
-		fmt.Fprintf(os.Stderr, "invalid --direction: %s\n", *direction)
-		os.Exit(2)
+		return benchConfig{}, fmt.Errorf("invalid --direction: %s", *direction)
 	}
 	if *loops < 1 {
-		fmt.Fprintf(os.Stderr, "invalid --loops: %d\n", *loops)
-		os.Exit(2)
+		return benchConfig{}, fmt.Errorf("invalid --loops: %d", *loops)
 	}
 	opts, err := parseOptions(*bounds, *mmapStrategy)
+	if err != nil {
+		return benchConfig{}, err
+	}
+	return benchConfig{
+		inputs:       inputs,
+		mode:         *mode,
+		surface:      *surface,
+		direction:    *direction,
+		bounds:       *bounds,
+		mmapStrategy: *mmapStrategy,
+		windowSize:   *windowSize,
+		cpuProfile:   *cpuProfile,
+		memProfile:   *memProfile,
+		loops:        *loops,
+		options:      opts,
+	}, nil
+}
+
+func main() {
+	cfg, err := parseBenchConfig()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	_ = windowSize // Go currently benchmarks read-at and whole-file mmap only.
-
 	before := processStatusKB()
-	if *cpuProfile != "" {
-		f, err := os.Create(*cpuProfile)
+	if cfg.cpuProfile != "" {
+		f, err := os.Create(cfg.cpuProfile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "create cpu profile: %v\n", err)
 			os.Exit(1)
@@ -338,45 +398,101 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 	started := time.Now()
-	var result counts
-	for i := 0; i < *loops; i++ {
-		var partial counts
-		switch *mode {
-		case "sdk-entry", "sdk-payloads":
-			partial, err = readSDK(*surface, *mode, *direction, inputs, opts)
-		case "facade-next", "facade-data":
-			partial, err = readFacade(*surface, *mode, *direction, inputs, opts)
-		default:
-			err = fmt.Errorf("invalid --mode: %s", *mode)
-		}
-		if err != nil {
-			break
-		}
-		result.addRun(partial)
-	}
+	result, err := runBenchLoops(cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	seconds := time.Since(started).Seconds()
-	if *memProfile != "" {
-		f, err := os.Create(*memProfile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "create memory profile: %v\n", err)
-			os.Exit(1)
-		}
-		runtime.GC()
-		if err := pprof.WriteHeapProfile(f); err != nil {
-			_ = f.Close()
-			fmt.Fprintf(os.Stderr, "write memory profile: %v\n", err)
-			os.Exit(1)
-		}
-		if err := f.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "close memory profile: %v\n", err)
-			os.Exit(1)
-		}
+	if err := writeMemProfile(cfg.memProfile); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 	after := processStatusKB()
+	encoded, err := benchOutput(cfg, result, seconds, before, after)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println(string(encoded))
+}
+
+func runBenchLoops(cfg benchConfig) (counts, error) {
+	var result counts
+	for range cfg.loops {
+		partial, err := readBenchOnce(cfg)
+		if err != nil {
+			return counts{}, err
+		}
+		result.addRun(partial)
+	}
+	return result, nil
+}
+
+func readBenchOnce(cfg benchConfig) (counts, error) {
+	switch cfg.mode {
+	case "sdk-entry", "sdk-payloads":
+		return readSDK(cfg.surface, cfg.mode, cfg.direction, cfg.inputs, cfg.options)
+	case "facade-next", "facade-data":
+		return readFacade(cfg.surface, cfg.mode, cfg.direction, cfg.inputs, cfg.options)
+	default:
+		return counts{}, fmt.Errorf("invalid --mode: %s", cfg.mode)
+	}
+}
+
+func writeMemProfile(path string) error {
+	if path == "" {
+		return nil
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("create memory profile: %w", err)
+	}
+	runtime.GC()
+	if err := pprof.WriteHeapProfile(f); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write memory profile: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close memory profile: %w", err)
+	}
+	return nil
+}
+
+func benchOutput(
+	cfg benchConfig,
+	result counts,
+	seconds float64,
+	before map[string]uint64,
+	after map[string]uint64,
+) ([]byte, error) {
+	output := map[string]interface{}{
+		"language":               "go",
+		"surface":                cfg.surface,
+		"mode":                   cfg.mode,
+		"direction":              cfg.direction,
+		"records":                result.records,
+		"fields":                 result.fields,
+		"bytes":                  result.bytes,
+		"checksum":               result.checksum,
+		"read_seconds":           seconds,
+		"read_rows_per_second":   float64(result.records) / seconds,
+		"read_fields_per_second": float64(result.fields) / seconds,
+		"read_bytes_per_second":  float64(result.bytes) / seconds,
+		"inputs":                 absoluteInputs(cfg.inputs),
+		"window_size":            cfg.windowSize,
+		"bounds":                 cfg.bounds,
+		"mmap_strategy":          cfg.mmapStrategy,
+		"loops":                  cfg.loops,
+		"timer_excludes":         []string{"fixture generation", "process startup", "external verification"},
+		"process_status_before":  before,
+		"process_status_after":   after,
+		"errors":                 []string{},
+	}
+	return json.Marshal(output)
+}
+
+func absoluteInputs(inputs []string) []string {
 	absInputs := make([]string, 0, len(inputs))
 	for _, input := range inputs {
 		abs, err := filepath.Abs(input)
@@ -386,33 +502,5 @@ func main() {
 			absInputs = append(absInputs, abs)
 		}
 	}
-	output := map[string]interface{}{
-		"language":               "go",
-		"surface":                *surface,
-		"mode":                   *mode,
-		"direction":              *direction,
-		"records":                result.records,
-		"fields":                 result.fields,
-		"bytes":                  result.bytes,
-		"checksum":               result.checksum,
-		"read_seconds":           seconds,
-		"read_rows_per_second":   float64(result.records) / seconds,
-		"read_fields_per_second": float64(result.fields) / seconds,
-		"read_bytes_per_second":  float64(result.bytes) / seconds,
-		"inputs":                 absInputs,
-		"window_size":            *windowSize,
-		"bounds":                 *bounds,
-		"mmap_strategy":          *mmapStrategy,
-		"loops":                  *loops,
-		"timer_excludes":         []string{"fixture generation", "process startup", "external verification"},
-		"process_status_before":  before,
-		"process_status_after":   after,
-		"errors":                 []string{},
-	}
-	encoded, err := json.Marshal(output)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	fmt.Println(string(encoded))
+	return absInputs
 }

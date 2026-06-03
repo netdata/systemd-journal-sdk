@@ -85,7 +85,27 @@ func closeWriter(w *journal.Writer, output string, finalState string) (string, e
 	}
 }
 
-func main() {
+type regenerateConfig struct {
+	input                   string
+	output                  string
+	format                  string
+	compressionName         string
+	compression             int
+	fss                     bool
+	fssIntervalUsec         uint64
+	finalState              string
+	maxSize                 uint64
+	livePublishEveryEntries uint64
+	compact                 bool
+}
+
+type regenerateStats struct {
+	records      uint64
+	payloads     uint64
+	payloadBytes uint64
+}
+
+func parseRegenerateConfig() (regenerateConfig, error) {
 	input := flag.String("input", "", "journal input file")
 	output := flag.String("output", "", "journal output file")
 	format := flag.String("format", "regular", "journal format: regular or compact")
@@ -97,8 +117,7 @@ func main() {
 	livePublishEveryEntries := flag.Uint64("live-publish-every-entries", 1, "live publication cadence")
 	flag.Parse()
 	if *input == "" || *output == "" {
-		fmt.Fprintln(os.Stderr, "--input and --output are required")
-		os.Exit(2)
+		return regenerateConfig{}, fmt.Errorf("--input and --output are required")
 	}
 	compact := false
 	switch *format {
@@ -107,16 +126,51 @@ func main() {
 	case "compact":
 		compact = true
 	default:
-		fmt.Fprintf(os.Stderr, "invalid --format: %s\n", *format)
-		os.Exit(2)
+		return regenerateConfig{}, fmt.Errorf("invalid --format: %s", *format)
 	}
 	compression, err := parseCompression(*compressionName)
+	if err != nil {
+		return regenerateConfig{}, err
+	}
+	return regenerateConfig{
+		input:                   *input,
+		output:                  *output,
+		format:                  *format,
+		compressionName:         *compressionName,
+		compression:             compression,
+		fss:                     *fss,
+		fssIntervalUsec:         *fssIntervalUsec,
+		finalState:              *finalState,
+		maxSize:                 *maxSize,
+		livePublishEveryEntries: *livePublishEveryEntries,
+		compact:                 compact,
+	}, nil
+}
+
+func main() {
+	cfg, err := parseRegenerateConfig()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+	reader, first := openInputReader(cfg.input)
+	defer reader.Close()
+	bootID, headSeqnum, fssStartUsec := firstEntryMetadata(first, cfg.fssIntervalUsec)
+	w := createOutputWriter(cfg, bootID, headSeqnum, fssStartUsec)
+	appendSeconds, stats := copyEntries(reader, w, first)
+	closeStarted := time.Now()
+	finalPath, closeErr := closeWriter(w, cfg.output, cfg.finalState)
+	closeSeconds := time.Since(closeStarted).Seconds()
+	if closeErr != nil {
+		fmt.Fprintf(os.Stderr, "close output: %v\n", closeErr)
+		os.Exit(1)
+	}
+	_ = json.NewEncoder(os.Stdout).Encode(regenerateOutput(cfg, stats, appendSeconds, closeSeconds, finalPath, fssStartUsec))
+}
+
+func openInputReader(input string) (*journal.Reader, *journal.Entry) {
 	opts := journal.DefaultReaderOptions().WithBounds(journal.ReaderBoundsSnapshot)
-	reader, err := journal.OpenFileWithOptions(*input, opts)
+	reader, err := journal.OpenFileWithOptions(input, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "open input: %v\n", err)
 		os.Exit(1)
@@ -137,75 +191,62 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	return reader, first
+}
 
+func firstEntryMetadata(first *journal.Entry, interval uint64) (journal.UUID, uint64, uint64) {
 	bootID := mustUUID(fallbackBoot)
 	headSeqnum := uint64(1)
-	fssStartUsec := *fssIntervalUsec
+	fssStartUsec := interval
 	if first != nil {
 		bootID = first.BootID
 		headSeqnum = first.Seqnum
-		fssStartUsec = systemdFSSStartUsec(first.Realtime, *fssIntervalUsec)
+		fssStartUsec = systemdFSSStartUsec(first.Realtime, interval)
 	}
-	if err := os.MkdirAll(filepath.Dir(*output), 0o755); err != nil {
+	return bootID, headSeqnum, fssStartUsec
+}
+
+func createOutputWriter(cfg regenerateConfig, bootID journal.UUID, headSeqnum uint64, fssStartUsec uint64) *journal.Writer {
+	if err := os.MkdirAll(filepath.Dir(cfg.output), 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "create output directory: %v\n", err)
 		os.Exit(1)
 	}
-	_ = os.Remove(*output)
+	_ = os.Remove(cfg.output)
 	writerOptions := journal.Options{
 		MachineID:               mustUUID("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		BootID:                  bootID,
 		SeqnumID:                mustUUID("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
 		FileID:                  randomUUID(),
 		HeadSeqnum:              headSeqnum,
-		MaxFileSize:             *maxSize,
-		DataHashTableBuckets:    dataHashBucketsForMaxSize(*maxSize),
+		MaxFileSize:             cfg.maxSize,
+		DataHashTableBuckets:    dataHashBucketsForMaxSize(cfg.maxSize),
 		FieldHashTableBuckets:   1023,
-		Compression:             compression,
+		Compression:             cfg.compression,
 		CompressThresholdBytes:  512,
-		Compact:                 compact,
-		LivePublishEveryEntries: journal.PublishEveryEntries(*livePublishEveryEntries),
+		Compact:                 cfg.compact,
+		LivePublishEveryEntries: journal.PublishEveryEntries(cfg.livePublishEveryEntries),
 		FieldNamePolicy:         journal.FieldNamePolicyRaw,
 	}
-	if *fss {
+	if cfg.fss {
 		writerOptions.Seal = &journal.SealOptions{
 			Seed:         make([]byte, 12),
-			IntervalUsec: *fssIntervalUsec,
+			IntervalUsec: cfg.fssIntervalUsec,
 			StartUsec:    fssStartUsec,
 		}
 	}
-	w, err := journal.Create(*output, writerOptions)
+	w, err := journal.Create(cfg.output, writerOptions)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create output: %v\n", err)
 		os.Exit(1)
 	}
+	return w
+}
 
-	inputBytes := int64(0)
-	if stat, err := os.Stat(*input); err == nil {
-		inputBytes = stat.Size()
-	}
+func copyEntries(reader *journal.Reader, w *journal.Writer, first *journal.Entry) (float64, regenerateStats) {
 	appendStarted := time.Now()
-	var records, payloads, payloadBytes uint64
-	appendEntry := func(entry *journal.Entry) error {
-		err := w.AppendRaw(entry.Payloads, journal.EntryOptions{
-			RealtimeUsec:     entry.Realtime,
-			RealtimeUsecSet:  true,
-			MonotonicUsec:    entry.Monotonic,
-			MonotonicUsecSet: true,
-			BootID:           entry.BootID,
-			Seqnum:           entry.Seqnum,
-		})
-		if err != nil {
-			return err
-		}
-		records++
-		payloads += uint64(len(entry.Payloads))
-		for _, payload := range entry.Payloads {
-			payloadBytes += uint64(len(payload))
-		}
-		return nil
-	}
+	var stats regenerateStats
 	if first != nil {
-		if err := appendEntry(first); err != nil {
+		if err := appendEntry(w, first, &stats); err != nil {
 			fmt.Fprintf(os.Stderr, "append first: %v\n", err)
 			os.Exit(1)
 		}
@@ -224,46 +265,72 @@ func main() {
 			fmt.Fprintf(os.Stderr, "get entry: %v\n", err)
 			os.Exit(1)
 		}
-		if err := appendEntry(entry); err != nil {
+		if err := appendEntry(w, entry, &stats); err != nil {
 			fmt.Fprintf(os.Stderr, "append entry: %v\n", err)
 			os.Exit(1)
 		}
 	}
-	appendSeconds := time.Since(appendStarted).Seconds()
-	closeStarted := time.Now()
-	finalPath, closeErr := closeWriter(w, *output, *finalState)
-	closeSeconds := time.Since(closeStarted).Seconds()
-	if closeErr != nil {
-		fmt.Fprintf(os.Stderr, "close output: %v\n", closeErr)
-		os.Exit(1)
+	return time.Since(appendStarted).Seconds(), stats
+}
+
+func appendEntry(w *journal.Writer, entry *journal.Entry, stats *regenerateStats) error {
+	err := w.AppendRaw(entry.Payloads, journal.EntryOptions{
+		RealtimeUsec:     entry.Realtime,
+		RealtimeUsecSet:  true,
+		MonotonicUsec:    entry.Monotonic,
+		MonotonicUsecSet: true,
+		BootID:           entry.BootID,
+		Seqnum:           entry.Seqnum,
+	})
+	if err != nil {
+		return err
 	}
-	generatedBytes := int64(0)
-	if stat, err := os.Stat(finalPath); err == nil {
-		generatedBytes = stat.Size()
+	stats.records++
+	stats.payloads += uint64(len(entry.Payloads))
+	for _, payload := range entry.Payloads {
+		stats.payloadBytes += uint64(len(payload))
 	}
+	return nil
+}
+
+func regenerateOutput(
+	cfg regenerateConfig,
+	stats regenerateStats,
+	appendSeconds float64,
+	closeSeconds float64,
+	finalPath string,
+	fssStartUsec uint64,
+) map[string]interface{} {
 	result := map[string]interface{}{
 		"driver":                     "go",
-		"records":                    records,
-		"payloads":                   payloads,
-		"payload_bytes":              payloadBytes,
-		"input_bytes":                inputBytes,
-		"generated_bytes":            generatedBytes,
+		"records":                    stats.records,
+		"payloads":                   stats.payloads,
+		"payload_bytes":              stats.payloadBytes,
+		"input_bytes":                fileSize(cfg.input),
+		"generated_bytes":            fileSize(finalPath),
 		"generated_path":             finalPath,
-		"format":                     *format,
-		"compression":                *compressionName,
-		"fss":                        *fss,
+		"format":                     cfg.format,
+		"compression":                cfg.compressionName,
+		"fss":                        cfg.fss,
 		"fss_start_usec":             nil,
 		"fss_interval_usec":          nil,
-		"final_state":                *finalState,
+		"final_state":                cfg.finalState,
 		"append_seconds":             appendSeconds,
 		"close_seconds":              closeSeconds,
 		"total_writer_seconds":       appendSeconds + closeSeconds,
-		"live_publish_every_entries": *livePublishEveryEntries,
+		"live_publish_every_entries": cfg.livePublishEveryEntries,
 		"errors":                     []string{},
 	}
-	if *fss {
+	if cfg.fss {
 		result["fss_start_usec"] = fssStartUsec
-		result["fss_interval_usec"] = *fssIntervalUsec
+		result["fss_interval_usec"] = cfg.fssIntervalUsec
 	}
-	_ = json.NewEncoder(os.Stdout).Encode(result)
+	return result
+}
+
+func fileSize(path string) int64 {
+	if stat, err := os.Stat(path); err == nil {
+		return stat.Size()
+	}
+	return 0
 }

@@ -57,6 +57,20 @@ type benchResult struct {
 	Errors                  []string `json:"errors"`
 }
 
+type writerConfig struct {
+	output                  string
+	format                  string
+	finalState              string
+	surface                 string
+	maxSize                 uint64
+	rotationMaxSize         uint64
+	livePublishEveryEntries uint64
+	apiMode                 string
+	rows                    int
+	compact                 bool
+	dataHashBuckets         int
+}
+
 type benchRow struct {
 	Fields   []journal.Field
 	Payloads [][]byte
@@ -284,7 +298,7 @@ func runDirectory(
 	result.JournalSizeBytes = total
 }
 
-func main() {
+func parseWriterConfig() writerConfig {
 	var output string
 	var format string
 	var finalState string
@@ -306,82 +320,105 @@ func main() {
 	flag.Parse()
 
 	dataHashBuckets := dataHashBucketsForMaxSize(maxSize)
-	result := benchResult{
-		Records:                 0,
-		FieldsPerRow:            fieldsPerRow,
-		Surface:                 surface,
-		Format:                  format,
-		Compression:             "none",
-		FSS:                     false,
-		APIMode:                 apiMode,
-		DataHashBuckets:         dataHashBuckets,
-		FieldHashBuckets:        fieldHashBuckets,
-		MaxSizeBytes:            maxSize,
-		RotationMaxSizeBytes:    rotationMaxSize,
-		LivePublication:         livePublicationName(livePublishEveryEntries),
-		LivePublishEveryEntries: livePublishEveryEntries,
-		AppendTimerExcludes:     []string{"row generation", "writer creation", "final close/sync", "journal verification"},
-		FinalState:              finalState,
-		Errors:                  []string{},
+	return writerConfig{
+		output:                  output,
+		format:                  format,
+		finalState:              finalState,
+		surface:                 surface,
+		maxSize:                 maxSize,
+		rotationMaxSize:         rotationMaxSize,
+		livePublishEveryEntries: livePublishEveryEntries,
+		apiMode:                 apiMode,
+		rows:                    rows,
+		compact:                 format == "compact",
+		dataHashBuckets:         dataHashBuckets,
 	}
-	if output == "" {
-		result.Errors = append(result.Errors, "--output is required")
-		_ = json.NewEncoder(os.Stdout).Encode(result)
-		os.Exit(2)
-	}
-	compact := format == "compact"
-	if !compact && format != "regular" {
-		result.Errors = append(result.Errors, "invalid --format")
-		_ = json.NewEncoder(os.Stdout).Encode(result)
-		os.Exit(2)
-	}
-	if apiMode != "raw-payload" && apiMode != "structured-field" {
-		result.Errors = append(result.Errors, "invalid --api-mode")
-		_ = json.NewEncoder(os.Stdout).Encode(result)
-		os.Exit(2)
-	}
-	if surface != "direct" && surface != "directory" {
-		result.Errors = append(result.Errors, "invalid --surface")
-		_ = json.NewEncoder(os.Stdout).Encode(result)
-		os.Exit(2)
+}
+
+func main() {
+	cfg := parseWriterConfig()
+	result := newBenchResult(cfg)
+	if !validateWriterConfig(cfg, &result) {
+		writeBenchResultAndExit(result, 2)
 	}
 
 	precomputeStart := time.Now()
-	data := makeRows(rows)
+	data := makeRows(cfg.rows)
 	result.PrecomputeSeconds = time.Since(precomputeStart).Seconds()
 
-	if surface == "directory" {
-		runDirectory(&result, output, format, maxSize, rotationMaxSize, livePublishEveryEntries, apiMode, data)
-		_ = json.NewEncoder(os.Stdout).Encode(result)
-		if len(result.Errors) > 0 || result.Records != rows {
-			os.Exit(1)
-		}
+	if cfg.surface == "directory" {
+		runDirectory(&result, cfg.output, cfg.format, cfg.maxSize, cfg.rotationMaxSize, cfg.livePublishEveryEntries, cfg.apiMode, data)
+		writeBenchResult(result, cfg.rows)
 		return
 	}
 
-	if err := os.MkdirAll(filepath.Dir(output), 0o755); err != nil {
-		result.Errors = append(result.Errors, err.Error())
-		_ = json.NewEncoder(os.Stdout).Encode(result)
-		os.Exit(1)
+	runDirect(&result, cfg, data)
+	writeBenchResult(result, cfg.rows)
+}
+
+func newBenchResult(cfg writerConfig) benchResult {
+	return benchResult{
+		Records:                 0,
+		FieldsPerRow:            fieldsPerRow,
+		Surface:                 cfg.surface,
+		Format:                  cfg.format,
+		Compression:             "none",
+		FSS:                     false,
+		APIMode:                 cfg.apiMode,
+		DataHashBuckets:         cfg.dataHashBuckets,
+		FieldHashBuckets:        fieldHashBuckets,
+		MaxSizeBytes:            cfg.maxSize,
+		RotationMaxSizeBytes:    cfg.rotationMaxSize,
+		LivePublication:         livePublicationName(cfg.livePublishEveryEntries),
+		LivePublishEveryEntries: cfg.livePublishEveryEntries,
+		AppendTimerExcludes:     []string{"row generation", "writer creation", "final close/sync", "journal verification"},
+		FinalState:              cfg.finalState,
+		Errors:                  []string{},
 	}
-	_ = os.Remove(output)
-	w, err := journal.Create(output, journal.Options{
+}
+
+func validateWriterConfig(cfg writerConfig, result *benchResult) bool {
+	if cfg.output == "" {
+		result.Errors = append(result.Errors, "--output is required")
+		return false
+	}
+	if !cfg.compact && cfg.format != "regular" {
+		result.Errors = append(result.Errors, "invalid --format")
+		return false
+	}
+	if cfg.apiMode != "raw-payload" && cfg.apiMode != "structured-field" {
+		result.Errors = append(result.Errors, "invalid --api-mode")
+		return false
+	}
+	if cfg.surface != "direct" && cfg.surface != "directory" {
+		result.Errors = append(result.Errors, "invalid --surface")
+		return false
+	}
+	return true
+}
+
+func runDirect(result *benchResult, cfg writerConfig, data []benchRow) {
+	if err := os.MkdirAll(filepath.Dir(cfg.output), 0o755); err != nil {
+		result.Errors = append(result.Errors, err.Error())
+		return
+	}
+	_ = os.Remove(cfg.output)
+	w, err := journal.Create(cfg.output, journal.Options{
 		MachineID:               machineID,
 		BootID:                  bootID,
 		SeqnumID:                seqnumID,
 		FileID:                  fileID,
 		HeadSeqnum:              1,
-		DataHashTableBuckets:    dataHashBuckets,
+		DataHashTableBuckets:    cfg.dataHashBuckets,
 		FieldHashTableBuckets:   fieldHashBuckets,
 		Compression:             journal.CompressionNone,
 		CompressThresholdBytes:  512,
-		Compact:                 compact,
-		LivePublishEveryEntries: journal.PublishEveryEntries(livePublishEveryEntries),
+		Compact:                 cfg.compact,
+		LivePublishEveryEntries: journal.PublishEveryEntries(cfg.livePublishEveryEntries),
 	})
 	if err != nil {
 		result.Errors = append(result.Errors, err.Error())
-		_ = json.NewEncoder(os.Stdout).Encode(result)
-		os.Exit(1)
+		return
 	}
 
 	appendStart := time.Now()
@@ -394,7 +431,7 @@ func main() {
 			BootID:           bootID,
 		}
 		var err error
-		if apiMode == "raw-payload" {
+		if cfg.apiMode == "raw-payload" {
 			err = w.AppendRaw(row.Payloads, opts)
 		} else {
 			err = w.Append(row.Fields, opts)
@@ -411,7 +448,7 @@ func main() {
 	}
 
 	closeStart := time.Now()
-	journalPath, closeErr := closeWriter(w, output, finalState)
+	journalPath, closeErr := closeWriter(w, cfg.output, cfg.finalState)
 	result.CloseSeconds = time.Since(closeStart).Seconds()
 	result.TotalWriterSeconds = result.AppendSeconds + result.CloseSeconds
 	if closeErr != nil {
@@ -423,9 +460,16 @@ func main() {
 	} else {
 		result.Errors = append(result.Errors, err.Error())
 	}
+}
 
+func writeBenchResult(result benchResult, expectedRecords int) {
 	_ = json.NewEncoder(os.Stdout).Encode(result)
-	if len(result.Errors) > 0 || result.Records != rows {
+	if len(result.Errors) > 0 || result.Records != expectedRecords {
 		os.Exit(1)
 	}
+}
+
+func writeBenchResultAndExit(result benchResult, code int) {
+	_ = json.NewEncoder(os.Stdout).Encode(result)
+	os.Exit(code)
 }

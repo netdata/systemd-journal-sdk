@@ -53,9 +53,13 @@ Last updated: 2026-06-03
   made all remaining Node adapter, CLI, facade, benchmark, and testcmd files
   locally Lizard-clean, passed the Node package test suite, and reduced the
   refreshed local all-tracked-file Lizard inventory to 174 critical findings.
-  Node has no remaining critical Lizard findings. Remaining work is to
-  continue complexity remediation, record final scanner results, and complete
-  whole-SOW review.
+  Node has no remaining critical Lizard findings. Batch 17 made Go adapter and
+  internal command-tool files locally Lizard-clean, passed `go test ./...`, and
+  reduced the refreshed local all-tracked-file Lizard inventory to 160 critical
+  findings. Remaining critical findings are `go: 31`, `rust: 53`, and
+  `tests: 76`; Go findings are limited to `go/journal/*_test.go`. Remaining
+  work is to continue complexity remediation, record final scanner results, and
+  complete whole-SOW review.
 
 ## Pending
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -74,6 +75,22 @@ type Result struct {
 	Evidence     interface{} `json:"evidence,omitempty"`
 }
 
+type testHandler func(*TestCase) Result
+
+var adapterHandlers = map[string]testHandler{
+	"file-format":           runFileFormatTest,
+	"entry-parse":           runEntryParseTest,
+	"matching":              runMatchingTest,
+	"stream":                runStreamTest,
+	"cursor-navigation":     runCursorTest,
+	"enumeration":           runEnumerationTest,
+	"import-export":         runImportExportTest,
+	"journalctl-cli":        runJournalctlCliTest,
+	"compression":           runCompressionTest,
+	"corruption-resilience": runCorruptionTest,
+	"verification":          runVerificationTest,
+}
+
 func (r *Result) SetError(err error) {
 	r.Status = "ERROR"
 	r.Error = err.Error()
@@ -91,6 +108,14 @@ func (r *Result) SetFail(note string) {
 	}
 }
 
+func failResult(tc *TestCase, format string, err error) Result {
+	return Result{TestName: tc.TestName, ResultFormat: format, Status: "FAIL", Error: err.Error()}
+}
+
+func booleanFail(tc *TestCase, err error) Result {
+	return failResult(tc, "boolean", err)
+}
+
 func runAdapterRun(stdin io.Reader, stdout io.Writer) error {
 	var tc TestCase
 	if err := json.NewDecoder(stdin).Decode(&tc); err != nil {
@@ -103,30 +128,9 @@ func runAdapterRun(stdin io.Reader, stdout io.Writer) error {
 		ResultFormat: tc.Expected.ResultFormat,
 	}
 
-	switch tc.Category {
-	case "file-format":
-		result = runFileFormatTest(&tc)
-	case "entry-parse":
-		result = runEntryParseTest(&tc)
-	case "matching":
-		result = runMatchingTest(&tc)
-	case "stream":
-		result = runStreamTest(&tc)
-	case "cursor-navigation":
-		result = runCursorTest(&tc)
-	case "enumeration":
-		result = runEnumerationTest(&tc)
-	case "import-export":
-		result = runImportExportTest(&tc)
-	case "journalctl-cli":
-		result = runJournalctlCliTest(&tc)
-	case "compression":
-		result = runCompressionTest(&tc)
-	case "corruption-resilience":
-		result = runCorruptionTest(&tc)
-	case "verification":
-		result = runVerificationTest(&tc)
-	default:
+	if handler, ok := adapterHandlers[tc.Category]; ok {
+		result = handler(&tc)
+	} else {
 		result.Status = "SKIP"
 		result.Note = fmt.Sprintf("unsupported category: %s", tc.Category)
 	}
@@ -500,76 +504,22 @@ func parseJournalExport(data []byte) ([]map[string]string, error) {
 }
 
 func runComplexMatchTest(tc *TestCase) Result {
-	tmp, err := os.CreateTemp("", "go-journal-match-*.journal")
+	path, cleanup, err := createComplexMatchFixture()
 	if err != nil {
-		return Result{TestName: tc.TestName, ResultFormat: tc.Expected.ResultFormat, Status: "FAIL", Error: err.Error()}
+		return failResult(tc, tc.Expected.ResultFormat, err)
 	}
-	path := tmp.Name()
-	_ = tmp.Close()
-	defer os.Remove(path)
-
-	w, err := journal.Create(path, journal.Options{})
-	if err != nil {
-		return Result{TestName: tc.TestName, ResultFormat: tc.Expected.ResultFormat, Status: "FAIL", Error: err.Error()}
-	}
-	entries := [][]journal.Field{
-		{
-			journal.StringField("L3", "ok"),
-			journal.StringField("TWO", "two"),
-			journal.StringField("ONE", "one"),
-		},
-		{
-			journal.StringField("L4_1", "yes"),
-			journal.StringField("L4_2", "ok"),
-			journal.StringField("PIFF", "paff"),
-			journal.StringField("QUUX", "xxxxx"),
-			journal.StringField("HALLO", "WALDO"),
-			{Name: "B", Value: []byte{'C', 0, 'D'}},
-			{Name: "A", Value: []byte{1, 2}},
-		},
-		{
-			journal.StringField("L3", "ok"),
-		},
-		{
-			journal.StringField("TWO", "two"),
-			journal.StringField("ONE", "one"),
-		},
-	}
-	for _, fields := range entries {
-		if err := w.Append(fields, journal.EntryOptions{}); err != nil {
-			_ = w.Close()
-			return Result{TestName: tc.TestName, ResultFormat: tc.Expected.ResultFormat, Status: "FAIL", Error: err.Error()}
-		}
-	}
-	if err := w.Close(); err != nil {
-		return Result{TestName: tc.TestName, ResultFormat: tc.Expected.ResultFormat, Status: "FAIL", Error: err.Error()}
-	}
+	defer cleanup()
 
 	r, err := journal.OpenFile(path)
 	if err != nil {
-		return Result{TestName: tc.TestName, ResultFormat: tc.Expected.ResultFormat, Status: "FAIL", Error: err.Error()}
+		return failResult(tc, tc.Expected.ResultFormat, err)
 	}
 	defer r.Close()
 	addSystemdComplexMatchExpression(r)
 
-	var matched []map[string]string
-	for {
-		ok, err := r.Step()
-		if err != nil {
-			return Result{TestName: tc.TestName, ResultFormat: tc.Expected.ResultFormat, Status: "FAIL", Error: err.Error()}
-		}
-		if !ok {
-			break
-		}
-		entry, err := r.GetEntry()
-		if err != nil {
-			return Result{TestName: tc.TestName, ResultFormat: tc.Expected.ResultFormat, Status: "FAIL", Error: err.Error()}
-		}
-		fields := make(map[string]string)
-		for k, v := range entry.Fields {
-			fields[k] = string(v)
-		}
-		matched = append(matched, fields)
+	matched, err := collectMatchedEntries(r)
+	if err != nil {
+		return failResult(tc, tc.Expected.ResultFormat, err)
 	}
 	if len(matched) != 2 {
 		return Result{
@@ -586,6 +536,82 @@ func runComplexMatchTest(tc *TestCase) Result {
 		Status:       "PASS",
 		Actual:       matched,
 	}
+}
+
+func createComplexMatchFixture() (string, func(), error) {
+	tmp, err := os.CreateTemp("", "go-journal-match-*.journal")
+	if err != nil {
+		return "", nil, err
+	}
+	path := tmp.Name()
+	_ = tmp.Close()
+	cleanup := func() { _ = os.Remove(path) }
+	if err := writeComplexMatchFixture(path); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return path, cleanup, nil
+}
+
+func writeComplexMatchFixture(path string) error {
+	w, err := journal.Create(path, journal.Options{})
+	if err != nil {
+		return err
+	}
+	for _, fields := range complexMatchEntries() {
+		if err := w.Append(fields, journal.EntryOptions{}); err != nil {
+			_ = w.Close()
+			return err
+		}
+	}
+	return w.Close()
+}
+
+func complexMatchEntries() [][]journal.Field {
+	return [][]journal.Field{
+		{
+			journal.StringField("L3", "ok"),
+			journal.StringField("TWO", "two"),
+			journal.StringField("ONE", "one"),
+		},
+		{
+			journal.StringField("L4_1", "yes"),
+			journal.StringField("L4_2", "ok"),
+			journal.StringField("PIFF", "paff"),
+			journal.StringField("QUUX", "xxxxx"),
+			journal.StringField("HALLO", "WALDO"),
+			{Name: "B", Value: []byte{'C', 0, 'D'}},
+			{Name: "A", Value: []byte{1, 2}},
+		},
+		{journal.StringField("L3", "ok")},
+		{
+			journal.StringField("TWO", "two"),
+			journal.StringField("ONE", "one"),
+		},
+	}
+}
+
+func collectMatchedEntries(r *journal.Reader) ([]map[string]string, error) {
+	var matched []map[string]string
+	for {
+		ok, err := r.Step()
+		if err != nil || !ok {
+			return matched, err
+		}
+		entry, err := r.GetEntry()
+		if err != nil {
+			return nil, err
+		}
+		matched = append(matched, stringEntryFields(entry))
+	}
+}
+
+func stringEntryFields(entry *journal.Entry) map[string]string {
+	fields := make(map[string]string, len(entry.Fields))
+	for k, v := range entry.Fields {
+		fields[k] = string(v)
+	}
+	return fields
 }
 
 func addSystemdComplexMatchExpression(r interface {
@@ -695,64 +721,23 @@ func runCursorTest(tc *TestCase) Result {
 	}
 	defer r.Close()
 
-	if err := journal.SdJournalSeekHead(r); err != nil {
-		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
+	ops := cursorTestOps{
+		seekHead:    func() error { return journal.SdJournalSeekHead(r) },
+		next:        func() (int, error) { return journal.SdJournalNext(r) },
+		getCursor:   func() (string, error) { return journal.SdJournalGetCursor(r) },
+		testCursor:  func(cursor string) (bool, error) { return journal.SdJournalTestCursor(r, cursor) },
+		getRealtime: func() (uint64, error) { return journal.SdJournalGetRealtimeUsec(r) },
+		seekCursor:  func(cursor string) error { return journal.SdJournalSeekCursor(r, cursor) },
 	}
-	if n, err := journal.SdJournalNext(r); err != nil {
-		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
-	} else if n == 0 {
-		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: "cannot read first entry"}
-	}
-
-	cursor, err := journal.SdJournalGetCursor(r)
+	cursor, cursorRealtime, err := readFirstCursor(ops)
 	if err != nil {
-		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
+		return booleanFail(tc, err)
 	}
-
-	match, err := journal.SdJournalTestCursor(r, cursor)
-	if err != nil {
-		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
+	if err := checkCursorValidation(ops, cursor); err != nil {
+		return booleanFail(tc, err)
 	}
-	if !match {
-		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: "current cursor did not match"}
-	}
-	cursorRealtime, err := journal.SdJournalGetRealtimeUsec(r)
-	if err != nil {
-		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
-	}
-	invalidMatch, err := journal.SdJournalTestCursor(r, "invalid-cursor")
-	if err != nil {
-		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
-	}
-	if invalidMatch {
-		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: "invalid cursor matched current position"}
-	}
-	if err := journal.SdJournalSeekCursor(r, "invalid-cursor"); err == nil {
-		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: "invalid seek cursor was accepted"}
-	}
-	if err := journal.SdJournalSeekCursor(r, cursor); err != nil {
-		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
-	}
-	idx := strings.LastIndex(cursor, "n=")
-	if idx < 0 {
-		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: "cursor missing seqnum segment"}
-	}
-	if err := journal.SdJournalSeekCursor(r, cursor[:idx]+"n=999999"); err != nil {
-		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
-	}
-	missingMatch, err := journal.SdJournalTestCursor(r, cursor)
-	if err != nil {
-		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
-	}
-	if missingMatch {
-		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: "missing seek stayed on original cursor"}
-	}
-	missingRealtime, err := journal.SdJournalGetRealtimeUsec(r)
-	if err != nil {
-		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: err.Error()}
-	}
-	if missingRealtime < cursorRealtime {
-		return Result{TestName: tc.TestName, ResultFormat: "boolean", Status: "FAIL", Error: "missing seek moved before requested cursor"}
+	if err := checkMissingCursorSeek(ops, cursor, cursorRealtime); err != nil {
+		return booleanFail(tc, err)
 	}
 
 	return Result{
@@ -768,6 +753,80 @@ func runCursorTest(tc *TestCase) Result {
 			"missing_seek_position": true,
 		},
 	}
+}
+
+type cursorTestOps struct {
+	seekHead    func() error
+	next        func() (int, error)
+	getCursor   func() (string, error)
+	testCursor  func(string) (bool, error)
+	getRealtime func() (uint64, error)
+	seekCursor  func(string) error
+}
+
+func readFirstCursor(ops cursorTestOps) (string, uint64, error) {
+	if err := ops.seekHead(); err != nil {
+		return "", 0, err
+	}
+	n, err := ops.next()
+	if err != nil {
+		return "", 0, err
+	}
+	if n == 0 {
+		return "", 0, errors.New("cannot read first entry")
+	}
+	cursor, err := ops.getCursor()
+	if err != nil {
+		return "", 0, err
+	}
+	realtime, err := ops.getRealtime()
+	return cursor, realtime, err
+}
+
+func checkCursorValidation(ops cursorTestOps, cursor string) error {
+	match, err := ops.testCursor(cursor)
+	if err != nil {
+		return err
+	}
+	if !match {
+		return errors.New("current cursor did not match")
+	}
+	invalidMatch, err := ops.testCursor("invalid-cursor")
+	if err != nil {
+		return err
+	}
+	if invalidMatch {
+		return errors.New("invalid cursor matched current position")
+	}
+	if err := ops.seekCursor("invalid-cursor"); err == nil {
+		return errors.New("invalid seek cursor was accepted")
+	}
+	return ops.seekCursor(cursor)
+}
+
+func checkMissingCursorSeek(ops cursorTestOps, cursor string, cursorRealtime uint64) error {
+	idx := strings.LastIndex(cursor, "n=")
+	if idx < 0 {
+		return errors.New("cursor missing seqnum segment")
+	}
+	if err := ops.seekCursor(cursor[:idx] + "n=999999"); err != nil {
+		return err
+	}
+	missingMatch, err := ops.testCursor(cursor)
+	if err != nil {
+		return err
+	}
+	if missingMatch {
+		return errors.New("missing seek stayed on original cursor")
+	}
+	missingRealtime, err := ops.getRealtime()
+	if err != nil {
+		return err
+	}
+	if missingRealtime < cursorRealtime {
+		return errors.New("missing seek moved before requested cursor")
+	}
+	return nil
 }
 
 func runEnumerationTest(tc *TestCase) Result {

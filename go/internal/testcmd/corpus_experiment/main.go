@@ -47,6 +47,44 @@ type spoolEntry struct {
 	Payloads  [][]byte
 }
 
+type rawReadConfig struct {
+	path           string
+	access         string
+	hashMode       string
+	binaryStats    bool
+	separatorStats bool
+}
+
+type rawReadState struct {
+	counts rawCounts
+	hasher hash.Hash
+	lenBuf [8]byte
+}
+
+type writeSpoolConfig struct {
+	input                   string
+	output                  string
+	format                  string
+	compressionName         string
+	compression             int
+	fss                     bool
+	fssIntervalUsec         uint64
+	finalState              string
+	maxSize                 uint64
+	livePublishEveryEntries uint64
+	compact                 bool
+}
+
+type spoolWriteStats struct {
+	records       uint64
+	payloads      uint64
+	payloadBytes  uint64
+	parseSeconds  float64
+	createSeconds float64
+	appendSeconds float64
+	closeSeconds  float64
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		usageAndExit()
@@ -97,98 +135,139 @@ func rawRead(args []string) {
 }
 
 func rawReadOne(path, access, hashMode string, binaryStats bool, separatorStats bool) map[string]any {
+	cfg := rawReadConfig{path: path, access: access, hashMode: hashMode, binaryStats: binaryStats, separatorStats: separatorStats}
 	started := time.Now()
+	reader, errClass, err := openRawReader(cfg)
+	if err != nil {
+		return errorRow(path, errClass, err.Error())
+	}
+	defer reader.Close()
+	state, err := newRawReadState(hashMode)
+	if err != nil {
+		return errorRow(path, "invalid_hash", err.Error())
+	}
+	if errClass, err := scanRawReader(reader, cfg, &state); err != nil {
+		return errorRow(path, errClass, err.Error())
+	}
+	elapsed := time.Since(started).Seconds()
+	return rawReadResult(cfg, state, elapsed)
+}
+
+func openRawReader(cfg rawReadConfig) (*journal.Reader, string, error) {
 	opts := journal.DefaultReaderOptions().WithBounds(journal.ReaderBoundsSnapshot)
-	switch access {
+	switch cfg.access {
 	case "mmap":
 		opts = opts.WithAccessMode(journal.ReaderAccessMmap)
 	case "read-at":
 		opts = opts.WithAccessMode(journal.ReaderAccessReadAt)
 	default:
-		return errorRow(path, "invalid_access", fmt.Sprintf("invalid access %q", access))
+		return nil, "invalid_access", fmt.Errorf("invalid access %q", cfg.access)
 	}
-	reader, err := journal.OpenFileWithOptions(path, opts)
+	reader, err := journal.OpenFileWithOptions(cfg.path, opts)
 	if err != nil {
-		return errorRow(path, "open", err.Error())
+		return nil, "open", err
 	}
-	defer reader.Close()
 	if err := reader.SeekHead(); err != nil {
-		return errorRow(path, "seek", err.Error())
+		_ = reader.Close()
+		return nil, "seek", err
 	}
-	var hasher hash.Hash
+	return reader, "", nil
+}
+
+func newRawReadState(hashMode string) (rawReadState, error) {
+	var state rawReadState
 	switch hashMode {
 	case "none":
 	case "sha256":
-		hasher = sha256.New()
-		_, _ = hasher.Write([]byte(rawReaderMagic))
+		state.hasher = sha256.New()
+		_, _ = state.hasher.Write([]byte(rawReaderMagic))
 	default:
-		return errorRow(path, "invalid_hash", fmt.Sprintf("invalid hash mode %q", hashMode))
+		return state, fmt.Errorf("invalid hash mode %q", hashMode)
 	}
-	var counts rawCounts
-	var lenBuf [8]byte
+	return state, nil
+}
+
+func scanRawReader(reader *journal.Reader, cfg rawReadConfig, state *rawReadState) (string, error) {
 	for {
 		ok, err := reader.Step()
 		if err != nil {
-			return errorRow(path, "step", err.Error())
+			return "step", err
 		}
 		if !ok {
 			break
 		}
-		if hasher != nil {
-			_, _ = hasher.Write([]byte("E"))
-			binary.BigEndian.PutUint64(lenBuf[:], counts.Entries)
-			_, _ = hasher.Write(lenBuf[:])
-		}
+		markRawEntryStart(state)
 		err = reader.VisitEntryPayloads(func(payload []byte) error {
-			if hasher != nil {
-				_, _ = hasher.Write([]byte("P"))
-				binary.BigEndian.PutUint64(lenBuf[:], uint64(len(payload)))
-				_, _ = hasher.Write(lenBuf[:])
-				_, _ = hasher.Write(payload)
-			}
-			counts.Payloads++
-			counts.PayloadBytes += uint64(len(payload))
-			if uint64(len(payload)) > counts.LargestPayloadBytes {
-				counts.LargestPayloadBytes = uint64(len(payload))
-			}
-			if separatorStats && payloadName(payload) == nil {
-				counts.PayloadsWithoutSeparator++
-			}
-			if binaryStats && payloadHasBinary(payload) {
-				counts.BinaryPayloads++
-			}
+			addRawPayload(state, cfg, payload)
 			return nil
 		})
 		if err != nil {
-			return errorRow(path, "payload", err.Error())
+			return "payload", err
 		}
-		if hasher != nil {
-			_, _ = hasher.Write([]byte("e"))
-		}
-		counts.Entries++
+		markRawEntryEnd(state)
 	}
-	elapsed := time.Since(started).Seconds()
-	inputBytes := fileSize(path)
+	return "", nil
+}
+
+func markRawEntryStart(state *rawReadState) {
+	if state.hasher == nil {
+		return
+	}
+	_, _ = state.hasher.Write([]byte("E"))
+	binary.BigEndian.PutUint64(state.lenBuf[:], state.counts.Entries)
+	_, _ = state.hasher.Write(state.lenBuf[:])
+}
+
+func markRawEntryEnd(state *rawReadState) {
+	if state.hasher != nil {
+		_, _ = state.hasher.Write([]byte("e"))
+	}
+	state.counts.Entries++
+}
+
+func addRawPayload(state *rawReadState, cfg rawReadConfig, payload []byte) {
+	if state.hasher != nil {
+		_, _ = state.hasher.Write([]byte("P"))
+		binary.BigEndian.PutUint64(state.lenBuf[:], uint64(len(payload)))
+		_, _ = state.hasher.Write(state.lenBuf[:])
+		_, _ = state.hasher.Write(payload)
+	}
+	state.counts.Payloads++
+	state.counts.PayloadBytes += uint64(len(payload))
+	if uint64(len(payload)) > state.counts.LargestPayloadBytes {
+		state.counts.LargestPayloadBytes = uint64(len(payload))
+	}
+	if cfg.separatorStats && payloadName(payload) == nil {
+		state.counts.PayloadsWithoutSeparator++
+	}
+	if cfg.binaryStats && payloadHasBinary(payload) {
+		state.counts.BinaryPayloads++
+	}
+}
+
+func rawReadResult(cfg rawReadConfig, state rawReadState, elapsed float64) map[string]any {
+	counts := state.counts
+	inputBytes := fileSize(cfg.path)
 	var digest any
-	if hasher != nil {
-		digest = hex.EncodeToString(hasher.Sum(nil))
+	if state.hasher != nil {
+		digest = hex.EncodeToString(state.hasher.Sum(nil))
 	}
 	var binaryPayloads any
-	if binaryStats {
+	if cfg.binaryStats {
 		binaryPayloads = counts.BinaryPayloads
 	}
 	var payloadsWithoutEquals any
-	if separatorStats {
+	if cfg.separatorStats {
 		payloadsWithoutEquals = counts.PayloadsWithoutSeparator
 	}
 	return map[string]any{
 		"schema":                   rawReaderSchema,
 		"driver":                   "go",
 		"status":                   "ok",
-		"hash_mode":                hashMode,
-		"binary_stats":             binaryStats,
-		"separator_stats":          separatorStats,
-		"file_id":                  sanitizedFileID(path),
+		"hash_mode":                cfg.hashMode,
+		"binary_stats":             cfg.binaryStats,
+		"separator_stats":          cfg.separatorStats,
+		"file_id":                  sanitizedFileID(cfg.path),
 		"input_bytes":              inputBytes,
 		"entries":                  counts.Entries,
 		"payloads":                 counts.Payloads,
@@ -202,7 +281,7 @@ func rawReadOne(path, access, hashMode string, binaryStats bool, separatorStats 
 		"payloads_per_second":      rate(counts.Payloads, elapsed),
 		"payload_bytes_per_second": rate(counts.PayloadBytes, elapsed),
 		"input_bytes_per_second":   rate(uint64(inputBytes), elapsed),
-		"reader_path":              rawReaderPath(hashMode, binaryStats, separatorStats),
+		"reader_path":              rawReaderPath(cfg.hashMode, cfg.binaryStats, cfg.separatorStats),
 	}
 }
 
@@ -262,6 +341,53 @@ func dumpSpool(args []string) {
 }
 
 func writeSpool(args []string) {
+	cfg, err := parseWriteSpoolConfig(args)
+	if err != nil {
+		exitError(err)
+	}
+	in, closeInput, err := openInput(cfg.input)
+	if err != nil {
+		exitError(err)
+	}
+	defer closeInput()
+	parser := newSpoolParser(in)
+	parseStarted := time.Now()
+	first, ok, err := parser.next()
+	stats := spoolWriteStats{parseSeconds: time.Since(parseStarted).Seconds()}
+	if err != nil {
+		exitError(err)
+	}
+	if !ok {
+		exitError(errors.New("spool contains no entries"))
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg.output), 0o755); err != nil {
+		exitError(err)
+	}
+	_ = os.Remove(cfg.output)
+	createStarted := time.Now()
+	w, err := journal.Create(cfg.output, writeSpoolOptions(cfg, first))
+	stats.createSeconds = time.Since(createStarted).Seconds()
+	if err != nil {
+		exitError(err)
+	}
+	appendSpoolEntries(w, parser, first, &stats)
+	closeStarted := time.Now()
+	switch cfg.finalState {
+	case "offline":
+		err = w.CloseOffline()
+	case "online":
+		err = w.Close()
+	default:
+		err = fmt.Errorf("invalid --final-state: %s", cfg.finalState)
+	}
+	stats.closeSeconds = time.Since(closeStarted).Seconds()
+	if err != nil {
+		exitError(err)
+	}
+	_ = json.NewEncoder(os.Stdout).Encode(writeSpoolResult(cfg, stats))
+}
+
+func parseWriteSpoolConfig(args []string) (writeSpoolConfig, error) {
 	fs := flag.NewFlagSet("write-spool", flag.ExitOnError)
 	input := fs.String("input", "-", "spool input path or - for stdin")
 	output := fs.String("output", "", "journal output path")
@@ -274,144 +400,134 @@ func writeSpool(args []string) {
 	livePublishEveryEntries := fs.Uint64("live-publish-every-entries", 1, "live publication cadence")
 	_ = fs.Parse(args)
 	if *output == "" {
-		exitError(errors.New("--output is required"))
+		return writeSpoolConfig{}, errors.New("--output is required")
 	}
-	compact := false
-	switch *format {
-	case "regular":
-		compact = false
-	case "compact":
-		compact = true
-	default:
-		exitError(fmt.Errorf("invalid --format: %s", *format))
+	compact, err := parseFormat(*format)
+	if err != nil {
+		return writeSpoolConfig{}, err
 	}
 	compression, err := parseCompression(*compressionName)
 	if err != nil {
-		exitError(err)
+		return writeSpoolConfig{}, err
 	}
-	in, closeInput, err := openInput(*input)
-	if err != nil {
-		exitError(err)
+	return writeSpoolConfig{
+		input:                   *input,
+		output:                  *output,
+		format:                  *format,
+		compressionName:         *compressionName,
+		compression:             compression,
+		fss:                     *fss,
+		fssIntervalUsec:         *fssIntervalUsec,
+		finalState:              *finalState,
+		maxSize:                 *maxSize,
+		livePublishEveryEntries: *livePublishEveryEntries,
+		compact:                 compact,
+	}, nil
+}
+
+func parseFormat(format string) (bool, error) {
+	switch format {
+	case "regular":
+		return false, nil
+	case "compact":
+		return true, nil
+	default:
+		return false, fmt.Errorf("invalid --format: %s", format)
 	}
-	defer closeInput()
-	parser := newSpoolParser(in)
-	parseStarted := time.Now()
-	first, ok, err := parser.next()
-	parseSeconds := time.Since(parseStarted).Seconds()
-	if err != nil {
-		exitError(err)
-	}
-	if !ok {
-		exitError(errors.New("spool contains no entries"))
-	}
-	if err := os.MkdirAll(filepath.Dir(*output), 0o755); err != nil {
-		exitError(err)
-	}
-	_ = os.Remove(*output)
+}
+
+func writeSpoolOptions(cfg writeSpoolConfig, first spoolEntry) journal.Options {
 	bootID := first.BootID
 	if isZeroUUID(bootID) {
 		bootID = mustUUID("dddddddddddddddddddddddddddddddd")
 	}
-	writerOptions := journal.Options{
+	opts := journal.Options{
 		MachineID:               mustUUID("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 		BootID:                  bootID,
 		SeqnumID:                mustUUID("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
 		FileID:                  randomUUID(),
 		HeadSeqnum:              max(1, first.Seqnum),
-		MaxFileSize:             *maxSize,
-		DataHashTableBuckets:    dataHashBucketsForMaxSize(*maxSize),
+		MaxFileSize:             cfg.maxSize,
+		DataHashTableBuckets:    dataHashBucketsForMaxSize(cfg.maxSize),
 		FieldHashTableBuckets:   1023,
-		Compression:             compression,
+		Compression:             cfg.compression,
 		CompressThresholdBytes:  512,
-		Compact:                 compact,
-		LivePublishEveryEntries: journal.PublishEveryEntries(*livePublishEveryEntries),
+		Compact:                 cfg.compact,
+		LivePublishEveryEntries: journal.PublishEveryEntries(cfg.livePublishEveryEntries),
 		FieldNamePolicy:         journal.FieldNamePolicyRaw,
 	}
-	if *fss {
-		writerOptions.Seal = &journal.SealOptions{
+	if cfg.fss {
+		opts.Seal = &journal.SealOptions{
 			Seed:         make([]byte, 12),
-			IntervalUsec: *fssIntervalUsec,
-			StartUsec:    systemdFSSStartUsec(first.Realtime, *fssIntervalUsec),
+			IntervalUsec: cfg.fssIntervalUsec,
+			StartUsec:    systemdFSSStartUsec(first.Realtime, cfg.fssIntervalUsec),
 		}
 	}
-	createStarted := time.Now()
-	w, err := journal.Create(*output, writerOptions)
-	createSeconds := time.Since(createStarted).Seconds()
-	if err != nil {
-		exitError(err)
-	}
-	var records, payloads, payloadBytes uint64
-	var appendSeconds float64
-	appendOne := func(entry spoolEntry) {
-		started := time.Now()
-		err := w.AppendRaw(entry.Payloads, journal.EntryOptions{
-			RealtimeUsec:     entry.Realtime,
-			RealtimeUsecSet:  true,
-			MonotonicUsec:    entry.Monotonic,
-			MonotonicUsecSet: true,
-			BootID:           entry.BootID,
-			Seqnum:           entry.Seqnum,
-		})
-		appendSeconds += time.Since(started).Seconds()
-		if err != nil {
-			exitError(err)
-		}
-		records++
-		payloads += uint64(len(entry.Payloads))
-		for _, payload := range entry.Payloads {
-			payloadBytes += uint64(len(payload))
-		}
-	}
-	appendOne(first)
+	return opts
+}
+
+func appendSpoolEntries(w *journal.Writer, parser *spoolParser, first spoolEntry, stats *spoolWriteStats) {
+	appendSpoolEntry(w, first, stats)
 	for {
 		started := time.Now()
 		entry, ok, err := parser.next()
-		parseSeconds += time.Since(started).Seconds()
+		stats.parseSeconds += time.Since(started).Seconds()
 		if err != nil {
 			exitError(err)
 		}
 		if !ok {
 			break
 		}
-		appendOne(entry)
+		appendSpoolEntry(w, entry, stats)
 	}
-	closeStarted := time.Now()
-	switch *finalState {
-	case "offline":
-		err = w.CloseOffline()
-	case "online":
-		err = w.Close()
-	default:
-		err = fmt.Errorf("invalid --final-state: %s", *finalState)
-	}
-	closeSeconds := time.Since(closeStarted).Seconds()
+}
+
+func appendSpoolEntry(w *journal.Writer, entry spoolEntry, stats *spoolWriteStats) {
+	started := time.Now()
+	err := w.AppendRaw(entry.Payloads, journal.EntryOptions{
+		RealtimeUsec:     entry.Realtime,
+		RealtimeUsecSet:  true,
+		MonotonicUsec:    entry.Monotonic,
+		MonotonicUsecSet: true,
+		BootID:           entry.BootID,
+		Seqnum:           entry.Seqnum,
+	})
+	stats.appendSeconds += time.Since(started).Seconds()
 	if err != nil {
 		exitError(err)
 	}
-	total := parseSeconds + createSeconds + appendSeconds + closeSeconds
+	stats.records++
+	stats.payloads += uint64(len(entry.Payloads))
+	for _, payload := range entry.Payloads {
+		stats.payloadBytes += uint64(len(payload))
+	}
+}
+
+func writeSpoolResult(cfg writeSpoolConfig, stats spoolWriteStats) map[string]any {
+	total := stats.parseSeconds + stats.createSeconds + stats.appendSeconds + stats.closeSeconds
 	result := map[string]any{
 		"schema":                       spoolSchema,
 		"driver":                       "go",
 		"status":                       "ok",
-		"records":                      records,
-		"payloads":                     payloads,
-		"payload_bytes":                payloadBytes,
-		"generated_bytes":              fileSize(*output),
-		"format":                       *format,
-		"compression":                  *compressionName,
-		"fss":                          *fss,
-		"final_state":                  *finalState,
-		"parse_seconds":                parseSeconds,
-		"create_seconds":               createSeconds,
-		"append_seconds":               appendSeconds,
-		"close_seconds":                closeSeconds,
+		"records":                      stats.records,
+		"payloads":                     stats.payloads,
+		"payload_bytes":                stats.payloadBytes,
+		"generated_bytes":              fileSize(cfg.output),
+		"format":                       cfg.format,
+		"compression":                  cfg.compressionName,
+		"fss":                          cfg.fss,
+		"final_state":                  cfg.finalState,
+		"parse_seconds":                stats.parseSeconds,
+		"create_seconds":               stats.createSeconds,
+		"append_seconds":               stats.appendSeconds,
+		"close_seconds":                stats.closeSeconds,
 		"total_seconds":                total,
-		"append_entries_per_second":    rate(records, appendSeconds),
-		"total_entries_per_second":     rate(records, total),
-		"append_payloads_per_second":   rate(payloads, appendSeconds),
-		"append_payload_bytes_per_sec": rate(payloadBytes, appendSeconds),
+		"append_entries_per_second":    rate(stats.records, stats.appendSeconds),
+		"total_entries_per_second":     rate(stats.records, total),
+		"append_payloads_per_second":   rate(stats.payloads, stats.appendSeconds),
+		"append_payload_bytes_per_sec": rate(stats.payloadBytes, stats.appendSeconds),
 	}
-	_ = json.NewEncoder(os.Stdout).Encode(result)
+	return result
 }
 
 type spoolParser struct {
@@ -427,15 +543,9 @@ func (p *spoolParser) next() (spoolEntry, bool, error) {
 	for {
 		line, err := p.reader.ReadBytes('\n')
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				if len(entry.Payloads) > 0 {
-					return entry, true, nil
-				}
-				return spoolEntry{}, false, nil
-			}
-			return spoolEntry{}, false, err
+			return finishSpoolRead(entry, err)
 		}
-		if string(line) == "\n" {
+		if isEntrySeparator(line) {
 			if len(entry.Payloads) > 0 {
 				return entry, true, nil
 			}
@@ -444,55 +554,95 @@ func (p *spoolParser) next() (spoolEntry, bool, error) {
 		if len(line) == 0 || line[len(line)-1] != '\n' {
 			return spoolEntry{}, false, errors.New("truncated spool field line")
 		}
-		line = line[:len(line)-1]
-		var name, value []byte
-		if idx := bytesIndex(line, '='); idx >= 0 {
-			name = append([]byte(nil), line[:idx]...)
-			value = append([]byte(nil), line[idx+1:]...)
-		} else {
-			name = append([]byte(nil), line...)
-			sizeRaw := make([]byte, 8)
-			if _, err := io.ReadFull(p.reader, sizeRaw); err != nil {
-				return spoolEntry{}, false, err
-			}
-			size := binary.LittleEndian.Uint64(sizeRaw)
-			if size > 768*1024*1024 {
-				return spoolEntry{}, false, errors.New("spool field exceeds journal DATA size limit")
-			}
-			value = make([]byte, int(size))
-			if _, err := io.ReadFull(p.reader, value); err != nil {
-				return spoolEntry{}, false, err
-			}
-			trailer, err := p.reader.ReadByte()
-			if err != nil {
-				return spoolEntry{}, false, err
-			}
-			if trailer != '\n' {
-				return spoolEntry{}, false, errors.New("spool binary field missing newline trailer")
-			}
+		field, err := p.readSpoolField(line[:len(line)-1])
+		if err != nil {
+			return spoolEntry{}, false, err
 		}
-		if string(name) == "__REALTIME_TIMESTAMP" {
-			entry.Realtime = parseU64(value)
+		if applySpoolMetadata(&entry, field.name, field.value) {
 			continue
 		}
-		if string(name) == "__MONOTONIC_TIMESTAMP" {
-			entry.Monotonic = parseU64(value)
-			continue
-		}
-		if string(name) == "__SEQNUM" {
-			entry.Seqnum = parseU64(value)
-			continue
-		}
-		if string(name) == "__BOOT_ID" {
-			entry.BootID = mustUUID(string(value))
-			continue
-		}
-		payload := make([]byte, 0, len(name)+1+len(value))
-		payload = append(payload, name...)
-		payload = append(payload, '=')
-		payload = append(payload, value...)
-		entry.Payloads = append(entry.Payloads, payload)
+		entry.Payloads = append(entry.Payloads, makePayload(field.name, field.value))
 	}
+}
+
+type spoolField struct {
+	name  []byte
+	value []byte
+}
+
+func finishSpoolRead(entry spoolEntry, err error) (spoolEntry, bool, error) {
+	if errors.Is(err, io.EOF) && len(entry.Payloads) > 0 {
+		return entry, true, nil
+	}
+	if errors.Is(err, io.EOF) {
+		return spoolEntry{}, false, nil
+	}
+	return spoolEntry{}, false, err
+}
+
+func isEntrySeparator(line []byte) bool {
+	return string(line) == "\n"
+}
+
+func (p *spoolParser) readSpoolField(line []byte) (spoolField, error) {
+	if idx := bytesIndex(line, '='); idx >= 0 {
+		return spoolField{
+			name:  append([]byte(nil), line[:idx]...),
+			value: append([]byte(nil), line[idx+1:]...),
+		}, nil
+	}
+	value, err := p.readBinarySpoolValue()
+	if err != nil {
+		return spoolField{}, err
+	}
+	return spoolField{name: append([]byte(nil), line...), value: value}, nil
+}
+
+func (p *spoolParser) readBinarySpoolValue() ([]byte, error) {
+	sizeRaw := make([]byte, 8)
+	if _, err := io.ReadFull(p.reader, sizeRaw); err != nil {
+		return nil, err
+	}
+	size := binary.LittleEndian.Uint64(sizeRaw)
+	if size > 768*1024*1024 {
+		return nil, errors.New("spool field exceeds journal DATA size limit")
+	}
+	value := make([]byte, int(size))
+	if _, err := io.ReadFull(p.reader, value); err != nil {
+		return nil, err
+	}
+	trailer, err := p.reader.ReadByte()
+	if err != nil {
+		return nil, err
+	}
+	if trailer != '\n' {
+		return nil, errors.New("spool binary field missing newline trailer")
+	}
+	return value, nil
+}
+
+func applySpoolMetadata(entry *spoolEntry, name, value []byte) bool {
+	switch string(name) {
+	case "__REALTIME_TIMESTAMP":
+		entry.Realtime = parseU64(value)
+	case "__MONOTONIC_TIMESTAMP":
+		entry.Monotonic = parseU64(value)
+	case "__SEQNUM":
+		entry.Seqnum = parseU64(value)
+	case "__BOOT_ID":
+		entry.BootID = mustUUID(string(value))
+	default:
+		return false
+	}
+	return true
+}
+
+func makePayload(name, value []byte) []byte {
+	payload := make([]byte, 0, len(name)+1+len(value))
+	payload = append(payload, name...)
+	payload = append(payload, '=')
+	payload = append(payload, value...)
+	return payload
 }
 
 func inputPaths(input, directory string, limit int) ([]string, error) {

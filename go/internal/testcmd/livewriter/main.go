@@ -10,7 +10,41 @@ import (
 	"github.com/netdata/systemd-journal-sdk/go/journal"
 )
 
+type liveConfig struct {
+	path              string
+	readyFile         string
+	entries           int
+	delay             time.Duration
+	syncEvery         int
+	crashAfter        int
+	binaryFixture     bool
+	zstdFixture       bool
+	xzFixture         bool
+	lz4Fixture        bool
+	compact           bool
+	compression       int
+	compressThreshold int
+	seal              bool
+	sealIntervalUsec  uint64
+	sealStartUsec     uint64
+}
+
 func main() {
+	cfg := parseLiveConfig()
+	lock, err := journal.AcquireWriterLock(cfg.path)
+	if err != nil {
+		exitWithError("acquire writer lock", err)
+	}
+	defer releaseLock(lock)
+
+	w, err := journal.Create(cfg.path, liveOptions(cfg))
+	if err != nil {
+		exitWithError("create journal", err)
+	}
+	appendLiveEntries(w, cfg)
+}
+
+func parseLiveConfig() liveConfig {
 	var path string
 	var readyFile string
 	var entries int
@@ -50,153 +84,184 @@ func main() {
 		fmt.Fprintln(os.Stderr, "path, ready-file, and positive entries are required")
 		os.Exit(2)
 	}
-
 	delay, err := time.ParseDuration(delayText)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid delay: %v\n", err)
 		os.Exit(2)
 	}
-
-	compression := journal.CompressionNone
-	switch compressionStr {
-	case "none":
-	case "zstd":
-		compression = journal.CompressionZSTD
-	case "xz":
-		compression = journal.CompressionXZ
-	case "lz4":
-		compression = journal.CompressionLZ4
-	default:
-		fmt.Fprintf(os.Stderr, "unknown compression: %s\n", compressionStr)
+	compression, err := parseCompression(compressionStr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-
-	lock, err := journal.AcquireWriterLock(path)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "acquire writer lock: %v\n", err)
-		os.Exit(1)
+	if seal && (sealIntervalUsec == 0 || sealStartUsec == 0) {
+		fmt.Fprintln(os.Stderr, "seal interval and start must be positive")
+		os.Exit(2)
 	}
-	defer func() {
-		if err := lock.Release(); err != nil {
-			fmt.Fprintf(os.Stderr, "release writer lock: %v\n", err)
-		}
-	}()
+	return liveConfig{
+		path:              path,
+		readyFile:         readyFile,
+		entries:           entries,
+		delay:             delay,
+		syncEvery:         syncEvery,
+		crashAfter:        crashAfter,
+		binaryFixture:     binaryFixture,
+		zstdFixture:       zstdFixture,
+		xzFixture:         xzFixture,
+		lz4Fixture:        lz4Fixture,
+		compact:           compact,
+		compression:       compression,
+		compressThreshold: compressThreshold,
+		seal:              seal,
+		sealIntervalUsec:  sealIntervalUsec,
+		sealStartUsec:     sealStartUsec,
+	}
+}
 
-	opts := journal.Options{Compression: compression, CompressThresholdBytes: compressThreshold, Compact: compact}
-	if seal {
-		if sealIntervalUsec == 0 || sealStartUsec == 0 {
-			fmt.Fprintln(os.Stderr, "seal interval and start must be positive")
-			os.Exit(2)
-		}
+func parseCompression(value string) (int, error) {
+	switch value {
+	case "none":
+		return journal.CompressionNone, nil
+	case "zstd":
+		return journal.CompressionZSTD, nil
+	case "xz":
+		return journal.CompressionXZ, nil
+	case "lz4":
+		return journal.CompressionLZ4, nil
+	default:
+		return journal.CompressionNone, fmt.Errorf("unknown compression: %s", value)
+	}
+}
+
+func releaseLock(lock *journal.WriterLock) {
+	if err := lock.Release(); err != nil {
+		fmt.Fprintf(os.Stderr, "release writer lock: %v\n", err)
+	}
+}
+
+func liveOptions(cfg liveConfig) journal.Options {
+	opts := journal.Options{
+		Compression:            cfg.compression,
+		CompressThresholdBytes: cfg.compressThreshold,
+		Compact:                cfg.compact,
+	}
+	if cfg.seal {
 		opts.Seal = &journal.SealOptions{
 			Seed:         make([]byte, 12),
-			IntervalUsec: sealIntervalUsec,
-			StartUsec:    sealStartUsec,
+			IntervalUsec: cfg.sealIntervalUsec,
+			StartUsec:    cfg.sealStartUsec,
 		}
 	}
-	w, err := journal.Create(path, opts)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "create journal: %v\n", err)
-		os.Exit(1)
-	}
+	return opts
+}
 
+func appendLiveEntries(w *journal.Writer, cfg liveConfig) {
 	const realtimeBase = uint64(1_700_001_000_000_000)
-	for i := 0; i < entries; i++ {
-		fields := []journal.Field{
-			journal.StringField("MESSAGE", fmt.Sprintf("live-%06d", i)),
-			journal.StringField("PRIORITY", "6"),
-			journal.StringField("SYSLOG_IDENTIFIER", "go-live-writer"),
-			journal.StringField("LIVE_SEQ", fmt.Sprintf("%06d", i)),
-		}
-		if binaryFixture && i == 0 {
-			fields = []journal.Field{
-				journal.StringField("TEST_ID", "binary-interoperability"),
-				journal.StringField("MESSAGE", "binary interoperability"),
-				journal.StringField("PRIORITY", "6"),
-				journal.StringField("LIVE_SEQ", "000000"),
-				{Name: "BINARY_PAYLOAD", Value: []byte{0x00, 0x01, 0x02, 'A', '\n', 0x7f, 0x80, 0xff}},
-				{Name: "BINARY_MATCH", Value: []byte{'a', 'b', 'c', 0x07, 'd', 'e', 'f'}},
-				{Name: "BINARY_EMPTY", Value: []byte{}},
-				{Name: "BINARY_COMPRESSIBLE", Value: bytes.Repeat([]byte("A"), 256)},
-			}
-		} else if zstdFixture && i == 0 {
-			largePayload := make([]byte, 256)
-			for j := range largePayload {
-				largePayload[j] = byte(j%26 + 'A')
-			}
-			fields = []journal.Field{
-				journal.StringField("TEST_ID", "zstd-interoperability"),
-				journal.StringField("MESSAGE", "zstd interoperability"),
-				journal.StringField("PRIORITY", "6"),
-				journal.StringField("LIVE_SEQ", "000000"),
-				{Name: "COMPRESSED_PAYLOAD", Value: largePayload},
-				{Name: "COMPRESSED_MATCH", Value: largePayload[:32]},
-			}
-		} else if xzFixture && i == 0 {
-			largePayload := make([]byte, 256)
-			for j := range largePayload {
-				largePayload[j] = byte(j%26 + 'A')
-			}
-			fields = []journal.Field{
-				journal.StringField("TEST_ID", "xz-interoperability"),
-				journal.StringField("MESSAGE", "xz interoperability"),
-				journal.StringField("PRIORITY", "6"),
-				journal.StringField("LIVE_SEQ", "000000"),
-				{Name: "COMPRESSED_PAYLOAD", Value: largePayload},
-				{Name: "COMPRESSED_MATCH", Value: largePayload[:32]},
-			}
-		} else if lz4Fixture && i == 0 {
-			largePayload := make([]byte, 256)
-			for j := range largePayload {
-				largePayload[j] = byte(j%26 + 'A')
-			}
-			fields = []journal.Field{
-				journal.StringField("TEST_ID", "lz4-interoperability"),
-				journal.StringField("MESSAGE", "lz4 interoperability"),
-				journal.StringField("PRIORITY", "6"),
-				journal.StringField("LIVE_SEQ", "000000"),
-				{Name: "COMPRESSED_PAYLOAD", Value: largePayload},
-				{Name: "COMPRESSED_MATCH", Value: largePayload[:32]},
-			}
-		}
+	for i := 0; i < cfg.entries; i++ {
+		fields := liveFields(i, cfg)
 		if err := w.Append(fields, journal.EntryOptions{
 			RealtimeUsec:  realtimeBase + uint64(i),
 			MonotonicUsec: uint64(i + 1),
 		}); err != nil {
-			fmt.Fprintf(os.Stderr, "append %d: %v\n", i, err)
 			_ = w.Close()
-			os.Exit(1)
+			exitWithError(fmt.Sprintf("append %d", i), err)
 		}
 
-		if i == 0 {
-			if err := w.Sync(); err != nil {
-				fmt.Fprintf(os.Stderr, "sync first entry: %v\n", err)
-				_ = w.Close()
-				os.Exit(1)
-			}
-			if err := os.WriteFile(readyFile, []byte("ready\n"), 0o600); err != nil {
-				fmt.Fprintf(os.Stderr, "write ready file: %v\n", err)
-				_ = w.Close()
-				os.Exit(1)
-			}
-		} else if syncEvery > 0 && (i+1)%syncEvery == 0 {
-			if err := w.Sync(); err != nil {
-				fmt.Fprintf(os.Stderr, "sync %d: %v\n", i, err)
-				_ = w.Close()
-				os.Exit(1)
-			}
-		}
-
-		if crashAfter > 0 && i+1 >= crashAfter {
+		syncLiveEntry(w, cfg, i)
+		if cfg.crashAfter > 0 && i+1 >= cfg.crashAfter {
 			os.Exit(17)
 		}
-		if delay > 0 {
-			time.Sleep(delay)
+		if cfg.delay > 0 {
+			time.Sleep(cfg.delay)
 		}
 	}
 
 	if err := w.Close(); err != nil {
-		fmt.Fprintf(os.Stderr, "close journal: %v\n", err)
-		os.Exit(1)
+		exitWithError("close journal", err)
 	}
+}
+
+func liveFields(index int, cfg liveConfig) []journal.Field {
+	if index != 0 {
+		return defaultLiveFields(index)
+	}
+	switch {
+	case cfg.binaryFixture:
+		return binaryFixtureFields()
+	case cfg.zstdFixture:
+		return compressedFixtureFields("zstd")
+	case cfg.xzFixture:
+		return compressedFixtureFields("xz")
+	case cfg.lz4Fixture:
+		return compressedFixtureFields("lz4")
+	default:
+		return defaultLiveFields(index)
+	}
+}
+
+func defaultLiveFields(index int) []journal.Field {
+	return []journal.Field{
+		journal.StringField("MESSAGE", fmt.Sprintf("live-%06d", index)),
+		journal.StringField("PRIORITY", "6"),
+		journal.StringField("SYSLOG_IDENTIFIER", "go-live-writer"),
+		journal.StringField("LIVE_SEQ", fmt.Sprintf("%06d", index)),
+	}
+}
+
+func binaryFixtureFields() []journal.Field {
+	return []journal.Field{
+		journal.StringField("TEST_ID", "binary-interoperability"),
+		journal.StringField("MESSAGE", "binary interoperability"),
+		journal.StringField("PRIORITY", "6"),
+		journal.StringField("LIVE_SEQ", "000000"),
+		{Name: "BINARY_PAYLOAD", Value: []byte{0x00, 0x01, 0x02, 'A', '\n', 0x7f, 0x80, 0xff}},
+		{Name: "BINARY_MATCH", Value: []byte{'a', 'b', 'c', 0x07, 'd', 'e', 'f'}},
+		{Name: "BINARY_EMPTY", Value: []byte{}},
+		{Name: "BINARY_COMPRESSIBLE", Value: bytes.Repeat([]byte("A"), 256)},
+	}
+}
+
+func compressedFixtureFields(name string) []journal.Field {
+	largePayload := makeCompressedPayload()
+	return []journal.Field{
+		journal.StringField("TEST_ID", name+"-interoperability"),
+		journal.StringField("MESSAGE", name+" interoperability"),
+		journal.StringField("PRIORITY", "6"),
+		journal.StringField("LIVE_SEQ", "000000"),
+		{Name: "COMPRESSED_PAYLOAD", Value: largePayload},
+		{Name: "COMPRESSED_MATCH", Value: largePayload[:32]},
+	}
+}
+
+func makeCompressedPayload() []byte {
+	largePayload := make([]byte, 256)
+	for i := range largePayload {
+		largePayload[i] = byte(i%26 + 'A')
+	}
+	return largePayload
+}
+
+func syncLiveEntry(w *journal.Writer, cfg liveConfig, index int) {
+	if index == 0 {
+		if err := w.Sync(); err != nil {
+			_ = w.Close()
+			exitWithError("sync first entry", err)
+		}
+		if err := os.WriteFile(cfg.readyFile, []byte("ready\n"), 0o600); err != nil {
+			_ = w.Close()
+			exitWithError("write ready file", err)
+		}
+		return
+	}
+	if cfg.syncEvery > 0 && (index+1)%cfg.syncEvery == 0 {
+		if err := w.Sync(); err != nil {
+			_ = w.Close()
+			exitWithError(fmt.Sprintf("sync %d", index), err)
+		}
+	}
+}
+
+func exitWithError(context string, err error) {
+	fmt.Fprintf(os.Stderr, "%s: %v\n", context, err)
+	os.Exit(1)
 }

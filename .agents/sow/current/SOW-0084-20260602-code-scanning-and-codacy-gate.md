@@ -1556,6 +1556,49 @@ Complexity remediation evidence:
   - Refreshed local all-tracked-file Lizard inventory now reports 174 critical
     findings, down from 186 after Batch 15. Node has no remaining critical
     Lizard findings.
+- Batch 17, Go adapter and internal command-tool findings:
+  - Refactored `go/adapter/main.go` adapter category dispatch plus complex
+    match and cursor conformance tests into fixture, collection, cursor
+    validation, and missing-cursor helpers without changing JSON result shape,
+    evidence fields, or libsystemd-facade behavior.
+  - Refactored `go/internal/testcmd/livewriter/main.go` into flag parsing,
+    compression parsing, writer-option construction, fixture field generation,
+    append/sync control, and lock-release helpers without changing live writer
+    flags, fixture payloads, or crash/ready-file behavior.
+  - Refactored `go/internal/testcmd/reader_core_bench/main.go` into config,
+    SDK/facade open/seek/step helpers, mode-specific counters, loop execution,
+    memory-profile output, and JSON result construction without changing
+    benchmark modes or output keys.
+  - Refactored `go/internal/testcmd/writer_core_bench/main.go` into config,
+    result construction, validation, direct-writer execution, and result
+    emission without changing benchmark modes, fixed identities, timer
+    exclusions, or JSON result keys.
+  - Refactored `go/internal/testcmd/corpus_experiment/main.go` raw-read,
+    write-spool, and spool-parser paths into access/hash setup, raw counter
+    helpers, writer option/timing helpers, binary/text spool field parsing,
+    and metadata handling while preserving raw-read error classes and spool
+    output schema.
+  - Refactored `go/internal/testcmd/corpus_regenerate/main.go` into config,
+    input-open, first-entry metadata, writer construction, append accounting,
+    close, and JSON result helpers without changing regeneration output keys
+    or deterministic synthetic identity values.
+  - Refactored `go/internal/testcmd/dataset_ingester/main.go` accepted and
+    rejection JSONL handlers into record-level materialization, append, writer
+    creation, and result-accounting helpers without changing accepted/rejected
+    corpus semantics.
+  - `gofmt` ran on all touched Go files.
+  - `go test ./...` in `go/` passed.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for
+    `go/adapter/main.go`, `go/internal/testcmd/livewriter/main.go`,
+    `go/internal/testcmd/reader_core_bench/main.go`,
+    `go/internal/testcmd/writer_core_bench/main.go`,
+    `go/internal/testcmd/corpus_experiment/main.go`,
+    `go/internal/testcmd/corpus_regenerate/main.go`, and
+    `go/internal/testcmd/dataset_ingester/main.go`.
+  - Refreshed local all-tracked-file Lizard inventory now reports 160 critical
+    findings, down from 174 after Batch 16. Remaining critical findings are
+    `go: 31`, `rust: 53`, and `tests: 76`; Go findings are now limited to
+    `go/journal/*_test.go`.
 
 Reviewer findings:
 
