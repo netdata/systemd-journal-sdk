@@ -2084,54 +2084,73 @@ fn test_different_boot_does_not_seed_monotonic_clamp_from_previous_tail() {
     let machine_id = uuid::Uuid::parse_str("00112233445566778899aabbccddeeff").unwrap();
     let boot_a = uuid::Uuid::parse_str("aa000000000000000000000000000001").unwrap();
     let boot_b = uuid::Uuid::parse_str("bb000000000000000000000000000002").unwrap();
+
+    write_cross_boot_monotonic_entry(
+        &dir,
+        machine_id,
+        boot_a,
+        b"MESSAGE=cross boot first",
+        1_700_003_100_000_000,
+        100,
+    );
+    write_cross_boot_monotonic_entry(
+        &dir,
+        machine_id,
+        boot_b,
+        b"MESSAGE=cross boot second",
+        1_700_003_100_000_001,
+        1,
+    );
+
+    let mut rows = read_cross_boot_monotonic_rows(&dir, machine_id);
+    rows.sort_by_key(|row| parse_u64_field(row, "__REALTIME_TIMESTAMP").unwrap_or(0));
+    assert_eq!(rows.len(), 2, "expected two cross-boot rows");
+    assert_cross_boot_monotonic_values(&rows, boot_a, boot_b);
+}
+
+fn write_cross_boot_monotonic_entry(
+    dir: &TempDir,
+    machine_id: uuid::Uuid,
+    boot_id: uuid::Uuid,
+    message: &'static [u8],
+    realtime: u64,
+    monotonic: u64,
+) {
     let origin = Origin {
         machine_id: Some(machine_id),
         namespace: None,
         source: journal_registry::Source::System,
     };
+    let config = Config::new(
+        origin,
+        RotationPolicy::default(),
+        RetentionPolicy::default(),
+    )
+    .with_identity_mode(LogIdentityMode::Strict)
+    .with_boot_id(boot_id);
+    let mut log = Log::new(dir.path(), config).unwrap();
+    let entry = [message, b"TEST_ID=cross-boot-monotonic"];
+    let ts = EntryTimestamps::default()
+        .with_entry_realtime_usec(realtime)
+        .with_entry_monotonic_usec(monotonic);
+    log.write_entry_with_timestamps(&entry, ts).unwrap();
+    log.sync().unwrap();
+}
 
-    {
-        let config = Config::new(
-            origin.clone(),
-            RotationPolicy::default(),
-            RetentionPolicy::default(),
-        )
-        .with_identity_mode(LogIdentityMode::Strict)
-        .with_boot_id(boot_a);
-        let mut log = Log::new(dir.path(), config).unwrap();
-        let first = [
-            b"MESSAGE=cross boot first" as &[u8],
-            b"TEST_ID=cross-boot-monotonic",
-        ];
-        let ts = EntryTimestamps::default()
-            .with_entry_realtime_usec(1_700_003_100_000_000)
-            .with_entry_monotonic_usec(100);
-        log.write_entry_with_timestamps(&first, ts).unwrap();
-        log.sync().unwrap();
-    }
-
-    {
-        let config = Config::new(
-            origin.clone(),
-            RotationPolicy::default(),
-            RetentionPolicy::default(),
-        )
-        .with_identity_mode(LogIdentityMode::Strict)
-        .with_boot_id(boot_b);
-        let mut log = Log::new(dir.path(), config).unwrap();
-        let second = [
-            b"MESSAGE=cross boot second" as &[u8],
-            b"TEST_ID=cross-boot-monotonic",
-        ];
-        let ts = EntryTimestamps::default()
-            .with_entry_realtime_usec(1_700_003_100_000_001)
-            .with_entry_monotonic_usec(1);
-        log.write_entry_with_timestamps(&second, ts).unwrap();
-        log.sync().unwrap();
-    }
-
+fn read_cross_boot_monotonic_rows(dir: &TempDir, machine_id: uuid::Uuid) -> Vec<serde_json::Value> {
     let journal_dir = dir.path().join(machine_id.as_simple().to_string());
-    let mut paths: Vec<_> = fs::read_dir(&journal_dir)
+    let mut rows = Vec::new();
+    for path in sorted_journal_paths(&journal_dir) {
+        verify_journalctl_file(&path);
+        rows.extend(read_journal_json(&path).into_iter().filter(|row| {
+            row.get("TEST_ID").and_then(|v| v.as_str()) == Some("cross-boot-monotonic")
+        }));
+    }
+    rows
+}
+
+fn sorted_journal_paths(journal_dir: &Path) -> Vec<PathBuf> {
+    let mut paths: Vec<_> = fs::read_dir(journal_dir)
         .unwrap()
         .filter_map(|e| e.ok())
         .filter(|e| {
@@ -2144,17 +2163,14 @@ fn test_different_boot_does_not_seed_monotonic_clamp_from_previous_tail() {
         .map(|e| e.path())
         .collect();
     paths.sort();
+    paths
+}
 
-    let mut rows = Vec::new();
-    for path in &paths {
-        verify_journalctl_file(path);
-        rows.extend(read_journal_json(path).into_iter().filter(|row| {
-            row.get("TEST_ID").and_then(|v| v.as_str()) == Some("cross-boot-monotonic")
-        }));
-    }
-    rows.sort_by_key(|row| parse_u64_field(row, "__REALTIME_TIMESTAMP").unwrap_or(0));
-    assert_eq!(rows.len(), 2, "expected two cross-boot rows");
-
+fn assert_cross_boot_monotonic_values(
+    rows: &[serde_json::Value],
+    boot_a: uuid::Uuid,
+    boot_b: uuid::Uuid,
+) {
     let monotonics: Vec<_> = rows
         .iter()
         .map(|row| parse_u64_field(row, "__MONOTONIC_TIMESTAMP").unwrap())

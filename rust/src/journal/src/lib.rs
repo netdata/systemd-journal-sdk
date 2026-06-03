@@ -3590,71 +3590,83 @@ mod tests {
 
         let mut journal =
             SdJournalOpenFiles(&[path.to_str().expect("utf8 path")], 0).expect("open files");
-        assert_eq!(SdJournalNext(&mut journal).expect("next"), 1);
-        let (seqnum, seqnum_id) = SdJournalGetSeqnum(&mut journal).expect("seqnum");
+        assert_stateful_facade_current_entry(&mut journal);
+        assert_stateful_facade_data_enumeration(&mut journal);
+        assert_stateful_facade_unique_and_field_enumeration(&mut journal);
+        assert_stateful_facade_cursor_navigation(&mut journal);
+        assert_stateful_facade_multi_file_navigation(&dir, &path);
+        assert_stateful_facade_match_cache_invalidation(&dir, &path);
+    }
+
+    fn assert_stateful_facade_current_entry(journal: &mut SdJournal) {
+        assert_eq!(SdJournalNext(journal).expect("next"), 1);
+        let (seqnum, seqnum_id) = SdJournalGetSeqnum(journal).expect("seqnum");
         assert_eq!(seqnum, 1);
         assert_ne!(seqnum_id, [0; 16]);
-        let (monotonic, boot_id) = SdJournalGetMonotonicUsec(&mut journal).expect("monotonic");
+        let (monotonic, boot_id) = SdJournalGetMonotonicUsec(journal).expect("monotonic");
         assert_eq!(monotonic, 11);
         assert_ne!(boot_id, [0; 16]);
 
-        SdJournalRestartData(&mut journal).expect("restart data for interleaved calls");
-        let first_payload = SdJournalEnumerateAvailableData(&mut journal)
+        SdJournalRestartData(journal).expect("restart data for interleaved calls");
+        let first_payload = SdJournalEnumerateAvailableData(journal)
             .expect("enumerate first data")
             .expect("first data exists");
         assert!(!first_payload.is_empty());
         assert_eq!(
-            SdJournalGetRealtimeUsec(&journal).expect("interleaved realtime"),
+            SdJournalGetRealtimeUsec(journal).expect("interleaved realtime"),
             1000
         );
         assert!(
-            !SdJournalGetCursor(&journal)
+            !SdJournalGetCursor(journal)
                 .expect("interleaved cursor")
                 .is_empty()
         );
         assert_eq!(
-            SdJournalGetData(&mut journal, "REPEAT").expect("interleaved get data"),
+            SdJournalGetData(journal, "REPEAT").expect("interleaved get data"),
             b"REPEAT=one"
         );
         assert_eq!(
-            SdJournalGetEntry(&mut journal)
+            SdJournalGetEntry(journal)
                 .expect("interleaved get entry")
                 .get_str("MESSAGE"),
             Some("first")
         );
+    }
 
-        SdJournalRestartData(&mut journal).expect("restart data");
+    fn assert_stateful_facade_data_enumeration(journal: &mut SdJournal) {
+        SdJournalRestartData(journal).expect("restart data");
         let mut payloads = Vec::new();
-        while let Some(payload) =
-            SdJournalEnumerateAvailableData(&mut journal).expect("enumerate data")
+        while let Some(payload) = SdJournalEnumerateAvailableData(journal).expect("enumerate data")
         {
             payloads.push(payload.to_vec());
         }
         assert!(payloads.iter().any(|payload| payload == b"REPEAT=one"));
         assert!(payloads.iter().any(|payload| payload == b"REPEAT=two"));
         assert!(payloads.iter().any(|payload| payload == b"BIN=\x00\xff"));
-        SdJournalRestartData(&mut journal).expect("restart data again");
+        SdJournalRestartData(journal).expect("restart data again");
         let mut restarted_payloads = Vec::new();
         while let Some(payload) =
-            SdJournalEnumerateAvailableData(&mut journal).expect("enumerate restarted data")
+            SdJournalEnumerateAvailableData(journal).expect("enumerate restarted data")
         {
             restarted_payloads.push(payload.to_vec());
         }
         assert_eq!(payloads, restarted_payloads);
         assert_eq!(
-            SdJournalGetData(&mut journal, "REPEAT").expect("get data"),
+            SdJournalGetData(journal, "REPEAT").expect("get data"),
             b"REPEAT=one"
         );
+    }
 
-        let direct_unique = SdJournalQueryUnique(&mut journal, "BIN").expect("query unique");
+    fn assert_stateful_facade_unique_and_field_enumeration(journal: &mut SdJournal) {
+        let direct_unique = SdJournalQueryUnique(journal, "BIN").expect("query unique");
         assert_eq!(direct_unique.len(), 1);
         assert_eq!(direct_unique[0].0, "BIN");
         assert_eq!(direct_unique[0].1, b"\x00\xff");
 
-        SdJournalQueryUniqueState(&mut journal, "REPEAT").expect("query unique state");
+        SdJournalQueryUniqueState(journal, "REPEAT").expect("query unique state");
         let mut unique = Vec::new();
         while let Some(payload) =
-            SdJournalEnumerateAvailableUnique(&mut journal).expect("enumerate unique")
+            SdJournalEnumerateAvailableUnique(journal).expect("enumerate unique")
         {
             unique.push(payload);
         }
@@ -3662,62 +3674,65 @@ mod tests {
         assert!(unique.iter().any(|payload| payload == b"REPEAT=two"));
         assert!(unique.iter().any(|payload| payload == b"REPEAT=three"));
 
-        SdJournalRestartFields(&mut journal).expect("restart fields");
+        SdJournalRestartFields(journal).expect("restart fields");
         let mut fields = HashSet::new();
-        while let Some(field) = SdJournalEnumerateField(&mut journal).expect("enumerate field") {
+        while let Some(field) = SdJournalEnumerateField(journal).expect("enumerate field") {
             fields.insert(field);
         }
         assert!(fields.contains("MESSAGE"));
         assert!(fields.contains("REPEAT"));
         assert!(fields.contains("BIN"));
+    }
 
-        SdJournalSeekRealtimeUsec(&mut journal, 1001).expect("seek realtime forward");
-        assert_eq!(SdJournalNext(&mut journal).expect("next after realtime"), 1);
-        let entry = SdJournalGetEntry(&mut journal).expect("entry after realtime");
+    fn assert_stateful_facade_cursor_navigation(journal: &mut SdJournal) {
+        SdJournalSeekRealtimeUsec(journal, 1001).expect("seek realtime forward");
+        assert_eq!(SdJournalNext(journal).expect("next after realtime"), 1);
+        let entry = SdJournalGetEntry(journal).expect("entry after realtime");
         assert_eq!(entry.get_str("MESSAGE"), Some("second"));
 
-        SdJournalSeekRealtimeUsec(&mut journal, 1001).expect("seek realtime backward");
+        SdJournalSeekRealtimeUsec(journal, 1001).expect("seek realtime backward");
         assert_eq!(
-            SdJournalPrevious(&mut journal).expect("previous after realtime"),
+            SdJournalPrevious(journal).expect("previous after realtime"),
             1
         );
-        let entry = SdJournalGetEntry(&mut journal).expect("entry after reverse realtime");
+        let entry = SdJournalGetEntry(journal).expect("entry after reverse realtime");
         assert_eq!(entry.get_str("MESSAGE"), Some("second"));
 
-        let cursor = SdJournalGetCursor(&journal).expect("cursor");
-        assert!(SdJournalTestCursor(&journal, &cursor).expect("test current cursor"));
-        assert!(!SdJournalTestCursor(&journal, "invalid-cursor").expect("test invalid cursor"));
+        let cursor = SdJournalGetCursor(journal).expect("cursor");
+        assert!(SdJournalTestCursor(journal, &cursor).expect("test current cursor"));
+        assert!(!SdJournalTestCursor(journal, "invalid-cursor").expect("test invalid cursor"));
         assert!(matches!(
-            SdJournalSeekCursor(&mut journal, "invalid-cursor"),
+            SdJournalSeekCursor(journal, "invalid-cursor"),
             Err(FacadeError::InvalidCursor)
         ));
-        SdJournalSeekRealtimeUsec(&mut journal, 1000).expect("seek first by realtime");
-        assert_eq!(SdJournalNext(&mut journal).expect("next to first"), 1);
-        let entry = SdJournalGetEntry(&mut journal).expect("first entry");
+        SdJournalSeekRealtimeUsec(journal, 1000).expect("seek first by realtime");
+        assert_eq!(SdJournalNext(journal).expect("next to first"), 1);
+        let entry = SdJournalGetEntry(journal).expect("first entry");
         assert_eq!(entry.get_str("MESSAGE"), Some("first"));
-        let first_cursor = SdJournalGetCursor(&journal).expect("first cursor");
+        let first_cursor = SdJournalGetCursor(journal).expect("first cursor");
         let first_realtime =
-            SdJournalGetRealtimeUsec(&journal).expect("first realtime after cursor seek");
-        SdJournalSeekCursor(&mut journal, &cursor).expect("seek cursor back to second");
-        let entry = SdJournalGetEntry(&mut journal).expect("entry after cursor seek");
+            SdJournalGetRealtimeUsec(journal).expect("first realtime after cursor seek");
+        SdJournalSeekCursor(journal, &cursor).expect("seek cursor back to second");
+        let entry = SdJournalGetEntry(journal).expect("entry after cursor seek");
         assert_eq!(entry.get_str("MESSAGE"), Some("second"));
         let (cursor_prefix, _) = first_cursor.rsplit_once("n=").expect("cursor has seqnum");
         let missing_cursor = format!("{cursor_prefix}n=999999");
-        SdJournalSeekCursor(&mut journal, &missing_cursor)
+        SdJournalSeekCursor(journal, &missing_cursor)
             .expect("valid missing cursor is accepted as a seek location");
         assert!(
-            !SdJournalTestCursor(&journal, &first_cursor)
+            !SdJournalTestCursor(journal, &first_cursor)
                 .expect("missing cursor seek does not stay on original cursor")
         );
         assert!(
-            SdJournalGetRealtimeUsec(&journal).expect("realtime after missing cursor seek")
+            SdJournalGetRealtimeUsec(journal).expect("realtime after missing cursor seek")
                 >= first_realtime
         );
-        let entry = SdJournalGetEntry(&mut journal).expect("entry after missing cursor seek");
+        let entry = SdJournalGetEntry(journal).expect("entry after missing cursor seek");
         assert_eq!(entry.get_str("MESSAGE"), Some("second"));
+    }
 
-        let path2 = dir.path().join("journals/user.journal");
-        write_facade_single_message_journal(&path2, b"third", 1002);
+    fn assert_stateful_facade_multi_file_navigation(dir: &tempfile::TempDir, path: &Path) {
+        let path2 = facade_second_journal_path(dir);
         let mut multi = SdJournalOpenFiles(
             &[
                 path2.to_str().expect("utf8 second path"),
@@ -3794,7 +3809,10 @@ mod tests {
             SdJournalPrevious(&mut multi).expect("multi previous before range"),
             0
         );
+    }
 
+    fn assert_stateful_facade_match_cache_invalidation(dir: &tempfile::TempDir, path: &Path) {
+        let path2 = facade_second_journal_path(dir);
         let mut filtered_multi = SdJournalOpenFiles(
             &[
                 path2.to_str().expect("utf8 second path"),
@@ -3819,6 +3837,14 @@ mod tests {
         let entry = SdJournalGetEntry(&mut filtered_multi).expect("filtered entry");
         assert_eq!(entry.get_str("MESSAGE"), Some("second"));
         assert_eq!(SdJournalNext(&mut filtered_multi).expect("filtered end"), 0);
+    }
+
+    fn facade_second_journal_path(dir: &tempfile::TempDir) -> PathBuf {
+        let path = dir.path().join("journals/user.journal");
+        if !path.exists() {
+            write_facade_single_message_journal(&path, b"third", 1002);
+        }
+        path
     }
 
     #[test]
@@ -3855,22 +3881,33 @@ mod tests {
     fn reader_preserves_raw_byte_field_names() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let path = dir.path().join("journals/raw-byte-names.journal");
-        let (mut journal_file, mut writer) = create_facade_test_writer(&path);
-        let invalid_utf8_name = vec![0xff, b'R', b'A', b'W'];
-        let nul_name = b"RAW\0NAME";
+        let invalid_utf8_name = invalid_utf8_raw_name();
+        let nul_name = nul_raw_name();
+        write_raw_byte_name_journal(&path, &invalid_utf8_name, nul_name);
 
+        let mut reader = FileReader::open(&path).expect("open raw byte-name journal");
+        assert!(reader.next().expect("read first entry"));
+        let entry = reader.get_entry().expect("get raw byte-name entry");
+        assert_raw_byte_name_accessors(&entry, &invalid_utf8_name, nul_name);
+        assert_raw_byte_name_payload(&entry, &invalid_utf8_name);
+        let lossy_name = String::from_utf8_lossy(&invalid_utf8_name).into_owned();
+        assert_lossy_raw_name_is_not_invented(&entry, &lossy_name);
+        assert_export_preserves_raw_byte_name(&entry, &invalid_utf8_name);
+        assert_json_omits_lossy_raw_name(&entry, &lossy_name);
+    }
+
+    fn write_raw_byte_name_journal(path: &Path, invalid_utf8_name: &[u8], nul_name: &[u8]) {
+        let (mut journal_file, mut writer) = create_facade_test_writer(path);
+        let binary_value = [0x61_u8, 0, 0x3d, 0x62];
         writer
             .add_entry_fields_with_options(
                 &mut journal_file,
                 [
                     journal_core::file::EntryField::structured(b"MESSAGE", b"raw byte names"),
-                    journal_core::file::EntryField::structured(
-                        invalid_utf8_name.as_slice(),
-                        b"invalid utf8",
-                    ),
+                    journal_core::file::EntryField::structured(invalid_utf8_name, b"invalid utf8"),
                     journal_core::file::EntryField::structured(nul_name, b"nul name"),
                     journal_core::file::EntryField::structured(b"field name", b"space"),
-                    journal_core::file::EntryField::structured(b"BINARY", b"a\0=b"),
+                    journal_core::file::EntryField::structured(b"BINARY", &binary_value),
                 ],
                 1_700_004_000_000_000,
                 1,
@@ -3879,39 +3916,58 @@ mod tests {
             )
             .expect("write raw byte-name entry");
         journal_file.sync().expect("sync raw byte-name journal");
+    }
 
-        let mut reader = FileReader::open(&path).expect("open raw byte-name journal");
-        assert!(reader.next().expect("read first entry"));
-        let entry = reader.get_entry().expect("get raw byte-name entry");
+    fn invalid_utf8_raw_name() -> Vec<u8> {
+        vec![0xff, 0x52, 0x41, 0x57]
+    }
 
+    fn nul_raw_name() -> &'static [u8] {
+        &[0x52, 0x41, 0x57, 0, 0x4e, 0x41, 0x4d, 0x45]
+    }
+
+    fn binary_raw_value() -> &'static [u8] {
+        &[0x61, 0, 0x3d, 0x62]
+    }
+
+    fn assert_raw_byte_name_accessors(entry: &Entry, invalid_utf8_name: &[u8], nul_name: &[u8]) {
         assert_eq!(entry.get("MESSAGE"), Some(b"raw byte names".as_slice()));
         assert_eq!(
-            entry.get_raw(invalid_utf8_name.as_slice()),
+            entry.get_raw(invalid_utf8_name),
             Some(b"invalid utf8".as_slice())
         );
         assert_eq!(entry.get_raw(nul_name), Some(b"nul name".as_slice()));
-        assert_eq!(entry.get_raw(b"BINARY"), Some(b"a\0=b".as_slice()));
+        assert_eq!(entry.get_raw(b"BINARY"), Some(binary_raw_value()));
         assert_eq!(
             entry.get_raw_values(b"field name"),
             vec![b"space".as_slice()]
         );
-        assert!(entry.raw_fields().any(|field| {
-            field.name == invalid_utf8_name.as_slice() && field.value == b"invalid utf8"
-        }));
+    }
+
+    fn assert_raw_byte_name_payload(entry: &Entry, invalid_utf8_name: &[u8]) {
+        assert!(
+            entry
+                .raw_fields()
+                .any(|field| { field.name == invalid_utf8_name && field.value == b"invalid utf8" })
+        );
         assert!(entry.payloads.iter().any(|payload| {
-            let mut expected = invalid_utf8_name.clone();
+            let mut expected = invalid_utf8_name.to_vec();
             expected.push(b'=');
             expected.extend_from_slice(b"invalid utf8");
             payload == &expected
         }));
-        let lossy_name = String::from_utf8_lossy(&invalid_utf8_name).into_owned();
+    }
+
+    fn assert_lossy_raw_name_is_not_invented(entry: &Entry, lossy_name: &str) {
         assert!(
-            !entry.fields.contains_key(&lossy_name),
+            !entry.fields.contains_key(lossy_name),
             "string convenience map must not invent lossy RAW field names"
         );
+    }
 
+    fn assert_export_preserves_raw_byte_name(entry: &Entry, invalid_utf8_name: &[u8]) {
         let export = export_entry_bytes(&entry);
-        let mut expected_export = invalid_utf8_name.clone();
+        let mut expected_export = invalid_utf8_name.to_vec();
         expected_export.push(b'=');
         expected_export.extend_from_slice(b"invalid utf8\n");
         assert!(
@@ -3920,12 +3976,14 @@ mod tests {
                 .any(|window| window == expected_export.as_slice()),
             "export output should preserve non-UTF8 RAW field names as bytes"
         );
+    }
 
+    fn assert_json_omits_lossy_raw_name(entry: &Entry, lossy_name: &str) {
         let serde_json::Value::Object(json) = json_entry(&entry) else {
             panic!("entry JSON should be an object");
         };
         assert!(
-            !json.contains_key(&lossy_name),
+            !json.contains_key(lossy_name),
             "JSON output must not invent lossy RAW field names"
         );
     }

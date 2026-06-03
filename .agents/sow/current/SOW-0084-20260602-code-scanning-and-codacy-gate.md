@@ -1714,6 +1714,39 @@ Complexity remediation evidence:
   - Refreshed local all-tracked-file Lizard inventory now reports 103 critical
     findings, down from 114 after Batch 19. Remaining critical findings are
     `rust: 27` and `tests: 76`; Go, Node.js, and Python remain at zero.
+- Batch 21, Rust journal facade, log-writer, and index pagination test
+  findings:
+  - Refactored `rust/src/journal/src/lib.rs`
+    `jf_facade_stateful_reader_operations` into current-entry, DATA
+    enumeration, unique/field enumeration, cursor, multi-file, and match-cache
+    invalidation helpers while preserving the libsystemd-style facade coverage.
+  - Refactored `rust/src/journal/src/lib.rs`
+    `reader_preserves_raw_byte_field_names` into raw-journal creation,
+    accessor, payload, export, and JSON assertion helpers. Replaced the
+    escape-heavy RAW byte-name test literals with equivalent numeric byte
+    helpers to avoid a local Lizard Rust parser span bug without changing test
+    bytes.
+  - Refactored `rust/src/crates/journal-log-writer/tests/log_writer.rs`
+    cross-boot monotonic coverage into cross-boot writer, reader, path, and
+    assertion helpers while preserving stock `journalctl --verify` checks.
+  - Refactored `rust/src/crates/journal-index/tests/pagination.rs`
+    same-timestamp, out-of-bounds resume, and time-boundary pagination tests
+    into indexed-journal fixture, page-read, position-recording, empty-resume,
+    and bounded-page helpers while preserving all expected positions.
+  - `cargo test --manifest-path rust/Cargo.toml -p journal --lib
+    --no-fail-fast` passed.
+  - `cargo test --manifest-path rust/Cargo.toml -p journal-log-writer --test
+    log_writer test_different_boot_does_not_seed_monotonic_clamp_from_previous_tail
+    --no-fail-fast` passed.
+  - `cargo test --manifest-path rust/Cargo.toml -p journal-index --test
+    pagination --no-fail-fast` passed.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for
+    `rust/src/journal/src/lib.rs`,
+    `rust/src/crates/journal-log-writer/tests/log_writer.rs`, and
+    `rust/src/crates/journal-index/tests/pagination.rs`.
+  - Refreshed local all-tracked-file Lizard inventory now reports 82 critical
+    findings, down from 103 after Batch 20. Remaining critical findings are
+    `rust: 19` and `tests: 63`; Go, Node.js, and Python remain at zero.
 
 Reviewer findings:
 

@@ -7,7 +7,8 @@ use journal_common::Seconds;
 use journal_core::file::{JournalFile, JournalFileOptions, JournalWriter};
 use journal_core::repository::File;
 use journal_index::{
-    Anchor, Direction, FieldName, FileIndexer, LogQueryParamsBuilder, Microseconds,
+    Anchor, Direction, FieldName, FileIndex, FileIndexer, LogEntryId, LogQueryParamsBuilder,
+    Microseconds,
 };
 use std::collections::HashSet;
 use std::fs;
@@ -22,6 +23,12 @@ const JAN_1_2024_MIDNIGHT: Microseconds = Microseconds(1704067200_000_000);
 struct TestEntry {
     timestamp: Microseconds,
     fields: Vec<(String, String)>,
+}
+
+struct IndexedJournal {
+    _temp_dir: TempDir,
+    file: File,
+    index: FileIndex,
 }
 
 impl TestEntry {
@@ -89,56 +96,100 @@ fn create_test_journal(
     Ok((temp_dir, file))
 }
 
-#[test]
-fn test_pagination_forward_with_same_timestamps() {
-    // Create 300 entries all with the same timestamp
-    const TOTAL_ENTRIES: usize = 300;
-    const PAGE_SIZE: usize = 200;
-    let same_timestamp = JAN_1_2024_MIDNIGHT;
-
-    let entries: Vec<TestEntry> = (0..TOTAL_ENTRIES)
-        .map(|i| {
-            TestEntry::new(same_timestamp)
-                .with_field("MESSAGE", format!("Entry {}", i))
-                .with_field("ENTRY_ID", i.to_string())
-        })
-        .collect();
-
+fn create_indexed_journal(
+    entries: Vec<TestEntry>,
+    timestamp_field: Option<&str>,
+    indexed_fields: &[&str],
+) -> IndexedJournal {
     let (_temp_dir, file) = create_test_journal(entries).unwrap();
-
     let mut indexer = FileIndexer::default();
-    let entry_id_field = FieldName::new("ENTRY_ID").unwrap();
-    let source_timestamp_field = FieldName::new("_SOURCE_REALTIME_TIMESTAMP").unwrap();
-    let file_index = indexer
+    let timestamp_field = timestamp_field.map(|field| FieldName::new(field).unwrap());
+    let indexed_fields: Vec<_> = indexed_fields
+        .iter()
+        .map(|field| FieldName::new(*field).unwrap())
+        .collect();
+    let index = indexer
         .index(
             &file,
-            Some(&source_timestamp_field),
-            &[entry_id_field],
+            timestamp_field.as_ref(),
+            &indexed_fields,
             Seconds(3600),
         )
         .unwrap();
 
-    let mut all_offsets = Vec::new();
-    let mut all_positions = HashSet::new();
-    let mut resume_position = None;
+    IndexedJournal {
+        _temp_dir,
+        file,
+        index,
+    }
+}
 
-    // First page
-    let params = LogQueryParamsBuilder::new(Anchor::Head, Direction::Forward)
-        .with_limit(PAGE_SIZE)
-        .build()
-        .unwrap();
+fn same_timestamp_entries(total: usize, timestamp: Microseconds) -> Vec<TestEntry> {
+    (0..total)
+        .map(|i| {
+            TestEntry::new(timestamp)
+                .with_field("MESSAGE", format!("Entry {}", i))
+                .with_field("ENTRY_ID", i.to_string())
+        })
+        .collect()
+}
 
-    let results = file_index.find_log_entries(&file, &params).unwrap();
-    println!("First page: {} entries", results.len());
-    assert_eq!(
-        results.len(),
-        PAGE_SIZE,
-        "First page should return PAGE_SIZE entries"
-    );
+fn hourly_entries(total: usize, base_timestamp: Microseconds) -> Vec<TestEntry> {
+    (0..total)
+        .map(|i| {
+            TestEntry::new(Microseconds(base_timestamp.0 + i as u64 * 3600_000_000))
+                .with_field("ENTRY_ID", i.to_string())
+        })
+        .collect()
+}
 
-    // Verify all have the same timestamp
-    for entry in &results {
-        assert_eq!(entry.timestamp, same_timestamp);
+fn read_page(
+    fixture: &IndexedJournal,
+    anchor: Anchor,
+    direction: Direction,
+    limit: usize,
+    resume_position: Option<usize>,
+) -> Vec<LogEntryId> {
+    let mut params = LogQueryParamsBuilder::new(anchor, direction).with_limit(limit);
+    if let Some(position) = resume_position {
+        params = params.with_resume_position(position);
+    }
+    fixture
+        .index
+        .find_log_entries(&fixture.file, &params.build().unwrap())
+        .unwrap()
+}
+
+fn read_bounded_page(
+    fixture: &IndexedJournal,
+    anchor: Anchor,
+    direction: Direction,
+    after: Microseconds,
+    before: Microseconds,
+    limit: usize,
+    resume_position: Option<usize>,
+) -> Vec<LogEntryId> {
+    let mut params = LogQueryParamsBuilder::new(anchor, direction)
+        .with_after(after)
+        .with_before(before)
+        .with_limit(limit);
+    if let Some(position) = resume_position {
+        params = params.with_resume_position(position);
+    }
+    fixture
+        .index
+        .find_log_entries(&fixture.file, &params.build().unwrap())
+        .unwrap()
+}
+
+fn record_same_timestamp_page(
+    results: &[LogEntryId],
+    timestamp: Microseconds,
+    all_offsets: &mut Vec<u64>,
+    all_positions: &mut HashSet<usize>,
+) {
+    for entry in results {
+        assert_eq!(entry.timestamp, timestamp);
         all_offsets.push(entry.offset);
         assert!(
             all_positions.insert(entry.position),
@@ -146,205 +197,113 @@ fn test_pagination_forward_with_same_timestamps() {
             entry.position
         );
     }
+}
 
-    if let Some(last_entry) = results.last() {
-        resume_position = Some(last_entry.position);
-    }
-
-    // Second page - should get remaining 100 entries
-    let params = LogQueryParamsBuilder::new(Anchor::Head, Direction::Forward)
-        .with_limit(PAGE_SIZE)
-        .with_resume_position(resume_position.unwrap())
-        .build()
-        .unwrap();
-
-    let results = file_index.find_log_entries(&file, &params).unwrap();
-    println!("Second page: {} entries", results.len());
-    assert_eq!(
-        results.len(),
-        TOTAL_ENTRIES - PAGE_SIZE,
-        "Second page should return remaining entries"
-    );
-
-    // Verify all have the same timestamp
-    for entry in &results {
-        assert_eq!(entry.timestamp, same_timestamp);
-        all_offsets.push(entry.offset);
-        assert!(
-            all_positions.insert(entry.position),
-            "Position {} appeared twice",
-            entry.position
-        );
-    }
-
-    if let Some(last_entry) = results.last() {
-        resume_position = Some(last_entry.position);
-    }
-
-    // Third page - should be empty
-    let params = LogQueryParamsBuilder::new(Anchor::Head, Direction::Forward)
-        .with_limit(PAGE_SIZE)
-        .with_resume_position(resume_position.unwrap())
-        .build()
-        .unwrap();
-
-    let results = file_index.find_log_entries(&file, &params).unwrap();
-    println!("Third page: {} entries", results.len());
-    assert_eq!(results.len(), 0, "Third page should be empty");
-
-    // Verify we got all entries
+fn assert_all_positions_seen(
+    all_offsets: &[u64],
+    all_positions: &HashSet<usize>,
+    total_entries: usize,
+) {
     assert_eq!(
         all_offsets.len(),
-        TOTAL_ENTRIES,
+        total_entries,
         "Should have retrieved all entries"
     );
-
-    // Verify all offsets are unique (no duplicates)
     let unique_offsets: HashSet<_> = all_offsets.iter().collect();
     assert_eq!(
         unique_offsets.len(),
-        TOTAL_ENTRIES,
+        total_entries,
         "All offsets should be unique"
     );
-
-    // Verify all positions are unique and contiguous
     assert_eq!(
         all_positions.len(),
-        TOTAL_ENTRIES,
+        total_entries,
         "Should have unique positions"
     );
-    for i in 0..TOTAL_ENTRIES {
+    for i in 0..total_entries {
         assert!(all_positions.contains(&i), "Position {} missing", i);
     }
 }
 
+fn assert_resume_returns_empty(
+    fixture: &IndexedJournal,
+    anchor: Anchor,
+    direction: Direction,
+    resume_position: usize,
+    message: &str,
+) {
+    let results = read_page(fixture, anchor, direction, 10, Some(resume_position));
+    assert_eq!(results.len(), 0, "{message}");
+}
+
 #[test]
-fn test_pagination_backward_with_same_timestamps() {
-    // Create 300 entries all with the same timestamp
+fn test_pagination_forward_with_same_timestamps() {
+    assert_same_timestamp_pagination(Anchor::Head, Direction::Forward);
+}
+
+fn assert_same_timestamp_pagination(anchor: Anchor, direction: Direction) {
     const TOTAL_ENTRIES: usize = 300;
     const PAGE_SIZE: usize = 200;
     let same_timestamp = JAN_1_2024_MIDNIGHT;
-
-    let entries: Vec<TestEntry> = (0..TOTAL_ENTRIES)
-        .map(|i| {
-            TestEntry::new(same_timestamp)
-                .with_field("MESSAGE", format!("Entry {}", i))
-                .with_field("ENTRY_ID", i.to_string())
-        })
-        .collect();
-
-    let (_temp_dir, file) = create_test_journal(entries).unwrap();
-
-    let mut indexer = FileIndexer::default();
-    let entry_id_field = FieldName::new("ENTRY_ID").unwrap();
-    let source_timestamp_field = FieldName::new("_SOURCE_REALTIME_TIMESTAMP").unwrap();
-    let file_index = indexer
-        .index(
-            &file,
-            Some(&source_timestamp_field),
-            &[entry_id_field],
-            Seconds(3600),
-        )
-        .unwrap();
-
+    let fixture = create_indexed_journal(
+        same_timestamp_entries(TOTAL_ENTRIES, same_timestamp),
+        Some("_SOURCE_REALTIME_TIMESTAMP"),
+        &["ENTRY_ID"],
+    );
     let mut all_offsets = Vec::new();
     let mut all_positions = HashSet::new();
-    let mut resume_position = None;
 
-    // First page (from tail, going backward)
-    let params = LogQueryParamsBuilder::new(Anchor::Tail, Direction::Backward)
-        .with_limit(PAGE_SIZE)
-        .build()
-        .unwrap();
-
-    let results = file_index.find_log_entries(&file, &params).unwrap();
+    let results = read_page(&fixture, anchor, direction, PAGE_SIZE, None);
     println!("First page: {} entries", results.len());
     assert_eq!(
         results.len(),
         PAGE_SIZE,
         "First page should return PAGE_SIZE entries"
     );
+    record_same_timestamp_page(
+        &results,
+        same_timestamp,
+        &mut all_offsets,
+        &mut all_positions,
+    );
+    let resume_position = results.last().expect("first page has entries").position;
 
-    // Verify all have the same timestamp
-    for entry in &results {
-        assert_eq!(entry.timestamp, same_timestamp);
-        all_offsets.push(entry.offset);
-        assert!(
-            all_positions.insert(entry.position),
-            "Position {} appeared twice",
-            entry.position
-        );
-    }
-
-    if let Some(last_entry) = results.last() {
-        resume_position = Some(last_entry.position);
-    }
-
-    // Second page - should get remaining 100 entries
-    let params = LogQueryParamsBuilder::new(Anchor::Tail, Direction::Backward)
-        .with_limit(PAGE_SIZE)
-        .with_resume_position(resume_position.unwrap())
-        .build()
-        .unwrap();
-
-    let results = file_index.find_log_entries(&file, &params).unwrap();
+    let results = read_page(
+        &fixture,
+        anchor,
+        direction,
+        PAGE_SIZE,
+        Some(resume_position),
+    );
     println!("Second page: {} entries", results.len());
     assert_eq!(
         results.len(),
         TOTAL_ENTRIES - PAGE_SIZE,
         "Second page should return remaining entries"
     );
+    record_same_timestamp_page(
+        &results,
+        same_timestamp,
+        &mut all_offsets,
+        &mut all_positions,
+    );
+    let resume_position = results.last().expect("second page has entries").position;
 
-    // Verify all have the same timestamp
-    for entry in &results {
-        assert_eq!(entry.timestamp, same_timestamp);
-        all_offsets.push(entry.offset);
-        assert!(
-            all_positions.insert(entry.position),
-            "Position {} appeared twice",
-            entry.position
-        );
-    }
-
-    if let Some(last_entry) = results.last() {
-        resume_position = Some(last_entry.position);
-    }
-
-    // Third page - should be empty
-    let params = LogQueryParamsBuilder::new(Anchor::Tail, Direction::Backward)
-        .with_limit(PAGE_SIZE)
-        .with_resume_position(resume_position.unwrap())
-        .build()
-        .unwrap();
-
-    let results = file_index.find_log_entries(&file, &params).unwrap();
+    let results = read_page(
+        &fixture,
+        anchor,
+        direction,
+        PAGE_SIZE,
+        Some(resume_position),
+    );
     println!("Third page: {} entries", results.len());
     assert_eq!(results.len(), 0, "Third page should be empty");
+    assert_all_positions_seen(&all_offsets, &all_positions, TOTAL_ENTRIES);
+}
 
-    // Verify we got all entries
-    assert_eq!(
-        all_offsets.len(),
-        TOTAL_ENTRIES,
-        "Should have retrieved all entries"
-    );
-
-    // Verify all offsets are unique (no duplicates)
-    let unique_offsets: HashSet<_> = all_offsets.iter().collect();
-    assert_eq!(
-        unique_offsets.len(),
-        TOTAL_ENTRIES,
-        "All offsets should be unique"
-    );
-
-    // Verify all positions are unique and contiguous
-    assert_eq!(
-        all_positions.len(),
-        TOTAL_ENTRIES,
-        "Should have unique positions"
-    );
-    for i in 0..TOTAL_ENTRIES {
-        assert!(all_positions.contains(&i), "Position {} missing", i);
-    }
+#[test]
+fn test_pagination_backward_with_same_timestamps() {
+    assert_same_timestamp_pagination(Anchor::Tail, Direction::Backward);
 }
 
 #[test]
@@ -711,115 +670,61 @@ fn test_pagination_limit_exceeds_total() {
 
 #[test]
 fn test_pagination_resume_out_of_bounds() {
-    // Create 10 entries
     const TOTAL_ENTRIES: usize = 10;
     let timestamp = JAN_1_2024_MIDNIGHT;
-
     let entries: Vec<TestEntry> = (0..TOTAL_ENTRIES)
         .map(|i| TestEntry::new(timestamp).with_field("ENTRY_ID", i.to_string()))
         .collect();
+    let fixture = create_indexed_journal(entries, None, &[]);
 
-    let (_temp_dir, file) = create_test_journal(entries).unwrap();
-
-    let mut indexer = FileIndexer::default();
-    let file_index = indexer.index(&file, None, &[], Seconds(3600)).unwrap();
-
-    // Forward: Resume from position equal to total entries (at boundary)
-    let params = LogQueryParamsBuilder::new(Anchor::Head, Direction::Forward)
-        .with_limit(10)
-        .with_resume_position(TOTAL_ENTRIES - 1)
-        .build()
-        .unwrap();
-
-    let results = file_index.find_log_entries(&file, &params).unwrap();
-    assert_eq!(
-        results.len(),
-        0,
-        "Resume from last position should return empty"
+    assert_resume_returns_empty(
+        &fixture,
+        Anchor::Head,
+        Direction::Forward,
+        TOTAL_ENTRIES - 1,
+        "Resume from last position should return empty",
     );
-
-    // Forward: Resume from position beyond total entries
-    let params = LogQueryParamsBuilder::new(Anchor::Head, Direction::Forward)
-        .with_limit(10)
-        .with_resume_position(TOTAL_ENTRIES)
-        .build()
-        .unwrap();
-
-    let results = file_index.find_log_entries(&file, &params).unwrap();
-    assert_eq!(
-        results.len(),
-        0,
-        "Resume from beyond last position should return empty"
+    assert_resume_returns_empty(
+        &fixture,
+        Anchor::Head,
+        Direction::Forward,
+        TOTAL_ENTRIES,
+        "Resume from beyond last position should return empty",
     );
-
-    // Forward: Resume from way beyond total entries
-    let params = LogQueryParamsBuilder::new(Anchor::Head, Direction::Forward)
-        .with_limit(10)
-        .with_resume_position(999)
-        .build()
-        .unwrap();
-
-    let results = file_index.find_log_entries(&file, &params).unwrap();
-    assert_eq!(
-        results.len(),
-        0,
-        "Resume from way beyond should return empty (not panic)"
+    assert_resume_returns_empty(
+        &fixture,
+        Anchor::Head,
+        Direction::Forward,
+        999,
+        "Resume from way beyond should return empty (not panic)",
     );
-
-    // Backward: Resume from position 0 returns empty (already tested but for completeness)
-    let params = LogQueryParamsBuilder::new(Anchor::Tail, Direction::Backward)
-        .with_limit(10)
-        .with_resume_position(0)
-        .build()
-        .unwrap();
-
-    let results = file_index.find_log_entries(&file, &params).unwrap();
-    assert_eq!(
-        results.len(),
+    assert_resume_returns_empty(
+        &fixture,
+        Anchor::Tail,
+        Direction::Backward,
         0,
-        "Backward from position 0 should return empty"
+        "Backward from position 0 should return empty",
     );
-
-    // Backward: Resume from position equal to total entries
-    let params = LogQueryParamsBuilder::new(Anchor::Tail, Direction::Backward)
-        .with_limit(10)
-        .with_resume_position(TOTAL_ENTRIES)
-        .build()
-        .unwrap();
-
-    let results = file_index.find_log_entries(&file, &params).unwrap();
-    assert_eq!(
-        results.len(),
-        0,
-        "Backward from position equal to total should return empty (not panic)"
+    assert_resume_returns_empty(
+        &fixture,
+        Anchor::Tail,
+        Direction::Backward,
+        TOTAL_ENTRIES,
+        "Backward from position equal to total should return empty (not panic)",
     );
-
-    // Backward: Resume from position beyond total entries
-    let params = LogQueryParamsBuilder::new(Anchor::Tail, Direction::Backward)
-        .with_limit(10)
-        .with_resume_position(TOTAL_ENTRIES + 5)
-        .build()
-        .unwrap();
-
-    let results = file_index.find_log_entries(&file, &params).unwrap();
-    assert_eq!(
-        results.len(),
-        0,
-        "Backward from beyond total should return empty (not panic)"
+    assert_resume_returns_empty(
+        &fixture,
+        Anchor::Tail,
+        Direction::Backward,
+        TOTAL_ENTRIES + 5,
+        "Backward from beyond total should return empty (not panic)",
     );
-
-    // Backward: Resume from way beyond total entries
-    let params = LogQueryParamsBuilder::new(Anchor::Tail, Direction::Backward)
-        .with_limit(10)
-        .with_resume_position(999)
-        .build()
-        .unwrap();
-
-    let results = file_index.find_log_entries(&file, &params).unwrap();
-    assert_eq!(
-        results.len(),
-        0,
-        "Backward from way beyond should return empty (not panic)"
+    assert_resume_returns_empty(
+        &fixture,
+        Anchor::Tail,
+        Direction::Backward,
+        999,
+        "Backward from way beyond should return empty (not panic)",
     );
 }
 
@@ -1003,96 +908,62 @@ fn test_pagination_anchor_in_middle_with_pagination() {
 
 #[test]
 fn test_pagination_with_time_boundaries() {
-    // Create entries at different timestamps
+    assert_time_boundary_pages(
+        Direction::Forward,
+        &[&[5, 6, 7, 8], &[9, 10, 11, 12], &[13, 14]],
+    );
+}
+
+#[test]
+fn test_pagination_backward_with_time_boundaries() {
+    assert_time_boundary_pages(
+        Direction::Backward,
+        &[&[14, 13, 12, 11], &[10, 9, 8, 7], &[6, 5]],
+    );
+}
+
+fn assert_time_boundary_pages(direction: Direction, expected_pages: &[&[usize]]) {
     let base_timestamp = JAN_1_2024_MIDNIGHT;
-    let entries: Vec<TestEntry> = (0..20)
-        .map(|i| {
-            // Entry at hour i
-            TestEntry::new(Microseconds(base_timestamp.0 + i * 3600_000_000))
-                .with_field("ENTRY_ID", i.to_string())
-        })
-        .collect();
-
-    let (_temp_dir, file) = create_test_journal(entries).unwrap();
-
-    let mut indexer = FileIndexer::default();
-    let file_index = indexer.index(&file, None, &[], Seconds(3600)).unwrap();
-
-    // Query with after and before boundaries: entries from hour 5 to hour 15 (exclusive)
-    // That's entries 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 (10 entries total)
+    let fixture = create_indexed_journal(hourly_entries(20, base_timestamp), None, &[]);
     let after = Microseconds(base_timestamp.0 + 5 * 3600_000_000);
     let before = Microseconds(base_timestamp.0 + 15 * 3600_000_000);
+    let anchor = match direction {
+        Direction::Forward => Anchor::Head,
+        Direction::Backward => Anchor::Tail,
+    };
 
-    // First page with limit 4
-    let params = LogQueryParamsBuilder::new(Anchor::Head, Direction::Forward)
-        .with_after(after)
-        .with_before(before)
-        .with_limit(4)
-        .build()
-        .unwrap();
+    let mut all_results = Vec::new();
+    let mut resume_position = None;
+    for (page_idx, expected_positions) in expected_pages.iter().enumerate() {
+        let results = read_bounded_page(
+            &fixture,
+            anchor,
+            direction,
+            after,
+            before,
+            4,
+            resume_position,
+        );
+        assert_eq!(
+            positions(&results),
+            *expected_positions,
+            "page {page_idx} positions should match"
+        );
+        resume_position = results.last().map(|entry| entry.position);
+        all_results.extend(results);
+    }
 
-    let results = file_index.find_log_entries(&file, &params).unwrap();
-    assert_eq!(results.len(), 4, "First page should return 4 entries");
-    // Should get entries 5, 6, 7, 8
-    assert_eq!(results[0].position, 5);
-    assert_eq!(results[3].position, 8);
-
-    let mut all_results = results.clone();
-
-    // Second page
-    let params = LogQueryParamsBuilder::new(Anchor::Head, Direction::Forward)
-        .with_after(after)
-        .with_before(before)
-        .with_limit(4)
-        .with_resume_position(results.last().unwrap().position)
-        .build()
-        .unwrap();
-
-    let results = file_index.find_log_entries(&file, &params).unwrap();
-    assert_eq!(results.len(), 4, "Second page should return 4 entries");
-    // Should get entries 9, 10, 11, 12
-    assert_eq!(results[0].position, 9);
-    assert_eq!(results[3].position, 12);
-
-    all_results.extend(results.clone());
-
-    // Third page
-    let params = LogQueryParamsBuilder::new(Anchor::Head, Direction::Forward)
-        .with_after(after)
-        .with_before(before)
-        .with_limit(4)
-        .with_resume_position(results.last().unwrap().position)
-        .build()
-        .unwrap();
-
-    let results = file_index.find_log_entries(&file, &params).unwrap();
-    assert_eq!(
-        results.len(),
-        2,
-        "Third page should return remaining 2 entries"
+    let results = read_bounded_page(
+        &fixture,
+        anchor,
+        direction,
+        after,
+        before,
+        4,
+        resume_position,
     );
-    // Should get entries 13, 14
-    assert_eq!(results[0].position, 13);
-    assert_eq!(results[1].position, 14);
-
-    all_results.extend(results.clone());
-
-    // Fourth page (should be empty)
-    let params = LogQueryParamsBuilder::new(Anchor::Head, Direction::Forward)
-        .with_after(after)
-        .with_before(before)
-        .with_limit(4)
-        .with_resume_position(results.last().unwrap().position)
-        .build()
-        .unwrap();
-
-    let results = file_index.find_log_entries(&file, &params).unwrap();
     assert_eq!(results.len(), 0, "Fourth page should be empty");
-
-    // Verify we got exactly 10 entries total
-    assert_eq!(all_results.len(), 10);
-
-    // Verify all timestamps are within boundaries
+    assert_eq!(all_results.len(), 10, "should collect ten bounded entries");
     for entry in &all_results {
         assert!(
             entry.timestamp.0 >= after.0,
@@ -1105,105 +976,6 @@ fn test_pagination_with_time_boundaries() {
     }
 }
 
-#[test]
-fn test_pagination_backward_with_time_boundaries() {
-    // Create entries at different timestamps
-    let base_timestamp = JAN_1_2024_MIDNIGHT;
-    let entries: Vec<TestEntry> = (0..20)
-        .map(|i| {
-            TestEntry::new(Microseconds(base_timestamp.0 + i * 3600_000_000))
-                .with_field("ENTRY_ID", i.to_string())
-        })
-        .collect();
-
-    let (_temp_dir, file) = create_test_journal(entries).unwrap();
-
-    let mut indexer = FileIndexer::default();
-    let file_index = indexer.index(&file, None, &[], Seconds(3600)).unwrap();
-
-    // Query backward with boundaries: entries from hour 5 to hour 15 (exclusive)
-    // That's entries 5-14 (10 entries total), going backward from 14 to 5
-    let after = Microseconds(base_timestamp.0 + 5 * 3600_000_000);
-    let before = Microseconds(base_timestamp.0 + 15 * 3600_000_000);
-
-    // First page with limit 4
-    let params = LogQueryParamsBuilder::new(Anchor::Tail, Direction::Backward)
-        .with_after(after)
-        .with_before(before)
-        .with_limit(4)
-        .build()
-        .unwrap();
-
-    let results = file_index.find_log_entries(&file, &params).unwrap();
-    assert_eq!(results.len(), 4, "First page should return 4 entries");
-    // Going backward, should get 14, 13, 12, 11
-    assert_eq!(results[0].position, 14);
-    assert_eq!(results[3].position, 11);
-
-    let mut all_results = results.clone();
-
-    // Second page
-    let params = LogQueryParamsBuilder::new(Anchor::Tail, Direction::Backward)
-        .with_after(after)
-        .with_before(before)
-        .with_limit(4)
-        .with_resume_position(results.last().unwrap().position)
-        .build()
-        .unwrap();
-
-    let results = file_index.find_log_entries(&file, &params).unwrap();
-    assert_eq!(results.len(), 4, "Second page should return 4 entries");
-    // Should get 10, 9, 8, 7
-    assert_eq!(results[0].position, 10);
-    assert_eq!(results[3].position, 7);
-
-    all_results.extend(results.clone());
-
-    // Third page
-    let params = LogQueryParamsBuilder::new(Anchor::Tail, Direction::Backward)
-        .with_after(after)
-        .with_before(before)
-        .with_limit(4)
-        .with_resume_position(results.last().unwrap().position)
-        .build()
-        .unwrap();
-
-    let results = file_index.find_log_entries(&file, &params).unwrap();
-    assert_eq!(
-        results.len(),
-        2,
-        "Third page should return remaining 2 entries"
-    );
-    // Should get 6, 5
-    assert_eq!(results[0].position, 6);
-    assert_eq!(results[1].position, 5);
-
-    all_results.extend(results.clone());
-
-    // Fourth page (should be empty)
-    let params = LogQueryParamsBuilder::new(Anchor::Tail, Direction::Backward)
-        .with_after(after)
-        .with_before(before)
-        .with_limit(4)
-        .with_resume_position(results.last().unwrap().position)
-        .build()
-        .unwrap();
-
-    let results = file_index.find_log_entries(&file, &params).unwrap();
-    assert_eq!(results.len(), 0, "Fourth page should be empty");
-
-    // Verify we got exactly 10 entries total
-    assert_eq!(all_results.len(), 10);
-
-    // Verify all timestamps are within boundaries
-    for entry in &all_results {
-        assert!(
-            entry.timestamp.0 >= after.0,
-            "Entry timestamp should be >= after boundary"
-        );
-        assert!(
-            entry.timestamp.0 < before.0,
-            "Entry timestamp should be < before boundary"
-        );
-    }
+fn positions(results: &[LogEntryId]) -> Vec<usize> {
+    results.iter().map(|entry| entry.position).collect()
 }
