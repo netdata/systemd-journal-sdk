@@ -2677,8 +2677,8 @@ Batch 47:
 
 Batch 48:
 
-- Scope: post-push disposition of the remaining CodeQL
-  `py/overly-permissive-file` finding after Batch 47.
+- Scope: post-push evaluation of an in-source suppression attempt for the
+  remaining CodeQL `py/overly-permissive-file` finding after Batch 47.
 - Evidence:
   - CodeQL and Codacy SARIF workflows both passed for `46f92ba`.
   - GitHub code scanning still reported one CodeQL
@@ -2689,14 +2689,20 @@ Batch 48:
     journald-compatible `0640`, but consumers may explicitly choose another
     POSIX creation mode, matching systemd's low-level mode parameter.
 - Changes:
-  - Added a narrow in-source CodeQL suppression at the Python `os.open()` call
-    site, with a local rationale comment explaining that the mode is an
-    explicit caller policy override and that the default remains `0640`.
+  - Added a local rationale comment at the Python `os.open()` call site
+    explaining that the mode is an explicit caller policy override and that the
+    default remains `0640`.
+  - Tried a narrow in-source CodeQL suppression marker, then removed it after
+    GitHub CodeQL still reported the same alert for `918b915`; the current
+    workflow does not honor that suppression mechanism.
 - Validation:
   - `.local/python-venv/bin/python python/test_all.py` passed.
   - `git diff --check` passed.
   - `.agents/sow/audit.sh` passed.
-  - Post-push CodeQL/Codacy validation is pending.
+  - CodeQL and Codacy SARIF workflows both passed for `918b915`.
+  - GitHub code scanning still reported the same CodeQL alert at
+    `python/journal/writer.py:104`.
+  - Final disposition through GitHub code-scanning dismissal is pending.
 
 Reviewer findings:
 
