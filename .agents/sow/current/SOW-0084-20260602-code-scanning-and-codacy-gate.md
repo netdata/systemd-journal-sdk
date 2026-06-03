@@ -2897,13 +2897,19 @@ Batch 52:
   - `git diff --check` passed.
   - `.agents/sow/audit.sh` passed.
 - Remaining gate:
-  - Push is required so GitHub CodeQL/Codacy SARIF and Codacy Cloud can analyze
-    this cleanup and confirm zero current actionable findings.
+  - Satisfied after push: GitHub and Codacy analyzed `defc9c3`.
+- Post-push scanner result for `defc9c3`:
+  - GitHub CodeQL workflow run `26917024514` completed successfully.
+  - GitHub Codacy SARIF workflow run `26917024524` completed successfully.
+  - GitHub code-scanning API reported `current_open_count=0` for current-head
+    alerts on `defc9c3`.
+  - Codacy Cloud issue export reported `codacy_issue_count=0` for `master`.
+  - Codacy Cloud security finding export reported `codacy_finding_count=0`.
 
 Reviewer findings:
 
-- Pending. The current SOW is not ready for terminal reviewer review because
-  the 3056 cloud findings remain unresolved.
+- Pending terminal reviewer review. The scanner gate is locally and remotely
+  clean, and the next step is the whole-SOW read-only reviewer pool.
 
 Same-failure scan:
 
