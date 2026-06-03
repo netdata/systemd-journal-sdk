@@ -121,6 +121,24 @@ class Probe:
         }
 
 
+@dataclass
+class ObjectScanState:
+    found_compression: set[str] = field(default_factory=set)
+    found_tag: bool = False
+    scanned: int = 0
+
+
+@dataclass
+class VerificationRuntime:
+    env: dict[str, str]
+    tools: Any
+    state_path: Path
+    state: dict[str, Any]
+    completed: dict[str, Any]
+    stats_dir: Path
+    work_dir: Path
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -138,39 +156,55 @@ def read_u64(data: bytes, offset: int) -> int:
 
 
 def parse_header(path: Path) -> dict[str, Any]:
+    raw = read_header_bytes(path)
+    validate_header_bytes(raw)
+    header_size = read_u64(raw, 88)
+    header = base_header(raw, header_size)
+    add_extended_header_fields(header, raw, header_size)
+    return header
+
+
+def read_header_bytes(path: Path) -> bytes:
     with path.open("rb") as handle:
-        raw = handle.read(272)
+        return handle.read(272)
+
+
+def validate_header_bytes(raw: bytes) -> None:
     if len(raw) < 208 or raw[:8] != JOURNAL_MAGIC:
         raise ValueError("not a readable systemd journal header")
+
+
+def flag_names(raw_value: int, flag_map: dict[str, int]) -> list[str]:
+    return [name for name, bit in flag_map.items() if raw_value & bit]
+
+
+def base_header(raw: bytes, header_size: int) -> dict[str, Any]:
     compatible = read_u32(raw, 8)
     incompatible = read_u32(raw, 12)
     state = raw[16]
-    header_size = read_u64(raw, 88)
-    header: dict[str, Any] = {
+    return {
         "state": STATE_NAMES.get(state, f"unknown-{state}"),
-        "compatible_flags": [
-            name for name, bit in COMPATIBLE_FLAGS.items() if compatible & bit
-        ],
-        "incompatible_flags": [
-            name for name, bit in INCOMPATIBLE_FLAGS.items() if incompatible & bit
-        ],
+        "compatible_flags": flag_names(compatible, COMPATIBLE_FLAGS),
+        "incompatible_flags": flag_names(incompatible, INCOMPATIBLE_FLAGS),
         "header_size": header_size,
         "arena_size": read_u64(raw, 96),
         "tail_object_offset": read_u64(raw, 136),
         "n_objects": read_u64(raw, 144),
         "n_entries": read_u64(raw, 152),
     }
-    if header_size >= 216 and len(raw) >= 216:
-        header["n_data"] = read_u64(raw, 208)
-    if header_size >= 224 and len(raw) >= 224:
-        header["n_fields"] = read_u64(raw, 216)
-    if header_size >= 232 and len(raw) >= 232:
-        header["n_tags"] = read_u64(raw, 224)
-    if header_size >= 248 and len(raw) >= 248:
-        header["data_hash_chain_depth"] = read_u64(raw, 240)
-    if header_size >= 256 and len(raw) >= 256:
-        header["field_hash_chain_depth"] = read_u64(raw, 248)
-    return header
+
+
+def add_extended_header_fields(header: dict[str, Any], raw: bytes, header_size: int) -> None:
+    optional_fields = [
+        ("n_data", 208, 216),
+        ("n_fields", 216, 224),
+        ("n_tags", 224, 232),
+        ("data_hash_chain_depth", 240, 248),
+        ("field_hash_chain_depth", 248, 256),
+    ]
+    for name, offset, required_size in optional_fields:
+        if header_size >= required_size and len(raw) >= required_size:
+            header[name] = read_u64(raw, offset)
 
 
 def sanitize_header(header: dict[str, Any]) -> dict[str, Any]:
@@ -196,44 +230,72 @@ def align8(value: int) -> int:
 
 
 def scan_objects(path: Path, header: dict[str, Any], limit: int) -> dict[str, Any]:
-    tail = int(header.get("tail_object_offset") or 0)
-    offset = int(header.get("header_size") or 0)
-    if offset <= 0 or tail <= 0:
+    bounds = object_scan_bounds(path, header)
+    if bounds is None:
         return {"status": "not-scanned", "reason": "missing-object-range"}
-    found_compression: set[str] = set()
-    found_tag = False
-    scanned = 0
-    file_size = path.stat().st_size
+    offset, tail, file_size = bounds
+    state = ObjectScanState()
     try:
         with path.open("rb") as handle:
-            while offset <= tail and offset + 16 <= file_size and scanned < limit:
-                handle.seek(offset)
-                raw = handle.read(16)
-                if len(raw) != 16:
+            while should_scan_object(offset, tail, file_size, state.scanned, limit):
+                object_header = read_object_header(handle, offset)
+                if object_header is None:
                     break
-                object_type = raw[0]
-                object_flags = raw[1]
-                object_size = read_u64(raw, 8)
-                if object_size < 16:
-                    break
-                if object_type == 1:
-                    for name, bit in OBJECT_FLAGS.items():
-                        if object_flags & bit:
-                            found_compression.add(name)
-                elif object_type == 7:
-                    found_tag = True
-                scanned += 1
-                next_offset = offset + align8(object_size)
-                if next_offset <= offset:
+                object_type, object_flags, object_size = object_header
+                update_object_scan_state(state, object_type, object_flags)
+                next_offset = next_object_offset(offset, object_size)
+                if next_offset is None:
                     break
                 offset = next_offset
     except OSError as exc:
         return {"status": "failed", "error_class": type(exc).__name__}
+    return object_scan_result(state, limit)
+
+
+def object_scan_bounds(path: Path, header: dict[str, Any]) -> tuple[int, int, int] | None:
+    tail = int(header.get("tail_object_offset") or 0)
+    offset = int(header.get("header_size") or 0)
+    if offset <= 0 or tail <= 0:
+        return None
+    return offset, tail, path.stat().st_size
+
+
+def should_scan_object(offset: int, tail: int, file_size: int, scanned: int, limit: int) -> bool:
+    return offset <= tail and offset + 16 <= file_size and scanned < limit
+
+
+def read_object_header(handle: Any, offset: int) -> tuple[int, int, int] | None:
+    handle.seek(offset)
+    raw = handle.read(16)
+    if len(raw) != 16:
+        return None
+    object_size = read_u64(raw, 8)
+    if object_size < 16:
+        return None
+    return raw[0], raw[1], object_size
+
+
+def update_object_scan_state(state: ObjectScanState, object_type: int, object_flags: int) -> None:
+    if object_type == 1:
+        state.found_compression.update(flag_names(object_flags, OBJECT_FLAGS))
+    elif object_type == 7:
+        state.found_tag = True
+    state.scanned += 1
+
+
+def next_object_offset(offset: int, object_size: int) -> int | None:
+    next_offset = offset + align8(object_size)
+    if next_offset <= offset:
+        return None
+    return next_offset
+
+
+def object_scan_result(state: ObjectScanState, limit: int) -> dict[str, Any]:
     return {
         "status": "ok",
-        "objects_scanned": scanned,
-        "compressed_data_flags": sorted(found_compression),
-        "tag_object_seen": found_tag,
+        "objects_scanned": state.scanned,
+        "compressed_data_flags": sorted(state.found_compression),
+        "tag_object_seen": state.found_tag,
         "scan_limit": limit,
     }
 
@@ -274,25 +336,39 @@ def load_known_bug_ids() -> set[str]:
 
 def classify_probe(case: JournalCase, known_bug_ids: set[str], object_scan_limit: int) -> Probe:
     probe = Probe(case=case)
-    if case.suffix == ".journal.zst":
-        probe.features.add("whole-file-zst")
-        probe.probe_status = "header-skipped-whole-file-zst"
+    if skip_whole_file_zst(probe):
         return probe
+    if not read_probe_header(probe):
+        return probe
+    add_header_features(probe)
+    if case.file_id in known_bug_ids:
+        probe.features.add("previous-bug-exposure")
+    probe.object_scan = scan_objects(case.path, probe.header, object_scan_limit)
+    add_object_scan_features(probe)
+    return probe
+
+
+def skip_whole_file_zst(probe: Probe) -> bool:
+    if probe.case.suffix != ".journal.zst":
+        return False
+    probe.features.add("whole-file-zst")
+    probe.probe_status = "header-skipped-whole-file-zst"
+    return True
+
+
+def read_probe_header(probe: Probe) -> bool:
     try:
-        probe.header = parse_header(case.path)
+        probe.header = parse_header(probe.case.path)
+        return True
     except Exception as exc:
         probe.probe_status = f"header-failed:{type(exc).__name__}"
-        return probe
+        return False
 
+
+def add_header_features(probe: Probe) -> None:
     incompatible = set(probe.header.get("incompatible_flags", []))
     compatible = set(probe.header.get("compatible_flags", []))
-    state = str(probe.header.get("state") or "")
-    if state == "online":
-        probe.features.add("active-open-snapshot")
-    elif state == "archived":
-        probe.features.add("archived")
-    elif state == "offline":
-        probe.features.add("offline-closed")
+    add_state_feature(probe, str(probe.header.get("state") or ""))
     if "keyed-hash" not in incompatible:
         probe.features.add("historical-unkeyed")
     if "compact" in incompatible:
@@ -301,15 +377,22 @@ def classify_probe(case: JournalCase, known_bug_ids: set[str], object_scan_limit
         probe.features.add("compressed-data")
     if compatible.intersection({"sealed", "sealed-continuous"}) or int(probe.header.get("n_tags") or 0) > 0:
         probe.features.add("fss-sealed")
-    if case.file_id in known_bug_ids:
-        probe.features.add("previous-bug-exposure")
 
-    probe.object_scan = scan_objects(case.path, probe.header, object_scan_limit)
+
+def add_state_feature(probe: Probe, state: str) -> None:
+    if state == "online":
+        probe.features.add("active-open-snapshot")
+    elif state == "archived":
+        probe.features.add("archived")
+    elif state == "offline":
+        probe.features.add("offline-closed")
+
+
+def add_object_scan_features(probe: Probe) -> None:
     if probe.object_scan.get("compressed_data_flags"):
         probe.features.add("compressed-data")
     if probe.object_scan.get("tag_object_seen"):
         probe.features.add("fss-sealed")
-    return probe
 
 
 def mark_distribution_features(probes: list[Probe], large_min_bytes: int) -> None:
@@ -417,128 +500,256 @@ def run_selected_verification(
     timeout: int,
     keep_outputs: bool,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
-    env = run_env()
-    tools = build_tools(env, out)
-    state_path = out / "state.json"
-    state = {"completed": {}}
-    completed: dict[str, Any] = state["completed"]
-    stats_dir = out / "time"
-    work_dir = out / "work"
+    runtime = build_verification_runtime(out)
+    case_args = verification_case_args(drivers, regenerators, regeneration_modes)
     results: list[dict[str, Any]] = []
     discrepancies: list[dict[str, Any]] = []
-
-    class Args:
-        pass
-
-    args = Args()
-    args.drivers = drivers
-    args.regenerators = regenerators
-    args.regeneration_modes = regeneration_modes
-
     for probe in selected:
-        case = probe.case
-        expected_keys = case_keys(case, args)
-        for key in expected_keys:
-            completed.pop(key, None)
-        active_case = case
-        snapshot_path: Path | None = None
-        try:
-            active_case = snapshot_case(case, work_dir)
-            snapshot_path = active_case.path
-            reader_results: dict[str, dict[str, Any]] = {}
-            for driver in drivers:
-                try:
-                    result = run_digest_driver(
-                        driver,
-                        active_case,
-                        tools=tools,
-                        env=env,
-                        stats_dir=stats_dir,
-                        timeout=timeout,
-                    )
-                except Exception as exc:
-                    result = {
-                        "kind": "reader",
-                        "driver": driver,
-                        "status": "failed",
-                        "file_id": case.file_id,
-                        "error_class": type(exc).__name__,
-                        "error_sha256": hashlib.sha256(str(exc).encode("utf-8")).hexdigest(),
-                    }
-                completed[f"{case.file_id}:reader:{driver}"] = {"identity": case.identity, "result": result}
-                results.append(result)
-                reader_results[driver] = result
-                write_json(state_path, state)
-
-            baseline = reader_results.get("systemd")
-            if not baseline or baseline.get("status") != "ok":
-                discrepancies.append(
-                    {
-                        "code": "missing_systemd_baseline",
-                        "file_id": case.file_id,
-                        "detail": "systemd baseline failed, SDK parity and regeneration checks were inconclusive",
-                    }
-                )
-                continue
-            baseline_digest = str(baseline.get("logical_digest"))
-            for driver, result in reader_results.items():
-                if driver == "systemd" or result.get("status") != "ok":
-                    continue
-                if result.get("logical_digest") != baseline_digest:
-                    discrepancies.append(
-                        {
-                            "code": "reader_digest_mismatch",
-                            "file_id": case.file_id,
-                            "detail": f"{driver} logical digest differs from systemd baseline",
-                        }
-                    )
-            for regen_driver in regenerators:
-                for mode in regeneration_modes:
-                    result = run_regenerator(
-                        regen_driver,
-                        mode,
-                        active_case,
-                        baseline_digest,
-                        tools=tools,
-                        env=env,
-                        work_dir=work_dir,
-                        stats_dir=stats_dir,
-                        keep_outputs=keep_outputs,
-                        timeout=timeout,
-                    )
-                    completed[f"{case.file_id}:writer:{regen_driver}:{mode}"] = {
-                        "identity": case.identity,
-                        "result": result,
-                    }
-                    results.append(result)
-                    write_json(state_path, state)
-                    if result.get("status") == "discrepancy":
-                        discrepancies.append(
-                            {
-                                "code": "writer_regeneration_mismatch",
-                                "file_id": case.file_id,
-                                "detail": f"{regen_driver}/{mode} generated output did not match systemd digest or stock verify",
-                            }
-                        )
-                    elif result.get("status") == "failed":
-                        discrepancies.append(
-                            {
-                                "code": "writer_regeneration_failed",
-                                "file_id": case.file_id,
-                                "detail": f"{regen_driver}/{mode} failed with {result.get('error_class')}",
-                            }
-                        )
-        finally:
-            if snapshot_path is not None:
-                snapshot_path.unlink(missing_ok=True)
-
+        verify_selected_probe(probe, case_args, runtime, results, discrepancies, timeout, keep_outputs)
     metadata = {
         "drivers": drivers,
         "regenerators": regenerators,
         "regeneration_modes": regeneration_modes,
-        "state_path": str(state_path.relative_to(ROOT)),
+        "state_path": str(runtime.state_path.relative_to(ROOT)),
     }
     return results, discrepancies, metadata
+
+
+def build_verification_runtime(out: Path) -> VerificationRuntime:
+    env = run_env()
+    tools = build_tools(env, out)
+    state_path = out / "state.json"
+    state = {"completed": {}}
+    return VerificationRuntime(
+        env=env,
+        tools=tools,
+        state_path=state_path,
+        state=state,
+        completed=state["completed"],
+        stats_dir=out / "time",
+        work_dir=out / "work",
+    )
+
+
+def verification_case_args(
+    drivers: list[str],
+    regenerators: list[str],
+    regeneration_modes: list[str],
+) -> argparse.Namespace:
+    return argparse.Namespace(
+        drivers=drivers,
+        regenerators=regenerators,
+        regeneration_modes=regeneration_modes,
+    )
+
+
+def verify_selected_probe(
+    probe: Probe,
+    case_args: argparse.Namespace,
+    runtime: VerificationRuntime,
+    results: list[dict[str, Any]],
+    discrepancies: list[dict[str, Any]],
+    timeout: int,
+    keep_outputs: bool,
+) -> None:
+    case = probe.case
+    clear_selected_state(case, case_args, runtime)
+    active_case, snapshot_path = snapshot_case(case, runtime.work_dir), None
+    try:
+        snapshot_path = active_case.path
+        reader_results = run_selected_readers(case, active_case, case_args.drivers, runtime, timeout)
+        results.extend(reader_results.values())
+        baseline_digest = selected_baseline_digest(case, reader_results, discrepancies)
+        if baseline_digest is not None:
+            run_selected_regenerators(
+                case,
+                active_case,
+                baseline_digest,
+                case_args,
+                runtime,
+                results,
+                discrepancies,
+                timeout,
+                keep_outputs,
+            )
+    finally:
+        if snapshot_path is not None:
+            snapshot_path.unlink(missing_ok=True)
+
+
+def clear_selected_state(
+    case: JournalCase,
+    case_args: argparse.Namespace,
+    runtime: VerificationRuntime,
+) -> None:
+    for key in case_keys(case, case_args):
+        runtime.completed.pop(key, None)
+
+
+def run_selected_readers(
+    case: JournalCase,
+    active_case: JournalCase,
+    drivers: list[str],
+    runtime: VerificationRuntime,
+    timeout: int,
+) -> dict[str, dict[str, Any]]:
+    reader_results: dict[str, dict[str, Any]] = {}
+    for driver in drivers:
+        result = selected_reader_result(driver, case, active_case, runtime, timeout)
+        runtime.completed[f"{case.file_id}:reader:{driver}"] = {"identity": case.identity, "result": result}
+        reader_results[driver] = result
+        write_json(runtime.state_path, runtime.state)
+    return reader_results
+
+
+def selected_reader_result(
+    driver: str,
+    case: JournalCase,
+    active_case: JournalCase,
+    runtime: VerificationRuntime,
+    timeout: int,
+) -> dict[str, Any]:
+    try:
+        return run_digest_driver(
+            driver,
+            active_case,
+            tools=runtime.tools,
+            env=runtime.env,
+            stats_dir=runtime.stats_dir,
+            timeout=timeout,
+        )
+    except Exception as exc:
+        return {
+            "kind": "reader",
+            "driver": driver,
+            "status": "failed",
+            "file_id": case.file_id,
+            "error_class": type(exc).__name__,
+            "error_sha256": hashlib.sha256(str(exc).encode("utf-8")).hexdigest(),
+        }
+
+
+def selected_baseline_digest(
+    case: JournalCase,
+    reader_results: dict[str, dict[str, Any]],
+    discrepancies: list[dict[str, Any]],
+) -> str | None:
+    baseline = reader_results.get("systemd")
+    if not baseline or baseline.get("status") != "ok":
+        discrepancies.append(selected_missing_baseline(case))
+        return None
+    baseline_digest = str(baseline.get("logical_digest"))
+    record_selected_reader_mismatches(case, reader_results, baseline_digest, discrepancies)
+    return baseline_digest
+
+
+def selected_missing_baseline(case: JournalCase) -> dict[str, Any]:
+    return {
+        "code": "missing_systemd_baseline",
+        "file_id": case.file_id,
+        "detail": "systemd baseline failed, SDK parity and regeneration checks were inconclusive",
+    }
+
+
+def record_selected_reader_mismatches(
+    case: JournalCase,
+    reader_results: dict[str, dict[str, Any]],
+    baseline_digest: str,
+    discrepancies: list[dict[str, Any]],
+) -> None:
+    for driver, result in reader_results.items():
+        if driver == "systemd" or result.get("status") != "ok":
+            continue
+        if result.get("logical_digest") != baseline_digest:
+            discrepancies.append(
+                {
+                    "code": "reader_digest_mismatch",
+                    "file_id": case.file_id,
+                    "detail": f"{driver} logical digest differs from systemd baseline",
+                }
+            )
+
+
+def run_selected_regenerators(
+    case: JournalCase,
+    active_case: JournalCase,
+    baseline_digest: str,
+    case_args: argparse.Namespace,
+    runtime: VerificationRuntime,
+    results: list[dict[str, Any]],
+    discrepancies: list[dict[str, Any]],
+    timeout: int,
+    keep_outputs: bool,
+) -> None:
+    for regen_driver in case_args.regenerators:
+        for mode in case_args.regeneration_modes:
+            result = run_selected_regenerator(
+                regen_driver,
+                mode,
+                case,
+                active_case,
+                baseline_digest,
+                runtime,
+                timeout,
+                keep_outputs,
+            )
+            results.append(result)
+            record_selected_regeneration_discrepancy(case, regen_driver, mode, result, discrepancies)
+
+
+def run_selected_regenerator(
+    regen_driver: str,
+    mode: str,
+    case: JournalCase,
+    active_case: JournalCase,
+    baseline_digest: str,
+    runtime: VerificationRuntime,
+    timeout: int,
+    keep_outputs: bool,
+) -> dict[str, Any]:
+    result = run_regenerator(
+        regen_driver,
+        mode,
+        active_case,
+        baseline_digest,
+        tools=runtime.tools,
+        env=runtime.env,
+        work_dir=runtime.work_dir,
+        stats_dir=runtime.stats_dir,
+        keep_outputs=keep_outputs,
+        timeout=timeout,
+    )
+    runtime.completed[f"{case.file_id}:writer:{regen_driver}:{mode}"] = {
+        "identity": case.identity,
+        "result": result,
+    }
+    write_json(runtime.state_path, runtime.state)
+    return result
+
+
+def record_selected_regeneration_discrepancy(
+    case: JournalCase,
+    regen_driver: str,
+    mode: str,
+    result: dict[str, Any],
+    discrepancies: list[dict[str, Any]],
+) -> None:
+    if result.get("status") == "discrepancy":
+        discrepancies.append(
+            {
+                "code": "writer_regeneration_mismatch",
+                "file_id": case.file_id,
+                "detail": f"{regen_driver}/{mode} generated output did not match systemd digest or stock verify",
+            }
+        )
+    elif result.get("status") == "failed":
+        discrepancies.append(
+            {
+                "code": "writer_regeneration_failed",
+                "file_id": case.file_id,
+                "detail": f"{regen_driver}/{mode} failed with {result.get('error_class')}",
+            }
+        )
 
 
 def build_report(args: argparse.Namespace) -> dict[str, Any]:
@@ -628,7 +839,19 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def write_markdown(report: dict[str, Any], path: Path) -> None:
-    lines = [
+    lines = markdown_header(report)
+    append_selection_policy(lines, report)
+    append_selected_files(lines, report)
+    append_missing_features(lines, report)
+    append_verification_results(lines, report)
+    append_discrepancies(lines, report)
+    append_rerun_recipe(lines, report)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def markdown_header(report: dict[str, Any]) -> list[str]:
+    return [
         "# Selective Real-Corpus Verification Report",
         "",
         f"- Schema: `{report['schema']}`",
@@ -637,12 +860,16 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
         f"- Verification status: `{report['verification'].get('status')}`",
         f"- Discrepancies: `{len(report['discrepancies'])}`",
         f"- Raw path manifest: `{report['raw_path_manifest']['location']}` (not committed)",
-        "",
-        "## Selection Policy",
-        "",
     ]
+
+
+def append_selection_policy(lines: list[str], report: dict[str, Any]) -> None:
+    lines.extend(["", "## Selection Policy", ""])
     for item in report["selection_policy"]:
         lines.append(f"- `{item['feature_class']}`: {item['reason']}")
+
+
+def append_selected_files(lines: list[str], report: dict[str, Any]) -> None:
     lines.extend(
         [
             "",
@@ -653,17 +880,22 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
         ]
     )
     for item in report["selected"]:
-        header = item.get("header", {})
-        lines.append(
-            "| {file_id} | {mib:.2f} | {features} | {reasons} | {entries} | {data} |".format(
-                file_id=f"`{item['file_id']}`",
-                mib=float(item.get("size") or 0) / 1024 / 1024,
-                features=", ".join(f"`{feature}`" for feature in item.get("feature_classes", [])),
-                reasons=", ".join(f"`{reason}`" for reason in item.get("selection_reasons", [])),
-                entries=int(header.get("n_entries") or 0),
-                data=int(header.get("n_data") or 0),
-            )
-        )
+        lines.append(selected_file_row(item))
+
+
+def selected_file_row(item: dict[str, Any]) -> str:
+    header = item.get("header", {})
+    return "| {file_id} | {mib:.2f} | {features} | {reasons} | {entries} | {data} |".format(
+        file_id=f"`{item['file_id']}`",
+        mib=float(item.get("size") or 0) / 1024 / 1024,
+        features=", ".join(f"`{feature}`" for feature in item.get("feature_classes", [])),
+        reasons=", ".join(f"`{reason}`" for reason in item.get("selection_reasons", [])),
+        entries=int(header.get("n_entries") or 0),
+        data=int(header.get("n_data") or 0),
+    )
+
+
+def append_missing_features(lines: list[str], report: dict[str, Any]) -> None:
     lines.extend(["", "## Missing Feature Classes", ""])
     missing = report.get("missing_feature_classes", {})
     if missing:
@@ -671,6 +903,9 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
             lines.append(f"- `{feature}`: {reason}")
     else:
         lines.append("- none")
+
+
+def append_verification_results(lines: list[str], report: dict[str, Any]) -> None:
     lines.extend(["", "## Verification Results", ""])
     results = report.get("results", [])
     if results:
@@ -681,23 +916,31 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
             ]
         )
         for result in results:
-            lines.append(
-                "| {kind} | {driver} | {mode} | {status} | `{file_id}` |".format(
-                    kind=result.get("kind", ""),
-                    driver=result.get("driver", ""),
-                    mode=result.get("mode", "-"),
-                    status=result.get("status", ""),
-                    file_id=result.get("file_id", ""),
-                )
-            )
+            lines.append(verification_result_row(result))
     else:
         lines.append("- verification not run")
+
+
+def verification_result_row(result: dict[str, Any]) -> str:
+    return "| {kind} | {driver} | {mode} | {status} | `{file_id}` |".format(
+        kind=result.get("kind", ""),
+        driver=result.get("driver", ""),
+        mode=result.get("mode", "-"),
+        status=result.get("status", ""),
+        file_id=result.get("file_id", ""),
+    )
+
+
+def append_discrepancies(lines: list[str], report: dict[str, Any]) -> None:
     lines.extend(["", "## Discrepancies", ""])
     if report.get("discrepancies"):
         for item in report["discrepancies"]:
             lines.append(f"- `{item.get('code')}` on `{item.get('file_id')}`: {item.get('detail')}")
     else:
         lines.append("- none")
+
+
+def append_rerun_recipe(lines: list[str], report: dict[str, Any]) -> None:
     lines.extend(
         [
             "",
@@ -709,8 +952,6 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
             "",
         ]
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

@@ -63,6 +63,17 @@ class JournalCase:
     identity: dict[str, Any]
 
 
+@dataclass
+class EvaluationRuntime:
+    env: dict[str, str]
+    tools: ToolPaths
+    state_path: Path
+    state: dict[str, Any]
+    completed: dict[str, Any]
+    stats_dir: Path
+    work_dir: Path
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
@@ -386,15 +397,40 @@ def systemd_digest(
         "--no-pager",
     ]
     actual = [*timed_command_prefix(stats_path), *cmd]
+    proc = start_systemd_export(actual, env)
+    digest_state, stderr_state, stdout_thread, stderr_thread = start_export_digest_threads(proc)
+    returncode, timed_out = wait_for_export_process(proc, stdout_thread, digest_state, timeout)
+    join_export_threads(stdout_thread, stderr_thread)
+    stderr_sha = str(stderr_state.get("sha256", hashlib.sha256(b"").hexdigest()))
+    validate_export_threads(stdout_thread, stderr_thread, returncode, cmd, stderr_sha)
+    if "error" in digest_state:
+        raise digest_state["error"]
+    validate_export_timeout(timed_out, returncode, cmd, stderr_sha)
+    digest = export_digest_or_raise(digest_state, returncode, cmd, stderr_sha)
+    stats = parse_time_stats(stats_path)
+    validate_export_returncode(returncode, cmd, stderr_sha)
+    digest.update({"driver": "systemd"})
+    return digest, stats
+
+
+def start_systemd_export(
+    actual: list[str],
+    env: dict[str, str],
+) -> subprocess.Popen[bytes]:
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
-    proc = subprocess.Popen(  # nosec B603 - harness uses shell=False command vectors.
+    return subprocess.Popen(  # nosec B603 - harness uses shell=False command vectors.
         actual,  # nosemgrep
         cwd=str(ROOT),
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+
+
+def start_export_digest_threads(
+    proc: subprocess.Popen[bytes],
+) -> tuple[dict[str, Any], dict[str, Any], threading.Thread, threading.Thread]:
     assert proc.stdout is not None
     assert proc.stderr is not None
     digest_state: dict[str, Any] = {}
@@ -417,7 +453,15 @@ def systemd_digest(
     stderr_thread = threading.Thread(target=drain_stderr, name="systemd-export-stderr")
     stdout_thread.start()
     stderr_thread.start()
+    return digest_state, stderr_state, stdout_thread, stderr_thread
 
+
+def wait_for_export_process(
+    proc: subprocess.Popen[bytes],
+    stdout_thread: threading.Thread,
+    digest_state: dict[str, Any],
+    timeout: int,
+) -> tuple[int, bool]:
     deadline = time.monotonic() + timeout
     timed_out = False
     while proc.poll() is None and stdout_thread.is_alive():
@@ -438,10 +482,21 @@ def systemd_digest(
         timed_out = True
         proc.kill()
         returncode = proc.wait()
+    return returncode, timed_out
 
+
+def join_export_threads(stdout_thread: threading.Thread, stderr_thread: threading.Thread) -> None:
     stdout_thread.join(timeout=5)
     stderr_thread.join(timeout=5)
-    stderr_sha = str(stderr_state.get("sha256", hashlib.sha256(b"").hexdigest()))
+
+
+def validate_export_threads(
+    stdout_thread: threading.Thread,
+    stderr_thread: threading.Thread,
+    returncode: int,
+    cmd: list[str],
+    stderr_sha: str,
+) -> None:
     if stdout_thread.is_alive() or stderr_thread.is_alive():
         raise TimeoutError(
             json.dumps(
@@ -455,8 +510,14 @@ def systemd_digest(
                 sort_keys=True,
             )
         )
-    if "error" in digest_state:
-        raise digest_state["error"]
+
+
+def validate_export_timeout(
+    timed_out: bool,
+    returncode: int,
+    cmd: list[str],
+    stderr_sha: str,
+) -> None:
     if timed_out:
         raise TimeoutError(
             json.dumps(
@@ -468,6 +529,14 @@ def systemd_digest(
                 sort_keys=True,
             )
         )
+
+
+def export_digest_or_raise(
+    digest_state: dict[str, Any],
+    returncode: int,
+    cmd: list[str],
+    stderr_sha: str,
+) -> dict[str, Any]:
     digest = digest_state.get("digest")
     if not isinstance(digest, dict):
         raise RuntimeError(
@@ -481,7 +550,10 @@ def systemd_digest(
                 sort_keys=True,
             )
         )
-    stats = parse_time_stats(stats_path)
+    return digest
+
+
+def validate_export_returncode(returncode: int, cmd: list[str], stderr_sha: str) -> None:
     if returncode != 0:
         raise RuntimeError(
             json.dumps(
@@ -493,8 +565,6 @@ def systemd_digest(
                 sort_keys=True,
             )
         )
-    digest.update({"driver": "systemd"})
-    return digest, stats
 
 
 def digest_driver_cmd(driver: str, path: Path, tools: ToolPaths) -> list[str]:
@@ -654,45 +724,16 @@ def run_regenerator(
     stats_path = stats_dir / f"{case.file_id}-{driver}-{mode}-regenerate.json"
     cmd = regenerate_cmd(driver, case, output, mode, tools)
     if cmd is None:
-        return {
-            "kind": "writer",
-            "driver": driver,
-            "mode": mode,
-            "status": "unsupported",
-            "file_id": case.file_id,
-            "reason": (
-                "systemd public regeneration requires journal export plus "
-                "systemd-journal-remote; this harness records the limitation "
-                "unless an installed remote helper is explicitly enabled later"
-            ),
-        }
+        return unsupported_regenerator_result(driver, mode, case)
 
     generated_path = output
     try:
-        free_bytes = shutil.disk_usage(output.parent).free
-        required_bytes = max(case.size * 2, 64 * 1024 * 1024)
-        if free_bytes < required_bytes:
-            raise OSError(
-                f"insufficient scratch space: required_bytes={required_bytes} free_bytes={free_bytes}"
-            )
+        ensure_regenerator_space(output, case)
         writer_result, stats = run_json_driver(cmd, env=env, stats_path=stats_path, timeout=timeout)
         generated_path = Path(str(writer_result.get("generated_path", output)))
-        verify_key = None
-        if writer_result.get("fss"):
-            start_usec = int(writer_result.get("fss_start_usec") or 0)
-            interval_usec = int(writer_result.get("fss_interval_usec") or 0)
-            if start_usec > 0 and interval_usec > 0:
-                verify_key = fss_verify_key(start_usec, interval_usec)
+        verify_key = verify_key_from_writer(writer_result)
         verify = verify_generated(generated_path, tools, env, timeout, verify_key=verify_key)
-        generated_case = JournalCase(
-            path=generated_path,
-            root=generated_path.parent,
-            file_id=f"{case.file_id}-{driver}-{mode}",
-            size=int(writer_result.get("generated_bytes") or generated_path.stat().st_size),
-            mtime_ns=generated_path.stat().st_mtime_ns,
-            suffix=".journal",
-            identity={"file_id": f"{case.file_id}-{driver}-{mode}", "suffix": ".journal"},
-        )
+        generated_case = generated_journal_case(case, driver, mode, writer_result, generated_path)
         reread = run_digest_driver(
             "systemd",
             generated_case,
@@ -704,25 +745,115 @@ def run_regenerator(
         generated_digest = str(reread.get("logical_digest"))
         generated_bytes = int(writer_result.get("generated_bytes") or generated_case.size)
     except Exception as exc:
-        if not keep_outputs:
-            try:
-                generated_path.unlink()
-            except FileNotFoundError:
-                pass
-        return {
-            "kind": "writer",
-            "driver": driver,
-            "mode": mode,
-            "status": "failed",
-            "file_id": case.file_id,
-            "error_class": type(exc).__name__,
-            "error_sha256": hashlib.sha256(str(exc).encode("utf-8")).hexdigest(),
-        }
-    if not keep_outputs:
-        try:
-            generated_path.unlink()
-        except FileNotFoundError:
-            pass
+        cleanup_generated_output(generated_path, keep_outputs)
+        return failed_regenerator_result(driver, mode, case, exc)
+    cleanup_generated_output(generated_path, keep_outputs)
+    return successful_regenerator_result(
+        driver,
+        mode,
+        case,
+        writer_result,
+        verify,
+        reread,
+        stats,
+        generated_digest,
+        generated_bytes,
+        baseline_digest,
+    )
+
+
+def unsupported_regenerator_result(
+    driver: str,
+    mode: str,
+    case: JournalCase,
+) -> dict[str, Any]:
+    return {
+        "kind": "writer",
+        "driver": driver,
+        "mode": mode,
+        "status": "unsupported",
+        "file_id": case.file_id,
+        "reason": (
+            "systemd public regeneration requires journal export plus "
+            "systemd-journal-remote; this harness records the limitation "
+            "unless an installed remote helper is explicitly enabled later"
+        ),
+    }
+
+
+def ensure_regenerator_space(output: Path, case: JournalCase) -> None:
+    free_bytes = shutil.disk_usage(output.parent).free
+    required_bytes = max(case.size * 2, 64 * 1024 * 1024)
+    if free_bytes < required_bytes:
+        raise OSError(
+            f"insufficient scratch space: required_bytes={required_bytes} free_bytes={free_bytes}"
+        )
+
+
+def verify_key_from_writer(writer_result: dict[str, Any]) -> str | None:
+    if not writer_result.get("fss"):
+        return None
+    start_usec = int(writer_result.get("fss_start_usec") or 0)
+    interval_usec = int(writer_result.get("fss_interval_usec") or 0)
+    if start_usec > 0 and interval_usec > 0:
+        return fss_verify_key(start_usec, interval_usec)
+    return None
+
+
+def generated_journal_case(
+    case: JournalCase,
+    driver: str,
+    mode: str,
+    writer_result: dict[str, Any],
+    generated_path: Path,
+) -> JournalCase:
+    file_id = f"{case.file_id}-{driver}-{mode}"
+    return JournalCase(
+        path=generated_path,
+        root=generated_path.parent,
+        file_id=file_id,
+        size=int(writer_result.get("generated_bytes") or generated_path.stat().st_size),
+        mtime_ns=generated_path.stat().st_mtime_ns,
+        suffix=".journal",
+        identity={"file_id": file_id, "suffix": ".journal"},
+    )
+
+
+def cleanup_generated_output(path: Path, keep_outputs: bool) -> None:
+    if keep_outputs:
+        return
+    path.unlink(missing_ok=True)
+
+
+def failed_regenerator_result(
+    driver: str,
+    mode: str,
+    case: JournalCase,
+    exc: Exception,
+) -> dict[str, Any]:
+    return {
+        "kind": "writer",
+        "driver": driver,
+        "mode": mode,
+        "status": "failed",
+        "file_id": case.file_id,
+        "error_class": type(exc).__name__,
+        "error_sha256": hashlib.sha256(str(exc).encode("utf-8")).hexdigest(),
+    }
+
+
+def successful_regenerator_result(
+    driver: str,
+    mode: str,
+    case: JournalCase,
+    writer_result: dict[str, Any],
+    verify: dict[str, Any],
+    reread: dict[str, Any],
+    stats: dict[str, Any],
+    generated_digest: str,
+    generated_bytes: int,
+    baseline_digest: str,
+) -> dict[str, Any]:
     return {
         "kind": "writer",
         "driver": driver,
@@ -841,20 +972,17 @@ def report_markdown(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
-    out = args.out.resolve()
-    out.mkdir(parents=True, exist_ok=True)
-    env = run_env()
-    tools: ToolPaths | None = None
+def prepare_roots(args: argparse.Namespace, env: dict[str, str], out: Path) -> tuple[list[Path], ToolPaths | None]:
     roots = [Path(root) for root in args.root]
-
     if args.mode == "smoke":
         tools = build_tools(env, out)
         roots = [generate_smoke_fixture(tools, env, out)]
+        return roots, tools
+    return roots, None
 
-    cases = discover_cases(roots, max_files=args.max_files)
-    discovery = summarize_discovery(cases)
-    report: dict[str, Any] = {
+
+def initial_corpus_report(args: argparse.Namespace, cases: list[JournalCase], discovery: dict[str, Any]) -> dict[str, Any]:
+    return {
         "schema": "systemd-journal-sdk-corpus-eval-report-v1",
         "created_at": utc_now(),
         "mode": args.mode,
@@ -868,131 +996,268 @@ def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
         "discrepancies": [],
     }
 
-    if args.mode == "dry-run":
-        report["dry_run_payload_policy"] = "stat/list only; journal payloads are not opened or read"
-        write_json(out / "report.json", report)
-        (out / "report.md").write_text(report_markdown(report), encoding="utf-8")
-        return report
 
+def write_report(out: Path, report: dict[str, Any]) -> None:
+    write_json(out / "report.json", report)
+    (out / "report.md").write_text(report_markdown(report), encoding="utf-8")
+
+
+def handle_dry_run(args: argparse.Namespace, out: Path, report: dict[str, Any]) -> bool:
+    if args.mode != "dry-run":
+        return False
+    report["dry_run_payload_policy"] = "stat/list only; journal payloads are not opened or read"
+    write_report(out, report)
+    return True
+
+
+def require_full_run_permission(args: argparse.Namespace) -> None:
     if args.mode == "run" and not args.allow_full_run:
         raise SystemExit("run mode requires --allow-full-run; use --mode smoke or --mode dry-run first")
 
-    if tools is None:
-        tools = build_tools(env, out)
 
+def build_runtime(out: Path, env: dict[str, str], tools: ToolPaths) -> EvaluationRuntime:
     state_path = out / "state.json"
     state = load_json(state_path, {"completed": {}})
     completed = state.setdefault("completed", {})
-    stats_dir = out / "time"
-    work_dir = out / "work"
+    return EvaluationRuntime(
+        env=env,
+        tools=tools,
+        state_path=state_path,
+        state=state,
+        completed=completed,
+        stats_dir=out / "time",
+        work_dir=out / "work",
+    )
 
-    for case in cases:
-        expected_keys = case_keys(case, args)
-        case_complete = all(
-            key in completed and completed[key].get("identity") == case.identity
-            for key in expected_keys
+
+def case_is_complete(case: JournalCase, args: argparse.Namespace, completed: dict[str, Any]) -> bool:
+    return all(
+        key in completed and completed[key].get("identity") == case.identity
+        for key in case_keys(case, args)
+    )
+
+
+def reset_case_state(case: JournalCase, args: argparse.Namespace, runtime: EvaluationRuntime) -> bool:
+    complete = case_is_complete(case, args, runtime.completed)
+    if complete:
+        return True
+    for key in case_keys(case, args):
+        runtime.completed.pop(key, None)
+    return False
+
+
+def snapshot_for_case(
+    case: JournalCase,
+    runtime: EvaluationRuntime,
+    case_complete: bool,
+) -> tuple[JournalCase, Path | None]:
+    if case_complete:
+        return case, None
+    active_case = snapshot_case(case, runtime.work_dir)
+    return active_case, active_case.path
+
+
+def cleanup_snapshot(snapshot_path: Path | None) -> None:
+    if snapshot_path is not None:
+        snapshot_path.unlink(missing_ok=True)
+
+
+def failed_reader_result(driver: str, case: JournalCase, exc: Exception) -> dict[str, Any]:
+    return {
+        "kind": "reader",
+        "driver": driver,
+        "status": "failed",
+        "file_id": case.file_id,
+        "error_class": type(exc).__name__,
+        "error_sha256": hashlib.sha256(str(exc).encode("utf-8")).hexdigest(),
+    }
+
+
+def reader_result_for_driver(
+    driver: str,
+    case: JournalCase,
+    active_case: JournalCase,
+    args: argparse.Namespace,
+    runtime: EvaluationRuntime,
+) -> dict[str, Any]:
+    key = f"{case.file_id}:reader:{driver}"
+    cached = runtime.completed.get(key)
+    if cached and cached.get("identity") == case.identity:
+        return cached["result"]
+    try:
+        result = run_digest_driver(
+            driver,
+            active_case,
+            tools=runtime.tools,
+            env=runtime.env,
+            stats_dir=runtime.stats_dir,
+            timeout=args.timeout,
         )
-        if not case_complete:
-            for key in expected_keys:
-                completed.pop(key, None)
+    except Exception as exc:
+        result = failed_reader_result(driver, case, exc)
+    runtime.completed[key] = {"identity": case.identity, "result": result}
+    write_json(runtime.state_path, runtime.state)
+    return result
 
-        active_case = case
-        snapshot_path: Path | None = None
-        try:
-            if not case_complete:
-                active_case = snapshot_case(case, work_dir)
-                snapshot_path = active_case.path
 
-            reader_results: dict[str, dict[str, Any]] = {}
-            for driver in args.drivers:
-                key = f"{case.file_id}:reader:{driver}"
-                if key in completed and completed[key].get("identity") == case.identity:
-                    result = completed[key]["result"]
-                else:
-                    try:
-                        result = run_digest_driver(
-                            driver,
-                            active_case,
-                            tools=tools,
-                            env=env,
-                            stats_dir=stats_dir,
-                            timeout=args.timeout,
-                        )
-                    except Exception as exc:
-                        result = {
-                            "kind": "reader",
-                            "driver": driver,
-                            "status": "failed",
-                            "file_id": case.file_id,
-                            "error_class": type(exc).__name__,
-                            "error_sha256": hashlib.sha256(str(exc).encode("utf-8")).hexdigest(),
-                        }
-                    completed[key] = {"identity": case.identity, "result": result}
-                    write_json(state_path, state)
-                report["results"].append(result)
-                reader_results[driver] = result
+def run_case_readers(
+    case: JournalCase,
+    active_case: JournalCase,
+    args: argparse.Namespace,
+    runtime: EvaluationRuntime,
+    report: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    reader_results: dict[str, dict[str, Any]] = {}
+    for driver in args.drivers:
+        result = reader_result_for_driver(driver, case, active_case, args, runtime)
+        report["results"].append(result)
+        reader_results[driver] = result
+    return reader_results
 
-            baseline = reader_results.get("systemd")
-            if baseline and baseline.get("status") == "ok":
-                baseline_digest = str(baseline.get("logical_digest"))
-                for driver, result in reader_results.items():
-                    if driver == "systemd" or result.get("status") != "ok":
-                        continue
-                    if result.get("logical_digest") != baseline_digest:
-                        report["discrepancies"].append(
-                            {
-                                "code": "reader_digest_mismatch",
-                                "file_id": case.file_id,
-                                "detail": f"{driver} logical digest differs from systemd baseline",
-                            }
-                        )
 
-                for regen_driver in args.regenerators:
-                    for regen_mode in args.regeneration_modes:
-                        key = f"{case.file_id}:writer:{regen_driver}:{regen_mode}"
-                        if key in completed and completed[key].get("identity") == case.identity:
-                            regen_result = completed[key]["result"]
-                        else:
-                            regen_result = run_regenerator(
-                                regen_driver,
-                                regen_mode,
-                                active_case,
-                                baseline_digest,
-                                tools=tools,
-                                env=env,
-                                work_dir=work_dir,
-                                stats_dir=stats_dir,
-                                keep_outputs=args.keep_outputs,
-                                timeout=args.timeout,
-                            )
-                            completed[key] = {"identity": case.identity, "result": regen_result}
-                            write_json(state_path, state)
-                        report["results"].append(regen_result)
-                        if regen_result.get("status") == "discrepancy":
-                            report["discrepancies"].append(
-                                {
-                                    "code": "writer_regeneration_mismatch",
-                                    "file_id": case.file_id,
-                                    "detail": f"{regen_driver}/{regen_mode} generated output did not match systemd logical digest or stock verify",
-                                }
-                            )
-            else:
-                report["discrepancies"].append(
-                    {
-                        "code": "missing_systemd_baseline",
-                        "file_id": case.file_id,
-                        "detail": "systemd baseline failed, so SDK parity checks were not conclusive",
-                    }
-                )
-        finally:
-            if snapshot_path is not None:
-                try:
-                    snapshot_path.unlink()
-                except FileNotFoundError:
-                    pass
+def baseline_digest_or_record(
+    report: dict[str, Any],
+    case: JournalCase,
+    reader_results: dict[str, dict[str, Any]],
+) -> str | None:
+    baseline = reader_results.get("systemd")
+    if baseline and baseline.get("status") == "ok":
+        baseline_digest = str(baseline.get("logical_digest"))
+        record_reader_mismatches(report, case, reader_results, baseline_digest)
+        return baseline_digest
+    report["discrepancies"].append(
+        {
+            "code": "missing_systemd_baseline",
+            "file_id": case.file_id,
+            "detail": "systemd baseline failed, so SDK parity checks were not conclusive",
+        }
+    )
+    return None
 
-    write_json(out / "report.json", report)
-    (out / "report.md").write_text(report_markdown(report), encoding="utf-8")
+
+def record_reader_mismatches(
+    report: dict[str, Any],
+    case: JournalCase,
+    reader_results: dict[str, dict[str, Any]],
+    baseline_digest: str,
+) -> None:
+    for driver, result in reader_results.items():
+        if driver == "systemd" or result.get("status") != "ok":
+            continue
+        if result.get("logical_digest") != baseline_digest:
+            report["discrepancies"].append(
+                {
+                    "code": "reader_digest_mismatch",
+                    "file_id": case.file_id,
+                    "detail": f"{driver} logical digest differs from systemd baseline",
+                }
+            )
+
+
+def regeneration_result_for_mode(
+    regen_driver: str,
+    regen_mode: str,
+    case: JournalCase,
+    active_case: JournalCase,
+    baseline_digest: str,
+    args: argparse.Namespace,
+    runtime: EvaluationRuntime,
+) -> dict[str, Any]:
+    key = f"{case.file_id}:writer:{regen_driver}:{regen_mode}"
+    cached = runtime.completed.get(key)
+    if cached and cached.get("identity") == case.identity:
+        return cached["result"]
+    result = run_regenerator(
+        regen_driver,
+        regen_mode,
+        active_case,
+        baseline_digest,
+        tools=runtime.tools,
+        env=runtime.env,
+        work_dir=runtime.work_dir,
+        stats_dir=runtime.stats_dir,
+        keep_outputs=args.keep_outputs,
+        timeout=args.timeout,
+    )
+    runtime.completed[key] = {"identity": case.identity, "result": result}
+    write_json(runtime.state_path, runtime.state)
+    return result
+
+
+def record_regeneration_discrepancy(
+    report: dict[str, Any],
+    case: JournalCase,
+    regen_driver: str,
+    regen_mode: str,
+    result: dict[str, Any],
+) -> None:
+    if result.get("status") != "discrepancy":
+        return
+    report["discrepancies"].append(
+        {
+            "code": "writer_regeneration_mismatch",
+            "file_id": case.file_id,
+            "detail": f"{regen_driver}/{regen_mode} generated output did not match systemd logical digest or stock verify",
+        }
+    )
+
+
+def run_case_regenerators(
+    case: JournalCase,
+    active_case: JournalCase,
+    baseline_digest: str,
+    args: argparse.Namespace,
+    runtime: EvaluationRuntime,
+    report: dict[str, Any],
+) -> None:
+    for regen_driver in args.regenerators:
+        for regen_mode in args.regeneration_modes:
+            result = regeneration_result_for_mode(
+                regen_driver,
+                regen_mode,
+                case,
+                active_case,
+                baseline_digest,
+                args,
+                runtime,
+            )
+            report["results"].append(result)
+            record_regeneration_discrepancy(report, case, regen_driver, regen_mode, result)
+
+
+def evaluate_case(
+    case: JournalCase,
+    args: argparse.Namespace,
+    runtime: EvaluationRuntime,
+    report: dict[str, Any],
+) -> None:
+    case_complete = reset_case_state(case, args, runtime)
+    active_case, snapshot_path = snapshot_for_case(case, runtime, case_complete)
+    try:
+        reader_results = run_case_readers(case, active_case, args, runtime, report)
+        baseline_digest = baseline_digest_or_record(report, case, reader_results)
+        if baseline_digest is not None:
+            run_case_regenerators(case, active_case, baseline_digest, args, runtime, report)
+    finally:
+        cleanup_snapshot(snapshot_path)
+
+
+def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
+    out = args.out.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    env = run_env()
+    roots, tools = prepare_roots(args, env, out)
+    cases = discover_cases(roots, max_files=args.max_files)
+    report = initial_corpus_report(args, cases, summarize_discovery(cases))
+    if handle_dry_run(args, out, report):
+        return report
+    require_full_run_permission(args)
+    if tools is None:
+        tools = build_tools(env, out)
+    runtime = build_runtime(out, env, tools)
+    for case in cases:
+        evaluate_case(case, args, runtime, report)
+    write_report(out, report)
     return report
 
 

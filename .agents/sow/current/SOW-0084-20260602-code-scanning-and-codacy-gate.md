@@ -1834,6 +1834,40 @@ Complexity remediation evidence:
     `tests/interoperability`: 21, `tests/corpus_eval`: 12,
     `tests/systemd_matrix`: 6, and `tests/vm_matrix`: 4.
 
+Batch 25:
+
+- Scope: corpus evaluation and real-corpus experiment harnesses under
+  `tests/corpus_eval/`.
+- Changes:
+  - Refactored `tests/corpus_eval/canonical.py` export parsing by extracting
+    entry-boundary, field-line, binary-value, metadata-field, and payload-field
+    helpers while preserving the canonical digest contract.
+  - Refactored `tests/corpus_eval/run_corpus_eval.py` by extracting report
+    setup, dry-run handling, full-run guard, runtime state, per-case resume
+    checks, snapshot lifecycle, reader execution, baseline comparison,
+    writer-regeneration execution, discrepancy recording, and generated-output
+    cleanup helpers.
+  - Refactored `tests/corpus_eval/run_selective_real_corpus.py` by extracting
+    header parsing, extended header fields, object scanning, probe feature
+    classification, selected verification runtime, reader comparison, writer
+    regeneration, discrepancy recording, and markdown section rendering
+    helpers.
+  - Refactored `tests/corpus_eval/run_spool_experiment.py` by narrowing the
+    spool writer helper with an options object and extracting per-case
+    directory setup, original raw reads, spool dumps, digest reads,
+    writer roundtrips, artifact cleanup, discrepancy calculation, report
+    construction, and markdown section rendering helpers.
+  - `python3 -m py_compile tests/corpus_eval/*.py` passed.
+  - `python3 -m unittest tests.corpus_eval.test_canonical` passed 7 tests.
+  - CLI help smoke checks passed for `run_corpus_eval.py`,
+    `run_selective_real_corpus.py`, and `run_spool_experiment.py`.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for
+    `tests/corpus_eval/`.
+  - Refreshed full `tests/` Lizard inventory now reports 44 critical findings:
+    `tests/interoperability`: 21, `tests/systemd_matrix`: 6,
+    `tests/vm_matrix`: 4, `tests/benchmarks/systemd`: 4,
+    `tests/datasets`: 6, `tests/conformance`: 2, and `tests/fss`: 1.
+
 Reviewer findings:
 
 - Pending. The current SOW is not ready for terminal reviewer review because

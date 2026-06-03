@@ -170,45 +170,69 @@ def iter_export_entries(stream: BinaryIO):
     while True:
         line = stream.readline()
         if line == b"":
-            if metadata or payloads:
-                yield metadata, payloads
+            yield from maybe_export_entry(metadata, payloads)
             return
         if line == b"\n":
-            if metadata or payloads:
-                yield metadata, payloads
+            yield from maybe_export_entry(metadata, payloads)
             metadata = {}
             payloads = []
             continue
-        if not line.endswith(b"\n"):
-            raise ValueError("truncated journal export field line")
-        line = line[:-1]
-        if b"=" in line:
-            name, value = line.split(b"=", 1)
-        else:
-            name = line
-            size_raw = stream.read(8)
-            if len(size_raw) != 8:
-                raise ValueError("truncated binary journal export field size")
-            size = struct.unpack("<Q", size_raw)[0]
-            value = stream.read(size)
-            if len(value) != size:
-                raise ValueError("truncated binary journal export field value")
-            trailer = stream.read(1)
-            if trailer != b"\n":
-                raise ValueError("truncated binary journal export field trailer")
+        name, value = read_export_field(stream, line)
+        store_export_field(metadata, payloads, name, value)
 
-        if name == b"_BOOT_ID":
-            metadata["__BOOT_ID"] = value
-            continue
-        if name.startswith(b"__"):
-            try:
-                key = name.decode("ascii")
-            except UnicodeDecodeError:
-                continue
-            if key in METADATA_ORDER:
-                metadata[key] = value
-            continue
-        payloads.append(name + b"=" + value)
+
+def maybe_export_entry(metadata: dict[str, bytes], payloads: list[bytes]):
+    if metadata or payloads:
+        yield metadata, payloads
+
+
+def read_export_field(stream: BinaryIO, line: bytes) -> tuple[bytes, bytes]:
+    if not line.endswith(b"\n"):
+        raise ValueError("truncated journal export field line")
+    line = line[:-1]
+    if b"=" in line:
+        return line.split(b"=", 1)
+    return line, read_binary_export_value(stream)
+
+
+def read_binary_export_value(stream: BinaryIO) -> bytes:
+    size_raw = stream.read(8)
+    if len(size_raw) != 8:
+        raise ValueError("truncated binary journal export field size")
+    size = struct.unpack("<Q", size_raw)[0]
+    value = stream.read(size)
+    if len(value) != size:
+        raise ValueError("truncated binary journal export field value")
+    trailer = stream.read(1)
+    if trailer != b"\n":
+        raise ValueError("truncated binary journal export field trailer")
+    return value
+
+
+def store_export_field(
+    metadata: dict[str, bytes],
+    payloads: list[bytes],
+    name: bytes,
+    value: bytes,
+) -> None:
+    if name == b"_BOOT_ID":
+        metadata["__BOOT_ID"] = value
+        return
+    if store_metadata_field(metadata, name, value):
+        return
+    payloads.append(name + b"=" + value)
+
+
+def store_metadata_field(metadata: dict[str, bytes], name: bytes, value: bytes) -> bool:
+    if not name.startswith(b"__"):
+        return False
+    try:
+        key = name.decode("ascii")
+    except UnicodeDecodeError:
+        return True
+    if key in METADATA_ORDER:
+        metadata[key] = value
+    return True
 
 
 def digest_entries(
