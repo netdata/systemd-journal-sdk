@@ -2871,105 +2871,88 @@ def test_journalctl_verify():
     valid_path = REPO_ROOT / 'fixtures/systemd/test-data/no-rtc/system.journal.zst'
     corrupt_path = REPO_ROOT / 'fixtures/systemd/test-data/corrupted/zstd-truncated-frame.zst'
     script = PYTHON_ROOT / 'cmd/journalctl.py'
+    _test_journalctl_verify_valid(script, valid_path)
+    _test_journalctl_verify_directory(script, valid_path)
+    _test_journalctl_verify_corrupt(script, corrupt_path)
+    _test_journalctl_verify_key(script, valid_path)
+    _test_journalctl_verify_sealed(script, valid_path)
 
-    # --verify valid file
+
+def _run_journalctl_verify_cmd(script, *args):
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
-    result = subprocess.run(  # nosec B603
-        [sys.executable, str(script), '--verify', '--file', str(valid_path)],
-        capture_output=True, text=True,
+    return subprocess.run(  # nosec B603
+        [sys.executable, str(script), *[str(arg) for arg in args]],
+        capture_output=True,
+        text=True,
     )
+
+
+def _assert_verify_success(result, label):
+    assert result.returncode == 0, f'{label} failed: {result.stderr}'
+    assert result.stdout == '', f"expected no stdout, got: {result.stdout}"
+    assert 'PASS:' in result.stderr, f"expected PASS in stderr, got: {result.stderr}"
+
+
+def _assert_verify_failure(result, label, stderr_text=None):
+    assert result.returncode != 0, f'expected {label} to fail'
+    assert result.stdout == '', f"expected no stdout, got: {result.stdout}"
+    if stderr_text is not None:
+        assert stderr_text in result.stderr, f"expected {stderr_text!r} in stderr, got: {result.stderr}"
+
+
+def _test_journalctl_verify_valid(script, valid_path):
+    result = _run_journalctl_verify_cmd(script, '--verify', '--file', valid_path)
     assert result.returncode == 0, f'--verify valid failed: {result.stderr}'
     assert result.stdout == '', f"expected no stdout, got: {result.stdout}"
     assert 'PASS:' in result.stderr, f"expected PASS in stderr, got: {result.stderr}"
 
-    # --verify-only valid file
-    # nosemgrep
-    # subprocess is required by this harness; commands are shell=False vectors.
-    result = subprocess.run(  # nosec B603
-        [sys.executable, str(script), '--verify-only', '--file', str(valid_path)],
-        capture_output=True, text=True,
-    )
-    assert result.returncode == 0, f'--verify-only valid failed: {result.stderr}'
-    assert result.stdout == '', f"expected no stdout, got: {result.stdout}"
-    assert 'PASS:' in result.stderr, f"expected PASS in stderr, got: {result.stderr}"
+    result = _run_journalctl_verify_cmd(script, '--verify-only', '--file', valid_path)
+    _assert_verify_success(result, '--verify-only valid')
 
-    # --verify directory follows symlinked journals and skips directories
+
+def _test_journalctl_verify_directory(script, valid_path):
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
         os.symlink(valid_path, tmp_path / 'linked.journal.zst')
         os.mkdir(tmp_path / 'skip.journal.zst')
-        # nosemgrep
-        # subprocess is required by this harness; commands are shell=False vectors.
-        result = subprocess.run(  # nosec B603
-            [sys.executable, str(script), '--verify', '--directory', str(tmp_path)],
-            capture_output=True, text=True,
-        )
+        result = _run_journalctl_verify_cmd(script, '--verify', '--directory', tmp_path)
     assert result.returncode == 0, f'--verify directory failed: {result.stderr}'
     assert result.stdout == '', f"expected no stdout, got: {result.stdout}"
     assert result.stderr.count('PASS:') == 1, f"expected one PASS in stderr, got: {result.stderr}"
     assert 'FAIL:' not in result.stderr, f"expected no FAIL in stderr, got: {result.stderr}"
 
-    # --verify empty directory
     with tempfile.TemporaryDirectory() as tmpdir:
-        # nosemgrep
-        # subprocess is required by this harness; commands are shell=False vectors.
-        result = subprocess.run(  # nosec B603
-            [sys.executable, str(script), '--verify', '--directory', tmpdir],
-            capture_output=True, text=True,
-        )
+        result = _run_journalctl_verify_cmd(script, '--verify', '--directory', tmpdir)
     assert result.returncode == 0, f'expected --verify empty directory to succeed: {result.stderr}'
     assert result.stdout == '', f"expected no stdout, got: {result.stdout}"
     assert result.stderr == '', f"expected no stderr, got: {result.stderr}"
 
-    # --verify corrupted file
-    # nosemgrep
-    # subprocess is required by this harness; commands are shell=False vectors.
-    result = subprocess.run(  # nosec B603
-        [sys.executable, str(script), '--verify', '--file', str(corrupt_path)],
-        capture_output=True, text=True,
-    )
+
+def _test_journalctl_verify_corrupt(script, corrupt_path):
+    result = _run_journalctl_verify_cmd(script, '--verify', '--file', corrupt_path)
     assert result.returncode != 0, 'expected --verify corrupted to fail'
     assert 'FAIL:' in result.stderr, f"expected FAIL in stderr, got: {result.stderr}"
 
-    # --verify-key unsealed file (valid key parsed, normal verification)
-    # nosemgrep
-    # subprocess is required by this harness; commands are shell=False vectors.
-    result = subprocess.run(  # nosec B603
-        [sys.executable, str(script), '--verify-key', VALID_FSS_VERIFICATION_KEY, '--file', str(valid_path)],
-        capture_output=True, text=True,
-    )
-    assert result.returncode == 0, f'--verify-key unsealed failed: {result.stderr}'
-    assert result.stdout == '', f"expected no stdout, got: {result.stdout}"
-    assert 'PASS:' in result.stderr, f"expected PASS in stderr, got: {result.stderr}"
 
-    # --verify-key invalid seed
-    # nosemgrep
-    # subprocess is required by this harness; commands are shell=False vectors.
-    result = subprocess.run(  # nosec B603
-        [sys.executable, str(script), '--verify-key', 'synthetic-test-key', '--file', str(valid_path)],
-        capture_output=True, text=True,
+def _test_journalctl_verify_key(script, valid_path):
+    result = _run_journalctl_verify_cmd(
+        script,
+        '--verify-key',
+        VALID_FSS_VERIFICATION_KEY,
+        '--file',
+        valid_path,
     )
-    assert result.returncode != 0, 'expected --verify-key invalid seed to fail'
-    assert result.stdout == '', f"expected no stdout, got: {result.stdout}"
-    assert 'Failed to parse seed.' in result.stderr, (
-        f"expected parse seed error in stderr, got: {result.stderr}"
-    )
+    _assert_verify_success(result, '--verify-key unsealed')
 
-    # --verify-key empty seed
-    # nosemgrep
-    # subprocess is required by this harness; commands are shell=False vectors.
-    result = subprocess.run(  # nosec B603
-        [sys.executable, str(script), '--verify-key=', '--file', str(valid_path)],
-        capture_output=True, text=True,
-    )
-    assert result.returncode != 0, 'expected --verify-key empty seed to fail'
-    assert result.stdout == '', f"expected no stdout, got: {result.stdout}"
-    assert 'Failed to parse seed.' in result.stderr, (
-        f"expected parse seed error in stderr, got: {result.stderr}"
-    )
+    result = _run_journalctl_verify_cmd(script, '--verify-key', 'synthetic-test-key', '--file', valid_path)
+    _assert_verify_failure(result, '--verify-key invalid seed', 'Failed to parse seed.')
 
-    # --verify sealed file without key (key required)
+    result = _run_journalctl_verify_cmd(script, '--verify-key=', '--file', valid_path)
+    _assert_verify_failure(result, '--verify-key empty seed', 'Failed to parse seed.')
+
+
+def _test_journalctl_verify_sealed(script, valid_path):
     from journal.compress import decompress_zst_sync
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir) / 'sealed.journal'
@@ -2981,12 +2964,7 @@ def test_journalctl_verify():
         buf[8:12] = flags.to_bytes(4, 'little')
         tmp_path.write_bytes(buf)
 
-        # nosemgrep
-        # subprocess is required by this harness; commands are shell=False vectors.
-        result = subprocess.run(  # nosec B603
-            [sys.executable, str(script), '--verify', '--file', str(tmp_path)],
-            capture_output=True, text=True,
-        )
+        result = _run_journalctl_verify_cmd(script, '--verify', '--file', tmp_path)
         assert result.returncode != 0, 'expected --verify sealed without key to fail'
         assert 'verification key' in result.stderr, (
             f"expected verification key message in stderr, got: {result.stderr}"
@@ -2995,7 +2973,6 @@ def test_journalctl_verify():
             f"sealed file without key should not pass, got: {result.stderr}"
         )
 
-        # --verify-key with real sealed file
         seal_opts = _test_seal_opts()
         sealed_path = Path(tmpdir) / 'sealed-real.journal'
         w = Writer.create(str(sealed_path), opts={'seal': seal_opts})
@@ -3003,23 +2980,12 @@ def test_journalctl_verify():
         w.close()
         key = _test_verification_key(seal_opts)
 
-        # nosemgrep
-        # subprocess is required by this harness; commands are shell=False vectors.
-        result = subprocess.run(  # nosec B603
-            [sys.executable, str(script), '--verify-key', key, '--file', str(sealed_path)],
-            capture_output=True, text=True,
-        )
+        result = _run_journalctl_verify_cmd(script, '--verify-key', key, '--file', sealed_path)
         assert result.returncode == 0, f'expected --verify-key sealed to pass, got: {result.stderr}'
         assert 'PASS:' in result.stderr, f"expected PASS in stderr, got: {result.stderr}"
 
-        # wrong key
         wrong_key = '000000000000000000000001/1-f4240'
-        # nosemgrep
-        # subprocess is required by this harness; commands are shell=False vectors.
-        result = subprocess.run(  # nosec B603
-            [sys.executable, str(script), '--verify-key', wrong_key, '--file', str(sealed_path)],
-            capture_output=True, text=True,
-        )
+        result = _run_journalctl_verify_cmd(script, '--verify-key', wrong_key, '--file', sealed_path)
         assert result.returncode != 0, 'expected --verify-key with wrong key to fail'
         assert 'FAIL:' in result.stderr, f"expected FAIL in stderr, got: {result.stderr}"
 
@@ -3037,50 +3003,69 @@ def _test_verification_key(opts):
 def _tamper_data_payload(path, expected_payload):
     buf = bytearray(Path(path).read_bytes())
     header = parse_file_header(buf)
+    scan = _find_tamper_target(buf, header, expected_payload)
+    _validate_tamper_target(scan, expected_payload)
+    buf[scan['payload_offset']] ^= 0x01
+    Path(path).write_bytes(buf)
+
+
+def _find_tamper_target(buf, header, expected_payload):
     offset = header['header_size']
     tail_object_offset = header['tail_object_offset']
     compact = bool(header['incompatible_flags'] & INCOMPATIBLE_COMPACT)
-    tag_count = 0
-    second_tag_offset = 0
-    target_payload_offset = 0
-    target_object_offset = 0
-
+    scan = {'tag_count': 0, 'second_tag_offset': 0, 'payload_offset': 0, 'object_offset': 0}
     while offset + 16 <= len(buf):
-        typ = buf[offset]
-        size = int.from_bytes(buf[offset + 8:offset + 16], 'little')
-        if size < 16:
-            raise AssertionError(f'invalid object size {size} at {offset}')
-        aligned = (size + 7) & ~7
-        if offset + aligned > len(buf):
-            raise AssertionError(f'object at {offset} exceeds file')
-
-        if typ == OBJECT_TYPE_TAG:
-            tag_count += 1
-            if tag_count == 2:
-                second_tag_offset = offset
-        elif typ == OBJECT_TYPE_DATA:
-            payload_offset = COMPACT_DATA_OBJECT_HEADER_SIZE if compact else DATA_OBJECT_HEADER_SIZE
-            if size > payload_offset:
-                start = offset + payload_offset
-                end = offset + size
-                if bytes(buf[start:end]) == expected_payload:
-                    target_payload_offset = start
-                    target_object_offset = offset
-
+        obj = _read_tamper_scan_object(buf, offset)
+        _update_tamper_scan(scan, buf, obj, compact, expected_payload)
         if offset == tail_object_offset:
             break
-        offset += aligned
+        offset += obj['aligned']
+    return scan
 
-    if target_payload_offset == 0:
+
+def _read_tamper_scan_object(buf, offset):
+    size = int.from_bytes(buf[offset + 8:offset + 16], 'little')
+    if size < 16:
+        raise AssertionError(f'invalid object size {size} at {offset}')
+    aligned = (size + 7) & ~7
+    if offset + aligned > len(buf):
+        raise AssertionError(f'object at {offset} exceeds file')
+    return {'type': buf[offset], 'size': size, 'offset': offset, 'aligned': aligned}
+
+
+def _update_tamper_scan(scan, buf, obj, compact, expected_payload):
+    if obj['type'] == OBJECT_TYPE_TAG:
+        _record_tamper_tag(scan, obj['offset'])
+    elif obj['type'] == OBJECT_TYPE_DATA:
+        _record_matching_tamper_data(scan, buf, obj, compact, expected_payload)
+
+
+def _record_tamper_tag(scan, offset):
+    scan['tag_count'] += 1
+    if scan['tag_count'] == 2:
+        scan['second_tag_offset'] = offset
+
+
+def _record_matching_tamper_data(scan, buf, obj, compact, expected_payload):
+    payload_offset = COMPACT_DATA_OBJECT_HEADER_SIZE if compact else DATA_OBJECT_HEADER_SIZE
+    if obj['size'] <= payload_offset:
+        return
+    start = obj['offset'] + payload_offset
+    end = obj['offset'] + obj['size']
+    if bytes(buf[start:end]) == expected_payload:
+        scan['payload_offset'] = start
+        scan['object_offset'] = obj['offset']
+
+
+def _validate_tamper_target(scan, expected_payload):
+    if scan['payload_offset'] == 0:
         raise AssertionError(f'payload not found: {expected_payload!r}')
-    if second_tag_offset == 0:
+    if scan['second_tag_offset'] == 0:
         raise AssertionError('second TAG not found')
-    if target_object_offset >= second_tag_offset:
+    if scan['object_offset'] >= scan['second_tag_offset']:
         raise AssertionError(
-            f'DATA object {target_object_offset} is not covered by second TAG {second_tag_offset}'
+            f'DATA object {scan["object_offset"]} is not covered by second TAG {scan["second_tag_offset"]}'
         )
-    buf[target_payload_offset] ^= 0x01
-    Path(path).write_bytes(buf)
 
 
 def test_writer_sealed_basic():

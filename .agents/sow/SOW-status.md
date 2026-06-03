@@ -41,8 +41,11 @@ Last updated: 2026-06-03
   findings. Batch 12 made all remaining `python/journal/*` core runtime files
   locally Lizard-clean, passed the full Python package test suite, and reduced
   the refreshed local all-tracked-file Lizard inventory to 213 critical
-  findings. Remaining work is to continue complexity remediation, record final
-  scanner results, and complete whole-SOW review.
+  findings. Batch 13 made all remaining Python adapter, CLI, and test harness
+  files locally Lizard-clean, passed the full Python package test suite, and
+  reduced the refreshed local all-tracked-file Lizard inventory to 203
+  critical findings. Remaining work is to continue complexity remediation,
+  record final scanner results, and complete whole-SOW review.
 
 ## Pending
 

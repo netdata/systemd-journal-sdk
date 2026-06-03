@@ -1446,6 +1446,34 @@ Complexity remediation evidence:
     findings, down from 220 after Batch 11. No `python/journal/*` core runtime
     findings remain; the 10 remaining Python findings are in `python/adapter.py`,
     Python CLI helpers, and `python/test_all.py`.
+- Batch 13, remaining Python adapter, CLI, and test harness findings:
+  - Refactored `python/adapter.py` conformance category dispatch into a
+    table-driven handler map, split cursor conformance checks into found,
+    invalid, and missing-cursor helpers, and split corruption-resilience logic
+    into verifier and read-probe helpers without changing reported conformance
+    result classes.
+  - Refactored `python/cmd/journalctl.py` timestamp parsing, verification-key
+    parsing, verify-file handling, and main query-mode dispatch into smaller
+    helpers while preserving directory verify skip behavior, sealed-key
+    handling, and file-backed journalctl output modes.
+  - Refactored `python/cmd/livewriter.py` live harness setup, writer options,
+    fixture field construction, append loop, ready-file publication, sync
+    cadence, and crash trigger into separate helpers without changing command
+    line options or fixture payloads.
+  - Refactored `python/test_all.py` journalctl verify coverage into valid,
+    directory, corrupted, key, and sealed subtests, and split the sealed DATA
+    tamper helper into object-scan and validation helpers without weakening the
+    requirement that the mutated DATA object is covered by the second TAG.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for
+    `python/adapter.py`, `python/cmd/journalctl.py`,
+    `python/cmd/livewriter.py`, and `python/test_all.py`.
+  - `python3 -m py_compile python/adapter.py python/cmd/journalctl.py
+    python/cmd/livewriter.py python/test_all.py` passed.
+  - `PYTHONPATH=python .local/python-venv/bin/python python/test_all.py`
+    passed.
+  - Refreshed local all-tracked-file Lizard inventory now reports 203 critical
+    findings, down from 213 after Batch 12. Python has no remaining critical
+    Lizard findings.
 
 Reviewer findings:
 

@@ -68,31 +68,7 @@ def run_adapter():
     result = {'test_name': tc.get('test_name', ''), 'result_format': tc.get('expected', {}).get('result_format', '')}
 
     try:
-        category = tc.get('category', '')
-        if category == 'file-format':
-            result = run_file_format_test(tc)
-        elif category == 'entry-parse':
-            result = run_entry_parse_test(tc)
-        elif category == 'matching':
-            result = run_matching_test(tc)
-        elif category == 'stream':
-            result = run_stream_test(tc)
-        elif category == 'cursor-navigation':
-            result = run_cursor_test(tc)
-        elif category == 'enumeration':
-            result = run_enumeration_test(tc)
-        elif category == 'import-export':
-            result = run_import_export_test(tc)
-        elif category == 'journalctl-cli':
-            result = run_journalctl_test(tc)
-        elif category == 'compression':
-            result = run_compression_test(tc)
-        elif category == 'corruption-resilience':
-            result = run_corruption_test(tc)
-        elif category == 'verification':
-            result = run_verification_test(tc)
-        else:
-            result = {'status': 'SKIP', 'note': f'unsupported category: {category}'}
+        result = _run_adapter_category(tc)
     except Exception as e:
         result = {'status': 'ERROR', 'error': str(e)}
 
@@ -104,6 +80,30 @@ def run_adapter():
         result['note'] = 'no matching test handler'
 
     print(json.dumps(result))
+
+
+def _run_adapter_category(tc):
+    category = tc.get('category', '')
+    handler = _adapter_handlers().get(category)
+    if handler is None:
+        return {'status': 'SKIP', 'note': f'unsupported category: {category}'}
+    return handler(tc)
+
+
+def _adapter_handlers():
+    return {
+        'file-format': run_file_format_test,
+        'entry-parse': run_entry_parse_test,
+        'matching': run_matching_test,
+        'stream': run_stream_test,
+        'cursor-navigation': run_cursor_test,
+        'enumeration': run_enumeration_test,
+        'import-export': run_import_export_test,
+        'journalctl-cli': run_journalctl_test,
+        'compression': run_compression_test,
+        'corruption-resilience': run_corruption_test,
+        'verification': run_verification_test,
+    }
 
 
 def run_file_format_test(tc):
@@ -342,33 +342,15 @@ def run_cursor_test(tc):
         return {'status': 'SKIP', 'note': 'zstd decompression unavailable'}
     r = SdJournalOpen(path, 0)
     try:
-        SdJournalSeekHead(r)
-        if SdJournalNext(r) == 0:
-            return {'status': 'FAIL', 'error': 'no entries'}
-        cursor = SdJournalGetCursor(r)
-        if not cursor:
-            return {'status': 'FAIL', 'error': 'null cursor'}
-        if not SdJournalTestCursor(r, cursor):
-            return {'status': 'FAIL', 'error': 'current cursor did not match'}
-        cursor_realtime = SdJournalGetRealtimeUsec(r)
-        if SdJournalTestCursor(r, 'invalid-cursor'):
-            return {'status': 'FAIL', 'error': 'invalid cursor matched current position'}
-        invalid_seek_rejected = False
-        try:
-            SdJournalSeekCursor(r, 'invalid-cursor')
-        except Exception:
-            invalid_seek_rejected = True
-        if not invalid_seek_rejected:
-            return {'status': 'FAIL', 'error': 'invalid seek cursor was accepted'}
-        SdJournalSeekCursor(r, cursor)
-        if 'n=' not in cursor:
-            return {'status': 'FAIL', 'error': 'cursor missing seqnum segment'}
-        missing_cursor = cursor.rsplit('n=', 1)[0] + 'n=999999'
-        SdJournalSeekCursor(r, missing_cursor)
-        if SdJournalTestCursor(r, cursor):
-            return {'status': 'FAIL', 'error': 'missing seek stayed on original cursor'}
-        if SdJournalGetRealtimeUsec(r) < cursor_realtime:
-            return {'status': 'FAIL', 'error': 'missing seek moved before requested cursor'}
+        cursor, cursor_realtime, failure = _cursor_test_found_cursor(r)
+        if failure is not None:
+            return failure
+        failure = _cursor_test_invalid_cursor(r)
+        if failure is not None:
+            return failure
+        failure = _cursor_test_missing_cursor_seek(r, cursor, cursor_realtime)
+        if failure is not None:
+            return failure
         return {
             'status': 'PASS',
             'actual': True,
@@ -382,6 +364,40 @@ def run_cursor_test(tc):
         }
     finally:
         r.close()
+
+
+def _cursor_test_found_cursor(r):
+    SdJournalSeekHead(r)
+    if SdJournalNext(r) == 0:
+        return None, 0, {'status': 'FAIL', 'error': 'no entries'}
+    cursor = SdJournalGetCursor(r)
+    if not cursor:
+        return None, 0, {'status': 'FAIL', 'error': 'null cursor'}
+    if not SdJournalTestCursor(r, cursor):
+        return None, 0, {'status': 'FAIL', 'error': 'current cursor did not match'}
+    return cursor, SdJournalGetRealtimeUsec(r), None
+
+
+def _cursor_test_invalid_cursor(r):
+    if SdJournalTestCursor(r, 'invalid-cursor'):
+        return {'status': 'FAIL', 'error': 'invalid cursor matched current position'}
+    try:
+        SdJournalSeekCursor(r, 'invalid-cursor')
+    except Exception:
+        return None
+    return {'status': 'FAIL', 'error': 'invalid seek cursor was accepted'}
+
+
+def _cursor_test_missing_cursor_seek(r, cursor, cursor_realtime):
+    if 'n=' not in cursor:
+        return {'status': 'FAIL', 'error': 'cursor missing seqnum segment'}
+    missing_cursor = cursor.rsplit('n=', 1)[0] + 'n=999999'
+    SdJournalSeekCursor(r, missing_cursor)
+    if SdJournalTestCursor(r, cursor):
+        return {'status': 'FAIL', 'error': 'missing seek stayed on original cursor'}
+    if SdJournalGetRealtimeUsec(r) < cursor_realtime:
+        return {'status': 'FAIL', 'error': 'missing seek moved before requested cursor'}
+    return None
 
 
 def run_enumeration_test(tc):
@@ -470,17 +486,25 @@ def run_compression_test(tc):
 def run_corruption_test(tc):
     name = tc.get('test_name', '')
     if name == 'journal-verify-corruption-detection':
-        from journal.verify import verify_file, VerificationError
-        path = resolve_fixture(tc, 'corrupted_file')
-        if not path:
-            return {'status': 'SKIP', 'note': 'no corrupted_file fixture'}
-        if fixture_requires_zstd(path):
-            return {'status': 'SKIP', 'note': 'zstd decompression unavailable'}
-        try:
-            verify_file(path)
-        except VerificationError as e:
-            return {'status': 'PASS', 'actual': str(e), 'error': str(e)}
-        return {'status': 'FAIL', 'error': 'verification did not detect corruption in truncated zstd frame'}
+        return _run_corruption_verifier_test(tc)
+    return _run_corruption_resilience_test(tc)
+
+
+def _run_corruption_verifier_test(tc):
+    from journal.verify import verify_file, VerificationError
+    path = resolve_fixture(tc, 'corrupted_file')
+    if not path:
+        return {'status': 'SKIP', 'note': 'no corrupted_file fixture'}
+    if fixture_requires_zstd(path):
+        return {'status': 'SKIP', 'note': 'zstd decompression unavailable'}
+    try:
+        verify_file(path)
+    except VerificationError as e:
+        return {'status': 'PASS', 'actual': str(e), 'error': str(e)}
+    return {'status': 'FAIL', 'error': 'verification did not detect corruption in truncated zstd frame'}
+
+
+def _run_corruption_resilience_test(tc):
     checked = 0
     read_errors = 0
     for key in ['corrupted_file', 'afl_corrupted_1', 'afl_corrupted_2']:
@@ -490,22 +514,32 @@ def run_corruption_test(tc):
         if fixture_requires_zstd(path):
             return {'status': 'SKIP', 'note': 'zstd decompression unavailable'}
         checked += 1
-        try:
-            r = FileReader.open(path)
-            for _ in range(1000):
-                if not r.step():
-                    break
-                try:
-                    r.get_entry()
-                except Exception:
-                    read_errors += 1
-                    break
-            r.close()
-        except Exception:
-            read_errors += 1
+        read_errors += _count_corruption_read_error(path)
     if checked == 0:
         return {'status': 'SKIP', 'note': 'no corruption fixtures'}
     return {'status': 'PASS', 'actual': True, 'evidence': {'checked': checked, 'read_errors': read_errors}}
+
+
+def _count_corruption_read_error(path):
+    try:
+        r = FileReader.open(path)
+        try:
+            return _count_entry_read_error(r)
+        finally:
+            r.close()
+    except Exception:
+        return 1
+
+
+def _count_entry_read_error(reader):
+    for _ in range(1000):
+        if not reader.step():
+            return 0
+        try:
+            reader.get_entry()
+        except Exception:
+            return 1
+    return 0
 
 
 def run_verification_test(tc):

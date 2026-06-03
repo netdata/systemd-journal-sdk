@@ -21,6 +21,8 @@ from journal.directory_reader import _collect_journal_files
 from journal.verify import verify_file, verify_file_with_key, VerificationError
 from journal.header import COMPATIBLE_SEALED
 
+_VERIFY_SKIP = object()
+
 
 def unsupported(name):
     sys.stderr.write(f'Error: --{name} is not supported in the pure-Python journalctl\n')
@@ -68,22 +70,42 @@ def parse_limit(name, value):
 
 def parse_timestamp_usec(value):
     value = value.strip()
-    if value == 'now':
-        return int(time.time() * 1_000_000)
-    if value in ('today', 'yesterday', 'tomorrow'):
-        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        if value == 'yesterday':
-            today -= timedelta(days=1)
-        elif value == 'tomorrow':
-            today += timedelta(days=1)
-        return int(today.timestamp() * 1_000_000)
+    parsed = _parse_named_timestamp_usec(value)
+    if parsed is not None:
+        return parsed
     if value.startswith('@'):
         return parse_epoch_timestamp_usec(value[1:])
-    if value and value[0] in '+-' and len(value) > 1 and not re.match(r'^[+-]\d{4}-', value):
+    if _is_relative_timestamp(value):
         delta = parse_duration_usec(value[1:])
         now = int(time.time() * 1_000_000)
         return now + delta if value[0] == '+' else now - delta
+    parsed = _parse_datetime_timestamp_usec(value)
+    if parsed is not None:
+        return parsed
+    raise ValueError(f'failed to parse timestamp: {value}')
 
+
+def _parse_named_timestamp_usec(value):
+    if value == 'now':
+        return int(time.time() * 1_000_000)
+    if value not in ('today', 'yesterday', 'tomorrow'):
+        return None
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    if value == 'yesterday':
+        today -= timedelta(days=1)
+    elif value == 'tomorrow':
+        today += timedelta(days=1)
+    return int(today.timestamp() * 1_000_000)
+
+
+def _is_relative_timestamp(value):
+    return (
+        value and value[0] in '+-' and len(value) > 1 and
+        re.match(r'^[+-]\d{4}-', value) is None
+    )
+
+
+def _parse_datetime_timestamp_usec(value):
     now = datetime.now()
     for fmt in (
         '%Y-%m-%d %H:%M:%S.%f',
@@ -101,7 +123,7 @@ def parse_timestamp_usec(value):
         if fmt.startswith('%H'):
             dt = dt.replace(year=now.year, month=now.month, day=now.day)
         return int(dt.timestamp() * 1_000_000)
-    raise ValueError(f'failed to parse timestamp: {value}')
+    return None
 
 
 def parse_epoch_timestamp_usec(value):
@@ -357,63 +379,15 @@ def run_verify(input_path, verify_key):
     if has_verify_key and not valid_verification_key(verify_key):
         sys.stderr.write('Failed to parse seed.\n')
         return 1
-
-    directory_input = os.path.isdir(input_path)
-    if directory_input:
-        files = _collect_journal_files(input_path)
-    else:
-        files = [input_path]
-
+    files, directory_input = _verify_input_files(input_path)
     if not files:
-        if directory_input:
-            return 0
-        sys.stderr.write('Error: verify: no journal files found\n')
-        return 1
+        return _verify_no_files(directory_input)
 
     first_err = None
     for path in files:
-        r = None
-        try:
-            r = FileReader.open(path)
-            sealed = (r.header()['compatible_flags'] & COMPATIBLE_SEALED) != 0
-        except Exception as err:
-            if directory_input:
-                continue
-            sys.stderr.write(f'FAIL: {path} ({err})\n')
-            if first_err is None:
-                first_err = err
-            continue
-        finally:
-            if r is not None:
-                r.close()
-
-        if sealed and has_verify_key:
-            try:
-                verify_file_with_key(path, verify_key)
-                sys.stderr.write(f'PASS: {path}\n')
-            except VerificationError as err:
-                sys.stderr.write(f'FAIL: {path} ({err})\n')
-                if first_err is None:
-                    first_err = err
-            continue
-
-        if sealed and not has_verify_key:
-            sys.stderr.write(
-                f'Journal file {path} has sealing enabled but verification key '
-                f'has not been passed using --verify-key=.\n'
-            )
-            sys.stderr.write(f'FAIL: {path} (verification key required for sealed journal file)\n')
-            if first_err is None:
-                first_err = RuntimeError('verification key required for sealed journal file')
-            continue
-
-        try:
-            verify_file(path)
-            sys.stderr.write(f'PASS: {path}\n')
-        except Exception as err:
-            sys.stderr.write(f'FAIL: {path} ({err})\n')
-            if first_err is None:
-                first_err = err
+        err = _verify_one_file(path, has_verify_key, verify_key, directory_input)
+        if first_err is None and err is not None:
+            first_err = err
 
     if first_err is not None:
         sys.stderr.write(f'Error: {first_err}\n')
@@ -421,19 +395,97 @@ def run_verify(input_path, verify_key):
     return 0
 
 
+def _verify_input_files(input_path):
+    directory_input = os.path.isdir(input_path)
+    if directory_input:
+        return _collect_journal_files(input_path), True
+    return [input_path], False
+
+
+def _verify_no_files(directory_input):
+    if directory_input:
+        return 0
+    sys.stderr.write('Error: verify: no journal files found\n')
+    return 1
+
+
+def _verify_one_file(path, has_verify_key, verify_key, directory_input):
+    sealed, err = _read_sealed_flag_for_verify(path, directory_input)
+    if err is _VERIFY_SKIP:
+        return None
+    if err is not None:
+        return err
+    if sealed and has_verify_key:
+        return _verify_sealed_file(path, verify_key)
+    if sealed:
+        return _verify_missing_key(path)
+    return _verify_unsealed_file(path)
+
+
+def _read_sealed_flag_for_verify(path, directory_input):
+    r = None
+    try:
+        r = FileReader.open(path)
+        return (r.header()['compatible_flags'] & COMPATIBLE_SEALED) != 0, None
+    except Exception as err:
+        if directory_input:
+            return False, _VERIFY_SKIP
+        sys.stderr.write(f'FAIL: {path} ({err})\n')
+        return False, err
+    finally:
+        if r is not None:
+            r.close()
+
+
+def _verify_sealed_file(path, verify_key):
+    try:
+        verify_file_with_key(path, verify_key)
+        sys.stderr.write(f'PASS: {path}\n')
+        return None
+    except VerificationError as err:
+        sys.stderr.write(f'FAIL: {path} ({err})\n')
+        return err
+
+
+def _verify_missing_key(path):
+    sys.stderr.write(
+        f'Journal file {path} has sealing enabled but verification key '
+        f'has not been passed using --verify-key=.\n'
+    )
+    sys.stderr.write(f'FAIL: {path} (verification key required for sealed journal file)\n')
+    return RuntimeError('verification key required for sealed journal file')
+
+
+def _verify_unsealed_file(path):
+    try:
+        verify_file(path)
+        sys.stderr.write(f'PASS: {path}\n')
+        return None
+    except Exception as err:
+        sys.stderr.write(f'FAIL: {path} ({err})\n')
+        return err
+
+
 def valid_verification_key(key):
+    seed_end = _consume_verification_seed(key)
+    if seed_end is None or seed_end >= len(key) or key[seed_end] != '/':
+        return False
+    return _valid_verification_key_range(key, seed_end + 1)
+
+
+def _consume_verification_seed(key):
     i = 0
     for _ in range(12):
         while i < len(key) and key[i] == '-':
             i += 1
         if i + 2 > len(key) or not is_hex(key[i]) or not is_hex(key[i + 1]):
-            return False
+            return None
         i += 2
-    if i >= len(key) or key[i] != '/':
-        return False
-    i += 1
+    return i
 
-    next_i, ok = consume_hex(key, i)
+
+def _valid_verification_key_range(key, start):
+    next_i, ok = consume_hex(key, start)
     if not ok or next_i >= len(key) or key[next_i] != '-':
         return False
     end_i, ok = consume_hex(key, next_i + 1)
@@ -454,6 +506,23 @@ def is_hex(ch):
 
 
 def main():
+    args = _parse_main_args()
+    _reject_unsupported_args(args)
+    path = _main_input_path(args)
+
+    if args.verify or args.verify_only or args.verify_key is not None:
+        return run_verify(path, args.verify_key)
+
+    head_limit, tail_limit = _main_limits(args)
+    since_usec, until_usec = _main_time_range(args)
+    try:
+        return _run_query_mode(path, args, head_limit, tail_limit, since_usec, until_usec)
+    except Exception as e:
+        sys.stderr.write(f'Error: {e}\n')
+        sys.exit(1)
+
+
+def _parse_main_args():
     parser = argparse.ArgumentParser(description='Pure-Python systemd journal reader')
     parser.add_argument('-f', '--file', help='journal file')
     parser.add_argument('-d', '--directory', help='journal directory')
@@ -476,9 +545,10 @@ def main():
     parser.add_argument('-U', '--until', help='show entries not newer than timestamp')
     parser.add_argument('--no-tail', action='store_true')
     parser.add_argument('positional', nargs='*', help='match expressions or +')
+    return parser.parse_args(preprocess_optional_boot_args(sys.argv[1:]))
 
-    args = parser.parse_args(preprocess_optional_boot_args(sys.argv[1:]))
 
+def _reject_unsupported_args(args):
     if args.sync:
         unsupported('sync')
     if args.flush:
@@ -487,16 +557,23 @@ def main():
         unsupported('rotate')
     if args.relinquish_var:
         unsupported('relinquish-var')
+
+
+def _main_input_path(args):
     path = args.file or args.directory
     if not path:
         sys.stderr.write('Error: use --file or --directory\n')
         sys.exit(1)
+    return path
 
-    if args.verify or args.verify_only or args.verify_key is not None:
-        return run_verify(path, args.verify_key)
 
+def _main_limits(args):
     head_limit = parse_limit('head', args.head)
     tail_limit = parse_limit('tail', args.tail) if args.tail is not None else 0
+    return head_limit, tail_limit
+
+
+def _main_time_range(args):
     try:
         since_usec = parse_timestamp_usec(args.since) if args.since else None
         until_usec = parse_timestamp_usec(args.until) if args.until else None
@@ -506,47 +583,51 @@ def main():
     if since_usec is not None and until_usec is not None and since_usec > until_usec:
         sys.stderr.write('Error: --since= must be before --until=.\n')
         sys.exit(1)
+    return since_usec, until_usec
 
-    try:
-        if args.follow:
-            follow_tail = tail_limit if args.tail is not None else 10
-            run_follow(path, args, since_usec, until_usec, follow_tail)
-            return 0
 
-        journal = open_filtered_journal(path, args)
-
-        if args.list_boots:
-            boots = SdJournalListBoots(journal)
-            for boot in boots:
-                first = boot['first_entry'] // 1000000
-                last = boot['last_entry'] // 1000000
-                idx = str(boot['index']).rjust(4)
-                first_dt = datetime.fromtimestamp(first)
-                last_dt = datetime.fromtimestamp(last)
-                sys.stdout.write(f'[{idx}] {boot["boot_id"][:8]} {first_dt.isoformat()} - {last_dt.isoformat()}\n')
-            journal.close()
-            return 0
-
-        if args.fields:
-            fields = SdJournalEnumerateFields(journal)
-            if isinstance(fields, set):
-                fields = sorted(fields)
-            for f in fields:
-                sys.stdout.write(f + '\n')
-            journal.close()
-            return 0
-
-        if tail_limit > 0:
-            show_tail(journal, tail_limit, since_usec, until_usec)
-            journal.close()
-            return 0
-
-        show_forward(journal, head_limit, since_usec, until_usec)
-        journal.close()
+def _run_query_mode(path, args, head_limit, tail_limit, since_usec, until_usec):
+    if args.follow:
+        follow_tail = tail_limit if args.tail is not None else 10
+        run_follow(path, args, since_usec, until_usec, follow_tail)
         return 0
-    except Exception as e:
-        sys.stderr.write(f'Error: {e}\n')
-        sys.exit(1)
+    journal = open_filtered_journal(path, args)
+    try:
+        return _run_open_journal_mode(journal, args, head_limit, tail_limit, since_usec, until_usec)
+    finally:
+        journal.close()
+
+
+def _run_open_journal_mode(journal, args, head_limit, tail_limit, since_usec, until_usec):
+    if args.list_boots:
+        _print_boots(journal)
+        return 0
+    if args.fields:
+        _print_fields(journal)
+        return 0
+    if tail_limit > 0:
+        show_tail(journal, tail_limit, since_usec, until_usec)
+        return 0
+    show_forward(journal, head_limit, since_usec, until_usec)
+    return 0
+
+
+def _print_boots(journal):
+    for boot in SdJournalListBoots(journal):
+        first = boot['first_entry'] // 1000000
+        last = boot['last_entry'] // 1000000
+        idx = str(boot['index']).rjust(4)
+        first_dt = datetime.fromtimestamp(first)
+        last_dt = datetime.fromtimestamp(last)
+        sys.stdout.write(f'[{idx}] {boot["boot_id"][:8]} {first_dt.isoformat()} - {last_dt.isoformat()}\n')
+
+
+def _print_fields(journal):
+    fields = SdJournalEnumerateFields(journal)
+    if isinstance(fields, set):
+        fields = sorted(fields)
+    for field in fields:
+        sys.stdout.write(field + '\n')
 
 
 if __name__ == '__main__':
