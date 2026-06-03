@@ -100,7 +100,8 @@ these inputs:
 
 - `/proc`
 - `/host/proc`
-- Host identity files used by systemd, including `/etc/machine-id`
+- `/etc/machine-id`
+- `/var/lib/dbus/machine-id`
 - platform registries
 - `sysctl`
 - `system_profiler`

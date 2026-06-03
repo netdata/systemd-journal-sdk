@@ -642,6 +642,10 @@ Tests or equivalent validation:
   live smoke above passed, and `tests/datasets/validate.py --help` hung during
   module execution and was terminated by exact PID. These attempts touched no
   product code and are not accepted validation evidence.
+- Local AGENTS singleton wording cleanup validation passed `git diff --check`,
+  `.agents/sow/audit.sh`, and a focused `rg` check showing the vague host
+  identity sentence is gone and the explicit `/etc/machine-id` and
+  `/var/lib/dbus/machine-id` bullets remain.
 
 Real-use evidence:
 
@@ -972,6 +976,11 @@ Real-use evidence:
   writer/reader matrix smoke, Python directory matrix, Python live matrix smoke
   with stock libsystemd verification, `git diff --check`, and
   `.agents/sow/audit.sh`.
+- Local AGENTS singleton wording cleanup targets the one current
+  `Agentlinter_clarity_no-vague-instructions` row reported after Codacy
+  analyzed `484bcfe`: the root instruction now names `/etc/machine-id` and
+  `/var/lib/dbus/machine-id` directly instead of saying "host identity files
+  used by systemd."
 
 Reviewer findings:
 
