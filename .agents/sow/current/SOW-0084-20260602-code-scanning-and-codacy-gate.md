@@ -2851,6 +2851,55 @@ Batch 51:
   - A second push and post-push scanner query are required to verify zero
     current-head GitHub code scanning alerts and zero Codacy Cloud issues.
 
+Batch 52:
+
+- Scope: final current Codacy Cloud findings after commit `bf09d6c`.
+- Post-push evidence for `bf09d6c`:
+  - GitHub CodeQL workflow passed for Go, JavaScript/TypeScript, Rust, and
+    Python.
+  - GitHub Codacy SARIF workflow passed.
+  - GitHub code-scanning API reported `current_open_count=0` for `bf09d6c`.
+  - Codacy Cloud `master` issue export reported 5 quality issues:
+    2 `Lizard_ccn-critical`, 1 `Lizard_nloc-critical`, 1
+    `Lizard_file-nloc-critical`, and 1
+    `PMD_category_ecmascript_errorprone_InnaccurateNumericLiteral`.
+- Rule disposition:
+  - Kept Codacy Cloud Lizard enabled. The remaining Lizard findings were
+    narrow maintainability signals in Node tests and the production writer file,
+    not broad scanner noise.
+  - Fixed the PMD JavaScript numeric-literal finding because it identified a
+    real JavaScript precision hazard: converting a large `Number` expression to
+    `BigInt` after the `Number` operation can lose precision.
+  - Did not disable PMD in Codacy Cloud from this finding. Although PMD
+    JavaScript was removed from GitHub SARIF as noisy, this specific Codacy
+    Cloud issue was actionable.
+- Fixes:
+  - Moved Node writer option/dedup helpers into
+    `node/src/lib/writer-options.js`, reducing
+    `node/src/lib/writer.js` below the Codacy Cloud critical file-NLOC limit
+    without changing writer behavior.
+  - Refactored `node/test/chunks/header_hash_writer.js` historical-header
+    checks into table-driven helpers.
+  - Refactored `node/test/chunks/seal_conformance.js` journalctl command
+    verification into small assertion/helper functions.
+  - Replaced unsafe `BigInt(large_number + i)` test timestamp construction with
+    `bigint + BigInt(i)` and normalized the same safe-but-risky pattern in two
+    related retention tests.
+- Local validation:
+  - `NODE_OPTIONS=--max-old-space-size=8192
+    npm_config_cache=../.local/npm-cache npm test` in `node/` passed.
+  - `python3 tests/interoperability/run_matrix.py --writers node --readers
+    node stock --entries 10` passed 11/11 checks against stock
+    `journalctl`.
+  - Local Lizard on the previously flagged Node files with `-C 12` reported no
+    threshold violations; `node/src/lib/writer.js` measured 988 NLOC.
+  - `node --check` passed for the affected Node files.
+  - `git diff --check` passed.
+  - `.agents/sow/audit.sh` passed.
+- Remaining gate:
+  - Push is required so GitHub CodeQL/Codacy SARIF and Codacy Cloud can analyze
+    this cleanup and confirm zero current actionable findings.
+
 Reviewer findings:
 
 - Pending. The current SOW is not ready for terminal reviewer review because

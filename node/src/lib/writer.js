@@ -3,7 +3,7 @@
 
 import { writeSync, readSync, closeSync, ftruncateSync, fsyncSync } from 'node:fs';
 import { zstdCompressSync } from 'node:zlib';
-import { readUint64LE, writeUint64LE, writeUint32LE, align8, randomUUID, isZeroUUID, bufEqual, stringToUUID } from './binary.js';
+import { readUint64LE, writeUint64LE, writeUint32LE, align8, randomUUID, isZeroUUID, bufEqual } from './binary.js';
 import { safeOpenSync, safeRenameSync } from './fs-safe.js';
 import {
   serializeFileHeader, parseObjectHeader, writeObjectHeader,
@@ -44,6 +44,12 @@ import {
   prepareFieldsForPolicy,
   prepareRawPayloadsForPolicy,
 } from './writer-policy.js';
+import {
+  dedupeEntryItems,
+  normalizeFileMode as normalizeFileModeOption,
+  normalizeLivePublishEveryEntries,
+  uuidOption,
+} from './writer-options.js';
 
 export const COMPRESSION_NONE = 0;
 export const COMPRESSION_ZSTD = 1;
@@ -1075,20 +1081,6 @@ function openedCompressionFromHeader(header) {
   return COMPRESSION_NONE;
 }
 
-function dedupeEntryItems(items) {
-  items.sort((a, b) => (a.offset < b.offset ? -1 : a.offset > b.offset ? 1 : 0));
-  const [firstItem, ...remainingItems] = items;
-  const deduped = [firstItem];
-  let lastOffset = firstItem.offset;
-  for (const item of remainingItems) {
-    if (item.offset !== lastOffset) {
-      deduped.push(item);
-      lastOffset = item.offset;
-    }
-  }
-  return deduped;
-}
-
 function normalizeCompression(value) {
   if (value === undefined || value === null || value === COMPRESSION_NONE || value === 'none') {
     return COMPRESSION_NONE;
@@ -1114,31 +1106,5 @@ function normalizeCompressThreshold(value) {
 }
 
 export function normalizeFileMode(value) {
-  if (value === undefined || value === null) return DEFAULT_JOURNAL_FILE_MODE;
-  if (!Number.isInteger(value) || value < 0 || value > 0o777) {
-    throw new Error(`invalid journal file mode: ${value}`);
-  }
-  return value;
-}
-
-function normalizeLivePublishEveryEntries(value) {
-  if (value === undefined || value === null) return 1;
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new Error(`invalid livePublishEveryEntries: ${value}`);
-  }
-  return value;
-}
-
-function uuidOption(value, label) {
-  if (value === undefined || value === null) return null;
-  let out;
-  if (typeof value === 'string') {
-    const clean = value.trim().replaceAll('-', '');
-    if (!/^[0-9a-fA-F]{32}$/.test(clean)) throw new Error(`${label} must be 16 bytes or 32 hex characters`);
-    out = stringToUUID(clean);
-  } else {
-    out = Buffer.from(value);
-  }
-  if (out.length !== 16) throw new Error(`${label} must be 16 bytes or 32 hex characters`);
-  return out;
+  return normalizeFileModeOption(value, DEFAULT_JOURNAL_FILE_MODE);
 }

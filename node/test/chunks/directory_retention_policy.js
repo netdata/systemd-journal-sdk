@@ -418,7 +418,7 @@ export async function run() {
       for (let i = 0; i < 3; i++) {
         first.append(
           [{ name: 'MESSAGE', value: `age-retention-${i}` }],
-          { realtimeUsec: BigInt(1_000_000 + i), monotonicUsec: BigInt(i + 1) },
+          { realtimeUsec: 1_000_000n + BigInt(i), monotonicUsec: BigInt(i + 1) },
         );
       }
       first.close();
@@ -448,7 +448,7 @@ export async function run() {
       for (let i = 0; i < 2; i++) {
         first.append(
           [{ name: 'MESSAGE', value: `age-active-retention-${i}` }],
-          { realtimeUsec: BigInt(1_000_000 + i), monotonicUsec: BigInt(i + 1) },
+          { realtimeUsec: 1_000_000n + BigInt(i), monotonicUsec: BigInt(i + 1) },
         );
       }
       first.close();

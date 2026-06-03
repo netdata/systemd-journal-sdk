@@ -58,7 +58,7 @@ export async function run() {
       for (let i = 0; i < 3; i++) {
         first.append(
           [{ name: 'MESSAGE', value: `open-retention-${retentionCase.name}-${i}` }],
-          { realtimeUsec: BigInt(1_700_002_276_000_000 + i), monotonicUsec: BigInt(i + 1) },
+          { realtimeUsec: 1_700_002_276_000_000n + BigInt(i), monotonicUsec: BigInt(i + 1) },
         );
       }
       first.close();
