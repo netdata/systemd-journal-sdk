@@ -141,6 +141,7 @@ fn main() {
 }
 
 fn run() -> AnyResult<()> {
+    // nosemgrep: rust.lang.security.args.args -- conformance adapter dispatches trusted test subcommands.
     match std::env::args().nth(1).as_deref() {
         Some("run") => cmd_run(),
         Some("list") => cmd_list(),
@@ -152,6 +153,7 @@ fn run() -> AnyResult<()> {
 }
 
 fn cmd_corrupt_probe() -> AnyResult<()> {
+    // nosemgrep: rust.lang.security.args.args -- private test probe consumes a harness-supplied fixture path.
     let path = std::env::args()
         .nth(2)
         .ok_or_else(|| anyhow!("missing corrupt probe path"))?;

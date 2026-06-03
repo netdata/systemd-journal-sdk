@@ -50,7 +50,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_max_level(tracing::Level::DEBUG)
         .init();
 
-    // Get directory from args or use default
+    // Get directory from args or use default.
+    // nosemgrep: rust.lang.security.args.args -- example CLI parses argv; not an authorization boundary.
     let dir = if let Some(arg) = env::args().nth(1) {
         PathBuf::from(arg)
     } else {

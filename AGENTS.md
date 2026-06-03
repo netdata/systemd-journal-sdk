@@ -78,7 +78,7 @@ inputs:
 
 - `/proc`
 - `/host/proc`
-- `/etc/machine-id`
+- Linux machine-id files such as `/etc/machine-id`
 - platform registries
 - `sysctl`
 - `system_profiler`

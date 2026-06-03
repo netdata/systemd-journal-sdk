@@ -101,6 +101,7 @@ impl FileIndexCacheBuilder {
 
         let cache_path = self
             .cache_path
+            // nosemgrep: rust.lang.security.temp-dir.temp-dir -- caller-configurable non-sensitive disk cache default.
             .unwrap_or_else(|| std::env::temp_dir().join("journal-engine-cache"));
         let disk_capacity = self.disk_capacity.unwrap_or(16 * 1024 * 1024);
         let block_size = self.block_size.unwrap_or(4 * 1024 * 1024);

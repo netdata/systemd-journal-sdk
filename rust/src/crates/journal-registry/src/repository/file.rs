@@ -427,7 +427,9 @@ mod tests {
 
     #[test]
     fn from_path_parses_native_absolute_paths() {
-        let path = std::env::temp_dir()
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir
+            .path()
             .join("00112233445566778899aabbccddeeff")
             .join("system.journal");
         let file = File::from_path(&path).expect("native absolute path parses");
@@ -452,7 +454,8 @@ mod tests {
 
     #[test]
     fn from_raw_path_accepts_native_absolute_paths() {
-        let path = std::env::temp_dir().join("raw-byte-names.journal");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("raw-byte-names.journal");
         let file = File::from_raw_path(&path).expect("raw native absolute path parses");
 
         assert_eq!(file.path(), path.to_str().expect("utf8 path"));

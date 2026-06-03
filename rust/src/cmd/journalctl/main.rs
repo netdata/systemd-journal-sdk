@@ -91,6 +91,7 @@ fn main() {
 }
 
 fn run() -> Result<()> {
+    // nosemgrep: rust.lang.security.args.args -- CLI entry point parses argv; not an authorization boundary.
     let args = Args::parse_from(preprocess_optional_boot_args(std::env::args()));
     if args.sync || args.flush || args.rotate || args.relinquish_var {
         return Err(anyhow!("{}", FacadeError::Unsupported));

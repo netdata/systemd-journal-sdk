@@ -354,8 +354,9 @@ Acceptance criteria evidence:
   `37491aa`, the export imported 1518 quality issues; after Codacy analyzed
   `9204315`, the export imported 1516 quality issues; after Codacy analyzed
   `bf8f4b9`, the export imported 1509 quality issues; after Codacy analyzed
-  `e80bf79`, the export imported 1508 quality issues. The exporter partitions
-  by language and fails if any partition reaches the CLI limit.
+  `e80bf79`, the export imported 1508 quality issues; after Codacy analyzed
+  `99d2b08`, the export imported 1502 quality issues. The exporter partitions by
+  language and fails if any partition reaches the CLI limit.
 - Codacy cloud security finding export initially imported 199 findings for
   `master`, the export after Codacy analyzed `057b737` imported 182 findings,
   the export after Codacy analyzed `8120b1e` imported 181 findings, and exports
@@ -364,9 +365,10 @@ Acceptance criteria evidence:
   `.local/codacy-cloud/codacy-findings.json`; after Codacy analyzed `9204315`,
   the export imported 178 findings; after Codacy analyzed `bf8f4b9`, the
   export imported 174 findings; after Codacy analyzed `e80bf79`, the export
-  imported 173 findings.
+  imported 173 findings; after Codacy analyzed `99d2b08`, the export imported
+  171 findings.
 - The user-observed 3056 Codacy UI count remains unreconciled with the Codacy
-  CLI repository dashboard count of 1508. Potential causes include UI scope,
+  CLI repository dashboard count of 1502. Potential causes include UI scope,
   non-master branch scope, additional views, ignored/resolved state inclusion,
   or stale UI totals.
 - SOW-0047 through SOW-0050 remain marked as blocked by code-scanning gates in
@@ -395,7 +397,8 @@ Tests or equivalent validation:
   1516 quality issues and 178 security findings; rerun after Codacy analyzed
   `bf8f4b9` exported 1509 quality issues and 174 security findings; rerun
   after Codacy analyzed `e80bf79` exported 1508 quality issues and 173
-  security findings.
+  security findings; rerun after Codacy analyzed `99d2b08` exported 1502
+  quality issues and 171 security findings.
 - `python3 tests/code_scanning/export_codacy_issues.py --source cli --provider gh --organization netdata --repository systemd-journal-sdk --branch master --output-dir .local/codacy-cloud --skip-findings --cli-timeout 300`:
   passed, proving the timeout-backed local CLI path still exports quality
   issues.
@@ -546,6 +549,15 @@ Tests or equivalent validation:
 - `python3 tests/vm_matrix/run_vm_matrix.py preflight`: ran successfully and
   reported `status=blocked` only because the four capped VM domains already
   exist; required tool discovery and target enumeration completed.
+- `cargo fmt -p journal -p journal-registry -p journalctl -p journal-engine -p adapter --check`:
+  passed for the Rust argv/temp-dir scanner cleanup batch.
+- `cargo check -p journal -p journal-registry -p journal-engine -p journalctl -p adapter`:
+  passed for the Rust argv/temp-dir scanner cleanup batch.
+- `cargo test -p journal verify_file_rejects_referenced_zero_sized_data_object`:
+  passed, covering the `.zst` decompression temp-file replacement.
+- `cargo test -p journal-registry from_path_parses_native_absolute_paths` and
+  `cargo test -p journal-registry from_raw_path_accepts_native_absolute_paths`:
+  passed, covering the registry test temp-dir replacement.
 - Local pinned Codacy package smoke:
   `@codacy/analysis-cli@0.8.1` installed under `.local/codacy-cli-test`;
   `codacy-analysis init --default .` succeeded; `codacy-analysis analyze .`
@@ -640,14 +652,24 @@ Real-use evidence:
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26855333850`.
   - Codacy SARIF: success, run URL
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26855333773`.
+- GitHub Actions workflow evidence collected from pushed commit `4a13d98`:
+  - CodeQL: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26855550525`.
+  - Codacy SARIF: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26855550546`.
+- GitHub Actions workflow evidence collected from pushed commit `99d2b08`:
+  - CodeQL: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26855684948`.
+  - Codacy SARIF: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26855684967`.
 - GitHub code scanning API returned 2053 open alerts after both workflows ran:
   by tool: Prospector 143, Agentlinter 240, PMD 50, lizard 955, PyLintPython3
   67, Bandit 111, Flawfinder 9, ESLint8 311, shellcheck 1, markdownlint 75,
   CodeQL 91.
 - Codacy cloud issue export ran locally through the authenticated `codacy` CLI
-  after Codacy analyzed `e80bf79`: 1508 quality issues on `master`.
-- Codacy security findings export ran locally after Codacy analyzed `e80bf79`:
-  173 findings.
+  after Codacy analyzed `99d2b08`: 1502 quality issues on `master`.
+- Codacy security findings export ran locally after Codacy analyzed `99d2b08`:
+  171 findings.
 - GitHub workflow cloud export still skips when `CODACY_API_TOKEN` is absent;
   that only affects scheduled/headless export, not local triage.
 - First actionable-finding cleanup batch fixed concrete Python unused/undefined
@@ -726,6 +748,19 @@ Real-use evidence:
   and probe catches in `node/adapter/index.js`; and
   `Agentlinter_clarity_sentence-complexity` by splitting the three flagged
   `AGENTS.md` sentences without changing policy.
+- Codacy export after `99d2b08` confirmed the local cleanup removed the targeted
+  rows: `Bandit_B108`, `markdownlint_MD012`, `ESLint8_no-empty`, and
+  `Agentlinter_clarity_sentence-complexity` counts are all 0. The export also
+  showed one reintroduced `Agentlinter_clarity_no-vague-instructions` row for a
+  bare `AGENTS.md` machine-id bullet; the local Rust batch fixes that wording.
+- Local Rust cleanup targets the next exported Rust scanner rows:
+  `Semgrep_rust.lang.security.temp-dir.temp-dir` is fixed in the public journal
+  `.zst` decompression path by using `tempfile::Builder`, fixed in registry
+  tests by using `tempfile::tempdir()`, and minimally suppressed only for the
+  caller-configurable non-sensitive engine disk cache default. The
+  `Semgrep_rust.lang.security.args.args` rows are minimally suppressed on CLI,
+  example, and conformance-adapter argv parsing sites because they parse command
+  line arguments and do not perform authorization.
 
 Reviewer findings:
 
@@ -794,7 +829,7 @@ Follow-up mapping:
 
 - Remaining work inside this SOW:
   - reconcile the user's observed 3056 UI count with the CLI-confirmed
-    `master` count of 1508 quality issues after commit `e80bf79`;
+    `master` count of 1502 quality issues after commit `99d2b08`;
   - group and triage the exported `master` cloud findings;
   - fix or minimally suppress every actionable finding;
   - run GitHub workflows after push and record CodeQL/Codacy results;

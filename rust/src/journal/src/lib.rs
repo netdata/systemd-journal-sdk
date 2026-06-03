@@ -2449,16 +2449,13 @@ fn decompress_zst_to_temp(path: &Path, prefix: &str) -> Result<PathBuf> {
     let source = File::open(path)?;
     let mut decoder = ruzstd::decoding::StreamingDecoder::new(source)
         .map_err(|err| SdkError::DecompressionFailed(err.to_string()))?;
-    let temp_path = std::env::temp_dir().join(format!(
-        "{prefix}-{}-{}.journal",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
-    let mut dest = File::create(&temp_path)?;
-    std::io::copy(&mut decoder, &mut dest)?;
+    let mut temp_file = tempfile::Builder::new()
+        .prefix(prefix)
+        .suffix(".journal")
+        .tempfile()?;
+    std::io::copy(&mut decoder, &mut temp_file)?;
+    let (dest, temp_path) = temp_file.keep().map_err(|err| err.error)?;
+    drop(dest);
     Ok(temp_path)
 }
 
