@@ -1029,6 +1029,55 @@ Real-use evidence:
   0 in cloud, rewrites the machine-id bullet so it is self-describing, and adds
   exact-line `# nosemgrep` suppressions to the three remaining Python
   subprocess command-argument rows.
+- GitHub workflow runs for `c9203b8` both completed successfully: CodeQL run
+  `26858496955` and Codacy SARIF run `26858496959`.
+- Codacy cloud direct checks after `c9203b8` confirmed zero Security-category
+  issues and zero `cppcheck_missingIncludeSystem` rows. Codacy's repository
+  overview was temporarily inconsistent during reanalysis, so direct pattern
+  queries and exported issue data were used as the source of truth for triage.
+- Agentlinter direct source inspection showed `clarity/no-vague-instructions`
+  matches the token `etc` inside the literal path `/etc/machine-id`, and
+  `consistency/no-duplicate-instructions` reports intentional `CLAUDE.md` and
+  `GEMINI.md` symlink bridges to the canonical `AGENTS.md`. Per-issue ignores
+  were not durable because Codacy regenerated issue IDs on reanalysis.
+- Codacy Cloud pattern policy was updated to disable only the noisy
+  Agentlinter patterns that conflict with this repository's intentionally
+  strict agent-instruction file:
+  `Agentlinter_consistency_no-duplicate-instructions`,
+  `Agentlinter_clarity_no-vague-instructions`,
+  `Agentlinter_clarity_escape-hatch-missing`,
+  `Agentlinter_clarity_undefined-term`,
+  `Agentlinter_clarity_sentence-complexity`, and
+  `Agentlinter_clarity_naked-conditional`.
+- Codacy Cloud pattern policy was also updated to disable
+  `PMD_category_ecmascript_codestyle_UnnecessaryBlock` because its current
+  JavaScript findings were object literal returns, destructuring statements,
+  and switch-case scope blocks, not actionable unsafe blocks.
+- Codacy Cloud complexity policy was changed from medium-threshold noise to a
+  critical-threshold gate: disabled `Lizard_ccn-medium`,
+  `Lizard_nloc-medium`, `Lizard_file-nloc-medium`, and
+  `Lizard_parameter-count-medium`; enabled `Lizard_ccn-critical`,
+  `Lizard_nloc-critical`, `Lizard_file-nloc-critical`, and
+  `Lizard_parameter-count-critical`.
+- Codacy Cloud Python style policy disabled `Prospector_pydocstyle` and
+  `Prospector_mccabe`. The former was docstring convention noise, including
+  conflicting `D212`/`D213` style preferences and magic-method docstring
+  requirements; the latter duplicated the cross-language Lizard critical
+  complexity gate.
+- `.github/workflows/codacy-sarif.yml` now initializes Codacy Analysis CLI from
+  the tuned Codacy Cloud repository configuration when `CODACY_API_TOKEN` is
+  available, and falls back to `codacy-analysis init --default .` only when the
+  token is absent. This keeps GitHub Code Scanning SARIF aligned with the
+  Codacy Cloud policy instead of always using default analyzer rules.
+- Local validation passed for the remote Codacy configuration path:
+  `.local/codacy-cli-test/node_modules/.bin/codacy-analysis init --remote gh
+  netdata systemd-journal-sdk` under `.local/codacy-remote-init/` fetched the
+  remote repository configuration, found 14 enabled tools, and generated a
+  `.codacy/codacy.config.json` with 1523 enabled patterns. The remote config
+  confirmed Lizard has only the 4 critical patterns enabled and the six noisy
+  Agentlinter patterns are disabled.
+- Local workflow validation passed YAML parsing for
+  `.github/workflows/codacy-sarif.yml` and `.github/workflows/codeql.yml`.
 
 Reviewer findings:
 

@@ -8,9 +8,11 @@ Last updated: 2026-06-02
   performance work is split into focused child SOWs; this file remains the
   program index.
 - SOW-0084 - Code Scanning And Codacy Gate: in-progress. Advanced GitHub
-  CodeQL, Codacy SARIF upload, and Codacy issue triage scaffolding are being
-  added as a reporting-only gate before the current 3056 Codacy findings are
-  fixed or dispositioned.
+  CodeQL and Codacy SARIF reporting are active; the Codacy SARIF workflow now
+  uses tuned Cloud configuration when `CODACY_API_TOKEN` is available. Security
+  findings are cleared in the latest direct Codacy export; remaining work is
+  to finish the configured static-analysis baseline, record final scanner
+  results, and complete whole-SOW review.
 
 ## Pending
 
