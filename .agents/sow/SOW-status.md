@@ -132,9 +132,14 @@ Last updated: 2026-06-03
   plus a same-function redundant-initialization warning found during local
   Cppcheck validation. The systemd ingester rebuilt against repo-local systemd
   v260.1 and passed the accepted/rejection dataset smoke plus stock
-  `journalctl --verify`. Remaining work is to re-run Codacy after Batch 30,
-  split the four remaining file-size findings, record final scanner results,
-  and complete whole-SOW review.
+  `journalctl --verify`. Codacy reanalysis after `3623590` reported 24
+  quality issues: 23 file-size findings and one Semgrep command-injection SAST
+  finding in the live-matrix harness. Batch 31 refactored the live-matrix
+  final-reader subprocess path to build commands from allowlisted reader specs,
+  passed local Semgrep, syntax, local Lizard, and a 20-entry Go live-matrix
+  smoke. Remaining work is to re-run Codacy after Batch 31, split the remaining
+  file-size findings, record final scanner results, and complete whole-SOW
+  review.
 
 ## Pending
 

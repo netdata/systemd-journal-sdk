@@ -518,7 +518,14 @@ def poll_reader_once(
     return best_seq, best_count, last_error
 
 
-def final_reader(reader_name: str, cmd: list[str], env: dict[str, str]) -> dict:
+def final_reader(
+    reader_name: str,
+    reader_spec: ReaderSpec,
+    tools: dict[str, str],
+    journal_path: str,
+    env: dict[str, str],
+) -> dict:
+    cmd = reader_cmd(reader_spec, tools, journal_path, ["PRIORITY=6"])
     try:
         # nosemgrep
         # subprocess is required by this harness; commands are shell=False vectors.
@@ -756,8 +763,7 @@ def collect_final_reads(
 ) -> list[dict]:
     results = []
     for reader_name, reader_spec, _idx in readers:
-        cmd = reader_cmd(reader_spec, tools, journal_path, ["PRIORITY=6"])
-        results.append(final_reader(reader_name, cmd, env))
+        results.append(final_reader(reader_name, reader_spec, tools, journal_path, env))
     return results
 
 

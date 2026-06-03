@@ -2114,6 +2114,42 @@ Batch 30:
     --both` passed: 349 accepted records, 9 rejection records, and stock
     `journalctl --verify --file` passed for the generated correctness journal.
 
+Batch 31:
+
+- Scope: Codacy cloud Semgrep security finding after commit
+  `362359014db68221bd2150202adf56a46f960a91`.
+- Cloud evidence:
+  - `codacy repository gh netdata systemd-journal-sdk --output json` reported
+    `lastAnalysedCommit.sha=362359014db68221bd2150202adf56a46f960a91` and 24
+    quality issues.
+  - `codacy findings gh netdata systemd-journal-sdk --output json` exported
+    one SAST finding: `CommandInjection` /
+    `Semgrep_python.lang.security.audit.dangerous-subprocess-use-tainted-env-args`
+    in `tests/interoperability/run_live_matrix.py`.
+  - The remaining quality inventory was 23 `Lizard_file-nloc-critical`
+    file-size findings.
+- Changes:
+  - Refactored the live-matrix final-reader path so the subprocess command is
+    built from the allowlisted `ReaderSpec` inside `final_reader()` instead of
+    receiving an opaque command vector parameter. Reported command output is
+    unchanged.
+- Validation:
+  - `python3 -m py_compile tests/interoperability/run_live_matrix.py` passed.
+  - `PYTHONPATH=.local/python-deps python3
+    tests/interoperability/run_live_matrix.py --help` passed.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reported no findings for
+    `tests/interoperability/run_live_matrix.py`.
+  - Local Semgrep with `semgrep --config=p/python --quiet
+    tests/interoperability/run_live_matrix.py` reported no findings.
+  - Tiny 5-entry live smoke was too short and failed because the Go writer
+    exited before the harness could observe an active writer; this exposed a
+    smoke-parameter issue, not a code regression.
+  - The corrected 20-entry live smoke passed:
+    `PYTHONPATH=.local/python-deps python3
+    tests/interoperability/run_live_matrix.py --entries 20 --features regular
+    --writers go --readers go --poll-readers 1 --libsystemd-readers 1
+    --poll-interval 0.02 --writer-delay-ms 5`.
+
 Reviewer findings:
 
 - Pending. The current SOW is not ready for terminal reviewer review because
