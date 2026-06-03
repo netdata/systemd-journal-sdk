@@ -51,6 +51,7 @@ function fixtureBase() {
   if (base) return base;
   let dir = process.cwd();
   for (;;) {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- adapter searches parent dirs for the repository manifest.
     if (existsSync(join(dir, 'tests', 'conformance', 'manifests', 'conformance-v01.json'))) return dir;
     const parent = resolve(dir, '..');
     if (parent === dir) return process.cwd();
@@ -172,6 +173,7 @@ function testFileHeaderParse(tc) {
 function runEntryParseTest(tc) {
   const path = resolveFixture(tc, 'importer_data');
   if (!path) return { status: 'SKIP', note: 'no importer_data fixture' };
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- conformance manifest supplies repository fixture paths.
   const data = readFileSync(path, 'utf8');
   const entries = parseJournalExport(data);
   if (tc.test_name === 'journal-importer-eof') {
@@ -449,6 +451,7 @@ function runVerificationTest(tc) {
   if (tc.test_name === 'journal-verify-sealed') {
     const tmp = join(tmpdir(), `node-verify-sealed-${process.pid}`);
     try {
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- temporary adapter directory is process-scoped test output.
       mkdirSync(tmp, { recursive: true });
     } catch { /* may already exist */ }
     try {

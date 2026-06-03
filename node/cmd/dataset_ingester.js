@@ -55,6 +55,7 @@ function expectedRejection(input) {
 }
 
 function makeWriter(path, compact, maxSizeBytes) {
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- output path is the explicit CLI target.
   mkdirSync(dirname(path), { recursive: true });
   const options = {
     bootId: BOOT_ID,
@@ -87,6 +88,7 @@ function finalizeWriter(writer, output, finalState, headRealtime) {
 }
 
 function records(path) {
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- dataset path is the explicit CLI input.
   return readFileSync(path, 'utf8')
     .split('\n')
     .filter(Boolean)

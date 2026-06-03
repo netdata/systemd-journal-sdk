@@ -560,6 +560,14 @@ Tests or equivalent validation:
   passed, covering the registry test temp-dir replacement.
 - `git diff --check`: passed after the markdown indentation and AGENTS glossary
   cleanup.
+- `node --check node/cmd/dataset_ingester.js node/cmd/journalctl/index.js node/adapter/index.js`:
+  passed after the Node non-literal filesystem suppression batch.
+- `node node/cmd/journalctl/index.js --file fixtures/systemd/test-data/no-rtc/system.journal.zst --head 1 --output=json`:
+  passed after the Node non-literal filesystem suppression batch.
+- Targeted Node adapter conformance runs passed for
+  `journal-importer-basic-parsing` and `journal-verify-sealed`, covering the
+  fixture read and temporary-directory creation sites touched by the Node
+  non-literal filesystem suppression batch.
 - Local pinned Codacy package smoke:
   `@codacy/analysis-cli@0.8.1` installed under `.local/codacy-cli-test`;
   `codacy-analysis init --default .` succeeded; `codacy-analysis analyze .`
@@ -771,6 +779,12 @@ Real-use evidence:
 - Local SOW-0003 heading cleanup targets `markdownlint_MD024` by making the
   second repair-validation headings unique while preserving the original
   validation evidence.
+- Local Node cleanup targets `ESLint8_security_detect-non-literal-fs-filename`
+  with narrow suppressions and rationale on expected dynamic paths: CLI input
+  and output paths in `node/cmd/dataset_ingester.js`, explicit
+  `--file`/`--directory` verification paths and discovered children in
+  `node/cmd/journalctl/index.js`, and repository fixture/temp paths in
+  `node/adapter/index.js`.
 
 Reviewer findings:
 

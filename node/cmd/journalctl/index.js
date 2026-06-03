@@ -594,6 +594,7 @@ function runVerify(inputPath, verifyKey, hasVerifyKey) {
 
   let stats;
   try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- journalctl verifies the explicit --file/--directory target.
     stats = statSync(inputPath);
   } catch (err) {
     process.stderr.write(`Error: verify: ${err.message}\n`);
@@ -700,6 +701,7 @@ function isHex(ch) {
 
 function collectJournalFilesForVerify(path) {
   const files = [];
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- directory target is explicit CLI input.
   const entries = readdirSync(path, { withFileTypes: true });
   for (const entry of entries) {
     const candidate = join(path, entry.name);
@@ -719,6 +721,7 @@ function collectJournalFilesForVerify(path) {
 
 function isRegularFile(path) {
   try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- helper validates candidate paths found under explicit input.
     return statSync(path).isFile();
   } catch {
     return false;
@@ -727,6 +730,7 @@ function isRegularFile(path) {
 
 function isDirectory(path) {
   try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- helper validates candidate paths found under explicit input.
     return statSync(path).isDirectory();
   } catch {
     return false;
@@ -735,6 +739,7 @@ function isDirectory(path) {
 
 function readDirEntries(path) {
   try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- helper lists candidate subdirectories under explicit input.
     return readdirSync(path, { withFileTypes: true });
   } catch {
     return [];
