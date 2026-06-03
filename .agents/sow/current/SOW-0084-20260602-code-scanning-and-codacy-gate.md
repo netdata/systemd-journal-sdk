@@ -2675,6 +2675,29 @@ Batch 47:
     the new permission test had already run. The failure was not a file-mode
     assertion, and the same suite passed with the explicit heap limit above.
 
+Batch 48:
+
+- Scope: post-push disposition of the remaining CodeQL
+  `py/overly-permissive-file` finding after Batch 47.
+- Evidence:
+  - CodeQL and Codacy SARIF workflows both passed for `46f92ba`.
+  - GitHub code scanning still reported one CodeQL
+    `py/overly-permissive-file` current-head alert at
+    `python/journal/writer.py:100`.
+  - The finding is not actionable as a code restriction without violating the
+    user decision and the current systemd evidence: the SDK default remains
+    journald-compatible `0640`, but consumers may explicitly choose another
+    POSIX creation mode, matching systemd's low-level mode parameter.
+- Changes:
+  - Added a narrow in-source CodeQL suppression at the Python `os.open()` call
+    site, with a local rationale comment explaining that the mode is an
+    explicit caller policy override and that the default remains `0640`.
+- Validation:
+  - `.local/python-venv/bin/python python/test_all.py` passed.
+  - `git diff --check` passed.
+  - `.agents/sow/audit.sh` passed.
+  - Post-push CodeQL/Codacy validation is pending.
+
 Reviewer findings:
 
 - Pending. The current SOW is not ready for terminal reviewer review because

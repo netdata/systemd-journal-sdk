@@ -97,7 +97,11 @@ class Writer:
         opts = opts or {}
         fd = None
         try:
-            fd = os.open(path, os.O_RDWR | os.O_CREAT, _normalize_file_mode(opts))
+            mode = _normalize_file_mode(opts)
+            # The SDK mirrors systemd journal_file_open(mode); explicit mode
+            # overrides are caller policy, while the default remains 0640.
+            # codeql[py/overly-permissive-file]
+            fd = os.open(path, os.O_RDWR | os.O_CREAT, mode)
             os.ftruncate(fd, 0)
             w = Writer(fd, path)
             w._compression = _normalize_compression(opts.get('compression', COMPRESSION_NONE))
