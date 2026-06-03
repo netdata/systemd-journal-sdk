@@ -2175,6 +2175,32 @@ Batch 32:
   - The 20-entry Go live-matrix smoke passed with the same command used in
     Batch 31.
 
+Batch 33:
+
+- Scope: make the live-matrix subprocess hardening explicit enough for Codacy
+  and future maintainers.
+- Changes:
+  - Added `validate_command_vector()` to reject empty commands, non-string
+    elements, NUL bytes, non-allowlisted relative executables, and absolute
+    executables outside the harness bin directory.
+  - Routed live-matrix polling readers, final readers, libsystemd readers, and
+    journal verification through the centralized `run()` wrapper.
+  - Added a narrow rule-specific Semgrep suppression at the single
+    `subprocess.run()` wrapper call after validation, because the analyzer does
+    not prove the allowlist.
+- Validation:
+  - `python3 -m py_compile tests/interoperability/run_live_matrix.py` passed.
+  - Local Semgrep with `semgrep --config=p/python --quiet
+    tests/interoperability/run_live_matrix.py` reported no findings.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reported no findings for
+    `tests/interoperability/run_live_matrix.py`.
+  - `git diff --check` passed.
+  - The 20-entry Go live-matrix smoke passed:
+    `PYTHONPATH=.local/python-deps python3
+    tests/interoperability/run_live_matrix.py --entries 20 --features regular
+    --writers go --readers go --poll-readers 1 --libsystemd-readers 1
+    --poll-interval 0.02 --writer-delay-ms 5`.
+
 Reviewer findings:
 
 - Pending. The current SOW is not ready for terminal reviewer review because

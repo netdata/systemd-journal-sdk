@@ -121,6 +121,35 @@ FEATURES = {
     "sealed": FeatureSpec("sealed", sealed=True, force_file_writers=frozenset({"rust"})),
 }
 
+
+ALLOWED_COMMAND_NAMES = frozenset({"cargo", "cc", "go", "journalctl", "node", "python3"})
+
+
+def is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def validate_command_vector(cmd: list[str]) -> None:
+    if not cmd:
+        raise ValueError("empty subprocess command")
+    if any(not isinstance(part, str) or "\0" in part for part in cmd):
+        raise ValueError("invalid subprocess command element")
+
+    executable = Path(cmd[0])
+    if executable.is_absolute():
+        resolved = executable.resolve()
+        if not is_within(resolved, BIN_DIR.resolve()):
+            raise ValueError(f"subprocess executable is outside harness bin dir: {cmd[0]}")
+        return
+
+    if cmd[0] not in ALLOWED_COMMAND_NAMES:
+        raise ValueError(f"subprocess executable is not allowlisted: {cmd[0]}")
+
+
 def run(
     cmd: list[str],
     *,
@@ -128,10 +157,12 @@ def run(
     timeout: int = 120,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    validate_command_vector(cmd)
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
     return subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
-        cmd,
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
+        cmd,  # validate_command_vector() allowlists executables; shell=False is required.
         cwd=str(cwd),
         text=True,
         stdout=subprocess.PIPE,
@@ -497,16 +528,7 @@ def poll_reader_once(
     last_error: str,
 ) -> tuple[list[str], int, str]:
     active_at_start = not writer_finished.is_set()
-    # nosemgrep
-    # subprocess is required by this harness; commands are shell=False vectors.
-    res = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=8,
-        env=env,
-    )
+    res = run(cmd, timeout=8, env=env)
     active_at_end = not writer_finished.is_set()
     if active_at_start and active_at_end and res.returncode == 0:
         parsed = parse_json_lines(res.stdout, reader_name)
@@ -568,16 +590,7 @@ def libsystemd_reader(
 ) -> dict:
     active_at_start = not writer_finished.is_set()
     try:
-        # nosemgrep
-        # subprocess is required by this harness; commands are shell=False vectors.
-        res = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout,
-            env=env,
-        )
+        res = run(cmd, timeout=timeout, env=env)
         return libsystemd_reader_result(reader_name, cmd, res, active_at_start)
     except Exception as error:
         return libsystemd_error_result(reader_name, cmd, active_at_start, str(error))
@@ -763,16 +776,7 @@ def verify_journal(journal_path: str, feature_spec: FeatureSpec, env: dict[str, 
     if feature_spec.verify_key:
         cmd.extend(["--verify-key", feature_spec.verify_key])
     cmd.extend(["--file", journal_path])
-    # nosemgrep
-    # subprocess is required by this harness; commands are shell=False vectors.
-    result = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
-        cmd,  # nosemgrep
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=30,
-        env=env,
-    )
+    result = run(cmd, timeout=30, env=env)
     return {"command": shell_join(cmd), "returncode": result.returncode, "stderr": result.stderr[-300:]}
 
 

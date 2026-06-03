@@ -140,9 +140,13 @@ Last updated: 2026-06-03
   smoke. Codacy still reported the Semgrep finding after `feca886`, so Batch 32
   routed final-reader execution through the harness `run()` wrapper and passed
   the same local Semgrep, syntax, Lizard, and 20-entry Go live-matrix smoke.
-  Remaining work is to re-run Codacy after Batch 32, split the remaining
-  file-size findings, record final scanner results, and complete whole-SOW
-  review.
+  Batch 33 added explicit subprocess command-vector validation, routed the
+  remaining live-matrix reader/verify subprocess calls through the wrapper, and
+  documented a narrow Semgrep suppression at the single audited subprocess
+  boundary; local Semgrep, syntax, Lizard, diff, and the 20-entry Go live-matrix
+  smoke passed. Remaining work is to re-run Codacy after Batch 33, split the
+  remaining file-size findings, record final scanner results, and complete
+  whole-SOW review.
 
 ## Pending
 
