@@ -28,6 +28,7 @@
 | `compress-on-archived` | 8388608 | `ok` | `ok` | `ok` |
 | `post-reboot-active` | 8388608 | `ok` | `ok` | `ok` |
 | `post-reboot-archived` | 8388608 | `ok` | `ok` | `ok` |
+
 ### ubuntu2204
 
 - Distro: `Ubuntu 22.04 LTS`

@@ -235,6 +235,7 @@ Failure handling:
 #### Implementation Changes
 
 Files modified:
+
 1. `node/package.json` — removed `lzma-wasm@^1.0.7`, added `node-liblzma@5.0.1`.
 2. `node/src/lib/xz-block.js` — rewritten to use `node-liblzma` standalone WASM with CHECK_NONE; synchronous compress/decompress via top-level await init.
 3. `node/src/lib/writer.js`:
@@ -348,11 +349,13 @@ Files modified:
 #### Artifact Changes Summary
 
 Files modified (functional):
+
 - `node/src/lib/xz-block.js` — package-resolution-based WASM loading, malloc checks, output cap, fixed error wrapping
 - `node/src/lib/reader.js` — stale XZ rejection comment removed
 - `node/test/all.js` — added 5 new test blocks
 
 Files modified (durable artifacts):
+
 - `.agents/sow/specs/product-scope.md` — Node.js XZ support + native policy
 - `.agents/skills/project-journal-compatibility/SKILL.md` — native policy alignment
 - `AGENTS.md` — native policy alignment in Goals and project-specific overrides

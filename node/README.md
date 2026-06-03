@@ -329,6 +329,7 @@ Current-entry data payloads returned by `SdJournalEnumerateAvailableData()` stay
 valid after end-of-row enumeration and until the reader advances, seeks,
 clears/restarts DATA enumeration, refreshes/remaps the file, or closes. Longer
 retention should copy the returned `Buffer`.
+
 - `SdJournalAddMatch(journal, data)` - Add match filter (AND)
 - `SdJournalAddDisjunction(journal)` - Add OR group for subsequent matches
 - `SdJournalAddConjunction(journal)` - Start an explicit AND group

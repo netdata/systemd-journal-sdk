@@ -44,6 +44,7 @@ Last updated: 2026-06-02
   strategies with break-even evidence from generated and real-corpus queries.
 
 ## Recently Closed Or Completed
+
 - SOW-0075 - VM Historical systemd Validation: completed. Ubuntu
   18.04/systemd 237, Ubuntu 22.04/systemd 249, and Ubuntu 24.04/systemd 255
   VM-generated journals passed 18/18 cases with stock, Rust, Go, Python using

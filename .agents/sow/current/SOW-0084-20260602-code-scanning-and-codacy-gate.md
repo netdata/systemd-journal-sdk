@@ -568,6 +568,10 @@ Tests or equivalent validation:
   `journal-importer-basic-parsing` and `journal-verify-sealed`, covering the
   fixture read and temporary-directory creation sites touched by the Node
   non-literal filesystem suppression batch.
+- Local `markdownlint` binary was not installed. A targeted structural check of
+  the touched Markdown files found no headings without a blank line below after
+  the `markdownlint_MD022`/`markdownlint_MD032` cleanup.
+- `git diff --check`: passed after the Markdown blank-line cleanup.
 - Local pinned Codacy package smoke:
   `@codacy/analysis-cli@0.8.1` installed under `.local/codacy-cli-test`;
   `codacy-analysis init --default .` succeeded; `codacy-analysis analyze .`
@@ -785,6 +789,9 @@ Real-use evidence:
   `--file`/`--directory` verification paths and discovered children in
   `node/cmd/journalctl/index.js`, and repository fixture/temp paths in
   `node/adapter/index.js`.
+- Local Markdown blank-line cleanup targets `markdownlint_MD022` and
+  `markdownlint_MD032` by adding required blank lines around headings and lists
+  in SOW/status/docs files without changing their content.
 
 Reviewer findings:
 

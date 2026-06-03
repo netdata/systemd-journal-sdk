@@ -3,6 +3,7 @@
 ## Role
 
 Each language SDK (Rust, Go, Node.js, Python) ships an **adapter executable** that:
+
 1. Receives a test case from the shared conformance harness
 2. Runs the test against the language's journal implementation
 3. Returns structured JSON results
@@ -82,6 +83,7 @@ The adapter writes a **result object** to stdout:
 ```
 
 **Required fields in result:**
+
 - `test_name` (string)
 - `status` (string: `"PASS"`, `"FAIL"`, `"ERROR"`, `"SKIP"`)
 - `result_format` (string, mirrors input)
@@ -90,6 +92,7 @@ The adapter writes a **result object** to stdout:
 - `error` (string, present when status is ERROR)
 
 **Optional fields:**
+
 - `note` (string): explanation for SKIP or unexpected behavior
 - `evidence` (object): raw parsed data for debugging
 

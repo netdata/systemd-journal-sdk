@@ -248,10 +248,12 @@ Validation commands and results run after project-manager fixes:
 - `bash .agents/sow/audit.sh` - passed.
 
 Dependency versions:
+
 - Rust: `lz4_flex 0.12.2` (existing), `lzma-rust2 0.15.8` (existing, added `encoder` feature).
 - Go: `github.com/pierrec/lz4/v4 v4.1.26` (new), `github.com/ulikunitz/xz v0.5.15` (new).
 
 Remaining Node/Python decisions:
+
 - Node.js xz/lz4 writing remains unimplemented; no pure-JS xz/LZMA2 encoder or raw-block LZ4 package was found that meets the pure-language policy. Node.js xz/lz4 writing requires either in-repo implementation or a user-approved scope split.
 - Python xz writing: Python standard library `lzma` module can produce `.xz` streams with `CHECK_NONE` and `FILTER_LZMA2`, but policy acceptance must be handled consistently with existing Python zstd decision.
 - Python lz4 writing: PyPI `lz4` has C bindings and is not acceptable under pure-language policy; requires in-repo pure Python raw-block implementation.

@@ -185,23 +185,27 @@ Open decisions:
 ## Validation (superseded by later repair validation)
 
 ### SOW Audit
+
 ```
 bash .agents/sow/audit.sh  ->  === SOW initialization complete and clean. ===
 ```
 
 ### Repair Manifest Schema Validation
+
 ```
 python3 tests/conformance/runner/manifest_checker.py validate tests/conformance/manifests/conformance-v01.json
 -> OK: tests/conformance/manifests/conformance-v01.json is valid
 ```
 
 ### Repair Fixture File Validation
+
 ```
 python3 tests/conformance/runner/manifest_checker.py validate-files tests/conformance/manifests/conformance-v01.json
 -> OK: All type:file fixtures exist (0 missing)
 ```
 
 ### Repair Dry-Run Simulation
+
 ```
 python3 tests/conformance/runner/manifest_checker.py dry-run tests/conformance/manifests/conformance-v01.json
 -> 15 test cases simulated; stub adapter returns PASS for all
@@ -209,17 +213,20 @@ python3 tests/conformance/runner/manifest_checker.py dry-run tests/conformance/m
 ```
 
 ### Fixture Availability
+
 - `fixtures/systemd/test-data/no-rtc/` - OK (7 committed compressed journal fixtures)
 - `fixtures/systemd/test-data/corrupted/` - OK (3 committed compressed corrupted journal fixtures)
 - `fixtures/systemd/test-data/journal-1.txt` - OK (copied from systemd v260.1 test/journal-data/)
 - `fixtures/systemd/test-data/journal-2.txt` - OK (copied from systemd v260.1 test/journal-data/)
 
 ### Sensitive Data Scan
+
 ```
 Checked durable artifact files: no sensitive-data patterns found.
 ```
 
 ### Git Status
+
 ```
 D .agents/sow/pending/SOW-0003-20260523-systemd-test-inventory-and-shared-harness.md
  M SOW-status.md
@@ -229,12 +236,14 @@ D .agents/sow/pending/SOW-0003-20260523-systemd-test-inventory-and-shared-harnes
 ```
 
 ### Non-ASCII Punctuation Scan
+
 ```
 LC_ALL=C rg -n "[^\x00-\x7F]" .agents/sow/current/SOW-0003-20260523-systemd-test-inventory-and-shared-harness.md fixtures/systemd tests/conformance
 -> (no output - all clean)
 ```
 
 ### Sensitive Data Scan
+
 ```
 Changed durable artifact scan for personal-name, workstation-path, and SOW marker patterns.
 -> (no output - all clean)
@@ -299,24 +308,28 @@ Required repair disposition:
 ## Validation Results
 
 ### py_compile
+
 ```
 python3 -m py_compile tests/conformance/runner/manifest_checker.py
 -> PASS
 ```
 
 ### Manifest Schema Validation
+
 ```
 python3 tests/conformance/runner/manifest_checker.py validate tests/conformance/manifests/conformance-v01.json
 -> OK: tests/conformance/manifests/conformance-v01.json is valid
 ```
 
 ### Fixture File Validation
+
 ```
 python3 tests/conformance/runner/manifest_checker.py validate-files tests/conformance/manifests/conformance-v01.json
 -> OK: All type:file fixtures exist (0 missing)
 ```
 
 ### Dry-Run Simulation
+
 ```
 python3 tests/conformance/runner/manifest_checker.py dry-run tests/conformance/manifests/conformance-v01.json
 -> 15 test cases simulated; all fixtures resolved as OK or GENERATED
@@ -325,30 +338,35 @@ python3 tests/conformance/runner/manifest_checker.py dry-run tests/conformance/m
 ```
 
 ### Repair SOW Audit
+
 ```
 bash .agents/sow/audit.sh
 -> === SOW initialization complete and clean. ===
 ```
 
 ### Git Whitespace Check
+
 ```
 git diff --check
 -> (no output - clean)
 ```
 
 ### Python Bytecode Cleanup
+
 ```
 find tests/conformance fixtures/systemd -name '__pycache__' -o -name '*.pyc' -o -name '*.pyo'
 -> Cleaned tests/conformance/runner/__pycache__
 ```
 
 ### Repair Non-ASCII Punctuation Scan
+
 ```
 LC_ALL=C rg -n "[^\x00-\x7F]" .agents/sow/current/SOW-0003-20260523-systemd-test-inventory-and-shared-harness.md fixtures/systemd tests/conformance
 -> (no output - all clean)
 ```
 
 ### Repair Sensitive Data Scan
+
 ```
 Changed durable artifact scan for personal-name, workstation-path, and SOW marker patterns.
 -> (no output - all clean)
