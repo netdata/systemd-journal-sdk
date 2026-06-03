@@ -7,7 +7,7 @@ import hashlib
 import json
 import re
 import shutil
-import subprocess
+import subprocess  # nosec B404 - subprocess is required by harnesses.
 import sys
 import base64
 from pathlib import Path
@@ -199,7 +199,9 @@ def run_generator_twice() -> None:
     run2.mkdir(parents=True, exist_ok=True)
 
     for target in (run1, run2):
-        subprocess.run(
+        # nosemgrep
+        # subprocess is required by this harness; commands are shell=False vectors.
+        subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
             [sys.executable, str(ROOT / "generate.py"), "committed", "--output-root", str(target / "tests" / "datasets")],
             cwd=REPO_ROOT,
             check=True,
@@ -223,7 +225,9 @@ def run_generator_twice() -> None:
 
 def validate_performance_hash(performance_manifest: dict[str, object]) -> None:
     rows = int(performance_manifest["record_count"])
-    result = subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    result = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
         [sys.executable, str(ROOT / "generate.py"), "performance-hash", "--rows", str(rows)],
         cwd=REPO_ROOT,
         check=True,

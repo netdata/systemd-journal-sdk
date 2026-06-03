@@ -8,7 +8,7 @@ import hashlib
 import json
 import os
 import shutil
-import subprocess
+import subprocess  # nosec B404 - subprocess is required by harnesses.
 import sys
 import threading
 import time
@@ -233,7 +233,9 @@ def build_tools(env: dict[str, str], out: Path) -> ToolPaths:
     build_results = []
     for label, cmd, cwd in commands:
         started = time.perf_counter()
-        result = subprocess.run(
+        # nosemgrep
+        # subprocess is required by this harness; commands are shell=False vectors.
+        result = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
             cmd,
             cwd=str(cwd),
             env=env,
@@ -336,7 +338,9 @@ def run_json_driver(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     actual = [*timed_command_prefix(stats_path), *cmd]
     started = time.perf_counter()
-    result = subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    result = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
         actual,
         cwd=str(ROOT),
         env=env,
@@ -382,7 +386,9 @@ def systemd_digest(
         "--no-pager",
     ]
     actual = [*timed_command_prefix(stats_path), *cmd]
-    proc = subprocess.Popen(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    proc = subprocess.Popen(  # nosec B603 - harness uses shell=False command vectors.
         actual,
         cwd=str(ROOT),
         env=env,
@@ -609,7 +615,9 @@ def verify_generated(
     cmd = [tools.journalctl, "--verify", "--file", str(path)]
     if verify_key is not None:
         cmd = [tools.journalctl, "--verify", "--verify-key", verify_key, "--file", str(path)]
-    result = subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    result = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
         cmd,
         cwd=str(ROOT),
         env=env,
@@ -762,7 +770,9 @@ def generate_smoke_fixture(tools: ToolPaths, env: dict[str, str], out: Path) -> 
         "--api-mode",
         "raw-payload",
     ]
-    result = subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    result = subprocess.run(  # nosec B603
         cmd,
         cwd=str(ROOT),
         env=env,

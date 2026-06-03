@@ -7,7 +7,7 @@ import argparse
 import hashlib
 import json
 import shutil
-import subprocess
+import subprocess  # nosec B404 - subprocess is required by harnesses.
 import sys
 import time
 from datetime import datetime, timezone
@@ -44,7 +44,9 @@ def run_json(
 ) -> tuple[Any, dict[str, Any]]:
     actual = [*timed_command_prefix(stats_path), *cmd]
     started = time.perf_counter()
-    result = subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    result = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
         actual,
         cwd=str(cwd),
         env=env,
@@ -81,7 +83,9 @@ def run_quiet(
 ) -> dict[str, Any]:
     actual = [*timed_command_prefix(stats_path), *cmd]
     started = time.perf_counter()
-    result = subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    result = subprocess.run(  # nosec B603
         actual,
         cwd=str(cwd),
         env=env,
@@ -143,7 +147,9 @@ def build_tools(env: dict[str, str], out: Path) -> dict[str, Path | str]:
     results = []
     for label, cmd, cwd in commands:
         started = time.perf_counter()
-        result = subprocess.run(
+        # nosemgrep
+        # subprocess is required by this harness; commands are shell=False vectors.
+        result = subprocess.run(  # nosec B603
             cmd,
             cwd=str(cwd),
             env=env,

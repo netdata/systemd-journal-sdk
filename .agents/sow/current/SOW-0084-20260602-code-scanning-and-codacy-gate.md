@@ -626,6 +626,22 @@ Tests or equivalent validation:
   `@codacy/analysis-cli@0.8.1` installed under `.local/codacy-cli-test`;
   `codacy-analysis init --default .` succeeded; `codacy-analysis analyze .`
   produced SARIF and the summarizer produced a sanitized 725-finding summary.
+- Local Python harness subprocess cleanup validation passed:
+  current-content same-pattern scan for missing `B404`, `B603`, and Semgrep
+  subprocess suppressions; line-length scan of all touched Python files;
+  `python3 -m py_compile` for all touched Python files;
+  `python3 tests/interoperability/run_matrix.py --writers python --readers
+  python --entries 2`; `python3 tests/interoperability/run_directory_matrix.py
+  --readers python`; `python3 tests/interoperability/run_live_matrix.py
+  --writers python --readers python --entries 10 --features regular
+  --poll-readers 1 --libsystemd-readers 1 --writer-delay-ms 20`; `git diff
+  --check`; and `.agents/sow/audit.sh`.
+- Discarded local validation attempts were expected CLI or harness behavior:
+  `run_directory_matrix.py --entries 2` rejected an unsupported option,
+  `run_live_matrix.py` rejected too-small live-test settings before the valid
+  live smoke above passed, and `tests/datasets/validate.py --help` hung during
+  module execution and was terminated by exact PID. These attempts touched no
+  product code and are not accepted validation evidence.
 
 Real-use evidence:
 
@@ -945,6 +961,17 @@ Real-use evidence:
   `cargo test --manifest-path rust/Cargo.toml -p journal_file -p
   window_manager -p sigbus`; a focused scan showing zero reported unsafe
   boundaries without nearby Semgrep suppression; and `git diff --check`.
+- Local Python harness subprocess cleanup targets the current `Bandit_B603`,
+  `Bandit_B404`, and Python Semgrep dangerous subprocess groups by documenting
+  expected subprocess use in harness-only files. The cleanup deliberately does
+  not broaden this permission to SDK runtime code; it only marks shell-free
+  process orchestration needed to build helpers, run matrix binaries, invoke
+  stock `journalctl`, and execute benchmarks.
+- Local validation for the Python harness subprocess cleanup passed the
+  same-pattern suppression scan, line-length scan, Python compile check, Python
+  writer/reader matrix smoke, Python directory matrix, Python live matrix smoke
+  with stock libsystemd verification, `git diff --check`, and
+  `.agents/sow/audit.sh`.
 
 Reviewer findings:
 

@@ -22,7 +22,7 @@ import argparse
 import json
 import os
 import shutil
-import subprocess
+import subprocess  # nosec B404 - subprocess is required by harnesses.
 import sys
 import time
 from dataclasses import dataclass
@@ -98,7 +98,9 @@ def run(
 ) -> subprocess.CompletedProcess:
     if env is None:
         env = build_env()
-    return subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    return subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
         cmd,
         cwd=str(cwd),
         env=env,

@@ -5,7 +5,7 @@ import argparse
 import json
 import os
 import selectors
-import subprocess
+import subprocess  # nosec B404 - subprocess is required by harnesses.
 import sys
 import threading
 import time
@@ -47,7 +47,9 @@ def parse_args():
 
 def systemd_version():
     try:
-        result = subprocess.run(
+        # nosemgrep
+        # subprocess is required by this harness; commands are shell=False vectors.
+        result = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
             ["journalctl", "--version"],
             check=True,
             stdout=subprocess.PIPE,
@@ -138,7 +140,9 @@ def journalctl_poll_reader(reader_id, args, stop_event, writer_done):
 
     while time.monotonic() < deadline:
         active_at_start = not writer_done.is_set()
-        result = subprocess.run(
+        # nosemgrep
+        # subprocess is required by this harness; commands are shell=False vectors.
+        result = subprocess.run(  # nosec B603
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -210,7 +214,9 @@ def journalctl_follow_reader(reader_id, args, stop_event, writer_done):
 
     while time.monotonic() < deadline:
         active_at_start = not writer_done.is_set()
-        proc = subprocess.Popen(
+        # nosemgrep
+        # subprocess is required by this harness; commands are shell=False vectors.
+        proc = subprocess.Popen(  # nosec B603 - harness uses shell=False command vectors.
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -326,7 +332,9 @@ def libsystemd_reader(reader_id, args, writer_done):
     while time.monotonic() < deadline:
         active_at_start = not writer_done.is_set()
         remaining = max(1.0, deadline - time.monotonic())
-        result = subprocess.run(
+        # nosemgrep
+        # subprocess is required by this harness; commands are shell=False vectors.
+        result = subprocess.run(  # nosec B603
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -361,7 +369,9 @@ def libsystemd_reader(reader_id, args, writer_done):
 
 
 def verify_journal(path):
-    result = subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    result = subprocess.run(  # nosec B603
         ["journalctl", "--verify", "--file", path],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -390,7 +400,9 @@ def main():
         "readers": [],
     }
 
-    writer = subprocess.Popen(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    writer = subprocess.Popen(  # nosec B603 - harness uses shell=False command vectors.
         args.writer_cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

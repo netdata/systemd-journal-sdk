@@ -11,7 +11,7 @@ import argparse
 import datetime as dt
 import json
 import os
-import subprocess
+import subprocess  # nosec B404 - subprocess is required by harnesses.
 import sys
 import urllib.error
 import urllib.parse
@@ -39,7 +39,9 @@ def parse_codacy_json(raw: str) -> dict[str, Any]:
 
 def run_codacy(args: list[str], timeout: int = DEFAULT_CLI_TIMEOUT_SECONDS) -> dict[str, Any]:
     command = ["codacy", *args, "-o", "json"]
-    completed = subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    completed = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
         command,
         check=False,
         text=True,

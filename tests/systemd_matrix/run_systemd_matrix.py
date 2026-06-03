@@ -8,7 +8,7 @@ import hashlib
 import json
 import os
 import shutil
-import subprocess
+import subprocess  # nosec B404 - subprocess is required by harnesses.
 import sys
 import threading
 import time
@@ -170,7 +170,9 @@ def run_capture(
 ) -> tuple[CommandResult, bytes]:
     started = time.perf_counter()
     try:
-        proc = subprocess.run(
+        # nosemgrep
+        # subprocess is required by this harness; commands are shell=False vectors.
+        proc = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
             cmd,
             cwd=str(cwd),
             env=env,
@@ -326,7 +328,9 @@ def stream_export_command_digest(
     timeout: int,
 ) -> tuple[dict[str, Any] | None, CommandResult]:
     started = time.perf_counter()
-    proc = subprocess.Popen(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    proc = subprocess.Popen(  # nosec B603 - harness uses shell=False command vectors.
         cmd,
         cwd=str(ROOT),
         env=env,
@@ -445,14 +449,18 @@ def maybe_meson_option(options_text: str, name: str, value: str) -> list[str]:
 def resolve_systemd_ref(systemd_src: Path, version: str, explicit_ref: str | None) -> str:
     ref = explicit_ref or version
     cmd = ["git", "-C", str(systemd_src), "rev-parse", f"{ref}^{{commit}}"]
-    proc = subprocess.run(cmd, cwd=str(ROOT), text=True, capture_output=True, check=False)
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    proc = subprocess.run(cmd, cwd=str(ROOT), text=True, capture_output=True, check=False)  # nosec B603 - harness uses shell=False command vectors.
     if proc.returncode != 0:
         raise RuntimeError(f"could not resolve systemd ref {ref!r} from {systemd_src}")
     return proc.stdout.strip()
 
 
 def is_git_checkout(path: Path) -> bool:
-    proc = subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    proc = subprocess.run(  # nosec B603
         ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
         cwd=str(ROOT),
         text=True,

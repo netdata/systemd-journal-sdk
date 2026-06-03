@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
-import subprocess
+import subprocess  # nosec B404 - subprocess is required by harnesses.
 import sys
 import time
 from dataclasses import dataclass
@@ -54,7 +54,9 @@ READERS = {
 
 
 def run(cmd: list[str], *, cwd: Path = REPO_ROOT, timeout: int = 60) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    return subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
         cmd,
         cwd=str(cwd),
         text=True,

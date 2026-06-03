@@ -7,7 +7,7 @@ import argparse
 import json
 import os
 import shutil
-import subprocess
+import subprocess  # nosec B404 - subprocess is required by harnesses.
 import sys
 from pathlib import Path
 
@@ -27,7 +27,9 @@ def run(cmd: list[str], *, cwd: Path = ROOT, env: dict[str, str] | None = None) 
     merged_env = os.environ.copy()
     if env:
         merged_env.update(env)
-    proc = subprocess.run(cmd, cwd=cwd, env=merged_env, text=True, capture_output=True)
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    proc = subprocess.run(cmd, cwd=cwd, env=merged_env, text=True, capture_output=True)  # nosec B603 - harness uses shell=False command vectors.
     return {
         "cmd": cmd,
         "cwd": str(cwd),

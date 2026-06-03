@@ -13,7 +13,7 @@ import argparse
 import hashlib
 import json
 import shutil
-import subprocess
+import subprocess  # nosec B404 - subprocess is required by harnesses.
 import sys
 import time
 from dataclasses import dataclass, field
@@ -333,7 +333,9 @@ def probe_boot_count(path: Path, timeout: int) -> int | None:
         return None
     cmd = [journalctl, "--file", str(path), "--list-boots", "--no-pager"]
     try:
-        proc = subprocess.run(
+        # nosemgrep
+        # subprocess is required by this harness; commands are shell=False vectors.
+        proc = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
             cmd,
             cwd=str(ROOT),
             stdout=subprocess.PIPE,

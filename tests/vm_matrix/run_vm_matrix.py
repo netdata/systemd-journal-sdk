@@ -14,7 +14,7 @@ import hashlib
 import json
 import os
 import shutil
-import subprocess
+import subprocess  # nosec B404 - subprocess is required by harnesses.
 import sys
 import time
 from pathlib import Path
@@ -119,7 +119,9 @@ def run(
     input_bytes: bytes | None = None,
     check: bool = True,
 ) -> subprocess.CompletedProcess[bytes]:
-    result = subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    result = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
         cmd,
         cwd=cwd,
         env=env,
@@ -680,7 +682,9 @@ def build_digest_helpers() -> dict[str, Path | None]:
 
 def digest_stock(path: Path) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     cmd = ["journalctl", "--file", str(path), "--output=export", "--all", "--no-pager", "--quiet"]
-    proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)  # nosec B603 - harness uses shell=False command vectors.
     assert proc.stdout is not None
     started = time.perf_counter()
     try:
@@ -729,7 +733,9 @@ def run_json_digest(driver: str, exe: Path, path: Path) -> tuple[dict[str, Any] 
 
 
 def digest_export_command(driver: str, cmd: list[str]) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)  # nosec B603 - harness uses shell=False command vectors.
     assert proc.stdout is not None
     started = time.perf_counter()
     try:

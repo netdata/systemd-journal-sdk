@@ -6,7 +6,7 @@ import json
 import os
 import shutil
 import stat
-import subprocess
+import subprocess  # nosec B404 - subprocess is required by harnesses.
 import sys
 import tempfile
 import time
@@ -80,7 +80,9 @@ from journal.fss import gen_mk, gen_state0, evolve, seek, get_key, get_epoch  # 
 
 
 def run(args, *, input_data=None, cwd=REPO_ROOT):
-    result = subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    result = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
         args,
         input=input_data,
         cwd=cwd,
@@ -153,7 +155,9 @@ def verify_journal_file_if_available(path):
 def verify_journal_file_fails_if_available(path, expected_text):
     if not journalctl_available():
         return
-    result = subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    result = subprocess.run(  # nosec B603
         ['journalctl', '--verify', '--file', path],
         cwd=REPO_ROOT,
         stdout=subprocess.PIPE,
@@ -172,7 +176,9 @@ def verify_journal_file_fails_if_available(path, expected_text):
 def verify_journal_file_with_key_if_available(path, key, label='journalctl verify'):
     if not journalctl_available():
         return
-    result = subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    result = subprocess.run(  # nosec B603
         ['journalctl', '--verify', '--verify-key', key, '--file', str(path)],
         capture_output=True,
         text=True,
@@ -184,7 +190,9 @@ def verify_journal_file_with_key_if_available(path, key, label='journalctl verif
 def verify_journal_file_with_key_fails_if_available(path, key):
     if not journalctl_available():
         return
-    result = subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    result = subprocess.run(  # nosec B603
         ['journalctl', '--verify', '--verify-key', key, '--file', str(path)],
         capture_output=True,
         text=True,
@@ -2865,7 +2873,9 @@ def test_journalctl_verify():
     script = PYTHON_ROOT / 'cmd/journalctl.py'
 
     # --verify valid file
-    result = subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    result = subprocess.run(  # nosec B603
         [sys.executable, str(script), '--verify', '--file', str(valid_path)],
         capture_output=True, text=True,
     )
@@ -2874,7 +2884,9 @@ def test_journalctl_verify():
     assert 'PASS:' in result.stderr, f"expected PASS in stderr, got: {result.stderr}"
 
     # --verify-only valid file
-    result = subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    result = subprocess.run(  # nosec B603
         [sys.executable, str(script), '--verify-only', '--file', str(valid_path)],
         capture_output=True, text=True,
     )
@@ -2887,7 +2899,9 @@ def test_journalctl_verify():
         tmp_path = Path(tmpdir)
         os.symlink(valid_path, tmp_path / 'linked.journal.zst')
         os.mkdir(tmp_path / 'skip.journal.zst')
-        result = subprocess.run(
+        # nosemgrep
+        # subprocess is required by this harness; commands are shell=False vectors.
+        result = subprocess.run(  # nosec B603
             [sys.executable, str(script), '--verify', '--directory', str(tmp_path)],
             capture_output=True, text=True,
         )
@@ -2898,7 +2912,9 @@ def test_journalctl_verify():
 
     # --verify empty directory
     with tempfile.TemporaryDirectory() as tmpdir:
-        result = subprocess.run(
+        # nosemgrep
+        # subprocess is required by this harness; commands are shell=False vectors.
+        result = subprocess.run(  # nosec B603
             [sys.executable, str(script), '--verify', '--directory', tmpdir],
             capture_output=True, text=True,
         )
@@ -2907,7 +2923,9 @@ def test_journalctl_verify():
     assert result.stderr == '', f"expected no stderr, got: {result.stderr}"
 
     # --verify corrupted file
-    result = subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    result = subprocess.run(  # nosec B603
         [sys.executable, str(script), '--verify', '--file', str(corrupt_path)],
         capture_output=True, text=True,
     )
@@ -2915,7 +2933,9 @@ def test_journalctl_verify():
     assert 'FAIL:' in result.stderr, f"expected FAIL in stderr, got: {result.stderr}"
 
     # --verify-key unsealed file (valid key parsed, normal verification)
-    result = subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    result = subprocess.run(  # nosec B603
         [sys.executable, str(script), '--verify-key', VALID_FSS_VERIFICATION_KEY, '--file', str(valid_path)],
         capture_output=True, text=True,
     )
@@ -2924,7 +2944,9 @@ def test_journalctl_verify():
     assert 'PASS:' in result.stderr, f"expected PASS in stderr, got: {result.stderr}"
 
     # --verify-key invalid seed
-    result = subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    result = subprocess.run(  # nosec B603
         [sys.executable, str(script), '--verify-key', 'synthetic-test-key', '--file', str(valid_path)],
         capture_output=True, text=True,
     )
@@ -2935,7 +2957,9 @@ def test_journalctl_verify():
     )
 
     # --verify-key empty seed
-    result = subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    result = subprocess.run(  # nosec B603
         [sys.executable, str(script), '--verify-key=', '--file', str(valid_path)],
         capture_output=True, text=True,
     )
@@ -2957,7 +2981,9 @@ def test_journalctl_verify():
         buf[8:12] = flags.to_bytes(4, 'little')
         tmp_path.write_bytes(buf)
 
-        result = subprocess.run(
+        # nosemgrep
+        # subprocess is required by this harness; commands are shell=False vectors.
+        result = subprocess.run(  # nosec B603
             [sys.executable, str(script), '--verify', '--file', str(tmp_path)],
             capture_output=True, text=True,
         )
@@ -2977,7 +3003,9 @@ def test_journalctl_verify():
         w.close()
         key = _test_verification_key(seal_opts)
 
-        result = subprocess.run(
+        # nosemgrep
+        # subprocess is required by this harness; commands are shell=False vectors.
+        result = subprocess.run(  # nosec B603
             [sys.executable, str(script), '--verify-key', key, '--file', str(sealed_path)],
             capture_output=True, text=True,
         )
@@ -2986,7 +3014,9 @@ def test_journalctl_verify():
 
         # wrong key
         wrong_key = '000000000000000000000001/1-f4240'
-        result = subprocess.run(
+        # nosemgrep
+        # subprocess is required by this harness; commands are shell=False vectors.
+        result = subprocess.run(  # nosec B603
             [sys.executable, str(script), '--verify-key', wrong_key, '--file', str(sealed_path)],
             capture_output=True, text=True,
         )

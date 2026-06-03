@@ -24,7 +24,7 @@ import argparse
 import json
 import os
 import shutil
-import subprocess
+import subprocess  # nosec B404 - subprocess is required by harnesses.
 import sys
 import threading
 import time
@@ -109,7 +109,9 @@ def run(
     timeout: int = 120,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    return subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
         cmd,
         cwd=str(cwd),
         text=True,
@@ -388,7 +390,9 @@ def run_one_live(
     env = build_env()
 
     # Start writer
-    writer_proc = subprocess.Popen(
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    writer_proc = subprocess.Popen(  # nosec B603 - harness uses shell=False command vectors.
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -445,7 +449,16 @@ def run_one_live(
         while not stop_poll.is_set():
             try:
                 active_at_start = not writer_finished.is_set()
-                res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=8, env=env)
+                # nosemgrep
+                # subprocess is required by this harness; commands are shell=False vectors.
+                res = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=8,
+                    env=env,
+                )
                 active_at_end = not writer_finished.is_set()
                 if active_at_start and active_at_end and res.returncode == 0:
                     parsed = parse_json_lines(res.stdout, reader_name)
@@ -473,7 +486,16 @@ def run_one_live(
 
     def do_final(reader_name: str, cmd: list[str]) -> dict:
         try:
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30, env=env)
+            # nosemgrep
+            # subprocess is required by this harness; commands are shell=False vectors.
+            res = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30,
+                env=env,
+            )
             if res.returncode == 0:
                 parsed = parse_json_lines(res.stdout, reader_name)
                 seqs = [str(e.get("LIVE_SEQ", "")) for e in parsed]
@@ -507,7 +529,16 @@ def run_one_live(
     def do_libsystemd(reader_name: str, cmd: list[str], timeout: int) -> dict:
         active_at_start = not writer_finished.is_set()
         try:
-            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout, env=env)
+            # nosemgrep
+            # subprocess is required by this harness; commands are shell=False vectors.
+            res = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=timeout,
+                env=env,
+            )
             parsed = parse_json_lines(res.stdout, reader_name) if res.returncode == 0 else []
             entries_count = int(parsed[-1].get("entries", 0)) if parsed else 0
             waits = int(parsed[-1].get("waits", 0)) if parsed else 0
@@ -618,7 +649,16 @@ def run_one_live(
     if feature_spec.verify_key:
         vcmd.extend(["--verify-key", feature_spec.verify_key])
     vcmd.extend(["--file", journal_path])
-    vp = subprocess.run(vcmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30, env=env)
+    # nosemgrep
+    # subprocess is required by this harness; commands are shell=False vectors.
+    vp = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
+        vcmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=30,
+        env=env,
+    )
     verify = {"command": shell_join(vcmd), "returncode": vp.returncode, "stderr": vp.stderr[-300:]}
     structure = inspect_journal_structure(
         journal_path,
