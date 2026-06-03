@@ -133,6 +133,21 @@ impl AdapterResult {
     }
 }
 
+fn adapter_fail(
+    tc: &TestCase,
+    actual: serde_json::Value,
+    error: impl Into<String>,
+    start: Instant,
+) -> AdapterResult {
+    AdapterResult::fail(
+        &tc.test_name,
+        &tc.expected.result_format,
+        actual,
+        error,
+        start,
+    )
+}
+
 fn main() {
     if let Err(err) = run() {
         eprintln!("ERROR: {err}");
@@ -431,168 +446,15 @@ fn test_invalid_match(tc: &TestCase, start: Instant) -> AdapterResult {
 }
 
 fn test_complex_match(tc: &TestCase, start: Instant) -> AdapterResult {
-    let tmp = match tempfile::tempdir() {
-        Ok(tmp) => tmp,
-        Err(err) => {
-            return AdapterResult::fail(
-                &tc.test_name,
-                &tc.expected.result_format,
-                serde_json::Value::Null,
-                err.to_string(),
-                start,
-            );
-        }
+    let (_tmp, active_path) = match create_complex_match_log() {
+        Ok(result) => result,
+        Err(err) => return adapter_fail(tc, serde_json::Value::Null, err.to_string(), start),
     };
-
-    let origin = Origin {
-        machine_id: None,
-        namespace: None,
-        source: Source::System,
+    let matched = match collect_complex_matches(&active_path) {
+        Ok(matched) => matched,
+        Err(err) => return adapter_fail(tc, serde_json::Value::Null, err, start),
     };
-    let config = Config::new(
-        origin,
-        RotationPolicy::default(),
-        RetentionPolicy::default(),
-    );
-    let mut log = match Log::new(tmp.path(), config) {
-        Ok(log) => log,
-        Err(err) => {
-            return AdapterResult::fail(
-                &tc.test_name,
-                &tc.expected.result_format,
-                serde_json::Value::Null,
-                err.to_string(),
-                start,
-            );
-        }
-    };
-
-    let entries: Vec<Vec<Vec<u8>>> = vec![
-        vec![b"L3=ok".to_vec(), b"TWO=two".to_vec(), b"ONE=one".to_vec()],
-        vec![
-            b"L4_1=yes".to_vec(),
-            b"L4_2=ok".to_vec(),
-            b"PIFF=paff".to_vec(),
-            b"QUUX=xxxxx".to_vec(),
-            b"HALLO=WALDO".to_vec(),
-            b"B=C\0D".to_vec(),
-            b"A=\x01\x02".to_vec(),
-        ],
-        vec![b"L3=ok".to_vec()],
-        vec![b"TWO=two".to_vec(), b"ONE=one".to_vec()],
-    ];
-
-    const REALTIME_BASE: u64 = 1_700_010_000_000_000;
-    for (index, entry) in entries.iter().enumerate() {
-        let fields: Vec<&[u8]> = entry.iter().map(Vec::as_slice).collect();
-        if let Err(err) = log.write_entry_with_timestamps(
-            &fields,
-            EntryTimestamps {
-                entry_realtime_usec: Some(REALTIME_BASE + index as u64),
-                entry_monotonic_usec: Some(index as u64 + 1),
-                source_realtime_usec: None,
-            },
-        ) {
-            return AdapterResult::fail(
-                &tc.test_name,
-                &tc.expected.result_format,
-                serde_json::Value::Null,
-                err.to_string(),
-                start,
-            );
-        }
-    }
-    if let Err(err) = log.sync() {
-        return AdapterResult::fail(
-            &tc.test_name,
-            &tc.expected.result_format,
-            serde_json::Value::Null,
-            err.to_string(),
-            start,
-        );
-    }
-    let Some(active_path) = log.active_file().map(|file| file.path().to_string()) else {
-        return AdapterResult::fail(
-            &tc.test_name,
-            &tc.expected.result_format,
-            serde_json::Value::Null,
-            "writer did not expose an active file",
-            start,
-        );
-    };
-    drop(log);
-
-    let mut journal = match SdJournalOpen(&active_path, 0) {
-        Ok(journal) => journal,
-        Err(err) => {
-            return AdapterResult::fail(
-                &tc.test_name,
-                &tc.expected.result_format,
-                serde_json::Value::Null,
-                err.to_string(),
-                start,
-            );
-        }
-    };
-    if let Err(err) = add_systemd_complex_match_expression(&mut journal) {
-        return AdapterResult::fail(
-            &tc.test_name,
-            &tc.expected.result_format,
-            serde_json::Value::Null,
-            err,
-            start,
-        );
-    }
-
-    let mut matched = Vec::new();
-    loop {
-        match SdJournalNext(&mut journal) {
-            Ok(0) => break,
-            Ok(_) => match SdJournalGetEntry(&mut journal) {
-                Ok(entry) => {
-                    let fields = entry
-                        .fields
-                        .into_iter()
-                        .map(|(key, value)| (key, String::from_utf8_lossy(&value).into_owned()))
-                        .collect::<HashMap<_, _>>();
-                    matched.push(fields);
-                }
-                Err(err) => {
-                    return AdapterResult::fail(
-                        &tc.test_name,
-                        &tc.expected.result_format,
-                        json!(matched),
-                        err.to_string(),
-                        start,
-                    );
-                }
-            },
-            Err(err) => {
-                return AdapterResult::fail(
-                    &tc.test_name,
-                    &tc.expected.result_format,
-                    json!(matched),
-                    err.to_string(),
-                    start,
-                );
-            }
-        }
-    }
-
-    if matched.len() != 2
-        || !matched.iter().any(|entry| {
-            entry.get("L3").is_some_and(|value| value == "ok")
-                && entry.get("TWO").is_some_and(|value| value == "two")
-                && entry.get("ONE").is_some_and(|value| value == "one")
-        })
-        || !matched.iter().any(|entry| {
-            entry.get("L4_1").is_some_and(|value| value == "yes")
-                && entry.get("L4_2").is_some_and(|value| value == "ok")
-                && entry.get("PIFF").is_some_and(|value| value == "paff")
-                && entry.get("QUUX").is_some_and(|value| value == "xxxxx")
-                && entry.get("HALLO").is_some_and(|value| value == "WALDO")
-        })
-    {
+    if !complex_matches_expected(&matched) {
         return AdapterResult::fail(
             &tc.test_name,
             &tc.expected.result_format,
@@ -613,28 +475,134 @@ fn test_complex_match(tc: &TestCase, start: Instant) -> AdapterResult {
     )
 }
 
+fn create_complex_match_log() -> AnyResult<(tempfile::TempDir, String)> {
+    let tmp = tempfile::tempdir()?;
+    let origin = Origin {
+        machine_id: None,
+        namespace: None,
+        source: Source::System,
+    };
+    let config = Config::new(
+        origin,
+        RotationPolicy::default(),
+        RetentionPolicy::default(),
+    );
+    let mut log = Log::new(tmp.path(), config)?;
+    write_complex_match_entries(&mut log)?;
+    log.sync()?;
+    let active_path = log
+        .active_file()
+        .map(|file| file.path().to_string())
+        .ok_or_else(|| anyhow!("writer did not expose an active file"))?;
+    drop(log);
+    Ok((tmp, active_path))
+}
+
+fn write_complex_match_entries(log: &mut Log) -> AnyResult<()> {
+    let entries: Vec<Vec<Vec<u8>>> = vec![
+        vec![b"L3=ok".to_vec(), b"TWO=two".to_vec(), b"ONE=one".to_vec()],
+        vec![
+            b"L4_1=yes".to_vec(),
+            b"L4_2=ok".to_vec(),
+            b"PIFF=paff".to_vec(),
+            b"QUUX=xxxxx".to_vec(),
+            b"HALLO=WALDO".to_vec(),
+            b"B=C\0D".to_vec(),
+            b"A=\x01\x02".to_vec(),
+        ],
+        vec![b"L3=ok".to_vec()],
+        vec![b"TWO=two".to_vec(), b"ONE=one".to_vec()],
+    ];
+
+    const REALTIME_BASE: u64 = 1_700_010_000_000_000;
+    for (index, entry) in entries.iter().enumerate() {
+        let fields: Vec<&[u8]> = entry.iter().map(Vec::as_slice).collect();
+        log.write_entry_with_timestamps(
+            &fields,
+            EntryTimestamps {
+                entry_realtime_usec: Some(REALTIME_BASE + index as u64),
+                entry_monotonic_usec: Some(index as u64 + 1),
+                source_realtime_usec: None,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn collect_complex_matches(active_path: &str) -> Result<Vec<HashMap<String, String>>, String> {
+    let mut journal = SdJournalOpen(active_path, 0).map_err(|err| err.to_string())?;
+    add_systemd_complex_match_expression(&mut journal)?;
+    let mut matched = Vec::new();
+    while SdJournalNext(&mut journal).map_err(|err| err.to_string())? != 0 {
+        let entry = SdJournalGetEntry(&mut journal).map_err(|err| err.to_string())?;
+        let fields = entry
+            .fields
+            .into_iter()
+            .map(|(key, value)| (key, String::from_utf8_lossy(&value).into_owned()))
+            .collect::<HashMap<_, _>>();
+        matched.push(fields);
+    }
+    Ok(matched)
+}
+
+fn complex_matches_expected(matched: &[HashMap<String, String>]) -> bool {
+    matched.len() == 2
+        && matched.iter().any(is_l3_one_two_match)
+        && matched.iter().any(is_l4_complex_match)
+}
+
+fn is_l3_one_two_match(entry: &HashMap<String, String>) -> bool {
+    entry.get("L3").is_some_and(|value| value == "ok")
+        && entry.get("TWO").is_some_and(|value| value == "two")
+        && entry.get("ONE").is_some_and(|value| value == "one")
+}
+
+fn is_l4_complex_match(entry: &HashMap<String, String>) -> bool {
+    entry.get("L4_1").is_some_and(|value| value == "yes")
+        && entry.get("L4_2").is_some_and(|value| value == "ok")
+        && entry.get("PIFF").is_some_and(|value| value == "paff")
+        && entry.get("QUUX").is_some_and(|value| value == "xxxxx")
+        && entry.get("HALLO").is_some_and(|value| value == "WALDO")
+}
+
+enum MatchOperation {
+    Match(&'static [u8]),
+    Disjunction,
+    Conjunction,
+}
+
 fn add_systemd_complex_match_expression(journal: &mut journal::SdJournal) -> Result<(), String> {
-    SdJournalAddMatch(journal, b"A=\x01\x02").map_err(|err| err.to_string())?;
-    SdJournalAddMatch(journal, b"B=C\0D").map_err(|err| err.to_string())?;
-    SdJournalAddMatch(journal, b"HALLO=WALDO").map_err(|err| err.to_string())?;
-    SdJournalAddMatch(journal, b"QUUX=mmmm").map_err(|err| err.to_string())?;
-    SdJournalAddMatch(journal, b"QUUX=xxxxx").map_err(|err| err.to_string())?;
-    SdJournalAddMatch(journal, b"HALLO=").map_err(|err| err.to_string())?;
-    SdJournalAddMatch(journal, b"QUUX=xxxxx").map_err(|err| err.to_string())?;
-    SdJournalAddMatch(journal, b"QUUX=yyyyy").map_err(|err| err.to_string())?;
-    SdJournalAddMatch(journal, b"PIFF=paff").map_err(|err| err.to_string())?;
-    SdJournalAddDisjunction(journal).map_err(|err| err.to_string())?;
-    SdJournalAddMatch(journal, b"ONE=one").map_err(|err| err.to_string())?;
-    SdJournalAddMatch(journal, b"ONE=two").map_err(|err| err.to_string())?;
-    SdJournalAddMatch(journal, b"TWO=two").map_err(|err| err.to_string())?;
-    SdJournalAddConjunction(journal).map_err(|err| err.to_string())?;
-    SdJournalAddMatch(journal, b"L4_1=yes").map_err(|err| err.to_string())?;
-    SdJournalAddMatch(journal, b"L4_1=ok").map_err(|err| err.to_string())?;
-    SdJournalAddMatch(journal, b"L4_2=yes").map_err(|err| err.to_string())?;
-    SdJournalAddMatch(journal, b"L4_2=ok").map_err(|err| err.to_string())?;
-    SdJournalAddDisjunction(journal).map_err(|err| err.to_string())?;
-    SdJournalAddMatch(journal, b"L3=yes").map_err(|err| err.to_string())?;
-    SdJournalAddMatch(journal, b"L3=ok").map_err(|err| err.to_string())?;
+    let operations = [
+        MatchOperation::Match(b"A=\x01\x02"),
+        MatchOperation::Match(b"B=C\0D"),
+        MatchOperation::Match(b"HALLO=WALDO"),
+        MatchOperation::Match(b"QUUX=mmmm"),
+        MatchOperation::Match(b"QUUX=xxxxx"),
+        MatchOperation::Match(b"HALLO="),
+        MatchOperation::Match(b"QUUX=xxxxx"),
+        MatchOperation::Match(b"QUUX=yyyyy"),
+        MatchOperation::Match(b"PIFF=paff"),
+        MatchOperation::Disjunction,
+        MatchOperation::Match(b"ONE=one"),
+        MatchOperation::Match(b"ONE=two"),
+        MatchOperation::Match(b"TWO=two"),
+        MatchOperation::Conjunction,
+        MatchOperation::Match(b"L4_1=yes"),
+        MatchOperation::Match(b"L4_1=ok"),
+        MatchOperation::Match(b"L4_2=yes"),
+        MatchOperation::Match(b"L4_2=ok"),
+        MatchOperation::Disjunction,
+        MatchOperation::Match(b"L3=yes"),
+        MatchOperation::Match(b"L3=ok"),
+    ];
+    for operation in operations {
+        match operation {
+            MatchOperation::Match(value) => SdJournalAddMatch(journal, value),
+            MatchOperation::Disjunction => SdJournalAddDisjunction(journal),
+            MatchOperation::Conjunction => SdJournalAddConjunction(journal),
+        }
+        .map_err(|err| err.to_string())?;
+    }
     Ok(())
 }
 
@@ -723,38 +691,7 @@ fn test_cursor(tc: &TestCase, start: Instant) -> AdapterResult {
             start,
         );
     };
-    let result: Result<bool, journal::FacadeError> = (|| {
-        let mut journal = SdJournalOpen(&path.to_string_lossy(), 0)?;
-        SdJournalSeekHead(&mut journal)?;
-        if SdJournalNext(&mut journal)? == 0 {
-            return Ok(false);
-        }
-        let cursor = SdJournalGetCursor(&journal)?;
-        if !SdJournalTestCursor(&journal, &cursor)? {
-            return Ok(false);
-        }
-        let cursor_realtime = SdJournalGetRealtimeUsec(&journal)?;
-        if SdJournalTestCursor(&journal, "invalid-cursor")? {
-            return Ok(false);
-        }
-        if SdJournalSeekCursor(&mut journal, "invalid-cursor").is_ok() {
-            return Ok(false);
-        }
-        SdJournalSeekCursor(&mut journal, &cursor)?;
-        let Some((cursor_prefix, _)) = cursor.rsplit_once("n=") else {
-            return Ok(false);
-        };
-        let missing_cursor = format!("{cursor_prefix}n=999999");
-        SdJournalSeekCursor(&mut journal, &missing_cursor)?;
-        if SdJournalTestCursor(&journal, &cursor)? {
-            return Ok(false);
-        }
-        if SdJournalGetRealtimeUsec(&journal)? < cursor_realtime {
-            return Ok(false);
-        }
-        Ok(true)
-    })();
-    match result {
+    match cursor_checks(&path) {
         Ok(ok) => AdapterResult::pass(&tc.test_name, &tc.expected.result_format, json!(ok), start),
         Err(err) => AdapterResult::error(
             &tc.test_name,
@@ -763,6 +700,48 @@ fn test_cursor(tc: &TestCase, start: Instant) -> AdapterResult {
             start,
         ),
     }
+}
+
+fn cursor_checks(path: &PathBuf) -> Result<bool, journal::FacadeError> {
+    let mut journal = SdJournalOpen(&path.to_string_lossy(), 0)?;
+    SdJournalSeekHead(&mut journal)?;
+    if SdJournalNext(&mut journal)? == 0 {
+        return Ok(false);
+    }
+    let cursor = SdJournalGetCursor(&journal)?;
+    if !valid_current_cursor(&journal, &cursor)? {
+        return Ok(false);
+    }
+    let cursor_realtime = SdJournalGetRealtimeUsec(&journal)?;
+    if invalid_cursor_accepted(&mut journal)? {
+        return Ok(false);
+    }
+    missing_cursor_positions_after_original(&mut journal, &cursor, cursor_realtime)
+}
+
+fn valid_current_cursor(
+    journal: &journal::SdJournal,
+    cursor: &str,
+) -> Result<bool, journal::FacadeError> {
+    Ok(SdJournalTestCursor(journal, cursor)? && !SdJournalTestCursor(journal, "invalid-cursor")?)
+}
+
+fn invalid_cursor_accepted(journal: &mut journal::SdJournal) -> Result<bool, journal::FacadeError> {
+    Ok(SdJournalSeekCursor(journal, "invalid-cursor").is_ok())
+}
+
+fn missing_cursor_positions_after_original(
+    journal: &mut journal::SdJournal,
+    cursor: &str,
+    cursor_realtime: u64,
+) -> Result<bool, journal::FacadeError> {
+    SdJournalSeekCursor(journal, cursor)?;
+    let Some((cursor_prefix, _)) = cursor.rsplit_once("n=") else {
+        return Ok(false);
+    };
+    SdJournalSeekCursor(journal, &format!("{cursor_prefix}n=999999"))?;
+    Ok(!SdJournalTestCursor(journal, cursor)?
+        && SdJournalGetRealtimeUsec(journal)? >= cursor_realtime)
 }
 
 fn test_corruption(tc: &TestCase, start: Instant) -> AdapterResult {
@@ -859,8 +838,8 @@ fn test_verify_corruption(tc: &TestCase, start: Instant) -> AdapterResult {
 }
 
 fn test_verify_sealed(tc: &TestCase, start: Instant) -> AdapterResult {
-    let tmp = match tempfile::tempdir() {
-        Ok(tmp) => tmp,
+    let (_tmp, path, key) = match create_sealed_verify_fixture() {
+        Ok(fixture) => fixture,
         Err(err) => {
             return AdapterResult::error(
                 &tc.test_name,
@@ -870,89 +849,6 @@ fn test_verify_sealed(tc: &TestCase, start: Instant) -> AdapterResult {
             );
         }
     };
-
-    let path = tmp
-        .path()
-        .join("00000000-0000-0000-0000-000000000001/system.journal");
-    if let Some(parent) = path.parent() {
-        if let Err(err) = fs::create_dir_all(parent) {
-            return AdapterResult::error(
-                &tc.test_name,
-                &tc.expected.result_format,
-                err.to_string(),
-                start,
-            );
-        }
-    }
-    let seed = [0u8; 12];
-    let seal_opts = SealOptions::new(seed, 1_000_000, 1_000_000);
-
-    let repo_file = match RepoFile::from_path(&path) {
-        Some(f) => f,
-        None => {
-            return AdapterResult::error(
-                &tc.test_name,
-                &tc.expected.result_format,
-                "test journal path should parse".to_string(),
-                start,
-            );
-        }
-    };
-
-    let opts =
-        JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3)).with_seal(seal_opts);
-
-    let mut journal_file = match JournalFile::<MmapMut>::create(&repo_file, opts) {
-        Ok(jf) => jf,
-        Err(err) => {
-            return AdapterResult::error(
-                &tc.test_name,
-                &tc.expected.result_format,
-                err.to_string(),
-                start,
-            );
-        }
-    };
-
-    let mut writer = match JournalWriter::new(&mut journal_file, 1, test_uuid(4)) {
-        Ok(writer) => writer,
-        Err(err) => {
-            return AdapterResult::error(
-                &tc.test_name,
-                &tc.expected.result_format,
-                err.to_string(),
-                start,
-            );
-        }
-    };
-
-    if let Err(err) = writer.add_entry(
-        &mut journal_file,
-        &[b"MESSAGE=sealed verify".as_slice()],
-        1_500_000,
-        1,
-    ) {
-        return AdapterResult::error(
-            &tc.test_name,
-            &tc.expected.result_format,
-            err.to_string(),
-            start,
-        );
-    }
-
-    if let Err(err) = journal_file.sync() {
-        return AdapterResult::error(
-            &tc.test_name,
-            &tc.expected.result_format,
-            err.to_string(),
-            start,
-        );
-    }
-    drop(writer);
-    drop(journal_file);
-
-    let seed_hex = seed.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    let key = format!("{seed_hex}/{:x}-{:x}", 1u64, 1_000_000u64);
     match verify_file_with_key(&path, &key) {
         Ok(()) => AdapterResult::pass(
             &tc.test_name,
@@ -968,6 +864,44 @@ fn test_verify_sealed(tc: &TestCase, start: Instant) -> AdapterResult {
             start,
         ),
     }
+}
+
+fn create_sealed_verify_fixture() -> AnyResult<(tempfile::TempDir, PathBuf, String)> {
+    let tmp = tempfile::tempdir()?;
+    let path = sealed_verify_path(&tmp);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let seed = [0u8; 12];
+    write_sealed_verify_journal(&path, seed)?;
+    Ok((tmp, path, sealed_verify_key(seed)))
+}
+
+fn sealed_verify_path(tmp: &tempfile::TempDir) -> PathBuf {
+    tmp.path()
+        .join("00000000-0000-0000-0000-000000000001/system.journal")
+}
+
+fn write_sealed_verify_journal(path: &PathBuf, seed: [u8; 12]) -> AnyResult<()> {
+    let repo_file =
+        RepoFile::from_path(path).ok_or_else(|| anyhow!("test journal path should parse"))?;
+    let opts = JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3))
+        .with_seal(SealOptions::new(seed, 1_000_000, 1_000_000));
+    let mut journal_file = JournalFile::<MmapMut>::create(&repo_file, opts)?;
+    let mut writer = JournalWriter::new(&mut journal_file, 1, test_uuid(4))?;
+    writer.add_entry(
+        &mut journal_file,
+        &[b"MESSAGE=sealed verify".as_slice()],
+        1_500_000,
+        1,
+    )?;
+    journal_file.sync()?;
+    Ok(())
+}
+
+fn sealed_verify_key(seed: [u8; 12]) -> String {
+    let seed_hex = seed.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    format!("{seed_hex}/{:x}-{:x}", 1u64, 1_000_000u64)
 }
 
 fn test_uuid(n: u8) -> uuid::Uuid {

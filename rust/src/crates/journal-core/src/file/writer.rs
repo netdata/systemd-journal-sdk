@@ -1851,7 +1851,7 @@ mod tests {
     fn field_cache_skips_oversized_field_names() {
         let mut cache = FieldCache::new();
         let offset = NonZeroU64::new(16).unwrap();
-        let oversized = vec![b'x'; FIELD_CACHE_MAX_PAYLOAD_LEN + 1];
+        let oversized = vec![0x78_u8; FIELD_CACHE_MAX_PAYLOAD_LEN + 1];
 
         cache.insert(&oversized, offset);
 
@@ -1882,9 +1882,7 @@ mod tests {
 
     #[test]
     fn zstd_frame_with_content_size_adds_decodable_frame_size() {
-        let payload: Vec<u8> = (0..275usize)
-            .map(|index| (index % 26) as u8 + b'A')
-            .collect();
+        let payload: Vec<u8> = (0..275usize).map(|index| (index % 26) as u8 + 65).collect();
         let frame = ruzstd::encoding::compress_to_vec(
             Cursor::new(payload.as_slice()),
             ruzstd::encoding::CompressionLevel::Fastest,
@@ -2004,8 +2002,8 @@ mod tests {
     }
 
     fn payload_with_total_len(len: usize) -> Vec<u8> {
-        let mut payload = b"F=".to_vec();
-        payload.resize(len, b'A');
+        let mut payload = Vec::from([70_u8, 61]);
+        payload.resize(len, 65);
         payload
     }
 
@@ -2702,17 +2700,14 @@ mod tests {
         let dir = TempDir::new().expect("create temp dir");
         let journal_dir = dir.path().join("journals");
         std::fs::create_dir_all(&journal_dir).expect("create journal dir");
+        assert_journald_policy(&journal_dir);
+        assert_journal_app_policy(&journal_dir);
+        assert_raw_policy(&journal_dir);
+    }
 
+    fn assert_journald_policy(journal_dir: &Path) {
         let journald_path = journal_dir.join("journald.journal");
-        let repo_file =
-            crate::repository::File::from_path(&journald_path).expect("test journal path");
-        let mut journal_file = JournalFile::create(
-            &repo_file,
-            JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3)),
-        )
-        .expect("create journal");
-        let mut writer =
-            JournalWriter::new(&mut journal_file, 1, test_uuid(4)).expect("create writer");
+        let (mut journal_file, mut writer) = create_policy_writer(&journald_path, [1, 2, 3], 4);
         writer
             .add_entry_structured(
                 &mut journal_file,
@@ -2725,16 +2720,11 @@ mod tests {
             )
             .expect("journald policy accepts protected fields");
         assert_eq!(journal_file.journal_header_ref().n_entries, 1);
+    }
 
+    fn assert_journal_app_policy(journal_dir: &Path) {
         let app_path = journal_dir.join("journal-app.journal");
-        let repo_file = crate::repository::File::from_path(&app_path).expect("test journal path");
-        let mut journal_file = JournalFile::create(
-            &repo_file,
-            JournalFileOptions::new(test_uuid(5), test_uuid(6), test_uuid(7)),
-        )
-        .expect("create journal");
-        let mut writer =
-            JournalWriter::new(&mut journal_file, 1, test_uuid(8)).expect("create writer");
+        let (mut journal_file, mut writer) = create_policy_writer(&app_path, [5, 6, 7], 8);
         writer
             .add_entry_structured_with_options(
                 &mut journal_file,
@@ -2749,16 +2739,7 @@ mod tests {
             )
             .expect("journal-app policy drops invalid fields");
         assert_eq!(journal_file.journal_header_ref().n_entries, 1);
-        let mut entry_offsets = Vec::new();
-        journal_file
-            .entry_offsets(&mut entry_offsets)
-            .expect("collect journal-app entry offsets");
-        let payloads = journal_file
-            .entry_data_objects(entry_offsets[0])
-            .expect("journal-app entry data iterator")
-            .map(|item| item.map(|object| object.raw_payload().to_vec()))
-            .collect::<crate::error::Result<Vec<_>>>()
-            .expect("read journal-app payloads");
+        let payloads = first_entry_payloads(&journal_file, "journal-app");
         assert!(payloads.iter().any(|p| p == b"MESSAGE=app valid"));
         assert!(!payloads.iter().any(|p| p.starts_with(b"_HOSTNAME=")));
         assert!(!payloads.iter().any(|p| p.starts_with(b"lowercase=")));
@@ -2773,16 +2754,11 @@ mod tests {
                 )
                 .is_err()
         );
+    }
 
+    fn assert_raw_policy(journal_dir: &Path) {
         let raw_path = journal_dir.join("raw.journal");
-        let repo_file = crate::repository::File::from_path(&raw_path).expect("test journal path");
-        let mut journal_file = JournalFile::create(
-            &repo_file,
-            JournalFileOptions::new(test_uuid(9), test_uuid(10), test_uuid(11)),
-        )
-        .expect("create journal");
-        let mut writer =
-            JournalWriter::new(&mut journal_file, 1, test_uuid(12)).expect("create writer");
+        let (mut journal_file, mut writer) = create_policy_writer(&raw_path, [9, 10, 11], 12);
         let long_name = vec![b'a'; 1024];
         writer
             .add_entry_fields_with_options(
@@ -2799,25 +2775,7 @@ mod tests {
                 EntryWriteOptions::default().field_name_policy(FieldNamePolicy::Raw),
             )
             .expect("raw policy accepts structure-only names");
-        let mut entry_offsets = Vec::new();
-        journal_file
-            .entry_offsets(&mut entry_offsets)
-            .expect("collect raw entry offsets");
-        let payloads = journal_file
-            .entry_data_objects(entry_offsets[0])
-            .expect("raw entry data iterator")
-            .map(|item| item.map(|object| object.raw_payload().to_vec()))
-            .collect::<crate::error::Result<Vec<_>>>()
-            .expect("read raw payloads");
-        assert!(payloads.iter().any(|p| p == b"lowercase=ok"));
-        assert!(payloads.iter().any(|p| p == b"foo.bar=dot"));
-        assert!(payloads.iter().any(|p| p == b"field name=space"));
-        assert!(
-            payloads
-                .iter()
-                .any(|p| p == &format!("{}=long", "a".repeat(1024)).into_bytes())
-        );
-        assert!(payloads.iter().any(|p| p == b"BINARY=a\0=b"));
+        assert_raw_policy_payloads(&journal_file);
         assert!(
             writer
                 .add_entry_fields_with_options(
@@ -2829,6 +2787,52 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    fn create_policy_writer(
+        path: &Path,
+        file_seeds: [u8; 3],
+        boot_seed: u8,
+    ) -> (JournalFile<MmapMut>, JournalWriter) {
+        let repo_file = crate::repository::File::from_path(path).expect("test journal path");
+        let mut journal_file = JournalFile::create(
+            &repo_file,
+            JournalFileOptions::new(
+                test_uuid(file_seeds[0]),
+                test_uuid(file_seeds[1]),
+                test_uuid(file_seeds[2]),
+            ),
+        )
+        .expect("create journal");
+        let writer =
+            JournalWriter::new(&mut journal_file, 1, test_uuid(boot_seed)).expect("create writer");
+        (journal_file, writer)
+    }
+
+    fn first_entry_payloads(journal_file: &JournalFile<MmapMut>, label: &str) -> Vec<Vec<u8>> {
+        let mut entry_offsets = Vec::new();
+        journal_file
+            .entry_offsets(&mut entry_offsets)
+            .unwrap_or_else(|_| panic!("collect {label} entry offsets"));
+        journal_file
+            .entry_data_objects(entry_offsets[0])
+            .unwrap_or_else(|_| panic!("{label} entry data iterator"))
+            .map(|item| item.map(|object| object.raw_payload().to_vec()))
+            .collect::<crate::error::Result<Vec<_>>>()
+            .unwrap_or_else(|_| panic!("read {label} payloads"))
+    }
+
+    fn assert_raw_policy_payloads(journal_file: &JournalFile<MmapMut>) {
+        let payloads = first_entry_payloads(journal_file, "raw");
+        assert!(payloads.iter().any(|p| p == b"lowercase=ok"));
+        assert!(payloads.iter().any(|p| p == b"foo.bar=dot"));
+        assert!(payloads.iter().any(|p| p == b"field name=space"));
+        assert!(
+            payloads
+                .iter()
+                .any(|p| p == &format!("{}=long", "a".repeat(1024)).into_bytes())
+        );
+        assert!(payloads.iter().any(|p| p == b"BINARY=a\0=b"));
     }
 
     #[test]

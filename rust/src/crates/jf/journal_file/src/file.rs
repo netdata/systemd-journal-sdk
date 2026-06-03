@@ -626,88 +626,129 @@ impl<M: MemoryMap> JournalFile<M> {
     }
 }
 
+const INITIAL_FILE_SIZE: u64 = 8 * 1024 * 1024;
+
+struct HashTableLayout {
+    data_size: u64,
+    field_size: u64,
+    data_offset: u64,
+    field_offset: u64,
+}
+
+impl HashTableLayout {
+    fn from_options(options: &JournalFileOptions) -> Self {
+        let data_size = (options.data_hash_table_buckets * std::mem::size_of::<HashItem>()) as u64;
+        let field_size =
+            (options.field_hash_table_buckets * std::mem::size_of::<HashItem>()) as u64;
+        let field_offset = std::mem::size_of::<JournalHeader>() as u64
+            + std::mem::size_of::<ObjectHeader>() as u64;
+        let data_offset = field_offset + field_size + std::mem::size_of::<ObjectHeader>() as u64;
+        Self {
+            data_size,
+            field_size,
+            data_offset,
+            field_offset,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum HashTableKind {
+    Data,
+    Field,
+}
+
+fn create_backing_file(path: impl AsRef<Path>) -> Result<File> {
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .read(true)
+        .write(true)
+        .open(path)?;
+    file.set_len(INITIAL_FILE_SIZE)?;
+    Ok(file)
+}
+
+fn initial_header(options: &JournalFileOptions, layout: &HashTableLayout) -> JournalHeader {
+    let mut header = JournalHeader::default();
+    header.signature = *b"LPKSHHRH";
+    header.compatible_flags = HeaderCompatibleFlags::TailEntryBootId as u32;
+    if options.enable_keyed_hash {
+        header.incompatible_flags |= HeaderIncompatibleFlags::KeyedHash as u32;
+    }
+    header.data_hash_table_offset = NonZeroU64::new(layout.data_offset);
+    header.data_hash_table_size = NonZeroU64::new(layout.data_size);
+    header.field_hash_table_offset = NonZeroU64::new(layout.field_offset);
+    header.field_hash_table_size = NonZeroU64::new(layout.field_size);
+    header.tail_object_offset =
+        NonZeroU64::new(layout.data_offset - std::mem::size_of::<ObjectHeader>() as u64);
+    header.header_size = std::mem::size_of::<JournalHeader>() as u64;
+    header.n_objects = 2;
+    header.arena_size = INITIAL_FILE_SIZE - header.header_size;
+    header.machine_id = options.machine_id;
+    header.file_id = options.file_id;
+    header.seqnum_id = options.seqnum_id;
+    header
+}
+
+fn map_created_hash_table<M: MemoryMapMut>(
+    file: &File,
+    header: &JournalHeader,
+    kind: HashTableKind,
+) -> Result<Option<M>> {
+    let (offset, size) = hash_table_header_fields(header, kind);
+    map_hash_table(file, header.header_size, offset, size)
+}
+
+fn create_header_map<M: MemoryMapMut>(file: &File, header: &JournalHeader) -> Result<M> {
+    let mut header_map = M::create(file, 0, std::mem::size_of::<JournalHeader>() as u64)?;
+    let header_mut = JournalHeader::mut_from_prefix(&mut header_map).unwrap().0;
+    *header_mut = *header;
+    Ok(header_map)
+}
+
+fn write_hash_table_object_header<M: MemoryMapMut>(
+    jf: &JournalFile<M>,
+    header: &JournalHeader,
+    kind: HashTableKind,
+) -> Result<()> {
+    let (offset, size) = hash_table_object_location(header, kind);
+    let object_header = jf.object_header_mut(offset)?;
+    object_header.type_ = match kind {
+        HashTableKind::Data => ObjectType::DataHashTable as u8,
+        HashTableKind::Field => ObjectType::FieldHashTable as u8,
+    };
+    object_header.size = size;
+    Ok(())
+}
+
+fn hash_table_header_fields(
+    header: &JournalHeader,
+    kind: HashTableKind,
+) -> (Option<NonZeroU64>, Option<NonZeroU64>) {
+    match kind {
+        HashTableKind::Data => (header.data_hash_table_offset, header.data_hash_table_size),
+        HashTableKind::Field => (header.field_hash_table_offset, header.field_hash_table_size),
+    }
+}
+
+fn hash_table_object_location(header: &JournalHeader, kind: HashTableKind) -> (NonZeroU64, u64) {
+    let (offset, size) = hash_table_header_fields(header, kind);
+    let object_header_size = std::mem::size_of::<ObjectHeader>() as u64;
+    (
+        NonZeroU64::new(offset.unwrap().get() - object_header_size).unwrap(),
+        size.unwrap().get() + object_header_size,
+    )
+}
+
 impl<M: MemoryMapMut> JournalFile<M> {
     pub fn create(path: impl AsRef<Path>, options: JournalFileOptions) -> Result<Self> {
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .read(true)
-            .write(true)
-            .open(&path)?;
-
-        // Preallocate file to 8 MiB (systemd FILE_SIZE_INCREASE)
-        let file_size: u64 = 8 * 1024 * 1024;
-        file.set_len(file_size)?;
-
-        // Calculate hash table sizes
-        let data_hash_table_size =
-            options.data_hash_table_buckets * std::mem::size_of::<HashItem>();
-        let field_hash_table_size =
-            options.field_hash_table_buckets * std::mem::size_of::<HashItem>();
-
-        // Calculate hash table offsets
-        // systemd creates FIELD_HASH_TABLE first, then DATA_HASH_TABLE
-        let field_hash_table_offset = std::mem::size_of::<JournalHeader>() as u64
-            + std::mem::size_of::<ObjectHeader>() as u64;
-        let data_hash_table_offset = field_hash_table_offset
-            + field_hash_table_size as u64
-            + std::mem::size_of::<ObjectHeader>() as u64;
-
-        // Create header with options configuration
-        let mut header = JournalHeader::default();
-        header.signature = *b"LPKSHHRH";
-
-        // Set flags based on options configuration
-        // HEADER_COMPATIBLE_TAIL_ENTRY_BOOT_ID is set for new files (v260+)
-        header.compatible_flags = HeaderCompatibleFlags::TailEntryBootId as u32;
-        if options.enable_keyed_hash {
-            header.incompatible_flags |= HeaderIncompatibleFlags::KeyedHash as u32;
-        }
-
-        // Set hash table configuration
-        header.data_hash_table_offset = NonZeroU64::new(data_hash_table_offset);
-        header.data_hash_table_size = NonZeroU64::new(data_hash_table_size as u64);
-        header.field_hash_table_offset = NonZeroU64::new(field_hash_table_offset);
-        header.field_hash_table_size = NonZeroU64::new(field_hash_table_size as u64);
-
-        // Set other header fields
-        // tail_object_offset points to the last object written (data hash table)
-        header.tail_object_offset =
-            NonZeroU64::new(data_hash_table_offset - std::mem::size_of::<ObjectHeader>() as u64);
-        header.header_size = std::mem::size_of::<JournalHeader>() as u64;
-        header.n_objects = 2;
-        // arena_size spans from header_size to end of preallocated file (8 MiB)
-        let file_size = 8 * 1024 * 1024;
-        header.arena_size = file_size as u64 - header.header_size;
-
-        // Set IDs from options
-        header.machine_id = options.machine_id;
-        header.file_id = options.file_id;
-        header.seqnum_id = options.seqnum_id;
-
-        // Create memory maps for hash tables
-        let data_hash_table_map = map_hash_table(
-            &file,
-            header.header_size,
-            header.data_hash_table_offset,
-            header.data_hash_table_size,
-        )?;
-        let field_hash_table_map = map_hash_table(
-            &file,
-            header.header_size,
-            header.field_hash_table_offset,
-            header.field_hash_table_size,
-        )?;
-
-        // Create header memory map and write header
-        let header_size = std::mem::size_of::<JournalHeader>() as u64;
-        let mut header_map = M::create(&file, 0, header_size)?;
-        {
-            let header_mut = JournalHeader::mut_from_prefix(&mut header_map).unwrap().0;
-            *header_mut = header;
-        }
-
-        // Create window manager for the rest of the objects
+        let file = create_backing_file(path)?;
+        let layout = HashTableLayout::from_options(&options);
+        let header = initial_header(&options, &layout);
+        let data_hash_table_map = map_created_hash_table(&file, &header, HashTableKind::Data)?;
+        let field_hash_table_map = map_created_hash_table(&file, &header, HashTableKind::Field)?;
+        let header_map = create_header_map::<M>(&file, &header)?;
         let window_manager = UnsafeCell::new(WindowManager::new(file, options.window_size, 32)?);
 
         let jf = JournalFile {
@@ -724,36 +765,8 @@ impl<M: MemoryMapMut> JournalFile<M> {
             backtrace: RefCell::new(Backtrace::capture()),
         };
 
-        // write data hash table object header info
-        {
-            let offset = NonZeroU64::new(
-                header.data_hash_table_offset.unwrap().get()
-                    - std::mem::size_of::<ObjectHeader>() as u64,
-            )
-            .unwrap();
-            let size = header.data_hash_table_size.unwrap().get()
-                + std::mem::size_of::<ObjectHeader>() as u64;
-
-            let object_header = jf.object_header_mut(offset)?;
-            object_header.type_ = ObjectType::DataHashTable as u8;
-            object_header.size = size
-        }
-
-        // write field hash table object header info
-        {
-            let offset = NonZeroU64::new(
-                header.field_hash_table_offset.unwrap().get()
-                    - std::mem::size_of::<ObjectHeader>() as u64,
-            )
-            .unwrap();
-            let size = header.field_hash_table_size.unwrap().get()
-                + std::mem::size_of::<ObjectHeader>() as u64;
-
-            let object_header = jf.object_header_mut(offset)?;
-            object_header.type_ = ObjectType::FieldHashTable as u8;
-            object_header.size = size
-        }
-
+        write_hash_table_object_header(&jf, &header, HashTableKind::Data)?;
+        write_hash_table_object_header(&jf, &header, HashTableKind::Field)?;
         Ok(jf)
     }
 
@@ -1119,236 +1132,240 @@ mod tests {
     use crate::JournalWriter;
     use zerocopy::IntoBytes;
 
+    #[derive(Clone, Copy, Debug)]
+    struct ExpectedSanitizedHeader {
+        header_size: u64,
+        n_data: u64,
+        n_fields: u64,
+        n_tags: u64,
+        n_entry_arrays: u64,
+        data_hash_chain_depth: u64,
+        field_hash_chain_depth: u64,
+        tail_entry_array_offset: u32,
+        tail_entry_array_n_entries: u32,
+        tail_entry_offset: u64,
+    }
+
+    const HEADER_SANITIZE_CASES: &[ExpectedSanitizedHeader] = &[
+        ExpectedSanitizedHeader {
+            header_size: 208,
+            n_data: 0,
+            n_fields: 0,
+            n_tags: 0,
+            n_entry_arrays: 0,
+            data_hash_chain_depth: 0,
+            field_hash_chain_depth: 0,
+            tail_entry_array_offset: 0,
+            tail_entry_array_n_entries: 0,
+            tail_entry_offset: 0,
+        },
+        ExpectedSanitizedHeader {
+            header_size: 216,
+            n_data: 11,
+            n_fields: 0,
+            n_tags: 0,
+            n_entry_arrays: 0,
+            data_hash_chain_depth: 0,
+            field_hash_chain_depth: 0,
+            tail_entry_array_offset: 0,
+            tail_entry_array_n_entries: 0,
+            tail_entry_offset: 0,
+        },
+        ExpectedSanitizedHeader {
+            header_size: 220,
+            n_data: 11,
+            n_fields: 0,
+            n_tags: 0,
+            n_entry_arrays: 0,
+            data_hash_chain_depth: 0,
+            field_hash_chain_depth: 0,
+            tail_entry_array_offset: 0,
+            tail_entry_array_n_entries: 0,
+            tail_entry_offset: 0,
+        },
+        ExpectedSanitizedHeader {
+            header_size: 224,
+            n_data: 11,
+            n_fields: 22,
+            n_tags: 0,
+            n_entry_arrays: 0,
+            data_hash_chain_depth: 0,
+            field_hash_chain_depth: 0,
+            tail_entry_array_offset: 0,
+            tail_entry_array_n_entries: 0,
+            tail_entry_offset: 0,
+        },
+        ExpectedSanitizedHeader {
+            header_size: 232,
+            n_data: 11,
+            n_fields: 22,
+            n_tags: 33,
+            n_entry_arrays: 0,
+            data_hash_chain_depth: 0,
+            field_hash_chain_depth: 0,
+            tail_entry_array_offset: 0,
+            tail_entry_array_n_entries: 0,
+            tail_entry_offset: 0,
+        },
+        ExpectedSanitizedHeader {
+            header_size: 240,
+            n_data: 11,
+            n_fields: 22,
+            n_tags: 33,
+            n_entry_arrays: 44,
+            data_hash_chain_depth: 0,
+            field_hash_chain_depth: 0,
+            tail_entry_array_offset: 0,
+            tail_entry_array_n_entries: 0,
+            tail_entry_offset: 0,
+        },
+        ExpectedSanitizedHeader {
+            header_size: 248,
+            n_data: 11,
+            n_fields: 22,
+            n_tags: 33,
+            n_entry_arrays: 44,
+            data_hash_chain_depth: 55,
+            field_hash_chain_depth: 0,
+            tail_entry_array_offset: 0,
+            tail_entry_array_n_entries: 0,
+            tail_entry_offset: 0,
+        },
+        ExpectedSanitizedHeader {
+            header_size: 250,
+            n_data: 11,
+            n_fields: 22,
+            n_tags: 33,
+            n_entry_arrays: 44,
+            data_hash_chain_depth: 55,
+            field_hash_chain_depth: 0,
+            tail_entry_array_offset: 0,
+            tail_entry_array_n_entries: 0,
+            tail_entry_offset: 0,
+        },
+        ExpectedSanitizedHeader {
+            header_size: 256,
+            n_data: 11,
+            n_fields: 22,
+            n_tags: 33,
+            n_entry_arrays: 44,
+            data_hash_chain_depth: 55,
+            field_hash_chain_depth: 66,
+            tail_entry_array_offset: 0,
+            tail_entry_array_n_entries: 0,
+            tail_entry_offset: 0,
+        },
+        ExpectedSanitizedHeader {
+            header_size: 260,
+            n_data: 11,
+            n_fields: 22,
+            n_tags: 33,
+            n_entry_arrays: 44,
+            data_hash_chain_depth: 55,
+            field_hash_chain_depth: 66,
+            tail_entry_array_offset: 77,
+            tail_entry_array_n_entries: 0,
+            tail_entry_offset: 0,
+        },
+        ExpectedSanitizedHeader {
+            header_size: 264,
+            n_data: 11,
+            n_fields: 22,
+            n_tags: 33,
+            n_entry_arrays: 44,
+            data_hash_chain_depth: 55,
+            field_hash_chain_depth: 66,
+            tail_entry_array_offset: 77,
+            tail_entry_array_n_entries: 88,
+            tail_entry_offset: 0,
+        },
+        ExpectedSanitizedHeader {
+            header_size: 268,
+            n_data: 11,
+            n_fields: 22,
+            n_tags: 33,
+            n_entry_arrays: 44,
+            data_hash_chain_depth: 55,
+            field_hash_chain_depth: 66,
+            tail_entry_array_offset: 77,
+            tail_entry_array_n_entries: 88,
+            tail_entry_offset: 0,
+        },
+        ExpectedSanitizedHeader {
+            header_size: 272,
+            n_data: 11,
+            n_fields: 22,
+            n_tags: 33,
+            n_entry_arrays: 44,
+            data_hash_chain_depth: 55,
+            field_hash_chain_depth: 66,
+            tail_entry_array_offset: 77,
+            tail_entry_array_n_entries: 88,
+            tail_entry_offset: 99,
+        },
+        ExpectedSanitizedHeader {
+            header_size: 300,
+            n_data: 11,
+            n_fields: 22,
+            n_tags: 33,
+            n_entry_arrays: 44,
+            data_hash_chain_depth: 55,
+            field_hash_chain_depth: 66,
+            tail_entry_array_offset: 77,
+            tail_entry_array_n_entries: 88,
+            tail_entry_offset: 99,
+        },
+    ];
+
     #[test]
     fn sanitize_header_for_historical_size_matches_per_field_boundaries() {
-        #[derive(Debug)]
-        struct Expected {
-            header_size: u64,
-            n_data: u64,
-            n_fields: u64,
-            n_tags: u64,
-            n_entry_arrays: u64,
-            data_hash_chain_depth: u64,
-            field_hash_chain_depth: u64,
-            tail_entry_array_offset: u32,
-            tail_entry_array_n_entries: u32,
-            tail_entry_offset: u64,
+        for expected in HEADER_SANITIZE_CASES {
+            assert_sanitized_header(*expected);
         }
+    }
 
-        let cases = [
-            Expected {
-                header_size: 208,
-                n_data: 0,
-                n_fields: 0,
-                n_tags: 0,
-                n_entry_arrays: 0,
-                data_hash_chain_depth: 0,
-                field_hash_chain_depth: 0,
-                tail_entry_array_offset: 0,
-                tail_entry_array_n_entries: 0,
-                tail_entry_offset: 0,
-            },
-            Expected {
-                header_size: 216,
-                n_data: 11,
-                n_fields: 0,
-                n_tags: 0,
-                n_entry_arrays: 0,
-                data_hash_chain_depth: 0,
-                field_hash_chain_depth: 0,
-                tail_entry_array_offset: 0,
-                tail_entry_array_n_entries: 0,
-                tail_entry_offset: 0,
-            },
-            Expected {
-                header_size: 220,
-                n_data: 11,
-                n_fields: 0,
-                n_tags: 0,
-                n_entry_arrays: 0,
-                data_hash_chain_depth: 0,
-                field_hash_chain_depth: 0,
-                tail_entry_array_offset: 0,
-                tail_entry_array_n_entries: 0,
-                tail_entry_offset: 0,
-            },
-            Expected {
-                header_size: 224,
-                n_data: 11,
-                n_fields: 22,
-                n_tags: 0,
-                n_entry_arrays: 0,
-                data_hash_chain_depth: 0,
-                field_hash_chain_depth: 0,
-                tail_entry_array_offset: 0,
-                tail_entry_array_n_entries: 0,
-                tail_entry_offset: 0,
-            },
-            Expected {
-                header_size: 232,
-                n_data: 11,
-                n_fields: 22,
-                n_tags: 33,
-                n_entry_arrays: 0,
-                data_hash_chain_depth: 0,
-                field_hash_chain_depth: 0,
-                tail_entry_array_offset: 0,
-                tail_entry_array_n_entries: 0,
-                tail_entry_offset: 0,
-            },
-            Expected {
-                header_size: 240,
-                n_data: 11,
-                n_fields: 22,
-                n_tags: 33,
-                n_entry_arrays: 44,
-                data_hash_chain_depth: 0,
-                field_hash_chain_depth: 0,
-                tail_entry_array_offset: 0,
-                tail_entry_array_n_entries: 0,
-                tail_entry_offset: 0,
-            },
-            Expected {
-                header_size: 248,
-                n_data: 11,
-                n_fields: 22,
-                n_tags: 33,
-                n_entry_arrays: 44,
-                data_hash_chain_depth: 55,
-                field_hash_chain_depth: 0,
-                tail_entry_array_offset: 0,
-                tail_entry_array_n_entries: 0,
-                tail_entry_offset: 0,
-            },
-            Expected {
-                header_size: 250,
-                n_data: 11,
-                n_fields: 22,
-                n_tags: 33,
-                n_entry_arrays: 44,
-                data_hash_chain_depth: 55,
-                field_hash_chain_depth: 0,
-                tail_entry_array_offset: 0,
-                tail_entry_array_n_entries: 0,
-                tail_entry_offset: 0,
-            },
-            Expected {
-                header_size: 256,
-                n_data: 11,
-                n_fields: 22,
-                n_tags: 33,
-                n_entry_arrays: 44,
-                data_hash_chain_depth: 55,
-                field_hash_chain_depth: 66,
-                tail_entry_array_offset: 0,
-                tail_entry_array_n_entries: 0,
-                tail_entry_offset: 0,
-            },
-            Expected {
-                header_size: 260,
-                n_data: 11,
-                n_fields: 22,
-                n_tags: 33,
-                n_entry_arrays: 44,
-                data_hash_chain_depth: 55,
-                field_hash_chain_depth: 66,
-                tail_entry_array_offset: 77,
-                tail_entry_array_n_entries: 0,
-                tail_entry_offset: 0,
-            },
-            Expected {
-                header_size: 264,
-                n_data: 11,
-                n_fields: 22,
-                n_tags: 33,
-                n_entry_arrays: 44,
-                data_hash_chain_depth: 55,
-                field_hash_chain_depth: 66,
-                tail_entry_array_offset: 77,
-                tail_entry_array_n_entries: 88,
-                tail_entry_offset: 0,
-            },
-            Expected {
-                header_size: 268,
-                n_data: 11,
-                n_fields: 22,
-                n_tags: 33,
-                n_entry_arrays: 44,
-                data_hash_chain_depth: 55,
-                field_hash_chain_depth: 66,
-                tail_entry_array_offset: 77,
-                tail_entry_array_n_entries: 88,
-                tail_entry_offset: 0,
-            },
-            Expected {
-                header_size: 272,
-                n_data: 11,
-                n_fields: 22,
-                n_tags: 33,
-                n_entry_arrays: 44,
-                data_hash_chain_depth: 55,
-                field_hash_chain_depth: 66,
-                tail_entry_array_offset: 77,
-                tail_entry_array_n_entries: 88,
-                tail_entry_offset: 99,
-            },
-            Expected {
-                header_size: 300,
-                n_data: 11,
-                n_fields: 22,
-                n_tags: 33,
-                n_entry_arrays: 44,
-                data_hash_chain_depth: 55,
-                field_hash_chain_depth: 66,
-                tail_entry_array_offset: 77,
-                tail_entry_array_n_entries: 88,
-                tail_entry_offset: 99,
-            },
-        ];
+    fn assert_sanitized_header(expected: ExpectedSanitizedHeader) {
+        let sanitized = sanitize_header_for_size(JournalHeader {
+            header_size: expected.header_size,
+            n_data: 11,
+            n_fields: 22,
+            n_tags: 33,
+            n_entry_arrays: 44,
+            data_hash_chain_depth: 55,
+            field_hash_chain_depth: 66,
+            tail_entry_array_offset: 77,
+            tail_entry_array_n_entries: 88,
+            tail_entry_offset: 99,
+            ..JournalHeader::default()
+        });
 
-        for expected in cases {
-            let sanitized = sanitize_header_for_size(JournalHeader {
-                header_size: expected.header_size,
-                n_data: 11,
-                n_fields: 22,
-                n_tags: 33,
-                n_entry_arrays: 44,
-                data_hash_chain_depth: 55,
-                field_hash_chain_depth: 66,
-                tail_entry_array_offset: 77,
-                tail_entry_array_n_entries: 88,
-                tail_entry_offset: 99,
-                ..JournalHeader::default()
-            });
-
-            assert_eq!(sanitized.n_data, expected.n_data, "{expected:?}");
-            assert_eq!(sanitized.n_fields, expected.n_fields, "{expected:?}");
-            assert_eq!(sanitized.n_tags, expected.n_tags, "{expected:?}");
-            assert_eq!(
-                sanitized.n_entry_arrays, expected.n_entry_arrays,
-                "{expected:?}"
-            );
-            assert_eq!(
-                sanitized.data_hash_chain_depth, expected.data_hash_chain_depth,
-                "{expected:?}"
-            );
-            assert_eq!(
-                sanitized.field_hash_chain_depth, expected.field_hash_chain_depth,
-                "{expected:?}"
-            );
-            assert_eq!(
-                sanitized.tail_entry_array_offset, expected.tail_entry_array_offset,
-                "{expected:?}"
-            );
-            assert_eq!(
-                sanitized.tail_entry_array_n_entries, expected.tail_entry_array_n_entries,
-                "{expected:?}"
-            );
-            assert_eq!(
-                sanitized.tail_entry_offset, expected.tail_entry_offset,
-                "{expected:?}"
-            );
-        }
+        assert_eq!(sanitized.n_data, expected.n_data, "{expected:?}");
+        assert_eq!(sanitized.n_fields, expected.n_fields, "{expected:?}");
+        assert_eq!(sanitized.n_tags, expected.n_tags, "{expected:?}");
+        assert_eq!(
+            sanitized.n_entry_arrays, expected.n_entry_arrays,
+            "{expected:?}"
+        );
+        assert_eq!(
+            sanitized.data_hash_chain_depth, expected.data_hash_chain_depth,
+            "{expected:?}"
+        );
+        assert_eq!(
+            sanitized.field_hash_chain_depth, expected.field_hash_chain_depth,
+            "{expected:?}"
+        );
+        assert_eq!(
+            sanitized.tail_entry_array_offset, expected.tail_entry_array_offset,
+            "{expected:?}"
+        );
+        assert_eq!(
+            sanitized.tail_entry_array_n_entries, expected.tail_entry_array_n_entries,
+            "{expected:?}"
+        );
+        assert_eq!(
+            sanitized.tail_entry_offset, expected.tail_entry_offset,
+            "{expected:?}"
+        );
     }
 
     fn data_object_bytes(payload: &[u8], flags: u8) -> Vec<u8> {

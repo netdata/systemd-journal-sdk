@@ -66,7 +66,12 @@ Last updated: 2026-06-03
   Lizard-clean, passed affected Rust helper package checks, and reduced the
   refreshed local all-tracked-file Lizard inventory to 114 critical findings.
   Rust internal helper files have no remaining critical Lizard findings;
-  remaining critical findings are `rust: 38` and `tests: 76`.
+  remaining critical findings are `rust: 38` and `tests: 76`. Batch 20 made
+  Rust adapter, legacy `jf`, and core file/writer touched files locally
+  Lizard-clean, passed affected Rust and legacy `jf` tests, and reduced the
+  refreshed local all-tracked-file Lizard inventory to 103 critical findings.
+  Remaining critical findings are `rust: 27` and `tests: 76`; Go, Node.js,
+  and Python remain at zero.
   Remaining work is to continue complexity remediation, record final scanner
   results, and complete whole-SOW review.
 

@@ -1,15 +1,15 @@
 #![allow(unused_imports, dead_code)]
 
 use crate::{
-    CompactEntryItem, DataHashTable, DataObject, DataObjectHeader, DataPayloadType, EntryObject,
-    EntryObjectHeader, FieldHashTable, FieldObject, FieldObjectHeader, HashItem, HashTable,
-    HashTableMut, HashableObject, HashableObjectMut, HeaderIncompatibleFlags, JournalFile,
-    JournalFileOptions, JournalHeader, JournalState, ObjectHeader, ObjectType, RegularEntryItem,
-    journal_hash_data,
+    journal_hash_data, CompactEntryItem, DataHashTable, DataObject, DataObjectHeader,
+    DataPayloadType, EntryObject, EntryObjectHeader, FieldHashTable, FieldObject,
+    FieldObjectHeader, HashItem, HashTable, HashTableMut, HashableObject, HashableObjectMut,
+    HeaderIncompatibleFlags, JournalFile, JournalFileOptions, JournalHeader, JournalState,
+    ObjectHeader, ObjectType, RegularEntryItem,
 };
 use error::{JournalError, Result};
 use memmap2::MmapMut;
-use rand::{Rng, seq::IndexedRandom};
+use rand::{seq::IndexedRandom, Rng};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::Path;
 use window_manager::MemoryMapMut;
@@ -673,27 +673,41 @@ mod tests {
 
     #[test]
     fn test_write_and_read_journal_entries() -> Result<()> {
-        // Create test data - a hash map with key/values to add to the journal file
-        let mut test_data = HashMap::new();
-        test_data.insert(
-            "MESSAGE",
-            vec!["Hello, world!", "Another message", "Final message"],
-        );
-        test_data.insert("PRIORITY", vec!["6", "4", "3"]);
-        test_data.insert(
-            "_SYSTEMD_UNIT",
-            vec!["test.service", "other.service", "test.service"],
-        );
-        test_data.insert("_PID", vec!["1234", "5678", "9999"]);
-
-        // Create a temporary file for the journal
+        let test_data = journal_test_data();
         let temp_file = NamedTempFile::new().map_err(JournalError::Io).unwrap();
         let journal_path = temp_file.path();
-
-        // Step 1: Create and write to the journal
         let boot_id = [1; 16];
         let num_entries = test_data.values().next().unwrap().len();
+        let iterations = 5000;
+        write_repeated_entries(journal_path, &test_data, iterations, boot_id)?;
+        verify_written_entries(journal_path, &test_data, num_entries, iterations)?;
+        verify_systemd_unit_filter(journal_path, iterations)?;
 
+        println!("✅ All tests passed!");
+        Ok(())
+    }
+
+    fn journal_test_data() -> HashMap<&'static str, Vec<&'static str>> {
+        HashMap::from([
+            (
+                "MESSAGE",
+                vec!["Hello, world!", "Another message", "Final message"],
+            ),
+            ("PRIORITY", vec!["6", "4", "3"]),
+            (
+                "_SYSTEMD_UNIT",
+                vec!["test.service", "other.service", "test.service"],
+            ),
+            ("_PID", vec!["1234", "5678", "9999"]),
+        ])
+    }
+
+    fn write_repeated_entries(
+        journal_path: &std::path::Path,
+        test_data: &HashMap<&'static str, Vec<&'static str>>,
+        iterations: usize,
+        boot_id: [u8; 16],
+    ) -> Result<()> {
         let options = JournalFileOptions::new(
             generate_uuid(),
             generate_uuid(),
@@ -701,143 +715,166 @@ mod tests {
             generate_uuid(),
         );
         let mut journal_file = JournalFile::create(journal_path, options)?;
-        let iterations = 5000;
+        let num_entries = test_data.values().next().unwrap().len();
         for _ in 0..iterations {
-            let mut writer = JournalWriter::new(&mut journal_file)?;
-
-            // Write entries to the journal
-            for i in 0..num_entries {
-                let mut entry_data = Vec::new();
-
-                // Build the entry data for this index
-                for (key, values) in &test_data {
-                    let kv_pair = format!("{}={}", key, values[i]);
-                    entry_data.push(kv_pair.into_bytes());
-                }
-
-                // Convert to slice references for the writer
-                let entry_refs: Vec<&[u8]> = entry_data.iter().map(|v| v.as_slice()).collect();
-
-                // Write the entry with timestamps
-                let realtime = 1000000 + (i as u64 * 1000); // Mock realtime in microseconds
-                let monotonic = 500000 + (i as u64 * 1000); // Mock monotonic time
-
-                writer.add_entry(&mut journal_file, &entry_refs, realtime, monotonic, boot_id)?;
-            }
+            write_one_iteration(&mut journal_file, test_data, num_entries, boot_id)?;
         }
-
-        // Step 2: Read back and verify the journal contents
-        {
-            let journal_file = JournalFile::<Mmap>::open(journal_path, 8 * 1024)?;
-            let mut reader = JournalReader::default();
-
-            let hdr = journal_file.journal_header_ref();
-            println!("Header: {:#?}", hdr);
-
-            // Start from the head
-            reader.set_location(Location::Head);
-
-            let mut entries_read = 0;
-            while reader.step(&journal_file, Direction::Forward)? {
-                println!("Reading entry {}", entries_read);
-
-                // Verify timestamps
-                let realtime = reader.get_realtime_usec(&journal_file)?;
-                let expected_realtime = 1000000 + ((entries_read % 3) * 1000);
-                assert_eq!(
-                    realtime, expected_realtime,
-                    "Realtime mismatch for entry {}",
-                    entries_read
-                );
-
-                let (seqnum, _seqnum_id) = reader.get_seqnum(&journal_file)?;
-                assert_eq!(
-                    seqnum,
-                    entries_read + 1,
-                    "Sequence number mismatch for entry {}",
-                    entries_read
-                );
-
-                // Read all data for this entry
-                let mut entry_fields = HashMap::new();
-                reader.entry_data_restart();
-
-                while let Some(data_guard) = reader.entry_data_enumerate(&journal_file)? {
-                    let payload = data_guard.payload_bytes();
-                    let payload_str = String::from_utf8_lossy(payload);
-
-                    if let Some(eq_pos) = payload_str.find('=') {
-                        let key = &payload_str[..eq_pos];
-                        let value = &payload_str[eq_pos + 1..];
-                        entry_fields.insert(key.to_string(), value.to_string());
-                    }
-                }
-
-                // Verify the data matches what we wrote
-                for (key, values) in &test_data {
-                    let expected_value = &values[entries_read as usize % 3];
-                    let actual_value = entry_fields.get(*key).unwrap_or_else(|| {
-                        panic!("Missing key '{}' in entry {}", key, entries_read)
-                    });
-
-                    assert_eq!(
-                        actual_value, expected_value,
-                        "Value mismatch for key '{}' in entry {}",
-                        key, entries_read
-                    );
-                }
-
-                println!("Read entry {}", entries_read);
-                entries_read += 1;
-            }
-
-            assert_eq!(
-                entries_read as usize,
-                num_entries * iterations,
-                "Number of entries read doesn't match written"
-            );
-        }
-
-        // Step 3: Test filtering by specific fields
-        {
-            let journal_file = JournalFile::<Mmap>::open(journal_path, 64 * 1024)?;
-            let mut reader = JournalReader::default();
-
-            // Test filtering by _SYSTEMD_UNIT=test.service
-            reader.add_match(b"_SYSTEMD_UNIT=test.service");
-            reader.set_location(Location::Head);
-
-            let mut filtered_entries = 0;
-            while reader.step(&journal_file, Direction::Forward)? {
-                // Verify this entry actually contains the filter match
-                reader.entry_data_restart();
-                let mut found_match = false;
-
-                while let Some(data_guard) = reader.entry_data_enumerate(&journal_file)? {
-                    let payload = data_guard.payload_bytes();
-                    if payload == b"_SYSTEMD_UNIT=test.service" {
-                        found_match = true;
-                        break;
-                    }
-                }
-
-                assert!(
-                    found_match,
-                    "Filtered entry doesn't contain the expected field"
-                );
-                filtered_entries += 1;
-            }
-
-            // Should find 2 entries with _SYSTEMD_UNIT=test.service per iteration (entries 0 and 2)
-            assert_eq!(
-                filtered_entries,
-                2 * iterations,
-                "Expected 2 entries with _SYSTEMD_UNIT=test.service per iteration"
-            );
-        }
-
-        println!("✅ All tests passed!");
         Ok(())
+    }
+
+    fn write_one_iteration(
+        journal_file: &mut JournalFile<MmapMut>,
+        test_data: &HashMap<&'static str, Vec<&'static str>>,
+        num_entries: usize,
+        boot_id: [u8; 16],
+    ) -> Result<()> {
+        let mut writer = JournalWriter::new(journal_file)?;
+        for i in 0..num_entries {
+            let entry_data = build_entry_data(test_data, i);
+            let entry_refs: Vec<&[u8]> = entry_data.iter().map(|v| v.as_slice()).collect();
+            let realtime = 1000000 + (i as u64 * 1000);
+            let monotonic = 500000 + (i as u64 * 1000);
+            writer.add_entry(journal_file, &entry_refs, realtime, monotonic, boot_id)?;
+        }
+        Ok(())
+    }
+
+    fn build_entry_data(
+        test_data: &HashMap<&'static str, Vec<&'static str>>,
+        index: usize,
+    ) -> Vec<Vec<u8>> {
+        test_data
+            .iter()
+            .map(|(key, values)| format!("{}={}", key, values[index]).into_bytes())
+            .collect()
+    }
+
+    fn verify_written_entries(
+        journal_path: &std::path::Path,
+        test_data: &HashMap<&'static str, Vec<&'static str>>,
+        num_entries: usize,
+        iterations: usize,
+    ) -> Result<()> {
+        let journal_file = JournalFile::<Mmap>::open(journal_path, 8 * 1024)?;
+        let mut reader = JournalReader::default();
+
+        println!("Header: {:#?}", journal_file.journal_header_ref());
+        reader.set_location(Location::Head);
+
+        let mut entries_read = 0;
+        while reader.step(&journal_file, Direction::Forward)? {
+            verify_read_entry(&journal_file, &mut reader, test_data, entries_read)?;
+            entries_read += 1;
+        }
+
+        assert_eq!(
+            entries_read as usize,
+            num_entries * iterations,
+            "Number of entries read doesn't match written"
+        );
+        Ok(())
+    }
+
+    fn verify_read_entry<'a>(
+        journal_file: &'a JournalFile<Mmap>,
+        reader: &mut JournalReader<'a, Mmap>,
+        test_data: &HashMap<&'static str, Vec<&'static str>>,
+        entries_read: u64,
+    ) -> Result<()> {
+        println!("Reading entry {}", entries_read);
+        assert_eq!(
+            reader.get_realtime_usec(journal_file)?,
+            1000000 + ((entries_read % 3) * 1000),
+            "Realtime mismatch for entry {}",
+            entries_read
+        );
+        let (seqnum, _seqnum_id) = reader.get_seqnum(journal_file)?;
+        assert_eq!(
+            seqnum,
+            entries_read + 1,
+            "Sequence number mismatch for entry {}",
+            entries_read
+        );
+        verify_entry_fields(
+            &read_entry_fields(journal_file, reader)?,
+            test_data,
+            entries_read,
+        );
+        println!("Read entry {}", entries_read);
+        Ok(())
+    }
+
+    fn read_entry_fields<'a>(
+        journal_file: &'a JournalFile<Mmap>,
+        reader: &mut JournalReader<'a, Mmap>,
+    ) -> Result<HashMap<String, String>> {
+        let mut entry_fields = HashMap::new();
+        reader.entry_data_restart();
+        while let Some(data_guard) = reader.entry_data_enumerate(journal_file)? {
+            let payload_str = String::from_utf8_lossy(data_guard.payload_bytes());
+            if let Some(eq_pos) = payload_str.find('=') {
+                entry_fields.insert(
+                    payload_str[..eq_pos].to_string(),
+                    payload_str[eq_pos + 1..].to_string(),
+                );
+            }
+        }
+        Ok(entry_fields)
+    }
+
+    fn verify_entry_fields(
+        entry_fields: &HashMap<String, String>,
+        test_data: &HashMap<&'static str, Vec<&'static str>>,
+        entries_read: u64,
+    ) {
+        for (key, values) in test_data {
+            let expected_value = &values[entries_read as usize % 3];
+            let actual_value = entry_fields
+                .get(*key)
+                .unwrap_or_else(|| panic!("Missing key '{}' in entry {}", key, entries_read));
+            assert_eq!(
+                actual_value, expected_value,
+                "Value mismatch for key '{}' in entry {}",
+                key, entries_read
+            );
+        }
+    }
+
+    fn verify_systemd_unit_filter(journal_path: &std::path::Path, iterations: usize) -> Result<()> {
+        let journal_file = JournalFile::<Mmap>::open(journal_path, 64 * 1024)?;
+        let mut reader = JournalReader::default();
+        reader.add_match(b"_SYSTEMD_UNIT=test.service");
+        reader.set_location(Location::Head);
+
+        let mut filtered_entries = 0;
+        while reader.step(&journal_file, Direction::Forward)? {
+            assert!(
+                entry_contains_payload(&journal_file, &mut reader, b"_SYSTEMD_UNIT=test.service")?,
+                "Filtered entry doesn't contain the expected field"
+            );
+            filtered_entries += 1;
+        }
+
+        assert_eq!(
+            filtered_entries,
+            2 * iterations,
+            "Expected 2 entries with _SYSTEMD_UNIT=test.service per iteration"
+        );
+        Ok(())
+    }
+
+    fn entry_contains_payload<'a>(
+        journal_file: &'a JournalFile<Mmap>,
+        reader: &mut JournalReader<'a, Mmap>,
+        expected: &[u8],
+    ) -> Result<bool> {
+        reader.entry_data_restart();
+        while let Some(data_guard) = reader.entry_data_enumerate(journal_file)? {
+            if data_guard.payload_bytes() == expected {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     #[test]

@@ -1674,6 +1674,46 @@ Complexity remediation evidence:
     findings, down from 129 after Batch 18. Remaining critical findings are
     `rust: 38` and `tests: 76`; Rust internal helper files have no remaining
     critical Lizard findings.
+- Batch 20, Rust adapter, legacy `jf`, and core file/writer findings:
+  - Refactored `rust/src/adapter/main.rs` complex match, cursor, and sealed
+    verification adapter tests into fixture, match-operation, cursor-check,
+    sealed-journal, and result-format helpers while preserving the exact
+    systemd match operation sequence and adapter result semantics.
+  - Refactored legacy `rust/src/crates/jf/journal_file/src/file.rs` writer
+    creation into backing-file, hash-table layout, initial-header, mmap, and
+    hash-table object-header helpers while preserving the initial 8 MiB file
+    allocation, FIELD-before-DATA hash table layout, v260-compatible header
+    flags, and option-derived IDs.
+  - Refactored duplicated historical-header sanitization tests in legacy `jf`
+    and `journal-core` into explicit expectation tables plus focused assertion
+    helpers while preserving every boundary case and expected field value.
+  - Refactored legacy `rust/src/crates/jf/journal_file/src/writer.rs`
+    write/read/filter coverage into test-data, repeated-write, entry-read,
+    field-assertion, and filter-assertion helpers while preserving iteration
+    count and expected filtered-entry count.
+  - Refactored `rust/src/crates/journal-core/src/file/file.rs` compact
+    writer/reader/stock-journalctl test into compact-journal creation,
+    in-SDK compact payload assertions, and optional stock read/verify helpers
+    while preserving skip behavior when `journalctl` is unavailable.
+  - Refactored `rust/src/crates/journal-core/src/file/writer.rs`
+    field-name policy coverage into journald, journal-app, raw-policy writer,
+    payload, and rejection helpers while preserving all policy assertions.
+  - Replaced two Rust byte-literal test helpers with equivalent numeric byte
+    values to avoid a local Lizard Rust parser span bug without changing test
+    data bytes.
+  - `cargo test --manifest-path rust/Cargo.toml -p adapter -p journal-core
+    --no-fail-fast` passed.
+  - `cargo test --manifest-path rust/src/crates/jf/Cargo.toml -p
+    journal_file --no-fail-fast` passed.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for
+    `rust/src/adapter/main.rs`,
+    `rust/src/crates/jf/journal_file/src/file.rs`,
+    `rust/src/crates/jf/journal_file/src/writer.rs`,
+    `rust/src/crates/journal-core/src/file/file.rs`, and
+    `rust/src/crates/journal-core/src/file/writer.rs`.
+  - Refreshed local all-tracked-file Lizard inventory now reports 103 critical
+    findings, down from 114 after Batch 19. Remaining critical findings are
+    `rust: 27` and `tests: 76`; Go, Node.js, and Python remain at zero.
 
 Reviewer findings:
 
