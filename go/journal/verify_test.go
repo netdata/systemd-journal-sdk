@@ -292,67 +292,89 @@ func tamperDataPayload(t *testing.T, path string, payload []byte) {
 	if err != nil {
 		t.Fatalf("parse header: %v", err)
 	}
+	target := findTamperDataTarget(t, data, header, payload)
+	assertTamperTargetCovered(t, target, payload)
+	data[target.payloadOffset] ^= 0x01
+	if err := os.WriteFile(path, data, 0o640); err != nil {
+		t.Fatalf("write tampered file: %v", err)
+	}
+}
 
-	var (
-		targetPayloadOffset uint64
-		targetObjectOffset  uint64
-		secondTagOffset     uint64
-		tagCount            int
-	)
+type tamperDataTarget struct {
+	payloadOffset uint64
+	objectOffset  uint64
+	secondTag     uint64
+}
+
+func findTamperDataTarget(t *testing.T, data []byte, header journalHeader, payload []byte) tamperDataTarget {
+	t.Helper()
+	target := tamperDataTarget{}
+	tagCount := 0
 
 	for offset := header.headerSize; ; {
-		if offset+objectHeaderSize > uint64(len(data)) {
-			t.Fatalf("object header at %d exceeds file", offset)
-		}
-		size := binary.LittleEndian.Uint64(data[offset+8 : offset+16])
-		if size < objectHeaderSize {
-			t.Fatalf("invalid object size %d at %d", size, offset)
-		}
-		alignedSize := align8(size)
-		if offset+alignedSize > uint64(len(data)) {
-			t.Fatalf("object at %d exceeds file", offset)
-		}
-
-		switch data[offset] {
-		case objectTypeTag:
-			tagCount++
-			if tagCount == 2 {
-				secondTagOffset = offset
-			}
-		case objectTypeData:
-			payloadOffset := uint64(dataObjectHeaderSize)
-			if header.incompatibleFlags&incompatibleCompact != 0 {
-				payloadOffset = uint64(compactDataObjectHeaderSize)
-			}
-			if size > payloadOffset {
-				start := offset + payloadOffset
-				end := offset + size
-				if bytes.Equal(data[start:end], payload) {
-					targetPayloadOffset = start
-					targetObjectOffset = offset
-				}
-			}
-		}
-
+		size, alignedSize := tamperObjectSize(t, data, offset)
+		recordTamperObject(data, header, payload, offset, size, &tagCount, &target)
 		if offset == header.tailObjectOffset {
-			break
+			return target
 		}
 		offset += alignedSize
 	}
+}
 
-	if targetPayloadOffset == 0 {
+func tamperObjectSize(t *testing.T, data []byte, offset uint64) (uint64, uint64) {
+	t.Helper()
+	if offset+objectHeaderSize > uint64(len(data)) {
+		t.Fatalf("object header at %d exceeds file", offset)
+	}
+	size := binary.LittleEndian.Uint64(data[offset+8 : offset+16])
+	if size < objectHeaderSize {
+		t.Fatalf("invalid object size %d at %d", size, offset)
+	}
+	alignedSize := align8(size)
+	if offset+alignedSize > uint64(len(data)) {
+		t.Fatalf("object at %d exceeds file", offset)
+	}
+	return size, alignedSize
+}
+
+func recordTamperObject(data []byte, header journalHeader, payload []byte, offset uint64, size uint64, tagCount *int, target *tamperDataTarget) {
+	switch data[offset] {
+	case objectTypeTag:
+		*tagCount = *tagCount + 1
+		if *tagCount == 2 {
+			target.secondTag = offset
+		}
+	case objectTypeData:
+		recordTamperDataObject(data, header, payload, offset, size, target)
+	}
+}
+
+func recordTamperDataObject(data []byte, header journalHeader, payload []byte, offset uint64, size uint64, target *tamperDataTarget) {
+	payloadOffset := uint64(dataObjectHeaderSize)
+	if header.incompatibleFlags&incompatibleCompact != 0 {
+		payloadOffset = uint64(compactDataObjectHeaderSize)
+	}
+	if size <= payloadOffset {
+		return
+	}
+	start := offset + payloadOffset
+	end := offset + size
+	if bytes.Equal(data[start:end], payload) {
+		target.payloadOffset = start
+		target.objectOffset = offset
+	}
+}
+
+func assertTamperTargetCovered(t *testing.T, target tamperDataTarget, payload []byte) {
+	t.Helper()
+	if target.payloadOffset == 0 {
 		t.Fatalf("payload %q not found", payload)
 	}
-	if secondTagOffset == 0 {
+	if target.secondTag == 0 {
 		t.Fatalf("second TAG not found; DATA payload would not be authenticated yet")
 	}
-	if targetObjectOffset >= secondTagOffset {
-		t.Fatalf("DATA object at %d is not covered by second TAG at %d", targetObjectOffset, secondTagOffset)
-	}
-
-	data[targetPayloadOffset] ^= 0x01
-	if err := os.WriteFile(path, data, 0o640); err != nil {
-		t.Fatalf("write tampered file: %v", err)
+	if target.objectOffset >= target.secondTag {
+		t.Fatalf("DATA object at %d is not covered by second TAG at %d", target.objectOffset, target.secondTag)
 	}
 }
 

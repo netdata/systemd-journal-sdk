@@ -4,96 +4,93 @@ import (
 	"bytes"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
 func TestSdJournalSeekCursorMatchesFullCursor(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cursor.journal")
+	createMessageJournal(t, path, []messageRow{
+		{message: "first", realtime: 1_700_000_000},
+		{message: "second", realtime: 1_700_000_000},
+	})
+	j := openSdJournal(t, path)
+	defer j.Close()
+
+	requireNext(t, j, "first")
+	first := requireEntry(t, j, "first")
+	requireNext(t, j, "second")
+	second := requireEntry(t, j, "second")
+
+	assertCursorSeeksToMessage(t, j, second.Cursor, "second")
+	assertCursorSeeksToMessage(t, j, first.Cursor, "first")
+}
+
+type messageRow struct {
+	message  string
+	realtime uint64
+}
+
+func createMessageJournal(t *testing.T, path string, rows []messageRow) {
+	t.Helper()
 	w, err := Create(path, testOptions())
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
 	}
-	for _, msg := range []string{"first", "second"} {
-		if err := w.Append([]Field{StringField("MESSAGE", msg)}, EntryOptions{RealtimeUsec: 1_700_000_000}); err != nil {
-			t.Fatalf("Append %q error: %v", msg, err)
+	for _, row := range rows {
+		if err := w.Append([]Field{StringField("MESSAGE", row.message)}, EntryOptions{RealtimeUsec: row.realtime}); err != nil {
+			t.Fatalf("Append %q error: %v", row.message, err)
 		}
 	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close error: %v", err)
 	}
+}
 
+func openSdJournal(t *testing.T, path string) *sdJournal {
+	t.Helper()
 	j, err := SdJournalOpen(path, 0)
 	if err != nil {
 		t.Fatalf("SdJournalOpen error: %v", err)
 	}
-	defer j.Close()
+	return j
+}
 
+func requireNext(t *testing.T, j *sdJournal, label string) {
+	t.Helper()
 	if n, err := j.Next(); err != nil || n != 1 {
-		t.Fatalf("first Next = %d, %v", n, err)
+		t.Fatalf("%s Next = %d, %v", label, n, err)
 	}
-	first, err := j.GetEntry()
-	if err != nil {
-		t.Fatalf("first GetEntry error: %v", err)
-	}
-	if n, err := j.Next(); err != nil || n != 1 {
-		t.Fatalf("second Next = %d, %v", n, err)
-	}
-	second, err := j.GetEntry()
-	if err != nil {
-		t.Fatalf("second GetEntry error: %v", err)
-	}
+}
 
-	if err := SdJournalSeekCursor(j, second.Cursor); err != nil {
-		t.Fatalf("SdJournalSeekCursor(second) error: %v", err)
-	}
-	got, err := j.GetEntry()
+func requireEntry(t *testing.T, j *sdJournal, label string) *Entry {
+	t.Helper()
+	entry, err := j.GetEntry()
 	if err != nil {
-		t.Fatalf("GetEntry after second cursor error: %v", err)
+		t.Fatalf("%s GetEntry error: %v", label, err)
 	}
-	if string(got.Fields["MESSAGE"]) != "second" {
-		t.Fatalf("cursor seek landed on %q, want second", got.Fields["MESSAGE"])
-	}
+	return entry
+}
 
-	if err := SdJournalSeekCursor(j, first.Cursor); err != nil {
-		t.Fatalf("SdJournalSeekCursor(first) error: %v", err)
+func assertCursorSeeksToMessage(t *testing.T, j *sdJournal, cursor string, want string) {
+	t.Helper()
+	if err := SdJournalSeekCursor(j, cursor); err != nil {
+		t.Fatalf("SdJournalSeekCursor(%s) error: %v", want, err)
 	}
-	got, err = j.GetEntry()
-	if err != nil {
-		t.Fatalf("GetEntry after first cursor error: %v", err)
-	}
-	if string(got.Fields["MESSAGE"]) != "first" {
-		t.Fatalf("cursor seek landed on %q, want first", got.Fields["MESSAGE"])
+	got := requireEntry(t, j, "after "+want+" cursor")
+	if string(got.Fields["MESSAGE"]) != want {
+		t.Fatalf("cursor seek landed on %q, want %s", got.Fields["MESSAGE"], want)
 	}
 }
 
 func TestSdJournalGetEntryWithRealtimeRestoresPosition(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "realtime.journal")
-	w, err := Create(path, testOptions())
-	if err != nil {
-		t.Fatalf("Create error: %v", err)
-	}
-	for i, msg := range []string{"first", "second", "third"} {
-		if err := w.Append([]Field{StringField("MESSAGE", msg)}, EntryOptions{RealtimeUsec: uint64(1000 + i)}); err != nil {
-			t.Fatalf("Append %q error: %v", msg, err)
-		}
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("Close error: %v", err)
-	}
-
-	j, err := SdJournalOpen(path, 0)
-	if err != nil {
-		t.Fatalf("SdJournalOpen error: %v", err)
-	}
+	createMessageJournal(t, path, []messageRow{{"first", 1000}, {"second", 1001}, {"third", 1002}})
+	j := openSdJournal(t, path)
 	defer j.Close()
 
-	if n, err := j.Next(); err != nil || n != 1 {
-		t.Fatalf("Next = %d, %v", n, err)
-	}
-	before, err := j.GetEntry()
-	if err != nil {
-		t.Fatalf("GetEntry before realtime lookup: %v", err)
-	}
+	requireNext(t, j, "before realtime lookup")
+	before := requireEntry(t, j, "before realtime lookup")
 
 	found, err := SdJournalGetEntryWithRealtime(j, 1001)
 	if err != nil {
@@ -103,10 +100,7 @@ func TestSdJournalGetEntryWithRealtimeRestoresPosition(t *testing.T) {
 		t.Fatalf("realtime lookup returned %q, want second", found.Fields["MESSAGE"])
 	}
 
-	after, err := j.GetEntry()
-	if err != nil {
-		t.Fatalf("GetEntry after realtime lookup: %v", err)
-	}
+	after := requireEntry(t, j, "after realtime lookup")
 	if after.Cursor != before.Cursor {
 		t.Fatalf("realtime lookup changed cursor from %q to %q", before.Cursor, after.Cursor)
 	}
@@ -114,23 +108,8 @@ func TestSdJournalGetEntryWithRealtimeRestoresPosition(t *testing.T) {
 
 func TestSdJournalAddMatchValidatesWithoutJournalctlSyntax(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "match.journal")
-	w, err := Create(path, testOptions())
-	if err != nil {
-		t.Fatalf("Create error: %v", err)
-	}
-	for _, msg := range []string{"alpha", "beta", "gamma"} {
-		if err := w.Append([]Field{StringField("MESSAGE", msg)}, EntryOptions{}); err != nil {
-			t.Fatalf("Append %q error: %v", msg, err)
-		}
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("Close error: %v", err)
-	}
-
-	j, err := SdJournalOpen(path, 0)
-	if err != nil {
-		t.Fatalf("SdJournalOpen error: %v", err)
-	}
+	createMessageJournal(t, path, []messageRow{{"alpha", 0}, {"beta", 0}, {"gamma", 0}})
+	j := openSdJournal(t, path)
 	defer j.Close()
 
 	if err := SdJournalAddMatch(j, []byte("MESSAGE=alpha")); err != nil {
@@ -146,6 +125,13 @@ func TestSdJournalAddMatchValidatesWithoutJournalctlSyntax(t *testing.T) {
 		t.Fatal("SdJournalAddMatch accepted invalid lowercase field")
 	}
 
+	if count := countFacadeRows(t, j); count != 2 {
+		t.Fatalf("facade disjunction matched %d entries, want 2", count)
+	}
+}
+
+func countFacadeRows(t *testing.T, j *sdJournal) int {
+	t.Helper()
 	count := 0
 	for {
 		n, err := j.Next()
@@ -157,9 +143,7 @@ func TestSdJournalAddMatchValidatesWithoutJournalctlSyntax(t *testing.T) {
 		}
 		count++
 	}
-	if count != 2 {
-		t.Fatalf("facade disjunction matched %d entries, want 2", count)
-	}
+	return count
 }
 
 func TestSdJournalQueryUniqueBinaryValues(t *testing.T) {
@@ -283,6 +267,24 @@ func TestSdJournalCompressedMixedDataPayloadsRemainValidForCurrentRow(t *testing
 func TestSdJournalJfFacadeStatefulReaderOperations(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "jf-facade.journal")
+	createJfFacadeJournal(t, path)
+
+	j, err := SdJournalOpenFiles([]string{path}, 0)
+	if err != nil {
+		t.Fatalf("SdJournalOpenFiles error: %v", err)
+	}
+	defer j.Close()
+
+	requireSdJournalNext(t, j, "first facade row")
+	assertJfFacadeFirstMetadata(t, j)
+	assertJfFacadeFirstData(t, j)
+	assertJfFacadeUniqueAndFields(t, j)
+	assertJfFacadeRealtimeAndCursor(t, j)
+	assertJfFacadeMultiFile(t, dir, path)
+}
+
+func createJfFacadeJournal(t *testing.T, path string) {
+	t.Helper()
 	w, err := Create(path, testOptions())
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
@@ -304,16 +306,10 @@ func TestSdJournalJfFacadeStatefulReaderOperations(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close error: %v", err)
 	}
+}
 
-	j, err := SdJournalOpenFiles([]string{path}, 0)
-	if err != nil {
-		t.Fatalf("SdJournalOpenFiles error: %v", err)
-	}
-	defer j.Close()
-
-	if n, err := SdJournalNext(j); err != nil || n != 1 {
-		t.Fatalf("Next = %d, %v", n, err)
-	}
+func assertJfFacadeFirstMetadata(t *testing.T, j *sdJournal) {
+	t.Helper()
 	seqnum, seqnumID, err := SdJournalGetSeqnum(j)
 	if err != nil {
 		t.Fatalf("SdJournalGetSeqnum error: %v", err)
@@ -328,16 +324,19 @@ func TestSdJournalJfFacadeStatefulReaderOperations(t *testing.T) {
 	if monotonic != 11 || isZeroUUID(bootID) {
 		t.Fatalf("monotonic metadata = %d %s", monotonic, bootID)
 	}
+}
 
+func assertJfFacadeFirstData(t *testing.T, j *sdJournal) {
+	t.Helper()
 	if err := SdJournalRestartData(j); err != nil {
 		t.Fatalf("SdJournalRestartData error: %v", err)
 	}
 	payloads := collectFacadeData(t, j, SdJournalEnumerateAvailableData)
-	if !containsPayload(payloads, []byte("REPEAT=one")) ||
-		!containsPayload(payloads, []byte("REPEAT=two")) ||
-		!containsPayload(payloads, []byte("BIN=\x00\xff")) {
-		t.Fatalf("data enumeration did not preserve repeated/binary payloads: %q", payloads)
-	}
+	requirePayloads(t, "data enumeration", payloads, [][]byte{
+		[]byte("REPEAT=one"),
+		[]byte("REPEAT=two"),
+		[]byte("BIN=\x00\xff"),
+	})
 	data, err := SdJournalGetData(j, "REPEAT")
 	if err != nil {
 		t.Fatalf("SdJournalGetData error: %v", err)
@@ -345,50 +344,38 @@ func TestSdJournalJfFacadeStatefulReaderOperations(t *testing.T) {
 	if !bytes.Equal(data, []byte("REPEAT=one")) {
 		t.Fatalf("GetData(REPEAT) = %q", data)
 	}
+}
 
+func assertJfFacadeUniqueAndFields(t *testing.T, j *sdJournal) {
+	t.Helper()
 	if err := SdJournalQueryUniqueState(j, "REPEAT"); err != nil {
 		t.Fatalf("SdJournalQueryUniqueState error: %v", err)
 	}
 	unique := collectFacadeData(t, j, SdJournalEnumerateAvailableUnique)
-	if !containsPayload(unique, []byte("REPEAT=one")) ||
-		!containsPayload(unique, []byte("REPEAT=two")) ||
-		!containsPayload(unique, []byte("REPEAT=three")) {
-		t.Fatalf("unique enumeration missing values: %q", unique)
-	}
+	requirePayloads(t, "unique enumeration", unique, [][]byte{
+		[]byte("REPEAT=one"),
+		[]byte("REPEAT=two"),
+		[]byte("REPEAT=three"),
+	})
 
 	if err := SdJournalRestartFields(j); err != nil {
 		t.Fatalf("SdJournalRestartFields error: %v", err)
 	}
-	fields := map[string]bool{}
-	for {
-		field, ok, err := SdJournalEnumerateField(j)
-		if err != nil {
-			t.Fatalf("SdJournalEnumerateField error: %v", err)
-		}
-		if !ok {
-			break
-		}
-		fields[field] = true
-	}
+	fields := collectFacadeFields(t, j)
 	for _, field := range []string{"MESSAGE", "REPEAT", "BIN"} {
 		if !fields[field] {
 			t.Fatalf("field %s missing from stateful field enumeration: %v", field, fields)
 		}
 	}
+}
 
+func assertJfFacadeRealtimeAndCursor(t *testing.T, j *sdJournal) {
+	t.Helper()
 	if err := SdJournalSeekRealtimeUsec(j, 1001); err != nil {
 		t.Fatalf("SdJournalSeekRealtimeUsec forward error: %v", err)
 	}
-	if n, err := SdJournalNext(j); err != nil || n != 1 {
-		t.Fatalf("Next after seek realtime = %d, %v", n, err)
-	}
-	entry, err := SdJournalGetEntry(j)
-	if err != nil {
-		t.Fatalf("GetEntry after seek realtime error: %v", err)
-	}
-	if got := string(entry.Fields["MESSAGE"]); got != "second" {
-		t.Fatalf("seek realtime forward landed on %q", got)
-	}
+	requireSdJournalNext(t, j, "after seek realtime")
+	requireSdJournalMessage(t, j, "seek realtime forward", "second")
 
 	if err := SdJournalSeekRealtimeUsec(j, 1001); err != nil {
 		t.Fatalf("SdJournalSeekRealtimeUsec backward error: %v", err)
@@ -396,13 +383,7 @@ func TestSdJournalJfFacadeStatefulReaderOperations(t *testing.T) {
 	if n, err := SdJournalPrevious(j); err != nil || n != 1 {
 		t.Fatalf("Previous after seek realtime = %d, %v", n, err)
 	}
-	entry, err = SdJournalGetEntry(j)
-	if err != nil {
-		t.Fatalf("GetEntry after backward seek realtime error: %v", err)
-	}
-	if got := string(entry.Fields["MESSAGE"]); got != "second" {
-		t.Fatalf("seek realtime backward landed on %q", got)
-	}
+	requireSdJournalMessage(t, j, "seek realtime backward", "second")
 
 	cursor, err := SdJournalGetCursor(j)
 	if err != nil {
@@ -414,7 +395,10 @@ func TestSdJournalJfFacadeStatefulReaderOperations(t *testing.T) {
 	if ok, err := SdJournalTestCursor(j, "invalid-cursor"); err != nil || ok {
 		t.Fatalf("SdJournalTestCursor(invalid) = %v, %v", ok, err)
 	}
+}
 
+func assertJfFacadeMultiFile(t *testing.T, dir string, path string) {
+	t.Helper()
 	path2 := filepath.Join(dir, "jf-facade-second.journal")
 	w2, err := Create(path2, testOptions())
 	if err != nil {
@@ -436,30 +420,10 @@ func TestSdJournalJfFacadeStatefulReaderOperations(t *testing.T) {
 	}
 	defer multi.Close()
 
-	var messages []string
-	for {
-		n, err := SdJournalNext(multi)
-		if err != nil {
-			t.Fatalf("multi next error: %v", err)
-		}
-		if n == 0 {
-			break
-		}
-		entry, err := SdJournalGetEntry(multi)
-		if err != nil {
-			t.Fatalf("multi get entry error: %v", err)
-		}
-		messages = append(messages, string(entry.Fields["MESSAGE"]))
-	}
 	// systemd compares same-source seqnums before realtime when interleaving files.
 	wantMessages := []string{"first", "third", "second"}
-	if len(messages) != len(wantMessages) {
+	if messages := collectSdJournalMessages(t, multi); !reflect.DeepEqual(messages, wantMessages) {
 		t.Fatalf("multi messages = %v, want %v", messages, wantMessages)
-	}
-	for i := range wantMessages {
-		if messages[i] != wantMessages[i] {
-			t.Fatalf("multi messages = %v, want %v", messages, wantMessages)
-		}
 	}
 
 	if err := SdJournalSeekRealtimeUsec(multi, 1002); err != nil {
@@ -468,19 +432,74 @@ func TestSdJournalJfFacadeStatefulReaderOperations(t *testing.T) {
 	if n, err := SdJournalPrevious(multi); err != nil || n != 1 {
 		t.Fatalf("multi previous after seek = %d, %v", n, err)
 	}
-	entry, err = SdJournalGetEntry(multi)
-	if err != nil {
-		t.Fatalf("multi get entry after backward seek error: %v", err)
-	}
-	if got := string(entry.Fields["MESSAGE"]); got != "second" {
-		t.Fatalf("multi backward seek landed on %q", got)
-	}
+	requireSdJournalMessage(t, multi, "multi backward seek", "second")
 
 	if err := SdJournalSeekRealtimeUsec(multi, 999); err != nil {
 		t.Fatalf("multi seek before range error: %v", err)
 	}
 	if n, err := SdJournalPrevious(multi); err != nil || n != 0 {
 		t.Fatalf("multi previous before range = %d, %v", n, err)
+	}
+}
+
+func requireSdJournalNext(t *testing.T, j *sdJournal, context string) {
+	t.Helper()
+	if n, err := SdJournalNext(j); err != nil || n != 1 {
+		t.Fatalf("Next %s = %d, %v", context, n, err)
+	}
+}
+
+func requireSdJournalMessage(t *testing.T, j *sdJournal, context string, want string) {
+	t.Helper()
+	entry, err := SdJournalGetEntry(j)
+	if err != nil {
+		t.Fatalf("GetEntry %s error: %v", context, err)
+	}
+	if got := string(entry.Fields["MESSAGE"]); got != want {
+		t.Fatalf("%s landed on %q, want %q", context, got, want)
+	}
+}
+
+func requirePayloads(t *testing.T, context string, payloads [][]byte, want [][]byte) {
+	t.Helper()
+	for _, payload := range want {
+		if !containsPayload(payloads, payload) {
+			t.Fatalf("%s missing %q in %q", context, payload, payloads)
+		}
+	}
+}
+
+func collectFacadeFields(t *testing.T, j *sdJournal) map[string]bool {
+	t.Helper()
+	fields := map[string]bool{}
+	for {
+		field, ok, err := SdJournalEnumerateField(j)
+		if err != nil {
+			t.Fatalf("SdJournalEnumerateField error: %v", err)
+		}
+		if !ok {
+			return fields
+		}
+		fields[field] = true
+	}
+}
+
+func collectSdJournalMessages(t *testing.T, j *sdJournal) []string {
+	t.Helper()
+	var messages []string
+	for {
+		n, err := SdJournalNext(j)
+		if err != nil {
+			t.Fatalf("multi next error: %v", err)
+		}
+		if n == 0 {
+			return messages
+		}
+		entry, err := SdJournalGetEntry(j)
+		if err != nil {
+			t.Fatalf("multi get entry error: %v", err)
+		}
+		messages = append(messages, string(entry.Fields["MESSAGE"]))
 	}
 }
 

@@ -26,52 +26,67 @@ func TestCreateAppendAndReopenLayout(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "go-writer.journal")
 	opts := testOptions()
 
+	createAppendReopenLayoutJournal(t, path, opts)
+	assertAppendReopenLayoutSnapshot(t, readJournalSnapshot(t, path))
+}
+
+func createAppendReopenLayoutJournal(t *testing.T, path string, opts Options) {
+	t.Helper()
 	w, err := Create(path, opts)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-
-	if err := w.Append([]Field{
+	appendWriterFields(t, w, "first", []Field{
 		StringField("MESSAGE", "hello"),
 		StringField("PRIORITY", "6"),
 		StringField("SYSLOG_IDENTIFIER", "go-test"),
-	}, EntryOptions{RealtimeUsec: 1_700_000_000_000_001, MonotonicUsec: 101}); err != nil {
-		t.Fatalf("Append(first) error = %v", err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("Close(first) error = %v", err)
-	}
+	}, EntryOptions{RealtimeUsec: 1_700_000_000_000_001, MonotonicUsec: 101})
+	closeWriterForTest(t, w, "first")
 
 	w, err = Open(path)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}
-	if err := w.Append([]Field{
+	appendWriterFields(t, w, "second", []Field{
 		StringField("MESSAGE", "hello"),
 		StringField("PRIORITY", "5"),
 		StringField("SYSLOG_IDENTIFIER", "go-test"),
-	}, EntryOptions{RealtimeUsec: 1_700_000_000_000_002, MonotonicUsec: 102}); err != nil {
-		t.Fatalf("Append(second) error = %v", err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("Close(second) error = %v", err)
-	}
+	}, EntryOptions{RealtimeUsec: 1_700_000_000_000_002, MonotonicUsec: 102})
+	closeWriterForTest(t, w, "second")
+}
 
-	snapshot := readJournalSnapshot(t, path)
-	if snapshot.header.state != stateOnline {
-		t.Fatalf("state = %d, want online", snapshot.header.state)
+func appendWriterFields(t *testing.T, w *Writer, label string, fields []Field, opts EntryOptions) {
+	t.Helper()
+	if err := w.Append(fields, opts); err != nil {
+		t.Fatalf("Append(%s) error = %v", label, err)
 	}
-	if snapshot.header.nEntries != 2 {
-		t.Fatalf("nEntries = %d, want 2", snapshot.header.nEntries)
+}
+
+func assertAppendReopenLayoutSnapshot(t *testing.T, snapshot journalSnapshot) {
+	t.Helper()
+	assertAppendReopenHeader(t, snapshot.header)
+	assertAppendReopenMessageData(t, snapshot.dataByPayload["MESSAGE=hello"])
+	assertAppendReopenObjectCounts(t, snapshot)
+}
+
+func assertAppendReopenHeader(t *testing.T, header journalHeader) {
+	t.Helper()
+	if header.state != stateOnline {
+		t.Fatalf("state = %d, want online", header.state)
 	}
-	if snapshot.header.headEntrySeqnum != 1 || snapshot.header.tailEntrySeqnum != 2 {
-		t.Fatalf("seqnum range = %d..%d, want 1..2", snapshot.header.headEntrySeqnum, snapshot.header.tailEntrySeqnum)
+	if header.nEntries != 2 {
+		t.Fatalf("nEntries = %d, want 2", header.nEntries)
 	}
-	if snapshot.header.entryArrayOffset == 0 {
+	if header.headEntrySeqnum != 1 || header.tailEntrySeqnum != 2 {
+		t.Fatalf("seqnum range = %d..%d, want 1..2", header.headEntrySeqnum, header.tailEntrySeqnum)
+	}
+	if header.entryArrayOffset == 0 {
 		t.Fatal("entryArrayOffset is zero")
 	}
+}
 
-	message := snapshot.dataByPayload["MESSAGE=hello"]
+func assertAppendReopenMessageData(t *testing.T, message dataSnapshot) {
+	t.Helper()
 	if message.offset == 0 {
 		t.Fatal("MESSAGE=hello data object not found")
 	}
@@ -81,7 +96,10 @@ func TestCreateAppendAndReopenLayout(t *testing.T) {
 	if message.header.entryOffset == 0 || message.header.entryArrayOffset == 0 {
 		t.Fatalf("MESSAGE=hello entry links are incomplete: entry=%d array=%d", message.header.entryOffset, message.header.entryArrayOffset)
 	}
+}
 
+func assertAppendReopenObjectCounts(t *testing.T, snapshot journalSnapshot) {
+	t.Helper()
 	if got := len(snapshot.entries); got != 2 {
 		t.Fatalf("entry object count = %d, want 2", got)
 	}
@@ -206,79 +224,85 @@ func TestCreateAndOpenCompressedDataAlgorithms(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), tc.name+".journal")
-			opts := testOptions()
-			opts.Compression = tc.compression
-			opts.CompressThresholdBytes = 16
-
-			w, err := Create(path, opts)
-			if err != nil {
-				t.Fatalf("Create() error = %v", err)
-			}
-			if err := w.Append([]Field{
-				StringField("MESSAGE", "first"),
-				{Name: "COMPRESSED_PAYLOAD", Value: bytes.Repeat([]byte("A"), 512)},
-			}, EntryOptions{RealtimeUsec: 1_700_000_000_000_001, MonotonicUsec: 101}); err != nil {
-				t.Fatalf("Append(first) error = %v", err)
-			}
-			if err := w.Close(); err != nil {
-				t.Fatalf("Close(first) error = %v", err)
-			}
-
-			w, err = Open(path)
-			if err != nil {
-				t.Fatalf("Open() error = %v", err)
-			}
-			if err := w.Append([]Field{
-				StringField("MESSAGE", "second"),
-				{Name: "COMPRESSED_PAYLOAD", Value: bytes.Repeat([]byte("B"), 512)},
-			}, EntryOptions{RealtimeUsec: 1_700_000_000_000_002, MonotonicUsec: 102}); err != nil {
-				t.Fatalf("Append(second) error = %v", err)
-			}
-			if err := w.Close(); err != nil {
-				t.Fatalf("Close(second) error = %v", err)
-			}
-
-			snapshot := readJournalSnapshot(t, path)
-			if snapshot.header.incompatibleFlags&tc.incompatibleFlag == 0 {
-				t.Fatalf("incompatible flags %#x missing %#x", snapshot.header.incompatibleFlags, tc.incompatibleFlag)
-			}
-			compressedObjects := 0
-			for _, data := range snapshot.dataByPayload {
-				if data.header.object.flag&tc.objectFlag != 0 {
-					compressedObjects++
-				}
-			}
-			if compressedObjects < 2 {
-				t.Fatalf("compressed DATA objects = %d, want at least 2", compressedObjects)
-			}
-
-			r, err := OpenFile(path)
-			if err != nil {
-				t.Fatalf("OpenFile() error = %v", err)
-			}
-			defer r.Close()
-			if err := r.Next(); err != nil {
-				t.Fatalf("Next(first) error = %v", err)
-			}
-			entry, err := r.GetEntry()
-			if err != nil {
-				t.Fatalf("GetEntry(first) error = %v", err)
-			}
-			if got := string(entry.Fields["COMPRESSED_PAYLOAD"]); got != strings.Repeat("A", 512) {
-				t.Fatalf("first payload mismatch: %q", got)
-			}
-			if err := r.Next(); err != nil {
-				t.Fatalf("Next(second) error = %v", err)
-			}
-			entry, err = r.GetEntry()
-			if err != nil {
-				t.Fatalf("GetEntry(second) error = %v", err)
-			}
-			if got := string(entry.Fields["COMPRESSED_PAYLOAD"]); got != strings.Repeat("B", 512) {
-				t.Fatalf("second payload mismatch: %q", got)
-			}
+			runCompressedDataAlgorithmCase(t, tc.name, tc.compression, tc.incompatibleFlag, tc.objectFlag)
 		})
+	}
+}
+
+func runCompressedDataAlgorithmCase(t *testing.T, name string, compression int, incompatibleFlag uint32, objectFlag uint8) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name+".journal")
+	createCompressedDataJournal(t, path, compression)
+	assertCompressedDataSnapshot(t, readJournalSnapshot(t, path), incompatibleFlag, objectFlag)
+	assertCompressedDataReadback(t, path)
+}
+
+func createCompressedDataJournal(t *testing.T, path string, compression int) {
+	t.Helper()
+	opts := testOptions()
+	opts.Compression = compression
+	opts.CompressThresholdBytes = 16
+
+	w, err := Create(path, opts)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	appendWriterFields(t, w, "first", compressedPayloadFields("first", "A"), EntryOptions{RealtimeUsec: 1_700_000_000_000_001, MonotonicUsec: 101})
+	closeWriterForTest(t, w, "first")
+
+	w, err = Open(path)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	appendWriterFields(t, w, "second", compressedPayloadFields("second", "B"), EntryOptions{RealtimeUsec: 1_700_000_000_000_002, MonotonicUsec: 102})
+	closeWriterForTest(t, w, "second")
+}
+
+func compressedPayloadFields(message string, fill string) []Field {
+	return []Field{
+		StringField("MESSAGE", message),
+		{Name: "COMPRESSED_PAYLOAD", Value: bytes.Repeat([]byte(fill), 512)},
+	}
+}
+
+func assertCompressedDataSnapshot(t *testing.T, snapshot journalSnapshot, incompatibleFlag uint32, objectFlag uint8) {
+	t.Helper()
+	if snapshot.header.incompatibleFlags&incompatibleFlag == 0 {
+		t.Fatalf("incompatible flags %#x missing %#x", snapshot.header.incompatibleFlags, incompatibleFlag)
+	}
+	compressedObjects := 0
+	for _, data := range snapshot.dataByPayload {
+		if data.header.object.flag&objectFlag != 0 {
+			compressedObjects++
+		}
+	}
+	if compressedObjects < 2 {
+		t.Fatalf("compressed DATA objects = %d, want at least 2", compressedObjects)
+	}
+}
+
+func assertCompressedDataReadback(t *testing.T, path string) {
+	t.Helper()
+	r, err := OpenFile(path)
+	if err != nil {
+		t.Fatalf("OpenFile() error = %v", err)
+	}
+	defer r.Close()
+	assertNextCompressedPayload(t, r, "first", "A")
+	assertNextCompressedPayload(t, r, "second", "B")
+}
+
+func assertNextCompressedPayload(t *testing.T, r *Reader, label string, fill string) {
+	t.Helper()
+	if err := r.Next(); err != nil {
+		t.Fatalf("Next(%s) error = %v", label, err)
+	}
+	entry, err := r.GetEntry()
+	if err != nil {
+		t.Fatalf("GetEntry(%s) error = %v", label, err)
+	}
+	if got := string(entry.Fields["COMPRESSED_PAYLOAD"]); got != strings.Repeat(fill, 512) {
+		t.Fatalf("%s payload mismatch: %q", label, got)
 	}
 }
 
@@ -852,6 +876,15 @@ func TestCompactWriterReaderAndJournalctl(t *testing.T) {
 	requireJournalctl(t)
 
 	path := filepath.Join(t.TempDir(), "compact-writer.journal")
+	createCompactJournal(t, path)
+	assertCompactSnapshot(t, readJournalSnapshot(t, path), 3)
+	assertCompactReadback(t, path, 3)
+	verifyJournalctl(t, path)
+	assertJournalctlRowCount(t, path, "TEST_ID=go-compact", 3)
+}
+
+func createCompactJournal(t *testing.T, path string) {
+	t.Helper()
 	opts := testOptions()
 	opts.Compact = true
 	w, err := Create(path, opts)
@@ -859,37 +892,38 @@ func TestCompactWriterReaderAndJournalctl(t *testing.T) {
 		t.Fatalf("Create(compact) error = %v", err)
 	}
 	for i := 0; i < 3; i++ {
-		if err := w.Append([]Field{
+		appendWriterFields(t, w, fmt.Sprintf("compact-%d", i), []Field{
 			StringField("MESSAGE", fmt.Sprintf("compact-%d", i)),
 			StringField("TEST_ID", "go-compact"),
 			StringField("REUSED", "same"),
-		}, EntryOptions{RealtimeUsec: 1_700_000_040_000_000 + uint64(i), MonotonicUsec: uint64(i + 1)}); err != nil {
-			t.Fatalf("Append(%d) error = %v", i, err)
-		}
+		}, EntryOptions{RealtimeUsec: 1_700_000_040_000_000 + uint64(i), MonotonicUsec: uint64(i + 1)})
 	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
+	closeWriterForTest(t, w, "compact")
+}
 
-	snapshot := readJournalSnapshot(t, path)
+func assertCompactSnapshot(t *testing.T, snapshot journalSnapshot, wantEntries int) {
+	t.Helper()
 	if snapshot.header.incompatibleFlags&incompatibleCompact == 0 {
 		t.Fatalf("compact flag missing from incompatible flags %#x", snapshot.header.incompatibleFlags)
 	}
-	if len(snapshot.entries) != 3 {
-		t.Fatalf("entry count = %d, want 3", len(snapshot.entries))
+	if len(snapshot.entries) != wantEntries {
+		t.Fatalf("entry count = %d, want %d", len(snapshot.entries), wantEntries)
 	}
 	for _, entry := range snapshot.entries {
 		if got := (entry.header.object.size - entryObjectHeaderSize) % compactEntryItemSize; got != 0 {
 			t.Fatalf("entry object size %d is not compact-item aligned", entry.header.object.size)
 		}
 	}
+}
 
+func assertCompactReadback(t *testing.T, path string, wantEntries int) {
+	t.Helper()
 	r, err := OpenFile(path)
 	if err != nil {
 		t.Fatalf("OpenFile(compact) error = %v", err)
 	}
 	defer r.Close()
-	for i := 0; i < 3; i++ {
+	for i := 0; i < wantEntries; i++ {
 		if err := r.Next(); err != nil {
 			t.Fatalf("Next(%d) error = %v", i, err)
 		}
@@ -901,11 +935,13 @@ func TestCompactWriterReaderAndJournalctl(t *testing.T) {
 			t.Fatalf("MESSAGE[%d] = %q", i, got)
 		}
 	}
+}
 
-	verifyJournalctl(t, path)
-	rows := runJournalctlJSON(t, path, "TEST_ID=go-compact")
-	if len(rows) != 3 {
-		t.Fatalf("journalctl row count = %d, want 3; rows=%v", len(rows), rows)
+func assertJournalctlRowCount(t *testing.T, path string, match string, want int) {
+	t.Helper()
+	rows := runJournalctlJSON(t, path, match)
+	if len(rows) != want {
+		t.Fatalf("journalctl row count = %d, want %d; rows=%v", len(rows), want, rows)
 	}
 }
 
@@ -1333,6 +1369,12 @@ func readJournalSnapshot(t *testing.T, path string) journalSnapshot {
 		dataByPayload:  make(map[string]dataSnapshot),
 		fieldByPayload: make(map[string]fieldSnapshot),
 	}
+	scanJournalSnapshotObjects(t, content, &snapshot, snapshotEndOffset(t, content, header))
+	return snapshot
+}
+
+func snapshotEndOffset(t *testing.T, content []byte, header journalHeader) uint64 {
+	t.Helper()
 	endOffset := uint64(len(content))
 	if header.tailObjectOffset != 0 {
 		if header.tailObjectOffset+objectHeaderSize > uint64(len(content)) {
@@ -1347,7 +1389,12 @@ func readJournalSnapshot(t *testing.T, path string) journalSnapshot {
 		}
 		endOffset = align8(header.tailObjectOffset + tail.size)
 	}
-	for offset := header.headerSize; offset < endOffset; {
+	return endOffset
+}
+
+func scanJournalSnapshotObjects(t *testing.T, content []byte, snapshot *journalSnapshot, endOffset uint64) {
+	t.Helper()
+	for offset := snapshot.header.headerSize; offset < endOffset; {
 		if offset+objectHeaderSize > uint64(len(content)) {
 			t.Fatalf("short object header at offset %d", offset)
 		}
@@ -1362,36 +1409,49 @@ func readJournalSnapshot(t *testing.T, path string) journalSnapshot {
 			t.Fatalf("object at offset %d exceeds file size: size=%d file=%d", offset, oh.size, len(content))
 		}
 
-		switch oh.typ {
-		case objectTypeData:
-			header, err := parseDataHeader(content[offset : offset+dataObjectHeaderSize])
-			if err != nil {
-				t.Fatalf("parseDataHeader(%d) error = %v", offset, err)
-			}
-			payloadOffset := uint64(dataObjectHeaderSize)
-			if snapshot.header.isCompact() {
-				payloadOffset = compactDataObjectHeaderSize
-			}
-			payload := append([]byte(nil), content[offset+payloadOffset:offset+oh.size]...)
-			snapshot.dataByPayload[string(payload)] = dataSnapshot{offset: offset, header: header, payload: payload}
-		case objectTypeField:
-			header, err := parseFieldHeader(content[offset : offset+fieldObjectHeaderSize])
-			if err != nil {
-				t.Fatalf("parseFieldHeader(%d) error = %v", offset, err)
-			}
-			payload := append([]byte(nil), content[offset+fieldObjectHeaderSize:offset+oh.size]...)
-			snapshot.fieldByPayload[string(payload)] = fieldSnapshot{offset: offset, header: header, payload: payload}
-		case objectTypeEntry:
-			entry := parseEntryObject(t, offset, content[offset:offset+oh.size], snapshot.header.isCompact())
-			snapshot.entries = append(snapshot.entries, entry)
-		case objectTypeDataHashTable, objectTypeFieldHashTable, objectTypeEntryArray:
-		default:
-			t.Fatalf("unexpected object type %d at offset %d", oh.typ, offset)
-		}
-
+		recordJournalSnapshotObject(t, content, snapshot, offset, oh)
 		offset = align8(offset + oh.size)
 	}
-	return snapshot
+}
+
+func recordJournalSnapshotObject(t *testing.T, content []byte, snapshot *journalSnapshot, offset uint64, oh objectHeader) {
+	t.Helper()
+	switch oh.typ {
+	case objectTypeData:
+		recordSnapshotDataObject(t, content, snapshot, offset, oh)
+	case objectTypeField:
+		recordSnapshotFieldObject(t, content, snapshot, offset, oh)
+	case objectTypeEntry:
+		entry := parseEntryObject(t, offset, content[offset:offset+oh.size], snapshot.header.isCompact())
+		snapshot.entries = append(snapshot.entries, entry)
+	case objectTypeDataHashTable, objectTypeFieldHashTable, objectTypeEntryArray:
+	default:
+		t.Fatalf("unexpected object type %d at offset %d", oh.typ, offset)
+	}
+}
+
+func recordSnapshotDataObject(t *testing.T, content []byte, snapshot *journalSnapshot, offset uint64, oh objectHeader) {
+	t.Helper()
+	header, err := parseDataHeader(content[offset : offset+dataObjectHeaderSize])
+	if err != nil {
+		t.Fatalf("parseDataHeader(%d) error = %v", offset, err)
+	}
+	payloadOffset := uint64(dataObjectHeaderSize)
+	if snapshot.header.isCompact() {
+		payloadOffset = compactDataObjectHeaderSize
+	}
+	payload := append([]byte(nil), content[offset+payloadOffset:offset+oh.size]...)
+	snapshot.dataByPayload[string(payload)] = dataSnapshot{offset: offset, header: header, payload: payload}
+}
+
+func recordSnapshotFieldObject(t *testing.T, content []byte, snapshot *journalSnapshot, offset uint64, oh objectHeader) {
+	t.Helper()
+	header, err := parseFieldHeader(content[offset : offset+fieldObjectHeaderSize])
+	if err != nil {
+		t.Fatalf("parseFieldHeader(%d) error = %v", offset, err)
+	}
+	payload := append([]byte(nil), content[offset+fieldObjectHeaderSize:offset+oh.size]...)
+	snapshot.fieldByPayload[string(payload)] = fieldSnapshot{offset: offset, header: header, payload: payload}
 }
 
 func parseEntryObject(t *testing.T, offset uint64, content []byte, compact bool) entrySnapshot {

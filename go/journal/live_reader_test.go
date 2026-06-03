@@ -24,14 +24,24 @@ func testGoReaderLiveGoWriter(t *testing.T, entries int, delay time.Duration) {
 	t.Helper()
 
 	moduleRoot := filepath.Join("..")
-	writerBin := buildGoTestBinary(t, moduleRoot, "./internal/testcmd/livewriter", "livewriter")
-
 	tmp := t.TempDir()
 	journalPath := filepath.Join(tmp, "live-test.journal")
 	readyFile := filepath.Join(tmp, "ready")
-
 	var stderr bytes.Buffer
-	cmd := exec.Command(writerBin,
+
+	cmd := liveWriterCommand(t, moduleRoot, journalPath, readyFile, entries, delay, &stderr)
+	done := startLiveWriter(t, cmd)
+	waitForLiveWriterReady(t, done, readyFile, &stderr)
+	maxSeen, writerErr := pollLiveWriter(journalPath, done)
+	assertLiveWriterCompleted(t, writerErr, maxSeen, &stderr)
+	assertFinalLiveRead(t, journalPath, entries)
+}
+
+func liveWriterCommand(t *testing.T, moduleRoot string, journalPath string, readyFile string, entries int, delay time.Duration, stderr *bytes.Buffer) *exec.Cmd {
+	t.Helper()
+	writerBin := buildGoTestBinary(t, moduleRoot, "./internal/testcmd/livewriter", "livewriter")
+	cmd := exec.Command(
+		writerBin,
 		"--path", journalPath,
 		"--ready-file", readyFile,
 		"--entries", fmt.Sprint(entries),
@@ -39,17 +49,24 @@ func testGoReaderLiveGoWriter(t *testing.T, entries int, delay time.Duration) {
 		"--sync-every", "10",
 	)
 	cmd.Dir = moduleRoot
-	cmd.Stderr = &stderr
+	cmd.Stderr = stderr
+	return cmd
+}
 
+func startLiveWriter(t *testing.T, cmd *exec.Cmd) <-chan error {
+	t.Helper()
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start live writer: %v", err)
 	}
-
 	done := make(chan error, 1)
 	go func() {
 		done <- cmd.Wait()
 	}()
+	return done
+}
 
+func waitForLiveWriterReady(t *testing.T, done <-chan error, readyFile string, stderr *bytes.Buffer) {
+	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
@@ -58,20 +75,19 @@ func testGoReaderLiveGoWriter(t *testing.T, entries int, delay time.Duration) {
 		default:
 		}
 		if _, err := os.Stat(readyFile); err == nil {
-			goto started
+			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("live writer did not create ready file; stderr=%s", stderr.String())
+}
 
-started:
+func pollLiveWriter(journalPath string, done <-chan error) (int, error) {
 	maxSeen := 0
-	var writerErr error
-	active := true
-	for active {
+	for {
 		select {
-		case writerErr = <-done:
-			active = false
+		case writerErr := <-done:
+			return maxSeen, writerErr
 		default:
 			count, err := readLiveSeqCount(journalPath)
 			if err == nil && count > maxSeen {
@@ -80,12 +96,20 @@ started:
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
+}
+
+func assertLiveWriterCompleted(t *testing.T, writerErr error, maxSeen int, stderr *bytes.Buffer) {
+	t.Helper()
 	if writerErr != nil {
 		t.Fatalf("live writer failed: %v; stderr=%s", writerErr, stderr.String())
 	}
 	if maxSeen < 1 {
 		t.Fatalf("live reader saw %d entries while writer was active, want at least 1", maxSeen)
 	}
+}
+
+func assertFinalLiveRead(t *testing.T, journalPath string, entries int) {
+	t.Helper()
 	finalCount, err := readLiveSeqCount(journalPath)
 	if err != nil {
 		t.Fatalf("final live read: %v", err)

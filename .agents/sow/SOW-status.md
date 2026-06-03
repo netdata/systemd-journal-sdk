@@ -57,9 +57,13 @@ Last updated: 2026-06-03
   internal command-tool files locally Lizard-clean, passed `go test ./...`, and
   reduced the refreshed local all-tracked-file Lizard inventory to 160 critical
   findings. Remaining critical findings are `go: 31`, `rust: 53`, and
-  `tests: 76`; Go findings are limited to `go/journal/*_test.go`. Remaining
-  work is to continue complexity remediation, record final scanner results, and
-  complete whole-SOW review.
+  `tests: 76`; Go findings are limited to `go/journal/*_test.go`. Batch 18
+  made all remaining Go journal test files locally Lizard-clean, passed
+  `go test ./...`, and reduced the refreshed local all-tracked-file Lizard
+  inventory to 129 critical findings. Go has no remaining critical Lizard
+  findings; remaining critical findings are `rust: 53` and `tests: 76`.
+  Remaining work is to continue complexity remediation, record final scanner
+  results, and complete whole-SOW review.
 
 ## Pending
 

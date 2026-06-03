@@ -3,13 +3,43 @@ package journal
 import (
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-func TestFSPRGVectors(t *testing.T) {
-	// fss_test.go lives in go/journal/; repo root is two levels up.
+type fsprgFixture struct {
+	FSPRGParams struct {
+		Secpar uint `json:"secpar"`
+	} `json:"fsprg_params"`
+	Vectors []fsprgVector `json:"vectors"`
+}
+
+type fsprgVector struct {
+	SeedDesc  string       `json:"seed_desc"`
+	SeedHex   string       `json:"seed_hex"`
+	MskHex    string       `json:"msk_hex"`
+	MpkHex    string       `json:"mpk_hex"`
+	State0Hex string       `json:"state0_hex"`
+	Epochs    []fsprgEpoch `json:"epochs"`
+}
+
+type fsprgEpoch struct {
+	Epoch        uint64     `json:"epoch"`
+	StateHex     string     `json:"state_hex"`
+	SeekStateHex string     `json:"seek_state_hex"`
+	Keys         []fsprgKey `json:"keys"`
+}
+
+type fsprgKey struct {
+	Idx    uint32 `json:"idx"`
+	KeyLen uint32 `json:"keylen"`
+	KeyHex string `json:"key_hex"`
+}
+
+func loadFSPRGFixture(t *testing.T) fsprgFixture {
+	t.Helper()
 	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatalf("repo root: %v", err)
@@ -18,103 +48,77 @@ func TestFSPRGVectors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read vectors: %v", err)
 	}
-	var fixture struct {
-		FSPRGParams struct {
-			Secpar uint `json:"secpar"`
-		} `json:"fsprg_params"`
-		Vectors []struct {
-			SeedDesc   string `json:"seed_desc"`
-			SeedHex    string `json:"seed_hex"`
-			MskHex     string `json:"msk_hex"`
-			MpkHex     string `json:"mpk_hex"`
-			State0Hex  string `json:"state0_hex"`
-			Epochs []struct {
-				Epoch        uint64 `json:"epoch"`
-				StateHex     string `json:"state_hex"`
-				SeekStateHex string `json:"seek_state_hex"`
-				Keys []struct {
-					Idx    uint32 `json:"idx"`
-					KeyLen uint32 `json:"keylen"`
-					KeyHex string `json:"key_hex"`
-				} `json:"keys"`
-			} `json:"epochs"`
-		} `json:"vectors"`
-	}
+	var fixture fsprgFixture
 	if err := json.Unmarshal(data, &fixture); err != nil {
 		t.Fatalf("parse vectors: %v", err)
 	}
+	return fixture
+}
 
+func TestFSPRGVectors(t *testing.T) {
+	fixture := loadFSPRGFixture(t)
 	for _, vec := range fixture.Vectors {
-		seed, err := hex.DecodeString(vec.SeedHex)
-		if err != nil {
-			t.Fatalf("decode seed %s: %v", vec.SeedDesc, err)
-		}
-		expectedMsk, err := hex.DecodeString(vec.MskHex)
-		if err != nil {
-			t.Fatalf("decode msk %s: %v", vec.SeedDesc, err)
-		}
-		expectedMpk, err := hex.DecodeString(vec.MpkHex)
-		if err != nil {
-			t.Fatalf("decode mpk %s: %v", vec.SeedDesc, err)
-		}
-		expectedState0, err := hex.DecodeString(vec.State0Hex)
-		if err != nil {
-			t.Fatalf("decode state0 %s: %v", vec.SeedDesc, err)
-		}
+		assertFSPRGVector(t, fixture.FSPRGParams.Secpar, vec)
+	}
+}
 
-		msk, mpk, err := fsprgGenMK(seed, fixture.FSPRGParams.Secpar)
-		if err != nil {
-			t.Fatalf("GenMK %s: %v", vec.SeedDesc, err)
-		}
-		if !bytesEqual(msk, expectedMsk) {
-			t.Fatalf("msk mismatch for %s", vec.SeedDesc)
-		}
-		if !bytesEqual(mpk, expectedMpk) {
-			t.Fatalf("mpk mismatch for %s", vec.SeedDesc)
-		}
+func assertFSPRGVector(t *testing.T, secpar uint, vec fsprgVector) {
+	t.Helper()
+	seed := decodeHex(t, "seed "+vec.SeedDesc, vec.SeedHex)
+	msk, mpk, err := fsprgGenMK(seed, secpar)
+	if err != nil {
+		t.Fatalf("GenMK %s: %v", vec.SeedDesc, err)
+	}
+	requireBytesEqual(t, "msk "+vec.SeedDesc, msk, decodeHex(t, "msk "+vec.SeedDesc, vec.MskHex))
+	requireBytesEqual(t, "mpk "+vec.SeedDesc, mpk, decodeHex(t, "mpk "+vec.SeedDesc, vec.MpkHex))
 
-		state0 := fsprgGenState0(mpk, seed)
-		if !bytesEqual(state0, expectedState0) {
-			t.Fatalf("state0 mismatch for %s", vec.SeedDesc)
-		}
-		if fsprgGetEpoch(state0) != 0 {
-			t.Fatalf("epoch0 mismatch for %s", vec.SeedDesc)
-		}
+	state0 := fsprgGenState0(mpk, seed)
+	requireBytesEqual(t, "state0 "+vec.SeedDesc, state0, decodeHex(t, "state0 "+vec.SeedDesc, vec.State0Hex))
+	if fsprgGetEpoch(state0) != 0 {
+		t.Fatalf("epoch0 mismatch for %s", vec.SeedDesc)
+	}
+	for _, ep := range vec.Epochs {
+		assertFSPRGEpoch(t, vec.SeedDesc, seed, msk, state0, ep)
+	}
+}
 
-		for _, ep := range vec.Epochs {
-			evolved := make([]byte, len(state0))
-			copy(evolved, state0)
-			for e := uint64(0); e < ep.Epoch; e++ {
-				evolved = fsprgEvolve(evolved)
-			}
-			expectedState, err := hex.DecodeString(ep.StateHex)
-			if err != nil {
-				t.Fatalf("decode state %s epoch %d: %v", vec.SeedDesc, ep.Epoch, err)
-			}
-			if !bytesEqual(evolved, expectedState) {
-				t.Fatalf("evolve mismatch for %s epoch %d", vec.SeedDesc, ep.Epoch)
-			}
+func assertFSPRGEpoch(t *testing.T, seedDesc string, seed []byte, msk []byte, state0 []byte, ep fsprgEpoch) {
+	t.Helper()
+	evolved := evolveToEpoch(state0, ep.Epoch)
+	requireBytesEqual(t, fmt.Sprintf("evolve %s epoch %d", seedDesc, ep.Epoch), evolved, decodeHex(t, "state", ep.StateHex))
 
-			seeked := fsprgSeek(state0, ep.Epoch, msk, seed)
-			expectedSeek, err := hex.DecodeString(ep.SeekStateHex)
-			if err != nil {
-				t.Fatalf("decode seek_state %s epoch %d: %v", vec.SeedDesc, ep.Epoch, err)
-			}
-			if !bytesEqual(seeked, expectedSeek) {
-				t.Fatalf("seek mismatch for %s epoch %d", vec.SeedDesc, ep.Epoch)
-			}
+	seeked := fsprgSeek(state0, ep.Epoch, msk, seed)
+	requireBytesEqual(t, fmt.Sprintf("seek %s epoch %d", seedDesc, ep.Epoch), seeked, decodeHex(t, "seek_state", ep.SeekStateHex))
 
-			for _, k := range ep.Keys {
-				key := fsprgGetKey(evolved, k.KeyLen, k.Idx)
-				expectedKey, err := hex.DecodeString(k.KeyHex)
-				if err != nil {
-					t.Fatalf("decode key %s epoch %d idx %d: %v", vec.SeedDesc, ep.Epoch, k.Idx, err)
-				}
-				if !bytesEqual(key, expectedKey) {
-					t.Fatalf("key mismatch for %s epoch %d idx %d", vec.SeedDesc, ep.Epoch, k.Idx)
-				}
-			}
-		}
+	for _, k := range ep.Keys {
+		key := fsprgGetKey(evolved, k.KeyLen, k.Idx)
+		label := fmt.Sprintf("key %s epoch %d idx %d", seedDesc, ep.Epoch, k.Idx)
+		requireBytesEqual(t, label, key, decodeHex(t, label, k.KeyHex))
+	}
+}
+
+func evolveToEpoch(state0 []byte, epoch uint64) []byte {
+	evolved := make([]byte, len(state0))
+	copy(evolved, state0)
+	for range epoch {
+		evolved = fsprgEvolve(evolved)
+	}
+	return evolved
+}
+
+func decodeHex(t *testing.T, label string, value string) []byte {
+	t.Helper()
+	decoded, err := hex.DecodeString(value)
+	if err != nil {
+		t.Fatalf("decode %s: %v", label, err)
+	}
+	return decoded
+}
+
+func requireBytesEqual(t *testing.T, label string, got []byte, want []byte) {
+	t.Helper()
+	if !bytesEqual(got, want) {
+		t.Fatalf("%s mismatch", label)
 	}
 }
 

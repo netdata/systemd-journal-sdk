@@ -1599,6 +1599,42 @@ Complexity remediation evidence:
     findings, down from 174 after Batch 16. Remaining critical findings are
     `go: 31`, `rust: 53`, and `tests: 76`; Go findings are now limited to
     `go/journal/*_test.go`.
+- Batch 18, Go journal test findings:
+  - Refactored `go/journal/facade_test.go` into message-journal,
+    cursor-seek, row-count, metadata, data-enumeration, unique-field, realtime,
+    cursor, and multi-file helper assertions without changing the
+    libsystemd-compatible facade behavior under test.
+  - Refactored `go/journal/fss_test.go` by replacing the nested anonymous JSON
+    fixture shapes and epoch/key checks with named fixture structs and focused
+    FSPRG vector, epoch, hex-decode, and byte-equality helpers.
+  - Refactored `go/journal/live_reader_test.go` into livewriter command,
+    startup, ready-file wait, active polling, writer-completion, and final
+    readback helpers without changing the live one-writer/reader assertions.
+  - Refactored `go/journal/reader_test.go` into shared reader creation,
+    raw-field accessor, raw-payload enumeration, live/snapshot bounds,
+    compressed fixture, sequence iteration, unique-field, and directory-reader
+    helpers while preserving raw/binary field, payload lifetime, index, and
+    directory-reader assertions.
+  - Refactored `go/journal/log_test.go` by extracting shared log append,
+    close, sync, forced-active-close, file-count, seqnum, directory JSON,
+    disposed-file, empty-online-continuation, eager-retention, and lifecycle
+    helpers while preserving retention, reopen, reliable active replacement,
+    and lifecycle event assertions.
+  - Refactored `go/journal/verify_test.go` by splitting sealed DATA payload
+    tampering into object-size validation, target discovery, coverage
+    assertion, and mutation helpers.
+  - Refactored `go/journal/writer_test.go` by extracting append/reopen layout,
+    compression algorithm, compact writer, journalctl row-count, and journal
+    snapshot object-scanning helpers while preserving journal layout,
+    compression, compact, stock journalctl, and snapshot assertions.
+  - `gofmt` ran on all touched Go journal test files.
+  - `go test ./journal` passed during the batch, and final `go test ./...` in
+    `go/` passed.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for
+    `go/journal/*.go`. Go has no remaining critical Lizard findings.
+  - Refreshed local all-tracked-file Lizard inventory now reports 129 critical
+    findings, down from 160 after Batch 17. Remaining critical findings are
+    `rust: 53` and `tests: 76`.
 
 Reviewer findings:
 
