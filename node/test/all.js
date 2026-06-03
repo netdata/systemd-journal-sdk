@@ -1094,6 +1094,7 @@ for (const [length, expected] of sipVectors) {
       { name: 'foo.bar', value: 'dot' },
       { name: 'field name', value: 'space' },
       { name: longName, value: 'long' },
+      { name: '__proto__', value: 'proto-safe' },
       { name: 'BINARY', value: Buffer.from([0x61, 0x00, 0x3d, 0x62]) },
     ], { realtimeUsec: 1_700_002_113_000_000n, monotonicUsec: 1n });
     assert.throws(
@@ -1112,7 +1113,10 @@ for (const [length, expected] of sipVectors) {
     assert.equal(entry.fields.lowercase.toString('utf8'), 'ok');
     assert.equal(entry.fields['foo.bar'].toString('utf8'), 'dot');
     assert.equal(entry.fields['field name'].toString('utf8'), 'space');
-    assert.equal(entry.fields[longName].toString('utf8'), 'long');
+    assert.equal(Reflect.get(entry.fields, longName).toString('utf8'), 'long');
+    assert.equal(Object.getPrototypeOf(entry.fields), null);
+    assert.equal(Reflect.get(entry.fields, '__proto__').toString('utf8'), 'proto-safe');
+    assert.equal(Object.prototype.protoSafe, undefined);
     assert.deepEqual(entry.fields.BINARY, Buffer.from([0x61, 0x00, 0x3d, 0x62]));
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
@@ -2006,6 +2010,7 @@ for (const [length, expected] of sipVectors) {
       { name: 'foo.bar', value: 'dot' },
       { name: 'field name', value: 'space' },
       { name: longName, value: 'long' },
+      { name: '__proto__', value: 'proto-safe' },
       { name: 'BINARY', value: Buffer.from([0x61, 0x00, 0x3d, 0x62]) },
     ], {
       realtimeUsec: 1_700_002_403_000_000n,
@@ -2032,7 +2037,10 @@ for (const [length, expected] of sipVectors) {
     assert.equal(entries[0].fields.lowercase.toString('utf8'), 'ok');
     assert.equal(entries[0].fields['foo.bar'].toString('utf8'), 'dot');
     assert.equal(entries[0].fields['field name'].toString('utf8'), 'space');
-    assert.equal(entries[0].fields[longName].toString('utf8'), 'long');
+    assert.equal(Reflect.get(entries[0].fields, longName).toString('utf8'), 'long');
+    assert.equal(Object.getPrototypeOf(entries[0].fields), null);
+    assert.equal(Reflect.get(entries[0].fields, '__proto__').toString('utf8'), 'proto-safe');
+    assert.equal(Object.prototype.protoSafe, undefined);
     assert.deepEqual(entries[0].fields.BINARY, Buffer.from([0x61, 0x00, 0x3d, 0x62]));
   } finally {
     rmSync(tempDir, { recursive: true, force: true });

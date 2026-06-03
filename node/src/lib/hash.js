@@ -46,7 +46,7 @@ export function sipHash24(key, msg) {
 
   let b = (len << 56n) & 0xffffffffffffffffn;
   for (let j = 0; i < msg.length; i++, j++) {
-    b |= BigInt(msg[i]) << BigInt(8 * j);
+    b |= BigInt(msg.readUInt8(i)) << BigInt(8 * j);
   }
 
   v3 ^= b;
@@ -104,7 +104,7 @@ function tailWord(data, start) {
   let word = 0;
   const end = Math.min(start + 4, data.length);
   for (let pos = start; pos < end; pos++) {
-    word |= data[pos] << (8 * (pos - start));
+    word |= data.readUInt8(pos) << (8 * (pos - start));
   }
   return word >>> 0;
 }

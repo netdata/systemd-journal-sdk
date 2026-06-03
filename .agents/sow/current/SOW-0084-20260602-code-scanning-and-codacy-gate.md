@@ -2476,6 +2476,33 @@ Batch 42:
   - `node --check node/internal/testcmd/livewriter.js` passed.
   - `npm_config_cache=../.local/npm-cache npm test` in `node/` passed.
 
+Batch 43:
+
+- Scope: Node object-injection current alerts that touched real field-name and
+  byte-indexing surfaces.
+- Evidence:
+  - GitHub current alerts for `987fb7a` included 57
+    `ESLint8_security_detect-object-injection` findings.
+  - Several were false positives on Buffer or array indexing, but reader entry
+    field maps and query match grouping also used dynamic access with journal
+    field names, which are untrusted file/caller data.
+- Changes:
+  - Added own-property helpers in the Node reader and used them for returned
+    field maps and filter matching.
+  - Replaced filter grouping with `Map` instead of an object keyed by field
+    name.
+  - Replaced writer `appendMap()` dynamic reads with `Reflect.get()`.
+  - Replaced Buffer byte bracket reads with `readUInt8()` in binary/hash/verify
+    paths.
+  - Replaced fixed optional-header/header-field dynamic access with
+    `Reflect.get()` / `Reflect.set()`.
+  - Added RAW `__proto__` field tests for direct and directory writers to prove
+    reader field maps stay null-prototype and do not pollute `Object.prototype`.
+- Validation:
+  - `node --check node/src/lib/binary.js node/src/lib/hash.js node/src/lib/header.js node/src/lib/reader.js node/src/lib/verify.js node/src/lib/verify-graph.js node/src/lib/writer.js node/test/all.js`
+    passed.
+  - `npm_config_cache=../.local/npm-cache npm test` in `node/` passed.
+
 Reviewer findings:
 
 - Pending. The current SOW is not ready for terminal reviewer review because
@@ -2545,8 +2572,8 @@ Follow-up mapping:
   - reconcile the user's observed 3056 UI count with the CLI-confirmed
     `master` count of 1502 quality issues after commit `99d2b08`;
   - group and triage the exported `master` cloud findings;
-  - push Batch 42 and verify GitHub CodeQL/Codacy SARIF no longer report the
-    fixed current-commit Node one-off or useless-catch findings;
+  - push Batch 43 and verify GitHub CodeQL/Codacy SARIF no longer report the
+    fixed current-commit Node object-access findings;
   - address any remaining current-commit Codacy findings that are not explained
     by stale cloud analysis or narrow generated-artifact exclusions;
   - run GitHub workflows after push and record CodeQL/Codacy results;

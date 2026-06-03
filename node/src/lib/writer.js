@@ -365,7 +365,7 @@ export class Writer {
   // Append a string-valued map with sorted keys.
   appendMap(fieldsMap) {
     const keys = Object.keys(fieldsMap).sort();
-    return this.append(keys.map(k => ({ name: k, value: fieldsMap[k] })));
+    return this.append(keys.map(k => ({ name: k, value: Reflect.get(fieldsMap, k) })));
   }
 
   _hash(payload) { return sipHash24(this.header.file_id, payload); }

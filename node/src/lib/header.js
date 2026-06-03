@@ -191,7 +191,7 @@ function parseOptionalHeaderFields(buf, header) {
 function parseOptionalU64HeaderFields(buf, header) {
   for (const [name, offset, end] of OPTIONAL_U64_HEADER_FIELDS) {
     if (headerContainsField(buf, header.header_size, end)) {
-      header[name] = readUint64LE(buf, offset);
+      Reflect.set(header, name, readUint64LE(buf, offset));
     }
   }
 }
@@ -199,7 +199,7 @@ function parseOptionalU64HeaderFields(buf, header) {
 function parseOptionalU32HeaderFields(buf, header) {
   for (const [name, offset, end] of OPTIONAL_U32_HEADER_FIELDS) {
     if (headerContainsField(buf, header.header_size, end)) {
-      header[name] = buf.readUInt32LE(offset);
+      Reflect.set(header, name, buf.readUInt32LE(offset));
     }
   }
 }

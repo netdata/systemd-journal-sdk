@@ -37,7 +37,7 @@ export function align8(value) {
 export function bufEqual(a, b) {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
+    if (a.readUInt8(i) !== b.readUInt8(i)) return false;
   }
   return true;
 }
@@ -55,7 +55,7 @@ export function stringToUUID(hex) {
 // Check if a UUID is all zeros.
 export function isZeroUUID(uuid) {
   for (let i = 0; i < 16; i++) {
-    if (uuid[i] !== 0) return false;
+    if (uuid.readUInt8(i) !== 0) return false;
   }
   return true;
 }

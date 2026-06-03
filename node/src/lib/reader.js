@@ -28,6 +28,25 @@ const SUPPORTED_INCOMPATIBLE_FLAGS = INCOMPATIBLE_KEYED_HASH |
   INCOMPATIBLE_COMPRESSED_LZ4 |
   INCOMPATIBLE_COMPACT;
 
+const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
+
+function getOwn(object, key) {
+  return hasOwn(object, key) ? Reflect.get(object, key) : undefined;
+}
+
+function setOwn(object, key, value) {
+  Reflect.set(object, key, value);
+}
+
+function pushOwnArray(object, key, value) {
+  const values = getOwn(object, key);
+  if (values) {
+    values.push(value);
+    return;
+  }
+  setOwn(object, key, [value]);
+}
+
 export class FileReader {
   constructor(buffer, header, path, cleanupPath) {
     this.buffer = buffer;
@@ -423,9 +442,8 @@ export class FileReader {
 
         const nameStr = decodeUtf8OrNull(name);
         if (nameStr === null) continue;
-        if (!(nameStr in fields)) fields[nameStr] = valueBuf;
-        if (!fieldValues[nameStr]) fieldValues[nameStr] = [];
-        fieldValues[nameStr].push(valueBuf);
+        if (!hasOwn(fields, nameStr)) setOwn(fields, nameStr, valueBuf);
+        pushOwnArray(fieldValues, nameStr, valueBuf);
       } catch { /* skip corrupt data */ }
     }
 
@@ -806,9 +824,9 @@ export class FilterBuilder {
 class MatchExpr {
   constructor(field, value) { this.field = field; this.value = value; }
   matches(entry) {
-    const vals = entry.fieldValues[this.field];
+    const vals = getOwn(entry.fieldValues, this.field);
     if (vals) return vals.some(v => Buffer.isBuffer(v) && v.equals(this.value));
-    const v = entry.fields[this.field];
+    const v = getOwn(entry.fields, this.field);
     return v !== undefined && Buffer.isBuffer(v) && v.equals(this.value);
   }
 }
@@ -827,18 +845,23 @@ const FALSE_EXPR = { matches: () => false };
 
 function buildCurrentExpr(matches) {
   if (matches.length === 0) return null;
-  const byField = Object.create(null);
+  const byField = new Map();
   const fieldOrder = [];
   for (const item of matches) {
     const eq = item.indexOf(0x3d);
     if (eq < 0) return FALSE_EXPR;
     const field = matchFieldName(item);
-    if (!byField[field]) { fieldOrder.push(field); byField[field] = []; }
-    byField[field].push(new MatchExpr(field, item.slice(eq + 1)));
+    let fieldMatches = byField.get(field);
+    if (!fieldMatches) {
+      fieldOrder.push(field);
+      fieldMatches = [];
+      byField.set(field, fieldMatches);
+    }
+    fieldMatches.push(new MatchExpr(field, item.slice(eq + 1)));
   }
   fieldOrder.sort();
   const parts = fieldOrder.map(f => {
-    const vs = byField[f];
+    const vs = byField.get(f);
     return vs.length === 1 ? vs[0] : new OrExpr(vs);
   });
   return parts.length === 1 ? parts[0] : new AndExpr(parts);

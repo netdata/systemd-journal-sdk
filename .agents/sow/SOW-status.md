@@ -186,7 +186,10 @@ Last updated: 2026-06-03
   Codacy Cloud still showed 8 quality issues with 0 security findings. Batch
   42 corrected the live-writer helper shape to remove the new useless-catch
   warning without dead catch logic; Node syntax checks and full Node tests
-  passed. Remaining work is to push Batch 42, verify
+  passed. Batch 43 hardened Node reader field maps, query grouping, append-map
+  access, byte-buffer reads, and optional-header dynamic access; it also added
+  RAW `__proto__` field regression coverage. Node syntax checks and full Node
+  tests passed. Remaining work is to push Batch 43, verify
   Codacy/GitHub code scanning has analyzed the current commit instead of stale
   snapshots, decide or disposition the cross-language `0640` journal file
   permission finding, address residual current-commit findings, record final

@@ -172,11 +172,11 @@ function parseVerificationKey(key) {
     throw new VerificationError('invalid verification key: not a string');
   }
   const { seed, next } = parseVerificationSeed(key);
-  if (next >= key.length || key[next] !== '/') {
+  if (next >= key.length || key.charCodeAt(next) !== 0x2f) {
     throw new VerificationError('invalid verification key: missing / separator');
   }
   const start = parseKeyU64Part(key, next + 1, 'start');
-  if (start.next >= key.length || key[start.next] !== '-') {
+  if (start.next >= key.length || key.charCodeAt(start.next) !== 0x2d) {
     throw new VerificationError('invalid verification key: bad start hex');
   }
   const interval = parseKeyU64Part(key, start.next + 1, 'interval');
@@ -194,7 +194,7 @@ function parseVerificationSeed(key) {
   const seed = Buffer.alloc(12);
   let i = 0;
   for (let c = 0; c < seed.length; c++) {
-    while (i < key.length && key[i] === '-') i++;
+    while (i < key.length && key.charCodeAt(i) === 0x2d) i++;
     seed[c] = parseSeedByte(key, i);
     i += 2;
   }
@@ -226,12 +226,14 @@ function parseKeyU64Part(key, start, label) {
 
 function consumeHex(s, start) {
   let i = start;
-  while (i < s.length && isHex(s[i])) i++;
+  while (i < s.length && isHexCode(s.charCodeAt(i))) i++;
   return { next: i, ok: i > start };
 }
 
-function isHex(ch) {
-  return /^[0-9a-fA-F]$/.test(ch);
+function isHexCode(code) {
+  return (code >= 0x30 && code <= 0x39) ||
+    (code >= 0x41 && code <= 0x46) ||
+    (code >= 0x61 && code <= 0x66);
 }
 
 function align8(v) {
@@ -310,8 +312,8 @@ function readSealObjectFrame(data, context, offset) {
   }
   return {
     offset,
-    typ: data[offset],
-    flags: data[offset + 1],
+    typ: data.readUInt8(offset),
+    flags: data.readUInt8(offset + 1),
     size,
     alignedSizeNumber: u64ToNumber(alignedSize, `aligned object size at offset ${offset}`),
   };
@@ -498,7 +500,7 @@ function readHmacObjectFrame(data, context, offset) {
     throw new VerificationError(`HMAC object at offset ${offset} with aligned size ${alignedSize} exceeds file bounds`);
   }
   return {
-    typ: data[offset],
+    typ: data.readUInt8(offset),
     size,
     alignedSizeNumber: u64ToNumber(alignedSize, `aligned object size at offset ${offset}`),
   };

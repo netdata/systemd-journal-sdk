@@ -118,7 +118,7 @@ class GraphVerifier {
       );
     }
     for (let i = 17; i < 24; i++) {
-      if (this.data[i] !== 0) throw new ObjectGraphVerificationError('reserved header bytes are non-zero');
+      if (this.data.readUInt8(i) !== 0) throw new ObjectGraphVerificationError('reserved header bytes are non-zero');
     }
     if (this.compact && BigInt(this.data.length) > JOURNAL_COMPACT_SIZE_MAX) {
       throw new ObjectGraphVerificationError('compact journal exceeds 32-bit size limit');
@@ -175,8 +175,8 @@ class GraphVerifier {
     if (offset + OBJECT_HEADER_SIZE > this.data.length) {
       throw new ObjectGraphVerificationError(`object header at offset ${offset} exceeds file bounds`);
     }
-    const typ = this.data[offset];
-    const flags = this.data[offset + 1];
+    const typ = this.data.readUInt8(offset);
+    const flags = this.data.readUInt8(offset + 1);
     const size = this.u64(offset + 8);
     const alignedSize = align8(size);
     const alignedSizeNumber = u64ToNumber(alignedSize, `aligned size at offset ${offset}`);
@@ -360,7 +360,7 @@ class GraphVerifier {
       throw new ObjectGraphVerificationError(`DATA object at offset ${offset} has bad n_entries`);
     }
     for (const field of ['next_hash_offset', 'next_field_offset', 'entry_offset', 'entry_array_offset']) {
-      this.validOffset(obj[field], `DATA ${offset} ${field}`);
+      this.validOffset(Reflect.get(obj, field), `DATA ${offset} ${field}`);
     }
     if (obj.n_entries < 2n && obj.entry_array_offset !== 0) {
       throw new ObjectGraphVerificationError(`DATA object at offset ${offset} has unexpected entry array`);
@@ -486,7 +486,7 @@ class GraphVerifier {
       ['n_entry_arrays', 240],
     ]);
     for (const [field, value] of expected) {
-      if (this.headerHas(fieldEnds.get(field)) && this.header[field] !== value) {
+      if (this.headerHas(fieldEnds.get(field)) && Reflect.get(this.header, field) !== value) {
         throw new ObjectGraphVerificationError(`header ${field} mismatch`);
       }
     }
@@ -649,7 +649,7 @@ class GraphVerifier {
   appendEntryArrayChainItems(entries, array, remaining, label) {
     const usedHere = Math.min(remaining, array.items.length);
     for (let i = 0; i < usedHere; i++) {
-      const item = array.items[i];
+      const item = array.items.at(i);
       if (item === 0) throw new ObjectGraphVerificationError(`${label} has zero used item`);
       if (!this.entryObjects.has(item)) throw new ObjectGraphVerificationError(`${label} references missing ENTRY`);
       entries.push(item);
@@ -716,7 +716,7 @@ class GraphVerifier {
   }
 
   hnum(field) {
-    return u64ToNumber(this.header[field], field);
+    return u64ToNumber(Reflect.get(this.header, field), field);
   }
 
   u64(offset) {
