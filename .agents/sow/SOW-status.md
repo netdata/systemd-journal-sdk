@@ -19,9 +19,11 @@ Last updated: 2026-06-03
   matrix, directory, and full verifier interoperability checks. Batch 3 cleared
   the touched Rust public reader/verifier runtime findings in
   `rust/src/journal/src/lib.rs` and `rust/src/journal/src/parse.rs`, preserving
-  parser APIs and passing Rust plus interoperability validation. Remaining work
-  is to continue complexity remediation, record final scanner results, and
-  complete whole-SOW review.
+  parser APIs and passing Rust plus interoperability validation. Batch 4 made
+  the Rust object-graph verifier locally Lizard-clean and passed Rust plus full
+  verifier interoperability validation. Remaining work is to continue
+  complexity remediation, record final scanner results, and complete whole-SOW
+  review.
 
 ## Pending
 

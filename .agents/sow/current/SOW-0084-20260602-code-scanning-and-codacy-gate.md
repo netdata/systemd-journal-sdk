@@ -1208,6 +1208,22 @@ Complexity remediation evidence:
     stock --entries 20` passed 22/22 checks against systemd 260.1.
   - `git diff --check` passed.
   - `.agents/sow/audit.sh` passed with a clean verdict.
+- Batch 4, Rust object-graph verifier internals:
+  - Refactored `rust/src/journal/src/verify_graph.rs` header reading into
+    prefix, required-field, optional historical-field, and header-validation
+    helpers.
+  - Refactored object graph walking into explicit object-envelope validation,
+    compression-flag validation, object recording, object-type dispatch,
+    ENTRY ordering checks, TAG checks, and tail-result validation.
+  - Refactored DATA parsing, ENTRY parsing, tail metadata validation, DATA hash
+    bucket validation, and ENTRY_ARRAY chain walking into smaller verifier
+    helpers without changing corruption acceptance or rejection rules.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for
+    `rust/src/journal/src/verify_graph.rs`.
+  - `cargo test -p journal -p adapter` passed.
+  - `tests/interoperability/run_verify_matrix.py` passed with stock, Go, Rust,
+    Node.js, and Python verifiers: 9 positive fixture classes, 12 negative
+    corruption classes, and 0 failures.
 
 Reviewer findings:
 
