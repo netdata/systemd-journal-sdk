@@ -1255,6 +1255,43 @@ Complexity remediation evidence:
   - `cargo test -p journal-core --lib` passed.
   - `tests/interoperability/run_matrix.py --writers rust go --readers rust go
     stock --entries 20` passed 32/32 checks against systemd 260.1.
+- Batch 7, remaining Rust core/log-writer runtime internals:
+  - Refactored `rust/src/crates/journal-core/src/file/cursor.rs` array cursor
+    resolution and filtered cursor resolution into explicit head, tail,
+    realtime, and resolved-entry helpers.
+  - Refactored `rust/src/crates/journal-core/src/file/offset_array.rs`
+    chained offset-array and inline DATA entry-array partitioning into
+    candidate-selection helpers without changing cursor ordering semantics.
+  - Refactored `rust/src/crates/journal-core/src/file/object.rs` DATA
+    decompression into zstd, lz4, and xz helpers while preserving error
+    clearing, LZ4 size-prefix validation, and the 768 MiB uncompressed DATA
+    allocation guard.
+  - Refactored `rust/src/crates/journal-core/src/file/filter.rs` filter
+    conversion helpers while preserving journalctl semantics: OR within values
+    of the same key and AND across different keys.
+  - Refactored `rust/src/crates/journal-core/src/fss.rs` deterministic
+    Miller-Rabin FSS prime testing into small witness/decomposition helpers
+    without changing the witness base list or round count.
+  - Refactored `rust/src/crates/journal-log-writer/src/log/mod.rs` startup,
+    append preparation, active-file rotation, lifecycle event publication, and
+    protected-file retention helpers without changing public writer APIs.
+  - Refactored `rust/src/crates/journal-log-writer/src/log/chain.rs` retention
+    handling into file-count, total-size, entry-age, and post-delete directory
+    sync helpers without changing deletion order or protected-file behavior.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for the
+    touched files:
+    `cursor.rs`, `offset_array.rs`, `object.rs`, `filter.rs`, `fss.rs`,
+    `log/mod.rs`, and `log/chain.rs`.
+  - `cargo test -p journal-core -p journal-log-writer --lib` passed.
+  - `cargo test -p journal -p adapter` passed.
+  - `tests/interoperability/run_matrix.py --writers rust go --readers rust go
+    stock --entries 20` passed 32/32 checks against systemd 260.1.
+  - `python3 tests/interoperability/run_directory_matrix.py --readers rust
+    stock` passed 22/22 directory checks against systemd 260.1.
+  - `python3 tests/interoperability/run_verify_matrix.py` passed with stock,
+    Go, Rust, Node.js, and Python verifiers: 9 positive fixture classes, 12
+    negative corruption classes, and 0 failures.
+  - `git diff --check` passed.
 
 Reviewer findings:
 

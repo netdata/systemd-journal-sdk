@@ -179,6 +179,56 @@ impl JournalFilter {
         }
     }
 
+    fn build_match_expr<M: MemoryMap>(
+        journal_file: &JournalFile<M>,
+        data: &[u8],
+    ) -> Result<FilterExpr> {
+        let hash = journal_file.hash(data);
+        let Some(offset) = journal_file.find_data_offset(hash, data)? else {
+            return Ok(FilterExpr::None);
+        };
+        let Some(ic) = journal_file.data_ref(offset)?.inlined_cursor() else {
+            return Ok(FilterExpr::None);
+        };
+        Ok(FilterExpr::Match(offset, ic))
+    }
+
+    fn matching_key_range_end(&self, start: usize, key: &[u8]) -> usize {
+        let mut end = start;
+        while end < self.current_matches.len()
+            && Self::extract_key(&self.current_matches[end]).unwrap_or(&[]) == key
+        {
+            end += 1;
+        }
+        end
+    }
+
+    fn convert_key_group<M: MemoryMap>(
+        &self,
+        journal_file: &JournalFile<M>,
+        start: usize,
+        end: usize,
+    ) -> Result<FilterExpr> {
+        if end - start == 1 {
+            return Self::build_match_expr(journal_file, self.current_matches[start].as_slice());
+        }
+
+        let mut matches = Vec::with_capacity(end - start);
+        for idx in start..end {
+            let data = self.current_matches[idx].as_slice();
+            matches.push(Self::build_match_expr(journal_file, data)?);
+        }
+        Ok(FilterExpr::Disjunction(matches))
+    }
+
+    fn collapse_filter_elements(elements: &mut Vec<FilterExpr>) -> Option<FilterExpr> {
+        match elements.len() {
+            0 => None,
+            1 => Some(elements.remove(0)),
+            _ => Some(FilterExpr::Conjunction(std::mem::take(elements))),
+        }
+    }
+
     fn convert_current_matches<M: MemoryMap>(
         &mut self,
         journal_file: &JournalFile<M>,
@@ -193,53 +243,12 @@ impl JournalFilter {
         while i < self.current_matches.len() {
             let current_key = Self::extract_key(&self.current_matches[i]).unwrap_or(&[]);
             let start = i;
-
-            // Find all matches with the same key
-            while i < self.current_matches.len()
-                && Self::extract_key(&self.current_matches[i]).unwrap_or(&[]) == current_key
-            {
-                i += 1;
-            }
-
-            // If we have multiple values for this key, create a disjunction
-            if i - start > 1 {
-                let mut matches = Vec::with_capacity(i - start);
-                for idx in start..i {
-                    let data = self.current_matches[idx].as_slice();
-                    let hash = journal_file.hash(data);
-
-                    let match_expr = match journal_file.find_data_offset(hash, data)? {
-                        Some(offset) => match journal_file.data_ref(offset)?.inlined_cursor() {
-                            Some(ic) => FilterExpr::Match(offset, ic),
-                            None => FilterExpr::None,
-                        },
-                        None => FilterExpr::None,
-                    };
-                    matches.push(match_expr);
-                }
-                elements.push(FilterExpr::Disjunction(matches));
-            } else {
-                let data = self.current_matches[start].as_slice();
-                let hash = journal_file.hash(data);
-
-                let match_expr = match journal_file.find_data_offset(hash, data)? {
-                    Some(offset) => match journal_file.data_ref(offset)?.inlined_cursor() {
-                        Some(ic) => FilterExpr::Match(offset, ic),
-                        None => FilterExpr::None,
-                    },
-                    None => FilterExpr::None,
-                };
-                elements.push(match_expr);
-            }
+            i = self.matching_key_range_end(start, current_key);
+            elements.push(self.convert_key_group(journal_file, start, i)?);
         }
 
         self.current_matches.clear();
-
-        match elements.len() {
-            0 => Ok(None),
-            1 => Ok(Some(elements.remove(0))),
-            _ => Ok(Some(FilterExpr::Conjunction(elements))),
-        }
+        Ok(Self::collapse_filter_elements(&mut elements))
     }
 
     pub fn add_match(&mut self, kv_pair: &[u8]) {

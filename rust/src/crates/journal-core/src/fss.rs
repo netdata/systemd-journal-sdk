@@ -86,61 +86,75 @@ fn det_randomize(buflen: usize, seed: &[u8], idx: u32) -> Vec<u8> {
     out
 }
 
+const MILLER_RABIN_BASES: [u64; 64] = [
+    2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97,
+    101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181, 191, 193,
+    197, 199, 211, 223, 227, 229, 233, 239, 241, 251, 257, 263, 269, 271, 277, 281, 283, 293, 307,
+    311,
+];
+
+fn small_prime_status(n: &BigUint) -> Option<bool> {
+    if n < &BigUint::from(2u32) {
+        return Some(false);
+    }
+    if *n == BigUint::from(2u32) || *n == BigUint::from(3u32) {
+        return Some(true);
+    }
+    if !n.bit(0) {
+        return Some(false);
+    }
+    None
+}
+
+fn decompose_odd_candidate(n: &BigUint) -> (BigUint, usize) {
+    let mut d = n - BigUint::from(1u32);
+    let mut r = 0usize;
+    while !d.bit(0) {
+        d >>= 1;
+        r += 1;
+    }
+    (d, r)
+}
+
+fn miller_rabin_witness_passes(
+    n: &BigUint,
+    n_minus_1: &BigUint,
+    d: &BigUint,
+    r: usize,
+    witness: u64,
+) -> bool {
+    let a_big = BigUint::from(witness);
+    if &a_big >= n {
+        return true;
+    }
+    let mut x = a_big.modpow(d, n);
+    if x == BigUint::from(1u32) || x == *n_minus_1 {
+        return true;
+    }
+    for _ in 1..r {
+        x = (&x * &x) % n;
+        if x == *n_minus_1 {
+            return true;
+        }
+    }
+    false
+}
+
 /// Deterministic Miller-Rabin probable-prime test using the first `rounds`
 /// prime bases.  Using 64 bases provides a stronger deterministic check than
 /// 12 bases and reduces arbitrary-seed divergence risk.  This does not claim
 /// to reproduce libgcrypt's random witness selection; it is an intentionally
 /// stronger deterministic check.
 fn miller_rabin(n: &BigUint, rounds: usize) -> bool {
-    if n < &BigUint::from(2u32) {
-        return false;
+    if let Some(status) = small_prime_status(n) {
+        return status;
     }
-    if *n == BigUint::from(2u32) || *n == BigUint::from(3u32) {
-        return true;
-    }
-    if n.bit(0) == false {
-        // even
-        return false;
-    }
-
-    // Write n-1 as 2^r * d
-    let mut d = n - BigUint::from(1u32);
-    let mut r = 0;
-    while d.bit(0) == false {
-        d >>= 1;
-        r += 1;
-    }
-
-    let bases: [u64; 64] = [
-        2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89,
-        97, 101, 103, 107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179, 181,
-        191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251, 257, 263, 269, 271, 277, 281,
-        283, 293, 307, 311,
-    ];
-    for &a in bases.iter().take(rounds) {
-        let a_big = BigUint::from(a);
-        if &a_big >= n {
-            continue;
-        }
-        let mut x = a_big.modpow(&d, n);
-        let n_minus_1 = n - BigUint::from(1u32);
-        if x == BigUint::from(1u32) || x == n_minus_1 {
-            continue;
-        }
-        let mut cont = false;
-        for _ in 1..r {
-            x = (&x * &x) % n;
-            if x == n_minus_1 {
-                cont = true;
-                break;
-            }
-        }
-        if cont {
-            continue;
-        }
-        return false;
-    }
-    true
+    let (d, r) = decompose_odd_candidate(n);
+    let n_minus_1 = n - BigUint::from(1u32);
+    MILLER_RABIN_BASES
+        .iter()
+        .take(rounds)
+        .all(|&a| miller_rabin_witness_passes(n, &n_minus_1, &d, r, a))
 }
 
 fn gen_prime_3mod4(bits: u32, seed: &[u8], idx: u32) -> BigUint {

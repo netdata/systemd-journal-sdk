@@ -25,8 +25,11 @@ Last updated: 2026-06-03
   runtime locally Lizard-clean and passed journal-core tests plus writer and
   verifier interoperability validation. Batch 6 made Rust core file/mmap object
   access runtime locally Lizard-clean and passed journal-core plus writer
-  interoperability validation. Remaining work is to continue complexity
-  remediation, record final scanner results, and complete whole-SOW review.
+  interoperability validation. Batch 7 made the remaining Rust core/log-writer
+  runtime files locally Lizard-clean and passed journal-core, journal-log-writer,
+  journal/adapter, writer-reader, directory, and verifier validation. Remaining
+  work is to continue complexity remediation, record final scanner results, and
+  complete whole-SOW review.
 
 ## Pending
 

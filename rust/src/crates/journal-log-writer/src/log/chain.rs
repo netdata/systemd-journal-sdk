@@ -492,65 +492,95 @@ impl OwnedChain {
         protected_file: Option<&repository::File>,
     ) -> RetentionOutcome {
         let mut deleted_files = Vec::new();
-        let mut error = None;
-
-        // Remove by file count limit
-        if let Some(max_files) = retention_policy.number_of_journal_files {
-            while self.inner.len() > max_files {
-                let reason = format!("num_files({}) > max_files({})", self.inner.len(), max_files);
-                tracing::Span::current().record("reason", reason);
-                match self.delete_oldest_file(protected_file) {
-                    Ok(Some(file)) => deleted_files.push(file),
-                    Ok(None) => break,
-                    Err(err) => {
-                        error = Some(err);
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Remove by total size limit
-        if error.is_none()
-            && let Some(max_total_size) = retention_policy.size_of_journal_files
-        {
-            while self.total_size > max_total_size && !self.inner.is_empty() {
-                let reason = format!(
-                    "total_size({}) > max_size({})",
-                    self.total_size, max_total_size
-                );
-                tracing::Span::current().record("reason", reason);
-                match self.delete_oldest_file(protected_file) {
-                    Ok(Some(file)) => deleted_files.push(file),
-                    Ok(None) => break,
-                    Err(err) => {
-                        error = Some(err);
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Remove by entry age limit
-        if error.is_none()
-            && let Some(max_entry_age) = retention_policy.duration_of_journal_files
-        {
-            let age_retention = self.delete_files_older_than(max_entry_age, protected_file);
-            deleted_files.extend(age_retention.deleted_files);
-            error = age_retention.error;
-        }
-
-        if error.is_none()
-            && !deleted_files.is_empty()
-            && let Err(err) = sync_directory(&self.path)
-        {
-            error = Some(err.into());
-        }
+        let mut error =
+            self.retain_by_file_count(retention_policy, protected_file, &mut deleted_files);
+        error = error.or_else(|| {
+            self.retain_by_total_size(retention_policy, protected_file, &mut deleted_files)
+        });
+        error = error.or_else(|| {
+            self.retain_by_entry_age(retention_policy, protected_file, &mut deleted_files)
+        });
+        error = error.or_else(|| self.sync_after_retention(&deleted_files));
 
         RetentionOutcome {
             deleted_files,
             error,
         }
+    }
+
+    fn delete_oldest_for_retention(
+        &mut self,
+        protected_file: Option<&repository::File>,
+        deleted_files: &mut Vec<repository::File>,
+    ) -> std::result::Result<bool, WriterError> {
+        match self.delete_oldest_file(protected_file) {
+            Ok(Some(file)) => {
+                deleted_files.push(file);
+                Ok(true)
+            }
+            Ok(None) => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+
+    fn retain_by_file_count(
+        &mut self,
+        retention_policy: &RetentionPolicy,
+        protected_file: Option<&repository::File>,
+        deleted_files: &mut Vec<repository::File>,
+    ) -> Option<WriterError> {
+        let max_files = retention_policy.number_of_journal_files?;
+        while self.inner.len() > max_files {
+            let reason = format!("num_files({}) > max_files({})", self.inner.len(), max_files);
+            tracing::Span::current().record("reason", reason);
+            match self.delete_oldest_for_retention(protected_file, deleted_files) {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(err) => return Some(err),
+            }
+        }
+        None
+    }
+
+    fn retain_by_total_size(
+        &mut self,
+        retention_policy: &RetentionPolicy,
+        protected_file: Option<&repository::File>,
+        deleted_files: &mut Vec<repository::File>,
+    ) -> Option<WriterError> {
+        let max_total_size = retention_policy.size_of_journal_files?;
+        while self.total_size > max_total_size && !self.inner.is_empty() {
+            let reason = format!(
+                "total_size({}) > max_size({})",
+                self.total_size, max_total_size
+            );
+            tracing::Span::current().record("reason", reason);
+            match self.delete_oldest_for_retention(protected_file, deleted_files) {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(err) => return Some(err),
+            }
+        }
+        None
+    }
+
+    fn retain_by_entry_age(
+        &mut self,
+        retention_policy: &RetentionPolicy,
+        protected_file: Option<&repository::File>,
+        deleted_files: &mut Vec<repository::File>,
+    ) -> Option<WriterError> {
+        let max_entry_age = retention_policy.duration_of_journal_files?;
+        let age_retention = self.delete_files_older_than(max_entry_age, protected_file);
+        deleted_files.extend(age_retention.deleted_files);
+        age_retention.error
+    }
+
+    fn sync_after_retention(&self, deleted_files: &[repository::File]) -> Option<WriterError> {
+        if deleted_files.is_empty() {
+            return None;
+        }
+        sync_directory(&self.path).err().map(Into::into)
     }
 
     /// Remove the oldest file

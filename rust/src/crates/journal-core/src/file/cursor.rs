@@ -79,98 +79,183 @@ impl JournalCursor {
         }
     }
 
+    fn entry_list<M: MemoryMap>(journal_file: &JournalFile<M>) -> Result<offset_array::List> {
+        journal_file
+            .entry_list()
+            .ok_or(JournalError::InvalidOffsetArrayOffset)
+    }
+
+    fn store_array_cursor_value<M: MemoryMap>(
+        &mut self,
+        journal_file: &JournalFile<M>,
+        cursor: offset_array::Cursor,
+    ) -> Result<Option<Location>> {
+        let Some(offset) = cursor.value(journal_file)? else {
+            return Ok(None);
+        };
+        self.array_cursor = Some(cursor);
+        Ok(Some(Location::ResolvedEntry(offset)))
+    }
+
+    fn resolve_head_array<M: MemoryMap>(
+        &mut self,
+        journal_file: &JournalFile<M>,
+    ) -> Result<Option<Location>> {
+        let cursor = Self::entry_list(journal_file)?.cursor_head();
+        self.store_array_cursor_value(journal_file, cursor)
+    }
+
+    fn resolve_tail_array<M: MemoryMap>(
+        &mut self,
+        journal_file: &JournalFile<M>,
+    ) -> Result<Option<Location>> {
+        let entry_list = Self::entry_list(journal_file)?;
+        let cursor = entry_list.cursor_tail(journal_file)?;
+        self.store_array_cursor_value(journal_file, cursor)
+    }
+
+    fn realtime_array_cursor<M: MemoryMap>(
+        journal_file: &JournalFile<M>,
+        realtime: u64,
+    ) -> Result<offset_array::Cursor> {
+        let entry_list = Self::entry_list(journal_file)?;
+        let predicate = |entry_offset| {
+            let entry_object = journal_file.entry_ref(entry_offset)?;
+            Ok(entry_object.header.realtime < realtime)
+        };
+
+        entry_list
+            .directed_partition_point(journal_file, predicate, Direction::Forward)?
+            .map(Ok)
+            .unwrap_or_else(|| entry_list.cursor_tail(journal_file))
+    }
+
+    fn resolve_realtime_array<M: MemoryMap>(
+        &mut self,
+        journal_file: &JournalFile<M>,
+        realtime: u64,
+    ) -> Result<Option<Location>> {
+        let cursor = Self::realtime_array_cursor(journal_file, realtime)?;
+        self.store_array_cursor_value(journal_file, cursor)
+    }
+
+    fn step_array_cursor<M: MemoryMap>(
+        &mut self,
+        journal_file: &JournalFile<M>,
+        direction: Direction,
+    ) -> Result<Option<Location>> {
+        let cursor = self.array_cursor.ok_or(JournalError::UnsetCursor)?;
+        let cursor = match direction {
+            Direction::Forward => cursor.next(journal_file)?,
+            Direction::Backward => cursor.previous(journal_file)?,
+        };
+        let Some(cursor) = cursor else {
+            return Ok(None);
+        };
+        self.store_array_cursor_value(journal_file, cursor)
+    }
+
     fn resolve_array_cursor<M: MemoryMap>(
         &mut self,
         journal_file: &JournalFile<M>,
         direction: Direction,
     ) -> Result<Option<Location>> {
-        let new_location = match (self.location, direction) {
-            (Location::Head, Direction::Forward) => {
-                let entry_list = journal_file
-                    .entry_list()
-                    .ok_or(JournalError::InvalidOffsetArrayOffset)?;
-
-                let cursor = entry_list.cursor_head();
-                if let Some(offset) = cursor.value(journal_file)? {
-                    self.array_cursor = Some(cursor);
-                    Some(Location::ResolvedEntry(offset))
-                } else {
-                    None
-                }
-            }
-            (Location::Head, Direction::Backward) => None,
-            (Location::Tail, Direction::Forward) => None,
-            (Location::Tail, Direction::Backward) => {
-                let entry_list = journal_file
-                    .entry_list()
-                    .ok_or(JournalError::InvalidOffsetArrayOffset)?;
-
-                let cursor = entry_list.cursor_tail(journal_file)?;
-                if let Some(offset) = cursor.value(journal_file)? {
-                    self.array_cursor = Some(cursor);
-                    Some(Location::ResolvedEntry(offset))
-                } else {
-                    None
-                }
-            }
+        match (self.location, direction) {
+            (Location::Head, Direction::Forward) => self.resolve_head_array(journal_file),
+            (Location::Head, Direction::Backward) => Ok(None),
+            (Location::Tail, Direction::Forward) => Ok(None),
+            (Location::Tail, Direction::Backward) => self.resolve_tail_array(journal_file),
             (Location::Realtime(realtime), _) => {
-                let entry_list = journal_file
-                    .entry_list()
-                    .ok_or(JournalError::InvalidOffsetArrayOffset)?;
-
-                let predicate = |entry_offset| {
-                    let entry_object = journal_file.entry_ref(entry_offset)?;
-                    Ok(entry_object.header.realtime < realtime)
-                };
-
-                let cursor = entry_list
-                    .directed_partition_point(journal_file, predicate, Direction::Forward)?
-                    .map(Ok)
-                    .unwrap_or_else(|| entry_list.cursor_tail(journal_file))?;
-
-                if let Some(offset) = cursor.value(journal_file)? {
-                    self.array_cursor = Some(cursor);
-                    Some(Location::ResolvedEntry(offset))
-                } else {
-                    None
-                }
+                self.resolve_realtime_array(journal_file, realtime)
             }
-            (Location::ResolvedEntry(_), Direction::Forward) => {
-                let Some(cursor) = self
-                    .array_cursor
-                    .ok_or(JournalError::UnsetCursor)?
-                    .next(journal_file)?
-                else {
-                    return Ok(None);
-                };
-
-                if let Some(offset) = cursor.value(journal_file)? {
-                    self.array_cursor = Some(cursor);
-                    Some(Location::ResolvedEntry(offset))
-                } else {
-                    None
-                }
+            (Location::ResolvedEntry(_), direction) => {
+                self.step_array_cursor(journal_file, direction)
             }
-            (Location::ResolvedEntry(_), Direction::Backward) => {
-                let Some(cursor) = self
-                    .array_cursor
-                    .ok_or(JournalError::UnsetCursor)?
-                    .previous(journal_file)?
-                else {
-                    return Ok(None);
-                };
+            _ => Err(JournalError::InvalidQueryConfiguration),
+        }
+    }
 
-                if let Some(offset) = cursor.value(journal_file)? {
-                    self.array_cursor = Some(cursor);
-                    Some(Location::ResolvedEntry(offset))
-                } else {
-                    None
-                }
-            }
-            _ => return Err(JournalError::InvalidQueryConfiguration),
+    fn filter_expr_mut(&mut self) -> Result<&mut FilterExpr> {
+        self.filter_expr
+            .as_mut()
+            .ok_or(JournalError::InvalidQueryConfiguration)
+    }
+
+    fn filter_head<M: MemoryMap>(
+        filter_expr: &mut FilterExpr,
+        journal_file: &JournalFile<M>,
+    ) -> Result<Option<Location>> {
+        Ok(filter_expr
+            .head()
+            .next(journal_file, NonZeroU64::MIN)?
+            .map(Location::ResolvedEntry))
+    }
+
+    fn filter_tail<M: MemoryMap>(
+        filter_expr: &mut FilterExpr,
+        journal_file: &JournalFile<M>,
+    ) -> Result<Option<Location>> {
+        Ok(filter_expr
+            .tail(journal_file)?
+            .previous(journal_file, NonZeroU64::MAX)?
+            .map(Location::ResolvedEntry))
+    }
+
+    fn resolve_filter_at_offset<M: MemoryMap>(
+        &mut self,
+        journal_file: &JournalFile<M>,
+        direction: Direction,
+        entry_offset: NonZeroU64,
+    ) -> Result<Option<Location>> {
+        let filter_expr = self.filter_expr_mut()?;
+        match direction {
+            Direction::Forward => Ok(filter_expr
+                .head()
+                .next(journal_file, entry_offset)?
+                .map(Location::ResolvedEntry)),
+            Direction::Backward => Ok(filter_expr
+                .tail(journal_file)?
+                .previous(journal_file, entry_offset)?
+                .map(Location::ResolvedEntry)),
+        }
+    }
+
+    fn resolve_filter_realtime<M: MemoryMap>(
+        &mut self,
+        journal_file: &JournalFile<M>,
+        realtime: u64,
+        direction: Direction,
+    ) -> Result<Option<Location>> {
+        let cursor = Self::realtime_array_cursor(journal_file, realtime)?;
+        let Some(entry_offset) = cursor.value(journal_file)? else {
+            return Ok(None);
         };
+        self.resolve_filter_at_offset(journal_file, direction, entry_offset)
+    }
 
-        Ok(new_location)
+    fn filter_after_resolved<M: MemoryMap>(
+        &mut self,
+        journal_file: &JournalFile<M>,
+        location_offset: NonZeroU64,
+    ) -> Result<Option<Location>> {
+        Ok(self
+            .filter_expr_mut()?
+            .next(journal_file, location_offset.saturating_add(1))?
+            .map(Location::ResolvedEntry))
+    }
+
+    fn filter_before_resolved<M: MemoryMap>(
+        &mut self,
+        journal_file: &JournalFile<M>,
+        location_offset: NonZeroU64,
+    ) -> Result<Option<Location>> {
+        let Some(needle_offset) = NonZeroU64::new(location_offset.get() - 1) else {
+            return Ok(None);
+        };
+        Ok(self
+            .filter_expr_mut()?
+            .previous(journal_file, needle_offset)?
+            .map(Location::ResolvedEntry))
     }
 
     fn resolve_filter_location<M: MemoryMap>(
@@ -178,64 +263,25 @@ impl JournalCursor {
         journal_file: &JournalFile<M>,
         direction: Direction,
     ) -> Result<Option<Location>> {
-        let filter_expr = self.filter_expr.as_mut().unwrap();
-
-        let resolved_location = match (self.location, direction) {
-            (Location::Head, Direction::Forward) => filter_expr
-                .head()
-                .next(journal_file, NonZeroU64::MIN)?
-                .map(Location::ResolvedEntry),
-            (Location::Head, Direction::Backward) => None,
-            (Location::Tail, Direction::Forward) => None,
-            (Location::Tail, Direction::Backward) => filter_expr
-                .tail(journal_file)?
-                .previous(journal_file, NonZeroU64::MAX)?
-                .map(Location::ResolvedEntry),
+        match (self.location, direction) {
+            (Location::Head, Direction::Forward) => {
+                Self::filter_head(self.filter_expr_mut()?, journal_file)
+            }
+            (Location::Head, Direction::Backward) => Ok(None),
+            (Location::Tail, Direction::Forward) => Ok(None),
+            (Location::Tail, Direction::Backward) => {
+                Self::filter_tail(self.filter_expr_mut()?, journal_file)
+            }
             (Location::Realtime(realtime), direction) => {
-                let entry_list = journal_file
-                    .entry_list()
-                    .ok_or(JournalError::InvalidOffsetArrayOffset)?;
-
-                let predicate = |entry_offset| {
-                    let entry_object = journal_file.entry_ref(entry_offset)?;
-                    Ok(entry_object.header.realtime < realtime)
-                };
-
-                let cursor = entry_list
-                    .directed_partition_point(journal_file, predicate, Direction::Forward)?
-                    .map(Ok)
-                    .unwrap_or_else(|| entry_list.cursor_tail(journal_file))?;
-
-                if let Some(entry_offset) = cursor.value(journal_file)? {
-                    match direction {
-                        Direction::Forward => filter_expr
-                            .head()
-                            .next(journal_file, entry_offset)?
-                            .map(Location::ResolvedEntry),
-                        Direction::Backward => filter_expr
-                            .tail(journal_file)?
-                            .previous(journal_file, entry_offset)?
-                            .map(Location::ResolvedEntry),
-                    }
-                } else {
-                    None
-                }
+                self.resolve_filter_realtime(journal_file, realtime, direction)
             }
-            (Location::ResolvedEntry(location_offset), Direction::Forward) => filter_expr
-                .next(journal_file, location_offset.saturating_add(1))?
-                .map(Location::ResolvedEntry),
-            (Location::ResolvedEntry(location_offset), Direction::Backward) => {
-                if let Some(needle_offset) = NonZeroU64::new(location_offset.get() - 1) {
-                    filter_expr
-                        .previous(journal_file, needle_offset)?
-                        .map(Location::ResolvedEntry)
-                } else {
-                    None
-                }
+            (Location::ResolvedEntry(offset), Direction::Forward) => {
+                self.filter_after_resolved(journal_file, offset)
             }
-            _ => return Err(JournalError::InvalidQueryConfiguration),
-        };
-
-        Ok(resolved_location)
+            (Location::ResolvedEntry(offset), Direction::Backward) => {
+                self.filter_before_resolved(journal_file, offset)
+            }
+            _ => Err(JournalError::InvalidQueryConfiguration),
+        }
     }
 }

@@ -498,6 +498,184 @@ fn open_existing_active_file(
     }
 }
 
+fn initial_sequence_identity(
+    chain: &OwnedChain,
+    config: &Config,
+) -> Result<(uuid::Uuid, uuid::Uuid, u64)> {
+    let boot_id = resolve_boot_id(config)?;
+    let (seqnum_id, current_seqnum) = chain
+        .tail_identity(config.strict_systemd_naming)?
+        .unwrap_or_else(|| (uuid::Uuid::new_v4(), 0));
+    Ok((boot_id, seqnum_id, current_seqnum))
+}
+
+fn replace_strict_online_chain_file(
+    chain: &mut OwnedChain,
+    strict_systemd_naming: bool,
+    boot_id: uuid::Uuid,
+) -> Result<()> {
+    if !strict_systemd_naming {
+        return Ok(());
+    }
+    let Some(repository_file) = chain.online_chain_file()? else {
+        return Ok(());
+    };
+    let Some(mut opened) = open_existing_active_file(chain, repository_file.clone(), boot_id)?
+    else {
+        return Ok(());
+    };
+
+    use journal_core::file::JournalState;
+
+    chain.update_file_size(&repository_file, opened.current_file_size());
+    opened.journal_file.journal_header_mut().state = JournalState::Archived as u8;
+    opened.journal_file.sync()?;
+    Ok(())
+}
+
+fn existing_active_file_for_config(
+    chain: &mut OwnedChain,
+    strict_systemd_naming: bool,
+) -> Result<Option<repository::File>> {
+    if strict_systemd_naming {
+        Ok(chain.existing_active_file())
+    } else {
+        chain.online_chain_file()
+    }
+}
+
+fn open_existing_active_for_config(
+    chain: &mut OwnedChain,
+    config: &Config,
+    boot_id: uuid::Uuid,
+) -> Result<Option<ActiveFile>> {
+    let Some(repository_file) =
+        existing_active_file_for_config(chain, config.strict_systemd_naming)?
+    else {
+        return Ok(None);
+    };
+    open_existing_active_file(chain, repository_file, boot_id)
+}
+
+fn adopt_active_file_identity(
+    active_file: &ActiveFile,
+    boot_id: &mut uuid::Uuid,
+    seqnum_id: &mut uuid::Uuid,
+    current_seqnum: &mut u64,
+) {
+    let header = active_file.journal_file.journal_header_ref();
+    *boot_id = active_file.writer.boot_id();
+    *seqnum_id = uuid::Uuid::from_bytes(header.seqnum_id);
+    *current_seqnum = header.tail_entry_seqnum;
+}
+
+fn rotation_state_for_active(
+    rotation_policy: &RotationPolicy,
+    active_file: Option<&ActiveFile>,
+) -> RotationState {
+    let mut rotation_state = RotationState::new(rotation_policy);
+    if let Some(active_file) = active_file {
+        rotation_state.observe_existing(
+            &active_file.writer,
+            active_file.journal_file.journal_header_ref().n_entries,
+        );
+    }
+    rotation_state
+}
+
+fn initial_log_clock(chain: &OwnedChain, strict_systemd_naming: bool) -> Result<RealtimeClock> {
+    if let Some(tail_realtime) = chain.tail_realtime(strict_systemd_naming)? {
+        Ok(RealtimeClock::with_initial(tail_realtime))
+    } else {
+        Ok(RealtimeClock::new())
+    }
+}
+
+fn initial_last_monotonic(
+    chain: &OwnedChain,
+    boot_id: uuid::Uuid,
+    strict_systemd_naming: bool,
+) -> Result<u64> {
+    Ok(chain
+        .tail_monotonic_for_boot(boot_id, strict_systemd_naming)?
+        .unwrap_or(0))
+}
+
+struct StartupActiveFile {
+    active_file: Option<ActiveFile>,
+    boot_id: uuid::Uuid,
+    seqnum_id: uuid::Uuid,
+    current_seqnum: u64,
+}
+
+struct StartupState {
+    chain: OwnedChain,
+    config: Config,
+    active_file: Option<ActiveFile>,
+    rotation_state: RotationState,
+    boot_id: uuid::Uuid,
+    seqnum_id: uuid::Uuid,
+    current_seqnum: u64,
+    clock: RealtimeClock,
+    last_monotonic_usec: u64,
+}
+
+fn normalize_config(mut config: Config) -> Result<Config> {
+    validate_config(&config)?;
+    config.rotation_policy = derive_rotation_policy(&config);
+    Ok(config)
+}
+
+fn create_startup_chain(path: &Path, config: &Config) -> Result<OwnedChain> {
+    let machine_id = resolve_machine_id(config)?;
+    create_chain(path, config.origin.source.clone(), machine_id)
+}
+
+fn open_startup_active_file(chain: &mut OwnedChain, config: &Config) -> Result<StartupActiveFile> {
+    let (mut boot_id, mut seqnum_id, mut current_seqnum) =
+        initial_sequence_identity(chain, config)?;
+    replace_strict_online_chain_file(chain, config.strict_systemd_naming, boot_id)?;
+    let active_file = open_existing_active_for_config(chain, config, boot_id)?;
+    if let Some(active_file) = &active_file {
+        adopt_active_file_identity(
+            active_file,
+            &mut boot_id,
+            &mut seqnum_id,
+            &mut current_seqnum,
+        );
+    }
+
+    Ok(StartupActiveFile {
+        active_file,
+        boot_id,
+        seqnum_id,
+        current_seqnum,
+    })
+}
+
+fn build_startup_state(path: &Path, config: Config) -> Result<StartupState> {
+    let config = normalize_config(config)?;
+    let mut chain = create_startup_chain(path, &config)?;
+    let startup_active = open_startup_active_file(&mut chain, &config)?;
+    let rotation_state =
+        rotation_state_for_active(&config.rotation_policy, startup_active.active_file.as_ref());
+    let last_monotonic_usec =
+        initial_last_monotonic(&chain, startup_active.boot_id, config.strict_systemd_naming)?;
+    let clock = initial_log_clock(&chain, config.strict_systemd_naming)?;
+
+    Ok(StartupState {
+        chain,
+        config,
+        active_file: startup_active.active_file,
+        rotation_state,
+        boot_id: startup_active.boot_id,
+        seqnum_id: startup_active.seqnum_id,
+        current_seqnum: startup_active.current_seqnum,
+        clock,
+        last_monotonic_usec,
+    })
+}
+
 pub struct Log {
     configured_dir: PathBuf,
     chain: OwnedChain,
@@ -608,6 +786,51 @@ impl Log {
                 >= Self::duration_to_micros(max_duration)
     }
 
+    fn append_rotation_reason(&self) -> LogLifecycleReason {
+        if self.active_file.is_none() {
+            LogLifecycleReason::Append
+        } else {
+            LogLifecycleReason::Rotation
+        }
+    }
+
+    fn prepare_append_for_realtime(&mut self, entry_realtime: u64) -> Result<()> {
+        self.apply_retention_on_open()?;
+        let opened_first_active = self.active_file.is_none();
+        if self.should_rotate_for_realtime(entry_realtime) {
+            self.rotate(entry_realtime, self.append_rotation_reason())?;
+            if opened_first_active {
+                self.retention_on_open_applied = true;
+            }
+        }
+        self.apply_retention_on_open()
+    }
+
+    fn raw_items_for_policy<'a>(&self, items: &'a [&'a [u8]]) -> Result<Option<Vec<&'a [u8]>>> {
+        if self.config.field_name_policy != FieldNamePolicy::JournalApp {
+            return Ok(None);
+        }
+        let filtered_items = filter_raw_items_for_journal_app(items)?;
+        if filtered_items.is_empty() {
+            return Err(WriterError::EmptyEntry);
+        }
+        Ok(Some(filtered_items))
+    }
+
+    fn structured_fields_for_policy<'a>(
+        &self,
+        fields: &'a [StructuredField<'a>],
+    ) -> Result<Option<Vec<StructuredField<'a>>>> {
+        if self.config.field_name_policy != FieldNamePolicy::JournalApp {
+            return Ok(None);
+        }
+        let filtered_fields = filter_structured_fields_for_journal_app(fields);
+        if filtered_fields.is_empty() {
+            return Err(WriterError::EmptyEntry);
+        }
+        Ok(Some(filtered_fields))
+    }
+
     fn apply_retention(&mut self, protected_file: Option<&repository::File>) -> Result<()> {
         if let Some(sizer) = &self.artifact_sizer {
             self.chain.refresh_retained_sizes(|file| {
@@ -694,85 +917,27 @@ impl Log {
 
     fn new_inner(
         path: &Path,
-        mut config: Config,
+        config: Config,
         lifecycle_observer: Option<Arc<dyn LogLifecycleObserver>>,
         artifact_sizer: Option<Arc<dyn LogArtifactSizer>>,
     ) -> Result<Self> {
-        validate_config(&config)?;
-        config.rotation_policy = derive_rotation_policy(&config);
-        let machine_id = resolve_machine_id(&config)?;
-        let mut chain = create_chain(path, config.origin.source.clone(), machine_id)?;
-
-        let tail_identity = chain.tail_identity(config.strict_systemd_naming)?;
-        let mut boot_id = resolve_boot_id(&config)?;
-        let (mut seqnum_id, mut current_seqnum) =
-            tail_identity.unwrap_or_else(|| (uuid::Uuid::new_v4(), 0));
-        let mut active_file = None;
-        if config.strict_systemd_naming
-            && let Some(repository_file) = chain.online_chain_file()?
-        {
-            use journal_core::file::JournalState;
-
-            if let Some(mut opened) =
-                open_existing_active_file(&mut chain, repository_file.clone(), boot_id)?
-            {
-                chain.update_file_size(&repository_file, opened.current_file_size());
-                opened.journal_file.journal_header_mut().state = JournalState::Archived as u8;
-                opened.journal_file.sync()?;
-            }
-        }
-        let existing_active_file = if config.strict_systemd_naming {
-            chain.existing_active_file()
-        } else {
-            chain.online_chain_file()?
-        };
-        if let Some(repository_file) = existing_active_file {
-            if let Some(opened) =
-                open_existing_active_file(&mut chain, repository_file.clone(), boot_id)?
-            {
-                let header = opened.journal_file.journal_header_ref();
-                boot_id = opened.writer.boot_id();
-                seqnum_id = uuid::Uuid::from_bytes(header.seqnum_id);
-                current_seqnum = header.tail_entry_seqnum;
-                active_file = Some(opened);
-            }
-        }
-        let mut rotation_state = RotationState::new(&config.rotation_policy);
-        if let Some(active_file) = &active_file {
-            rotation_state.observe_existing(
-                &active_file.writer,
-                active_file.journal_file.journal_header_ref().n_entries,
-            );
-        }
-        // When there is no tail monotonic timestamp for this boot we start at 0.
-        // The first clamped write becomes 1us if an override asks for 0, preserving strict monotonicity.
-        let last_monotonic_usec = chain
-            .tail_monotonic_for_boot(boot_id, config.strict_systemd_naming)?
-            .unwrap_or(0);
-
-        // Initialize clock with last entry timestamp if available
-        let clock =
-            if let Some(tail_realtime) = chain.tail_realtime(config.strict_systemd_naming)? {
-                RealtimeClock::with_initial(tail_realtime)
-            } else {
-                RealtimeClock::new()
-            };
+        let startup = build_startup_state(path, config)?;
 
         let mut log = Log {
             configured_dir: path.to_path_buf(),
-            chain,
-            config,
-            active_file,
-            rotation_state,
-            boot_id,
-            seqnum_id,
-            current_seqnum,
-            clock,
-            last_monotonic_usec,
+            chain: startup.chain,
+            config: startup.config,
+            active_file: startup.active_file,
+            rotation_state: startup.rotation_state,
+            boot_id: startup.boot_id,
+            seqnum_id: startup.seqnum_id,
+            current_seqnum: startup.current_seqnum,
+            clock: startup.clock,
+            last_monotonic_usec: startup.last_monotonic_usec,
             lifecycle_observer,
             artifact_sizer,
             retention_on_open_applied: false,
-            boot_id_field: format!("_BOOT_ID={}", boot_id.as_simple()).into_bytes(),
+            boot_id_field: format!("_BOOT_ID={}", startup.boot_id.as_simple()).into_bytes(),
             source_realtime_field: Vec::with_capacity(SOURCE_REALTIME_PREFIX.len() + 20),
         };
         if log.config.open_mode == LogOpenMode::Eager && log.active_file.is_none() {
@@ -828,31 +993,9 @@ impl Log {
         }
 
         let entry_realtime = self.peek_entry_realtime(&timestamps);
-        self.apply_retention_on_open()?;
-        let opened_first_active = self.active_file.is_none();
-        if self.should_rotate_for_realtime(entry_realtime) {
-            let reason = if self.active_file.is_none() {
-                LogLifecycleReason::Append
-            } else {
-                LogLifecycleReason::Rotation
-            };
-            self.rotate(entry_realtime, reason)?;
-            if opened_first_active {
-                self.retention_on_open_applied = true;
-            }
-        }
-        self.apply_retention_on_open()?;
-
-        let filtered_items;
-        let write_items = if self.config.field_name_policy == FieldNamePolicy::JournalApp {
-            filtered_items = filter_raw_items_for_journal_app(items)?;
-            if filtered_items.is_empty() {
-                return Err(WriterError::EmptyEntry);
-            }
-            filtered_items.as_slice()
-        } else {
-            items
-        };
+        self.prepare_append_for_realtime(entry_realtime)?;
+        let filtered_items = self.raw_items_for_policy(items)?;
+        let write_items = filtered_items.as_deref().unwrap_or(items);
 
         let (realtime, monotonic) = self.capture_dual_timestamp(Some(&timestamps))?;
         self.write_raw_entry_fields(
@@ -917,31 +1060,9 @@ impl Log {
         }
 
         let entry_realtime = self.peek_entry_realtime(&timestamps);
-        self.apply_retention_on_open()?;
-        let opened_first_active = self.active_file.is_none();
-        if self.should_rotate_for_realtime(entry_realtime) {
-            let reason = if self.active_file.is_none() {
-                LogLifecycleReason::Append
-            } else {
-                LogLifecycleReason::Rotation
-            };
-            self.rotate(entry_realtime, reason)?;
-            if opened_first_active {
-                self.retention_on_open_applied = true;
-            }
-        }
-        self.apply_retention_on_open()?;
-
-        let filtered_fields;
-        let write_fields = if self.config.field_name_policy == FieldNamePolicy::JournalApp {
-            filtered_fields = filter_structured_fields_for_journal_app(fields);
-            if filtered_fields.is_empty() {
-                return Err(WriterError::EmptyEntry);
-            }
-            filtered_fields.as_slice()
-        } else {
-            fields
-        };
+        self.prepare_append_for_realtime(entry_realtime)?;
+        let filtered_fields = self.structured_fields_for_policy(fields)?;
+        let write_fields = filtered_fields.as_deref().unwrap_or(fields);
 
         let (realtime, monotonic) = self.capture_dual_timestamp(Some(&timestamps))?;
         self.write_structured_entry_fields(
@@ -1185,95 +1306,115 @@ impl Log {
         self.apply_retention(protected_file.as_ref())
     }
 
-    #[tracing::instrument(skip_all, fields(active_file))]
-    fn rotate(&mut self, head_realtime: u64, reason: LogLifecycleReason) -> Result<()> {
-        use journal_core::file::JournalState;
-
-        // Update chain with current file size before rotating
+    fn update_active_file_size(&mut self) {
         if let Some(active_file) = &self.active_file {
             self.chain.update_file_size(
                 &active_file.repository_file,
                 active_file.current_file_size(),
             );
-        } else if self.config.strict_systemd_naming {
+        }
+    }
+
+    fn prepare_initial_rotation(&mut self) -> Result<()> {
+        self.update_active_file_size();
+        if self.active_file.is_none() && self.config.strict_systemd_naming {
             self.chain.archive_existing_active_file()?;
         }
+        Ok(())
+    }
 
-        // Create new file (either initial or rotated)
+    fn archive_rotated_file(&mut self, old_file: &ActiveFile) -> Result<repository::File> {
+        if !self.config.strict_systemd_naming {
+            return Ok(old_file.repository_file.clone());
+        }
+        let old_header = old_file.journal_file.journal_header_ref();
+        self.chain.archive_file(
+            &old_file.repository_file,
+            uuid::Uuid::from_bytes(old_header.seqnum_id),
+            old_header.head_entry_seqnum,
+            old_header.head_entry_realtime,
+        )
+    }
+
+    fn rotate_existing_active_file(
+        &mut self,
+        mut old_file: ActiveFile,
+        max_file_size: Option<u64>,
+        head_realtime: u64,
+    ) -> Result<(ActiveFile, LogLifecycleEvent)> {
+        use journal_core::file::JournalState;
+
+        old_file.journal_file.journal_header_mut().state = JournalState::Archived as u8;
+        old_file.journal_file.sync()?;
+        let archived = self.archive_rotated_file(&old_file)?;
+        let new_file = old_file.rotate(
+            &mut self.chain,
+            max_file_size,
+            head_realtime,
+            self.config.compression,
+            self.config.compression_threshold,
+            self.config.strict_systemd_naming,
+            self.config.live_publish_every_entries,
+        )?;
+        let active = new_file.repository_file.clone();
+        Ok((new_file, LogLifecycleEvent::Rotated { archived, active }))
+    }
+
+    fn create_initial_active_file(
+        &mut self,
+        max_file_size: Option<u64>,
+        head_realtime: u64,
+        reason: LogLifecycleReason,
+    ) -> Result<(ActiveFile, LogLifecycleEvent)> {
+        let new_file = ActiveFile::create(
+            &mut self.chain,
+            self.seqnum_id,
+            self.boot_id,
+            self.current_seqnum + 1,
+            max_file_size,
+            head_realtime,
+            self.config.compression,
+            self.config.compression_threshold,
+            self.config.compact,
+            self.config.strict_systemd_naming,
+            self.config.live_publish_every_entries,
+        )?;
+        let active = new_file.repository_file.clone();
+        Ok((new_file, LogLifecycleEvent::Created { active, reason }))
+    }
+
+    fn emit_lifecycle_event(&self, event: &LogLifecycleEvent) {
+        if let Some(observer) = &self.lifecycle_observer {
+            observer.on_event(event);
+        }
+    }
+
+    fn protected_active_file(&self) -> Option<repository::File> {
+        self.active_file
+            .as_ref()
+            .map(|active_file| active_file.repository_file.clone())
+    }
+
+    #[tracing::instrument(skip_all, fields(active_file))]
+    fn rotate(&mut self, head_realtime: u64, reason: LogLifecycleReason) -> Result<()> {
+        self.prepare_initial_rotation()?;
         let max_file_size = self.config.rotation_policy.size_of_journal_file;
-        let (new_file, lifecycle_event) = if let Some(mut old_file) = self.active_file.take() {
-            // Set the old file's state to ARCHIVED before creating successor
-            old_file.journal_file.journal_header_mut().state = JournalState::Archived as u8;
-            old_file.journal_file.sync()?;
-            let archived = if self.config.strict_systemd_naming {
-                let old_header = old_file.journal_file.journal_header_ref();
-                self.chain.archive_file(
-                    &old_file.repository_file,
-                    uuid::Uuid::from_bytes(old_header.seqnum_id),
-                    old_header.head_entry_seqnum,
-                    old_header.head_entry_realtime,
-                )?
-            } else {
-                old_file.repository_file.clone()
-            };
-            let new_file = old_file.rotate(
-                &mut self.chain,
-                max_file_size,
-                head_realtime,
-                self.config.compression,
-                self.config.compression_threshold,
-                self.config.strict_systemd_naming,
-                self.config.live_publish_every_entries,
-            )?;
-            let active = new_file.repository_file.clone();
-            (
-                new_file,
-                Some(LogLifecycleEvent::Rotated { archived, active }),
-            )
+        let (new_file, lifecycle_event) = if let Some(old_file) = self.active_file.take() {
+            self.rotate_existing_active_file(old_file, max_file_size, head_realtime)?
         } else {
-            let new_file = ActiveFile::create(
-                &mut self.chain,
-                self.seqnum_id,
-                self.boot_id,
-                self.current_seqnum + 1,
-                max_file_size,
-                head_realtime,
-                self.config.compression,
-                self.config.compression_threshold,
-                self.config.compact,
-                self.config.strict_systemd_naming,
-                self.config.live_publish_every_entries,
-            )?;
-            let active = new_file.repository_file.clone();
-            (
-                new_file,
-                Some(LogLifecycleEvent::Created { active, reason }),
-            )
+            self.create_initial_active_file(max_file_size, head_realtime, reason)?
         };
 
         tracing::Span::current().record("new_file", new_file.repository_file.path());
 
         self.active_file = Some(new_file);
         self.rotation_state.reset();
-        if let Some(active_file) = &self.active_file {
-            self.chain.update_file_size(
-                &active_file.repository_file,
-                active_file.current_file_size(),
-            );
-        }
-        if let Some(event) = lifecycle_event
-            && let Some(observer) = &self.lifecycle_observer
-        {
-            observer.on_event(&event);
-        }
+        self.update_active_file_size();
+        self.emit_lifecycle_event(&lifecycle_event);
 
         // Retention runs after the post-rotation current file is known, so the
         // tracked current file counts in the envelope and is never deleted.
-        let protected_file = self
-            .active_file
-            .as_ref()
-            .map(|active_file| &active_file.repository_file);
-        let protected_file = protected_file.cloned();
+        let protected_file = self.protected_active_file();
         self.apply_retention(protected_file.as_ref())?;
 
         Ok(())

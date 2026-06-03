@@ -228,6 +228,42 @@ impl List {
     /// # Parameters
     /// * `predicate` - Function that takes an array item value and returns true if the search should continue.
     /// * `direction` - Direction of the search (Forward or Backward)
+    fn cursor_at_node_index<M: MemoryMap>(
+        self,
+        journal_file: &JournalFile<M>,
+        node: &Node,
+        index: usize,
+    ) -> Result<Cursor> {
+        Cursor::at_position(journal_file, self, node.offset, index, node.remaining_items)
+    }
+
+    fn node_partition_cursor<M, F>(
+        self,
+        journal_file: &JournalFile<M>,
+        node: &Node,
+        predicate: &F,
+        direction: Direction,
+    ) -> Result<Option<(Cursor, usize)>>
+    where
+        M: MemoryMap,
+        F: Fn(NonZeroU64) -> Result<bool>,
+    {
+        let left = 0;
+        let right = node.len().get();
+        let Some(index) =
+            node.directed_partition_point(journal_file, left, right, predicate, direction)?
+        else {
+            return Ok(None);
+        };
+
+        let cursor = self.cursor_at_node_index(journal_file, node, index)?;
+        Ok(Some((cursor, index)))
+    }
+
+    fn backward_search_must_continue(node: &Node, index: usize) -> bool {
+        index == node.len().get() - 1 && node.has_next()
+    }
+
     pub fn directed_partition_point<M, F>(
         self,
         journal_file: &JournalFile<M>,
@@ -239,44 +275,24 @@ impl List {
         F: Fn(NonZeroU64) -> Result<bool>,
     {
         let mut last_cursor: Option<Cursor> = None;
-
         let mut node = self.head(journal_file)?;
 
         loop {
-            let left = 0;
-            let right = node.len().get();
-
-            if let Some(index) =
-                node.directed_partition_point(journal_file, left, right, &predicate, direction)?
+            if let Some((cursor, index)) =
+                self.node_partition_cursor(journal_file, &node, &predicate, direction)?
             {
-                let cursor = Cursor::at_position(
-                    journal_file,
-                    self,
-                    node.offset,
-                    index,
-                    node.remaining_items,
-                )?;
-
                 match direction {
                     Direction::Forward => {
                         return Ok(Some(cursor));
                     }
                     Direction::Backward => {
-                        // In backward direction, save this match and continue
-                        // to ensure we'll find the last match
                         last_cursor = Some(cursor);
-
-                        // If this match is at the end of the array and there's a next array,
-                        // we should check the next array as well
-                        if index == node.len().get() - 1 && node.has_next() {
-                            // continue;
-                        } else {
+                        if !Self::backward_search_must_continue(&node, index) {
                             return Ok(last_cursor);
                         }
                     }
                 }
             } else if direction == Direction::Backward {
-                // No match in this array for backward direction
                 return Ok(last_cursor);
             }
 
@@ -287,12 +303,10 @@ impl List {
             }
         }
 
-        // For backward direction, return the last match we found (if any)
         if direction == Direction::Backward {
             return Ok(last_cursor);
         }
 
-        // No match found in any array
         Ok(None)
     }
 
@@ -678,64 +692,80 @@ impl InlinedCursor {
         M: MemoryMap,
         F: Fn(NonZeroU64) -> Result<bool>,
     {
-        // Variables to track our best match
-        let mut best_match: Option<Self> = None;
+        let inlined_match = self.inlined_partition_candidate(&predicate, direction)?;
+        let array_match = self.array_partition_candidate(journal_file, predicate, direction)?;
 
-        // Handle the inlined entry based on direction
+        match (inlined_match, array_match) {
+            (Some(best), Some(array)) => {
+                Self::best_directed_match(journal_file, best, array, direction).map(Some)
+            }
+            (Some(best), None) => Ok(Some(best)),
+            (None, Some(array)) => Ok(Some(array)),
+            (None, None) => Ok(None),
+        }
+    }
+
+    fn inlined_partition_candidate<F>(
+        &self,
+        predicate: &F,
+        direction: Direction,
+    ) -> Result<Option<Self>>
+    where
+        F: Fn(NonZeroU64) -> Result<bool>,
+    {
+        let predicate_matches = predicate(self.inlined_offset)?;
         match direction {
-            Direction::Forward => {
-                if !predicate(self.inlined_offset)? {
-                    return Ok(Some(self.head()));
-                }
-            }
-            Direction::Backward => {
-                if predicate(self.inlined_offset)? {
-                    // If predicate is true for inlined entry and we're going backward,
-                    // this is potentially our best match
-                    best_match = Some(self.head());
-                }
-            }
+            Direction::Forward if !predicate_matches => Ok(Some(self.head())),
+            Direction::Backward if predicate_matches => Ok(Some(self.head())),
+            _ => Ok(None),
         }
+    }
 
-        // If we have an array cursor, check it too using binary search
-        if let Some(cursor) = self.cursor {
-            let ic = cursor
+    fn array_partition_candidate<M, F>(
+        &self,
+        journal_file: &JournalFile<M>,
+        predicate: F,
+        direction: Direction,
+    ) -> Result<Option<Self>>
+    where
+        M: MemoryMap,
+        F: Fn(NonZeroU64) -> Result<bool>,
+    {
+        let Some(cursor) = self.cursor else {
+            return Ok(None);
+        };
+        let Some(cursor) =
+            cursor
                 .list
-                .directed_partition_point(journal_file, predicate, direction)?;
+                .directed_partition_point(journal_file, predicate, direction)?
+        else {
+            return Ok(None);
+        };
 
-            if let Some(ic) = ic {
-                // Create a new InlinedCursor with this array cursor
-                let array_match = Self {
-                    inlined_offset: self.inlined_offset,
-                    cursor: Some(ic),
-                    at_inlined_offset: false,
-                };
+        Ok(Some(Self {
+            inlined_offset: self.inlined_offset,
+            cursor: Some(cursor),
+            at_inlined_offset: false,
+        }))
+    }
 
-                // Compare with our current best match
-                if best_match.is_none() {
-                    best_match = Some(array_match);
-                } else {
-                    // Choose the better match based on direction
-                    let best_offset = best_match.as_ref().unwrap().value(journal_file)?;
-                    let array_offset = array_match.value(journal_file)?;
-
-                    match direction {
-                        Direction::Forward => {
-                            if array_offset < best_offset {
-                                best_match = Some(array_match);
-                            }
-                        }
-                        Direction::Backward => {
-                            if array_offset > best_offset {
-                                best_match = Some(array_match);
-                            }
-                        }
-                    }
-                }
-            }
+    fn best_directed_match<M: MemoryMap>(
+        journal_file: &JournalFile<M>,
+        best: Self,
+        candidate: Self,
+        direction: Direction,
+    ) -> Result<Self> {
+        let best_offset = best.value(journal_file)?;
+        let candidate_offset = candidate.value(journal_file)?;
+        let candidate_is_better = match direction {
+            Direction::Forward => candidate_offset < best_offset,
+            Direction::Backward => candidate_offset > best_offset,
+        };
+        if candidate_is_better {
+            Ok(candidate)
+        } else {
+            Ok(best)
         }
-
-        Ok(best_match)
     }
 
     pub fn collect_offsets<M: MemoryMap>(
