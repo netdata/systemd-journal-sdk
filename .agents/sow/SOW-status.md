@@ -114,9 +114,15 @@ Last updated: 2026-06-03
   builds and smokes, direct conformance helper builds, and deterministic
   ingester validation across systemd, Rust, Go, Node.js, and Python. The
   refreshed full `tests/` Lizard inventory now reports 10 critical findings:
-  `tests/systemd_matrix`: 6 and `tests/vm_matrix`: 4.
-  Remaining work is to continue complexity remediation, record final scanner
-  results, and complete whole-SOW review.
+  `tests/systemd_matrix`: 6 and `tests/vm_matrix`: 4. Batch 28 made
+  `tests/systemd_matrix/run_systemd_matrix.py` and
+  `tests/vm_matrix/run_vm_matrix.py` locally Lizard-clean, passed syntax
+  checks, CLI help smoke checks, a systemd-matrix summarize smoke, and a
+  single-target VM validation smoke against existing repo-local raw data. The
+  final local whole-repository Lizard run with `-C 12 -L 100 -a 12 -w .`
+  completed with no warnings.
+  Remaining work is to refresh non-complexity scanner inventories, record
+  final scanner results, and complete whole-SOW review.
 
 ## Pending
 

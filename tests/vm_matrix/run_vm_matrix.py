@@ -183,67 +183,69 @@ def check_bridge() -> bool:
     return run(["ip", "-brief", "link", "show", "br0"], check=False).returncode == 0
 
 
-def preflight(targets: list[Target]) -> dict[str, Any]:
-    ensure_local_dirs()
-    tools = {
-        name: which(name)
-        for name in [
-            "virsh",
-            "virt-install",
-            "qemu-img",
-            "genisoimage",
-            "ssh",
-            "scp",
-            "curl",
-            "journalctl",
-            "cargo",
-            "go",
-            "python3",
-            "node",
-        ]
+REQUIRED_PREFLIGHT_TOOLS = ["virsh", "virt-install", "qemu-img", "genisoimage", "ssh", "scp", "curl", "journalctl"]
+OPTIONAL_PREFLIGHT_TOOLS = ["cargo", "go", "python3", "node"]
+
+
+def preflight_tools() -> dict[str, str | None]:
+    return {name: which(name) for name in REQUIRED_PREFLIGHT_TOOLS + OPTIONAL_PREFLIGHT_TOOLS}
+
+
+def missing_preflight_tools(tools: dict[str, str | None]) -> list[str]:
+    return [name for name in REQUIRED_PREFLIGHT_TOOLS if tools.get(name) is None]
+
+
+def target_virtual_size(target: Target) -> tuple[int, list[str]]:
+    try:
+        return int(qemu_image_info(target.image_url)["virtual-size"]), []
+    except Exception:
+        return 0, ["IMAGE_INFO_FAILED"]
+
+
+def preflight_target_row(target: Target) -> dict[str, Any]:
+    virtual_size, discrepancies = target_virtual_size(target)
+    if domain_exists(target.name):
+        discrepancies.append("DOMAIN_EXISTS")
+    if virtual_size > DISK_CAP_BYTES:
+        discrepancies.append("IMAGE_TOO_LARGE_FOR_CAP")
+    return {
+        "alias": target.alias,
+        "vm_name": target.name,
+        "distro": target.distro,
+        "expected_systemd": target.expected_systemd,
+        "osinfo": target.osinfo,
+        "image_url": target.image_url,
+        "checksum_url": target.checksum_url,
+        "checksum_algorithm": target.checksum_algorithm,
+        "checksum": target.checksum,
+        "source_note": target.source_note,
+        "resources": {"vcpus": 1, "memory_mib": 1024, "disk_gib": 4},
+        "image_virtual_size_bytes": virtual_size,
+        "status": "ok" if not discrepancies else "blocked",
+        "discrepancies": discrepancies,
     }
-    missing = [
-        name
-        for name in ["virsh", "virt-install", "qemu-img", "genisoimage", "ssh", "scp", "curl", "journalctl"]
-        if tools.get(name) is None
-    ]
-    rows = []
-    for target in targets:
-        discrepancies = []
-        if domain_exists(target.name):
-            discrepancies.append("DOMAIN_EXISTS")
-        try:
-            info = qemu_image_info(target.image_url)
-            virtual_size = int(info["virtual-size"])
-        except Exception:
-            virtual_size = 0
-            discrepancies.append("IMAGE_INFO_FAILED")
-        if virtual_size > DISK_CAP_BYTES:
-            discrepancies.append("IMAGE_TOO_LARGE_FOR_CAP")
-        rows.append(
-            {
-                "alias": target.alias,
-                "vm_name": target.name,
-                "distro": target.distro,
-                "expected_systemd": target.expected_systemd,
-                "osinfo": target.osinfo,
-                "image_url": target.image_url,
-                "checksum_url": target.checksum_url,
-                "checksum_algorithm": target.checksum_algorithm,
-                "checksum": target.checksum,
-                "source_note": target.source_note,
-                "resources": {"vcpus": 1, "memory_mib": 1024, "disk_gib": 4},
-                "image_virtual_size_bytes": virtual_size,
-                "status": "ok" if not discrepancies else "blocked",
-                "discrepancies": discrepancies,
-            }
-        )
+
+
+def preflight_host_state() -> tuple[bool, bytes, bytes]:
     bridge_ok = check_bridge()
     df = run(["df", "-B1", str(LIBVIRT_IMAGES)], check=False)
     rhel810 = run(
         ["sudo", "-n", "virsh", "--connect", "qemu:///system", "domstate", "rhel810"],
         check=False,
     )
+    return bridge_ok, df.stdout, rhel810.stdout
+
+
+def preflight_status(missing: list[str], bridge_ok: bool, rows: list[dict[str, Any]]) -> str:
+    return "ok" if not missing and bridge_ok and all(row["status"] == "ok" for row in rows) else "blocked"
+
+
+def preflight(targets: list[Target]) -> dict[str, Any]:
+    ensure_local_dirs()
+    tools = preflight_tools()
+    missing = missing_preflight_tools(tools)
+    rows = [preflight_target_row(target) for target in targets]
+    bridge_ok, df_stdout, rhel810_stdout = preflight_host_state()
     report = {
         "schema": SCHEMA,
         "kind": "preflight",
@@ -251,12 +253,10 @@ def preflight(targets: list[Target]) -> dict[str, Any]:
         "caps": {"max_new_vms": 4, "name_prefix": "sdjournal-", "vcpus": 1, "memory_mib": 1024, "disk_gib": 4},
         "tools": {key: bool(value) for key, value in tools.items()},
         "bridge_br0": "ok" if bridge_ok else "missing",
-        "libvirt_images_df_sha256": hashlib.sha256(df.stdout).hexdigest(),
-        "rhel810_read_only_state": "running" if rhel810.stdout.strip() == b"running" else "unavailable",
+        "libvirt_images_df_sha256": hashlib.sha256(df_stdout).hexdigest(),
+        "rhel810_read_only_state": "running" if rhel810_stdout.strip() == b"running" else "unavailable",
         "targets": rows,
-        "status": "ok"
-        if not missing and bridge_ok and all(row["status"] == "ok" for row in rows)
-        else "blocked",
+        "status": preflight_status(missing, bridge_ok, rows),
         "discrepancies": (["MISSING_TOOL"] if missing else []) + ([] if bridge_ok else ["BRIDGE_MISSING"]),
     }
     (STATE_DIR / "preflight.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
@@ -443,34 +443,58 @@ def dom_mac(target: Target) -> str:
     raise RuntimeError(f"no bridge interface found for {target.name}")
 
 
+def scoped_link_local_ip(ip: str) -> str:
+    return ip + "%br0" if ":" in ip and ip.startswith("fe80:") else ip
+
+
+def agent_ipv4(stdout: bytes) -> str | None:
+    for line in stdout.decode().splitlines():
+        fields = line.split()
+        if len(fields) >= 4 and fields[2] == "ipv4":
+            ip = fields[3].split("/", 1)[0]
+            if ip != "127.0.0.1":
+                return ip
+    return None
+
+
+def neigh_line_mac(fields: list[str]) -> str | None:
+    if "lladdr" in fields:
+        mac_index = fields.index("lladdr") + 1
+        return fields[mac_index].lower() if mac_index < len(fields) else None
+    if len(fields) >= 5:
+        return fields[4].lower()
+    return None
+
+
+def neigh_ip_for_mac(stdout: bytes, mac: str) -> str | None:
+    for line in stdout.decode().splitlines():
+        fields = line.split()
+        if fields and neigh_line_mac(fields) == mac:
+            return scoped_link_local_ip(fields[0])
+    return None
+
+
+def agent_ip_for_target(target: Target) -> str | None:
+    agent = run(
+        ["sudo", "-n", "virsh", "--connect", "qemu:///system", "domifaddr", target.name, "--source", "agent"],
+        check=False,
+        timeout=20,
+    )
+    return agent_ipv4(agent.stdout)
+
+
+def neighbor_ip_for_mac(mac: str) -> str | None:
+    neigh = run(["ip", "neigh", "show", "dev", "br0"], check=False, timeout=20)
+    return neigh_ip_for_mac(neigh.stdout, mac)
+
+
 def wait_for_ip(target: Target, timeout: int = 240) -> str:
     mac = dom_mac(target)
     deadline = time.time() + timeout
     while time.time() < deadline:
-        agent = run(
-            ["sudo", "-n", "virsh", "--connect", "qemu:///system", "domifaddr", target.name, "--source", "agent"],
-            check=False,
-            timeout=20,
-        )
-        for line in agent.stdout.decode().splitlines():
-            fields = line.split()
-            if len(fields) >= 4 and fields[2] == "ipv4":
-                ip = fields[3].split("/", 1)[0]
-                if ip != "127.0.0.1":
-                    return ip
-        neigh = run(["ip", "neigh", "show", "dev", "br0"], check=False, timeout=20)
-        for line in neigh.stdout.decode().splitlines():
-            fields = line.split()
-            if "lladdr" in fields:
-                mac_index = fields.index("lladdr") + 1
-                if mac_index < len(fields) and fields[mac_index].lower() == mac:
-                    if ":" in fields[0] and fields[0].startswith("fe80:"):
-                        return fields[0] + "%br0"
-                    return fields[0]
-            if len(fields) >= 5 and fields[4].lower() == mac:
-                if ":" in fields[0] and fields[0].startswith("fe80:"):
-                    return fields[0] + "%br0"
-                return fields[0]
+        ip = agent_ip_for_target(target) or neighbor_ip_for_mac(mac)
+        if ip:
+            return ip
         time.sleep(5)
     raise RuntimeError(f"timed out waiting for IP for {target.name}")
 
@@ -781,84 +805,115 @@ def verify_file(path: Path) -> dict[str, Any]:
     }
 
 
+def read_text_default(path: Path, default: str = "") -> str:
+    return path.read_text().strip() if path.exists() else default
+
+
+def read_vm_verify(raw: Path) -> dict[str, Any]:
+    verify_path = raw / "vm-verify.jsonl"
+    rows: dict[str, Any] = {}
+    if not verify_path.exists():
+        return rows
+    for line in verify_path.read_text().splitlines():
+        if line.strip():
+            row = json.loads(line)
+            rows[row["case_id"]] = row
+    return rows
+
+
+def add_compiled_reader(
+    readers: dict[str, Any],
+    discrepancies: list[str],
+    helpers: dict[str, Path | None],
+    driver: str,
+    path: Path,
+) -> None:
+    exe = helpers.get(driver)
+    if exe is None:
+        readers[driver] = {"digest": None, "stats": {"status": "skipped", "reason": "tool unavailable"}}
+        discrepancies.append(f"{driver.upper()}_READ_FAILED")
+        return
+    digest, stats = run_json_digest(driver, exe, path)
+    readers[driver] = {"digest": digest, "stats": stats}
+
+
+def add_python_reader(readers: dict[str, Any], path: Path) -> None:
+    py = os.environ.get("SOW0075_PYTHON") or which("python3")
+    if not py:
+        return
+    digest, stats = digest_export_command(
+        "python",
+        [py, str(ROOT / "python" / "cmd" / "journalctl.py"), "--file", str(path), "--output=export"],
+    )
+    readers["python"] = {"digest": digest, "stats": stats}
+
+
+def add_node_reader(readers: dict[str, Any], path: Path) -> None:
+    node = which("node")
+    if not node:
+        return
+    digest, stats = digest_export_command(
+        "node",
+        [node, str(ROOT / "node" / "cmd" / "journalctl" / "index.js"), "--file", str(path), "--output", "export"],
+    )
+    readers["node"] = {"digest": digest, "stats": stats}
+
+
+def compare_case_readers(readers: dict[str, Any], baseline: str | None) -> list[str]:
+    discrepancies: list[str] = []
+    for driver, row in readers.items():
+        if driver == "stock":
+            continue
+        digest = row["digest"]
+        if digest is None:
+            discrepancies.append(f"{driver.upper()}_READ_FAILED")
+        elif baseline and digest.get("logical_digest") != baseline:
+            discrepancies.append(f"{driver.upper()}_DIGEST_MISMATCH")
+    return discrepancies
+
+
+def validate_case(path: Path, helpers: dict[str, Path | None], vm_verify: dict[str, Any]) -> dict[str, Any]:
+    case_id = path.stem
+    host_verify = verify_file(path)
+    stock_digest, stock_stats = digest_stock(path)
+    readers = {"stock": {"digest": stock_digest, "stats": stock_stats}}
+    discrepancies: list[str] = []
+
+    if host_verify["status"] != "ok":
+        discrepancies.append("HOST_STOCK_VERIFY_FAILED")
+    if stock_digest is None:
+        discrepancies.append("STOCK_READ_FAILED")
+    for driver in ("rust", "go"):
+        add_compiled_reader(readers, discrepancies, helpers, driver, path)
+    add_python_reader(readers, path)
+    add_node_reader(readers, path)
+    discrepancies.extend(compare_case_readers(readers, stock_digest.get("logical_digest") if stock_digest else None))
+    vm_row = vm_verify.get(case_id)
+    if vm_row and int(vm_row.get("returncode", 1)) != 0:
+        discrepancies.append("VM_STOCK_VERIFY_FAILED")
+    return {
+        "case_id": case_id,
+        "file": {"bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()},
+        "vm_stock_verify": vm_row,
+        "host_stock_verify": host_verify,
+        "readers": readers,
+        "status": "ok" if not discrepancies else "discrepancy",
+        "discrepancies": sorted(set(discrepancies)),
+    }
+
+
 def validate_one(target: Target, helpers: dict[str, Path | None]) -> dict[str, Any]:
     raw = RAW_DIR / target.alias
-    systemd_version = (raw / "systemd-version.txt").read_text().strip() if (raw / "systemd-version.txt").exists() else ""
-    os_release = (raw / "os-release.txt").read_text().strip() if (raw / "os-release.txt").exists() else ""
-    binary_status = (raw / "binary-field-status.txt").read_text().strip() if (raw / "binary-field-status.txt").exists() else "unknown"
-    vm_verify = {}
-    if (raw / "vm-verify.jsonl").exists():
-        for line in (raw / "vm-verify.jsonl").read_text().splitlines():
-            if line.strip():
-                row = json.loads(line)
-                vm_verify[row["case_id"]] = row
-    cases = []
-    for path in sorted(raw.glob("*.journal")):
-        case_id = path.stem
-        file_sha = hashlib.sha256(path.read_bytes()).hexdigest()
-        host_verify = verify_file(path)
-        stock_digest, stock_stats = digest_stock(path)
-        readers = {
-            "stock": {"digest": stock_digest, "stats": stock_stats},
-        }
-        discrepancies = []
-        if host_verify["status"] != "ok":
-            discrepancies.append("HOST_STOCK_VERIFY_FAILED")
-        if stock_digest is None:
-            discrepancies.append("STOCK_READ_FAILED")
-        for driver in ("rust", "go"):
-            exe = helpers.get(driver)
-            if exe is None:
-                readers[driver] = {"digest": None, "stats": {"status": "skipped", "reason": "tool unavailable"}}
-                discrepancies.append(f"{driver.upper()}_READ_FAILED")
-                continue
-            digest, stats = run_json_digest(driver, exe, path)
-            readers[driver] = {"digest": digest, "stats": stats}
-        py = os.environ.get("SOW0075_PYTHON") or which("python3")
-        if py:
-            digest, stats = digest_export_command(
-                "python",
-                [py, str(ROOT / "python" / "cmd" / "journalctl.py"), "--file", str(path), "--output=export"],
-            )
-            readers["python"] = {"digest": digest, "stats": stats}
-        node = which("node")
-        if node:
-            digest, stats = digest_export_command(
-                "node",
-                [node, str(ROOT / "node" / "cmd" / "journalctl" / "index.js"), "--file", str(path), "--output", "export"],
-            )
-            readers["node"] = {"digest": digest, "stats": stats}
-        baseline = stock_digest.get("logical_digest") if stock_digest else None
-        for driver, row in readers.items():
-            if driver == "stock":
-                continue
-            digest = row["digest"]
-            if digest is None:
-                discrepancies.append(f"{driver.upper()}_READ_FAILED")
-            elif baseline and digest.get("logical_digest") != baseline:
-                discrepancies.append(f"{driver.upper()}_DIGEST_MISMATCH")
-        vm_row = vm_verify.get(case_id)
-        if vm_row and int(vm_row.get("returncode", 1)) != 0:
-            discrepancies.append("VM_STOCK_VERIFY_FAILED")
-        cases.append(
-            {
-                "case_id": case_id,
-                "file": {"bytes": path.stat().st_size, "sha256": file_sha},
-                "vm_stock_verify": vm_row,
-                "host_stock_verify": host_verify,
-                "readers": readers,
-                "status": "ok" if not discrepancies else "discrepancy",
-                "discrepancies": sorted(set(discrepancies)),
-            }
-        )
+    vm_verify = read_vm_verify(raw)
+    cases = [validate_case(path, helpers, vm_verify) for path in sorted(raw.glob("*.journal"))]
     return {
         "alias": target.alias,
         "vm_name": target.name,
         "distro": target.distro,
         "expected_systemd": target.expected_systemd,
-        "observed_systemd": systemd_version,
-        "observed_os_release": os_release,
-        "binary_field_ingestion": binary_status,
+        "observed_systemd": read_text_default(raw / "systemd-version.txt"),
+        "observed_os_release": read_text_default(raw / "os-release.txt"),
+        "binary_field_ingestion": read_text_default(raw / "binary-field-status.txt", "unknown"),
         "cases": cases,
         "status": "ok" if cases and all(case["status"] == "ok" for case in cases) else "discrepancy",
     }
@@ -892,8 +947,8 @@ def validate(targets: list[Target], report_json: Path, report_md: Path) -> dict[
     return report
 
 
-def markdown_report(report: dict[str, Any]) -> str:
-    lines = [
+def append_markdown_header(lines: list[str], report: dict[str, Any]) -> None:
+    lines.extend([
         "# SOW-0075 VM Historical systemd Matrix Report",
         "",
         f"- Schema: `{report['schema']}`",
@@ -904,46 +959,67 @@ def markdown_report(report: dict[str, Any]) -> str:
         "",
         "| target | observed systemd | cases | status | discrepancy codes |",
         "|---|---:|---:|---|---|",
-    ]
+    ])
+
+
+def target_discrepancy_codes(target: dict[str, Any]) -> str:
+    codes = sorted({code for case in target["cases"] for code in case["discrepancies"]})
+    return ", ".join(codes) if codes else "none"
+
+
+def append_target_summary(lines: list[str], report: dict[str, Any]) -> None:
     for target in report["targets"]:
-        codes = sorted({code for case in target["cases"] for code in case["discrepancies"]})
         lines.append(
             "| {alias} | `{systemd}` | {cases} | `{status}` | `{codes}` |".format(
                 alias=target["alias"],
                 systemd=target["observed_systemd"] or "unknown",
                 cases=len(target["cases"]),
                 status=target["status"],
-                codes=", ".join(codes) if codes else "none",
+                codes=target_discrepancy_codes(target),
             )
         )
+
+
+def case_reader_parity(case: dict[str, Any]) -> str:
+    baseline = case["readers"]["stock"]["digest"]
+    if baseline is None:
+        return "failed"
+    digest = baseline.get("logical_digest")
+    for driver, row in case["readers"].items():
+        if driver != "stock" and (row["digest"] is None or row["digest"].get("logical_digest") != digest):
+            return "failed"
+    return "ok"
+
+
+def append_case_table(lines: list[str], target: dict[str, Any]) -> None:
+    lines.append(f"### {target['alias']}")
+    lines.append("")
+    lines.append(f"- Distro: `{target['distro']}`")
+    lines.append(f"- OS release: `{target['observed_os_release'] or 'unknown'}`")
+    lines.append(f"- Binary field ingestion: `{target['binary_field_ingestion']}`")
+    lines.append("")
+    lines.append("| case | bytes | stock verify | reader parity | status |")
+    lines.append("|---|---:|---|---|---|")
+    for case in target["cases"]:
+        lines.append(
+            f"| `{case['case_id']}` | {case['file']['bytes']} | "
+            f"`{case['host_stock_verify']['status']}` | `{case_reader_parity(case)}` | "
+            f"`{case['status']}` |"
+        )
+    lines.append("")
+
+
+def append_case_results(lines: list[str], report: dict[str, Any]) -> None:
     lines.extend(["", "## Case Results", ""])
     for target in report["targets"]:
-        lines.append(f"### {target['alias']}")
-        lines.append("")
-        lines.append(f"- Distro: `{target['distro']}`")
-        lines.append(f"- OS release: `{target['observed_os_release'] or 'unknown'}`")
-        lines.append(f"- Binary field ingestion: `{target['binary_field_ingestion']}`")
-        lines.append("")
-        lines.append("| case | bytes | stock verify | reader parity | status |")
-        lines.append("|---|---:|---|---|---|")
-        for case in target["cases"]:
-            stock = case["host_stock_verify"]["status"]
-            baseline = case["readers"]["stock"]["digest"]
-            parity = "ok"
-            if baseline is None:
-                parity = "failed"
-            else:
-                digest = baseline.get("logical_digest")
-                for driver, row in case["readers"].items():
-                    if driver == "stock":
-                        continue
-                    if row["digest"] is None or row["digest"].get("logical_digest") != digest:
-                        parity = "failed"
-                        break
-            lines.append(
-                f"| `{case['case_id']}` | {case['file']['bytes']} | `{stock}` | `{parity}` | `{case['status']}` |"
-            )
-        lines.append("")
+        append_case_table(lines, target)
+
+
+def markdown_report(report: dict[str, Any]) -> str:
+    lines: list[str] = []
+    append_markdown_header(lines, report)
+    append_target_summary(lines, report)
+    append_case_results(lines, report)
     return "\n".join(lines) + "\n"
 
 

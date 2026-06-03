@@ -320,6 +320,136 @@ def journalctl_version(journalctl: Path | str, env: dict[str, str], timeout: int
     }
 
 
+def parse_digest_stdout(
+    stream: BinaryIO,
+    digest_state: dict[str, Any],
+    stdout_state: dict[str, Any],
+) -> None:
+    hashing_stdout = HashingReader(stream)
+    try:
+        digest_state["digest"] = digest_export_stream(hashing_stdout)
+    except Exception as exc:  # pragma: no cover - exercised by bad helpers.
+        digest_state["error_class"] = type(exc).__name__
+        digest_state["error_sha256"] = sha256_bytes(str(exc).encode("utf-8"))
+    finally:
+        stdout_state["sha256"] = hashing_stdout.hexdigest()
+        stdout_state["bytes"] = hashing_stdout.bytes
+
+
+def drain_digest_stderr(stream: BinaryIO, stderr_state: dict[str, Any]) -> None:
+    try:
+        stderr_state.update(drain_digest(stream))
+    except Exception as exc:  # pragma: no cover - defensive only.
+        stderr_state["sha256"] = sha256_bytes(str(exc).encode("utf-8"))
+        stderr_state["bytes"] = 0
+
+
+def start_digest_threads(
+    label: str,
+    proc: subprocess.Popen[bytes],
+    digest_state: dict[str, Any],
+    stdout_state: dict[str, Any],
+    stderr_state: dict[str, Any],
+) -> tuple[threading.Thread, threading.Thread]:
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+    stdout_thread = threading.Thread(
+        target=parse_digest_stdout,
+        args=(proc.stdout, digest_state, stdout_state),
+        name=f"{label}-stdout",
+    )
+    stderr_thread = threading.Thread(
+        target=drain_digest_stderr,
+        args=(proc.stderr, stderr_state),
+        name=f"{label}-stderr",
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+    return stdout_thread, stderr_thread
+
+
+def wait_for_stdout_or_timeout(
+    proc: subprocess.Popen[bytes],
+    stdout_thread: threading.Thread,
+    deadline: float,
+) -> bool:
+    timed_out = False
+    while proc.poll() is None and stdout_thread.is_alive():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            proc.kill()
+            break
+        stdout_thread.join(timeout=min(0.1, remaining))
+    return timed_out
+
+
+def wait_for_process_exit(
+    proc: subprocess.Popen[bytes],
+    deadline: float,
+    timed_out: bool,
+) -> tuple[int, bool]:
+    try:
+        remaining = max(0.0, deadline - time.monotonic())
+        return proc.wait(timeout=remaining), timed_out
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        return proc.wait(), True
+
+
+def join_digest_threads(
+    stdout_thread: threading.Thread,
+    stderr_thread: threading.Thread,
+    returncode: int,
+    timed_out: bool,
+) -> tuple[int, bool]:
+    stdout_thread.join(timeout=5)
+    stderr_thread.join(timeout=5)
+    if stdout_thread.is_alive() or stderr_thread.is_alive():
+        return 124, True
+    return returncode, timed_out
+
+
+def wait_digest_process(
+    proc: subprocess.Popen[bytes],
+    stdout_thread: threading.Thread,
+    stderr_thread: threading.Thread,
+    digest_state: dict[str, Any],
+    timeout: int,
+) -> tuple[int, bool]:
+    deadline = time.monotonic() + timeout
+    timed_out = wait_for_stdout_or_timeout(proc, stdout_thread, deadline)
+    if "error_class" in digest_state and proc.poll() is None:
+        proc.kill()
+    returncode, timed_out = wait_for_process_exit(proc, deadline, timed_out)
+    return join_digest_threads(stdout_thread, stderr_thread, returncode, timed_out)
+
+
+def export_digest_command_result(
+    label: str,
+    cmd: list[str],
+    started: float,
+    returncode: int,
+    timed_out: bool,
+    stdout_state: dict[str, Any],
+    stderr_state: dict[str, Any],
+    timeout: int,
+) -> CommandResult:
+    empty_sha = sha256_bytes(b"")
+    return CommandResult(
+        label=label,
+        returncode=returncode if not timed_out else 124,
+        elapsed_seconds=time.perf_counter() - started,
+        stdout_sha256=str(stdout_state.get("sha256", empty_sha)),
+        stdout_bytes=int(stdout_state.get("bytes", 0)),
+        stderr_sha256=str(stderr_state.get("sha256", empty_sha)),
+        stderr_bytes=int(stderr_state.get("bytes", 0)),
+        command_sha256=command_sha(cmd),
+        timeout_seconds=timeout,
+        timed_out=timed_out,
+    )
+
+
 def stream_export_command_digest(
     label: str,
     cmd: list[str],
@@ -342,70 +472,17 @@ def stream_export_command_digest(
     digest_state: dict[str, Any] = {}
     stderr_state: dict[str, Any] = {}
     stdout_state: dict[str, Any] = {}
-
-    def parse_stdout() -> None:
-        hashing_stdout = HashingReader(proc.stdout)
-        try:
-            digest_state["digest"] = digest_export_stream(hashing_stdout)
-        except Exception as exc:  # pragma: no cover - exercised by bad helpers.
-            digest_state["error_class"] = type(exc).__name__
-            digest_state["error_sha256"] = sha256_bytes(str(exc).encode("utf-8"))
-        finally:
-            stdout_state["sha256"] = hashing_stdout.hexdigest()
-            stdout_state["bytes"] = hashing_stdout.bytes
-
-    def drain_stderr() -> None:
-        try:
-            stderr_state.update(drain_digest(proc.stderr))
-        except Exception as exc:  # pragma: no cover - defensive only.
-            stderr_state["sha256"] = sha256_bytes(str(exc).encode("utf-8"))
-            stderr_state["bytes"] = 0
-
-    stdout_thread = threading.Thread(target=parse_stdout, name=f"{label}-stdout")
-    stderr_thread = threading.Thread(target=drain_stderr, name=f"{label}-stderr")
-    stdout_thread.start()
-    stderr_thread.start()
-
-    deadline = time.monotonic() + timeout
-    timed_out = False
-    while proc.poll() is None and stdout_thread.is_alive():
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            timed_out = True
-            proc.kill()
-            break
-        stdout_thread.join(timeout=min(0.1, remaining))
-
-    if "error_class" in digest_state and proc.poll() is None:
-        proc.kill()
-
-    try:
-        remaining = max(0.0, deadline - time.monotonic())
-        returncode = proc.wait(timeout=remaining)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        proc.kill()
-        returncode = proc.wait()
-
-    stdout_thread.join(timeout=5)
-    stderr_thread.join(timeout=5)
-    if stdout_thread.is_alive() or stderr_thread.is_alive():
-        timed_out = True
-        returncode = 124
-
-    elapsed = time.perf_counter() - started
-    empty_sha = sha256_bytes(b"")
-    command_result = CommandResult(
-        label=label,
-        returncode=returncode if not timed_out else 124,
-        elapsed_seconds=elapsed,
-        stdout_sha256=str(stdout_state.get("sha256", empty_sha)),
-        stdout_bytes=int(stdout_state.get("bytes", 0)),
-        stderr_sha256=str(stderr_state.get("sha256", empty_sha)),
-        stderr_bytes=int(stderr_state.get("bytes", 0)),
-        command_sha256=command_sha(cmd),
-        timeout_seconds=timeout,
-        timed_out=timed_out,
+    stdout_thread, stderr_thread = start_digest_threads(label, proc, digest_state, stdout_state, stderr_state)
+    returncode, timed_out = wait_digest_process(proc, stdout_thread, stderr_thread, digest_state, timeout)
+    command_result = export_digest_command_result(
+        label,
+        cmd,
+        started,
+        returncode,
+        timed_out,
+        stdout_state,
+        stderr_state,
+        timeout,
     )
     if timed_out or returncode != 0 or "error_class" in digest_state:
         return None, command_result
@@ -548,55 +625,46 @@ def ensure_systemd_source(
     return source_dir, commit, commands
 
 
-def patch_systemd_helper(source_dir: Path) -> None:
-    helper_dest = (
-        source_dir / "src" / "libsystemd" / "sd-journal" / SYSTEMD_HELPER_SOURCE_NAME
-    )
-    shutil.copyfile(SYSTEMD_HELPER_SOURCE, helper_dest)
-
-    meson_file = source_dir / "src" / "libsystemd" / "meson.build"
-    text = meson_file.read_text(encoding="utf-8")
-    if SYSTEMD_HELPER_SOURCE_NAME not in text:
-        marker = """        {
+def meson_helper_insertion(text: str) -> str:
+    marker = """        {
                 'sources' : files('sd-journal/test-journal-append.c'),
                 'type' : 'manual',
         },
 """
-        entry = f"""        {{
+    entry = f"""        {{
                 'sources' : files('sd-journal/{SYSTEMD_HELPER_SOURCE_NAME}'),
                 'type' : 'manual',
         }},
 """
-        if marker in text:
-            text = text.replace(marker, marker + entry)
-        else:
-            simple_marker = "        'sd-journal/test-journal-file.c',\n"
-            simple_entry = f"        'sd-journal/{SYSTEMD_HELPER_SOURCE_NAME}',\n"
-            legacy_marker = """        [files('sd-journal/test-format-change-ingester.c'),
-         [], [], [], '', 'manual'],
-"""
-            legacy_entry = f"""        [files('sd-journal/{SYSTEMD_HELPER_SOURCE_NAME}'),
-         [], [], [], '', 'manual'],
-"""
-            if simple_marker in text:
-                text = text.replace(simple_marker, simple_marker + simple_entry)
-            elif legacy_marker in text:
-                text = text.replace(legacy_marker, legacy_marker + legacy_entry)
-            else:
-                raise RuntimeError("could not find systemd meson journal test marker")
-        meson_file.write_text(text, encoding="utf-8")
+    if marker in text:
+        return text.replace(marker, marker + entry)
 
-    authenticate_file = (
-        source_dir / "src" / "libsystemd" / "sd-journal" / "journal-authenticate.c"
-    )
-    text = authenticate_file.read_text(encoding="utf-8")
-    if "SYSTEMD_JOURNAL_FSS_ROOT" not in text:
-        # Generation opens the file through systemd internals, which load the
-        # FSS state path before appending. Verification still uses --verify-key
-        # and must not depend on any host or repository-local FSS state.
-        if "#include <stdlib.h>" not in text:
-            text = text.replace("#include <unistd.h>\n", "#include <stdlib.h>\n#include <unistd.h>\n")
-        new = """        const char *fss_root = getenv("SYSTEMD_JOURNAL_FSS_ROOT");
+    simple_marker = "        'sd-journal/test-journal-file.c',\n"
+    simple_entry = f"        'sd-journal/{SYSTEMD_HELPER_SOURCE_NAME}',\n"
+    if simple_marker in text:
+        return text.replace(simple_marker, simple_marker + simple_entry)
+
+    legacy_marker = """        [files('sd-journal/test-format-change-ingester.c'),
+         [], [], [], '', 'manual'],
+"""
+    legacy_entry = f"""        [files('sd-journal/{SYSTEMD_HELPER_SOURCE_NAME}'),
+         [], [], [], '', 'manual'],
+"""
+    if legacy_marker in text:
+        return text.replace(legacy_marker, legacy_marker + legacy_entry)
+    raise RuntimeError("could not find systemd meson journal test marker")
+
+
+def patch_meson_helper(source_dir: Path) -> None:
+    meson_file = source_dir / "src" / "libsystemd" / "meson.build"
+    text = meson_file.read_text(encoding="utf-8")
+    if SYSTEMD_HELPER_SOURCE_NAME in text:
+        return
+    meson_file.write_text(meson_helper_insertion(text), encoding="utf-8")
+
+
+def fss_root_replacements() -> tuple[tuple[str, str], ...]:
+    new_path = """        const char *fss_root = getenv("SYSTEMD_JOURNAL_FSS_ROOT");
         if (!fss_root || !*fss_root)
                 fss_root = "/var/log/journal";
 
@@ -604,15 +672,11 @@ def patch_systemd_helper(source_dir: Path) -> None:
                      fss_root, SD_ID128_FORMAT_VAL(machine)) < 0)
                 return -ENOMEM;
 """
-        old = """        if (asprintf(&path, "/var/log/journal/" SD_ID128_FORMAT_STR "/fss",
+    old_path = """        if (asprintf(&path, "/var/log/journal/" SD_ID128_FORMAT_STR "/fss",
                      SD_ID128_FORMAT_VAL(machine)) < 0)
                 return -ENOMEM;
 """
-        old_legacy = """        if (asprintf(&p, "/var/log/journal/" SD_ID128_FORMAT_STR "/fss",
-                     SD_ID128_FORMAT_VAL(machine)) < 0)
-                return -ENOMEM;
-"""
-        new_legacy = """        const char *fss_root = getenv("SYSTEMD_JOURNAL_FSS_ROOT");
+    new_legacy = """        const char *fss_root = getenv("SYSTEMD_JOURNAL_FSS_ROOT");
         if (!fss_root || !*fss_root)
                 fss_root = "/var/log/journal";
 
@@ -620,25 +684,49 @@ def patch_systemd_helper(source_dir: Path) -> None:
                      fss_root, SD_ID128_FORMAT_VAL(machine)) < 0)
                 return -ENOMEM;
 """
-        if old in text:
-            text = text.replace(old, new)
-        elif old_legacy in text:
-            text = text.replace(old_legacy, new_legacy)
-        else:
-            raise RuntimeError("could not find systemd journal FSS path marker")
-        authenticate_file.write_text(text, encoding="utf-8")
+    old_legacy = """        if (asprintf(&p, "/var/log/journal/" SD_ID128_FORMAT_STR "/fss",
+                     SD_ID128_FORMAT_VAL(machine)) < 0)
+                return -ENOMEM;
+"""
+    return ((old_path, new_path), (old_legacy, new_legacy))
 
+
+def patch_authenticate_fss_root(source_dir: Path) -> None:
+    authenticate_file = source_dir / "src" / "libsystemd" / "sd-journal" / "journal-authenticate.c"
+    text = authenticate_file.read_text(encoding="utf-8")
+    if "SYSTEMD_JOURNAL_FSS_ROOT" in text:
+        return
+
+    if "#include <stdlib.h>" not in text:
+        text = text.replace("#include <unistd.h>\n", "#include <stdlib.h>\n#include <unistd.h>\n")
+    for old, new in fss_root_replacements():
+        if old in text:
+            authenticate_file.write_text(text.replace(old, new), encoding="utf-8")
+            return
+    raise RuntimeError("could not find systemd journal FSS path marker")
+
+
+def patch_filesystems_gperf(source_dir: Path) -> None:
     filesystems_file = source_dir / "src" / "basic" / "filesystems-gperf.gperf"
-    if filesystems_file.exists():
-        text = filesystems_file.read_text(encoding="utf-8")
-        additions = {
-            "bcachefs,": "bcachefs,        {BCACHEFS_SUPER_MAGIC}\n",
-            "guest_memfd,": "guest_memfd,     {GUEST_MEMFD_MAGIC}\n",
-            "pidfs,": "pidfs,           {PID_FS_MAGIC}\n",
-        }
-        missing = [line for marker, line in additions.items() if marker not in text]
-        if missing:
-            filesystems_file.write_text(text.rstrip() + "\n" + "".join(missing), encoding="utf-8")
+    if not filesystems_file.exists():
+        return
+    text = filesystems_file.read_text(encoding="utf-8")
+    additions = {
+        "bcachefs,": "bcachefs,        {BCACHEFS_SUPER_MAGIC}\n",
+        "guest_memfd,": "guest_memfd,     {GUEST_MEMFD_MAGIC}\n",
+        "pidfs,": "pidfs,           {PID_FS_MAGIC}\n",
+    }
+    missing = [line for marker, line in additions.items() if marker not in text]
+    if missing:
+        filesystems_file.write_text(text.rstrip() + "\n" + "".join(missing), encoding="utf-8")
+
+
+def patch_systemd_helper(source_dir: Path) -> None:
+    helper_dest = source_dir / "src" / "libsystemd" / "sd-journal" / SYSTEMD_HELPER_SOURCE_NAME
+    shutil.copyfile(SYSTEMD_HELPER_SOURCE, helper_dest)
+    patch_meson_helper(source_dir)
+    patch_authenticate_fss_root(source_dir)
+    patch_filesystems_gperf(source_dir)
 
 
 def build_systemd(args: argparse.Namespace) -> dict[str, Any]:
@@ -846,66 +934,76 @@ def sanitize_generator_payload(
     return sanitized, key
 
 
-def generate_corpus(args: argparse.Namespace) -> dict[str, Any]:
-    out = args.out.resolve()
-    build = build_systemd(args) if args.sealed else ensure_build(args)
-    slug = version_slug(args.version)
-    case = version_slug(args.case)
-    reports_dir = out / "reports"
-    discrepancies: list[dict[str, Any]] = []
-    status = "ok"
+def prepare_generation_paths(args: argparse.Namespace, out: Path) -> tuple[Path, Path]:
     journal_path = args.journal or generated_journal_path(out, args.version, args.case)
     journal_path = require_under(journal_path, out, "--journal output")
     key_path = verification_key_path(out, args.version, args.case)
     journal_path.parent.mkdir(parents=True, exist_ok=True)
     journal_path.unlink(missing_ok=True)
     key_path.unlink(missing_ok=True)
+    return journal_path, key_path
+
+
+def corpus_generator_path(build: dict[str, Any] | None) -> Path | None:
     artifacts = build.get("artifacts", {}) if build else {}
     generator_rel = artifacts.get("generator")
-    generator = ROOT / generator_rel if generator_rel else None
-    payload: dict[str, Any] | None = None
-    command: dict[str, Any] | None = None
+    return ROOT / generator_rel if generator_rel else None
 
+
+def generation_command(args: argparse.Namespace, out: Path, generator: Path, journal_path: Path) -> list[str]:
+    cmd = [
+        str(generator),
+        "--dataset",
+        str(args.dataset.resolve()),
+        "--output",
+        str(journal_path),
+        "--final-state",
+        args.final_state,
+        "--max-size-bytes",
+        str(args.max_size_bytes),
+    ]
+    if args.compact:
+        cmd.append("--compact")
+    if args.sealed:
+        fss_root = fss_root_path(out, args.version, args.case)
+        if fss_root.exists():
+            shutil.rmtree(fss_root)
+        fss_root.mkdir(parents=True, exist_ok=True)
+        cmd.extend(["--sealed", "--fss-root", str(fss_root)])
+    return cmd
+
+
+def run_generation_command(
+    args: argparse.Namespace,
+    out: Path,
+    generator: Path | None,
+    journal_path: Path,
+    key_path: Path,
+) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None, dict[str, Any] | None]:
     if not generator or not generator.exists():
-        status = "failed"
-        discrepancies.append({"code": "GENERATE_FAILED", "reason": "missing-generator"})
-    else:
-        cmd = [
-            str(generator),
-            "--dataset",
-            str(args.dataset.resolve()),
-            "--output",
-            str(journal_path),
-            "--final-state",
-            args.final_state,
-            "--max-size-bytes",
-            str(args.max_size_bytes),
-        ]
-        if args.compact:
-            cmd.append("--compact")
-        if args.sealed:
-            fss_root = fss_root_path(out, args.version, args.case)
-            if fss_root.exists():
-                shutil.rmtree(fss_root)
-            fss_root.mkdir(parents=True, exist_ok=True)
-            cmd.extend(["--sealed", "--fss-root", str(fss_root)])
-        payload, result = run_json_line(
-            "generate deterministic systemd corpus",
-            cmd,
-            env=matrix_env(out),
-            timeout=args.timeout,
-        )
-        command = result.as_dict()
-        if result.returncode != 0 or payload is None:
-            status = "failed"
-            discrepancies.append({"code": "GENERATE_FAILED", "command_sha256": result.command_sha256})
-        else:
-            payload, _ = sanitize_generator_payload(payload, key_path)
+        return "failed", [{"code": "GENERATE_FAILED", "reason": "missing-generator"}], None, None
 
-    journal = None
+    payload, result = run_json_line(
+        "generate deterministic systemd corpus",
+        generation_command(args, out, generator, journal_path),
+        env=matrix_env(out),
+        timeout=args.timeout,
+    )
+    if result.returncode != 0 or payload is None:
+        return "failed", [{"code": "GENERATE_FAILED", "command_sha256": result.command_sha256}], payload, result.as_dict()
+
+    payload, _ = sanitize_generator_payload(payload, key_path)
+    return "ok", [], payload, result.as_dict()
+
+
+def generated_journal_metadata(
+    args: argparse.Namespace,
+    journal_path: Path,
+    status: str,
+) -> tuple[dict[str, Any] | None, str, list[dict[str, Any]]]:
     if status == "ok" and journal_path.exists():
         stat = journal_path.stat()
-        journal = {
+        return {
             "artifact": relative(journal_path),
             "size_bytes": stat.st_size,
             "sha256": sha256_file(journal_path),
@@ -913,12 +1011,23 @@ def generate_corpus(args: argparse.Namespace) -> dict[str, Any]:
             "final_state": args.final_state,
             "compact": args.compact,
             "sealed": args.sealed,
-        }
-    elif status == "ok":
-        status = "failed"
-        discrepancies.append({"code": "GENERATE_FAILED", "reason": "missing-output"})
+        }, status, []
+    if status == "ok":
+        return None, "failed", [{"code": "GENERATE_FAILED", "reason": "missing-output"}]
+    return None, status, []
 
-    report = {
+
+def generation_report(
+    args: argparse.Namespace,
+    build: dict[str, Any] | None,
+    journal: dict[str, Any] | None,
+    key_path: Path,
+    payload: dict[str, Any] | None,
+    command: dict[str, Any] | None,
+    status: str,
+    discrepancies: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
         "schema": REPORT_SCHEMA,
         "kind": "generate",
         "created_at": utc_now(),
@@ -940,6 +1049,25 @@ def generate_corpus(args: argparse.Namespace) -> dict[str, Any]:
         "status": status,
         "discrepancies": discrepancies,
     }
+
+
+def generate_corpus(args: argparse.Namespace) -> dict[str, Any]:
+    out = args.out.resolve()
+    build = build_systemd(args) if args.sealed else ensure_build(args)
+    slug = version_slug(args.version)
+    case = version_slug(args.case)
+    reports_dir = out / "reports"
+    journal_path, key_path = prepare_generation_paths(args, out)
+    status, discrepancies, payload, command = run_generation_command(
+        args,
+        out,
+        corpus_generator_path(build),
+        journal_path,
+        key_path,
+    )
+    journal, status, journal_discrepancies = generated_journal_metadata(args, journal_path, status)
+    discrepancies.extend(journal_discrepancies)
+    report = generation_report(args, build, journal, key_path, payload, command, status, discrepancies)
     write_json(reports_dir / f"generate-{slug}-{case}.json", report)
     write_markdown_report(reports_dir / f"generate-{slug}-{case}.md", report)
     return report
@@ -1042,13 +1170,7 @@ def compare_readers(
     results: list[dict[str, Any]],
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], list[dict[str, Any]]]:
     readers = [row for row in results if row.get("kind") == "reader" and row.get("status") == "ok"]
-    baseline = None
-    for preferred in ("stock_journalctl_read", "version_journalctl_read"):
-        baseline = next((row for row in readers if row.get("role") == preferred), None)
-        if baseline is not None:
-            break
-    if baseline is None and readers:
-        baseline = readers[0]
+    baseline = select_reader_baseline(readers)
     discrepancies: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
     if baseline is None:
@@ -1056,141 +1178,187 @@ def compare_readers(
     for row in readers:
         if row is baseline:
             continue
-        if row.get("logical_digest") != baseline.get("logical_digest"):
-            if (
-                row.get("role") == "version_journalctl_read"
-                and baseline.get("role") == "stock_journalctl_read"
-                and row.get("counts") == baseline.get("counts")
-            ):
-                observations.append(
-                    {
-                        "code": "VERSION_EXPORT_METADATA_DRIFT",
-                        "baseline": baseline.get("role"),
-                        "reader": row.get("role"),
-                        "baseline_digest": baseline.get("logical_digest"),
-                        "reader_digest": row.get("logical_digest"),
-                    }
-                )
-                continue
-            discrepancies.append(
-                {
-                    "code": "DIGEST_MISMATCH",
-                    "baseline": baseline.get("role"),
-                    "reader": row.get("role"),
-                    "baseline_digest": baseline.get("logical_digest"),
-                    "reader_digest": row.get("logical_digest"),
-                }
-            )
-        if row.get("counts") != baseline.get("counts"):
-            discrepancies.append(
-                {
-                    "code": "COUNT_MISMATCH",
-                    "baseline": baseline.get("role"),
-                    "reader": row.get("role"),
-                }
-            )
+        row_discrepancies, row_observations = compare_reader_row(row, baseline)
+        discrepancies.extend(row_discrepancies)
+        observations.extend(row_observations)
     return baseline, discrepancies, observations
 
 
-def test_matrix(args: argparse.Namespace) -> dict[str, Any]:
-    out = args.out.resolve()
-    env = matrix_env(out)
-    explicit_version_journalctl = getattr(args, "version_journalctl", None)
-    build = None if explicit_version_journalctl else ensure_build(args)
-    rust_digest, go_digest, sdk_build = sdk_tool_paths(out, args.timeout)
-    slug = version_slug(args.version)
-    case = version_slug(args.case)
-    reports_dir = out / "reports"
+def select_reader_baseline(readers: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for preferred in ("stock_journalctl_read", "version_journalctl_read"):
+        baseline = next((row for row in readers if row.get("role") == preferred), None)
+        if baseline is not None:
+            return baseline
+    return readers[0] if readers else None
+
+
+def is_version_metadata_drift(row: dict[str, Any], baseline: dict[str, Any]) -> bool:
+    return (
+        row.get("role") == "version_journalctl_read"
+        and baseline.get("role") == "stock_journalctl_read"
+        and row.get("counts") == baseline.get("counts")
+    )
+
+
+def digest_mismatch(row: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "code": "DIGEST_MISMATCH",
+        "baseline": baseline.get("role"),
+        "reader": row.get("role"),
+        "baseline_digest": baseline.get("logical_digest"),
+        "reader_digest": row.get("logical_digest"),
+    }
+
+
+def metadata_drift_observation(row: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
+    observation = digest_mismatch(row, baseline)
+    observation["code"] = "VERSION_EXPORT_METADATA_DRIFT"
+    return observation
+
+
+def count_mismatch(row: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "code": "COUNT_MISMATCH",
+        "baseline": baseline.get("role"),
+        "reader": row.get("role"),
+    }
+
+
+def compare_reader_row(
+    row: dict[str, Any],
+    baseline: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    discrepancies: list[dict[str, Any]] = []
+    observations: list[dict[str, Any]] = []
+    if row.get("logical_digest") != baseline.get("logical_digest"):
+        if is_version_metadata_drift(row, baseline):
+            observations.append(metadata_drift_observation(row, baseline))
+        else:
+            discrepancies.append(digest_mismatch(row, baseline))
+    if row.get("counts") != baseline.get("counts"):
+        discrepancies.append(count_mismatch(row, baseline))
+    return discrepancies, observations
+
+REQUIRED_MATRIX_ROLES = {
+    "stock_journalctl_verify",
+    "stock_journalctl_read",
+    "rust_sdk_read",
+    "go_sdk_read",
+    "python_sdk_read",
+    "node_sdk_read",
+}
+
+ROLE_FAILURE_CODES = {
+    "version_journalctl_verify": "VERSION_VERIFY_FAILED",
+    "stock_journalctl_verify": "STOCK_VERIFY_FAILED",
+    "version_journalctl_read": "VERSION_READ_FAILED",
+    "stock_journalctl_read": "STOCK_READ_FAILED",
+    "rust_sdk_read": "RUST_READ_FAILED",
+    "go_sdk_read": "GO_READ_FAILED",
+    "python_sdk_read": "PYTHON_READ_FAILED",
+    "node_sdk_read": "NODE_READ_FAILED",
+}
+
+
+def matrix_journal_path(args: argparse.Namespace, out: Path) -> Path:
     journal_path = args.journal or generated_journal_path(out, args.version, args.case)
     journal_path = require_under(journal_path, out, "--journal input")
     if not journal_path.exists():
         raise SystemExit(f"journal input does not exist: {journal_path}")
-    key_path = getattr(args, "verify_key_file", None) or verification_key_path(out, args.version, args.case)
-    verification_key = None
-    verification_key_info = None
-    if key_path.exists():
-        verification_key = key_path.read_text(encoding="utf-8").strip()
-        verification_key_info = {
-            "present": True,
-            "artifact": relative(key_path),
-            "sha256": sha256_file(key_path),
-        }
+    return journal_path
 
-    artifacts = build.get("artifacts", {}) if build else {}
+
+def read_verification_key(args: argparse.Namespace, out: Path) -> tuple[str | None, dict[str, Any] | None]:
+    key_path = getattr(args, "verify_key_file", None) or verification_key_path(out, args.version, args.case)
+    if not key_path.exists():
+        return None, None
+    return key_path.read_text(encoding="utf-8").strip(), {
+        "present": True,
+        "artifact": relative(key_path),
+        "sha256": sha256_file(key_path),
+    }
+
+
+def version_journalctl_path(args: argparse.Namespace, build: dict[str, Any] | None) -> Path | None:
+    explicit_version_journalctl = getattr(args, "version_journalctl", None)
     if explicit_version_journalctl:
-        version_journalctl = explicit_version_journalctl.resolve()
-    else:
-        version_journalctl = ROOT / artifacts["journalctl"] if artifacts.get("journalctl") else None
-    stock_journalctl = shutil.which("journalctl")
-    results: list[dict[str, Any]] = []
-    discrepancies: list[dict[str, Any]] = []
-    tools: dict[str, Any] = {
+        return explicit_version_journalctl.resolve()
+    artifacts = build.get("artifacts", {}) if build else {}
+    return ROOT / artifacts["journalctl"] if artifacts.get("journalctl") else None
+
+
+def matrix_tools(sdk_build: dict[str, Any], out: Path) -> dict[str, Any]:
+    return {
         "sdk_build": {
             "status": sdk_build.get("status"),
             "report": relative(out / "reports" / "sdk-tools.json"),
         }
     }
 
-    if version_journalctl and version_journalctl.exists():
-        tools["version_journalctl"] = journalctl_version(version_journalctl, env, args.timeout)
-        results.append(
-            verify_with_journalctl(
-                "version_journalctl_verify",
-                version_journalctl,
-                journal_path,
-                env=env,
-                timeout=args.timeout,
-                verification_key=verification_key,
-            )
-        )
-        results.append(
-            read_with_journalctl(
-                "version_journalctl_read",
-                version_journalctl,
-                journal_path,
-                env=env,
-                timeout=args.timeout,
-            )
-        )
-    else:
+
+def add_version_journalctl_results(
+    args: argparse.Namespace,
+    env: dict[str, str],
+    tools: dict[str, Any],
+    results: list[dict[str, Any]],
+    discrepancies: list[dict[str, Any]],
+    version_journalctl: Path | None,
+    journal_path: Path,
+    verification_key: str | None,
+) -> None:
+    if not version_journalctl or not version_journalctl.exists():
         discrepancies.append({"code": "VERSION_JOURNALCTL_UNAVAILABLE"})
         tools["version_journalctl"] = {"available": False}
+        return
+    tools["version_journalctl"] = journalctl_version(version_journalctl, env, args.timeout)
+    results.append(verify_with_journalctl("version_journalctl_verify", version_journalctl, journal_path, env=env, timeout=args.timeout, verification_key=verification_key))
+    results.append(read_with_journalctl("version_journalctl_read", version_journalctl, journal_path, env=env, timeout=args.timeout))
 
-    if stock_journalctl:
-        tools["stock_journalctl"] = journalctl_version(stock_journalctl, env, args.timeout)
-        results.append(
-            verify_with_journalctl(
-                "stock_journalctl_verify",
-                stock_journalctl,
-                journal_path,
-                env=env,
-                timeout=args.timeout,
-                verification_key=verification_key,
-            )
-        )
-        results.append(
-            read_with_journalctl(
-                "stock_journalctl_read",
-                stock_journalctl,
-                journal_path,
-                env=env,
-                timeout=args.timeout,
-            )
-        )
-    else:
+
+def add_stock_journalctl_results(
+    args: argparse.Namespace,
+    env: dict[str, str],
+    tools: dict[str, Any],
+    results: list[dict[str, Any]],
+    discrepancies: list[dict[str, Any]],
+    journal_path: Path,
+    verification_key: str | None,
+) -> None:
+    stock_journalctl = shutil.which("journalctl")
+    if not stock_journalctl:
         discrepancies.append({"code": "MISSING_TOOL", "tool": "journalctl"})
         tools["stock_journalctl"] = {"available": False}
+        return
+    tools["stock_journalctl"] = journalctl_version(stock_journalctl, env, args.timeout)
+    results.append(verify_with_journalctl("stock_journalctl_verify", stock_journalctl, journal_path, env=env, timeout=args.timeout, verification_key=verification_key))
+    results.append(read_with_journalctl("stock_journalctl_read", stock_journalctl, journal_path, env=env, timeout=args.timeout))
 
+
+def add_compiled_sdk_readers(
+    args: argparse.Namespace,
+    env: dict[str, str],
+    results: list[dict[str, Any]],
+    discrepancies: list[dict[str, Any]],
+    journal_path: Path,
+    rust_digest: Path,
+    go_digest: Path,
+) -> None:
     if rust_digest.exists():
-        results.append(
-            read_with_sdk("rust_sdk_read", rust_digest, journal_path, env=env, timeout=args.timeout)
-        )
+        results.append(read_with_sdk("rust_sdk_read", rust_digest, journal_path, env=env, timeout=args.timeout))
     else:
         discrepancies.append({"code": "BUILD_FAILED", "tool": "rust-corpus-digest"})
     if go_digest.exists():
         results.append(read_with_sdk("go_sdk_read", go_digest, journal_path, env=env, timeout=args.timeout))
     else:
         discrepancies.append({"code": "BUILD_FAILED", "tool": "go-corpus-digest"})
+
+
+def add_python_reader(
+    args: argparse.Namespace,
+    env: dict[str, str],
+    results: list[dict[str, Any]],
+    journal_path: Path,
+) -> None:
     results.append(
         read_with_export_command(
             "python_sdk_read",
@@ -1205,65 +1373,67 @@ def test_matrix(args: argparse.Namespace) -> dict[str, Any]:
             timeout=args.timeout,
         )
     )
-    node = shutil.which("node")
-    if node:
-        results.append(
-            read_with_export_command(
-                "node_sdk_read",
-                [
-                    node,
-                    str(ROOT / "node" / "cmd" / "journalctl" / "index.js"),
-                    "--file",
-                    str(journal_path),
-                    "--output",
-                    "export",
-                ],
-                env=env,
-                timeout=args.timeout,
-            )
-        )
-    else:
-        discrepancies.append({"code": "MISSING_TOOL", "tool": "node"})
 
+
+def add_node_reader(
+    args: argparse.Namespace,
+    env: dict[str, str],
+    results: list[dict[str, Any]],
+    discrepancies: list[dict[str, Any]],
+    journal_path: Path,
+) -> None:
+    node = shutil.which("node")
+    if not node:
+        discrepancies.append({"code": "MISSING_TOOL", "tool": "node"})
+        return
+    results.append(
+        read_with_export_command(
+            "node_sdk_read",
+            [
+                node,
+                str(ROOT / "node" / "cmd" / "journalctl" / "index.js"),
+                "--file",
+                str(journal_path),
+                "--output",
+                "export",
+            ],
+            env=env,
+            timeout=args.timeout,
+        )
+    )
+
+
+def append_failed_result_discrepancies(results: list[dict[str, Any]], discrepancies: list[dict[str, Any]]) -> None:
     for row in results:
         if row.get("status") == "ok":
             continue
-        role = row.get("role")
-        if role == "version_journalctl_verify":
-            discrepancies.append({"code": "VERSION_VERIFY_FAILED", "role": role})
-        elif role == "stock_journalctl_verify":
-            discrepancies.append({"code": "STOCK_VERIFY_FAILED", "role": role})
-        elif role == "version_journalctl_read":
-            discrepancies.append({"code": "VERSION_READ_FAILED", "role": role})
-        elif role == "stock_journalctl_read":
-            discrepancies.append({"code": "STOCK_READ_FAILED", "role": role})
-        elif role == "rust_sdk_read":
-            discrepancies.append({"code": "RUST_READ_FAILED", "role": role})
-        elif role == "go_sdk_read":
-            discrepancies.append({"code": "GO_READ_FAILED", "role": role})
-        elif role == "python_sdk_read":
-            discrepancies.append({"code": "PYTHON_READ_FAILED", "role": role})
-        elif role == "node_sdk_read":
-            discrepancies.append({"code": "NODE_READ_FAILED", "role": role})
+        code = ROLE_FAILURE_CODES.get(str(row.get("role")))
+        if code:
+            discrepancies.append({"code": code, "role": row.get("role")})
 
-    baseline, compare_discrepancies, observations = compare_readers(results)
-    discrepancies.extend(compare_discrepancies)
-    required_roles = {
-        "stock_journalctl_verify",
-        "stock_journalctl_read",
-        "rust_sdk_read",
-        "go_sdk_read",
-        "python_sdk_read",
-        "node_sdk_read",
-    }
-    present_ok = {
+
+def present_required_roles(results: list[dict[str, Any]]) -> set[str]:
+    return {
         str(row.get("role"))
         for row in results
-        if row.get("role") in required_roles and row.get("status") == "ok"
+        if row.get("role") in REQUIRED_MATRIX_ROLES and row.get("status") == "ok"
     }
-    status = "ok" if not discrepancies and present_ok == required_roles else "failed"
+
+
+def matrix_report(
+    args: argparse.Namespace,
+    build: dict[str, Any] | None,
+    journal_path: Path,
+    tools: dict[str, Any],
+    verification_key_info: dict[str, Any] | None,
+    results: list[dict[str, Any]],
+    observations: list[dict[str, Any]],
+    discrepancies: list[dict[str, Any]],
+    status: str,
+    baseline: dict[str, Any] | None,
+) -> dict[str, Any]:
     stat = journal_path.stat()
-    report = {
+    return {
         "schema": REPORT_SCHEMA,
         "kind": "reader-matrix",
         "created_at": utc_now(),
@@ -1283,14 +1453,38 @@ def test_matrix(args: argparse.Namespace) -> dict[str, Any]:
         "status": status,
         "discrepancies": discrepancies,
     }
+
+
+def test_matrix(args: argparse.Namespace) -> dict[str, Any]:
+    out = args.out.resolve()
+    env = matrix_env(out)
+    build = None if getattr(args, "version_journalctl", None) else ensure_build(args)
+    rust_digest, go_digest, sdk_build = sdk_tool_paths(out, args.timeout)
+    journal_path = matrix_journal_path(args, out)
+    verification_key, verification_key_info = read_verification_key(args, out)
+    tools = matrix_tools(sdk_build, out)
+    results: list[dict[str, Any]] = []
+    discrepancies: list[dict[str, Any]] = []
+
+    add_version_journalctl_results(args, env, tools, results, discrepancies, version_journalctl_path(args, build), journal_path, verification_key)
+    add_stock_journalctl_results(args, env, tools, results, discrepancies, journal_path, verification_key)
+    add_compiled_sdk_readers(args, env, results, discrepancies, journal_path, rust_digest, go_digest)
+    add_python_reader(args, env, results, journal_path)
+    add_node_reader(args, env, results, discrepancies, journal_path)
+    append_failed_result_discrepancies(results, discrepancies)
+    baseline, compare_discrepancies, observations = compare_readers(results)
+    discrepancies.extend(compare_discrepancies)
+    status = "ok" if not discrepancies and present_required_roles(results) == REQUIRED_MATRIX_ROLES else "failed"
+    report = matrix_report(args, build, journal_path, tools, verification_key_info, results, observations, discrepancies, status, baseline)
+    slug = version_slug(args.version)
+    case = version_slug(args.case)
+    reports_dir = out / "reports"
     write_json(reports_dir / f"matrix-{slug}-{case}.json", report)
     write_markdown_report(reports_dir / f"matrix-{slug}-{case}.md", report)
     return report
 
 
-def write_markdown_report(path: Path, report: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lines: list[str] = []
+def append_markdown_header(lines: list[str], report: dict[str, Any]) -> None:
     kind = report.get("kind", "report")
     status = report.get("status", "unknown")
     lines.append(f"# systemd matrix {kind}")
@@ -1311,6 +1505,9 @@ def write_markdown_report(path: Path, report: dict[str, Any]) -> None:
     if report.get("baseline"):
         lines.append(f"- Baseline reader: `{report['baseline'].get('role')}`")
     lines.append("")
+
+
+def append_markdown_discrepancies(lines: list[str], report: dict[str, Any]) -> None:
     discrepancies = report.get("discrepancies") or []
     lines.append("## Discrepancies")
     if discrepancies:
@@ -1319,6 +1516,9 @@ def write_markdown_report(path: Path, report: dict[str, Any]) -> None:
             lines.append(f"- `{code}`: {DISCREPANCY_CODES.get(code, 'see JSON report')}")
     else:
         lines.append("- `OK`: no discrepancy detected")
+
+
+def append_markdown_observations(lines: list[str], report: dict[str, Any]) -> None:
     observations = report.get("observations") or []
     if observations:
         lines.append("")
@@ -1326,31 +1526,48 @@ def write_markdown_report(path: Path, report: dict[str, Any]) -> None:
         for item in observations:
             code = item.get("code", "UNKNOWN")
             lines.append(f"- `{code}`: {DISCREPANCY_CODES.get(code, 'see JSON report')}")
+
+
+def markdown_result_row(row: dict[str, Any]) -> str:
+    counts = row.get("counts") if isinstance(row.get("counts"), dict) else {}
+    digest = str(row.get("logical_digest") or "")
+    digest_prefix = f"`{digest[:16]}`" if digest else ""
+    return (
+        "| "
+        + " | ".join(
+            [
+                f"`{row.get('role')}`",
+                f"`{row.get('kind')}`",
+                f"`{row.get('status')}`",
+                str(counts.get("entries", "")),
+                str(counts.get("payloads", "")),
+                digest_prefix,
+            ]
+        )
+        + " |"
+    )
+
+
+def append_markdown_results(lines: list[str], report: dict[str, Any]) -> None:
     results = report.get("results")
-    if isinstance(results, list):
-        lines.append("")
-        lines.append("## Results")
-        lines.append("")
-        lines.append("| Role | Kind | Status | Entries | Payloads | Digest |")
-        lines.append("| --- | --- | --- | ---: | ---: | --- |")
-        for row in results:
-            counts = row.get("counts") if isinstance(row.get("counts"), dict) else {}
-            digest = str(row.get("logical_digest") or "")
-            digest_prefix = f"`{digest[:16]}`" if digest else ""
-            lines.append(
-                "| "
-                + " | ".join(
-                    [
-                        f"`{row.get('role')}`",
-                        f"`{row.get('kind')}`",
-                        f"`{row.get('status')}`",
-                        str(counts.get("entries", "")),
-                        str(counts.get("payloads", "")),
-                        digest_prefix,
-                    ]
-                )
-                + " |"
-            )
+    if not isinstance(results, list):
+        return
+    lines.append("")
+    lines.append("## Results")
+    lines.append("")
+    lines.append("| Role | Kind | Status | Entries | Payloads | Digest |")
+    lines.append("| --- | --- | --- | ---: | ---: | --- |")
+    for row in results:
+        lines.append(markdown_result_row(row))
+
+
+def write_markdown_report(path: Path, report: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    append_markdown_header(lines, report)
+    append_markdown_discrepancies(lines, report)
+    append_markdown_observations(lines, report)
+    append_markdown_results(lines, report)
     lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
 

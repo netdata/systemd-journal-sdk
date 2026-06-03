@@ -1978,6 +1978,47 @@ Batch 27:
   - Refreshed full `tests/` Lizard inventory now reports 10 critical findings:
     `tests/systemd_matrix`: 6 and `tests/vm_matrix`: 4.
 
+Batch 28:
+
+- Scope: final local critical complexity findings in
+  `tests/systemd_matrix/run_systemd_matrix.py` and
+  `tests/vm_matrix/run_vm_matrix.py`.
+- Changes:
+  - Refactored `tests/systemd_matrix/run_systemd_matrix.py` by extracting
+    streaming digest subprocess lifecycle helpers, systemd source patching
+    helpers, corpus-generation helpers, reader baseline/comparison helpers,
+    matrix result collection helpers, and Markdown rendering helpers.
+  - Refactored `tests/vm_matrix/run_vm_matrix.py` by extracting preflight tool
+    and target-row helpers, VM IP discovery parsing helpers, per-case reader
+    validation helpers, and Markdown rendering helpers.
+- Validation:
+  - `python3 -m py_compile tests/systemd_matrix/run_systemd_matrix.py
+    tests/vm_matrix/run_vm_matrix.py` passed.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for
+    `tests/systemd_matrix/run_systemd_matrix.py` and
+    `tests/vm_matrix/run_vm_matrix.py`.
+  - CLI help smoke checks passed for `tests/systemd_matrix/run_systemd_matrix.py`,
+    `tests/systemd_matrix/run_systemd_matrix.py summarize`,
+    `tests/systemd_matrix/run_systemd_matrix.py test`,
+    `tests/vm_matrix/run_vm_matrix.py`,
+    `tests/vm_matrix/run_vm_matrix.py validate`, and
+    `tests/vm_matrix/run_vm_matrix.py preflight`.
+  - Systemd matrix summarize smoke passed:
+    `python3 tests/systemd_matrix/run_systemd_matrix.py summarize --report
+    .local/systemd-matrix/reports/matrix-v260.1-smoke.json --markdown
+    .local/sow-0084-systemd-matrix-summary-smoke.md` returned status `ok` and
+    empty discrepancy/observation code lists.
+  - VM matrix validation smoke passed against existing repo-local
+    `.local/sow-0075` raw data:
+    `PYTHONPATH=.local/python-deps python3 tests/vm_matrix/run_vm_matrix.py
+    validate --targets ubuntu1804 --report-json
+    .local/sow-0084-vm-validate-smoke.json --report-md
+    .local/sow-0084-vm-validate-smoke.md` returned status `ok` with no
+    discrepancies.
+  - Final local whole-repository Lizard run with `-C 12 -L 100 -a 12 -w .`
+    completed with no warnings. The local critical complexity inventory is now
+    zero at this threshold.
+
 Reviewer findings:
 
 - Pending. The current SOW is not ready for terminal reviewer review because
@@ -2047,8 +2088,6 @@ Follow-up mapping:
   - reconcile the user's observed 3056 UI count with the CLI-confirmed
     `master` count of 1502 quality issues after commit `99d2b08`;
   - group and triage the exported `master` cloud findings;
-  - continue complexity remediation for the remaining `tests/systemd_matrix`
-    and `tests/vm_matrix` scanner findings;
   - fix or minimally suppress every actionable non-complexity finding;
   - run GitHub workflows after push and record CodeQL/Codacy results;
   - switch from reporting-only to enforcement after the actionable baseline is
