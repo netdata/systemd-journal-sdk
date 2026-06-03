@@ -100,7 +100,7 @@ these inputs:
 
 - `/proc`
 - `/host/proc`
-- Linux machine-id identity files, including `/etc/machine-id`
+- Linux system identity files used by systemd, including `/etc/machine-id`
 - platform registries
 - `sysctl`
 - `system_profiler`
@@ -160,7 +160,7 @@ Canonical external-agent prompt block:
 
 ```text
 CRITICAL REPOSITORY BOUNDARY:
-- DO NOT MAKE CHANGES OUTSIDE THIS REPOSITORY FOR ANY REASON.
+- Do not make changes outside this repository for any reason.
 - Repository path: current repository root.
 - You may inspect external references read-only when the task requires it.
 - Write, edit, delete, move, reset, checkout, install, generate, cache, or format nothing outside this repository.

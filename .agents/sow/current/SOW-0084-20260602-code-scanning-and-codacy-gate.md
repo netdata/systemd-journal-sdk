@@ -254,7 +254,7 @@ Repository boundary block for every external-agent prompt:
 
 ```text
 CRITICAL REPOSITORY BOUNDARY:
-- DO NOT MAKE CHANGES OUTSIDE THIS REPOSITORY FOR ANY REASON.
+- Do not make changes outside this repository for any reason.
 - Repository path: current repository root.
 - You may inspect external references read-only when the task requires it.
 - Write, edit, delete, move, reset, checkout, install, generate, cache, or format nothing outside this repository.
@@ -895,6 +895,20 @@ Real-use evidence:
   `Agentlinter_clarity_no-vague-instructions`, and
   `Agentlinter_clarity_naked-conditional` rows by adding glossary entries,
   making exception paths explicit, and replacing vague host-identity wording.
+- Codacy cloud export after `939692c` reported 1354 quality issues and 144
+  security findings on `master`. `Prospector_pycodestyle` is now 0, the
+  hardcoded `strftime` rule remains 0, and the AGENTS clarity group is down to
+  two rows.
+- GitHub workflow runs for `939692c` both completed successfully: CodeQL run
+  `26857062135` and Codacy SARIF run `26857062200`.
+- Local template/instruction cleanup targets those two AGENTS clarity rows and
+  all 25 current `markdownlint_MD033` rows by replacing the last all-caps
+  repository-boundary sentence with sentence-case wording, replacing the vague
+  machine-id bullet with explicit systemd identity wording, and changing
+  SOW-template placeholders from angle brackets to bracket placeholders.
+- Local validation for the template/instruction cleanup passed
+  `rg -n "DO NOT MAKE CHANGES OUTSIDE THIS REPOSITORY|<[^>]+>"` on the edited
+  durable artifacts, `git diff --check`, and `.agents/sow/audit.sh`.
 
 Reviewer findings:
 
