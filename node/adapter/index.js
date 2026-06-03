@@ -2,7 +2,7 @@
 // Node.js conformance adapter: run, list, probe.
 // All output is synchronous JSON on stdout.
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { FileReader } from '../src/lib/reader.js';
@@ -19,14 +19,9 @@ import {
   SdJournalSeekHead,
   SdJournalTestCursor,
   exportEntry,
-  jsonEntry,
-  parseCursor,
 } from '../src/facade.js';
 import { parseMatchString } from '../src/lib/hash.js';
 import { verifyFile, verifyFileWithKey } from '../src/lib/verify.js';
-import { isJournalFileName } from '../src/lib/compress.js';
-import { readUint64LE, uuidToString, randomUUID, bufEqual } from '../src/lib/binary.js';
-import { HEADER_SIZE } from '../src/lib/header.js';
 
 const ADAPTER_VERSION = '0.1.0';
 

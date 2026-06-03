@@ -4,8 +4,7 @@ import { FileReader } from './lib/reader.js';
 import { DirectoryReader } from './lib/directory-reader.js';
 import { isJournalFileName } from './lib/compress.js';
 import { parseMatchString } from './lib/hash.js';
-import { readUint64LE, uuidToString } from './lib/binary.js';
-import { OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE } from './lib/header.js';
+import { uuidToString } from './lib/binary.js';
 import { TextDecoder } from 'node:util';
 
 const utf8Decoder = new TextDecoder('utf-8', { fatal: true });

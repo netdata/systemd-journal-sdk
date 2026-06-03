@@ -590,6 +590,24 @@ Tests or equivalent validation:
   cleanup.
 - `git diff --check`: passed after the small-rule cleanup.
 - `.agents/sow/audit.sh`: passed after the small-rule cleanup.
+- `node --check node/src/index.js node/src/facade.js node/adapter/index.js`:
+  passed after the Node unused-symbol cleanup.
+- `node -e "import('./node/src/index.js').then(...)"`: passed and verified
+  representative public Node exports: `SdJournalOpenFile`,
+  `SdJournalAddMatch`, `SdJournalQueryUnique`, `OUTPUT_MODE_DEFAULT`, and
+  `parseMatchString`.
+- `node node/adapter/index.js list`: passed and returned 15 adapter cases.
+- Manifest-backed Node adapter runs passed for `journal-match-boolean-logic`
+  and `journal-verify-sealed`.
+- `node node/cmd/journalctl/index.js --file fixtures/systemd/test-data/no-rtc/system.journal.zst --head 1 --output=json`:
+  passed after the Node unused-symbol cleanup.
+- Full `npm_config_cache=../.local/npm-cache npm test` in `node/` was attempted
+  again and stopped by exact PID after the known unrelated
+  `journal-corruption-append-resilient` adapter hang reproduced. The stopped
+  process tree was the `npm test` process started for this validation run.
+- Local ESLint verification was unavailable because `node/node_modules/.bin`
+  does not contain an ESLint binary; the unused-symbol group will be verified
+  by the next Codacy cloud export after push.
 - Local pinned Codacy package smoke:
   `@codacy/analysis-cli@0.8.1` installed under `.local/codacy-cli-test`;
   `codacy-analysis init --default .` succeeded; `codacy-analysis analyze .`
@@ -699,6 +717,11 @@ Real-use evidence:
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26856262152`.
   - Codacy SARIF: success, run URL
     `https://github.com/netdata/systemd-journal-sdk/actions/runs/26856262128`.
+- GitHub Actions workflow evidence collected from pushed commit `dfadb09`:
+  - CodeQL: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26856479837`.
+  - Codacy SARIF: success, run URL
+    `https://github.com/netdata/systemd-journal-sdk/actions/runs/26856479848`.
 - GitHub code scanning API returned 2053 open alerts after both workflows ran:
   by tool: Prospector 143, Agentlinter 240, PMD 50, lizard 955, PyLintPython3
   67, Bandit 111, Flawfinder 9, ESLint8 311, shellcheck 1, markdownlint 75,
@@ -829,6 +852,12 @@ Real-use evidence:
   list marker. The C fixes remove direct `strlen` calls in systemd helper code
   by carrying generated lengths or using a local C-string length helper for
   argv/static-string inputs.
+- Codacy cloud export after `dfadb09` reported 1436 quality issues and 144
+  security findings on `master`.
+- Local Node unused-symbol cleanup targets `ESLint8_no-unused-vars` and
+  `ESLint8_@typescript-eslint_no-unused-vars` by replacing import-then-export
+  patterns in the public Node index with direct re-exports and removing dead
+  imports from the Node facade and conformance adapter.
 
 Reviewer findings:
 
