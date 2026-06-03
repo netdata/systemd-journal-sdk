@@ -120,23 +120,34 @@ function readLockOwner(path) {
   if (lines.length < 4 || lines[0] !== LOCK_VERSION) {
     throw new Error('invalid lock metadata');
   }
+  const owner = parseLockOwnerLines(lines.slice(1));
+  validateLockOwner(owner);
+  return owner;
+}
+
+function parseLockOwnerLines(lines) {
   const owner = {};
-  for (const line of lines.slice(1)) {
+  for (const line of lines) {
     const index = line.indexOf('=');
     if (index < 0) continue;
-    const key = line.slice(0, index);
-    const value = line.slice(index + 1);
-    if (key === 'pid') owner.pid = Number.parseInt(value, 10);
-    if (key === 'boot_id') owner.bootId = value;
-    if (key === 'start_time') owner.startTime = value;
-    if (key === 'owner_id') owner.ownerId = value;
-    if (key === 'platform') owner.platform = value;
+    assignLockOwnerField(owner, line.slice(0, index), line.slice(index + 1));
   }
+  return owner;
+}
+
+function assignLockOwnerField(owner, key, value) {
+  if (key === 'pid') owner.pid = Number.parseInt(value, 10);
+  if (key === 'boot_id') owner.bootId = value;
+  if (key === 'start_time') owner.startTime = value;
+  if (key === 'owner_id') owner.ownerId = value;
+  if (key === 'platform') owner.platform = value;
+}
+
+function validateLockOwner(owner) {
   if (!Number.isSafeInteger(owner.pid) || owner.pid <= 0 || owner.startTime === undefined) {
     throw new Error('incomplete lock metadata');
   }
   if (owner.bootId === undefined) owner.bootId = '';
-  return owner;
 }
 
 function sameOwner(left, right) {

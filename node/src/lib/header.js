@@ -116,6 +116,14 @@ export function writeObjectHeader(buf, offset, type, flags, size) {
 
 // Parse the file header from a journal buffer.
 export function parseFileHeader(buf) {
+  const sig = validateFileHeaderPrefix(buf);
+  const header = parseFileHeaderBase(buf, sig);
+  validateDeclaredHeaderSize(buf, header);
+  parseOptionalHeaderFields(buf, header);
+  return header;
+}
+
+function validateFileHeaderPrefix(buf) {
   if (buf.length < HEADER_MIN_SIZE) {
     throw new Error(`header buffer too small: ${buf.length} < ${HEADER_MIN_SIZE}`);
   }
@@ -123,8 +131,12 @@ export function parseFileHeader(buf) {
   if (sig !== 'LPKSHHRH') {
     throw new Error('invalid journal signature');
   }
+  return sig;
+}
 
-  const header = {
+
+function parseFileHeaderBase(buf, sig) {
+  return {
     signature: sig,
     compatible_flags: buf.readUInt32LE(8),
     incompatible_flags: buf.readUInt32LE(12),
@@ -158,41 +170,54 @@ export function parseFileHeader(buf) {
     tail_entry_array_n_entries: 0,
     tail_entry_offset: 0n,
   };
+}
+
+
+function validateDeclaredHeaderSize(buf, header) {
   const requiredHeaderSize = Number(
     header.header_size < BigInt(HEADER_SIZE) ? header.header_size : BigInt(HEADER_SIZE),
   );
   if (buf.length < requiredHeaderSize) {
     throw new Error(`header buffer too small: ${buf.length} < ${requiredHeaderSize}`);
   }
-  if (headerContainsField(buf, header.header_size, 216)) {
-    header.n_data = readUint64LE(buf, 208);
-  }
-  if (headerContainsField(buf, header.header_size, 224)) {
-    header.n_fields = readUint64LE(buf, 216);
-  }
-  if (headerContainsField(buf, header.header_size, 232)) {
-    header.n_tags = readUint64LE(buf, 224);
-  }
-  if (headerContainsField(buf, header.header_size, 240)) {
-    header.n_entry_arrays = readUint64LE(buf, 232);
-  }
-  if (headerContainsField(buf, header.header_size, 248)) {
-    header.data_hash_chain_depth = readUint64LE(buf, 240);
-  }
-  if (headerContainsField(buf, header.header_size, 256)) {
-    header.field_hash_chain_depth = readUint64LE(buf, 248);
-  }
-  if (headerContainsField(buf, header.header_size, 260)) {
-    header.tail_entry_array_offset = buf.readUInt32LE(256);
-  }
-  if (headerContainsField(buf, header.header_size, 264)) {
-    header.tail_entry_array_n_entries = buf.readUInt32LE(260);
-  }
-  if (headerContainsField(buf, header.header_size, 272)) {
-    header.tail_entry_offset = readUint64LE(buf, 264);
-  }
-  return header;
 }
+
+
+function parseOptionalHeaderFields(buf, header) {
+  parseOptionalU64HeaderFields(buf, header);
+  parseOptionalU32HeaderFields(buf, header);
+}
+
+function parseOptionalU64HeaderFields(buf, header) {
+  for (const [name, offset, end] of OPTIONAL_U64_HEADER_FIELDS) {
+    if (headerContainsField(buf, header.header_size, end)) {
+      header[name] = readUint64LE(buf, offset);
+    }
+  }
+}
+
+function parseOptionalU32HeaderFields(buf, header) {
+  for (const [name, offset, end] of OPTIONAL_U32_HEADER_FIELDS) {
+    if (headerContainsField(buf, header.header_size, end)) {
+      header[name] = buf.readUInt32LE(offset);
+    }
+  }
+}
+
+const OPTIONAL_U64_HEADER_FIELDS = [
+  ['n_data', 208, 216],
+  ['n_fields', 216, 224],
+  ['n_tags', 224, 232],
+  ['n_entry_arrays', 232, 240],
+  ['data_hash_chain_depth', 240, 248],
+  ['field_hash_chain_depth', 248, 256],
+  ['tail_entry_offset', 264, 272],
+];
+
+const OPTIONAL_U32_HEADER_FIELDS = [
+  ['tail_entry_array_offset', 256, 260],
+  ['tail_entry_array_n_entries', 260, 264],
+];
 
 function headerContainsField(buf, headerSize, end) {
   return headerSize >= BigInt(end) && buf.length >= end;

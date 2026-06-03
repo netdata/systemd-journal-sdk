@@ -73,36 +73,40 @@ function jenkinsHashLittle2(data) {
   let a = (JENKINS_INIT + length) >>> 0;
   let b = a;
   let c = a;
+  [a, b, c, data] = jenkinsProcess12ByteBlocks(data, a, b, c);
+  if (data.length === 0) return [c >>> 0, b >>> 0];
+  [a, b, c] = jenkinsAddTailWords(data, a, b, c);
+  [a, b, c] = jenkinsFinal(a, b, c);
+  return [c >>> 0, b >>> 0];
+}
 
+function jenkinsProcess12ByteBlocks(data, a, b, c) {
   let i = 0;
-  while (i + 12 <= length) {
-    a = (a + (data[i] | (data[i+1] << 8) | (data[i+2] << 16) | (data[i+3] << 24))) >>> 0;
-    b = (b + (data[i+4] | (data[i+5] << 8) | (data[i+6] << 16) | (data[i+7] << 24))) >>> 0;
-    c = (c + (data[i+8] | (data[i+9] << 8) | (data[i+10] << 16) | (data[i+11] << 24))) >>> 0;
+  while (i + 12 <= data.length) {
+    a = (a + data.readUInt32LE(i)) >>> 0;
+    b = (b + data.readUInt32LE(i + 4)) >>> 0;
+    c = (c + data.readUInt32LE(i + 8)) >>> 0;
     [a, b, c] = jenkinsMix(a, b, c);
     i += 12;
   }
+  return [a, b, c, data.subarray(i)];
+}
 
-  const k = data.slice(i);
-  if (k.length === 0) return [c >>> 0, b >>> 0];
 
-  switch (k.length) {
-    case 12: c = (c + (k[11] << 24)) >>> 0; // fallthrough
-    case 11: c = (c + (k[10] << 16)) >>> 0;
-    case 10: c = (c + (k[9] << 8)) >>> 0;
-    case 9:  c = (c + k[8]) >>> 0;
-    case 8:  b = (b + (k[7] << 24)) >>> 0;
-    case 7:  b = (b + (k[6] << 16)) >>> 0;
-    case 6:  b = (b + (k[5] << 8)) >>> 0;
-    case 5:  b = (b + k[4]) >>> 0;
-    case 4:  a = (a + (k[3] << 24)) >>> 0;
-    case 3:  a = (a + (k[2] << 16)) >>> 0;
-    case 2:  a = (a + (k[1] << 8)) >>> 0;
-    case 1:  a = (a + k[0]) >>> 0;
+function jenkinsAddTailWords(data, a, b, c) {
+  a = (a + tailWord(data, 0)) >>> 0;
+  b = (b + tailWord(data, 4)) >>> 0;
+  c = (c + tailWord(data, 8)) >>> 0;
+  return [a, b, c];
+}
+
+function tailWord(data, start) {
+  let word = 0;
+  const end = Math.min(start + 4, data.length);
+  for (let pos = start; pos < end; pos++) {
+    word |= data[pos] << (8 * (pos - start));
   }
-
-  [a, b, c] = jenkinsFinal(a, b, c);
-  return [c >>> 0, b >>> 0];
+  return word >>> 0;
 }
 
 function jenkinsMix(a, b, c) {
@@ -132,22 +136,40 @@ function rotl32(v, n) {
 
 // Validate and parse a match string (FIELD=value).
 export function parseMatchString(s) {
+  const field = matchFieldName(s);
+  validateMatchFieldName(field);
+  return Buffer.from(s, 'binary');
+}
+
+function matchFieldName(s) {
+  validateMatchShape(s);
+  return s.slice(0, s.indexOf('='));
+}
+
+function validateMatchShape(s) {
   if (s === '') throw new Error('EINVAL: empty match string');
   if (s === '=') throw new Error('EINVAL: missing field name');
   if (s.startsWith('=')) throw new Error('EINVAL: field name cannot start with =');
-
   const eq = s.indexOf('=');
   if (eq < 0) throw new Error('EINVAL: missing = separator');
+}
 
-  const field = s.slice(0, eq);
+
+function validateMatchFieldName(field) {
   if (field === '') throw new Error('EINVAL: empty field name');
   if (field.length > 64) throw new Error('EINVAL: field name too long');
-  if (field[0] >= '0' && field[0] <= '9') throw new Error(`EINVAL: invalid field name "${field}"`);
+  if (fieldStartsWithDigit(field)) throw new Error(`EINVAL: invalid field name "${field}"`);
   for (let i = 0; i < field.length; i++) {
-    const c = field.charCodeAt(i);
-    if (c !== 0x5f && !(c >= 0x41 && c <= 0x5a) && !(c >= 0x30 && c <= 0x39)) {
+    if (!validFieldNameChar(field.charCodeAt(i))) {
       throw new Error(`EINVAL: invalid field name "${field}"`);
     }
   }
-  return Buffer.from(s, 'binary');
+}
+
+function fieldStartsWithDigit(field) {
+  return field[0] >= '0' && field[0] <= '9';
+}
+
+function validFieldNameChar(c) {
+  return c === 0x5f || (c >= 0x41 && c <= 0x5a) || (c >= 0x30 && c <= 0x39);
 }

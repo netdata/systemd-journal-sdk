@@ -1474,6 +1474,29 @@ Complexity remediation evidence:
   - Refreshed local all-tracked-file Lizard inventory now reports 203 critical
     findings, down from 213 after Batch 12. Python has no remaining critical
     Lizard findings.
+- Batch 14, first Node.js core runtime findings:
+  - Refactored `node/src/lib/hash.js` Jenkins lookup3 hashing into
+    12-byte-block and tail-word helpers and split `parseMatchString()` field
+    validation without changing accepted field-name rules or error strings.
+  - Refactored `node/src/lib/header.js` file-header parsing into prefix,
+    base-header, declared-size, and optional-field table helpers without
+    changing historical-header field interpretation.
+  - Refactored `node/src/lib/lock.js` lock-owner metadata parsing into parse,
+    assign, and validate helpers without changing optional helper lock-file
+    semantics.
+  - Refactored `node/src/lib/fss.js` Miller-Rabin probable-prime testing into
+    power-of-two decomposition, bounded-base selection, and witness helpers
+    without changing the deterministic witness base list or default round
+    count.
+  - `node --check node/src/lib/hash.js node/src/lib/header.js
+    node/src/lib/lock.js node/src/lib/fss.js` passed.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for
+    `node/src/lib/hash.js`, `node/src/lib/header.js`,
+    `node/src/lib/lock.js`, and `node/src/lib/fss.js`.
+  - `npm_config_cache=../.local/npm-cache timeout 300 npm test` in `node/`
+    passed.
+  - Refreshed local all-tracked-file Lizard inventory now reports 199 critical
+    findings, down from 203 after Batch 13.
 
 Reviewer findings:
 

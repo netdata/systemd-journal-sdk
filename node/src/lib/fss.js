@@ -132,38 +132,46 @@ function isProbablePrime(n, rounds = 64) {
   if (n === 2n || n === 3n) return true;
   if (n % 2n === 0n) return false;
 
-  let d = n - 1n;
+  const { d, r } = decomposePowerOfTwoFactor(n - 1n);
+  for (const base of millerRabinBases(rounds)) {
+    if (base < n && !millerRabinWitnessPasses(base, n, d, r)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function decomposePowerOfTwoFactor(value) {
+  let d = value;
   let r = 0;
   while (d % 2n === 0n) {
     d /= 2n;
     r += 1;
   }
-
-  const bases = [
-    2n, 3n, 5n, 7n, 11n, 13n, 17n, 19n, 23n, 29n, 31n, 37n, 41n, 43n, 47n, 53n,
-    59n, 61n, 67n, 71n, 73n, 79n, 83n, 89n, 97n, 101n, 103n, 107n, 109n, 113n,
-    127n, 131n, 137n, 139n, 149n, 151n, 157n, 163n, 167n, 173n, 179n, 181n,
-    191n, 193n, 197n, 199n, 211n, 223n, 227n, 229n, 233n, 239n, 241n, 251n,
-    257n, 263n, 269n, 271n, 277n, 281n, 283n, 293n, 307n, 311n,
-  ];
-  for (let i = 0; i < rounds && i < bases.length; i++) {
-    const a = bases[i];
-    if (a >= n) continue;
-    let x = modPow(a, d, n);
-    if (x === 1n || x === n - 1n) continue;
-    let cont = false;
-    for (let j = 1; j < r; j++) {
-      x = modPow(x, 2n, n);
-      if (x === n - 1n) {
-        cont = true;
-        break;
-      }
-    }
-    if (cont) continue;
-    return false;
-  }
-  return true;
+  return { d, r };
 }
+
+function millerRabinBases(rounds) {
+  return MILLER_RABIN_BASES.slice(0, Math.min(rounds, MILLER_RABIN_BASES.length));
+}
+
+function millerRabinWitnessPasses(a, n, d, r) {
+  let x = modPow(a, d, n);
+  if (x === 1n || x === n - 1n) return true;
+  for (let j = 1; j < r; j++) {
+    x = modPow(x, 2n, n);
+    if (x === n - 1n) return true;
+  }
+  return false;
+}
+
+const MILLER_RABIN_BASES = [
+  2n, 3n, 5n, 7n, 11n, 13n, 17n, 19n, 23n, 29n, 31n, 37n, 41n, 43n, 47n, 53n,
+  59n, 61n, 67n, 71n, 73n, 79n, 83n, 89n, 97n, 101n, 103n, 107n, 109n, 113n,
+  127n, 131n, 137n, 139n, 149n, 151n, 157n, 163n, 167n, 173n, 179n, 181n,
+  191n, 193n, 197n, 199n, 211n, 223n, 227n, 229n, 233n, 239n, 241n, 251n,
+  257n, 263n, 269n, 271n, 277n, 281n, 283n, 293n, 307n, 311n,
+];
 
 function genPrime3Mod4(bits, seed, idx) {
   const buflen = bits / 8;
