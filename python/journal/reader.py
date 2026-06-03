@@ -119,135 +119,192 @@ class FileReader:
         offsets = []
         offset = self._header['entry_array_offset']
         remaining = self._header['n_entries']
+        seen = set()
 
         while offset != 0 and remaining > 0:
-            oh = parse_object_header(self._buffer, offset)
-            if not oh or oh['type'] != OBJECT_TYPE_ENTRY_ARRAY:
+            if offset in seen:
+                raise ValueError('entry array chain contains a cycle')
+            seen.add(offset)
+
+            array = self._read_entry_array_object(offset)
+            if array is None:
                 break
-            obj_size = oh['size']
-            if obj_size < OFFSET_ARRAY_OBJECT_HEADER_SIZE:
-                break
-            next_offset = _UNPACK_U64_FROM(self._buffer, offset + 16)[0]
-            item_size = self._offset_array_item_size_value
-            if (obj_size - OFFSET_ARRAY_OBJECT_HEADER_SIZE) % item_size != 0:
-                raise ValueError('entry array item payload has invalid compact alignment')
-            capacity = (obj_size - OFFSET_ARRAY_OBJECT_HEADER_SIZE) // item_size
 
-            to_read = min(remaining, capacity)
-            data_start = offset + OFFSET_ARRAY_OBJECT_HEADER_SIZE
-
-            for i in range(to_read):
-                item_offset = data_start + i * item_size
-                if self._compact:
-                    entry_off = _UNPACK_U32_FROM(self._buffer, item_offset)[0]
-                else:
-                    entry_off = _UNPACK_U64_FROM(self._buffer, item_offset)[0]
-                if entry_off != 0 and self._valid_entry_offset(entry_off):
-                    offsets.append(entry_off)
-
+            to_read = min(remaining, array['capacity'])
+            self._append_entry_array_offsets(offsets, array, to_read)
             remaining -= to_read
-            offset = next_offset
+            offset = self._next_entry_array_offset(offset, array['next_offset'])
 
         return offsets
+
+    def _read_entry_array_object(self, offset):
+        oh = parse_object_header(self._buffer, offset)
+        if not oh or oh['type'] != OBJECT_TYPE_ENTRY_ARRAY:
+            return None
+
+        obj_size = oh['size']
+        if obj_size <= OFFSET_ARRAY_OBJECT_HEADER_SIZE:
+            raise ValueError('entry array object has no item capacity')
+
+        item_size = self._offset_array_item_size_value
+        item_bytes = obj_size - OFFSET_ARRAY_OBJECT_HEADER_SIZE
+        if item_bytes % item_size != 0:
+            raise ValueError('entry array item payload has invalid compact alignment')
+
+        return {
+            'data_start': offset + OFFSET_ARRAY_OBJECT_HEADER_SIZE,
+            'capacity': item_bytes // item_size,
+            'item_size': item_size,
+            'next_offset': _UNPACK_U64_FROM(self._buffer, offset + 16)[0],
+        }
+
+    def _append_entry_array_offsets(self, offsets, array, to_read):
+        for i in range(to_read):
+            item_offset = array['data_start'] + i * array['item_size']
+            entry_off = self._read_entry_array_item_offset(item_offset)
+            if entry_off != 0 and self._valid_entry_offset(entry_off):
+                offsets.append(entry_off)
+
+    def _read_entry_array_item_offset(self, item_offset):
+        if self._compact:
+            return _UNPACK_U32_FROM(self._buffer, item_offset)[0]
+        return _UNPACK_U64_FROM(self._buffer, item_offset)[0]
+
+    def _next_entry_array_offset(self, current_offset, next_offset):
+        if next_offset != 0 and next_offset <= current_offset:
+            raise ValueError('entry array chain next pointer is not increasing')
+        return next_offset
 
     def refresh(self):
         """Refresh header and entry-array state for active files."""
         return self._refresh_entry_offsets()
 
     def _refresh_entry_offsets(self):
-        if self._cleanup_path or self._fd is None or self._mmap is None:
+        if not self._can_refresh():
             return False
 
-        old_offsets = self._entry_offsets
-        old_index = self._entry_index
-        old_size = len(self._buffer)
-        old_fd = self._fd
-        old_mmap = self._mmap
-        old_buffer = self._buffer
-        old_header = self._header
-        old_compact = self._compact
-        old_entry_item_size = self._entry_item_size
-        old_offset_array_item_size = self._offset_array_item_size_value
-        old_data_payload_offset = self._data_payload_offset_value
+        snapshot = self._refresh_snapshot()
         new_fd = None
         new_mmap = None
         mapped_new_file = False
 
         try:
-            new_size = os.fstat(self._fd).st_size
-        except OSError:
-            return False
-        if new_size <= 0:
-            return False
-
-        if new_size != old_size:
-            try:
-                new_fd, new_mmap, new_buffer = _map_file_readonly(self._path)
-            except Exception:
+            new_size = self._refresh_file_size()
+            if new_size is None:
                 return False
-            mapped_new_file = True
-            self._fd = new_fd
-            self._mmap = new_mmap
-            self._buffer = new_buffer
 
-        try:
-            header = parse_file_header(self._buffer)
-            _ensure_supported_header(header)
-            if (
-                new_size == old_size
-                and header.get('n_entries') == self._header.get('n_entries')
-                and header.get('tail_entry_array_offset') == self._header.get('tail_entry_array_offset')
-                and header.get('tail_entry_array_n_entries') == self._header.get('tail_entry_array_n_entries')
-            ):
-                self._header = header
-                self._entry_index = min(old_index, len(self._entry_offsets))
+            mapped_new_file, new_fd, new_mmap = self._maybe_remap_for_refresh(
+                snapshot['size'],
+                new_size,
+            )
+            unchanged = self._load_refresh_header_and_offsets(new_size, snapshot)
+            if unchanged:
                 return False
-            self._header = header
-            self._compact = (self._header['incompatible_flags'] & INCOMPATIBLE_COMPACT) != 0
-            self._entry_item_size = COMPACT_ENTRY_ITEM_SIZE if self._compact else REGULAR_ENTRY_ITEM_SIZE
-            self._offset_array_item_size_value = (
-                COMPACT_OFFSET_ARRAY_ITEM_SIZE if self._compact else REGULAR_OFFSET_ARRAY_ITEM_SIZE
-            )
-            self._data_payload_offset_value = (
-                COMPACT_DATA_OBJECT_HEADER_SIZE if self._compact else DATA_OBJECT_HEADER_SIZE
-            )
-            self._entry_offsets = self._read_entry_array_offsets()
         except Exception:
-            if mapped_new_file:
-                self._fd = old_fd
-                self._mmap = old_mmap
-                self._buffer = old_buffer
-                if new_mmap is not None:
-                    with contextlib.suppress(Exception):
-                        new_mmap.close()
-                if new_fd is not None:
-                    with contextlib.suppress(Exception):
-                        os.close(new_fd)
-            self._header = old_header
-            self._compact = old_compact
-            self._entry_item_size = old_entry_item_size
-            self._offset_array_item_size_value = old_offset_array_item_size
-            self._data_payload_offset_value = old_data_payload_offset
-            self._entry_offsets = old_offsets
-            self._entry_index = min(old_index, len(self._entry_offsets))
-            self._reset_cached_entry_data_state()
+            self._restore_refresh_snapshot(snapshot, mapped_new_file, new_fd, new_mmap)
             return False
 
         if mapped_new_file:
-            try:
-                old_mmap.close()
-            finally:
-                os.close(old_fd)
-        self._entry_index = min(old_index, len(self._entry_offsets))
+            self._close_refresh_snapshot_mapping(snapshot)
+        self._entry_index = min(snapshot['index'], len(self._entry_offsets))
         self._reset_cached_entry_data_state()
+        return self._entry_offsets_changed(snapshot['offsets'])
+
+    def _can_refresh(self):
+        return not self._cleanup_path and self._fd is not None and self._mmap is not None
+
+    def _refresh_snapshot(self):
+        return {
+            'offsets': self._entry_offsets,
+            'index': self._entry_index,
+            'size': len(self._buffer),
+            'fd': self._fd,
+            'mmap': self._mmap,
+            'buffer': self._buffer,
+            'header': self._header,
+            'compact': self._compact,
+            'entry_item_size': self._entry_item_size,
+            'offset_array_item_size': self._offset_array_item_size_value,
+            'data_payload_offset': self._data_payload_offset_value,
+        }
+
+    def _refresh_file_size(self):
+        try:
+            new_size = os.fstat(self._fd).st_size
+        except OSError:
+            return None
+        return new_size if new_size > 0 else None
+
+    def _maybe_remap_for_refresh(self, old_size, new_size):
+        if new_size == old_size:
+            return False, None, None
+        new_fd, new_mmap, new_buffer = _map_file_readonly(self._path)
+        self._fd = new_fd
+        self._mmap = new_mmap
+        self._buffer = new_buffer
+        return True, new_fd, new_mmap
+
+    def _load_refresh_header_and_offsets(self, new_size, snapshot):
+        header = parse_file_header(self._buffer)
+        _ensure_supported_header(header)
+        if self._refresh_header_unchanged(header, new_size, snapshot):
+            self._header = header
+            self._entry_index = min(snapshot['index'], len(self._entry_offsets))
+            return True
+
+        self._header = header
+        self._refresh_layout_from_header()
+        self._entry_offsets = self._read_entry_array_offsets()
+        return False
+
+    def _refresh_header_unchanged(self, header, new_size, snapshot):
         return (
-            len(self._entry_offsets) != len(old_offsets)
-            or (
-                bool(self._entry_offsets)
-                and bool(old_offsets)
-                and self._entry_offsets[-1] != old_offsets[-1]
-            )
+            new_size == snapshot['size']
+            and header.get('n_entries') == self._header.get('n_entries')
+            and header.get('tail_entry_array_offset') == self._header.get('tail_entry_array_offset')
+            and header.get('tail_entry_array_n_entries') == self._header.get('tail_entry_array_n_entries')
         )
+
+    def _refresh_layout_from_header(self):
+        self._compact = (self._header['incompatible_flags'] & INCOMPATIBLE_COMPACT) != 0
+        self._entry_item_size = COMPACT_ENTRY_ITEM_SIZE if self._compact else REGULAR_ENTRY_ITEM_SIZE
+        self._offset_array_item_size_value = (
+            COMPACT_OFFSET_ARRAY_ITEM_SIZE if self._compact else REGULAR_OFFSET_ARRAY_ITEM_SIZE
+        )
+        self._data_payload_offset_value = (
+            COMPACT_DATA_OBJECT_HEADER_SIZE if self._compact else DATA_OBJECT_HEADER_SIZE
+        )
+
+    def _restore_refresh_snapshot(self, snapshot, mapped_new_file, new_fd, new_mmap):
+        if mapped_new_file:
+            self._fd = snapshot['fd']
+            self._mmap = snapshot['mmap']
+            self._buffer = snapshot['buffer']
+            if new_mmap is not None:
+                with contextlib.suppress(Exception):
+                    new_mmap.close()
+            if new_fd is not None:
+                with contextlib.suppress(Exception):
+                    os.close(new_fd)
+        self._header = snapshot['header']
+        self._compact = snapshot['compact']
+        self._entry_item_size = snapshot['entry_item_size']
+        self._offset_array_item_size_value = snapshot['offset_array_item_size']
+        self._data_payload_offset_value = snapshot['data_payload_offset']
+        self._entry_offsets = snapshot['offsets']
+        self._entry_index = min(snapshot['index'], len(self._entry_offsets))
+        self._reset_cached_entry_data_state()
+
+    def _close_refresh_snapshot_mapping(self, snapshot):
+        try:
+            snapshot['mmap'].close()
+        finally:
+            os.close(snapshot['fd'])
+
+    def _entry_offsets_changed(self, old_offsets):
+        if len(self._entry_offsets) != len(old_offsets):
+            return True
+        return bool(self._entry_offsets) and bool(old_offsets) and self._entry_offsets[-1] != old_offsets[-1]
 
     def _valid_entry_offset(self, offset):
         off = offset

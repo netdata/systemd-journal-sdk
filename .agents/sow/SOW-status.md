@@ -31,9 +31,11 @@ Last updated: 2026-06-03
   made the legacy Rust `jf` compatibility copy and `journal-registry` runtime
   touched files locally Lizard-clean, with affected crate tests passing. Batch
   9 made Rust `journal-engine` and `journal-index` query/index runtime files
-  locally Lizard-clean, with full affected crate tests passing. Remaining work
-  is to continue complexity remediation, record final scanner results, and
-  complete whole-SOW review.
+  locally Lizard-clean, with full affected crate tests passing. Batch 10 made
+  Python verifier and reader touched runtime files locally Lizard-clean, fixed
+  a corrupted ENTRY_ARRAY hang, and passed the full Python package test suite.
+  Remaining work is to continue complexity remediation, record final scanner
+  results, and complete whole-SOW review.
 
 ## Pending
 

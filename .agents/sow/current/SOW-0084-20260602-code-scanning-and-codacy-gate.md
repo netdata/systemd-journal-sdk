@@ -1357,6 +1357,37 @@ Complexity remediation evidence:
     `journal-index` unit tests, 12 filter-evaluation tests, 15 pagination
     tests, 2 runnable `journal-engine` doc tests, and 1 `journal-index` doc
     test.
+- Batch 10, Python verifier and reader runtime internals:
+  - Refactored `python/journal/verify_graph.py` object-graph verification into
+    smaller header, object-walk, object-dispatch, DATA parsing, tail-metadata,
+    and entry-array-chain helpers without changing the strict graph
+    verification contract.
+  - Refactored `python/journal/verify.py` normal verification, verification-key
+    parsing, and sealed TAG/HMAC verification into smaller helpers and a
+    `_SealedVerifier` state object without changing sealed/unsealed behavior.
+  - Validation uncovered a real robustness regression in
+    `python/journal/reader.py`: corrupted AFL fixture
+    `id:000000,src:000031,time:210669947,execs:34191940,op:havoc,rep:32.zst`
+    could spin during `FileReader.open()` because a malformed ENTRY_ARRAY chain
+    did not reduce the remaining entry count. The final reader rejects
+    zero-capacity, cyclic, and non-forward ENTRY_ARRAY chains instead of
+    spinning.
+  - Refactored `python/journal/reader.py` live refresh into snapshot, remap,
+    header reload, rollback, and result helpers without changing successful
+    refresh semantics.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for
+    `python/journal/verify.py`, `python/journal/verify_graph.py`, and
+    `python/journal/reader.py`.
+  - `python3 -m py_compile python/journal/verify.py
+    python/journal/verify_graph.py python/journal/reader.py` passed.
+  - Targeted Python verifier tests passed for corruption detection, valid
+    fixture verification, sealed verification, `journalctl --verify`,
+    sealed writer verification, wrong-key failure, and tampered-data failure.
+  - The formerly hanging conformance manifest case
+    `journal-corruption-append-resilient` now passes quickly and reports the
+    corrupted AFL fixture as a read error.
+  - `PYTHONPATH=python .local/python-venv/bin/python python/test_all.py`
+    passed.
 
 Reviewer findings:
 

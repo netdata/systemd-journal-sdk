@@ -73,6 +73,18 @@ class ObjectGraphVerificationError(Exception):
     pass
 
 
+class _WalkState:
+    def __init__(self):
+        self.entry_seqnum = 0
+        self.entry_seqnum_set = False
+        self.entry_monotonic = 0
+        self.entry_monotonic_set = False
+        self.entry_boot_id = b"\x00" * 16
+        self.entry_realtime = 0
+        self.entry_realtime_set = False
+        self.last_tag_realtime = 0
+
+
 def verify_object_graph(data):
     """Verify raw object graph invariants that normal readers may tolerate."""
     _GraphVerifier(data).verify()
@@ -137,150 +149,209 @@ class _GraphVerifier:
     def _walk_objects(self):
         tail = self.header["tail_object_offset"]
         if tail == 0:
-            if self.header["n_objects"] != 0:
-                raise ObjectGraphVerificationError("tail_object_offset is zero with objects recorded")
+            self._validate_empty_tail()
             return
+
+        self._validate_tail_start(tail)
+        state = _WalkState()
+        offset = self.header["header_size"]
+
+        while True:
+            obj = self._read_walk_object(offset, tail)
+            self._record_walk_object(obj)
+            self._dispatch_walk_object(obj, state)
+
+            if offset == tail:
+                break
+            offset = obj["end"]
+
+        self._validate_walk_tail(state, tail)
+
+    def _validate_empty_tail(self):
+        if self.header["n_objects"] != 0:
+            raise ObjectGraphVerificationError("tail_object_offset is zero with objects recorded")
+
+    def _validate_tail_start(self, tail):
         if tail < self.header["header_size"]:
             raise ObjectGraphVerificationError("tail_object_offset is before header_size")
 
-        offset = self.header["header_size"]
-        found_tail = False
-        entry_seqnum = 0
-        entry_seqnum_set = False
-        entry_monotonic = 0
-        entry_monotonic_set = False
-        entry_boot_id = b"\x00" * 16
-        entry_realtime = 0
-        entry_realtime_set = False
-        last_tag_realtime = 0
+    def _read_walk_object(self, offset, tail):
+        if offset > tail:
+            raise ObjectGraphVerificationError(
+                f"object walk skipped past tail_object_offset {tail}"
+            )
+        if offset + OBJECT_HEADER_SIZE > len(self.data):
+            raise ObjectGraphVerificationError(
+                f"object header at offset {offset} exceeds file bounds"
+            )
 
-        while True:
-            if offset > tail:
-                raise ObjectGraphVerificationError(
-                    f"object walk skipped past tail_object_offset {tail}"
-                )
-            if offset + OBJECT_HEADER_SIZE > len(self.data):
-                raise ObjectGraphVerificationError(
-                    f"object header at offset {offset} exceeds file bounds"
-                )
-            typ = self.data[offset]
-            flags = self.data[offset + 1]
-            size = _u64(self.data, offset + 8)
-            aligned_size = _align8(size)
-            end = offset + aligned_size
+        typ = self.data[offset]
+        flags = self.data[offset + 1]
+        size = _u64(self.data, offset + 8)
+        aligned_size = _align8(size)
+        end = offset + aligned_size
 
-            if typ == 0 and size == 0:
-                raise ObjectGraphVerificationError(f"zero object before tail at offset {offset}")
-            if typ not in OBJECT_TYPES:
-                raise ObjectGraphVerificationError(f"unknown object type {typ} at offset {offset}")
-            if size < OBJECT_HEADER_SIZE:
-                raise ObjectGraphVerificationError(
-                    f"object size {size} too small at offset {offset}"
-                )
-            if aligned_size < size or aligned_size == 0 or end > len(self.data):
-                raise ObjectGraphVerificationError(
-                    f"object at offset {offset} exceeds file bounds"
-                )
-            if offset % 8 != 0:
-                raise ObjectGraphVerificationError(f"object offset {offset} is not aligned")
+        self._validate_walk_object_header(offset, typ, size, aligned_size, end)
+        return {
+            "offset": offset,
+            "type": typ,
+            "flags": flags,
+            "size": size,
+            "end": end,
+        }
 
-            self.spans[offset] = (typ, flags, size, end)
-            self.order.append(offset)
-            self.counts[typ] += 1
+    def _validate_walk_object_header(self, offset, typ, size, aligned_size, end):
+        if typ == 0 and size == 0:
+            raise ObjectGraphVerificationError(f"zero object before tail at offset {offset}")
+        if typ not in OBJECT_TYPES:
+            raise ObjectGraphVerificationError(f"unknown object type {typ} at offset {offset}")
+        if size < OBJECT_HEADER_SIZE:
+            raise ObjectGraphVerificationError(
+                f"object size {size} too small at offset {offset}"
+            )
+        if aligned_size < size or aligned_size == 0 or end > len(self.data):
+            raise ObjectGraphVerificationError(
+                f"object at offset {offset} exceeds file bounds"
+            )
+        if offset % 8 != 0:
+            raise ObjectGraphVerificationError(f"object offset {offset} is not aligned")
 
-            if flags & ~OBJECT_COMPRESSED_MASK:
-                raise ObjectGraphVerificationError(
-                    f"object at offset {offset} has unknown flags 0x{flags:x}"
-                )
-            if _flag_count(flags & OBJECT_COMPRESSED_MASK) > 1:
-                raise ObjectGraphVerificationError(
-                    f"object at offset {offset} has multiple compression flags"
-                )
-            if typ != OBJECT_TYPE_DATA and flags:
-                raise ObjectGraphVerificationError(
-                    f"{OBJECT_TYPES[typ]} object at offset {offset} has compression flags"
-                )
-            if flags & OBJECT_COMPRESSED_XZ and not (
-                self.header["incompatible_flags"] & INCOMPATIBLE_COMPRESSED_XZ
-            ):
-                raise ObjectGraphVerificationError(
-                    f"XZ DATA object without matching header flag at offset {offset}"
-                )
-            if flags & OBJECT_COMPRESSED_LZ4 and not (
-                self.header["incompatible_flags"] & INCOMPATIBLE_COMPRESSED_LZ4
-            ):
-                raise ObjectGraphVerificationError(
-                    f"LZ4 DATA object without matching header flag at offset {offset}"
-                )
-            if flags & OBJECT_COMPRESSED_ZSTD and not (
-                self.header["incompatible_flags"] & INCOMPATIBLE_COMPRESSED_ZSTD
-            ):
-                raise ObjectGraphVerificationError(
-                    f"ZSTD DATA object without matching header flag at offset {offset}"
-                )
+    def _record_walk_object(self, obj):
+        offset = obj["offset"]
+        typ = obj["type"]
+        flags = obj["flags"]
+        self.spans[offset] = (typ, flags, obj["size"], obj["end"])
+        self.order.append(offset)
+        self.counts[typ] += 1
+        self._validate_object_flags(offset, typ, flags)
 
-            if typ == OBJECT_TYPE_DATA:
-                self._parse_data(offset, flags, size)
-            elif typ == OBJECT_TYPE_FIELD:
-                self._parse_field(offset, size)
-            elif typ == OBJECT_TYPE_ENTRY:
-                seqnum, realtime, monotonic, boot_id = self._parse_entry(offset, size)
-                if self.header["compatible_flags"] & COMPATIBLE_SEALED and self.counts[OBJECT_TYPE_TAG] <= 0:
-                    raise ObjectGraphVerificationError(f"first entry before first tag at offset {offset}")
-                if realtime < last_tag_realtime:
-                    raise ObjectGraphVerificationError(f"older entry after newer tag at offset {offset}")
-                if not entry_seqnum_set and seqnum != self.header["head_entry_seqnum"]:
-                    raise ObjectGraphVerificationError(f"head entry seqnum mismatch at offset {offset}")
-                if entry_seqnum_set and entry_seqnum >= seqnum:
-                    raise ObjectGraphVerificationError(f"entry seqnum out of sync at offset {offset}")
-                entry_seqnum = seqnum
-                entry_seqnum_set = True
-                if entry_monotonic_set and entry_boot_id == boot_id and entry_monotonic > monotonic:
-                    raise ObjectGraphVerificationError(f"entry monotonic out of sync at offset {offset}")
-                entry_monotonic = monotonic
-                entry_boot_id = boot_id
-                entry_monotonic_set = True
-                if not entry_realtime_set and realtime != self.header["head_entry_realtime"]:
-                    raise ObjectGraphVerificationError(f"head entry realtime mismatch at offset {offset}")
-                entry_realtime = realtime
-                entry_realtime_set = True
-            elif typ in (OBJECT_TYPE_DATA_HASH_TABLE, OBJECT_TYPE_FIELD_HASH_TABLE):
-                self._parse_hash_table(offset, typ, size)
-            elif typ == OBJECT_TYPE_ENTRY_ARRAY:
-                self._parse_entry_array(offset, size)
-                if offset == self.header["entry_array_offset"]:
-                    if self.main_entry_array_found:
-                        raise ObjectGraphVerificationError("more than one main entry array")
-                    self.main_entry_array_found = True
-            elif typ == OBJECT_TYPE_TAG:
-                if not (self.header["compatible_flags"] & COMPATIBLE_SEALED):
-                    raise ObjectGraphVerificationError("TAG object in unsealed file")
-                if size != TAG_OBJECT_SIZE:
-                    raise ObjectGraphVerificationError(f"invalid TAG size at offset {offset}")
-                seqnum = _u64(self.data, offset + 16)
-                if seqnum != self.counts[OBJECT_TYPE_TAG]:
-                    raise ObjectGraphVerificationError(f"TAG seqnum mismatch at offset {offset}")
-                last_tag_realtime = entry_realtime if entry_realtime_set else last_tag_realtime
+    def _validate_object_flags(self, offset, typ, flags):
+        if flags & ~OBJECT_COMPRESSED_MASK:
+            raise ObjectGraphVerificationError(
+                f"object at offset {offset} has unknown flags 0x{flags:x}"
+            )
+        if _flag_count(flags & OBJECT_COMPRESSED_MASK) > 1:
+            raise ObjectGraphVerificationError(
+                f"object at offset {offset} has multiple compression flags"
+            )
+        if typ != OBJECT_TYPE_DATA and flags:
+            raise ObjectGraphVerificationError(
+                f"{OBJECT_TYPES[typ]} object at offset {offset} has compression flags"
+            )
+        self._validate_compression_header_flags(offset, flags)
 
-            if offset == tail:
-                found_tail = True
-                break
-            offset = end
+    def _validate_compression_header_flags(self, offset, flags):
+        incompatible_flags = self.header["incompatible_flags"]
+        if flags & OBJECT_COMPRESSED_XZ and not (incompatible_flags & INCOMPATIBLE_COMPRESSED_XZ):
+            raise ObjectGraphVerificationError(
+                f"XZ DATA object without matching header flag at offset {offset}"
+            )
+        if flags & OBJECT_COMPRESSED_LZ4 and not (incompatible_flags & INCOMPATIBLE_COMPRESSED_LZ4):
+            raise ObjectGraphVerificationError(
+                f"LZ4 DATA object without matching header flag at offset {offset}"
+            )
+        if flags & OBJECT_COMPRESSED_ZSTD and not (incompatible_flags & INCOMPATIBLE_COMPRESSED_ZSTD):
+            raise ObjectGraphVerificationError(
+                f"ZSTD DATA object without matching header flag at offset {offset}"
+            )
 
-        if not found_tail:
-            raise ObjectGraphVerificationError("tail object pointer is dead")
+    def _dispatch_walk_object(self, obj, state):
+        offset = obj["offset"]
+        typ = obj["type"]
+        size = obj["size"]
+        if typ == OBJECT_TYPE_DATA:
+            self._parse_data(offset, obj["flags"], size)
+        elif typ == OBJECT_TYPE_FIELD:
+            self._parse_field(offset, size)
+        elif typ == OBJECT_TYPE_ENTRY:
+            self._handle_entry_walk_object(offset, size, state)
+        elif typ in (OBJECT_TYPE_DATA_HASH_TABLE, OBJECT_TYPE_FIELD_HASH_TABLE):
+            self._parse_hash_table(offset, typ, size)
+        elif typ == OBJECT_TYPE_ENTRY_ARRAY:
+            self._handle_entry_array_walk_object(offset, size)
+        elif typ == OBJECT_TYPE_TAG:
+            self._handle_tag_walk_object(offset, size, state)
+
+    def _handle_entry_walk_object(self, offset, size, state):
+        seqnum, realtime, monotonic, boot_id = self._parse_entry(offset, size)
+        entry = {
+            "seqnum": seqnum,
+            "realtime": realtime,
+            "monotonic": monotonic,
+            "boot_id": boot_id,
+        }
+        self._validate_entry_walk_order(offset, entry, state)
+        state.entry_seqnum = seqnum
+        state.entry_seqnum_set = True
+        state.entry_monotonic = monotonic
+        state.entry_boot_id = boot_id
+        state.entry_monotonic_set = True
+        state.entry_realtime = realtime
+        state.entry_realtime_set = True
+
+    def _validate_entry_walk_order(self, offset, entry, state):
+        self._validate_entry_tag_order(offset, entry["realtime"], state)
+        self._validate_entry_seqnum_order(offset, entry["seqnum"], state)
+        self._validate_entry_monotonic_order(offset, entry, state)
+        self._validate_entry_realtime_head(offset, entry["realtime"], state)
+
+    def _validate_entry_tag_order(self, offset, realtime, state):
+        if self.header["compatible_flags"] & COMPATIBLE_SEALED and self.counts[OBJECT_TYPE_TAG] <= 0:
+            raise ObjectGraphVerificationError(f"first entry before first tag at offset {offset}")
+        if realtime >= state.last_tag_realtime:
+            return
+        raise ObjectGraphVerificationError(f"older entry after newer tag at offset {offset}")
+
+    def _validate_entry_seqnum_order(self, offset, seqnum, state):
+        if not state.entry_seqnum_set and seqnum != self.header["head_entry_seqnum"]:
+            raise ObjectGraphVerificationError(f"head entry seqnum mismatch at offset {offset}")
+        if state.entry_seqnum_set and state.entry_seqnum >= seqnum:
+            raise ObjectGraphVerificationError(f"entry seqnum out of sync at offset {offset}")
+
+    def _validate_entry_monotonic_order(self, offset, entry, state):
+        if (
+            state.entry_monotonic_set
+            and state.entry_boot_id == entry["boot_id"]
+            and state.entry_monotonic > entry["monotonic"]
+        ):
+            raise ObjectGraphVerificationError(f"entry monotonic out of sync at offset {offset}")
+
+    def _validate_entry_realtime_head(self, offset, realtime, state):
+        if not state.entry_realtime_set and realtime != self.header["head_entry_realtime"]:
+            raise ObjectGraphVerificationError(f"head entry realtime mismatch at offset {offset}")
+
+    def _handle_entry_array_walk_object(self, offset, size):
+        self._parse_entry_array(offset, size)
+        if offset != self.header["entry_array_offset"]:
+            return
+        if self.main_entry_array_found:
+            raise ObjectGraphVerificationError("more than one main entry array")
+        self.main_entry_array_found = True
+
+    def _handle_tag_walk_object(self, offset, size, state):
+        if not (self.header["compatible_flags"] & COMPATIBLE_SEALED):
+            raise ObjectGraphVerificationError("TAG object in unsealed file")
+        if size != TAG_OBJECT_SIZE:
+            raise ObjectGraphVerificationError(f"invalid TAG size at offset {offset}")
+        seqnum = _u64(self.data, offset + 16)
+        if seqnum != self.counts[OBJECT_TYPE_TAG]:
+            raise ObjectGraphVerificationError(f"TAG seqnum mismatch at offset {offset}")
+        if state.entry_realtime_set:
+            state.last_tag_realtime = state.entry_realtime
+
+    def _validate_walk_tail(self, state, tail):
         if self.order[-1] != tail:
             raise ObjectGraphVerificationError("tail_object_offset does not point to walked tail")
-        if entry_seqnum_set and entry_seqnum != self.header["tail_entry_seqnum"]:
+        if state.entry_seqnum_set and state.entry_seqnum != self.header["tail_entry_seqnum"]:
             raise ObjectGraphVerificationError("tail_entry_seqnum mismatch")
         if (
-            entry_monotonic_set
+            state.entry_monotonic_set
             and self.header["compatible_flags"] & COMPATIBLE_TAIL_ENTRY_BOOT_ID
-            and entry_boot_id == self.header["tail_entry_boot_id"]
-            and entry_monotonic != self.header["tail_entry_monotonic"]
+            and state.entry_boot_id == self.header["tail_entry_boot_id"]
+            and state.entry_monotonic != self.header["tail_entry_monotonic"]
         ):
             raise ObjectGraphVerificationError("tail_entry_monotonic mismatch")
-        if entry_realtime_set and entry_realtime != self.header["tail_entry_realtime"]:
+        if state.entry_realtime_set and state.entry_realtime != self.header["tail_entry_realtime"]:
             raise ObjectGraphVerificationError("tail_entry_realtime mismatch")
 
     def _parse_data(self, offset, flags, size):
@@ -288,17 +359,10 @@ class _GraphVerifier:
         if size <= payload_offset:
             raise ObjectGraphVerificationError(f"DATA object at offset {offset} has no payload")
         payload = self.data[offset + payload_offset:offset + size]
-        hash_payload = self._decompress_payload(flags, payload, offset) if flags else payload
         stored_hash = _u64(self.data, offset + 16)
-        computed_hash = self._hash(hash_payload)
-        if stored_hash != computed_hash:
-            raise ObjectGraphVerificationError(
-                f"DATA hash mismatch at offset {offset}: {stored_hash:#x} != {computed_hash:#x}"
-            )
-        entry_offset = _u64(self.data, offset + 40)
-        n_entries = _u64(self.data, offset + 56)
-        if (entry_offset == 0) != (n_entries == 0):
-            raise ObjectGraphVerificationError(f"DATA object at offset {offset} has bad n_entries")
+        self._validate_data_hash(offset, flags, payload, stored_hash)
+
+        entry_offset, n_entries = self._data_entry_head(offset)
         obj = {
             "hash": stored_hash,
             "next_hash_offset": _u64(self.data, offset + 24),
@@ -309,13 +373,31 @@ class _GraphVerifier:
             "tail_entry_array_offset": _u32(self.data, offset + 64) if self.compact else 0,
             "tail_entry_array_n_entries": _u32(self.data, offset + 68) if self.compact else 0,
         }
+        self._validate_data_object_links(offset, obj)
+        self.data_objects[offset] = obj
+
+    def _validate_data_hash(self, offset, flags, payload, stored_hash):
+        hash_payload = self._decompress_payload(flags, payload, offset) if flags else payload
+        computed_hash = self._hash(hash_payload)
+        if stored_hash != computed_hash:
+            raise ObjectGraphVerificationError(
+                f"DATA hash mismatch at offset {offset}: {stored_hash:#x} != {computed_hash:#x}"
+            )
+
+    def _data_entry_head(self, offset):
+        entry_offset = _u64(self.data, offset + 40)
+        n_entries = _u64(self.data, offset + 56)
+        if (entry_offset == 0) != (n_entries == 0):
+            raise ObjectGraphVerificationError(f"DATA object at offset {offset} has bad n_entries")
+        return entry_offset, n_entries
+
+    def _validate_data_object_links(self, offset, obj):
         for field in ("next_hash_offset", "next_field_offset", "entry_offset", "entry_array_offset"):
             self._valid_offset(obj[field], f"DATA {offset} {field}")
-        if n_entries < 2 and obj["entry_array_offset"] != 0:
+        if obj["n_entries"] < 2 and obj["entry_array_offset"] != 0:
             raise ObjectGraphVerificationError(f"DATA object at offset {offset} has unexpected entry array")
-        if n_entries >= 2 and obj["entry_array_offset"] == 0:
+        if obj["n_entries"] >= 2 and obj["entry_array_offset"] == 0:
             raise ObjectGraphVerificationError(f"DATA object at offset {offset} is missing entry array")
-        self.data_objects[offset] = obj
 
     def _parse_field(self, offset, size):
         if size <= FIELD_OBJECT_HEADER_SIZE:
@@ -441,9 +523,15 @@ class _GraphVerifier:
             if self.header["n_entries"] != 0:
                 raise ObjectGraphVerificationError("entries recorded but no ENTRY objects found")
             return
+
         entries = sorted(self.entry_objects.items(), key=lambda item: item[1]["seqnum"])
         head_offset, head = entries[0]
         tail_offset, tail = entries[-1]
+        self._validate_head_tail_entry_metadata(head, tail)
+        self._validate_tail_boot_metadata(tail)
+        self._validate_tail_entry_offset(head_offset, tail_offset)
+
+    def _validate_head_tail_entry_metadata(self, head, tail):
         if self.header["head_entry_seqnum"] != head["seqnum"]:
             raise ObjectGraphVerificationError("head_entry_seqnum mismatch")
         if self.header["tail_entry_seqnum"] != tail["seqnum"]:
@@ -452,11 +540,16 @@ class _GraphVerifier:
             raise ObjectGraphVerificationError("head_entry_realtime mismatch")
         if self.header["tail_entry_realtime"] != tail["realtime"]:
             raise ObjectGraphVerificationError("tail_entry_realtime mismatch")
-        if self.header["compatible_flags"] & COMPATIBLE_TAIL_ENTRY_BOOT_ID:
-            if self.header["tail_entry_monotonic"] != tail["monotonic"]:
-                raise ObjectGraphVerificationError("tail_entry_monotonic mismatch")
-            if self.header["tail_entry_boot_id"] != tail["boot_id"]:
-                raise ObjectGraphVerificationError("tail_entry_boot_id mismatch")
+
+    def _validate_tail_boot_metadata(self, tail):
+        if not (self.header["compatible_flags"] & COMPATIBLE_TAIL_ENTRY_BOOT_ID):
+            return
+        if self.header["tail_entry_monotonic"] != tail["monotonic"]:
+            raise ObjectGraphVerificationError("tail_entry_monotonic mismatch")
+        if self.header["tail_entry_boot_id"] != tail["boot_id"]:
+            raise ObjectGraphVerificationError("tail_entry_boot_id mismatch")
+
+    def _validate_tail_entry_offset(self, head_offset, tail_offset):
         if self._header_has(272) and self.header["tail_entry_offset"] != tail_offset:
             raise ObjectGraphVerificationError("tail_entry_offset mismatch")
         if head_offset == 0:
@@ -552,30 +645,43 @@ class _GraphVerifier:
         current = start_offset
         seen = set()
         while remaining > 0:
-            if current in seen:
-                raise ObjectGraphVerificationError(f"{label} has a cycle")
-            seen.add(current)
-            array = self.entry_arrays.get(current)
-            if array is None:
-                raise ObjectGraphVerificationError(f"{label} references missing ENTRY_ARRAY")
-            next_offset = array["next"]
-            if next_offset and next_offset <= current:
-                raise ObjectGraphVerificationError(f"{label} next pointer is not increasing")
+            array = self._entry_array_chain_node(current, seen, label)
+            next_offset = self._entry_array_next_offset(current, array, label)
             capacity = len(array["items"])
             used_here = min(remaining, capacity)
-            for idx in range(used_here):
-                item = array["items"][idx]
-                if item == 0:
-                    raise ObjectGraphVerificationError(f"{label} has zero used item")
-                if item not in self.entry_objects:
-                    raise ObjectGraphVerificationError(f"{label} references missing ENTRY")
-                entries.append(item)
+            entries.extend(self._entry_array_used_items(array, used_here, label))
             remaining -= used_here
             if remaining == 0:
                 break
             if next_offset == 0:
                 raise ObjectGraphVerificationError(f"{label} ended early")
             current = next_offset
+        return entries
+
+    def _entry_array_chain_node(self, current, seen, label):
+        if current in seen:
+            raise ObjectGraphVerificationError(f"{label} has a cycle")
+        seen.add(current)
+        array = self.entry_arrays.get(current)
+        if array is None:
+            raise ObjectGraphVerificationError(f"{label} references missing ENTRY_ARRAY")
+        return array
+
+    def _entry_array_next_offset(self, current, array, label):
+        next_offset = array["next"]
+        if next_offset and next_offset <= current:
+            raise ObjectGraphVerificationError(f"{label} next pointer is not increasing")
+        return next_offset
+
+    def _entry_array_used_items(self, array, used_count, label):
+        entries = []
+        for idx in range(used_count):
+            item = array["items"][idx]
+            if item == 0:
+                raise ObjectGraphVerificationError(f"{label} has zero used item")
+            if item not in self.entry_objects:
+                raise ObjectGraphVerificationError(f"{label} references missing ENTRY")
+            entries.append(item)
         return entries
 
     def _data_object_in_hash_table(self, data_offset, data_hash):
