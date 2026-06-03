@@ -3,9 +3,9 @@
 
 import { openSync, writeSync, readSync, closeSync, ftruncateSync, fsyncSync, renameSync } from 'node:fs';
 import { zstdCompressSync } from 'node:zlib';
-import { readUint64LE, writeUint64LE, writeUint32LE, writeUint8, align8, randomUUID, isZeroUUID, bufEqual, stringToUUID } from './binary.js';
+import { readUint64LE, writeUint64LE, writeUint32LE, align8, randomUUID, isZeroUUID, bufEqual, stringToUUID } from './binary.js';
 import {
-  serializeFileHeader, parseFileHeader, parseObjectHeader, writeObjectHeader,
+  serializeFileHeader, parseObjectHeader, writeObjectHeader,
   HEADER_SIZE, OBJECT_TYPE_DATA, OBJECT_TYPE_ENTRY,
   OBJECT_TYPE_DATA_HASH_TABLE, OBJECT_TYPE_FIELD_HASH_TABLE,
   OBJECT_TYPE_ENTRY_ARRAY, OBJECT_TYPE_FIELD,
@@ -18,12 +18,11 @@ import {
   COMPACT_ENTRY_ITEM_SIZE, COMPACT_OFFSET_ARRAY_ITEM_SIZE, REGULAR_OFFSET_ARRAY_ITEM_SIZE,
   COMPACT_DATA_OBJECT_HEADER_SIZE, COMPACT_DATA_TAIL_OFFSET_OFFSET,
   COMPACT_DATA_TAIL_ENTRIES_OFFSET, JOURNAL_COMPACT_SIZE_MAX,
-  DEFAULT_DATA_HASH_BUCKETS, DEFAULT_FIELD_HASH_BUCKETS,
+  DEFAULT_FIELD_HASH_BUCKETS,
   normalizeJournalMaxFileSize, dataHashBucketsForMaxFileSize,
   FILE_SIZE_INCREASE,
-  INITIAL_ENTRY_ARRAY_CAP, INITIAL_DATA_ENTRY_ARRAY_CAP,
 } from './header.js';
-import { SealOptions, SealState, TAG_LENGTH, OBJECT_TYPE_TAG, COMPATIBLE_SEALED, COMPATIBLE_SEALED_CONTINUOUS } from './seal.js';
+import { SealState, TAG_LENGTH, OBJECT_TYPE_TAG, COMPATIBLE_SEALED, COMPATIBLE_SEALED_CONTINUOUS } from './seal.js';
 import { sipHash24, jenkinsHash64 } from './hash.js';
 import { decompressZstdDataPayload } from './compress.js';
 import { compressLz4DataPayload, decompressLz4DataPayload } from './lz4-block.js';
@@ -39,7 +38,6 @@ import {
 } from './writer-file.js';
 import {
   FIELD_NAME_POLICY_JOURNALD,
-  FIELD_NAME_POLICY_RAW,
   fieldNameBytes,
   normalizeFieldNamePolicy,
   prepareFieldsForPolicy,

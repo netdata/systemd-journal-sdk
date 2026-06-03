@@ -320,7 +320,7 @@ def test_live_publish_every_entries_preserves_closed_file_bytes():
 
 
 def test_journald_field_policy_validation():
-    from journal.writer import _validate_field_name_for_policy
+    from journal.writer_policy import _validate_field_name_for_policy
 
     for item in ('message=value', 'Priority=value', '_myfield=value'):
         try:

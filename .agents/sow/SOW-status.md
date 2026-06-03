@@ -172,7 +172,11 @@ Last updated: 2026-06-03
   diff, and SOW-audit validation passed. Batch 39 fixed the current-commit
   survivor findings for Python writer private helper re-exports, Rust
   `verify_slice` label use, and benchmark stdout status sanitization after
-  CodeQL/Codacy analyzed `15c2355`. Remaining work is to push Batch 39, verify
+  CodeQL/Codacy analyzed `15c2355`. Batch 40 removed private Python writer
+  compatibility re-exports, updated internal imports to use `writer_policy`
+  directly, and removed Node unused imports while preserving public direct
+  re-exports; focused Python checks, Node syntax checks, full Node tests, and
+  diff checks passed. Remaining work is to push Batch 40, verify
   Codacy/GitHub code scanning has analyzed the current commit instead of stale
   snapshots, decide or disposition the cross-language `0640` journal file
   permission finding, address residual current-commit findings, record final

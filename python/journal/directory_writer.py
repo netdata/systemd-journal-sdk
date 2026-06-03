@@ -14,8 +14,8 @@ from .writer import (
     _normalize_field_name_policy,
     _prepare_fields_for_policy,
     _prepare_raw_payloads_for_policy,
-    _writer_policy_for_log_policy,
 )
+from .writer_policy import _writer_policy_for_log_policy
 
 
 DEFAULT_MAX_ENTRIES = 0

@@ -5,11 +5,6 @@ import {
   fsprgGenMK, fsprgGenState0, fsprgGetEpoch, fsprgEvolve, fsprgGetKey,
   RECOMMENDED_SECPAR, RECOMMENDED_SEEDLEN,
 } from './fss.js';
-import {
-  writeObjectHeader, OBJECT_HEADER_SIZE,
-  OBJECT_TYPE_DATA, OBJECT_TYPE_FIELD, OBJECT_TYPE_ENTRY,
-  OBJECT_TYPE_DATA_HASH_TABLE, OBJECT_TYPE_FIELD_HASH_TABLE, OBJECT_TYPE_ENTRY_ARRAY,
-} from './header.js';
 
 export const TAG_LENGTH = 256 / 8;
 export const OBJECT_TYPE_TAG = 7;

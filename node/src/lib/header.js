@@ -1,7 +1,7 @@
 // Journal file header parsing and writing.
 // Layout matches Go format.go exactly.
 
-import { readUint64LE, writeUint64LE, writeUint32LE, writeUint8 } from './binary.js';
+import { readUint64LE, writeUint64LE } from './binary.js';
 
 export const HEADER_MIN_SIZE = 208;
 export const HEADER_SIZE = 272;  // v260+ writer header size

@@ -2391,6 +2391,33 @@ Batch 39:
     `cargo test -p journal verify_file_detects_corruption` passed.
   - `git diff --check` passed.
 
+Batch 40:
+
+- Scope: current-commit survivors after GitHub CodeQL/Codacy SARIF analyzed
+  `f1ca053`.
+- Evidence:
+  - GitHub code-scanning export for `f1ca053`: 216 current alerts. Direct
+    non-Node survivors included two Python writer unused-global compatibility
+    aliases and the cross-language `0640` journal file permission finding.
+  - Codacy cloud export for `f1ca053`: 5 quality issues and 0 security
+    findings. The 5 cloud issues were all Rust file-size findings.
+  - Node CodeQL reported unused imports in writer, reader, seal, and header
+    modules.
+- Changes:
+  - Removed private Python writer compatibility re-exports and updated internal
+    imports/tests to use `writer_policy` directly.
+  - Removed unused Node imports while preserving public direct re-exports from
+    `writer-policy.js`.
+- Validation:
+  - `python3 -m py_compile python/journal/writer.py python/journal/directory_writer.py python/test_all.py`
+    passed.
+  - Focused Python checks for `test_journald_field_policy_validation()` and
+    `test_directory_writer_replaces_unsupported_chain_active()` passed.
+  - `node --check node/src/lib/writer.js node/src/lib/reader.js node/src/lib/seal.js node/src/lib/header.js`
+    passed.
+  - `npm_config_cache=../.local/npm-cache npm test` in `node/` passed.
+  - `git diff --check` passed.
+
 Reviewer findings:
 
 - Pending. The current SOW is not ready for terminal reviewer review because
@@ -2460,9 +2487,8 @@ Follow-up mapping:
   - reconcile the user's observed 3056 UI count with the CLI-confirmed
     `master` count of 1502 quality issues after commit `99d2b08`;
   - group and triage the exported `master` cloud findings;
-  - push Batch 39 and verify GitHub CodeQL/Codacy SARIF no longer report the
-    fixed current-commit Python unused-import, Rust unused-label, and benchmark
-    stdout findings;
+  - push Batch 40 and verify GitHub CodeQL/Codacy SARIF no longer report the
+    fixed current-commit Python unused-global and Node unused-import findings;
   - address any remaining current-commit Codacy findings that are not explained
     by stale cloud analysis or narrow generated-artifact exclusions;
   - run GitHub workflows after push and record CodeQL/Codacy results;
