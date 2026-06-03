@@ -527,16 +527,7 @@ def final_reader(
 ) -> dict:
     cmd = reader_cmd(reader_spec, tools, journal_path, ["PRIORITY=6"])
     try:
-        # nosemgrep
-        # subprocess is required by this harness; commands are shell=False vectors.
-        res = subprocess.run(  # nosec B603 - harness uses shell=False command vectors.
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=30,
-            env=env,
-        )
+        res = run(cmd, timeout=30, env=env)
         return final_reader_result(reader_name, cmd, res)
     except Exception as e:
         return reader_error_result(reader_name, cmd, str(e))

@@ -137,7 +137,10 @@ Last updated: 2026-06-03
   finding in the live-matrix harness. Batch 31 refactored the live-matrix
   final-reader subprocess path to build commands from allowlisted reader specs,
   passed local Semgrep, syntax, local Lizard, and a 20-entry Go live-matrix
-  smoke. Remaining work is to re-run Codacy after Batch 31, split the remaining
+  smoke. Codacy still reported the Semgrep finding after `feca886`, so Batch 32
+  routed final-reader execution through the harness `run()` wrapper and passed
+  the same local Semgrep, syntax, Lizard, and 20-entry Go live-matrix smoke.
+  Remaining work is to re-run Codacy after Batch 32, split the remaining
   file-size findings, record final scanner results, and complete whole-SOW
   review.
 

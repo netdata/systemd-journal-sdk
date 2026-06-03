@@ -2150,6 +2150,31 @@ Batch 31:
     --writers go --readers go --poll-readers 1 --libsystemd-readers 1
     --poll-interval 0.02 --writer-delay-ms 5`.
 
+Batch 32:
+
+- Scope: persistent Codacy Semgrep finding after commit
+  `feca886e2af2e37b78aa7adf331969fd8793cf12`.
+- Cloud evidence:
+  - `codacy repository gh netdata systemd-journal-sdk --output json` reported
+    `lastAnalysedCommit.sha=feca886e2af2e37b78aa7adf331969fd8793cf12` and 24
+    quality issues.
+  - `codacy findings gh netdata systemd-journal-sdk --output json` still
+    exported one `CommandInjection` finding at the final-reader subprocess
+    call in `tests/interoperability/run_live_matrix.py`.
+- Changes:
+  - Replaced the final-reader direct `subprocess.run()` call with the existing
+    harness `run()` wrapper, preserving the same command vector, timeout,
+    stdout/stderr capture, and explicit environment while centralizing
+    subprocess execution in one audited helper.
+- Validation:
+  - `python3 -m py_compile tests/interoperability/run_live_matrix.py` passed.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reported no findings for
+    `tests/interoperability/run_live_matrix.py`.
+  - Local Semgrep with `semgrep --config=p/python --quiet
+    tests/interoperability/run_live_matrix.py` reported no findings.
+  - The 20-entry Go live-matrix smoke passed with the same command used in
+    Batch 31.
+
 Reviewer findings:
 
 - Pending. The current SOW is not ready for terminal reviewer review because
