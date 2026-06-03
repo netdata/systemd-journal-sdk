@@ -1224,6 +1224,23 @@ Complexity remediation evidence:
   - `tests/interoperability/run_verify_matrix.py` passed with stock, Go, Rust,
     Node.js, and Python verifiers: 9 positive fixture classes, 12 negative
     corruption classes, and 0 failures.
+- Batch 5, Rust core writer runtime internals:
+  - Refactored `rust/src/crates/journal-core/src/file/writer.rs` seal tag
+    evolution, ENTRY preparation, ENTRY object writing, DATA dedup/new-object
+    publication, FIELD linkage, global ENTRY_ARRAY appends, compact DATA tail
+    updates, and DATA-to-ENTRY link publication into smaller helpers.
+  - Public writer APIs, field policy APIs, compression choices, compact writer
+    layout, FSS behavior, and live publication options were left unchanged.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no runtime findings for
+    `rust/src/crates/journal-core/src/file/writer.rs`. The remaining rows in
+    that file are two large test functions and stay in scope for the later
+    test/harness cleanup batch.
+  - `cargo test -p journal-core --lib` passed.
+  - `tests/interoperability/run_matrix.py --writers rust go --readers rust go
+    stock --entries 20` passed 32/32 checks against systemd 260.1.
+  - `tests/interoperability/run_verify_matrix.py` passed with stock, Go, Rust,
+    Node.js, and Python verifiers: 9 positive fixture classes, 12 negative
+    corruption classes, and 0 failures.
 
 Reviewer findings:
 

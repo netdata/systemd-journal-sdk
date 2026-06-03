@@ -21,9 +21,10 @@ Last updated: 2026-06-03
   `rust/src/journal/src/lib.rs` and `rust/src/journal/src/parse.rs`, preserving
   parser APIs and passing Rust plus interoperability validation. Batch 4 made
   the Rust object-graph verifier locally Lizard-clean and passed Rust plus full
-  verifier interoperability validation. Remaining work is to continue
-  complexity remediation, record final scanner results, and complete whole-SOW
-  review.
+  verifier interoperability validation. Batch 5 made the Rust core writer
+  runtime locally Lizard-clean and passed journal-core tests plus writer and
+  verifier interoperability validation. Remaining work is to continue complexity
+  remediation, record final scanner results, and complete whole-SOW review.
 
 ## Pending
 
