@@ -140,17 +140,28 @@ def systemd_version() -> str:
 
 
 def make_fixtures() -> dict[str, Path]:
+    dirs = prepare_fixture_dirs()
+    write_stock_fixtures(dirs["stock"])
+    write_corrupt_fixtures(dirs["corrupt"])
+    write_zst_fixture(dirs["zst"])
+    return dirs
+
+
+def prepare_fixture_dirs() -> dict[str, Path]:
     if FIXTURE_DIR.exists():
         shutil.rmtree(FIXTURE_DIR)
-    stock_dir = FIXTURE_DIR / "stock-parity"
-    corrupt_dir = FIXTURE_DIR / "corrupt-skip"
-    zst_dir = FIXTURE_DIR / "zst-extension"
-    empty_dir = FIXTURE_DIR / "empty"
-    stock_dir.mkdir(parents=True)
-    corrupt_dir.mkdir(parents=True)
-    zst_dir.mkdir(parents=True)
-    empty_dir.mkdir(parents=True)
+    dirs = {
+        "stock": FIXTURE_DIR / "stock-parity",
+        "corrupt": FIXTURE_DIR / "corrupt-skip",
+        "zst": FIXTURE_DIR / "zst-extension",
+        "empty": FIXTURE_DIR / "empty",
+    }
+    for path in dirs.values():
+        path.mkdir(parents=True)
+    return dirs
 
+
+def write_stock_fixtures(stock_dir: Path) -> None:
     write_journal(
         stock_dir / "root-active.journal",
         MACHINE_A,
@@ -193,7 +204,10 @@ def make_fixtures() -> dict[str, Path]:
         "05050505050505050505050505050505",
         [FixtureRow("000005", "machine", 1_700_003_000_000_005, 1, "directory dashed machine")],
     )
+    write_skipped_fixtures(stock_dir, machine_dir)
 
+
+def write_skipped_fixtures(stock_dir: Path, machine_dir: Path) -> None:
     write_journal(
         stock_dir / "not-a-machine-id" / "skipped.journal",
         MACHINE_A,
@@ -216,6 +230,8 @@ def make_fixtures() -> dict[str, Path]:
         [FixtureRow("999002", "skipped", 1_700_003_000_000_902, 1, "nested subdir")],
     )
 
+
+def write_corrupt_fixtures(corrupt_dir: Path) -> None:
     write_journal(
         corrupt_dir / "valid.journal",
         MACHINE_A,
@@ -228,6 +244,8 @@ def make_fixtures() -> dict[str, Path]:
     unreadable.write_bytes(b"not readable as a journal")
     unreadable.chmod(0)
 
+
+def write_zst_fixture(zst_dir: Path) -> None:
     plain_zst_source = zst_dir / "sdk-zst-source.journal"
     write_journal(
         plain_zst_source,
@@ -239,13 +257,6 @@ def make_fixtures() -> dict[str, Path]:
     zst_target = zst_dir / "sdk-zst.journal.zst"
     require_ok(run(["zstd", "-q", "-f", "-o", str(zst_target), str(plain_zst_source)]), "compress zst fixture")
     plain_zst_source.unlink()
-
-    return {
-        "stock": stock_dir,
-        "corrupt": corrupt_dir,
-        "zst": zst_dir,
-        "empty": empty_dir,
-    }
 
 
 def write_journal(path: Path, machine_id: str, boot_id: str, seqnum_id: str, rows: list[FixtureRow]) -> None:
@@ -281,34 +292,44 @@ def write_journal(path: Path, machine_id: str, boot_id: str, seqnum_id: str, row
 
 
 def reader_command(reader: ReaderSpec, tools: dict[str, str], mode: str, directory: Path, args: list[str]) -> list[str]:
-    if reader.name == "stock":
-        base = ["journalctl", "--directory", str(directory), "--no-pager", "--quiet"]
-    elif reader.name == "go":
-        base = [tools["go_journalctl"], "--directory", str(directory)]
-    elif reader.name == "rust":
-        base = [tools["rust_journalctl"], "--directory", str(directory)]
-    elif reader.name == "node":
-        base = ["node", str(REPO_ROOT / "node/cmd/journalctl/index.js"), "--directory", str(directory)]
-    elif reader.name == "python":
-        base = [PYTHON, str(REPO_ROOT / "python/cmd/journalctl.py"), "--directory", str(directory)]
-    else:
-        raise ValueError(reader.name)
-
-    if mode == "json":
-        return [*base, "--output=json", *args]
-    if mode == "export":
-        return [*base, "--output=export", *args]
-    if mode == "text":
-        return [*base, *args]
-    if mode == "fields":
-        return [*base, "--fields"]
-    if mode == "boots":
-        return [*base, "--list-boots"]
+    base = reader_base_command(reader, tools, directory)
     if mode == "verify":
-        if reader.name == "stock":
-            return ["journalctl", "--verify", "--directory", str(directory), "--no-pager", "--quiet"]
-        return [base[0], *base[1:], "--verify"]
+        return verify_command(reader, base, directory)
+    return [*base, *reader_mode_suffix(mode), *args]
+
+
+def reader_base_command(reader: ReaderSpec, tools: dict[str, str], directory: Path) -> list[str]:
+    if reader.name == "stock":
+        return ["journalctl", "--directory", str(directory), "--no-pager", "--quiet"]
+    if reader.name == "go":
+        return [tools["go_journalctl"], "--directory", str(directory)]
+    if reader.name == "rust":
+        return [tools["rust_journalctl"], "--directory", str(directory)]
+    if reader.name == "node":
+        return ["node", str(REPO_ROOT / "node/cmd/journalctl/index.js"), "--directory", str(directory)]
+    if reader.name == "python":
+        return [PYTHON, str(REPO_ROOT / "python/cmd/journalctl.py"), "--directory", str(directory)]
+    raise ValueError(reader.name)
+
+
+def reader_mode_suffix(mode: str) -> list[str]:
+    if mode == "json":
+        return ["--output=json"]
+    if mode == "export":
+        return ["--output=export"]
+    if mode == "text":
+        return []
+    if mode == "fields":
+        return ["--fields"]
+    if mode == "boots":
+        return ["--list-boots"]
     raise ValueError(mode)
+
+
+def verify_command(reader: ReaderSpec, base: list[str], directory: Path) -> list[str]:
+    if reader.name == "stock":
+        return ["journalctl", "--verify", "--directory", str(directory), "--no-pager", "--quiet"]
+    return [*base, "--verify"]
 
 
 def parse_json_lines(stdout: str) -> list[dict]:

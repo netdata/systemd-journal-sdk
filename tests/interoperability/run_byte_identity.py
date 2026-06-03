@@ -330,7 +330,7 @@ def compare_pair(left_name: str, right_name: str, *, final_state: str, limit: in
     }
 
 
-def main() -> int:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skip-run", action="store_true", help="compare existing .local ingester outputs")
     parser.add_argument("--diff-limit", type=int, default=16)
@@ -341,73 +341,113 @@ def main() -> int:
         default="online",
         help="journal final state to compare; use all to run online, offline, and archived",
     )
-    args = parser.parse_args()
+    return parser.parse_args()
 
+
+def requested_states(final_state: str) -> list[str]:
+    return ["online", "offline", "archived"] if final_state == "all" else [final_state]
+
+
+def run_ingesters_for_state(final_state: str) -> dict:
+    return run([
+        sys.executable,
+        str(INGESTER_RUNNER),
+        "--both",
+        "--final-state",
+        final_state,
+        "--max-size-bytes",
+        str(BYTE_IDENTITY_MAX_SIZE_BYTES),
+    ])
+
+
+def state_journal_paths(final_state: str) -> dict[str, str]:
+    return {language: str(journal_path(language, final_state)) for language in LANGUAGES}
+
+
+def missing_state_paths(paths: dict[str, str]) -> list[str]:
+    return [path for path in paths.values() if not Path(path).exists()]
+
+
+def chain_depth_results(final_state: str) -> dict[str, dict]:
+    results = {}
+    for language in LANGUAGES:
+        path = journal_path(language, final_state)
+        results[language] = validate_chain_depth(path.read_bytes(), path)
+    return results
+
+
+def failed_chain_depth(chain_depths: dict[str, dict]) -> tuple[str, dict] | None:
+    for language, result in chain_depths.items():
+        if result["returncode"] != 0 or not result["ok"]:
+            return language, result
+    return None
+
+
+def state_comparisons(args: argparse.Namespace, final_state: str) -> list[dict]:
+    return [
+        compare_pair(left, right, final_state=final_state, limit=args.diff_limit)
+        for left, right in comparison_pairs(args.reference)
+    ]
+
+
+def evaluate_state(args: argparse.Namespace, final_state: str) -> tuple[dict[str, object], bool]:
+    state_summary: dict[str, object] = {}
+    if not args.skip_run:
+        ingest = run_ingesters_for_state(final_state)
+        state_summary["ingesters"] = ingest
+        if ingest["returncode"] != 0:
+            return state_summary, False
+    paths = state_journal_paths(final_state)
+    missing = missing_state_paths(paths)
+    if missing:
+        state_summary["missing"] = missing
+        return state_summary, False
+    chain_depths = chain_depth_results(final_state)
+    failed = failed_chain_depth(chain_depths)
+    if failed is not None:
+        language, result = failed
+        state_summary[f"chain_depth_{language}"] = result
+        return state_summary, False
+    comparisons = state_comparisons(args, final_state)
+    state_summary["max_size_bytes"] = BYTE_IDENTITY_MAX_SIZE_BYTES
+    state_summary["chain_depths"] = {k: v["chain_depth"] for k, v in chain_depths.items()}
+    state_summary["paths"] = paths
+    state_summary["comparisons"] = comparisons
+    state_summary["all_equal"] = all(item["equal"] for item in comparisons)
+    return state_summary, True
+
+
+def failure_summary(state_summaries: dict[str, object]) -> dict[str, object]:
+    return {"states": state_summaries, "all_equal": False}
+
+
+def final_summary(states: list[str], state_summaries: dict[str, object]) -> dict[str, object]:
     summary: dict[str, object] = {}
-    states = ["online", "offline", "archived"] if args.final_state == "all" else [args.final_state]
-    state_summaries: dict[str, object] = {}
-
-    for final_state in states:
-        state_summary: dict[str, object] = {}
-        if not args.skip_run:
-            ingest = run([
-                sys.executable,
-                str(INGESTER_RUNNER),
-                "--both",
-                "--final-state",
-                final_state,
-                "--max-size-bytes",
-                str(BYTE_IDENTITY_MAX_SIZE_BYTES),
-            ])
-            state_summary["ingesters"] = ingest
-            if ingest["returncode"] != 0:
-                state_summaries[final_state] = state_summary
-                summary["states"] = state_summaries
-                summary["all_equal"] = False
-                print(json.dumps(summary, indent=2, sort_keys=True))
-                return 1
-
-        paths = {language: str(journal_path(language, final_state)) for language in LANGUAGES}
-        missing = [path for path in paths.values() if not Path(path).exists()]
-        if missing:
-            state_summary["missing"] = missing
-            state_summaries[final_state] = state_summary
-            summary["states"] = state_summaries
-            summary["all_equal"] = False
-            print(json.dumps(summary, indent=2, sort_keys=True))
-            return 1
-
-        chain_depths = {}
-        for language in LANGUAGES:
-            path = journal_path(language, final_state)
-            data = path.read_bytes()
-            result = validate_chain_depth(data, path)
-            chain_depths[language] = result
-            if result["returncode"] != 0 or not result["ok"]:
-                state_summary[f"chain_depth_{language}"] = result
-                state_summaries[final_state] = state_summary
-                summary["states"] = state_summaries
-                summary["all_equal"] = False
-                print(json.dumps(summary, indent=2, sort_keys=True))
-                return 1
-        state_summary["max_size_bytes"] = BYTE_IDENTITY_MAX_SIZE_BYTES
-        state_summary["chain_depths"] = {k: v["chain_depth"] for k, v in chain_depths.items()}
-
-        comparisons = [
-            compare_pair(left, right, final_state=final_state, limit=args.diff_limit)
-            for left, right in comparison_pairs(args.reference)
-        ]
-        state_summary["paths"] = paths
-        state_summary["comparisons"] = comparisons
-        state_summary["all_equal"] = all(item["equal"] for item in comparisons)
-        state_summaries[final_state] = state_summary
-
     if len(states) == 1:
         summary.update(state_summaries[states[0]])  # Preserve the original single-state shape.
     else:
         summary["states"] = state_summaries
     summary["all_equal"] = all(state["all_equal"] for state in state_summaries.values())
+    return summary
+
+
+def print_summary(summary: dict[str, object]) -> None:
     print(json.dumps(summary, indent=2, sort_keys=True))
+
+
+def main() -> int:
+    args = parse_args()
+    states = requested_states(args.final_state)
+    state_summaries: dict[str, object] = {}
+
+    for final_state in states:
+        state_summary, complete = evaluate_state(args, final_state)
+        state_summaries[final_state] = state_summary
+        if not complete:
+            print_summary(failure_summary(state_summaries))
+            return 1
+    summary = final_summary(states, state_summaries)
+    print_summary(summary)
     return 0 if summary["all_equal"] else 1
 
 

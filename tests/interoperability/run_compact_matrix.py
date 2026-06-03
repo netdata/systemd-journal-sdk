@@ -551,7 +551,7 @@ def systemd_version() -> str:
     return "unavailable"
 
 
-def main() -> int:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--writers", nargs="*", choices=sorted(WRITERS))
     parser.add_argument("--readers", nargs="*", choices=sorted(READERS))
@@ -560,67 +560,89 @@ def main() -> int:
     # Intentionally below the SDK default of 512 to exercise compression with small compact fixtures.
     parser.add_argument("--compression-threshold-bytes", type=int, default=16)
     parser.add_argument("--keep-files", action="store_true")
-    args = parser.parse_args()
+    return parser.parse_args()
 
+
+def prepare_dirs() -> None:
     LOCAL_DIR.mkdir(parents=True, exist_ok=True)
     FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
 
-    print("Building tools...", flush=True)
-    tools = build_tools()
-    libsystemd_reader = build_libsystemd_reader()
 
-    writer_specs = selected(WRITERS, args.writers)
-    reader_specs = selected(READERS, args.readers)
+def generated_compact_checks(
+    writer: WriterSpec,
+    tools: dict[str, str],
+    libsystemd_reader: str,
+    reader_specs: list[ReaderSpec],
+    args: argparse.Namespace,
+) -> tuple[dict[str, str] | None, list[dict]]:
+    print(f"\n--- Generating {writer.name} compact fixture ({args.compression}) ---", flush=True)
+    try:
+        result = generate_journal(
+            writer,
+            tools,
+            args.entries,
+            args.compression,
+            args.compression_threshold_bytes,
+        )
+    except Exception as err:
+        print(f"ERROR generating {writer.name}: {err}", flush=True)
+        return None, [{"writer": writer.name, "compression": args.compression, "status": "FAIL", "error": str(err)}]
+    journal_path = result["journal_file"]
+    print(f"  journal: {journal_path}", flush=True)
+    checks = stock_compact_checks(writer.name, journal_path, libsystemd_reader, args.compression)
+    checks.extend(reader_compact_checks(writer.name, journal_path, tools, reader_specs))
+    return result, checks
 
-    generated = []
-    all_checks: list[dict] = []
 
-    for writer in writer_specs:
-        print(f"\n--- Generating {writer.name} compact fixture ({args.compression}) ---", flush=True)
-        try:
-            result = generate_journal(
-                writer,
-                tools,
-                args.entries,
-                args.compression,
-                args.compression_threshold_bytes,
-            )
-            generated.append(result)
-        except Exception as err:
-            print(f"ERROR generating {writer.name}: {err}", flush=True)
-            all_checks.append({"writer": writer.name, "compression": args.compression, "status": "FAIL", "error": str(err)})
+def stock_compact_checks(
+    writer_name: str,
+    journal_path: str,
+    libsystemd_reader: str,
+    compression: str,
+) -> list[dict]:
+    checks = []
+    for check in [
+        inspect_compact(journal_path, compression),
+        check_stock_verify(journal_path),
+        check_stock_json(journal_path),
+        check_stock_export(journal_path),
+        check_stock_export_match(journal_path),
+        check_libsystemd(journal_path, libsystemd_reader),
+    ]:
+        checks.append({"writer": writer_name, "compression": compression, **check})
+        print(f"  {check['test']}: {check['status']}", flush=True)
+    return checks
+
+
+def reader_compact_checks(
+    writer_name: str,
+    journal_path: str,
+    tools: dict[str, str],
+    reader_specs: list[ReaderSpec],
+) -> list[dict]:
+    checks = []
+    for reader in reader_specs:
+        if reader.name == "stock":
             continue
+        reader_json = check_reader_json(reader, tools, journal_path, writer_name)
+        checks.append(reader_json)
+        print(f"  {reader.name}-json: {reader_json['status']}", flush=True)
+        reader_export = check_reader_export(reader, tools, journal_path, writer_name)
+        checks.append(reader_export)
+        print(f"  {reader.name}-export: {reader_export['status']}", flush=True)
+    return checks
 
-        journal_path = result["journal_file"]
-        print(f"  journal: {journal_path}", flush=True)
 
-        checks = [
-            inspect_compact(journal_path, args.compression),
-            check_stock_verify(journal_path),
-            check_stock_json(journal_path),
-            check_stock_export(journal_path),
-            check_stock_export_match(journal_path),
-            check_libsystemd(journal_path, libsystemd_reader),
-        ]
-        for check in checks:
-            all_checks.append({"writer": writer.name, "compression": args.compression, **check})
-            print(f"  {check['test']}: {check['status']}", flush=True)
-
-        for reader in reader_specs:
-            if reader.name == "stock":
-                continue
-            reader_json = check_reader_json(reader, tools, journal_path, writer.name)
-            all_checks.append(reader_json)
-            print(f"  {reader.name}-json: {reader_json['status']}", flush=True)
-
-            reader_export = check_reader_export(reader, tools, journal_path, writer.name)
-            all_checks.append(reader_export)
-            print(f"  {reader.name}-export: {reader_export['status']}", flush=True)
-
+def compact_payload(
+    args: argparse.Namespace,
+    writer_specs: list[WriterSpec],
+    reader_specs: list[ReaderSpec],
+    generated: list[dict],
+    all_checks: list[dict],
+) -> dict:
     passed = sum(1 for check in all_checks if check.get("status") == "PASS")
     failed = len(all_checks) - passed
-
-    payload = {
+    return {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "systemd_version": systemd_version(),
         "writers": [writer.name for writer in writer_specs],
@@ -632,30 +654,65 @@ def main() -> int:
         "summary": {"total": len(all_checks), "passed": passed, "failed": failed},
     }
 
+
+def timestamped_result_path(compression: str) -> Path:
     now = datetime.now()
     timestamp = (
         f"{now.year:04d}{now.month:02d}{now.day:02d}-"
         f"{now.hour:02d}{now.minute:02d}{now.second:02d}"
     )
-    result_path = LOCAL_DIR / f"compact-matrix-{args.compression}-results-{timestamp}.json"
-    result_path.write_text(json.dumps(payload, indent=2) + "\n")
+    return LOCAL_DIR / f"compact-matrix-{compression}-results-{timestamp}.json"
 
+
+def write_payload(payload: dict) -> Path:
+    result_path = timestamped_result_path(str(payload["compression"]))
+    result_path.write_text(json.dumps(payload, indent=2) + "\n")
+    return result_path
+
+
+def print_summary(payload: dict, result_path: Path) -> None:
+    summary = payload["summary"]
     print("\n=== SUMMARY ===", flush=True)
     print(f"systemd: {payload['systemd_version']}", flush=True)
     print(f"writers: {', '.join(payload['writers'])}", flush=True)
     print(f"compression: {payload['compression']}", flush=True)
-    print(f"total: {len(all_checks)}, passed: {passed}, failed: {failed}", flush=True)
+    print(f"total: {summary['total']}, passed: {summary['passed']}, failed: {summary['failed']}", flush=True)
     print(f"results: {result_path}", flush=True)
-
-    for check in all_checks:
+    for check in payload["checks"]:
         if check.get("status") != "PASS":
             print(f"FAIL: {check.get('writer', '?')} {check.get('test', '?')}: {check.get('error', '')}", flush=True)
 
-    if not args.keep_files:
-        for ready in FIXTURE_DIR.glob("*.ready"):
-            ready.unlink(missing_ok=True)
 
-    return 0 if failed == 0 else 1
+def cleanup_ready_files(keep_files: bool) -> None:
+    if keep_files:
+        return
+    for ready in FIXTURE_DIR.glob("*.ready"):
+        ready.unlink(missing_ok=True)
+
+
+def main() -> int:
+    args = parse_args()
+    prepare_dirs()
+    print("Building tools...", flush=True)
+    tools = build_tools()
+    libsystemd_reader = build_libsystemd_reader()
+
+    writer_specs = selected(WRITERS, args.writers)
+    reader_specs = selected(READERS, args.readers)
+
+    generated = []
+    all_checks: list[dict] = []
+
+    for writer in writer_specs:
+        result, checks = generated_compact_checks(writer, tools, libsystemd_reader, reader_specs, args)
+        if result is not None:
+            generated.append(result)
+        all_checks.extend(checks)
+    payload = compact_payload(args, writer_specs, reader_specs, generated, all_checks)
+    result_path = write_payload(payload)
+    print_summary(payload, result_path)
+    cleanup_ready_files(args.keep_files)
+    return 0 if payload["summary"]["failed"] == 0 else 1
 
 
 if __name__ == "__main__":

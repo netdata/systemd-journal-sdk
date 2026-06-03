@@ -119,6 +119,14 @@ class ObjectSpan:
 
 
 @dataclass(frozen=True)
+class RawObjectHeader:
+    typ: int
+    flags: int
+    size: int
+    aligned_end: int
+
+
+@dataclass(frozen=True)
 class DataObject:
     offset: int
     hash: int
@@ -155,6 +163,26 @@ class EntryArrayObject:
     next_entry_array_offset: int
     capacity: int
     items: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class HashChainSpec:
+    name: str
+    object_type: int
+    objects: dict[int, Any]
+    table_offset: int
+    table_size: int
+    header_depth_field: str
+
+
+@dataclass
+class EntryArrayWalkState:
+    used_items: list[tuple[int, int]]
+    remaining: int
+    offset: int
+    seen: set[int]
+    last_array_offset: int = 0
+    last_used: int = 0
 
 
 def inspect_journal_structure(
@@ -249,25 +277,36 @@ class _JournalStructureInspector:
         }
 
     def _read_header(self) -> None:
+        if not self._has_readable_header_prefix():
+            return
+        self._read_header_fields()
+        self._validate_header_geometry()
+        self._validate_header_semantics()
+
+    def _has_readable_header_prefix(self) -> bool:
         if len(self.data) < HEADER_MIN_SIZE:
             self._error(f"journal smaller than minimum header: {len(self.data)} < {HEADER_MIN_SIZE}")
-            return
+            return False
         if self.data[:8] != b"LPKSHHRH":
             self._error("invalid journal signature")
-            return
+            return False
+        return True
 
+    def _read_header_fields(self) -> None:
         for name, start, end, kind in HEADER_FIELDS:
-            if len(self.data) < end:
-                continue
-            if kind == "u8":
-                self.header[name] = self.data[start]
-            elif kind == "u32":
-                self.header[name] = _u32(self.data, start)
-            elif kind == "u64":
-                self.header[name] = _u64(self.data, start)
-            else:
-                self.header[name] = bytes(self.data[start:end])
+            if len(self.data) >= end:
+                self.header[name] = self._read_header_field(start, end, kind)
 
+    def _read_header_field(self, start: int, end: int, kind: str) -> int | bytes:
+        if kind == "u8":
+            return self.data[start]
+        if kind == "u32":
+            return _u32(self.data, start)
+        if kind == "u64":
+            return _u64(self.data, start)
+        return bytes(self.data[start:end])
+
+    def _validate_header_geometry(self) -> None:
         header_size = self.header.get("header_size", 0)
         arena_size = self.header.get("arena_size", 0)
         if header_size < HEADER_MIN_SIZE:
@@ -282,87 +321,126 @@ class _JournalStructureInspector:
             self._error(
                 f"header_size + arena_size exceeds file size: {header_size} + {arena_size} > {len(self.data)}"
             )
+
+    def _validate_header_semantics(self) -> None:
         if self.header.get("incompatible_flags", 0) & INCOMPATIBLE_KEYED_HASH == 0:
             self._error("HEADER_INCOMPATIBLE_KEYED_HASH not set")
         if self.expected_compact is not None and self._is_compact() != self.expected_compact:
             self._error(f"compact flag mismatch: got {self._is_compact()}, want {self.expected_compact}")
 
     def _walk_objects(self) -> None:
-        offset = self.header["header_size"]
-        tail = self.header["tail_object_offset"]
-        if tail == 0:
-            self._error("tail_object_offset is zero")
-            return
-        if tail < offset:
-            self._error(f"tail_object_offset {tail} is before header_size {offset}")
+        offset, tail = self._object_walk_bounds()
+        if offset is None:
             return
 
         while True:
-            if offset > tail:
-                self._error(f"object walk skipped past tail_object_offset {tail} at {offset}")
+            header = self._read_object_header(offset, tail)
+            if header is None:
                 return
-            if offset + OBJECT_HEADER_SIZE > len(self.data):
-                self._error(f"object header at offset {offset} exceeds file bounds")
-                return
-
-            typ = self.data[offset]
-            flags = self.data[offset + 1]
-            size = _u64(self.data, offset + 8)
-            aligned_end = offset + align8(size)
-            if typ == 0 and size == 0:
-                self._error(f"zero object encountered before tail at offset {offset}")
-                return
-            if size < OBJECT_HEADER_SIZE:
-                self._error(f"object at offset {offset} has invalid size {size}")
-                return
-            if aligned_end > len(self.data):
-                self._error(f"object at offset {offset} with aligned size {align8(size)} exceeds file bounds")
-                return
-            if offset % 8 != 0:
-                self._error(f"object offset {offset} is not 8-byte aligned")
-            if typ not in OBJECT_TYPES:
-                self._error(f"unknown object type {typ} at offset {offset}")
-
-            span = ObjectSpan(offset=offset, end=aligned_end, typ=typ, flags=flags, size=size)
+            span = ObjectSpan(
+                offset=offset,
+                end=header.aligned_end,
+                typ=header.typ,
+                flags=header.flags,
+                size=header.size,
+            )
             self.spans.append(span)
             self.by_offset[offset] = span
             self._parse_object(span)
 
             if offset == tail:
                 break
-            next_offset = aligned_end
+            next_offset = header.aligned_end
             if next_offset <= offset:
                 self._error(f"object walk did not advance from offset {offset}")
                 return
             offset = next_offset
 
+        self._validate_trailing_padding()
+
+    def _object_walk_bounds(self) -> tuple[int | None, int]:
+        offset = self.header["header_size"]
+        tail = self.header["tail_object_offset"]
+        if tail == 0:
+            self._error("tail_object_offset is zero")
+            return None, tail
+        if tail < offset:
+            self._error(f"tail_object_offset {tail} is before header_size {offset}")
+            return None, tail
+        return offset, tail
+
+    def _read_object_header(self, offset: int, tail: int) -> RawObjectHeader | None:
+        if offset > tail:
+            self._error(f"object walk skipped past tail_object_offset {tail} at {offset}")
+            return None
+        if offset + OBJECT_HEADER_SIZE > len(self.data):
+            self._error(f"object header at offset {offset} exceeds file bounds")
+            return None
+        header = RawObjectHeader(
+            typ=self.data[offset],
+            flags=self.data[offset + 1],
+            size=_u64(self.data, offset + 8),
+            aligned_end=offset + align8(_u64(self.data, offset + 8)),
+        )
+        return header if self._validate_object_header(offset, header) else None
+
+    def _validate_object_header(self, offset: int, header: RawObjectHeader) -> bool:
+        if header.typ == 0 and header.size == 0:
+            self._error(f"zero object encountered before tail at offset {offset}")
+            return False
+        if header.size < OBJECT_HEADER_SIZE:
+            self._error(f"object at offset {offset} has invalid size {header.size}")
+            return False
+        if header.aligned_end > len(self.data):
+            self._error(f"object at offset {offset} with aligned size {align8(header.size)} exceeds file bounds")
+            return False
+        if offset % 8 != 0:
+            self._error(f"object offset {offset} is not 8-byte aligned")
+        if header.typ not in OBJECT_TYPES:
+            self._error(f"unknown object type {header.typ} at offset {offset}")
+        return True
+
+    def _validate_trailing_padding(self) -> None:
         padding = self.data[self.spans[-1].end :]
         if any(padding):
             self._error(f"non-zero bytes found after tail object at offset {self.spans[-1].end}")
 
     def _parse_object(self, span: ObjectSpan) -> None:
+        self._validate_object_flags(span)
+        if span.typ == OBJECT_TYPE_DATA:
+            self._parse_data(span)
+            return
+        parser = self._object_parser(span.typ)
+        if parser is not None:
+            parser(span)
+
+    def _validate_object_flags(self, span: ObjectSpan) -> None:
         if span.flags & ~OBJECT_COMPRESSED_MASK:
             self._error(f"object at offset {span.offset} has unknown flags 0x{span.flags:x}")
         if _flag_count(span.flags & OBJECT_COMPRESSED_MASK) > 1:
             self._error(f"object at offset {span.offset} has multiple compression flags")
         if span.typ != OBJECT_TYPE_DATA and span.flags != 0:
             self._error(f"{OBJECT_TYPES.get(span.typ, 'UNKNOWN')} object at offset {span.offset} has flags 0x{span.flags:x}")
-        if span.typ == OBJECT_TYPE_DATA:
-            self._parse_data(span)
-        elif span.typ == OBJECT_TYPE_FIELD:
-            self._parse_field(span)
-        elif span.typ == OBJECT_TYPE_ENTRY:
-            self._parse_entry(span)
-        elif span.typ == OBJECT_TYPE_ENTRY_ARRAY:
-            self._parse_entry_array(span)
-        elif span.typ in (OBJECT_TYPE_DATA_HASH_TABLE, OBJECT_TYPE_FIELD_HASH_TABLE):
-            if span.size < OBJECT_HEADER_SIZE + HASH_ITEM_SIZE:
-                self._error(f"{OBJECT_TYPES[span.typ]} at offset {span.offset} is too small")
-            elif (span.size - OBJECT_HEADER_SIZE) % HASH_ITEM_SIZE != 0:
-                self._error(f"{OBJECT_TYPES[span.typ]} at offset {span.offset} has unaligned hash items")
-        elif span.typ == OBJECT_TYPE_TAG:
-            if span.size != TAG_OBJECT_SIZE:
-                self._error(f"TAG object at offset {span.offset} has invalid size {span.size}")
+
+    def _object_parser(self, typ: int) -> Any:
+        return {
+            OBJECT_TYPE_FIELD: self._parse_field,
+            OBJECT_TYPE_ENTRY: self._parse_entry,
+            OBJECT_TYPE_ENTRY_ARRAY: self._parse_entry_array,
+            OBJECT_TYPE_DATA_HASH_TABLE: self._parse_hash_table,
+            OBJECT_TYPE_FIELD_HASH_TABLE: self._parse_hash_table,
+            OBJECT_TYPE_TAG: self._parse_tag,
+        }.get(typ)
+
+    def _parse_hash_table(self, span: ObjectSpan) -> None:
+        if span.size < OBJECT_HEADER_SIZE + HASH_ITEM_SIZE:
+            self._error(f"{OBJECT_TYPES[span.typ]} at offset {span.offset} is too small")
+        elif (span.size - OBJECT_HEADER_SIZE) % HASH_ITEM_SIZE != 0:
+            self._error(f"{OBJECT_TYPES[span.typ]} at offset {span.offset} has unaligned hash items")
+
+    def _parse_tag(self, span: ObjectSpan) -> None:
+        if span.size != TAG_OBJECT_SIZE:
+            self._error(f"TAG object at offset {span.offset} has invalid size {span.size}")
 
     def _parse_data(self, span: ObjectSpan) -> None:
         payload_offset = COMPACT_DATA_OBJECT_HEADER_SIZE if self._is_compact() else DATA_OBJECT_HEADER_SIZE
@@ -499,29 +577,41 @@ class _JournalStructureInspector:
     def _validate_compression(self) -> None:
         incompatible_flags = self.header["incompatible_flags"]
         header_compression = incompatible_flags & INCOMPATIBLE_COMPRESSION_MASK
-        object_compression_counts = Counter()
-        for span in self.spans:
-            if span.typ != OBJECT_TYPE_DATA:
-                continue
-            if span.flags & OBJECT_COMPRESSED_XZ:
-                object_compression_counts["xz"] += 1
-            if span.flags & OBJECT_COMPRESSED_LZ4:
-                object_compression_counts["lz4"] += 1
-            if span.flags & OBJECT_COMPRESSED_ZSTD:
-                object_compression_counts["zstd"] += 1
-            for name, flag in COMPRESSION_OBJECT_FLAGS.items():
-                if span.flags & flag and not incompatible_flags & COMPRESSION_HEADER_FLAGS[name]:
-                    self._error(f"{name} DATA object at offset {span.offset} without matching header flag")
-
+        object_compression_counts = self._count_compressed_data_objects(incompatible_flags)
         if self.expected_compression is None:
             return
         if self.expected_compression == "none":
-            if header_compression != 0:
-                self._error(f"compression header flags set for uncompressed expectation: 0x{header_compression:x}")
-            if object_compression_counts:
-                self._error(f"compressed DATA objects found for uncompressed expectation: {dict(object_compression_counts)}")
+            self._validate_no_compression_expected(header_compression, object_compression_counts)
             return
+        self._validate_expected_compression(header_compression, object_compression_counts)
 
+    def _count_compressed_data_objects(self, incompatible_flags: int) -> Counter:
+        object_compression_counts = Counter()
+        for span in self.spans:
+            if span.typ == OBJECT_TYPE_DATA:
+                self._record_data_compression(span, object_compression_counts, incompatible_flags)
+        return object_compression_counts
+
+    def _record_data_compression(
+        self,
+        span: ObjectSpan,
+        object_compression_counts: Counter,
+        incompatible_flags: int,
+    ) -> None:
+        for name, flag in COMPRESSION_OBJECT_FLAGS.items():
+            if not span.flags & flag:
+                continue
+            object_compression_counts[name] += 1
+            if not incompatible_flags & COMPRESSION_HEADER_FLAGS[name]:
+                self._error(f"{name} DATA object at offset {span.offset} without matching header flag")
+
+    def _validate_no_compression_expected(self, header_compression: int, object_compression_counts: Counter) -> None:
+        if header_compression != 0:
+            self._error(f"compression header flags set for uncompressed expectation: 0x{header_compression:x}")
+        if object_compression_counts:
+            self._error(f"compressed DATA objects found for uncompressed expectation: {dict(object_compression_counts)}")
+
+    def _validate_expected_compression(self, header_compression: int, object_compression_counts: Counter) -> None:
         expected_header = COMPRESSION_HEADER_FLAGS[self.expected_compression]
         expected_object = COMPRESSION_OBJECT_FLAGS[self.expected_compression]
         if header_compression != expected_header:
@@ -536,119 +626,178 @@ class _JournalStructureInspector:
 
     def _validate_references(self) -> None:
         for obj in self.data_objects.values():
-            if (obj.entry_offset == 0) != (obj.n_entries == 0):
-                self._error(f"DATA object at offset {obj.offset} has inconsistent entry_offset/n_entries")
-            self._valid_offset(obj.next_hash_offset, OBJECT_TYPE_DATA, f"DATA {obj.offset} next_hash_offset")
-            self._valid_offset(obj.next_field_offset, OBJECT_TYPE_DATA, f"DATA {obj.offset} next_field_offset")
-            self._valid_offset(obj.entry_offset, OBJECT_TYPE_ENTRY, f"DATA {obj.offset} entry_offset")
-            self._valid_offset(obj.entry_array_offset, OBJECT_TYPE_ENTRY_ARRAY, f"DATA {obj.offset} entry_array_offset")
-            if obj.n_entries <= 1 and obj.entry_array_offset != 0:
-                self._error(f"DATA object at offset {obj.offset} has entry_array_offset with n_entries={obj.n_entries}")
-            if obj.n_entries > 1 and obj.entry_array_offset == 0:
-                self._error(f"DATA object at offset {obj.offset} has n_entries={obj.n_entries} without entry array")
-            if self._is_compact():
-                self._valid_offset(
-                    obj.compact_tail_entry_array_offset,
-                    OBJECT_TYPE_ENTRY_ARRAY,
-                    f"DATA {obj.offset} compact tail_entry_array_offset",
-                )
-
+            self._validate_data_references(obj)
         for obj in self.field_objects.values():
-            self._valid_offset(obj.next_hash_offset, OBJECT_TYPE_FIELD, f"FIELD {obj.offset} next_hash_offset")
-            self._valid_offset(obj.head_data_offset, OBJECT_TYPE_DATA, f"FIELD {obj.offset} head_data_offset")
-
+            self._validate_field_references(obj)
         for obj in self.entry_objects.values():
-            if obj.seqnum == 0:
-                self._error(f"ENTRY object at offset {obj.offset} has zero seqnum")
-            if obj.realtime == 0:
-                self._error(f"ENTRY object at offset {obj.offset} has zero realtime")
-            if obj.boot_id == b"\x00" * 16:
-                self._error(f"ENTRY object at offset {obj.offset} has zero boot_id")
-            for item_offset in obj.item_offsets:
-                self._valid_offset(item_offset, OBJECT_TYPE_DATA, f"ENTRY {obj.offset} item offset")
-            if list(obj.item_offsets) != sorted(obj.item_offsets):
-                self._error(f"ENTRY object at offset {obj.offset} item offsets are not sorted")
-
+            self._validate_entry_references(obj)
         for array in self.entry_arrays.values():
-            next_offset = array.next_entry_array_offset
-            if next_offset:
-                if next_offset <= array.offset:
-                    self._error(f"ENTRY_ARRAY at offset {array.offset} has non-increasing next offset {next_offset}")
-                self._valid_offset(next_offset, OBJECT_TYPE_ENTRY_ARRAY, f"ENTRY_ARRAY {array.offset} next")
+            self._validate_entry_array_reference(array)
+
+    def _validate_data_references(self, obj: DataObject) -> None:
+        if (obj.entry_offset == 0) != (obj.n_entries == 0):
+            self._error(f"DATA object at offset {obj.offset} has inconsistent entry_offset/n_entries")
+        self._valid_offset(obj.next_hash_offset, OBJECT_TYPE_DATA, f"DATA {obj.offset} next_hash_offset")
+        self._valid_offset(obj.next_field_offset, OBJECT_TYPE_DATA, f"DATA {obj.offset} next_field_offset")
+        self._valid_offset(obj.entry_offset, OBJECT_TYPE_ENTRY, f"DATA {obj.offset} entry_offset")
+        self._valid_offset(obj.entry_array_offset, OBJECT_TYPE_ENTRY_ARRAY, f"DATA {obj.offset} entry_array_offset")
+        self._validate_data_entry_array_rules(obj)
+        if self._is_compact():
+            self._valid_offset(
+                obj.compact_tail_entry_array_offset,
+                OBJECT_TYPE_ENTRY_ARRAY,
+                f"DATA {obj.offset} compact tail_entry_array_offset",
+            )
+
+    def _validate_data_entry_array_rules(self, obj: DataObject) -> None:
+        if obj.n_entries <= 1 and obj.entry_array_offset != 0:
+            self._error(f"DATA object at offset {obj.offset} has entry_array_offset with n_entries={obj.n_entries}")
+        if obj.n_entries > 1 and obj.entry_array_offset == 0:
+            self._error(f"DATA object at offset {obj.offset} has n_entries={obj.n_entries} without entry array")
+
+    def _validate_field_references(self, obj: FieldObject) -> None:
+        self._valid_offset(obj.next_hash_offset, OBJECT_TYPE_FIELD, f"FIELD {obj.offset} next_hash_offset")
+        self._valid_offset(obj.head_data_offset, OBJECT_TYPE_DATA, f"FIELD {obj.offset} head_data_offset")
+
+    def _validate_entry_references(self, obj: EntryObject) -> None:
+        if obj.seqnum == 0:
+            self._error(f"ENTRY object at offset {obj.offset} has zero seqnum")
+        if obj.realtime == 0:
+            self._error(f"ENTRY object at offset {obj.offset} has zero realtime")
+        if obj.boot_id == b"\x00" * 16:
+            self._error(f"ENTRY object at offset {obj.offset} has zero boot_id")
+        for item_offset in obj.item_offsets:
+            self._valid_offset(item_offset, OBJECT_TYPE_DATA, f"ENTRY {obj.offset} item offset")
+        if list(obj.item_offsets) != sorted(obj.item_offsets):
+            self._error(f"ENTRY object at offset {obj.offset} item offsets are not sorted")
+
+    def _validate_entry_array_reference(self, array: EntryArrayObject) -> None:
+        next_offset = array.next_entry_array_offset
+        if next_offset == 0:
+            return
+        if next_offset <= array.offset:
+            self._error(f"ENTRY_ARRAY at offset {array.offset} has non-increasing next offset {next_offset}")
+        self._valid_offset(next_offset, OBJECT_TYPE_ENTRY_ARRAY, f"ENTRY_ARRAY {array.offset} next")
 
     def _validate_hash_chains(self, name: str) -> None:
-        if name == "data":
-            object_type = OBJECT_TYPE_DATA
-            objects = self.data_objects
-            next_attr = "next_hash_offset"
-            table_offset = self.header["data_hash_table_offset"]
-            table_size = self.header["data_hash_table_size"]
-            header_depth_field = "data_hash_chain_depth"
-        else:
-            object_type = OBJECT_TYPE_FIELD
-            objects = self.field_objects
-            next_attr = "next_hash_offset"
-            table_offset = self.header["field_hash_table_offset"]
-            table_size = self.header["field_hash_table_size"]
-            header_depth_field = "field_hash_chain_depth"
-
-        if table_offset == 0 or table_size == 0:
+        spec = self._hash_chain_spec(name)
+        if spec.table_offset == 0 or spec.table_size == 0:
             return
-        bucket_count = table_size // HASH_ITEM_SIZE
+        bucket_count = spec.table_size // HASH_ITEM_SIZE
         referenced: set[int] = set()
         max_depth = 0
-
         for bucket_index in range(bucket_count):
-            bucket_offset = table_offset + bucket_index * HASH_ITEM_SIZE
-            head = _u64(self.data, bucket_offset)
-            tail = _u64(self.data, bucket_offset + 8)
-            if (head == 0) != (tail == 0):
-                self._error(f"{name} hash bucket {bucket_index} has mismatched head/tail")
-                continue
-            depth = 0
-            current = head
-            seen: set[int] = set()
-            last = 0
-            while current:
-                if current in seen:
-                    self._error(f"{name} hash bucket {bucket_index} has a cycle at {current}")
-                    break
-                seen.add(current)
-                span = self._object_at(current, object_type, f"{name} hash bucket {bucket_index} object")
-                if not span:
-                    break
-                obj = objects.get(current)
-                if obj is None:
-                    self._error(f"{name} hash bucket {bucket_index} references unparsable object at {current}")
-                    break
-                if obj.hash % bucket_count != bucket_index:
-                    self._error(
-                        f"{name} hash bucket mismatch for object {current}: hash bucket {obj.hash % bucket_count}, table bucket {bucket_index}"
-                    )
-                referenced.add(current)
-                last = current
-                next_offset = getattr(obj, next_attr)
-                if next_offset:
-                    if next_offset <= current:
-                        self._error(f"{name} hash chain at {current} points backwards to {next_offset}")
-                        break
-                    depth += 1
-                current = next_offset
-            if last and last != tail:
-                self._error(f"{name} hash bucket {bucket_index} tail mismatch: got {tail}, walked {last}")
+            depth = self._walk_hash_bucket(spec, bucket_index, bucket_count, referenced)
             max_depth = max(max_depth, depth)
-
-        unreferenced = sorted(set(objects) - referenced)
-        if unreferenced:
-            self._error(f"{name} objects missing from hash table: {unreferenced[:8]}")
-
-        header_depth = self.header.get(header_depth_field, 0)
-        if header_depth > max_depth:
-            self._error(f"header {header_depth_field} {header_depth} exceeds walked max depth {max_depth}")
+        self._validate_hash_chain_summary(spec, referenced, max_depth)
         if name == "data":
             self.actual_data_hash_chain_depth = max_depth
         else:
             self.actual_field_hash_chain_depth = max_depth
+
+    def _hash_chain_spec(self, name: str) -> HashChainSpec:
+        if name == "data":
+            return HashChainSpec(
+                name=name,
+                object_type=OBJECT_TYPE_DATA,
+                objects=self.data_objects,
+                table_offset=self.header["data_hash_table_offset"],
+                table_size=self.header["data_hash_table_size"],
+                header_depth_field="data_hash_chain_depth",
+            )
+        return HashChainSpec(
+            name=name,
+            object_type=OBJECT_TYPE_FIELD,
+            objects=self.field_objects,
+            table_offset=self.header["field_hash_table_offset"],
+            table_size=self.header["field_hash_table_size"],
+            header_depth_field="field_hash_chain_depth",
+        )
+
+    def _walk_hash_bucket(
+        self,
+        spec: HashChainSpec,
+        bucket_index: int,
+        bucket_count: int,
+        referenced: set[int],
+    ) -> int:
+        head, tail = self._hash_bucket_head_tail(spec, bucket_index)
+        if (head == 0) != (tail == 0):
+            self._error(f"{spec.name} hash bucket {bucket_index} has mismatched head/tail")
+            return 0
+        depth, last = self._walk_hash_chain(spec, bucket_index, bucket_count, head, referenced)
+        if last and last != tail:
+            self._error(f"{spec.name} hash bucket {bucket_index} tail mismatch: got {tail}, walked {last}")
+        return depth
+
+    def _hash_bucket_head_tail(self, spec: HashChainSpec, bucket_index: int) -> tuple[int, int]:
+        bucket_offset = spec.table_offset + bucket_index * HASH_ITEM_SIZE
+        return _u64(self.data, bucket_offset), _u64(self.data, bucket_offset + 8)
+
+    def _walk_hash_chain(
+        self,
+        spec: HashChainSpec,
+        bucket_index: int,
+        bucket_count: int,
+        head: int,
+        referenced: set[int],
+    ) -> tuple[int, int]:
+        depth = 0
+        current = head
+        seen: set[int] = set()
+        last = 0
+        while current:
+            step = self._validate_hash_chain_step(spec, bucket_index, bucket_count, current, seen, referenced)
+            if step is None:
+                break
+            last = current
+            if step:
+                depth += 1
+            current = step
+        return depth, last
+
+    def _validate_hash_chain_step(
+        self,
+        spec: HashChainSpec,
+        bucket_index: int,
+        bucket_count: int,
+        current: int,
+        seen: set[int],
+        referenced: set[int],
+    ) -> int | None:
+        if current in seen:
+            self._error(f"{spec.name} hash bucket {bucket_index} has a cycle at {current}")
+            return None
+        seen.add(current)
+        if not self._object_at(current, spec.object_type, f"{spec.name} hash bucket {bucket_index} object"):
+            return None
+        obj = spec.objects.get(current)
+        if obj is None:
+            self._error(f"{spec.name} hash bucket {bucket_index} references unparsable object at {current}")
+            return None
+        if obj.hash % bucket_count != bucket_index:
+            self._error(
+                f"{spec.name} hash bucket mismatch for object {current}: hash bucket {obj.hash % bucket_count}, table bucket {bucket_index}"
+            )
+        referenced.add(current)
+        next_offset = obj.next_hash_offset
+        if next_offset and next_offset <= current:
+            self._error(f"{spec.name} hash chain at {current} points backwards to {next_offset}")
+            return None
+        return next_offset
+
+    def _validate_hash_chain_summary(
+        self,
+        spec: HashChainSpec,
+        referenced: set[int],
+        max_depth: int,
+    ) -> None:
+        unreferenced = sorted(set(spec.objects) - referenced)
+        if unreferenced:
+            self._error(f"{spec.name} objects missing from hash table: {unreferenced[:8]}")
+        header_depth = self.header.get(spec.header_depth_field, 0)
+        if header_depth > max_depth:
+            self._error(f"header {spec.header_depth_field} {header_depth} exceeds walked max depth {max_depth}")
 
     def _validate_entry_arrays(self) -> None:
         global_offsets = self._validate_entry_array_chain(
@@ -696,62 +845,108 @@ class _JournalStructureInspector:
         tail_offset: int | None = None,
         tail_n_entries: int | None = None,
     ) -> list[tuple[int, int]]:
+        if not self._entry_array_start_is_valid(start_offset, n_used, label):
+            return []
+        state = EntryArrayWalkState([], n_used, start_offset, set())
+        self._walk_entry_array_chain(label, state)
+        self._validate_entry_array_tail(label, state, tail_offset, tail_n_entries)
+        return state.used_items
+
+    def _entry_array_start_is_valid(self, start_offset: int, n_used: int, label: str) -> bool:
         if n_used == 0:
             if start_offset != 0:
                 self._error(f"{label} has start offset {start_offset} with zero used entries")
-            return []
+            return False
         if start_offset == 0:
             self._error(f"{label} has zero start offset with {n_used} used entries")
-            return []
+            return False
+        return True
 
-        used_items: list[tuple[int, int]] = []
-        remaining = n_used
-        offset = start_offset
-        seen: set[int] = set()
-        last_array_offset = 0
-        last_used = 0
-
-        while offset:
-            if offset in seen:
-                self._error(f"{label} has cycle at ENTRY_ARRAY {offset}")
-                break
-            seen.add(offset)
-            self.referenced_entry_arrays.add(offset)
-            array = self.entry_arrays.get(offset)
+    def _walk_entry_array_chain(self, label: str, state: EntryArrayWalkState) -> None:
+        while state.offset:
+            array = self._entry_array_at_current(label, state)
             if array is None:
-                self._object_at(offset, OBJECT_TYPE_ENTRY_ARRAY, label)
                 break
-
-            used_here = min(remaining, array.capacity)
-            for index, item in enumerate(array.items):
-                if index < used_here:
-                    if item == 0:
-                        self._error(f"{label} ENTRY_ARRAY {offset} has zero item at used index {index}")
-                    else:
-                        self._object_at(item, OBJECT_TYPE_ENTRY, f"{label} item")
-                        used_items.append((offset, item))
-                elif item != 0:
-                    self._error(f"{label} ENTRY_ARRAY {offset} has non-zero unused item at index {index}")
-
-            remaining -= used_here
-            last_array_offset = offset
-            last_used = used_here
-            if remaining == 0:
-                if array.next_entry_array_offset != 0:
-                    self._error(f"{label} has unused next ENTRY_ARRAY {array.next_entry_array_offset}")
+            used_here = min(state.remaining, array.capacity)
+            self._validate_entry_array_items(label, state.offset, array, used_here, state.used_items)
+            state.remaining -= used_here
+            state.last_array_offset = state.offset
+            state.last_used = used_here
+            if self._entry_array_chain_done(label, state, array):
                 break
-            if array.next_entry_array_offset == 0:
-                self._error(f"{label} ended before {remaining} entries were linked")
-                break
-            offset = array.next_entry_array_offset
+            state.offset = array.next_entry_array_offset
 
-        if tail_offset is not None and tail_n_entries is not None:
-            if tail_offset != last_array_offset:
-                self._error(f"{label} tail array mismatch: header {tail_offset}, walked {last_array_offset}")
-            if tail_n_entries != last_used:
-                self._error(f"{label} tail entry count mismatch: header {tail_n_entries}, walked {last_used}")
+    def _entry_array_at_current(
+        self,
+        label: str,
+        state: EntryArrayWalkState,
+    ) -> EntryArrayObject | None:
+        if state.offset in state.seen:
+            self._error(f"{label} has cycle at ENTRY_ARRAY {state.offset}")
+            return None
+        state.seen.add(state.offset)
+        self.referenced_entry_arrays.add(state.offset)
+        array = self.entry_arrays.get(state.offset)
+        if array is None:
+            self._object_at(state.offset, OBJECT_TYPE_ENTRY_ARRAY, label)
+        return array
 
-        return used_items
+    def _validate_entry_array_items(
+        self,
+        label: str,
+        offset: int,
+        array: EntryArrayObject,
+        used_here: int,
+        used_items: list[tuple[int, int]],
+    ) -> None:
+        for index, item in enumerate(array.items):
+            if index < used_here:
+                self._validate_used_entry_array_item(label, offset, index, item, used_items)
+            elif item != 0:
+                self._error(f"{label} ENTRY_ARRAY {offset} has non-zero unused item at index {index}")
+
+    def _validate_used_entry_array_item(
+        self,
+        label: str,
+        offset: int,
+        index: int,
+        item: int,
+        used_items: list[tuple[int, int]],
+    ) -> None:
+        if item == 0:
+            self._error(f"{label} ENTRY_ARRAY {offset} has zero item at used index {index}")
+            return
+        self._object_at(item, OBJECT_TYPE_ENTRY, f"{label} item")
+        used_items.append((offset, item))
+
+    def _entry_array_chain_done(
+        self,
+        label: str,
+        state: EntryArrayWalkState,
+        array: EntryArrayObject,
+    ) -> bool:
+        if state.remaining == 0:
+            if array.next_entry_array_offset != 0:
+                self._error(f"{label} has unused next ENTRY_ARRAY {array.next_entry_array_offset}")
+            return True
+        if array.next_entry_array_offset == 0:
+            self._error(f"{label} ended before {state.remaining} entries were linked")
+            return True
+        return False
+
+    def _validate_entry_array_tail(
+        self,
+        label: str,
+        state: EntryArrayWalkState,
+        tail_offset: int | None,
+        tail_n_entries: int | None,
+    ) -> None:
+        if tail_offset is None or tail_n_entries is None:
+            return
+        if tail_offset != state.last_array_offset:
+            self._error(f"{label} tail array mismatch: header {tail_offset}, walked {state.last_array_offset}")
+        if tail_n_entries != state.last_used:
+            self._error(f"{label} tail entry count mismatch: header {tail_n_entries}, walked {state.last_used}")
 
     def _validate_tail_metadata(self) -> None:
         entries = sorted(self.entry_objects.values(), key=lambda item: item.seqnum)

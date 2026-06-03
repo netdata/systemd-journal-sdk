@@ -1868,6 +1868,52 @@ Batch 25:
     `tests/vm_matrix`: 4, `tests/benchmarks/systemd`: 4,
     `tests/datasets`: 6, `tests/conformance`: 2, and `tests/fss`: 1.
 
+Batch 26:
+
+- Scope: interoperability harnesses under `tests/interoperability/`.
+- Changes:
+  - Refactored `tests/interoperability/journal_structure.py` header,
+    object-walk, reference-validation, hash-chain, and entry-array checks into
+    focused helpers and small state dataclasses while preserving the structural
+    oracle contract.
+  - Refactored binary, closed-file, compression, compact, byte-identity,
+    directory, mixed-directory, live, and verifier matrix entrypoints by
+    extracting argument parsing, setup, case execution, result payload,
+    reporting, and cleanup helpers.
+  - Replaced the verifier corruption branch chain with named corruption
+    helpers and a dispatch table, preserving the existing corruption names and
+    generated negative fixture semantics.
+  - Refactored the live matrix writer lifecycle, polling reader collection,
+    stock libsystemd reader collection, final snapshot reads, verification,
+    structure checks, assessment, and reporting while preserving command
+    vectors and result JSON fields.
+- Validation:
+  - `python3 -m py_compile tests/interoperability/*.py` passed.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for
+    `tests/interoperability/`.
+  - CLI help smoke checks passed for `run_binary_matrix.py`, `run_matrix.py`,
+    `run_byte_identity.py`, `run_compression_matrix.py`,
+    `run_compact_matrix.py`, `run_directory_matrix.py`,
+    `run_mixed_directory_matrix.py`, `run_verify_matrix.py`, and
+    `run_live_matrix.py`.
+  - Targeted interoperability smokes passed:
+    - `run_matrix.py --entries 3 --writers go --readers go stock`: 11/11.
+    - `run_binary_matrix.py --writers go --readers go stock`: 7/7.
+    - `run_compression_matrix.py --writers go --readers go stock
+      --compression zstd --entries 2`: 9/9.
+    - `run_compact_matrix.py --writers go --readers go stock --entries 2`:
+      8/8.
+    - `run_directory_matrix.py --readers go stock`: status `PASS`.
+    - `PYTHONPATH=.local/python-deps run_mixed_directory_matrix.py --readers
+      go stock`: 27/27.
+    - `run_live_matrix.py --features regular --writers go --readers go stock
+      --entries 5 --poll-readers 1 --libsystemd-readers 1 --writer-delay-ms
+      20`: 1/1.
+  - Refreshed full `tests/` Lizard inventory now reports 23 critical findings:
+    `tests/systemd_matrix`: 6, `tests/vm_matrix`: 4,
+    `tests/benchmarks/systemd`: 4, `tests/datasets`: 6,
+    `tests/conformance`: 2, and `tests/fss`: 1.
+
 Reviewer findings:
 
 - Pending. The current SOW is not ready for terminal reviewer review because

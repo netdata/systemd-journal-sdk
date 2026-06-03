@@ -348,46 +348,66 @@ def _parse_export_binary_entries(output: bytes) -> dict[str, bytes]:
 
     Returns dict mapping field name to raw value bytes.
     """
-    if isinstance(output, str):
-        output = output.encode('latin-1')
+    output = _export_output_bytes(output)
     fields: dict[str, bytes] = {}
     i = 0
     while i < len(output):
         if output[i] == 0x0a:
             i += 1
             continue
-        line_start = i
-        while i < len(output) and output[i] != 0x0a:
-            i += 1
-        line = output[line_start:i]
-        i += 1
+        line, i = _read_export_line(output, i)
         if not line:
             continue
-        line_str = line.decode('latin-1', errors='replace')
-        eq_idx = line_str.find('=')
-        if eq_idx >= 0:
-            name = line_str[:eq_idx]
-            value_str = line_str[eq_idx + 1:]
-            try:
-                value_bytes = value_str.encode('latin-1')
-            except Exception:
-                value_bytes = value_str.encode('utf-8', errors='replace')
-            fields[name] = value_bytes
-            continue
-        if 0x00 <= line[0] <= 0x09:
-            continue
-        name = line_str
-        if i + 8 > len(output):
-            break
-        size_bytes = output[i:i + 8]
-        size = int.from_bytes(size_bytes, 'little')
-        i += 8
-        data = output[i:i + size]
-        i += size
-        if i < len(output) and output[i] == 0x0a:
-            i += 1
-        fields[name] = data
+        i = _store_export_line(fields, output, line, i)
     return fields
+
+
+def _export_output_bytes(output: bytes | str) -> bytes:
+    if isinstance(output, str):
+        return output.encode("latin-1")
+    return output
+
+
+def _read_export_line(output: bytes, start: int) -> tuple[bytes, int]:
+    i = start
+    while i < len(output) and output[i] != 0x0a:
+        i += 1
+    return output[start:i], i + 1
+
+
+def _store_export_line(fields: dict[str, bytes], output: bytes, line: bytes, i: int) -> int:
+    line_str = line.decode("latin-1", errors="replace")
+    eq_idx = line_str.find("=")
+    if eq_idx >= 0:
+        fields[line_str[:eq_idx]] = _text_export_value(line_str[eq_idx + 1:])
+        return i
+    if 0x00 <= line[0] <= 0x09:
+        return i
+    parsed = _read_binary_export_value(output, i)
+    if parsed is None:
+        return len(output)
+    value, next_i = parsed
+    fields[line_str] = value
+    return next_i
+
+
+def _text_export_value(value_str: str) -> bytes:
+    try:
+        return value_str.encode("latin-1")
+    except Exception:
+        return value_str.encode("utf-8", errors="replace")
+
+
+def _read_binary_export_value(output: bytes, i: int) -> tuple[bytes, int] | None:
+    if i + 8 > len(output):
+        return None
+    size = int.from_bytes(output[i:i + 8], "little")
+    i += 8
+    data = output[i:i + size]
+    i += size
+    if i < len(output) and output[i] == 0x0a:
+        i += 1
+    return data, i
 
 
 def _validate_export_output_bytes(output: bytes, test_name: str, cmd: list[str]) -> dict:
@@ -507,74 +527,80 @@ def selected(mapping: dict[str, object], names: list[str] | None):
     return [mapping[name] for name in names]
 
 
-def main() -> int:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--writers", nargs="*", choices=sorted(WRITERS))
     parser.add_argument("--readers", nargs="*", choices=sorted(READERS))
     parser.add_argument("--keep-files", action="store_true")
-    args = parser.parse_args()
+    return parser.parse_args()
 
+
+def prepare_dirs() -> None:
     LOCAL_DIR.mkdir(parents=True, exist_ok=True)
     FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
 
-    print("Building tools...")
-    tools = build_tools()
-    libsystemd_reader = build_libsystemd_reader()
 
-    writer_specs = selected(WRITERS, args.writers)
-    reader_specs = selected(READERS, args.readers)
+def generated_writer_checks(
+    writer: WriterSpec,
+    tools: dict[str, str],
+    libsystemd_reader: str,
+    reader_specs: list[ReaderSpec],
+) -> tuple[dict[str, str] | None, list[dict]]:
+    print(f"\n--- Generating {writer.name} binary fixture ---", flush=True)
+    try:
+        result = generate_journal(writer, tools, 10)
+    except Exception as e:
+        print(f"ERROR generating {writer.name}: {e}", flush=True)
+        return None, [{"writer": writer.name, "status": "FAIL", "error": str(e)}]
+    journal_path = result["journal_file"]
+    print(f"  journal: {journal_path}", flush=True)
+    checks = stock_checks(writer.name, journal_path, libsystemd_reader)
+    checks.extend(reader_checks(writer.name, journal_path, tools, reader_specs))
+    return result, checks
 
-    generated = []
-    all_checks: list[dict] = []
 
-    for writer in writer_specs:
-        print(f"\n--- Generating {writer.name} binary fixture ---", flush=True)
-        try:
-            result = generate_journal(writer, tools, 10)
-            generated.append(result)
-        except Exception as e:
-            print(f"ERROR generating {writer.name}: {e}", flush=True)
-            all_checks.append({"writer": writer.name, "status": "FAIL", "error": str(e)})
+def stock_checks(writer_name: str, journal_path: str, libsystemd_reader: str) -> list[dict]:
+    checks = []
+    for label, check in [
+        ("stock-verify", check_stock_verify(journal_path)),
+        ("stock-json", check_stock_json(journal_path)),
+        ("stock-export", check_stock_export(journal_path)),
+        ("stock-export-match", check_stock_export_binary_match(journal_path)),
+        ("libsystemd", check_libsystemd(journal_path, libsystemd_reader)),
+    ]:
+        checks.append({"writer": writer_name, **check})
+        print(f"  {label}: {check['status']}", flush=True)
+    return checks
+
+
+def reader_checks(
+    writer_name: str,
+    journal_path: str,
+    tools: dict[str, str],
+    reader_specs: list[ReaderSpec],
+) -> list[dict]:
+    checks = []
+    for reader in reader_specs:
+        if reader.name == "stock":
             continue
+        reader_json = check_reader_json(reader, tools, journal_path, writer_name)
+        checks.append(reader_json)
+        print(f"  {reader.name}-json: {reader_json['status']}", flush=True)
+        reader_export = check_reader_export(reader, tools, journal_path, writer_name)
+        checks.append(reader_export)
+        print(f"  {reader.name}-export: {reader_export['status']}", flush=True)
+    return checks
 
-        journal_path = result["journal_file"]
-        print(f"  journal: {journal_path}", flush=True)
 
-        stock_verify = check_stock_verify(journal_path)
-        all_checks.append({"writer": writer.name, **stock_verify})
-        print(f"  stock-verify: {stock_verify['status']}", flush=True)
-
-        stock_json = check_stock_json(journal_path)
-        all_checks.append({"writer": writer.name, **stock_json})
-        print(f"  stock-json: {stock_json['status']}", flush=True)
-
-        stock_export = check_stock_export(journal_path)
-        all_checks.append({"writer": writer.name, **stock_export})
-        print(f"  stock-export: {stock_export['status']}", flush=True)
-
-        stock_export_match = check_stock_export_binary_match(journal_path)
-        all_checks.append({"writer": writer.name, **stock_export_match})
-        print(f"  stock-export-match: {stock_export_match['status']}", flush=True)
-
-        libsystemd = check_libsystemd(journal_path, libsystemd_reader)
-        all_checks.append({"writer": writer.name, **libsystemd})
-        print(f"  libsystemd: {libsystemd['status']}", flush=True)
-
-        for reader in reader_specs:
-            if reader.name == "stock":
-                continue
-            reader_json = check_reader_json(reader, tools, journal_path, writer.name)
-            all_checks.append(reader_json)
-            print(f"  {reader.name}-json: {reader_json['status']}", flush=True)
-
-            reader_export = check_reader_export(reader, tools, journal_path, writer.name)
-            all_checks.append(reader_export)
-            print(f"  {reader.name}-export: {reader_export['status']}", flush=True)
-
+def result_payload(
+    writer_specs: list[WriterSpec],
+    reader_specs: list[ReaderSpec],
+    generated: list[dict],
+    all_checks: list[dict],
+) -> dict:
     passed = sum(1 for c in all_checks if c.get("status") == "PASS")
     failed = len(all_checks) - passed
-
-    payload = {
+    return {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "systemd_version": systemd_version(),
         "writers": [w.name for w in writer_specs],
@@ -589,29 +615,64 @@ def main() -> int:
         },
     }
 
+
+def timestamped_result_path() -> Path:
     now = datetime.now()
     timestamp = (
         f"{now.year:04d}{now.month:02d}{now.day:02d}-"
         f"{now.hour:02d}{now.minute:02d}{now.second:02d}"
     )
-    result_path = LOCAL_DIR / f"binary-matrix-results-{timestamp}.json"
-    result_path.write_text(json.dumps(payload, indent=2) + "\n")
+    return LOCAL_DIR / f"binary-matrix-results-{timestamp}.json"
 
+
+def write_payload(payload: dict) -> Path:
+    result_path = timestamped_result_path()
+    result_path.write_text(json.dumps(payload, indent=2) + "\n")
+    return result_path
+
+
+def print_summary(payload: dict, result_path: Path) -> None:
+    summary = payload["summary"]
     print("\n=== SUMMARY ===", flush=True)
     print(f"systemd: {payload['systemd_version']}", flush=True)
-    print(f"writers: {', '.join([w.name for w in writer_specs])}", flush=True)
-    print(f"total: {len(all_checks)}, passed: {passed}, failed: {failed}", flush=True)
+    print(f"writers: {', '.join(payload['writers'])}", flush=True)
+    print(f"total: {summary['total']}, passed: {summary['passed']}, failed: {summary['failed']}", flush=True)
     print(f"results: {result_path}", flush=True)
-
-    for check in all_checks:
+    for check in payload["checks"]:
         if check.get("status") != "PASS":
             print(f"FAIL: {check.get('writer', '?')} {check.get('test', '?')}: {check.get('error', '')}", flush=True)
 
-    if not args.keep_files:
-        for f in FIXTURE_DIR.glob("*.ready"):
-            f.unlink(missing_ok=True)
 
-    return 0 if failed == 0 else 1
+def cleanup_ready_files(keep_files: bool) -> None:
+    if keep_files:
+        return
+    for f in FIXTURE_DIR.glob("*.ready"):
+        f.unlink(missing_ok=True)
+
+
+def main() -> int:
+    args = parse_args()
+    prepare_dirs()
+    print("Building tools...")
+    tools = build_tools()
+    libsystemd_reader = build_libsystemd_reader()
+
+    writer_specs = selected(WRITERS, args.writers)
+    reader_specs = selected(READERS, args.readers)
+
+    generated = []
+    all_checks: list[dict] = []
+
+    for writer in writer_specs:
+        result, checks = generated_writer_checks(writer, tools, libsystemd_reader, reader_specs)
+        if result is not None:
+            generated.append(result)
+        all_checks.extend(checks)
+    payload = result_payload(writer_specs, reader_specs, generated, all_checks)
+    result_path = write_payload(payload)
+    print_summary(payload, result_path)
+    cleanup_ready_files(args.keep_files)
+    return 0 if payload["summary"]["failed"] == 0 else 1
 
 
 if __name__ == "__main__":

@@ -526,69 +526,93 @@ def selected(mapping: dict[str, object], names: list[str] | None):
     return [mapping[name] for name in names]
 
 
-def main() -> int:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--writers", nargs="*", choices=sorted(WRITERS))
     parser.add_argument("--readers", nargs="*", choices=sorted(READERS))
     parser.add_argument("--compression", nargs="*", choices=COMPRESSION_FAMILIES, default=DEFAULT_COMPRESSION_FAMILIES)
     parser.add_argument("--entries", type=int, default=10)
     parser.add_argument("--keep-files", action="store_true")
-    args = parser.parse_args()
+    return parser.parse_args()
 
+
+def prepare_dirs() -> None:
     LOCAL_DIR.mkdir(parents=True, exist_ok=True)
     FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
 
-    print("Building tools...")
-    tools = build_tools()
-    libsystemd_reader = build_libsystemd_reader()
 
-    writer_specs = selected(WRITERS, args.writers)
-    reader_specs = selected(READERS, args.readers)
-    compression_families = args.compression
+def generated_compression_checks(
+    compression: str,
+    writer: WriterSpec,
+    tools: dict[str, str],
+    libsystemd_reader: str,
+    reader_specs: list[ReaderSpec],
+    entries: int,
+) -> tuple[dict[str, str] | None, list[dict]]:
+    print(f"\n--- Generating {writer.name} {compression} fixture ---", flush=True)
+    try:
+        result = generate_journal(writer, tools, entries, compression)
+    except Exception as e:
+        print(f"ERROR generating {writer.name} {compression}: {e}", flush=True)
+        return None, [{"writer": writer.name, "compression": compression, "status": "FAIL", "error": str(e)}]
+    journal_path = result["journal_file"]
+    print(f"  journal: {journal_path}", flush=True)
+    checks = stock_compression_checks(writer.name, journal_path, libsystemd_reader, compression)
+    checks.extend(reader_compression_checks(writer.name, journal_path, tools, reader_specs, compression))
+    return result, checks
 
-    generated = []
-    all_checks: list[dict] = []
 
-    for compression in compression_families:
-        for writer in writer_specs:
-            print(f"\n--- Generating {writer.name} {compression} fixture ---", flush=True)
-            try:
-                result = generate_journal(writer, tools, args.entries, compression)
-                generated.append(result)
-            except Exception as e:
-                print(f"ERROR generating {writer.name} {compression}: {e}", flush=True)
-                all_checks.append({"writer": writer.name, "compression": compression, "status": "FAIL", "error": str(e)})
-                continue
+def stock_compression_checks(
+    writer_name: str,
+    journal_path: str,
+    libsystemd_reader: str,
+    compression: str,
+) -> list[dict]:
+    checks = []
+    for check in [
+        inspect_compression(journal_path, compression),
+        check_stock_verify(journal_path),
+        check_stock_json(journal_path, compression),
+        check_stock_export(journal_path, compression),
+        check_stock_export_match(journal_path, compression),
+        check_libsystemd(journal_path, libsystemd_reader, compression),
+    ]:
+        checks.append({"writer": writer_name, "compression": compression, **check})
+        print(f"  {check['test']}: {check['status']}", flush=True)
+    return checks
 
-            journal_path = result["journal_file"]
-            print(f"  journal: {journal_path}", flush=True)
 
-            for check in [
-                inspect_compression(journal_path, compression),
-                check_stock_verify(journal_path),
-                check_stock_json(journal_path, compression),
-                check_stock_export(journal_path, compression),
-                check_stock_export_match(journal_path, compression),
-                check_libsystemd(journal_path, libsystemd_reader, compression),
-            ]:
-                all_checks.append({"writer": writer.name, "compression": compression, **check})
-                print(f"  {check['test']}: {check['status']}", flush=True)
+def reader_compression_checks(
+    writer_name: str,
+    journal_path: str,
+    tools: dict[str, str],
+    reader_specs: list[ReaderSpec],
+    compression: str,
+) -> list[dict]:
+    checks = []
+    for reader in reader_specs:
+        if reader.name == "stock":
+            continue
+        for check in [
+            check_reader_json(reader, tools, journal_path, writer_name, compression),
+            check_reader_export(reader, tools, journal_path, writer_name, compression),
+            check_reader_export_match(reader, tools, journal_path, writer_name, compression),
+        ]:
+            checks.append(check)
+            print(f"  {reader.name}-{check['test']}: {check['status']}", flush=True)
+    return checks
 
-            for reader in reader_specs:
-                if reader.name == "stock":
-                    continue
-                for check in [
-                    check_reader_json(reader, tools, journal_path, writer.name, compression),
-                    check_reader_export(reader, tools, journal_path, writer.name, compression),
-                    check_reader_export_match(reader, tools, journal_path, writer.name, compression),
-                ]:
-                    all_checks.append(check)
-                    print(f"  {reader.name}-{check['test']}: {check['status']}", flush=True)
 
+def compression_payload(
+    writer_specs: list[WriterSpec],
+    reader_specs: list[ReaderSpec],
+    compression_families: list[str],
+    generated: list[dict],
+    all_checks: list[dict],
+) -> dict:
     passed = sum(1 for c in all_checks if c.get("status") == "PASS")
     failed = len(all_checks) - passed
-
-    payload = {
+    return {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "systemd_version": systemd_version(),
         "writers": [w.name for w in writer_specs],
@@ -603,30 +627,74 @@ def main() -> int:
         },
     }
 
+
+def timestamped_result_path() -> Path:
     now = datetime.now()
     timestamp = (
         f"{now.year:04d}{now.month:02d}{now.day:02d}-"
         f"{now.hour:02d}{now.minute:02d}{now.second:02d}"
     )
-    result_path = LOCAL_DIR / f"compression-matrix-results-{timestamp}.json"
-    result_path.write_text(json.dumps(payload, indent=2) + "\n")
+    return LOCAL_DIR / f"compression-matrix-results-{timestamp}.json"
 
+
+def write_payload(payload: dict) -> Path:
+    result_path = timestamped_result_path()
+    result_path.write_text(json.dumps(payload, indent=2) + "\n")
+    return result_path
+
+
+def print_summary(payload: dict, result_path: Path) -> None:
+    summary = payload["summary"]
     print("\n=== SUMMARY ===", flush=True)
     print(f"systemd: {payload['systemd_version']}", flush=True)
-    print(f"writers: {', '.join([w.name for w in writer_specs])}", flush=True)
-    print(f"compression: {', '.join(compression_families)}", flush=True)
-    print(f"total: {len(all_checks)}, passed: {passed}, failed: {failed}", flush=True)
+    print(f"writers: {', '.join(payload['writers'])}", flush=True)
+    print(f"compression: {', '.join(payload['compression_families'])}", flush=True)
+    print(f"total: {summary['total']}, passed: {summary['passed']}, failed: {summary['failed']}", flush=True)
     print(f"results: {result_path}", flush=True)
-
-    for check in all_checks:
+    for check in payload["checks"]:
         if check.get("status") != "PASS":
             print(f"FAIL: {check.get('writer', '?')} {check.get('reader', '')} {check.get('test', '?')}: {check.get('error', '')}", flush=True)
 
-    if not args.keep_files:
-        for f in FIXTURE_DIR.glob("*.ready"):
-            f.unlink(missing_ok=True)
 
-    return 0 if failed == 0 else 1
+def cleanup_ready_files(keep_files: bool) -> None:
+    if keep_files:
+        return
+    for f in FIXTURE_DIR.glob("*.ready"):
+        f.unlink(missing_ok=True)
+
+
+def main() -> int:
+    args = parse_args()
+    prepare_dirs()
+    print("Building tools...")
+    tools = build_tools()
+    libsystemd_reader = build_libsystemd_reader()
+
+    writer_specs = selected(WRITERS, args.writers)
+    reader_specs = selected(READERS, args.readers)
+    compression_families = args.compression
+
+    generated = []
+    all_checks: list[dict] = []
+
+    for compression in compression_families:
+        for writer in writer_specs:
+            result, checks = generated_compression_checks(
+                compression,
+                writer,
+                tools,
+                libsystemd_reader,
+                reader_specs,
+                args.entries,
+            )
+            if result is not None:
+                generated.append(result)
+            all_checks.extend(checks)
+    payload = compression_payload(writer_specs, reader_specs, compression_families, generated, all_checks)
+    result_path = write_payload(payload)
+    print_summary(payload, result_path)
+    cleanup_ready_files(args.keep_files)
+    return 0 if payload["summary"]["failed"] == 0 else 1
 
 
 if __name__ == "__main__":

@@ -311,67 +311,83 @@ def selected(mapping: dict[str, object], names: list[str] | None) -> list:
     return [mapping[name] for name in names]
 
 
-def main() -> int:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--entries", type=int, default=50)
     parser.add_argument("--writers", nargs="*", choices=sorted(WRITERS))
     parser.add_argument("--readers", nargs="*", choices=sorted(READERS))
     parser.add_argument("--keep-files", action="store_true")
-    args = parser.parse_args()
+    return parser.parse_args()
 
+
+def validate_args(args: argparse.Namespace) -> None:
     if args.entries < 2:
         raise SystemExit("--entries must be at least 2")
 
-    LOCAL_DIR.mkdir(parents=True, exist_ok=True)
-    tools = build_tools()
-    writer_specs = selected(WRITERS, args.writers)
-    reader_specs = selected(READERS, args.readers)
 
-    generated = [generate_journal(writer, tools, args.entries) for writer in writer_specs]
+def matrix_checks(
+    generated: list[dict[str, str]],
+    reader_specs: list[ReaderSpec],
+    tools: dict[str, str],
+    entries: int,
+) -> list[dict]:
     checks: list[dict] = []
-
     for writer_result in generated:
         checks.append(verify_check(writer_result))
         for reader in reader_specs:
-            checks.append(read_check(reader, tools, writer_result, ["PRIORITY=6"], args.entries, "priority-read"))
-            checks.append(read_check(reader, tools, writer_result, ["PRIORITY=1"], 0, "negative-priority"))
-            checks.append(
-                read_check(
-                    reader,
-                    tools,
-                    writer_result,
-                    ["MESSAGE=live-000000", "MESSAGE=live-000001"],
-                    2,
-                    "same-field-or",
-                    expected_sequences=["000000", "000001"],
-                )
-            )
-            checks.append(
-                read_check(
-                    reader,
-                    tools,
-                    writer_result,
-                    ["MESSAGE=live-000000", "+", "MESSAGE=live-000001"],
-                    2,
-                    "plus-disjunction",
-                    expected_sequences=["000000", "000001"],
-                )
-            )
-            checks.append(
-                read_check(
-                    reader,
-                    tools,
-                    writer_result,
-                    ["PRIORITY=6", "MESSAGE=live-000000"],
-                    1,
-                    "cross-field-and",
-                    expected_sequences=["000000"],
-                )
-            )
+            checks.extend(reader_query_checks(reader, tools, writer_result, entries))
+    return checks
 
+
+def reader_query_checks(
+    reader: ReaderSpec,
+    tools: dict[str, str],
+    writer_result: dict[str, str],
+    entries: int,
+) -> list[dict]:
+    return [
+        read_check(reader, tools, writer_result, ["PRIORITY=6"], entries, "priority-read"),
+        read_check(reader, tools, writer_result, ["PRIORITY=1"], 0, "negative-priority"),
+        read_check(
+            reader,
+            tools,
+            writer_result,
+            ["MESSAGE=live-000000", "MESSAGE=live-000001"],
+            2,
+            "same-field-or",
+            expected_sequences=["000000", "000001"],
+        ),
+        read_check(
+            reader,
+            tools,
+            writer_result,
+            ["MESSAGE=live-000000", "+", "MESSAGE=live-000001"],
+            2,
+            "plus-disjunction",
+            expected_sequences=["000000", "000001"],
+        ),
+        read_check(
+            reader,
+            tools,
+            writer_result,
+            ["PRIORITY=6", "MESSAGE=live-000000"],
+            1,
+            "cross-field-and",
+            expected_sequences=["000000"],
+        ),
+    ]
+
+
+def matrix_payload(
+    args: argparse.Namespace,
+    writer_specs: list[WriterSpec],
+    reader_specs: list[ReaderSpec],
+    generated: list[dict[str, str]],
+    checks: list[dict],
+) -> dict:
     passed = sum(1 for check in checks if check["status"] == "PASS")
     failed = len(checks) - passed
-    payload = {
+    return {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "systemd_version": systemd_version(),
         "entries_per_writer": args.entries,
@@ -382,33 +398,65 @@ def main() -> int:
         "summary": {"total": len(checks), "passed": passed, "failed": failed},
     }
 
+
+def timestamped_result_path() -> Path:
     now = datetime.now()
     timestamp = (
         f"{now.year:04d}{now.month:02d}{now.day:02d}-"
         f"{now.hour:02d}{now.minute:02d}{now.second:02d}"
     )
-    result_path = LOCAL_DIR / f"matrix-results-{timestamp}.json"
-    result_path.write_text(json.dumps(payload, indent=2) + "\n")
+    return LOCAL_DIR / f"matrix-results-{timestamp}.json"
 
+
+def write_payload(payload: dict) -> Path:
+    result_path = timestamped_result_path()
+    result_path.write_text(json.dumps(payload, indent=2) + "\n")
+    return result_path
+
+
+def print_summary(payload: dict, result_path: Path) -> None:
+    summary = payload["summary"]
     print(f"systemd: {payload['systemd_version']}")
-    print(f"entries per writer: {args.entries}")
+    print(f"entries per writer: {payload['entries_per_writer']}")
     print(f"writers: {', '.join(payload['writers'])}")
     print(f"readers: {', '.join(payload['readers'])}")
-    print(f"checks: {len(checks)} total, {passed} passed, {failed} failed")
-    for check in checks:
-        status = check["status"]
-        detail = f"{check['writer']} -> {check['reader']} {check['test']}"
-        if status == "PASS":
-            print(f"PASS {detail}")
-        else:
-            print(f"FAIL {detail}: {check.get('error', '')}")
+    print(f"checks: {summary['total']} total, {summary['passed']} passed, {summary['failed']} failed")
+    for check in payload["checks"]:
+        print_check_summary(check)
     print(f"results: {result_path}")
 
-    if not args.keep_files:
-        for ready_file in LOCAL_DIR.glob("*.ready"):
-            ready_file.unlink(missing_ok=True)
 
-    return 0 if failed == 0 else 1
+def print_check_summary(check: dict) -> None:
+    status = check["status"]
+    detail = f"{check['writer']} -> {check['reader']} {check['test']}"
+    if status == "PASS":
+        print(f"PASS {detail}")
+    else:
+        print(f"FAIL {detail}: {check.get('error', '')}")
+
+
+def cleanup_ready_files(keep_files: bool) -> None:
+    if keep_files:
+        return
+    for ready_file in LOCAL_DIR.glob("*.ready"):
+        ready_file.unlink(missing_ok=True)
+
+
+def main() -> int:
+    args = parse_args()
+    validate_args(args)
+    LOCAL_DIR.mkdir(parents=True, exist_ok=True)
+    tools = build_tools()
+    writer_specs = selected(WRITERS, args.writers)
+    reader_specs = selected(READERS, args.readers)
+
+    generated = [generate_journal(writer, tools, args.entries) for writer in writer_specs]
+    checks = matrix_checks(generated, reader_specs, tools, args.entries)
+    payload = matrix_payload(args, writer_specs, reader_specs, generated, checks)
+    result_path = write_payload(payload)
+    print_summary(payload, result_path)
+    cleanup_ready_files(args.keep_files)
+    return 0 if payload["summary"]["failed"] == 0 else 1
 
 
 if __name__ == "__main__":

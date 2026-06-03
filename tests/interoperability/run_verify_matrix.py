@@ -17,7 +17,7 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -262,49 +262,90 @@ def write_positive(path: Path, spec: FixtureSpec) -> None:
 
 def corrupt(data: bytearray, name: str) -> None:
     parsed = parse_journal(data)
-    first_data = parsed["data_offsets"][0]
-    first_entry = parsed["entry_offsets"][0]
-
-    if name == "object_type_unknown":
-        data[first_data] = 99
-    elif name == "object_size_too_small":
-        write_u64(data, first_data + 8, 8)
-    elif name == "zstd_decompressed_size_too_large":
-        data_offset = first_zstd_data_object(parsed, data)
-        payload_offset = COMPACT_DATA_OBJECT_HEADER_SIZE if parsed["compact"] else DATA_OBJECT_HEADER_SIZE
-        payload_len = read_u64(data, data_offset + 8) - payload_offset
-        oversized = oversized_zstd_frame(MAX_UNCOMPRESSED_DATA_OBJECT_SIZE + 1)
-        if payload_len < len(oversized):
-            raise RuntimeError("zstd oversized corruption needs a larger compressed DATA object")
-        data[data_offset + payload_offset:data_offset + payload_offset + len(oversized)] = oversized
-    elif name == "data_hash_bad":
-        write_u64(data, first_data + 16, read_u64(data, first_data + 16) + 1)
-    elif name == "data_hash_bucket_missing":
-        data_hash = read_u64(data, first_data + 16)
-        bucket_count = parsed["data_hash_table_size"] // HASH_ITEM_SIZE
-        bucket_offset = parsed["data_hash_table_offset"] + (data_hash % bucket_count) * HASH_ITEM_SIZE
-        write_u64(data, bucket_offset, 0)
-        write_u64(data, bucket_offset + 8, 0)
-    elif name == "entry_array_unsorted":
-        entry_array = parsed["entry_array_offset"]
-        if len(parsed["entry_offsets"]) < 2:
-            raise RuntimeError("entry_array_unsorted needs at least two entries")
-        write_u64(data, entry_array + OFFSET_ARRAY_OBJECT_HEADER_SIZE, parsed["entry_offsets"][1])
-    elif name == "header_n_data_bad":
-        write_u64(data, 208, read_u64(data, 208) + 1)
-    elif name == "main_entry_array_missing":
-        write_u64(data, 176, 0)
-    elif name == "entry_seqnum_zero":
-        write_u64(data, first_entry + 16, 0)
-    elif name == "tail_entry_seqnum_bad":
-        write_u64(data, 160, 999)
-    elif name == "tail_monotonic_bad":
-        write_u64(data, 200, 999999)
-    elif name == "tag_hmac_bad":
-        tag_offset = parsed["tag_offsets"][0]
-        data[tag_offset + 32] ^= 0x01
-    else:
+    handler = CORRUPTORS.get(name)
+    if handler is None:
         raise ValueError(name)
+    handler(data, parsed)
+
+
+def corrupt_object_type_unknown(data: bytearray, parsed: dict) -> None:
+    data[parsed["data_offsets"][0]] = 99
+
+
+def corrupt_object_size_too_small(data: bytearray, parsed: dict) -> None:
+    write_u64(data, parsed["data_offsets"][0] + 8, 8)
+
+
+def corrupt_zstd_decompressed_size_too_large(data: bytearray, parsed: dict) -> None:
+    data_offset = first_zstd_data_object(parsed, data)
+    payload_offset = COMPACT_DATA_OBJECT_HEADER_SIZE if parsed["compact"] else DATA_OBJECT_HEADER_SIZE
+    payload_len = read_u64(data, data_offset + 8) - payload_offset
+    oversized = oversized_zstd_frame(MAX_UNCOMPRESSED_DATA_OBJECT_SIZE + 1)
+    if payload_len < len(oversized):
+        raise RuntimeError("zstd oversized corruption needs a larger compressed DATA object")
+    data[data_offset + payload_offset:data_offset + payload_offset + len(oversized)] = oversized
+
+
+def corrupt_data_hash_bad(data: bytearray, parsed: dict) -> None:
+    first_data = parsed["data_offsets"][0]
+    write_u64(data, first_data + 16, read_u64(data, first_data + 16) + 1)
+
+
+def corrupt_data_hash_bucket_missing(data: bytearray, parsed: dict) -> None:
+    first_data = parsed["data_offsets"][0]
+    data_hash = read_u64(data, first_data + 16)
+    bucket_count = parsed["data_hash_table_size"] // HASH_ITEM_SIZE
+    bucket_offset = parsed["data_hash_table_offset"] + (data_hash % bucket_count) * HASH_ITEM_SIZE
+    write_u64(data, bucket_offset, 0)
+    write_u64(data, bucket_offset + 8, 0)
+
+
+def corrupt_entry_array_unsorted(data: bytearray, parsed: dict) -> None:
+    entry_array = parsed["entry_array_offset"]
+    if len(parsed["entry_offsets"]) < 2:
+        raise RuntimeError("entry_array_unsorted needs at least two entries")
+    write_u64(data, entry_array + OFFSET_ARRAY_OBJECT_HEADER_SIZE, parsed["entry_offsets"][1])
+
+
+def corrupt_header_n_data_bad(data: bytearray, _parsed: dict) -> None:
+    write_u64(data, 208, read_u64(data, 208) + 1)
+
+
+def corrupt_main_entry_array_missing(data: bytearray, _parsed: dict) -> None:
+    write_u64(data, 176, 0)
+
+
+def corrupt_entry_seqnum_zero(data: bytearray, parsed: dict) -> None:
+    write_u64(data, parsed["entry_offsets"][0] + 16, 0)
+
+
+def corrupt_tail_entry_seqnum_bad(data: bytearray, _parsed: dict) -> None:
+    write_u64(data, 160, 999)
+
+
+def corrupt_tail_monotonic_bad(data: bytearray, _parsed: dict) -> None:
+    write_u64(data, 200, 999999)
+
+
+def corrupt_tag_hmac_bad(data: bytearray, parsed: dict) -> None:
+    tag_offset = parsed["tag_offsets"][0]
+    data[tag_offset + 32] ^= 0x01
+
+
+CORRUPTORS: dict[str, Callable[[bytearray, dict], None]] = {
+    "object_type_unknown": corrupt_object_type_unknown,
+    "object_size_too_small": corrupt_object_size_too_small,
+    "zstd_decompressed_size_too_large": corrupt_zstd_decompressed_size_too_large,
+    "data_hash_bad": corrupt_data_hash_bad,
+    "data_hash_bucket_missing": corrupt_data_hash_bucket_missing,
+    "entry_array_unsorted": corrupt_entry_array_unsorted,
+    "header_n_data_bad": corrupt_header_n_data_bad,
+    "main_entry_array_missing": corrupt_main_entry_array_missing,
+    "entry_seqnum_zero": corrupt_entry_seqnum_zero,
+    "tail_entry_seqnum_bad": corrupt_tail_entry_seqnum_bad,
+    "tail_monotonic_bad": corrupt_tail_monotonic_bad,
+    "tag_hmac_bad": corrupt_tag_hmac_bad,
+}
 
 
 def parse_journal(data: bytes | bytearray) -> dict:

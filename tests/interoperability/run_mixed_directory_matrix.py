@@ -366,36 +366,45 @@ def validate_feature_flags(spec: FixtureSpec, inspect: dict) -> list[str]:
 
 
 def reader_command(reader: ReaderSpec, tools: dict[str, str], mode: str, directory: Path, args: list[str]) -> list[str]:
-    if reader.name == "stock":
-        base = ["journalctl", "--directory", str(directory), "--no-pager", "--quiet"]
-    elif reader.name == "go":
-        base = [tools["go_journalctl"], "--directory", str(directory)]
-    elif reader.name == "rust":
-        base = [tools["rust_journalctl"], "--directory", str(directory)]
-    elif reader.name == "node":
-        base = ["node", str(REPO_ROOT / "node/cmd/journalctl/index.js"), "--directory", str(directory)]
-    elif reader.name == "python":
-        base = [PYTHON, str(REPO_ROOT / "python/cmd/journalctl.py"), "--directory", str(directory)]
-    else:
-        raise ValueError(reader.name)
-
-    if mode == "json":
-        return [*base, "--output=json", *args]
-    if mode == "export":
-        return [*base, "--output=export", *args]
-    if mode == "text":
-        return [*base, *args]
-    if mode == "fields":
-        return [*base, "--fields"]
-    if mode == "boots":
-        return [*base, "--list-boots"]
+    base = reader_base_command(reader, tools, directory)
     if mode == "verify":
-        if reader.name == "stock":
-            base = ["journalctl", "--verify", "--directory", str(directory), "--no-pager", "--quiet"]
-        else:
-            base = [*base, "--verify"]
-        return [*base, *args]
+        return [*verify_base_command(reader, base, directory), *args]
+    suffix = reader_mode_suffix(mode)
+    return [*base, *suffix, *args]
+
+
+def reader_base_command(reader: ReaderSpec, tools: dict[str, str], directory: Path) -> list[str]:
+    if reader.name == "stock":
+        return ["journalctl", "--directory", str(directory), "--no-pager", "--quiet"]
+    if reader.name == "go":
+        return [tools["go_journalctl"], "--directory", str(directory)]
+    if reader.name == "rust":
+        return [tools["rust_journalctl"], "--directory", str(directory)]
+    if reader.name == "node":
+        return ["node", str(REPO_ROOT / "node/cmd/journalctl/index.js"), "--directory", str(directory)]
+    if reader.name == "python":
+        return [PYTHON, str(REPO_ROOT / "python/cmd/journalctl.py"), "--directory", str(directory)]
+    raise ValueError(reader.name)
+
+
+def reader_mode_suffix(mode: str) -> list[str]:
+    if mode == "json":
+        return ["--output=json"]
+    if mode == "export":
+        return ["--output=export"]
+    if mode == "text":
+        return []
+    if mode == "fields":
+        return ["--fields"]
+    if mode == "boots":
+        return ["--list-boots"]
     raise ValueError(mode)
+
+
+def verify_base_command(reader: ReaderSpec, base: list[str], directory: Path) -> list[str]:
+    if reader.name == "stock":
+        return ["journalctl", "--verify", "--directory", str(directory), "--no-pager", "--quiet"]
+    return [*base, "--verify"]
 
 
 def parse_json_lines(stdout: str) -> list[dict]:
@@ -619,17 +628,151 @@ def selected(mapping: dict[str, ReaderSpec], names: list[str] | None) -> list[Re
     return [mapping[name] for name in names]
 
 
-def main() -> int:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--readers", nargs="*", choices=sorted(READERS))
     parser.add_argument("--keep-files", action="store_true")
-    args = parser.parse_args()
+    return parser.parse_args()
 
+
+def prepare_dirs() -> None:
     LOCAL_DIR.mkdir(parents=True, exist_ok=True)
     FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
     if shutil.which("zstd") is None:
         raise SystemExit("zstd CLI is required for whole-file .journal.zst fixture generation")
 
+
+def stock_reader_checks(
+    reader: ReaderSpec,
+    tools: dict[str, str],
+    fixtures: dict[str, Path],
+    stock_sequence: list[str],
+) -> list[dict]:
+    return [
+        run_json_check(reader, tools, fixtures["stock"], "json-all", STOCK_SPECS, [], stock_sequence),
+        run_json_check(
+            reader,
+            tools,
+            fixtures["stock"],
+            "regular-or-compact-none",
+            STOCK_SPECS,
+            ["MIXED_KIND=regular-none", "MIXED_KIND=compact-none"],
+            ["000000", "000001"],
+        ),
+        run_json_check(
+            reader,
+            tools,
+            fixtures["stock"],
+            "compact-and-unsealed",
+            STOCK_SPECS,
+            ["MIXED_COMPACT=1", "MIXED_SEALED=0"],
+            ["000001", "000003"],
+        ),
+        run_json_check(
+            reader,
+            tools,
+            fixtures["stock"],
+            "plus-disjunction",
+            STOCK_SPECS,
+            ["MIXED_SEQ=000000", "+", "MIXED_SEQ=000006"],
+            ["000000", "000006"],
+        ),
+        run_export_check(reader, tools, fixtures["stock"], STOCK_SPECS),
+        run_text_check(reader, tools, fixtures["stock"], STOCK_SPECS),
+        run_fields_check(reader, tools, fixtures["stock"]),
+        run_boots_check(reader, tools, fixtures["stock"], len(STOCK_SPECS)),
+        run_verify_check(reader, tools, fixtures["unsealed"], "verify-unsealed-without-key", [], True),
+        run_verify_check(reader, tools, fixtures["stock"], "verify-sealed-without-key-fails", [], False),
+        run_verify_check(reader, tools, fixtures["stock"], "verify-sealed-with-key", ["--verify-key", VERIFY_KEY], True),
+        run_verify_check(reader, tools, fixtures["stock"], "verify-sealed-wrong-key-fails", ["--verify-key", WRONG_VERIFY_KEY], False),
+    ]
+
+
+def zst_reader_checks(
+    reader: ReaderSpec,
+    tools: dict[str, str],
+    fixtures: dict[str, Path],
+    zst_sequence: list[str],
+) -> list[dict]:
+    if reader.name == "stock":
+        return []
+    return [
+        run_json_check(reader, tools, fixtures["zst"], "zst-json-all", ZST_SPECS, [], zst_sequence),
+        run_verify_check(reader, tools, fixtures["zst"], "zst-verify-without-key-fails", [], False),
+        run_verify_check(reader, tools, fixtures["zst"], "zst-verify-with-key", ["--verify-key", VERIFY_KEY], True),
+    ]
+
+
+def reader_checks(
+    reader: ReaderSpec,
+    tools: dict[str, str],
+    fixtures: dict[str, Path],
+    stock_sequence: list[str],
+    zst_sequence: list[str],
+) -> list[dict]:
+    checks = stock_reader_checks(reader, tools, fixtures, stock_sequence)
+    checks.extend(zst_reader_checks(reader, tools, fixtures, zst_sequence))
+    for check in checks:
+        print(f"{reader.name} {check['test']}: {check['status']}", flush=True)
+    return checks
+
+
+def matrix_payload(
+    readers: list[ReaderSpec],
+    stock_sequence: list[str],
+    zst_sequence: list[str],
+    all_checks: list[dict],
+) -> dict:
+    passed = sum(1 for check in all_checks if check.get("status") == "PASS")
+    failed = len(all_checks) - passed
+    return {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "systemd_version": systemd_version(),
+        "fixture_directory": str(FIXTURE_DIR),
+        "verification_key": VERIFY_KEY,
+        "readers": [reader.name for reader in readers],
+        "stock_sequence": stock_sequence,
+        "zst_sequence": zst_sequence,
+        "checks": all_checks,
+        "summary": {"total": len(all_checks), "passed": passed, "failed": failed},
+    }
+
+
+def timestamped_result_path() -> Path:
+    now = datetime.now()
+    timestamp = (
+        f"{now.year:04d}{now.month:02d}{now.day:02d}-"
+        f"{now.hour:02d}{now.minute:02d}{now.second:02d}"
+    )
+    return LOCAL_DIR / f"mixed-directory-matrix-results-{timestamp}.json"
+
+
+def write_payload(payload: dict) -> Path:
+    result_path = timestamped_result_path()
+    result_path.write_text(json.dumps(payload, indent=2) + "\n")
+    return result_path
+
+
+def print_summary(payload: dict, result_path: Path) -> None:
+    summary = payload["summary"]
+    print("\n=== SUMMARY ===", flush=True)
+    print(f"systemd: {payload['systemd_version']}", flush=True)
+    print(f"readers: {', '.join(payload['readers'])}", flush=True)
+    print(f"total: {summary['total']}, passed: {summary['passed']}, failed: {summary['failed']}", flush=True)
+    print(f"results: {result_path}", flush=True)
+    for check in payload["checks"]:
+        if check.get("status") != "PASS":
+            print(f"FAIL: {check.get('reader', '?')} {check.get('test', '?')}: {check.get('error', '')}", flush=True)
+
+
+def cleanup_fixtures(keep_files: bool) -> None:
+    if not keep_files:
+        shutil.rmtree(FIXTURE_DIR, ignore_errors=True)
+
+
+def main() -> int:
+    args = parse_args()
+    prepare_dirs()
     print("Building tools...", flush=True)
     tools = build_tools()
     readers = selected(READERS, args.readers)
@@ -642,94 +785,12 @@ def main() -> int:
     zst_sequence = expected_sequence(ZST_SPECS)
 
     for reader in readers:
-        checks = [
-            run_json_check(reader, tools, fixtures["stock"], "json-all", STOCK_SPECS, [], stock_sequence),
-            run_json_check(
-                reader,
-                tools,
-                fixtures["stock"],
-                "regular-or-compact-none",
-                STOCK_SPECS,
-                ["MIXED_KIND=regular-none", "MIXED_KIND=compact-none"],
-                ["000000", "000001"],
-            ),
-            run_json_check(
-                reader,
-                tools,
-                fixtures["stock"],
-                "compact-and-unsealed",
-                STOCK_SPECS,
-                ["MIXED_COMPACT=1", "MIXED_SEALED=0"],
-                ["000001", "000003"],
-            ),
-            run_json_check(
-                reader,
-                tools,
-                fixtures["stock"],
-                "plus-disjunction",
-                STOCK_SPECS,
-                ["MIXED_SEQ=000000", "+", "MIXED_SEQ=000006"],
-                ["000000", "000006"],
-            ),
-            run_export_check(reader, tools, fixtures["stock"], STOCK_SPECS),
-            run_text_check(reader, tools, fixtures["stock"], STOCK_SPECS),
-            run_fields_check(reader, tools, fixtures["stock"]),
-            run_boots_check(reader, tools, fixtures["stock"], len(STOCK_SPECS)),
-            run_verify_check(reader, tools, fixtures["unsealed"], "verify-unsealed-without-key", [], True),
-            run_verify_check(reader, tools, fixtures["stock"], "verify-sealed-without-key-fails", [], False),
-            run_verify_check(reader, tools, fixtures["stock"], "verify-sealed-with-key", ["--verify-key", VERIFY_KEY], True),
-            run_verify_check(reader, tools, fixtures["stock"], "verify-sealed-wrong-key-fails", ["--verify-key", WRONG_VERIFY_KEY], False),
-        ]
-        all_checks.extend(checks)
-        for check in checks:
-            print(f"{reader.name} {check['test']}: {check['status']}", flush=True)
-
-        if reader.name != "stock":
-            zst_checks = [
-                run_json_check(reader, tools, fixtures["zst"], "zst-json-all", ZST_SPECS, [], zst_sequence),
-                run_verify_check(reader, tools, fixtures["zst"], "zst-verify-without-key-fails", [], False),
-                run_verify_check(reader, tools, fixtures["zst"], "zst-verify-with-key", ["--verify-key", VERIFY_KEY], True),
-            ]
-            all_checks.extend(zst_checks)
-            for check in zst_checks:
-                print(f"{reader.name} {check['test']}: {check['status']}", flush=True)
-
-    passed = sum(1 for check in all_checks if check.get("status") == "PASS")
-    failed = len(all_checks) - passed
-
-    payload = {
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-        "systemd_version": systemd_version(),
-        "fixture_directory": str(FIXTURE_DIR),
-        "verification_key": VERIFY_KEY,
-        "readers": [reader.name for reader in readers],
-        "stock_sequence": stock_sequence,
-        "zst_sequence": zst_sequence,
-        "checks": all_checks,
-        "summary": {"total": len(all_checks), "passed": passed, "failed": failed},
-    }
-    now = datetime.now()
-    timestamp = (
-        f"{now.year:04d}{now.month:02d}{now.day:02d}-"
-        f"{now.hour:02d}{now.minute:02d}{now.second:02d}"
-    )
-    result_path = LOCAL_DIR / f"mixed-directory-matrix-results-{timestamp}.json"
-    result_path.write_text(json.dumps(payload, indent=2) + "\n")
-
-    print("\n=== SUMMARY ===", flush=True)
-    print(f"systemd: {payload['systemd_version']}", flush=True)
-    print(f"readers: {', '.join(payload['readers'])}", flush=True)
-    print(f"total: {len(all_checks)}, passed: {passed}, failed: {failed}", flush=True)
-    print(f"results: {result_path}", flush=True)
-
-    for check in all_checks:
-        if check.get("status") != "PASS":
-            print(f"FAIL: {check.get('reader', '?')} {check.get('test', '?')}: {check.get('error', '')}", flush=True)
-
-    if not args.keep_files:
-        shutil.rmtree(FIXTURE_DIR, ignore_errors=True)
-
-    return 0 if failed == 0 else 1
+        all_checks.extend(reader_checks(reader, tools, fixtures, stock_sequence, zst_sequence))
+    payload = matrix_payload(readers, stock_sequence, zst_sequence, all_checks)
+    result_path = write_payload(payload)
+    print_summary(payload, result_path)
+    cleanup_fixtures(args.keep_files)
+    return 0 if payload["summary"]["failed"] == 0 else 1
 
 
 if __name__ == "__main__":

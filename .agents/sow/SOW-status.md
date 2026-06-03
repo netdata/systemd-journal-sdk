@@ -99,6 +99,14 @@ Last updated: 2026-06-03
   reports 44 critical findings: `tests/interoperability`: 21,
   `tests/systemd_matrix`: 6, `tests/vm_matrix`: 4,
   `tests/benchmarks/systemd`: 4, `tests/datasets`: 6,
+  `tests/conformance`: 2, and `tests/fss`: 1. Batch 26 made all
+  `tests/interoperability/*` harness files locally Lizard-clean, passed Python
+  compile checks, CLI help smoke checks for the touched interoperability
+  entrypoints, and targeted interoperability smokes for closed-file, binary,
+  zstd compression, compact, directory, mixed-directory, and live Go/stock
+  cases. The refreshed full `tests/` Lizard inventory now reports 23 critical
+  findings: `tests/systemd_matrix`: 6, `tests/vm_matrix`: 4,
+  `tests/benchmarks/systemd`: 4, `tests/datasets`: 6,
   `tests/conformance`: 2, and `tests/fss`: 1.
   Remaining work is to continue complexity remediation, record final scanner
   results, and complete whole-SOW review.
