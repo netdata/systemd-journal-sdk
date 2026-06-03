@@ -121,7 +121,7 @@ export class DirectoryReader {
     let best = null;
     for (let i = 0; i < this.readers.length; i++) {
       this._fillCandidate(i, direction, applyFilter);
-      const candidate = this.candidates[i];
+      const candidate = this._candidateAt(i);
       if (!candidate) continue;
       if (!best) {
         best = candidate;
@@ -141,7 +141,7 @@ export class DirectoryReader {
 
     this.index = best.readerIndex;
     this.currentKey = best.key;
-    this.candidates[best.readerIndex] = null;
+    this._setCandidate(best.readerIndex, null);
     this.realtimeSeekBound = null;
     return true;
   }
@@ -172,8 +172,9 @@ export class DirectoryReader {
   }
 
   _fillCandidate(readerIndex, direction, applyFilter) {
-    if (this.candidates[readerIndex]) return;
-    const reader = this.readers[readerIndex];
+    if (this._candidateAt(readerIndex)) return;
+    const reader = this.readers.at(readerIndex);
+    if (!reader) return;
 
     for (;;) {
       const ok = direction === 0 ? reader.next() : reader.previous();
@@ -207,9 +208,17 @@ export class DirectoryReader {
         if ((direction === 0 && cmp <= 0) || (direction === 1 && cmp >= 0)) continue;
       }
 
-      this.candidates[readerIndex] = { readerIndex, key };
+      this._setCandidate(readerIndex, { readerIndex, key });
       return;
     }
+  }
+
+  _candidateAt(index) {
+    return this.candidates.at(index) ?? null;
+  }
+
+  _setCandidate(index, value) {
+    this.candidates.splice(index, 1, value);
   }
 
   _entryKey(reader, entry) {

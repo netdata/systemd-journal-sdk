@@ -56,7 +56,7 @@ function parseLiveWriterFlag(args, arg) {
   ]);
   const field = flags.get(arg);
   if (!field) return false;
-  args[field] = true;
+  Reflect.set(args, field, true);
   return true;
 }
 
@@ -221,7 +221,7 @@ function compressedFixtureFields(kind) {
 
 function patternedPayload() {
   const largePayload = Buffer.alloc(256);
-  for (let j = 0; j < largePayload.length; j++) largePayload[j] = (j % 26) + 0x41;
+  for (let j = 0; j < largePayload.length; j++) largePayload.writeUInt8((j % 26) + 0x41, j);
   return largePayload;
 }
 

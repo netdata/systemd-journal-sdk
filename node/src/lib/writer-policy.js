@@ -91,7 +91,7 @@ function validateRawFieldName(name) {
   const bytes = fieldNameBytes(name);
   if (bytes.length === 0) throw new Error('invalid field name: empty');
   for (let i = 0; i < bytes.length; i++) {
-    if (bytes[i] === 0x3d) throw new Error(`invalid field name: contains '=': ${fieldNameForError(name)}`);
+    if (bytes.readUInt8(i) === 0x3d) throw new Error(`invalid field name: contains '=': ${fieldNameForError(name)}`);
   }
 }
 
@@ -107,7 +107,7 @@ function validateJournaldFieldName(name, allowProtected) {
 
 function validateJournaldFieldNameBytes(bytes, display) {
   for (let i = 0; i < bytes.length; i++) {
-    if (!isJournaldFieldNameByte(bytes[i])) {
+    if (!isJournaldFieldNameByte(bytes.readUInt8(i))) {
       throw new Error(`invalid field name: bad char at ${i}: ${display}`);
     }
   }

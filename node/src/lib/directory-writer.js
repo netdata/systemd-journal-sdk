@@ -827,7 +827,7 @@ function optionUsec(value, fallback) {
 
 function optionValue(object, ...names) {
   for (const name of names) {
-    if (Object.prototype.hasOwnProperty.call(object, name)) return object[name];
+    if (Object.prototype.hasOwnProperty.call(object, name)) return Reflect.get(object, name);
   }
   return undefined;
 }

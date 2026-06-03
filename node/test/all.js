@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, mkdtempSync, rmSync, writeSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
@@ -67,6 +67,15 @@ import {
   readHostBootId,
   readHostBootIdText,
 } from '../src/lib/platform.js';
+import {
+  safeExistsSync,
+  safeMkdirSync,
+  safeOpenSync,
+  safeReadFileSync,
+  safeReaddirSync,
+  safeSymlinkSync,
+  safeWriteFileSync,
+} from '../src/lib/fs-safe.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, '..');
@@ -74,7 +83,7 @@ const repoRoot = resolve(packageRoot, '..');
 const validFSSVerificationKey = 'c262bd-85187f-0b1b04-877cc5/1c7af8-35a4e900';
 
 function listJavaScriptFiles(dir, out = []) {
-  for (const stat of readdirSync(dir, { withFileTypes: true })) {
+  for (const stat of safeReaddirSync(dir, { withFileTypes: true })) {
     const name = stat.name;
     const path = join(dir, name);
     if (stat.isDirectory()) {
@@ -101,24 +110,24 @@ function run(cmd, args, options = {}) {
 }
 
 function journalFiles(directory) {
-  return readdirSync(directory)
+  return safeReaddirSync(directory)
     .filter((name) => name.endsWith('.journal'))
     .sort()
     .map((name) => join(directory, name));
 }
 
 function disposedJournalFiles(directory) {
-  return readdirSync(directory)
+  return safeReaddirSync(directory)
     .filter((name) => name.endsWith('.journal~'))
     .sort()
     .map((name) => join(directory, name));
 }
 
 function clearKeyedHashFlag(path) {
-  const flags = readFileSync(path).readUInt32LE(12);
+  const flags = safeReadFileSync(path).readUInt32LE(12);
   const buf = Buffer.alloc(4);
   buf.writeUInt32LE(flags & ~INCOMPATIBLE_KEYED_HASH, 0);
-  const fd = openSync(path, 'r+');
+  const fd = safeOpenSync(path, 'r+');
   try {
     writeSync(fd, buf, 0, buf.length, 12);
   } finally {
@@ -129,7 +138,7 @@ function clearKeyedHashFlag(path) {
 function writeHeaderSize(path, size) {
   const buf = Buffer.alloc(8);
   buf.writeBigUInt64LE(BigInt(size), 0);
-  const fd = openSync(path, 'r+');
+  const fd = safeOpenSync(path, 'r+');
   try {
     writeSync(fd, buf, 0, buf.length, 88);
   } finally {
@@ -188,7 +197,7 @@ function verifyJournalFileWithKeyFailsIfAvailable(path, key) {
 }
 
 function journalHasDataObjectFlag(path, flag) {
-  const buf = readFileSync(path);
+  const buf = safeReadFileSync(path);
   let offset = HEADER_SIZE;
 
   while (offset + 16 <= buf.length) {
@@ -261,7 +270,7 @@ assert.throws(
   const tempDir = mkdtempSync(join(tmpdir(), 'node-historical-unkeyed-'));
   const journalPath = join(tempDir, 'unkeyed-lz4.journal');
   try {
-    writeFileSync(journalPath, makeHistoricalHeaderFixture(240, INCOMPATIBLE_COMPRESSED_LZ4));
+    safeWriteFileSync(journalPath, makeHistoricalHeaderFixture(240, INCOMPATIBLE_COMPRESSED_LZ4));
     const reader = FileReader.open(journalPath);
     assert.equal(reader.header.incompatible_flags & INCOMPATIBLE_KEYED_HASH, 0);
     assert.ok(reader.header.incompatible_flags & INCOMPATIBLE_COMPRESSED_LZ4);
@@ -331,7 +340,7 @@ for (const [length, expected] of sipVectors) {
       }
       const pending = writer.entriesSinceLivePublication;
       writer.close();
-      return { bytes: readFileSync(journalPath), pending };
+      return { bytes: safeReadFileSync(journalPath), pending };
     };
 
     const immediate = writeFile('immediate', 1);
@@ -944,7 +953,7 @@ for (const [length, expected] of sipVectors) {
         ], opts);
       }
       writer.close();
-      return readFileSync(journalPath);
+      return safeReadFileSync(journalPath);
     };
 
     assert.deepEqual(write('structured', false), write('raw', true));
@@ -1152,7 +1161,7 @@ for (const [length, expected] of sipVectors) {
     const writer = Writer.create(journalPath);
     writer.close();
 
-    const fd = openSync(journalPath, 'r+');
+    const fd = safeOpenSync(journalPath, 'r+');
     const flags = Buffer.alloc(4);
     const unsupportedFlag = 1 << 30;
     flags.writeUInt32LE(INCOMPATIBLE_KEYED_HASH | unsupportedFlag, 0);
@@ -1216,7 +1225,7 @@ for (const [length, expected] of sipVectors) {
     }
     writer.close();
 
-    const header = parseFileHeader(readFileSync(journalPath).subarray(0, HEADER_SIZE));
+    const header = parseFileHeader(safeReadFileSync(journalPath).subarray(0, HEADER_SIZE));
     assert.ok(
       header.arena_size + BigInt(HEADER_SIZE) > BigInt(FILE_SIZE_INCREASE),
       'arena size must grow past initial allocation',
@@ -1245,7 +1254,7 @@ for (const [length, expected] of sipVectors) {
     });
     writer.close();
 
-    const header = parseFileHeader(readFileSync(journalPath).subarray(0, HEADER_SIZE));
+    const header = parseFileHeader(safeReadFileSync(journalPath).subarray(0, HEADER_SIZE));
     assert.ok(
       header.arena_size + BigInt(HEADER_SIZE) > BigInt(FILE_SIZE_INCREASE),
       'initial arena must cover large hash tables',
@@ -1349,7 +1358,7 @@ for (const [length, expected] of sipVectors) {
     assert.throws(() => Writer.open(activePath), /keyed hash required/);
 
     const second = new Log(tempDir, options);
-    assert.equal(existsSync(activePath), false);
+    assert.equal(safeExistsSync(activePath), false);
     assert.equal(disposedJournalFiles(second.journalDirectory()).length, 1);
     second.append([{ name: 'MESSAGE', value: 'replace-chain-2' }], { realtimeUsec: 1700002272000002n, monotonicUsec: 3n });
     assert.notEqual(second.activeFile(), activePath);
@@ -1386,7 +1395,7 @@ for (const [length, expected] of sipVectors) {
     assert.throws(() => Writer.open(activePath), /outdated header/);
 
     const second = new Log(tempDir, options);
-    assert.equal(existsSync(activePath), false);
+    assert.equal(safeExistsSync(activePath), false);
     assert.equal(disposedJournalFiles(second.journalDirectory()).length, 1);
     second.append([{ name: 'MESSAGE', value: 'replace-strict-2' }], { realtimeUsec: 1700002273000002n, monotonicUsec: 3n });
     assert.equal(second.activeFile(), join(second.journalDirectory(), 'system.journal'));
@@ -1416,9 +1425,9 @@ for (const [length, expected] of sipVectors) {
     first.close();
 
     const journalDir = first.journalDirectory();
-    const names = readdirSync(journalDir).filter((name) => name.endsWith('.journal')).sort();
+    const names = safeReaddirSync(journalDir).filter((name) => name.endsWith('.journal')).sort();
     assert.equal(names.length, 1);
-    const reader = FileReader.open(join(journalDir, names[0]));
+    const reader = FileReader.open(join(journalDir, names.at(0)));
     const seqnumId = Buffer.from(reader.header.seqnum_id);
     const nextSeqnum = reader.header.tail_entry_seqnum + 1n;
     reader.close();
@@ -1437,10 +1446,10 @@ for (const [length, expected] of sipVectors) {
     const second = new Log(tempDir, options);
     second.append([{ name: 'MESSAGE', value: 'empty-reopen-2' }, { name: 'TEST_ID', value: 'node-empty-online-reopen' }]);
     second.close();
-    assert.equal(existsSync(emptyPath), false);
+    assert.equal(safeExistsSync(emptyPath), false);
 
     const seqnums = [];
-    for (const name of readdirSync(journalDir).filter((name) => name.endsWith('.journal')).sort()) {
+    for (const name of safeReaddirSync(journalDir).filter((name) => name.endsWith('.journal')).sort()) {
       const fileReader = FileReader.open(join(journalDir, name));
       while (fileReader.step()) seqnums.push(fileReader.getEntry().seqnum);
       fileReader.close();
@@ -1457,20 +1466,20 @@ for (const [length, expected] of sipVectors) {
     const unlockedPath = join(tempDir, 'writer-unlocked-default.journal');
     const unlocked = Writer.create(unlockedPath);
     unlocked.close();
-    assert.equal(existsSync(`${unlockedPath}.lock`), false);
+    assert.equal(safeExistsSync(`${unlockedPath}.lock`), false);
 
     const journalPath = join(tempDir, 'writer-lock.journal');
     const lock = WriterLock.acquire(journalPath);
     const writer = Writer.create(journalPath);
     try {
       writer.append([{ name: 'MESSAGE', value: 'held' }]);
-      assert.ok(existsSync(`${journalPath}.lock`));
+      assert.ok(safeExistsSync(`${journalPath}.lock`));
       assert.throws(() => WriterLock.acquire(journalPath), /journal writer lock held/);
     } finally {
       writer.close();
       lock.release();
     }
-    assert.equal(existsSync(`${journalPath}.lock`), false);
+    assert.equal(safeExistsSync(`${journalPath}.lock`), false);
     const reopened = Writer.open(journalPath);
     reopened.close();
   } finally {
@@ -1597,7 +1606,7 @@ for (const [length, expected] of sipVectors) {
 
 {
   // Verify production dependencies do not require native install hooks.
-  const lock = JSON.parse(readFileSync(join(packageRoot, 'package-lock.json'), 'utf8'));
+  const lock = JSON.parse(safeReadFileSync(join(packageRoot, 'package-lock.json'), 'utf8'));
   const packages = Object.entries(lock.packages ?? {});
   const installScriptPackages = packages
     .filter(([, metadata]) => metadata.hasInstallScript === true)
@@ -1617,7 +1626,7 @@ for (const [length, expected] of sipVectors) {
   const vendorDir = join(packageRoot, 'vendor/node-liblzma-wasm');
   for (const [fileName, expectedHash] of expected) {
     const actualHash = createHash('sha256')
-      .update(readFileSync(join(vendorDir, fileName)))
+      .update(safeReadFileSync(join(vendorDir, fileName)))
       .digest('hex');
     assert.equal(actualHash, expectedHash, `${fileName} vendor hash mismatch`);
   }
@@ -1816,14 +1825,14 @@ for (const [length, expected] of sipVectors) {
       log.append([{ name: 'MESSAGE', value: `entry-${i}` }]);
       if (i === 0) {
         assert.match(basename(log.activeFile()), /^custom-source@[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{16}\.journal$/);
-        assert.equal(existsSync(join(log.journalDirectory(), 'custom-source.journal')), false);
+        assert.equal(safeExistsSync(join(log.journalDirectory(), 'custom-source.journal')), false);
       }
     }
     log.close();
     assert.throws(() => log.append([{ name: 'MESSAGE', value: 'after-close' }]), /journal log is closed/);
 
     assert.equal(log.journalDirectory(), join(tempDir, '00112233445566778899aabbccddeeff'));
-    const files = readdirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal') || name.endsWith('.journal~')).sort();
+    const files = safeReaddirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal') || name.endsWith('.journal~')).sort();
     const archived = files.filter((name) => name.endsWith('.journal~'));
     assert.equal(archived.length, 0);
     assert.equal(files.length, 3);
@@ -2066,7 +2075,7 @@ for (const [length, expected] of sipVectors) {
       );
     }
     log.close();
-    const files = readdirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal')).sort();
+    const files = safeReaddirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal')).sort();
     assert.equal(files.length, 2);
     const counts = files.map((name) => {
       const reader = FileReader.open(join(log.journalDirectory(), name));
@@ -2095,7 +2104,7 @@ for (const [length, expected] of sipVectors) {
     log.append([{ name: 'MESSAGE', value: 'default system naming' }]);
     assert.equal(log.nextSeqnum, 2n);
     assert.match(basename(log.activeFile()), /^system@[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{16}\.journal$/);
-    assert.equal(existsSync(join(log.journalDirectory(), 'system.journal')), false);
+    assert.equal(safeExistsSync(join(log.journalDirectory(), 'system.journal')), false);
     log.close();
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
@@ -2120,12 +2129,12 @@ for (const [length, expected] of sipVectors) {
     }
     first.close();
     const journalDir = first.journalDirectory();
-    assert.equal(readdirSync(journalDir).filter((name) => name.endsWith('.journal')).length, 3);
+    assert.equal(safeReaddirSync(journalDir).filter((name) => name.endsWith('.journal')).length, 3);
 
     const retained = new Log(tempDir, { ...baseOptions, maxEntries: 0, maxRetentionAgeUsec: 1_000_000n });
-    assert.equal(readdirSync(journalDir).filter((name) => name.endsWith('.journal')).length, 3);
+    assert.equal(safeReaddirSync(journalDir).filter((name) => name.endsWith('.journal')).length, 3);
     retained.enforceRetention();
-    assert.equal(readdirSync(journalDir).filter((name) => name.endsWith('.journal')).length, 0);
+    assert.equal(safeReaddirSync(journalDir).filter((name) => name.endsWith('.journal')).length, 0);
     retained.close();
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
@@ -2150,7 +2159,7 @@ for (const [length, expected] of sipVectors) {
     }
     first.close();
     const journalDir = first.journalDirectory();
-    assert.equal(readdirSync(journalDir).filter((name) => name.endsWith('.journal')).length, 2);
+    assert.equal(safeReaddirSync(journalDir).filter((name) => name.endsWith('.journal')).length, 2);
 
     const retained = new Log(tempDir, { ...baseOptions, maxEntries: 0, maxRetentionAgeUsec: 1_000_000n });
     retained.append(
@@ -2159,7 +2168,7 @@ for (const [length, expected] of sipVectors) {
     );
     const activePath = retained.activeFile();
     retained.enforceRetention();
-    const files = readdirSync(journalDir).filter((name) => name.endsWith('.journal')).sort();
+    const files = safeReaddirSync(journalDir).filter((name) => name.endsWith('.journal')).sort();
     assert.deepEqual(files.map((name) => join(journalDir, name)), [activePath]);
     const reader = FileReader.open(activePath);
     assert.equal(reader.step(), true);
@@ -2182,7 +2191,7 @@ for (const [length, expected] of sipVectors) {
       maxFiles: 10,
     });
     assert.throws(() => log.append([]), /empty entry/);
-    const files = readdirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal'));
+    const files = safeReaddirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal'));
     assert.equal(files.length, 0);
     log.close();
   } finally {
@@ -2292,9 +2301,9 @@ for (const retentionCase of [
     log.append([{ name: 'MESSAGE', value: 'strict naming' }]);
     assert.equal(log.activeFile(), join(log.journalDirectory(), 'system.journal'));
     log.close();
-    const files = readdirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal')).sort();
+    const files = safeReaddirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal')).sort();
     assert.equal(files.length, 1);
-    assert.match(files[0], /^system@[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{16}\.journal$/);
+    assert.match(files.at(0), /^system@[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{16}\.journal$/);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
@@ -2313,7 +2322,7 @@ for (const retentionCase of [
     for (let i = 0; i < 3; i++) {
       log.append([{ name: 'MESSAGE', value: `retention-active-${i}` }]);
     }
-    const files = readdirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal')).sort();
+    const files = safeReaddirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal')).sort();
     assert.equal(files.length, 1);
     log.close();
   } finally {
@@ -2440,7 +2449,7 @@ for (const retentionCase of [
     const deleted = events.find((event) => event.type === 'deleted');
     assert.ok(deleted);
     assert.equal(deleted.deletedPaths.length, 1);
-    const files = readdirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal'));
+    const files = safeReaddirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal'));
     assert.equal(files.length, 1);
     log.close();
   } finally {
@@ -2464,9 +2473,9 @@ for (const retentionCase of [
       { name: 'TEST_ID', value: 'node-strict-byte-retention' },
     ]);
     log.close();
-    const files = readdirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal')).sort();
+    const files = safeReaddirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal')).sort();
     assert.equal(files.length, 1);
-    const reader = FileReader.open(join(log.journalDirectory(), files[0]));
+    const reader = FileReader.open(join(log.journalDirectory(), files.at(0)));
     assert.equal(reader.step(), true);
     assert.equal(reader.getEntry().fields.MESSAGE.toString('utf8'), 'strict byte retained');
     reader.close();
@@ -2524,7 +2533,7 @@ for (const retentionCase of [
     log.close();
 
     const seqnums = [];
-    for (const name of readdirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal')).sort()) {
+    for (const name of safeReaddirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal')).sort()) {
       const reader = FileReader.open(join(log.journalDirectory(), name));
       while (reader.step()) seqnums.push(reader.getEntry().seqnum);
       reader.close();
@@ -2552,7 +2561,7 @@ for (const retentionCase of [
     second.append([{ name: 'MESSAGE', value: 'strict-reopen-1' }]);
     second.close();
     const seqnums = [];
-    for (const name of readdirSync(second.journalDirectory()).filter((name) => name.endsWith('.journal')).sort()) {
+    for (const name of safeReaddirSync(second.journalDirectory()).filter((name) => name.endsWith('.journal')).sort()) {
       const reader = FileReader.open(join(second.journalDirectory(), name));
       while (reader.step()) seqnums.push(reader.getEntry().seqnum);
       reader.close();
@@ -2583,7 +2592,7 @@ for (const retentionCase of [
     second.close();
 
     const seqnums = [];
-    for (const name of readdirSync(second.journalDirectory()).filter((name) => name.endsWith('.journal')).sort()) {
+    for (const name of safeReaddirSync(second.journalDirectory()).filter((name) => name.endsWith('.journal')).sort()) {
       const reader = FileReader.open(join(second.journalDirectory(), name));
       while (reader.step()) seqnums.push(reader.getEntry().seqnum);
       reader.close();
@@ -2606,7 +2615,7 @@ for (const retentionCase of [
     });
     for (let i = 0; i < 3; i++) log.append([{ name: 'MESSAGE', value: `no-rotation-${i}` }]);
     log.close();
-    const files = readdirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal'));
+    const files = safeReaddirSync(log.journalDirectory()).filter((name) => name.endsWith('.journal'));
     assert.equal(files.length, 1);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
@@ -2624,7 +2633,7 @@ run(process.execPath, ['-e', "import './node/src/index.js'"], { cwd: repoRoot })
 {
   // FSPRG vector tests against committed systemd v260.1 fixture.
   const vectorsPath = join(repoRoot, 'tests/fss/fixtures/fsprg-vectors-v01.json');
-  const vectorsData = JSON.parse(readFileSync(vectorsPath, 'utf8'));
+  const vectorsData = JSON.parse(safeReadFileSync(vectorsPath, 'utf8'));
   const secpar = vectorsData.fsprg_params.secpar;
   for (const vec of vectorsData.vectors) {
     const seed = Buffer.from(vec.seed_hex, 'hex');
@@ -2713,8 +2722,8 @@ run(process.execPath, ['-e', "import './node/src/index.js'"], { cwd: repoRoot })
   // --verify directory follows symlinked journals and skips directories
   {
     const tmpDir = mkdtempSync(join(tmpdir(), 'node-verify-dir-'));
-    symlinkSync(validPath, join(tmpDir, 'linked.journal.zst'));
-    mkdirSync(join(tmpDir, 'skip.journal.zst'));
+    safeSymlinkSync(validPath, join(tmpDir, 'linked.journal.zst'));
+    safeMkdirSync(join(tmpDir, 'skip.journal.zst'));
 
     const result = spawnSync(cmd, [script, '--verify', '--directory', tmpDir], { encoding: 'utf8' });
     rmSync(tmpDir, { recursive: true });
@@ -2805,12 +2814,12 @@ run(process.execPath, ['-e', "import './node/src/index.js'"], { cwd: repoRoot })
   {
     const tmpDir = mkdtempSync(join(tmpdir(), 'node-verify-sealed-nokey-'));
     const tmpPath = join(tmpDir, 'sealed.journal');
-    const src = readFileSync(validPath);
+    const src = safeReadFileSync(validPath);
     const decompressed = decompressZstSync(src);
     const buf = Buffer.from(decompressed);
     const flags = buf.readUInt32LE(8);
     buf.writeUInt32LE(flags | 1, 8); // set COMPATIBLE_SEALED
-    writeFileSync(tmpPath, buf);
+    safeWriteFileSync(tmpPath, buf);
 
     const result = spawnSync(cmd, [script, '--verify', '--file', tmpPath], { encoding: 'utf8' });
     rmSync(tmpDir, { recursive: true });
@@ -2873,7 +2882,7 @@ function testVerificationKey(opts) {
 }
 
 function tamperDataPayload(path, expectedPayload) {
-  const buf = Buffer.from(readFileSync(path));
+  const buf = Buffer.from(safeReadFileSync(path));
   const headerSize = Number(buf.readBigUInt64LE(88));
   const tailObjectOffset = Number(buf.readBigUInt64LE(136));
   const compact = (buf.readUInt32LE(12) & INCOMPATIBLE_COMPACT) !== 0;
@@ -2914,7 +2923,7 @@ function tamperDataPayload(path, expectedPayload) {
     throw new Error(`DATA object ${targetObjectOffset} is not covered by second TAG ${secondTagOffset}`);
   }
   buf[targetPayloadOffset] ^= 0x01;
-  writeFileSync(path, buf);
+  safeWriteFileSync(path, buf);
 }
 
 // Sealed verification API validates HMACs and keeps structural verification.
@@ -2930,7 +2939,7 @@ function tamperDataPayload(path, expectedPayload) {
     const key = testVerificationKey(testSealOpts());
     verifyFileWithKey(journalPath, key);
     const zstPath = `${journalPath}.zst`;
-    writeFileSync(zstPath, zstdCompressSync(readFileSync(journalPath)));
+    safeWriteFileSync(zstPath, zstdCompressSync(safeReadFileSync(journalPath)));
     verifyFileWithKey(zstPath, key);
     assert.throws(
       () => verifyFileWithKey(journalPath, '000000000000000000000001/1-f4240'),
@@ -2996,7 +3005,7 @@ function tamperDataPayload(path, expectedPayload) {
     const writer = Writer.create(journalPath);
     writer.append([{ name: 'MESSAGE', value: 'unsealed' }]);
     writer.close();
-    const buf = readFileSync(journalPath);
+    const buf = safeReadFileSync(journalPath);
     assert.equal(buf.length >= 16, true);
     const compatibleFlags = buf.readUInt32LE(8);
     if (compatibleFlags & COMPATIBLE_SEALED) {
@@ -3139,11 +3148,11 @@ function tamperDataPayload(path, expectedPayload) {
 }
 
 const manifestPath = join(repoRoot, 'tests/conformance/manifests/conformance-v01.json');
-if (!existsSync(manifestPath)) {
+if (!safeExistsSync(manifestPath)) {
   throw new Error(`missing conformance manifest: ${manifestPath}`);
 }
 
-const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+const manifest = JSON.parse(safeReadFileSync(manifestPath, 'utf8'));
 const failures = [];
 const results = [];
 const expectedSkips = new Set();

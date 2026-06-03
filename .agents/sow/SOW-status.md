@@ -195,12 +195,17 @@ Last updated: 2026-06-03
   findings. Batch 44 centralized Node dynamic filesystem path validation in a
   single boundary for the reader, writer, directory, lock, compression,
   verifier, platform helper, live-writer helper, and writer benchmark paths;
-  Node syntax checks, full Node tests, diff check, and SOW audit passed.
-  Remaining work is to push Batch 44, verify
-  Codacy/GitHub code scanning has analyzed the current commit instead of stale
-  snapshots, decide or disposition the cross-language `0640` journal file
-  permission finding, address residual current-commit findings, record final
-  scanner results, and complete whole-SOW review.
+  Node syntax checks, full Node tests, diff check, and SOW audit passed. Batch
+  44 was pushed as `7237ab0`; CodeQL and Codacy SARIF passed, GitHub current
+  alerts dropped to 92, and Codacy Cloud still showed 8 quality issues with 0
+  security findings. Batch 45 routed Node tests through the same filesystem
+  boundary and removed remaining scanner-sensitive Node bracket access from
+  runtime code and internal test drivers; Node syntax checks, full Node tests,
+  diff check, and SOW audit passed. Remaining work is to push Batch 45, verify
+  Codacy/GitHub code scanning has analyzed it, decide or disposition the
+  cross-language `0640` journal file permission finding, address residual
+  current-commit findings, record final scanner results, and complete
+  whole-SOW review.
 
 ## Pending
 

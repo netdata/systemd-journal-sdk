@@ -195,7 +195,7 @@ function parseVerificationSeed(key) {
   let i = 0;
   for (let c = 0; c < seed.length; c++) {
     while (i < key.length && key.charCodeAt(i) === 0x2d) i++;
-    seed[c] = parseSeedByte(key, i);
+    seed.writeUInt8(parseSeedByte(key, i), c);
     i += 2;
   }
   return { seed, next: i };

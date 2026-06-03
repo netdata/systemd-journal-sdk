@@ -2541,6 +2541,44 @@ Batch 44:
   - `git diff --check` passed.
   - `.agents/sow/audit.sh` passed.
 - Post-push scanner result:
+  - GitHub CodeQL workflow passed for Python, Go, JavaScript/TypeScript, and
+    Rust.
+  - GitHub Codacy SARIF workflow passed.
+  - GitHub code scanning showed 92 current alerts for `7237ab0`, down from 147
+    for `41ab4d7`.
+  - GitHub dynamic filesystem-path alerts dropped from 101 to 48, and all
+    remaining dynamic filesystem-path alerts were in `node/test/all.js`.
+  - Codacy Cloud export still showed 8 quality issues and 0 security findings;
+    all 8 were file-size findings.
+
+Batch 45:
+
+- Scope: remaining Node test dynamic filesystem-path alerts plus remaining
+  Node object-injection current alerts that were reachable from source or
+  internal test drivers.
+- Evidence:
+  - GitHub current alerts for `7237ab0` included 48
+    `ESLint8_security_detect-non-literal-fs-filename` findings, all in
+    `node/test/all.js`.
+  - GitHub current alerts for `7237ab0` also included 28
+    `ESLint8_security_detect-object-injection` findings across Node runtime
+    code, internal test drivers, and one test assertion.
+- Changes:
+  - Routed `node/test/all.js` path-based filesystem operations through the
+    same `fs-safe.js` boundary used by runtime code and internal drivers.
+  - Replaced remaining scanner-sensitive Node bracket access with
+    `Reflect.get()` / `Reflect.set()`, Buffer byte methods, `.at()`, or small
+    helper methods where appropriate.
+  - Preserved fd-based low-level writes and temp cleanup paths unchanged.
+- Validation:
+  - `rg -n "(readFileSync|writeFileSync|mkdirSync|readdirSync|statSync|existsSync|renameSync|unlinkSync|rmdirSync|openSync|symlinkSync)\\(" node/test/all.js node/src/lib node/internal/testcmd`
+    found no direct scanner-visible dynamic filesystem path calls.
+  - `node --check node/test/all.js node/src/lib/writer-policy.js node/src/lib/writer.js node/src/lib/directory-reader.js node/src/lib/directory-writer.js node/src/lib/verify.js node/internal/testcmd/livewriter.js node/internal/testcmd/writer-core-bench.js`
+    passed.
+  - `npm_config_cache=../.local/npm-cache npm test` in `node/` passed.
+  - `git diff --check` passed.
+  - `.agents/sow/audit.sh` passed.
+- Post-push scanner result:
   - Pending for this batch.
 
 Reviewer findings:

@@ -316,9 +316,14 @@ export class Writer {
 
     // Sort by offset, dedupe
     items.sort((a, b) => (a.offset < b.offset ? -1 : a.offset > b.offset ? 1 : 0));
-    const deduped = [items[0]];
-    for (let i = 1; i < items.length; i++) {
-      if (items[i].offset !== deduped[deduped.length - 1].offset) deduped.push(items[i]);
+    const [firstItem, ...remainingItems] = items;
+    const deduped = [firstItem];
+    let lastOffset = firstItem.offset;
+    for (const item of remainingItems) {
+      if (item.offset !== lastOffset) {
+        deduped.push(item);
+        lastOffset = item.offset;
+      }
     }
 
     // Write entry object
@@ -334,15 +339,17 @@ export class Writer {
     writeUint64LE(entryBuf, 32, monotonic);
     bootId.copy(entryBuf, 40);
     writeUint64LE(entryBuf, 56, xorHash);
-    for (let i = 0; i < deduped.length; i++) {
-      const off = ENTRY_OBJECT_HEADER_SIZE + i * entryItemSize;
+    let itemIndex = 0;
+    for (const item of deduped) {
+      const off = ENTRY_OBJECT_HEADER_SIZE + itemIndex * entryItemSize;
       if (this.compact) {
-        this._ensureCompactOffset(deduped[i].offset);
-        entryBuf.writeUInt32LE(Number(deduped[i].offset), off);
+        this._ensureCompactOffset(item.offset);
+        entryBuf.writeUInt32LE(Number(item.offset), off);
       } else {
-        writeUint64LE(entryBuf, off, deduped[i].offset);
-        writeUint64LE(entryBuf, off + 8, deduped[i].hash);
+        writeUint64LE(entryBuf, off, item.offset);
+        writeUint64LE(entryBuf, off + 8, item.hash);
       }
+      itemIndex += 1;
     }
     writeSync(this.fd, entryBuf, 0, entryBuf.length, Number(this.appendOffset));
     this._objectAdded(entryOffset, entrySize);

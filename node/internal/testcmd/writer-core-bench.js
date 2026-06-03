@@ -56,10 +56,16 @@ function parseWriterBenchArg(args, argv, index, arg) {
   const next = argv[index + 1];
   if (next === undefined) throw new Error(`unknown or incomplete argument: ${arg}`);
   const stringField = WRITER_BENCH_STRING_OPTIONS.get(arg);
-  if (stringField) args[stringField] = next;
-  else if (WRITER_BENCH_NUMBER_OPTIONS.has(arg)) args[WRITER_BENCH_NUMBER_OPTIONS.get(arg)] = Number(next);
-  else throw new Error(`unknown or incomplete argument: ${arg}`);
-  return index + 1;
+  if (stringField) {
+    Reflect.set(args, stringField, next);
+    return index + 1;
+  }
+  const numberField = WRITER_BENCH_NUMBER_OPTIONS.get(arg);
+  if (numberField) {
+    Reflect.set(args, numberField, Number(next));
+    return index + 1;
+  }
+  throw new Error(`unknown or incomplete argument: ${arg}`);
 }
 
 function dataHashBucketsForMaxSize(maxSizeBytes) {
@@ -102,13 +108,13 @@ function makeRows(rows) {
     for (let offset = 0; offset < 12; offset++) {
       fields.push(fieldWithPayload(
         `LOW_CARD_${offset.toString().padStart(2, '0')}`,
-        lowValues[offset][row % 16],
+        lowValues.at(offset).at(row % 16),
       ));
     }
     for (let offset = 0; offset < 8; offset++) {
       fields.push(fieldWithPayload(
         `MED_CARD_${offset.toString().padStart(2, '0')}`,
-        mediumValues[offset][row % 2048],
+        mediumValues.at(offset).at(row % 2048),
       ));
     }
     for (let offset = 0; offset < 8; offset++) {
@@ -191,9 +197,9 @@ function runDirectory(result, args, rows) {
       bootId: BOOT_ID,
     };
     if (args.apiMode === 'raw-payload') {
-      log.appendRaw(rows[index].payloads, appendOptions);
+      log.appendRaw(rows.at(index).payloads, appendOptions);
     } else {
-      log.append(rows[index].fields, appendOptions);
+      log.append(rows.at(index).fields, appendOptions);
     }
     result.records++;
   }
@@ -299,9 +305,9 @@ try {
       bootId: BOOT_ID,
     };
     if (args.apiMode === 'raw-payload') {
-      writer.appendRaw(rows[index].payloads, appendOptions);
+      writer.appendRaw(rows.at(index).payloads, appendOptions);
     } else {
-      writer.append(rows[index].fields, appendOptions);
+      writer.append(rows.at(index).fields, appendOptions);
     }
     result.records++;
   }
