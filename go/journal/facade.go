@@ -560,16 +560,24 @@ func SdJournalSeekCursor(j *sdJournal, cursor string) error {
 		if err != nil {
 			return err
 		}
-		if gotRealtime > wantRealtime {
-			return nil
-		}
-		if gotSeqnumID == wantSeqnumID &&
-			gotBootID == wantBootID &&
-			gotRealtime == wantRealtime &&
-			gotSeqnum == wantSeqnum {
+		done, ok := cursorSeekPositionReached(
+			gotSeqnumID, gotBootID, gotRealtime, gotSeqnum,
+			wantSeqnumID, wantBootID, wantRealtime, wantSeqnum,
+		)
+		if done || ok {
 			return nil
 		}
 	}
+}
+
+func cursorSeekPositionReached(gotSeqnumID, gotBootID string, gotRealtime, gotSeqnum uint64, wantSeqnumID, wantBootID string, wantRealtime, wantSeqnum uint64) (bool, bool) {
+	if gotRealtime > wantRealtime {
+		return true, false
+	}
+	return false, gotSeqnumID == wantSeqnumID &&
+		gotBootID == wantBootID &&
+		gotRealtime == wantRealtime &&
+		gotSeqnum == wantSeqnum
 }
 
 func SdJournalProcessOutput(j *sdJournal, entry *Entry) (string, error) {

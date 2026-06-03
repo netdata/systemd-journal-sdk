@@ -12,10 +12,13 @@ Last updated: 2026-06-02
   uses tuned Cloud configuration when `CODACY_API_TOKEN` is available. Security
   findings are cleared in the latest direct Codacy export. The generated
   `rust/Cargo.lock` Lizard finding is excluded in Codacy Cloud, the corrected
-  actionable inventory is 161 runtime, 201 test/harness, and 17 other findings,
-  and Batch 1 made the Go reader/verifier touched files locally Lizard-clean.
-  Remaining work is to continue complexity remediation, record final scanner
-  results, and complete whole-SOW review.
+  actionable inventory is 161 runtime, 201 test/harness, and 17 other findings.
+  Batch 1 made the Go reader/verifier touched files locally Lizard-clean.
+  Batch 2 made all non-test Go runtime files under `go/journal/*.go` and
+  `go/cmd/journalctl/*.go` locally Lizard-clean and passed Go tests plus
+  matrix, directory, and full verifier interoperability checks. Remaining work
+  is to continue complexity remediation, record final scanner results, and
+  complete whole-SOW review.
 
 ## Pending
 

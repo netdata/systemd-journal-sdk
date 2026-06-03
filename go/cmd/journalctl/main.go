@@ -55,6 +55,29 @@ type optionalStringFlag struct {
 	value string
 }
 
+type cliFlags struct {
+	file       *string
+	directory  *string
+	output     *string
+	listBoots  *bool
+	noTail     *bool
+	follow     *bool
+	boot       optionalStringFlag
+	fields     *bool
+	field      *string
+	head       *int
+	tail       *int
+	since      *string
+	until      *string
+	sync       *bool
+	flush      *bool
+	rotate     *bool
+	relinquish *bool
+	verify     *bool
+	verifyOnly *bool
+	verifyKey  *string
+}
+
 func (f *optionalStringFlag) Set(value string) error {
 	f.set = true
 	if value == "true" {
@@ -84,43 +107,7 @@ func main() {
 }
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("journalctl", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-
-	var (
-		fileFlag       = fs.String("file", "", "journal file")
-		directoryFlag  = fs.String("directory", "", "journal directory")
-		outputFlag     = fs.String("output", "default", "output mode: default, json, export")
-		listBootsFlag  = fs.Bool("list-boots", false, "list boots")
-		noTailFlag     = fs.Bool("no-tail", false, "show all entries, start from the beginning")
-		followFlag     = fs.Bool("follow", false, "follow appended entries")
-		bootFlag       optionalStringFlag
-		fieldsFlag     = fs.Bool("fields", false, "show field names")
-		fieldFlag      = fs.String("field", "", "show values for a field")
-		headFlag       = fs.Int("head", 0, "show first N entries")
-		tailFlag       = fs.Int("tail", 0, "show last N entries")
-		sinceFlag      = fs.String("since", "", "show entries since timestamp")
-		untilFlag      = fs.String("until", "", "show entries until timestamp")
-		syncFlag       = fs.Bool("sync", false, "sync journal (unsupported)")
-		flushFlag      = fs.Bool("flush", false, "flush journal (unsupported)")
-		rotateFlag     = fs.Bool("rotate", false, "rotate journal (unsupported)")
-		relinquishFlag = fs.Bool("relinquish-var", false, "relinquish var (unsupported)")
-		verifyFlag     = fs.Bool("verify", false, "verify journal file")
-		verifyOnlyFlag = fs.Bool("verify-only", false, "verify only")
-		verifyKeyFlag  = fs.String("verify-key", "", "FSS verification key")
-	)
-	fs.Var(&bootFlag, "boot", "boot filter")
-	fs.Var(&bootFlag, "b", "boot filter")
-	fs.StringVar(fieldFlag, "F", "", "show values for a field")
-	fs.StringVar(sinceFlag, "S", "", "show entries since timestamp")
-	fs.StringVar(untilFlag, "U", "", "show entries until timestamp")
-
-	fs.Usage = func() {
-		fmt.Fprintf(stderr, "Usage: %s [options]\n", fs.Name())
-		fmt.Fprintf(stderr, "Pure-Go systemd journal reader\n")
-		fmt.Fprintf(stderr, "\nOptions:\n")
-		fs.PrintDefaults()
-	}
+	fs, flags := newCLIFlagSet(stderr)
 
 	if err := fs.Parse(preprocessOptionalBootArgs(args)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -129,58 +116,121 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	if *syncFlag || *flushFlag || *rotateFlag || *relinquishFlag {
-		return journal.ErrUnsupported
-	}
-	if *headFlag < 0 {
-		return errors.New("--head must be a non-negative integer")
-	}
-	if *tailFlag < 0 {
-		return errors.New("--tail must be a non-negative integer")
-	}
-
-	inputPath := *fileFlag
-	if inputPath == "" && *directoryFlag != "" {
-		inputPath = *directoryFlag
-	}
-
-	if inputPath == "" {
-		return errors.New("no journal file or directory specified (use --file or --directory)")
+	if err := flags.validate(); err != nil {
+		return err
 	}
 
 	hasVerifyKey := hasStringFlag(args, "verify-key")
-	if *verifyFlag || *verifyOnlyFlag || hasVerifyKey {
-		return runVerify(inputPath, *verifyKeyFlag, hasVerifyKey, stdout, stderr)
-	}
-
-	sinceUsec, err := parseOptionalTimestampUsec(*sinceFlag)
+	inputPath, err := flags.inputPath()
 	if err != nil {
 		return err
 	}
-	untilUsec, err := parseOptionalTimestampUsec(*untilFlag)
+	if *flags.verify || *flags.verifyOnly || hasVerifyKey {
+		return runVerify(inputPath, *flags.verifyKey, hasVerifyKey, stdout, stderr)
+	}
+
+	sinceUsec, untilUsec, err := flags.timeBounds()
 	if err != nil {
 		return err
 	}
-	if sinceUsec != nil && untilUsec != nil && *sinceUsec > *untilUsec {
-		return errors.New("--since= must be before --until=.")
-	}
 
-	if *followFlag {
+	if *flags.follow {
 		tail := 10
 		if flagWasSet(fs, "tail") {
-			tail = *tailFlag
+			tail = *flags.tail
 		}
-		return runFollow(inputPath, fs.Args(), bootFlag, *outputFlag, sinceUsec, untilUsec, tail, *noTailFlag, stdout)
+		return runFollow(inputPath, fs.Args(), flags.boot, *flags.output, sinceUsec, untilUsec, tail, *flags.noTail, stdout)
 	}
 
-	j, err := openFilteredJournal(inputPath, fs.Args(), bootFlag, *outputFlag)
+	j, err := openFilteredJournal(inputPath, fs.Args(), flags.boot, *flags.output)
 	if err != nil {
 		return err
 	}
 	defer j.Close()
 
+	return flags.dispatch(j, sinceUsec, untilUsec, stdout)
+}
+
+func newCLIFlagSet(stderr io.Writer) (*flag.FlagSet, *cliFlags) {
+	fs := flag.NewFlagSet("journalctl", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	flags := &cliFlags{
+		file:       fs.String("file", "", "journal file"),
+		directory:  fs.String("directory", "", "journal directory"),
+		output:     fs.String("output", "default", "output mode: default, json, export"),
+		listBoots:  fs.Bool("list-boots", false, "list boots"),
+		noTail:     fs.Bool("no-tail", false, "show all entries, start from the beginning"),
+		follow:     fs.Bool("follow", false, "follow appended entries"),
+		fields:     fs.Bool("fields", false, "show field names"),
+		field:      fs.String("field", "", "show values for a field"),
+		head:       fs.Int("head", 0, "show first N entries"),
+		tail:       fs.Int("tail", 0, "show last N entries"),
+		since:      fs.String("since", "", "show entries since timestamp"),
+		until:      fs.String("until", "", "show entries until timestamp"),
+		sync:       fs.Bool("sync", false, "sync journal (unsupported)"),
+		flush:      fs.Bool("flush", false, "flush journal (unsupported)"),
+		rotate:     fs.Bool("rotate", false, "rotate journal (unsupported)"),
+		relinquish: fs.Bool("relinquish-var", false, "relinquish var (unsupported)"),
+		verify:     fs.Bool("verify", false, "verify journal file"),
+		verifyOnly: fs.Bool("verify-only", false, "verify only"),
+		verifyKey:  fs.String("verify-key", "", "FSS verification key"),
+	}
+	fs.Var(&flags.boot, "boot", "boot filter")
+	fs.Var(&flags.boot, "b", "boot filter")
+	fs.StringVar(flags.field, "F", "", "show values for a field")
+	fs.StringVar(flags.since, "S", "", "show entries since timestamp")
+	fs.StringVar(flags.until, "U", "", "show entries until timestamp")
+	fs.Usage = func() {
+		fmt.Fprintf(stderr, "Usage: %s [options]\n", fs.Name())
+		fmt.Fprintf(stderr, "Pure-Go systemd journal reader\n")
+		fmt.Fprintf(stderr, "\nOptions:\n")
+		fs.PrintDefaults()
+	}
+	return fs, flags
+}
+
+func (f *cliFlags) validate() error {
+	if *f.sync || *f.flush || *f.rotate || *f.relinquish {
+		return journal.ErrUnsupported
+	}
+	if *f.head < 0 {
+		return errors.New("--head must be a non-negative integer")
+	}
+	if *f.tail < 0 {
+		return errors.New("--tail must be a non-negative integer")
+	}
+	return nil
+}
+
+func (f *cliFlags) inputPath() (string, error) {
+	inputPath := *f.file
+	if inputPath == "" && *f.directory != "" {
+		inputPath = *f.directory
+	}
+	if inputPath == "" {
+		return "", errors.New("no journal file or directory specified (use --file or --directory)")
+	}
+	return inputPath, nil
+}
+
+func (f *cliFlags) timeBounds() (*uint64, *uint64, error) {
+	sinceUsec, err := parseOptionalTimestampUsec(*f.since)
+	if err != nil {
+		return nil, nil, err
+	}
+	untilUsec, err := parseOptionalTimestampUsec(*f.until)
+	if err != nil {
+		return nil, nil, err
+	}
+	if sinceUsec != nil && untilUsec != nil && *sinceUsec > *untilUsec {
+		return nil, nil, errors.New("--since= must be before --until=.")
+	}
+	return sinceUsec, untilUsec, nil
+}
+
+func (f *cliFlags) dispatch(j cliJournal, sinceUsec, untilUsec *uint64, stdout io.Writer) error {
 	switch {
-	case *listBootsFlag:
+	case *f.listBoots:
 		boots, err := j.ListBoots()
 		if err != nil {
 			return fmt.Errorf("list boots: %w", err)
@@ -195,7 +245,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		}
 		return nil
 
-	case *fieldsFlag:
+	case *f.fields:
 		fields, err := j.EnumerateFields()
 		if err != nil {
 			return fmt.Errorf("enumerate fields: %w", err)
@@ -206,8 +256,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		}
 		return nil
 
-	case *fieldFlag != "":
-		return j.VisitUnique(*fieldFlag, func(value []byte) error {
+	case *f.field != "":
+		return j.VisitUnique(*f.field, func(value []byte) error {
 			if _, err := stdout.Write(value); err != nil {
 				return err
 			}
@@ -217,14 +267,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			return nil
 		})
 
-	case *headFlag > 0:
-		return showForward(j, *headFlag, sinceUsec, untilUsec, stdout)
+	case *f.head > 0:
+		return showForward(j, *f.head, sinceUsec, untilUsec, stdout)
 
-	case *tailFlag > 0:
-		return showTail(j, *tailFlag, sinceUsec, untilUsec, stdout)
+	case *f.tail > 0:
+		return showTail(j, *f.tail, sinceUsec, untilUsec, stdout)
 
 	default:
-		return showForward(j, *headFlag, sinceUsec, untilUsec, stdout)
+		return showForward(j, *f.head, sinceUsec, untilUsec, stdout)
 	}
 }
 
@@ -317,9 +367,30 @@ func parseOptionalTimestampUsec(value string) (*uint64, error) {
 
 func parseTimestampUsec(value string) (uint64, error) {
 	value = strings.TrimSpace(value)
+	if usec, ok := parseRelativeTimestampUsec(value); ok {
+		return usec, nil
+	}
+	if strings.HasPrefix(value, "@") {
+		return parseEpochTimestampUsec(strings.TrimPrefix(value, "@"))
+	}
+	if usec, ok, err := parseSignedDurationTimestampUsec(value); ok || err != nil {
+		return usec, err
+	}
+
+	now := time.Now()
+	if usec, ok := parseDateTimestampUsec(value); ok {
+		return usec, nil
+	}
+	if usec, ok := parseTimeOfDayTimestampUsec(value, now); ok {
+		return usec, nil
+	}
+	return 0, fmt.Errorf("failed to parse timestamp: %s", value)
+}
+
+func parseRelativeTimestampUsec(value string) (uint64, bool) {
 	switch value {
 	case "now":
-		return uint64(time.Now().UnixMicro()), nil
+		return uint64(time.Now().UnixMicro()), true
 	case "today", "yesterday", "tomorrow":
 		now := time.Now()
 		day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
@@ -328,24 +399,28 @@ func parseTimestampUsec(value string) (uint64, error) {
 		} else if value == "tomorrow" {
 			day = day.AddDate(0, 0, 1)
 		}
-		return uint64(day.UnixMicro()), nil
+		return uint64(day.UnixMicro()), true
+	default:
+		return 0, false
 	}
-	if strings.HasPrefix(value, "@") {
-		return parseEpochTimestampUsec(strings.TrimPrefix(value, "@"))
-	}
-	if len(value) > 1 && (value[0] == '+' || value[0] == '-') && !signedDatePrefixRe.MatchString(value) {
-		delta, err := parseDurationUsec(value[1:])
-		if err != nil {
-			return 0, err
-		}
-		now := time.Now().UnixMicro()
-		if value[0] == '+' {
-			return uint64(now + int64(delta)), nil
-		}
-		return uint64(now - int64(delta)), nil
-	}
+}
 
-	now := time.Now()
+func parseSignedDurationTimestampUsec(value string) (uint64, bool, error) {
+	if len(value) <= 1 || (value[0] != '+' && value[0] != '-') || signedDatePrefixRe.MatchString(value) {
+		return 0, false, nil
+	}
+	delta, err := parseDurationUsec(value[1:])
+	if err != nil {
+		return 0, true, err
+	}
+	now := time.Now().UnixMicro()
+	if value[0] == '+' {
+		return uint64(now + int64(delta)), true, nil
+	}
+	return uint64(now - int64(delta)), true, nil
+}
+
+func parseDateTimestampUsec(value string) (uint64, bool) {
 	for _, layout := range []string{
 		"2006-01-02 15:04:05.999999",
 		"2006-01-02 15:04:05",
@@ -353,16 +428,20 @@ func parseTimestampUsec(value string) (uint64, error) {
 		"2006-01-02",
 	} {
 		if t, err := time.ParseInLocation(layout, value, time.Local); err == nil {
-			return uint64(t.UnixMicro()), nil
+			return uint64(t.UnixMicro()), true
 		}
 	}
+	return 0, false
+}
+
+func parseTimeOfDayTimestampUsec(value string, now time.Time) (uint64, bool) {
 	for _, layout := range []string{"15:04:05.999999", "15:04:05", "15:04"} {
 		if t, err := time.ParseInLocation(layout, value, time.Local); err == nil {
 			t = time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), time.Local)
-			return uint64(t.UnixMicro()), nil
+			return uint64(t.UnixMicro()), true
 		}
 	}
-	return 0, fmt.Errorf("failed to parse timestamp: %s", value)
+	return 0, false
 }
 
 func parseEpochTimestampUsec(value string) (uint64, error) {
@@ -447,17 +526,7 @@ func collectBoots(j cliJournal) ([]bootInfo, error) {
 		if bootID == "" || strings.Trim(bootID, "0") == "" {
 			continue
 		}
-		item := boots[bootID]
-		if item == nil {
-			boots[bootID] = &bootInfo{bootID: bootID, firstEntry: entry.Realtime, lastEntry: entry.Realtime}
-		} else {
-			if entry.Realtime < item.firstEntry {
-				item.firstEntry = entry.Realtime
-			}
-			if entry.Realtime > item.lastEntry {
-				item.lastEntry = entry.Realtime
-			}
-		}
+		updateBootInfo(boots, bootID, entry.Realtime)
 	}
 	out := make([]bootInfo, 0, len(boots))
 	for _, item := range boots {
@@ -474,6 +543,20 @@ func collectBoots(j cliJournal) ([]bootInfo, error) {
 		out[i].index = base + i
 	}
 	return out, nil
+}
+
+func updateBootInfo(boots map[string]*bootInfo, bootID string, realtime uint64) {
+	item := boots[bootID]
+	if item == nil {
+		boots[bootID] = &bootInfo{bootID: bootID, firstEntry: realtime, lastEntry: realtime}
+		return
+	}
+	if realtime < item.firstEntry {
+		item.firstEntry = realtime
+	}
+	if realtime > item.lastEntry {
+		item.lastEntry = realtime
+	}
 }
 
 func resolveBootID(j cliJournal, descriptor string) (string, error) {
@@ -674,27 +757,14 @@ func runFollow(inputPath string, matches []string, boot optionalStringFlag, outp
 }
 
 func runVerify(inputPath, verifyKey string, hasVerifyKey bool, stdout, stderr io.Writer) error {
-	if hasVerifyKey && !validVerificationKey(verifyKey) {
-		fmt.Fprintln(stderr, "Failed to parse seed.")
-		return errors.New("failed to parse seed")
+	if err := validateVerificationKeyOption(verifyKey, hasVerifyKey, stderr); err != nil {
+		return err
 	}
 
-	info, err := os.Stat(inputPath)
+	files, directoryInput, err := verifyInputFiles(inputPath)
 	if err != nil {
-		return fmt.Errorf("verify: %w", err)
+		return err
 	}
-
-	var files []string
-	directoryInput := info.IsDir()
-	if directoryInput {
-		files, err = collectJournalFilesForVerify(inputPath)
-		if err != nil {
-			return fmt.Errorf("verify: read directory: %w", err)
-		}
-	} else {
-		files = append(files, inputPath)
-	}
-
 	if len(files) == 0 {
 		if directoryInput {
 			return nil
@@ -704,50 +774,75 @@ func runVerify(inputPath, verifyKey string, hasVerifyKey bool, stdout, stderr io
 
 	var firstErr error
 	for _, path := range files {
-		sealed, err := isFileSealed(path)
-		if err != nil {
-			if directoryInput {
-				continue
-			}
-			fmt.Fprintf(stderr, "FAIL: %s (%v)\n", path, err)
+		if err := verifyOneFile(path, verifyKey, hasVerifyKey, directoryInput, stderr); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
-			continue
 		}
-
-		if sealed && !hasVerifyKey {
-			fmt.Fprintf(stderr, "Journal file %s has sealing enabled but verification key has not been passed using --verify-key=.\n", path)
-			fmt.Fprintf(stderr, "FAIL: %s (verification key required for sealed journal file)\n", path)
-			if firstErr == nil {
-				firstErr = errors.New("verification key required for sealed journal file")
-			}
-			continue
-		}
-
-		if sealed && hasVerifyKey {
-			if err := journal.VerifyFileWithKey(path, verifyKey); err != nil {
-				fmt.Fprintf(stderr, "FAIL: %s (%v)\n", path, err)
-				if firstErr == nil {
-					firstErr = err
-				}
-				continue
-			}
-			fmt.Fprintf(stderr, "PASS: %s\n", path)
-			continue
-		}
-
-		if err := journal.VerifyFile(path); err != nil {
-			fmt.Fprintf(stderr, "FAIL: %s (%v)\n", path, err)
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		fmt.Fprintf(stderr, "PASS: %s\n", path)
 	}
 
 	return firstErr
+}
+
+func validateVerificationKeyOption(verifyKey string, hasVerifyKey bool, stderr io.Writer) error {
+	if !hasVerifyKey || validVerificationKey(verifyKey) {
+		return nil
+	}
+	fmt.Fprintln(stderr, "Failed to parse seed.")
+	return errors.New("failed to parse seed")
+}
+
+func verifyInputFiles(inputPath string) ([]string, bool, error) {
+	info, err := os.Stat(inputPath)
+	if err != nil {
+		return nil, false, fmt.Errorf("verify: %w", err)
+	}
+	if !info.IsDir() {
+		return []string{inputPath}, false, nil
+	}
+	files, err := collectJournalFilesForVerify(inputPath)
+	if err != nil {
+		return nil, true, fmt.Errorf("verify: read directory: %w", err)
+	}
+	return files, true, nil
+}
+
+func verifyOneFile(path, verifyKey string, hasVerifyKey, directoryInput bool, stderr io.Writer) error {
+	sealed, err := isFileSealed(path)
+	if err != nil {
+		return reportVerifyOpenError(path, err, directoryInput, stderr)
+	}
+	if sealed && !hasVerifyKey {
+		return reportVerifyMissingKey(path, stderr)
+	}
+	if err := verifyFileWithOptionalKey(path, verifyKey, sealed && hasVerifyKey); err != nil {
+		fmt.Fprintf(stderr, "FAIL: %s (%v)\n", path, err)
+		return err
+	}
+	fmt.Fprintf(stderr, "PASS: %s\n", path)
+	return nil
+}
+
+func reportVerifyOpenError(path string, err error, directoryInput bool, stderr io.Writer) error {
+	if directoryInput {
+		return nil
+	}
+	fmt.Fprintf(stderr, "FAIL: %s (%v)\n", path, err)
+	return err
+}
+
+func reportVerifyMissingKey(path string, stderr io.Writer) error {
+	err := errors.New("verification key required for sealed journal file")
+	fmt.Fprintf(stderr, "Journal file %s has sealing enabled but verification key has not been passed using --verify-key=.\n", path)
+	fmt.Fprintf(stderr, "FAIL: %s (%v)\n", path, err)
+	return err
+}
+
+func verifyFileWithOptionalKey(path, verifyKey string, useKey bool) error {
+	if useKey {
+		return journal.VerifyFileWithKey(path, verifyKey)
+	}
+	return journal.VerifyFile(path)
 }
 
 func isFileSealed(path string) (bool, error) {
@@ -881,29 +976,43 @@ func flagWasSet(fs *flag.FlagSet, name string) bool {
 }
 
 func validVerificationKey(key string) bool {
+	seedEnd, ok := consumeVerificationSeed(key)
+	if !ok || seedEnd >= len(key) || key[seedEnd] != '/' {
+		return false
+	}
+	startEnd, ok := consumeHex(key, seedEnd+1)
+	if !ok || startEnd >= len(key) || key[startEnd] != '-' {
+		return false
+	}
+	end, ok := consumeHex(key, startEnd+1)
+	return ok && end == len(key) && hexRangeHasNonZero(key[startEnd+1:end])
+}
+
+func consumeVerificationSeed(key string) (int, bool) {
 	i := 0
 	for c := 0; c < 12; c++ {
-		for i < len(key) && key[i] == '-' {
-			i++
+		next, ok := consumeVerificationSeedByte(key, i)
+		if !ok {
+			return 0, false
 		}
-		if i+2 > len(key) || !isHex(key[i]) || !isHex(key[i+1]) {
-			return false
-		}
-		i += 2
+		i = next
 	}
-	if i >= len(key) || key[i] != '/' {
-		return false
+	return i, true
+}
+
+func consumeVerificationSeedByte(key string, start int) (int, bool) {
+	i := start
+	for i < len(key) && key[i] == '-' {
+		i++
 	}
-	i++
-	next, ok := consumeHex(key, i)
-	if !ok || next >= len(key) || key[next] != '-' {
-		return false
+	if i+2 > len(key) || !isHex(key[i]) || !isHex(key[i+1]) {
+		return 0, false
 	}
-	end, ok := consumeHex(key, next+1)
-	if !ok || end != len(key) {
-		return false
-	}
-	for _, b := range key[next+1 : end] {
+	return i + 2, true
+}
+
+func hexRangeHasNonZero(s string) bool {
+	for _, b := range s {
 		if b != '0' {
 			return true
 		}

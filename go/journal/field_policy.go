@@ -96,13 +96,15 @@ func validateJournaldFieldNameBytes(name []byte, allowProtected bool) error {
 		return fmt.Errorf("%w: %q", errFieldName, string(name))
 	}
 	for i := 0; i < len(name); i++ {
-		c := name[i]
-		if c == '_' || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
-			continue
+		if !validJournaldFieldNameByte(name[i]) {
+			return fmt.Errorf("%w: %q", errFieldName, string(name))
 		}
-		return fmt.Errorf("%w: %q", errFieldName, string(name))
 	}
 	return nil
+}
+
+func validJournaldFieldNameByte(c byte) bool {
+	return c == '_' || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }
 
 func prepareFieldsForPolicy(fields []Field, policy FieldNamePolicy) ([]Field, error) {

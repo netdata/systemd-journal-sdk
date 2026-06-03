@@ -108,23 +108,11 @@ func detRandomize(buflen int, seed []byte, idx uint32) []byte {
 // divergence risk.  This does not claim to reproduce libgcrypt's random
 // witness selection; it is an intentionally stronger deterministic check.
 func millerRabin(n *big.Int, rounds int) bool {
-	if n.Sign() < 0 {
-		return false
-	}
-	if n.Cmp(big.NewInt(2)) == 0 || n.Cmp(big.NewInt(3)) == 0 {
-		return true
-	}
-	if n.Bit(0) == 0 {
-		return false
+	if decided, prime := millerRabinSmallDecision(n); decided {
+		return prime
 	}
 
-	// Write n-1 as 2^r * d
-	d := new(big.Int).Sub(n, big.NewInt(1))
-	r := 0
-	for d.Bit(0) == 0 {
-		d.Rsh(d, 1)
-		r++
-	}
+	d, r := millerRabinDecompose(n)
 
 	bases := []int64{
 		2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53,
@@ -134,28 +122,54 @@ func millerRabin(n *big.Int, rounds int) bool {
 		257, 263, 269, 271, 277, 281, 283, 293, 307, 311,
 	}
 	for i := 0; i < rounds && i < len(bases); i++ {
-		a := big.NewInt(bases[i])
-		if a.Cmp(n) >= 0 {
-			continue
-		}
-		x := new(big.Int).Exp(a, d, n)
-		if x.Cmp(big.NewInt(1)) == 0 || x.Cmp(new(big.Int).Sub(n, big.NewInt(1))) == 0 {
-			continue
-		}
-		cont := false
-		for j := 1; j < r; j++ {
-			x.Mul(x, x).Mod(x, n)
-			if x.Cmp(new(big.Int).Sub(n, big.NewInt(1))) == 0 {
-				cont = true
-				break
-			}
-		}
-		if cont {
+		if millerRabinBasePasses(n, d, r, bases[i]) {
 			continue
 		}
 		return false
 	}
 	return true
+}
+
+func millerRabinSmallDecision(n *big.Int) (bool, bool) {
+	if n.Sign() < 0 {
+		return true, false
+	}
+	if n.Cmp(big.NewInt(2)) == 0 || n.Cmp(big.NewInt(3)) == 0 {
+		return true, true
+	}
+	if n.Bit(0) == 0 {
+		return true, false
+	}
+	return false, false
+}
+
+func millerRabinDecompose(n *big.Int) (*big.Int, int) {
+	d := new(big.Int).Sub(n, big.NewInt(1))
+	r := 0
+	for d.Bit(0) == 0 {
+		d.Rsh(d, 1)
+		r++
+	}
+	return d, r
+}
+
+func millerRabinBasePasses(n, d *big.Int, rounds int, base int64) bool {
+	a := big.NewInt(base)
+	if a.Cmp(n) >= 0 {
+		return true
+	}
+	x := new(big.Int).Exp(a, d, n)
+	nMinusOne := new(big.Int).Sub(n, big.NewInt(1))
+	if x.Cmp(big.NewInt(1)) == 0 || x.Cmp(nMinusOne) == 0 {
+		return true
+	}
+	for j := 1; j < rounds; j++ {
+		x.Mul(x, x).Mod(x, n)
+		if x.Cmp(nMinusOne) == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func genPrime3Mod4(bits uint, seed []byte, idx uint32) *big.Int {
@@ -281,5 +295,3 @@ func fsprgGetKey(state []byte, keylen uint32, idx uint32) []byte {
 	secpar := readSecpar(state)
 	return detRandomize(int(keylen), state[2:2+2*secpar/8+8], idx)
 }
-
-

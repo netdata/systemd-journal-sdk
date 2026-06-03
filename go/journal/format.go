@@ -299,11 +299,7 @@ func parseHeader(src []byte) (journalHeader, error) {
 	copy(h.tailEntryBootID[:], src[56:72])
 	copy(h.seqnumID[:], src[72:88])
 	h.headerSize = binary.LittleEndian.Uint64(src[88:96])
-	requiredHeaderSize := h.headerSize
-	if requiredHeaderSize > headerSize {
-		requiredHeaderSize = headerSize
-	}
-	if len(src) < int(requiredHeaderSize) {
+	if len(src) < int(requiredParseHeaderSize(h.headerSize)) {
 		return journalHeader{}, errInvalidJournal
 	}
 	h.arenaSize = binary.LittleEndian.Uint64(src[96:104])
@@ -320,8 +316,24 @@ func parseHeader(src []byte) (journalHeader, error) {
 	h.headEntryRealtime = binary.LittleEndian.Uint64(src[184:192])
 	h.tailEntryRealtime = binary.LittleEndian.Uint64(src[192:200])
 	h.tailEntryMonotonic = binary.LittleEndian.Uint64(src[200:208])
-	// Historical journal headers grew one field at a time. Only expose fields
-	// that are contained by the on-disk header_size.
+	parseExtendedHeaderFields(src, &h)
+
+	if h.headerSize < headerMinSize {
+		return journalHeader{}, errUnsupportedJournal
+	}
+	return h, nil
+}
+
+func requiredParseHeaderSize(headerSize uint64) uint64 {
+	if headerSize > headerSizeMax {
+		return headerSizeMax
+	}
+	return headerSize
+}
+
+const headerSizeMax = headerSize
+
+func parseExtendedHeaderFields(src []byte, h *journalHeader) {
 	if headerContainsField(src, h.headerSize, 216) {
 		h.nData = binary.LittleEndian.Uint64(src[208:216])
 	}
@@ -349,11 +361,6 @@ func parseHeader(src []byte) (journalHeader, error) {
 	if headerContainsField(src, h.headerSize, 272) {
 		h.tailEntryOffset = binary.LittleEndian.Uint64(src[264:272])
 	}
-
-	if h.headerSize < headerMinSize {
-		return journalHeader{}, errUnsupportedJournal
-	}
-	return h, nil
 }
 
 func headerContainsField(src []byte, headerSize uint64, end int) bool {

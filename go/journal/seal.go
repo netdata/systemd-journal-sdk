@@ -244,65 +244,77 @@ func (w *Writer) hmacPutObject(objectStart uint64, typ uint8) error {
 	}
 	w.seal.hmacStart()
 
-	// Object header (up to payload) is always HMAC'd
-	buf := make([]byte, objectHeaderSize)
-	if err := w.readAt(buf, objectStart); err != nil {
+	buf, objectSize, err := w.readHMACObjectHeader(objectStart)
+	if err != nil {
 		return err
 	}
 	w.seal.hmacWrite(buf)
+	return w.hmacPutObjectPayload(objectStart, typ, objectSize)
+}
 
+func (w *Writer) readHMACObjectHeader(objectStart uint64) ([]byte, uint64, error) {
+	buf := make([]byte, objectHeaderSize)
+	if err := w.readAt(buf, objectStart); err != nil {
+		return nil, 0, err
+	}
+	return buf, binary.LittleEndian.Uint64(buf[8:16]), nil
+}
+
+func (w *Writer) hmacPutObjectPayload(objectStart uint64, typ uint8, objectSize uint64) error {
 	switch typ {
 	case objectTypeData:
-		// hash (8 bytes) + payload
-		hashBuf := make([]byte, 8)
-		if err := w.readAt(hashBuf, objectStart+16); err != nil {
-			return err
-		}
-		w.seal.hmacWrite(hashBuf)
-		payloadOffset := w.dataPayloadOffset()
-		payloadSize := binary.LittleEndian.Uint64(buf[8:16]) - payloadOffset
-		if payloadSize > 0 {
-			payload := make([]byte, payloadSize)
-			if err := w.readAt(payload, objectStart+payloadOffset); err != nil {
-				return err
-			}
-			w.seal.hmacWrite(payload)
-		}
+		return w.hmacPutDataObjectPayload(objectStart, objectSize)
 	case objectTypeField:
-		// hash (8 bytes) + payload
-		hashBuf := make([]byte, 8)
-		if err := w.readAt(hashBuf, objectStart+16); err != nil {
-			return err
-		}
-		w.seal.hmacWrite(hashBuf)
-		payloadSize := binary.LittleEndian.Uint64(buf[8:16]) - uint64(fieldObjectHeaderSize)
-		if payloadSize > 0 {
-			payload := make([]byte, payloadSize)
-			if err := w.readAt(payload, objectStart+fieldObjectHeaderSize); err != nil {
-				return err
-			}
-			w.seal.hmacWrite(payload)
-		}
+		return w.hmacPutFieldObjectPayload(objectStart, objectSize)
 	case objectTypeEntry:
-		// everything from seqnum onward
-		entrySize := binary.LittleEndian.Uint64(buf[8:16])
-		if entrySize > uint64(objectHeaderSize) {
-			rest := make([]byte, entrySize-uint64(objectHeaderSize))
-			if err := w.readAt(rest, objectStart+objectHeaderSize); err != nil {
-				return err
-			}
-			w.seal.hmacWrite(rest)
-		}
+		return w.hmacPutEntryObjectPayload(objectStart, objectSize)
 	case objectTypeDataHashTable, objectTypeFieldHashTable, objectTypeEntryArray:
 		// nothing beyond object header
+		return nil
 	case objectTypeTag:
-		// seqnum + epoch
-		tagMeta := make([]byte, 16)
-		if err := w.readAt(tagMeta, objectStart+objectHeaderSize); err != nil {
-			return err
-		}
-		w.seal.hmacWrite(tagMeta)
+		return w.hmacWriteObjectRange(objectStart+objectHeaderSize, 16)
 	}
+	return nil
+}
+
+func (w *Writer) hmacPutDataObjectPayload(objectStart, objectSize uint64) error {
+	if err := w.hmacWriteObjectRange(objectStart+16, 8); err != nil {
+		return err
+	}
+	payloadOffset := w.dataPayloadOffset()
+	if objectSize <= payloadOffset {
+		return nil
+	}
+	return w.hmacWriteObjectRange(objectStart+payloadOffset, objectSize-payloadOffset)
+}
+
+func (w *Writer) hmacPutFieldObjectPayload(objectStart, objectSize uint64) error {
+	if err := w.hmacWriteObjectRange(objectStart+16, 8); err != nil {
+		return err
+	}
+	payloadOffset := uint64(fieldObjectHeaderSize)
+	if objectSize <= payloadOffset {
+		return nil
+	}
+	return w.hmacWriteObjectRange(objectStart+payloadOffset, objectSize-payloadOffset)
+}
+
+func (w *Writer) hmacPutEntryObjectPayload(objectStart, objectSize uint64) error {
+	if objectSize <= uint64(objectHeaderSize) {
+		return nil
+	}
+	return w.hmacWriteObjectRange(objectStart+objectHeaderSize, objectSize-uint64(objectHeaderSize))
+}
+
+func (w *Writer) hmacWriteObjectRange(offset, size uint64) error {
+	if size == 0 {
+		return nil
+	}
+	buf := make([]byte, size)
+	if err := w.readAt(buf, offset); err != nil {
+		return err
+	}
+	w.seal.hmacWrite(buf)
 	return nil
 }
 

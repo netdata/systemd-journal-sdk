@@ -222,60 +222,24 @@ type chainState struct {
 	tailBootID         UUID
 }
 
+type retentionRun struct {
+	files        []archivedJournalFile
+	activePath   string
+	total        uint64
+	fileCount    int
+	deletedPaths []string
+}
+
 // NewLog creates a high-level directory writer. Files are stored below
 // dir/<machine-id>/ using Netdata-compatible chain naming by default, with
 // opt-in strict systemd active naming through StrictSystemdNaming.
 func NewLog(dir string, config LogConfig) (*Log, error) {
-	if dir == "" {
-		return nil, errInvalidJournal
-	}
-	if config.OpenMode != LogOpenLazy && config.OpenMode != LogOpenEager {
-		return nil, fmt.Errorf("%w: unsupported log open mode %d", errInvalidJournal, config.OpenMode)
-	}
-	if config.IdentityMode != LogIdentityAuto && config.IdentityMode != LogIdentityStrict {
-		return nil, fmt.Errorf("%w: unsupported log identity mode %d", errInvalidJournal, config.IdentityMode)
-	}
-	logFieldPolicy := config.Options.FieldNamePolicy
-	if err := validateFieldNamePolicy(logFieldPolicy); err != nil {
-		return nil, err
-	}
-
-	source := config.Source
-	if source == "" {
-		source = "system"
-	}
-	if err := validateJournalSource(source); err != nil {
-		return nil, err
-	}
-	if err := validateRotationPolicy(config.RotationPolicy); err != nil {
-		return nil, err
-	}
-	if err := validateRetentionPolicy(config.RetentionPolicy); err != nil {
-		return nil, err
-	}
-	if config.IdentityMode == LogIdentityStrict {
-		if isZeroUUID(config.Options.MachineID) {
-			return nil, fmt.Errorf("%w: strict identity requires machine id", errInvalidJournal)
-		}
-		if isZeroUUID(config.Options.BootID) {
-			return nil, fmt.Errorf("%w: strict identity requires boot id", errInvalidJournal)
-		}
-	}
-
-	explicitHeadSeqnum := config.Options.HeadSeqnum != 0
-	explicitSeqnumID := !isZeroUUID(config.Options.SeqnumID)
-	rotation := deriveRotationPolicy(config.RotationPolicy, config.RetentionPolicy, config.Options.Compact)
-	options := config.Options
-	options.FieldNamePolicy = logWriterFieldNamePolicy(logFieldPolicy)
-	if options.MaxFileSize == 0 && rotation.MaxFileSize != nil {
-		options.MaxFileSize = *rotation.MaxFileSize
-	}
-	opts, err := normalizeLogOptions(options, config.IdentityMode)
+	prepared, err := prepareNewLogConfig(dir, config)
 	if err != nil {
 		return nil, err
 	}
 
-	machineDir := filepath.Join(dir, opts.MachineID.String())
+	machineDir := filepath.Join(dir, prepared.options.MachineID.String())
 	if err := os.MkdirAll(machineDir, 0o750); err != nil {
 		return nil, err
 	}
@@ -283,95 +247,19 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 	l := &Log{
 		configuredDir:   dir,
 		machineDir:      machineDir,
-		source:          source,
-		options:         opts,
-		rotation:        rotation,
+		source:          prepared.source,
+		options:         prepared.options,
+		rotation:        prepared.rotation,
 		retention:       config.RetentionPolicy,
 		strict:          config.StrictSystemdNaming,
 		lifecycle:       config.Lifecycle,
 		artifacts:       config.ArtifactSizer,
-		fieldNamePolicy: logFieldPolicy,
+		fieldNamePolicy: prepared.logFieldPolicy,
 		entriesInFile:   0,
 	}
 
-	if l.strict {
-		state, err := l.scanChainState()
-		if err != nil {
-			return nil, err
-		}
-		if state.hasTail {
-			if !explicitHeadSeqnum {
-				l.options.HeadSeqnum = state.tailSeqnum + 1
-			}
-			if !explicitSeqnumID {
-				l.options.SeqnumID = state.seqnumID
-			}
-			l.lastRealtime = state.tailRealtime
-			if state.tailBootID == l.options.BootID {
-				l.lastMonotonic = state.tailMonotonic
-			}
-		}
-		if state.activePath != "" {
-			if err := l.archiveOnlineChainActive(state.activePath); err != nil {
-				return nil, err
-			}
-		}
-		activePath := l.systemdActivePath()
-		if _, err := os.Stat(activePath); err == nil {
-			l.active = activePath
-			w, err := OpenWithOptions(activePath, l.options)
-			if err != nil {
-				if !replaceableActiveOpenError(err) {
-					return nil, err
-				}
-				if err := l.replaceActiveFile(activePath); err != nil {
-					return nil, err
-				}
-			} else if w.header.nEntries == 0 {
-				if err := l.discardEmptyOpenedWriter(w); err != nil {
-					return nil, err
-				}
-			} else {
-				l.attachOpenedWriter(w)
-			}
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
-	} else {
-		state, err := l.scanChainState()
-		if err != nil {
-			return nil, err
-		}
-		if state.hasTail {
-			if !explicitHeadSeqnum {
-				l.options.HeadSeqnum = state.tailSeqnum + 1
-			}
-			if !explicitSeqnumID {
-				l.options.SeqnumID = state.seqnumID
-			}
-			l.lastRealtime = state.tailRealtime
-			if state.tailBootID == l.options.BootID {
-				l.lastMonotonic = state.tailMonotonic
-			}
-		}
-		if state.activePath != "" {
-			l.active = state.activePath
-			w, err := OpenWithOptions(l.active, l.options)
-			if err != nil {
-				if !replaceableActiveOpenError(err) {
-					return nil, err
-				}
-				if err := l.replaceActiveFile(l.active); err != nil {
-					return nil, err
-				}
-			} else if w.header.nEntries == 0 {
-				if err := l.discardEmptyOpenedWriter(w); err != nil {
-					return nil, err
-				}
-			} else {
-				l.attachOpenedWriter(w)
-			}
-		}
+	if err := l.openExistingChain(prepared.explicitHeadSeqnum, prepared.explicitSeqnumID); err != nil {
+		return nil, err
 	}
 	if config.OpenMode == LogOpenEager && l.writer == nil {
 		if err := l.ensureWriter(l.entryOptionsForAppend(EntryOptions{}), LogLifecycleReasonEagerOpen); err != nil {
@@ -383,6 +271,153 @@ func NewLog(dir string, config LogConfig) (*Log, error) {
 	}
 
 	return l, nil
+}
+
+type preparedLogConfig struct {
+	source             string
+	options            Options
+	rotation           RotationPolicy
+	logFieldPolicy     FieldNamePolicy
+	explicitHeadSeqnum bool
+	explicitSeqnumID   bool
+}
+
+func prepareNewLogConfig(dir string, config LogConfig) (preparedLogConfig, error) {
+	if err := validateNewLogConfig(dir, config); err != nil {
+		return preparedLogConfig{}, err
+	}
+	source := normalizedLogSource(config.Source)
+	rotation := deriveRotationPolicy(config.RotationPolicy, config.RetentionPolicy, config.Options.Compact)
+	options := config.Options
+	options.FieldNamePolicy = logWriterFieldNamePolicy(config.Options.FieldNamePolicy)
+	if options.MaxFileSize == 0 && rotation.MaxFileSize != nil {
+		options.MaxFileSize = *rotation.MaxFileSize
+	}
+	opts, err := normalizeLogOptions(options, config.IdentityMode)
+	if err != nil {
+		return preparedLogConfig{}, err
+	}
+	return preparedLogConfig{
+		source:             source,
+		options:            opts,
+		rotation:           rotation,
+		logFieldPolicy:     config.Options.FieldNamePolicy,
+		explicitHeadSeqnum: config.Options.HeadSeqnum != 0,
+		explicitSeqnumID:   !isZeroUUID(config.Options.SeqnumID),
+	}, nil
+}
+
+func validateNewLogConfig(dir string, config LogConfig) error {
+	if dir == "" {
+		return errInvalidJournal
+	}
+	if config.OpenMode != LogOpenLazy && config.OpenMode != LogOpenEager {
+		return fmt.Errorf("%w: unsupported log open mode %d", errInvalidJournal, config.OpenMode)
+	}
+	if config.IdentityMode != LogIdentityAuto && config.IdentityMode != LogIdentityStrict {
+		return fmt.Errorf("%w: unsupported log identity mode %d", errInvalidJournal, config.IdentityMode)
+	}
+	if err := validateFieldNamePolicy(config.Options.FieldNamePolicy); err != nil {
+		return err
+	}
+	if err := validateJournalSource(normalizedLogSource(config.Source)); err != nil {
+		return err
+	}
+	if err := validateRotationPolicy(config.RotationPolicy); err != nil {
+		return err
+	}
+	if err := validateRetentionPolicy(config.RetentionPolicy); err != nil {
+		return err
+	}
+	return validateStrictLogIdentity(config)
+}
+
+func normalizedLogSource(source string) string {
+	if source == "" {
+		return "system"
+	}
+	return source
+}
+
+func validateStrictLogIdentity(config LogConfig) error {
+	if config.IdentityMode != LogIdentityStrict {
+		return nil
+	}
+	if isZeroUUID(config.Options.MachineID) {
+		return fmt.Errorf("%w: strict identity requires machine id", errInvalidJournal)
+	}
+	if isZeroUUID(config.Options.BootID) {
+		return fmt.Errorf("%w: strict identity requires boot id", errInvalidJournal)
+	}
+	return nil
+}
+
+func (l *Log) openExistingChain(explicitHeadSeqnum, explicitSeqnumID bool) error {
+	state, err := l.scanChainState()
+	if err != nil {
+		return err
+	}
+	l.applyChainTailState(state, explicitHeadSeqnum, explicitSeqnumID)
+	if l.strict {
+		return l.openStrictChainActive(state)
+	}
+	return l.openDefaultChainActive(state)
+}
+
+func (l *Log) applyChainTailState(state chainState, explicitHeadSeqnum, explicitSeqnumID bool) {
+	if !state.hasTail {
+		return
+	}
+	if !explicitHeadSeqnum {
+		l.options.HeadSeqnum = state.tailSeqnum + 1
+	}
+	if !explicitSeqnumID {
+		l.options.SeqnumID = state.seqnumID
+	}
+	l.lastRealtime = state.tailRealtime
+	if state.tailBootID == l.options.BootID {
+		l.lastMonotonic = state.tailMonotonic
+	}
+}
+
+func (l *Log) openStrictChainActive(state chainState) error {
+	if state.activePath != "" {
+		if err := l.archiveOnlineChainActive(state.activePath); err != nil {
+			return err
+		}
+	}
+	activePath := l.systemdActivePath()
+	if _, err := os.Stat(activePath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	l.active = activePath
+	return l.openActivePath(activePath)
+}
+
+func (l *Log) openDefaultChainActive(state chainState) error {
+	if state.activePath == "" {
+		return nil
+	}
+	l.active = state.activePath
+	return l.openActivePath(l.active)
+}
+
+func (l *Log) openActivePath(path string) error {
+	w, err := OpenWithOptions(path, l.options)
+	if err != nil {
+		if !replaceableActiveOpenError(err) {
+			return err
+		}
+		return l.replaceActiveFile(path)
+	}
+	if w.header.nEntries == 0 {
+		return l.discardEmptyOpenedWriter(w)
+	}
+	l.attachOpenedWriter(w)
+	return nil
 }
 
 func (l *Log) archiveOnlineChainActive(path string) error {
@@ -808,9 +843,30 @@ func (l *Log) archiveActive() (string, error) {
 }
 
 func (l *Log) enforceRetention(protectedPath string) error {
-	files, _, err := l.archivedFiles()
+	run, err := l.newRetentionRun(protectedPath)
 	if err != nil {
 		return err
+	}
+	if err := l.enforceRetentionLimits(&run); err != nil {
+		return err
+	}
+	if err := syncJournalDirectory(l.machineDir); err != nil {
+		return err
+	}
+	if len(run.deletedPaths) > 0 {
+		l.emitLifecycle(LogLifecycleEvent{
+			Type:         LogLifecycleDeleted,
+			Reason:       LogLifecycleReasonRetention,
+			DeletedPaths: run.deletedPaths,
+		})
+	}
+	return nil
+}
+
+func (l *Log) newRetentionRun(protectedPath string) (retentionRun, error) {
+	files, _, err := l.archivedFiles()
+	if err != nil {
+		return retentionRun{}, err
 	}
 	activePath := protectedPath
 	if activePath == "" {
@@ -830,11 +886,11 @@ func (l *Log) enforceRetention(protectedPath string) error {
 			activeExtraFile = true
 			activeSize, err := l.retainedSize(activePath, uint64(activeInfo.Size()))
 			if err != nil {
-				return err
+				return retentionRun{}, err
 			}
 			total = saturatingAdd(total, activeSize)
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
+			return retentionRun{}, err
 		}
 	}
 
@@ -852,88 +908,72 @@ func (l *Log) enforceRetention(protectedPath string) error {
 	if activeExtraFile {
 		fileCount++
 	}
-	var deletedPaths []string
-	for l.retention.MaxFiles != nil && fileCount > *l.retention.MaxFiles {
-		deleteIndex := -1
-		for i, file := range files {
-			if activePath == "" || file.path != activePath {
-				deleteIndex = i
-				break
-			}
-		}
-		if deleteIndex == -1 {
-			break
-		}
-		deleted := files[deleteIndex]
-		if err := os.Remove(deleted.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	return retentionRun{files: files, activePath: activePath, total: total, fileCount: fileCount}, nil
+}
+
+func (l *Log) enforceRetentionLimits(run *retentionRun) error {
+	for l.retention.MaxFiles != nil && run.fileCount > *l.retention.MaxFiles {
+		if ok, err := l.deleteOldestRetainedFile(run, nil); err != nil || !ok {
 			return err
 		}
-		deletedPaths = append(deletedPaths, deleted.path)
-		total = saturatingSub(total, deleted.size)
-		files = append(files[:deleteIndex], files[deleteIndex+1:]...)
-		fileCount--
 	}
-	for l.retention.MaxBytes != nil && total > *l.retention.MaxBytes && len(files) > 0 {
-		deleteIndex := -1
-		for i, file := range files {
-			if activePath == "" || file.path != activePath {
-				deleteIndex = i
-				break
-			}
-		}
-		if deleteIndex == -1 {
-			break
-		}
-		deleted := files[deleteIndex]
-		if err := os.Remove(deleted.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	for l.retention.MaxBytes != nil && run.total > *l.retention.MaxBytes && len(run.files) > 0 {
+		if ok, err := l.deleteOldestRetainedFile(run, nil); err != nil || !ok {
 			return err
 		}
-		deletedPaths = append(deletedPaths, deleted.path)
-		total = saturatingSub(total, deleted.size)
-		files = append(files[:deleteIndex], files[deleteIndex+1:]...)
 	}
-	if l.retention.MaxAge != nil {
-		cutoff := uint64(time.Now().UnixMicro())
-		maxAgeUsec := durationUsec(*l.retention.MaxAge)
-		if cutoff >= maxAgeUsec {
-			cutoff -= maxAgeUsec
-		} else {
-			cutoff = 0
+	return l.enforceRetentionMaxAge(run)
+}
+
+func (l *Log) enforceRetentionMaxAge(run *retentionRun) error {
+	if l.retention.MaxAge == nil {
+		return nil
+	}
+	cutoff := retentionAgeCutoff(*l.retention.MaxAge)
+	for len(run.files) > 0 {
+		if run.files[0].headRealtime > cutoff {
+			break
 		}
-		for len(files) > 0 {
-			deleteIndex := -1
-			for i, file := range files {
-				if file.headRealtime > cutoff {
-					break
-				}
-				if activePath == "" || file.path != activePath {
-					deleteIndex = i
-					break
-				}
-			}
-			if deleteIndex == -1 {
-				break
-			}
-			deleted := files[deleteIndex]
-			if err := os.Remove(deleted.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return err
-			}
-			deletedPaths = append(deletedPaths, deleted.path)
-			total = saturatingSub(total, deleted.size)
-			files = append(files[:deleteIndex], files[deleteIndex+1:]...)
+		ok, err := l.deleteOldestRetainedFile(run, &cutoff)
+		if err != nil || !ok {
+			return err
 		}
-	}
-	if err := syncJournalDirectory(l.machineDir); err != nil {
-		return err
-	}
-	if len(deletedPaths) > 0 {
-		l.emitLifecycle(LogLifecycleEvent{
-			Type:         LogLifecycleDeleted,
-			Reason:       LogLifecycleReasonRetention,
-			DeletedPaths: deletedPaths,
-		})
 	}
 	return nil
+}
+
+func retentionAgeCutoff(maxAge time.Duration) uint64 {
+	cutoff := uint64(time.Now().UnixMicro())
+	maxAgeUsec := durationUsec(maxAge)
+	if cutoff >= maxAgeUsec {
+		return cutoff - maxAgeUsec
+	}
+	return 0
+}
+
+func (l *Log) deleteOldestRetainedFile(run *retentionRun, cutoff *uint64) (bool, error) {
+	deleteIndex := -1
+	for i, file := range run.files {
+		if cutoff != nil && file.headRealtime > *cutoff {
+			break
+		}
+		if run.activePath == "" || file.path != run.activePath {
+			deleteIndex = i
+			break
+		}
+	}
+	if deleteIndex == -1 {
+		return false, nil
+	}
+	deleted := run.files[deleteIndex]
+	if err := os.Remove(deleted.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	run.deletedPaths = append(run.deletedPaths, deleted.path)
+	run.total = saturatingSub(run.total, deleted.size)
+	run.files = append(run.files[:deleteIndex], run.files[deleteIndex+1:]...)
+	run.fileCount--
+	return true, nil
 }
 
 func (l *Log) entryOptionsForAppend(opts EntryOptions) EntryOptions {
@@ -1259,14 +1299,18 @@ func validateJournalSource(source string) error {
 		return errInvalidJournal
 	}
 	for i := 0; i < len(source); i++ {
-		c := source[i]
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-			(c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' {
-			continue
+		if !validJournalSourceByte(source[i]) {
+			return errInvalidJournal
 		}
-		return errInvalidJournal
 	}
 	return nil
+}
+
+func validJournalSourceByte(c byte) bool {
+	return (c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') ||
+		c == '_' || c == '-' || c == '.'
 }
 
 func saturatingSub(value, other uint64) uint64 {

@@ -6,7 +6,8 @@ Status: in-progress
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: decisions recorded; scanner workflow and triage scaffold in progress.
+Sub-state: decisions recorded; scanner workflow active; critical complexity
+remediation in progress.
 
 ## Requirements
 
@@ -1147,6 +1148,38 @@ Complexity remediation evidence:
   - `go test ./...` passed from `go/`.
   - `tests/interoperability/run_matrix.py --writers go rust --readers go stock
     --entries 20` passed 22/22 checks against systemd 260.1.
+- Batch 2, Go writer/log/runtime and verifier/sealing internals:
+  - Refactored `go/journal/writer.go` append-open header validation,
+    payload-entry preparation, initial layout construction, DATA compression
+    selection, DATA/FIELD linking, entry-array append paths, and DATA-to-entry
+    link publication into smaller helpers without changing public APIs.
+  - Refactored `go/journal/log.go` high-level log construction, active-chain
+    reopen, retention enforcement, and journal-source validation into smaller
+    helpers without changing directory-writer behavior.
+  - Refactored `go/cmd/journalctl/main.go` flag setup/dispatch, timestamp
+    parsing, boot aggregation, directory/file verification, and verification
+    key syntax checks into smaller helpers.
+  - Refactored `go/journal/verify.go` FSS verification into an explicit
+    sealed-verifier state with object, entry, tag, and HMAC replay helpers.
+  - Refactored `go/journal/seal.go` writer HMAC object publication into
+    object-header and per-object payload helpers.
+  - Refactored smaller critical findings in `go/journal/field_policy.go`,
+    `go/journal/hash.go`, `go/journal/fss.go`, `go/journal/format.go`, and
+    `go/journal/facade.go`.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for all
+    touched Go runtime files.
+  - Local Lizard with the same thresholds reports no findings for all non-test
+    Go runtime files under `go/journal/*.go` and `go/cmd/journalctl/*.go`.
+  - `go test ./...` passed from `go/`.
+  - `tests/interoperability/run_matrix.py --writers go rust --readers go stock
+    --entries 20` passed 22/22 checks against systemd 260.1.
+  - `tests/interoperability/run_directory_matrix.py --readers go stock` passed
+    22/22 directory checks against systemd 260.1.
+  - `tests/interoperability/run_verify_matrix.py` passed with stock, Go, Rust,
+    Node.js, and Python verifiers: 9 positive fixture classes, 12 negative
+    corruption classes, and 0 failures.
+  - `git diff --check` passed.
+  - `.agents/sow/audit.sh` passed with a clean verdict.
 
 Reviewer findings:
 

@@ -78,48 +78,23 @@ func jenkinsHashLittle2(data []byte) (uint32, uint32) {
 		k = k[12:]
 	}
 
-	switch len(k) {
-	case 12:
-		c += uint32(k[11]) << 24
-		fallthrough
-	case 11:
-		c += uint32(k[10]) << 16
-		fallthrough
-	case 10:
-		c += uint32(k[9]) << 8
-		fallthrough
-	case 9:
-		c += uint32(k[8])
-		fallthrough
-	case 8:
-		b += uint32(k[7]) << 24
-		fallthrough
-	case 7:
-		b += uint32(k[6]) << 16
-		fallthrough
-	case 6:
-		b += uint32(k[5]) << 8
-		fallthrough
-	case 5:
-		b += uint32(k[4])
-		fallthrough
-	case 4:
-		a += uint32(k[3]) << 24
-		fallthrough
-	case 3:
-		a += uint32(k[2]) << 16
-		fallthrough
-	case 2:
-		a += uint32(k[1]) << 8
-		fallthrough
-	case 1:
-		a += uint32(k[0])
-	case 0:
+	if len(k) == 0 {
 		return c, b
 	}
+	a += jenkinsTailWord(k, 0)
+	b += jenkinsTailWord(k, 4)
+	c += jenkinsTailWord(k, 8)
 
 	a, b, c = jenkinsFinal(a, b, c)
 	return c, b
+}
+
+func jenkinsTailWord(data []byte, start int) uint32 {
+	var word uint32
+	for i := 0; i < 4 && start+i < len(data); i++ {
+		word |= uint32(data[start+i]) << (8 * i)
+	}
+	return word
 }
 
 func jenkinsMix(a, b, c uint32) (uint32, uint32, uint32) {
