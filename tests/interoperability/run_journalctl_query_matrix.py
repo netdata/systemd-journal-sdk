@@ -68,7 +68,7 @@ FILE_ROWS = [
 
 
 def local_timestamp(usec: int) -> str:
-    return datetime.fromtimestamp(usec / 1_000_000).strftime("%Y-%m-%d %H:%M:%S.%f")
+    return datetime.fromtimestamp(usec / 1_000_000).isoformat(sep=" ", timespec="microseconds")
 
 
 def run(

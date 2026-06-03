@@ -8,6 +8,9 @@
 - FIELD: systemd journal file object type for a field name.
 - SOW: Statement of Work.
 - FTS: full-text search.
+- SNMP: Simple Network Management Protocol.
+- THIS: uppercase English pronoun used in repository-boundary prompt emphasis.
+- DO: uppercase English verb used in repository-boundary prompt emphasis.
 - MAKE: uppercase English verb used in repository-boundary prompt emphasis.
 - WASM: WebAssembly.
 - DO NOT: uppercase emphasis in agent prompt blocks.

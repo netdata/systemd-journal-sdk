@@ -706,7 +706,12 @@ def main() -> int:
         "checks": all_checks,
         "summary": {"total": len(all_checks), "passed": passed, "failed": failed},
     }
-    result_path = LOCAL_DIR / f"mixed-directory-matrix-results-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+    now = datetime.now()
+    timestamp = (
+        f"{now.year:04d}{now.month:02d}{now.day:02d}-"
+        f"{now.hour:02d}{now.minute:02d}{now.second:02d}"
+    )
+    result_path = LOCAL_DIR / f"mixed-directory-matrix-results-{timestamp}.json"
     result_path.write_text(json.dumps(payload, indent=2) + "\n")
 
     print("\n=== SUMMARY ===", flush=True)

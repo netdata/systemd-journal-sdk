@@ -649,7 +649,11 @@ def main() -> int:
     )
 
     env = build_env()
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    now = datetime.now(timezone.utc)
+    run_id = (
+        f"{now.year:04d}{now.month:02d}{now.day:02d}T"
+        f"{now.hour:02d}{now.minute:02d}{now.second:02d}{now.microsecond:06d}Z"
+    )
     profile_parts = [
         f"{args.format}-none-fss-off",
         f"api-{args.api_mode}",

@@ -608,6 +608,12 @@ Tests or equivalent validation:
 - Local ESLint verification was unavailable because `node/node_modules/.bin`
   does not contain an ESLint binary; the unused-symbol group will be verified
   by the next Codacy cloud export after push.
+- `rg -n "strftime\\(" tests/interoperability tests/benchmarks tests/systemd_matrix tests/corpus_eval tests/datasets python -g '*.py'`:
+  passed with no matches after the timestamp cleanup.
+- `python3 -m py_compile` passed for all Python files touched by the timestamp
+  cleanup.
+- `git diff --check`: passed after the timestamp/glossary cleanup.
+- `.agents/sow/audit.sh`: passed after the timestamp/glossary cleanup.
 - Local pinned Codacy package smoke:
   `@codacy/analysis-cli@0.8.1` installed under `.local/codacy-cli-test`;
   `codacy-analysis init --default .` succeeded; `codacy-analysis analyze .`
@@ -858,6 +864,13 @@ Real-use evidence:
   `ESLint8_@typescript-eslint_no-unused-vars` by replacing import-then-export
   patterns in the public Node index with direct re-exports and removing dead
   imports from the Node facade and conformance adapter.
+- Codacy cloud export after `1dd2b2d` reported 1390 quality issues and 144
+  security findings on `master`. The two Node unused-symbol rules are now 0.
+- Local timestamp/glossary cleanup targets
+  `Semgrep_codacy.python.i18n.no-hardcoded-strftime` by removing direct
+  `strftime()` calls from report timestamp helpers, and
+  `Agentlinter_clarity_undefined-term` by adding glossary entries for the
+  remaining uppercase prompt terms.
 
 Reviewer findings:
 

@@ -463,7 +463,11 @@ def main() -> int:
     args = parser.parse_args()
 
     env = build_env()
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    now = datetime.now(timezone.utc)
+    run_id = (
+        f"{now.year:04d}{now.month:02d}{now.day:02d}T"
+        f"{now.hour:02d}{now.minute:02d}{now.second:02d}Z"
+    )
     profile = "regular-none-fss-off" if args.regular else "compact-none-fss-off"
     out = args.output_dir / f"{profile}-{run_id}"
     out.mkdir(parents=True, exist_ok=True)

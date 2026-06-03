@@ -538,7 +538,11 @@ def main() -> int:
     args = parser.parse_args()
 
     env = build_env()
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    now = datetime.now(timezone.utc)
+    timestamp = (
+        f"{now.year:04d}{now.month:02d}{now.day:02d}T"
+        f"{now.hour:02d}{now.minute:02d}{now.second:02d}Z"
+    )
     run_dir = args.out / timestamp
     fixture_dir = run_dir / "fixtures"
     run_dir.mkdir(parents=True, exist_ok=True)
