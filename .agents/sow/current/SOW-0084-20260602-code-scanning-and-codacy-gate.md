@@ -924,6 +924,14 @@ Real-use evidence:
   --output=json`; Node `reader_core_bench.js` on the no-rtc fixture; a focused
   same-pattern `rg` scan showing only the deliberately suppressed adapter
   helper assignment remains; and `git diff --check`.
+- Codacy cloud export after `375985c` reported 1298 quality issues and 113
+  security findings on `master`. The Node object-injection rule,
+  `markdownlint_MD033`, and `Agentlinter_clarity_undefined-term` are all now
+  0. One `Agentlinter_clarity_no-vague-instructions` row remained for the
+  host-identity source wording in `AGENTS.md`.
+- Local singleton cleanup replaces that remaining host-identity bullet with
+  simpler wording: "Host identity files used by systemd, including
+  `/etc/machine-id`."
 
 Reviewer findings:
 
