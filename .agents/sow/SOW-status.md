@@ -181,8 +181,12 @@ Last updated: 2026-06-03
   quality issues with 0 security findings. Batch 41 fixed one-off Node
   scanner findings for empty cleanup catches, fixed dynamic import, verifier
   constant-condition loop shape, and live-writer async error handling; Node
-  syntax checks and full Node tests passed. Remaining work is to push Batch 41,
-  verify
+  syntax checks and full Node tests passed. Batch 41 was pushed as `480694e`;
+  CodeQL and Codacy SARIF passed, GitHub current alerts dropped to 178, and
+  Codacy Cloud still showed 8 quality issues with 0 security findings. Batch
+  42 corrected the live-writer helper shape to remove the new useless-catch
+  warning without dead catch logic; Node syntax checks and full Node tests
+  passed. Remaining work is to push Batch 42, verify
   Codacy/GitHub code scanning has analyzed the current commit instead of stale
   snapshots, decide or disposition the cross-language `0640` journal file
   permission finding, address residual current-commit findings, record final
