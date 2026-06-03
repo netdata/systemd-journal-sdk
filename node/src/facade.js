@@ -11,17 +11,33 @@ const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
 
 // Format an entry as export bytes.
 export function exportEntryBuffer(entry) {
+  return buildExportEntryBuffer(entry);
+}
+
+function buildExportEntryBuffer(entry) {
   const parts = [];
-  if (entry.cursor) parts.push(formatExportText(`__CURSOR=${entry.cursor}`));
-  if (entry.realtime) parts.push(formatExportText(`__REALTIME_TIMESTAMP=${entry.realtime}`));
-  if (entry.monotonic) parts.push(formatExportText(`__MONOTONIC_TIMESTAMP=${entry.monotonic}`));
-  if (entry.seqnum) parts.push(formatExportText(`__SEQNUM=${entry.seqnum}`));
+  appendExportMetadata(parts, entry);
+  appendPreferredExportFields(parts, entry);
+  appendRemainingExportFields(parts, entry);
+  appendRawExportFields(parts, entry);
+  parts.push(Buffer.from('\n'));
+  return Buffer.concat(parts);
+}
 
-  // Extract seqnum_id from cursor
-  const m = entry.cursor && entry.cursor.match(/s=([^;]+)/);
-  if (m) parts.push(formatExportText(`__SEQNUM_ID=${m[1]}`));
-  if (entry.boot_id) parts.push(formatExportText(`_BOOT_ID=${uuidToString(entry.boot_id)}`));
+function appendExportMetadata(parts, entry) {
+  appendExportTextIfPresent(parts, '__CURSOR', entry.cursor);
+  appendExportTextIfPresent(parts, '__REALTIME_TIMESTAMP', entry.realtime);
+  appendExportTextIfPresent(parts, '__MONOTONIC_TIMESTAMP', entry.monotonic);
+  appendExportTextIfPresent(parts, '__SEQNUM', entry.seqnum);
+  appendExportTextIfPresent(parts, '__SEQNUM_ID', cursorSeqnumId(entry.cursor));
+  appendExportTextIfPresent(parts, '_BOOT_ID', entry.boot_id && uuidToString(entry.boot_id));
+}
 
+function appendExportTextIfPresent(parts, name, value) {
+  if (value) parts.push(formatExportText(`${name}=${value}`));
+}
+
+function appendPreferredExportFields(parts, entry) {
   const preferred = ['_MACHINE_ID', '_HOSTNAME', 'PRIORITY', '_TRANSPORT'];
   const written = new Set(['_BOOT_ID', '__CURSOR', '__REALTIME_TIMESTAMP', '__MONOTONIC_TIMESTAMP', '__SEQNUM', '__SEQNUM_ID']);
   for (const name of preferred) {
@@ -31,25 +47,34 @@ export function exportEntryBuffer(entry) {
       written.add(name);
     }
   }
+  return written;
+}
 
+function appendRemainingExportFields(parts, entry) {
+  const written = new Set(['_BOOT_ID', '__CURSOR', '__REALTIME_TIMESTAMP', '__MONOTONIC_TIMESTAMP', '__SEQNUM', '__SEQNUM_ID']);
+  for (const name of ['_MACHINE_ID', '_HOSTNAME', 'PRIORITY', '_TRANSPORT']) written.add(name);
   const remaining = Object.keys(entry.fields).filter(k => !written.has(k)).sort();
   for (const name of remaining) {
-    const values = getOwnValue(entry.fieldValues, name);
-    if (values) {
-      for (const v of values) parts.push(formatExportField(name, v));
-    } else {
-      const value = getOwnValue(entry.fields, name);
-      if (value) parts.push(formatExportField(name, value));
-    }
+    appendExportFieldValues(parts, name, entry);
   }
+}
+
+function appendExportFieldValues(parts, name, entry) {
+  const values = getOwnValue(entry.fieldValues, name);
+  if (values) {
+    for (const v of values) parts.push(formatExportField(name, v));
+    return;
+  }
+  const value = getOwnValue(entry.fields, name);
+  if (value) parts.push(formatExportField(name, value));
+}
+
+function appendRawExportFields(parts, entry) {
   for (const [name, value] of entry.rawFields || []) {
     if (decodeUtf8OrNull(name) === null) {
       parts.push(formatExportRawField(name, value));
     }
   }
-
-  parts.push(Buffer.from('\n'));
-  return Buffer.concat(parts);
 }
 
 export function exportEntry(entry) {
@@ -83,16 +108,37 @@ function formatExportRawField(name, value) {
 // Format an entry as JSON object.
 export function jsonEntry(entry) {
   const result = Object.create(null);
+  const written = addJsonMetadata(result, entry);
+  addJsonFields(result, entry, written);
+  return result;
+}
+
+function addJsonMetadata(result, entry) {
   const written = new Set();
+  addJsonMetadataValue(result, written, '__CURSOR', entry.cursor);
+  addJsonMetadataValue(result, written, '__REALTIME_TIMESTAMP', entry.realtime && String(entry.realtime));
+  addJsonMetadataValue(result, written, '__MONOTONIC_TIMESTAMP', entry.monotonic && String(entry.monotonic));
+  addJsonMetadataValue(result, written, '__SEQNUM', entry.seqnum && String(entry.seqnum));
+  addJsonMetadataValue(result, written, '__SEQNUM_ID', cursorSeqnumId(entry.cursor));
+  addJsonMetadataValue(result, written, '_BOOT_ID', entry.boot_id && uuidToString(entry.boot_id));
+  return written;
+}
 
-  if (entry.cursor) { result['__CURSOR'] = entry.cursor; written.add('__CURSOR'); }
-  if (entry.realtime) { result['__REALTIME_TIMESTAMP'] = String(entry.realtime); written.add('__REALTIME_TIMESTAMP'); }
-  if (entry.monotonic) { result['__MONOTONIC_TIMESTAMP'] = String(entry.monotonic); written.add('__MONOTONIC_TIMESTAMP'); }
-  if (entry.seqnum) { result['__SEQNUM'] = String(entry.seqnum); written.add('__SEQNUM'); }
-  const m = entry.cursor && entry.cursor.match(/s=([^;]+)/);
-  if (m) { result['__SEQNUM_ID'] = m[1]; written.add('__SEQNUM_ID'); }
-  if (entry.boot_id) { result['_BOOT_ID'] = uuidToString(entry.boot_id); written.add('_BOOT_ID'); }
+function addJsonMetadataValue(result, written, name, value) {
+  if (!value) return;
+  setOwnValue(result, name, value);
+  written.add(name);
+}
 
+function cursorSeqnumId(cursor) {
+  if (!cursor) return '';
+  for (const segment of String(cursor).split(';')) {
+    if (segment.startsWith('s=')) return segment.slice(2);
+  }
+  return '';
+}
+
+function addJsonFields(result, entry, written) {
   const remaining = Object.keys(entry.fields).filter(k => !written.has(k)).sort();
   for (const name of remaining) {
     const fieldValues = getOwnValue(entry.fieldValues, name);
@@ -100,7 +146,6 @@ export function jsonEntry(entry) {
     const values = fieldValues || (fieldValue ? [fieldValue] : []);
     for (const v of values) addJsonValue(result, name, v);
   }
-  return result;
 }
 
 function addJsonValue(result, name, value) {
@@ -294,22 +339,10 @@ export class SdJournal {
   }
 
   getData(fieldName) {
-    if (typeof this.reader.getEntryPayload === 'function') {
-      const payload = this.reader.getEntryPayload(fieldName);
-      if (payload !== null) return payload;
-    }
+    const directPayload = getDirectEntryPayload(this.reader, fieldName);
+    if (directPayload !== null) return directPayload;
     const entry = this.getEntry();
-    const nameBytes = fieldNameBytes(fieldName);
-    const key = typeof fieldName === 'string' ? fieldName : decodeUtf8OrNull(nameBytes);
-    if (entry && key === null && entry.rawFieldValues) {
-      const rawValues = entry.rawFieldValues.get(nameBytes.toString('hex'));
-      if (rawValues && rawValues.length > 0) return payloadFromFieldValue(nameBytes, rawValues[0]);
-    }
-    const values = entry && key !== null ? getOwnValue(entry.fieldValues, key) : undefined;
-    if (!entry || key === null || !values || values.length === 0) {
-      throw new Error('data field not found');
-    }
-    return payloadFromFieldValue(key, values[0]);
+    return getEntryDataPayload(entry, fieldName);
   }
 
   processOutput(entry) {
@@ -523,6 +556,31 @@ export function SdJournalSetOutputMode(journal, mode) {
 
 export function SdJournalProcessOutput(journal, entry) {
   return journal.processOutput(entry);
+}
+
+function getDirectEntryPayload(reader, fieldName) {
+  if (typeof reader.getEntryPayload !== 'function') return null;
+  const payload = reader.getEntryPayload(fieldName);
+  return payload === null ? null : payload;
+}
+
+function getEntryDataPayload(entry, fieldName) {
+  const nameBytes = fieldNameBytes(fieldName);
+  const key = typeof fieldName === 'string' ? fieldName : decodeUtf8OrNull(nameBytes);
+  const rawPayload = getRawEntryPayload(entry, key, nameBytes);
+  if (rawPayload !== null) return rawPayload;
+  const values = entry && key !== null ? getOwnValue(entry.fieldValues, key) : undefined;
+  if (!entry || key === null || !values || values.length === 0) {
+    throw new Error('data field not found');
+  }
+  return payloadFromFieldValue(key, values[0]);
+}
+
+function getRawEntryPayload(entry, key, nameBytes) {
+  if (!entry || key !== null || !entry.rawFieldValues) return null;
+  const rawValues = entry.rawFieldValues.get(nameBytes.toString('hex'));
+  if (!rawValues || rawValues.length === 0) return null;
+  return payloadFromFieldValue(nameBytes, rawValues[0]);
 }
 
 function payloadFromFieldValue(fieldName, value) {

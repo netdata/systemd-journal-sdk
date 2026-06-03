@@ -164,18 +164,29 @@ function parseArgs(argv) {
   });
   for (let i = 2; i < argv.length; i++) {
     const arg = argv.at(i);
-    if (arg === '--rejection-mode') args.rejectionMode = true;
-    else if (arg === '--compact') args.compact = true;
-    else if (arg === '--final-state') args.finalState = argv.at(++i);
-    else if (arg === '--dataset') args.dataset = argv.at(++i);
-    else if (arg === '--output') args.output = argv.at(++i);
-    else if (arg === '--max-size-bytes') args.maxSizeBytes = Number(argv.at(++i));
-    else throw new Error(`unknown argument: ${arg}`);
+    i = parseIngesterArg(args, argv, i, arg);
   }
+  validateIngesterArgs(args);
+  return args;
+}
+
+function parseIngesterArg(args, argv, index, arg) {
+  if (arg === '--rejection-mode') { args.rejectionMode = true; return index; }
+  if (arg === '--compact') { args.compact = true; return index; }
+  const value = argv.at(index + 1);
+  if (value === undefined) throw new Error(`missing value for ${arg}`);
+  if (arg === '--final-state') args.finalState = value;
+  else if (arg === '--dataset') args.dataset = value;
+  else if (arg === '--output') args.output = value;
+  else if (arg === '--max-size-bytes') args.maxSizeBytes = Number(value);
+  else throw new Error(`unknown argument: ${arg}`);
+  return index + 1;
+}
+
+function validateIngesterArgs(args) {
   if (!['online', 'offline', 'archived'].includes(args.finalState)) throw new Error(`invalid final state: ${args.finalState}`);
   if (args.maxSizeBytes !== undefined && (!Number.isSafeInteger(args.maxSizeBytes) || args.maxSizeBytes <= 0)) throw new Error('invalid --max-size-bytes');
   if (!args.dataset || !args.output) throw new Error('usage: dataset_ingester --dataset PATH --output PATH [--rejection-mode] [--final-state online|offline|archived] [--compact] [--max-size-bytes BYTES]');
-  return args;
 }
 
 try {

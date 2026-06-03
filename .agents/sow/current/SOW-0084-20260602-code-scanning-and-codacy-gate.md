@@ -1526,6 +1526,36 @@ Complexity remediation evidence:
   - Refreshed local all-tracked-file Lizard inventory now reports 186 critical
     findings, down from 199 after Batch 14. `node/src/lib/*` has no remaining
     critical Lizard findings.
+- Batch 16, remaining Node.js adapter/CLI/facade/tooling findings:
+  - Refactored `node/adapter/index.js` adapter dispatch and cursor conformance
+    checks into read, run, finalize, invalid-cursor, and missing-cursor helpers
+    without changing JSON result shape or evidence fields.
+  - Refactored `node/src/facade.js` export and JSON formatting plus
+    `getData()` lookup into metadata, field, raw-field, direct-payload, and
+    entry-payload helpers without changing output modes or row-scoped payload
+    behavior.
+  - Refactored `node/cmd/journalctl/index.js` duration parsing,
+    verification-key validation, and `--verify` file loop into parser,
+    input-selection, sealed-state, and per-file verification helpers without
+    changing user-facing error messages or exit-code behavior.
+  - Refactored Node dataset/livewriter/writer-benchmark argument parsing and
+    livewriter fixture generation into table/helper-driven paths without
+    changing accepted flags or fixture payloads.
+  - Moved optional reader benchmark `/proc/self/status` parsing into
+    `node/cmd/status_kb.js`, keeping host-status probing isolated in the
+    benchmark command.
+  - `node --check` passed for `node/adapter/index.js`,
+    `node/cmd/dataset_ingester.js`, `node/cmd/journalctl/index.js`,
+    `node/cmd/reader_core_bench.js`, `node/cmd/status_kb.js`,
+    `node/internal/testcmd/livewriter.js`,
+    `node/internal/testcmd/writer-core-bench.js`, and `node/src/facade.js`.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for the
+    touched Node adapter/CLI/facade/tooling files.
+  - `npm_config_cache=../.local/npm-cache timeout 300 npm test` in `node/`
+    passed.
+  - Refreshed local all-tracked-file Lizard inventory now reports 174 critical
+    findings, down from 186 after Batch 15. Node has no remaining critical
+    Lizard findings.
 
 Reviewer findings:
 

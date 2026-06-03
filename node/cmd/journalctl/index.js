@@ -271,48 +271,75 @@ function localDateUsec(y, mo, d, h, mi, s, us) {
 }
 
 function parseDurationUsec(value) {
-  const units = new Map([
-    ['us', 1n], ['usec', 1n], ['usecs', 1n],
-    ['ms', 1000n], ['msec', 1000n], ['msecs', 1000n],
-    ['s', 1_000_000n], ['sec', 1_000_000n], ['secs', 1_000_000n], ['second', 1_000_000n], ['seconds', 1_000_000n],
-    ['m', 60_000_000n], ['min', 60_000_000n], ['mins', 60_000_000n], ['minute', 60_000_000n], ['minutes', 60_000_000n],
-    ['h', 3_600_000_000n], ['hr', 3_600_000_000n], ['hour', 3_600_000_000n], ['hours', 3_600_000_000n],
-    ['d', 86_400_000_000n], ['day', 86_400_000_000n], ['days', 86_400_000_000n],
-    ['w', 604_800_000_000n], ['week', 604_800_000_000n], ['weeks', 604_800_000_000n],
-  ]);
   let total = 0n;
   let pos = 0;
   while (pos < value.length) {
-    const whitespaceStart = pos;
-    while (pos < value.length && isWhitespace(value.charAt(pos))) pos++;
-    if (pos >= value.length) {
-      if (whitespaceStart !== pos) throw new Error(`failed to parse duration: ${value}`);
-      break;
-    }
-
-    const numberStart = pos;
-    while (pos < value.length && isDigit(value.charAt(pos))) pos++;
-    if (pos < value.length && value.charAt(pos) === '.') {
-      pos++;
-      const fractionStart = pos;
-      while (pos < value.length && isDigit(value.charAt(pos))) pos++;
-      if (pos === fractionStart) throw new Error(`failed to parse duration: ${value}`);
-    }
-    if (pos === numberStart) throw new Error(`failed to parse duration: ${value}`);
-
-    const numberText = value.slice(numberStart, pos);
-    while (pos < value.length && isWhitespace(value.charAt(pos))) pos++;
-    const unitStart = pos;
-    while (pos < value.length && isAsciiLetter(value.charAt(pos))) pos++;
-    const unit = (pos === unitStart ? 's' : value.slice(unitStart, pos)).toLowerCase();
-    const multiplier = units.get(unit);
-    if (!multiplier) throw new Error(`failed to parse duration: ${value}`);
-    const [whole, frac = ''] = numberText.split('.');
-    const scale = 10n ** BigInt(frac.length);
-    total += (BigInt(whole) * scale + BigInt(frac || '0')) * multiplier / scale;
+    const part = parseDurationPart(value, pos);
+    if (part === null) break;
+    total += part.usec;
+    pos = part.next;
   }
   if (pos !== value.length || total === 0n) throw new Error(`failed to parse duration: ${value}`);
   return total;
+}
+
+const DURATION_UNITS = new Map([
+  ['us', 1n], ['usec', 1n], ['usecs', 1n],
+  ['ms', 1000n], ['msec', 1000n], ['msecs', 1000n],
+  ['s', 1_000_000n], ['sec', 1_000_000n], ['secs', 1_000_000n], ['second', 1_000_000n], ['seconds', 1_000_000n],
+  ['m', 60_000_000n], ['min', 60_000_000n], ['mins', 60_000_000n], ['minute', 60_000_000n], ['minutes', 60_000_000n],
+  ['h', 3_600_000_000n], ['hr', 3_600_000_000n], ['hour', 3_600_000_000n], ['hours', 3_600_000_000n],
+  ['d', 86_400_000_000n], ['day', 86_400_000_000n], ['days', 86_400_000_000n],
+  ['w', 604_800_000_000n], ['week', 604_800_000_000n], ['weeks', 604_800_000_000n],
+]);
+
+function parseDurationPart(value, start) {
+  const ws = skipDurationWhitespace(value, start);
+  if (ws.pos >= value.length) {
+    if (ws.skipped) throw new Error(`failed to parse duration: ${value}`);
+    return null;
+  }
+  const number = readDurationNumber(value, ws.pos);
+  const unit = readDurationUnit(value, number.next);
+  const multiplier = DURATION_UNITS.get(unit.name);
+  if (!multiplier) throw new Error(`failed to parse duration: ${value}`);
+  return { next: unit.next, usec: durationNumberUsec(number.text, multiplier) };
+}
+
+function skipDurationWhitespace(value, pos) {
+  const start = pos;
+  while (pos < value.length && isWhitespace(value.charAt(pos))) pos++;
+  return { pos, skipped: pos !== start };
+}
+
+function readDurationNumber(value, pos) {
+  const start = pos;
+  while (pos < value.length && isDigit(value.charAt(pos))) pos++;
+  if (pos < value.length && value.charAt(pos) === '.') {
+    pos = readDurationFraction(value, pos + 1);
+  }
+  if (pos === start) throw new Error(`failed to parse duration: ${value}`);
+  return { text: value.slice(start, pos), next: pos };
+}
+
+function readDurationFraction(value, pos) {
+  const start = pos;
+  while (pos < value.length && isDigit(value.charAt(pos))) pos++;
+  if (pos === start) throw new Error(`failed to parse duration: ${value}`);
+  return pos;
+}
+
+function readDurationUnit(value, pos) {
+  while (pos < value.length && isWhitespace(value.charAt(pos))) pos++;
+  const start = pos;
+  while (pos < value.length && isAsciiLetter(value.charAt(pos))) pos++;
+  return { name: (pos === start ? 's' : value.slice(start, pos)).toLowerCase(), next: pos };
+}
+
+function durationNumberUsec(numberText, multiplier) {
+  const [whole, frac = ''] = numberText.split('.');
+  const scale = 10n ** BigInt(frac.length);
+  return (BigInt(whole) * scale + BigInt(frac || '0')) * multiplier / scale;
 }
 
 function openFilteredJournal(inputPath, opts, matches) {
@@ -592,72 +619,16 @@ function runVerify(inputPath, verifyKey, hasVerifyKey) {
     return 1;
   }
 
-  let stats;
-  try {
-    // eslint-disable-next-line security/detect-non-literal-fs-filename -- journalctl verifies the explicit --file/--directory target.
-    stats = statSync(inputPath);
-  } catch (err) {
-    process.stderr.write(`Error: verify: ${err.message}\n`);
-    return 1;
-  }
+  const input = verificationInputFiles(inputPath);
+  if (!input) return 1;
 
-  let files = [];
-  const directoryInput = stats.isDirectory();
-  if (directoryInput) {
-    files = collectJournalFilesForVerify(inputPath);
-  } else {
-    files.push(inputPath);
-  }
-
-  if (files.length === 0) {
-    if (directoryInput) return 0;
+  if (input.files.length === 0) {
+    if (input.directoryInput) return 0;
     process.stderr.write('Error: verify: no journal files found\n');
     return 1;
   }
 
-  let firstErr = null;
-  for (const file of files) {
-    let sealed = false;
-    let r = null;
-    try {
-      r = FileReader.open(file);
-      sealed = (r.header.compatible_flags & COMPATIBLE_SEALED) !== 0;
-    } catch (err) {
-      if (directoryInput) continue;
-      process.stderr.write(`FAIL: ${file} (${err.message})\n`);
-      if (!firstErr) firstErr = err;
-      continue;
-    } finally {
-      if (r) r.close();
-    }
-
-    if (sealed && !hasVerifyKey) {
-      process.stderr.write(`Journal file ${file} has sealing enabled but verification key has not been passed using --verify-key=.\n`);
-      process.stderr.write(`FAIL: ${file} (verification key required for sealed journal file)\n`);
-      if (!firstErr) firstErr = new Error('verification key required for sealed journal file');
-      continue;
-    }
-
-    if (sealed && hasVerifyKey) {
-      try {
-        verifyFileWithKey(file, verifyKey);
-        process.stderr.write(`PASS: ${file}\n`);
-      } catch (err) {
-        process.stderr.write(`FAIL: ${file} (${err.message})\n`);
-        if (!firstErr) firstErr = err;
-      }
-      continue;
-    }
-
-    try {
-      verifyFile(file);
-      process.stderr.write(`PASS: ${file}\n`);
-    } catch (err) {
-      process.stderr.write(`FAIL: ${file} (${err.message})\n`);
-      if (!firstErr) firstErr = err;
-    }
-  }
-
+  const firstErr = verifyJournalFiles(input.files, input.directoryInput, verifyKey, hasVerifyKey);
   if (firstErr) {
     process.stderr.write('Error: ' + firstErr.message + '\n');
     return 1;
@@ -665,27 +636,95 @@ function runVerify(inputPath, verifyKey, hasVerifyKey) {
   return 0;
 }
 
-function validVerificationKey(key) {
-  let i = 0;
-  for (let c = 0; c < 12; c++) {
-    while (i < key.length && key.charAt(i) === '-') i++;
-    if (i + 2 > key.length || !isHex(key.charAt(i)) || !isHex(key.charAt(i + 1))) {
-      return false;
-    }
-    i += 2;
+function verificationInputFiles(inputPath) {
+  try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- journalctl verifies the explicit --file/--directory target.
+    const stats = statSync(inputPath);
+    const directoryInput = stats.isDirectory();
+    return {
+      directoryInput,
+      files: directoryInput ? collectJournalFilesForVerify(inputPath) : [inputPath],
+    };
+  } catch (err) {
+    process.stderr.write(`Error: verify: ${err.message}\n`);
+    return null;
   }
-  if (i >= key.length || key.charAt(i) !== '/') {
-    return false;
-  }
-  i++;
+}
 
-  const start = consumeHex(key, i);
+function verifyJournalFiles(files, directoryInput, verifyKey, hasVerifyKey) {
+  let firstErr = null;
+  for (const file of files) {
+    const err = verifyJournalFile(file, directoryInput, verifyKey, hasVerifyKey);
+    if (err && !firstErr) firstErr = err;
+  }
+  return firstErr;
+}
+
+function verifyJournalFile(file, directoryInput, verifyKey, hasVerifyKey) {
+  const sealed = readJournalSealedFlag(file, directoryInput);
+  if (sealed === null) return null;
+  if (sealed instanceof Error) return sealed;
+  if (sealed && !hasVerifyKey) return verificationKeyRequiredError(file);
+  return runJournalFileVerification(file, sealed, verifyKey);
+}
+
+function readJournalSealedFlag(file, directoryInput) {
+  let r = null;
+  try {
+    r = FileReader.open(file);
+    return (r.header.compatible_flags & COMPATIBLE_SEALED) !== 0;
+  } catch (err) {
+    if (directoryInput) return null;
+    process.stderr.write(`FAIL: ${file} (${err.message})\n`);
+    return err;
+  } finally {
+    if (r) r.close();
+  }
+}
+
+function verificationKeyRequiredError(file) {
+  const err = new Error('verification key required for sealed journal file');
+  process.stderr.write(`Journal file ${file} has sealing enabled but verification key has not been passed using --verify-key=.\n`);
+  process.stderr.write(`FAIL: ${file} (${err.message})\n`);
+  return err;
+}
+
+function runJournalFileVerification(file, sealed, verifyKey) {
+  try {
+    if (sealed) verifyFileWithKey(file, verifyKey);
+    else verifyFile(file);
+    process.stderr.write(`PASS: ${file}\n`);
+    return null;
+  } catch (err) {
+    process.stderr.write(`FAIL: ${file} (${err.message})\n`);
+    return err;
+  }
+}
+
+function validVerificationKey(key) {
+  const seedEnd = consumeVerificationKeySeed(key);
+  if (seedEnd === null || seedEnd >= key.length || key.charAt(seedEnd) !== '/') return false;
+  const start = consumeHex(key, seedEnd + 1);
   if (!start.ok || start.next >= key.length || key.charAt(start.next) !== '-') {
     return false;
   }
   const interval = consumeHex(key, start.next + 1);
   if (!interval.ok || interval.next !== key.length) return false;
   return key.slice(start.next + 1, interval.next).split('').some((ch) => ch !== '0');
+}
+
+function consumeVerificationKeySeed(key) {
+  let i = 0;
+  for (let c = 0; c < 12; c++) {
+    while (i < key.length && key.charAt(i) === '-') i++;
+    if (!hasHexPairAt(key, i)) return null;
+    i += 2;
+  }
+  return i;
+}
+
+function hasHexPairAt(key, offset) {
+  return offset + 2 <= key.length && isHex(key.charAt(offset)) && isHex(key.charAt(offset + 1));
 }
 
 function consumeHex(s, start) {

@@ -79,40 +79,57 @@ function utf8FieldObject(fields) {
 // ---- RUN ----
 
 function runAdapter() {
-  const input = readFileSync(0, 'utf8');
-  let tc;
-  try { tc = JSON.parse(input); } catch (e) { process.stderr.write(`decode error: ${e.message}\n`); process.exit(1); }
-
+  const tc = readAdapterTestCase();
   const start = Date.now();
-  let result;
-  try {
-    switch (tc.category) {
-      case 'file-format': result = runFileFormatTest(tc); break;
-      case 'entry-parse': result = runEntryParseTest(tc); break;
-      case 'matching': result = runMatchingTest(tc); break;
-      case 'stream': result = runStreamTest(tc); break;
-      case 'cursor-navigation': result = runCursorTest(tc); break;
-      case 'enumeration': result = runEnumerationTest(tc); break;
-      case 'import-export': result = runExportTest(tc); break;
-      case 'journalctl-cli': result = runJournalctlTest(tc); break;
-      case 'compression': result = runCompressionTest(tc); break;
-      case 'corruption-resilience': result = runCorruptionTest(tc); break;
-      case 'verification':
-        result = runVerificationTest(tc); break;
-      default:
-        result = { status: 'SKIP', note: `unsupported category: ${tc.category}` };
-    }
-  } catch (e) {
-    result = { status: 'ERROR', error: e.message };
-  }
+  const result = finalizeAdapterResult(tc, start, runAdapterTestCase(tc));
+  process.stdout.write(JSON.stringify(result) + '\n');
+}
 
+function readAdapterTestCase() {
+  const input = readFileSync(0, 'utf8');
+  try {
+    return JSON.parse(input);
+  } catch (e) {
+    process.stderr.write(`decode error: ${e.message}\n`);
+    process.exit(1);
+  }
+}
+
+function runAdapterTestCase(tc) {
+  const runner = ADAPTER_CATEGORY_RUNNERS.get(tc.category);
+  if (!runner) return { status: 'SKIP', note: `unsupported category: ${tc.category}` };
+  return executeAdapterRunner(runner, tc);
+}
+
+function executeAdapterRunner(runner, tc) {
+  try {
+    return runner(tc);
+  } catch (e) {
+    return { status: 'ERROR', error: e.message };
+  }
+}
+
+function finalizeAdapterResult(tc, start, result) {
   result.test_name = tc.test_name;
   result.result_format = tc.expected.result_format;
   result.duration_ms = Math.max(1, Date.now() - start);
   if (!result.status) { result.status = 'SKIP'; result.note = 'no matching test handler'; }
-
-  process.stdout.write(JSON.stringify(result) + '\n');
+  return result;
 }
+
+const ADAPTER_CATEGORY_RUNNERS = new Map([
+  ['file-format', runFileFormatTest],
+  ['entry-parse', runEntryParseTest],
+  ['matching', runMatchingTest],
+  ['stream', runStreamTest],
+  ['cursor-navigation', runCursorTest],
+  ['enumeration', runEnumerationTest],
+  ['import-export', runExportTest],
+  ['journalctl-cli', runJournalctlTest],
+  ['compression', runCompressionTest],
+  ['corruption-resilience', runCorruptionTest],
+  ['verification', runVerificationTest],
+]);
 
 // ---- FILE FORMAT ----
 
@@ -303,32 +320,12 @@ function runCursorTest(tc) {
   if (!path) return { status: 'SKIP', note: 'no journal_dir fixture' };
   const r = SdJournalOpen(path, 0);
   try {
-    SdJournalSeekHead(r);
-    if (SdJournalNext(r) === 0) return { status: 'FAIL', error: 'no entries' };
-    const cursor = SdJournalGetCursor(r);
-    if (!cursor) return { status: 'FAIL', error: 'null cursor' };
-    if (!SdJournalTestCursor(r, cursor)) return { status: 'FAIL', error: 'current cursor did not match' };
-    const cursorRealtime = SdJournalGetRealtimeUsec(r);
-    if (SdJournalTestCursor(r, 'invalid-cursor')) {
-      return { status: 'FAIL', error: 'invalid cursor matched current position' };
-    }
-    let invalidSeekRejected = false;
-    try {
-      SdJournalSeekCursor(r, 'invalid-cursor');
-    } catch {
-      invalidSeekRejected = true;
-    }
-    if (!invalidSeekRejected) return { status: 'FAIL', error: 'invalid seek cursor was accepted' };
-    SdJournalSeekCursor(r, cursor);
-    const cursorPrefix = cursor.split(/n=[^;]*$/)[0];
-    if (cursorPrefix === cursor) return { status: 'FAIL', error: 'cursor missing seqnum segment' };
-    SdJournalSeekCursor(r, `${cursorPrefix}n=999999`);
-    if (SdJournalTestCursor(r, cursor)) {
-      return { status: 'FAIL', error: 'missing seek stayed on original cursor' };
-    }
-    if (SdJournalGetRealtimeUsec(r) < cursorRealtime) {
-      return { status: 'FAIL', error: 'missing seek moved before requested cursor' };
-    }
+    const cursorState = cursorTestInitialState(r);
+    if (cursorState.status) return cursorState;
+    const invalidCheck = checkInvalidCursorBehavior(r);
+    if (invalidCheck.status) return invalidCheck;
+    const missingCheck = checkMissingCursorBehavior(r, cursorState.cursor, cursorState.cursorRealtime);
+    if (missingCheck.status) return missingCheck;
     return {
       status: 'PASS',
       actual: true,
@@ -341,6 +338,44 @@ function runCursorTest(tc) {
       },
     };
   } finally { SdJournalClose(r); }
+}
+
+function cursorTestInitialState(r) {
+  SdJournalSeekHead(r);
+  if (SdJournalNext(r) === 0) return { status: 'FAIL', error: 'no entries' };
+  const cursor = SdJournalGetCursor(r);
+  if (!cursor) return { status: 'FAIL', error: 'null cursor' };
+  if (!SdJournalTestCursor(r, cursor)) return { status: 'FAIL', error: 'current cursor did not match' };
+  return { cursor, cursorRealtime: SdJournalGetRealtimeUsec(r) };
+}
+
+function checkInvalidCursorBehavior(r) {
+  if (SdJournalTestCursor(r, 'invalid-cursor')) {
+    return { status: 'FAIL', error: 'invalid cursor matched current position' };
+  }
+  if (!invalidSeekRejected(r)) return { status: 'FAIL', error: 'invalid seek cursor was accepted' };
+  return {};
+}
+
+function invalidSeekRejected(r) {
+  try {
+    SdJournalSeekCursor(r, 'invalid-cursor');
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function checkMissingCursorBehavior(r, cursor, cursorRealtime) {
+  SdJournalSeekCursor(r, cursor);
+  const cursorPrefix = cursor.split(/n=[^;]*$/)[0];
+  if (cursorPrefix === cursor) return { status: 'FAIL', error: 'cursor missing seqnum segment' };
+  SdJournalSeekCursor(r, `${cursorPrefix}n=999999`);
+  if (SdJournalTestCursor(r, cursor)) return { status: 'FAIL', error: 'missing seek stayed on original cursor' };
+  if (SdJournalGetRealtimeUsec(r) < cursorRealtime) {
+    return { status: 'FAIL', error: 'missing seek moved before requested cursor' };
+  }
+  return {};
 }
 
 // ---- ENUMERATION ----

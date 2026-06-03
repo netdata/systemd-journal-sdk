@@ -31,39 +31,34 @@ function parseArgs(argv) {
   };
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
-    const next = argv[i + 1];
-    if (arg === '--rows' && next !== undefined) {
-      args.rows = Number(next);
-      i++;
-    } else if (arg === '--output' && next !== undefined) {
-      args.output = next;
-      i++;
-    } else if (arg === '--format' && next !== undefined) {
-      args.format = next;
-      i++;
-    } else if (arg === '--final-state' && next !== undefined) {
-      args.finalState = next;
-      i++;
-    } else if (arg === '--surface' && next !== undefined) {
-      args.surface = next;
-      i++;
-    } else if (arg === '--max-size-bytes' && next !== undefined) {
-      args.maxSizeBytes = Number(next);
-      i++;
-    } else if (arg === '--rotation-max-size-bytes' && next !== undefined) {
-      args.rotationMaxSizeBytes = Number(next);
-      i++;
-    } else if (arg === '--live-publish-every-entries' && next !== undefined) {
-      args.livePublishEveryEntries = Number(next);
-      i++;
-    } else if (arg === '--api-mode' && next !== undefined) {
-      args.apiMode = next;
-      i++;
-    } else {
-      throw new Error(`unknown or incomplete argument: ${arg}`);
-    }
+    i = parseWriterBenchArg(args, argv, i, arg);
   }
   return args;
+}
+
+const WRITER_BENCH_STRING_OPTIONS = new Map([
+  ['--output', 'output'],
+  ['--format', 'format'],
+  ['--final-state', 'finalState'],
+  ['--surface', 'surface'],
+  ['--api-mode', 'apiMode'],
+]);
+
+const WRITER_BENCH_NUMBER_OPTIONS = new Map([
+  ['--rows', 'rows'],
+  ['--max-size-bytes', 'maxSizeBytes'],
+  ['--rotation-max-size-bytes', 'rotationMaxSizeBytes'],
+  ['--live-publish-every-entries', 'livePublishEveryEntries'],
+]);
+
+function parseWriterBenchArg(args, argv, index, arg) {
+  const next = argv[index + 1];
+  if (next === undefined) throw new Error(`unknown or incomplete argument: ${arg}`);
+  const stringField = WRITER_BENCH_STRING_OPTIONS.get(arg);
+  if (stringField) args[stringField] = next;
+  else if (WRITER_BENCH_NUMBER_OPTIONS.has(arg)) args[WRITER_BENCH_NUMBER_OPTIONS.get(arg)] = Number(next);
+  else throw new Error(`unknown or incomplete argument: ${arg}`);
+  return index + 1;
 }
 
 function dataHashBucketsForMaxSize(maxSizeBytes) {

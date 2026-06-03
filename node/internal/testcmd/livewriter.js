@@ -28,69 +28,55 @@ function parseArgs(argv) {
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    const next = () => {
-      if (i + 1 >= argv.length) throw new Error(`${arg} requires a value`);
-      return argv[++i];
-    };
-    switch (arg) {
-      case '--path':
-        args.path = next();
-        break;
-      case '--ready-file':
-        args.readyFile = next();
-        break;
-      case '--entries':
-        args.entries = parsePositiveInt(next(), '--entries');
-        break;
-      case '--delay':
-        args.delayMs = parseDelayMs(next());
-        break;
-      case '--sync-every':
-        args.syncEvery = parseNonNegativeInt(next(), '--sync-every');
-        break;
-      case '--crash-after':
-        args.crashAfter = parseNonNegativeInt(next(), '--crash-after');
-        break;
-      case '--binary-fixture':
-        args.binaryFixture = true;
-        break;
-      case '--zstd-fixture':
-        args.zstdFixture = true;
-        break;
-      case '--lz4-fixture':
-        args.lz4Fixture = true;
-        break;
-      case '--xz-fixture':
-        args.xzFixture = true;
-        break;
-      case '--compression':
-        args.compression = next();
-        break;
-      case '--compress-threshold':
-      case '--compression-threshold-bytes':
-        args.compressionThresholdBytes = parsePositiveInt(next(), '--compression-threshold-bytes');
-        break;
-      case '--compact':
-        args.compact = true;
-        break;
-      case '--seal':
-        args.seal = true;
-        break;
-      case '--seal-interval-usec':
-        args.sealIntervalUsec = parsePositiveInt(next(), '--seal-interval-usec');
-        break;
-      case '--seal-start-usec':
-        args.sealStartUsec = parsePositiveInt(next(), '--seal-start-usec');
-        break;
-      default:
-        throw new Error(`unknown argument: ${arg}`);
-    }
+    i = parseLiveWriterArg(args, argv, i, arg);
   }
 
   if (!args.path || !args.readyFile || args.entries <= 0) {
     throw new Error('path, ready-file, and positive entries are required');
   }
   return args;
+}
+
+function parseLiveWriterArg(args, argv, index, arg) {
+  if (parseLiveWriterFlag(args, arg)) return index;
+  const value = argv[index + 1];
+  if (value === undefined) throw new Error(`${arg} requires a value`);
+  applyLiveWriterOption(args, arg, value);
+  return index + 1;
+}
+
+function parseLiveWriterFlag(args, arg) {
+  const flags = new Map([
+    ['--binary-fixture', 'binaryFixture'],
+    ['--zstd-fixture', 'zstdFixture'],
+    ['--lz4-fixture', 'lz4Fixture'],
+    ['--xz-fixture', 'xzFixture'],
+    ['--compact', 'compact'],
+    ['--seal', 'seal'],
+  ]);
+  const field = flags.get(arg);
+  if (!field) return false;
+  args[field] = true;
+  return true;
+}
+
+function applyLiveWriterOption(args, arg, value) {
+  switch (arg) {
+    case '--path': args.path = value; return;
+    case '--ready-file': args.readyFile = value; return;
+    case '--entries': args.entries = parsePositiveInt(value, '--entries'); return;
+    case '--delay': args.delayMs = parseDelayMs(value); return;
+    case '--sync-every': args.syncEvery = parseNonNegativeInt(value, '--sync-every'); return;
+    case '--crash-after': args.crashAfter = parseNonNegativeInt(value, '--crash-after'); return;
+    case '--compression': args.compression = value; return;
+    case '--compress-threshold':
+    case '--compression-threshold-bytes':
+      args.compressionThresholdBytes = parsePositiveInt(value, '--compression-threshold-bytes');
+      return;
+    case '--seal-interval-usec': args.sealIntervalUsec = parsePositiveInt(value, '--seal-interval-usec'); return;
+    case '--seal-start-usec': args.sealStartUsec = parsePositiveInt(value, '--seal-start-usec'); return;
+    default: throw new Error(`unknown argument: ${arg}`);
+  }
 }
 
 function parsePositiveInt(value, name) {
@@ -137,104 +123,12 @@ async function main() {
   mkdirSync(dirname(args.path), { recursive: true });
   mkdirSync(dirname(args.readyFile), { recursive: true });
 
-  const writerOptions = {
-    compression: args.compression,
-    compressionThresholdBytes: args.compressionThresholdBytes,
-    compact: args.compact,
-  };
-  if (args.seal) {
-    writerOptions.seal = new SealOptions(
-      Buffer.alloc(12),
-      args.sealIntervalUsec,
-      args.sealStartUsec,
-    );
-  }
   const lock = WriterLock.acquire(args.path);
   let writer;
-  const realtimeBase = 1_700_001_000_000_000n;
 
   try {
-    writer = Writer.create(args.path, writerOptions);
-    for (let i = 0; i < args.entries; i++) {
-      let fields;
-      if (args.binaryFixture && i === 0) {
-        fields = [
-          { name: 'TEST_ID', value: 'binary-interoperability' },
-          { name: 'MESSAGE', value: 'binary interoperability' },
-          { name: 'PRIORITY', value: '6' },
-          { name: 'LIVE_SEQ', value: '000000' },
-          { name: 'BINARY_PAYLOAD', value: Buffer.from([0x00, 0x01, 0x02, 0x41, 0x0a, 0x7f, 0x80, 0xff]) },
-          { name: 'BINARY_MATCH', value: Buffer.from([0x61, 0x62, 0x63, 0x07, 0x64, 0x65, 0x66]) },
-          { name: 'BINARY_EMPTY', value: Buffer.from([]) },
-          { name: 'BINARY_COMPRESSIBLE', value: Buffer.alloc(256, 0x41) },
-        ];
-      } else if (args.zstdFixture && i === 0) {
-        const largePayload = Buffer.alloc(256);
-        for (let j = 0; j < 256; j++) {
-          largePayload[j] = (j % 26) + 0x41;
-        }
-        fields = [
-          { name: 'TEST_ID', value: 'zstd-interoperability' },
-          { name: 'MESSAGE', value: 'zstd interoperability' },
-          { name: 'PRIORITY', value: '6' },
-          { name: 'LIVE_SEQ', value: '000000' },
-          { name: 'COMPRESSED_PAYLOAD', value: largePayload },
-          { name: 'COMPRESSED_MATCH', value: largePayload.subarray(0, 32) },
-        ];
-      } else if (args.lz4Fixture && i === 0) {
-        const largePayload = Buffer.alloc(256);
-        for (let j = 0; j < 256; j++) {
-          largePayload[j] = (j % 26) + 0x41;
-        }
-        fields = [
-          { name: 'TEST_ID', value: 'lz4-interoperability' },
-          { name: 'MESSAGE', value: 'lz4 interoperability' },
-          { name: 'PRIORITY', value: '6' },
-          { name: 'LIVE_SEQ', value: '000000' },
-          { name: 'COMPRESSED_PAYLOAD', value: largePayload },
-          { name: 'COMPRESSED_MATCH', value: largePayload.subarray(0, 32) },
-        ];
-      } else if (args.xzFixture && i === 0) {
-        const largePayload = Buffer.alloc(256);
-        for (let j = 0; j < 256; j++) {
-          largePayload[j] = (j % 26) + 0x41;
-        }
-        fields = [
-          { name: 'TEST_ID', value: 'xz-interoperability' },
-          { name: 'MESSAGE', value: 'xz interoperability' },
-          { name: 'PRIORITY', value: '6' },
-          { name: 'LIVE_SEQ', value: '000000' },
-          { name: 'COMPRESSED_PAYLOAD', value: largePayload },
-          { name: 'COMPRESSED_MATCH', value: largePayload.subarray(0, 32) },
-        ];
-      } else {
-        fields = [
-          { name: 'MESSAGE', value: `live-${i.toString().padStart(6, '0')}` },
-          { name: 'PRIORITY', value: '6' },
-          { name: 'SYSLOG_IDENTIFIER', value: 'node-live-writer' },
-          { name: 'LIVE_SEQ', value: i.toString().padStart(6, '0') },
-        ];
-      }
-
-      writer.append(fields, {
-        realtimeUsec: realtimeBase + BigInt(i),
-        monotonicUsec: BigInt(i + 1),
-      });
-
-      if (i === 0) {
-        writer.sync();
-        writeFileSync(args.readyFile, 'ready\n', { mode: 0o600 });
-      } else if (args.syncEvery > 0 && (i + 1) % args.syncEvery === 0) {
-        writer.sync();
-      }
-
-      if (args.crashAfter > 0 && i + 1 >= args.crashAfter) {
-        process.exit(17);
-      }
-
-      await sleep(args.delayMs);
-    }
-
+    writer = Writer.create(args.path, writerOptionsFromArgs(args));
+    await appendLiveEntries(writer, args);
     writer.close();
     lock.release();
   } catch (error) {
@@ -252,6 +146,92 @@ async function main() {
     }
     throw error;
   }
+}
+
+function writerOptionsFromArgs(args) {
+  const writerOptions = {
+    compression: args.compression,
+    compressionThresholdBytes: args.compressionThresholdBytes,
+    compact: args.compact,
+  };
+  if (args.seal) {
+    writerOptions.seal = new SealOptions(
+      Buffer.alloc(12),
+      args.sealIntervalUsec,
+      args.sealStartUsec,
+    );
+  }
+  return writerOptions;
+}
+
+async function appendLiveEntries(writer, args) {
+  const realtimeBase = 1_700_001_000_000_000n;
+  for (let i = 0; i < args.entries; i++) {
+    writer.append(liveFieldsForEntry(args, i), {
+      realtimeUsec: realtimeBase + BigInt(i),
+      monotonicUsec: BigInt(i + 1),
+    });
+    await handleLiveAppendSideEffects(writer, args, i);
+  }
+}
+
+async function handleLiveAppendSideEffects(writer, args, index) {
+  if (index === 0) {
+    writer.sync();
+    writeFileSync(args.readyFile, 'ready\n', { mode: 0o600 });
+  } else if (args.syncEvery > 0 && (index + 1) % args.syncEvery === 0) {
+    writer.sync();
+  }
+  if (args.crashAfter > 0 && index + 1 >= args.crashAfter) process.exit(17);
+  await sleep(args.delayMs);
+}
+
+function liveFieldsForEntry(args, index) {
+  if (args.binaryFixture && index === 0) return binaryFixtureFields();
+  if (args.zstdFixture && index === 0) return compressedFixtureFields('zstd');
+  if (args.lz4Fixture && index === 0) return compressedFixtureFields('lz4');
+  if (args.xzFixture && index === 0) return compressedFixtureFields('xz');
+  return defaultLiveFields(index);
+}
+
+function binaryFixtureFields() {
+  return [
+    { name: 'TEST_ID', value: 'binary-interoperability' },
+    { name: 'MESSAGE', value: 'binary interoperability' },
+    { name: 'PRIORITY', value: '6' },
+    { name: 'LIVE_SEQ', value: '000000' },
+    { name: 'BINARY_PAYLOAD', value: Buffer.from([0x00, 0x01, 0x02, 0x41, 0x0a, 0x7f, 0x80, 0xff]) },
+    { name: 'BINARY_MATCH', value: Buffer.from([0x61, 0x62, 0x63, 0x07, 0x64, 0x65, 0x66]) },
+    { name: 'BINARY_EMPTY', value: Buffer.from([]) },
+    { name: 'BINARY_COMPRESSIBLE', value: Buffer.alloc(256, 0x41) },
+  ];
+}
+
+function compressedFixtureFields(kind) {
+  const largePayload = patternedPayload();
+  return [
+    { name: 'TEST_ID', value: `${kind}-interoperability` },
+    { name: 'MESSAGE', value: `${kind} interoperability` },
+    { name: 'PRIORITY', value: '6' },
+    { name: 'LIVE_SEQ', value: '000000' },
+    { name: 'COMPRESSED_PAYLOAD', value: largePayload },
+    { name: 'COMPRESSED_MATCH', value: largePayload.subarray(0, 32) },
+  ];
+}
+
+function patternedPayload() {
+  const largePayload = Buffer.alloc(256);
+  for (let j = 0; j < largePayload.length; j++) largePayload[j] = (j % 26) + 0x41;
+  return largePayload;
+}
+
+function defaultLiveFields(index) {
+  return [
+    { name: 'MESSAGE', value: `live-${index.toString().padStart(6, '0')}` },
+    { name: 'PRIORITY', value: '6' },
+    { name: 'SYSLOG_IDENTIFIER', value: 'node-live-writer' },
+    { name: 'LIVE_SEQ', value: index.toString().padStart(6, '0') },
+  ];
 }
 
 main().catch((error) => {

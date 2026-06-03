@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 // Node.js reader-core benchmark command.
 
-import { readFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import {
   DirectoryReader,
@@ -13,6 +12,7 @@ import {
   SdJournalPrevious,
   SdJournalRestartData,
 } from '../src/index.js';
+import { processStatusKb } from './status_kb.js';
 
 const MASK64 = (1n << 64n) - 1n;
 
@@ -49,32 +49,6 @@ function checksumPayload(checksum, payload) {
     checksum ^= BigInt(payload[payload.length - 1]);
   }
   return checksum & MASK64;
-}
-
-function processStatusKb() {
-  let status;
-  try {
-    status = readFileSync('/proc/self/status', 'utf8');
-  } catch {
-    return {};
-  }
-  const wanted = new Set([
-    'VmSize', 'VmPeak', 'VmRSS', 'VmHWM', 'RssAnon', 'RssFile',
-    'RssShmem', 'VmData', 'VmStk', 'VmExe', 'VmLib', 'VmPTE',
-  ]);
-  const out = {};
-  for (const line of status.split('\n')) {
-    const idx = line.indexOf(':');
-    if (idx < 0) continue;
-    const key = line.slice(0, idx);
-    if (!wanted.has(key)) continue;
-    const parts = line.slice(idx + 1).trim().split(/\s+/);
-    if (parts.length > 0) {
-      const value = Number(parts[0]);
-      if (Number.isFinite(value)) out[`${key}_kb`] = value;
-    }
-  }
-  return out;
 }
 
 function advance(reader, direction) {
