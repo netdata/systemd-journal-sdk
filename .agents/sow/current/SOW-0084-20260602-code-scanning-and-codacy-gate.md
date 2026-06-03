@@ -2417,6 +2417,40 @@ Batch 40:
     passed.
   - `npm_config_cache=../.local/npm-cache npm test` in `node/` passed.
   - `git diff --check` passed.
+- Post-push scanner result for `5be8ed6`:
+  - GitHub CodeQL workflow passed for Python, Go, JavaScript/TypeScript, and
+    Rust.
+  - GitHub Codacy SARIF workflow passed.
+  - GitHub code scanning showed 189 current alerts for `5be8ed6`, down from
+    216 for `f1ca053`.
+  - Codacy Cloud export showed 8 quality issues and 0 security findings. The 8
+    issues were all file-size findings.
+
+Batch 41:
+
+- Scope: one-off Node scanner findings after GitHub/Codacy analyzed `5be8ed6`.
+- Evidence:
+  - GitHub current alerts for `5be8ed6` included 9 `ESLint8_no-empty`, 1
+    `ESLint8_no-constant-condition`, 1 `ESLint8_no-unsanitized_method`, and 1
+    `ESLint8_security-node_detect-unhandled-async-errors`.
+  - The dynamic import warning pointed to a fixed vendored WASM glue path in
+    `node/src/lib/xz-block.js`.
+  - The async-error rule source under the local Codacy dependency cache flags
+    async function declarations unless the function body contains an explicit
+    try/catch or inline awaited `.catch(...)`.
+- Changes:
+  - Replaced the fixed dynamic import in `xz-block.js` with a static ESM import
+    of the vendored WASM glue module.
+  - Added comments to best-effort cleanup catch blocks so swallowed cleanup
+    failures are explicit.
+  - Rewrote the verifier sealing loop to avoid a deliberate constant
+    condition.
+  - Added explicit async error handling to the Node live-writer test helper
+    without changing propagated errors.
+- Validation:
+  - `node --check node/internal/testcmd/livewriter.js node/src/lib/xz-block.js node/src/lib/reader.js node/src/lib/verify.js node/src/lib/directory-writer.js`
+    passed.
+  - `npm_config_cache=../.local/npm-cache npm test` in `node/` passed.
 
 Reviewer findings:
 
@@ -2487,8 +2521,8 @@ Follow-up mapping:
   - reconcile the user's observed 3056 UI count with the CLI-confirmed
     `master` count of 1502 quality issues after commit `99d2b08`;
   - group and triage the exported `master` cloud findings;
-  - push Batch 40 and verify GitHub CodeQL/Codacy SARIF no longer report the
-    fixed current-commit Python unused-global and Node unused-import findings;
+  - push Batch 41 and verify GitHub CodeQL/Codacy SARIF no longer report the
+    fixed current-commit one-off Node findings;
   - address any remaining current-commit Codacy findings that are not explained
     by stale cloud analysis or narrow generated-artifact exclusions;
   - run GitHub workflows after push and record CodeQL/Codacy results;

@@ -157,8 +157,12 @@ function readJournalFileForVerify(path) {
     return readFileSync(path);
   } finally {
     if (cleanupPath) {
-      try { unlinkSync(cleanupPath); } catch {}
-      try { rmdirSync(dirname(cleanupPath)); } catch {}
+      try { unlinkSync(cleanupPath); } catch {
+        // Best-effort cleanup while preserving the verification result.
+      }
+      try { rmdirSync(dirname(cleanupPath)); } catch {
+        // Best-effort cleanup while preserving the verification result.
+      }
     }
   }
 }
@@ -238,13 +242,14 @@ function verifySealed(data, header, seed, startEpoch, intervalUsec) {
   const context = createSealVerificationContext(data, header, seed);
   const state = createSealVerificationState(context.headerSize);
 
-  while (true) {
-    if (context.tailObjectOffset === 0n) break;
+  let reachedTailObject = context.tailObjectOffset === 0n;
+  while (!reachedTailObject) {
     const frame = readSealObjectFrame(data, context, state.offset);
     validateSealObjectFlags(frame, header);
     state.nObjects++;
     processSealedObject(data, header, context, state, frame, seed, startEpoch, intervalUsec);
-    if (BigInt(state.offset) === context.tailObjectOffset) break;
+    reachedTailObject = BigInt(state.offset) === context.tailObjectOffset;
+    if (reachedTailObject) break;
     state.offset += frame.alignedSizeNumber;
   }
 

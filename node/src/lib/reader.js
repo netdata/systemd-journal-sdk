@@ -77,8 +77,12 @@ export class FileReader {
       return new FileReader(buffer, header, path, cleanupPath);
     } catch (err) {
       if (cleanupPath) {
-        try { unlinkSync(cleanupPath); } catch {}
-        try { rmdirSync(dirname(cleanupPath)); } catch {}
+        try { unlinkSync(cleanupPath); } catch {
+          // Best-effort cleanup while preserving the original open failure.
+        }
+        try { rmdirSync(dirname(cleanupPath)); } catch {
+          // Best-effort cleanup while preserving the original open failure.
+        }
       }
       throw err;
     }
@@ -537,7 +541,9 @@ export class FileReader {
       try {
         const entry = this._readEntryAt(off);
         if (entry) for (const k of Object.keys(entry.fields)) fields.add(k);
-      } catch {}
+      } catch {
+        // Compatibility fallback skips corrupt entries that normal iteration cannot decode.
+      }
     }
     return fields;
   }
@@ -545,8 +551,12 @@ export class FileReader {
   close() {
     this._resetCachedEntryDataState();
     if (this.cleanupPath) {
-      try { unlinkSync(this.cleanupPath); } catch {}
-      try { rmdirSync(dirname(this.cleanupPath)); } catch {}
+      try { unlinkSync(this.cleanupPath); } catch {
+        // Best-effort cleanup on reader close.
+      }
+      try { rmdirSync(dirname(this.cleanupPath)); } catch {
+        // Best-effort cleanup on reader close.
+      }
       this.cleanupPath = null;
     }
     this.buffer = null;

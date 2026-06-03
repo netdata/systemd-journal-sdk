@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import createLZMA from '../../vendor/node-liblzma-wasm/liblzma.js';
 
 const LZMA_OK = 0;
 const LZMA_BUF_ERROR = 10;
@@ -8,13 +9,11 @@ const LZMA_PRESET_DEFAULT = 0;
 export const MAX_UNCOMPRESSED_DATA_OBJECT_SIZE = 768 * 1024 * 1024;
 
 const wasmUrl = new URL('../../vendor/node-liblzma-wasm/liblzma.wasm', import.meta.url);
-const wasmGlueUrl = new URL('../../vendor/node-liblzma-wasm/liblzma.js', import.meta.url);
 const wasmBytes = readFileSync(wasmUrl);
 const wasmBinary = wasmBytes.buffer.slice(
   wasmBytes.byteOffset,
   wasmBytes.byteOffset + wasmBytes.byteLength,
 );
-const { default: createLZMA } = await import(wasmGlueUrl.href);
 const wasmModule = await createLZMA({ wasmBinary });
 
 function checkedMalloc(size) {

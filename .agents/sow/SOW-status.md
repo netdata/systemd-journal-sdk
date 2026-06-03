@@ -176,7 +176,13 @@ Last updated: 2026-06-03
   compatibility re-exports, updated internal imports to use `writer_policy`
   directly, and removed Node unused imports while preserving public direct
   re-exports; focused Python checks, Node syntax checks, full Node tests, and
-  diff checks passed. Remaining work is to push Batch 40, verify
+  diff checks passed. Batch 40 was pushed as `5be8ed6`; CodeQL and Codacy
+  SARIF passed, GitHub current alerts dropped to 189, and Codacy Cloud showed 8
+  quality issues with 0 security findings. Batch 41 fixed one-off Node
+  scanner findings for empty cleanup catches, fixed dynamic import, verifier
+  constant-condition loop shape, and live-writer async error handling; Node
+  syntax checks and full Node tests passed. Remaining work is to push Batch 41,
+  verify
   Codacy/GitHub code scanning has analyzed the current commit instead of stale
   snapshots, decide or disposition the cross-language `0640` journal file
   permission finding, address residual current-commit findings, record final

@@ -166,12 +166,16 @@ function writerOptionsFromArgs(args) {
 
 async function appendLiveEntries(writer, args) {
   const realtimeBase = 1_700_001_000_000_000n;
-  for (let i = 0; i < args.entries; i++) {
-    writer.append(liveFieldsForEntry(args, i), {
-      realtimeUsec: realtimeBase + BigInt(i),
-      monotonicUsec: BigInt(i + 1),
-    });
-    await handleLiveAppendSideEffects(writer, args, i);
+  try {
+    for (let i = 0; i < args.entries; i++) {
+      writer.append(liveFieldsForEntry(args, i), {
+        realtimeUsec: realtimeBase + BigInt(i),
+        monotonicUsec: BigInt(i + 1),
+      });
+      await handleLiveAppendSideEffects(writer, args, i);
+    }
+  } catch (error) {
+    throw error;
   }
 }
 

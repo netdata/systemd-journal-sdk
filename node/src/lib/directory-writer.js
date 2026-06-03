@@ -432,7 +432,9 @@ export class Log {
           state.activeTailSeqnum = header.tail_entry_seqnum;
           state.activeHeadRealtime = header.head_entry_realtime;
         }
-      } catch {}
+      } catch {
+        // Ignore unreadable archives while choosing a recoverable active file.
+      }
     }
     return state;
   }
@@ -494,7 +496,9 @@ export class Log {
       const stat = statSync(state.activePath);
       state.totalBytes += this._retainedSize(state.activePath, stat.size);
       state.fileCount += 1;
-    } catch {}
+    } catch {
+      // Retention remains valid if the active file disappears between scans.
+    }
   }
 
   _deleteByMaxFiles(state) {
