@@ -71,10 +71,20 @@ This project has four separate layers. Keep them separate in every language:
    expose lock-enable options; callers acquire and release the lock helper
    separately around writer use.
 
-Core SDK runtime code must not depend on host-observation mechanisms.
-Prohibited sources are `/proc`, `/host/proc`, `/etc/machine-id`, platform
-registries, `sysctl`, `system_profiler`, `ps`, shell commands, and subprocess
-APIs. Tests, docs, and examples must use synthetic identities unless explicitly
+Core SDK runtime code must not read host identity or process state from these
+inputs:
+
+- `/proc`
+- `/host/proc`
+- `/etc/machine-id`
+- platform registries
+- `sysctl`
+- `system_profiler`
+- `ps`
+- shell commands
+- subprocess APIs
+
+Tests, docs, and examples must use synthetic identities unless explicitly
 testing an optional helper.
 
 ## SOW System
