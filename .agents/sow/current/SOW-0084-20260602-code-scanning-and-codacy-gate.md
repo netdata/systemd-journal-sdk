@@ -1123,6 +1123,14 @@ Complexity remediation batches:
 5. Re-export Codacy findings after each meaningful batch and keep the local
    Lizard inventory under `.local/` as the working ledger.
 
+Generated artifact disposition:
+
+- `rust/Cargo.lock` is generated dependency metadata. Refactoring it is
+  meaningless and would corrupt Cargo's lockfile contract. Codacy Cloud config
+  was imported from the current remote config with one additional exclude:
+  `rust/Cargo.lock`. The import preserved the 14 enabled tools and 1523 enabled
+  patterns, then Codacy reanalysis was requested.
+
 Reviewer findings:
 
 - Pending. The current SOW is not ready for terminal reviewer review because
