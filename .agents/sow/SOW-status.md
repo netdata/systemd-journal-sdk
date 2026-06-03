@@ -87,7 +87,12 @@ Last updated: 2026-06-03
   inventory to 56 critical findings. Remaining groups are
   `tests/interoperability`: 21, `tests/benchmarks`: 13,
   `tests/corpus_eval`: 12, `tests/systemd_matrix`: 6, and
-  `tests/vm_matrix`: 4.
+  `tests/vm_matrix`: 4. Batch 24 made all benchmark report/runner harness
+  files locally Lizard-clean, passed Python compile checks and CLI help smoke
+  checks for the touched benchmark entrypoints, and reduced the refreshed
+  local test-file Lizard inventory to 43 critical findings. Remaining groups
+  are `tests/interoperability`: 21, `tests/corpus_eval`: 12,
+  `tests/systemd_matrix`: 6, and `tests/vm_matrix`: 4.
   Remaining work is to continue complexity remediation, record final scanner
   results, and complete whole-SOW review.
 

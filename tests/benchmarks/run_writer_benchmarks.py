@@ -300,35 +300,28 @@ def quick_header_check(path: Path, *, compact: bool) -> dict[str, Any]:
 def one_measurement(
     language: str,
     base: list[str],
-    *,
+    args: argparse.Namespace,
     dataset: Path,
     output_dir: Path,
-    rows: int,
     repetition: int,
     warmup: bool,
-    final_state: str,
-    compact: bool,
-    max_size_bytes: int,
     env: dict[str, str],
-    verify: bool,
-    keep_journals: bool,
 ) -> dict[str, Any]:
     label = "warmup" if warmup else f"rep-{repetition}"
-    run_dir = output_dir / language / label
-    run_dir.mkdir(parents=True, exist_ok=True)
-    output = run_dir / "output.journal"
-    actual = final_journal_path(output, final_state, 1_700_000_000_000_000)
-    for path in {output, actual}:
-        path.unlink(missing_ok=True)
-
+    run_dir, output, actual = prepare_measurement_paths(
+        output_dir,
+        language,
+        label,
+        args.final_state,
+    )
     cmd = ingester_command(
         base,
         dataset=dataset,
         output=output,
-        final_state=final_state,
-        compact=compact,
+        final_state=args.final_state,
+        compact=not args.regular,
         language=language,
-        max_size_bytes=max_size_bytes,
+        max_size_bytes=args.max_size_bytes,
     )
     stats_path = run_dir / "time.json"
     result = timed_run(cmd, stats_path, env)
@@ -338,42 +331,101 @@ def one_measurement(
     file_size = journal_path.stat().st_size if journal_path.exists() else 0
     wall = float(stats.get("wall_seconds", 0.0) or 0.0)
     records = int(ingester.get("records", 0) or 0)
-    structure = quick_header_check(journal_path, compact=compact) if journal_path.exists() else {
+    structure = quick_header_check(journal_path, compact=not args.regular) if journal_path.exists() else {
         "status": "FAIL",
         "error": "journal file missing",
     }
-    verification = verify_journal(journal_path) if verify and journal_path.exists() and not warmup else None
+    verification = verify_journal(journal_path) if should_verify(args, warmup, journal_path) else None
 
-    item = {
-        "language": language,
-        "kind": "warmup" if warmup else "measurement",
-        "repetition": repetition,
-        "command": cmd,
-        "returncode": result.returncode,
-        "stdout_tail": result.stdout[-1000:],
-        "stderr_tail": result.stderr[-1000:],
-        "ingester": ingester,
-        "time": stats,
-        "records": records,
-        "expected_records": rows,
-        "rows_per_second": records / wall if wall > 0 else None,
-        "bytes_per_second": file_size / wall if wall > 0 else None,
-        "journal_path": str(journal_path) if keep_journals else None,
-        "journal_size_bytes": file_size,
-        "structure": structure,
-        "verify": verification,
+    item = writer_measurement_item(
+        {
+            "language": language,
+            "repetition": repetition,
+            "warmup": warmup,
+            "command": cmd,
+            "result": result,
+            "ingester": ingester,
+            "stats": stats,
+            "records": records,
+            "expected_records": args.rows,
+            "wall": wall,
+            "journal_path": journal_path,
+            "file_size": file_size,
+            "keep_journals": args.keep_journals,
+            "structure": structure,
+            "verification": verification,
+        }
+    )
+
+    if not args.keep_journals:
+        cleanup_journal_paths(output, actual)
+    return item
+
+
+def should_verify(args: argparse.Namespace, warmup: bool, journal_path: Path) -> bool:
+    return not args.skip_verify and not warmup and journal_path.exists()
+
+
+def prepare_measurement_paths(
+    output_dir: Path,
+    language: str,
+    label: str,
+    final_state: str,
+) -> tuple[Path, Path, Path]:
+    run_dir = output_dir / language / label
+    run_dir.mkdir(parents=True, exist_ok=True)
+    output = run_dir / "output.journal"
+    actual = final_journal_path(output, final_state, 1_700_000_000_000_000)
+    cleanup_journal_paths(output, actual)
+    return run_dir, output, actual
+
+
+def writer_measurement_item(data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "language": data["language"],
+        "kind": "warmup" if data["warmup"] else "measurement",
+        "repetition": data["repetition"],
+        "command": data["command"],
+        "returncode": data["result"].returncode,
+        "stdout_tail": data["result"].stdout[-1000:],
+        "stderr_tail": data["result"].stderr[-1000:],
+        "ingester": data["ingester"],
+        "time": data["stats"],
+        "records": data["records"],
+        "expected_records": data["expected_records"],
+        "rows_per_second": writer_rows_per_second(data),
+        "bytes_per_second": writer_bytes_per_second(data),
+        "journal_path": str(data["journal_path"]) if data["keep_journals"] else None,
+        "journal_size_bytes": data["file_size"],
+        "structure": data["structure"],
+        "verify": data["verification"],
         "status": "PASS"
-        if result.returncode == 0
-        and records == rows
-        and structure["status"] == "PASS"
-        and (verification is None or verification["returncode"] == 0)
+        if writer_measurement_passed(data)
         else "FAIL",
     }
 
-    if not keep_journals:
-        for path in {output, actual}:
-            path.unlink(missing_ok=True)
-    return item
+
+def writer_rows_per_second(data: dict[str, Any]) -> float | None:
+    return data["records"] / data["wall"] if data["wall"] > 0 else None
+
+
+def writer_bytes_per_second(data: dict[str, Any]) -> float | None:
+    return data["file_size"] / data["wall"] if data["wall"] > 0 else None
+
+
+def writer_measurement_passed(data: dict[str, Any]) -> bool:
+    verification = data["verification"]
+    return (
+        data["result"].returncode == 0
+        and data["records"] == data["expected_records"]
+        and data["structure"]["status"] == "PASS"
+        and (verification is None or verification["returncode"] == 0)
+    )
+
+
+def cleanup_journal_paths(*paths: Path) -> None:
+    for path in set(paths):
+        path.unlink(missing_ok=True)
 
 
 def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -448,7 +500,7 @@ def environment_report(env: dict[str, str], output_dir: Path) -> dict[str, Any]:
     }
 
 
-def main() -> int:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--languages", nargs="+", choices=LANGUAGES, default=list(LANGUAGES))
     parser.add_argument("--rows", type=int, default=100_000)
@@ -462,64 +514,72 @@ def main() -> int:
     parser.add_argument("--skip-verify", action="store_true")
     parser.add_argument("--keep-journals", action="store_true")
     parser.add_argument("--max-size-bytes", type=int, default=DEFAULT_MAX_SIZE_BYTES)
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    env = build_env()
+
+def compact_timestamp_id() -> str:
     now = datetime.now(timezone.utc)
-    run_id = (
+    return (
         f"{now.year:04d}{now.month:02d}{now.day:02d}T"
         f"{now.hour:02d}{now.minute:02d}{now.second:02d}Z"
     )
-    profile = "regular-none-fss-off" if args.regular else "compact-none-fss-off"
-    out = args.output_dir / f"{profile}-{run_id}"
-    out.mkdir(parents=True, exist_ok=True)
 
-    dataset = ensure_performance_corpus(args.dataset, args.rows, args.regenerate_dataset)
+
+def writer_profile(args: argparse.Namespace) -> str:
+    return "regular-none-fss-off" if args.regular else "compact-none-fss-off"
+
+
+def build_all_tools(args: argparse.Namespace, env: dict[str, str]) -> dict[str, dict[str, Any]]:
     tools = {}
     for language in args.languages:
         base, metadata = build_tool(language, env)
         tools[language] = {"command": base, "metadata": metadata}
+    return tools
 
+
+def run_writer_measurements(
+    args: argparse.Namespace,
+    tools: dict[str, dict[str, Any]],
+    dataset: Path,
+    output_dir: Path,
+    env: dict[str, str],
+) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for language in args.languages:
         base = tools[language]["command"]
-        for warmup in range(args.warmups):
-            results.append(
-                one_measurement(
-                    language,
-                    base,
-                    dataset=args.dataset,
-                    output_dir=out,
-                    rows=args.rows,
-                    repetition=warmup + 1,
-                    warmup=True,
-                    final_state=args.final_state,
-                    compact=not args.regular,
-                    max_size_bytes=args.max_size_bytes,
-                    env=env,
-                    verify=False,
-                    keep_journals=False,
-                )
-            )
-        for repetition in range(args.repetitions):
-            results.append(
-                one_measurement(
-                    language,
-                    base,
-                    dataset=args.dataset,
-                    output_dir=out,
-                    rows=args.rows,
-                    repetition=repetition + 1,
-                    warmup=False,
-                    final_state=args.final_state,
-                    compact=not args.regular,
-                    max_size_bytes=args.max_size_bytes,
-                    env=env,
-                    verify=not args.skip_verify,
-                    keep_journals=args.keep_journals,
-                )
-            )
+        results.extend(run_language_measurements(args, language, base, dataset, output_dir, env))
+    return results
 
+
+def run_language_measurements(
+    args: argparse.Namespace,
+    language: str,
+    base: list[str],
+    dataset: Path,
+    output_dir: Path,
+    env: dict[str, str],
+) -> list[dict[str, Any]]:
+    results = []
+    for warmup in range(args.warmups):
+        results.append(
+            one_measurement(language, base, args, dataset, output_dir, warmup + 1, True, env)
+        )
+    for repetition in range(args.repetitions):
+        results.append(
+            one_measurement(language, base, args, dataset, output_dir, repetition + 1, False, env)
+        )
+    return results
+
+
+def writer_report(
+    args: argparse.Namespace,
+    profile: str,
+    dataset: Path,
+    output_dir: Path,
+    env: dict[str, str],
+    tools: dict[str, dict[str, Any]],
+    results: list[dict[str, Any]],
+) -> dict[str, Any]:
     report = {
         "benchmark": "writer-ingestion",
         "profile": profile,
@@ -544,10 +604,39 @@ def main() -> int:
     failures = [r for r in results if r["kind"] == "measurement" and r["status"] != "PASS"]
     report["status"] = "PASS" if not failures else "FAIL"
     report["failures"] = failures
+    return report
 
-    report_path = out / "report.json"
+
+def write_report(output_dir: Path, report: dict[str, Any]) -> Path:
+    report_path = output_dir / "report.json"
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
-    print(json.dumps({"status": report["status"], "report": str(report_path), "summary": report["summary"]}, indent=2, sort_keys=True))
+    return report_path
+
+
+def print_report_summary(report: dict[str, Any], report_path: Path) -> None:
+    print(
+        json.dumps(
+            {"status": report["status"], "report": str(report_path), "summary": report["summary"]},
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
+def main() -> int:
+    args = parse_args()
+    env = build_env()
+    profile = writer_profile(args)
+    out = args.output_dir / f"{profile}-{compact_timestamp_id()}"
+    out.mkdir(parents=True, exist_ok=True)
+
+    dataset = ensure_performance_corpus(args.dataset, args.rows, args.regenerate_dataset)
+    tools = build_all_tools(args, env)
+    results = run_writer_measurements(args, tools, dataset, out, env)
+    report = writer_report(args, profile, dataset, out, env, tools, results)
+    report_path = write_report(out, report)
+    print_report_summary(report, report_path)
+    failures = report["failures"]
     return 0 if not failures else 1
 
 

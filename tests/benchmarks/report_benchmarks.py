@@ -100,39 +100,11 @@ def resolve_artifact(path: Path, seen: set[Path] | None = None) -> tuple[Path, P
 def load_run(path: Path, label: str) -> BenchmarkRun:
     artifact_path, manifest_path = resolve_artifact(path)
     artifact = load_json(artifact_path)
-    manifest: dict[str, Any] = {}
-    kind: str
-    summary: Any
 
     if artifact_path.name == "report.json":
-        if not isinstance(artifact, dict):
-            raise SystemExit(f"writer report must be a JSON object: {artifact_path}")
-        benchmark = artifact.get("benchmark")
-        if benchmark != "writer-core":
-            raise SystemExit(f"unsupported report benchmark {benchmark!r} in {artifact_path}")
-        environment = artifact.get("environment", {})
-        if not isinstance(environment, dict):
-            environment = {}
-        parameters = artifact.get("parameters", {})
-        if not isinstance(parameters, dict):
-            parameters = {}
-        kind = "writer-core"
-        summary = artifact.get("summary", {})
-        manifest = {
-            "created_at": environment.get("timestamp_utc") or artifact_path.parent.name,
-            "parameters": parameters,
-            "environment": environment,
-            "status": artifact.get("status", ""),
-        }
+        kind, summary, manifest = load_writer_core_run(artifact_path, artifact)
     else:
-        if not isinstance(artifact, list):
-            raise SystemExit(f"reader summary must be a JSON array: {artifact_path}")
-        kind = "reader-core"
-        summary = artifact
-        if manifest_path is not None and manifest_path.exists():
-            manifest = load_json(manifest_path)
-            if not isinstance(manifest, dict):
-                raise SystemExit(f"manifest must be a JSON object: {manifest_path}")
+        kind, summary, manifest = load_reader_core_run(artifact_path, manifest_path, artifact)
 
     return BenchmarkRun(
         label=label,
@@ -144,6 +116,45 @@ def load_run(path: Path, label: str) -> BenchmarkRun:
         summary=summary,
         manifest=manifest,
     )
+
+
+def load_writer_core_run(
+    artifact_path: Path,
+    artifact: Any,
+) -> tuple[str, Any, dict[str, Any]]:
+    if not isinstance(artifact, dict):
+        raise SystemExit(f"writer report must be a JSON object: {artifact_path}")
+    benchmark = artifact.get("benchmark")
+    if benchmark != "writer-core":
+        raise SystemExit(f"unsupported report benchmark {benchmark!r} in {artifact_path}")
+    environment = dict_or_empty(artifact.get("environment"))
+    parameters = dict_or_empty(artifact.get("parameters"))
+    manifest = {
+        "created_at": environment.get("timestamp_utc") or artifact_path.parent.name,
+        "parameters": parameters,
+        "environment": environment,
+        "status": artifact.get("status", ""),
+    }
+    return "writer-core", artifact.get("summary", {}), manifest
+
+
+def load_reader_core_run(
+    artifact_path: Path,
+    manifest_path: Path | None,
+    artifact: Any,
+) -> tuple[str, Any, dict[str, Any]]:
+    if not isinstance(artifact, list):
+        raise SystemExit(f"reader summary must be a JSON array: {artifact_path}")
+    manifest: dict[str, Any] = {}
+    if manifest_path is not None and manifest_path.exists():
+        manifest = load_json(manifest_path)
+        if not isinstance(manifest, dict):
+            raise SystemExit(f"manifest must be a JSON object: {manifest_path}")
+    return "reader-core", artifact, manifest
+
+
+def dict_or_empty(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
 def fmt_int(value: Any) -> str:
@@ -787,6 +798,23 @@ def render_report(
     conclusion: str,
     conclusion_note: str,
 ) -> str:
+    primary = validate_report_inputs(run, before, after, conclusion)
+
+    out = [f"# {title}", ""]
+    out.extend(render_identity(run, before, after))
+    out.extend(render_configuration(run, after))
+    out.extend(render_primary_results(primary, before, after))
+    out.extend(render_conclusion(conclusion, conclusion_note))
+    out.extend(render_raw_evidence(run, before, after))
+    return "\n".join(out).rstrip() + "\n"
+
+
+def validate_report_inputs(
+    run: BenchmarkRun | None,
+    before: BenchmarkRun | None,
+    after: BenchmarkRun | None,
+    conclusion: str,
+) -> BenchmarkRun:
     if conclusion not in CONCLUSION_CHOICES:
         raise SystemExit(f"unsupported conclusion label: {conclusion}")
     primary = after or run
@@ -798,11 +826,15 @@ def render_report(
         raise SystemExit("--after requires --before")
     if before is not None and before.kind != after.kind:
         raise SystemExit(f"before/after benchmark kinds differ: {before.kind} vs {after.kind}")
+    return primary
 
-    out = [f"# {title}", ""]
-    out.extend(render_identity(run, before, after))
-    out.extend(render_configuration(run, after))
 
+def render_primary_results(
+    primary: BenchmarkRun,
+    before: BenchmarkRun | None,
+    after: BenchmarkRun | None,
+) -> list[str]:
+    out: list[str] = []
     if primary.kind == "reader-core":
         out.extend(render_reader_production(primary))
         out.extend(render_reader_diagnostics(primary))
@@ -814,19 +846,19 @@ def render_report(
             out.extend(render_writer_change(before, after))
     else:
         raise SystemExit(f"unsupported benchmark kind: {primary.kind}")
+    return out
 
-    out.extend(
-        [
-            "## Conclusion",
-            "",
-            f"- Verdict: {CONCLUSION_CHOICES[conclusion]}",
-        ]
-    )
+
+def render_conclusion(conclusion: str, conclusion_note: str) -> list[str]:
+    out = [
+        "## Conclusion",
+        "",
+        f"- Verdict: {CONCLUSION_CHOICES[conclusion]}",
+    ]
     if conclusion_note:
         out.append(f"- Note: {conclusion_note}")
     out.append("")
-    out.extend(render_raw_evidence(run, before, after))
-    return "\n".join(out).rstrip() + "\n"
+    return out
 
 
 def parse_args() -> argparse.Namespace:

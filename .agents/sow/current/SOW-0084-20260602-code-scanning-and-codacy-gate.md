@@ -1801,6 +1801,38 @@ Complexity remediation evidence:
     `tests/interoperability`: 21, `tests/benchmarks`: 13,
     `tests/corpus_eval`: 12, `tests/systemd_matrix`: 6, and
     `tests/vm_matrix`: 4.
+- Batch 24, benchmark harness findings:
+  - Refactored `tests/benchmarks/report_benchmarks.py` by separating writer
+    and reader artifact loading, report input validation, primary-result
+    rendering, and conclusion rendering.
+  - Refactored `tests/benchmarks/run_reader_core_benchmarks.py` by extracting
+    checksum reference/mismatch helpers plus argument parsing, run-directory
+    setup, fixture setup, case selection, per-iteration execution, progress
+    printing, artifact writing, and latest-link update helpers.
+  - Refactored `tests/benchmarks/run_writer_benchmarks.py` by narrowing the
+    measurement API, extracting measurement path setup, pass/fail calculation,
+    report construction, report writing, and language iteration helpers.
+  - Refactored `tests/benchmarks/run_writer_core_benchmarks.py` by narrowing
+    the Rust API byte-identity helper and measurement API, extracting
+    per-mode byte-identity measurement, pass/fail calculation, summary
+    aggregation, profile construction, language iteration, compare execution,
+    failure collection, and report writing helpers.
+  - Refactored `tests/benchmarks/run_writer_directory_benchmarks.py` by
+    narrowing the directory measurement API and extracting directory path
+    setup, command construction, driver execution, file discovery, structure
+    checks, pass/fail calculation, summary aggregation, profile construction,
+    language iteration, failure collection, and report writing helpers.
+  - `python3 -m py_compile` passed for all five touched benchmark files.
+  - CLI help smoke checks passed for all five touched benchmark entrypoints:
+    `report_benchmarks.py`, `run_reader_core_benchmarks.py`,
+    `run_writer_benchmarks.py`, `run_writer_core_benchmarks.py`, and
+    `run_writer_directory_benchmarks.py`.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for the five
+    touched benchmark files.
+  - Refreshed local all-tracked test-file Lizard inventory now reports 43
+    critical findings, down from 56 after Batch 23. Remaining groups are:
+    `tests/interoperability`: 21, `tests/corpus_eval`: 12,
+    `tests/systemd_matrix`: 6, and `tests/vm_matrix`: 4.
 
 Reviewer findings:
 

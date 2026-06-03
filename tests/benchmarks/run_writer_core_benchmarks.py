@@ -258,79 +258,128 @@ def sha256_file(path: Path) -> str:
 
 def rust_api_mode_byte_identity(
     base: list[str],
-    *,
+    args: argparse.Namespace,
     output_dir: Path,
-    rows: int,
-    journal_format: str,
-    final_state: str,
-    max_size_bytes: int,
-    rust_trusted_unique_payloads: bool,
     live_publish_every_entries: int,
-    rust_mmap_strategy: str,
     env: dict[str, str],
-    keep_journals: bool,
-    verify: bool,
 ) -> dict[str, Any]:
     compare_dir = output_dir / "rust-api-mode-byte-identity"
     compare_dir.mkdir(parents=True, exist_ok=True)
     measurements: list[dict[str, Any]] = []
 
     for mode in ("raw-payload", "structured-field"):
-        output = compare_dir / f"{mode}.journal"
-        output.unlink(missing_ok=True)
-        cmd = bench_command(
-            base,
-            language="rust",
-            output=output,
-            rows=rows,
-            journal_format=journal_format,
-            final_state=final_state,
-            max_size_bytes=max_size_bytes,
-            api_mode=mode,
-            rust_trusted_unique_payloads=rust_trusted_unique_payloads,
-            live_publish_every_entries=live_publish_every_entries,
-            rust_mmap_strategy=rust_mmap_strategy,
-        )
-        result = run(cmd, env=env, timeout=1800)
-        driver = parse_driver_result(result.stdout)
-        journal_path = Path(driver.get("journal_path") or output)
-        exists = journal_path.exists()
-        structure = (
-            quick_header_check(journal_path, compact=journal_format == "compact")
-            if exists
-            else {"status": "FAIL", "error": "journal file missing"}
-        )
-        verification = verify_journal(journal_path) if verify and exists else None
-        records = int(driver.get("records", 0) or 0)
-        errors = list(driver.get("errors", []) or [])
-        status = (
-            "PASS"
-            if result.returncode == 0
-            and records == rows
-            and not errors
-            and structure["status"] == "PASS"
-            and (verification is None or verification["returncode"] == 0)
-            else "FAIL"
-        )
         measurements.append(
-            {
-                "api_mode": mode,
-                "command": cmd,
-                "returncode": result.returncode,
-                "stdout_tail": result.stdout[-1000:],
-                "stderr_tail": result.stderr[-1000:],
-                "driver": driver,
-                "records": records,
-                "expected_records": rows,
-                "journal_path": str(journal_path) if keep_journals else None,
-                "journal_size_bytes": journal_path.stat().st_size if exists else 0,
-                "sha256": sha256_file(journal_path) if exists else None,
-                "structure": structure,
-                "verify": verification,
-                "status": status,
-            }
+            rust_api_mode_measurement(
+                base,
+                args,
+                compare_dir,
+                mode,
+                live_publish_every_entries,
+                env,
+            )
         )
 
+    status, errors = rust_api_identity_status(measurements)
+    cleanup_rust_api_identity_outputs(compare_dir, measurements, args.keep_journals)
+    return {
+        "kind": "rust-api-mode-byte-identity",
+        "status": status,
+        "rows": args.rows,
+        "fields_per_row": 32,
+        "format": args.format,
+        "final_state": args.final_state,
+        "max_size_bytes": args.max_size_bytes,
+        "trusted_unique_payloads": args.rust_trusted_unique_payloads,
+        "live_publish_every_entries": live_publish_every_entries,
+        "mmap_strategy": args.rust_mmap_strategy,
+        "measurements": measurements,
+        "errors": errors,
+    }
+
+
+def rust_api_mode_measurement(
+    base: list[str],
+    args: argparse.Namespace,
+    compare_dir: Path,
+    mode: str,
+    live_publish_every_entries: int,
+    env: dict[str, str],
+) -> dict[str, Any]:
+    output = compare_dir / f"{mode}.journal"
+    output.unlink(missing_ok=True)
+    cmd = bench_command(
+        base,
+        language="rust",
+        output=output,
+        rows=args.rows,
+        journal_format=args.format,
+        final_state=args.final_state,
+        max_size_bytes=args.max_size_bytes,
+        api_mode=mode,
+        rust_trusted_unique_payloads=args.rust_trusted_unique_payloads,
+        live_publish_every_entries=live_publish_every_entries,
+        rust_mmap_strategy=args.rust_mmap_strategy,
+    )
+    result = run(cmd, env=env, timeout=1800)
+    driver = parse_driver_result(result.stdout)
+    journal_path = Path(driver.get("journal_path") or output)
+    return rust_api_mode_result(args, mode, cmd, result, driver, journal_path)
+
+
+def rust_api_mode_result(
+    args: argparse.Namespace,
+    mode: str,
+    cmd: list[str],
+    result: subprocess.CompletedProcess[str],
+    driver: dict[str, Any],
+    journal_path: Path,
+) -> dict[str, Any]:
+    exists = journal_path.exists()
+    structure = (
+        quick_header_check(journal_path, compact=args.format == "compact")
+        if exists
+        else {"status": "FAIL", "error": "journal file missing"}
+    )
+    verification = verify_journal(journal_path) if not args.skip_verify and exists else None
+    records = int(driver.get("records", 0) or 0)
+    errors = list(driver.get("errors", []) or [])
+    return {
+        "api_mode": mode,
+        "command": cmd,
+        "returncode": result.returncode,
+        "stdout_tail": result.stdout[-1000:],
+        "stderr_tail": result.stderr[-1000:],
+        "driver": driver,
+        "records": records,
+        "expected_records": args.rows,
+        "journal_path": str(journal_path) if args.keep_journals else None,
+        "journal_size_bytes": journal_path.stat().st_size if exists else 0,
+        "sha256": sha256_file(journal_path) if exists else None,
+        "structure": structure,
+        "verify": verification,
+        "status": rust_api_mode_status(result, records, args.rows, errors, structure, verification),
+    }
+
+
+def rust_api_mode_status(
+    result: subprocess.CompletedProcess[str],
+    records: int,
+    expected_records: int,
+    errors: list[Any],
+    structure: dict[str, Any],
+    verification: dict[str, Any] | None,
+) -> str:
+    passed = (
+        result.returncode == 0
+        and records == expected_records
+        and not errors
+        and structure["status"] == "PASS"
+        and (verification is None or verification["returncode"] == 0)
+    )
+    return "PASS" if passed else "FAIL"
+
+
+def rust_api_identity_status(measurements: list[dict[str, Any]]) -> tuple[str, list[str]]:
     raw = next(item for item in measurements if item["api_mode"] == "raw-payload")
     structured = next(item for item in measurements if item["api_mode"] == "structured-field")
     status = "PASS"
@@ -344,46 +393,30 @@ def rust_api_mode_byte_identity(
     if raw["sha256"] != structured["sha256"]:
         status = "FAIL"
         errors.append("raw-payload and structured-field output hashes differ")
+    return status, errors
 
-    if not keep_journals:
-        for item in measurements:
-            path = Path(item["driver"].get("journal_path") or compare_dir / f"{item['api_mode']}.journal")
-            path.unlink(missing_ok=True)
 
-    return {
-        "kind": "rust-api-mode-byte-identity",
-        "status": status,
-        "rows": rows,
-        "fields_per_row": 32,
-        "format": journal_format,
-        "final_state": final_state,
-        "max_size_bytes": max_size_bytes,
-        "trusted_unique_payloads": rust_trusted_unique_payloads,
-        "live_publish_every_entries": live_publish_every_entries,
-        "mmap_strategy": rust_mmap_strategy,
-        "measurements": measurements,
-        "errors": errors,
-    }
+def cleanup_rust_api_identity_outputs(
+    compare_dir: Path,
+    measurements: list[dict[str, Any]],
+    keep_journals: bool,
+) -> None:
+    if keep_journals:
+        return
+    for item in measurements:
+        path = Path(item["driver"].get("journal_path") or compare_dir / f"{item['api_mode']}.journal")
+        path.unlink(missing_ok=True)
 
 
 def one_measurement(
     language: str,
     base: list[str],
-    *,
+    args: argparse.Namespace,
     output_dir: Path,
-    rows: int,
     repetition: int,
     warmup: bool,
-    journal_format: str,
-    final_state: str,
-    max_size_bytes: int,
-    api_mode: str,
-    rust_trusted_unique_payloads: bool,
     live_publish_every_entries: int,
-    rust_mmap_strategy: str,
     env: dict[str, str],
-    verify: bool,
-    keep_journals: bool,
 ) -> dict[str, Any]:
     label = "warmup" if warmup else f"rep-{repetition}"
     run_dir = output_dir / language / label
@@ -395,14 +428,14 @@ def one_measurement(
         base,
         language=language,
         output=output,
-        rows=rows,
-        journal_format=journal_format,
-        final_state=final_state,
-        max_size_bytes=max_size_bytes,
-        api_mode=api_mode,
-        rust_trusted_unique_payloads=rust_trusted_unique_payloads,
+        rows=args.rows,
+        journal_format=args.format,
+        final_state=args.final_state,
+        max_size_bytes=args.max_size_bytes,
+        api_mode=args.api_mode,
+        rust_trusted_unique_payloads=args.rust_trusted_unique_payloads,
         live_publish_every_entries=live_publish_every_entries,
-        rust_mmap_strategy=rust_mmap_strategy,
+        rust_mmap_strategy=args.rust_mmap_strategy,
     )
     stats_path = run_dir / "time.json"
     result = timed_run(cmd, stats_path, env)
@@ -412,96 +445,160 @@ def one_measurement(
     file_size = journal_path.stat().st_size if journal_path.exists() else 0
     records = int(driver.get("records", 0) or 0)
     errors = list(driver.get("errors", []) or [])
-    structure = quick_header_check(journal_path, compact=journal_format == "compact") if journal_path.exists() else {
+    structure = quick_header_check(journal_path, compact=args.format == "compact") if journal_path.exists() else {
         "status": "FAIL",
         "error": "journal file missing",
     }
-    verification = verify_journal(journal_path) if verify and journal_path.exists() and not warmup else None
+    verification = verify_journal(journal_path) if should_verify(args, warmup, journal_path) else None
     append_seconds = float(driver.get("append_seconds", 0.0) or 0.0)
     append_rate = float(driver.get("append_rows_per_second", 0.0) or 0.0)
     process_wall = float(stats.get("process_wall_seconds", 0.0) or 0.0)
 
-    item = {
-        "language": language,
-        "kind": "warmup" if warmup else "measurement",
-        "repetition": repetition,
-        "command": cmd,
-        "returncode": result.returncode,
-        "stdout_tail": result.stdout[-1000:],
-        "stderr_tail": result.stderr[-1000:],
-        "driver": driver,
-        "process_time": stats,
-        "records": records,
-        "expected_records": rows,
-        "append_seconds": append_seconds,
-        "append_rows_per_second": append_rate,
-        "process_rows_per_second": records / process_wall if process_wall > 0 else None,
-        "journal_path": str(journal_path) if keep_journals else None,
-        "journal_size_bytes": file_size,
-        "structure": structure,
-        "verify": verification,
+    item = writer_core_measurement_item(
+        {
+            "language": language,
+            "repetition": repetition,
+            "warmup": warmup,
+            "command": cmd,
+            "result": result,
+            "driver": driver,
+            "stats": stats,
+            "records": records,
+            "expected_records": args.rows,
+            "append_seconds": append_seconds,
+            "append_rate": append_rate,
+            "process_wall": process_wall,
+            "journal_path": journal_path,
+            "file_size": file_size,
+            "keep_journals": args.keep_journals,
+            "structure": structure,
+            "verification": verification,
+            "errors": errors,
+        }
+    )
+
+    cleanup_writer_core_output(output, journal_path, args.keep_journals)
+    return item
+
+
+def should_verify(args: argparse.Namespace, warmup: bool, journal_path: Path) -> bool:
+    return not args.skip_verify and not warmup and journal_path.exists()
+
+
+def writer_core_measurement_item(data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "language": data["language"],
+        "kind": "warmup" if data["warmup"] else "measurement",
+        "repetition": data["repetition"],
+        "command": data["command"],
+        "returncode": data["result"].returncode,
+        "stdout_tail": data["result"].stdout[-1000:],
+        "stderr_tail": data["result"].stderr[-1000:],
+        "driver": data["driver"],
+        "process_time": data["stats"],
+        "records": data["records"],
+        "expected_records": data["expected_records"],
+        "append_seconds": data["append_seconds"],
+        "append_rows_per_second": data["append_rate"],
+        "process_rows_per_second": process_rows_per_second(data),
+        "journal_path": str(data["journal_path"]) if data["keep_journals"] else None,
+        "journal_size_bytes": data["file_size"],
+        "structure": data["structure"],
+        "verify": data["verification"],
         "status": "PASS"
-        if result.returncode == 0
-        and records == rows
-        and not errors
-        and structure["status"] == "PASS"
-        and (verification is None or verification["returncode"] == 0)
+        if writer_core_measurement_passed(data)
         else "FAIL",
     }
 
-    if not keep_journals:
-        output.unlink(missing_ok=True)
-        if journal_path != output:
-            journal_path.unlink(missing_ok=True)
-    return item
+
+def process_rows_per_second(data: dict[str, Any]) -> float | None:
+    process_wall = data["process_wall"]
+    return data["records"] / process_wall if process_wall > 0 else None
+
+
+def writer_core_measurement_passed(data: dict[str, Any]) -> bool:
+    verification = data["verification"]
+    return (
+        data["result"].returncode == 0
+        and data["records"] == data["expected_records"]
+        and not data["errors"]
+        and data["structure"]["status"] == "PASS"
+        and (verification is None or verification["returncode"] == 0)
+    )
+
+
+def cleanup_writer_core_output(output: Path, journal_path: Path, keep_journals: bool) -> None:
+    if keep_journals:
+        return
+    output.unlink(missing_ok=True)
+    if journal_path != output:
+        journal_path.unlink(missing_ok=True)
 
 
 def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
     summary: dict[str, Any] = {}
     for language in LANGUAGES:
-        rows = [
-            r
-            for r in results
-            if r["language"] == language and r["kind"] == "measurement" and r["status"] == "PASS"
-        ]
+        rows = passing_measurements(results, language)
         if not rows:
             continue
-        append_rates = [float(r["append_rows_per_second"]) for r in rows]
-        process_rates = [
-            float(r["process_rows_per_second"])
-            for r in rows
-            if r["process_rows_per_second"] is not None
-        ]
-        sizes = [int(r["journal_size_bytes"]) for r in rows]
-        api_modes = sorted({str(r["driver"].get("api_mode", "unknown")) for r in rows})
-        live_publication = sorted({str(r["driver"].get("live_publication", "unknown")) for r in rows})
-        live_publish_every_entries = sorted(
-            {int(r["driver"].get("live_publish_every_entries", -1) or 0) for r in rows}
-        )
-        mmap_strategies = sorted({str(r["driver"].get("mmap_strategy", "unknown")) for r in rows})
-        data_buckets = sorted({int(r["driver"].get("data_hash_table_buckets", 0) or 0) for r in rows})
-        field_buckets = sorted({int(r["driver"].get("field_hash_table_buckets", 0) or 0) for r in rows})
-        max_sizes = sorted({int(r["driver"].get("max_size_bytes", 0) or 0) for r in rows})
-        summary[language] = {
-            "measurements": len(rows),
-            "append_rows_per_second_min": min(append_rates),
-            "append_rows_per_second_median": statistics.median(append_rates),
-            "append_rows_per_second_max": max(append_rates),
-            "process_rows_per_second_median": statistics.median(process_rates) if process_rates else None,
-            "journal_size_bytes_median": statistics.median(sizes),
-            "api_modes": api_modes,
-            "live_publication": live_publication,
-            "live_publish_every_entries": live_publish_every_entries,
-            "mmap_strategies": mmap_strategies,
-            "data_hash_table_buckets": data_buckets,
-            "field_hash_table_buckets": field_buckets,
-            "max_size_bytes": max_sizes,
-        }
+        summary[language] = summarize_language(rows)
     systemd_rate = summary.get("systemd", {}).get("append_rows_per_second_median")
     if systemd_rate:
-        for item in summary.values():
-            item["systemd_append_ratio_median"] = item["append_rows_per_second_median"] / systemd_rate
+        add_systemd_ratios(summary, systemd_rate)
     return summary
+
+
+def passing_measurements(results: list[dict[str, Any]], language: str) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in results
+        if row["language"] == language and row["kind"] == "measurement" and row["status"] == "PASS"
+    ]
+
+
+def summarize_language(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    append_rates = [float(row["append_rows_per_second"]) for row in rows]
+    process_rates = [
+        float(row["process_rows_per_second"])
+        for row in rows
+        if row["process_rows_per_second"] is not None
+    ]
+    sizes = [int(row["journal_size_bytes"]) for row in rows]
+    summary = {
+        "measurements": len(rows),
+        "append_rows_per_second_min": min(append_rates),
+        "append_rows_per_second_median": statistics.median(append_rates),
+        "append_rows_per_second_max": max(append_rates),
+        "process_rows_per_second_median": statistics.median(process_rates) if process_rates else None,
+        "journal_size_bytes_median": statistics.median(sizes),
+    }
+    summary.update(driver_field_summary(rows))
+    return summary
+
+
+def driver_field_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "api_modes": sorted_driver_strings(rows, "api_mode"),
+        "live_publication": sorted_driver_strings(rows, "live_publication"),
+        "live_publish_every_entries": sorted_driver_ints(rows, "live_publish_every_entries", -1),
+        "mmap_strategies": sorted_driver_strings(rows, "mmap_strategy"),
+        "data_hash_table_buckets": sorted_driver_ints(rows, "data_hash_table_buckets", 0),
+        "field_hash_table_buckets": sorted_driver_ints(rows, "field_hash_table_buckets", 0),
+        "max_size_bytes": sorted_driver_ints(rows, "max_size_bytes", 0),
+    }
+
+
+def sorted_driver_strings(rows: list[dict[str, Any]], field: str) -> list[str]:
+    return sorted({str(row["driver"].get(field, "unknown")) for row in rows})
+
+
+def sorted_driver_ints(rows: list[dict[str, Any]], field: str, default: int) -> list[int]:
+    return sorted({int(row["driver"].get(field, default) or 0) for row in rows})
+
+
+def add_systemd_ratios(summary: dict[str, Any], systemd_rate: float) -> None:
+    for item in summary.values():
+        item["systemd_append_ratio_median"] = item["append_rows_per_second_median"] / systemd_rate
 
 
 def driver_consistency_failures(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -599,7 +696,7 @@ def resolve_live_publish_every_entries(
     raise ValueError(f"invalid live publication mode: {mode}")
 
 
-def main() -> int:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--languages", nargs="+", choices=LANGUAGES, default=list(LANGUAGES))
     parser.add_argument("--rows", type=int, default=100_000)
@@ -649,19 +746,18 @@ def main() -> int:
         action="store_true",
         help="After benchmark runs, write the same Rust corpus through raw and structured APIs and require byte identity.",
     )
-    args = parser.parse_args()
-    live_publish_every_entries = resolve_live_publish_every_entries(
-        args.rust_live_publication,
-        args.rust_live_publication_interval,
-        args.live_publish_every_entries,
-    )
+    return parser.parse_args()
 
-    env = build_env()
+
+def timestamp_id() -> str:
     now = datetime.now(timezone.utc)
-    run_id = (
+    return (
         f"{now.year:04d}{now.month:02d}{now.day:02d}T"
         f"{now.hour:02d}{now.minute:02d}{now.second:02d}{now.microsecond:06d}Z"
     )
+
+
+def writer_core_profile(args: argparse.Namespace, live_publish_every_entries: int) -> str:
     profile_parts = [
         f"{args.format}-none-fss-off",
         f"api-{args.api_mode}",
@@ -671,85 +767,105 @@ def main() -> int:
         if args.rust_trusted_unique_payloads:
             profile_parts.append("trusted-unique")
         profile_parts.append(f"mmap-{args.rust_mmap_strategy}")
-    profile = "-".join(profile_parts)
-    out = args.output_dir / f"{profile}-{run_id}"
-    out.mkdir(parents=True, exist_ok=True)
+    return "-".join(profile_parts)
 
+
+def build_all_tools(args: argparse.Namespace, env: dict[str, str]) -> dict[str, dict[str, Any]]:
     tools = {}
     for language in args.languages:
         base, metadata = build_tool(language, env)
         tools[language] = {"command": base, "metadata": metadata}
+    return tools
 
+
+def run_writer_core_measurements(
+    args: argparse.Namespace,
+    tools: dict[str, dict[str, Any]],
+    output_dir: Path,
+    live_publish_every_entries: int,
+    env: dict[str, str],
+) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for language in args.languages:
         base = tools[language]["command"]
-        for warmup in range(args.warmups):
-            results.append(
-                one_measurement(
-                    language,
-                    base,
-                    output_dir=out,
-                    rows=args.rows,
-                    repetition=warmup + 1,
-                    warmup=True,
-                    journal_format=args.format,
-                    final_state=args.final_state,
-                    max_size_bytes=args.max_size_bytes,
-                    api_mode=args.api_mode,
-                    rust_trusted_unique_payloads=args.rust_trusted_unique_payloads,
-                    live_publish_every_entries=live_publish_every_entries,
-                    rust_mmap_strategy=args.rust_mmap_strategy,
-                    env=env,
-                    verify=False,
-                    keep_journals=False,
-                )
-            )
-        for repetition in range(args.repetitions):
-            results.append(
-                one_measurement(
-                    language,
-                    base,
-                    output_dir=out,
-                    rows=args.rows,
-                    repetition=repetition + 1,
-                    warmup=False,
-                    journal_format=args.format,
-                    final_state=args.final_state,
-                    max_size_bytes=args.max_size_bytes,
-                    api_mode=args.api_mode,
-                    rust_trusted_unique_payloads=args.rust_trusted_unique_payloads,
-                    live_publish_every_entries=live_publish_every_entries,
-                    rust_mmap_strategy=args.rust_mmap_strategy,
-                    env=env,
-                    verify=not args.skip_verify,
-                    keep_journals=args.keep_journals,
-                )
-            )
+        results.extend(
+            run_writer_core_language(args, language, base, output_dir, live_publish_every_entries, env)
+        )
+    return results
 
-    rust_api_mode_compare = None
-    if args.rust_compare_api_modes:
-        if "rust" not in args.languages:
-            rust_api_mode_compare = {
-                "kind": "rust-api-mode-byte-identity",
-                "status": "FAIL",
-                "errors": ["--rust-compare-api-modes requires --languages to include rust"],
-            }
-        else:
-            rust_api_mode_compare = rust_api_mode_byte_identity(
-                tools["rust"]["command"],
-                output_dir=out,
-                rows=args.rows,
-                journal_format=args.format,
-                final_state=args.final_state,
-                max_size_bytes=args.max_size_bytes,
-                rust_trusted_unique_payloads=args.rust_trusted_unique_payloads,
-                live_publish_every_entries=live_publish_every_entries,
-                rust_mmap_strategy=args.rust_mmap_strategy,
-                env=env,
-                keep_journals=args.keep_journals,
-                verify=not args.skip_verify,
-            )
 
+def run_writer_core_language(
+    args: argparse.Namespace,
+    language: str,
+    base: list[str],
+    output_dir: Path,
+    live_publish_every_entries: int,
+    env: dict[str, str],
+) -> list[dict[str, Any]]:
+    results = []
+    for warmup in range(args.warmups):
+        results.append(
+            one_measurement(
+                language,
+                base,
+                args,
+                output_dir,
+                warmup + 1,
+                True,
+                live_publish_every_entries,
+                env,
+            )
+        )
+    for repetition in range(args.repetitions):
+        results.append(
+            one_measurement(
+                language,
+                base,
+                args,
+                output_dir,
+                repetition + 1,
+                False,
+                live_publish_every_entries,
+                env,
+            )
+        )
+    return results
+
+
+def run_rust_api_mode_compare(
+    args: argparse.Namespace,
+    tools: dict[str, dict[str, Any]],
+    output_dir: Path,
+    live_publish_every_entries: int,
+    env: dict[str, str],
+) -> dict[str, Any] | None:
+    if not args.rust_compare_api_modes:
+        return None
+    if "rust" not in args.languages:
+        return {
+            "kind": "rust-api-mode-byte-identity",
+            "status": "FAIL",
+            "errors": ["--rust-compare-api-modes requires --languages to include rust"],
+        }
+    return rust_api_mode_byte_identity(
+        tools["rust"]["command"],
+        args,
+        output_dir=output_dir,
+        live_publish_every_entries=live_publish_every_entries,
+        env=env,
+    )
+
+
+def writer_core_report(
+    args: argparse.Namespace,
+    profile: str,
+    output_dir: Path,
+    env: dict[str, str],
+    tools: dict[str, dict[str, Any]],
+    results: list[dict[str, Any]],
+    live_publish_every_entries: int,
+    rust_api_mode_compare: dict[str, Any] | None,
+) -> dict[str, Any]:
     report = {
         "benchmark": "writer-core",
         "profile": profile,
@@ -785,21 +901,34 @@ def main() -> int:
         "rust_api_mode_byte_identity": rust_api_mode_compare,
         "summary": summarize(results),
     }
+    failures = writer_core_failures(results, rust_api_mode_compare)
+    report["status"] = "PASS" if not failures else "FAIL"
+    report["failures"] = failures
+    return report
+
+
+def writer_core_failures(
+    results: list[dict[str, Any]],
+    rust_api_mode_compare: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
     measurement_failures = [
-        r for r in results if r["kind"] == "measurement" and r["status"] != "PASS"
+        row for row in results if row["kind"] == "measurement" and row["status"] != "PASS"
     ]
-    consistency_failures = driver_consistency_failures(results)
     compare_failures = (
         [rust_api_mode_compare]
         if rust_api_mode_compare is not None and rust_api_mode_compare["status"] != "PASS"
         else []
     )
-    failures = [*measurement_failures, *consistency_failures, *compare_failures]
-    report["status"] = "PASS" if not failures else "FAIL"
-    report["failures"] = failures
+    return [*measurement_failures, *driver_consistency_failures(results), *compare_failures]
 
-    report_path = out / "report.json"
+
+def write_report(output_dir: Path, report: dict[str, Any]) -> Path:
+    report_path = output_dir / "report.json"
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    return report_path
+
+
+def print_report_summary(report: dict[str, Any], report_path: Path) -> None:
     print(
         json.dumps(
             {"status": report["status"], "report": str(report_path), "summary": report["summary"]},
@@ -807,6 +936,42 @@ def main() -> int:
             sort_keys=True,
         )
     )
+
+
+def main() -> int:
+    args = parse_args()
+    live_publish_every_entries = resolve_live_publish_every_entries(
+        args.rust_live_publication,
+        args.rust_live_publication_interval,
+        args.live_publish_every_entries,
+    )
+    env = build_env()
+    profile = writer_core_profile(args, live_publish_every_entries)
+    out = args.output_dir / f"{profile}-{timestamp_id()}"
+    out.mkdir(parents=True, exist_ok=True)
+
+    tools = build_all_tools(args, env)
+    results = run_writer_core_measurements(args, tools, out, live_publish_every_entries, env)
+    rust_api_mode_compare = run_rust_api_mode_compare(
+        args,
+        tools,
+        out,
+        live_publish_every_entries,
+        env,
+    )
+    report = writer_core_report(
+        args,
+        profile,
+        out,
+        env,
+        tools,
+        results,
+        live_publish_every_entries,
+        rust_api_mode_compare,
+    )
+    report_path = write_report(out, report)
+    print_report_summary(report, report_path)
+    failures = report["failures"]
     return 0 if not failures else 1
 
 

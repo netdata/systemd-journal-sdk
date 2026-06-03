@@ -430,58 +430,86 @@ def case_command(
 
 
 def validate_equivalent_checksums(runs: list[dict[str, Any]]) -> None:
-    references: dict[tuple[str, str], dict[str, Any]] = {}
-    for item in runs:
-        if item.get("warmup"):
-            continue
-        result = item["result"]
-        if result["language"] == "systemd" and result["mode"] == "data":
-            key = (result["surface"], result["direction"])
-            existing = references.get(key)
-            if existing is not None and any(
-                existing[field] != result[field]
-                for field in ("records", "fields", "bytes", "checksum")
-            ):
-                raise RuntimeError(f"systemd checksum changed across runs for {key}")
-            references[key] = result
-
+    references = systemd_checksum_references(runs)
     errors = []
     for item in runs:
         if item.get("warmup"):
             continue
         result = item["result"]
-        comparable = (
-            result["language"] == "rust" and result["mode"] in COMPARABLE_RUST_PAYLOAD_MODES
-        ) or (
-            result["language"] == "go" and result["mode"] in COMPARABLE_GO_PAYLOAD_MODES
-        ) or (
-            result["language"] == "python" and result["mode"] in COMPARABLE_PYTHON_PAYLOAD_MODES
-        ) or (
-            result["language"] == "node" and result["mode"] in COMPARABLE_NODE_PAYLOAD_MODES
-        )
-        if not comparable:
+        if not is_comparable_checksum_result(result):
             continue
-        key = (result["surface"], result["direction"])
-        reference = references.get(key)
-        if reference is None:
-            continue
-        for field in ("records", "fields", "bytes", "checksum"):
-            if result[field] != reference[field]:
-                errors.append(
-                    {
-                        "surface": result["surface"],
-                        "direction": result["direction"],
-                        "language": result["language"],
-                        "mode": result["mode"],
-                        "bounds": result.get("bounds", ""),
-                        "mmap_strategy": result.get("mmap_strategy", ""),
-                        "field": field,
-                        "sdk": result[field],
-                        "systemd": reference[field],
-                    }
-                )
+        errors.extend(checksum_mismatches(result, references))
     if errors:
         raise RuntimeError(f"reader checksum mismatch: {json.dumps(errors, indent=2)}")
+
+
+def systemd_checksum_references(
+    runs: list[dict[str, Any]],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    references: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in runs:
+        if item.get("warmup"):
+            continue
+        result = item["result"]
+        if result["language"] != "systemd" or result["mode"] != "data":
+            continue
+        key = (result["surface"], result["direction"])
+        existing = references.get(key)
+        if existing is not None and checksum_fields_differ(existing, result):
+            raise RuntimeError(f"systemd checksum changed across runs for {key}")
+        references[key] = result
+    return references
+
+
+def checksum_fields_differ(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    return any(left[field] != right[field] for field in CHECKSUM_FIELDS)
+
+
+def is_comparable_checksum_result(result: dict[str, Any]) -> bool:
+    language = result["language"]
+    mode = result["mode"]
+    return (
+        (language == "rust" and mode in COMPARABLE_RUST_PAYLOAD_MODES)
+        or (language == "go" and mode in COMPARABLE_GO_PAYLOAD_MODES)
+        or (language == "python" and mode in COMPARABLE_PYTHON_PAYLOAD_MODES)
+        or (language == "node" and mode in COMPARABLE_NODE_PAYLOAD_MODES)
+    )
+
+
+CHECKSUM_FIELDS = ("records", "fields", "bytes", "checksum")
+
+
+def checksum_mismatches(
+    result: dict[str, Any],
+    references: dict[tuple[str, str], dict[str, Any]],
+) -> list[dict[str, Any]]:
+    key = (result["surface"], result["direction"])
+    reference = references.get(key)
+    if reference is None:
+        return []
+    return [
+        checksum_mismatch(result, reference, field)
+        for field in CHECKSUM_FIELDS
+        if result[field] != reference[field]
+    ]
+
+
+def checksum_mismatch(
+    result: dict[str, Any],
+    reference: dict[str, Any],
+    field: str,
+) -> dict[str, Any]:
+    return {
+        "surface": result["surface"],
+        "direction": result["direction"],
+        "language": result["language"],
+        "mode": result["mode"],
+        "bounds": result.get("bounds", ""),
+        "mmap_strategy": result.get("mmap_strategy", ""),
+        "field": field,
+        "sdk": result[field],
+        "systemd": reference[field],
+    }
 
 
 def summarize(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -527,7 +555,7 @@ def summarize(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def main() -> int:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--rows", type=int, default=100_000)
@@ -543,19 +571,30 @@ def main() -> int:
     parser.add_argument("--languages", default="", help="Comma-separated language filter, e.g. rust,go,systemd")
     parser.add_argument("--skip-open-files", action="store_true")
     parser.add_argument("--keep-fixtures", action="store_true")
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    env = build_env()
+
+def timestamp_id() -> str:
     now = datetime.now(timezone.utc)
-    timestamp = (
+    return (
         f"{now.year:04d}{now.month:02d}{now.day:02d}T"
         f"{now.hour:02d}{now.minute:02d}{now.second:02d}Z"
     )
+
+
+def prepare_run_directories(args: argparse.Namespace, timestamp: str) -> tuple[Path, Path]:
     run_dir = args.out / timestamp
     fixture_dir = run_dir / "fixtures"
     run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir, fixture_dir
 
-    tools = build_tools(env)
+
+def prepare_reader_fixtures(
+    args: argparse.Namespace,
+    tools: dict[str, Any],
+    env: dict[str, str],
+    fixture_dir: Path,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
     direct_fixture = generate_direct_fixture(
         tools,
         env,
@@ -565,79 +604,153 @@ def main() -> int:
         args.final_state,
         args.max_size_bytes,
     )
-    directory_fixture = None
-    if not args.skip_open_files:
-        directory_fixture = generate_directory_fixture(
-            tools,
-            env,
-            fixture_dir,
-            args.directory_rows,
-            args.format,
-            args.directory_max_size_bytes,
-        )
+    if args.skip_open_files:
+        return direct_fixture, None
+    directory_fixture = generate_directory_fixture(
+        tools,
+        env,
+        fixture_dir,
+        args.directory_rows,
+        args.format,
+        args.directory_max_size_bytes,
+    )
+    return direct_fixture, directory_fixture
 
-    runs: list[dict[str, Any]] = []
+
+def selected_reader_cases(
+    args: argparse.Namespace,
+    directory_fixture: dict[str, Any] | None,
+) -> list[tuple[str, str, str, str, str]]:
     cases = list(SINGLE_FILE_CASES)
     if directory_fixture is not None:
         cases.extend(OPEN_FILES_CASES)
     if args.languages:
         wanted_languages = {item.strip() for item in args.languages.split(",") if item.strip()}
         cases = [case for case in cases if case[0] in wanted_languages]
+    return cases
+
+
+def run_reader_cases(
+    args: argparse.Namespace,
+    tools: dict[str, Any],
+    env: dict[str, str],
+    run_dir: Path,
+    direct_fixture: dict[str, Any],
+    directory_fixture: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    runs: list[dict[str, Any]] = []
+    cases = selected_reader_cases(args, directory_fixture)
 
     total_iterations = args.warmups + args.repetitions
     for language, surface, mode, bounds, mmap_strategy in cases:
-        inputs = (
-            [direct_fixture["path"]]
-            if surface == "file"
-            else list(directory_fixture["files"])  # type: ignore[index,union-attr]
-        )
+        inputs = reader_case_inputs(surface, direct_fixture, directory_fixture)
         for iteration in range(total_iterations):
-            warmup = iteration < args.warmups
-            stats_path = run_dir / "time" / f"{language}-{surface}-{mode}-{iteration}.json"
-            cmd = case_command(
-                tools,
-                language,
-                surface,
-                mode,
-                inputs,
-                args.direction,
-                args.window_size,
-                bounds,
-                mmap_strategy,
-            )
-            result = timed_run(cmd, stats_path, env)
-            require_ok(result, f"reader bench {language}/{surface}/{mode} iteration {iteration}")
-            parsed = parse_json_result(result.stdout)
             runs.append(
-                {
-                    "warmup": warmup,
-                    "iteration": iteration,
-                    "command": cmd,
-                    "result": parsed,
-                    "process_stats": parse_time_stats(stats_path),
-                    "stderr_tail": result.stderr[-2000:],
-                }
+                run_reader_iteration(
+                    args,
+                    tools,
+                    env,
+                    run_dir,
+                    language,
+                    surface,
+                    mode,
+                    bounds,
+                    mmap_strategy,
+                    inputs,
+                    iteration,
+                )
             )
-            print(
-                json.dumps(
-                    {
-                        "warmup": warmup,
-                        "language": language,
-                        "surface": surface,
-                        "mode": mode,
-                        "bounds": bounds,
-                        "mmap_strategy": mmap_strategy,
-                        "iteration": iteration,
-                        "records": parsed.get("records"),
-                        "read_rows_per_second": parsed.get("read_rows_per_second"),
-                    }
-                ),
-                flush=True,
-            )
+    return runs
 
-    validate_equivalent_checksums(runs)
-    summary = summarize(runs)
-    manifest = {
+
+def reader_case_inputs(
+    surface: str,
+    direct_fixture: dict[str, Any],
+    directory_fixture: dict[str, Any] | None,
+) -> list[str]:
+    if surface == "file":
+        return [direct_fixture["path"]]
+    if directory_fixture is None:
+        raise RuntimeError("open-files reader case requires directory fixture")
+    return list(directory_fixture["files"])
+
+
+def run_reader_iteration(
+    args: argparse.Namespace,
+    tools: dict[str, Any],
+    env: dict[str, str],
+    run_dir: Path,
+    language: str,
+    surface: str,
+    mode: str,
+    bounds: str,
+    mmap_strategy: str,
+    inputs: list[str],
+    iteration: int,
+) -> dict[str, Any]:
+    warmup = iteration < args.warmups
+    stats_path = run_dir / "time" / f"{language}-{surface}-{mode}-{iteration}.json"
+    cmd = case_command(
+        tools,
+        language,
+        surface,
+        mode,
+        inputs,
+        args.direction,
+        args.window_size,
+        bounds,
+        mmap_strategy,
+    )
+    result = timed_run(cmd, stats_path, env)
+    require_ok(result, f"reader bench {language}/{surface}/{mode} iteration {iteration}")
+    parsed = parse_json_result(result.stdout)
+    print_reader_progress(language, surface, mode, bounds, mmap_strategy, iteration, warmup, parsed)
+    return {
+        "warmup": warmup,
+        "iteration": iteration,
+        "command": cmd,
+        "result": parsed,
+        "process_stats": parse_time_stats(stats_path),
+        "stderr_tail": result.stderr[-2000:],
+    }
+
+
+def print_reader_progress(
+    language: str,
+    surface: str,
+    mode: str,
+    bounds: str,
+    mmap_strategy: str,
+    iteration: int,
+    warmup: bool,
+    parsed: dict[str, Any],
+) -> None:
+    print(
+        json.dumps(
+            {
+                "warmup": warmup,
+                "language": language,
+                "surface": surface,
+                "mode": mode,
+                "bounds": bounds,
+                "mmap_strategy": mmap_strategy,
+                "iteration": iteration,
+                "records": parsed.get("records"),
+                "read_rows_per_second": parsed.get("read_rows_per_second"),
+            }
+        ),
+        flush=True,
+    )
+
+
+def reader_manifest(
+    args: argparse.Namespace,
+    timestamp: str,
+    direct_fixture: dict[str, Any],
+    directory_fixture: dict[str, Any] | None,
+    summary: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
         "created_at": timestamp,
         "host": os.uname().nodename,
         "format": args.format,
@@ -654,12 +767,27 @@ def main() -> int:
         "timer_excludes": ["fixture generation", "tool builds", "process startup", "external verification"],
         "summary": summary,
     }
+
+
+def write_reader_artifacts(
+    args: argparse.Namespace,
+    timestamp: str,
+    run_dir: Path,
+    direct_fixture: dict[str, Any],
+    directory_fixture: dict[str, Any] | None,
+    runs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    summary = summarize(runs)
+    manifest = reader_manifest(args, timestamp, direct_fixture, directory_fixture, summary)
     (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     with (run_dir / "runs.jsonl").open("w", encoding="utf-8") as f:
         for item in runs:
             f.write(json.dumps(item) + "\n")
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return summary
 
+
+def update_latest_link(args: argparse.Namespace, run_dir: Path) -> None:
     latest = args.out / "latest"
     if latest.is_symlink() or latest.exists():
         if latest.is_dir() and not latest.is_symlink():
@@ -668,6 +796,25 @@ def main() -> int:
             latest.unlink()
     latest.symlink_to(run_dir.resolve(), target_is_directory=True)
 
+
+def main() -> int:
+    args = parse_args()
+    env = build_env()
+    timestamp = timestamp_id()
+    run_dir, fixture_dir = prepare_run_directories(args, timestamp)
+    tools = build_tools(env)
+    direct_fixture, directory_fixture = prepare_reader_fixtures(args, tools, env, fixture_dir)
+    runs = run_reader_cases(args, tools, env, run_dir, direct_fixture, directory_fixture)
+    validate_equivalent_checksums(runs)
+    summary = write_reader_artifacts(
+        args,
+        timestamp,
+        run_dir,
+        direct_fixture,
+        directory_fixture,
+        runs,
+    )
+    update_latest_link(args, run_dir)
     if not args.keep_fixtures:
         shutil.rmtree(fixture_dir, ignore_errors=True)
 

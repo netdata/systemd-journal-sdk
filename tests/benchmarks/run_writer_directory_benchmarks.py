@@ -104,126 +104,223 @@ def count_directory_rows(directory: Path) -> dict[str, Any]:
 def one_measurement(
     language: str,
     base: list[str],
-    *,
+    args: argparse.Namespace,
     output_dir: Path,
-    rows: int,
     repetition: int,
     warmup: bool,
-    journal_format: str,
-    max_size_bytes: int,
-    rotation_max_size_bytes: int,
-    api_mode: str,
-    live_publish_every_entries: int,
     env: dict[str, str],
-    verify: bool,
-    keep_journals: bool,
 ) -> dict[str, Any]:
     label = "warmup" if warmup else f"rep-{repetition}"
+    run_dir, output = prepare_directory_measurement_path(output_dir, language, label)
+    cmd = directory_bench_command(language, base, args, output)
+    result, stats, driver = run_directory_driver(cmd, run_dir, env)
+    data = directory_measurement_context(
+        language,
+        repetition,
+        warmup,
+        args,
+        cmd,
+        result,
+        stats,
+        driver,
+        output,
+    )
+    item = directory_measurement_item(data)
+    cleanup_directory_output(output, args.keep_journals)
+    return item
+
+
+def prepare_directory_measurement_path(
+    output_dir: Path,
+    language: str,
+    label: str,
+) -> tuple[Path, Path]:
     run_dir = output_dir / language / label
     run_dir.mkdir(parents=True, exist_ok=True)
-    output = run_dir / "journal-dir"
+    return run_dir, run_dir / "journal-dir"
 
-    cmd = bench_command(
+
+def directory_bench_command(
+    language: str,
+    base: list[str],
+    args: argparse.Namespace,
+    output: Path,
+) -> list[str]:
+    return bench_command(
         language,
         base,
         output=output,
-        rows=rows,
-        journal_format=journal_format,
-        max_size_bytes=max_size_bytes,
-        rotation_max_size_bytes=rotation_max_size_bytes,
-        api_mode=api_mode,
-        live_publish_every_entries=live_publish_every_entries,
+        rows=args.rows,
+        journal_format=args.format,
+        max_size_bytes=args.max_size_bytes,
+        rotation_max_size_bytes=args.rotation_max_size_bytes,
+        api_mode=args.api_mode,
+        live_publish_every_entries=args.live_publish_every_entries,
     )
+
+
+def run_directory_driver(
+    cmd: list[str],
+    run_dir: Path,
+    env: dict[str, str],
+) -> tuple[Any, dict[str, Any], dict[str, Any]]:
     stats_path = run_dir / "time.json"
     result = timed_run(cmd, stats_path, env)
     stats = parse_time_stats(stats_path)
     driver = parse_driver_result(result.stdout)
+    return result, stats, driver
+
+
+def directory_measurement_context(
+    language: str,
+    repetition: int,
+    warmup: bool,
+    args: argparse.Namespace,
+    cmd: list[str],
+    result: Any,
+    stats: dict[str, Any],
+    driver: dict[str, Any],
+    output: Path,
+) -> dict[str, Any]:
     records = int(driver.get("records", 0) or 0)
-    errors = list(driver.get("errors", []) or [])
     directory = Path(driver.get("journal_directory") or output)
+    files = directory_journal_files(driver, directory)
+    verify_directory = should_verify(args, warmup)
+    return {
+        "language": language,
+        "repetition": repetition,
+        "warmup": warmup,
+        "command": cmd,
+        "result": result,
+        "driver": driver,
+        "stats": stats,
+        "records": records,
+        "expected_records": args.rows,
+        "errors": list(driver.get("errors", []) or []),
+        "append_seconds": float(driver.get("append_seconds", 0.0) or 0.0),
+        "process_wall": float(stats.get("process_wall_seconds", 0.0) or 0.0),
+        "directory": directory,
+        "files": files,
+        "keep_journals": args.keep_journals,
+        "file_checks": directory_file_checks(files, args.format),
+        "verifications": [verify_file(path) for path in files] if verify_directory else [],
+        "row_count": count_directory_rows(directory) if verify_directory else None,
+    }
+
+
+def directory_journal_files(driver: dict[str, Any], directory: Path) -> list[Path]:
     files = [Path(path) for path in driver.get("journal_files", [])]
-    if not files and directory.exists():
-        files = sorted(path for path in directory.rglob("*.journal") if path.is_file())
-    file_checks = [
+    if files or not directory.exists():
+        return files
+    return sorted(path for path in directory.rglob("*.journal") if path.is_file())
+
+
+def directory_file_checks(files: list[Path], journal_format: str) -> list[dict[str, Any]]:
+    return [
         quick_header_check(path, compact=journal_format == "compact")
         if path.exists()
         else {"status": "FAIL", "error": "journal file missing"}
         for path in files
     ]
-    verifications = [verify_file(path) for path in files] if verify and not warmup else []
-    row_count = count_directory_rows(directory) if verify and not warmup else None
-    append_seconds = float(driver.get("append_seconds", 0.0) or 0.0)
-    process_wall = float(stats.get("process_wall_seconds", 0.0) or 0.0)
-    status = (
-        "PASS"
-        if result.returncode == 0
-        and records == rows
-        and not errors
-        and files
-        and all(check["status"] == "PASS" for check in file_checks)
-        and all(item["returncode"] == 0 for item in verifications)
-        and (row_count is None or (row_count["returncode"] == 0 and row_count["rows"] == rows))
-        else "FAIL"
-    )
-    item = {
-        "language": language,
-        "kind": "warmup" if warmup else "measurement",
-        "repetition": repetition,
-        "command": cmd,
-        "returncode": result.returncode,
-        "stdout_tail": result.stdout[-1000:],
-        "stderr_tail": result.stderr[-1000:],
-        "driver": driver,
-        "process_time": stats,
-        "records": records,
-        "expected_records": rows,
-        "append_seconds": append_seconds,
-        "append_rows_per_second": float(driver.get("append_rows_per_second", 0.0) or 0.0),
-        "process_rows_per_second": records / process_wall if process_wall > 0 else None,
-        "journal_directory": str(directory) if keep_journals else None,
-        "journal_files": [str(path) for path in files] if keep_journals else None,
-        "journal_file_count": len(files),
-        "journal_size_bytes": int(driver.get("journal_size_bytes", 0) or 0),
-        "structure": file_checks,
-        "verify": verifications,
-        "stock_directory_read": row_count,
-        "status": status,
-    }
-    if not keep_journals:
-        import shutil
 
-        shutil.rmtree(output, ignore_errors=True)
-    return item
+
+def cleanup_directory_output(output: Path, keep_journals: bool) -> None:
+    if keep_journals:
+        return
+    import shutil
+
+    shutil.rmtree(output, ignore_errors=True)
+
+
+def should_verify(args: argparse.Namespace, warmup: bool) -> bool:
+    return not args.skip_verify and not warmup
+
+
+def directory_measurement_item(data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "language": data["language"],
+        "kind": "warmup" if data["warmup"] else "measurement",
+        "repetition": data["repetition"],
+        "command": data["command"],
+        "returncode": data["result"].returncode,
+        "stdout_tail": data["result"].stdout[-1000:],
+        "stderr_tail": data["result"].stderr[-1000:],
+        "driver": data["driver"],
+        "process_time": data["stats"],
+        "records": data["records"],
+        "expected_records": data["expected_records"],
+        "append_seconds": data["append_seconds"],
+        "append_rows_per_second": float(data["driver"].get("append_rows_per_second", 0.0) or 0.0),
+        "process_rows_per_second": directory_process_rows_per_second(data),
+        "journal_directory": str(data["directory"]) if data["keep_journals"] else None,
+        "journal_files": [str(path) for path in data["files"]] if data["keep_journals"] else None,
+        "journal_file_count": len(data["files"]),
+        "journal_size_bytes": int(data["driver"].get("journal_size_bytes", 0) or 0),
+        "structure": data["file_checks"],
+        "verify": data["verifications"],
+        "stock_directory_read": data["row_count"],
+        "status": "PASS" if directory_measurement_passed(data) else "FAIL",
+    }
+
+
+def directory_process_rows_per_second(data: dict[str, Any]) -> float | None:
+    process_wall = data["process_wall"]
+    return data["records"] / process_wall if process_wall > 0 else None
+
+
+def directory_measurement_passed(data: dict[str, Any]) -> bool:
+    row_count = data["row_count"]
+    return (
+        data["result"].returncode == 0
+        and data["records"] == data["expected_records"]
+        and not data["errors"]
+        and bool(data["files"])
+        and all(check["status"] == "PASS" for check in data["file_checks"])
+        and all(item["returncode"] == 0 for item in data["verifications"])
+        and (row_count is None or row_count_matches(row_count, data["expected_records"]))
+    )
+
+
+def row_count_matches(row_count: dict[str, Any], expected_rows: int) -> bool:
+    return row_count["returncode"] == 0 and row_count["rows"] == expected_rows
 
 
 def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
     summary: dict[str, Any] = {}
     for language in LANGUAGES:
-        rows = [
-            r
-            for r in results
-            if r["language"] == language and r["kind"] == "measurement" and r["status"] == "PASS"
-        ]
+        rows = passing_measurements(results, language)
         if not rows:
             continue
-        append_rates = [float(r["append_rows_per_second"]) for r in rows]
-        process_rates = [
-            float(r["process_rows_per_second"])
-            for r in rows
-            if r["process_rows_per_second"] is not None
-        ]
-        sizes = [int(r["journal_size_bytes"]) for r in rows]
-        counts = [int(r["journal_file_count"]) for r in rows]
-        summary[language] = {
-            "measurements": len(rows),
-            "append_rows_per_second_min": min(append_rates),
-            "append_rows_per_second_median": statistics.median(append_rates),
-            "append_rows_per_second_max": max(append_rates),
-            "process_rows_per_second_median": statistics.median(process_rates) if process_rates else None,
-            "journal_size_bytes_median": statistics.median(sizes),
-            "journal_file_count_median": statistics.median(counts),
-        }
+        summary[language] = summarize_language(rows)
     return summary
+
+
+def passing_measurements(results: list[dict[str, Any]], language: str) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in results
+        if row["language"] == language and row["kind"] == "measurement" and row["status"] == "PASS"
+    ]
+
+
+def summarize_language(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    append_rates = [float(row["append_rows_per_second"]) for row in rows]
+    process_rates = [
+        float(row["process_rows_per_second"])
+        for row in rows
+        if row["process_rows_per_second"] is not None
+    ]
+    sizes = [int(row["journal_size_bytes"]) for row in rows]
+    counts = [int(row["journal_file_count"]) for row in rows]
+    return {
+        "measurements": len(rows),
+        "append_rows_per_second_min": min(append_rates),
+        "append_rows_per_second_median": statistics.median(append_rates),
+        "append_rows_per_second_max": max(append_rates),
+        "process_rows_per_second_median": statistics.median(process_rates) if process_rates else None,
+        "journal_size_bytes_median": statistics.median(sizes),
+        "journal_file_count_median": statistics.median(counts),
+    }
 
 
 def driver_consistency_failures(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -256,7 +353,7 @@ def driver_consistency_failures(results: list[dict[str, Any]]) -> list[dict[str,
     return failures
 
 
-def main() -> int:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--languages", nargs="+", choices=LANGUAGES, default=list(LANGUAGES))
     parser.add_argument("--rows", type=int, default=200_000)
@@ -270,77 +367,85 @@ def main() -> int:
     parser.add_argument("--rotation-max-size-bytes", type=int, default=128 * 1024 * 1024)
     parser.add_argument("--api-mode", choices=("raw-payload", "structured-field"), default="raw-payload")
     parser.add_argument("--live-publish-every-entries", type=int, default=1)
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def validate_args(args: argparse.Namespace) -> None:
     if args.max_size_bytes != args.rotation_max_size_bytes:
-        parser.error(
+        raise SystemExit(
             "--max-size-bytes and --rotation-max-size-bytes must match for comparable "
             "writer-directory benchmarks"
         )
 
-    env = build_env()
+
+def timestamp_id() -> str:
     now = datetime.now(timezone.utc)
-    run_id = (
+    return (
         f"{now.year:04d}{now.month:02d}{now.day:02d}T"
         f"{now.hour:02d}{now.minute:02d}{now.second:02d}{now.microsecond:06d}Z"
     )
-    profile = (
+
+
+def directory_profile(args: argparse.Namespace) -> str:
+    return (
         f"{args.format}-none-fss-off-directory-api-{args.api_mode}"
         f"-live-every-{args.live_publish_every_entries}"
         f"-rotate-{args.rotation_max_size_bytes}"
     )
-    out = args.output_dir / f"{profile}-{run_id}"
-    out.mkdir(parents=True, exist_ok=True)
 
+
+def build_all_tools(args: argparse.Namespace, env: dict[str, str]) -> dict[str, dict[str, Any]]:
     tools = {}
     for language in args.languages:
         base, metadata = build_tool(language, env)
         tools[language] = {"command": base, "metadata": metadata}
+    return tools
 
+
+def run_directory_measurements(
+    args: argparse.Namespace,
+    tools: dict[str, dict[str, Any]],
+    output_dir: Path,
+    env: dict[str, str],
+) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for language in args.languages:
         base = tools[language]["command"]
-        for warmup in range(args.warmups):
-            results.append(
-                one_measurement(
-                    language,
-                    base,
-                    output_dir=out,
-                    rows=args.rows,
-                    repetition=warmup + 1,
-                    warmup=True,
-                    journal_format=args.format,
-                    max_size_bytes=args.max_size_bytes,
-                    rotation_max_size_bytes=args.rotation_max_size_bytes,
-                    api_mode=args.api_mode,
-                    live_publish_every_entries=args.live_publish_every_entries,
-                    env=env,
-                    verify=False,
-                    keep_journals=False,
-                )
-            )
-        for repetition in range(args.repetitions):
-            results.append(
-                one_measurement(
-                    language,
-                    base,
-                    output_dir=out,
-                    rows=args.rows,
-                    repetition=repetition + 1,
-                    warmup=False,
-                    journal_format=args.format,
-                    max_size_bytes=args.max_size_bytes,
-                    rotation_max_size_bytes=args.rotation_max_size_bytes,
-                    api_mode=args.api_mode,
-                    live_publish_every_entries=args.live_publish_every_entries,
-                    env=env,
-                    verify=not args.skip_verify,
-                    keep_journals=args.keep_journals,
-                )
-            )
+        results.extend(run_language_measurements(args, language, base, output_dir, env))
+    return results
 
+
+def run_language_measurements(
+    args: argparse.Namespace,
+    language: str,
+    base: list[str],
+    output_dir: Path,
+    env: dict[str, str],
+) -> list[dict[str, Any]]:
+    results = []
+    for warmup in range(args.warmups):
+        results.append(one_measurement(language, base, args, output_dir, warmup + 1, True, env))
+    for repetition in range(args.repetitions):
+        results.append(one_measurement(language, base, args, output_dir, repetition + 1, False, env))
+    return results
+
+
+def directory_failures(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     failures = [r for r in results if r["kind"] == "measurement" and r["status"] != "PASS"]
     failures.extend(driver_consistency_failures(results))
-    report = {
+    return failures
+
+
+def directory_report(
+    args: argparse.Namespace,
+    profile: str,
+    output_dir: Path,
+    env: dict[str, str],
+    tools: dict[str, dict[str, Any]],
+    results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    failures = directory_failures(results)
+    return {
         "benchmark": "writer-directory",
         "profile": profile,
         "parameters": {
@@ -373,8 +478,15 @@ def main() -> int:
         "status": "PASS" if not failures else "FAIL",
         "failures": failures,
     }
-    report_path = out / "report.json"
+
+
+def write_report(output_dir: Path, report: dict[str, Any]) -> Path:
+    report_path = output_dir / "report.json"
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    return report_path
+
+
+def print_report_summary(report: dict[str, Any], report_path: Path) -> None:
     print(
         json.dumps(
             {"status": report["status"], "report": str(report_path), "summary": report["summary"]},
@@ -382,6 +494,22 @@ def main() -> int:
             sort_keys=True,
         )
     )
+
+
+def main() -> int:
+    args = parse_args()
+    validate_args(args)
+    env = build_env()
+    profile = directory_profile(args)
+    out = args.output_dir / f"{profile}-{timestamp_id()}"
+    out.mkdir(parents=True, exist_ok=True)
+
+    tools = build_all_tools(args, env)
+    results = run_directory_measurements(args, tools, out, env)
+    report = directory_report(args, profile, out, env, tools, results)
+    report_path = write_report(out, report)
+    print_report_summary(report, report_path)
+    failures = report["failures"]
     return 0 if not failures else 1
 
 
