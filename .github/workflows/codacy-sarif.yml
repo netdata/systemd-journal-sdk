@@ -56,9 +56,19 @@ jobs:
               codacy-analysis init --remote gh netdata systemd-journal-sdk
             echo "codacy_enforce=true" >> "${GITHUB_OUTPUT}"
           else
-            npm exec --yes --package "@codacy/analysis-cli@${CODACY_ANALYSIS_CLI_VERSION}" -- \
-              codacy-analysis init --default .
+            echo "No tuned Codacy configuration is available in this workflow."
+            echo "Uploading an empty Codacy SARIF closeout for old local default-config alerts."
             echo "codacy_enforce=false" >> "${GITHUB_OUTPUT}"
+            python3 tests/code_scanning/write_empty_codacy_sarif.py \
+              .local/codacy/codacy-analysis.sarif
+            echo "codacy_status=0" >> "${GITHUB_OUTPUT}"
+            {
+              echo "## Codacy Analysis CLI"
+              echo
+              echo "Skipped local default analysis because no tuned Codacy configuration is available."
+              echo "Uploaded an empty closeout SARIF for stale default-config alerts."
+            } >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
           fi
 
           set +e
