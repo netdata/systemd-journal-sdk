@@ -1241,6 +1241,20 @@ Complexity remediation evidence:
   - `tests/interoperability/run_verify_matrix.py` passed with stock, Go, Rust,
     Node.js, and Python verifiers: 9 positive fixture classes, 12 negative
     corruption classes, and 0 failures.
+- Batch 6, Rust core file/mmap object access internals:
+  - Refactored `rust/src/crates/journal-core/src/file/file.rs` DATA payload
+    visiting, DATA lookup, new-file creation, initial hash-table object header
+    publication, and mutable object access into smaller helpers.
+  - Preserved file creation layout, mmap guard behavior, DATA decompression
+    behavior, keyed-hash lookup semantics, and writer-visible post-create
+    synchronization behavior.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no runtime findings for
+    `rust/src/crates/journal-core/src/file/file.rs`. The remaining rows in
+    that file are two large test functions and stay in scope for the later
+    test/harness cleanup batch.
+  - `cargo test -p journal-core --lib` passed.
+  - `tests/interoperability/run_matrix.py --writers rust go --readers rust go
+    stock --entries 20` passed 32/32 checks against systemd 260.1.
 
 Reviewer findings:
 

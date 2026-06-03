@@ -437,6 +437,41 @@ struct DataLookupResult {
     matches: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct DataLookupHeader {
+    flags: u8,
+    size_needed: u64,
+    stored_hash: u64,
+    next_hash_offset: Option<NonZeroU64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CreateLayout {
+    data_hash_table_size: usize,
+    field_hash_table_size: usize,
+    data_hash_table_offset: u64,
+    field_hash_table_offset: u64,
+    data_hash_table_object_offset: u64,
+    file_size: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MutableObjectContext {
+    object_type: ObjectType,
+    is_compact: bool,
+    arena_end: u64,
+}
+
+impl DataLookupHeader {
+    fn is_compressed(self) -> bool {
+        (self.flags
+            & (ObjectFlags::CompressedZstd as u8
+                | ObjectFlags::CompressedLz4 as u8
+                | ObjectFlags::CompressedXz as u8))
+            != 0
+    }
+}
+
 impl DataPayloadObjectInfo {
     pub fn is_compressed(self) -> bool {
         self.is_compressed
@@ -885,38 +920,13 @@ impl<M: MemoryMap> JournalFile<M> {
     where
         F: FnOnce(&[u8]) -> Result<()>,
     {
-        validate_offset_alignment(offset)?;
-        if offset.get() < context.header_size {
-            return Err(JournalError::ObjectExceedsFileBounds);
-        }
-
+        Self::validate_data_payload_offset(context, offset)?;
         self.window_manager.with_mut(|wm| {
-            let object_header_size = std::mem::size_of::<ObjectHeader>() as u64;
-            let header_slice = wm.get_slice(offset.get(), object_header_size)?;
-            let info = parse_data_payload_object_header(header_slice)?;
-            let size_needed = info.size_needed;
-
-            let end_offset = offset
-                .get()
-                .checked_add(size_needed)
-                .ok_or(JournalError::ObjectExceedsFileBounds)?;
-            if end_offset > context.arena_end {
-                return Err(JournalError::ObjectExceedsFileBounds);
-            }
-
-            if size_needed < context.payload_prefix_size {
-                return Err(JournalError::InvalidObjectSize(size_needed));
-            }
-
-            let data = if let Some(data) = wm.active_slice_if_contains(offset.get(), size_needed) {
-                data
-            } else {
-                wm.get_slice(offset.get(), size_needed)?
-            };
+            let info = Self::data_payload_info_from_window(wm, context, offset)?;
+            let data = Self::data_slice_from_window(wm, offset, info.size_needed)?;
             if !info.is_compressed {
                 return visitor(&data[context.payload_prefix_size as usize..]);
             }
-
             let object = DataObject::from_data(data, context.is_compact)
                 .ok_or(JournalError::ZerocopyFailure)?;
             decompressed.clear();
@@ -936,25 +946,60 @@ impl<M: MemoryMap> JournalFile<M> {
             return Err(JournalError::ObjectExceedsFileBounds);
         }
 
-        self.window_manager.with_mut(|wm| {
-            let object_header_size = std::mem::size_of::<ObjectHeader>() as u64;
-            let header_slice = wm.get_slice(offset.get(), object_header_size)?;
-            let info = parse_data_payload_object_header(header_slice)?;
-            let size_needed = info.size_needed;
+        self.window_manager
+            .with_mut(|wm| Self::data_payload_info_from_window(wm, context, offset))
+    }
 
-            let end_offset = offset
-                .get()
-                .checked_add(size_needed)
-                .ok_or(JournalError::ObjectExceedsFileBounds)?;
-            if end_offset > context.arena_end {
-                return Err(JournalError::ObjectExceedsFileBounds);
-            }
-            if size_needed < context.payload_prefix_size {
-                return Err(JournalError::InvalidObjectSize(size_needed));
-            }
+    fn validate_data_payload_offset(
+        context: DataPayloadReadContext,
+        offset: NonZeroU64,
+    ) -> Result<()> {
+        validate_offset_alignment(offset)?;
+        if offset.get() < context.header_size {
+            return Err(JournalError::ObjectExceedsFileBounds);
+        }
+        Ok(())
+    }
 
-            Ok(info)
-        })
+    fn data_payload_info_from_window(
+        wm: &mut WindowManager<M>,
+        context: DataPayloadReadContext,
+        offset: NonZeroU64,
+    ) -> Result<DataPayloadObjectInfo> {
+        let object_header_size = std::mem::size_of::<ObjectHeader>() as u64;
+        let header_slice = wm.get_slice(offset.get(), object_header_size)?;
+        let info = parse_data_payload_object_header(header_slice)?;
+        Self::validate_data_payload_info(context, offset, info)?;
+        Ok(info)
+    }
+
+    fn validate_data_payload_info(
+        context: DataPayloadReadContext,
+        offset: NonZeroU64,
+        info: DataPayloadObjectInfo,
+    ) -> Result<()> {
+        let end_offset = offset
+            .get()
+            .checked_add(info.size_needed)
+            .ok_or(JournalError::ObjectExceedsFileBounds)?;
+        if end_offset > context.arena_end {
+            return Err(JournalError::ObjectExceedsFileBounds);
+        }
+        if info.size_needed < context.payload_prefix_size {
+            return Err(JournalError::InvalidObjectSize(info.size_needed));
+        }
+        Ok(())
+    }
+
+    fn data_slice_from_window<'w>(
+        wm: &'w mut WindowManager<M>,
+        offset: NonZeroU64,
+        size_needed: u64,
+    ) -> Result<&'w [u8]> {
+        if wm.active_window_contains(offset.get(), size_needed) {
+            return Ok(wm.active_slice(offset.get(), size_needed));
+        }
+        wm.get_slice(offset.get(), size_needed)
     }
 
     #[doc(hidden)]
@@ -1067,71 +1112,84 @@ impl<M: MemoryMap> JournalFile<M> {
         payload: PayloadParts<'_>,
         decompression_buffer: &mut Vec<u8>,
     ) -> Result<DataLookupResult> {
-        validate_offset_alignment(offset)?;
-        if offset.get() < context.header_size {
-            return Err(JournalError::ObjectExceedsFileBounds);
-        }
-
+        Self::validate_data_payload_offset(context, offset)?;
         self.window_manager.with_mut(|wm| {
-            let header_slice =
-                wm.get_slice(offset.get(), std::mem::size_of::<DataObjectHeader>() as u64)?;
-            if header_slice[0] != ObjectType::Data as u8 {
-                return Err(JournalError::InvalidObjectType);
-            }
-
-            let flags = header_slice[1];
-            let size_needed = u64::from_le_bytes(header_slice[8..16].try_into().unwrap());
-            if size_needed < std::mem::size_of::<DataObjectHeader>() as u64 {
-                return Err(JournalError::InvalidObjectSize(size_needed));
-            }
-            if size_needed < context.payload_prefix_size {
-                return Err(JournalError::InvalidObjectSize(size_needed));
-            }
-
-            let end_offset = offset
-                .get()
-                .checked_add(size_needed)
-                .ok_or(JournalError::ObjectExceedsFileBounds)?;
-            if end_offset > context.arena_end {
-                return Err(JournalError::ObjectExceedsFileBounds);
-            }
-
-            let stored_hash = u64::from_le_bytes(header_slice[16..24].try_into().unwrap());
-            let next_hash_offset =
-                NonZeroU64::new(u64::from_le_bytes(header_slice[24..32].try_into().unwrap()));
-            if stored_hash != hash {
+            let lookup = Self::data_lookup_header_from_window(wm, context, offset)?;
+            if lookup.stored_hash != hash {
                 return Ok(DataLookupResult {
-                    next_hash_offset,
+                    next_hash_offset: lookup.next_hash_offset,
                     matches: false,
                 });
             }
 
-            let data = if let Some(data) = wm.active_slice_if_contains(offset.get(), size_needed) {
-                data
-            } else {
-                wm.get_slice(offset.get(), size_needed)?
-            };
-            let payload_start = context.payload_prefix_size as usize;
-            let is_compressed = (flags
-                & (ObjectFlags::CompressedZstd as u8
-                    | ObjectFlags::CompressedLz4 as u8
-                    | ObjectFlags::CompressedXz as u8))
-                != 0;
-            let matches = if is_compressed {
-                let object = DataObject::from_data(data, context.is_compact)
-                    .ok_or(JournalError::ZerocopyFailure)?;
-                decompression_buffer.clear();
-                let len = object.decompress(decompression_buffer)?;
-                payload.equals_slice(&decompression_buffer[..len])
-            } else {
-                payload.equals_slice(&data[payload_start..])
-            };
-
+            let data = Self::data_slice_from_window(wm, offset, lookup.size_needed)?;
+            let matches = Self::data_lookup_payload_matches(
+                context,
+                lookup,
+                data,
+                payload,
+                decompression_buffer,
+            )?;
             Ok(DataLookupResult {
-                next_hash_offset,
+                next_hash_offset: lookup.next_hash_offset,
                 matches,
             })
         })
+    }
+
+    fn data_lookup_header_from_window(
+        wm: &mut WindowManager<M>,
+        context: DataPayloadReadContext,
+        offset: NonZeroU64,
+    ) -> Result<DataLookupHeader> {
+        let header_slice =
+            wm.get_slice(offset.get(), std::mem::size_of::<DataObjectHeader>() as u64)?;
+        Self::parse_data_lookup_header(context, offset, header_slice)
+    }
+
+    fn parse_data_lookup_header(
+        context: DataPayloadReadContext,
+        offset: NonZeroU64,
+        header_slice: &[u8],
+    ) -> Result<DataLookupHeader> {
+        if header_slice[0] != ObjectType::Data as u8 {
+            return Err(JournalError::InvalidObjectType);
+        }
+        let size_needed = u64::from_le_bytes(header_slice[8..16].try_into().unwrap());
+        if size_needed < std::mem::size_of::<DataObjectHeader>() as u64 {
+            return Err(JournalError::InvalidObjectSize(size_needed));
+        }
+        let info = DataPayloadObjectInfo {
+            size_needed,
+            is_compressed: false,
+        };
+        Self::validate_data_payload_info(context, offset, info)?;
+        Ok(DataLookupHeader {
+            flags: header_slice[1],
+            size_needed,
+            stored_hash: u64::from_le_bytes(header_slice[16..24].try_into().unwrap()),
+            next_hash_offset: NonZeroU64::new(u64::from_le_bytes(
+                header_slice[24..32].try_into().unwrap(),
+            )),
+        })
+    }
+
+    fn data_lookup_payload_matches(
+        context: DataPayloadReadContext,
+        lookup: DataLookupHeader,
+        data: &[u8],
+        payload: PayloadParts<'_>,
+        decompression_buffer: &mut Vec<u8>,
+    ) -> Result<bool> {
+        if lookup.is_compressed() {
+            let object = DataObject::from_data(data, context.is_compact)
+                .ok_or(JournalError::ZerocopyFailure)?;
+            decompression_buffer.clear();
+            let len = object.decompress(decompression_buffer)?;
+            return Ok(payload.equals_slice(&decompression_buffer[..len]));
+        }
+        let payload_start = context.payload_prefix_size as usize;
+        Ok(payload.equals_slice(&data[payload_start..]))
     }
 
     pub fn find_field_offset(&self, hash: u64, payload: &[u8]) -> Result<Option<NonZeroU64>> {
@@ -1386,76 +1444,13 @@ impl<M: MemoryMapMut> JournalFile<M> {
     }
 
     pub fn create(file: &crate::repository::File, options: JournalFileOptions) -> Result<Self> {
-        let mut open_options = OpenOptions::new();
-        open_options
-            .create(true)
-            .truncate(true)
-            .read(true)
-            .write(true);
-        #[cfg(unix)]
-        open_options.mode(0o640);
-        let fd = open_options.open(file.path())?;
-
-        // Calculate hash table sizes
-        let data_hash_table_size =
-            options.data_hash_table_buckets * std::mem::size_of::<HashItem>();
-        let field_hash_table_size =
-            options.field_hash_table_buckets * std::mem::size_of::<HashItem>();
-
-        // Calculate hash table offsets
-        // systemd creates FIELD_HASH_TABLE first, then DATA_HASH_TABLE
-        let field_hash_table_offset = std::mem::size_of::<JournalHeader>() as u64
-            + std::mem::size_of::<ObjectHeader>() as u64;
-        let data_hash_table_offset = field_hash_table_offset
-            + field_hash_table_size as u64
-            + std::mem::size_of::<ObjectHeader>() as u64;
-
-        // Create header with options configuration
-        let mut header = JournalHeader::default();
-        header.signature = *b"LPKSHHRH";
-
-        // Set flags based on options configuration
-        // HEADER_COMPATIBLE_TAIL_ENTRY_BOOT_ID is set for new files (v260+)
-        header.compatible_flags = HeaderCompatibleFlags::TailEntryBootId as u32;
-        if options.enable_keyed_hash {
-            header.incompatible_flags |= HeaderIncompatibleFlags::KeyedHash as u32;
-        }
-        header.incompatible_flags |= options.compression.as_incompatible_flag();
-        if options.compact {
-            header.incompatible_flags |= HeaderIncompatibleFlags::Compact as u32;
-        }
-        if options.seal.is_some() {
-            header.compatible_flags |= HeaderCompatibleFlags::Sealed as u32;
-            header.compatible_flags |= HeaderCompatibleFlags::SealedContinuous as u32;
-        }
-
-        // Set hash table configuration
-        header.data_hash_table_offset = NonZeroU64::new(data_hash_table_offset);
-        header.data_hash_table_size = NonZeroU64::new(data_hash_table_size as u64);
-        header.field_hash_table_offset = NonZeroU64::new(field_hash_table_offset);
-        header.field_hash_table_size = NonZeroU64::new(field_hash_table_size as u64);
-
-        // Set other header fields. tail_object_offset points to the last
-        // object written (data hash table).
-        let data_hash_table_object_offset =
-            data_hash_table_offset - std::mem::size_of::<ObjectHeader>() as u64;
-        let append_offset = data_hash_table_offset + data_hash_table_size as u64;
-        header.tail_object_offset = NonZeroU64::new(data_hash_table_object_offset);
-        header.header_size = std::mem::size_of::<JournalHeader>() as u64;
-        header.n_objects = 2;
-        let file_size = round_up_to_file_size_increment(append_offset)?;
-        if options.compact && file_size > JOURNAL_COMPACT_SIZE_MAX {
+        let fd = Self::open_new_file(file)?;
+        let layout = Self::create_layout(&options)?;
+        if options.compact && layout.file_size > JOURNAL_COMPACT_SIZE_MAX {
             return Err(JournalError::ObjectExceedsFileBounds);
         }
-        fd.set_len(file_size)?;
-        header.arena_size = file_size - header.header_size;
-
-        // Set IDs from options
-        header.machine_id = *options.machine_id.as_bytes();
-        header.file_id = *options.file_id.as_bytes();
-        header.seqnum_id = *options.seqnum_id.as_bytes();
-
-        // Create memory maps for hash tables
+        fd.set_len(layout.file_size)?;
+        let mut header = Self::create_header(&options, layout);
         let data_hash_table_map = map_hash_table(
             &fd,
             header.header_size,
@@ -1468,18 +1463,7 @@ impl<M: MemoryMapMut> JournalFile<M> {
             header.field_hash_table_offset,
             header.field_hash_table_size,
         )?;
-
-        // Create header memory map and write header
-        let header_size = std::mem::size_of::<JournalHeader>() as u64;
-        let mut header_map = M::create(&fd, 0, header_size)?;
-        {
-            let header_mut = JournalHeader::mut_from_prefix(&mut header_map).unwrap().0;
-            *header_mut = header;
-            // Set state to ONLINE as per journal file format spec
-            header_mut.state = JournalState::Online as u8;
-        }
-
-        // Create window manager for the rest of the objects
+        let header_map = Self::create_header_map(&fd, &mut header)?;
         let window_manager = GuardedCell::new(WindowManager::new_writer_owned_with_strategy(
             fd,
             options.window_size,
@@ -1497,40 +1481,114 @@ impl<M: MemoryMapMut> JournalFile<M> {
             seal_options: options.seal.clone(),
         };
 
-        // write data hash table object header info
-        {
-            let offset = NonZeroU64::new(
-                header.data_hash_table_offset.unwrap().get()
-                    - std::mem::size_of::<ObjectHeader>() as u64,
-            )
-            .unwrap();
-            let size = header.data_hash_table_size.unwrap().get()
-                + std::mem::size_of::<ObjectHeader>() as u64;
-
-            let object_header = jf.object_header_mut(offset)?;
-            object_header.type_ = ObjectType::DataHashTable as u8;
-            object_header.size = size
-        }
-
-        // write field hash table object header info
-        {
-            let offset = NonZeroU64::new(
-                header.field_hash_table_offset.unwrap().get()
-                    - std::mem::size_of::<ObjectHeader>() as u64,
-            )
-            .unwrap();
-            let size = header.field_hash_table_size.unwrap().get()
-                + std::mem::size_of::<ObjectHeader>() as u64;
-
-            let object_header = jf.object_header_mut(offset)?;
-            object_header.type_ = ObjectType::FieldHashTable as u8;
-            object_header.size = size
-        }
-
-        // Sync to ensure the ONLINE state is persisted to disk
+        jf.write_initial_hash_table_headers(header)?;
         jf.sync()?;
-
         Ok(jf)
+    }
+
+    fn open_new_file(file: &crate::repository::File) -> Result<File> {
+        let mut open_options = OpenOptions::new();
+        open_options
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true);
+        #[cfg(unix)]
+        open_options.mode(0o640);
+        Ok(open_options.open(file.path())?)
+    }
+
+    fn create_layout(options: &JournalFileOptions) -> Result<CreateLayout> {
+        let data_hash_table_size =
+            options.data_hash_table_buckets * std::mem::size_of::<HashItem>();
+        let field_hash_table_size =
+            options.field_hash_table_buckets * std::mem::size_of::<HashItem>();
+        let field_hash_table_offset = std::mem::size_of::<JournalHeader>() as u64
+            + std::mem::size_of::<ObjectHeader>() as u64;
+        let data_hash_table_offset = field_hash_table_offset
+            + field_hash_table_size as u64
+            + std::mem::size_of::<ObjectHeader>() as u64;
+        let data_hash_table_object_offset =
+            data_hash_table_offset - std::mem::size_of::<ObjectHeader>() as u64;
+        let append_offset = data_hash_table_offset + data_hash_table_size as u64;
+        let file_size = round_up_to_file_size_increment(append_offset)?;
+        Ok(CreateLayout {
+            data_hash_table_size,
+            field_hash_table_size,
+            data_hash_table_offset,
+            field_hash_table_offset,
+            data_hash_table_object_offset,
+            file_size,
+        })
+    }
+
+    fn create_header(options: &JournalFileOptions, layout: CreateLayout) -> JournalHeader {
+        let mut header = JournalHeader::default();
+        header.signature = *b"LPKSHHRH";
+        header.compatible_flags = HeaderCompatibleFlags::TailEntryBootId as u32;
+        if options.enable_keyed_hash {
+            header.incompatible_flags |= HeaderIncompatibleFlags::KeyedHash as u32;
+        }
+        header.incompatible_flags |= options.compression.as_incompatible_flag();
+        if options.compact {
+            header.incompatible_flags |= HeaderIncompatibleFlags::Compact as u32;
+        }
+        if options.seal.is_some() {
+            header.compatible_flags |= HeaderCompatibleFlags::Sealed as u32;
+            header.compatible_flags |= HeaderCompatibleFlags::SealedContinuous as u32;
+        }
+        header.data_hash_table_offset = NonZeroU64::new(layout.data_hash_table_offset);
+        header.data_hash_table_size = NonZeroU64::new(layout.data_hash_table_size as u64);
+        header.field_hash_table_offset = NonZeroU64::new(layout.field_hash_table_offset);
+        header.field_hash_table_size = NonZeroU64::new(layout.field_hash_table_size as u64);
+        header.tail_object_offset = NonZeroU64::new(layout.data_hash_table_object_offset);
+        header.header_size = std::mem::size_of::<JournalHeader>() as u64;
+        header.n_objects = 2;
+        header.arena_size = layout.file_size - header.header_size;
+        header.machine_id = *options.machine_id.as_bytes();
+        header.file_id = *options.file_id.as_bytes();
+        header.seqnum_id = *options.seqnum_id.as_bytes();
+        header
+    }
+
+    fn create_header_map(fd: &File, header: &mut JournalHeader) -> Result<M> {
+        let header_size = std::mem::size_of::<JournalHeader>() as u64;
+        let mut header_map = M::create(fd, 0, header_size)?;
+        {
+            let header_mut = JournalHeader::mut_from_prefix(&mut header_map).unwrap().0;
+            *header_mut = *header;
+            header_mut.state = JournalState::Online as u8;
+            header.state = JournalState::Online as u8;
+        }
+        Ok(header_map)
+    }
+
+    fn write_initial_hash_table_headers(&mut self, header: JournalHeader) -> Result<()> {
+        self.write_hash_table_object_header(
+            header.data_hash_table_offset.unwrap(),
+            header.data_hash_table_size.unwrap(),
+            ObjectType::DataHashTable,
+        )?;
+        self.write_hash_table_object_header(
+            header.field_hash_table_offset.unwrap(),
+            header.field_hash_table_size.unwrap(),
+            ObjectType::FieldHashTable,
+        )
+    }
+
+    fn write_hash_table_object_header(
+        &self,
+        table_offset: NonZeroU64,
+        table_size: NonZeroU64,
+        object_type: ObjectType,
+    ) -> Result<()> {
+        let object_offset =
+            NonZeroU64::new(table_offset.get() - std::mem::size_of::<ObjectHeader>() as u64)
+                .unwrap();
+        let object_header = self.object_header_mut(object_offset)?;
+        object_header.type_ = object_type as u8;
+        object_header.size = table_size.get() + std::mem::size_of::<ObjectHeader>() as u64;
+        Ok(())
     }
 
     pub fn journal_header_mut(&mut self) -> &mut JournalHeader {
@@ -1569,64 +1627,91 @@ impl<M: MemoryMapMut> JournalFile<M> {
     where
         T: JournalObjectMut<&'a mut [u8]>,
     {
+        let context = self.mutable_object_context(type_, offset)?;
+        self.window_manager.with_guarded(offset, |wm| {
+            let size_needed = Self::mutable_object_size(wm, context, offset, size)?;
+            let data = wm.get_slice_mut(offset.get(), size_needed)?;
+            let value =
+                T::from_data_mut(data, context.is_compact).ok_or(JournalError::ZerocopyFailure)?;
+            Ok(value)
+        })
+    }
+
+    fn mutable_object_context(
+        &self,
+        object_type: ObjectType,
+        offset: NonZeroU64,
+    ) -> Result<MutableObjectContext> {
         validate_offset_alignment(offset)?;
-
         let journal_header = self.journal_header_ref();
-        let is_compact = journal_header.has_incompatible_flag(HeaderIncompatibleFlags::Compact);
         let header_size = journal_header.header_size;
-        let arena_end = header_size + journal_header.arena_size;
-
-        // Objects cannot be located in the file header
         if offset.get() < header_size {
             return Err(JournalError::ObjectExceedsFileBounds);
         }
-
-        self.window_manager.with_guarded(offset, |wm| {
-            // Get or set the size
-            let size_needed = match size {
-                Some(size) => {
-                    // Setting object header for a new object (no bounds check needed,
-                    // the file will be extended as necessary)
-                    let header_slice =
-                        wm.get_slice_mut(offset.get(), std::mem::size_of::<ObjectHeader>() as u64)?;
-                    let header = ObjectHeader::mut_from_bytes(header_slice)
-                        .map_err(|_| JournalError::ZerocopyFailure)?;
-                    header.type_ = type_ as u8;
-                    header.size = size;
-                    size
-                }
-                None => {
-                    // Reading existing object header
-                    let header_slice =
-                        wm.get_slice(offset.get(), std::mem::size_of::<ObjectHeader>() as u64)?;
-                    let header = ObjectHeader::ref_from_bytes(header_slice)
-                        .map_err(|_| JournalError::ZerocopyFailure)?;
-                    if header.type_ != type_ as u8 {
-                        return Err(JournalError::InvalidObjectType);
-                    }
-                    let size_needed = header.validated_size()?;
-
-                    // Validate that the object doesn't exceed the journal's arena bounds
-                    let end_offset = offset
-                        .get()
-                        .checked_add(size_needed)
-                        .ok_or(JournalError::ObjectExceedsFileBounds)?;
-                    if end_offset > arena_end {
-                        return Err(JournalError::ObjectExceedsFileBounds);
-                    }
-
-                    size_needed
-                }
-            };
-
-            // Get mutable object data
-            let data = wm.get_slice_mut(offset.get(), size_needed)?;
-
-            // Parse the mutable object
-            let value = T::from_data_mut(data, is_compact).ok_or(JournalError::ZerocopyFailure)?;
-
-            Ok(value)
+        Ok(MutableObjectContext {
+            object_type,
+            is_compact: journal_header.has_incompatible_flag(HeaderIncompatibleFlags::Compact),
+            arena_end: header_size + journal_header.arena_size,
         })
+    }
+
+    fn mutable_object_size(
+        wm: &mut WindowManager<M>,
+        context: MutableObjectContext,
+        offset: NonZeroU64,
+        size: Option<u64>,
+    ) -> Result<u64> {
+        match size {
+            Some(size) => Self::initialize_mutable_object_header(wm, context, offset, size),
+            None => Self::existing_mutable_object_size(wm, context, offset),
+        }
+    }
+
+    fn initialize_mutable_object_header(
+        wm: &mut WindowManager<M>,
+        context: MutableObjectContext,
+        offset: NonZeroU64,
+        size: u64,
+    ) -> Result<u64> {
+        let header_slice =
+            wm.get_slice_mut(offset.get(), std::mem::size_of::<ObjectHeader>() as u64)?;
+        let header = ObjectHeader::mut_from_bytes(header_slice)
+            .map_err(|_| JournalError::ZerocopyFailure)?;
+        header.type_ = context.object_type as u8;
+        header.size = size;
+        Ok(size)
+    }
+
+    fn existing_mutable_object_size(
+        wm: &mut WindowManager<M>,
+        context: MutableObjectContext,
+        offset: NonZeroU64,
+    ) -> Result<u64> {
+        let header_slice =
+            wm.get_slice(offset.get(), std::mem::size_of::<ObjectHeader>() as u64)?;
+        let header = ObjectHeader::ref_from_bytes(header_slice)
+            .map_err(|_| JournalError::ZerocopyFailure)?;
+        if header.type_ != context.object_type as u8 {
+            return Err(JournalError::InvalidObjectType);
+        }
+        let size_needed = header.validated_size()?;
+        Self::validate_mutable_object_bounds(context, offset, size_needed)?;
+        Ok(size_needed)
+    }
+
+    fn validate_mutable_object_bounds(
+        context: MutableObjectContext,
+        offset: NonZeroU64,
+        size_needed: u64,
+    ) -> Result<()> {
+        let end_offset = offset
+            .get()
+            .checked_add(size_needed)
+            .ok_or(JournalError::ObjectExceedsFileBounds)?;
+        if end_offset > context.arena_end {
+            return Err(JournalError::ObjectExceedsFileBounds);
+        }
+        Ok(())
     }
 
     pub fn offset_array_mut(

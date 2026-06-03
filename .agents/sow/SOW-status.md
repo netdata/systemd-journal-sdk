@@ -23,7 +23,9 @@ Last updated: 2026-06-03
   the Rust object-graph verifier locally Lizard-clean and passed Rust plus full
   verifier interoperability validation. Batch 5 made the Rust core writer
   runtime locally Lizard-clean and passed journal-core tests plus writer and
-  verifier interoperability validation. Remaining work is to continue complexity
+  verifier interoperability validation. Batch 6 made Rust core file/mmap object
+  access runtime locally Lizard-clean and passed journal-core plus writer
+  interoperability validation. Remaining work is to continue complexity
   remediation, record final scanner results, and complete whole-SOW review.
 
 ## Pending
