@@ -2612,7 +2612,17 @@ Batch 46:
   - `git diff --check` passed.
   - `.agents/sow/audit.sh` passed.
 - Post-push scanner result:
-  - Pending for this batch.
+  - GitHub CodeQL workflow passed for Python, Go, JavaScript/TypeScript, and
+    Rust.
+  - GitHub Codacy SARIF workflow passed and exported Codacy Cloud issue data.
+  - GitHub code scanning showed 16 current alerts for `27c5b6c`, down from 21
+    for `5533029`.
+  - GitHub object-injection alerts dropped from 5 to 0.
+  - Remaining GitHub current alerts are 8 `Lizard_file-nloc-critical`, 4
+    `Lizard_ccn-critical`, 3 Agentlinter instruction-file findings, and 1
+    CodeQL `py/overly-permissive-file` finding.
+  - Codacy Cloud export still showed 8 quality issues and 0 security findings;
+    all 8 were file-size findings.
 
 Reviewer findings:
 

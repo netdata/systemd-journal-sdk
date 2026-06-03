@@ -209,10 +209,12 @@ Last updated: 2026-06-03
   removing the final scanner-sensitive bracket reads/writes in Node runtime,
   internal benchmark, live-writer helper, and sealed-file test code; Node syntax
   checks, targeted survivor search, full Node tests, diff check, and SOW audit
-  passed locally. Remaining work is to push Batch 46, verify Codacy/GitHub code
-  scanning has analyzed it, decide or disposition the cross-language `0640`
-  journal file permission finding, address residual current-commit findings,
-  record final scanner results, and complete whole-SOW review.
+  passed locally. Batch 46 was pushed as `27c5b6c`; CodeQL and Codacy SARIF
+  passed, GitHub current alerts dropped to 16, object-injection alerts dropped
+  to zero, and Codacy Cloud still showed 8 quality issues with 0 security
+  findings. Remaining work is to decide or disposition the cross-language
+  `0640` journal file permission finding, address residual current-commit
+  findings, record final scanner results, and complete whole-SOW review.
 
 ## Pending
 
