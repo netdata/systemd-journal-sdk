@@ -1,7 +1,0 @@
----
-engines:
-  cppcheck:
-    language: c
-exclude_paths:
-  - "CLAUDE.md"
-  - "GEMINI.md"

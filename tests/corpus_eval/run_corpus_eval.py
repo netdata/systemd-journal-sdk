@@ -389,7 +389,7 @@ def systemd_digest(
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
     proc = subprocess.Popen(  # nosec B603 - harness uses shell=False command vectors.
-        actual,
+        actual,  # nosemgrep
         cwd=str(ROOT),
         env=env,
         stdout=subprocess.PIPE,
@@ -773,7 +773,7 @@ def generate_smoke_fixture(tools: ToolPaths, env: dict[str, str], out: Path) -> 
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
     result = subprocess.run(  # nosec B603
-        cmd,
+        cmd,  # nosemgrep
         cwd=str(ROOT),
         env=env,
         stdout=subprocess.PIPE,

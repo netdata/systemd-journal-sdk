@@ -663,6 +663,11 @@ Tests or equivalent validation:
   Codacy Analysis CLI binary does not expose the documented
   `validate-configuration` command, so validation used YAML parsing and will
   rely on the next cloud analysis as the authoritative configuration check.
+- Local Codacy configuration rollback validation passed `python3 -m py_compile`
+  for the two touched Python harnesses, focused same-line `# nosemgrep`
+  verification for the three remaining Semgrep subprocess argument rows,
+  Cppcheck `--enable=all --inline-suppr` scan showing `missingIncludeSystem`
+  remains locally suppressed, `git diff --check`, and `.agents/sow/audit.sh`.
 
 Real-use evidence:
 
@@ -1013,8 +1018,17 @@ Real-use evidence:
   - `cppcheck_missingIncludeSystem` reports missing standard or systemd headers
     in six C helper files under Codacy's analysis environment. The files build
     locally and through the existing systemd helper scripts, so the C helpers
-    now use file-level `missingIncludeSystem` suppressions instead of changing
-    valid include lists.
+  now use file-level `missingIncludeSystem` suppressions instead of changing
+  valid include lists.
+- Codacy cloud export after `7f51c78` reported 1137 quality issues on
+  `master`. This proved `.codacy.yaml` was not acceptable: it did not remove
+  the `AGENTS.md` versus `CLAUDE.md` duplicate-instruction group and it
+  increased the analyzed issue count by reintroducing previously ignored path
+  classes. The local correction removes `.codacy.yaml`, keeps the Cppcheck
+  file-level suppressions because `cppcheck_missingIncludeSystem` is confirmed
+  0 in cloud, rewrites the machine-id bullet so it is self-describing, and adds
+  exact-line `# nosemgrep` suppressions to the three remaining Python
+  subprocess command-argument rows.
 
 Reviewer findings:
 

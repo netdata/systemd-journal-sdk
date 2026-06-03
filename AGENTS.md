@@ -100,8 +100,7 @@ these inputs:
 
 - `/proc`
 - `/host/proc`
-- `/etc/machine-id`
-- `/var/lib/dbus/machine-id`
+- machine identity files: `/etc/machine-id` and `/var/lib/dbus/machine-id`
 - platform registries
 - `sysctl`
 - `system_profiler`
