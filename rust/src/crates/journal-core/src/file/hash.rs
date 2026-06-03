@@ -108,6 +108,7 @@ fn read_u32_le_at(data: &[u8], offset: usize) -> u32 {
     debug_assert!(offset + 4 <= data.len());
     // SAFETY: callers check chunk/tail length before requesting each word.
     // `read_unaligned` is required because journal payloads are byte strings.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     u32::from_le(unsafe { std::ptr::read_unaligned(data.as_ptr().add(offset).cast::<u32>()) })
 }
 

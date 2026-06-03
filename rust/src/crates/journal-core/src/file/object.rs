@@ -833,7 +833,7 @@ impl DataObjectHeader {
         let cursor = match self.n_entries?.get() {
             1 => None,
             n => {
-                let total_items = unsafe { NonZeroUsize::new_unchecked(n as usize - 1) };
+                let total_items = NonZeroUsize::new(n as usize - 1)?;
                 Some(Cursor::at_head(List::new(
                     self.entry_array_offset?,
                     total_items,

@@ -43,6 +43,9 @@ pub fn load_machine_id() -> io::Result<uuid::Uuid> {
         tv_sec: 1,
         tv_nsec: 0,
     };
+    // SAFETY: `bytes` is a valid 16-byte output buffer and `timeout` points to
+    // an initialized timespec for the duration of the call.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let rc = unsafe { libc::gethostuuid(bytes.as_mut_ptr(), &timeout) };
     if rc == 0 {
         return Ok(uuid::Uuid::from_bytes(bytes));
@@ -90,8 +93,14 @@ pub fn load_boot_id() -> io::Result<uuid::Uuid> {
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]
 fn load_boot_id_from_sysctl_boottime() -> io::Result<uuid::Uuid> {
     let name = b"kern.boottime\0";
+    // SAFETY: `timeval` is a plain C value that is fully initialized by
+    // `sysctlbyname` before it is read below.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let mut boottime: libc::timeval = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::timeval>();
+    // SAFETY: The name is NUL-terminated, output buffer points to `boottime`,
+    // and `len` is initialized to the buffer size expected by sysctl.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let rc = unsafe {
         libc::sysctlbyname(
             name.as_ptr() as *const libc::c_char,

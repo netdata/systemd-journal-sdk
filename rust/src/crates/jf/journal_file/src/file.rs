@@ -417,12 +417,18 @@ impl<M: MemoryMap> JournalFile<M> {
 
     pub fn object_header_ref(&self, position: NonZeroU64) -> Result<&ObjectHeader> {
         let size_needed = std::mem::size_of::<ObjectHeader>() as u64;
+        // SAFETY: Read access goes through the internal window manager and the
+        // returned header borrow is tied to `self`.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let window_manager = unsafe { &mut *self.window_manager.get() };
         let header_slice = window_manager.get_slice(position.get(), size_needed)?;
         Ok(ObjectHeader::ref_from_bytes(header_slice).unwrap())
     }
 
     fn object_data_ref(&self, offset: NonZeroU64, size_needed: u64) -> Result<&[u8]> {
+        // SAFETY: Read access uses the internal window manager only to obtain a
+        // mapped slice whose lifetime is tied to `self`.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let window_manager = unsafe { &mut *self.window_manager.get() };
         let object_slice = window_manager.get_slice(offset.get(), size_needed)?;
         Ok(object_slice)
@@ -771,12 +777,18 @@ impl<M: MemoryMapMut> JournalFile<M> {
 
     fn object_header_mut(&self, offset: NonZeroU64) -> Result<&mut ObjectHeader> {
         let size_needed = std::mem::size_of::<ObjectHeader>() as u64;
+        // SAFETY: Mutable object access is serialized by the JournalFile API;
+        // this unwrap gives the internal window manager the caller's borrow.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let window_manager = unsafe { &mut *self.window_manager.get() };
         let header_slice = window_manager.get_slice_mut(offset.get(), size_needed)?;
         Ok(ObjectHeader::mut_from_bytes(header_slice).unwrap())
     }
 
     fn object_data_mut(&self, offset: NonZeroU64, size_needed: u64) -> Result<&mut [u8]> {
+        // SAFETY: Mutable access is serialized by JournalFile methods; the
+        // returned slice is tied to the caller's borrow of `self`.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let window_manager = unsafe { &mut *self.window_manager.get() };
         let object_slice = window_manager.get_slice_mut(offset.get(), size_needed)?;
         Ok(object_slice)

@@ -320,6 +320,7 @@ impl RowPayload {
                 // SAFETY: FileReader only creates borrowed row payloads for whole-file mmap.
                 // Row storage is cleared before advancing/seeking/remapping, so the mapped
                 // bytes stay valid for the documented current-row lifetime.
+                // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
                 unsafe { std::slice::from_raw_parts(*ptr, *len) }
             }
             Self::Owned { index } => owned[*index].as_slice(),
@@ -3127,6 +3128,9 @@ mod tests {
             .is_some()
         {}
 
+        // SAFETY: This test intentionally checks that the previously returned
+        // row payload remains valid until the reader advances to another row.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let first_after_end = unsafe { std::slice::from_raw_parts(first_ptr, first_len) };
         assert_eq!(first_after_end, b"MESSAGE=first");
 
@@ -3184,6 +3188,9 @@ mod tests {
                 .is_none()
         );
 
+        // SAFETY: This test intentionally checks that compressed row payload
+        // storage remains valid while enumerating the current row.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let first_after_second = unsafe { std::slice::from_raw_parts(first_ptr, first_len) };
         assert_eq!(first_after_second, first_payload.as_bytes());
     }
@@ -3237,7 +3244,12 @@ mod tests {
                 .is_none()
         );
 
+        // SAFETY: This test intentionally checks that both current-row payload
+        // pointers remain valid after the row enumeration reaches EOF.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let small_after_end = unsafe { std::slice::from_raw_parts(small_ptr, small_len) };
+        // SAFETY: Same current-row lifetime check as `small_after_end`.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let large_after_end = unsafe { std::slice::from_raw_parts(large_ptr, large_len) };
         assert_eq!(small_after_end, small_payload.as_slice());
         assert_eq!(large_after_end, large_payload.as_slice());

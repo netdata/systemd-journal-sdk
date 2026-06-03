@@ -932,6 +932,19 @@ Real-use evidence:
 - Local singleton cleanup replaces that remaining host-identity bullet with
   simpler wording: "Host identity files used by systemd, including
   `/etc/machine-id`."
+- Local Rust unsafe cleanup targets the 32 current
+  `Semgrep_rust.lang.security.unsafe-usage.unsafe-usage` rows. Two
+  `NonZeroUsize::new_unchecked` call sites were replaced with safe
+  `NonZeroUsize::new(...)?`. Required FFI, mmap, raw-slice, signal-handler, and
+  `UnsafeCell` boundaries now have concrete `SAFETY:` comments and narrow
+  `nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage` suppressions at the
+  exact unsafe boundary.
+- Local validation for the Rust unsafe cleanup passed `cargo fmt
+  --manifest-path rust/Cargo.toml --all`; `cargo test --manifest-path
+  rust/Cargo.toml -p journal-common -p journal-core -p journal --lib`;
+  `cargo test --manifest-path rust/Cargo.toml -p journal_file -p
+  window_manager -p sigbus`; a focused scan showing zero reported unsafe
+  boundaries without nearby Semgrep suppression; and `git diff --check`.
 
 Reviewer findings:
 

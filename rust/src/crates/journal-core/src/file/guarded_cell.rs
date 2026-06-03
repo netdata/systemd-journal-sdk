@@ -145,6 +145,7 @@ impl<T> GuardedCell<T> {
         // - We need references that outlive this function's scope
         // - RefCell's RefMut cannot express this pattern (it must drop before returning)
         // - The guard flag provides the runtime safety check for exclusive access
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe { Ok(&mut *self.value.get()) }
     }
 
@@ -177,6 +178,7 @@ impl<T> GuardedCell<T> {
         // SAFETY: The guard was set above and will be cleared by GuardReset
         // after the closure returns. Callers must not return references into the
         // guarded value, so no derived reference can outlive the closure.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let value_ref = unsafe { &mut *self.value.get() };
         f(value_ref)
     }
@@ -252,6 +254,7 @@ impl<T> GuardedCell<T> {
         // SAFETY: We've verified via the guard that no other mutable reference exists.
         // The closure gets temporary mutable access, but we ensure the guard is set
         // before returning the ValueGuard.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let value_ref = unsafe { &mut *self.value.get() };
 
         // Execute the user's closure to extract/create the result value

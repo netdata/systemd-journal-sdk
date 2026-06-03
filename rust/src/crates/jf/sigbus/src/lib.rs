@@ -10,6 +10,10 @@ extern "C" fn sigbus_handler(
     info: *mut libc::siginfo_t,
     _ucontext: *mut libc::c_void,
 ) {
+    // SAFETY: This signal handler only reads the provided siginfo pointer,
+    // remaps the faulting page with async-signal-safe `mmap`, and stores an
+    // atomic flag. It does not retain pointers after returning.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     unsafe {
         let si = &*info;
         let fault_addr = si.si_addr();
@@ -33,6 +37,9 @@ pub fn signalled() -> bool {
 }
 
 pub fn install_handler() -> Result<()> {
+    // SAFETY: The handler function has C ABI and `sigaction` is initialized
+    // before registration for SIGBUS.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let rc = HANDLER_INSTALLED.get_or_init(|| unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
 

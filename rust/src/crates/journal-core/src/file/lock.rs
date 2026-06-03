@@ -145,8 +145,14 @@ fn platform_boot_id() -> String {
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]
 fn platform_boot_id() -> String {
     let name = b"kern.boottime\0";
+    // SAFETY: `timeval` is a plain C value that is fully initialized by
+    // `sysctlbyname` before it is read below.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let mut boottime: libc::timeval = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::timeval>();
+    // SAFETY: The name is NUL-terminated, output buffer points to `boottime`,
+    // and `len` is initialized to the buffer size expected by sysctl.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let rc = unsafe {
         libc::sysctlbyname(
             name.as_ptr() as *const libc::c_char,
@@ -211,6 +217,9 @@ fn platform_owner_process_is_alive(owner: &LockOwner) -> io::Result<bool> {
         Ok(pid) if pid > 0 => pid,
         _ => return Ok(false),
     };
+    // SAFETY: `kill(pid, 0)` does not signal the process; it only asks the OS
+    // whether this positive PID exists or is inaccessible.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let rc = unsafe { libc::kill(pid, 0) };
     if rc == 0 {
         return Ok(true);
@@ -233,6 +242,9 @@ fn platform_process_start_time(pid: u32) -> io::Result<String> {
         GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
+    // SAFETY: FFI call receives a value PID and returns either a null handle or
+    // an owned process handle closed below.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if handle.is_null() {
         let err = io::Error::last_os_error();
@@ -264,7 +276,13 @@ fn platform_process_start_time(pid: u32) -> io::Result<String> {
         dwHighDateTime: 0,
     };
 
+    // SAFETY: `handle` is a valid process handle and all FILETIME pointers
+    // point to initialized stack storage for Windows to fill.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let ok = unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) };
+    // SAFETY: `handle` is the owned handle returned by OpenProcess above and is
+    // closed exactly once on this path.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     unsafe {
         CloseHandle(handle);
     }
@@ -294,6 +312,9 @@ fn platform_owner_process_is_alive(owner: &LockOwner) -> io::Result<bool> {
         Err(err) => return Err(err),
     }
 
+    // SAFETY: FFI call receives a value PID and returns either a null handle or
+    // an owned process handle closed below.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, owner.pid) };
     if handle.is_null() {
         let err = io::Error::last_os_error();
@@ -304,7 +325,13 @@ fn platform_owner_process_is_alive(owner: &LockOwner) -> io::Result<bool> {
         };
     }
 
+    // SAFETY: `handle` is a valid synchronization handle from OpenProcess.
+    // Zero timeout makes this a non-blocking liveness probe.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let wait = unsafe { WaitForSingleObject(handle, 0) };
+    // SAFETY: `handle` is the owned handle returned by OpenProcess above and is
+    // closed exactly once on this path.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     unsafe {
         CloseHandle(handle);
     }

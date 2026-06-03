@@ -295,10 +295,16 @@ pub fn monotonic_now() -> std::io::Result<Microseconds> {
     #[cfg(unix)]
     {
         let mut ts = std::mem::MaybeUninit::<libc::timespec>::uninit();
+        // SAFETY: `ts` points to valid uninitialized storage for
+        // `clock_gettime` to initialize on success.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let rc = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, ts.as_mut_ptr()) };
         if rc != 0 {
             return Err(std::io::Error::last_os_error());
         }
+        // SAFETY: `assume_init` is reached only after `clock_gettime`
+        // returned success and initialized the full `timespec`.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let ts = unsafe { ts.assume_init() };
         let seconds = u64::try_from(ts.tv_sec).map_err(|_| {
             std::io::Error::new(
@@ -329,6 +335,9 @@ pub fn monotonic_now() -> std::io::Result<Microseconds> {
         use windows_sys::Win32::System::WindowsProgramming::QueryUnbiasedInterruptTime;
 
         let mut ticks_100ns = 0u64;
+        // SAFETY: Windows writes a 64-bit tick count through this valid stack
+        // pointer and does not retain the pointer after the call.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let ok = unsafe { QueryUnbiasedInterruptTime(&mut ticks_100ns) };
         if ok == 0 {
             return Err(std::io::Error::last_os_error());

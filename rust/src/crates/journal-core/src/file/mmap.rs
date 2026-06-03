@@ -73,6 +73,9 @@ impl MemoryMap for Mmap {
         if end > file_size {
             return Err(JournalError::ObjectExceedsFileBounds);
         }
+        // SAFETY: `offset + size` was checked against the current file size
+        // above, so this read-only mapping stays within file bounds.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let mmap = unsafe {
             MmapOptions::new()
                 .offset(offset)
@@ -106,6 +109,9 @@ impl MemoryMap for MmapMut {
             return Err(JournalError::ObjectExceedsFileBounds);
         }
 
+        // SAFETY: `required_size` was checked against the file size above, and
+        // `create` extends the file before calling this checked constructor.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let mmap = unsafe {
             MmapOptions::new()
                 .offset(offset)

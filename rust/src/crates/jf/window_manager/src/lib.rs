@@ -21,6 +21,9 @@ impl MemoryMap for Mmap {
         if end > file.metadata()?.len() {
             return Err(JournalError::ObjectExceedsFileBounds);
         }
+        // SAFETY: caller-provided offset and size were checked against file
+        // length immediately above, keeping the mapping within file bounds.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let mmap = unsafe {
             MmapOptions::new()
                 .offset(offset)
@@ -42,6 +45,9 @@ impl MemoryMap for MmapMut {
             file.set_len(required_size)?;
         }
 
+        // SAFETY: required size was checked and the file is extended before
+        // creating the writable mapping.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let mmap = unsafe {
             MmapOptions::new()
                 .offset(offset)
