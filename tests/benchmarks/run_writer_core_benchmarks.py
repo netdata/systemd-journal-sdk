@@ -895,7 +895,7 @@ def writer_core_report(
                 "journal verification",
             ],
         },
-        "environment": environment_report(env, out),
+        "environment": environment_report(env, output_dir),
         "tools": tools,
         "results": results,
         "rust_api_mode_byte_identity": rust_api_mode_compare,

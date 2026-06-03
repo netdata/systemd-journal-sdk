@@ -574,7 +574,7 @@ def run_language_measurements(
 def writer_report(
     args: argparse.Namespace,
     profile: str,
-    dataset: Path,
+    dataset: dict[str, Any],
     output_dir: Path,
     env: dict[str, str],
     tools: dict[str, dict[str, Any]],
@@ -596,7 +596,7 @@ def writer_report(
             "keep_journals": args.keep_journals,
         },
         "dataset": dataset,
-        "environment": environment_report(env, out),
+        "environment": environment_report(env, output_dir),
         "tools": tools,
         "results": results,
         "summary": summarize(results),
@@ -631,8 +631,9 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     dataset = ensure_performance_corpus(args.dataset, args.rows, args.regenerate_dataset)
+    dataset_path = Path(str(dataset["path"]))
     tools = build_all_tools(args, env)
-    results = run_writer_measurements(args, tools, dataset, out, env)
+    results = run_writer_measurements(args, tools, dataset_path, out, env)
     report = writer_report(args, profile, dataset, out, env, tools, results)
     report_path = write_report(out, report)
     print_report_summary(report, report_path)

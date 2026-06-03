@@ -121,8 +121,15 @@ Last updated: 2026-06-03
   single-target VM validation smoke against existing repo-local raw data. The
   final local whole-repository Lizard run with `-C 12 -L 100 -a 12 -w .`
   completed with no warnings.
-  Remaining work is to refresh non-complexity scanner inventories, record
-  final scanner results, and complete whole-SOW review.
+  Batch 29 fixed the actionable non-file-size Codacy findings visible after
+  commit `3290d185`: three Python benchmark report `undefined name 'out'`
+  defects, two systemd-matrix style findings, one Node `prefer-for-of` finding,
+  and one Node object-injection security finding. Targeted Python compile,
+  Node syntax/tests, local Lizard, and tiny Go writer benchmark smokes passed.
+  Remaining work is to re-run Codacy after Batch 29, address the remaining
+  file-size complexity findings by splitting files or recording an explicit
+  user decision for generated/vendor/test exceptions, record final scanner
+  results, and complete whole-SOW review.
 
 ## Pending
 

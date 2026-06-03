@@ -471,7 +471,7 @@ def directory_report(
                 "stock directory readback",
             ],
         },
-        "environment": environment_report(env, out),
+        "environment": environment_report(env, output_dir),
         "tools": tools,
         "results": results,
         "summary": summarize(results),

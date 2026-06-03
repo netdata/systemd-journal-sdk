@@ -1239,6 +1239,7 @@ def compare_reader_row(
         discrepancies.append(count_mismatch(row, baseline))
     return discrepancies, observations
 
+
 REQUIRED_MATRIX_ROLES = {
     "stock_journalctl_verify",
     "stock_journalctl_read",
@@ -1311,8 +1312,25 @@ def add_version_journalctl_results(
         tools["version_journalctl"] = {"available": False}
         return
     tools["version_journalctl"] = journalctl_version(version_journalctl, env, args.timeout)
-    results.append(verify_with_journalctl("version_journalctl_verify", version_journalctl, journal_path, env=env, timeout=args.timeout, verification_key=verification_key))
-    results.append(read_with_journalctl("version_journalctl_read", version_journalctl, journal_path, env=env, timeout=args.timeout))
+    results.append(
+        verify_with_journalctl(
+            "version_journalctl_verify",
+            version_journalctl,
+            journal_path,
+            env=env,
+            timeout=args.timeout,
+            verification_key=verification_key,
+        )
+    )
+    results.append(
+        read_with_journalctl(
+            "version_journalctl_read",
+            version_journalctl,
+            journal_path,
+            env=env,
+            timeout=args.timeout,
+        )
+    )
 
 
 def add_stock_journalctl_results(
@@ -1330,8 +1348,25 @@ def add_stock_journalctl_results(
         tools["stock_journalctl"] = {"available": False}
         return
     tools["stock_journalctl"] = journalctl_version(stock_journalctl, env, args.timeout)
-    results.append(verify_with_journalctl("stock_journalctl_verify", stock_journalctl, journal_path, env=env, timeout=args.timeout, verification_key=verification_key))
-    results.append(read_with_journalctl("stock_journalctl_read", stock_journalctl, journal_path, env=env, timeout=args.timeout))
+    results.append(
+        verify_with_journalctl(
+            "stock_journalctl_verify",
+            stock_journalctl,
+            journal_path,
+            env=env,
+            timeout=args.timeout,
+            verification_key=verification_key,
+        )
+    )
+    results.append(
+        read_with_journalctl(
+            "stock_journalctl_read",
+            stock_journalctl,
+            journal_path,
+            env=env,
+            timeout=args.timeout,
+        )
+    )
 
 
 def add_compiled_sdk_readers(

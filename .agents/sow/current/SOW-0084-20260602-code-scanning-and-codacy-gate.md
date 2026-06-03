@@ -2019,6 +2019,67 @@ Batch 28:
     completed with no warnings. The local critical complexity inventory is now
     zero at this threshold.
 
+Batch 29:
+
+- Scope: actionable non-complexity Codacy cloud findings after commit
+  `3290d185d2b5067ff82c5bc0fa16033d1122340e`.
+- Cloud evidence:
+  - `codacy repository gh netdata systemd-journal-sdk --output json` reported
+    `lastAnalysedCommit.sha=3290d185d2b5067ff82c5bc0fa16033d1122340e` and 20
+    quality issues.
+  - Remaining non-file-size patterns were: `Prospector_pyflakes` 3,
+    `Prospector_pycodestyle` 3, `ESLint8_@typescript-eslint_prefer-for-of` 1,
+    and `ESLint8_security_detect-object-injection` 1.
+  - Security findings list had one open high finding matching the Node object
+    injection issue.
+- Changes:
+  - Fixed real `Prospector_pyflakes` `undefined name 'out'` defects in
+    `tests/benchmarks/run_writer_benchmarks.py`,
+    `tests/benchmarks/run_writer_core_benchmarks.py`, and
+    `tests/benchmarks/run_writer_directory_benchmarks.py` by using the
+    existing `output_dir` parameter in report environment metadata.
+  - Fixed an additional bug exposed by the writer-ingestion smoke:
+    `run_writer_benchmarks.py` now passes the generated dataset path to
+    ingesters while keeping the dataset metadata in the report.
+  - Fixed `Prospector_pycodestyle` findings in
+    `tests/systemd_matrix/run_systemd_matrix.py` by adding the missing blank
+    line after the function definition and wrapping two long result-append
+    calls.
+  - Fixed Node `prefer-for-of` and object-injection findings in
+    `node/cmd/status_kb.js` by using `for...of` traversal and a fixed-key
+    setter map instead of assigning dynamic object keys from parsed
+    `/proc/self/status` text.
+- Validation:
+  - `python3 -m py_compile tests/benchmarks/run_writer_benchmarks.py
+    tests/benchmarks/run_writer_core_benchmarks.py
+    tests/benchmarks/run_writer_directory_benchmarks.py
+    tests/systemd_matrix/run_systemd_matrix.py` passed.
+  - `node --check cmd/status_kb.js` passed from the `node/` directory.
+  - `npm_config_cache=../.local/npm-cache npm test` passed in `node/`.
+  - Local Lizard with `-C 12 -L 100 -a 12 -w` reports no findings for the five
+    touched files.
+  - `node --input-type=module -e "import('./node/cmd/status_kb.js').then(...)"`
+    returned status-key output and proved `processStatusKb()` still returns an
+    object.
+  - Tiny writer-ingestion smoke passed:
+    `PYTHONPATH=.local/python-deps python3
+    tests/benchmarks/run_writer_benchmarks.py --languages go --rows 5
+    --repetitions 1 --warmups 0 --output-dir
+    .local/sow-0084-benchmark-fix-smoke --skip-verify --max-size-bytes
+    8388608`.
+  - Tiny writer-core smoke passed:
+    `PYTHONPATH=.local/python-deps python3
+    tests/benchmarks/run_writer_core_benchmarks.py --languages go --rows 5
+    --repetitions 1 --warmups 0 --output-dir
+    .local/sow-0084-benchmark-core-fix-smoke --skip-verify --max-size-bytes
+    8388608`.
+  - Tiny directory-writer smoke passed:
+    `PYTHONPATH=.local/python-deps python3
+    tests/benchmarks/run_writer_directory_benchmarks.py --languages go --rows
+    5 --repetitions 1 --warmups 0 --output-dir
+    .local/sow-0084-benchmark-dir-fix-smoke --skip-verify --max-size-bytes
+    8388608 --rotation-max-size-bytes 8388608`.
+
 Reviewer findings:
 
 - Pending. The current SOW is not ready for terminal reviewer review because
@@ -2088,7 +2149,10 @@ Follow-up mapping:
   - reconcile the user's observed 3056 UI count with the CLI-confirmed
     `master` count of 1502 quality issues after commit `99d2b08`;
   - group and triage the exported `master` cloud findings;
-  - fix or minimally suppress every actionable non-complexity finding;
+  - trigger Codacy reanalysis after Batch 29 and verify the non-file-size
+    findings are gone;
+  - address the remaining file-size complexity findings by splitting files or
+    recording an explicit user decision for generated/vendor/test exceptions;
   - run GitHub workflows after push and record CodeQL/Codacy results;
   - switch from reporting-only to enforcement after the actionable baseline is
     zero or after a later user decision.
