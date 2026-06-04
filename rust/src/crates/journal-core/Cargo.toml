@@ -25,6 +25,7 @@ uuid = { workspace = true , features = ["v4", "rng", "serde"] }
 
 # File format dependencies
 ruzstd = { workspace = true }
+zstd = { workspace = true }
 siphasher = { workspace = true }
 md5 = { workspace = true }
 hashers = { workspace = true }

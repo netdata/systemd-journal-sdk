@@ -109,7 +109,52 @@ fn prepare_lz4_output_buffer(buf: &mut Vec<u8>, uncompressed_size: usize) -> Res
     Ok(())
 }
 
+fn zstd_uncompressed_size(payload: &[u8]) -> Result<usize> {
+    let Some(size) = zstd::zstd_safe::get_frame_content_size(payload)
+        .map_err(|_| JournalError::DecompressorError)?
+    else {
+        return Err(JournalError::DecompressorError);
+    };
+
+    let uncompressed_size = usize::try_from(size).map_err(|_| JournalError::DecompressorError)?;
+    if uncompressed_size > MAX_UNCOMPRESSED_DATA_OBJECT_SIZE {
+        return Err(JournalError::DecompressorError);
+    }
+    Ok(uncompressed_size)
+}
+
+fn prepare_zstd_output_buffer(buf: &mut Vec<u8>, uncompressed_size: usize) -> Result<()> {
+    buf.clear();
+    if uncompressed_size > buf.capacity() && buf.try_reserve_exact(uncompressed_size).is_err() {
+        return Err(JournalError::DecompressorError);
+    }
+    Ok(())
+}
+
 pub(super) fn decompress_zstd_payload(payload: &[u8], buf: &mut Vec<u8>) -> Result<usize> {
+    if let Ok(len) = decompress_zstd_payload_native(payload, buf) {
+        return Ok(len);
+    }
+
+    decompress_zstd_payload_streaming(payload, buf)
+}
+
+fn decompress_zstd_payload_native(payload: &[u8], buf: &mut Vec<u8>) -> Result<usize> {
+    let uncompressed_size = match zstd_uncompressed_size(payload) {
+        Ok(size) => size,
+        Err(_) => return clear_decompression_error(buf),
+    };
+    if prepare_zstd_output_buffer(buf, uncompressed_size).is_err() {
+        return clear_decompression_error(buf);
+    }
+
+    match zstd::zstd_safe::decompress(buf, payload) {
+        Ok(len) if len == uncompressed_size => Ok(len),
+        Ok(_) | Err(_) => clear_decompression_error(buf),
+    }
+}
+
+fn decompress_zstd_payload_streaming(payload: &[u8], buf: &mut Vec<u8>) -> Result<usize> {
     use ruzstd::decoding::StreamingDecoder;
 
     let decoder = StreamingDecoder::new(payload).map_err(|_| JournalError::DecompressorError)?;
@@ -137,4 +182,38 @@ pub(super) fn decompress_xz_payload(payload: &[u8], buf: &mut Vec<u8>) -> Result
 
     let decoder = XzReader::new(payload, false);
     read_limited_to_end(decoder, buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn native_zstd_decompresses_into_reserved_vec() {
+        let payload = b"FIELD=native zstd payload ".repeat(128);
+        let compressed = zstd::bulk::compress(&payload, 1).expect("compress zstd payload");
+        let mut out = Vec::new();
+
+        let len =
+            decompress_zstd_payload_native(&compressed, &mut out).expect("native zstd decode");
+
+        assert_eq!(len, payload.len());
+        assert_eq!(&out[..len], payload.as_slice());
+    }
+
+    #[test]
+    fn zstd_decompressor_keeps_ruzstd_fallback() {
+        let payload = b"FIELD=ruzstd compatibility payload ".repeat(128);
+        let compressed = ruzstd::encoding::compress_to_vec(
+            Cursor::new(payload.as_slice()),
+            ruzstd::encoding::CompressionLevel::Fastest,
+        );
+        let mut out = Vec::new();
+
+        let len = decompress_zstd_payload(&compressed, &mut out).expect("fallback zstd decode");
+
+        assert_eq!(len, payload.len());
+        assert_eq!(&out[..len], payload.as_slice());
+    }
 }

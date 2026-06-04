@@ -49,6 +49,7 @@ pub use facade::{
     SdJournalSeekTail, SdJournalSetOutputMode, SdJournalTestCursor, SdJournalVisitUniqueValues,
 };
 pub use journal_core::error::JournalError;
+use journal_core::file::RowPinnedPayload;
 use journal_core::file::file::DataPayloadReadContext;
 pub use journal_core::file::{
     BucketUtilization, Compression, Direction, EntryItemsType, ExperimentalMmapStrategy,
@@ -305,7 +306,6 @@ struct ReaderCell {
 pub struct FileReader {
     inner: ReaderCell,
     temp_path: Option<PathBuf>,
-    borrow_uncompressed_row_payloads: bool,
     current_key: Option<DirectoryEntryKey>,
     data_offsets: Vec<NonZeroU64>,
     data_payload_context: Option<DataPayloadReadContext>,
@@ -314,31 +314,32 @@ pub struct FileReader {
     entry_data_state_active: bool,
     decompressed: Vec<u8>,
     row_payloads: Vec<RowPayload>,
-    row_owned_payloads: Vec<Vec<u8>>,
+    row_arena: Vec<u8>,
+    row_pins_active: bool,
 }
 
 #[derive(Clone, Copy)]
 enum RowPayload {
     Borrowed { ptr: *const u8, len: usize },
-    Owned { index: usize },
+    Arena { start: usize, len: usize },
 }
 
 enum RowPayloadData {
     Borrowed { ptr: *const u8, len: usize },
-    Owned(Vec<u8>),
+    Decompressed { len: usize },
 }
 
 impl RowPayload {
-    fn as_slice<'a>(&self, owned: &'a [Vec<u8>]) -> &'a [u8] {
+    fn as_slice<'a>(&self, arena: &'a [u8]) -> &'a [u8] {
         match self {
             Self::Borrowed { ptr, len } => {
-                // SAFETY: FileReader only creates borrowed row payloads for whole-file mmap.
-                // Row storage is cleared before advancing/seeking/remapping, so the mapped
-                // bytes stay valid for the documented current-row lifetime.
+                // SAFETY: FileReader creates borrowed row payloads only through
+                // JournalFile's row-pinned mmap path. Row pins are cleared before
+                // advancing, seeking, or explicitly resetting row data state.
                 // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
                 unsafe { std::slice::from_raw_parts(*ptr, *len) }
             }
-            Self::Owned { index } => owned[*index].as_slice(),
+            Self::Arena { start, len } => &arena[*start..*start + *len],
         }
     }
 }
@@ -351,6 +352,7 @@ enum StepStatus {
 
 impl Drop for FileReader {
     fn drop(&mut self) {
+        self.clear_row_payload_pins_best_effort();
         if let Some(path) = &self.temp_path {
             let _ = std::fs::remove_file(path);
         }
@@ -376,8 +378,6 @@ impl FileReader {
             }
             .build(),
             temp_path: None,
-            borrow_uncompressed_row_payloads: options.mmap_strategy
-                == ExperimentalMmapStrategy::WholeFile,
             current_key: None,
             data_offsets: Vec::new(),
             data_payload_context: None,
@@ -386,7 +386,8 @@ impl FileReader {
             entry_data_state_active: false,
             decompressed: Vec::new(),
             row_payloads: Vec::new(),
-            row_owned_payloads: Vec::new(),
+            row_arena: Vec::new(),
+            row_pins_active: false,
         })
     }
 
@@ -406,8 +407,6 @@ impl FileReader {
             }
             .build(),
             temp_path: Some(temp_path),
-            borrow_uncompressed_row_payloads: options.mmap_strategy
-                == ExperimentalMmapStrategy::WholeFile,
             current_key: None,
             data_offsets: Vec::new(),
             data_payload_context: None,
@@ -416,7 +415,8 @@ impl FileReader {
             entry_data_state_active: false,
             decompressed: Vec::new(),
             row_payloads: Vec::new(),
-            row_owned_payloads: Vec::new(),
+            row_arena: Vec::new(),
+            row_pins_active: false,
         })
     }
 
@@ -444,6 +444,7 @@ impl FileReader {
     }
 
     pub fn seek_head(&mut self) {
+        self.clear_row_payload_pins_best_effort();
         self.reset_cached_entry_data_state();
         self.current_key = None;
         self.inner.with_reader_mut(|reader| {
@@ -452,6 +453,7 @@ impl FileReader {
     }
 
     pub fn seek_tail(&mut self) {
+        self.clear_row_payload_pins_best_effort();
         self.reset_cached_entry_data_state();
         self.current_key = None;
         self.inner.with_reader_mut(|reader| {
@@ -460,6 +462,7 @@ impl FileReader {
     }
 
     pub fn seek_realtime(&mut self, usec: u64) {
+        self.clear_row_payload_pins_best_effort();
         self.reset_cached_entry_data_state();
         self.current_key = None;
         self.inner.with_reader_mut(|reader| {
@@ -501,6 +504,8 @@ impl FileReader {
     }
 
     fn step_valid(&mut self, direction: Direction) -> Result<bool> {
+        self.clear_row_payload_pins()?;
+        self.reset_row_payload_storage();
         loop {
             let data_offsets = &mut self.data_offsets;
             let status = self.inner.with_mut(|fields| {
@@ -540,8 +545,7 @@ impl FileReader {
                     );
                     self.data_index = 0;
                     self.entry_data_state_active = false;
-                    self.row_payloads.clear();
-                    self.row_owned_payloads.clear();
+                    self.reset_row_payload_storage();
                     return Ok(true);
                 }
                 StepStatus::Skip => continue,
@@ -552,8 +556,7 @@ impl FileReader {
                     self.data_payload_context = None;
                     self.data_index = 0;
                     self.entry_data_state_active = false;
-                    self.row_payloads.clear();
-                    self.row_owned_payloads.clear();
+                    self.reset_row_payload_storage();
                     return Ok(false);
                 }
             }
@@ -599,9 +602,80 @@ impl FileReader {
     }
 
     pub fn clear_entry_data_state(&mut self) {
+        self.clear_row_payload_pins_best_effort();
         self.reset_cached_entry_data_state();
         self.inner
             .with_reader_mut(|reader| reader.entry_data_restart());
+    }
+
+    fn clear_row_payload_pins(&mut self) -> Result<()> {
+        if !self.row_pins_active {
+            return Ok(());
+        }
+        self.inner
+            .with_file(|file| file.clear_row_payload_pins())
+            .map_err(SdkError::from)?;
+        self.row_pins_active = false;
+        debug_assert!(!self.row_pins_active);
+        Ok(())
+    }
+
+    fn clear_row_payload_pins_best_effort(&mut self) {
+        let _ = self.clear_row_payload_pins();
+        debug_assert!(
+            !self.row_pins_active,
+            "row pins must be cleared before resetting or advancing row state"
+        );
+    }
+
+    fn reset_row_payload_storage(&mut self) {
+        debug_assert!(
+            !self.row_pins_active,
+            "row payload storage reset requires row pins to be cleared first"
+        );
+        self.row_payloads.clear();
+        self.row_arena.clear();
+    }
+
+    fn cache_current_row_payloads(&mut self) -> Result<()> {
+        self.reset_row_payload_storage();
+        let Some(context) = self.data_payload_context else {
+            return Ok(());
+        };
+        let data_offsets = &self.data_offsets;
+        let decompressed = &mut self.decompressed;
+        let row_payloads = &mut self.row_payloads;
+        let row_arena = &mut self.row_arena;
+        let mut row_pins_active = false;
+
+        self.inner
+            .with_file(|file| {
+                file.visit_data_payloads_row_pinned_with_context(
+                    context,
+                    data_offsets,
+                    decompressed,
+                    |payload| {
+                        match payload {
+                            RowPinnedPayload::Borrowed { ptr, len } => {
+                                row_pins_active = true;
+                                row_payloads.push(RowPayload::Borrowed { ptr, len });
+                            }
+                            RowPinnedPayload::Decompressed(bytes) => {
+                                let start = row_arena.len();
+                                row_arena.extend_from_slice(bytes);
+                                row_payloads.push(RowPayload::Arena {
+                                    start,
+                                    len: bytes.len(),
+                                });
+                            }
+                        }
+                        Ok(())
+                    },
+                )
+            })
+            .map_err(SdkError::from)?;
+        self.row_pins_active = row_pins_active;
+        Ok(())
     }
 
     fn reset_cached_entry_data_state(&mut self) {
@@ -610,8 +684,7 @@ impl FileReader {
         self.data_payload_context = None;
         self.data_index = 0;
         self.entry_data_state_active = false;
-        self.row_payloads.clear();
-        self.row_owned_payloads.clear();
+        self.reset_row_payload_storage();
     }
 
     fn invalidate_entry_data_state(&mut self) {
@@ -621,6 +694,7 @@ impl FileReader {
     }
 
     pub fn entry_data_restart(&mut self) -> Result<()> {
+        self.clear_row_payload_pins()?;
         self.inner
             .with_reader_mut(|reader| reader.entry_data_restart());
         let inner = &mut self.inner;
@@ -638,8 +712,7 @@ impl FileReader {
         })?;
         self.data_index = 0;
         self.entry_data_state_active = true;
-        self.row_payloads.clear();
-        self.row_owned_payloads.clear();
+        self.cache_current_row_payloads()?;
         Ok(())
     }
 
@@ -654,11 +727,14 @@ impl FileReader {
         if self.row_payloads.len() == index {
             let payload = self.read_row_payload(data_offset)?;
             let payload = match payload {
-                RowPayloadData::Borrowed { ptr, len } => RowPayload::Borrowed { ptr, len },
-                RowPayloadData::Owned(bytes) => {
-                    let owned_index = self.row_owned_payloads.len();
-                    self.row_owned_payloads.push(bytes);
-                    RowPayload::Owned { index: owned_index }
+                RowPayloadData::Borrowed { ptr, len } => {
+                    self.row_pins_active = true;
+                    RowPayload::Borrowed { ptr, len }
+                }
+                RowPayloadData::Decompressed { len } => {
+                    let start = self.row_arena.len();
+                    self.row_arena.extend_from_slice(&self.decompressed[..len]);
+                    RowPayload::Arena { start, len }
                 }
             };
             self.row_payloads.push(payload);
@@ -667,43 +743,32 @@ impl FileReader {
             .row_payloads
             .get(index)
             .expect("payload should be stored before returning it");
-        Ok(Some(payload.as_slice(&self.row_owned_payloads)))
+        Ok(Some(payload.as_slice(&self.row_arena)))
     }
 
     fn read_row_payload(&mut self, data_offset: NonZeroU64) -> Result<RowPayloadData> {
-        let borrow_uncompressed = self.borrow_uncompressed_row_payloads;
         let cached_context = self.data_payload_context;
+        let decompressed = &mut self.decompressed;
         self.inner.with_mut(|fields| {
             let context = cached_context.unwrap_or_else(|| fields.file.data_payload_read_context());
             fields.reader.release_object_guards();
-            let info = fields
+            if let Some((ptr, len)) = fields
                 .file
-                .data_payload_object_info_at(context, data_offset)?;
-            if !info.is_compressed() {
-                if borrow_uncompressed {
-                    let (ptr, len) = fields.file.raw_data_payload_ptr_with_info_unguarded(
-                        context,
-                        data_offset,
-                        info,
-                    )?;
-                    return Ok(RowPayloadData::Borrowed { ptr, len });
-                }
-
-                let payload =
-                    fields
-                        .reader
-                        .raw_data_payload_at(fields.file, context, info, data_offset)?;
-                let owned = RowPayloadData::Owned(payload.to_vec());
-                fields.reader.release_object_guards();
-                return Ok(owned);
+                .raw_data_payload_ptr_row_pinned_if_uncompressed(context, data_offset)?
+            {
+                return Ok(RowPayloadData::Borrowed { ptr, len });
             }
 
             let data_guard = fields.reader.data_object_at(fields.file, data_offset)?;
-            let mut decompressed = Vec::new();
-            let len = data_guard.decompress(&mut decompressed)?;
-            decompressed.truncate(len);
+            decompressed.clear();
+            let len = data_guard.decompress(decompressed)?;
+            debug_assert_eq!(
+                decompressed.len(),
+                len,
+                "decompressors must set the output buffer length before returning"
+            );
             fields.reader.release_object_guards();
-            Ok(RowPayloadData::Owned(decompressed))
+            Ok(RowPayloadData::Decompressed { len })
         })
     }
 
@@ -737,6 +802,16 @@ impl FileReader {
         self.inner
             .with(|fields| fields.reader.get_realtime_usec(fields.file))
             .map_err(Into::into)
+    }
+
+    pub fn get_seqnum(&self) -> Result<(u64, [u8; 16])> {
+        let key = self.current_directory_entry_key()?;
+        Ok((key.seqnum, key.seqnum_id))
+    }
+
+    pub fn get_monotonic_usec(&self) -> Result<(u64, [u8; 16])> {
+        let key = self.current_directory_entry_key()?;
+        Ok((key.monotonic, key.boot_id))
     }
 
     pub fn get_cursor(&self) -> Result<String> {

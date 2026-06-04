@@ -37,9 +37,32 @@ Last updated: 2026-06-04
 - SOW-0083 - Index-Derived Facet And Histogram Optimization: open. Depends on
   SOW-0082; measures and implements optional index-derived facet and histogram
   strategies with break-even evidence from generated and real-corpus queries.
+- SOW-0087 - Rust Core Row View Primitive: open. Follow-up from SOW-0086 to
+  move current-row ownership into a lower Rust core primitive.
+- SOW-0088 - Rust Offset Array Cursor Cache: open. Follow-up from SOW-0086 to
+  remove repeated offset-array node reads and reverse traversal list walks.
+- SOW-0089 - Rust Compressed DATA Reuse: open. Follow-up from SOW-0086 to
+  measure and conditionally implement compressed-DATA and Zstandard context
+  reuse.
+- SOW-0090 - Rust Reader Header Snapshot Cache: open. Follow-up from SOW-0086
+  to centralize cached header/snapshot state for Rust reader hot paths.
+- SOW-0091 - Rust Row View Adoption: open. Depends on SOW-0087; adopts the
+  future row-view primitive in directory, engine, and index paths.
+- SOW-0092 - Rust Row Pin Hostile File Bound: open. Follow-up from SOW-0086 to
+  bound per-row row-pinned mmap growth for hostile or corrupt files while
+  preserving zero-copy row-level validity on normal journals.
 
 ## Recently Closed Or Completed
 
+- SOW-0086 - Rust Reader Performance Contract And Gap Analysis: completed.
+  Established the Rust reader performance contract, added the Rust reader
+  performance spec, implemented row-level mmap-backed payload lifetime for
+  uncompressed DATA, added the compressed current-row arena path, improved
+  facade metadata/data hot paths, added native zstd decompression with pure
+  fallback, and mapped remaining Rust reader performance work to SOW-0087
+  through SOW-0092. Final benchmark evidence shows Rust facade DATA enumeration
+  faster than systemd DATA enumeration on every measured candidate, from 1.56x
+  to 3.61x. Five read-only reviewers voted `PRODUCTION GRADE`.
 - SOW-0085 - Codacy Coverage Reporting: completed. GitHub Actions now
   generates Rust, Go, Python, and Node.js coverage reports, uploads partial
   reports to Codacy with the selected account-token environment, and finalizes

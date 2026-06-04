@@ -391,6 +391,26 @@ impl DirectoryReader {
         self.files[self.index].get_realtime_usec()
     }
 
+    pub fn get_seqnum(&self) -> Result<(u64, [u8; 16])> {
+        if self.index >= self.files.len() {
+            return Err(SdkError::NoEntry);
+        }
+        if let Some(key) = self.current_key {
+            return Ok((key.seqnum, key.seqnum_id));
+        }
+        self.files[self.index].get_seqnum()
+    }
+
+    pub fn get_monotonic_usec(&self) -> Result<(u64, [u8; 16])> {
+        if self.index >= self.files.len() {
+            return Err(SdkError::NoEntry);
+        }
+        if let Some(key) = self.current_key {
+            return Ok((key.monotonic, key.boot_id));
+        }
+        self.files[self.index].get_monotonic_usec()
+    }
+
     pub fn get_cursor(&self) -> Result<String> {
         if self.index >= self.files.len() {
             return Err(SdkError::NoEntry);

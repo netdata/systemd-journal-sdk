@@ -273,15 +273,20 @@ impl SdJournal {
         .map_err(map_error)
     }
 
-    pub fn get_seqnum(&mut self) -> std::result::Result<(u64, [u8; 16]), Error> {
-        let entry = self.get_entry()?;
-        let seqnum_id = parse_cursor_seqnum_id(&entry.cursor)?;
-        Ok((entry.seqnum, seqnum_id))
+    pub fn get_seqnum(&self) -> std::result::Result<(u64, [u8; 16]), Error> {
+        match &self.reader {
+            ReaderKind::File(reader) => reader.get_seqnum(),
+            ReaderKind::Directory(reader) => reader.get_seqnum(),
+        }
+        .map_err(map_error)
     }
 
-    pub fn get_monotonic_usec(&mut self) -> std::result::Result<(u64, [u8; 16]), Error> {
-        let entry = self.get_entry()?;
-        Ok((entry.monotonic, entry.boot_id))
+    pub fn get_monotonic_usec(&self) -> std::result::Result<(u64, [u8; 16]), Error> {
+        match &self.reader {
+            ReaderKind::File(reader) => reader.get_monotonic_usec(),
+            ReaderKind::Directory(reader) => reader.get_monotonic_usec(),
+        }
+        .map_err(map_error)
     }
 
     pub fn test_cursor(&self, cursor: &str) -> std::result::Result<bool, Error> {
@@ -506,11 +511,11 @@ pub fn SdJournalGetRealtimeUsec(j: &SdJournal) -> std::result::Result<u64, Error
     j.get_realtime_usec()
 }
 
-pub fn SdJournalGetSeqnum(j: &mut SdJournal) -> std::result::Result<(u64, [u8; 16]), Error> {
+pub fn SdJournalGetSeqnum(j: &SdJournal) -> std::result::Result<(u64, [u8; 16]), Error> {
     j.get_seqnum()
 }
 
-pub fn SdJournalGetMonotonicUsec(j: &mut SdJournal) -> std::result::Result<(u64, [u8; 16]), Error> {
+pub fn SdJournalGetMonotonicUsec(j: &SdJournal) -> std::result::Result<(u64, [u8; 16]), Error> {
     j.get_monotonic_usec()
 }
 
@@ -612,20 +617,6 @@ fn payload_from_field_value(field: &str, value: &[u8]) -> Vec<u8> {
     payload.push(b'=');
     payload.extend_from_slice(value);
     payload
-}
-
-fn parse_cursor_seqnum_id(cursor: &str) -> std::result::Result<[u8; 16], Error> {
-    let seqnum_id = cursor
-        .split(';')
-        .find_map(|part| part.strip_prefix("s="))
-        .ok_or(Error::InvalidCursor)?;
-    let bytes = hex::decode(seqnum_id).map_err(|_| Error::InvalidCursor)?;
-    if bytes.len() != 16 {
-        return Err(Error::InvalidCursor);
-    }
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&bytes);
-    Ok(out)
 }
 
 fn map_error(err: SdkError) -> Error {

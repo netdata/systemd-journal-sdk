@@ -134,6 +134,7 @@ struct Window<M: MemoryMap> {
     offset: u64,
     size: u64,
     mmap: M,
+    row_pinned: bool,
 }
 
 impl<M: MemoryMap> std::fmt::Debug for Window<M> {
@@ -189,6 +190,7 @@ pub struct WindowManager<M: MemoryMap> {
     active_window_idx: Option<usize>,
     max_windows: usize,
     windows: Vec<Window<M>>,
+    row_pin_count: usize,
     map_count: u64,
     remap_count: u64,
     eviction_count: u64,
@@ -286,6 +288,7 @@ impl<M: MemoryMap> WindowManager<M> {
             chunk_size,
             max_windows,
             windows: Vec::new(),
+            row_pin_count: 0,
             active_window_idx: None,
             map_count: 0,
             remap_count: 0,
@@ -391,15 +394,8 @@ impl<M: MemoryMap> WindowManager<M> {
             offset: window_start,
             size,
             mmap,
+            row_pinned: false,
         })
-    }
-
-    fn find_window_to_evict(&self) -> usize {
-        if self.active_window_idx == Some(0) && self.windows.len() > 1 {
-            1
-        } else {
-            0
-        }
     }
 
     fn lookup_window_by_range(&self, position: u64, size_needed: u64) -> Option<usize> {
@@ -459,6 +455,96 @@ impl<M: MemoryMap> WindowManager<M> {
         window.get_slice(position, size)
     }
 
+    pub(crate) fn clear_row_pins(&mut self) {
+        if self.row_pin_count == 0 {
+            return;
+        }
+        for window in &mut self.windows {
+            window.row_pinned = false;
+        }
+        self.row_pin_count = 0;
+    }
+
+    pub(crate) fn get_row_pinned_slice(&mut self, position: u64, size: u64) -> Result<&[u8]> {
+        let end = position
+            .checked_add(size)
+            .ok_or(JournalError::ObjectExceedsFileBounds)?;
+        self.ensure_cached_file_contains(end)?;
+        let idx = self.get_window_index_preserving_row_pins(position, size)?;
+        self.active_window_idx = Some(idx);
+        let window = &mut self.windows[idx];
+        if !window.row_pinned {
+            window.row_pinned = true;
+            self.row_pin_count += 1;
+        }
+        Ok(window.get_slice(position, size))
+    }
+
+    fn push_window(&mut self, window: Window<M>) -> usize {
+        self.windows.push(window);
+        self.record_mapped_bytes();
+        self.windows.len() - 1
+    }
+
+    fn get_window_index_preserving_row_pins(
+        &mut self,
+        position: u64,
+        size_needed: u64,
+    ) -> Result<usize> {
+        if self.strategy == ExperimentalMmapStrategy::WholeFile {
+            let was_unpinned = {
+                let window = self.get_whole_file_window(position, size_needed)?;
+                let was_unpinned = !window.row_pinned;
+                window.row_pinned = true;
+                was_unpinned
+            };
+            if was_unpinned {
+                self.row_pin_count += 1;
+            }
+            return Ok(0);
+        }
+
+        if let Some(idx) = self.lookup_window_by_range(position, size_needed) {
+            return Ok(idx);
+        }
+
+        let range_end = position
+            .checked_add(size_needed)
+            .ok_or(JournalError::ObjectExceedsFileBounds)?;
+        let window_start = self.get_chunk_aligned_start(position);
+        let window_end = self.get_chunk_aligned_end(range_end)?;
+        let num_chunks = (window_end - window_start) / self.chunk_size;
+
+        if let Some(idx) = self.lookup_window_by_position(position) {
+            if !self.windows[idx].row_pinned {
+                // The overlapping window is not pinned, so no current-row
+                // payload can point into it. Replace it with a wider window;
+                // get_row_pinned_slice() pins the replacement before returning
+                // borrowed bytes to the reader.
+                let _window = self.windows.remove(idx);
+                self.active_window_idx = None;
+                let new_window = self.create_window(window_start, num_chunks)?;
+                self.remap_count += 1;
+                return Ok(self.push_window(new_window));
+            }
+            // The pinned window contains the requested start but not the full
+            // requested range; lookup_window_by_range would have matched
+            // otherwise. Do not remap it because existing row slices may point
+            // into it. Map a wider overlapping window for this row instead.
+        }
+
+        if self.windows.len() >= self.max_windows {
+            if let Some(idx) = self.windows.iter().position(|window| !window.row_pinned) {
+                self.windows.remove(idx);
+                self.eviction_count += 1;
+                self.active_window_idx = None;
+            }
+        }
+
+        let new_window = self.create_window(window_start, num_chunks)?;
+        Ok(self.push_window(new_window))
+    }
+
     fn get_window(&mut self, position: u64, size_needed: u64) -> Result<&mut Window<M>> {
         if self.strategy == ExperimentalMmapStrategy::WholeFile {
             return self.get_whole_file_window(position, size_needed);
@@ -469,6 +555,34 @@ impl<M: MemoryMap> WindowManager<M> {
             self.active_window_idx = Some(idx);
             Ok(&mut self.windows[idx])
         } else if let Some(idx) = self.lookup_window_by_position(position) {
+            if self.row_pin_count > 0 && self.windows[idx].row_pinned {
+                let range_end = position
+                    .checked_add(size_needed)
+                    .ok_or(JournalError::ObjectExceedsFileBounds)?;
+                let window_start = self.get_chunk_aligned_start(position);
+                let window_end = self.get_chunk_aligned_end(range_end)?;
+                let num_chunks = (window_end - window_start) / self.chunk_size;
+
+                if self.windows.len() >= self.max_windows {
+                    if let Some(evict_idx) =
+                        self.windows.iter().position(|window| !window.row_pinned)
+                    {
+                        self.windows.remove(evict_idx);
+                        self.eviction_count += 1;
+                        self.active_window_idx = None;
+                    }
+                }
+
+                // If every cached window is row-pinned, retain them all and
+                // map an overlapping transient window for this non-row access.
+                // SOW-0092 tracks adding a hard hostile-file cap for this
+                // intentional per-row cache growth.
+                let new_window = self.create_window(window_start, num_chunks)?;
+                let idx = self.push_window(new_window);
+                self.active_window_idx = Some(idx);
+                return Ok(&mut self.windows[idx]);
+            }
+
             // Remap the window
 
             let _window = self.windows.remove(idx);
@@ -499,11 +613,25 @@ impl<M: MemoryMap> WindowManager<M> {
             // Create a brand new window
 
             if self.windows.len() >= self.max_windows {
-                self.windows.remove(self.find_window_to_evict());
-                self.eviction_count += 1;
-                // Invalidate active_window_idx after removal to maintain consistency.
-                // If create_window fails below, the index won't point to a non-existent window.
-                self.active_window_idx = None;
+                if self.row_pin_count == 0 {
+                    let idx = if self.active_window_idx == Some(0) && self.windows.len() > 1 {
+                        1
+                    } else {
+                        0
+                    };
+                    self.windows.remove(idx);
+                    self.eviction_count += 1;
+                    // Invalidate active_window_idx after removal to maintain consistency.
+                    // If create_window fails below, the index won't point to a non-existent window.
+                    self.active_window_idx = None;
+                } else if let Some(idx) = self.windows.iter().position(|window| !window.row_pinned)
+                {
+                    self.windows.remove(idx);
+                    self.eviction_count += 1;
+                    // Invalidate active_window_idx after removal to maintain consistency.
+                    // If create_window fails below, the index won't point to a non-existent window.
+                    self.active_window_idx = None;
+                }
             }
 
             {
@@ -549,6 +677,7 @@ impl<M: MemoryMap> WindowManager<M> {
         if had_windows {
             self.windows.clear();
             self.active_window_idx = None;
+            self.row_pin_count = 0;
         }
 
         let new_window = self.create_window(0, chunk_count)?;
@@ -587,6 +716,7 @@ impl<M: MemoryMapMut> WindowManager<M> {
         }
         self.windows.clear();
         self.active_window_idx = None;
+        self.row_pin_count = 0;
         self.file.set_len(logical_size)?;
         #[cfg(unix)]
         {
@@ -614,6 +744,7 @@ impl<M: MemoryMapMut> WindowManager<M> {
         if logical_size < self.file_size {
             self.windows.clear();
             self.active_window_idx = None;
+            self.row_pin_count = 0;
         }
         self.file.set_len(logical_size)?;
         self.file_size = logical_size;

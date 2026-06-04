@@ -81,9 +81,73 @@ fn facade_uncompressed_windowed_data_remains_valid_for_current_row() {
         let data = fields.file.data_ref(first_offset).expect("data ref");
         data.raw_payload().as_ptr()
     });
-    assert_ne!(
+    assert_eq!(
         first_ptr, mmap_ptr,
-        "windowed mmap facade payloads must use row-owned storage"
+        "windowed mmap facade payloads must stay borrowed from row-pinned mmap storage"
+    );
+}
+
+#[test]
+fn facade_uncompressed_windowed_row_pins_survive_window_pressure() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir.path().join("journals/window-pressure.journal");
+    let (mut journal_file, mut writer) = create_facade_test_writer(&path);
+    let payloads: Vec<Vec<u8>> = (0..24)
+        .map(|idx| format!("FIELD_{idx:02}={}", "x".repeat(5000)).into_bytes())
+        .collect();
+    let payload_refs: Vec<&[u8]> = payloads.iter().map(Vec::as_slice).collect();
+    writer
+        .add_entry(&mut journal_file, &payload_refs, 1000, 11)
+        .expect("write pressure entry");
+    journal_file.sync().expect("sync pressure journal");
+
+    let mut reader =
+        FileReader::open_with_options(&path, ReaderOptions::snapshot().with_window_size(4096))
+            .expect("open pressure reader");
+    assert!(reader.next().expect("first entry"));
+    reader.entry_data_restart().expect("restart data");
+
+    let (first_ptr, first_len, first_expected) = {
+        let payload = reader
+            .enumerate_entry_payload()
+            .expect("enumerate first data")
+            .expect("first payload");
+        (payload.as_ptr(), payload.len(), payload.to_vec())
+    };
+
+    let mut count = 1;
+    while reader
+        .enumerate_entry_payload()
+        .expect("enumerate pressure row")
+        .is_some()
+    {
+        count += 1;
+    }
+    assert_eq!(count, payloads.len());
+
+    let stats = reader
+        .inner
+        .with_file(|file| file.mmap_stats())
+        .expect("mmap stats");
+    assert!(
+        stats.window_count > 16,
+        "row pins must allow one current row to retain more windows than the normal cache"
+    );
+
+    // SAFETY: This intentionally verifies the current-row lifetime guarantee
+    // after later payload fetches forced additional rolling mmap windows.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let first_after_pressure = unsafe { std::slice::from_raw_parts(first_ptr, first_len) };
+    assert_eq!(first_after_pressure, first_expected.as_slice());
+    assert!(
+        reader.row_pins_active,
+        "current row should keep mmap windows pinned while payload pointers are row-valid"
+    );
+
+    assert!(!reader.next().expect("advance past pressure row"));
+    assert!(
+        !reader.row_pins_active,
+        "leaving the current row must clear row-pinned mmap windows"
     );
 }
 

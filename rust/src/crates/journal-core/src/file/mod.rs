@@ -26,6 +26,8 @@ pub use file::{
     JournalFile, JournalFileOptions, MIN_COMPRESS_THRESHOLD, PayloadParts,
     normalize_compress_threshold,
 };
+#[doc(hidden)]
+pub use file_payload::RowPinnedPayload;
 pub use reader::JournalReader;
 pub use writer::{EntryField, EntryWriteOptions, FieldNamePolicy, JournalWriter, StructuredField};
 

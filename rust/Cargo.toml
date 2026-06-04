@@ -67,6 +67,7 @@ rustc-hash = "2.1"
 
 # Compression
 ruzstd = "0.8.3"
+zstd = { version = "0.13.3", default-features = false }
 lz4_flex = { version = "0.13.1", default-features = false, features = ["std", "safe-decode", "checked-decode"] }
 lzma-rust2 = { version = "0.16.3", default-features = false, features = ["std", "xz", "encoder"] }
 

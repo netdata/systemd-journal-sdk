@@ -22,6 +22,12 @@ pub struct DataPayloadObjectInfo {
     is_compressed: bool,
 }
 
+#[doc(hidden)]
+pub enum RowPinnedPayload<'a> {
+    Borrowed { ptr: *const u8, len: usize },
+    Decompressed(&'a [u8]),
+}
+
 #[derive(Debug, Clone, Copy)]
 struct DataLookupResult {
     next_hash_offset: Option<NonZeroU64>,
@@ -254,6 +260,102 @@ impl<M: MemoryMap> JournalFile<M> {
                 };
             let payload = &data[context.payload_prefix_size as usize..];
             Ok((payload.as_ptr(), payload.len()))
+        })
+    }
+
+    #[doc(hidden)]
+    /// Returns a pointer to an uncompressed DATA payload and pins the backing
+    /// mmap window until row pins are explicitly cleared.
+    pub fn raw_data_payload_ptr_with_info_row_pinned(
+        &self,
+        context: DataPayloadReadContext,
+        offset: NonZeroU64,
+        info: DataPayloadObjectInfo,
+    ) -> Result<(*const u8, usize)> {
+        validate_offset_alignment(offset)?;
+        if offset.get() < context.header_size {
+            return Err(JournalError::ObjectExceedsFileBounds);
+        }
+        if info.is_compressed {
+            return Err(JournalError::InvalidObjectType);
+        }
+        if info.size_needed < context.payload_prefix_size {
+            return Err(JournalError::InvalidObjectSize(info.size_needed));
+        }
+
+        self.window_manager.with_mut(|wm| {
+            let data = wm.get_row_pinned_slice(offset.get(), info.size_needed)?;
+            let payload = &data[context.payload_prefix_size as usize..];
+            Ok((payload.as_ptr(), payload.len()))
+        })
+    }
+
+    #[doc(hidden)]
+    /// Returns a row-pinned pointer when the DATA object is uncompressed.
+    /// Compressed DATA returns `Ok(None)` so the caller can take the
+    /// decompression path.
+    pub fn raw_data_payload_ptr_row_pinned_if_uncompressed(
+        &self,
+        context: DataPayloadReadContext,
+        offset: NonZeroU64,
+    ) -> Result<Option<(*const u8, usize)>> {
+        Self::validate_data_payload_offset(context, offset)?;
+
+        self.window_manager.with_mut(|wm| {
+            let info = Self::data_payload_info_from_window(wm, context, offset)?;
+            if info.is_compressed {
+                return Ok(None);
+            }
+            let data = wm.get_row_pinned_slice(offset.get(), info.size_needed)?;
+            let payload = &data[context.payload_prefix_size as usize..];
+            Ok(Some((payload.as_ptr(), payload.len())))
+        })
+    }
+
+    #[doc(hidden)]
+    pub fn clear_row_payload_pins(&self) -> Result<()> {
+        self.window_manager.with_mut(|wm| {
+            wm.clear_row_pins();
+            Ok(())
+        })
+    }
+
+    #[doc(hidden)]
+    pub fn visit_data_payloads_row_pinned_with_context<F>(
+        &self,
+        context: DataPayloadReadContext,
+        offsets: &[NonZeroU64],
+        decompressed: &mut Vec<u8>,
+        mut visitor: F,
+    ) -> Result<()>
+    where
+        F: FnMut(RowPinnedPayload<'_>) -> Result<()>,
+    {
+        self.window_manager.with_mut(|wm| {
+            for offset in offsets.iter().copied() {
+                Self::validate_data_payload_offset(context, offset)?;
+                let info = Self::data_payload_info_from_window(wm, context, offset)?;
+                let data = if !info.is_compressed {
+                    wm.get_row_pinned_slice(offset.get(), info.size_needed)?
+                } else {
+                    Self::data_slice_from_window(wm, offset, info.size_needed)?
+                };
+                let payload = &data[context.payload_prefix_size as usize..];
+                if !info.is_compressed {
+                    visitor(RowPinnedPayload::Borrowed {
+                        ptr: payload.as_ptr(),
+                        len: payload.len(),
+                    })?;
+                    continue;
+                }
+
+                let object = DataObject::from_data(data, context.is_compact)
+                    .ok_or(JournalError::ZerocopyFailure)?;
+                decompressed.clear();
+                let len = object.decompress(decompressed)?;
+                visitor(RowPinnedPayload::Decompressed(&decompressed[..len]))?;
+            }
+            Ok(())
         })
     }
 
