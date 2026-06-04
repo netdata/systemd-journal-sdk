@@ -420,6 +420,11 @@ Real-use evidence:
   4m04s, and the Codacy upload job completed in 11s.
 - Codacy Cloud repository summary for analyzed commit `6b2ed49a` reported
   `Coverage: 62.0%`, 0 issues, and 0 security findings.
+- GitHub Coverage workflow run `26941281896` passed on final closeout commit
+  `a822d23d`: Go coverage completed in 36s, Python in 1m03s, Rust in 2m33s,
+  Node.js in 4m15s, and the Codacy upload job completed successfully.
+- Codacy Cloud repository summary for analyzed final commit `a822d23d` reported
+  `Coverage: 62.0%`, 0 issues, and 0 security findings.
 
 Reviewer findings:
 
@@ -560,8 +565,8 @@ partial Codacy reports, and finalizes the Codacy coverage report for the commit.
 
 Final external evidence:
 
-- GitHub Coverage workflow run `26940990649`: success.
-- Codacy analyzed commit: `6b2ed49abfa8`.
+- GitHub Coverage workflow run `26941281896`: success.
+- Codacy analyzed commit: `a822d23daecbaba26d809b4c6032cfb582955863`.
 - Codacy coverage: 62.0%.
 - Codacy issues: 0.
 - Codacy security findings: 0.
