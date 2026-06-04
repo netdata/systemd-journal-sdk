@@ -1,9 +1,13 @@
 # SOW Status
 
-Last updated: 2026-06-03
+Last updated: 2026-06-04
 
 ## Current
 
+- SOW-0085 - Codacy Coverage Reporting: in-progress. Adds local
+  Rust/Go/Python/Node coverage generation and a GitHub Actions coverage
+  workflow that uploads partial coverage reports to Codacy with the
+  account-token environment selected by the user.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
