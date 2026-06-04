@@ -44,7 +44,7 @@ jobs:
         run: tests/coverage/run_go_coverage.sh
 
       - name: Upload Go coverage artifact
-        uses: actions/upload-artifact@v8
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-go
           path: |
@@ -77,7 +77,7 @@ jobs:
         run: tests/coverage/run_python_coverage.sh
 
       - name: Upload Python coverage artifact
-        uses: actions/upload-artifact@v8
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-python
           path: |
@@ -109,7 +109,7 @@ jobs:
         run: tests/coverage/run_node_coverage.sh
 
       - name: Upload Node.js coverage artifact
-        uses: actions/upload-artifact@v8
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-node
           path: |
@@ -135,7 +135,7 @@ jobs:
         run: tests/coverage/run_rust_coverage.sh
 
       - name: Upload Rust coverage artifact
-        uses: actions/upload-artifact@v8
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-rust
           path: |

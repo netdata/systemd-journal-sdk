@@ -4,8 +4,7 @@
 
 Status: in-progress
 
-Sub-state: locally validated and reviewed; ready for push and post-push
-Codacy ingestion verification
+Sub-state: pushed once; repairing GitHub Actions artifact upload tag failure
 
 ## Requirements
 
@@ -309,6 +308,17 @@ Failure handling:
 - Cleaned coverage script colored `printf` calls and validated the new scripts
   with ShellCheck to avoid introducing static-analysis noise into the clean
   Codacy gate.
+- Pushed commit `8d3538c8df53` and observed GitHub Coverage workflow run
+  `26940463211` fail during job setup because `actions/upload-artifact@v8` does
+  not exist.
+- Verified current GitHub Action release tags with `gh api` on 2026-06-04:
+  `actions/upload-artifact` latest is `v7.0.1`,
+  `actions/download-artifact` latest is `v8.0.1`, `actions/checkout` latest is
+  `v6.0.3`, `actions/setup-go` latest is `v6.4.0`,
+  `actions/setup-node` latest is `v6.4.0`, and `actions/setup-python` latest is
+  `v6.2.0`.
+- Repaired `.github/workflows/coverage.yml` to use
+  `actions/upload-artifact@v7` while keeping `actions/download-artifact@v8`.
 
 ## Validation
 
@@ -374,8 +384,11 @@ Tests or equivalent validation:
 
 Real-use evidence:
 
-- Codacy Cloud still reports `Coverage: N/A` until the coverage workflow is
-  pushed and Codacy ingests a successful upload for the commit.
+- GitHub Coverage workflow run `26940463211` failed before any tests ran because
+  `actions/upload-artifact@v8` could not be resolved. This is a workflow action
+  tag availability failure, not a language coverage-generation failure.
+- Codacy Cloud still reports `Coverage: N/A` until a repaired coverage workflow
+  run succeeds and Codacy ingests a successful upload for the commit.
 
 Reviewer findings:
 
@@ -425,7 +438,9 @@ Reviewer findings:
   - Normalized Go coverprofile output to repository-relative `go/...` paths
     before upload, avoiding reliance on reporter-internal GitHub module-prefix
     stripping.
-  - Bumped artifact upload/download actions to their current major `v8`.
+  - Bumped artifact download to current major `v8`; later post-push validation
+    showed artifact upload's current major is `v7`, so upload was repaired to
+    `actions/upload-artifact@v7`.
   - Disabled xtrace inside the upload script before token-bearing paths.
   - Re-ran syntax, workflow, Go coverage, root-relative path checks, tokenless
     upload skip, diff hygiene, and SOW audit.
@@ -494,7 +509,8 @@ Lessons:
 
 Follow-up mapping:
 
-- After push, verify the GitHub Coverage workflow and Codacy coverage ingestion.
+- After the repaired workflow is pushed, verify the GitHub Coverage workflow and
+  Codacy coverage ingestion.
 - A coverage percentage threshold is intentionally not set until the first
   accurate baseline is visible in Codacy.
 
