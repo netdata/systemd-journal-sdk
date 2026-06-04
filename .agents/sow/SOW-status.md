@@ -4,10 +4,6 @@ Last updated: 2026-06-04
 
 ## Current
 
-- SOW-0085 - Codacy Coverage Reporting: in-progress. Adds local
-  Rust/Go/Python/Node coverage generation and a GitHub Actions coverage
-  workflow that uploads partial coverage reports to Codacy with the
-  account-token environment selected by the user.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
@@ -44,6 +40,12 @@ Last updated: 2026-06-04
 
 ## Recently Closed Or Completed
 
+- SOW-0085 - Codacy Coverage Reporting: completed. GitHub Actions now
+  generates Rust, Go, Python, and Node.js coverage reports, uploads partial
+  reports to Codacy with the selected account-token environment, and finalizes
+  the Codacy coverage report. Final validation: GitHub Coverage run
+  `26940990649` succeeded, Codacy analyzed commit `6b2ed49a`, coverage is
+  62.0%, issues are 0, and security findings are 0.
 - SOW-0084 - Code Scanning And Codacy Gate: completed. GitHub CodeQL and
   Codacy SARIF workflows are active; tuned Codacy runs enforce findings,
   the no-token path uploads only a stale-alert closeout SARIF, GitHub

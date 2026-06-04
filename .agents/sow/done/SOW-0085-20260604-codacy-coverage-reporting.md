@@ -2,10 +2,10 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: coverage ingested; repairing Codacy findings introduced by coverage
-workflow
+Sub-state: completed; GitHub coverage workflow passes and Codacy reports
+coverage with zero issues and zero security findings
 
 ## Requirements
 
@@ -333,6 +333,10 @@ Failure handling:
     `29eef336d9b2848a0b548edc03f92a220660cdb8`
   - `taiki-e/install-action` cargo-llvm-cov ref:
     `28ba36d36bfc4814f98a469ff9f76b2a41e9aa8a`
+- Pushed commit `6b2ed49abfa8` and verified GitHub Coverage workflow run
+  `26940990649` passed with the SHA-pinned third-party actions.
+- Verified Codacy Cloud analyzed commit `6b2ed49abfa8`, reports
+  `Coverage: 62.0%`, and reports 0 issues and 0 security findings.
 
 ## Validation
 
@@ -410,7 +414,12 @@ Real-use evidence:
 - Codacy Cloud repository summary after run `26940610266` reported
   `Coverage: 62.0%` for `netdata/systemd-journal-sdk`.
 - Codacy Cloud also reported 4 quality/security issues introduced by this SOW;
-  these are being repaired before closure.
+  these were repaired before closure.
+- GitHub Coverage workflow run `26940990649` passed on commit `6b2ed49a`:
+  Go coverage completed in 41s, Python in 1m25s, Rust in 2m36s, Node.js in
+  4m04s, and the Codacy upload job completed in 11s.
+- Codacy Cloud repository summary for analyzed commit `6b2ed49a` reported
+  `Coverage: 62.0%`, 0 issues, and 0 security findings.
 
 Reviewer findings:
 
@@ -485,6 +494,8 @@ Same-failure scan:
 - Confirmed no pre-existing coverage workflow or upload path existed by scanning
   `.github/workflows/` for coverage, Codacy Coverage Reporter, `get.sh`,
   `coverprofile`, `llvm-cov`, `lcov`, `c8`, and `coverage.py` terms.
+- Confirmed Codacy Cloud issues and security findings are empty after the
+  SHA-pinned workflow repair.
 
 Sensitive data gate:
 
@@ -501,9 +512,9 @@ Artifact maintenance gate:
 - End-user/operator docs: added `tests/coverage/README.md`.
 - End-user/operator skills: no update needed; no output/reference skill is
   affected.
-- SOW lifecycle: SOW remains `in-progress` in `current/` until reviewer and
-  pushed-workflow validation complete.
-- SOW-status.md: updated with active SOW-0085 status.
+- SOW lifecycle: moved from `current/` to `done/` after reviewer,
+  pushed-workflow, and Codacy Cloud validation completed.
+- SOW-status.md: updated with completed SOW-0085 status.
 
 Specs update:
 
@@ -531,19 +542,42 @@ Lessons:
 
 Follow-up mapping:
 
-- After the repaired workflow is pushed, verify the GitHub Coverage workflow and
-  Codacy coverage ingestion.
-- A coverage percentage threshold is intentionally not set until the first
-  accurate baseline is visible in Codacy.
+- Implemented: GitHub Coverage workflow passed after the repaired workflow was
+  pushed.
+- Implemented: Codacy coverage ingestion is visible at 62.0%.
+- Implemented: Codacy issues and security findings returned to zero.
+- Rejected for this SOW: adding a separate workflow-level coverage threshold.
+  Codacy already has a repository gate policy with `minCoveragePercentage=60`,
+  and the first measured coverage is 62.0%.
 
 ## Outcome
 
-Pending.
+Completed.
+
+SOW-0085 added repeatable local coverage scripts and a GitHub Actions workflow
+that generates Rust, Go, Python, and Node.js coverage reports, uploads them as
+partial Codacy reports, and finalizes the Codacy coverage report for the commit.
+
+Final external evidence:
+
+- GitHub Coverage workflow run `26940990649`: success.
+- Codacy analyzed commit: `6b2ed49abfa8`.
+- Codacy coverage: 62.0%.
+- Codacy issues: 0.
+- Codacy security findings: 0.
 
 ## Lessons Extracted
 
-Pending.
+- `actionlint` validates workflow syntax but does not prove referenced action
+  tags exist. For newly pinned or upgraded actions, verify release tags with the
+  GitHub API or by running the workflow.
+- Codacy's GitHub Actions pinning rule is useful. Third-party Actions in
+  workflows should use full commit SHAs plus explicit inputs when tag names also
+  carry behavior.
+- Coverage reporting can introduce static-analysis findings in workflow and SOW
+  artifacts. SOW closure must include a remote Codacy issue/finding check, not
+  only local script validation.
 
 ## Followup
 
-Pending.
+None.
