@@ -4,7 +4,8 @@
 
 Status: in-progress
 
-Sub-state: pushed once; repairing GitHub Actions artifact upload tag failure
+Sub-state: coverage ingested; repairing Codacy findings introduced by coverage
+workflow
 
 ## Requirements
 
@@ -216,14 +217,14 @@ Selected: account-token upload using `CODACY_API_TOKEN`,
 Implication: the GitHub repository needs a `CODACY_API_TOKEN` secret with
 coverage-upload rights. Token values remain out of durable artifacts.
 
-2. Coverage scope
+1. Coverage scope
 
 Selected: Rust, Go, Python, and Node.js.
 
 Implication: CI cost is higher than a single-language setup, but Codacy will not
 misrepresent the multi-language SDK as partially unmeasured.
 
-3. Coverage gate behavior
+1. Coverage gate behavior
 
 Selected: reporting-only until baseline is visible.
 
@@ -319,6 +320,19 @@ Failure handling:
   `v6.2.0`.
 - Repaired `.github/workflows/coverage.yml` to use
   `actions/upload-artifact@v7` while keeping `actions/download-artifact@v8`.
+- Repaired the four Codacy findings reported after coverage ingestion:
+  - `Semgrep_yaml.github-actions.security.third-party-action-not-pinned-to-commit-sha`
+    reported `dtolnay/rust-toolchain@stable` and
+    `taiki-e/install-action@cargo-llvm-cov` in
+    `.github/workflows/coverage.yml`.
+  - `markdownlint_MD029` reported ordered-list style at lines 219 and 226 in
+    this SOW.
+- Pinned third-party Rust coverage actions to full commit SHAs while preserving
+  explicit inputs:
+  - `dtolnay/rust-toolchain` stable ref:
+    `29eef336d9b2848a0b548edc03f92a220660cdb8`
+  - `taiki-e/install-action` cargo-llvm-cov ref:
+    `28ba36d36bfc4814f98a469ff9f76b2a41e9aa8a`
 
 ## Validation
 
@@ -387,8 +401,16 @@ Real-use evidence:
 - GitHub Coverage workflow run `26940463211` failed before any tests ran because
   `actions/upload-artifact@v8` could not be resolved. This is a workflow action
   tag availability failure, not a language coverage-generation failure.
-- Codacy Cloud still reports `Coverage: N/A` until a repaired coverage workflow
-  run succeeds and Codacy ingests a successful upload for the commit.
+- GitHub Coverage workflow run `26940610266` passed on commit `3a2a5e44`:
+  Go coverage completed in 48s, Python in 1m31s, Rust in 2m31s, Node.js in
+  4m33s, and the Codacy upload job completed in 17s.
+- Codacy Coverage Reporter logs for run `26940610266` showed each partial
+  report upload succeeded and the final coverage notification was received
+  successfully.
+- Codacy Cloud repository summary after run `26940610266` reported
+  `Coverage: 62.0%` for `netdata/systemd-journal-sdk`.
+- Codacy Cloud also reported 4 quality/security issues introduced by this SOW;
+  these are being repaired before closure.
 
 Reviewer findings:
 
