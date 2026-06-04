@@ -11,8 +11,13 @@ from tests.code_scanning.summarize_findings import (
     findings_from_sarif,
     path_class,
     path_prefix,
+    tool_from_rule,
 )
 from tests.code_scanning.export_codacy_issues import parse_codacy_json, _validate_https_url
+from tests.code_scanning.write_empty_codacy_sarif import (
+    CODACY_TOOL_NAMES,
+    build_empty_sarif,
+)
 
 
 def test_path_grouping_is_sanitized() -> None:
@@ -70,6 +75,18 @@ def test_sarif_summary_uses_rule_and_path_only(tmp_path) -> None:
     assert "do not copy" not in json.dumps(summary)
 
 
+def test_empty_codacy_sarif_closeout_has_stale_alert_tools_only() -> None:
+    sarif = build_empty_sarif()
+    runs = sarif["runs"]
+
+    assert sarif["version"] == "2.1.0"
+    assert len(runs) == len(CODACY_TOOL_NAMES)
+    assert [run["tool"]["driver"]["name"] for run in runs] == list(CODACY_TOOL_NAMES)
+    assert all(run["results"] == [] for run in runs)
+    assert "ESLint8" in CODACY_TOOL_NAMES
+    assert "ESLint9" not in CODACY_TOOL_NAMES
+
+
 def test_codacy_issue_summary_handles_cloud_shape(tmp_path) -> None:
     export = {
         "data": [
@@ -105,6 +122,11 @@ def test_codacy_issue_summary_handles_cloud_shape(tmp_path) -> None:
 def test_codacy_cli_json_parser_ignores_progress_lines() -> None:
     payload = parse_codacy_json('- Fetching issues...\n{"issues": [{"resultDataId": 1}]}')
     assert payload == {"issues": [{"resultDataId": 1}]}
+
+
+def test_rule_tool_detection_handles_current_and_historical_eslint() -> None:
+    assert tool_from_rule("ESLint8_security_detect-object-injection") == "ESLint8"
+    assert tool_from_rule("ESLint9_security_detect-object-injection") == "ESLint9"
 
 
 def test_codacy_api_url_requires_https() -> None:

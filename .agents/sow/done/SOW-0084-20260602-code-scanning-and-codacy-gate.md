@@ -2,12 +2,13 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: scanner workflow implemented; actionable findings cleared; Batch 53
-hardening reviewed; post-push scanner confirmation pending before closeout.
+Sub-state: completed; scanner workflows are active, actionable findings are
+cleared or dispositioned, stale GitHub SARIF alerts are closed, Codacy Cloud is
+clean, and final whole-SOW reviewers voted production-grade.
 
 ## Requirements
 
@@ -2956,6 +2957,18 @@ Batch 53:
     npm_config_cache=../.local/npm-cache npm test` in `node/` passed.
   - `git diff --check` passed.
   - `.agents/sow/audit.sh` passed.
+- Post-push scanner result for `cc7e38c`:
+  - GitHub CodeQL workflow run `26919572210` completed successfully.
+  - GitHub Codacy SARIF workflow run `26919572189` completed successfully.
+  - Before stale-alert cleanup, GitHub code-scanning API reported 257 open
+    alerts, all from old Codacy local default-config SARIF runs; current-head
+    open alert count was 0.
+  - Dismissed exactly those 257 stale non-current alerts with a GitHub
+    code-scanning dismissal comment stating they were from pre-tuned Codacy
+    default-config SARIF and were absent from current-head analysis.
+  - After dismissal, GitHub code-scanning API reported total open alerts: 0.
+  - Codacy Cloud issue export reported `codacy_issue_count=0` for `master`.
+  - Codacy Cloud security finding export reported `codacy_finding_count=0`.
 
 Reviewer findings:
 
@@ -3046,6 +3059,57 @@ Batch 54:
     generated 10 SARIF runs and 0 results.
   - `git diff --check` passed.
   - `.agents/sow/audit.sh` passed.
+- Final reviewer cleanup before close:
+  - Added a why-comment in `tests/code_scanning/write_empty_codacy_sarif.py`
+    documenting that the closeout tool list is limited to tool names that had
+    stale pre-tuned alerts, not all current analyzer tools.
+  - Added unit coverage proving the closeout SARIF has 10 stale-alert tool
+    runs, zero results, includes stale-alert `ESLint8`, and excludes
+    current-only `ESLint9`.
+  - Updated `documentation/code-scanning.md` to describe tuned-config
+    enforcement, the no-token/no-config empty closeout fallback, and the
+    stale-alert closeout helper.
+  - Updated `tests/code_scanning/summarize_findings.py` to classify current
+    `ESLint9` rule prefixes while preserving historical `ESLint8`
+    classification.
+- Final cleanup validation:
+  - `python3 -m pytest tests/code_scanning/test_summarize_findings.py -q`
+    passed, 8 tests.
+  - `python3 -m py_compile tests/code_scanning/write_empty_codacy_sarif.py
+    tests/code_scanning/test_summarize_findings.py
+    tests/code_scanning/summarize_findings.py` passed.
+  - `python3 tests/code_scanning/write_empty_codacy_sarif.py
+    .local/code-scanning/closeout-test/empty-codacy-closeout.sarif` generated
+    10 SARIF runs and 0 results.
+  - `git diff --check` passed.
+
+Round 3 reviewer findings after Batch 54 and final cleanup:
+
+- Final whole-SOW reviewer votes:
+  - `llm-netdata-cloud/kimi-k2.6`: PRODUCTION GRADE.
+  - `llm-netdata-cloud/qwen3.6-plus`: PRODUCTION GRADE.
+  - `llm-netdata-cloud/glm-5.1`: PRODUCTION GRADE.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: PRODUCTION GRADE.
+  - `minimax-coding-plan/MiniMax-M3`: PRODUCTION GRADE.
+- Round 3 blocking findings: none.
+- Round 3 non-blocking findings and dispositions:
+  - No-token/no-config Codacy fallback is visibility-only and can close stale
+    SARIF alerts for tool names that also still exist in tuned analysis.
+    Disposition: accepted for this SOW because the authoritative path is the
+    tuned config or `CODACY_API_TOKEN`; documentation now describes the
+    fallback explicitly and the helper excludes current-only tool names such
+    as `ESLint9`.
+  - Stale-alert closeout tool list is a manual maintenance contract.
+    Disposition: accepted and documented in `documentation/code-scanning.md`
+    and `tests/code_scanning/write_empty_codacy_sarif.py`; unit coverage
+    preserves the intended `ESLint8`/`ESLint9` distinction.
+  - `.bandit` uses bare YAML `skips: []`. Disposition: accepted; local Bandit
+    1.9.4 validates this format and rejects the INI-style form tested during
+    Batch 53.
+  - Fork PRs without secrets will not run the tuned Codacy Cloud path.
+    Disposition: accepted as a GitHub Actions secret-scope limitation; CodeQL
+    still runs, and protected-branch/default-branch validation uses the tuned
+    path when the secret is configured.
 
 Same-failure scan:
 
@@ -3071,11 +3135,12 @@ Artifact maintenance gate:
 - Runtime project skills: no update yet. Existing orchestration skill already
   covers whole-SOW review, repository boundaries, and raw artifact discipline.
 - Specs: no SDK behavior spec update needed for workflow scaffolding.
-- End-user/operator docs: added `documentation/code-scanning.md`.
+- End-user/operator docs: added `documentation/code-scanning.md` and updated it
+  with the final tuned-enforcement/no-token-closeout behavior.
 - End-user/operator skills: no output/reference skill produced.
-- SOW lifecycle: moved to `.agents/sow/current/` and marked `in-progress`.
-- SOW-status.md: updated to list SOW-0084 under current work and keep Netdata
-  integration SOWs blocked by the code-scanning gate.
+- SOW lifecycle: moved to `.agents/sow/done/` and marked `completed`.
+- SOW-status.md: updated during closeout to move SOW-0084 to done and remove
+  the scanner gate as a blocker for Netdata integration SOWs.
 
 Specs update:
 
@@ -3118,23 +3183,54 @@ Follow-up mapping:
   accept caller-provided paths.
 - The report-only phase is complete. Batch 53 switches Codacy SARIF to
   enforcement when a tuned configuration is available, while preserving
-  visibility-only behavior for no-token/default-config runs.
-- Remaining work inside this SOW: commit and push Batch 54, wait for GitHub
-  CodeQL/Codacy SARIF and Codacy Cloud analysis on that pushed commit, record
-  zero-finding evidence, then move this SOW to `done/` with final outcome and
-  status updates.
+  visibility-only behavior for no-token/no-config closeout runs.
+- All remaining SOW closeout work is complete: final reviewers voted
+  production-grade, SOW-status files are updated, and the SOW is moved to
+  `done/`.
 
 ## Outcome
 
-Pending.
+Completed.
+
+- GitHub CodeQL and Codacy SARIF workflows are committed and active.
+- Useful scanner rules remain enabled; noise was removed or narrowed with
+  recorded evidence.
+- GitHub current-head code scanning has zero open alerts after the stale
+  pre-tuned Codacy SARIF alerts were dismissed.
+- Codacy Cloud reports zero quality issues and zero security findings on
+  `master`.
+- The no-token/no-config Codacy workflow path no longer runs noisy local
+  default analysis; it uploads an empty closeout SARIF for stale alert tool
+  names only.
+- Documentation, scanner helper tests, SOW evidence, and status indexes reflect
+  the final gate.
 
 ## Lessons Extracted
 
-Pending.
+- Codacy Cloud and local Codacy Analysis CLI can diverge materially. The Cloud
+  project policy is the authoritative scanner policy for this repository.
+- GitHub code-scanning alert count and SARIF analysis result count are not the
+  same thing. A dismissed CodeQL result can still appear in analysis metadata
+  without being an open alert.
+- Broad scanner suppressions quickly hide useful signals. Re-enable useful
+  rules globally and suppress only audited harness boundaries.
+- Unauthenticated Codacy default analysis is not a trustworthy fallback for
+  this repository because it can reintroduce stale/noisy SARIF alerts.
+- Large maintainability findings were useful: fixing them before Netdata
+  integration reduced future refactor risk.
 
 ## Followup
 
-Pending.
+- No follow-up SOW is needed for the scanner gate before Netdata integration.
+- SOW-0047 through SOW-0050 can proceed without the code-scanning blocker,
+  subject to their other existing gates.
+- If the Codacy workflow tool set changes later, update
+  `tests/code_scanning/write_empty_codacy_sarif.py`,
+  `tests/code_scanning/test_summarize_findings.py`, and
+  `documentation/code-scanning.md` in the same change.
+- If the project chooses to enforce Codacy on fork PRs, create a separate SOW
+  because GitHub secret availability and `pull_request_target` security tradeoffs
+  need explicit design review.
 
 ## Regression Log
 

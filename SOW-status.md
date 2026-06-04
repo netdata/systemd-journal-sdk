@@ -3,7 +3,6 @@
 ## Current
 
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
-- `SOW-0075-20260601-vm-historical-systemd-validation.md` - in-progress. Ubuntu 18.04/22.04/24.04 VM validation and RHEL 8.10 read-only archived validation passed with sanitized reports; Debian 11 remains blocked because the created VM refuses SSH on port 22 and the four-new-VM cap is exhausted.
 
 ## Pending
 
@@ -16,6 +15,8 @@
 
 ## Done
 
+- `SOW-0084-20260602-code-scanning-and-codacy-gate.md`
+- `SOW-0075-20260601-vm-historical-systemd-validation.md`
 - `SOW-0076-20260601-independent-selective-real-corpus-verification.md`
 - `SOW-0064-20260530-real-world-journal-corpus-evaluation.md`
 - `SOW-0055-20260529-rust-seek-cursor-systemd-parity.md`

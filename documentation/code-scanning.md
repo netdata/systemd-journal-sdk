@@ -2,8 +2,10 @@
 
 This repository treats static-analysis findings as a release and Netdata
 integration gate. GitHub CodeQL and Codacy SARIF are configured as
-reporting-only until the existing actionable baseline is fixed or explicitly
-dispositioned.
+enforcing gates when the tuned Codacy configuration is available. The only
+non-enforcing path is the no-token/no-config Codacy fallback, which uploads an
+empty SARIF closeout for historical stale alerts instead of running Codacy's
+noisy local default configuration.
 
 ## Workflows
 
@@ -12,9 +14,22 @@ dispositioned.
 - `.github/workflows/codacy-sarif.yml` runs Codacy Analysis CLI, uploads SARIF
   to GitHub code scanning, and summarizes findings without committing raw
   SARIF or source snippets.
-- If the repository secret `CODACY_API_TOKEN` is configured, the Codacy workflow
-  also exports Codacy cloud issues into `.local/codacy/` on the runner and adds
-  a sanitized summary to the job summary.
+- If `.codacy/codacy.config.json` is committed or the repository secret
+  `CODACY_API_TOKEN` is configured, the Codacy workflow runs the tuned
+  configuration and fails on analyzer findings or analyzer infrastructure
+  failure.
+- If neither committed config nor `CODACY_API_TOKEN` is available, the workflow
+  does not run Codacy's local default configuration. It uploads an empty SARIF
+  closeout for the historical default-config tool names that previously
+  produced stale GitHub code-scanning alerts.
+- The stale-alert closeout tool names are maintained in
+  `tests/code_scanning/write_empty_codacy_sarif.py`. They are intentionally
+  limited to GitHub tool names that already had stale alerts under the
+  `codacy-analysis-cli` SARIF category. Do not add current-only analyzer tool
+  names without checking alert history first.
+- If `CODACY_API_TOKEN` is configured, the workflow also exports Codacy cloud
+  issues into `.local/codacy/` on the runner and adds a sanitized summary to
+  the job summary.
 
 ## Local Codacy Export
 

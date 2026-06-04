@@ -88,6 +88,7 @@ def tool_from_rule(rule_id: str | None) -> str | None:
         "Agentlinter",
         "Bandit",
         "ESLint8",
+        "ESLint9",
         "Lizard",
         "PMD",
         "Prospector",

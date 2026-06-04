@@ -8,6 +8,9 @@ import sys
 from pathlib import Path
 
 
+# GitHub SARIF tool names that had stale pre-tuned Codacy default alerts.
+# Some tools still run in tuned analysis; keep current-only tool names out so
+# the no-token fallback cannot close findings from a new analyzer generation.
 CODACY_TOOL_NAMES = (
     "Agentlinter",
     "Bandit",
