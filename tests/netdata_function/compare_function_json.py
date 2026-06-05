@@ -85,7 +85,8 @@ def normalized_facets(doc: dict[str, Any]) -> dict[str, dict[str, int]]:
             count = option.get("count")
             if isinstance(option_id, str) and isinstance(count, int) and count != 0:
                 values[option_id] = count
-        out[facet_id] = values
+        if values:
+            out[facet_id] = values
     return out
 
 

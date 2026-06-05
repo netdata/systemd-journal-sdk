@@ -6,12 +6,33 @@ use crate::{
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_FUNCTION_NAME: &str = "systemd-journal";
 const DEFAULT_ITEMS_TO_RETURN: usize = 200;
 const DEFAULT_TIME_WINDOW_SECONDS: i64 = 3600;
 const DEFAULT_HISTOGRAM_BUCKETS: usize = 250;
+const EFFECTIVELY_DISABLED_TIMEOUT_SECONDS: u64 = 100 * 365 * 24 * 60 * 60;
+
+const NETDATA_ACCEPTED_PARAMS: &[&str] = &[
+    "info",
+    "delta",
+    "tail",
+    "slice",
+    "data_only",
+    "sampling",
+    "after",
+    "before",
+    "if_modified_since",
+    "anchor",
+    "last",
+    "direction",
+    "query",
+    "histogram",
+    "facets",
+    "selections",
+    "timeout",
+];
 
 const SYSTEMD_DEFAULT_VIEW_KEYS: &[&str] = &[
     "PRIORITY",
@@ -70,6 +91,35 @@ const SYSTEMD_DEFAULT_FACETS: &[&str] = &[
     "_STREAM_ID",
     "_NAMESPACE",
     "_RUNTIME_SCOPE",
+    "_KERNEL_SUBSYSTEM",
+    "_UDEV_DEVNODE",
+    "OBJECT_UID",
+    "OBJECT_GID",
+    "OBJECT_COMM",
+    "OBJECT_EXE",
+    "OBJECT_AUDIT_LOGINUID",
+    "OBJECT_SYSTEMD_CGROUP",
+    "OBJECT_SYSTEMD_SESSION",
+    "OBJECT_SYSTEMD_OWNER_UID",
+    "OBJECT_SYSTEMD_UNIT",
+    "OBJECT_SYSTEMD_USER_UNIT",
+    "COREDUMP_COMM",
+    "COREDUMP_UNIT",
+    "COREDUMP_USER_UNIT",
+    "COREDUMP_SIGNAL_NAME",
+    "COREDUMP_CGROUP",
+    "CONTAINER_ID",
+    "CONTAINER_NAME",
+    "CONTAINER_TAG",
+    "IMAGE_NAME",
+    "ND_NIDL_NODE",
+    "ND_NIDL_CONTEXT",
+    "ND_LOG_SOURCE",
+    "ND_ALERT_NAME",
+    "ND_ALERT_CLASS",
+    "ND_ALERT_COMPONENT",
+    "ND_ALERT_TYPE",
+    "ND_ALERT_STATUS",
 ];
 
 #[derive(Debug, Clone)]
@@ -149,6 +199,32 @@ pub struct NetdataJournalFunction<P = SystemdJournalProfile> {
     profile: P,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct NetdataFunctionRunOptions {
+    pub timeout: Option<Duration>,
+}
+
+impl NetdataFunctionRunOptions {
+    pub fn from_timeout_seconds(seconds: u64) -> Self {
+        let seconds = if seconds == 0 {
+            EFFECTIVELY_DISABLED_TIMEOUT_SECONDS
+        } else {
+            seconds
+        };
+        Self {
+            timeout: Some(Duration::from_secs(seconds)),
+        }
+    }
+}
+
+impl Default for NetdataFunctionRunOptions {
+    fn default() -> Self {
+        Self {
+            timeout: Some(Duration::from_secs(EFFECTIVELY_DISABLED_TIMEOUT_SECONDS)),
+        }
+    }
+}
+
 impl NetdataJournalFunction<SystemdJournalProfile> {
     pub fn systemd_journal() -> Self {
         Self {
@@ -167,35 +243,72 @@ where
     }
 
     pub fn run_directory_request_json(&self, directory: &Path, request: &Value) -> Result<Value> {
+        self.run_directory_request_json_with_options(
+            directory,
+            request,
+            NetdataFunctionRunOptions::default(),
+        )
+    }
+
+    pub fn run_directory_request_json_with_options(
+        &self,
+        directory: &Path,
+        request: &Value,
+        options: NetdataFunctionRunOptions,
+    ) -> Result<Value> {
         let request = NetdataRequest::parse(request, &self.config)?;
         if request.info {
             return Ok(self.info_response());
         }
 
         let paths = collect_journal_files(directory)?;
-        let mut combined = self.explore_paths(&paths, &request)?;
+        let deadline = options.timeout.map(|timeout| Instant::now() + timeout);
+        let mut combined = self.explore_paths(&paths, &request, deadline)?;
         if !request.filters.is_empty() {
             let mut vocabulary_request = request.clone();
             vocabulary_request.filters.clear();
             vocabulary_request.histogram = None;
             vocabulary_request.limit = 0;
-            let vocabulary = self.explore_paths(&paths, &vocabulary_request)?;
+            let vocabulary = self.explore_paths(&paths, &vocabulary_request, deadline)?;
             combined.add_zero_count_facet_values(&vocabulary.facets);
         }
         Ok(self.query_response(request, paths, combined))
     }
 
     pub fn run_directory_request_bytes(&self, directory: &Path, request: &[u8]) -> Result<Value> {
+        self.run_directory_request_bytes_with_options(
+            directory,
+            request,
+            NetdataFunctionRunOptions::default(),
+        )
+    }
+
+    pub fn run_directory_request_bytes_with_options(
+        &self,
+        directory: &Path,
+        request: &[u8],
+        options: NetdataFunctionRunOptions,
+    ) -> Result<Value> {
         let request: Value = serde_json::from_slice(request).map_err(|err| {
             SdkError::InvalidPath(format!("invalid Netdata function JSON: {err}"))
         })?;
-        self.run_directory_request_json(directory, &request)
+        self.run_directory_request_json_with_options(directory, &request, options)
     }
 
-    fn explore_paths(&self, paths: &[PathBuf], request: &NetdataRequest) -> Result<CombinedResult> {
+    fn explore_paths(
+        &self,
+        paths: &[PathBuf],
+        request: &NetdataRequest,
+        deadline: Option<Instant>,
+    ) -> Result<CombinedResult> {
         let query = request.to_explorer_query();
         let mut combined = CombinedResult::default();
         for path in paths {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                combined.partial = true;
+                combined.timed_out = true;
+                break;
+            }
             let mut reader = match FileReader::open_with_options(path, self.config.reader_options) {
                 Ok(reader) => reader,
                 Err(err) => {
@@ -227,11 +340,7 @@ where
             "_request": { "info": true },
             "versions": { "netdata_function_api": 1, "sdk": env!("CARGO_PKG_VERSION") },
             "v": 3,
-            "accepted_params": [
-                "info", "delta", "tail", "slice", "data_only", "sampling", "after",
-                "before", "if_modified_since", "anchor", "last", "direction", "query",
-                "histogram", "facets", "selections"
-            ],
+            "accepted_params": NETDATA_ACCEPTED_PARAMS,
             "required_params": [],
             "show_ids": false,
             "has_history": true,
@@ -266,20 +375,16 @@ where
                 "errors": combined.file_errors,
             },
             "status": 200,
-            "partial": false,
+            "partial": combined.partial,
             "type": "table",
-            "message": "OK",
+            "message": if combined.timed_out { "Timed out" } else { "OK" },
             "update_every": 1,
             "help": null,
             "last_modified": 0,
             "show_ids": false,
             "has_history": true,
             "pagination": true,
-            "accepted_params": [
-                "info", "delta", "tail", "slice", "data_only", "sampling", "after",
-                "before", "if_modified_since", "anchor", "last", "direction", "query",
-                "histogram", "facets", "selections"
-            ],
+            "accepted_params": NETDATA_ACCEPTED_PARAMS,
             "facets": facets,
             "columns": columns.map,
             "data": data,
@@ -368,7 +473,7 @@ where
             let field_name = String::from_utf8_lossy(field).into_owned();
             let mut options: Vec<_> = values
                 .iter()
-                .filter(|(value, _)| value.as_slice() != b"-")
+                .filter(|(value, _)| !value.is_empty() && value.as_slice() != b"-")
                 .map(|(value, count)| {
                     json!({
                         "id": String::from_utf8_lossy(value).into_owned(),
@@ -565,6 +670,8 @@ struct CombinedResult {
     stats: ExplorerStats,
     skipped_files: u64,
     file_errors: Vec<String>,
+    partial: bool,
+    timed_out: bool,
 }
 
 impl CombinedResult {

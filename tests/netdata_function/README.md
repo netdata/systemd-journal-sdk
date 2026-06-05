@@ -6,8 +6,11 @@ function wrapper with an external Netdata `systemd-journal.plugin` binary.
 The external plugin and the SDK wrapper use the same CLI shape:
 
 ```bash
-<binary> --test systemd-journal --dir <journal-dir> --request <request.json>
+<binary> --test systemd-journal --dir <journal-dir> --request <request.json> --timeout <seconds>
 ```
+
+`--timeout 0` disables the test timeout by mapping it to an effectively
+unreachable internal deadline. Nonzero values are seconds.
 
 The comparator checks semantic function output, not byte-for-byte JSON:
 

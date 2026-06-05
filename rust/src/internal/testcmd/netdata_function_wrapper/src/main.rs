@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use journal::netdata::NetdataJournalFunction;
+use journal::netdata::{NetdataFunctionRunOptions, NetdataJournalFunction};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -13,6 +13,8 @@ struct Args {
     directory: PathBuf,
     #[arg(long = "request")]
     request: PathBuf,
+    #[arg(long = "timeout", default_value_t = 0)]
+    timeout_seconds: u64,
 }
 
 fn main() -> Result<()> {
@@ -24,8 +26,9 @@ fn main() -> Result<()> {
     let request = std::fs::read(&args.request)
         .with_context(|| format!("failed to read request {}", args.request.display()))?;
     let function = NetdataJournalFunction::systemd_journal();
+    let options = NetdataFunctionRunOptions::from_timeout_seconds(args.timeout_seconds);
     let response = function
-        .run_directory_request_bytes(&args.directory, &request)
+        .run_directory_request_bytes_with_options(&args.directory, &request, options)
         .with_context(|| {
             format!(
                 "failed to run function '{}' for {}",

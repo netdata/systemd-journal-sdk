@@ -2,12 +2,16 @@
 
 ## Status
 
-Status: in-progress
+Status: paused
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: Rust SDK API, wrapper CLI, semantic comparator, and repo-local
-plugin smoke implemented; multi-GB dataset matrix still pending.
+Sub-state: Rust SDK API, wrapper CLI, semantic comparator, repo-local plugin
+smoke, and one 4 GiB real-corpus comparison implemented. Paused because the
+comparison exposed a SOW-0082 Explorer traversal regression: Netdata-shaped
+queries currently scan the same candidate rows once for main/histogram work
+and again for facet work. SOW-0082 must be reopened and repaired before this
+SOW can produce trustworthy performance conclusions.
 
 ## Requirements
 
@@ -596,6 +600,23 @@ Failure handling:
 - Added `tests/netdata_function/requests/window-last5-default-facets.json`
   with the 31-field default `systemd-journal.plugin` facet set and verified it
   against the installed plugin on the repo-local fixture.
+- Added SDK wrapper `--timeout <seconds>` CLI compatibility. `--timeout 0`
+  maps to an effectively unreachable internal deadline so large comparison
+  runs can disable timeout behavior consistently with the Netdata plugin test
+  CLI. Nonzero values are enforced at file boundaries and return partial
+  metadata if expired.
+- During the first 4 GiB function-boundary run, the plugin and SDK matched
+  rows, matched item counts, and histogram totals, but facet equality failed.
+  Root cause: the SDK default facet catalog represented only the initial
+  31-field subset and missed current plugin defaults such as `OBJECT_*`,
+  `COREDUMP_*`, `_KERNEL_SUBSYSTEM`, container fields, and Netdata alert
+  fields from `SYSTEMD_KEYS_INCLUDED_IN_FACETS`. The comparator also counted
+  empty facet objects despite documenting nonzero-counter comparison. The SDK
+  default catalog and comparator were updated before rerunning the large test.
+- A second large run showed matching facet fields but one facet counter delta:
+  `CODE_FUNC=""` was counted by the SDK and suppressed by the plugin. The SDK
+  facet output now suppresses empty-string facet values, matching the plugin's
+  empty-value reporting behavior.
 
 ## Validation
 
@@ -624,11 +645,63 @@ Tests or equivalent validation:
   `.local/sow-0093/results/sdk-vs-plugin-smoke-report.json`.
 - Smoke result summary: all four cases passed semantic comparison for status,
   rows, nonzero facets, nonzero histogram totals, and stable item counters.
+- Timeout compatibility validation:
+  - `cargo test --manifest-path rust/Cargo.toml -q -p journal netdata --lib`
+    passed.
+  - `cargo build --manifest-path rust/Cargo.toml -q -p netdata_function_wrapper`
+    passed.
+  - `python3 -m py_compile tests/netdata_function/run_function_compare.py
+    tests/netdata_function/compare_function_json.py` passed.
 
 Real-use evidence:
 
-- Repo-local fixture evidence exists. Selected multi-GB journal datasets and
-  cold/warm function-boundary matrices remain pending.
+- Repo-local fixture evidence exists.
+- Large real-corpus function-boundary run completed against `/var/log/journal`
+  using no filters, default facets, `sampling: 0`, `--timeout 0`, and the
+  middle-of-corpus 4 GiB timestamp window:
+  - request path:
+    `.local/sow-0093/big-default-facets/request-default-facets-4g.json`;
+  - report path:
+    `.local/sow-0093/big-default-facets/sdk-vs-plugin-default-facets-4g-report.json`;
+  - request SHA-256:
+    `531a65ccf02d8a1fbe05c1d5d08350a3402d2212a856d28f682c0eaf043d0c18`;
+  - approximate selected file range by archived journal filename timestamps:
+    197 files, 4,328,521,728 bytes, 4.031 GiB;
+  - request timeframe: `after=1733494460`, `before=1735656412`;
+  - matched rows: 5,341,590;
+  - returned rows: 200;
+  - nonzero facet fields compared: 45;
+  - histogram totals matched exactly:
+    critical 161, error 414, warning 25,625, notice 15,438, info 5,298,156,
+    debug 1,796;
+  - semantic checks passed for status, rows, nonzero facet counters, histogram
+    totals, and stable item counters.
+- Large-run timings:
+  - installed `systemd-journal.plugin`: 14.249806431 seconds wall time,
+    254,121,010 stdout bytes, 1,086 progress-prefix bytes, 0 stderr bytes;
+  - release SDK wrapper: 12.451746555 seconds wall time, 253,807,459 stdout
+    bytes, 0 progress-prefix bytes, 0 stderr bytes.
+- SDK traversal profile for the same request was captured under
+  `.local/sow-0093/profile/`:
+  - `perf stat`: 12.560816954 seconds elapsed, 10.923555 seconds user,
+    1.466209 seconds system, 4,287,880 KiB max RSS, 1,216,572 page faults,
+    144,401,274,287 instructions, 60,158,491,830 cycles, 2.4 IPC;
+  - `perf record`: 10,762 samples, no lost samples;
+  - top flat samples: `scan_current_row` 11.01%, libc memory/page-fault related
+    symbols 6.71% plus 1.92% plus related kernel page-fault paths,
+    `sort_by` 6.11%, `NetdataJournalFunction::explore_paths` 6.10%,
+    stdout `write_all` paths 6.66% combined, UTF-8 lossy conversion 2.52%,
+    mmap `get_slice` 2.25%, serde JSON `Value` serialization 1.83%,
+    SipHash write 1.74%, row load 1.66%, BTreeMap insert 1.62%, object refs
+    around 3.26% across symbols.
+  - SDK stats for the same request: 10,693,088 rows examined, 5,341,590
+    matched rows, 262,966,312 DATA references seen, 150,627,670 skipped DATA
+    references, 14,954,259 DATA payloads loaded, 5,945 decompressed payloads,
+    320,495,400 facet updates, 5,341,590 histogram updates.
+  - Direct object-header scan of the approximate selected archived-file window:
+    197 files, 4.031 GiB, 7,391,405 DATA objects, 2,747 compressed DATA
+    objects, 153 files with compressed DATA, zstd only, 4,824,599 stored
+    compressed DATA bytes.
 
 Reviewer findings:
 
