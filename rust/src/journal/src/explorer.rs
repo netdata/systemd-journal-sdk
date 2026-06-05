@@ -1,5 +1,7 @@
 use super::*;
+use journal_core::file::{DataObject, offset_array::InlinedCursor};
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 const DEFAULT_HISTOGRAM_TARGET_BUCKETS: usize = 150;
 const DEFAULT_TIME_SLACK_USEC: u64 = 120_000_000;
@@ -29,6 +31,20 @@ pub enum ExplorerFieldMode {
 impl Default for ExplorerFieldMode {
     fn default() -> Self {
         Self::FirstValue
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ExplorerStrategy {
+    Traversal,
+    Index,
+    Compare,
+}
+
+impl Default for ExplorerStrategy {
+    fn default() -> Self {
+        Self::Traversal
     }
 }
 
@@ -113,7 +129,7 @@ impl ExplorerQuery {
     }
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct ExplorerStats {
     pub rows_examined: u64,
     pub rows_matched: u64,
@@ -155,11 +171,20 @@ pub struct ExplorerHistogram {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct ExplorerComparison {
+    pub traversal_duration: Duration,
+    pub index_duration: Duration,
+    pub traversal_stats: ExplorerStats,
+    pub index_stats: ExplorerStats,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct ExplorerResult {
     pub rows: Vec<ExplorerRow>,
     pub facets: HashMap<Vec<u8>, HashMap<Vec<u8>, u64>>,
     pub histogram: Option<ExplorerHistogram>,
     pub stats: ExplorerStats,
+    pub comparison: Option<ExplorerComparison>,
 }
 
 #[derive(Default)]
@@ -512,6 +537,22 @@ impl ExplorerAccumulator {
 
 impl FileReader {
     pub fn explore(&mut self, query: &ExplorerQuery) -> Result<ExplorerResult> {
+        self.explore_with_strategy(query, ExplorerStrategy::Traversal)
+    }
+
+    pub fn explore_with_strategy(
+        &mut self,
+        query: &ExplorerQuery,
+        strategy: ExplorerStrategy,
+    ) -> Result<ExplorerResult> {
+        match strategy {
+            ExplorerStrategy::Traversal => self.explore_traversal(query),
+            ExplorerStrategy::Index => self.explore_indexed(query),
+            ExplorerStrategy::Compare => self.explore_compare(query),
+        }
+    }
+
+    fn explore_traversal(&mut self, query: &ExplorerQuery) -> Result<ExplorerResult> {
         validate_query(query)?;
 
         let mut result = ExplorerResult {
@@ -542,6 +583,106 @@ impl FileReader {
 
         self.configure_explorer_filters(query, None)?;
         Ok(result)
+    }
+
+    fn explore_compare(&mut self, query: &ExplorerQuery) -> Result<ExplorerResult> {
+        let traversal_started = Instant::now();
+        let traversal = self.explore_traversal(query)?;
+        let traversal_duration = traversal_started.elapsed();
+
+        let index_started = Instant::now();
+        let mut indexed = self.explore_indexed(query)?;
+        let index_duration = index_started.elapsed();
+
+        if !explorer_outputs_match(&traversal, &indexed) {
+            return Err(SdkError::VerificationError(
+                "indexed explorer output differs from traversal explorer output".to_string(),
+            ));
+        }
+        indexed.comparison = Some(ExplorerComparison {
+            traversal_duration,
+            index_duration,
+            traversal_stats: traversal.stats,
+            index_stats: indexed.stats.clone(),
+        });
+        Ok(indexed)
+    }
+
+    fn explore_indexed(&mut self, query: &ExplorerQuery) -> Result<ExplorerResult> {
+        validate_query(query)?;
+        validate_indexed_query(query)?;
+
+        let mut result = ExplorerResult {
+            histogram: query
+                .histogram
+                .as_ref()
+                .map(|field| new_histogram(field, query)),
+            ..ExplorerResult::default()
+        };
+
+        if query.limit > 0 {
+            let mut row_query = query.clone();
+            row_query.facets.clear();
+            row_query.histogram = None;
+            self.configure_explorer_filters(&row_query, None)?;
+            let mut accumulator = ExplorerAccumulator::for_main(&row_query, None);
+            self.scan_explorer_main(&row_query, &mut accumulator, &mut result)?;
+        }
+
+        for group in facet_pass_groups(query) {
+            let candidates = self.indexed_candidate_set(query, group.excluded_field.as_deref())?;
+            self.inner.with_file(|file| {
+                indexed_count_facet_group(file, query, &group, &candidates, &mut result)
+            })?;
+        }
+
+        if query.histogram.is_some() {
+            let candidates = self.indexed_candidate_set(query, None)?;
+            self.inner
+                .with_file(|file| indexed_count_histogram(file, query, &candidates, &mut result))?;
+        }
+
+        self.configure_explorer_filters(query, None)?;
+        Ok(result)
+    }
+
+    fn indexed_candidate_set(
+        &mut self,
+        query: &ExplorerQuery,
+        excluded_field: Option<&[u8]>,
+    ) -> Result<IndexedCandidateSet> {
+        if query.filters.is_empty()
+            && query.after_realtime_usec.is_none()
+            && query.before_realtime_usec.is_none()
+        {
+            let count = self
+                .inner
+                .with_file(|file| file.journal_header_ref().n_entries);
+            return Ok(IndexedCandidateSet::All { count });
+        }
+
+        self.configure_explorer_filters(query, excluded_field)?;
+        self.seek_for_explorer(query);
+        let mut offsets = HashSet::new();
+        while self.step_for_explorer(query.direction)? {
+            let Some(metadata) = self.row.metadata() else {
+                continue;
+            };
+            let commit_realtime = metadata.realtime;
+            if stop_by_commit_time(query, commit_realtime) {
+                break;
+            }
+            if !timestamp_in_range(query, commit_realtime) {
+                continue;
+            }
+            if let Some(entry_offset) = self.row.entry_offset() {
+                offsets.insert(entry_offset);
+            }
+        }
+        Ok(IndexedCandidateSet::Set {
+            count: offsets.len() as u64,
+            offsets,
+        })
     }
 
     fn configure_explorer_filters(
@@ -837,6 +978,31 @@ enum ScanApply<'a> {
     Deferred(&'a mut Vec<usize>),
 }
 
+enum IndexedCandidateSet {
+    All {
+        count: u64,
+    },
+    Set {
+        count: u64,
+        offsets: HashSet<NonZeroU64>,
+    },
+}
+
+impl IndexedCandidateSet {
+    fn count(&self) -> u64 {
+        match self {
+            Self::All { count } | Self::Set { count, .. } => *count,
+        }
+    }
+
+    fn contains(&self, entry_offset: NonZeroU64) -> bool {
+        match self {
+            Self::All { .. } => true,
+            Self::Set { offsets, .. } => offsets.contains(&entry_offset),
+        }
+    }
+}
+
 struct FacetPassGroup {
     excluded_field: Option<Vec<u8>>,
     facet_indices: Vec<usize>,
@@ -868,6 +1034,217 @@ fn facet_pass_groups(query: &ExplorerQuery) -> Vec<FacetPassGroup> {
     }
 
     groups
+}
+
+fn indexed_count_facet_group(
+    file: &JournalFile<Mmap>,
+    query: &ExplorerQuery,
+    group: &FacetPassGroup,
+    candidates: &IndexedCandidateSet,
+    result: &mut ExplorerResult,
+) -> Result<()> {
+    result.stats.facet_rows_matched = result
+        .stats
+        .facet_rows_matched
+        .saturating_add(candidates.count());
+
+    for facet_index in &group.facet_indices {
+        let Some(field) = query.facets.get(*facet_index) else {
+            continue;
+        };
+        let mut values = HashMap::new();
+        let mut rows_with_field = HashSet::new();
+        let mut decompressed = Vec::new();
+
+        for item in file.field_data_objects_with_offsets(field)? {
+            let (_, data) = item?;
+            let Some((value, cursor)) =
+                indexed_value_and_cursor(&data, field, &mut decompressed, &mut result.stats)?
+            else {
+                continue;
+            };
+            drop(data);
+
+            let count = indexed_count_facet_entries(
+                file,
+                cursor,
+                candidates,
+                &mut rows_with_field,
+                &mut result.stats,
+            )?;
+            if count == 0 {
+                continue;
+            }
+            increment_counter_by(&mut values, &value, count);
+            result.stats.facet_updates = result.stats.facet_updates.saturating_add(count);
+        }
+
+        let unset = candidates
+            .count()
+            .saturating_sub(rows_with_field.len() as u64);
+        if unset != 0 {
+            increment_counter_by(&mut values, UNSET_VALUE, unset);
+            result.stats.facet_updates = result.stats.facet_updates.saturating_add(unset);
+        }
+        result.facets.insert(field.clone(), values);
+    }
+
+    Ok(())
+}
+
+fn indexed_count_histogram(
+    file: &JournalFile<Mmap>,
+    query: &ExplorerQuery,
+    candidates: &IndexedCandidateSet,
+    result: &mut ExplorerResult,
+) -> Result<()> {
+    let Some(histogram) = result.histogram.as_mut() else {
+        return Ok(());
+    };
+    let field = histogram.field.clone();
+    let mut decompressed = Vec::new();
+
+    for item in file.field_data_objects_with_offsets(&field)? {
+        let (_, data) = item?;
+        let Some((value, cursor)) =
+            indexed_value_and_cursor(&data, &field, &mut decompressed, &mut result.stats)?
+        else {
+            continue;
+        };
+        drop(data);
+
+        indexed_count_histogram_entries(
+            file,
+            cursor,
+            candidates,
+            &value,
+            histogram,
+            query,
+            &mut result.stats,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn indexed_value_and_cursor(
+    data: &DataObject<&[u8]>,
+    field: &[u8],
+    decompressed: &mut Vec<u8>,
+    stats: &mut ExplorerStats,
+) -> Result<Option<(Vec<u8>, Option<InlinedCursor>)>> {
+    stats.data_objects_classified = stats.data_objects_classified.saturating_add(1);
+    stats.data_payloads_loaded = stats.data_payloads_loaded.saturating_add(1);
+    let payload = if data.is_compressed() {
+        decompressed.clear();
+        let len = data.decompress(decompressed)?;
+        stats.payloads_decompressed = stats.payloads_decompressed.saturating_add(1);
+        &decompressed[..len]
+    } else {
+        data.raw_payload()
+    };
+
+    let Some((payload_field, value)) = split_payload_bytes(payload) else {
+        return Ok(None);
+    };
+    if payload_field != field {
+        return Ok(None);
+    }
+    Ok(Some((value.to_vec(), data.inlined_cursor())))
+}
+
+fn indexed_count_facet_entries(
+    file: &JournalFile<Mmap>,
+    cursor: Option<InlinedCursor>,
+    candidates: &IndexedCandidateSet,
+    rows_with_field: &mut HashSet<NonZeroU64>,
+    stats: &mut ExplorerStats,
+) -> Result<u64> {
+    let mut count = 0u64;
+    indexed_visit_entries(file, cursor, |entry_offset| {
+        stats.data_refs_seen = stats.data_refs_seen.saturating_add(1);
+        if candidates.contains(entry_offset) {
+            count = count.saturating_add(1);
+            rows_with_field.insert(entry_offset);
+        }
+        Ok(())
+    })?;
+    Ok(count)
+}
+
+fn indexed_count_histogram_entries(
+    file: &JournalFile<Mmap>,
+    cursor: Option<InlinedCursor>,
+    candidates: &IndexedCandidateSet,
+    value: &[u8],
+    histogram: &mut ExplorerHistogram,
+    query: &ExplorerQuery,
+    stats: &mut ExplorerStats,
+) -> Result<()> {
+    let histogram_start = histogram
+        .buckets
+        .first()
+        .map(|bucket| bucket.start_realtime_usec)
+        .unwrap_or_default();
+    let histogram_bucket_width = histogram
+        .buckets
+        .first()
+        .map(|bucket| {
+            bucket
+                .end_realtime_usec
+                .saturating_sub(bucket.start_realtime_usec)
+                .max(1)
+        })
+        .unwrap_or(1);
+    let histogram_bucket_count = histogram.buckets.len();
+
+    indexed_visit_entries(file, cursor, |entry_offset| {
+        stats.data_refs_seen = stats.data_refs_seen.saturating_add(1);
+        if !candidates.contains(entry_offset) {
+            return Ok(());
+        }
+        let entry = file.entry_ref(entry_offset)?;
+        let realtime = entry.header.realtime;
+        drop(entry);
+        if !timestamp_in_range(query, realtime) {
+            return Ok(());
+        }
+        let Some(bucket_index) = histogram_bucket_index_from_bounds(
+            realtime,
+            histogram_start,
+            histogram_bucket_width,
+            histogram_bucket_count,
+        ) else {
+            return Ok(());
+        };
+        if let Some(bucket) = histogram.buckets.get_mut(bucket_index) {
+            increment_counter_by(&mut bucket.values, value, 1);
+            stats.histogram_updates = stats.histogram_updates.saturating_add(1);
+        }
+        Ok(())
+    })
+}
+
+fn indexed_visit_entries<F>(
+    file: &JournalFile<Mmap>,
+    cursor: Option<InlinedCursor>,
+    mut visitor: F,
+) -> Result<()>
+where
+    F: FnMut(NonZeroU64) -> Result<()>,
+{
+    let Some(mut cursor) = cursor.map(|cursor| cursor.head()) else {
+        return Ok(());
+    };
+    let mut needle = NonZeroU64::MIN;
+    while let Some(entry_offset) = cursor.next_until(file, needle)? {
+        visitor(entry_offset)?;
+        let Some(next) = entry_offset.get().checked_add(1).and_then(NonZeroU64::new) else {
+            break;
+        };
+        needle = next;
+    }
+    Ok(())
 }
 
 fn classify_data_for_accumulator(
@@ -984,6 +1361,69 @@ fn validate_query(query: &ExplorerQuery) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn validate_indexed_query(query: &ExplorerQuery) -> Result<()> {
+    if query.field_mode != ExplorerFieldMode::AllValues {
+        return Err(SdkError::Unsupported(
+            "indexed explorer strategy requires ExplorerFieldMode::AllValues",
+        ));
+    }
+    if !query.fts_patterns.is_empty() {
+        return Err(SdkError::Unsupported(
+            "indexed explorer strategy does not support FTS",
+        ));
+    }
+    if query.use_source_realtime
+        && (query.after_realtime_usec.is_some()
+            || query.before_realtime_usec.is_some()
+            || query.histogram.is_some())
+    {
+        return Err(SdkError::Unsupported(
+            "indexed explorer strategy requires commit realtime for time-bounded facets and histograms",
+        ));
+    }
+    Ok(())
+}
+
+fn explorer_outputs_match(left: &ExplorerResult, right: &ExplorerResult) -> bool {
+    if left.rows.len() != right.rows.len() {
+        return false;
+    }
+    if left.rows.iter().zip(&right.rows).any(|(left, right)| {
+        left.realtime_usec != right.realtime_usec
+            || left.cursor != right.cursor
+            || left.payloads != right.payloads
+    }) {
+        return false;
+    }
+    if left.facets != right.facets {
+        return false;
+    }
+    explorer_histograms_match(left.histogram.as_ref(), right.histogram.as_ref())
+}
+
+fn explorer_histograms_match(
+    left: Option<&ExplorerHistogram>,
+    right: Option<&ExplorerHistogram>,
+) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            left.field == right.field
+                && left.buckets.len() == right.buckets.len()
+                && left
+                    .buckets
+                    .iter()
+                    .zip(&right.buckets)
+                    .all(|(left, right)| {
+                        left.start_realtime_usec == right.start_realtime_usec
+                            && left.end_realtime_usec == right.end_realtime_usec
+                            && left.values == right.values
+                    })
+        }
+        _ => false,
+    }
 }
 
 fn query_needs_source_realtime_main(query: &ExplorerQuery) -> bool {
@@ -1342,6 +1782,117 @@ mod tests {
             .expect("priority facet");
         assert_eq!(priority.get(b"3".as_slice()), Some(&1));
         assert_eq!(priority.get(b"4".as_slice()), Some(&1));
+    }
+
+    #[test]
+    fn explorer_index_strategy_matches_traversal_for_all_values() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("indexed-all-values.journal");
+        write_entries(
+            &path,
+            None,
+            &[
+                (&[b"SERVICE=a", b"PRIORITY=3", b"TAG=x"], 1_000),
+                (&[b"SERVICE=b", b"PRIORITY=3", b"TAG=x"], 2_000),
+                (&[b"SERVICE=a", b"PRIORITY=4", b"TAG=y", b"TAG=z"], 3_000),
+                (&[b"PRIORITY=3"], 4_000),
+            ],
+        );
+
+        let query = ExplorerQuery {
+            after_realtime_usec: Some(0),
+            before_realtime_usec: Some(5_000),
+            filters: vec![ExplorerFilter::new(b"PRIORITY".to_vec(), [b"3".to_vec()])],
+            facets: vec![b"SERVICE".to_vec(), b"TAG".to_vec()],
+            histogram: Some(b"SERVICE".to_vec()),
+            histogram_target_buckets: 2,
+            limit: 2,
+            field_mode: ExplorerFieldMode::AllValues,
+            use_source_realtime: false,
+            ..ExplorerQuery::default()
+        };
+
+        let mut reader = FileReader::open(&path).expect("open reader");
+        let result = reader
+            .explore_with_strategy(&query, ExplorerStrategy::Compare)
+            .expect("compare");
+
+        let comparison = result.comparison.as_ref().expect("comparison diagnostics");
+        assert_eq!(comparison.index_stats, result.stats);
+        assert_eq!(comparison.traversal_stats.rows_returned, 2);
+        assert_eq!(comparison.index_stats.rows_returned, 2);
+
+        assert_eq!(result.rows.len(), 2);
+        let service = result
+            .facets
+            .get(b"SERVICE".as_slice())
+            .expect("service facet");
+        assert_eq!(service.get(b"a".as_slice()), Some(&1));
+        assert_eq!(service.get(b"b".as_slice()), Some(&1));
+        assert_eq!(service.get(UNSET_VALUE), Some(&1));
+        let histogram = result.histogram.as_ref().expect("histogram");
+        assert_eq!(histogram.buckets.len(), 2);
+        assert_eq!(histogram.buckets[0].values.get(b"a".as_slice()), Some(&1));
+        assert_eq!(histogram.buckets[0].values.get(b"b".as_slice()), Some(&1));
+        assert!(histogram.buckets[1].values.is_empty());
+    }
+
+    #[test]
+    fn explorer_index_strategy_preserves_same_field_filter_exclusion() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("indexed-same-field-filter.journal");
+        write_entries(
+            &path,
+            None,
+            &[
+                (&[b"SERVICE=a", b"PRIORITY=3"], 1_000),
+                (&[b"SERVICE=b", b"PRIORITY=3"], 2_000),
+                (&[b"SERVICE=a", b"PRIORITY=4"], 3_000),
+            ],
+        );
+
+        let query = ExplorerQuery {
+            filters: vec![
+                ExplorerFilter::new(b"SERVICE".to_vec(), [b"a".to_vec()]),
+                ExplorerFilter::new(b"PRIORITY".to_vec(), [b"3".to_vec()]),
+            ],
+            facets: vec![b"SERVICE".to_vec(), b"PRIORITY".to_vec()],
+            field_mode: ExplorerFieldMode::AllValues,
+            use_source_realtime: false,
+            ..ExplorerQuery::default()
+        };
+
+        let mut reader = FileReader::open(&path).expect("open reader");
+        let result = reader
+            .explore_with_strategy(&query, ExplorerStrategy::Compare)
+            .expect("compare");
+        let service = result
+            .facets
+            .get(b"SERVICE".as_slice())
+            .expect("service facet");
+        assert_eq!(service.get(b"a".as_slice()), Some(&1));
+        assert_eq!(service.get(b"b".as_slice()), Some(&1));
+    }
+
+    #[test]
+    fn explorer_index_strategy_rejects_first_value_semantics() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("indexed-first-value.journal");
+        write_entries(&path, None, &[(&[b"TAG=one", b"TAG=two"], 1_000)]);
+
+        let mut reader = FileReader::open(&path).expect("open reader");
+        let err = reader
+            .explore_with_strategy(
+                &ExplorerQuery {
+                    facets: vec![b"TAG".to_vec()],
+                    field_mode: ExplorerFieldMode::FirstValue,
+                    ..ExplorerQuery::default()
+                },
+                ExplorerStrategy::Index,
+            )
+            .expect_err("first-value index strategy should be rejected");
+
+        assert!(matches!(err, SdkError::Unsupported(_)));
     }
 
     #[test]

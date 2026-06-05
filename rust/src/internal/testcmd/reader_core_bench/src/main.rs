@@ -1,10 +1,10 @@
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use journal::{
-    Direction, DirectoryReader, ExplorerFieldMode, ExplorerFilter, ExplorerQuery, FileReader,
-    JournalFile, JournalReader, Mmap, ReaderBounds, ReaderOptions, SdJournalEnumerateAvailableData,
-    SdJournalNext, SdJournalOpenDirectoryWithOptions, SdJournalOpenFilesWithOptions,
-    SdJournalRestartData,
+    Direction, DirectoryReader, ExplorerFieldMode, ExplorerFilter, ExplorerQuery, ExplorerStrategy,
+    FileReader, JournalFile, JournalReader, Mmap, ReaderBounds, ReaderOptions,
+    SdJournalEnumerateAvailableData, SdJournalNext, SdJournalOpenDirectoryWithOptions,
+    SdJournalOpenFilesWithOptions, SdJournalRestartData,
 };
 use journal_core::file::{ExperimentalMmapStrategy, HashableObject};
 use serde_json::{Value, json};
@@ -46,6 +46,8 @@ struct Args {
     explorer_field_mode: String,
     #[arg(long, default_value_t = false)]
     explorer_use_source_realtime: bool,
+    #[arg(long, default_value = "traversal")]
+    explorer_strategy: String,
     #[arg(long)]
     explorer_after_usec: Option<u64>,
     #[arg(long)]
@@ -88,6 +90,7 @@ struct ReadConfig<'a> {
     explorer_fts_patterns: &'a [String],
     explorer_field_mode: ExplorerFieldMode,
     explorer_use_source_realtime: bool,
+    explorer_strategy: ExplorerStrategy,
     explorer_after_usec: Option<u64>,
     explorer_before_usec: Option<u64>,
 }
@@ -299,10 +302,16 @@ fn parse_explorer_field_mode(value: &str) -> Result<ExplorerFieldMode> {
     }
 }
 
-fn defaulted_facets(cfg: &ReadConfig<'_>) -> Vec<Vec<u8>> {
-    if cfg.explorer_facets.is_empty() {
-        return vec![b"PRIORITY".to_vec()];
+fn parse_explorer_strategy(value: &str) -> Result<ExplorerStrategy> {
+    match value {
+        "traversal" => Ok(ExplorerStrategy::Traversal),
+        "index" => Ok(ExplorerStrategy::Index),
+        "compare" => Ok(ExplorerStrategy::Compare),
+        other => Err(anyhow!("invalid --explorer-strategy: {other}")),
     }
+}
+
+fn defaulted_facets(cfg: &ReadConfig<'_>) -> Vec<Vec<u8>> {
     cfg.explorer_facets
         .iter()
         .map(|field| field.as_bytes().to_vec())
@@ -631,10 +640,16 @@ fn read_explorer_query_file(path: &Path, cfg: &ReadConfig<'_>) -> Result<Counts>
     let mut reader = FileReader::open_with_options(path, options)
         .with_context(|| format!("failed to open explorer file reader for {}", path.display()))?;
     let query = explorer_query_from_config(cfg)?;
-    let result = reader.explore(&query)?;
+    let result = reader.explore_with_strategy(&query, cfg.explorer_strategy)?;
 
+    let logical_records = result
+        .stats
+        .rows_examined
+        .max(result.stats.facet_rows_matched)
+        .max(result.stats.rows_matched)
+        .max(result.stats.histogram_updates);
     let mut counts = Counts {
-        records: result.stats.rows_examined,
+        records: logical_records,
         fields: result.stats.data_refs_seen,
         ..Counts::default()
     };
@@ -670,9 +685,20 @@ fn read_explorer_query_file(path: &Path, cfg: &ReadConfig<'_>) -> Result<Counts>
     counts
         .extra
         .insert("facet_summary".to_string(), facet_summary);
+    if let Some(comparison) = &result.comparison {
+        counts.extra.insert(
+            "explorer_comparison".to_string(),
+            json!({
+                "traversal_duration_ns": u64::try_from(comparison.traversal_duration.as_nanos()).unwrap_or(u64::MAX),
+                "index_duration_ns": u64::try_from(comparison.index_duration.as_nanos()).unwrap_or(u64::MAX),
+                "traversal_stats": &comparison.traversal_stats,
+                "index_stats": &comparison.index_stats,
+            }),
+        );
+    }
     counts.extra.insert(
         "explorer_stats".to_string(),
-        serde_json::to_value(result.stats).unwrap_or_else(|_| json!({})),
+        serde_json::to_value(&result.stats).unwrap_or_else(|_| json!({})),
     );
     if let Some(summary) = histogram_summary {
         counts
@@ -871,6 +897,7 @@ fn run(args: &Args) -> Result<(Counts, f64, Value, Value)> {
         explorer_fts_patterns: &args.explorer_fts_patterns,
         explorer_field_mode: parse_explorer_field_mode(&args.explorer_field_mode)?,
         explorer_use_source_realtime: args.explorer_use_source_realtime,
+        explorer_strategy: parse_explorer_strategy(&args.explorer_strategy)?,
         explorer_after_usec: args.explorer_after_usec,
         explorer_before_usec: args.explorer_before_usec,
     };
@@ -955,6 +982,7 @@ fn main() -> Result<()> {
                 "fts_patterns": args.explorer_fts_patterns,
                 "field_mode": args.explorer_field_mode,
                 "use_source_realtime": args.explorer_use_source_realtime,
+                "strategy": args.explorer_strategy,
                 "after_usec": args.explorer_after_usec,
                 "before_usec": args.explorer_before_usec,
             },

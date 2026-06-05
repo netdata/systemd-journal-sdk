@@ -135,6 +135,17 @@ contracts:
   `ExplorerFieldMode::FirstValue` is the default. `ExplorerFieldMode::AllValues`
   is an explicit slower mode for exact duplicate-value accounting and scans the
   whole row for repeated-field correctness.
+- `FileReader::explore_with_strategy()` exposes explicit strategy selection for
+  performance experiments and specialized callers. `ExplorerStrategy::Traversal`
+  is the default and must remain the general-purpose path. `ExplorerStrategy::Index`
+  may answer selected all-values facet and histogram queries from FIELD/DATA
+  chains and DATA entry posting lists, but it must reject query modes it cannot
+  answer exactly. Do not silently approximate `FirstValue`, FTS, or
+  source-realtime semantics. `ExplorerStrategy::Compare` must run both
+  strategies, reject mismatches, and expose traversal/index timing and counter
+  diagnostics. There is no auto planner; SOW-0083 evidence shows index
+  aggregation is shape-sensitive and can regress badly on selective filters or
+  many facets.
 - Owned convenience APIs: APIs that return fully materialized entries may copy
   and allocate, but they must be documented and benchmarked as non-hot paths.
 

@@ -1,6 +1,8 @@
 #![allow(clippy::field_reassign_with_default)]
 
-pub use super::file_iterators::{EntryDataIterator, FieldDataIterator, FieldIterator};
+pub use super::file_iterators::{
+    EntryDataIterator, FieldDataIterator, FieldDataOffsetIterator, FieldIterator,
+};
 pub use super::file_payload::{DataPayloadObjectInfo, DataPayloadReadContext};
 use super::mmap::{
     ExperimentalMmapStrategy, MemoryMap, MemoryMapMut, WindowManager, WindowManagerStats,
@@ -888,6 +890,29 @@ impl<M: MemoryMap> JournalFile<M> {
 
         // Create the iterator
         Ok(FieldDataIterator {
+            journal: self,
+            current_data_offset: head_data_offset,
+        })
+    }
+
+    /// Creates an iterator over all DATA objects for the specified field,
+    /// including the on-disk DATA object offset.
+    pub fn field_data_objects_with_offsets<'a>(
+        &'a self,
+        field_name: &'a [u8],
+    ) -> Result<FieldDataOffsetIterator<'a, M>> {
+        let field_hash = self.hash(field_name);
+        let Some(field_offset) = self.find_field_offset(field_hash, field_name)? else {
+            return Ok(FieldDataOffsetIterator {
+                journal: self,
+                current_data_offset: None,
+            });
+        };
+
+        let field_guard = self.field_ref(field_offset)?;
+        let head_data_offset = field_guard.header.head_data_offset;
+
+        Ok(FieldDataOffsetIterator {
             journal: self,
             current_data_offset: head_data_offset,
         })

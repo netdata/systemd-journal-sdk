@@ -117,6 +117,15 @@ Current reader scope:
   owns the reader position and replaces the reader match state while it runs;
   callers should explicitly seek and reapply any manual matches before
   continuing normal iteration after an explorer query;
+- `FileReader::explore_with_strategy()` exposes explicit strategy selection.
+  `ExplorerStrategy::Traversal` is the default behavior used by `explore()`.
+  `ExplorerStrategy::Index` derives all-values facet and histogram counts from
+  FIELD/DATA indexes and DATA entry posting lists. It rejects default
+  first-value semantics, FTS, and source-realtime-bounded queries instead of
+  returning approximate results. `ExplorerStrategy::Compare` runs traversal and
+  index, fails if their logical outputs differ, and returns timing/counter
+  diagnostics in `ExplorerResult::comparison`. There is no automatic planner
+  because index aggregation is faster only for some query shapes;
 - default reader options use live/windowed mmap with a 32 MiB window. Smaller
   windows are available for constrained environments, but high-cardinality
   indexed queries can become remap-bound with very small windows;
@@ -321,6 +330,32 @@ if let Some(priority) = result.facets.get(b"PRIORITY".as_slice()) {
 The default first-value mode counts at most one value per selected field per
 row. Use `ExplorerFieldMode::AllValues` when a row may contain repeated values
 for a selected facet or histogram field and every duplicate value must count.
+
+Specialized callers can select an execution strategy:
+
+```rust
+use journal::{ExplorerFieldMode, ExplorerQuery, ExplorerStrategy, FileReader};
+
+let mut reader = FileReader::open("/path/to/system.journal")?;
+let result = reader.explore_with_strategy(
+    &ExplorerQuery {
+        facets: vec![b"PRIORITY".to_vec()],
+        field_mode: ExplorerFieldMode::AllValues,
+        use_source_realtime: false,
+        limit: 0,
+        ..ExplorerQuery::default()
+    },
+    ExplorerStrategy::Index,
+)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The index strategy is exact for its supported subset, but it is not a universal
+speedup. It can be much faster for narrow unfiltered all-values facets and
+histograms, and slower for many facets or selective filters. Use
+`ExplorerStrategy::Compare` when validating a query shape before relying on the
+index strategy; successful compare results include traversal and index timings
+and stats in `ExplorerResult::comparison`.
 
 The default `ExplorerAnchor::Auto` chooses the natural scan start for the query
 direction. Use explicit `Head`, `Tail`, or `Realtime(usec)` anchors only for

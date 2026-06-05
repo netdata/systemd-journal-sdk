@@ -501,6 +501,20 @@ Accepted reader API layers:
   `ExplorerFieldMode::AllValues` is an explicit slower mode for exact
   duplicate-value accounting and scans the whole row for repeated-field
   correctness.
+- Rust also exposes explicit explorer execution strategy controls through
+  `FileReader::explore_with_strategy()`. `ExplorerStrategy::Traversal` is the
+  default and remains the behavior of `FileReader::explore()`.
+  `ExplorerStrategy::Index` walks FIELD/DATA chains and DATA entry posting
+  lists to derive facet and histogram counts without candidate-row field
+  traversal, but it is intentionally limited to exact `AllValues` accounting,
+  commit-realtime time semantics, and no FTS. It rejects default
+  `FirstValue`, source-realtime-bounded, and FTS queries instead of returning
+  approximate results. `ExplorerStrategy::Compare` runs traversal and index,
+  fails if the logical row/facet/histogram output differs, and returns
+  traversal/index timing and counter diagnostics in the result. No automatic
+  planner is enabled; SOW-0083 showed index aggregation is a large win for narrow
+  unfiltered all-values queries and histogram-only queries, but slower for many
+  facets and can be catastrophically slower for selective filters.
 - The libsystemd-compatible facade is available in Rust, Go, Node.js, and
   Python for file-backed use. It includes open file, open directory, open files,
   close, seek head/tail/realtime/cursor, next/previous/skip, add match,

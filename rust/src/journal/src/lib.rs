@@ -16,8 +16,9 @@ mod verify_graph;
 
 pub use directory::DirectoryReader;
 pub use explorer::{
-    ExplorerAnchor, ExplorerFieldMode, ExplorerFilter, ExplorerHistogram, ExplorerHistogramBucket,
-    ExplorerQuery, ExplorerResult, ExplorerRow, ExplorerStats,
+    ExplorerAnchor, ExplorerComparison, ExplorerFieldMode, ExplorerFilter, ExplorerHistogram,
+    ExplorerHistogramBucket, ExplorerQuery, ExplorerResult, ExplorerRow, ExplorerStats,
+    ExplorerStrategy,
 };
 pub use export::{export_entry, export_entry_bytes, format_entry_text, json_entry};
 pub use parse::{ParseError, ParsedCursor, parse_cursor, parse_match_bytes, parse_match_string};

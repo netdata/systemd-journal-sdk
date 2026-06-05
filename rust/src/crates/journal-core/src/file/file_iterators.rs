@@ -91,6 +91,32 @@ impl<'a, M: MemoryMap> Iterator for FieldDataIterator<'a, M> {
     }
 }
 
+/// Iterator that walks through all DATA objects for a specific field and
+/// returns the object offset with each guard.
+pub struct FieldDataOffsetIterator<'a, M: MemoryMap> {
+    pub(super) journal: &'a JournalFile<M>,
+    pub(super) current_data_offset: Option<NonZeroU64>,
+}
+
+impl<'a, M: MemoryMap> Iterator for FieldDataOffsetIterator<'a, M> {
+    type Item = Result<(NonZeroU64, ValueGuard<'a, DataObject<&'a [u8]>>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let data_offset = self.current_data_offset?;
+
+        match self.journal.data_ref(data_offset) {
+            Ok(data_guard) => {
+                self.current_data_offset = data_guard.header.next_field_offset;
+                Some(Ok((data_offset, data_guard)))
+            }
+            Err(e) => {
+                self.current_data_offset = None;
+                Some(Err(e))
+            }
+        }
+    }
+}
+
 /// Iterator that walks through all DATA objects for a specific entry
 pub struct EntryDataIterator<'a, M: MemoryMap> {
     pub(super) journal: &'a JournalFile<M>,

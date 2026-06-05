@@ -7,10 +7,6 @@ Last updated: 2026-06-05
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
-- SOW-0083 - Index-Derived Facet And Histogram Optimization: in-progress.
-  Activated from clean pushed rollback point `42c15858` as an evidence-first
-  experiment. The index-derived path must prove correctness and useful speedups
-  before any public API, auto-planner, or retained-complexity commitment.
 
 ## Pending
 
@@ -31,8 +27,22 @@ Last updated: 2026-06-05
   release, language registry/package publication, and clean consumer install
   validation after compatibility, portability, corpus, integration, and parity
   gates are complete.
+- SOW-0093 - Netdata Function Boundary Reader Comparison: open. Build the SDK
+  wrapper and comparison harness for Netdata function-boundary output equality
+  and performance using semantic normalized function JSON and the shared
+  `--test`, `--dir`, and `--request` CLI shape; Netdata plugin CLI entrypoints
+  are external inputs created outside this repository.
 ## Recently Closed Or Completed
 
+- SOW-0083 - Index-Derived Facet And Histogram Optimization: completed. Rust
+  now exposes explicit `ExplorerStrategy::{Traversal, Index, Compare}` controls
+  for the explorer API. `Traversal` remains the default, `Index` is exact only
+  for all-values, no-FTS, commit-realtime query shapes, and `Compare` returns
+  traversal/index timing and counter diagnostics after logical equality
+  verification. Benchmarks show large wins for narrow unfiltered all-values
+  facets and histogram-only queries, but regressions for many facets and
+  selective filters, so no auto planner was added. Five final reviewers voted
+  `PRODUCTION GRADE`.
 - SOW-0082 - Rust Optimized Journal Explorer API: completed. Rust now exposes
   an additive `FileReader::explore()` API for the optimized single-file explorer
   query model, using indexed filters, lazy DATA-offset classification, grouped
