@@ -484,6 +484,23 @@ Accepted reader API layers:
   payloads. Convenience entry materialization APIs may build maps, repeated
   value maps, owned payload vectors, and cursor strings and are not the
   primary hot path.
+- Rust exposes `FileReader::explore()` as an optimized single-file
+  log-explorer query surface for exact indexed filters, selected facet
+  counters, optional histogram, optional FTS, and optional returned rows. It
+  uses native filter indexes for exact slicing, lazy candidate-row DATA-offset
+  classification caches to avoid reprocessing reusable `FIELD=value` objects
+  within each traversal pass, and owned cached value labels for required DATA
+  that must be returned in facet, histogram, FTS, or row results.
+  Facets with the same effective filter set are grouped into one traversal
+  pass. `ExplorerAnchor::Auto` is the default scan-start policy, using the
+  lower time bound or head for forward queries and the upper time bound or tail
+  for backward queries. `ExplorerFieldMode::FirstValue` is the default explorer
+  accounting mode: one selected facet/histogram/source field contributes at
+  most one value per row, so traversal may stop after all required fields are
+  found and avoid unrelated trailing DATA, including compressed DATA.
+  `ExplorerFieldMode::AllValues` is an explicit slower mode for exact
+  duplicate-value accounting and scans the whole row for repeated-field
+  correctness.
 - The libsystemd-compatible facade is available in Rust, Go, Node.js, and
   Python for file-backed use. It includes open file, open directory, open files,
   close, seek head/tail/realtime/cursor, next/previous/skip, add match,
@@ -671,6 +688,10 @@ Current Rust reader feature slice:
   option and increases virtual-memory pressure on large active files;
 - raw current-entry payload visitors on file and directory readers for
   allocation-light scans that operate on borrowed `FIELD=value` bytes;
+- single-file Rust optimized explorer API for exact indexed filters, selected
+  facets, optional histogram, optional FTS, optional Top-N rows, query counters,
+  per-pass DATA classification caching, unrelated-compressed-DATA skipping,
+  and repeated-field mode selection;
 - byte-preserving RAW field-name representation through `Entry::raw_fields()`,
   `Entry::get_raw()`, and `Entry::get_raw_values()`. `Entry.fields` and
   `Entry.field_values` remain UTF-8 string-keyed convenience maps and do not

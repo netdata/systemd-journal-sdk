@@ -27,15 +27,18 @@ Last updated: 2026-06-05
   release, language registry/package publication, and clean consumer install
   validation after compatibility, portability, corpus, integration, and parity
   gates are complete.
-- SOW-0082 - Rust Optimized Journal Explorer API: open. Depends on SOW-0081;
-  implements a legacy-like optimized Rust API that fixes unnecessary
-  compressed-DATA decompression, unnecessary field traversal, and repeated
-  processing of deduplicated DATA objects.
 - SOW-0083 - Index-Derived Facet And Histogram Optimization: open. Depends on
   SOW-0082; measures and implements optional index-derived facet and histogram
   strategies with break-even evidence from generated and real-corpus queries.
 ## Recently Closed Or Completed
 
+- SOW-0082 - Rust Optimized Journal Explorer API: completed. Rust now exposes
+  an additive `FileReader::explore()` API for the optimized single-file explorer
+  query model, using indexed filters, lazy DATA-offset classification, grouped
+  facet passes, default first-value row-level field identity tracking,
+  compressed-DATA avoidance for irrelevant fields, and returned-row-only full
+  expansion. Final reviewers voted `PRODUCTION GRADE`; low-priority coverage
+  depth notes remain non-blocking or part of SOW-0083.
 - SOW-0081 - systemd-journal Plugin And Facets Specification: completed.
   Added an evidence-backed specification for Netdata `systemd-journal.plugin`
   and facets behavior, documented the code-vs-README default timeframe

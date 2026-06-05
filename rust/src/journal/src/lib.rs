@@ -6,6 +6,7 @@
 //! export/JSON formatting, and a libsystemd-style facade.
 
 mod directory;
+mod explorer;
 mod export;
 mod facade;
 mod parse;
@@ -14,6 +15,10 @@ mod sealed_verify;
 mod verify_graph;
 
 pub use directory::DirectoryReader;
+pub use explorer::{
+    ExplorerAnchor, ExplorerFieldMode, ExplorerFilter, ExplorerHistogram, ExplorerHistogramBucket,
+    ExplorerQuery, ExplorerResult, ExplorerRow, ExplorerStats,
+};
 pub use export::{export_entry, export_entry_bytes, format_entry_text, json_entry};
 pub use parse::{ParseError, ParsedCursor, parse_cursor, parse_match_bytes, parse_match_string};
 pub use sealed_verify::{verify_file, verify_file_with_key};

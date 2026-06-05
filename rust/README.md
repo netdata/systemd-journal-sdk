@@ -101,6 +101,22 @@ Current reader scope:
 - `FileReader::visit_unique_values()` and
   `DirectoryReader::visit_unique_values()` stream indexed unique values without
   first materializing the full result set;
+- `FileReader::explore()` provides an optimized single-file query surface for
+  log-explorer workloads: exact indexed filters, selected facet counters,
+  optional histogram, optional FTS, optional returned rows, and query counters.
+  It lazily classifies reusable DATA objects by DATA offset during candidate-row
+  traversal, groups facets that share the same effective filter set into one
+  traversal pass, and expands all fields only for returned rows.
+  `ExplorerAnchor::Auto` is the default: forward queries start from the lower
+  time bound or file head, while backward queries start from the upper time
+  bound or file tail. `ExplorerFieldMode::FirstValue` is the default explorer
+  accounting mode: one selected facet/histogram/source field contributes at
+  most one value per row, so traversal may stop after all required fields are
+  found. `ExplorerFieldMode::AllValues` is available when a caller needs exact
+  duplicate-value accounting and accepts the slower full-row scan. `explore()`
+  owns the reader position and replaces the reader match state while it runs;
+  callers should explicitly seek and reapply any manual matches before
+  continuing normal iteration after an explorer query;
 - default reader options use live/windowed mmap with a 32 MiB window. Smaller
   windows are available for constrained environments, but high-cardinality
   indexed queries can become remap-bound with very small windows;
@@ -281,6 +297,34 @@ while reader.next()? {
 }
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
+
+Optimized single-file explorer usage:
+
+```rust
+use journal::{ExplorerQuery, FileReader};
+
+let mut reader = FileReader::open("/path/to/system.journal")?;
+let result = reader.explore(&ExplorerQuery {
+    facets: vec![b"PRIORITY".to_vec()],
+    limit: 0,
+    ..ExplorerQuery::default()
+})?;
+
+if let Some(priority) = result.facets.get(b"PRIORITY".as_slice()) {
+    for (value, count) in priority {
+        println!("{} {count}", String::from_utf8_lossy(value));
+    }
+}
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The default first-value mode counts at most one value per selected field per
+row. Use `ExplorerFieldMode::AllValues` when a row may contain repeated values
+for a selected facet or histogram field and every duplicate value must count.
+
+The default `ExplorerAnchor::Auto` chooses the natural scan start for the query
+direction. Use explicit `Head`, `Tail`, or `Realtime(usec)` anchors only for
+manual paging or when the caller intentionally wants a non-default start point.
 
 For RAW-mode files, use the byte-keyed entry surface when field names are not
 guaranteed to be UTF-8:

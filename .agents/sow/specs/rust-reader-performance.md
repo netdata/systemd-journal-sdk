@@ -119,6 +119,22 @@ contracts:
 - libsystemd-compatible facade APIs: `SdJournal` data enumeration must be a
   thin layer over the SDK row enumeration path and must not introduce extra
   copies or ENTRY materialization in hot metadata/data paths.
+- Optimized explorer APIs: `FileReader::explore()` must use native filter
+  indexes for exact field/value slicing, lazy candidate-row DATA-offset
+  classification caches for reusable DATA objects, and owned cached value
+  labels for required DATA that must be returned in facet, histogram, FTS, or
+  row results. The default field mode is first-value row semantics: one selected
+  facet/histogram/source field contributes at most one value per row, and the
+  row DATA loop may stop after all requested field identities are found. This
+  early stop must avoid touching and decompressing unrelated trailing DATA.
+  Facets that share the same effective filter set must be grouped into one
+  traversal pass instead of multiplying row scans by facet count.
+  `ExplorerAnchor::Auto` is the default anchor policy: forward scans start from
+  the lower query bound or file head, while backward scans start from the upper
+  query bound or file tail.
+  `ExplorerFieldMode::FirstValue` is the default. `ExplorerFieldMode::AllValues`
+  is an explicit slower mode for exact duplicate-value accounting and scans the
+  whole row for repeated-field correctness.
 - Owned convenience APIs: APIs that return fully materialized entries may copy
   and allocate, but they must be documented and benchmarked as non-hot paths.
 

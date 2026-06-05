@@ -1,9 +1,10 @@
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use journal::{
-    Direction, DirectoryReader, FileReader, JournalFile, JournalReader, Mmap, ReaderBounds,
-    ReaderOptions, SdJournalEnumerateAvailableData, SdJournalNext,
-    SdJournalOpenDirectoryWithOptions, SdJournalOpenFilesWithOptions, SdJournalRestartData,
+    Direction, DirectoryReader, ExplorerFieldMode, ExplorerFilter, ExplorerQuery, FileReader,
+    JournalFile, JournalReader, Mmap, ReaderBounds, ReaderOptions, SdJournalEnumerateAvailableData,
+    SdJournalNext, SdJournalOpenDirectoryWithOptions, SdJournalOpenFilesWithOptions,
+    SdJournalRestartData,
 };
 use journal_core::file::{ExperimentalMmapStrategy, HashableObject};
 use serde_json::{Value, json};
@@ -31,6 +32,24 @@ struct Args {
     bounds: String,
     #[arg(long, default_value = "windowed")]
     mmap_strategy: String,
+    #[arg(long = "explorer-facet")]
+    explorer_facets: Vec<String>,
+    #[arg(long = "explorer-filter")]
+    explorer_filters: Vec<String>,
+    #[arg(long = "explorer-histogram")]
+    explorer_histogram: Option<String>,
+    #[arg(long, default_value_t = 0)]
+    explorer_limit: usize,
+    #[arg(long = "explorer-fts")]
+    explorer_fts_patterns: Vec<String>,
+    #[arg(long, default_value = "first-value")]
+    explorer_field_mode: String,
+    #[arg(long, default_value_t = false)]
+    explorer_use_source_realtime: bool,
+    #[arg(long)]
+    explorer_after_usec: Option<u64>,
+    #[arg(long)]
+    explorer_before_usec: Option<u64>,
 }
 
 #[derive(Default)]
@@ -62,6 +81,15 @@ struct ReadConfig<'a> {
     bounds: &'a str,
     strategy: ExperimentalMmapStrategy,
     window_size: u64,
+    explorer_facets: &'a [String],
+    explorer_filters: &'a [String],
+    explorer_histogram: Option<&'a str>,
+    explorer_limit: usize,
+    explorer_fts_patterns: &'a [String],
+    explorer_field_mode: ExplorerFieldMode,
+    explorer_use_source_realtime: bool,
+    explorer_after_usec: Option<u64>,
+    explorer_before_usec: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -190,6 +218,63 @@ fn checksum_payload(mut checksum: u64, payload: &[u8]) -> u64 {
     checksum
 }
 
+fn checksum_bytes(mut checksum: u64, bytes: &[u8]) -> u64 {
+    checksum = checksum.rotate_left(11) ^ bytes.len() as u64;
+    for byte in bytes.iter().take(8) {
+        checksum = checksum.rotate_left(3) ^ *byte as u64;
+    }
+    if let Some(last) = bytes.last() {
+        checksum ^= (*last as u64) << 17;
+    }
+    checksum
+}
+
+fn split_benchmark_payload(payload: &[u8]) -> Option<(&[u8], &[u8])> {
+    let eq = payload.iter().position(|byte| *byte == b'=')?;
+    Some((&payload[..eq], &payload[eq + 1..]))
+}
+
+fn increment_facet_count(
+    facets: &mut HashMap<Vec<u8>, HashMap<Vec<u8>, u64>>,
+    field: &[u8],
+    value: &[u8],
+) {
+    facets
+        .entry(field.to_vec())
+        .or_default()
+        .entry(value.to_vec())
+        .and_modify(|count| *count = count.saturating_add(1))
+        .or_insert(1);
+}
+
+fn facet_summary(facets: &HashMap<Vec<u8>, HashMap<Vec<u8>, u64>>) -> Value {
+    let mut facet_count = 0u64;
+    let mut value_count = 0u64;
+    let mut total_updates = 0u64;
+    let mut checksum = 0u64;
+    let mut fields: Vec<_> = facets.iter().collect();
+    fields.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+    for (field, values) in fields {
+        facet_count = facet_count.saturating_add(1);
+        checksum = checksum_bytes(checksum, field);
+        let mut sorted_values: Vec<_> = values.iter().collect();
+        sorted_values.sort_by(|(left, _), (right, _)| left.cmp(right));
+        value_count = value_count.saturating_add(sorted_values.len() as u64);
+        for (value, count) in sorted_values {
+            checksum = checksum_bytes(checksum, value) ^ count;
+            total_updates = total_updates.saturating_add(*count);
+        }
+    }
+
+    json!({
+        "facet_fields": facet_count,
+        "facet_values": value_count,
+        "facet_updates": total_updates,
+        "facet_checksum": checksum,
+    })
+}
+
 fn parse_direction(value: &str) -> Result<Direction> {
     match value {
         "forward" => Ok(Direction::Forward),
@@ -204,6 +289,69 @@ fn parse_mmap_strategy(value: &str) -> Result<ExperimentalMmapStrategy> {
         "whole-file" => Ok(ExperimentalMmapStrategy::WholeFile),
         other => Err(anyhow!("invalid --mmap-strategy: {other}")),
     }
+}
+
+fn parse_explorer_field_mode(value: &str) -> Result<ExplorerFieldMode> {
+    match value {
+        "all-values" => Ok(ExplorerFieldMode::AllValues),
+        "first-value" => Ok(ExplorerFieldMode::FirstValue),
+        other => Err(anyhow!("invalid --explorer-field-mode: {other}")),
+    }
+}
+
+fn defaulted_facets(cfg: &ReadConfig<'_>) -> Vec<Vec<u8>> {
+    if cfg.explorer_facets.is_empty() {
+        return vec![b"PRIORITY".to_vec()];
+    }
+    cfg.explorer_facets
+        .iter()
+        .map(|field| field.as_bytes().to_vec())
+        .collect()
+}
+
+fn parse_explorer_filters(raw_filters: &[String]) -> Result<Vec<ExplorerFilter>> {
+    let mut grouped: HashMap<Vec<u8>, Vec<Vec<u8>>> = HashMap::new();
+    for raw_filter in raw_filters {
+        let Some((field, value)) = raw_filter.split_once('=') else {
+            return Err(anyhow!(
+                "--explorer-filter must be FIELD=VALUE: {raw_filter}"
+            ));
+        };
+        if field.is_empty() || field.as_bytes().contains(&b'=') {
+            return Err(anyhow!("invalid --explorer-filter field: {raw_filter}"));
+        }
+        grouped
+            .entry(field.as_bytes().to_vec())
+            .or_default()
+            .push(value.as_bytes().to_vec());
+    }
+
+    Ok(grouped
+        .into_iter()
+        .map(|(field, values)| ExplorerFilter { field, values })
+        .collect())
+}
+
+fn explorer_query_from_config(cfg: &ReadConfig<'_>) -> Result<ExplorerQuery> {
+    Ok(ExplorerQuery {
+        after_realtime_usec: cfg.explorer_after_usec,
+        before_realtime_usec: cfg.explorer_before_usec,
+        direction: cfg.direction,
+        limit: cfg.explorer_limit,
+        filters: parse_explorer_filters(cfg.explorer_filters)?,
+        facets: defaulted_facets(cfg),
+        histogram: cfg
+            .explorer_histogram
+            .map(|field| field.as_bytes().to_vec()),
+        fts_patterns: cfg
+            .explorer_fts_patterns
+            .iter()
+            .map(|pattern| pattern.as_bytes().to_vec())
+            .collect(),
+        field_mode: cfg.explorer_field_mode,
+        use_source_realtime: cfg.explorer_use_source_realtime,
+        ..ExplorerQuery::default()
+    })
 }
 
 fn process_status_kb() -> Value {
@@ -415,6 +563,126 @@ fn read_sdk_file(path: &Path, cfg: &ReadConfig<'_>) -> Result<Counts> {
     Ok(counts)
 }
 
+fn configure_reader_filters(reader: &mut FileReader, cfg: &ReadConfig<'_>) -> Result<()> {
+    reader.flush_matches();
+    for filter in parse_explorer_filters(cfg.explorer_filters)? {
+        for value in filter.values {
+            let mut payload = Vec::with_capacity(filter.field.len() + 1 + value.len());
+            payload.extend_from_slice(&filter.field);
+            payload.push(b'=');
+            payload.extend_from_slice(&value);
+            reader.add_match(&payload);
+        }
+    }
+    Ok(())
+}
+
+fn read_sdk_facet_scan_file(path: &Path, cfg: &ReadConfig<'_>) -> Result<Counts> {
+    let options = reader_options(cfg.bounds, cfg.strategy, cfg.window_size)?;
+    let mut reader = FileReader::open_with_options(path, options).with_context(|| {
+        format!(
+            "failed to open SDK facet-scan file reader for {}",
+            path.display()
+        )
+    })?;
+    configure_reader_filters(&mut reader, cfg)?;
+    match cfg.direction {
+        Direction::Forward => reader.seek_head(),
+        Direction::Backward => reader.seek_tail(),
+    }
+
+    let facet_fields = defaulted_facets(cfg);
+    let facet_set: std::collections::HashSet<Vec<u8>> = facet_fields.iter().cloned().collect();
+    let mut facets: HashMap<Vec<u8>, HashMap<Vec<u8>, u64>> = HashMap::new();
+    let mut counts = Counts::default();
+
+    while step_file_reader(&mut reader, cfg.direction)? {
+        let realtime = reader.get_realtime_usec()?;
+        if cfg
+            .explorer_after_usec
+            .is_some_and(|after| realtime < after)
+            || cfg
+                .explorer_before_usec
+                .is_some_and(|before| realtime > before)
+        {
+            continue;
+        }
+        counts.add_record_marker(realtime);
+        reader.visit_entry_payloads(|payload| {
+            counts.add_payload(black_box(payload));
+            if let Some((field, value)) = split_benchmark_payload(payload) {
+                if facet_set.contains(field) {
+                    increment_facet_count(&mut facets, field, value);
+                }
+            }
+            Ok(())
+        })?;
+    }
+
+    counts
+        .extra
+        .insert("facet_summary".to_string(), facet_summary(&facets));
+    black_box(counts.checksum);
+    Ok(counts)
+}
+
+fn read_explorer_query_file(path: &Path, cfg: &ReadConfig<'_>) -> Result<Counts> {
+    let options = reader_options(cfg.bounds, cfg.strategy, cfg.window_size)?;
+    let mut reader = FileReader::open_with_options(path, options)
+        .with_context(|| format!("failed to open explorer file reader for {}", path.display()))?;
+    let query = explorer_query_from_config(cfg)?;
+    let result = reader.explore(&query)?;
+
+    let mut counts = Counts {
+        records: result.stats.rows_examined,
+        fields: result.stats.data_refs_seen,
+        ..Counts::default()
+    };
+    for row in &result.rows {
+        counts.checksum = counts.checksum.rotate_left(7) ^ row.realtime_usec;
+        for payload in &row.payloads {
+            counts.bytes = counts.bytes.saturating_add(payload.len() as u64);
+            counts.checksum = checksum_payload(counts.checksum, black_box(payload));
+        }
+    }
+    let facet_summary = facet_summary(&result.facets);
+    let histogram_summary = result.histogram.as_ref().map(|histogram| {
+        let mut checksum = checksum_bytes(0, &histogram.field);
+        let mut value_updates = 0u64;
+        for bucket in &histogram.buckets {
+            checksum ^= bucket.start_realtime_usec.rotate_left(13);
+            checksum ^= bucket.end_realtime_usec.rotate_left(17);
+            let mut values: Vec<_> = bucket.values.iter().collect();
+            values.sort_by(|(left, _), (right, _)| left.cmp(right));
+            for (value, count) in values {
+                checksum = checksum_bytes(checksum, value) ^ count;
+                value_updates = value_updates.saturating_add(*count);
+            }
+        }
+        json!({
+            "field_checksum": checksum_bytes(0, &histogram.field),
+            "buckets": histogram.buckets.len(),
+            "value_updates": value_updates,
+            "histogram_checksum": checksum,
+        })
+    });
+
+    counts
+        .extra
+        .insert("facet_summary".to_string(), facet_summary);
+    counts.extra.insert(
+        "explorer_stats".to_string(),
+        serde_json::to_value(result.stats).unwrap_or_else(|_| json!({})),
+    );
+    if let Some(summary) = histogram_summary {
+        counts
+            .extra
+            .insert("histogram_summary".to_string(), summary);
+    }
+    black_box(counts.checksum);
+    Ok(counts)
+}
+
 fn step_file_reader(reader: &mut FileReader, direction: Direction) -> Result<bool> {
     Ok(match direction {
         Direction::Forward => reader.next(),
@@ -596,6 +864,15 @@ fn run(args: &Args) -> Result<(Counts, f64, Value, Value)> {
         bounds: &args.bounds,
         strategy: parse_mmap_strategy(&args.mmap_strategy)?,
         window_size: args.window_size,
+        explorer_facets: &args.explorer_facets,
+        explorer_filters: &args.explorer_filters,
+        explorer_histogram: args.explorer_histogram.as_deref(),
+        explorer_limit: args.explorer_limit,
+        explorer_fts_patterns: &args.explorer_fts_patterns,
+        explorer_field_mode: parse_explorer_field_mode(&args.explorer_field_mode)?,
+        explorer_use_source_realtime: args.explorer_use_source_realtime,
+        explorer_after_usec: args.explorer_after_usec,
+        explorer_before_usec: args.explorer_before_usec,
     };
     let status_before = process_status_kb();
     let started = Instant::now();
@@ -614,6 +891,14 @@ fn dispatch_read(inputs: &[PathBuf], cfg: &ReadConfig<'_>) -> Result<Counts> {
         "core-compressed-stats" => {
             require_single_file_input(inputs, cfg.surface, "core modes")?;
             read_core(&inputs[0], cfg)
+        }
+        "sdk-facet-scan" => {
+            require_single_file_input(inputs, cfg.surface, "SDK facet scan mode")?;
+            read_sdk_facet_scan_file(&inputs[0], cfg)
+        }
+        "explorer-query" => {
+            require_single_file_input(inputs, cfg.surface, "explorer query mode")?;
+            read_explorer_query_file(&inputs[0], cfg)
         }
         "sdk-entry" | "sdk-payloads" => dispatch_sdk_read(inputs, cfg),
         "facade-next" | "facade-data" => read_facade(inputs, cfg),
@@ -662,6 +947,17 @@ fn main() -> Result<()> {
             "window_size": args.window_size,
             "bounds": args.bounds,
             "mmap_strategy": args.mmap_strategy,
+            "explorer": {
+                "facets": args.explorer_facets,
+                "filters": args.explorer_filters,
+                "histogram": args.explorer_histogram,
+                "limit": args.explorer_limit,
+                "fts_patterns": args.explorer_fts_patterns,
+                "field_mode": args.explorer_field_mode,
+                "use_source_realtime": args.explorer_use_source_realtime,
+                "after_usec": args.explorer_after_usec,
+                "before_usec": args.explorer_before_usec,
+            },
             "timer_excludes": ["fixture generation", "process startup", "external verification"],
             "process_status_before": status_before,
             "process_status_after": status_after,
