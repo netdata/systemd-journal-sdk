@@ -13,28 +13,25 @@ Sub-state: created as follow-up after SOW-0083; repository-boundary decision rec
 ### Purpose
 
 Build an end-to-end, Netdata-function-boundary comparison that proves whether
-the SDK explorer logic produces the same function output as existing Netdata
-plugins and measures realistic read/query performance on multi-GB datasets.
+the SDK explorer logic can reproduce Netdata's generic log-function behavior
+and measures realistic read/query performance on multi-GB journal datasets.
 
 ### User Request
 
 The user requested a comparison plan:
 
-- select two 4-5 GB datasets, one from the large local journal corpus and one
-  from the NetFlow raw tier;
+- select representative multi-GB journal datasets from the large local journal
+  corpus;
 - create an SDK wrapper that accepts the same Netdata function test CLI shape
   the plugins will expose:
   `/path/to/wrapper --test function-name --dir /path/to/backend-data/ --request /path/to/function/request/payload.json [additional options if required]`;
 - compare against `systemd-journal.plugin` after Netdata exposes the same
   standard CLI shape;
-- compare against `netflow.plugin` after Netdata exposes the same standard CLI
-  shape;
-- create representative request payloads for common and rare cases, using the
-  default facets from the Netdata plugins for common cases;
+- create representative request payloads for common and rare generic log-query
+  cases, using the default facets from `systemd-journal.plugin` for common
+  cases;
 - compare SDK wrapper output against `systemd-journal.plugin` output for
   semantic normalized function JSON equality and speed;
-- compare SDK wrapper output against `netflow.plugin` output for semantic
-  normalized function JSON equality and speed.
 
 The user then clarified that the wrapper must be treated as the first CLI over
 a future Netdata-specific SDK API, not throwaway benchmark code. The eventual
@@ -52,6 +49,17 @@ This SOW must therefore start with an analysis of current
 extract the complete requirements for this Netdata-specific SDK API before
 implementation starts.
 
+The user then decided that a hardcoded NetFlow/`flows:netflow` function is not
+part of this SDK requirement. NetFlow source analysis remains useful only as
+design evidence for catalogs, views, projected scans, and future grouped
+statistics APIs. The current SOW must not require a NetFlow raw-tier dataset,
+NetFlow function output compatibility, or a `flows:netflow` implementation.
+
+Extensibility note: the generic Netdata SDK layer should not block future APIs
+for grouped rollups, statistics, or Kibana/Elasticsearch-like log analytics.
+Those APIs are not part of the current acceptance criteria and need a separate
+SOW before implementation.
+
 ### Assistant Understanding
 
 Facts:
@@ -59,16 +67,16 @@ Facts:
 - SOW-0082 added an optimized Rust explorer traversal engine.
 - SOW-0083 added explicit index and compare strategies, but no auto planner,
   because index aggregation is query-shape sensitive.
-- Existing Netdata plugin behavior is the real integration target, not only the
-  standalone SDK benchmark shape.
+- Existing Netdata generic log-function behavior is the real integration
+  target, not only the standalone SDK benchmark shape.
 
 Inferences:
 
 - Netdata-function-boundary testing is the right next evidence gate before
   deciding which explorer strategy to integrate.
-- The Netdata plugin CLI entrypoints are standard Netdata features and will be
-  created separately. This repository owns the SDK wrapper and comparison
-  harness side only.
+- The Netdata `systemd-journal.plugin` CLI entrypoint is a standard Netdata
+  feature and will be created separately. This repository owns the SDK wrapper
+  and comparison harness side only.
 - Semantic normalized output equality at the function boundary is stronger
   evidence than internal SDK summaries because it includes request parsing,
   plugin defaults, sampling, facets, histogram, returned rows, and output
@@ -79,36 +87,41 @@ Inferences:
 Unknowns:
 
 - Exact default facet sets, request shapes, sampling rules, volatile output
-  fields, and function output canonicalization must be re-read from current
-  Netdata source before implementation.
+  fields, and function output canonicalization for the generic log-function
+  path must be re-read from current Netdata source before implementation.
 - The wrapper must use the same `--test`, `--dir`, and `--request` command-line
-  contract as the Netdata plugin binaries so the benchmark harness can swap
-  binaries without changing payloads.
+  contract as the Netdata `systemd-journal.plugin` binary so the benchmark
+  harness can swap binaries without changing payloads.
 - The wrapper should be a thin CLI over the future SDK API. The reusable API
   should stay in a Netdata-specific module/layer, separate from the core
   journal file-format reader.
 
 ### Acceptance Criteria
 
-- Select and document two sanitized 4-5 GB datasets:
-  - one from the local large journal corpus;
-  - one from the NetFlow raw tier.
+- Select and document representative sanitized multi-GB journal datasets from
+  the local large journal corpus.
 - Add an SDK wrapper command with this CLI contract:
   `/path/to/wrapper --test function-name --dir /path/to/backend-data/ --request /path/to/function/request/payload.json [additional options if required]`.
 - Treat Netdata-side plugin test entrypoints as external binaries with the same
   contract; do not implement or modify them in this repository.
-- Extract default/common facets from current Netdata plugin source and use them
-  in common-case request payloads.
+- Extract default/common facets from current `systemd-journal.plugin` source
+  and use them in common-case request payloads.
 - Inventory the current `systemd-journal.plugin` and `netflow-plugin`
   function contracts and record the API requirements they imply, including
   request parsing, default facets, default view/grouping keys, histogram
   defaults, field catalogs, source/directory selection, enrichment or
   presentation transforms, sampling/overbudget behavior, autocomplete or
   vocabulary behavior, top-N rows, function metadata, and volatile output
-  fields.
+  fields. `netflow-plugin` is analysis evidence only, not an implementation or
+  output-comparison target for this SOW.
 - Define a reusable Netdata-specific SDK API boundary that accepts backend
   directories, default facet keys, default view/grouping keys, a default
   histogram key, and optional enrichment/presentation callbacks per key.
+- Do not add a hardcoded `flows:netflow` function, NetFlow raw-tier dataset
+  requirement, or NetFlow output compatibility requirement in this SOW.
+- Keep the API boundary extensible enough that future SOWs can add grouped
+  rollups, aggregate statistics, and log analytics APIs without redesigning
+  the core Netdata function layer.
 - Preserve separation of concerns: journal reading remains generic; Netdata
   function behavior, UI metadata, field catalogs, and enrichment callbacks live
   in the Netdata-specific SDK layer.
@@ -126,7 +139,6 @@ Unknowns:
   rows/s, wall time, CPU time, peak RSS, and output size.
 - Produce a sanitized report comparing:
   - SDK wrapper versus `systemd-journal.plugin`;
-  - SDK wrapper versus `netflow.plugin`;
   - semantic normalized output equality or exact mismatch classes;
   - speed ratios and confidence limits.
 - Do not write raw journal payloads, raw IPs, private endpoints, or customer
@@ -148,6 +160,9 @@ Current state:
   performance and behavior gates.
 - The wrapper is now scoped as the first public shape of a future
   Netdata-specific SDK API. It must not become a one-off benchmark tool.
+- A hardcoded `flows:netflow` function is intentionally out of scope for this
+  SDK layer. NetFlow remains a reference for API extensibility and performance
+  patterns only.
 
 Initial Netdata source analysis:
 
@@ -264,8 +279,9 @@ Initial Netdata source analysis:
   `src/crates/netflow-plugin/src/query/planner/request.rs:45`
 - NetFlow has a field catalog with allowed facet/grouping fields, raw-only
   fields, virtual fields, autocomplete rules, and presentation display names
-  and labels. These map directly to the proposed API inputs for default view
-  keys and optional enrichment/presentation callbacks per key.
+  and labels. These inform the proposed API inputs for default view keys and
+  optional enrichment/presentation callbacks per key, but they are not current
+  SDK implementation requirements.
   Evidence:
   `src/crates/netflow-plugin/src/facet_catalog.rs:30`
   `src/crates/netflow-plugin/src/facet_catalog.rs:56`
@@ -277,8 +293,8 @@ Initial Netdata source analysis:
   `src/crates/netflow-plugin/src/presentation/labels.rs:20`
 - NetFlow already has an optimized projected raw scan that builds a required
   field plan for metrics, group-by, and selected fields, and avoids full row
-  materialization where possible. This is an important existing pattern for
-  the SDK Netdata API.
+  materialization where possible. This is an important design reference for
+  the SDK Netdata API and future grouped rollup/statistics work.
   Evidence:
   `src/crates/netflow-plugin/src/query/planner/request.rs:68`
   `src/crates/netflow-plugin/src/query/scan/session/projected.rs:17`
@@ -288,8 +304,8 @@ Initial Netdata source analysis:
   `src/crates/netflow-plugin/src/query/projected/apply.rs:83`
   `src/crates/netflow-plugin/src/query/projected/apply.rs:129`
 - NetFlow also has persisted facet vocabulary/sidecar behavior and a read-only
-  constructor. SOW-0093 must either use a no-persist/read-only mode or isolate
-  side effects in scratch copies when comparing against NetFlow.
+  constructor. This side-effect model is a future integration consideration,
+  not a current SOW-0093 runtime target.
   Evidence:
   `src/crates/netflow-plugin/src/facet_runtime.rs:94`
   `src/crates/netflow-plugin/src/facet_runtime.rs:116`
@@ -305,11 +321,6 @@ Risks:
 - Output equality requires stable canonicalization for maps, permitted ordering
   differences, and documented volatile metadata; over-normalization could hide
   real regressions.
-- NetFlow may persist facet state or sidecar files during test initialization.
-  Prefer a Netdata-side read-only/no-persist mode when practical. If unavailable,
-  use a scratch dataset created through a low-overhead copy-on-write/reflink
-  mechanism when the filesystem supports it; plain 4-5 GB copies are allowed
-  only when the report labels the copy cost separately from query performance.
 - Cold-cache measurements can be dominated by storage state; warm-cache and
   cold-cache runs must be labelled separately.
 
@@ -320,10 +331,11 @@ Status: ready
 Problem / root-cause model:
 
 - Microbenchmarks prove internal hot-path behavior, but they do not prove that
-  SDK explorer logic matches Netdata plugin output or wins at the function
-  boundary.
+  SDK explorer logic matches Netdata `systemd-journal.plugin` output or wins at
+  the function boundary.
 - The next confidence gap is realistic request payloads, plugin defaults, and
-  semantic normalized output equality against existing Netdata implementations.
+  semantic normalized output equality against the existing generic Netdata
+  journal log function.
 
 Evidence reviewed:
 
@@ -335,15 +347,18 @@ Affected contracts and surfaces:
 
 - Rust SDK wrapper CLI.
 - Netdata function payload input/output contracts.
-- Netdata `systemd-journal.plugin` and `netflow.plugin` CLI contracts as
-  external comparison dependencies.
+- Netdata `systemd-journal.plugin` CLI contract as an external comparison
+  dependency.
+- NetFlow source behavior as non-normative design evidence for future grouped
+  rollup/statistics APIs.
 - Benchmark reports and future Netdata integration decisions.
 
 Existing patterns to reuse:
 
 - `reader_core_bench` JSON result conventions.
 - Sanitized report discipline from corpus-evaluation SOWs.
-- Netdata plugin function request/response shapes from current Netdata source.
+- Netdata `systemd-journal.plugin` function request/response shapes from
+  current Netdata source.
 
 Risk and blast radius:
 
@@ -365,12 +380,14 @@ Sensitive data handling plan:
 
 Implementation plan:
 
-1. Inventory current Netdata plugin function defaults and request/response
+1. Inventory current Netdata function defaults and request/response
    contracts. This step is mandatory before implementation and must produce
-   the API boundary for the Netdata-specific SDK layer.
+   the API boundary for the Netdata-specific SDK layer. NetFlow analysis is
+   design evidence only.
 2. Select datasets and create sanitized dataset manifests.
 3. Implement SDK wrapper and canonical semantic comparator.
-4. Invoke Netdata plugin CLI entrypoints when available; do not edit Netdata
+4. Invoke the Netdata `systemd-journal.plugin` CLI entrypoint when available;
+   do not edit Netdata
    source from this repository.
 5. Build common and rare request payload suites.
 6. Run cold/warm repeated performance and equality matrices.
@@ -381,7 +398,7 @@ Validation plan:
 - Unit tests for payload parsing and output canonicalization, including
   permitted volatile-field normalization and unclassified-difference failures.
 - Golden comparison tests on small synthetic journals.
-- Multi-GB equality/performance matrix on selected datasets.
+- Multi-GB equality/performance matrix on selected journal datasets.
 - `git diff --check`.
 - `.agents/sow/audit.sh`.
 - Whole-SOW reviewer pass.
@@ -396,7 +413,7 @@ Artifact impact plan:
 - End-user/operator docs: update only if wrapper becomes a supported tool.
 - End-user/operator skills: no expected update.
 - SOW lifecycle: pending until implementation starts; current phase is
-  analysis of Netdata plugin behavior and API requirements.
+  analysis of Netdata generic log-function behavior and API requirements.
 - SOW-status.md: updated with pending state.
 
 Open-source reference evidence:
@@ -406,26 +423,36 @@ Open-source reference evidence:
 
 Open decisions:
 
-- None blocking for analysis. The user decided the Netdata plugin CLI
-  entrypoints are standard Netdata features and will be created separately.
-  This repository implements only the SDK wrapper and comparison harness.
+- None blocking for analysis. The user decided the Netdata
+  `systemd-journal.plugin` CLI entrypoint is a standard Netdata feature and
+  will be created separately. This repository implements only the SDK wrapper
+  and comparison harness.
 
 ## Implications And Decisions
 
 - 2026-06-05 repository-boundary decision: this repository will not modify
-  `systemd-journal.plugin` or `netflow.plugin`. The user will create their
-  standard CLI function payload entrypoints separately. This SOW builds the SDK
-  wrapper with the same `--test`, `--dir`, and `--request` contract, plus the
-  semantic normalized comparison harness that can call those plugin CLIs when
-  they exist.
+  `systemd-journal.plugin` or `netflow.plugin`. The user will create the
+  `systemd-journal.plugin` CLI function payload entrypoint separately. This
+  SOW builds the SDK wrapper with the same `--test`, `--dir`, and `--request`
+  contract, plus the semantic normalized comparison harness that can call that
+  plugin CLI when it exists.
+- 2026-06-05 scope decision: a hardcoded NetFlow/`flows:netflow` function is
+  not part of this SDK requirement. NetFlow analysis remains design evidence
+  only. The current deliverable targets generic Netdata log-function behavior
+  and comparison against `systemd-journal.plugin`.
+- 2026-06-05 extensibility decision: grouped rollups, aggregate statistics, and
+  Kibana/Elasticsearch-like log analytics are important future directions, but
+  they are not part of SOW-0093 acceptance. The SOW-0093 API boundary should
+  avoid choices that would make those future APIs difficult.
 
 ## Plan
 
-1. Complete and record the Netdata plugin behavior/API analysis.
+1. Complete and record the Netdata generic log-function behavior/API analysis.
 2. Define the Netdata-specific SDK API boundary and wrapper CLI shape.
 3. Select datasets.
 4. Build SDK wrapper, request suite, semantic comparator, and report harness.
-5. Compare against Netdata plugin CLI binaries when they are available.
+5. Compare against the Netdata `systemd-journal.plugin` CLI binary when it is
+   available.
 
 ## Delegation Plan
 
@@ -455,8 +482,9 @@ Failure handling:
 
 - If semantic normalized output equality fails, record mismatch classes and
   create repair SOWs instead of hiding differences.
-- If Netdata plugin modifications are not approved, restrict this SOW to SDK
-  wrapper and external binary invocation only.
+- If Netdata `systemd-journal.plugin` modifications are not approved, restrict
+  this SOW to SDK wrapper and external `systemd-journal.plugin` binary
+  invocation only.
 
 ## Execution Log
 
@@ -468,6 +496,9 @@ Failure handling:
 - Per user recommendation, started with read-only analysis of
   `systemd-journal.plugin` and `netflow-plugin` in `netdata/netdata @
   f340a0e3ffb7`.
+- Recorded the user decision that `flows:netflow` is not a current SDK
+  requirement and that grouped rollup/statistics APIs are future extensibility
+  concerns, not SOW-0093 acceptance criteria.
 
 ## Validation
 
@@ -481,7 +512,7 @@ Tests or equivalent validation:
 
 Real-use evidence:
 
-- Pending selected 4-5 GB datasets and function-boundary matrices.
+- Pending selected multi-GB journal datasets and function-boundary matrices.
 
 Reviewer findings:
 
