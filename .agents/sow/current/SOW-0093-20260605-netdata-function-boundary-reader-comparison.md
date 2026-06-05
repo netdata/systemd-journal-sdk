@@ -2,11 +2,12 @@
 
 ## Status
 
-Status: open
+Status: in-progress
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: created as follow-up after SOW-0083; repository-boundary decision recorded.
+Sub-state: Rust SDK API, wrapper CLI, semantic comparator, and repo-local
+plugin smoke implemented; multi-GB dataset matrix still pending.
 
 ## Requirements
 
@@ -568,19 +569,58 @@ Failure handling:
   offline test CLI against a repo-local journal fixture for both `info` and a
   real window query. No live host journal directory was queried.
 
+### 2026-06-06
+
+- Moved the SOW to current/in-progress for SDK wrapper implementation.
+- Added the Rust `journal::netdata` API boundary:
+  `NetdataJournalFunction::systemd_journal()`,
+  `run_directory_request_json()`, and `run_directory_request_bytes()`.
+- Added the internal Rust wrapper command
+  `rust/src/internal/testcmd/netdata_function_wrapper`, using the same CLI
+  shape as the external Netdata plugin:
+  `--test systemd-journal --dir <journal-dir> --request <request.json>`.
+- Added `ExplorerQuery::exclude_facet_field_filters`. The explorer default
+  remains `true` to preserve previous SDK behavior; the Netdata wrapper sets it
+  to `false` to match `systemd-journal.plugin` facet counting with all filters
+  applied.
+- Fixed the Rust explorer histogram path to count matched rows missing the
+  histogram field under `"-"` for both traversal and explicit indexed
+  strategy.
+- Added filtered-request zero-count facet vocabulary fill in the Netdata
+  wrapper. The semantic comparator still ignores zero-count padding because
+  the plugin may retain zero-count values seen during scan bookkeeping that do
+  not affect rows or result counters.
+- Added semantic comparator and runner tooling under
+  `tests/netdata_function/`, plus sanitized request fixtures for `info`,
+  unfiltered priority facets/histogram, and filtered priority query behavior.
+
 ## Validation
 
 Acceptance criteria evidence:
 
-- Pending implementation.
+- Partial. Rust SDK API, wrapper CLI, semantic comparator, and repo-local
+  plugin smoke are implemented. Multi-GB dataset selection and repeated
+  performance matrix remain pending.
 
 Tests or equivalent validation:
 
-- Pending.
+- `cargo test -p journal -p netdata_function_wrapper` passed from the Rust
+  workspace.
+- `tests/netdata_function/run_function_compare.py` passed against the
+  installed `/usr/libexec/netdata/plugins.d/systemd-journal.plugin` and the
+  repo-local fixture directory `.local/sow-0093/smoke-journals` for:
+  - `tests/netdata_function/requests/info.json`
+  - `tests/netdata_function/requests/window-last5-priority.json`
+  - `tests/netdata_function/requests/window-error-filter.json`
+- Smoke comparison report path:
+  `.local/sow-0093/results/sdk-vs-plugin-smoke-report.json`.
+- Smoke result summary: all three cases passed semantic comparison for status,
+  rows, nonzero facets, nonzero histogram totals, and stable item counters.
 
 Real-use evidence:
 
-- Pending selected multi-GB journal datasets and function-boundary matrices.
+- Repo-local fixture evidence exists. Selected multi-GB journal datasets and
+  cold/warm function-boundary matrices remain pending.
 
 Reviewer findings:
 
@@ -592,33 +632,44 @@ Same-failure scan:
 
 Sensitive data gate:
 
-- Pending implementation; durable artifacts must remain sanitized.
+- No raw journal payloads or raw plugin/SDK outputs were committed. Durable
+  artifacts contain only sanitized request fixtures, source code, docs, and
+  aggregate validation summaries. Generated plugin/SDK outputs and comparison
+  reports remain under `.local/sow-0093/`.
 
 Artifact maintenance gate:
 
-- AGENTS.md: pending closeout decision.
-- Runtime project skills: pending closeout decision.
-- Specs: pending closeout decision.
-- End-user/operator docs: pending closeout decision.
+- AGENTS.md: no update needed; repository-boundary and runtime purity
+  policies did not change.
+- Runtime project skills: no update yet; the Netdata function comparison
+  workflow is SOW-local until the full matrix is complete.
+- Specs: updated
+  `.agents/sow/specs/systemd-journal-plugin-facets.md` with the Rust Netdata
+  function boundary, wrapper CLI, same-field facet-filter switch, missing
+  histogram value behavior, and zero-count vocabulary comparator rule.
+- End-user/operator docs: updated `rust/README.md` with the new
+  `journal::netdata` API and wrapper command.
 - End-user/operator skills: pending closeout decision.
-- SOW lifecycle: pending/open and not implemented.
+- SOW lifecycle: current/in-progress; do not close until the multi-GB matrix is
+  complete or explicitly split.
 - SOW-status.md: updated when SOW state changes.
 
 Specs update:
 
-- Pending.
+- Updated
+  `.agents/sow/specs/systemd-journal-plugin-facets.md`.
 
 Project skills update:
 
-- Pending.
+- Not updated; no reusable project-wide work procedure has been accepted yet.
 
 End-user/operator docs update:
 
-- Pending.
+- Updated `rust/README.md`.
 
 End-user/operator skills update:
 
-- Pending.
+- Not updated; no exported/operator skill changed.
 
 Lessons:
 

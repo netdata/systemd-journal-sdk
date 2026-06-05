@@ -1,12 +1,23 @@
 # SOW Status
 
-Last updated: 2026-06-05
+Last updated: 2026-06-06
 
 ## Current
 
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
+- SOW-0093 - Netdata Function Boundary Reader Comparison: in-progress. Build
+  the SDK Netdata-specific function API boundary, wrapper, and comparison
+  harness for Netdata function-boundary output equality and performance using
+  semantic normalized function JSON and the shared `--test`, `--dir`, and
+  `--request` CLI shape; current comparison target is generic log-function
+  behavior versus `systemd-journal.plugin`, `netdata/netdata#22638` provides
+  the external offline test CLI input, Rust `journal::netdata`, the internal
+  `netdata_function_wrapper`, semantic comparator, and three repo-local plugin
+  smoke cases are implemented and passing; multi-GB dataset selection and
+  repeated cold/warm function-boundary matrix remain pending. NetFlow source
+  analysis is design evidence only for future grouped rollup/statistics APIs.
 
 ## Pending
 
@@ -27,15 +38,6 @@ Last updated: 2026-06-05
   release, language registry/package publication, and clean consumer install
   validation after compatibility, portability, corpus, integration, and parity
   gates are complete.
-- SOW-0093 - Netdata Function Boundary Reader Comparison: open. Build the SDK
-  Netdata-specific function API boundary, wrapper, and comparison harness for
-  Netdata function-boundary output equality and performance using semantic
-  normalized function JSON and the shared `--test`, `--dir`, and `--request`
-  CLI shape; current comparison target is generic log-function behavior versus
-  `systemd-journal.plugin`, `netdata/netdata#22638` provides the external
-  offline test CLI input and its installed binary passed repo-local fixture
-  smoke checks, and NetFlow source analysis is design evidence only for future
-  grouped rollup/statistics APIs.
 ## Recently Closed Or Completed
 
 - SOW-0083 - Index-Derived Facet And Histogram Optimization: completed. Rust

@@ -79,6 +79,7 @@ pub struct ExplorerQuery {
     pub histogram_target_buckets: usize,
     pub fts_patterns: Vec<Vec<u8>>,
     pub field_mode: ExplorerFieldMode,
+    pub exclude_facet_field_filters: bool,
     pub use_source_realtime: bool,
     pub realtime_slack_usec: u64,
 }
@@ -97,6 +98,7 @@ impl Default for ExplorerQuery {
             histogram_target_buckets: DEFAULT_HISTOGRAM_TARGET_BUCKETS,
             fts_patterns: Vec::new(),
             field_mode: ExplorerFieldMode::FirstValue,
+            exclude_facet_field_filters: true,
             use_source_realtime: true,
             realtime_slack_usec: DEFAULT_TIME_SLACK_USEC,
         }
@@ -320,6 +322,7 @@ struct ExplorerAccumulator {
     value_fts_matches: Vec<bool>,
     value_source_realtime: Vec<Option<u64>>,
     value_histogram_buckets: Vec<Option<Vec<u64>>>,
+    field_histogram_unset_buckets: Vec<Option<Vec<u64>>>,
     offset_cache: OffsetClassCache,
     histogram_start_realtime_usec: u64,
     histogram_bucket_width_usec: u64,
@@ -370,6 +373,7 @@ impl ExplorerAccumulator {
             value_fts_matches: Vec::new(),
             value_source_realtime: Vec::new(),
             value_histogram_buckets: Vec::new(),
+            field_histogram_unset_buckets: Vec::new(),
             offset_cache: OffsetClassCache::default(),
             histogram_start_realtime_usec: histogram
                 .and_then(|histogram| histogram.buckets.first())
@@ -395,6 +399,10 @@ impl ExplorerAccumulator {
         if let Some(index) = self.field_lookup.get(field).copied() {
             let had_required = self.flags[index] != 0;
             self.flags[index] |= flags;
+            if flags & FACET_HISTOGRAM != 0 && self.field_histogram_unset_buckets[index].is_none() {
+                self.field_histogram_unset_buckets[index] =
+                    Some(vec![0; self.histogram_bucket_count]);
+            }
             if !had_required && self.flags[index] != 0 {
                 self.required_identity_count += 1;
             }
@@ -408,6 +416,8 @@ impl ExplorerAccumulator {
         self.last_seen_row_ids.push(0);
         self.unset_counts.push(0);
         self.values_by_field.push(Vec::new());
+        self.field_histogram_unset_buckets
+            .push((flags & FACET_HISTOGRAM != 0).then(|| vec![0; self.histogram_bucket_count]));
         if flags != 0 {
             self.required_identity_count += 1;
         }
@@ -490,6 +500,29 @@ impl ExplorerAccumulator {
         }
     }
 
+    fn finish_histogram_row(&mut self, row_id: u64, realtime_usec: u64, stats: &mut ExplorerStats) {
+        for field_index in 0..self.fields.len() {
+            if self.flags[field_index] & FACET_HISTOGRAM == 0 {
+                continue;
+            }
+            if self.last_seen_row_ids[field_index] == row_id {
+                continue;
+            }
+            let Some(buckets) = self.field_histogram_unset_buckets[field_index].as_mut() else {
+                continue;
+            };
+            if let Some(bucket_index) = histogram_bucket_index_from_bounds(
+                realtime_usec,
+                self.histogram_start_realtime_usec,
+                self.histogram_bucket_width_usec,
+                buckets.len(),
+            ) {
+                buckets[bucket_index] = buckets[bucket_index].saturating_add(1);
+                stats.histogram_updates = stats.histogram_updates.saturating_add(1);
+            }
+        }
+    }
+
     fn finish_facets(self, result: &mut ExplorerResult) {
         for field_index in 0..self.fields.len() {
             if self.flags[field_index] & FACET_PUBLIC == 0 {
@@ -515,6 +548,16 @@ impl ExplorerAccumulator {
         let Some(histogram) = histogram else {
             return;
         };
+        for buckets in self.field_histogram_unset_buckets.into_iter().flatten() {
+            for (bucket_index, count) in buckets.iter().enumerate() {
+                if *count == 0 {
+                    continue;
+                }
+                if let Some(bucket) = histogram.buckets.get_mut(bucket_index) {
+                    increment_counter_by(&mut bucket.values, UNSET_VALUE, *count);
+                }
+            }
+        }
         for value_index in 0..self.value_histogram_buckets.len() {
             let Some(buckets) = &self.value_histogram_buckets[value_index] else {
                 continue;
@@ -751,6 +794,7 @@ impl FileReader {
             for value_index in &deferred_values {
                 accumulator.apply_value(*value_index, Some(effective_realtime), &mut result.stats);
             }
+            accumulator.finish_histogram_row(row_id, effective_realtime, &mut result.stats);
             if result.rows.len() < query.limit {
                 result
                     .rows
@@ -868,7 +912,8 @@ impl FileReader {
                             }
                             let field_index = accumulator.value_field_indices[value_index];
                             let first_for_field = if use_first_value
-                                || accumulator.flags[field_index] & FACET_PUBLIC != 0
+                                || accumulator.flags[field_index] & (FACET_PUBLIC | FACET_HISTOGRAM)
+                                    != 0
                             {
                                 accumulator.mark_field_seen(field_index, row_id)
                             } else {
@@ -1017,9 +1062,9 @@ fn facet_pass_groups(query: &ExplorerQuery) -> Vec<FacetPassGroup> {
     let mut groups: Vec<FacetPassGroup> = Vec::new();
 
     for (index, facet) in query.facets.iter().enumerate() {
-        let excluded_field = filter_fields
-            .contains(facet.as_slice())
-            .then(|| facet.clone());
+        let excluded_field = (query.exclude_facet_field_filters
+            && filter_fields.contains(facet.as_slice()))
+        .then(|| facet.clone());
         if let Some(existing) = groups
             .iter_mut()
             .find(|group| group.excluded_field.as_deref() == excluded_field.as_deref())
@@ -1103,6 +1148,7 @@ fn indexed_count_histogram(
     };
     let field = histogram.field.clone();
     let mut decompressed = Vec::new();
+    let mut rows_with_field = HashSet::new();
 
     for item in file.field_data_objects_with_offsets(&field)? {
         let (_, data) = item?;
@@ -1120,9 +1166,19 @@ fn indexed_count_histogram(
             &value,
             histogram,
             query,
+            &mut rows_with_field,
             &mut result.stats,
         )?;
     }
+
+    indexed_count_histogram_unset_entries(
+        file,
+        candidates,
+        &rows_with_field,
+        histogram,
+        query,
+        &mut result.stats,
+    )?;
 
     Ok(())
 }
@@ -1179,6 +1235,7 @@ fn indexed_count_histogram_entries(
     value: &[u8],
     histogram: &mut ExplorerHistogram,
     query: &ExplorerQuery,
+    rows_with_field: &mut HashSet<NonZeroU64>,
     stats: &mut ExplorerStats,
 ) -> Result<()> {
     let histogram_start = histogram
@@ -1203,6 +1260,7 @@ fn indexed_count_histogram_entries(
         if !candidates.contains(entry_offset) {
             return Ok(());
         }
+        rows_with_field.insert(entry_offset);
         let entry = file.entry_ref(entry_offset)?;
         let realtime = entry.header.realtime;
         drop(entry);
@@ -1223,6 +1281,74 @@ fn indexed_count_histogram_entries(
         }
         Ok(())
     })
+}
+
+fn indexed_count_histogram_unset_entries(
+    file: &JournalFile<Mmap>,
+    candidates: &IndexedCandidateSet,
+    rows_with_field: &HashSet<NonZeroU64>,
+    histogram: &mut ExplorerHistogram,
+    query: &ExplorerQuery,
+    stats: &mut ExplorerStats,
+) -> Result<()> {
+    let histogram_start = histogram
+        .buckets
+        .first()
+        .map(|bucket| bucket.start_realtime_usec)
+        .unwrap_or_default();
+    let histogram_bucket_width = histogram
+        .buckets
+        .first()
+        .map(|bucket| {
+            bucket
+                .end_realtime_usec
+                .saturating_sub(bucket.start_realtime_usec)
+                .max(1)
+        })
+        .unwrap_or(1);
+    let histogram_bucket_count = histogram.buckets.len();
+
+    let mut visit = |entry_offset: NonZeroU64| -> Result<()> {
+        if rows_with_field.contains(&entry_offset) {
+            return Ok(());
+        }
+        let entry = file.entry_ref(entry_offset)?;
+        let realtime = entry.header.realtime;
+        drop(entry);
+        if !timestamp_in_range(query, realtime) {
+            return Ok(());
+        }
+        let Some(bucket_index) = histogram_bucket_index_from_bounds(
+            realtime,
+            histogram_start,
+            histogram_bucket_width,
+            histogram_bucket_count,
+        ) else {
+            return Ok(());
+        };
+        if let Some(bucket) = histogram.buckets.get_mut(bucket_index) {
+            increment_counter_by(&mut bucket.values, UNSET_VALUE, 1);
+            stats.histogram_updates = stats.histogram_updates.saturating_add(1);
+        }
+        Ok(())
+    };
+
+    match candidates {
+        IndexedCandidateSet::All { .. } => {
+            let mut entry_offsets = Vec::new();
+            file.entry_offsets(&mut entry_offsets)?;
+            for entry_offset in entry_offsets {
+                visit(entry_offset)?;
+            }
+        }
+        IndexedCandidateSet::Set { offsets, .. } => {
+            for entry_offset in offsets {
+                visit(*entry_offset)?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn indexed_visit_entries<F>(
@@ -1834,7 +1960,7 @@ mod tests {
         assert_eq!(histogram.buckets.len(), 2);
         assert_eq!(histogram.buckets[0].values.get(b"a".as_slice()), Some(&1));
         assert_eq!(histogram.buckets[0].values.get(b"b".as_slice()), Some(&1));
-        assert!(histogram.buckets[1].values.is_empty());
+        assert_eq!(histogram.buckets[1].values.get(UNSET_VALUE), Some(&1));
     }
 
     #[test]

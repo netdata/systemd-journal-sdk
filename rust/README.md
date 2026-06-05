@@ -126,6 +126,20 @@ Current reader scope:
   index, fails if their logical outputs differ, and returns timing/counter
   diagnostics in `ExplorerResult::comparison`. There is no automatic planner
   because index aggregation is faster only for some query shapes;
+- `journal::netdata` provides the first Netdata-specific Rust function
+  boundary over the explorer. `NetdataJournalFunction::systemd_journal()` runs
+  a `systemd-journal` request JSON against a journal directory and returns
+  Netdata-shaped function JSON. This layer owns Netdata request parsing,
+  default facets, default display columns, histogram defaults, field
+  presentation transforms, row options, and zero-count vocabulary padding for
+  filtered requests. It is intentionally separate from the core journal
+  file-format reader;
+- `src/internal/testcmd/netdata_function_wrapper` exposes the SDK Netdata
+  boundary through the same offline CLI shape as Netdata's plugin test path:
+  `netdata_function_wrapper --test systemd-journal --dir <journal-dir>
+  --request <request.json>`. The comparison tools under
+  `../tests/netdata_function/` compare semantic function output against an
+  external `systemd-journal.plugin` binary;
 - default reader options use live/windowed mmap with a 32 MiB window. Smaller
   windows are available for constrained environments, but high-cardinality
   indexed queries can become remap-bound with very small windows;

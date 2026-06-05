@@ -9,6 +9,7 @@ mod directory;
 mod explorer;
 mod export;
 mod facade;
+pub mod netdata;
 mod parse;
 mod reader_helpers;
 mod sealed_verify;

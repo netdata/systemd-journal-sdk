@@ -90,6 +90,61 @@ Evidence note:
   code sets one hour. The SDK target is the code behavior unless a later user
   decision changes it.
 
+## SDK Netdata Function Boundary
+
+The Rust SDK exposes an additive Netdata-specific boundary under
+`journal::netdata`.
+
+Current Rust entrypoints:
+
+- `NetdataJournalFunction::systemd_journal()`
+- `NetdataJournalFunction::run_directory_request_json()`
+- `NetdataJournalFunction::run_directory_request_bytes()`
+
+The first wrapper command is an internal test command named
+`netdata_function_wrapper`, with the same external shape as the Netdata plugin:
+
+```bash
+netdata_function_wrapper --test systemd-journal --dir <journal-dir> --request <request.json>
+```
+
+The Netdata boundary is not part of the core journal file-format layer. It owns
+Netdata request parsing, default facets, default display fields, default
+histogram, field presentation transforms, row options, and Netdata-shaped JSON.
+The core reader remains responsible for journal traversal and object access.
+
+The Netdata-specific profile currently implements the `systemd-journal.plugin`
+field presentation needed by the comparison harness:
+
+- `PRIORITY` numeric values render as syslog priority names.
+- `SYSLOG_FACILITY` numeric values render as syslog facility names.
+- row options derive Netdata severity from `PRIORITY`.
+- `ND_JOURNAL_PROCESS` is synthesized from `SYSLOG_IDENTIFIER`, `_COMM`, or
+  `_EXE` plus `SYSLOG_PID` or `_PID` when the field is not already present.
+- `ND_JOURNAL_FILE` is injected from the file path for returned rows.
+
+The Rust explorer now has an explicit
+`ExplorerQuery::exclude_facet_field_filters` switch:
+
+- default `true` preserves the SDK explorer's original behavior, where a
+  facet's own selected values are excluded while counting that facet;
+- the Netdata wrapper sets it to `false` because `systemd-journal.plugin`
+  counts facets with all filters applied.
+
+The Rust explorer histogram path counts matched rows that do not contain the
+histogram field under the `"-"` value. Both traversal and explicit index
+strategy produce the same missing-value histogram semantics.
+
+Filtered Netdata wrapper requests add zero-count facet values from an
+unfiltered vocabulary pass. This approximates the plugin's vocabulary-padding
+behavior while keeping data rows, nonzero facet counters, histogram totals, and
+stable item counters comparable.
+
+The comparison harness in `tests/netdata_function/` compares semantic function
+output. It intentionally ignores zero-count vocabulary padding because the
+plugin may retain zero-count values discovered while scanning rows that do not
+contribute to the result.
+
 ## GET And POST Differences
 
 The query parser supports both GET-style function strings and POST JSON payloads.

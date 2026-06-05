@@ -28,6 +28,7 @@ members = [
     "src/internal/testcmd/corpus_digest",
     "src/internal/testcmd/corpus_regenerate",
     "src/internal/testcmd/corpus_experiment",
+    "src/internal/testcmd/netdata_function_wrapper",
 
     # Conformance adapter
     "src/adapter",

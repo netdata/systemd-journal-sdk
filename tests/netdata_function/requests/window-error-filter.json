@@ -1,0 +1,18 @@
+{
+  "after": 1666569601,
+  "before": 1666584438,
+  "last": 5,
+  "direction": "backward",
+  "data_only": false,
+  "slice": true,
+  "facets": [
+    "SYSLOG_IDENTIFIER",
+    "PRIORITY"
+  ],
+  "histogram": "PRIORITY",
+  "selections": {
+    "PRIORITY": [
+      "3"
+    ]
+  }
+}
