@@ -37,9 +37,6 @@ Last updated: 2026-06-05
 - SOW-0083 - Index-Derived Facet And Histogram Optimization: open. Depends on
   SOW-0082; measures and implements optional index-derived facet and histogram
   strategies with break-even evidence from generated and real-corpus queries.
-- SOW-0089 - Rust Compressed DATA Reuse: open. Follow-up from SOW-0086 to
-  measure and conditionally implement compressed-DATA and Zstandard context
-  reuse.
 - SOW-0090 - Rust Reader Header Snapshot Cache: open. Follow-up from SOW-0086
   to centralize cached header/snapshot state for Rust reader hot paths.
 - SOW-0091 - Rust Row View Adoption: open. Depends on SOW-0087; adopts the
@@ -50,6 +47,12 @@ Last updated: 2026-06-05
 
 ## Recently Closed Or Completed
 
+- SOW-0089 - Rust Compressed DATA Reuse: completed. Added an internal Rust
+  benchmark mode that measures compressed DATA reuse by offset and algorithm,
+  proved the available large-file corpus has too little repeated compressed
+  DATA to justify a production decompressed-DATA cache or reusable Zstandard
+  context, and left production Rust reader paths unchanged; five reviewers
+  voted `PRODUCTION GRADE`.
 - SOW-0088 - Rust Offset Array Cursor Cache: completed. Rust offset-array
   cursor movement now caches scalar node metadata/current values, avoids
   same-node node rebuilds, avoids repeated reverse head-to-current walks through

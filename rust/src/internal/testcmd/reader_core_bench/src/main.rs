@@ -7,6 +7,7 @@ use journal::{
 };
 use journal_core::file::{ExperimentalMmapStrategy, HashableObject};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::hint::black_box;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
@@ -38,6 +39,7 @@ struct Counts {
     fields: u64,
     bytes: u64,
     checksum: u64,
+    extra: serde_json::Map<String, Value>,
 }
 
 impl Counts {
@@ -60,6 +62,121 @@ struct ReadConfig<'a> {
     bounds: &'a str,
     strategy: ExperimentalMmapStrategy,
     window_size: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CompressedDataSample {
+    refs: u64,
+    compressed_bytes: u64,
+    decompressed_bytes: u64,
+    is_zstd: bool,
+    is_lz4: bool,
+    is_xz: bool,
+}
+
+#[derive(Default)]
+struct CompressionStats {
+    compressed: HashMap<NonZeroU64, CompressedDataSample>,
+    total_refs: u64,
+    uncompressed_refs: u64,
+    compressed_refs: u64,
+    compressed_repeat_refs: u64,
+    compressed_zstd_refs: u64,
+    compressed_lz4_refs: u64,
+    compressed_xz_refs: u64,
+    compressed_bytes_all_refs: u64,
+}
+
+impl CompressionStats {
+    fn record_uncompressed(&mut self) {
+        self.total_refs = self.total_refs.saturating_add(1);
+        self.uncompressed_refs = self.uncompressed_refs.saturating_add(1);
+    }
+
+    fn record_compressed(
+        &mut self,
+        offset: NonZeroU64,
+        sample: CompressedDataSample,
+    ) -> Result<()> {
+        self.total_refs = self.total_refs.saturating_add(1);
+        self.compressed_refs = self.compressed_refs.saturating_add(1);
+        self.compressed_bytes_all_refs = self
+            .compressed_bytes_all_refs
+            .saturating_add(sample.compressed_bytes);
+        if sample.is_zstd {
+            self.compressed_zstd_refs = self.compressed_zstd_refs.saturating_add(1);
+        }
+        if sample.is_lz4 {
+            self.compressed_lz4_refs = self.compressed_lz4_refs.saturating_add(1);
+        }
+        if sample.is_xz {
+            self.compressed_xz_refs = self.compressed_xz_refs.saturating_add(1);
+        }
+
+        if let Some(existing) = self.compressed.get_mut(&offset) {
+            existing.refs = existing.refs.saturating_add(1);
+            self.compressed_repeat_refs = self.compressed_repeat_refs.saturating_add(1);
+            return Ok(());
+        }
+
+        self.compressed
+            .insert(offset, CompressedDataSample { refs: 1, ..sample });
+        Ok(())
+    }
+
+    fn to_json(&self) -> Value {
+        let unique_compressed_refs = self.compressed.len() as u64;
+        let compressed_reuse_ratio = if self.compressed_refs > 0 {
+            self.compressed_repeat_refs as f64 / self.compressed_refs as f64
+        } else {
+            0.0
+        };
+        let compressed_bytes_unique = self
+            .compressed
+            .values()
+            .map(|sample| sample.compressed_bytes)
+            .sum::<u64>();
+        let decompressed_bytes_unique = self
+            .compressed
+            .values()
+            .map(|sample| sample.decompressed_bytes)
+            .sum::<u64>();
+        let decompressed_bytes_all_refs = self
+            .compressed
+            .values()
+            .map(|sample| sample.decompressed_bytes.saturating_mul(sample.refs))
+            .sum::<u64>();
+        let reusable_offsets = self
+            .compressed
+            .values()
+            .filter(|sample| sample.refs > 1)
+            .count() as u64;
+        let max_refs_per_compressed_offset = self
+            .compressed
+            .values()
+            .map(|sample| sample.refs)
+            .max()
+            .unwrap_or(0);
+
+        json!({
+            "total_data_refs": self.total_refs,
+            "uncompressed_data_refs": self.uncompressed_refs,
+            "compressed_data_refs": self.compressed_refs,
+            "unique_compressed_offsets": unique_compressed_refs,
+            "compressed_repeat_refs": self.compressed_repeat_refs,
+            "compressed_reuse_ratio": compressed_reuse_ratio,
+            "reusable_compressed_offsets": reusable_offsets,
+            "max_refs_per_compressed_offset": max_refs_per_compressed_offset,
+            "compressed_zstd_refs": self.compressed_zstd_refs,
+            "compressed_lz4_refs": self.compressed_lz4_refs,
+            "compressed_xz_refs": self.compressed_xz_refs,
+            "compressed_bytes_all_refs": self.compressed_bytes_all_refs,
+            "compressed_bytes_unique": compressed_bytes_unique,
+            "decompressed_bytes_unique": decompressed_bytes_unique,
+            "decompressed_bytes_all_refs": decompressed_bytes_all_refs,
+            "avoided_decompressed_bytes_if_unique_cache": decompressed_bytes_all_refs.saturating_sub(decompressed_bytes_unique),
+        })
+    }
 }
 
 fn checksum_payload(mut checksum: u64, payload: &[u8]) -> u64 {
@@ -141,6 +258,7 @@ fn read_core(path: &Path, cfg: &ReadConfig<'_>) -> Result<Counts> {
     let mut counts = Counts::default();
     let mut offsets = Vec::new();
     let mut decompressed = Vec::new();
+    let mut compression_stats = CompressionStats::default();
 
     while reader.step(&file, cfg.direction)? {
         let realtime = reader.get_realtime_usec(&file)?;
@@ -152,7 +270,13 @@ fn read_core(path: &Path, cfg: &ReadConfig<'_>) -> Result<Counts> {
             &mut counts,
             &mut offsets,
             &mut decompressed,
+            &mut compression_stats,
         )?;
+    }
+    if cfg.mode == "core-compressed-stats" {
+        counts
+            .extra
+            .insert("compression_stats".to_string(), compression_stats.to_json());
     }
 
     black_box(counts.checksum);
@@ -166,11 +290,20 @@ fn record_core_mode(
     counts: &mut Counts,
     offsets: &mut Vec<NonZeroU64>,
     decompressed: &mut Vec<u8>,
+    compression_stats: &mut CompressionStats,
 ) -> Result<()> {
     match mode {
         "core-next" => Ok(()),
         "core-offsets" => record_core_offsets(file, reader, counts, offsets),
         "core-payloads" => record_core_payloads(file, reader, counts, offsets, decompressed),
+        "core-compressed-stats" => record_core_compressed_stats(
+            file,
+            reader,
+            counts,
+            offsets,
+            decompressed,
+            compression_stats,
+        ),
         other => Err(anyhow!("invalid core mode for file surface: {other}")),
     }
 }
@@ -185,6 +318,44 @@ fn record_core_offsets(
     reader.entry_data_offsets(file, offsets)?;
     counts.fields = counts.fields.saturating_add(offsets.len() as u64);
     counts.checksum ^= offsets.len() as u64;
+    Ok(())
+}
+
+fn record_core_compressed_stats(
+    file: &JournalFile<Mmap>,
+    reader: &JournalReader<'_, Mmap>,
+    counts: &mut Counts,
+    offsets: &mut Vec<NonZeroU64>,
+    decompressed: &mut Vec<u8>,
+    stats: &mut CompressionStats,
+) -> Result<()> {
+    offsets.clear();
+    reader.entry_data_offsets(file, offsets)?;
+    counts.fields = counts.fields.saturating_add(offsets.len() as u64);
+    counts.checksum ^= offsets.len() as u64;
+
+    for offset in offsets.iter().copied() {
+        let data = file.data_ref(offset)?;
+        if !data.is_compressed() {
+            stats.record_uncompressed();
+            continue;
+        }
+
+        decompressed.clear();
+        let len = data.decompress(decompressed)?;
+        stats.record_compressed(
+            offset,
+            CompressedDataSample {
+                refs: 1,
+                compressed_bytes: data.raw_payload().len() as u64,
+                decompressed_bytes: len as u64,
+                is_zstd: data.zstd_compressed(),
+                is_lz4: data.lz4_compressed(),
+                is_xz: data.xz_compressed(),
+            },
+        )?;
+    }
+
     Ok(())
 }
 
@@ -440,6 +611,10 @@ fn dispatch_read(inputs: &[PathBuf], cfg: &ReadConfig<'_>) -> Result<Counts> {
             require_single_file_input(inputs, cfg.surface, "core modes")?;
             read_core(&inputs[0], cfg)
         }
+        "core-compressed-stats" => {
+            require_single_file_input(inputs, cfg.surface, "core modes")?;
+            read_core(&inputs[0], cfg)
+        }
         "sdk-entry" | "sdk-payloads" => dispatch_sdk_read(inputs, cfg),
         "facade-next" | "facade-data" => read_facade(inputs, cfg),
         other => Err(anyhow!("invalid --mode: {other}")),
@@ -478,6 +653,7 @@ fn main() -> Result<()> {
             "fields": counts.fields,
             "bytes": counts.bytes,
             "checksum": counts.checksum,
+            "extra": counts.extra,
             "read_seconds": read_seconds,
             "read_rows_per_second": if read_seconds > 0.0 { counts.records as f64 / read_seconds } else { 0.0 },
             "read_fields_per_second": if read_seconds > 0.0 { counts.fields as f64 / read_seconds } else { 0.0 },
