@@ -37,8 +37,6 @@ Last updated: 2026-06-05
 - SOW-0083 - Index-Derived Facet And Histogram Optimization: open. Depends on
   SOW-0082; measures and implements optional index-derived facet and histogram
   strategies with break-even evidence from generated and real-corpus queries.
-- SOW-0088 - Rust Offset Array Cursor Cache: open. Follow-up from SOW-0086 to
-  remove repeated offset-array node reads and reverse traversal list walks.
 - SOW-0089 - Rust Compressed DATA Reuse: open. Follow-up from SOW-0086 to
   measure and conditionally implement compressed-DATA and Zstandard context
   reuse.
@@ -52,6 +50,14 @@ Last updated: 2026-06-05
 
 ## Recently Closed Or Completed
 
+- SOW-0088 - Rust Offset Array Cursor Cache: completed. Rust offset-array
+  cursor movement now caches scalar node metadata/current values, avoids
+  same-node node rebuilds, avoids repeated reverse head-to-current walks through
+  lazy node-chain reuse, fixes a `collect_offsets()` remaining-items bug, and
+  adds forward/backward multi-node traversal coverage. Final large-file
+  benchmark evidence shows forward `core-next` improved on 5/6 candidates and
+  forward `core-offsets` improved on 5/6 candidates; five reviewers voted
+  `PRODUCTION GRADE`.
 - SOW-0087 - Rust Core Row View Primitive: completed. Rust current-row reader
   ownership now lives in a `journal-core` `CurrentRowView` primitive used by
   `FileReader` and facade DATA enumeration; public Rust API shape is

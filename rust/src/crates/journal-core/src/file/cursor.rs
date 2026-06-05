@@ -90,7 +90,7 @@ impl JournalCursor {
         journal_file: &JournalFile<M>,
         cursor: offset_array::Cursor,
     ) -> Result<Option<Location>> {
-        let Some(offset) = cursor.value(journal_file)? else {
+        let Some((cursor, offset)) = cursor.materialize_value(journal_file)? else {
             return Ok(None);
         };
         self.array_cursor = Some(cursor);
@@ -144,7 +144,10 @@ impl JournalCursor {
         journal_file: &JournalFile<M>,
         direction: Direction,
     ) -> Result<Option<Location>> {
-        let cursor = self.array_cursor.ok_or(JournalError::UnsetCursor)?;
+        let cursor = self
+            .array_cursor
+            .as_ref()
+            .ok_or(JournalError::UnsetCursor)?;
         let cursor = match direction {
             Direction::Forward => cursor.next(journal_file)?,
             Direction::Backward => cursor.previous(journal_file)?,

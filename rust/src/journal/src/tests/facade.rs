@@ -152,6 +152,40 @@ fn facade_uncompressed_windowed_row_pins_survive_window_pressure() {
 }
 
 #[test]
+fn file_reader_steps_forward_and_backward_across_entry_array_nodes() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir.path().join("journals/many-entry-arrays.journal");
+    let (mut journal_file, mut writer) = create_facade_test_writer(&path);
+
+    for idx in 0..80u64 {
+        let message = format!("MESSAGE=row-{idx:02}");
+        writer
+            .add_entry(
+                &mut journal_file,
+                &[message.as_bytes()],
+                10_000 + idx,
+                20_000 + idx,
+            )
+            .expect("write entry");
+    }
+    journal_file.sync().expect("sync journal");
+
+    let mut reader = FileReader::open(&path).expect("open reader");
+    let mut forward = Vec::new();
+    while reader.next().expect("next entry") {
+        forward.push(reader.get_seqnum().expect("seqnum").0);
+    }
+    assert_eq!(forward, (1..=80).collect::<Vec<_>>());
+
+    reader.seek_tail();
+    let mut backward = Vec::new();
+    while reader.previous().expect("previous entry") {
+        backward.push(reader.get_seqnum().expect("seqnum").0);
+    }
+    assert_eq!(backward, (1..=80).rev().collect::<Vec<_>>());
+}
+
+#[test]
 fn facade_compressed_data_payloads_remain_valid_for_current_row() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let path = dir.path().join("journals/system.journal");

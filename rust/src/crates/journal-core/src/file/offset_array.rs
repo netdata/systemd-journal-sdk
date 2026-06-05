@@ -2,6 +2,7 @@ use super::mmap::MemoryMap;
 use crate::error::{JournalError, Result};
 use crate::file::JournalFile;
 use std::num::{NonZeroU64, NonZeroUsize};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -10,6 +11,8 @@ pub enum Direction {
 }
 
 /// A reference to a single array of offsets in the journal file
+#[derive(Clone, Copy)]
+#[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
 pub struct Node {
     offset: NonZeroU64,
     next_offset: Option<NonZeroU64>,
@@ -212,6 +215,21 @@ impl List {
         Ok(current)
     }
 
+    fn node_chain<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<Arc<[Node]>> {
+        let mut nodes = Vec::new();
+        let mut current = self.head(journal_file)?;
+
+        loop {
+            nodes.push(current);
+            let Some(next) = current.next(journal_file)? else {
+                break;
+            };
+            current = next;
+        }
+
+        Ok(Arc::from(nodes))
+    }
+
     /// Get a cursor at the first position in the chain
     pub fn cursor_head(self) -> Cursor {
         Cursor::at_head(self)
@@ -228,13 +246,8 @@ impl List {
     /// # Parameters
     /// * `predicate` - Function that takes an array item value and returns true if the search should continue.
     /// * `direction` - Direction of the search (Forward or Backward)
-    fn cursor_at_node_index<M: MemoryMap>(
-        self,
-        journal_file: &JournalFile<M>,
-        node: &Node,
-        index: usize,
-    ) -> Result<Cursor> {
-        Cursor::at_position(journal_file, self, node.offset, index, node.remaining_items)
+    fn cursor_at_node_index(self, node: &Node, index: usize) -> Cursor {
+        Cursor::at_cached_position(self, *node, index, None, None)
     }
 
     fn node_partition_cursor<M, F>(
@@ -256,7 +269,7 @@ impl List {
             return Ok(None);
         };
 
-        let cursor = self.cursor_at_node_index(journal_file, node, index)?;
+        let cursor = self.cursor_at_node_index(node, index);
         Ok(Some((cursor, index)))
     }
 
@@ -338,17 +351,35 @@ impl List {
 }
 
 /// A cursor pointing to a specific position within an offset array chain
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 #[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
 pub struct Cursor {
     list: List,
     array_offset: NonZeroU64,
     array_index: usize,
     remaining_items: NonZeroUsize,
+    node: Option<Node>,
+    node_index: Option<usize>,
+    node_chain: Option<Arc<[Node]>>,
+    cached_value: Option<NonZeroU64>,
 }
 
 impl Cursor {
     pub fn head(&self) -> Self {
+        if let Some(chain) = &self.node_chain {
+            if let Some(node) = chain.first().copied() {
+                return Self {
+                    list: self.list,
+                    array_offset: node.offset,
+                    array_index: 0,
+                    remaining_items: node.remaining_items,
+                    node: Some(node),
+                    node_index: Some(0),
+                    node_chain: Some(Arc::clone(chain)),
+                    cached_value: None,
+                };
+            }
+        }
         Self::at_head(self.list)
     }
 
@@ -359,22 +390,31 @@ impl Cursor {
             array_offset: list.head_offset,
             array_index: 0,
             remaining_items: list.total_items,
+            node: None,
+            node_index: None,
+            node_chain: None,
+            cached_value: None,
         }
     }
 
     /// Create a cursor at the tail of the chain
     pub fn at_tail<M: MemoryMap>(journal_file: &JournalFile<M>, list: List) -> Result<Self> {
-        let mut current_array = list.head(journal_file)?;
-
-        while let Some(next_array) = current_array.next(journal_file)? {
-            current_array = next_array;
-        }
+        let chain = list.node_chain(journal_file)?;
+        let node_index = chain
+            .len()
+            .checked_sub(1)
+            .ok_or(JournalError::EmptyOffsetArrayList)?;
+        let current_array = chain[node_index];
 
         Ok(Self {
             list,
             array_offset: current_array.offset,
             array_index: current_array.len().get() - 1,
             remaining_items: current_array.len(),
+            node: Some(current_array),
+            node_index: Some(node_index),
+            node_chain: Some(chain),
+            cached_value: None,
         })
     }
 
@@ -396,28 +436,90 @@ impl Cursor {
             return Err(JournalError::InvalidOffsetArrayIndex);
         }
 
-        Ok(Self {
-            list: offset_array_list,
-            array_offset,
+        Ok(Self::at_cached_position(
+            offset_array_list,
+            array,
             array_index,
-            remaining_items,
-        })
+            None,
+            None,
+        ))
+    }
+
+    fn at_cached_position(
+        list: List,
+        node: Node,
+        array_index: usize,
+        node_index: Option<usize>,
+        node_chain: Option<Arc<[Node]>>,
+    ) -> Self {
+        Self {
+            list,
+            array_offset: node.offset,
+            array_index,
+            remaining_items: node.remaining_items,
+            node: Some(node),
+            node_index,
+            node_chain,
+            cached_value: None,
+        }
     }
 
     /// Get the current array this cursor points to
     pub fn node<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<Node> {
+        if let Some(node) = self.node {
+            return Ok(node);
+        }
         Node::new(journal_file, self.array_offset, self.remaining_items)
     }
 
     pub fn value<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<Option<NonZeroU64>> {
+        if let Some(value) = self.cached_value {
+            return Ok(Some(value));
+        }
         self.node(journal_file)?.get(journal_file, self.array_index)
+    }
+
+    pub(crate) fn materialize_value<M: MemoryMap>(
+        mut self,
+        journal_file: &JournalFile<M>,
+    ) -> Result<Option<(Self, NonZeroU64)>> {
+        if let Some(value) = self.cached_value {
+            return Ok(Some((self, value)));
+        }
+
+        let node = self.node(journal_file)?;
+        let Some(value) = node.get(journal_file, self.array_index)? else {
+            return Ok(None);
+        };
+        self.node = Some(node);
+        self.cached_value = Some(value);
+        Ok(Some((self, value)))
+    }
+
+    fn node_chain_position<M: MemoryMap>(
+        &self,
+        journal_file: &JournalFile<M>,
+    ) -> Result<(Arc<[Node]>, usize)> {
+        if let (Some(chain), Some(index)) = (&self.node_chain, self.node_index) {
+            return Ok((Arc::clone(chain), index));
+        }
+
+        let chain = self.list.node_chain(journal_file)?;
+        let Some(index) = chain
+            .iter()
+            .position(|node| node.offset == self.array_offset)
+        else {
+            return Err(JournalError::InvalidOffsetArrayOffset);
+        };
+        Ok((chain, index))
     }
 
     /// Move to the next position
     pub fn next<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<Option<Self>> {
         let array_node = self.node(journal_file)?;
 
-        // FIXME: overtly defensive/expensive...
+        // Same-node movement keeps the cached node metadata and avoids
+        // rereading the offset-array object until the value itself is needed.
         if self.array_index + 1 < array_node.len().get() {
             // Next item is in the same array
             return Ok(Some(Self {
@@ -425,6 +527,10 @@ impl Cursor {
                 array_offset: self.array_offset,
                 array_index: self.array_index + 1,
                 remaining_items: self.remaining_items,
+                node: Some(array_node),
+                node_index: self.node_index,
+                node_chain: self.node_chain.as_ref().map(Arc::clone),
+                cached_value: None,
             }));
         }
 
@@ -432,32 +538,46 @@ impl Cursor {
             return Ok(None);
         }
 
-        let next_array = array_node.next(journal_file)?.unwrap();
+        let (next_array, node_index, node_chain) =
+            if let (Some(chain), Some(index)) = (&self.node_chain, self.node_index) {
+                let next_index = index + 1;
+                let Some(next_array) = chain.get(next_index).copied() else {
+                    return Err(JournalError::InvalidOffsetArrayOffset);
+                };
+                (next_array, Some(next_index), Some(Arc::clone(chain)))
+            } else {
+                let next_array = array_node
+                    .next(journal_file)?
+                    .ok_or(JournalError::InvalidOffsetArrayOffset)?;
+                (next_array, None, None)
+            };
 
-        match NonZeroUsize::new(
-            self.remaining_items
-                .get()
-                .saturating_sub(array_node.len().get()),
-        ) {
-            None => Ok(None),
-            Some(remaining_items) => Ok(Some(Self {
-                list: self.list,
-                array_offset: next_array.offset,
-                array_index: 0,
-                remaining_items,
-            })),
-        }
+        Ok(Some(Self {
+            list: self.list,
+            array_offset: next_array.offset,
+            array_index: 0,
+            remaining_items: next_array.remaining_items,
+            node: Some(next_array),
+            node_index,
+            node_chain,
+            cached_value: None,
+        }))
     }
 
     /// Move to the previous position
     pub fn previous<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<Option<Self>> {
         if self.array_index > 0 {
             // Previous item is in the same array
+            let array_node = self.node(journal_file)?;
             return Ok(Some(Self {
                 list: self.list,
                 array_offset: self.array_offset,
                 array_index: self.array_index - 1,
                 remaining_items: self.remaining_items,
+                node: Some(array_node),
+                node_index: self.node_index,
+                node_chain: self.node_chain.as_ref().map(Arc::clone),
+                cached_value: None,
             }));
         }
 
@@ -465,21 +585,22 @@ impl Cursor {
             return Ok(None);
         }
 
-        let mut node = self.list.head(journal_file)?;
-        while node.has_next() {
-            if node.next_offset == Some(self.array_offset) {
-                return Ok(Some(Self {
-                    list: self.list,
-                    array_offset: node.offset,
-                    array_index: node.len().get() - 1,
-                    remaining_items: node.remaining_items,
-                }));
-            }
+        let (chain, index) = self.node_chain_position(journal_file)?;
+        let previous_index = index
+            .checked_sub(1)
+            .ok_or(JournalError::InvalidOffsetArrayOffset)?;
+        let previous_node = chain[previous_index];
 
-            node = node.next(journal_file)?.unwrap();
-        }
-
-        Err(JournalError::InvalidOffsetArrayOffset)
+        Ok(Some(Self {
+            list: self.list,
+            array_offset: previous_node.offset,
+            array_index: previous_node.len().get() - 1,
+            remaining_items: previous_node.remaining_items,
+            node: Some(previous_node),
+            node_index: Some(previous_index),
+            node_chain: Some(chain),
+            cached_value: None,
+        }))
     }
 
     pub fn collect_offsets<M: MemoryMap>(
@@ -499,7 +620,7 @@ impl Cursor {
         // Copy from subsequent arrays
         while let Some(next_node) = node.next(journal_file)? {
             let array = journal_file.offset_array_ref(next_node.offset())?;
-            let remaining_items = node.remaining_items.get();
+            let remaining_items = next_node.remaining_items.get();
             array.collect_offsets(0, remaining_items, offsets)?;
             node = next_node;
         }
@@ -518,7 +639,7 @@ impl std::fmt::Debug for Cursor {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "allocative", derive(allocative::Allocative))]
 pub struct InlinedCursor {
     inlined_offset: NonZeroU64,
@@ -538,17 +659,17 @@ impl InlinedCursor {
     pub fn head(&self) -> Self {
         Self {
             inlined_offset: self.inlined_offset,
-            cursor: self.cursor.as_ref().map(|c| c.head()),
+            cursor: self.cursor.as_ref().map(Cursor::head),
             at_inlined_offset: true,
         }
     }
 
     pub fn tail<M: MemoryMap>(&self, journal_file: &JournalFile<M>) -> Result<Self> {
         // Start with a copy of the current cursor
-        let mut result = *self;
+        let mut result = self.clone();
 
         // If we have an entry array list cursor, move it to the tail
-        if let Some(cursor) = self.cursor {
+        if let Some(cursor) = self.cursor.as_ref() {
             result.cursor = Some(cursor.list.cursor_tail(journal_file)?);
             result.at_inlined_offset = false;
         }
@@ -562,7 +683,7 @@ impl InlinedCursor {
             if self.cursor.is_some() {
                 return Ok(Some(Self {
                     inlined_offset: self.inlined_offset,
-                    cursor: self.cursor,
+                    cursor: self.cursor.clone(),
                     at_inlined_offset: false,
                 }));
             } else {
@@ -594,16 +715,16 @@ impl InlinedCursor {
             return Ok(None);
         }
 
-        if let Some(current_cursor) = self.cursor {
+        if let Some(current_cursor) = self.cursor.as_ref() {
             // Try to move to the previous position in the array
             if let Some(prev_cursor) = current_cursor.previous(journal_file)? {
                 // We can move back within the array
-                let mut ic = *self;
+                let mut ic = self.clone();
                 ic.cursor = Some(prev_cursor);
                 return Ok(Some(ic));
             } else {
                 // We're at the first array position, move to the inlined entry
-                let mut ic = *self;
+                let mut ic = self.clone();
                 ic.at_inlined_offset = true;
                 return Ok(Some(ic));
             }
@@ -619,7 +740,7 @@ impl InlinedCursor {
         }
 
         // Case 2: We're in the entry array
-        if let Some(cursor) = self.cursor {
+        if let Some(cursor) = self.cursor.as_ref() {
             return cursor.value(journal_file);
         }
 
@@ -670,7 +791,7 @@ impl InlinedCursor {
         while let Some(ic) = self.previous(journal_file)? {
             *self = ic;
 
-            let Some(current_offset) = ic.value(journal_file)? else {
+            let Some(current_offset) = self.value(journal_file)? else {
                 break;
             };
 
@@ -731,7 +852,7 @@ impl InlinedCursor {
         M: MemoryMap,
         F: Fn(NonZeroU64) -> Result<bool>,
     {
-        let Some(cursor) = self.cursor else {
+        let Some(cursor) = self.cursor.as_ref() else {
             return Ok(None);
         };
         let Some(cursor) =
@@ -778,10 +899,10 @@ impl InlinedCursor {
             offsets.push(self.inlined_offset);
 
             // If we have a cursor, collect all offsets from the beginning
-            if let Some(cursor) = self.cursor {
+            if let Some(cursor) = self.cursor.as_ref() {
                 cursor.list.collect_offsets(journal_file, offsets)?;
             }
-        } else if let Some(cursor) = self.cursor {
+        } else if let Some(cursor) = self.cursor.as_ref() {
             // We're somewhere in the array chain, collect from current position
             cursor.collect_offsets(journal_file, offsets)?;
         }
