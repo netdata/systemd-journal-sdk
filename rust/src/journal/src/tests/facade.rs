@@ -15,7 +15,7 @@ fn facade_uncompressed_data_uses_mmap_payload_for_whole_file_reader() {
     .expect("open reader");
     assert!(reader.next().expect("first entry"));
     reader.entry_data_restart().expect("restart data");
-    let first_offset = reader.data_offsets[0];
+    let first_offset = reader.row.data_offset_at(0).expect("first offset");
     let (returned_ptr, returned_len, returned_payload) = {
         let payload = reader
             .enumerate_entry_payload()
@@ -48,7 +48,7 @@ fn facade_uncompressed_windowed_data_remains_valid_for_current_row() {
     let mut reader = FileReader::open(&path).expect("open reader");
     assert!(reader.next().expect("first entry"));
     reader.entry_data_restart().expect("restart data");
-    let first_offset = reader.data_offsets[0];
+    let first_offset = reader.row.data_offset_at(0).expect("first offset");
 
     let (first_ptr, first_len) = {
         let payload = reader
@@ -140,13 +140,13 @@ fn facade_uncompressed_windowed_row_pins_survive_window_pressure() {
     let first_after_pressure = unsafe { std::slice::from_raw_parts(first_ptr, first_len) };
     assert_eq!(first_after_pressure, first_expected.as_slice());
     assert!(
-        reader.row_pins_active,
+        reader.row.row_pins_active(),
         "current row should keep mmap windows pinned while payload pointers are row-valid"
     );
 
     assert!(!reader.next().expect("advance past pressure row"));
     assert!(
-        !reader.row_pins_active,
+        !reader.row.row_pins_active(),
         "leaving the current row must clear row-pinned mmap windows"
     );
 }
@@ -226,7 +226,7 @@ fn facade_whole_file_row_handles_mixed_compressed_and_uncompressed_payloads() {
     .expect("open whole-file reader");
     assert!(reader.next().expect("first entry"));
     reader.entry_data_restart().expect("restart data");
-    let small_offset = reader.data_offsets[0];
+    let small_offset = reader.row.data_offset_at(0).expect("small offset");
 
     let (small_ptr, small_len) = {
         let payload = reader

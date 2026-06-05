@@ -49,12 +49,11 @@ pub use facade::{
     SdJournalSeekTail, SdJournalSetOutputMode, SdJournalTestCursor, SdJournalVisitUniqueValues,
 };
 pub use journal_core::error::JournalError;
-use journal_core::file::RowPinnedPayload;
-use journal_core::file::file::DataPayloadReadContext;
 pub use journal_core::file::{
     BucketUtilization, Compression, Direction, EntryItemsType, ExperimentalMmapStrategy,
     FieldNamePolicy, HashableObject, JournalFile, JournalReader, Location, Mmap,
 };
+use journal_core::file::{CurrentRowMetadata, CurrentRowView};
 pub use journal_log_writer::{
     Config, EntryTimestamps, Log, LogLifecycleEvent, LogLifecycleObserver, RetentionPolicy,
     RotationPolicy, WriterError,
@@ -306,53 +305,30 @@ struct ReaderCell {
 pub struct FileReader {
     inner: ReaderCell,
     temp_path: Option<PathBuf>,
-    current_key: Option<DirectoryEntryKey>,
-    data_offsets: Vec<NonZeroU64>,
-    data_payload_context: Option<DataPayloadReadContext>,
-    data_offsets_entry: Option<NonZeroU64>,
-    data_index: usize,
-    entry_data_state_active: bool,
-    decompressed: Vec<u8>,
-    row_payloads: Vec<RowPayload>,
-    row_arena: Vec<u8>,
-    row_pins_active: bool,
+    row: CurrentRowView,
 }
 
-#[derive(Clone, Copy)]
-enum RowPayload {
-    Borrowed { ptr: *const u8, len: usize },
-    Arena { start: usize, len: usize },
-}
-
-enum RowPayloadData {
-    Borrowed { ptr: *const u8, len: usize },
-    Decompressed { len: usize },
-}
-
-impl RowPayload {
-    fn as_slice<'a>(&self, arena: &'a [u8]) -> &'a [u8] {
-        match self {
-            Self::Borrowed { ptr, len } => {
-                // SAFETY: FileReader creates borrowed row payloads only through
-                // JournalFile's row-pinned mmap path. Row pins are cleared before
-                // advancing, seeking, or explicitly resetting row data state.
-                // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-                unsafe { std::slice::from_raw_parts(*ptr, *len) }
-            }
-            Self::Arena { start, len } => &arena[*start..*start + *len],
-        }
+fn key_from_metadata(metadata: CurrentRowMetadata) -> DirectoryEntryKey {
+    DirectoryEntryKey {
+        seqnum_id: metadata.seqnum_id,
+        seqnum: metadata.seqnum,
+        boot_id: metadata.boot_id,
+        monotonic: metadata.monotonic,
+        realtime: metadata.realtime,
+        xor_hash: metadata.xor_hash,
     }
 }
 
 enum StepStatus {
-    Valid(DirectoryEntryKey, NonZeroU64),
+    Valid,
     Skip,
     End,
 }
 
 impl Drop for FileReader {
     fn drop(&mut self) {
-        self.clear_row_payload_pins_best_effort();
+        self.inner
+            .with_file(|file| self.row.clear_current_best_effort(file));
         if let Some(path) = &self.temp_path {
             let _ = std::fs::remove_file(path);
         }
@@ -378,16 +354,7 @@ impl FileReader {
             }
             .build(),
             temp_path: None,
-            current_key: None,
-            data_offsets: Vec::new(),
-            data_payload_context: None,
-            data_offsets_entry: None,
-            data_index: 0,
-            entry_data_state_active: false,
-            decompressed: Vec::new(),
-            row_payloads: Vec::new(),
-            row_arena: Vec::new(),
-            row_pins_active: false,
+            row: CurrentRowView::default(),
         })
     }
 
@@ -407,16 +374,7 @@ impl FileReader {
             }
             .build(),
             temp_path: Some(temp_path),
-            current_key: None,
-            data_offsets: Vec::new(),
-            data_payload_context: None,
-            data_offsets_entry: None,
-            data_index: 0,
-            entry_data_state_active: false,
-            decompressed: Vec::new(),
-            row_payloads: Vec::new(),
-            row_arena: Vec::new(),
-            row_pins_active: false,
+            row: CurrentRowView::default(),
         })
     }
 
@@ -444,27 +402,24 @@ impl FileReader {
     }
 
     pub fn seek_head(&mut self) {
-        self.clear_row_payload_pins_best_effort();
-        self.reset_cached_entry_data_state();
-        self.current_key = None;
+        self.inner
+            .with_file(|file| self.row.clear_current_best_effort(file));
         self.inner.with_reader_mut(|reader| {
             reader.set_location(Location::Head);
         });
     }
 
     pub fn seek_tail(&mut self) {
-        self.clear_row_payload_pins_best_effort();
-        self.reset_cached_entry_data_state();
-        self.current_key = None;
+        self.inner
+            .with_file(|file| self.row.clear_current_best_effort(file));
         self.inner.with_reader_mut(|reader| {
             reader.set_location(Location::Tail);
         });
     }
 
     pub fn seek_realtime(&mut self, usec: u64) {
-        self.clear_row_payload_pins_best_effort();
-        self.reset_cached_entry_data_state();
-        self.current_key = None;
+        self.inner
+            .with_file(|file| self.row.clear_current_best_effort(file));
         self.inner.with_reader_mut(|reader| {
             reader.set_location(Location::Realtime(usec));
         });
@@ -504,59 +459,36 @@ impl FileReader {
     }
 
     fn step_valid(&mut self, direction: Direction) -> Result<bool> {
-        self.clear_row_payload_pins()?;
-        self.reset_row_payload_storage();
+        self.inner
+            .with_file(|file| self.row.clear_current(file))
+            .map_err(SdkError::from)?;
         loop {
-            let data_offsets = &mut self.data_offsets;
+            let row = &mut self.row;
             let status = self.inner.with_mut(|fields| {
                 if !fields.reader.step(fields.file, direction)? {
                     return Ok(StepStatus::End);
                 }
 
-                match fields.reader.get_entry_offset().and_then(|offset| {
-                    let entry = fields.file.entry_ref(offset)?;
-                    let header = fields.file.journal_header_ref();
-                    collect_offsets_from_entry_items(&entry.items, data_offsets);
-                    Ok((
-                        DirectoryEntryKey {
-                            seqnum_id: header.seqnum_id,
-                            seqnum: entry.header.seqnum,
-                            boot_id: entry.header.boot_id,
-                            monotonic: entry.header.monotonic,
-                            realtime: entry.header.realtime,
-                            xor_hash: entry.header.xor_hash,
-                        },
-                        offset,
-                    ))
-                }) {
-                    Ok((key, offset)) => Ok(StepStatus::Valid(key, offset)),
+                match fields
+                    .reader
+                    .get_entry_offset()
+                    .and_then(|offset| row.load_entry(fields.file, offset))
+                {
+                    Ok(_) => Ok(StepStatus::Valid),
                     Err(err) if recoverable_entry_error(&err) => Ok(StepStatus::Skip),
                     Err(err) => Err(err),
                 }
             })?;
 
             match status {
-                StepStatus::Valid(key, offset) => {
-                    self.current_key = Some(key);
-                    self.data_offsets_entry = Some(offset);
-                    self.data_payload_context = Some(
-                        self.inner
-                            .with_file(|file| file.data_payload_read_context()),
-                    );
-                    self.data_index = 0;
-                    self.entry_data_state_active = false;
-                    self.reset_row_payload_storage();
+                StepStatus::Valid => {
                     return Ok(true);
                 }
                 StepStatus::Skip => continue,
                 StepStatus::End => {
-                    self.current_key = None;
-                    self.data_offsets.clear();
-                    self.data_offsets_entry = None;
-                    self.data_payload_context = None;
-                    self.data_index = 0;
-                    self.entry_data_state_active = false;
-                    self.reset_row_payload_storage();
+                    self.inner
+                        .with_file(|file| self.row.clear_current(file))
+                        .map_err(SdkError::from)?;
                     return Ok(false);
                 }
             }
@@ -566,12 +498,10 @@ impl FileReader {
     pub fn get_entry(&mut self) -> Result<Entry> {
         self.invalidate_entry_data_state();
         let inner = &mut self.inner;
-        let data_offsets = &mut self.data_offsets;
-        let data_offsets_entry = &mut self.data_offsets_entry;
-        let decompressed = &mut self.decompressed;
+        let row = &mut self.row;
         inner.with_mut(|fields| {
             let offset = fields.reader.get_entry_offset()?;
-            *data_offsets_entry = Some(offset);
+            let (data_offsets, decompressed) = row.payload_work_buffers_mut();
             read_entry_at(
                 fields.file,
                 fields.reader,
@@ -582,194 +512,73 @@ impl FileReader {
         })
     }
 
-    pub fn visit_entry_payloads<F>(&mut self, visitor: F) -> Result<()>
+    pub fn visit_entry_payloads<F>(&mut self, mut visitor: F) -> Result<()>
     where
         F: FnMut(&[u8]) -> Result<()>,
     {
         self.invalidate_entry_data_state();
         let inner = &mut self.inner;
-        let data_offsets = &mut self.data_offsets;
-        let data_offsets_entry = &mut self.data_offsets_entry;
-        let decompressed = &mut self.decompressed;
+        let row = &mut self.row;
         inner.with_mut(|fields| {
-            let offset = fields.reader.get_entry_offset()?;
-            if *data_offsets_entry != Some(offset) {
-                collect_entry_data_offsets(fields.file, offset, data_offsets)?;
-                *data_offsets_entry = Some(offset);
+            fields.reader.release_object_guards();
+            if row.entry_offset().is_none() {
+                let offset = fields.reader.get_entry_offset()?;
+                row.load_entry(fields.file, offset)?;
             }
-            visit_entry_payload_offsets(fields.file, data_offsets, decompressed, visitor)
+            for index in 0..row.data_offset_count() {
+                let Some(data_offset) = row.data_offset_at(index) else {
+                    break;
+                };
+                let mut visitor_result = Ok(());
+                match row.visit_payload_at_transient(fields.file, data_offset, |payload| {
+                    visitor_result = visitor(payload);
+                    Ok(())
+                }) {
+                    Ok(()) => visitor_result?,
+                    Err(err) if recoverable_entry_data_error(&err) => continue,
+                    Err(err) => return Err(err.into()),
+                }
+            }
+            Ok(())
         })
     }
 
     pub fn clear_entry_data_state(&mut self) {
-        self.clear_row_payload_pins_best_effort();
-        self.reset_cached_entry_data_state();
+        self.inner
+            .with_file(|file| self.row.reset_data_state_best_effort(file));
         self.inner
             .with_reader_mut(|reader| reader.entry_data_restart());
     }
 
-    fn clear_row_payload_pins(&mut self) -> Result<()> {
-        if !self.row_pins_active {
-            return Ok(());
-        }
-        self.inner
-            .with_file(|file| file.clear_row_payload_pins())
-            .map_err(SdkError::from)?;
-        self.row_pins_active = false;
-        debug_assert!(!self.row_pins_active);
-        Ok(())
-    }
-
-    fn clear_row_payload_pins_best_effort(&mut self) {
-        let _ = self.clear_row_payload_pins();
-        debug_assert!(
-            !self.row_pins_active,
-            "row pins must be cleared before resetting or advancing row state"
-        );
-    }
-
-    fn reset_row_payload_storage(&mut self) {
-        debug_assert!(
-            !self.row_pins_active,
-            "row payload storage reset requires row pins to be cleared first"
-        );
-        self.row_payloads.clear();
-        self.row_arena.clear();
-    }
-
-    fn cache_current_row_payloads(&mut self) -> Result<()> {
-        self.reset_row_payload_storage();
-        let Some(context) = self.data_payload_context else {
-            return Ok(());
-        };
-        let data_offsets = &self.data_offsets;
-        let decompressed = &mut self.decompressed;
-        let row_payloads = &mut self.row_payloads;
-        let row_arena = &mut self.row_arena;
-        let mut row_pins_active = false;
-
-        self.inner
-            .with_file(|file| {
-                file.visit_data_payloads_row_pinned_with_context(
-                    context,
-                    data_offsets,
-                    decompressed,
-                    |payload| {
-                        match payload {
-                            RowPinnedPayload::Borrowed { ptr, len } => {
-                                row_pins_active = true;
-                                row_payloads.push(RowPayload::Borrowed { ptr, len });
-                            }
-                            RowPinnedPayload::Decompressed(bytes) => {
-                                let start = row_arena.len();
-                                row_arena.extend_from_slice(bytes);
-                                row_payloads.push(RowPayload::Arena {
-                                    start,
-                                    len: bytes.len(),
-                                });
-                            }
-                        }
-                        Ok(())
-                    },
-                )
-            })
-            .map_err(SdkError::from)?;
-        self.row_pins_active = row_pins_active;
-        Ok(())
-    }
-
-    fn reset_cached_entry_data_state(&mut self) {
-        self.data_offsets.clear();
-        self.data_offsets_entry = None;
-        self.data_payload_context = None;
-        self.data_index = 0;
-        self.entry_data_state_active = false;
-        self.reset_row_payload_storage();
-    }
-
     fn invalidate_entry_data_state(&mut self) {
-        if self.entry_data_state_active {
+        if self.row.data_state_active() {
             self.clear_entry_data_state();
         }
     }
 
     pub fn entry_data_restart(&mut self) -> Result<()> {
-        self.clear_row_payload_pins()?;
+        self.inner
+            .with_file(|file| self.row.clear_pins(file))
+            .map_err(SdkError::from)?;
         self.inner
             .with_reader_mut(|reader| reader.entry_data_restart());
-        let inner = &mut self.inner;
-        let data_offsets = &mut self.data_offsets;
-        let data_offsets_entry = &mut self.data_offsets_entry;
-        let data_payload_context = &mut self.data_payload_context;
-        inner.with_mut(|fields| {
-            let offset = fields.reader.get_entry_offset()?;
-            if *data_offsets_entry != Some(offset) {
-                collect_entry_data_offsets(fields.file, offset, data_offsets)?;
-                *data_offsets_entry = Some(offset);
-            }
-            *data_payload_context = Some(fields.file.data_payload_read_context());
-            Ok::<(), SdkError>(())
-        })?;
-        self.data_index = 0;
-        self.entry_data_state_active = true;
-        self.cache_current_row_payloads()?;
-        Ok(())
+        if self.row.entry_offset().is_none() {
+            let row = &mut self.row;
+            self.inner.with_mut(|fields| {
+                let offset = fields.reader.get_entry_offset()?;
+                row.load_entry(fields.file, offset).map(|_| ())
+            })?;
+        }
+        self.row.restart_data().map_err(Into::into)
     }
 
     pub fn enumerate_entry_payload(&mut self) -> Result<Option<&[u8]>> {
-        let Some(data_offset) = self.data_offsets.get(self.data_index).copied() else {
-            self.entry_data_state_active = true;
-            return Ok(None);
-        };
-        let index = self.data_index;
-        self.data_index += 1;
-        self.entry_data_state_active = true;
-        if self.row_payloads.len() == index {
-            let payload = self.read_row_payload(data_offset)?;
-            let payload = match payload {
-                RowPayloadData::Borrowed { ptr, len } => {
-                    self.row_pins_active = true;
-                    RowPayload::Borrowed { ptr, len }
-                }
-                RowPayloadData::Decompressed { len } => {
-                    let start = self.row_arena.len();
-                    self.row_arena.extend_from_slice(&self.decompressed[..len]);
-                    RowPayload::Arena { start, len }
-                }
-            };
-            self.row_payloads.push(payload);
-        }
-        let payload = self
-            .row_payloads
-            .get(index)
-            .expect("payload should be stored before returning it");
-        Ok(Some(payload.as_slice(&self.row_arena)))
-    }
-
-    fn read_row_payload(&mut self, data_offset: NonZeroU64) -> Result<RowPayloadData> {
-        let cached_context = self.data_payload_context;
-        let decompressed = &mut self.decompressed;
-        self.inner.with_mut(|fields| {
-            let context = cached_context.unwrap_or_else(|| fields.file.data_payload_read_context());
+        let row = &mut self.row;
+        let payload = self.inner.with_mut(|fields| {
             fields.reader.release_object_guards();
-            if let Some((ptr, len)) = fields
-                .file
-                .raw_data_payload_ptr_row_pinned_if_uncompressed(context, data_offset)?
-            {
-                return Ok(RowPayloadData::Borrowed { ptr, len });
-            }
-
-            let data_guard = fields.reader.data_object_at(fields.file, data_offset)?;
-            decompressed.clear();
-            let len = data_guard.decompress(decompressed)?;
-            debug_assert_eq!(
-                decompressed.len(),
-                len,
-                "decompressors must set the output buffer length before returning"
-            );
-            fields.reader.release_object_guards();
-            Ok(RowPayloadData::Decompressed { len })
-        })
+            row.read_next_payload(fields.file)
+        })?;
+        Ok(payload.map(|payload| self.row.payload_slice(payload)))
     }
 
     pub fn collect_entry_payloads(&mut self, payloads: &mut Vec<Vec<u8>>) -> Result<()> {
@@ -796,8 +605,8 @@ impl FileReader {
     }
 
     pub fn get_realtime_usec(&self) -> Result<u64> {
-        if let Some(key) = self.current_key {
-            return Ok(key.realtime);
+        if let Some(metadata) = self.row.metadata() {
+            return Ok(metadata.realtime);
         }
         self.inner
             .with(|fields| fields.reader.get_realtime_usec(fields.file))
@@ -815,16 +624,16 @@ impl FileReader {
     }
 
     pub fn get_cursor(&self) -> Result<String> {
-        if let Some(key) = self.current_key {
-            return Ok(format_cursor_from_key(key));
+        if let Some(metadata) = self.row.metadata() {
+            return Ok(format_cursor_from_key(key_from_metadata(metadata)));
         }
         self.inner
             .with(|fields| build_cursor(fields.file, fields.reader))
     }
 
     fn current_directory_entry_key(&self) -> Result<DirectoryEntryKey> {
-        if let Some(key) = self.current_key {
-            return Ok(key);
+        if let Some(metadata) = self.row.metadata() {
+            return Ok(key_from_metadata(metadata));
         }
         self.inner.with(|fields| {
             let offset = fields.reader.get_entry_offset()?;
@@ -893,7 +702,7 @@ impl FileReader {
         F: FnMut(&[u8]) -> Result<()>,
     {
         self.invalidate_entry_data_state();
-        let decompressed = &mut self.decompressed;
+        let decompressed = self.row.decompressed_mut();
         self.inner.with_file(|file| {
             visit_file_unique_values_indexed(file, field_name.as_bytes(), decompressed, visitor)
         })

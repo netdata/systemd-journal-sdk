@@ -95,37 +95,6 @@ pub(super) fn read_entry_at(
     })
 }
 
-pub(super) fn visit_entry_payload_offsets<F>(
-    file: &JournalFile<Mmap>,
-    data_offsets: &[NonZeroU64],
-    decompressed: &mut Vec<u8>,
-    mut visitor: F,
-) -> Result<()>
-where
-    F: FnMut(&[u8]) -> Result<()>,
-{
-    let context = file.data_payload_read_context();
-    for data_offset in data_offsets.iter().copied() {
-        let mut visitor_result = Ok(());
-        match file.visit_data_payload_at_with_context(
-            context,
-            data_offset,
-            decompressed,
-            |payload| {
-                visitor_result = visitor(payload);
-                Ok(())
-            },
-        ) {
-            Ok(()) => {}
-            Err(err) if recoverable_entry_data_error(&err) => continue,
-            Err(err) => return Err(err.into()),
-        }
-        visitor_result?;
-    }
-
-    Ok(())
-}
-
 pub(super) fn enumerate_file_fields_indexed(file: &JournalFile<Mmap>) -> Result<Vec<String>> {
     let mut fields = HashSet::new();
 
@@ -200,16 +169,6 @@ pub(super) fn collect_entry_metadata_and_data_offsets(
     );
     collect_offsets_from_entry_items(&entry.items, data_offsets);
     Ok(metadata)
-}
-
-pub(super) fn collect_entry_data_offsets(
-    file: &JournalFile<Mmap>,
-    entry_offset: NonZeroU64,
-    data_offsets: &mut Vec<NonZeroU64>,
-) -> Result<()> {
-    let entry = file.entry_ref(entry_offset)?;
-    collect_offsets_from_entry_items(&entry.items, data_offsets);
-    Ok(())
 }
 
 pub(super) fn collect_offsets_from_entry_items(

@@ -14,6 +14,7 @@ mod object_compression;
 mod object_hash;
 pub mod offset_array;
 pub mod reader;
+mod row_view;
 pub mod sigbus;
 mod value_guard;
 pub mod writer;
@@ -41,6 +42,10 @@ pub use filter::{FilterExpr, JournalFilter, LogicalOp};
 
 // For FFI compatibility and advanced object manipulation
 pub use object::{EntryItemsType, HashableObject, HeaderIncompatibleFlags, JournalState};
+#[doc(hidden)]
+// Hidden row-view types cross the journal-core/journal crate boundary; keep
+// them reachable without making them part of the documented SDK surface.
+pub use row_view::{CurrentRowMetadata, CurrentRowPayload, CurrentRowView};
 
 // Re-export commonly needed external types
 pub use mmap::{ExperimentalMmapStrategy, Mmap, MmapMut, WindowManagerStats};

@@ -11,8 +11,9 @@ Sub-state: pending and dependent on SOW-0087.
 ### Purpose
 
 Adopt the future Rust core row-view primitive across directory reading,
-`journal-engine`, and `journal-index` so performance fixes do not remain limited
-to `FileReader` and facade paths.
+`FileReader` callback payload traversal, `journal-engine`, and
+`journal-index` so performance fixes do not remain limited to the
+single-payload facade enumeration path.
 
 ### User Request
 
@@ -23,6 +24,9 @@ the same purpose.
 ### Acceptance Criteria
 
 - Directory reader payload access delegates to the shared row-view primitive.
+- `FileReader::visit_entry_payloads()` either uses the row-pinned row-view
+  payload path or records benchmark evidence proving the transient visitor path
+  is intentionally faster for its contract.
 - `journal-engine` projected field extraction delegates to the shared row-view
   primitive or records why its path is intentionally separate and faster.
 - `journal-index` DATA extraction/parsing delegates to the shared byte-oriented
@@ -35,9 +39,9 @@ Status: blocked
 
 Problem / root-cause model:
 
-- SOW-0086 found duplicated row extraction/parsing across directory, engine, and
-  index code. This cannot be cleanly fixed until SOW-0087 creates the lower
-  row-view primitive.
+- SOW-0086 found duplicated row extraction/parsing across directory, engine,
+  index, and callback payload paths. This cannot be cleanly fixed until
+  SOW-0087 creates the lower row-view primitive.
 
 Evidence reviewed:
 
@@ -64,7 +68,8 @@ Sensitive data handling plan:
 Implementation plan:
 
 1. Wait for SOW-0087 completion.
-2. Replace duplicated row extraction in directory, engine, and index surfaces.
+2. Replace duplicated row extraction in directory, `visit_entry_payloads()`,
+   engine, and index surfaces.
 3. Benchmark each replaced path independently.
 
 Validation plan:

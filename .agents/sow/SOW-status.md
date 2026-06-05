@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-06-04
+Last updated: 2026-06-05
 
 ## Current
 
@@ -37,8 +37,6 @@ Last updated: 2026-06-04
 - SOW-0083 - Index-Derived Facet And Histogram Optimization: open. Depends on
   SOW-0082; measures and implements optional index-derived facet and histogram
   strategies with break-even evidence from generated and real-corpus queries.
-- SOW-0087 - Rust Core Row View Primitive: open. Follow-up from SOW-0086 to
-  move current-row ownership into a lower Rust core primitive.
 - SOW-0088 - Rust Offset Array Cursor Cache: open. Follow-up from SOW-0086 to
   remove repeated offset-array node reads and reverse traversal list walks.
 - SOW-0089 - Rust Compressed DATA Reuse: open. Follow-up from SOW-0086 to
@@ -54,6 +52,14 @@ Last updated: 2026-06-04
 
 ## Recently Closed Or Completed
 
+- SOW-0087 - Rust Core Row View Primitive: completed. Rust current-row reader
+  ownership now lives in a `journal-core` `CurrentRowView` primitive used by
+  `FileReader` and facade DATA enumeration; public Rust API shape is
+  unchanged, unused internal row-view surface was removed, large-file
+  `facade/sdk` ratios improved from 0.751-0.884 to 0.874-0.933, and five final
+  closeout reviewers voted `PRODUCTION GRADE`. Remaining callback/owned-entry
+  row-view adoption is tracked by SOW-0091, and hostile row-pin bounds are
+  tracked by SOW-0092.
 - SOW-0086 - Rust Reader Performance Contract And Gap Analysis: completed.
   Established the Rust reader performance contract, added the Rust reader
   performance spec, implemented row-level mmap-backed payload lifetime for
