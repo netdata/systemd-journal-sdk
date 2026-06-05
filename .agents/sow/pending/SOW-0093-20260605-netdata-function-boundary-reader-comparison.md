@@ -36,6 +36,22 @@ The user requested a comparison plan:
 - compare SDK wrapper output against `netflow.plugin` output for semantic
   normalized function JSON equality and speed.
 
+The user then clarified that the wrapper must be treated as the first CLI over
+a future Netdata-specific SDK API, not throwaway benchmark code. The eventual
+SDK API should turn any journal-backed data set into a Netdata function. The
+API consumer must provide:
+
+- backend directories or backend data roots;
+- default facet keys;
+- default view keys or grouping keys;
+- default histogram key;
+- optional enrichment or presentation callback per key.
+
+This SOW must therefore start with an analysis of current
+`systemd-journal.plugin` and `netflow-plugin` behavior. The analysis must
+extract the complete requirements for this Netdata-specific SDK API before
+implementation starts.
+
 ### Assistant Understanding
 
 Facts:
@@ -68,6 +84,9 @@ Unknowns:
 - The wrapper must use the same `--test`, `--dir`, and `--request` command-line
   contract as the Netdata plugin binaries so the benchmark harness can swap
   binaries without changing payloads.
+- The wrapper should be a thin CLI over the future SDK API. The reusable API
+  should stay in a Netdata-specific module/layer, separate from the core
+  journal file-format reader.
 
 ### Acceptance Criteria
 
@@ -80,6 +99,19 @@ Unknowns:
   contract; do not implement or modify them in this repository.
 - Extract default/common facets from current Netdata plugin source and use them
   in common-case request payloads.
+- Inventory the current `systemd-journal.plugin` and `netflow-plugin`
+  function contracts and record the API requirements they imply, including
+  request parsing, default facets, default view/grouping keys, histogram
+  defaults, field catalogs, source/directory selection, enrichment or
+  presentation transforms, sampling/overbudget behavior, autocomplete or
+  vocabulary behavior, top-N rows, function metadata, and volatile output
+  fields.
+- Define a reusable Netdata-specific SDK API boundary that accepts backend
+  directories, default facet keys, default view/grouping keys, a default
+  histogram key, and optional enrichment/presentation callbacks per key.
+- Preserve separation of concerns: journal reading remains generic; Netdata
+  function behavior, UI metadata, field catalogs, and enrichment callbacks live
+  in the Netdata-specific SDK layer.
 - Add rare-case payloads for selective filters, broad filters, narrow facets,
   many facets, histogram-only, returned rows, anchor/direction, and FTS where
   supported.
@@ -114,6 +146,155 @@ Current state:
   equivalence and performance evidence.
 - Existing pending Netdata integration SOWs cover actual integration after
   performance and behavior gates.
+- The wrapper is now scoped as the first public shape of a future
+  Netdata-specific SDK API. It must not become a one-off benchmark tool.
+
+Initial Netdata source analysis:
+
+- Checked `netdata/netdata @ f340a0e3ffb7`.
+- `systemd-journal.plugin` creates its function around the shared logs-query
+  and facets layer. It uses `lqs_facets_create()` with systemd-specific facet
+  include/exclude lists and then calls `lqs_request_parse_and_validate()` with
+  default histogram `PRIORITY`.
+  Evidence:
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:59`
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:61`
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:68`
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:279`
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:300`
+- `systemd-journal.plugin` registers journal-specific field behavior in
+  `systemd_journal_register_transformations()`: visible/default fields,
+  main text, FTS field, dynamic row process id, severity mapping, and
+  transformations for priority, syslog facility, errno, message id, boot id,
+  UID/GID, capabilities, and source realtime timestamp.
+  Evidence:
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:158`
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:166`
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:168`
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:170`
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:177`
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:182`
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:189`
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:196`
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:207`
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:214`
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:217`
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:224`
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:237`
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:243`
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:252`
+- The systemd journal function currently scans every returned row field through
+  `NSD_JOURNAL_FOREACH_DATA`, parses `KEY=VALUE`, adjusts the row timestamp
+  from `_SOURCE_REALTIME_TIMESTAMP` when needed, truncates facet values at
+  `FACET_MAX_VALUE_LENGTH`, and sends every parsed field to the facets layer.
+  This is the behavior the SDK API must reproduce semantically while avoiding
+  unnecessary decompression, traversal, and repeated DATA processing.
+  Evidence:
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:29`
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:37`
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:42`
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:48`
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:79`
+- The shared logs-query request contract accepts `info`, `delta`, `tail`,
+  `slice`, `data_only`, `sampling`, `after`, `before`, `if_modified_since`,
+  `anchor`, `last`, `direction`, `query`, `histogram`, `facets`, and
+  `selections`. POST selections are OR within values of one field and AND
+  across fields by the facets backend; GET has hash-id mode.
+  Evidence:
+  `src/libnetdata/facets/logs_query_status.h:8`
+  `src/libnetdata/facets/logs_query_status.h:329`
+  `src/libnetdata/facets/logs_query_status.h:339`
+  `src/libnetdata/facets/logs_query_status.h:354`
+  `src/libnetdata/facets/logs_query_status.h:385`
+  `src/libnetdata/facets/logs_query_status.h:490`
+- The logs-query validation layer handles default one-hour windows, relative
+  time conversion, anchor/tail semantics, default returned entries, slice
+  enablement, default histogram setup, and request echoing.
+  Evidence:
+  `src/libnetdata/facets/logs_query_status.h:731`
+  `src/libnetdata/facets/logs_query_status.h:762`
+  `src/libnetdata/facets/logs_query_status.h:781`
+  `src/libnetdata/facets/logs_query_status.h:791`
+  `src/libnetdata/facets/logs_query_status.h:816`
+  `src/libnetdata/facets/logs_query_status.h:825`
+  `src/libnetdata/facets/logs_query_status.h:830`
+- The systemd journal function selects files by source and time, sorts files by
+  direction, emits per-file query metrics, reports partial/timeouts, sampling
+  status, `last_modified`, facets, histogram, and fstat-cache diagnostics.
+  Evidence:
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:486`
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:507`
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:547`
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:615`
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:714`
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:788`
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:791`
+- `netflow-plugin` exposes a distinct function contract named
+  `flows:netflow`, version 4, with response modes for table, metrics
+  time-series, and autocomplete.
+  Evidence:
+  `src/crates/netflow-plugin/src/api/flows/model.rs:5`
+  `src/crates/netflow-plugin/src/api/flows/model.rs:80`
+  `src/crates/netflow-plugin/src/api/flows/model.rs:95`
+  `src/crates/netflow-plugin/src/api/flows/model.rs:110`
+  `src/crates/netflow-plugin/src/api/flows/handler.rs:40`
+  `src/crates/netflow-plugin/src/api/flows/handler.rs:45`
+  `src/crates/netflow-plugin/src/api/flows/handler.rs:88`
+  `src/crates/netflow-plugin/src/api/flows/handler.rs:134`
+- NetFlow request parsing accepts payload JSON or legacy args and normalizes
+  `mode`, `view`, `after`, `before`, `query`, `selections`, `facets`,
+  `group_by`, `sort_by`, `top_n`, `field`, and `term`.
+  Evidence:
+  `src/crates/netflow-plugin/src/api/flows/handler.rs:186`
+  `src/crates/netflow-plugin/src/query/request/model/types.rs:3`
+  `src/crates/netflow-plugin/src/query/request/model/types.rs:88`
+  `src/crates/netflow-plugin/src/query/request/model/deserialize.rs:6`
+  `src/crates/netflow-plugin/src/query/request/selection/decode.rs:6`
+- NetFlow defaults and view-specific keys are explicit:
+  default group-by is `SRC_AS_NAME`, `PROTOCOL`, `DST_AS_NAME`; map views
+  override group-by with country/state/city coordinate fields; default sort is
+  bytes; default top-N is 25; default query window is 15 minutes.
+  Evidence:
+  `src/crates/netflow-plugin/src/query/request/constants.rs:4`
+  `src/crates/netflow-plugin/src/query/request/constants.rs:25`
+  `src/crates/netflow-plugin/src/query/request/constants.rs:26`
+  `src/crates/netflow-plugin/src/query/request/constants.rs:27`
+  `src/crates/netflow-plugin/src/query/request/constants.rs:33`
+  `src/crates/netflow-plugin/src/query/request/model/types.rs:88`
+  `src/crates/netflow-plugin/src/query/planner/request.rs:45`
+- NetFlow has a field catalog with allowed facet/grouping fields, raw-only
+  fields, virtual fields, autocomplete rules, and presentation display names
+  and labels. These map directly to the proposed API inputs for default view
+  keys and optional enrichment/presentation callbacks per key.
+  Evidence:
+  `src/crates/netflow-plugin/src/facet_catalog.rs:30`
+  `src/crates/netflow-plugin/src/facet_catalog.rs:56`
+  `src/crates/netflow-plugin/src/facet_catalog.rs:73`
+  `src/crates/netflow-plugin/src/query/request/constants.rs:46`
+  `src/crates/netflow-plugin/src/query/fields/rules.rs:5`
+  `src/crates/netflow-plugin/src/query/fields/rules.rs:25`
+  `src/crates/netflow-plugin/src/presentation/display.rs:3`
+  `src/crates/netflow-plugin/src/presentation/labels.rs:20`
+- NetFlow already has an optimized projected raw scan that builds a required
+  field plan for metrics, group-by, and selected fields, and avoids full row
+  materialization where possible. This is an important existing pattern for
+  the SDK Netdata API.
+  Evidence:
+  `src/crates/netflow-plugin/src/query/planner/request.rs:68`
+  `src/crates/netflow-plugin/src/query/scan/session/projected.rs:17`
+  `src/crates/netflow-plugin/src/query/scan/session/projected.rs:38`
+  `src/crates/netflow-plugin/src/query/scan/raw.rs:166`
+  `src/crates/netflow-plugin/src/query/scan/raw.rs:179`
+  `src/crates/netflow-plugin/src/query/projected/apply.rs:83`
+  `src/crates/netflow-plugin/src/query/projected/apply.rs:129`
+- NetFlow also has persisted facet vocabulary/sidecar behavior and a read-only
+  constructor. SOW-0093 must either use a no-persist/read-only mode or isolate
+  side effects in scratch copies when comparing against NetFlow.
+  Evidence:
+  `src/crates/netflow-plugin/src/facet_runtime.rs:94`
+  `src/crates/netflow-plugin/src/facet_runtime.rs:116`
+  `src/crates/netflow-plugin/src/facet_runtime.rs:120`
+  `src/crates/netflow-plugin/src/facet_runtime.rs:227`
 
 Risks:
 
@@ -185,7 +366,8 @@ Sensitive data handling plan:
 Implementation plan:
 
 1. Inventory current Netdata plugin function defaults and request/response
-   contracts.
+   contracts. This step is mandatory before implementation and must produce
+   the API boundary for the Netdata-specific SDK layer.
 2. Select datasets and create sanitized dataset manifests.
 3. Implement SDK wrapper and canonical semantic comparator.
 4. Invoke Netdata plugin CLI entrypoints when available; do not edit Netdata
@@ -213,7 +395,8 @@ Artifact impact plan:
   discovered.
 - End-user/operator docs: update only if wrapper becomes a supported tool.
 - End-user/operator skills: no expected update.
-- SOW lifecycle: pending until implementation starts.
+- SOW lifecycle: pending until implementation starts; current phase is
+  analysis of Netdata plugin behavior and API requirements.
 - SOW-status.md: updated with pending state.
 
 Open-source reference evidence:
@@ -223,9 +406,9 @@ Open-source reference evidence:
 
 Open decisions:
 
-- None blocking. The user decided the Netdata plugin CLI entrypoints are
-  standard Netdata features and will be created separately. This repository
-  implements only the SDK wrapper and comparison harness.
+- None blocking for analysis. The user decided the Netdata plugin CLI
+  entrypoints are standard Netdata features and will be created separately.
+  This repository implements only the SDK wrapper and comparison harness.
 
 ## Implications And Decisions
 
@@ -238,10 +421,11 @@ Open decisions:
 
 ## Plan
 
-1. Inventory Netdata plugin defaults.
-2. Select datasets.
-3. Build SDK wrapper, request suite, semantic comparator, and report harness.
-4. Compare against Netdata plugin CLI binaries when they are available.
+1. Complete and record the Netdata plugin behavior/API analysis.
+2. Define the Netdata-specific SDK API boundary and wrapper CLI shape.
+3. Select datasets.
+4. Build SDK wrapper, request suite, semantic comparator, and report harness.
+5. Compare against Netdata plugin CLI binaries when they are available.
 
 ## Delegation Plan
 
@@ -279,6 +463,11 @@ Failure handling:
 ### 2026-06-05
 
 - Created as pending follow-up from SOW-0083.
+- Added user clarification that the wrapper is the first CLI over a future
+  Netdata-specific SDK API.
+- Per user recommendation, started with read-only analysis of
+  `systemd-journal.plugin` and `netflow-plugin` in `netdata/netdata @
+  f340a0e3ffb7`.
 
 ## Validation
 

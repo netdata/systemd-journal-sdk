@@ -28,10 +28,12 @@ Last updated: 2026-06-05
   validation after compatibility, portability, corpus, integration, and parity
   gates are complete.
 - SOW-0093 - Netdata Function Boundary Reader Comparison: open. Build the SDK
-  wrapper and comparison harness for Netdata function-boundary output equality
-  and performance using semantic normalized function JSON and the shared
-  `--test`, `--dir`, and `--request` CLI shape; Netdata plugin CLI entrypoints
-  are external inputs created outside this repository.
+  Netdata-specific function API boundary, wrapper, and comparison harness for
+  Netdata function-boundary output equality and performance using semantic
+  normalized function JSON and the shared `--test`, `--dir`, and `--request`
+  CLI shape; first phase is read-only analysis of `systemd-journal.plugin` and
+  `netflow-plugin`, and Netdata plugin CLI entrypoints are external inputs
+  created outside this repository.
 ## Recently Closed Or Completed
 
 - SOW-0083 - Index-Derived Facet And Histogram Optimization: completed. Rust
