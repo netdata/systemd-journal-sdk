@@ -7,6 +7,10 @@ Last updated: 2026-06-05
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
+- SOW-0083 - Index-Derived Facet And Histogram Optimization: in-progress.
+  Activated from clean pushed rollback point `42c15858` as an evidence-first
+  experiment. The index-derived path must prove correctness and useful speedups
+  before any public API, auto-planner, or retained-complexity commitment.
 
 ## Pending
 
@@ -27,9 +31,6 @@ Last updated: 2026-06-05
   release, language registry/package publication, and clean consumer install
   validation after compatibility, portability, corpus, integration, and parity
   gates are complete.
-- SOW-0083 - Index-Derived Facet And Histogram Optimization: open. Depends on
-  SOW-0082; measures and implements optional index-derived facet and histogram
-  strategies with break-even evidence from generated and real-corpus queries.
 ## Recently Closed Or Completed
 
 - SOW-0082 - Rust Optimized Journal Explorer API: completed. Rust now exposes
