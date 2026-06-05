@@ -37,14 +37,17 @@ Last updated: 2026-06-05
 - SOW-0083 - Index-Derived Facet And Histogram Optimization: open. Depends on
   SOW-0082; measures and implements optional index-derived facet and histogram
   strategies with break-even evidence from generated and real-corpus queries.
-- SOW-0091 - Rust Row View Adoption: open. Depends on SOW-0087; adopts the
-  future row-view primitive in directory, engine, and index paths.
 - SOW-0092 - Rust Row Pin Hostile File Bound: open. Follow-up from SOW-0086 to
   bound per-row row-pinned mmap growth for hostile or corrupt files while
   preserving zero-copy row-level validity on normal journals.
 
 ## Recently Closed Or Completed
 
+- SOW-0091 - Rust Row View Adoption: completed. Rust `CurrentRowView` now
+  serves remaining SDK visitor, owned-entry, engine projection, and index query
+  row-oriented DATA paths; `sdk-payloads` improved on every large-file
+  candidate with +8.9% median, `sdk-entry` improved on every candidate with
+  +8.6% median, and five final reviewers voted `PRODUCTION GRADE`.
 - SOW-0090 - Rust Reader Header Snapshot Cache: completed. Rust `FileReader`
   now captures read-only header snapshot metadata at open, uses it for snapshot
   headers, directory ordering, boot metadata, facade boot listing, and fallback

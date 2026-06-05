@@ -50,10 +50,6 @@ impl CurrentRowView {
         &mut self.decompressed
     }
 
-    pub fn payload_work_buffers_mut(&mut self) -> (&mut Vec<NonZeroU64>, &mut Vec<u8>) {
-        (&mut self.data_offsets, &mut self.decompressed)
-    }
-
     pub fn data_offset_count(&self) -> usize {
         self.data_offsets.len()
     }
@@ -151,6 +147,7 @@ impl CurrentRowView {
         Ok(())
     }
 
+    #[inline(always)]
     pub fn read_next_payload<M: MemoryMap>(
         &mut self,
         file: &JournalFile<M>,
@@ -184,6 +181,56 @@ impl CurrentRowView {
         Ok(Some(CurrentRowPayload::Arena { start, end }))
     }
 
+    #[inline(always)]
+    pub fn read_next_payload_with_offset<M: MemoryMap>(
+        &mut self,
+        file: &JournalFile<M>,
+    ) -> Result<Option<(NonZeroU64, CurrentRowPayload)>> {
+        let Some(data_offset) = self.next_data_offset() else {
+            return Ok(None);
+        };
+
+        let payload = self.read_payload_at(file, data_offset)?;
+        Ok(Some((data_offset, payload)))
+    }
+
+    #[inline(always)]
+    fn next_data_offset(&mut self) -> Option<NonZeroU64> {
+        self.data_state_active = true;
+        let data_offset = self.data_offsets.get(self.data_index).copied()?;
+        self.data_index += 1;
+        Some(data_offset)
+    }
+
+    #[inline(always)]
+    pub fn read_payload_at<M: MemoryMap>(
+        &mut self,
+        file: &JournalFile<M>,
+        data_offset: NonZeroU64,
+    ) -> Result<CurrentRowPayload> {
+        let context = self.payload_context.ok_or(JournalError::UnsetCursor)?;
+        if let Some((ptr, len)) =
+            file.raw_data_payload_ptr_row_pinned_if_uncompressed(context, data_offset)?
+        {
+            self.row_pins_active = true;
+            return Ok(CurrentRowPayload::Borrowed { ptr, len });
+        }
+
+        let data = file.data_ref(data_offset)?;
+        self.decompressed.clear();
+        let len = data.decompress(&mut self.decompressed)?;
+        debug_assert_eq!(
+            self.decompressed.len(),
+            len,
+            "decompressors must set the output buffer length before returning"
+        );
+        let start = self.row_arena.len();
+        self.row_arena.extend_from_slice(&self.decompressed[..len]);
+        let end = self.row_arena.len();
+        Ok(CurrentRowPayload::Arena { start, end })
+    }
+
+    #[inline(always)]
     pub fn payload_slice(&self, payload: CurrentRowPayload) -> &[u8] {
         match payload {
             CurrentRowPayload::Borrowed { ptr, len } => {
@@ -195,25 +242,6 @@ impl CurrentRowView {
             }
             CurrentRowPayload::Arena { start, end } => &self.row_arena[start..end],
         }
-    }
-
-    pub fn visit_payload_at_transient<M, F>(
-        &mut self,
-        file: &JournalFile<M>,
-        data_offset: NonZeroU64,
-        visitor: F,
-    ) -> Result<()>
-    where
-        M: MemoryMap,
-        F: FnOnce(&[u8]) -> Result<()>,
-    {
-        let context = self.payload_context.ok_or(JournalError::UnsetCursor)?;
-        file.visit_data_payload_at_with_context(
-            context,
-            data_offset,
-            &mut self.decompressed,
-            visitor,
-        )
     }
 
     pub fn reset_data_state<M: MemoryMap>(&mut self, file: &JournalFile<M>) -> Result<()> {

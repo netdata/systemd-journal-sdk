@@ -113,6 +113,19 @@ impl FieldValuePair {
         })
     }
 
+    /// Parse a UTF-8 `field=value` byte payload into a `FieldValuePair`.
+    ///
+    /// Returns `None` when the payload is not UTF-8, has no `=`, or has an
+    /// empty field name.
+    pub fn parse_bytes(payload: &[u8]) -> Option<Self> {
+        let split_pos = payload.iter().position(|byte| *byte == b'=')?;
+        if split_pos == 0 {
+            return None;
+        }
+        let key = std::str::from_utf8(payload).ok()?.to_string();
+        Some(Self { key, split_pos })
+    }
+
     /// Get the field name portion.
     pub fn field(&self) -> &str {
         &self.key[..self.split_pos]
@@ -230,8 +243,11 @@ pub fn parse_timestamp(
     field_name: &[u8],
     data_object: &journal_core::file::DataObject<&[u8]>,
 ) -> crate::Result<u64> {
-    let payload = data_object.raw_payload();
+    parse_timestamp_payload(field_name, data_object.raw_payload())
+}
 
+/// Parse a u64 timestamp from a raw `field=value` payload.
+pub fn parse_timestamp_payload(field_name: &[u8], payload: &[u8]) -> crate::Result<u64> {
     let value_bytes = FieldValuePair::strip_field_prefix(field_name, payload)
         .ok_or_else(|| crate::IndexError::InvalidFieldPrefix)?;
 
@@ -277,6 +293,33 @@ mod tests {
 
         assert!(FieldValuePair::parse("PRIORITY").is_none());
         assert!(FieldValuePair::parse("=error").is_none());
+    }
+
+    #[test]
+    fn test_field_value_pair_parse_bytes() {
+        let pair = FieldValuePair::parse_bytes(b"PRIORITY=error").unwrap();
+        assert_eq!(pair.field(), "PRIORITY");
+        assert_eq!(pair.value(), "error");
+        assert_eq!(pair.as_bytes(), b"PRIORITY=error");
+
+        assert!(FieldValuePair::parse_bytes(b"PRIORITY").is_none());
+        assert!(FieldValuePair::parse_bytes(b"=error").is_none());
+        assert!(FieldValuePair::parse_bytes(b"FIELD=\xff").is_none());
+    }
+
+    #[test]
+    fn test_parse_timestamp_payload() {
+        let timestamp = parse_timestamp_payload(
+            b"_SOURCE_REALTIME_TIMESTAMP",
+            b"_SOURCE_REALTIME_TIMESTAMP=1704067200000000",
+        )
+        .unwrap();
+        assert_eq!(timestamp, 1_704_067_200_000_000);
+
+        assert!(matches!(
+            parse_timestamp_payload(b"_SOURCE_REALTIME_TIMESTAMP", b"MESSAGE=hello"),
+            Err(crate::IndexError::InvalidFieldPrefix)
+        ));
     }
 
     #[test]

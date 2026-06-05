@@ -5,7 +5,7 @@
 //! functions for extracting raw field data from journal entries.
 
 use crate::error::Result;
-use journal_core::file::{JournalFile, Mmap};
+use journal_core::file::{CurrentRowView, JournalFile, Mmap};
 use journal_index::{
     Anchor, Direction, FieldName, FieldValuePair, FileIndex, Filter, LogEntryId, LogQueryParams,
     LogQueryParamsBuilder, Microseconds,
@@ -569,20 +569,13 @@ fn extract_entry_data(
 ) -> Result<Vec<LogEntryData>> {
     let entries_by_file = entries_grouped_by_file(log_entries);
     let mut result = vec![None; log_entries.len()];
-    let mut decompress_buf = Vec::new();
 
     for (file, file_entries) in entries_by_file {
         let journal_file = JournalFile::<Mmap>::open(file, 8 * 1024 * 1024)?;
-        let mut data_offsets = Vec::new();
+        let mut row = CurrentRowView::default();
 
         for (original_idx, entry) in file_entries {
-            let fields = read_entry_fields(
-                &journal_file,
-                entry,
-                output_fields,
-                &mut data_offsets,
-                &mut decompress_buf,
-            )?;
+            let fields = read_entry_fields(&journal_file, entry, output_fields, &mut row)?;
             result[original_idx] = Some(LogEntryData {
                 timestamp: entry.timestamp.get(),
                 fields,
@@ -610,54 +603,58 @@ fn read_entry_fields(
     journal_file: &JournalFile<Mmap>,
     entry: &LogEntryId,
     output_fields: Option<&HashSet<String>>,
-    data_offsets: &mut Vec<NonZeroU64>,
-    decompress_buf: &mut Vec<u8>,
+    row: &mut CurrentRowView,
 ) -> Result<Vec<FieldValuePair>> {
     let entry_offset =
         NonZeroU64::new(entry.offset).ok_or(journal_core::JournalError::InvalidOffset)?;
-    collect_entry_data_offsets(journal_file, entry_offset, data_offsets)?;
+    row.load_entry(journal_file, entry_offset)?;
+    let mut fields = Vec::with_capacity(row.data_offset_count());
+    row.restart_data()?;
 
-    let mut fields = Vec::new();
-    for data_offset in data_offsets.iter().copied() {
-        if let Some(pair) =
-            read_projected_pair(journal_file, data_offset, output_fields, decompress_buf)?
-        {
-            fields.push(pair);
+    let result = (|| {
+        while let Some((_, payload)) = row.read_next_payload_with_offset(journal_file)? {
+            let payload = row.payload_slice(payload);
+            if let Some(pair) = read_projected_pair(payload, output_fields) {
+                fields.push(pair);
+            }
         }
-    }
-    Ok(fields)
-}
-
-fn collect_entry_data_offsets(
-    journal_file: &JournalFile<Mmap>,
-    entry_offset: NonZeroU64,
-    data_offsets: &mut Vec<NonZeroU64>,
-) -> Result<()> {
-    data_offsets.clear();
-    let entry_guard = journal_file.entry_ref(entry_offset)?;
-    entry_guard.collect_offsets(data_offsets)?;
-    Ok(())
+        Ok(fields)
+    })();
+    row.reset_data_state(journal_file)?;
+    result
 }
 
 fn read_projected_pair(
-    journal_file: &JournalFile<Mmap>,
-    data_offset: NonZeroU64,
+    payload_bytes: &[u8],
     output_fields: Option<&HashSet<String>>,
-    decompress_buf: &mut Vec<u8>,
-) -> Result<Option<FieldValuePair>> {
-    let data_guard = journal_file.data_ref(data_offset)?;
-    let payload_bytes = if data_guard.is_compressed() {
-        data_guard.decompress(decompress_buf)?;
-        &decompress_buf[..]
-    } else {
-        data_guard.raw_payload()
-    };
-
+) -> Option<FieldValuePair> {
+    if !payload_may_match_projection(payload_bytes, output_fields) {
+        return None;
+    }
+    if let Some(pair) = FieldValuePair::parse_bytes(payload_bytes) {
+        return is_projected(pair.field(), output_fields).then_some(pair);
+    }
     let payload_str = String::from_utf8_lossy(payload_bytes);
     let Some(pair) = FieldValuePair::parse(&payload_str) else {
-        return Ok(None);
+        return None;
     };
-    Ok(is_projected(pair.field(), output_fields).then_some(pair))
+    is_projected(pair.field(), output_fields).then_some(pair)
+}
+
+fn payload_may_match_projection(
+    payload_bytes: &[u8],
+    output_fields: Option<&HashSet<String>>,
+) -> bool {
+    let Some(projected) = output_fields else {
+        return true;
+    };
+    let Some(eq) = payload_bytes.iter().position(|byte| *byte == b'=') else {
+        return true;
+    };
+    let Ok(field) = std::str::from_utf8(&payload_bytes[..eq]) else {
+        return true;
+    };
+    projected.contains(field)
 }
 
 #[cfg(test)]
@@ -685,5 +682,26 @@ mod tests {
     #[test]
     fn projection_accepts_all_fields_without_projection_filter() {
         assert!(is_projected("_SYSTEMD_UNIT", None));
+    }
+
+    #[test]
+    fn projected_pair_prefilter_rejects_unmatched_utf8_field_without_parsing_value() {
+        let projected = projected_fields(&["MESSAGE"]);
+
+        assert!(read_projected_pair(b"PRIORITY=3", Some(&projected)).is_none());
+        assert_eq!(
+            read_projected_pair(b"MESSAGE=hello", Some(&projected))
+                .expect("projected pair")
+                .as_str(),
+            "MESSAGE=hello"
+        );
+    }
+
+    #[test]
+    fn projected_pair_preserves_lossy_legacy_path_for_non_utf8_payloads() {
+        let projected = projected_fields(&["FIELD"]);
+        let pair = read_projected_pair(b"FIELD=\xff", Some(&projected)).expect("lossy pair");
+
+        assert_eq!(pair.field(), "FIELD");
     }
 }

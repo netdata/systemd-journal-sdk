@@ -41,36 +41,29 @@ pub(super) fn format_cursor_from_key(key: DirectoryEntryKey) -> String {
     )
 }
 
-pub(super) fn read_entry_at(
+pub(super) fn read_current_row_entry(
     file: &JournalFile<Mmap>,
-    reader: &JournalReader<'_, Mmap>,
-    entry_offset: NonZeroU64,
-    data_offsets: &mut Vec<NonZeroU64>,
-    decompressed: &mut Vec<u8>,
-    seqnum_id: [u8; 16],
+    row: &mut CurrentRowView,
 ) -> Result<Entry> {
-    let (seqnum, realtime, monotonic, boot_id) =
-        collect_entry_metadata_and_data_offsets(file, entry_offset, data_offsets)?;
+    let metadata = row.metadata().ok_or(JournalError::UnsetCursor)?;
 
     let mut fields = HashMap::new();
     let mut field_values: HashMap<String, Vec<Vec<u8>>> = HashMap::new();
     let mut payloads = Vec::new();
+    payloads.reserve(row.data_offset_count());
 
-    payloads.reserve(data_offsets.len());
-
-    for data_offset in data_offsets.iter().copied() {
-        let data = match file.data_ref(data_offset) {
-            Ok(data) => data,
+    row.restart_data()?;
+    loop {
+        let payload = match row.read_next_payload_with_offset(file) {
+            Ok(Some((_, payload))) => payload,
+            Ok(None) => break,
             Err(err) if recoverable_entry_data_error(&err) => continue,
-            Err(err) => return Err(err.into()),
+            Err(err) => {
+                let _ = row.reset_data_state(file);
+                return Err(err.into());
+            }
         };
-        let payload = if data.is_compressed() {
-            decompressed.clear();
-            data.decompress(decompressed)?;
-            decompressed.as_slice()
-        } else {
-            data.raw_payload()
-        };
+        let payload = row.payload_slice(payload);
 
         payloads.push(payload.to_vec());
         if let Some(eq) = payload.iter().position(|byte| *byte == b'=') {
@@ -83,16 +76,17 @@ pub(super) fn read_entry_at(
             }
         }
     }
+    row.reset_data_state(file)?;
 
     Ok(Entry {
         fields,
         field_values,
         payloads,
-        seqnum,
-        realtime,
-        monotonic,
-        boot_id,
-        cursor: build_cursor(file, reader, seqnum_id)?,
+        seqnum: metadata.seqnum,
+        realtime: metadata.realtime,
+        monotonic: metadata.monotonic,
+        boot_id: metadata.boot_id,
+        cursor: format_cursor_from_key(key_from_metadata(metadata)),
     })
 }
 
@@ -154,47 +148,6 @@ where
     }
 
     Ok(())
-}
-
-pub(super) fn collect_entry_metadata_and_data_offsets(
-    file: &JournalFile<Mmap>,
-    entry_offset: NonZeroU64,
-    data_offsets: &mut Vec<NonZeroU64>,
-) -> Result<(u64, u64, u64, [u8; 16])> {
-    let entry = file.entry_ref(entry_offset)?;
-    let metadata = (
-        entry.header.seqnum,
-        entry.header.realtime,
-        entry.header.monotonic,
-        entry.header.boot_id,
-    );
-    collect_offsets_from_entry_items(&entry.items, data_offsets);
-    Ok(metadata)
-}
-
-pub(super) fn collect_offsets_from_entry_items(
-    items: &EntryItemsType<&[u8]>,
-    data_offsets: &mut Vec<NonZeroU64>,
-) {
-    data_offsets.clear();
-    match items {
-        EntryItemsType::Regular(items) => {
-            data_offsets.reserve(items.len());
-            data_offsets.extend(
-                items
-                    .iter()
-                    .filter_map(|item| NonZeroU64::new(item.object_offset)),
-            );
-        }
-        EntryItemsType::Compact(items) => {
-            data_offsets.reserve(items.len());
-            data_offsets.extend(
-                items
-                    .iter()
-                    .filter_map(|item| NonZeroU64::new(item.object_offset as u64)),
-            );
-        }
-    }
 }
 
 pub(super) fn verify_journal_file_strict(file: &JournalFile<Mmap>) -> Result<()> {

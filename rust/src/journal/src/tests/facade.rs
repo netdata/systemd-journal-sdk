@@ -152,6 +152,48 @@ fn facade_uncompressed_windowed_row_pins_survive_window_pressure() {
 }
 
 #[test]
+fn visit_entry_payloads_clears_row_pins_when_visitor_returns_error() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir.path().join("journals/system.journal");
+    write_facade_test_journal(&path);
+
+    let mut reader = FileReader::open_with_options(
+        &path,
+        ReaderOptions::snapshot().with_mmap_strategy(ExperimentalMmapStrategy::WholeFile),
+    )
+    .expect("open reader");
+    assert!(reader.next().expect("first entry"));
+
+    let err = reader
+        .visit_entry_payloads(|payload| {
+            assert_eq!(payload, b"MESSAGE=first");
+            Err(SdkError::Unsupported("intentional visitor error"))
+        })
+        .expect_err("visitor error should propagate");
+    assert!(matches!(
+        err,
+        SdkError::Unsupported("intentional visitor error")
+    ));
+    assert!(
+        !reader.row.row_pins_active(),
+        "visitor errors must clear row-pinned mmap windows"
+    );
+    assert!(
+        !reader.row.data_state_active(),
+        "visitor errors must clear active data enumeration state"
+    );
+
+    reader
+        .entry_data_restart()
+        .expect("restart data after error");
+    let payload = reader
+        .enumerate_entry_payload()
+        .expect("enumerate after visitor error")
+        .expect("first payload after restart");
+    assert_eq!(payload, b"MESSAGE=first");
+}
+
+#[test]
 fn file_reader_steps_forward_and_backward_across_entry_array_nodes() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let path = dir.path().join("journals/many-entry-arrays.journal");

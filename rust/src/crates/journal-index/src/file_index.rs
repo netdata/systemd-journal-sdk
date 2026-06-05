@@ -2,7 +2,7 @@ use crate::{
     Bitmap, FieldName, FieldValuePair, Histogram, IndexError, Microseconds, Result, Seconds,
 };
 use journal_core::collections::{HashMap, HashSet};
-use journal_core::file::{JournalFile, Mmap};
+use journal_core::file::{CurrentRowView, JournalFile, Mmap};
 use journal_core::repository::File;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -380,23 +380,25 @@ impl LogQueryParamsBuilder {
 /// Read a timestamp field value from an entry's data objects.
 fn get_timestamp_field(
     journal_file: &JournalFile<Mmap>,
+    row: &mut CurrentRowView,
     field_name: &super::FieldName,
     entry_offset: NonZeroU64,
 ) -> Result<u64> {
-    let data_iter = journal_file.entry_data_objects(entry_offset)?;
-
-    for data_result in data_iter {
-        let data_object = data_result?;
-        match crate::field_types::parse_timestamp(field_name.as_bytes(), &data_object) {
-            Ok(timestamp) => return Ok(timestamp),
-            Err(IndexError::InvalidFieldPrefix) => {
-                continue;
-            }
-            Err(e) => return Err(e),
-        };
-    }
-
-    Err(IndexError::MissingFieldName)
+    row.load_entry(journal_file, entry_offset)?;
+    row.restart_data()?;
+    let result = (|| {
+        while let Some((_, payload)) = row.read_next_payload_with_offset(journal_file)? {
+            let payload = row.payload_slice(payload);
+            match crate::field_types::parse_timestamp_payload(field_name.as_bytes(), payload) {
+                Ok(timestamp) => return Ok(timestamp),
+                Err(IndexError::InvalidFieldPrefix) => continue,
+                Err(e) => return Err(e),
+            };
+        }
+        Err(IndexError::MissingFieldName)
+    })();
+    row.reset_data_state(journal_file)?;
+    result
 }
 
 /// Get the timestamp for an entry at the given offset.
@@ -405,12 +407,13 @@ fn get_timestamp_field(
 /// Falls back to the entry's realtime timestamp if the field is not found.
 fn get_entry_timestamp(
     journal_file: &JournalFile<Mmap>,
+    row: &mut CurrentRowView,
     source_timestamp_field: Option<&super::FieldName>,
     entry_offset: NonZeroU64,
 ) -> Result<u64> {
     // Try to read the source timestamp field if specified
     if let Some(field_name) = source_timestamp_field {
-        match get_timestamp_field(journal_file, field_name, entry_offset) {
+        match get_timestamp_field(journal_file, row, field_name, entry_offset) {
             Ok(timestamp) => return Ok(timestamp),
             Err(IndexError::MissingFieldName) => {
                 // Field not found, fall back to realtime timestamp
@@ -432,10 +435,10 @@ fn partition_point_entries<F>(
     entry_offsets: &[NonZeroU64],
     left: usize,
     right: usize,
-    predicate: F,
+    mut predicate: F,
 ) -> Result<usize>
 where
-    F: Fn(NonZeroU64) -> Result<bool>,
+    F: FnMut(NonZeroU64) -> Result<bool>,
 {
     let mut left = left;
     let mut right = right;
@@ -459,54 +462,47 @@ where
 /// Check if an entry matches a regex pattern
 fn entry_matches_regex(
     journal_file: &JournalFile<Mmap>,
+    row: &mut CurrentRowView,
     entry_offset: NonZeroU64,
     regex: &Regex,
     data_match_cache: &mut HashMap<NonZeroU64, bool>,
-    data_offsets_scratch: &mut Vec<NonZeroU64>,
-    scratch_buffer: &mut Vec<u8>,
 ) -> Result<bool> {
-    // Collect all data object offsets for this entry
-    data_offsets_scratch.clear();
-    {
-        let entry = journal_file.entry_ref(entry_offset)?;
-        entry.collect_offsets(data_offsets_scratch)?;
-    }
+    row.load_entry(journal_file, entry_offset)?;
+    row.restart_data()?;
+    let result = (|| {
+        for index in 0..row.data_offset_count() {
+            let Some(data_offset) = row.data_offset_at(index) else {
+                break;
+            };
+            // Check cache first
+            if let Some(&matches) = data_match_cache.get(&data_offset) {
+                if matches {
+                    return Ok(true);
+                }
+                continue;
+            }
 
-    // Check each data object offset
-    for data_offset in data_offsets_scratch.iter().copied() {
-        // Check cache first
-        if let Some(&matches) = data_match_cache.get(&data_offset) {
+            // Cache miss - load the data object and check if it matches
+            let payload = row.read_payload_at(journal_file, data_offset)?;
+            let payload_bytes = row.payload_slice(payload);
+
+            let matches = if let Ok(payload_str) = std::str::from_utf8(payload_bytes) {
+                regex.is_match(payload_str)
+            } else {
+                false
+            };
+
+            // Update cache
+            data_match_cache.insert(data_offset, matches);
+
             if matches {
                 return Ok(true);
             }
-            continue;
         }
-
-        // Cache miss - load the data object and check if it matches
-        let data_object = journal_file.data_ref(data_offset)?;
-
-        let payload_bytes = if data_object.is_compressed() {
-            data_object.decompress(scratch_buffer)?;
-            &scratch_buffer[..]
-        } else {
-            data_object.raw_payload()
-        };
-
-        let matches = if let Ok(payload_str) = std::str::from_utf8(payload_bytes) {
-            regex.is_match(payload_str)
-        } else {
-            false
-        };
-
-        // Update cache
-        data_match_cache.insert(data_offset, matches);
-
-        if matches {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
+        Ok(false)
+    })();
+    row.reset_data_state(journal_file)?;
+    result
 }
 
 /// Identifies a specific log entry within a journal file.
@@ -634,9 +630,8 @@ struct EntryScanner<'a> {
     params: &'a LogQueryParams,
     anchor_usec: Microseconds,
     limit: usize,
-    data_offsets_scratch: Vec<NonZeroU64>,
+    row: CurrentRowView,
     data_match_cache: HashMap<NonZeroU64, bool>,
-    scratch_buffer: Vec<u8>,
     regex_filtered_count: usize,
 }
 
@@ -658,9 +653,8 @@ impl<'a> EntryScanner<'a> {
             params,
             anchor_usec,
             limit,
-            data_offsets_scratch: Vec::new(),
+            row: CurrentRowView::default(),
             data_match_cache: HashMap::default(),
-            scratch_buffer: Vec::new(),
             regex_filtered_count: 0,
         }
     }
@@ -724,7 +718,7 @@ impl<'a> EntryScanner<'a> {
         Ok(entries)
     }
 
-    fn forward_start_index(&self, entry_offsets: &[NonZeroU64]) -> Result<Option<usize>> {
+    fn forward_start_index(&mut self, entry_offsets: &[NonZeroU64]) -> Result<Option<usize>> {
         let start_idx = if let Some(resume_pos) = self.params.resume_position() {
             resume_pos + 1
         } else {
@@ -735,7 +729,7 @@ impl<'a> EntryScanner<'a> {
         Ok((start_idx < entry_offsets.len()).then_some(start_idx))
     }
 
-    fn backward_start_index(&self, entry_offsets: &[NonZeroU64]) -> Result<Option<usize>> {
+    fn backward_start_index(&mut self, entry_offsets: &[NonZeroU64]) -> Result<Option<usize>> {
         if let Some(resume_pos) = self.params.resume_position() {
             return Ok((resume_pos > 0 && resume_pos < entry_offsets.len()).then(|| resume_pos - 1));
         }
@@ -747,9 +741,10 @@ impl<'a> EntryScanner<'a> {
         Ok((partition_idx > 0).then(|| partition_idx - 1))
     }
 
-    fn entry_timestamp(&self, entry_offset: NonZeroU64) -> Result<u64> {
+    fn entry_timestamp(&mut self, entry_offset: NonZeroU64) -> Result<u64> {
         get_entry_timestamp(
             self.journal_file,
+            &mut self.row,
             self.params.source_timestamp_field(),
             entry_offset,
         )
@@ -761,11 +756,10 @@ impl<'a> EntryScanner<'a> {
         };
         let matches = entry_matches_regex(
             self.journal_file,
+            &mut self.row,
             entry_offset,
             regex,
             &mut self.data_match_cache,
-            &mut self.data_offsets_scratch,
-            &mut self.scratch_buffer,
         )?;
         if !matches {
             self.regex_filtered_count += 1;

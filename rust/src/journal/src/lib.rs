@@ -534,18 +534,12 @@ impl FileReader {
         self.invalidate_entry_data_state();
         let inner = &mut self.inner;
         let row = &mut self.row;
-        let seqnum_id = self.header_snapshot.header.seqnum_id;
         inner.with_mut(|fields| {
-            let offset = fields.reader.get_entry_offset()?;
-            let (data_offsets, decompressed) = row.payload_work_buffers_mut();
-            read_entry_at(
-                fields.file,
-                fields.reader,
-                offset,
-                data_offsets,
-                decompressed,
-                seqnum_id,
-            )
+            if row.entry_offset().is_none() {
+                let offset = fields.reader.get_entry_offset()?;
+                row.load_entry(fields.file, offset)?;
+            }
+            read_current_row_entry(fields.file, row)
         })
     }
 
@@ -562,20 +556,24 @@ impl FileReader {
                 let offset = fields.reader.get_entry_offset()?;
                 row.load_entry(fields.file, offset)?;
             }
-            for index in 0..row.data_offset_count() {
-                let Some(data_offset) = row.data_offset_at(index) else {
-                    break;
-                };
-                let mut visitor_result = Ok(());
-                match row.visit_payload_at_transient(fields.file, data_offset, |payload| {
-                    visitor_result = visitor(payload);
-                    Ok(())
-                }) {
-                    Ok(()) => visitor_result?,
+            row.restart_data()?;
+            loop {
+                let payload = match row.read_next_payload(fields.file) {
+                    Ok(Some(payload)) => payload,
+                    Ok(None) => break,
                     Err(err) if recoverable_entry_data_error(&err) => continue,
-                    Err(err) => return Err(err.into()),
+                    Err(err) => {
+                        let _ = row.reset_data_state(fields.file);
+                        return Err(err.into());
+                    }
+                };
+                let payload = row.payload_slice(payload);
+                if let Err(err) = visitor(payload) {
+                    let _ = row.reset_data_state(fields.file);
+                    return Err(err);
                 }
             }
+            row.reset_data_state(fields.file)?;
             Ok(())
         })
     }
