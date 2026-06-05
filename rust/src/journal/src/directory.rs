@@ -487,7 +487,7 @@ impl DirectoryReader {
     pub fn list_boots(&self) -> Vec<BootInfo> {
         let mut boots: HashMap<String, (i64, i64)> = HashMap::new();
         for reader in &self.files {
-            let header = reader.header();
+            let header = reader.cached_header().header;
             let boot_id = hex::encode(header.tail_entry_boot_id);
             let first = header.head_entry_realtime as i64;
             let last = header.tail_entry_realtime as i64;
@@ -717,26 +717,24 @@ fn id128_string_valid(s: &str) -> bool {
 fn build_directory_boot_newest(files: &[FileReader]) -> HashMap<[u8; 16], DirectoryBootNewest> {
     let mut newest: HashMap<[u8; 16], DirectoryBootNewest> = HashMap::new();
     for reader in files {
-        reader.inner.with_file(|file| {
-            let header = file.journal_header_ref();
-            if header.tail_entry_boot_id == [0; 16] {
-                return;
-            }
-            let replace = match newest.get(&header.tail_entry_boot_id) {
-                None => true,
-                Some(current) => header.tail_entry_monotonic > current.monotonic,
-            };
-            if replace {
-                newest.insert(
-                    header.tail_entry_boot_id,
-                    DirectoryBootNewest {
-                        machine_id: header.machine_id,
-                        monotonic: header.tail_entry_monotonic,
-                        realtime: header.tail_entry_realtime,
-                    },
-                );
-            }
-        });
+        let header = reader.cached_header();
+        if header.header.tail_entry_boot_id == [0; 16] {
+            continue;
+        }
+        let replace = match newest.get(&header.header.tail_entry_boot_id) {
+            None => true,
+            Some(current) => header.tail_entry_monotonic > current.monotonic,
+        };
+        if replace {
+            newest.insert(
+                header.header.tail_entry_boot_id,
+                DirectoryBootNewest {
+                    machine_id: header.machine_id,
+                    monotonic: header.tail_entry_monotonic,
+                    realtime: header.header.tail_entry_realtime,
+                },
+            );
+        }
     }
     newest
 }
@@ -747,8 +745,8 @@ fn directory_files_non_overlapping(files: &[FileReader]) -> bool {
     }
 
     for pair in files.windows(2) {
-        let previous = pair[0].header();
-        let next = pair[1].header();
+        let previous = pair[0].cached_header().header;
+        let next = pair[1].cached_header().header;
         if previous.seqnum_id != next.seqnum_id
             || previous.tail_entry_seqnum == 0
             || next.head_entry_seqnum == 0

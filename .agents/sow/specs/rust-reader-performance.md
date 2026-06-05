@@ -15,9 +15,13 @@ scan large journal sets with predictable CPU, memory, and I/O behavior.
 
 ## Mandatory Hot-Path Rules
 
-1. Cache the journal file header in the reader/file layer. Repeated current-row
-   metadata access must not reread or rematerialize the ENTRY object when the
-   needed metadata is already available from the current row key.
+1. Cache journal file header snapshot metadata in the read-only reader/file
+   layer. Snapshot readers, directory ordering, boot metadata, and cursor
+   formatting must use the cached snapshot for stable fields such as
+   `seqnum_id`, head/tail realtime, head/tail seqnum, boot ID, machine ID, and
+   tail monotonic. Live public `header()` calls may explicitly refresh from the
+   mapped header, but hot row traversal must not rematerialize header state on
+   every row or field.
 2. Use rolling mmap windows for normal file access. Whole-file mmap may exist
    only as an explicit experimental option, not as the default answer to
    lifetime or performance problems.

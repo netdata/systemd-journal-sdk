@@ -17,13 +17,13 @@ pub(super) fn open_journal_file(path: &Path, options: ReaderOptions) -> Result<J
 pub(super) fn build_cursor(
     file: &JournalFile<Mmap>,
     reader: &JournalReader<'_, Mmap>,
+    seqnum_id: [u8; 16],
 ) -> Result<String> {
-    let (seqnum, seqnum_id) = reader.get_seqnum(file)?;
     let offset = reader.get_entry_offset()?;
     let entry = file.entry_ref(offset)?;
     Ok(format_cursor_from_key(DirectoryEntryKey {
         seqnum_id,
-        seqnum,
+        seqnum: entry.header.seqnum,
         boot_id: entry.header.boot_id,
         monotonic: entry.header.monotonic,
         realtime: entry.header.realtime,
@@ -47,6 +47,7 @@ pub(super) fn read_entry_at(
     entry_offset: NonZeroU64,
     data_offsets: &mut Vec<NonZeroU64>,
     decompressed: &mut Vec<u8>,
+    seqnum_id: [u8; 16],
 ) -> Result<Entry> {
     let (seqnum, realtime, monotonic, boot_id) =
         collect_entry_metadata_and_data_offsets(file, entry_offset, data_offsets)?;
@@ -91,7 +92,7 @@ pub(super) fn read_entry_at(
         realtime,
         monotonic,
         boot_id,
-        cursor: build_cursor(file, reader)?,
+        cursor: build_cursor(file, reader, seqnum_id)?,
     })
 }
 

@@ -329,6 +329,52 @@ fn snapshot_reader_handles_final_partial_mmap_window() {
 }
 
 #[test]
+fn snapshot_header_is_fixed_while_live_header_refreshes() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir.path().join("journals/system.journal");
+    let (mut journal_file, mut writer) = create_facade_test_writer(&path);
+
+    writer
+        .add_entry(
+            &mut journal_file,
+            &[b"MESSAGE=first".as_slice()],
+            1_700_005_000_000_000,
+            10,
+        )
+        .expect("write first entry");
+    journal_file.sync().expect("sync first entry");
+
+    let snapshot_reader =
+        FileReader::open_with_options(&path, ReaderOptions::snapshot()).expect("open snapshot");
+    let live_reader =
+        FileReader::open_with_options(&path, ReaderOptions::live()).expect("open live");
+
+    assert_eq!(snapshot_reader.header().tail_entry_seqnum, 1);
+    assert_eq!(live_reader.header().tail_entry_seqnum, 1);
+
+    writer
+        .add_entry(
+            &mut journal_file,
+            &[b"MESSAGE=second".as_slice()],
+            1_700_005_000_000_001,
+            11,
+        )
+        .expect("write second entry");
+    journal_file.sync().expect("sync second entry");
+
+    assert_eq!(
+        snapshot_reader.header().tail_entry_seqnum,
+        1,
+        "snapshot header should remain fixed at open time"
+    );
+    assert_eq!(
+        live_reader.header().tail_entry_seqnum,
+        2,
+        "live header should refresh from the mapped file"
+    );
+}
+
+#[test]
 fn default_reader_options_use_production_window_size() {
     let options = ReaderOptions::default();
     assert_eq!(options.bounds, ReaderBounds::Live);

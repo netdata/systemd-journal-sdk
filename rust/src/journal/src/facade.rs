@@ -409,7 +409,7 @@ impl SdJournal {
     pub fn list_boots(&self) -> Vec<BootInfo> {
         match &self.reader {
             ReaderKind::File(reader) => {
-                let header = reader.header();
+                let header = reader.cached_header().header;
                 vec![BootInfo {
                     index: 0,
                     boot_id: hex::encode(header.tail_entry_boot_id),

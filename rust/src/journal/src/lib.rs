@@ -279,7 +279,7 @@ pub struct BootInfo {
     pub last_entry: i64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct FileHeader {
     pub signature: [u8; 8],
     pub compatible_flags: u32,
@@ -294,6 +294,36 @@ pub struct FileHeader {
     pub seqnum_id: [u8; 16],
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FileHeaderSnapshot {
+    pub(crate) header: FileHeader,
+    pub(crate) machine_id: [u8; 16],
+    pub(crate) tail_entry_monotonic: u64,
+}
+
+impl FileHeaderSnapshot {
+    fn from_file(file: &JournalFile<Mmap>) -> Self {
+        let header = file.journal_header_ref();
+        Self {
+            header: FileHeader {
+                signature: header.signature,
+                compatible_flags: header.compatible_flags,
+                incompatible_flags: header.incompatible_flags,
+                state: header.state,
+                header_size: header.header_size,
+                head_entry_realtime: header.head_entry_realtime,
+                tail_entry_realtime: header.tail_entry_realtime,
+                head_entry_seqnum: header.head_entry_seqnum,
+                tail_entry_seqnum: header.tail_entry_seqnum,
+                tail_entry_boot_id: header.tail_entry_boot_id,
+                seqnum_id: header.seqnum_id,
+            },
+            machine_id: header.machine_id,
+            tail_entry_monotonic: header.tail_entry_monotonic,
+        }
+    }
+}
+
 #[self_referencing]
 struct ReaderCell {
     file: JournalFile<Mmap>,
@@ -306,6 +336,8 @@ pub struct FileReader {
     inner: ReaderCell,
     temp_path: Option<PathBuf>,
     row: CurrentRowView,
+    header_snapshot: FileHeaderSnapshot,
+    bounds: ReaderBounds,
 }
 
 fn key_from_metadata(metadata: CurrentRowMetadata) -> DirectoryEntryKey {
@@ -347,6 +379,7 @@ impl FileReader {
         }
 
         let file = open_journal_file(path, options)?;
+        let header_snapshot = FileHeaderSnapshot::from_file(&file);
         Ok(Self {
             inner: ReaderCellBuilder {
                 file,
@@ -355,6 +388,8 @@ impl FileReader {
             .build(),
             temp_path: None,
             row: CurrentRowView::default(),
+            header_snapshot,
+            bounds: options.bounds,
         })
     }
 
@@ -367,6 +402,7 @@ impl FileReader {
                 return Err(err);
             }
         };
+        let header_snapshot = FileHeaderSnapshot::from_file(&file);
         Ok(Self {
             inner: ReaderCellBuilder {
                 file,
@@ -375,26 +411,25 @@ impl FileReader {
             .build(),
             temp_path: Some(temp_path),
             row: CurrentRowView::default(),
+            header_snapshot,
+            bounds: options.bounds,
         })
     }
 
     pub fn header(&self) -> FileHeader {
-        self.inner.with_file(|file| {
-            let header = file.journal_header_ref();
-            FileHeader {
-                signature: header.signature,
-                compatible_flags: header.compatible_flags,
-                incompatible_flags: header.incompatible_flags,
-                state: header.state,
-                header_size: header.header_size,
-                head_entry_realtime: header.head_entry_realtime,
-                tail_entry_realtime: header.tail_entry_realtime,
-                head_entry_seqnum: header.head_entry_seqnum,
-                tail_entry_seqnum: header.tail_entry_seqnum,
-                tail_entry_boot_id: header.tail_entry_boot_id,
-                seqnum_id: header.seqnum_id,
-            }
-        })
+        if self.bounds == ReaderBounds::Snapshot {
+            return self.header_snapshot.header;
+        }
+        self.live_header()
+    }
+
+    pub(crate) fn cached_header(&self) -> FileHeaderSnapshot {
+        self.header_snapshot
+    }
+
+    fn live_header(&self) -> FileHeader {
+        self.inner
+            .with_file(|file| FileHeaderSnapshot::from_file(file).header)
     }
 
     pub fn bucket_utilization(&self) -> Option<BucketUtilization> {
@@ -499,6 +534,7 @@ impl FileReader {
         self.invalidate_entry_data_state();
         let inner = &mut self.inner;
         let row = &mut self.row;
+        let seqnum_id = self.header_snapshot.header.seqnum_id;
         inner.with_mut(|fields| {
             let offset = fields.reader.get_entry_offset()?;
             let (data_offsets, decompressed) = row.payload_work_buffers_mut();
@@ -508,6 +544,7 @@ impl FileReader {
                 offset,
                 data_offsets,
                 decompressed,
+                seqnum_id,
             )
         })
     }
@@ -627,8 +664,9 @@ impl FileReader {
         if let Some(metadata) = self.row.metadata() {
             return Ok(format_cursor_from_key(key_from_metadata(metadata)));
         }
+        let seqnum_id = self.header_snapshot.header.seqnum_id;
         self.inner
-            .with(|fields| build_cursor(fields.file, fields.reader))
+            .with(|fields| build_cursor(fields.file, fields.reader, seqnum_id))
     }
 
     fn current_directory_entry_key(&self) -> Result<DirectoryEntryKey> {
@@ -638,9 +676,8 @@ impl FileReader {
         self.inner.with(|fields| {
             let offset = fields.reader.get_entry_offset()?;
             let entry = fields.file.entry_ref(offset)?;
-            let header = fields.file.journal_header_ref();
             Ok(DirectoryEntryKey {
-                seqnum_id: header.seqnum_id,
+                seqnum_id: self.header_snapshot.header.seqnum_id,
                 seqnum: entry.header.seqnum,
                 boot_id: entry.header.boot_id,
                 monotonic: entry.header.monotonic,
@@ -677,7 +714,7 @@ impl FileReader {
 
 impl FileReader {
     fn header_realtime_start(&self) -> u64 {
-        self.header().head_entry_realtime
+        self.header_snapshot.header.head_entry_realtime
     }
 
     pub fn enumerate_fields(&mut self) -> Result<Vec<String>> {
