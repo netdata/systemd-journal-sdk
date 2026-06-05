@@ -27,9 +27,6 @@ Last updated: 2026-06-05
   release, language registry/package publication, and clean consumer install
   validation after compatibility, portability, corpus, integration, and parity
   gates are complete.
-- SOW-0081 - systemd-journal Plugin And Facets Specification: open. Documents
-  Netdata `systemd-journal.plugin` and facets behavior in full detail before a
-  replacement API is implemented.
 - SOW-0082 - Rust Optimized Journal Explorer API: open. Depends on SOW-0081;
   implements a legacy-like optimized Rust API that fixes unnecessary
   compressed-DATA decompression, unnecessary field traversal, and repeated
@@ -39,6 +36,12 @@ Last updated: 2026-06-05
   strategies with break-even evidence from generated and real-corpus queries.
 ## Recently Closed Or Completed
 
+- SOW-0081 - systemd-journal Plugin And Facets Specification: completed.
+  Added an evidence-backed specification for Netdata `systemd-journal.plugin`
+  and facets behavior, documented the code-vs-README default timeframe
+  discrepancy, separated generic SDK explorer semantics from Netdata-specific
+  adapter policy, mapped SOW-0082 and SOW-0083 follow-up, and completed final
+  reviewer closeout with no remaining content blockers.
 - SOW-0092 - Rust Row Pin Hostile File Bound: completed. Rust row-pinned
   mmap windows are now capped at the normal rolling-window budget; hostile
   overflow DATA falls back to row-scoped boxed storage, normal uncompressed
