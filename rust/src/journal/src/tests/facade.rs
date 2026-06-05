@@ -88,7 +88,7 @@ fn facade_uncompressed_windowed_data_remains_valid_for_current_row() {
 }
 
 #[test]
-fn facade_uncompressed_windowed_row_pins_survive_window_pressure() {
+fn facade_uncompressed_windowed_row_pins_are_bounded_under_window_pressure() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let path = dir.path().join("journals/window-pressure.journal");
     let (mut journal_file, mut writer) = create_facade_test_writer(&path);
@@ -130,8 +130,16 @@ fn facade_uncompressed_windowed_row_pins_survive_window_pressure() {
         .with_file(|file| file.mmap_stats())
         .expect("mmap stats");
     assert!(
-        stats.window_count > 16,
-        "row pins must allow one current row to retain more windows than the normal cache"
+        stats.row_pin_count <= stats.row_pin_limit,
+        "row pins must stay bounded by the normal rolling-window cache"
+    );
+    assert_eq!(
+        stats.row_pin_count, stats.row_pin_limit,
+        "hostile pressure row should hit the row-pin cap"
+    );
+    assert!(
+        stats.row_overflow_object_count > 0,
+        "hostile pressure row should use row-scoped overflow storage"
     );
 
     // SAFETY: This intentionally verifies the current-row lifetime guarantee

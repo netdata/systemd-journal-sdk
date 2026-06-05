@@ -52,6 +52,7 @@ pub use journal_core::error::JournalError;
 pub use journal_core::file::{
     BucketUtilization, Compression, Direction, EntryItemsType, ExperimentalMmapStrategy,
     FieldNamePolicy, HashableObject, JournalFile, JournalReader, Location, Mmap,
+    WindowManagerStats,
 };
 use journal_core::file::{CurrentRowMetadata, CurrentRowView};
 pub use journal_log_writer::{
@@ -434,6 +435,13 @@ impl FileReader {
 
     pub fn bucket_utilization(&self) -> Option<BucketUtilization> {
         self.inner.with_file(JournalFile::bucket_utilization)
+    }
+
+    #[doc(hidden)]
+    pub fn mmap_stats(&self) -> Result<WindowManagerStats> {
+        self.inner
+            .with_file(|file| file.mmap_stats())
+            .map_err(Into::into)
     }
 
     pub fn seek_head(&mut self) {

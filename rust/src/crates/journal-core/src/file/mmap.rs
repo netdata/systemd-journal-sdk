@@ -2,7 +2,7 @@ use crate::error::{JournalError, Result};
 use journal_common::compat::is_multiple_of;
 use std::fs::File;
 #[cfg(not(unix))]
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::{Deref, DerefMut};
 #[cfg(unix)]
 use std::os::unix::fs::FileExt;
@@ -28,6 +28,9 @@ pub struct WindowManagerStats {
     pub strategy: ExperimentalMmapStrategy,
     pub file_size: u64,
     pub window_count: usize,
+    pub row_pin_count: usize,
+    pub row_pin_limit: usize,
+    pub row_overflow_object_count: usize,
     pub current_mapped_bytes: u64,
     pub max_mapped_bytes: u64,
     pub map_count: u64,
@@ -195,6 +198,7 @@ pub struct WindowManager<M: MemoryMap> {
     remap_count: u64,
     eviction_count: u64,
     max_mapped_bytes: u64,
+    row_overflow_objects: Vec<Box<[u8]>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -294,6 +298,7 @@ impl<M: MemoryMap> WindowManager<M> {
             remap_count: 0,
             eviction_count: 0,
             max_mapped_bytes: 0,
+            row_overflow_objects: Vec::new(),
         })
     }
 
@@ -303,6 +308,9 @@ impl<M: MemoryMap> WindowManager<M> {
             strategy: self.strategy,
             file_size: self.file_size,
             window_count: self.windows.len(),
+            row_pin_count: self.row_pin_count,
+            row_pin_limit: self.max_windows,
+            row_overflow_object_count: self.row_overflow_objects.len(),
             current_mapped_bytes,
             max_mapped_bytes: self.max_mapped_bytes.max(current_mapped_bytes),
             map_count: self.map_count,
@@ -332,6 +340,38 @@ impl<M: MemoryMap> WindowManager<M> {
             return Ok(());
         }
         Err(JournalError::ObjectExceedsFileBounds)
+    }
+
+    pub(crate) fn read_exact_at(&mut self, position: u64, output: &mut [u8]) -> Result<()> {
+        let end = position
+            .checked_add(output.len() as u64)
+            .ok_or(JournalError::ObjectExceedsFileBounds)?;
+        self.ensure_cached_file_contains(end)?;
+
+        #[cfg(unix)]
+        {
+            let mut read = 0usize;
+            while read < output.len() {
+                let bytes_read = self
+                    .file
+                    .read_at(&mut output[read..], position + read as u64)?;
+                if bytes_read == 0 {
+                    return Err(JournalError::Io(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "short journal file read",
+                    )));
+                }
+                read += bytes_read;
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            self.file.seek(SeekFrom::Start(position))?;
+            self.file.read_exact(output)?;
+        }
+
+        Ok(())
     }
 
     fn get_chunk_aligned_start(&self, position: u64) -> u64 {
@@ -457,12 +497,34 @@ impl<M: MemoryMap> WindowManager<M> {
 
     pub(crate) fn clear_row_pins(&mut self) {
         if self.row_pin_count == 0 {
+            self.row_overflow_objects.clear();
             return;
         }
         for window in &mut self.windows {
             window.row_pinned = false;
         }
         self.row_pin_count = 0;
+        self.row_overflow_objects.clear();
+    }
+
+    #[inline(always)]
+    pub(crate) fn row_pin_limit_reached(&self) -> bool {
+        self.strategy != ExperimentalMmapStrategy::WholeFile
+            && self.row_pin_count >= self.max_windows
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn get_row_overflow_slice(&mut self, position: u64, size: u64) -> Result<&[u8]> {
+        let len = usize::try_from(size).map_err(|_| JournalError::ObjectExceedsFileBounds)?;
+        let mut data = vec![0u8; len].into_boxed_slice();
+        self.read_exact_at(position, &mut data)?;
+        self.row_overflow_objects.push(data);
+        Ok(self
+            .row_overflow_objects
+            .last()
+            .expect("just pushed row overflow object")
+            .as_ref())
     }
 
     pub(crate) fn get_row_pinned_slice(&mut self, position: u64, size: u64) -> Result<&[u8]> {
@@ -470,13 +532,18 @@ impl<M: MemoryMap> WindowManager<M> {
             .checked_add(size)
             .ok_or(JournalError::ObjectExceedsFileBounds)?;
         self.ensure_cached_file_contains(end)?;
-        let idx = self.get_window_index_preserving_row_pins(position, size)?;
+        let Some(idx) = self.get_window_index_preserving_row_pins(position, size)? else {
+            return self.get_row_overflow_slice(position, size);
+        };
         self.active_window_idx = Some(idx);
-        let window = &mut self.windows[idx];
-        if !window.row_pinned {
-            window.row_pinned = true;
+        if !self.windows[idx].row_pinned {
+            if self.row_pin_limit_reached() {
+                return self.get_row_overflow_slice(position, size);
+            }
+            self.windows[idx].row_pinned = true;
             self.row_pin_count += 1;
         }
+        let window = &mut self.windows[idx];
         Ok(window.get_slice(position, size))
     }
 
@@ -490,7 +557,7 @@ impl<M: MemoryMap> WindowManager<M> {
         &mut self,
         position: u64,
         size_needed: u64,
-    ) -> Result<usize> {
+    ) -> Result<Option<usize>> {
         if self.strategy == ExperimentalMmapStrategy::WholeFile {
             let was_unpinned = {
                 let window = self.get_whole_file_window(position, size_needed)?;
@@ -501,11 +568,11 @@ impl<M: MemoryMap> WindowManager<M> {
             if was_unpinned {
                 self.row_pin_count += 1;
             }
-            return Ok(0);
+            return Ok(Some(0));
         }
 
         if let Some(idx) = self.lookup_window_by_range(position, size_needed) {
-            return Ok(idx);
+            return Ok(Some(idx));
         }
 
         let range_end = position
@@ -517,6 +584,9 @@ impl<M: MemoryMap> WindowManager<M> {
 
         if let Some(idx) = self.lookup_window_by_position(position) {
             if !self.windows[idx].row_pinned {
+                if self.row_pin_limit_reached() {
+                    return Ok(None);
+                }
                 // The overlapping window is not pinned, so no current-row
                 // payload can point into it. Replace it with a wider window;
                 // get_row_pinned_slice() pins the replacement before returning
@@ -525,7 +595,7 @@ impl<M: MemoryMap> WindowManager<M> {
                 self.active_window_idx = None;
                 let new_window = self.create_window(window_start, num_chunks)?;
                 self.remap_count += 1;
-                return Ok(self.push_window(new_window));
+                return Ok(Some(self.push_window(new_window)));
             }
             // The pinned window contains the requested start but not the full
             // requested range; lookup_window_by_range would have matched
@@ -538,11 +608,13 @@ impl<M: MemoryMap> WindowManager<M> {
                 self.windows.remove(idx);
                 self.eviction_count += 1;
                 self.active_window_idx = None;
+            } else {
+                return Ok(None);
             }
         }
 
         let new_window = self.create_window(window_start, num_chunks)?;
-        Ok(self.push_window(new_window))
+        Ok(Some(self.push_window(new_window)))
     }
 
     fn get_window(&mut self, position: u64, size_needed: u64) -> Result<&mut Window<M>> {
@@ -573,10 +645,10 @@ impl<M: MemoryMap> WindowManager<M> {
                     }
                 }
 
-                // If every cached window is row-pinned, retain them all and
-                // map an overlapping transient window for this non-row access.
-                // SOW-0092 tracks adding a hard hostile-file cap for this
-                // intentional per-row cache growth.
+                // If every cached window is row-pinned, retain row-valid
+                // payloads and use one replaceable transient window for this
+                // immediate non-row access. Later non-row accesses evict that
+                // unpinned transient window instead of growing with the row.
                 let new_window = self.create_window(window_start, num_chunks)?;
                 let idx = self.push_window(new_window);
                 self.active_window_idx = Some(idx);
@@ -678,6 +750,7 @@ impl<M: MemoryMap> WindowManager<M> {
             self.windows.clear();
             self.active_window_idx = None;
             self.row_pin_count = 0;
+            self.row_overflow_objects.clear();
         }
 
         let new_window = self.create_window(0, chunk_count)?;
@@ -717,6 +790,7 @@ impl<M: MemoryMapMut> WindowManager<M> {
         self.windows.clear();
         self.active_window_idx = None;
         self.row_pin_count = 0;
+        self.row_overflow_objects.clear();
         self.file.set_len(logical_size)?;
         #[cfg(unix)]
         {
@@ -745,6 +819,7 @@ impl<M: MemoryMapMut> WindowManager<M> {
             self.windows.clear();
             self.active_window_idx = None;
             self.row_pin_count = 0;
+            self.row_overflow_objects.clear();
         }
         self.file.set_len(logical_size)?;
         self.file_size = logical_size;
@@ -956,6 +1031,47 @@ mod tests {
             "Expected get_slice to succeed after recovery"
         );
         assert_eq!(wm.windows.len(), 1);
+    }
+
+    #[test]
+    fn row_pinned_slice_uses_overflow_storage_at_window_limit_one() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file
+            .write_all(&vec![1u8; PAGE_SIZE_TEST as usize])
+            .unwrap();
+        temp_file
+            .write_all(&vec![2u8; PAGE_SIZE_TEST as usize])
+            .unwrap();
+        temp_file.flush().unwrap();
+
+        let file = File::open(temp_file.path()).unwrap();
+        let mut wm: WindowManager<Mmap> = WindowManager::new(file, PAGE_SIZE_TEST, 1).unwrap();
+
+        let first = wm.get_row_pinned_slice(0, 16).unwrap();
+        let first_ptr = first.as_ptr();
+        let first_len = first.len();
+        assert_eq!(first, &[1u8; 16]);
+
+        let second = wm.get_row_pinned_slice(PAGE_SIZE_TEST, 16).unwrap();
+        assert_eq!(second, &[2u8; 16]);
+
+        let stats = wm.stats();
+        assert_eq!(stats.row_pin_limit, 1);
+        assert_eq!(stats.row_pin_count, 1);
+        assert_eq!(stats.window_count, 1);
+        assert_eq!(stats.row_overflow_object_count, 1);
+
+        // SAFETY: The first slice points into a row-pinned mmap window. The
+        // second access forced overflow storage, but it must not unmap the
+        // first row-pinned window.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+        let first_after_overflow = unsafe { std::slice::from_raw_parts(first_ptr, first_len) };
+        assert_eq!(first_after_overflow, &[1u8; 16]);
+
+        wm.clear_row_pins();
+        let stats = wm.stats();
+        assert_eq!(stats.row_pin_count, 0);
+        assert_eq!(stats.row_overflow_object_count, 0);
     }
 
     #[test]

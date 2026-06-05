@@ -126,6 +126,7 @@ impl CurrentRowView {
             realtime: entry.header.realtime,
             xor_hash: entry.header.xor_hash,
         };
+        drop(entry);
 
         self.entry_offset = Some(entry_offset);
         self.metadata = Some(metadata);

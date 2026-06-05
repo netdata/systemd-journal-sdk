@@ -28,6 +28,7 @@ pub enum RowPinnedPayload<'a> {
     Decompressed(&'a [u8]),
 }
 
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy)]
 struct DataLookupResult {
     next_hash_offset: Option<NonZeroU64>,

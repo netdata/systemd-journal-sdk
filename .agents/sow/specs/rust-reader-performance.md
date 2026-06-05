@@ -71,9 +71,12 @@ Rules:
 - Non-row APIs must keep using the normal bounded rolling-window behavior unless
   their contract explicitly requires row-level payload lifetime.
 - A hard cap for hostile or corrupt rows that reference DATA objects across many
-  windows is not part of this SOW-0086 contract; it is tracked by SOW-0092 and
-  must preserve row-level validity by falling back to row-owned storage if
-  needed.
+  windows is enforced by SOW-0092. The cap is the normal rolling-window cache
+  limit for the `WindowManager` instance. When a row would need another
+  row-pinned mmap window after the cap is reached, the mmap manager reads that
+  DATA object into row-scoped boxed overflow storage and returns a slice from
+  that stable storage. Overflow storage is cleared with row pins on row advance,
+  seek, explicit row reset, or reader cleanup.
 
 ## DATA Decompression
 
