@@ -312,6 +312,46 @@ Initial Netdata source analysis:
   `src/crates/netflow-plugin/src/facet_runtime.rs:120`
   `src/crates/netflow-plugin/src/facet_runtime.rs:227`
 
+Netdata offline test CLI evidence:
+
+- Checked `netdata/netdata @ 8c5c9b465e20` from PR
+  `netdata/netdata#22638`.
+- `systemd-journal.plugin` now has the external CLI shape SOW-0093 needs:
+  `systemd-journal.plugin --test systemd-journal --dir <journal-dir>
+  --request <payload.json>`. The parser accepts both split and equals forms,
+  rejects duplicate/missing options, validates that `--dir` is a directory,
+  reads the request payload as JSON, disables scan progress on stdout, switches
+  the journal source to the single provided directory, and calls
+  `function_systemd_journal_result()` to print raw JSON to stdout.
+  Evidence:
+  `src/collectors/systemd-journal.plugin/systemd-main.c:30`
+  `src/collectors/systemd-journal.plugin/systemd-main.c:57`
+  `src/collectors/systemd-journal.plugin/systemd-main.c:145`
+  `src/collectors/systemd-journal.plugin/systemd-main.c:164`
+  `src/collectors/systemd-journal.plugin/systemd-main.c:184`
+  `src/collectors/systemd-journal.plugin/systemd-main.c:187`
+  `src/collectors/systemd-journal.plugin/systemd-main.c:193`
+  `src/collectors/systemd-journal.plugin/systemd-main.c:201`
+- The plugin exposes `function_systemd_journal_result()` as a raw buffer path
+  while preserving the normal PLUGINSD-framed function path separately. This
+  gives SOW-0093 a real external comparison binary once the user's local build
+  installs this branch.
+  Evidence:
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:260`
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:316`
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:329`
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:337`
+- PR `netdata/netdata#22638` also adds a `netflow-plugin --test
+  flows:netflow ... --no-persist` path. This remains non-normative design
+  evidence for this SDK SOW because `flows:netflow` is not a current SDK
+  requirement.
+  Evidence:
+  `src/crates/netflow-plugin/src/test_cli.rs:9`
+  `src/crates/netflow-plugin/src/test_cli.rs:31`
+  `src/crates/netflow-plugin/src/test_cli.rs:55`
+  `src/crates/netflow-plugin/src/facet_runtime.rs:117`
+  `src/crates/netflow-plugin/src/facet_runtime.rs:121`
+
 Risks:
 
 - Netdata source modifications are outside this repository and explicitly out
@@ -426,7 +466,8 @@ Open decisions:
 - None blocking for analysis. The user decided the Netdata
   `systemd-journal.plugin` CLI entrypoint is a standard Netdata feature and
   will be created separately. This repository implements only the SDK wrapper
-  and comparison harness.
+  and comparison harness. The local Netdata branch from
+  `netdata/netdata#22638` provides that external CLI once built and installed.
 
 ## Implications And Decisions
 
@@ -499,6 +540,10 @@ Failure handling:
 - Recorded the user decision that `flows:netflow` is not a current SDK
   requirement and that grouped rollup/statistics APIs are future extensibility
   concerns, not SOW-0093 acceptance criteria.
+- Inspected the user's local Netdata checkout read-only on branch
+  `test-function-cli` at `netdata/netdata @ 8c5c9b465e20`; recorded that PR
+  `netdata/netdata#22638` supplies the external `systemd-journal.plugin`
+  offline test CLI needed by this SOW.
 
 ## Validation
 

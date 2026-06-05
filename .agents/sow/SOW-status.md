@@ -32,9 +32,9 @@ Last updated: 2026-06-05
   Netdata function-boundary output equality and performance using semantic
   normalized function JSON and the shared `--test`, `--dir`, and `--request`
   CLI shape; current comparison target is generic log-function behavior versus
-  `systemd-journal.plugin`, NetFlow source analysis is design evidence only
-  for future grouped rollup/statistics APIs, and Netdata plugin CLI entrypoints
-  are external inputs created outside this repository.
+  `systemd-journal.plugin`, `netdata/netdata#22638` provides the external
+  offline test CLI input once built/installed, and NetFlow source analysis is
+  design evidence only for future grouped rollup/statistics APIs.
 ## Recently Closed Or Completed
 
 - SOW-0083 - Index-Derived Facet And Histogram Optimization: completed. Rust
