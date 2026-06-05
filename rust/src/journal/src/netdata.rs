@@ -74,7 +74,6 @@ const SYSTEMD_DEFAULT_FACETS: &[&str] = &[
     "_GID",
     "_COMM",
     "_EXE",
-    "_CAP_EFFECTIVE",
     "_AUDIT_LOGINUID",
     "_SYSTEMD_CGROUP",
     "_SYSTEMD_SLICE",
@@ -88,7 +87,6 @@ const SYSTEMD_DEFAULT_FACETS: &[&str] = &[
     "_MACHINE_ID",
     "_HOSTNAME",
     "_TRANSPORT",
-    "_STREAM_ID",
     "_NAMESPACE",
     "_RUNTIME_SCOPE",
     "_KERNEL_SUBSYSTEM",
@@ -319,7 +317,9 @@ where
                     continue;
                 }
             };
-            let result = match reader.explore_with_strategy(&query, self.config.explorer_strategy) {
+            let result = match reader
+                .explore_with_strategy_cursor_rows(&query, self.config.explorer_strategy)
+            {
                 Ok(result) => result,
                 Err(err) => {
                     combined.skipped_files = combined.skipped_files.saturating_add(1);
@@ -329,9 +329,9 @@ where
                     continue;
                 }
             };
-            combined.merge(path, result, query.direction);
+            combined.merge(path, result, query.direction, query.limit);
         }
-        combined.sort_and_limit(query.direction, query.limit);
+        combined.expand_row_payloads(self.config.reader_options);
         Ok(combined)
     }
 
@@ -662,6 +662,21 @@ struct LocatedRow {
     row: ExplorerRow,
 }
 
+fn expand_located_row_payloads(
+    located: &mut LocatedRow,
+    reader_options: ReaderOptions,
+) -> Result<()> {
+    let mut reader = FileReader::open_with_options(&located.file_path, reader_options)?;
+    reader.seek_cursor(&located.row.cursor)?;
+    if !reader.test_cursor(&located.row.cursor)? {
+        return Err(SdkError::InvalidCursor(format!(
+            "selected row cursor is no longer available: {}",
+            located.row.cursor
+        )));
+    }
+    reader.collect_entry_payloads(&mut located.row.payloads)
+}
+
 #[derive(Debug, Default)]
 struct CombinedResult {
     rows: Vec<LocatedRow>,
@@ -675,7 +690,7 @@ struct CombinedResult {
 }
 
 impl CombinedResult {
-    fn merge(&mut self, path: &Path, result: ExplorerResult, direction: Direction) {
+    fn merge(&mut self, path: &Path, result: ExplorerResult, direction: Direction, limit: usize) {
         self.merge_stats(result.stats);
         for row in result.rows {
             self.rows.push(LocatedRow {
@@ -692,7 +707,7 @@ impl CombinedResult {
         if let Some(histogram) = result.histogram {
             merge_histogram(&mut self.histogram, histogram);
         }
-        self.sort_and_limit(direction, usize::MAX);
+        self.sort_and_limit(direction, limit);
     }
 
     fn sort_and_limit(&mut self, direction: Direction, limit: usize) {
@@ -705,6 +720,36 @@ impl CombinedResult {
         if self.rows.len() > limit {
             self.rows.truncate(limit);
         }
+        self.stats.rows_returned = self.rows.len() as u64;
+    }
+
+    fn expand_row_payloads(&mut self, reader_options: ReaderOptions) {
+        if self.rows.is_empty() {
+            self.stats.rows_returned = 0;
+            return;
+        }
+
+        let mut rows = Vec::with_capacity(self.rows.len());
+        for mut located in self.rows.drain(..) {
+            if !located.row.payloads.is_empty() {
+                rows.push(located);
+                continue;
+            }
+            match expand_located_row_payloads(&mut located, reader_options) {
+                Ok(()) => {
+                    self.stats.returned_row_expansions =
+                        self.stats.returned_row_expansions.saturating_add(1);
+                    rows.push(located);
+                }
+                Err(err) => {
+                    self.partial = true;
+                    self.file_errors
+                        .push(format!("{}: {err}", located.file_path.display()));
+                }
+            }
+        }
+        self.rows = rows;
+        self.stats.rows_returned = self.rows.len() as u64;
     }
 
     fn merge_stats(&mut self, stats: ExplorerStats) {

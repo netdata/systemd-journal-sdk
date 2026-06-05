@@ -7,11 +7,10 @@ Status: paused
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
 Sub-state: Rust SDK API, wrapper CLI, semantic comparator, repo-local plugin
-smoke, and one 4 GiB real-corpus comparison implemented. Paused because the
-comparison exposed a SOW-0082 Explorer traversal regression: Netdata-shaped
-queries currently scan the same candidate rows once for main/histogram work
-and again for facet work. SOW-0082 must be reopened and repaired before this
-SOW can produce trustworthy performance conclusions.
+smoke, and one 4 GiB real-corpus comparison implemented. The comparison exposed
+a SOW-0082 Explorer traversal/RSS regression; SOW-0082 is now repaired and
+closed, so this SOW can resume from the repaired SDK path before accepting
+performance conclusions.
 
 ## Requirements
 

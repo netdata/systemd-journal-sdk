@@ -15,12 +15,10 @@ Last updated: 2026-06-06
   behavior versus `systemd-journal.plugin`, `netdata/netdata#22638` provides
   the external offline test CLI input, Rust `journal::netdata`, the internal
   `netdata_function_wrapper`, semantic comparator, and three repo-local plugin
-  smoke cases are implemented and passing. One 4 GiB real-corpus comparison
-  passed semantic checks, but exposed a SOW-0082 Explorer traversal regression:
-  Netdata-shaped queries scan candidate rows once for main/histogram work and
-  again for facet work. SOW-0082 is reopened before more SOW-0093 performance
-  conclusions are accepted. NetFlow source analysis is design evidence only
-  for future grouped rollup/statistics APIs.
+  smoke cases are implemented and passing. The SOW-0082 Explorer traversal and
+  RSS regression exposed by the first 4 GiB real-corpus comparison is repaired
+  and closed; SOW-0093 can resume from that repair. NetFlow source analysis is
+  design evidence only for future grouped rollup/statistics APIs.
 
 ## Pending
 
@@ -43,6 +41,14 @@ Last updated: 2026-06-06
   gates are complete.
 ## Recently Closed Or Completed
 
+- SOW-0082 - Rust Optimized Journal Explorer API: completed after regression
+  repair. Normal Netdata-shaped Explorer queries now use one candidate-row
+  traversal for rows, facets, and histogram; the Netdata function wrapper keeps
+  cursor-only row candidates, truncates to the final global row limit, and then
+  expands only selected rows. The 4 GiB journal-window request now matches the
+  installed `systemd-journal.plugin` semantically, has `returned_row_expansions`
+  200, and measured 83,876 KiB maximum RSS on the final cold-I/O run. Five
+  final reviewers voted `PRODUCTION GRADE`.
 - SOW-0083 - Index-Derived Facet And Histogram Optimization: completed. Rust
   now exposes explicit `ExplorerStrategy::{Traversal, Index, Compare}` controls
   for the explorer API. `Traversal` remains the default, `Index` is exact only
@@ -52,13 +58,6 @@ Last updated: 2026-06-06
   facets and histogram-only queries, but regressions for many facets and
   selective filters, so no auto planner was added. Five final reviewers voted
   `PRODUCTION GRADE`.
-- SOW-0082 - Rust Optimized Journal Explorer API: completed. Rust now exposes
-  an additive `FileReader::explore()` API for the optimized single-file explorer
-  query model, using indexed filters, lazy DATA-offset classification, grouped
-  facet passes, default first-value row-level field identity tracking,
-  compressed-DATA avoidance for irrelevant fields, and returned-row-only full
-  expansion. Final reviewers voted `PRODUCTION GRADE`; low-priority coverage
-  depth notes remain non-blocking or part of SOW-0083.
 - SOW-0081 - systemd-journal Plugin And Facets Specification: completed.
   Added an evidence-backed specification for Netdata `systemd-journal.plugin`
   and facets behavior, documented the code-vs-README default timeframe

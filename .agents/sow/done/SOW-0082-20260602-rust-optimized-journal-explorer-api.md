@@ -6,8 +6,13 @@ Status: completed
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: completed; implementation, validation, final reviewer pass, and
-closeout are complete.
+Sub-state: regression repaired, reviewed, and re-closed. SOW-0093 real
+function-boundary testing found that Netdata-shaped Explorer queries scanned
+candidate rows once for main/histogram work and again for facet work, and that
+the SDK wrapper used about 4 GiB maximum RSS on a 4 GiB journal-window query.
+The repaired normal path now uses one candidate-row traversal and final-row-only
+payload expansion; final validation measured 83,876 KiB maximum RSS for the
+same request.
 
 ## Requirements
 
@@ -660,8 +665,8 @@ Artifact maintenance gate:
   `.agents/sow/specs/rust-reader-performance.md`.
 - End-user/operator docs: updated `rust/README.md` for the new public Rust API.
 - End-user/operator skills: no output/reference skills were affected.
-- SOW lifecycle: SOW remains `Status: in-progress` in `.agents/sow/current/`
-  until reviewer pass and final closeout.
+- SOW lifecycle: SOW is `Status: completed` in `.agents/sow/done/` after the
+  regression repair reviewer pass and final closeout.
 - SOW-status.md: updated `.agents/sow/SOW-status.md`.
 
 Specs update:
@@ -720,4 +725,165 @@ rates and aggregate counters.
 
 ## Regression Log
 
-None yet.
+### Regression - 2026-06-06
+
+Status: completed after repair.
+
+What broke:
+
+- The Explorer implementation violates the SOW-0082 purpose for Netdata-shaped
+  queries by performing two candidate-row traversal passes: one main pass for
+  returned rows plus histogram and one facet pass for facet counters.
+- The same query shape also showed unacceptable memory use at the function
+  boundary. The SDK wrapper reached about 4 GiB maximum RSS while producing a
+  response comparable to the installed plugin, which reached about 750 MiB
+  maximum RSS on the same request before the plugin's high-cardinality default
+  facet issue was corrected externally.
+
+Evidence:
+
+- Code path:
+  - `rust/src/journal/src/explorer.rs:609` starts the main pass.
+  - `rust/src/journal/src/explorer.rs:616` starts separate facet pass groups.
+  - `rust/src/journal/src/explorer.rs:869` increments `rows_examined` for each
+    row-scan operation.
+- SOW-0093 4 GiB real-corpus request:
+  - request path:
+    `.local/sow-0093/big-default-facets/request-default-facets-4g.json`;
+  - report path:
+    `.local/sow-0093/big-default-facets/sdk-vs-plugin-default-facets-4g-report.json`;
+  - matched rows: 5,341,590;
+  - SDK `rows_examined`: 10,693,088;
+  - SDK `facet_rows_matched`: 5,341,590;
+  - SDK `rows_matched`: 5,341,590.
+- Same request RSS measurement with stdout redirected to `/dev/null`:
+  - installed `systemd-journal.plugin`: 14.40 seconds wall time,
+    767,904 KiB maximum RSS;
+  - SDK wrapper: 12.23 seconds wall time, 4,287,352 KiB maximum RSS.
+- Output-size analysis found that `_STREAM_ID` dominated the 242 MiB response
+  because it was still a default facet in the installed plugin at the time of
+  the measurement. That plugin default-facet issue is external to this
+  repository, but it does not make 4 GiB SDK RSS acceptable.
+
+Why previous validation missed it:
+
+- SOW-0082 recorded the two-pass behavior as an implementation note instead of
+  treating it as a violation of the single optimized traversal contract.
+- Prior benchmarks reported logical rows per second and did not fail on
+  `rows_examined > unique matched candidate rows`.
+- Prior memory checks did not compare maximum RSS at the Netdata function
+  boundary.
+
+Repair contract:
+
+- Apply filters first using journal indexes.
+- Traverse the resulting candidate rows once per file for the normal Explorer
+  query shape.
+- During that one pass, build requested facet counters, requested histogram
+  buckets, and selected row identifiers or cursors for returned rows.
+- Expand full returned-row data only for rows selected for return. This may be
+  a second targeted lookup over the selected row cursors, not a second full
+  candidate-row traversal.
+- Preserve special multi-pass behavior only when an explicit query semantic
+  truly requires different effective filter sets per facet group, and record
+  that behavior in counters so it cannot be mistaken for the normal hot path.
+- Reduce function-boundary memory so large facet responses do not require
+  multi-gigabyte RSS. The hot path must avoid holding avoidable duplicated JSON
+  object trees, repeated owned labels, or per-row temporary allocations beyond
+  row-scoped scratch. If response streaming requires a separate SOW, this
+  regression must at least identify and eliminate avoidable Explorer-side
+  memory amplification before re-closing.
+
+Validation required before re-closing:
+
+- Add focused tests proving a query with rows, histogram, and facets but no
+  facet-exclusion semantics performs one candidate-row traversal, with
+  `rows_examined` matching the unique scanned candidate-row count.
+- Re-run Rust Explorer tests and the Netdata wrapper tests.
+- Re-run the SOW-0093 4 GiB comparison after the installed plugin default
+  high-cardinality facet fix is present, and record wall time, output bytes,
+  maximum RSS, `rows_examined`, `rows_matched`, and `facet_rows_matched`.
+- Compare memory against the installed plugin for the same request with stdout
+  redirected to `/dev/null`.
+- Update specs/docs if public counter semantics or Explorer strategy behavior
+  changes.
+
+Repair implemented:
+
+- Added a normal-path combined traversal in
+  `rust/src/journal/src/explorer.rs` so queries with returned rows, histogram,
+  and facets run one candidate-row pass when no facet-specific filter exclusion
+  is required.
+- Kept the existing multi-pass facet behavior only for queries that require
+  different effective filters per facet group.
+- Added crate-internal cursor-only row collection for the Netdata function
+  boundary. Public Explorer calls still return expanded row payloads.
+- Changed the Netdata directory wrapper to keep only the final global row
+  cursors and then expand payloads only for those final rows.
+- Added a focused regression test proving crate-internal cursor-only row
+  collection stores row identity without expanding payloads and can expand the
+  selected row later through its cursor.
+- Removed redundant filter reconfiguration and final directory sorting found by
+  the reviewer pass after the first local repair.
+- Removed `_CAP_EFFECTIVE` and `_STREAM_ID` from the SDK's systemd-journal
+  default facet list to match the installed plugin default-facet correction.
+  `_CAP_EFFECTIVE` remains a default view column, matching the separate display
+  concern.
+
+Repair validation:
+
+- `cd rust && cargo fmt --check && cargo test -q -p journal --lib && cargo build --release -q -p netdata_function_wrapper`
+  passed with 53 Rust journal tests.
+- `python3 -m py_compile tests/netdata_function/run_function_compare.py tests/netdata_function/compare_function_json.py`
+  passed.
+- `git diff --check` passed.
+- `.agents/sow/audit.sh` passed with a clean verdict.
+- SOW-0093 4 GiB real-corpus request after repair:
+  `.local/sow-0093/big-default-facets/request-default-facets-4g.json`.
+- SDK wrapper direct warm-cache measurement:
+  `.local/sow-0082/regression/sdk-default-after-cursor-final-expand.json`
+  and `.local/sow-0082/regression/sdk-default-after-cursor-final-expand.time`;
+  wall time 3.18 seconds; maximum RSS 85,312 KiB; matched rows 5,341,590;
+  returned rows 200; `rows_examined` 5,346,544; `rows_matched` 5,341,590;
+  `facet_rows_matched` 5,341,590; `returned_row_expansions` 200.
+- SDK wrapper direct final cold-I/O measurement after reviewer cleanup:
+  `.local/sow-0082/regression/sdk-default-final.json` and
+  `.local/sow-0082/regression/sdk-default-final.time`; wall time 36.84 seconds;
+  maximum RSS 83,876 KiB; major page faults 236,921; file-system inputs
+  7,475,264; matched rows 5,341,590; returned rows 200; `rows_examined`
+  5,346,545; `rows_matched` 5,341,590; `facet_rows_matched` 5,341,590;
+  `returned_row_expansions` 200.
+- Semantic comparison against installed `systemd-journal.plugin`:
+  `.local/sow-0082/regression/sdk-vs-plugin-default-after-cursor-final-expand.json`;
+  comparison `ok: true`; status, item counts, rows, facets, and histogram totals
+  matched. The comparator measured plugin wall time 12.21 seconds and SDK wall
+  time 3.17 seconds.
+- Final semantic comparison after reviewer cleanup:
+  `.local/sow-0082/regression/sdk-vs-plugin-default-final.json`; status, item
+  counts, rows, facets, and histogram totals all matched. The comparator
+  measured plugin wall time 16.38 seconds and SDK wall time 3.28 seconds.
+- Installed `systemd-journal.plugin` RSS measurement after its default-facet
+  correction:
+  `.local/sow-0082/regression/plugin-default-after-default-facet-fix.time`;
+  wall time 14.88 seconds; maximum RSS 120,408 KiB.
+
+Reviewer results for the regression repair:
+
+- `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`; noted only
+  non-blocking documentation/coverage observations.
+- `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`; noted
+  non-blocking `Compare`/`FirstValue` indexed-strategy limitations that are
+  already part of SOW-0083 constraints.
+- `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`; noted no blocking
+  correctness, memory, or API issues.
+- `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`; recommended a
+  focused cursor-only unit test, which was added.
+- `minimax-coding-plan/MiniMax-M3`: `PRODUCTION GRADE`; found two cleanup
+  candidates, the redundant combined-path filter reconfiguration and redundant
+  final directory sort, both fixed before final validation.
+
+Follow-up mapping:
+
+- No unresolved blocking follow-ups remain for this regression.
+- The broader SOW-0093 Netdata function-boundary comparison can resume from the
+  final SOW-0082 repair commit.

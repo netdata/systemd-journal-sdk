@@ -20,7 +20,6 @@
     "_GID",
     "_COMM",
     "_EXE",
-    "_CAP_EFFECTIVE",
     "_AUDIT_LOGINUID",
     "_SYSTEMD_CGROUP",
     "_SYSTEMD_SLICE",
@@ -34,7 +33,6 @@
     "_MACHINE_ID",
     "_HOSTNAME",
     "_TRANSPORT",
-    "_STREAM_ID",
     "_NAMESPACE",
     "_RUNTIME_SCOPE"
   ],
