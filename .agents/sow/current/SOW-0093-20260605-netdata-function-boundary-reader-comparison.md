@@ -593,6 +593,9 @@ Failure handling:
 - Added semantic comparator and runner tooling under
   `tests/netdata_function/`, plus sanitized request fixtures for `info`,
   unfiltered priority facets/histogram, and filtered priority query behavior.
+- Added `tests/netdata_function/requests/window-last5-default-facets.json`
+  with the 31-field default `systemd-journal.plugin` facet set and verified it
+  against the installed plugin on the repo-local fixture.
 
 ## Validation
 
@@ -611,10 +614,15 @@ Tests or equivalent validation:
   repo-local fixture directory `.local/sow-0093/smoke-journals` for:
   - `tests/netdata_function/requests/info.json`
   - `tests/netdata_function/requests/window-last5-priority.json`
+  - `tests/netdata_function/requests/window-last5-default-facets.json`
   - `tests/netdata_function/requests/window-error-filter.json`
+- The default-facets request selects 31 facets, uses timeframe
+  `2022-10-24T00:00:01Z` through `2022-10-24T04:07:18Z`, matches 1,917 rows,
+  returns 5 rows, and passes semantic comparison for status, rows, nonzero
+  facets, nonzero histogram totals, and stable item counters.
 - Smoke comparison report path:
   `.local/sow-0093/results/sdk-vs-plugin-smoke-report.json`.
-- Smoke result summary: all three cases passed semantic comparison for status,
+- Smoke result summary: all four cases passed semantic comparison for status,
   rows, nonzero facets, nonzero histogram totals, and stable item counters.
 
 Real-use evidence:
