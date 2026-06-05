@@ -352,6 +352,25 @@ Netdata offline test CLI evidence:
   `src/crates/netflow-plugin/src/facet_runtime.rs:117`
   `src/crates/netflow-plugin/src/facet_runtime.rs:121`
 
+Installed Netdata CLI smoke evidence:
+
+- The user installed the Netdata branch from PR `netdata/netdata#22638`.
+- Installed binary checked read-only:
+  `/usr/libexec/netdata/plugins.d/systemd-journal.plugin`.
+- A repo-local fixture was created under `.local/sow-0093/smoke-journals/` by
+  decompressing `fixtures/systemd/test-data/no-rtc/system.journal.zst`; this
+  avoided probing live host journal state.
+- Fixture timestamp range was checked with stock `journalctl --file`: 1,922
+  rows, realtime seconds `1666569601` through `1666584438`.
+- Smoke request `{"info":true}` against the installed plugin returned valid
+  raw JSON, HTTP status `200`, stdout length 1,290 bytes, and empty stderr.
+- Smoke request for the exact fixture window with `last:5`,
+  `direction:"backward"`, `data_only:false`, `slice:true`, and facet
+  `PRIORITY` returned valid raw JSON, HTTP status `200`, 5 data rows, 1 facet,
+  a histogram object, stdout length 94,358 bytes, and empty stderr.
+- Smoke artifacts remain under `.local/sow-0093/` and are not durable project
+  artifacts.
+
 Risks:
 
 - Netdata source modifications are outside this repository and explicitly out
@@ -467,7 +486,8 @@ Open decisions:
   `systemd-journal.plugin` CLI entrypoint is a standard Netdata feature and
   will be created separately. This repository implements only the SDK wrapper
   and comparison harness. The local Netdata branch from
-  `netdata/netdata#22638` provides that external CLI once built and installed.
+  `netdata/netdata#22638` provides that external CLI and the installed binary
+  passed the SOW-0093 repo-local fixture smoke checks.
 
 ## Implications And Decisions
 
@@ -544,6 +564,9 @@ Failure handling:
   `test-function-cli` at `netdata/netdata @ 8c5c9b465e20`; recorded that PR
   `netdata/netdata#22638` supplies the external `systemd-journal.plugin`
   offline test CLI needed by this SOW.
+- Verified the installed `/usr/libexec/netdata/plugins.d/systemd-journal.plugin`
+  offline test CLI against a repo-local journal fixture for both `info` and a
+  real window query. No live host journal directory was queried.
 
 ## Validation
 

@@ -33,8 +33,9 @@ Last updated: 2026-06-05
   normalized function JSON and the shared `--test`, `--dir`, and `--request`
   CLI shape; current comparison target is generic log-function behavior versus
   `systemd-journal.plugin`, `netdata/netdata#22638` provides the external
-  offline test CLI input once built/installed, and NetFlow source analysis is
-  design evidence only for future grouped rollup/statistics APIs.
+  offline test CLI input and its installed binary passed repo-local fixture
+  smoke checks, and NetFlow source analysis is design evidence only for future
+  grouped rollup/statistics APIs.
 ## Recently Closed Or Completed
 
 - SOW-0083 - Index-Derived Facet And Histogram Optimization: completed. Rust
