@@ -7,18 +7,20 @@ Last updated: 2026-06-06
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
-- SOW-0093 - Netdata Function Boundary Reader Comparison: paused. Build
+- SOW-0093 - Netdata Function Boundary Reader Comparison: in-progress. Build
   the SDK Netdata-specific function API boundary, wrapper, and comparison
   harness for Netdata function-boundary output equality and performance using
   semantic normalized function JSON and the shared `--test`, `--dir`, and
   `--request` CLI shape; current comparison target is generic log-function
-  behavior versus `systemd-journal.plugin`, `netdata/netdata#22638` provides
-  the external offline test CLI input, Rust `journal::netdata`, the internal
-  `netdata_function_wrapper`, semantic comparator, and three repo-local plugin
-  smoke cases are implemented and passing. The SOW-0082 Explorer traversal and
-  RSS regression exposed by the first 4 GiB real-corpus comparison is repaired
-  and closed; SOW-0093 can resume from that repair. NetFlow source analysis is
-  design evidence only for future grouped rollup/statistics APIs.
+  behavior versus `systemd-journal.plugin`. Rust `journal::netdata`, the
+  internal `netdata_function_wrapper`, semantic comparator, progress/cancel
+  run-control API, directory-local source info metadata, full-analysis
+  Netdata catalog semantics, data-only, and data-only delta now pass the
+  repo-local six-request SDK-first comparison matrix. Remaining replacement
+  gaps include sampling estimates, full source-registry selection, tail,
+  cancellation/timeout matrix parity, and learned/persisted realtime-drift
+  state. NetFlow source analysis is design evidence only for future grouped
+  rollup/statistics APIs.
 
 ## Pending
 

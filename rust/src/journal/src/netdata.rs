@@ -15,6 +15,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const DEFAULT_FUNCTION_NAME: &str = "systemd-journal";
 const DEFAULT_ITEMS_TO_RETURN: usize = 200;
 const DEFAULT_TIME_WINDOW_SECONDS: i64 = 3600;
+const DEFAULT_ITEMS_SAMPLING: u64 = 1_000_000;
+const DATA_ONLY_CHECK_EVERY_ROWS: u64 = 128;
 const API_RELATIVE_TIME_MAX_SECONDS: i64 = 3 * 365 * 86_400;
 const NETDATA_MISSING_AFTER_RELATIVE_SECONDS: i64 = 600;
 const DEFAULT_HISTOGRAM_BUCKETS: usize = 150;
@@ -324,17 +326,21 @@ where
         mut options: NetdataFunctionRunOptions<'_>,
     ) -> Result<Value> {
         let request = NetdataRequest::parse(request, &self.config)?;
+        let mut paths = collect_journal_files(directory)?;
         if request.info {
-            return Ok(self.info_response());
+            return Ok(self.info_response(request.echo, &paths));
         }
 
-        let mut paths = collect_journal_files(directory)?;
         sort_journal_files_for_request(&mut paths, request.direction, self.config.reader_options);
         let deadline = options.timeout.map(|timeout| Instant::now() + timeout);
         let mut combined = self.explore_paths(&paths, &request, deadline, &mut options)?;
-        combined
-            .add_zero_count_facet_values_from_files(&request.facets, self.config.reader_options);
-        if !combined.partial && !request.filters.is_empty() {
+        if !request.data_only {
+            combined.add_zero_count_facet_values_from_files(
+                &request.facets,
+                self.config.reader_options,
+            );
+        }
+        if !request.data_only && !combined.partial && !request.filters.is_empty() {
             let mut vocabulary_request = request.clone();
             vocabulary_request.filters.clear();
             vocabulary_request.histogram = None;
@@ -406,12 +412,14 @@ where
             }
             combined.matched_files = combined.matched_files.saturating_add(1);
             combined.matched_paths.push(path.clone());
-            match reader.enumerate_fields_indexed() {
-                Ok(fields) => combined.add_column_fields(fields),
-                Err(err) => combined.file_errors.push(format!(
-                    "{}: FIELD index enumeration failed: {err}",
-                    path.display()
-                )),
+            if !request.data_only {
+                match reader.enumerate_fields_indexed() {
+                    Ok(fields) => combined.add_column_fields(fields),
+                    Err(err) => combined.file_errors.push(format!(
+                        "{}: FIELD index enumeration failed: {err}",
+                        path.display()
+                    )),
+                }
             }
             let explored = {
                 let mut explorer_progress = |progress: ExplorerProgress| {
@@ -474,13 +482,13 @@ where
         Ok(combined)
     }
 
-    fn info_response(&self) -> Value {
+    fn info_response(&self, echo: Value, paths: &[PathBuf]) -> Value {
         json!({
-            "_request": { "info": true },
+            "_request": echo,
             "versions": { "netdata_function_api": 1, "sdk": env!("CARGO_PKG_VERSION") },
             "v": 3,
             "accepted_params": self.accepted_params_from_fields(&[]),
-            "required_params": [],
+            "required_params": self.required_source_params(paths),
             "show_ids": true,
             "has_history": true,
             "pagination": {
@@ -512,10 +520,9 @@ where
         };
         let data = self.build_data_rows(&context, &columns.order, &combined.rows);
         let facets = self.build_facets(&context, &request.facets, &combined.facets);
-        let histogram = combined
-            .histogram
-            .as_ref()
-            .map(|histogram| self.build_histogram(&context, histogram));
+        let histogram = combined.histogram.as_ref().map(|histogram| {
+            self.build_histogram(&context, histogram, combined.facets.get(&histogram.field))
+        });
         let returned = data.len() as u64;
         let not_modified = request.if_modified_since_usec != 0
             && !combined.partial
@@ -593,12 +600,15 @@ where
             object.insert("help".to_string(), Value::Null);
             object.insert(
                 "accepted_params".to_string(),
-                self.accepted_params_from_fields(
-                    &combined.reportable_facet_fields(&request.facets),
-                ),
+                self.accepted_params_from_fields(&request.facet_field_names()),
             );
             object.insert("default_sort_column".to_string(), Value::from("timestamp"));
             object.insert("default_charts".to_string(), Value::Array(Vec::new()));
+            object.insert(
+                "available_histograms".to_string(),
+                self.available_histograms(&request, &combined),
+            );
+        } else if request.histogram.is_some() {
             object.insert(
                 "available_histograms".to_string(),
                 self.available_histograms(&request, &combined),
@@ -612,24 +622,26 @@ where
             );
         }
 
-        let facets_key = if request.data_only && request.delta {
-            "facets_delta"
-        } else {
-            "facets"
-        };
-        let histogram_key = if request.data_only && request.delta {
-            "histogram_delta"
-        } else {
-            "histogram"
-        };
-        let items_key = if request.data_only && request.delta {
-            "items_delta"
-        } else {
-            "items"
-        };
-        object.insert(facets_key.to_string(), facets);
-        object.insert(histogram_key.to_string(), histogram.unwrap_or(Value::Null));
-        object.insert(items_key.to_string(), items);
+        if !request.data_only || request.delta {
+            let facets_key = if request.data_only {
+                "facets_delta"
+            } else {
+                "facets"
+            };
+            let histogram_key = if request.data_only {
+                "histogram_delta"
+            } else {
+                "histogram"
+            };
+            let items_key = if request.data_only {
+                "items_delta"
+            } else {
+                "items"
+            };
+            object.insert(facets_key.to_string(), facets);
+            object.insert(histogram_key.to_string(), histogram.unwrap_or(Value::Null));
+            object.insert(items_key.to_string(), items);
+        }
 
         response
     }
@@ -643,23 +655,11 @@ where
     ) -> Columns {
         let mut order = vec!["timestamp".to_string(), "rowOptions".to_string()];
         push_unique_many(&mut order, &self.config.default_view_keys);
+        push_unique_many(&mut order, &request.facet_field_names());
         if let Some(histogram) = &request.histogram {
             push_unique(&mut order, histogram);
         }
-        let default_facet_fields: BTreeSet<&str> = self
-            .config
-            .default_facets
-            .iter()
-            .map(String::as_str)
-            .collect();
         for field in column_fields {
-            if default_facet_fields.contains(field.as_str())
-                && !facets
-                    .get(field.as_bytes())
-                    .is_some_and(facet_group_is_reportable)
-            {
-                continue;
-            }
             push_unique(&mut order, field);
         }
 
@@ -723,15 +723,11 @@ where
     ) -> Value {
         let mut out = Vec::new();
         for (order, field) in requested.iter().enumerate() {
-            let Some(values) = facets.get(field) else {
-                continue;
-            };
-            if !facet_group_is_reportable(values) {
-                continue;
-            }
+            let values = facets.get(field);
             let field_name = String::from_utf8_lossy(field).into_owned();
             let mut options: Vec<_> = values
-                .iter()
+                .into_iter()
+                .flat_map(|values| values.iter())
                 .filter(|(value, count)| {
                     (!value.is_empty() && value.as_slice() != b"-")
                         || (**count == 0 && value.is_empty())
@@ -751,9 +747,6 @@ where
                     })
                 })
                 .collect();
-            if options.is_empty() {
-                continue;
-            }
             sort_facet_options(&field_name, &mut options);
             for (idx, option) in options.iter_mut().enumerate() {
                 if let Some(object) = option.as_object_mut() {
@@ -770,7 +763,12 @@ where
         Value::Array(out)
     }
 
-    fn build_histogram(&self, context: &DisplayContext, histogram: &ExplorerHistogram) -> Value {
+    fn build_histogram(
+        &self,
+        context: &DisplayContext,
+        histogram: &ExplorerHistogram,
+        known_values: Option<&BTreeMap<Vec<u8>, u64>>,
+    ) -> Value {
         let field = String::from_utf8_lossy(&histogram.field).into_owned();
         let mut dimension_ids = BTreeSet::new();
         let mut buckets = Vec::with_capacity(histogram.buckets.len());
@@ -783,6 +781,15 @@ where
                 dimension_ids.insert(value.clone());
             }
             buckets.push((bucket.start_realtime_usec, values));
+        }
+        let actual_dimension_ids = dimension_ids.clone();
+        if let Some(known_values) = known_values {
+            for value in known_values.keys() {
+                if value.is_empty() || value.as_slice() == b"-" {
+                    continue;
+                }
+                dimension_ids.insert(value.clone());
+            }
         }
         let dimension_ids: Vec<Vec<u8>> = dimension_ids.into_iter().collect();
         let labels: Vec<Value> = std::iter::once(Value::String("time".to_string()))
@@ -804,7 +811,18 @@ where
                 let mut point = Vec::with_capacity(dimension_ids.len() + 1);
                 point.push(Value::from(start_realtime_usec / 1000));
                 for value in &dimension_ids {
-                    point.push(json!([values.get(value).copied().unwrap_or(0), 0, 0]));
+                    let count = values
+                        .get(value)
+                        .copied()
+                        .map(Value::from)
+                        .unwrap_or_else(|| {
+                            if actual_dimension_ids.contains(value) {
+                                Value::from(0)
+                            } else {
+                                Value::Null
+                            }
+                        });
+                    point.push(Value::Array(vec![count, Value::from(0), Value::from(0)]));
                 }
                 Value::Array(point)
             })
@@ -838,8 +856,43 @@ where
             .collect()
     }
 
+    fn required_source_params(&self, paths: &[PathBuf]) -> Value {
+        let summary = JournalSourceSummary::from_paths(paths, self.config.reader_options);
+        let options: Vec<Value> = ["all", "all-local-logs", "all-local-system-logs"]
+            .into_iter()
+            .map(|id| {
+                json!({
+                    "id": id,
+                    "name": id,
+                    "info": summary.info(),
+                    "pill": human_binary_size(summary.total_size),
+                })
+            })
+            .collect();
+        json!([{
+            "id": "__logs_sources",
+            "name": "Journal Sources",
+            "help": "Select the logs source to query",
+            "type": "multiselect",
+            "options": options,
+        }])
+    }
+
     fn available_histograms(&self, request: &NetdataRequest, combined: &CombinedResult) -> Value {
-        let fields = combined.reportable_facet_fields(&request.facets);
+        let mut fields = request.facet_field_names();
+        for field in combined.reportable_facet_fields(&request.facets) {
+            push_unique(&mut fields, &field);
+        }
+        for field in &request.facets {
+            if let Ok(field) = std::str::from_utf8(field) {
+                push_unique(&mut fields, field);
+            }
+        }
+        if request.data_only {
+            if let Some(histogram) = &request.histogram {
+                push_unique(&mut fields, histogram);
+            }
+        }
         let mut sorted = fields.clone();
         sorted.sort_by(|left, right| netdata_reorder_key(left).cmp(&netdata_reorder_key(right)));
         let order_by_field: BTreeMap<String, usize> = sorted
@@ -902,7 +955,7 @@ impl NetdataRequest {
         let delta = data_only && get_bool(object, "delta").unwrap_or(false);
         let tail =
             data_only && if_modified_since_usec != 0 && get_bool(object, "tail").unwrap_or(false);
-        let sampling = get_u64(object, "sampling").unwrap_or_default();
+        let sampling = get_u64(object, "sampling").unwrap_or(DEFAULT_ITEMS_SAMPLING);
         let mut anchor = get_u64(object, "anchor")
             .map(normalize_timestamp_to_usec)
             .map(ExplorerAnchor::Realtime)
@@ -919,9 +972,12 @@ impl NetdataRequest {
             }
         }
         let limit = get_u64(object, "last")
+            .filter(|value| *value != 0)
             .map(|value| value as usize)
             .unwrap_or(DEFAULT_ITEMS_TO_RETURN);
-        let facets = parse_string_array(object.get("facets"))
+        let requested_facets = parse_string_array(object.get("facets"));
+        let facets = requested_facets
+            .clone()
             .unwrap_or_else(|| config.default_facets.clone())
             .into_iter()
             .map(Vec::from)
@@ -953,6 +1009,8 @@ impl NetdataRequest {
             delta,
             tail,
             sampling,
+            requested_facets.as_deref(),
+            object.get("selections"),
             requested_histogram.as_deref(),
             requested_query.as_deref(),
         );
@@ -977,7 +1035,16 @@ impl NetdataRequest {
         })
     }
 
+    fn facet_field_names(&self) -> Vec<String> {
+        self.facets
+            .iter()
+            .filter_map(|field| String::from_utf8(field.clone()).ok())
+            .collect()
+    }
+
     fn to_explorer_query(&self) -> ExplorerQuery {
+        let analysis_enabled = !self.data_only || self.delta;
+        let tail_anchor = self.tail && matches!(self.anchor, ExplorerAnchor::Realtime(_));
         ExplorerQuery {
             after_realtime_usec: self.after_realtime_usec,
             before_realtime_usec: self.before_realtime_usec,
@@ -985,17 +1052,24 @@ impl NetdataRequest {
             direction: self.direction,
             limit: self.limit,
             filters: self.filters.clone(),
-            facets: self.facets.clone(),
-            histogram: self
-                .histogram
-                .as_ref()
-                .map(|field| field.as_bytes().to_vec()),
+            facets: analysis_enabled
+                .then(|| self.facets.clone())
+                .unwrap_or_default(),
+            histogram: analysis_enabled
+                .then(|| {
+                    self.histogram
+                        .as_ref()
+                        .map(|field| field.as_bytes().to_vec())
+                })
+                .flatten(),
             histogram_target_buckets: DEFAULT_HISTOGRAM_BUCKETS,
             fts_patterns: self.fts_patterns.clone(),
             field_mode: ExplorerFieldMode::FirstValue,
             exclude_facet_field_filters: false,
             use_source_realtime: true,
             realtime_slack_usec: NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC,
+            stop_when_rows_full: self.data_only && !tail_anchor,
+            stop_when_rows_full_check_every: DATA_ONLY_CHECK_EVERY_ROWS,
             debug_collect_column_fields_by_row_traversal: false,
         }
     }
@@ -1005,6 +1079,70 @@ impl NetdataRequest {
 struct LocatedRow {
     file_path: PathBuf,
     row: ExplorerRow,
+}
+
+#[derive(Debug, Default)]
+struct JournalSourceSummary {
+    files: u64,
+    total_size: u64,
+    first_realtime_usec: Option<u64>,
+    last_realtime_usec: Option<u64>,
+}
+
+impl JournalSourceSummary {
+    fn from_paths(paths: &[PathBuf], reader_options: ReaderOptions) -> Self {
+        let mut summary = Self::default();
+        for path in paths {
+            if let Ok(metadata) = std::fs::metadata(path) {
+                summary.files = summary.files.saturating_add(1);
+                summary.total_size = summary.total_size.saturating_add(metadata.len());
+            }
+            let Ok(reader) = FileReader::open_with_options(path, reader_options) else {
+                continue;
+            };
+            let header = reader.header();
+            if header.head_entry_realtime != 0 {
+                summary.first_realtime_usec = Some(
+                    summary
+                        .first_realtime_usec
+                        .map_or(header.head_entry_realtime, |current| {
+                            current.min(header.head_entry_realtime)
+                        }),
+                );
+            }
+            if header.tail_entry_realtime != 0 {
+                summary.last_realtime_usec = Some(
+                    summary
+                        .last_realtime_usec
+                        .map_or(header.tail_entry_realtime, |current| {
+                            current.max(header.tail_entry_realtime)
+                        }),
+                );
+            }
+        }
+        summary
+    }
+
+    fn info(&self) -> String {
+        let coverage = match (self.first_realtime_usec, self.last_realtime_usec) {
+            (Some(first), Some(last)) if last >= first => {
+                human_duration_seconds((last - first) / 1_000_000)
+            }
+            _ => "0s".to_string(),
+        };
+        let last_entry = self
+            .last_realtime_usec
+            .and_then(|usec| DateTime::<Utc>::from_timestamp((usec / 1_000_000) as i64, 0))
+            .map(|datetime| datetime.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        format!(
+            "{} files, total size {}, covering {}, last entry at {}",
+            self.files,
+            human_binary_size(self.total_size),
+            coverage,
+            last_entry
+        )
+    }
 }
 
 fn expand_located_row_payloads(
@@ -1673,6 +1811,8 @@ fn normalized_request_echo(
     delta: bool,
     tail: bool,
     sampling: u64,
+    requested_facets: Option<&[String]>,
+    selections: Option<&Value>,
     histogram: Option<&str>,
     query: Option<&str>,
 ) -> Value {
@@ -1680,7 +1820,7 @@ fn normalized_request_echo(
         ExplorerAnchor::Realtime(usec) => usec,
         ExplorerAnchor::Auto | ExplorerAnchor::Head | ExplorerAnchor::Tail => 0,
     };
-    json!({
+    let mut out = json!({
         "info": info,
         "slice": true,
         "data_only": data_only,
@@ -1699,7 +1839,24 @@ fn normalized_request_echo(
         "last": limit,
         "query": query,
         "histogram": histogram,
-    })
+    });
+    if let Some(facets) = requested_facets {
+        out.as_object_mut()
+            .expect("Netdata request echo root must be an object")
+            .insert(
+                "facets".to_string(),
+                facets
+                    .iter()
+                    .map(|field| Value::String(field.clone()))
+                    .collect(),
+            );
+    }
+    if let Some(Value::Object(selections)) = selections {
+        out.as_object_mut()
+            .expect("Netdata request echo root must be an object")
+            .insert("selections".to_string(), Value::Object(selections.clone()));
+    }
+    out
 }
 
 fn normalize_timestamp_to_usec(value: u64) -> u64 {
@@ -1721,6 +1878,40 @@ fn unix_now_seconds() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or_default()
+}
+
+fn human_binary_size(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0usize;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{}{}", bytes, UNITS[unit])
+    } else if value.fract() == 0.0 {
+        format!("{value:.0}{}", UNITS[unit])
+    } else {
+        format!("{value:.1}{}", UNITS[unit])
+    }
+}
+
+fn human_duration_seconds(seconds: u64) -> String {
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    let seconds = seconds % 60;
+    let mut parts = Vec::new();
+    if hours != 0 {
+        parts.push(format!("{hours}h"));
+    }
+    if minutes != 0 {
+        parts.push(format!("{minutes}m"));
+    }
+    if seconds != 0 || parts.is_empty() {
+        parts.push(format!("{seconds}s"));
+    }
+    parts.join(" ")
 }
 
 fn collect_journal_files(path: &Path) -> Result<Vec<PathBuf>> {
@@ -2744,7 +2935,7 @@ mod tests {
         };
 
         let function = NetdataJournalFunction::systemd_journal();
-        let rendered = function.build_histogram(&DisplayContext::default(), &histogram);
+        let rendered = function.build_histogram(&DisplayContext::default(), &histogram, None);
         let labels = rendered["chart"]["result"]["labels"]
             .as_array()
             .expect("labels");

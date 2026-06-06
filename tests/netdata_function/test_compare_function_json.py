@@ -151,6 +151,74 @@ class CompareFunctionJsonTest(unittest.TestCase):
         self.assertIn("PRIORITY", artifacts)
         self.assertEqual(artifacts["PRIORITY"][0]["id"], "CzGfAU2z3TC")
 
+    def test_data_only_delta_sections_are_compared_semantically(self) -> None:
+        left = function_doc()
+        left["_request"] = {"data_only": True}
+        left["facets_delta"] = left.pop("facets")
+        left["histogram_delta"] = left.pop("histogram")
+        left["items_delta"] = left.pop("items")
+
+        right = function_doc()
+        right["_request"] = {"data_only": True}
+        right["facets_delta"] = right.pop("facets")
+        right["histogram_delta"] = right.pop("histogram")
+        right["items_delta"] = right.pop("items")
+        right["facets_delta"][0]["order"] = 99
+        right["facets_delta"][0]["options"][0]["order"] = 42
+
+        report = compare(left, right)
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["checks"]["facets"])
+        self.assertTrue(report["checks"]["histogram"])
+        self.assertTrue(report["checks"]["items"])
+
+    def test_data_only_ignores_plugin_only_all_null_columns(self) -> None:
+        left = function_doc(
+            columns={
+                "timestamp": {"index": 0, "name": "Time"},
+                "MESSAGE": {"index": 1, "name": "Message"},
+            },
+        )
+        left["_request"] = {"data_only": True}
+        right = function_doc(
+            columns={
+                "timestamp": {"index": 0, "name": "Time"},
+                "MESSAGE": {"index": 1, "name": "Message"},
+                "CODE_FILE": {"index": 2, "name": "CODE_FILE"},
+            },
+        )
+        right["_request"] = {"data_only": True}
+        right["data"] = [[1000, "hello", None]]
+
+        report = compare(left, right)
+        self.assertTrue(report["ok"])
+        ignored = report["non_content"]["data_only_ignored_all_null_columns"]
+        self.assertIn("CODE_FILE", ignored["right"])
+
+    def test_data_only_missing_non_null_column_fails(self) -> None:
+        left = function_doc(
+            columns={
+                "timestamp": {"index": 0, "name": "Time"},
+                "MESSAGE": {"index": 1, "name": "Message"},
+            },
+        )
+        left["_request"] = {"data_only": True}
+        right = function_doc(
+            columns={
+                "timestamp": {"index": 0, "name": "Time"},
+                "MESSAGE": {"index": 1, "name": "Message"},
+                "CODE_FILE": {"index": 2, "name": "CODE_FILE"},
+            },
+        )
+        right["_request"] = {"data_only": True}
+        right["data"] = [[1000, "hello", "main.c"]]
+
+        report = compare(left, right)
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["checks"]["columns"])
+        self.assertFalse(report["checks"]["rows"])
+        self.assertIn("CODE_FILE", report["diffs"]["rows"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -222,6 +222,13 @@ Evidence: `systemd-journal-files.c:357-425`.
 through `available_journal_file_sources_to_json_array()`
 (`logs_query_status.h:663-696`, `systemd-journal-files.c:537-575`).
 
+The SDK Netdata function replacement builds the same source selector for its
+explicit directory input. It reports `__logs_sources` options for `all`,
+`all-local-logs`, and `all-local-system-logs`, deriving file count, total size,
+coverage, and last-entry timestamp from the selected journal files. This is
+directory-local source metadata; full Netdata registry/provider source
+selection remains a separate replacement requirement.
+
 ## Timeframe And Anchor Semantics
 
 Input `after` and `before` are seconds; normalized query bounds are converted to
@@ -496,10 +503,15 @@ Evidence: `facets.c:903-919`, `facets.c:2313-2344`.
 Output:
 
 - `available_histograms` lists all value-tracked, non-hidden keys;
+- for explicit request facets, the list order follows the requested facet list,
+  while each item's `order` metadata follows Netdata's sorted field order;
 - `histogram` is emitted for full analysis;
 - `histogram_delta` is emitted only for data-only plus delta mode;
 - data is emitted as stacked-bar chart-compatible rows, one per histogram slot,
   with one dimension per observed value.
+- histogram dimensions that occur in at least one bucket use numeric zero in
+  buckets where that value is absent. Dimensions known only from the facet
+  vocabulary use JSON `null` in every bucket where the value was not observed.
 
 Evidence: `facets.c:2817-2868`, `facets.c:1209-1609`.
 
@@ -507,8 +519,16 @@ Evidence: `facets.c:2817-2868`, `facets.c:1209-1609`.
 
 `data_only=true` means "return rows fast" and skips normal `facets`,
 `histogram`, `items`, `message`, `update_every`, and `help` output. It still
-calls `facets_report()` so data rows are returned (`systemd-journal-execute.h:714-792`,
-`facets.c:2592-2600`, `facets.c:2808-2884`).
+calls `facets_report()` so data rows and table scaffolding are returned
+(`systemd-journal-execute.h:714-792`, `facets.c:2592-2600`,
+`facets.c:2808-2884`).
+
+Data-only without delta does not emit `facets`, `histogram`, or `items`. If a
+histogram key was requested, `available_histograms` is still emitted so the UI
+keeps its histogram selector metadata.
+
+Data-only with delta emits `facets_delta`, `histogram_delta`, and `items_delta`
+instead of the full-analysis names.
 
 `delta=true` is forced off unless `data_only=true`
 (`logs_query_status.h:752-753`).
@@ -699,6 +719,11 @@ Evidence: `systemd-journal-execute.h:719-783`, `facets.c:2597-2672`,
 Data-only plus delta emits `facets_delta`, `histogram_delta`, and `items_delta`
 instead of the full analysis names (`facets.c:2604-2616`,
 `facets.c:2846-2855`, `facets.c:2873-2884`).
+
+Strict comparison treats data-only all-null column-catalog differences as
+non-content only when those columns have no returned-row value on either side.
+This preserves the Explorer production rule that column catalogs come from
+FIELD indexes while still rejecting any missing non-null returned field.
 
 The Rust SDK Netdata function API validates and echoes `data_only`, `delta`,
 `tail`, `sampling`, and `if_modified_since` using the same high-level rules:

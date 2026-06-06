@@ -7,11 +7,14 @@ Status: in-progress
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
 Sub-state: strict SDK-first content comparison passes locally for the large
-default-facets full-analysis request; Rust SDK run-control API now covers
-progress reporting, cancellation, timeout plumbing, request normalization for
-data-only/delta/tail, and `last_modified`. Remaining replacement gaps include
-sampling estimates, source-registry selection, broader request-matrix parity,
-and learned/persisted realtime-drift state.
+default-facets full-analysis request and for the repo-local six-request matrix:
+`info`, full priority, filtered priority, full default facets, data-only, and
+data-only delta. Rust SDK run-control API covers progress reporting,
+cancellation, timeout plumbing, request normalization for data-only/delta/tail,
+and `last_modified`. Remaining replacement gaps include sampling estimates,
+source-registry selection beyond the explicit directory source summary,
+tail/cancellation/timeout matrix parity, and learned/persisted realtime-drift
+state.
 
 ## Requirements
 
@@ -976,6 +979,42 @@ Real-use evidence:
     boundary, learned realtime-drift state is not persisted by the SDK API yet,
     and the strict comparator matrix still needs data-only, delta, tail,
     sampling, source-selection, cancellation, and timeout fixtures.
+- Netdata function boundary expansion on 2026-06-06:
+  - request fixtures added:
+    `tests/netdata_function/requests/window-last5-data-only.json` and
+    `tests/netdata_function/requests/window-last5-data-only-delta.json`;
+  - strict SDK-first comparison report:
+    `.local/sow-0093/function-compare-all-fixtures-clean-candidate.json`;
+  - compared binary pair:
+    `rust/target/release/netdata_function_wrapper` first, then installed
+    `/usr/libexec/netdata/plugins.d/systemd-journal.plugin`;
+  - fixture directory:
+    `.local/sow-0093/smoke-journals`;
+  - all six cases passed strict semantic content comparison:
+    `info.json`, `window-last5-priority.json`,
+    `window-error-filter.json`, `window-last5-default-facets.json`,
+    `window-last5-data-only.json`, and
+    `window-last5-data-only-delta.json`;
+  - every case matched stable top-level content, columns, returned rows,
+    facets, histogram, item counters, and diagnostic item counters;
+  - data-only delta matched the plugin's 128-row stop cadence with
+    `matched=128`, `after=123`, `returned=5`, and `max_to_return=5`;
+  - implementation fixes in this checkpoint:
+    - source `info` required-parameter metadata is derived from the explicit
+      journal directory's headers and file sizes;
+    - full-analysis columns keep every indexed FIELD column and requested
+      facet columns, instead of suppressing default facet fields with no
+      reportable values;
+    - requested empty facet groups are emitted with empty option arrays;
+    - histogram dimensions distinguish actual dimensions, whose empty buckets
+      render as `0`, from vocabulary-only dimensions, whose empty buckets
+      render as `null`;
+    - `available_histograms` preserves request-list order while keeping the
+      plugin's sorted `order` metadata;
+    - the comparator normalizes `facets_delta`, `histogram_delta`, and
+      `items_delta` like their full-analysis counterparts, while treating
+      data-only all-null column-catalog artifacts as non-content only when no
+      returned-row value exists on either side.
 
 Implementation fixes after first reviewer batch:
 

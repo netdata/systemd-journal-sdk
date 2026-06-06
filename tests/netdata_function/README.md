@@ -28,6 +28,14 @@ derives that order from hash-table traversal. Runtime envelope fields such as
 `items.evaluated` is also diagnostic because it counts internal scan work, not
 journal content.
 
+`data_only=true` has two extra compatibility rules:
+
+- `facets_delta`, `histogram_delta`, and `items_delta` are compared with the
+  same semantic rules as `facets`, `histogram`, and `items`.
+- Plugin-only or SDK-only columns that are `null` in every returned row are
+  reported as non-content. A missing column with any non-null returned-row value
+  remains a content mismatch.
+
 The comparator reports, but does not treat as content, Netdata's zero-count
 empty-string unavailable-field artifact:
 

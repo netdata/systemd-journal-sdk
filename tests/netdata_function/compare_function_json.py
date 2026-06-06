@@ -10,7 +10,10 @@ id, and histogram buckets by timestamp and value label.
 Netdata can also emit diagnostic/accounting values that are not journal content:
 `items.evaluated` counts internal scan work, and the facets compatibility layer
 can emit a zero-count hash id for an unavailable empty unique value. These are
-reported, but they do not decide content equality.
+reported, but they do not decide content equality. Data-only responses can also
+expose all-null plugin column-catalog artifacts from rows that were scanned for
+paging but not returned; those are reported as non-content unless a column has
+any returned-row value on either side.
 """
 
 from __future__ import annotations
@@ -57,6 +60,11 @@ def load_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def is_data_only(doc: dict[str, Any]) -> bool:
+    request = doc.get("_request")
+    return isinstance(request, dict) and request.get("data_only") is True
+
+
 def column_indices(doc: dict[str, Any]) -> dict[str, int]:
     columns = doc.get("columns")
     if not isinstance(columns, dict):
@@ -68,13 +76,32 @@ def column_indices(doc: dict[str, Any]) -> dict[str, int]:
     return out
 
 
-def normalized_columns(doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def columns_with_any_returned_value(doc: dict[str, Any]) -> set[str]:
+    indices = column_indices(doc)
+    rows = doc.get("data")
+    if not isinstance(rows, list):
+        return set()
+    out: set[str] = set()
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        for name, idx in indices.items():
+            if 0 <= idx < len(row) and row[idx] is not None:
+                out.add(name)
+    return out
+
+
+def normalized_columns(
+    doc: dict[str, Any], allowed_columns: set[str] | None = None
+) -> dict[str, dict[str, Any]]:
     columns = doc.get("columns")
     if not isinstance(columns, dict):
         return {}
     out: dict[str, dict[str, Any]] = {}
     for name, meta in columns.items():
         if not isinstance(name, str) or not isinstance(meta, dict):
+            continue
+        if allowed_columns is not None and name not in allowed_columns:
             continue
         normalized = dict(meta)
         for field in VOLATILE_COLUMN_METADATA_FIELDS:
@@ -83,12 +110,20 @@ def normalized_columns(doc: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
-def normalized_rows(doc: dict[str, Any]) -> list[dict[str, Any]]:
+def normalized_rows(
+    doc: dict[str, Any], allowed_columns: set[str] | None = None
+) -> list[dict[str, Any]]:
     indices = column_indices(doc)
     rows = doc.get("data")
     if not isinstance(rows, list):
         return []
-    ordered_columns = sorted(indices, key=lambda name: indices[name])
+    if allowed_columns is None:
+        ordered_columns = sorted(indices, key=lambda name: indices[name])
+    else:
+        ordered_columns = sorted(
+            allowed_columns,
+            key=lambda name: (indices.get(name, 1 << 30), name),
+        )
     out: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, list):
@@ -106,6 +141,8 @@ def normalized_rows(doc: dict[str, Any]) -> list[dict[str, Any]]:
 
 def normalized_facets(doc: dict[str, Any]) -> dict[str, Any]:
     facets = doc.get("facets")
+    if not isinstance(facets, list):
+        facets = doc.get("facets_delta")
     if not isinstance(facets, list):
         return {}
     out: dict[str, Any] = {}
@@ -148,6 +185,8 @@ def normalized_facets(doc: dict[str, Any]) -> dict[str, Any]:
 def non_content_facet_artifacts(doc: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     facets = doc.get("facets")
     if not isinstance(facets, list):
+        facets = doc.get("facets_delta")
+    if not isinstance(facets, list):
         return {}
     artifacts: dict[str, list[dict[str, Any]]] = {}
     for facet in facets:
@@ -170,6 +209,8 @@ def non_content_facet_artifacts(doc: dict[str, Any]) -> dict[str, list[dict[str,
 
 def normalized_histogram(doc: dict[str, Any]) -> Any:
     histogram = doc.get("histogram")
+    if not isinstance(histogram, dict):
+        histogram = doc.get("histogram_delta")
     if not isinstance(histogram, dict):
         return normalize_json(histogram)
     result = histogram.get("chart", {}).get("result")
@@ -202,6 +243,8 @@ def normalized_histogram(doc: dict[str, Any]) -> Any:
 def normalized_items(doc: dict[str, Any]) -> dict[str, Any]:
     items = doc.get("items")
     if not isinstance(items, dict):
+        items = doc.get("items_delta")
+    if not isinstance(items, dict):
         return {}
     return normalize_json(
         {key: value for key, value in items.items() if key not in DIAGNOSTIC_ITEM_FIELDS}
@@ -210,6 +253,8 @@ def normalized_items(doc: dict[str, Any]) -> dict[str, Any]:
 
 def normalized_diagnostic_items(doc: dict[str, Any]) -> dict[str, Any]:
     items = doc.get("items")
+    if not isinstance(items, dict):
+        items = doc.get("items_delta")
     if not isinstance(items, dict):
         return {}
     return normalize_json(
@@ -227,9 +272,23 @@ def normalized_top_level(doc: dict[str, Any]) -> dict[str, Any]:
             "columns",
             "data",
             "facets",
+            "facets_delta",
             "histogram",
+            "histogram_delta",
             "items",
+            "items_delta",
         }
+    }
+
+
+def ignored_data_only_columns(left: dict[str, Any], right: dict[str, Any]) -> dict[str, list[str]]:
+    if not (is_data_only(left) or is_data_only(right)):
+        return {"left": [], "right": []}
+    left_ignored = set(column_indices(left)) - columns_with_any_returned_value(left)
+    right_ignored = set(column_indices(right)) - columns_with_any_returned_value(right)
+    return {
+        "left": sorted(left_ignored - columns_with_any_returned_value(right)),
+        "right": sorted(right_ignored - columns_with_any_returned_value(left)),
     }
 
 
@@ -282,10 +341,16 @@ def value_count(facets: Any) -> int:
 
 
 def compare(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
-    left_columns = normalized_columns(left)
-    right_columns = normalized_columns(right)
-    left_rows = normalized_rows(left)
-    right_rows = normalized_rows(right)
+    data_only = is_data_only(left) or is_data_only(right)
+    allowed_columns = None
+    if data_only:
+        allowed_columns = columns_with_any_returned_value(
+            left
+        ) | columns_with_any_returned_value(right)
+    left_columns = normalized_columns(left, allowed_columns)
+    right_columns = normalized_columns(right, allowed_columns)
+    left_rows = normalized_rows(left, allowed_columns)
+    right_rows = normalized_rows(right, allowed_columns)
     left_facets = normalized_facets(left)
     right_facets = normalized_facets(right)
     left_histogram = normalized_histogram(left)
@@ -324,6 +389,7 @@ def compare(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
         "non_content": {
             "left_empty_unavailable_facet_artifacts": non_content_facet_artifacts(left),
             "right_empty_unavailable_facet_artifacts": non_content_facet_artifacts(right),
+            "data_only_ignored_all_null_columns": ignored_data_only_columns(left, right),
         },
         "left": {
             "top_level_keys": sorted(left_top_level),

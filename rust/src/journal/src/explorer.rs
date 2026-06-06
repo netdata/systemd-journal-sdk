@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 const DEFAULT_HISTOGRAM_TARGET_BUCKETS: usize = 150;
 const DEFAULT_TIME_SLACK_USEC: u64 = 120_000_000;
 const EXPLORER_CONTROL_CHECK_EVERY_ROWS: u64 = 8192;
+const DEFAULT_ROWS_FULL_CHECK_EVERY_ROWS: u64 = 1;
 const SOURCE_REALTIME_FIELD: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP";
 const UNSET_VALUE: &[u8] = b"-";
 
@@ -83,6 +84,8 @@ pub struct ExplorerQuery {
     pub exclude_facet_field_filters: bool,
     pub use_source_realtime: bool,
     pub realtime_slack_usec: u64,
+    pub stop_when_rows_full: bool,
+    pub stop_when_rows_full_check_every: u64,
     /// Debug-only discrepancy tool. Production explorer callers must never set
     /// this; column catalogs belong to FIELD indexes, not row traversal.
     #[doc(hidden)]
@@ -106,6 +109,8 @@ impl Default for ExplorerQuery {
             exclude_facet_field_filters: true,
             use_source_realtime: true,
             realtime_slack_usec: DEFAULT_TIME_SLACK_USEC,
+            stop_when_rows_full: false,
+            stop_when_rows_full_check_every: DEFAULT_ROWS_FULL_CHECK_EVERY_ROWS,
             debug_collect_column_fields_by_row_traversal: false,
         }
     }
@@ -1103,6 +1108,14 @@ impl FileReader {
                     row_payload_mode,
                 )?);
             }
+            if should_stop_when_rows_full(
+                query,
+                &result.rows,
+                effective_realtime,
+                result.stats.rows_matched,
+            ) {
+                break;
+            }
         }
         result.stats.rows_returned = result.rows.len() as u64;
         Ok(())
@@ -1190,6 +1203,14 @@ impl FileReader {
                     &mut result.stats,
                     row_payload_mode,
                 )?);
+            }
+            if should_stop_when_rows_full(
+                query,
+                &result.rows,
+                effective_realtime,
+                result.stats.rows_matched,
+            ) {
+                break;
             }
         }
         result.stats.rows_returned = result.rows.len() as u64;
@@ -2013,6 +2034,39 @@ fn facet_pass_needs_source_realtime(query: &ExplorerQuery) -> bool {
 
 fn query_needs_main_pass(query: &ExplorerQuery) -> bool {
     query.limit > 0 || query.histogram.is_some()
+}
+
+fn should_stop_when_rows_full(
+    query: &ExplorerQuery,
+    rows: &[ExplorerRow],
+    effective_realtime: u64,
+    rows_matched: u64,
+) -> bool {
+    if !query.stop_when_rows_full || query.limit == 0 || rows.len() < query.limit {
+        return false;
+    }
+    let every = query.stop_when_rows_full_check_every.max(1);
+    if rows_matched == 0 || rows_matched % every != 0 {
+        return false;
+    }
+    match query.direction {
+        Direction::Backward => {
+            rows.iter()
+                .map(|row| row.realtime_usec)
+                .min()
+                .is_some_and(|oldest| {
+                    effective_realtime < oldest.saturating_sub(query.realtime_slack_usec)
+                })
+        }
+        Direction::Forward => {
+            rows.iter()
+                .map(|row| row.realtime_usec)
+                .max()
+                .is_some_and(|newest| {
+                    effective_realtime > newest.saturating_add(query.realtime_slack_usec)
+                })
+        }
+    }
 }
 
 fn payload_from_parts(field: &[u8], value: &[u8]) -> Vec<u8> {
