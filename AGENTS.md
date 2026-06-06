@@ -58,6 +58,11 @@ Mandatory rules:
   outside the requested scope. Compressed DATA must stay compressed unless the
   caller needs that DATA's value for filtering, faceting, FTS, or returned-row
   display.
+- Explorer column catalogs must come from FIELD indexes, not row traversal.
+  `ExplorerQuery::debug_collect_column_fields_by_row_traversal` is a
+  discrepancy-debug tool only. Production use, benchmark success, or
+  compatibility acceptance with this flag enabled is invalid evidence and must
+  be treated as an explorer bug.
 - Treat repeated parsing of reusable DATA objects as a performance bug unless a
   SOW records evidence that the alternative is slower or unsafe.
 - Benchmark and profile hot paths before accepting performance-sensitive code.

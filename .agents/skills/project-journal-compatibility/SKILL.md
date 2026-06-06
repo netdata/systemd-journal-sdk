@@ -69,6 +69,11 @@ Do not use this skill for:
 - Field-name enumeration should use FIELD hash-table traversal on valid indexed files. A compatibility fallback to entry scanning is acceptable only when a historical or damaged FIELD table cannot be traversed safely, and that fallback must be documented in the active SOW.
 - Unfiltered unique value enumeration must match systemd's algorithmic shape: find the FIELD object and walk its DATA chain, then de-duplicate across files. It must not scan every entry or expand unrelated fields.
 - Avoid unnecessary DATA decompression, repeated `FIELD=value` parsing, allocation, sorting, hashing, or syscalls in reader/writer hot paths. Treat these as regressions unless tests and benchmark evidence prove they are required.
+- Explorer column catalogs must be built from FIELD indexes. The Rust
+  `ExplorerQuery::debug_collect_column_fields_by_row_traversal` switch is a
+  debug-only discrepancy tool; production reports, benchmarks, or compatibility
+  claims with that switch enabled are invalid and must be treated as an
+  explorer defect.
 - Smoke tests are not sufficient evidence for production compatibility. SOW validation must record exact stock systemd version, commands/helpers, stress duration, entry counts, reader counts, and failure criteria.
 - Common compression-library dependencies are allowed after dependency review. Journal parsing/writing must not depend on systemd/libjournal; CGO, native Node.js runtime addon loading, and linking to system journal libraries remain disallowed unless the user explicitly changes those separate constraints. Dependency packages may ship native artifacts if the SDK runtime path is constrained and tested to use only non-native implementations (e.g. WASM) and does not load or link native code at runtime.
 - Every external-agent prompt must include the canonical repository-boundary block verbatim from `AGENTS.md` or `.agents/skills/project-agent-orchestration/SKILL.md`.

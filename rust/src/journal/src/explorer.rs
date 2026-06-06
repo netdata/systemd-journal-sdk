@@ -82,7 +82,10 @@ pub struct ExplorerQuery {
     pub exclude_facet_field_filters: bool,
     pub use_source_realtime: bool,
     pub realtime_slack_usec: u64,
-    pub collect_column_fields: bool,
+    /// Debug-only discrepancy tool. Production explorer callers must never set
+    /// this; column catalogs belong to FIELD indexes, not row traversal.
+    #[doc(hidden)]
+    pub debug_collect_column_fields_by_row_traversal: bool,
 }
 
 impl Default for ExplorerQuery {
@@ -102,7 +105,7 @@ impl Default for ExplorerQuery {
             exclude_facet_field_filters: true,
             use_source_realtime: true,
             realtime_slack_usec: DEFAULT_TIME_SLACK_USEC,
-            collect_column_fields: false,
+            debug_collect_column_fields_by_row_traversal: false,
         }
     }
 }
@@ -633,6 +636,16 @@ impl FileReader {
         strategy: ExplorerStrategy,
         row_payload_mode: ExplorerRowPayloadMode,
     ) -> Result<ExplorerResult> {
+        validate_no_debug_column_collection(query)?;
+        self.explore_with_strategy_and_payload_mode_unchecked(query, strategy, row_payload_mode)
+    }
+
+    fn explore_with_strategy_and_payload_mode_unchecked(
+        &mut self,
+        query: &ExplorerQuery,
+        strategy: ExplorerStrategy,
+        row_payload_mode: ExplorerRowPayloadMode,
+    ) -> Result<ExplorerResult> {
         match strategy {
             ExplorerStrategy::Traversal => self.explore_traversal(query, row_payload_mode),
             ExplorerStrategy::Index => self.explore_indexed(query, row_payload_mode),
@@ -879,7 +892,7 @@ impl FileReader {
             if !query.fts_patterns.is_empty() && !scan.fts_matches {
                 continue;
             }
-            if query.collect_column_fields {
+            if query.debug_collect_column_fields_by_row_traversal {
                 result.column_fields.extend(scan.column_fields);
             }
 
@@ -946,7 +959,7 @@ impl FileReader {
             if !query.fts_patterns.is_empty() && !scan.fts_matches {
                 continue;
             }
-            if query.collect_column_fields {
+            if query.debug_collect_column_fields_by_row_traversal {
                 result.column_fields.extend(scan.column_fields);
             }
 
@@ -1072,7 +1085,7 @@ impl FileReader {
                         needs_fts,
                         query,
                         query
-                            .collect_column_fields
+                            .debug_collect_column_fields_by_row_traversal
                             .then_some(&mut out.column_fields),
                         stats,
                     )?;
@@ -1120,7 +1133,7 @@ impl FileReader {
 
                     if use_first_value
                         && !needs_fts
-                        && !query.collect_column_fields
+                        && !query.debug_collect_column_fields_by_row_traversal
                         && fields_missing_from_row == 0
                     {
                         stats.early_stop_opportunities =
@@ -1700,6 +1713,15 @@ fn validate_query(query: &ExplorerQuery) -> Result<()> {
     Ok(())
 }
 
+fn validate_no_debug_column_collection(query: &ExplorerQuery) -> Result<()> {
+    if query.debug_collect_column_fields_by_row_traversal {
+        return Err(SdkError::Unsupported(
+            "debug_collect_column_fields_by_row_traversal is a debug-only discrepancy tool; production explorer queries must use FIELD-index column catalogs instead",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_indexed_query(query: &ExplorerQuery) -> Result<()> {
     if query.field_mode != ExplorerFieldMode::AllValues {
         return Err(SdkError::Unsupported(
@@ -2038,6 +2060,35 @@ mod tests {
         assert_eq!(service.get(b"a".as_slice()), Some(&1));
         assert_eq!(service.get(b"b".as_slice()), Some(&1));
         assert!(result.stats.data_cache_misses > 0);
+    }
+
+    #[test]
+    fn explorer_rejects_debug_row_traversal_column_collection() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("debug-column-collection.journal");
+        write_entries(&path, None, &[(&[b"PRIORITY=3", b"MESSAGE=hello"], 1_000)]);
+
+        let query = ExplorerQuery {
+            facets: vec![b"PRIORITY".to_vec()],
+            debug_collect_column_fields_by_row_traversal: true,
+            ..ExplorerQuery::default()
+        };
+
+        let mut reader = FileReader::open(&path).expect("open reader");
+        let err = reader
+            .explore(&query)
+            .expect_err("debug-only column collection is rejected");
+        assert!(matches!(err, SdkError::Unsupported(_)));
+        assert!(
+            err.to_string()
+                .contains("debug_collect_column_fields_by_row_traversal")
+        );
+
+        let mut reader = FileReader::open(&path).expect("reopen reader");
+        let err = reader
+            .explore_with_strategy_cursor_rows(&query, ExplorerStrategy::Traversal)
+            .expect_err("cursor-row explorer also rejects debug-only column collection");
+        assert!(matches!(err, SdkError::Unsupported(_)));
     }
 
     #[test]

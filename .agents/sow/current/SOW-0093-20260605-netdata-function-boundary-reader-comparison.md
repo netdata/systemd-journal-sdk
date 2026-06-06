@@ -653,6 +653,10 @@ Tests or equivalent validation:
 
 - `cargo test -p journal netdata --lib` passed from the Rust workspace.
 - `cargo test -p journal explorer --lib` passed from the Rust workspace.
+- `cargo test -p journal --lib` passed from the Rust workspace after the
+  debug row-traversal column collection guard: 70 tests passed.
+- `cargo check -p reader_core_bench` passed from the Rust workspace after the
+  explorer query field rename.
 - `cargo build --release -p netdata_function_wrapper` passed from the Rust
   workspace.
 - `python3 -m py_compile tests/netdata_function/run_function_compare.py
@@ -684,6 +688,21 @@ Tests or equivalent validation:
     passed.
   - `python3 -m py_compile tests/netdata_function/run_function_compare.py
     tests/netdata_function/compare_function_json.py` passed.
+- Debug row-traversal column collection guard validation:
+  - `cargo test -p journal explorer_rejects_debug_row_traversal_column_collection
+    --lib` passed.
+  - `cargo test -p journal
+    netdata_requests_never_enable_debug_row_traversal_column_collection --lib`
+    passed.
+  - `cargo test -p journal explorer --lib` passed: 23 tests.
+  - `cargo test -p journal netdata --lib` passed: 18 tests.
+  - `python3 -m py_compile tests/netdata_function/run_function_compare.py
+    tests/netdata_function/compare_function_json.py
+    tests/netdata_function/test_compare_function_json.py` passed.
+  - `python3 tests/netdata_function/test_compare_function_json.py` passed:
+    10 tests.
+  - `git diff --check` passed.
+  - `.agents/sow/audit.sh` passed.
 
 Real-use evidence:
 
@@ -773,9 +792,9 @@ Real-use evidence:
     - installed plugin: elapsed `0:11.78`, user `22.45s`, system `0.75s`, CPU
       `196%`, max RSS `120,944 KiB`, major faults `1`, minor faults
       `178,689`.
-- `collect_column_fields=false` experiment on 2026-06-06:
+- row-traversal column-collection disabled experiment on 2026-06-06:
   - code state: `NetdataRequest::to_explorer_query()` forced
-    `collect_column_fields: false` for the experiment;
+    row-traversal column collection off for the experiment;
   - report path:
     `.local/sow-0093/collect-column-fields-false/sdk-first-default-facets-5rep-20260606T105236Z.json`;
   - SDK wall time all repetitions: `3.172902`, `2.955008`, `3.089483`,
@@ -796,9 +815,8 @@ Real-use evidence:
     `86,312 KiB`, major faults `0`, minor faults `86,909`.
 - FIELD-index column-catalog implementation on 2026-06-06:
   - implementation shape: matched files enumerate columns through indexed FIELD
-    objects before row traversal; `ExplorerQuery::collect_column_fields` remains
-    false so row traversal does not parse unrelated DATA just to discover
-    columns.
+    objects before row traversal; row traversal does not parse unrelated DATA
+    just to discover columns.
   - report path:
     `.local/sow-0093/field-index-columns/sdk-first-default-facets-5rep-20260606T110306Z.json`;
   - all 5 SDK-first repetitions passed strict content comparison. Every run
@@ -818,6 +836,28 @@ Real-use evidence:
     `.local/sow-0093/field-index-columns/time-sdk-20260606T110306Z.txt`;
     elapsed `0:03.32`, user `2.84s`, system `0.42s`, CPU `98%`, max RSS
     `86,492 KiB`, major faults `0`, minor faults `87,693`.
+- Debug row-traversal column collection guard on 2026-06-06:
+  - decision: row-traversal column collection is a debug-only discrepancy
+    marker and must never be a valid production, benchmark, or compatibility
+    path. The production column catalog source is FIELD indexes.
+  - implementation shape:
+    `ExplorerQuery::debug_collect_column_fields_by_row_traversal` replaced the
+    old `collect_column_fields` field name, is hidden from generated docs, and
+    is rejected by production explorer entrypoints with `SdkError::Unsupported`.
+  - Netdata request parsing always sets the marker to `false`.
+  - docs/spec/skill impact: root performance contract, journal compatibility
+    skill, Rust reader performance spec, product scope spec,
+    systemd-journal plugin facets spec, and Rust README all now state that any
+    result requiring this marker is an explorer bug, not a valid operating
+    mode.
+  - one SDK-first strict comparison pass after the guard still passed with
+    report path
+    `.local/sow-0093/debug-column-guard/sdk-first-default-facets-1rep-20260606T-debug-column-guard.json`.
+    The SDK ran in `3.471433655` seconds and the installed plugin ran in
+    `12.503126743` seconds. Stable content checks passed for columns, rows,
+    facets, histogram, items, and top-level metadata; the known diagnostic
+    `items.evaluated` accounting check remained the only non-content
+    difference.
 
 Implementation fixes after first reviewer batch:
 

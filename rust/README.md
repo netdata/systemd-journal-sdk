@@ -349,6 +349,11 @@ The default first-value mode counts at most one value per selected field per
 row. Use `ExplorerFieldMode::AllValues` when a row may contain repeated values
 for a selected facet or histogram field and every duplicate value must count.
 
+Explorer column catalogs are built from FIELD indexes. Do not use row traversal
+to discover columns in production; a comparison that needs
+`debug_collect_column_fields_by_row_traversal` has found a bug in the explorer
+or its column-catalog setup, not a valid operating mode.
+
 Specialized callers can select an execution strategy:
 
 ```rust

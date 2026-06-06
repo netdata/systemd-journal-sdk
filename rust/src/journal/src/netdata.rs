@@ -824,7 +824,7 @@ impl NetdataRequest {
             exclude_facet_field_filters: false,
             use_source_realtime: true,
             realtime_slack_usec: NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC,
-            collect_column_fields: false,
+            debug_collect_column_fields_by_row_traversal: false,
         }
     }
 }
@@ -2269,6 +2269,21 @@ mod tests {
         assert_eq!(parsed.filters[0].values, vec![b"4".to_vec(), b"3".to_vec()]);
         assert_eq!(parsed.filters[1].field, b"_HOSTNAME");
         assert_eq!(parsed.filters[1].values, vec![b"node-a".to_vec()]);
+    }
+
+    #[test]
+    fn netdata_requests_never_enable_debug_row_traversal_column_collection() {
+        let request = json!({
+            "facets": ["PRIORITY", "_HOSTNAME"],
+            "histogram": "PRIORITY",
+            "last": 25
+        });
+
+        let parsed = NetdataRequest::parse(&request, &NetdataFunctionConfig::systemd_journal())
+            .expect("parse request");
+        let query = parsed.to_explorer_query();
+
+        assert!(!query.debug_collect_column_fields_by_row_traversal);
     }
 
     #[test]

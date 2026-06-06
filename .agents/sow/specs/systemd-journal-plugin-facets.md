@@ -664,6 +664,11 @@ SDK column-catalog policy:
 - The SDK may therefore expose columns that the plugin would not discover in a
   narrow traversal. Returned rows still contain values only for fields present
   in those rows.
+- Row-traversal column discovery is not a production feature. The Rust
+  `ExplorerQuery::debug_collect_column_fields_by_row_traversal` marker exists
+  only to diagnose explorer discrepancies and is rejected by production
+  explorer entrypoints. Any comparison that passes only with that marker enabled
+  has found an SDK explorer bug, not a valid compatibility mode.
 
 Full analysis adds:
 

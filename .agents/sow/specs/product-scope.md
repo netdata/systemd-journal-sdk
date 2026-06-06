@@ -498,6 +498,10 @@ Accepted reader API layers:
   accounting mode: one selected facet/histogram/source field contributes at
   most one value per row, so traversal may stop after all required fields are
   found and avoid unrelated trailing DATA, including compressed DATA.
+  Column catalogs must come from FIELD indexes, not row traversal. The
+  debug-only `ExplorerQuery::debug_collect_column_fields_by_row_traversal`
+  marker is rejected by production explorer entrypoints; any benchmark or
+  compatibility claim that depends on it is invalid.
   `ExplorerFieldMode::AllValues` is an explicit slower mode for exact
   duplicate-value accounting and scans the whole row for repeated-field
   correctness.

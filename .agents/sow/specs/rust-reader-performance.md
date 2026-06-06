@@ -129,6 +129,11 @@ contracts:
   early stop must avoid touching and decompressing unrelated trailing DATA.
   Facets that share the same effective filter set must be grouped into one
   traversal pass instead of multiplying row scans by facet count.
+  Column catalogs must be built from FIELD indexes before traversal. The
+  `ExplorerQuery::debug_collect_column_fields_by_row_traversal` switch is
+  intentionally rejected by production explorer entrypoints; it exists only as
+  an internal discrepancy-debug marker, and any result that needs it is an
+  explorer correctness or catalog bug.
   `ExplorerAnchor::Auto` is the default anchor policy: forward scans start from
   the lower query bound or file head, while backward scans start from the upper
   query bound or file tail.
