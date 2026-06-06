@@ -39,6 +39,12 @@ Last updated: 2026-06-06
   release, language registry/package publication, and clean consumer install
   validation after compatibility, portability, corpus, integration, and parity
   gates are complete.
+- SOW-0094 - Rust Explorer Lazy Compressed Field Inference Experiment: open.
+  Deferred Rust Explorer optimization experiment to skip compressed DATA until
+  uncompressed row DATA are examined, infer compressed DATA field identity from
+  cached `next_field_offset` chains when possible, and decompress only when
+  facets or histogram requirements still need it; blocked until SOW-0093
+  stabilizes and promotes the Explorer API.
 ## Recently Closed Or Completed
 
 - SOW-0082 - Rust Optimized Journal Explorer API: completed after regression

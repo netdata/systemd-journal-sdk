@@ -1092,6 +1092,10 @@ Follow-up mapping:
 - Decide whether presentation-order identity is a required Netdata boundary
   contract. If yes, this SOW must add comparator checks for column indexes and
   histogram label order, then align the SDK output before close.
+- Deferred compressed-DATA Explorer optimization is tracked by SOW-0094. That
+  SOW must not block this SOW's Explorer API stabilization unless current
+  function-boundary validation proves decompression avoidance is required for
+  correctness rather than performance.
 
 ## Outcome
 
