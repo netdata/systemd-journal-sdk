@@ -25,7 +25,7 @@ fn main() -> Result<()> {
 
     let request = std::fs::read(&args.request)
         .with_context(|| format!("failed to read request {}", args.request.display()))?;
-    let function = NetdataJournalFunction::systemd_journal();
+    let function = NetdataJournalFunction::systemd_journal_plugin_compatible();
     let options = NetdataFunctionRunOptions::from_timeout_seconds(args.timeout_seconds);
     let response = function
         .run_directory_request_bytes_with_options(&args.directory, &request, options)

@@ -34,6 +34,7 @@ def run_command(
     directory: Path,
     request: Path,
     timeout_seconds: int,
+    process_timeout_seconds: int,
 ) -> dict[str, Any]:
     command = [
         str(binary),
@@ -47,23 +48,34 @@ def run_command(
         str(timeout_seconds),
     ]
     started = time.perf_counter()
-    completed = subprocess.run(
-        command,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    timed_out = False
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=process_timeout_seconds,
+        )
+        stdout = completed.stdout
+        stderr = completed.stderr
+        exit_code = completed.returncode
+    except subprocess.TimeoutExpired as err:
+        timed_out = True
+        stdout = err.stdout or b""
+        stderr = err.stderr or b""
+        exit_code = -1
     elapsed = time.perf_counter() - started
-    stdout = completed.stdout
-    stderr = completed.stderr
     parsed = None
     parse_error = None
     json_prefix_bytes = 0
-    if completed.returncode == 0:
+    if exit_code == 0:
         parsed, parse_error, json_prefix_bytes = parse_stdout_json(stdout)
     return {
         "command_hash": hashlib.sha256("\0".join(command).encode()).hexdigest(),
-        "exit_code": completed.returncode,
+        "exit_code": exit_code,
+        "timed_out": timed_out,
+        "process_timeout_seconds": process_timeout_seconds,
         "wall_seconds": elapsed,
         "stdout_bytes": len(stdout),
         "stderr_bytes": len(stderr),
@@ -81,11 +93,27 @@ def run_case(
     request: Path,
     repetitions: int,
     timeout_seconds: int,
+    process_timeout_seconds: int,
+    save_json_dir: Path | None,
 ) -> dict[str, Any]:
     runs = []
-    for _ in range(repetitions):
-        plugin_run = run_command(plugin, function, directory, request, timeout_seconds)
-        sdk_run = run_command(sdk, function, directory, request, timeout_seconds)
+    for repetition in range(repetitions):
+        sdk_run = run_command(
+            sdk,
+            function,
+            directory,
+            request,
+            timeout_seconds,
+            process_timeout_seconds,
+        )
+        plugin_run = run_command(
+            plugin,
+            function,
+            directory,
+            request,
+            timeout_seconds,
+            process_timeout_seconds,
+        )
         comparison = {
             "ok": False,
             "checks": {},
@@ -93,6 +121,19 @@ def run_case(
         }
         if isinstance(plugin_run["json"], dict) and isinstance(sdk_run["json"], dict):
             comparison = compare(plugin_run["json"], sdk_run["json"])
+        if save_json_dir is not None:
+            save_json_dir.mkdir(parents=True, exist_ok=True)
+            case_name = request.stem
+            if isinstance(sdk_run["json"], dict):
+                (save_json_dir / f"{case_name}-run{repetition + 1}-sdk.json").write_text(
+                    json.dumps(sdk_run["json"], indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+            if isinstance(plugin_run["json"], dict):
+                (save_json_dir / f"{case_name}-run{repetition + 1}-plugin.json").write_text(
+                    json.dumps(plugin_run["json"], indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
         plugin_report = {k: v for k, v in plugin_run.items() if k != "json"}
         sdk_report = {k: v for k, v in sdk_run.items() if k != "json"}
         runs.append(
@@ -119,7 +160,14 @@ def main() -> int:
     parser.add_argument("--request", type=Path, action="append", required=True)
     parser.add_argument("--repetitions", type=int, default=1)
     parser.add_argument("--timeout", type=int, default=0)
+    parser.add_argument(
+        "--process-timeout",
+        type=int,
+        default=3600,
+        help="Subprocess wall-clock timeout in seconds; independent from the function --timeout value.",
+    )
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--save-json-dir", type=Path)
     args = parser.parse_args()
 
     report = {
@@ -136,6 +184,8 @@ def main() -> int:
                 request,
                 args.repetitions,
                 args.timeout,
+                args.process_timeout,
+                args.save_json_dir,
             )
             for request in args.request
         ],

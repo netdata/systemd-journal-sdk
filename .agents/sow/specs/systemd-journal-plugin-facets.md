@@ -98,6 +98,7 @@ The Rust SDK exposes an additive Netdata-specific boundary under
 Current Rust entrypoints:
 
 - `NetdataJournalFunction::systemd_journal()`
+- `NetdataJournalFunction::systemd_journal_plugin_compatible()`
 - `NetdataJournalFunction::run_directory_request_json()`
 - `NetdataJournalFunction::run_directory_request_bytes()`
 
@@ -119,9 +120,21 @@ field presentation needed by the comparison harness:
 - `PRIORITY` numeric values render as syslog priority names.
 - `SYSLOG_FACILITY` numeric values render as syslog facility names.
 - row options derive Netdata severity from `PRIORITY`.
-- `ND_JOURNAL_PROCESS` is synthesized from `SYSLOG_IDENTIFIER`, `_COMM`, or
-  `_EXE` plus `SYSLOG_PID` or `_PID` when the field is not already present.
+- `ND_JOURNAL_PROCESS` is synthesized from `CONTAINER_NAME`,
+  `SYSLOG_IDENTIFIER`, or `_COMM` plus `_PID` when present; `_EXE` and
+  `SYSLOG_PID` are not fallbacks in this plugin-compatible boundary.
 - `ND_JOURNAL_FILE` is injected from the file path for returned rows.
+
+The default `systemd_journal()` constructor keeps UID/GID journal values as raw
+IDs and does not resolve host user or group names. The
+`systemd_journal_plugin_compatible()` constructor is the explicit opt-in profile
+for comparison with Netdata's installed plugin; it may resolve UID/GID display
+names through the host platform when the caller chooses that compatibility mode.
+
+The standalone SDK comparison wrapper accepts requests that contain
+`__logs_sources`, but it runs against an explicit `--dir` and does not implement
+Netdata's journal registry source-group filtering. Source-group filtering needs
+separate integration work at the Netdata registry boundary.
 
 The Rust explorer now has an explicit
 `ExplorerQuery::exclude_facet_field_filters` switch:
@@ -141,9 +154,16 @@ behavior while keeping data rows, nonzero facet counters, histogram totals, and
 stable item counters comparable.
 
 The comparison harness in `tests/netdata_function/` compares semantic function
-output. It intentionally ignores zero-count vocabulary padding because the
-plugin may retain zero-count values discovered while scanning rows that do not
-contribute to the result.
+output. General zero-count facet values are content and must match. The only
+facet-value artifact ignored as non-content is Netdata's empty-string
+unavailable-field value with id `CzGfAU2z3TC`, display name
+`[unavailable field]`, and count `0`.
+
+The comparator treats `items.evaluated` as a diagnostic scan-accounting counter,
+not journal content. It must still report the value and any mismatch, but
+content equality is decided by stable item counters (`matched`, `returned`,
+`max_to_return`, `after`, `before`, `unsampled`, and `estimated`), columns,
+rows, facets, and histogram buckets.
 
 ## GET And POST Differences
 
@@ -212,6 +232,14 @@ microseconds. `before_ut` is inclusive for the whole final second:
 
 Evidence: `logs_query_status.h:762-779`.
 
+When both `after` and `before` are missing or zero, the plugin uses a default
+one-hour window ending at `now`. When either endpoint is present, the plugin
+passes the pair through `rrdr_relative_window_to_absolute()`: absolute values
+larger than three years in seconds stay absolute, while smaller positive and
+negative values are interpreted as relative seconds. A missing `after` with a
+supplied `before` uses the Netdata helper's 600-second relative default.
+Evidence: `libnetdata.c:364-422` and `buffer.h:12`.
+
 If `after > before`, values are swapped. If equal, `after` is shifted back by
 the default query duration (`logs_query_status.h:769-777`).
 
@@ -256,6 +284,9 @@ Selection:
 - A file is eligible when the source selection matches and its known time range
   overlaps the query timeframe after delta expansion
   (`systemd-journal-execute.h:486-503`).
+- The scanner accepts both `.journal` and `.journal~` files. It follows
+  symlinked directories and symlinked regular journal files during recursive
+  scans (`systemd-journal-files.c:610-641`, `systemd-journal-files.c:643-705`).
 - Files without known message timestamps are included so scanning can update
   metadata (`systemd-journal-execute.h:490-493`).
 - `if_modified_since` returns HTTP 304 before scanning if no matched file has
@@ -278,6 +309,10 @@ Per-file metadata:
   (`systemd-journal-files.c:259-290`).
 - `messages_in_file` is computed only when first and last writer IDs match
   (`systemd-journal-files.c:304-315`).
+- Boot-id display annotations keep the earliest realtime timestamp seen for
+  each `_BOOT_ID` across all scanned files. The registry conflict callback
+  replaces an existing boot timestamp only when the new timestamp is smaller
+  (`systemd-journal-files.c:141-143`, `systemd-journal-files.c:857-872`).
 
 ## Native Slice Filtering
 
@@ -618,6 +653,18 @@ Evidence: `systemd-journal-execute.h:714-792`,
 `systemd-journal-execute.h:794-812`, `facets.c:2578-2597`,
 `facets.c:2674-2974`.
 
+SDK column-catalog policy:
+
+- The SDK builds the table column catalog from FIELD indexes of every selected
+  journal file, independently of the visible timeframe slice and independently
+  of returned rows.
+- This intentionally avoids `systemd-journal.plugin`'s implementation artifact
+  of discovering columns while traversing row DATA. It makes the UI field list
+  stable while users page through rows in the same selected file set.
+- The SDK may therefore expose columns that the plugin would not discover in a
+  narrow traversal. Returned rows still contain values only for fields present
+  in those rows.
+
 Full analysis adds:
 
 - `message`;
@@ -653,6 +700,8 @@ These behaviors are generic and should be part of the SDK optimized explorer API
 - support FTS as an opt-in path that necessarily expands searchable values;
 - avoid expanding compressed or unrelated DATA unless needed by filters, facets,
   histogram, FTS, or returned-row display;
+- enumerate field names through FIELD hash tables for column catalogs instead
+  of discovering fields by row traversal;
 - avoid repeated work for reusable DATA objects.
 
 ## Netdata-Specific Policy

@@ -732,10 +732,15 @@ impl FileReader {
 
     pub fn enumerate_fields(&mut self) -> Result<Vec<String>> {
         self.invalidate_entry_data_state();
-        match self.inner.with_file(enumerate_file_fields_indexed) {
+        match self.enumerate_fields_indexed() {
             Ok(fields) => Ok(fields),
             Err(_) => enumerate_file_fields_by_scan(self),
         }
+    }
+
+    pub(crate) fn enumerate_fields_indexed(&mut self) -> Result<Vec<String>> {
+        self.invalidate_entry_data_state();
+        self.inner.with_file(enumerate_file_fields_indexed)
     }
 
     pub fn query_unique(&mut self, field_name: &str) -> Result<Vec<Vec<u8>>> {

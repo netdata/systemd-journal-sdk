@@ -2,15 +2,14 @@
 
 ## Status
 
-Status: paused
+Status: in-progress
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: Rust SDK API, wrapper CLI, semantic comparator, repo-local plugin
-smoke, and one 4 GiB real-corpus comparison implemented. The comparison exposed
-a SOW-0082 Explorer traversal/RSS regression; SOW-0082 is now repaired and
-closed, so this SOW can resume from the repaired SDK path before accepting
-performance conclusions.
+Sub-state: strict SDK-first content comparison passes locally; reviewer rerun
+after the latest fixes and broader matrix validation remain pending. The
+previous semantic-subset comparator proved only a narrow stable subset of the
+Netdata-function response and is no longer sufficient for acceptance.
 
 ## Requirements
 
@@ -132,13 +131,21 @@ Unknowns:
 - Add rare-case payloads for selective filters, broad filters, narrow facets,
   many facets, histogram-only, returned rows, anchor/direction, and FTS where
   supported.
-- Build a canonical output comparator that compares semantic normalized
-  function JSON, not byte-for-byte JSON. The comparator may remove or normalize
-  only documented volatile fields, such as expiry timestamps, generation
-  timestamps, durations, runtime stats, and agent/runtime identifiers. It must
-  normalize ordering only where the Netdata function contract permits it.
-- Treat any unclassified output difference as a mismatch until the SOW records
+- Build a strict content comparator that compares the complete
+  Netdata-function content:
+  - full table column catalog and column metadata;
+  - every returned row, comparing every field by column name;
+  - every returned facet, every facet value, and every facet value count;
+  - the full histogram object, including bucket timestamps, labels, and values
+    per facet value;
+  - full stable item counters.
+- The comparator may exclude only explicitly documented volatile diagnostic or
+  envelope fields such as runtime stats, journal-file scan diagnostics, expiry
+  timestamps, generation timestamps, and implementation version strings.
+- Treat any unclassified content difference as a mismatch until the SOW records
   why it is volatile or intentionally different.
+- Run the SDK wrapper before `systemd-journal.plugin` in comparison runs so the
+  plugin no longer warms the page cache for the SDK.
 - Measure cold and warm runs separately with repeated release builds and record
   rows/s, wall time, CPU time, peak RSS, and output size.
 - Produce a sanitized report comparing:
@@ -509,6 +516,23 @@ Open decisions:
   Kibana/Elasticsearch-like log analytics are important future directions, but
   they are not part of SOW-0093 acceptance. The SOW-0093 API boundary should
   avoid choices that would make those future APIs difficult.
+- 2026-06-06 strict comparator decision: the previous comparator is rejected
+  as too weak for acceptance because it checked only a stable subset of rows
+  and ignored the full column catalog. Acceptance now requires the SDK and
+  `systemd-journal.plugin` to match the same content: complete columns,
+  complete returned rows by column name, complete facets and facet value
+  counts, complete histogram buckets and values, and stable item counters.
+  Only explicitly documented volatile diagnostic/envelope fields may be
+  excluded. Comparison runs must execute the SDK first and the plugin second.
+- 2026-06-06 column-catalog decision: the SDK must not discover response
+  columns by traversing matched row DATA. For stable UI behavior, selected
+  journal files contribute all FIELD names from their FIELD hash tables,
+  independently of the visible timeframe slice or returned rows. This can
+  return columns that `systemd-journal.plugin` would not discover in a narrow
+  traversal, but it is the correct SDK behavior because fields should not appear
+  and disappear as users page through rows in the same selected file set. Row
+  traversal remains responsible only for filters, facets, histogram, FTS, and
+  returned-row display.
 
 ## Plan
 
@@ -590,9 +614,9 @@ Failure handling:
   histogram field under `"-"` for both traversal and explicit indexed
   strategy.
 - Added filtered-request zero-count facet vocabulary fill in the Netdata
-  wrapper. The semantic comparator still ignores zero-count padding because
-  the plugin may retain zero-count values seen during scan bookkeeping that do
-  not affect rows or result counters.
+  wrapper. General zero-count facet values are content and must match. The
+  strict comparator ignores only Netdata's empty-string unavailable-field
+  artifact with id `CzGfAU2z3TC`, name `[unavailable field]`, and count `0`.
 - Added semantic comparator and runner tooling under
   `tests/netdata_function/`, plus sanitized request fixtures for `info`,
   unfiltered priority facets/histogram, and filtered priority query behavior.
@@ -627,8 +651,17 @@ Acceptance criteria evidence:
 
 Tests or equivalent validation:
 
-- `cargo test -p journal -p netdata_function_wrapper` passed from the Rust
+- `cargo test -p journal netdata --lib` passed from the Rust workspace.
+- `cargo test -p journal explorer --lib` passed from the Rust workspace.
+- `cargo build --release -p netdata_function_wrapper` passed from the Rust
   workspace.
+- `python3 -m py_compile tests/netdata_function/run_function_compare.py
+  tests/netdata_function/compare_function_json.py
+  tests/netdata_function/test_compare_function_json.py` passed.
+- `python3 tests/netdata_function/test_compare_function_json.py` passed with
+  10 focused comparator tests for table columns, returned rows, facet identity,
+  facet counts, histogram presence/data, stable top-level content,
+  diagnostic-item handling, and unavailable-artifact behavior.
 - `tests/netdata_function/run_function_compare.py` passed against the
   installed `/usr/libexec/netdata/plugins.d/systemd-journal.plugin` and the
   repo-local fixture directory `.local/sow-0093/smoke-journals` for:
@@ -655,60 +688,310 @@ Tests or equivalent validation:
 Real-use evidence:
 
 - Repo-local fixture evidence exists.
-- Large real-corpus function-boundary run completed against `/var/log/journal`
-  using no filters, default facets, `sampling: 0`, `--timeout 0`, and the
-  middle-of-corpus 4 GiB timestamp window:
+- Earlier subset-comparison and two-pass/profile numbers in this SOW are
+  superseded by the strict content comparator repair. They are not used as
+  acceptance evidence because they did not compare the complete Netdata
+  function content.
+- Strict SDK-first real-corpus function-boundary run completed against
+  `/var/log/journal` using no filters, default facets, `sampling: 0`,
+  `--timeout 0`, and the middle-of-corpus timestamp window:
   - request path:
     `.local/sow-0093/big-default-facets/request-default-facets-4g.json`;
-  - report path:
-    `.local/sow-0093/big-default-facets/sdk-vs-plugin-default-facets-4g-report.json`;
+  - latest report path:
+    `.local/sow-0093/strict-content/sdk-first-strict-report-latest.json`;
+  - latest saved JSON path:
+    `.local/sow-0093/strict-content/json-latest/`;
   - request SHA-256:
     `531a65ccf02d8a1fbe05c1d5d08350a3402d2212a856d28f682c0eaf043d0c18`;
-  - approximate selected file range by archived journal filename timestamps:
-    197 files, 4,328,521,728 bytes, 4.031 GiB;
   - request timeframe: `after=1733494460`, `before=1735656412`;
-  - matched rows: 5,341,590;
-  - returned rows: 200;
-  - nonzero facet fields compared: 45;
-  - histogram totals matched exactly:
-    critical 161, error 414, warning 25,625, notice 15,438, info 5,298,156,
-    debug 1,796;
-  - semantic checks passed for status, rows, nonzero facet counters, histogram
-    totals, and stable item counters.
-- Large-run timings:
-  - installed `systemd-journal.plugin`: 14.249806431 seconds wall time,
-    254,121,010 stdout bytes, 1,086 progress-prefix bytes, 0 stderr bytes;
-  - release SDK wrapper: 12.451746555 seconds wall time, 253,807,459 stdout
-    bytes, 0 progress-prefix bytes, 0 stderr bytes.
-- SDK traversal profile for the same request was captured under
-  `.local/sow-0093/profile/`:
-  - `perf stat`: 12.560816954 seconds elapsed, 10.923555 seconds user,
-    1.466209 seconds system, 4,287,880 KiB max RSS, 1,216,572 page faults,
-    144,401,274,287 instructions, 60,158,491,830 cycles, 2.4 IPC;
-  - `perf record`: 10,762 samples, no lost samples;
-  - top flat samples: `scan_current_row` 11.01%, libc memory/page-fault related
-    symbols 6.71% plus 1.92% plus related kernel page-fault paths,
-    `sort_by` 6.11%, `NetdataJournalFunction::explore_paths` 6.10%,
-    stdout `write_all` paths 6.66% combined, UTF-8 lossy conversion 2.52%,
-    mmap `get_slice` 2.25%, serde JSON `Value` serialization 1.83%,
-    SipHash write 1.74%, row load 1.66%, BTreeMap insert 1.62%, object refs
-    around 3.26% across symbols.
-  - SDK stats for the same request: 10,693,088 rows examined, 5,341,590
-    matched rows, 262,966,312 DATA references seen, 150,627,670 skipped DATA
-    references, 14,954,259 DATA payloads loaded, 5,945 decompressed payloads,
-    320,495,400 facet updates, 5,341,590 histogram updates.
-  - Direct object-header scan of the approximate selected archived-file window:
-    197 files, 4.031 GiB, 7,391,405 DATA objects, 2,747 compressed DATA
-    objects, 153 files with compressed DATA, zstd only, 4,824,599 stored
-    compressed DATA bytes.
+  - content checks all passed: top-level stable metadata, 185 table columns,
+    200 returned rows by column name, 43 facets, 3,311 content facet values,
+    5,341,590 matched rows, item content counters, and full histogram buckets;
+  - diagnostic check still differs:
+    `items.evaluated` is 5,341,653 for the SDK and 5,341,591 for the installed
+    plugin. This is recorded as diagnostic scan accounting, not journal
+    content. Netdata's plugin computes this counter inside its facets engine
+    after its own per-file seek/sampling path; the SDK reports raw explorer
+    rows examined. Both implementations report the same matched row count,
+    returned rows, item content counters, facets, histogram, and table data.
+  - Netdata source-realtime slack alignment:
+    the SDK wrapper now uses the plugin default 5-second
+    journal-vs-source-realtime slack for per-file scans, while preserving the
+    2-minute maximum slack for file preselection. Evidence checked in
+    `ktsaou/netdata @ f6f857d46356`:
+    `src/collectors/systemd-journal.plugin/systemd-internals.h:86` defines the
+    5-second default, `systemd-internals.h:87` defines the 2-minute maximum,
+    `src/libnetdata/facets/logs_query_status.h:154` applies the per-file
+    anchor delta, and
+    `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:114`
+    reads the per-file delta before querying.
+  - one plugin-side non-content facet artifact was classified and counted:
+    under facet `CODE_FUNC`, option id `CzGfAU2z3TC`, name
+    `[unavailable field]`, count 0. Evidence: Netdata facet IDs use
+    `XXH3_64bits`; `CzGfAU2z3TC` is the hash id for the empty byte string.
+    Stock `journalctl --field CODE_FUNC --file` on the isolated file does not
+    expose an empty value, and raw byte search found only non-empty
+    `CODE_FUNC=` payloads in that file.
+- Strict-run timings with SDK first from the latest strict report:
+  - release SDK wrapper: 11.508506117999787 seconds wall time, 863,048 stdout
+    bytes, 0 progress-prefix bytes, 0 stderr bytes;
+  - installed `systemd-journal.plugin`: 11.471252544986783 seconds wall time,
+    976,271 stdout bytes, 1,053 progress-prefix bytes, 0 stderr bytes.
+  - This single timing is not accepted as performance evidence because it
+    followed a release rebuild and reviewer activity; it is accepted as
+    content-equivalence evidence only.
+- Performance rerun on 2026-06-06:
+  - environment caveat: CPU governor was `powersave`; load average was
+    approximately `5.52, 7.05, 7.34`, so these are workstation measurements,
+    not final lab-grade benchmark numbers.
+  - report path:
+    `.local/sow-0093/performance/sdk-first-default-facets-5rep-20260606T103020Z.json`;
+  - all 5 SDK-first repetitions passed strict content comparison. Every run
+    matched columns, rows, facets, histogram, stable item counters, and stable
+    top-level metadata. The only repeated mismatch was diagnostic
+    `items.evaluated`, with plugin `5,341,591` and SDK `5,341,653`.
+  - wall time, all repetitions:
+    - SDK: `23.275288`, `11.138136`, `10.919930`, `10.909060`, `11.000762`
+      seconds; mean `13.448635`, median `11.000762`;
+    - installed plugin: `16.891252`, `10.851466`, `10.830661`,
+      `11.162464`, `11.015219` seconds; mean `12.150212`, median
+      `11.015219`.
+  - warm repetitions 2 through 5:
+    - SDK mean `10.991972` seconds, median `10.960346`;
+    - installed plugin mean `10.964952` seconds, median `10.933342`;
+    - warm wall-time ratio is effectively tied: plugin mean is `0.9975x` SDK
+      mean.
+  - `/usr/bin/time -v` SDK-first pass paths:
+    `.local/sow-0093/performance/time-sdk-20260606T103020Z.txt`,
+    `.local/sow-0093/performance/time-plugin-20260606T103020Z.txt`,
+    `.local/sow-0093/performance/time-sdk-20260606T103020Z.json`, and
+    `.local/sow-0093/performance/time-plugin-20260606T103020Z.json`.
+  - `/usr/bin/time -v` pass also passed strict content comparison. Resource
+    summary:
+    - SDK: elapsed `0:11.66`, user `11.11s`, system `0.41s`, CPU `98%`, max
+      RSS `88,088 KiB`, major faults `0`, minor faults `86,942`;
+    - installed plugin: elapsed `0:11.78`, user `22.45s`, system `0.75s`, CPU
+      `196%`, max RSS `120,944 KiB`, major faults `1`, minor faults
+      `178,689`.
+- `collect_column_fields=false` experiment on 2026-06-06:
+  - code state: `NetdataRequest::to_explorer_query()` forced
+    `collect_column_fields: false` for the experiment;
+  - report path:
+    `.local/sow-0093/collect-column-fields-false/sdk-first-default-facets-5rep-20260606T105236Z.json`;
+  - SDK wall time all repetitions: `3.172902`, `2.955008`, `3.089483`,
+    `3.450088`, `3.038830` seconds; mean `3.141262`, median `3.089483`;
+  - installed plugin wall time all repetitions: `11.313140`, `11.281508`,
+    `12.048969`, `11.442461`, `11.891761` seconds; mean `11.595568`,
+    median `11.442461`;
+  - strict content comparison failed only on `columns` and row maps derived from
+    those columns. Facets, histogram, stable item counters, and stable top-level
+    metadata matched in all repetitions. The diagnostic `items.evaluated`
+    mismatch remained plugin `5,341,591` versus SDK `5,341,653`;
+  - SDK output had 77 columns; installed plugin output had 185 columns. The 108
+    missing SDK columns had zero non-null values across the returned 200 rows,
+    and all shared column row values matched;
+  - `/usr/bin/time -v` SDK pass:
+    `.local/sow-0093/collect-column-fields-false/time-sdk-20260606T105449Z.txt`;
+    elapsed `0:03.11`, user `2.60s`, system `0.44s`, CPU `97%`, max RSS
+    `86,312 KiB`, major faults `0`, minor faults `86,909`.
+- FIELD-index column-catalog implementation on 2026-06-06:
+  - implementation shape: matched files enumerate columns through indexed FIELD
+    objects before row traversal; `ExplorerQuery::collect_column_fields` remains
+    false so row traversal does not parse unrelated DATA just to discover
+    columns.
+  - report path:
+    `.local/sow-0093/field-index-columns/sdk-first-default-facets-5rep-20260606T110306Z.json`;
+  - all 5 SDK-first repetitions passed strict content comparison. Every run
+    matched columns, rows, facets, histogram, stable item counters, and stable
+    top-level metadata. The only repeated mismatch was diagnostic
+    `items.evaluated`, with plugin `5,341,591` and SDK `5,341,653`.
+  - SDK wall time all repetitions: `3.459349`, `3.416601`, `3.326840`,
+    `3.224579`, `3.106113` seconds; mean `3.306696`, median `3.326840`.
+  - installed plugin wall time all repetitions: `11.489004`, `11.499245`,
+    `11.285479`, `11.017115`, `11.095556` seconds; mean `11.277280`,
+    median `11.285479`.
+  - warm repetitions 2 through 5: SDK mean `3.268533` seconds, plugin mean
+    `11.224349` seconds, making the SDK `3.43x` faster by warm mean.
+  - run-5 column comparison: plugin columns `185`, SDK columns `185`, missing
+    SDK columns `0`, extra SDK columns `0`, shared-row diffs `0`.
+  - `/usr/bin/time -v` SDK pass:
+    `.local/sow-0093/field-index-columns/time-sdk-20260606T110306Z.txt`;
+    elapsed `0:03.32`, user `2.84s`, system `0.42s`, CPU `98%`, max RSS
+    `86,492 KiB`, major faults `0`, minor faults `87,693`.
+
+Implementation fixes after first reviewer batch:
+
+- `SystemdJournalProfile` now keeps UID/GID fields raw by default and performs
+  no host user/group name resolution. The comparison CLI uses the explicit
+  `NetdataJournalFunction::systemd_journal_plugin_compatible()` constructor to
+  opt into Netdata-plugin presentation compatibility.
+- `OffsetClassCache::lookup()` now has a bounded probe loop even though normal
+  insertion grows the table before it becomes full.
+- `skip_by_commit_time()` now documents that source-realtime slack delegates
+  per-row skip decisions to effective realtime filtering.
+- `ND_JOURNAL_PROCESS` now mirrors the installed plugin's dynamic row-id
+  fallback order for this boundary: `CONTAINER_NAME`, then
+  `SYSLOG_IDENTIFIER`, then `_COMM`; `_EXE` is not a fallback, `SYSLOG_PID` is
+  not preferred over `_PID`, and rows with no PID render only the identifier.
+  Evidence checked in `ktsaou/netdata @ f6f857d46356`:
+  `src/collectors/systemd-journal.plugin/systemd-journal-annotations.c:499`
+  through `systemd-journal-annotations.c:525`.
+- The wrapper now applies Netdata's duplicate visible timestamp adjustment
+  before sorting/truncating returned rows: backward scans decrement duplicate
+  timestamps and forward scans increment them. Evidence checked in
+  `ktsaou/netdata @ f6f857d46356`:
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:173`
+  through `systemd-journal-execute.h:179`, and
+  `systemd-journal-execute.h:282` through
+  `systemd-journal-execute.h:288`.
+- `__logs_sources` selections are explicitly ignored by this standalone
+  `--dir` wrapper. Source-group filtering depends on Netdata's journal registry
+  and is not implemented in this repository-local comparison wrapper yet.
+- The SDK keeps the Netdata `_BOOT_ID` data-transform trailing two spaces
+  because the installed plugin appends the same suffix. Evidence checked in
+  `ktsaou/netdata @ f6f857d46356`:
+  `src/collectors/systemd-journal.plugin/systemd-journal-annotations.c:390`
+  through `systemd-journal-annotations.c:397`.
+- Netdata facet values are capped and collapsed at 8,192 bytes in the SDK
+  Netdata boundary before facet and histogram output. This matches
+  `FACET_MAX_VALUE_LENGTH` used by `systemd-journal.plugin` when sending field
+  values to the facets engine. Evidence checked in `ktsaou/netdata @
+  f6f857d46356`:
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:80`
+  through `systemd-journal-execute.h:85` and
+  `src/collectors/systemd-journal.plugin/systemd-journal-function.h:9`.
+- Default visible column registration order now mirrors the plugin order for
+  the registered fields: `_HOSTNAME`, `ND_JOURNAL_PROCESS`, `MESSAGE`,
+  `PRIORITY`, `SYSLOG_FACILITY`, `ERRNO`, and `ND_JOURNAL_FILE`. Evidence
+  checked in `ktsaou/netdata @ f6f857d46356`:
+  `src/collectors/systemd-journal.plugin/systemd-journal.c:158` through
+  `systemd-journal.c:196`.
+- Time-window normalization now mirrors Netdata's
+  `rrdr_relative_window_to_absolute()` path: both-zero defaults to a one-hour
+  window ending at `now`; small positive and negative endpoints are relative;
+  inverted windows are swapped; equal windows expand back by the default query
+  duration; and microsecond bounds use inclusive final-second rounding.
+  Evidence checked in `ktsaou/netdata @ f6f857d46356`:
+  `src/libnetdata/facets/logs_query_status.h:762` through
+  `logs_query_status.h:779`,
+  `src/libnetdata/libnetdata.c:364` through `libnetdata.c:422`, and
+  `src/libnetdata/buffer/buffer.h:12`.
+- Candidate journal files are now sorted before scanning using the same
+  comparator shape as the plugin: last message realtime, file mtime, first
+  message realtime, reversed for forward queries. Evidence checked in
+  `ktsaou/netdata @ f6f857d46356`:
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:547`
+  through `systemd-journal-execute.h:553` and
+  `src/collectors/systemd-journal.plugin/systemd-journal-files.c:822`
+  through `systemd-journal-files.c:854`.
+- Boot-id display timestamps now keep the earliest timestamp seen for each
+  boot id, independent of candidate-file scan order. Evidence checked in
+  `ktsaou/netdata @ f6f857d46356`:
+  `src/collectors/systemd-journal.plugin/systemd-journal-files.c:141` through
+  `systemd-journal-files.c:143` and
+  `systemd-journal-files.c:857` through `systemd-journal-files.c:872`.
 
 Reviewer findings:
 
-- Pending.
+- First read-only reviewer batch found real gaps:
+  - `ND_JOURNAL_PROCESS` fallback differed from the installed plugin. Fixed and
+    covered by `dynamic_process_name_matches_plugin_fallback_order`.
+  - Duplicate visible row timestamps did not follow plugin direction-specific
+    adjustment. Fixed and covered by
+    `duplicate_row_timestamps_match_plugin_direction_adjustment`.
+  - The spec still described stale `_EXE` / `SYSLOG_PID` process fallback
+    behavior. Fixed in
+    `.agents/sow/specs/systemd-journal-plugin-facets.md`.
+  - `__logs_sources` was accepted but not implemented by the standalone
+    `--dir` wrapper. Disposition: documented as an explicit limitation because
+    source groups require the Netdata journal registry boundary.
+- Second read-only reviewer batch verified strict content comparison and
+  SDK-first runner order. Reviewer votes received before the 8,192-byte finding:
+  Kimi, Qwen, GLM, and Mimo: production-grade for the checked slice after
+  disposition. MiniMax continued deeper review and found additional
+  presentation/edge-case issues below.
+- MiniMax found that Netdata's 8,192-byte facet value cap was specified but not
+  implemented by the SDK boundary. Fixed by truncating/collapsing Netdata
+  facet and histogram values before output. Added
+  `facet_values_are_truncated_and_collapsed_like_plugin` and
+  `histogram_values_are_truncated_and_collapsed_like_plugin`.
+- MiniMax found that the default registered column order differed. Fixed for
+  registered fields. Remaining caveat: extra/discovered table columns after the
+  registered fields and histogram label order still differ in presentation
+  order, but strict semantic content comparison maps rows by column name and
+  histogram buckets by label. This SOW therefore proves content equivalence,
+  not byte-for-byte or presentation-order identity.
+- Qwen found that time-window normalization did not match Netdata for inverted
+  and equal bounds. Investigation found a wider compatibility gap: the SDK also
+  treated small positive values as absolute epoch seconds, while Netdata treats
+  values within three years as relative. Fixed and covered by
+  `normalizes_missing_time_window_to_last_hour_like_plugin`,
+  `normalizes_inverted_time_window_like_plugin`,
+  `normalizes_equal_time_window_like_plugin`,
+  `normalizes_relative_time_window_like_plugin`, and
+  `normalizes_missing_after_with_supplied_before_like_plugin`.
+- Kimi found a candidate-file ordering risk. Fixed by ordering files with the
+  plugin comparator shape and covered by
+  `journal_file_order_matches_plugin_comparator_shape`.
+- Kimi also questioned `.journal~` inclusion. Disposition: false finding.
+  Netdata's scanner explicitly accepts `.journal~`; the SDK behavior is kept
+  and covered by `disposed_journal_extension_matches_plugin_scan_contract`.
+  Evidence checked in `ktsaou/netdata @ f6f857d46356`:
+  `src/collectors/systemd-journal.plugin/systemd-journal-files.c:610`
+  through `systemd-journal-files.c:641`.
+- The candidate-file ordering fix exposed a boot-id annotation mismatch because
+  the SDK kept the first seen boot timestamp instead of the earliest timestamp.
+  Fixed and covered by
+  `boot_first_realtime_keeps_earliest_timestamp_like_plugin`.
+- Final same-scope reviewer rerun after the time-window, file-order, boot-id,
+  and 8,192-byte fixes returned production-grade votes from Kimi, Qwen, GLM,
+  Mimo, and MiniMax for the checked scope.
+- GLM found a SOW-only evidence typo: the diagnostic `items.evaluated` values
+  were reversed. Fixed to match report 29: SDK `5,341,653`, installed plugin
+  `5,341,591`.
+- Kimi suggested using only query-matched files for boot-id display
+  annotations. This was tested as report 28 and rejected: report 28 failed
+  strict content comparison because plugin `_BOOT_ID` facet display names use
+  registry-level boot annotations beyond the query-matched file set. The SDK
+  keeps full collected-path boot annotations to match the installed plugin.
+- The strict comparison was rerun after the reviewer dispositions with the SDK
+  executed first and the plugin second. The rerun produced
+  `.local/sow-0093/strict-content/sdk-first-strict-report-latest.json` and kept
+  all content checks passing: top-level stable metadata, columns, rows, facets,
+  histogram buckets, and stable item counters.
+- Final read-only reviewer batch against the strict content requirement and
+  latest saved JSON artifacts returned production-grade votes from Kimi, Qwen,
+  GLM, Mimo, and MiniMax for this checked slice.
+  - Reviewers independently confirmed SDK-first execution in
+    `tests/netdata_function/run_function_compare.py`.
+  - Reviewers confirmed the comparator checks columns, rows by column name,
+    facets, facet values and counts, histogram buckets and values by label, and
+    stable item counters.
+  - Reviewers agreed the only accepted differences are diagnostic or
+    presentation-order differences, not content differences.
+  - Qwen raised a possible cosmetic left/right-label issue in the report. Direct
+    check rejected it: the report diff is
+    `$.evaluated: value differs (5341591 != 5341653)`, matching plugin-left and
+    SDK-right for the documented diagnostic counter.
+  - Reviewers repeated the caveat that this proves content equivalence for the
+    checked large default-facets request, not presentation-order identity,
+    broader request-matrix coverage, or performance evidence.
 
 Same-failure scan:
 
-- Pending.
+- `rg -n "ND_JOURNAL_PROCESS|SYSLOG_PID|_EXE|CONTAINER_NAME"` was run across
+  the SOW, spec, README, test README, and Rust Netdata boundary. Remaining
+  `_EXE` and `SYSLOG_PID` mentions are either source field constants, explicit
+  negative-fallback documentation, or tests proving they are not used for
+  `ND_JOURNAL_PROCESS`.
+- `rg -n "FACET_MAX|8192|truncate"` was run across the SDK Netdata boundary
+  and spec. The missing 8,192-byte cap was fixed and covered by focused Rust
+  tests.
+- `rg -n "journal~|is_journal_file|nd_journal_file_dict_items|boot_ids_to_first_ut"`
+  was run against the Netdata plugin source and Rust wrapper to verify the
+  `.journal~`, candidate-file order, and boot-id annotation dispositions.
+- `git diff --check` passed.
+- `.agents/sow/audit.sh` passed.
 
 Sensitive data gate:
 
@@ -753,11 +1036,22 @@ End-user/operator skills update:
 
 Lessons:
 
-- Pending.
+- Strict content comparison must include complete rows by column name, complete
+  facets including zero-count values, histogram buckets by label, stable item
+  counters, and stable top-level metadata. Counts-only comparisons are not
+  sufficient for this boundary.
+- Real-corpus slices can miss edge cases such as overlong facet values. When
+  the spec names a transform or limit, add focused synthetic tests even if the
+  production slice does not exercise it.
+- Content equality and presentation-order equality are different contracts.
+  This SOW currently validates content equivalence; presentation-order identity
+  needs an explicit decision before it becomes a close gate.
 
 Follow-up mapping:
 
-- Pending.
+- Decide whether presentation-order identity is a required Netdata boundary
+  contract. If yes, this SOW must add comparator checks for column indexes and
+  histogram label order, then align the SDK output before close.
 
 ## Outcome
 

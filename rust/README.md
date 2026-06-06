@@ -132,8 +132,12 @@ Current reader scope:
   Netdata-shaped function JSON. This layer owns Netdata request parsing,
   default facets, default display columns, histogram defaults, field
   presentation transforms, row options, and zero-count vocabulary padding for
-  filtered requests. It is intentionally separate from the core journal
-  file-format reader;
+  filtered requests. The default profile keeps UID/GID values as raw journal
+  data and does not resolve host user or group names. The separate
+  `NetdataJournalFunction::systemd_journal_plugin_compatible()` constructor
+  opts into host user/group name presentation to emulate Netdata's installed
+  plugin. This layer is intentionally separate from the core journal file-format
+  reader;
 - `src/internal/testcmd/netdata_function_wrapper` exposes the SDK Netdata
   boundary through the same offline CLI shape as Netdata's plugin test path:
   `netdata_function_wrapper --test systemd-journal --dir <journal-dir>

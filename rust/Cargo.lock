@@ -1175,6 +1175,7 @@ dependencies = [
  "journal-core",
  "journal-log-writer",
  "journal-registry",
+ "libc",
  "lz4_flex",
  "lzma-rust2",
  "memmap2",

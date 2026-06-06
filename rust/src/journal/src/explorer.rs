@@ -82,6 +82,7 @@ pub struct ExplorerQuery {
     pub exclude_facet_field_filters: bool,
     pub use_source_realtime: bool,
     pub realtime_slack_usec: u64,
+    pub collect_column_fields: bool,
 }
 
 impl Default for ExplorerQuery {
@@ -101,6 +102,7 @@ impl Default for ExplorerQuery {
             exclude_facet_field_filters: true,
             use_source_realtime: true,
             realtime_slack_usec: DEFAULT_TIME_SLACK_USEC,
+            collect_column_fields: false,
         }
     }
 }
@@ -191,6 +193,7 @@ pub struct ExplorerResult {
     pub rows: Vec<ExplorerRow>,
     pub facets: HashMap<Vec<u8>, HashMap<Vec<u8>, u64>>,
     pub histogram: Option<ExplorerHistogram>,
+    pub column_fields: HashSet<Vec<u8>>,
     pub stats: ExplorerStats,
     pub comparison: Option<ExplorerComparison>,
 }
@@ -199,6 +202,7 @@ pub struct ExplorerResult {
 struct RowScan {
     timestamp: Option<u64>,
     fts_matches: bool,
+    column_fields: Vec<Vec<u8>>,
 }
 
 const FACET_PUBLIC: u8 = 0x01;
@@ -259,7 +263,7 @@ impl OffsetClassCache {
     fn lookup(&self, offset: NonZeroU64) -> Option<OffsetClass> {
         let mask = self.slots.len().saturating_sub(1);
         let mut index = offset_slot(offset.get()) & mask;
-        loop {
+        for _ in 0..self.slots.len() {
             let slot = self.slots[index];
             if slot.offset == 0 {
                 return None;
@@ -269,6 +273,7 @@ impl OffsetClassCache {
             }
             index = (index + 1) & mask;
         }
+        None
     }
 
     fn insert(&mut self, offset: NonZeroU64, class: OffsetClass) {
@@ -848,6 +853,9 @@ impl FileReader {
             if stop_by_commit_time(query, commit_realtime) {
                 break;
             }
+            if skip_by_commit_time(query, commit_realtime) {
+                continue;
+            }
 
             let scan = if accumulator.required_identity_count == 0 && query.fts_patterns.is_empty()
             {
@@ -864,12 +872,15 @@ impl FileReader {
                     &mut result.stats,
                 )?
             };
-            let effective_realtime = scan.timestamp.unwrap_or(commit_realtime);
+            let effective_realtime = effective_realtime_from_scan(scan.timestamp, commit_realtime);
             if !timestamp_in_range(query, effective_realtime) {
                 continue;
             }
             if !query.fts_patterns.is_empty() && !scan.fts_matches {
                 continue;
+            }
+            if query.collect_column_fields {
+                result.column_fields.extend(scan.column_fields);
             }
 
             result.stats.rows_matched = result.stats.rows_matched.saturating_add(1);
@@ -909,6 +920,9 @@ impl FileReader {
             if stop_by_commit_time(query, commit_realtime) {
                 break;
             }
+            if skip_by_commit_time(query, commit_realtime) {
+                continue;
+            }
 
             let scan = if accumulator.required_identity_count == 0 && query.fts_patterns.is_empty()
             {
@@ -925,12 +939,15 @@ impl FileReader {
                     &mut result.stats,
                 )?
             };
-            let effective_realtime = scan.timestamp.unwrap_or(commit_realtime);
+            let effective_realtime = effective_realtime_from_scan(scan.timestamp, commit_realtime);
             if !timestamp_in_range(query, effective_realtime) {
                 continue;
             }
             if !query.fts_patterns.is_empty() && !scan.fts_matches {
                 continue;
+            }
+            if query.collect_column_fields {
+                result.column_fields.extend(scan.column_fields);
             }
 
             if include_main {
@@ -982,6 +999,9 @@ impl FileReader {
             if stop_by_commit_time(query, commit_realtime) {
                 break;
             }
+            if skip_by_commit_time(query, commit_realtime) {
+                continue;
+            }
 
             row_id = row_id.saturating_add(1);
             deferred_values.clear();
@@ -996,7 +1016,7 @@ impl FileReader {
             } else {
                 self.scan_current_row(query, accumulator, row_id, ScanApply::Immediate, stats)?
             };
-            let effective_realtime = scan.timestamp.unwrap_or(commit_realtime);
+            let effective_realtime = effective_realtime_from_scan(scan.timestamp, commit_realtime);
             if !timestamp_in_range(query, effective_realtime) {
                 continue;
             }
@@ -1051,6 +1071,9 @@ impl FileReader {
                         accumulator,
                         needs_fts,
                         query,
+                        query
+                            .collect_column_fields
+                            .then_some(&mut out.column_fields),
                         stats,
                     )?;
 
@@ -1095,7 +1118,11 @@ impl FileReader {
                         }
                     }
 
-                    if use_first_value && !needs_fts && fields_missing_from_row == 0 {
+                    if use_first_value
+                        && !needs_fts
+                        && !query.collect_column_fields
+                        && fields_missing_from_row == 0
+                    {
                         stats.early_stop_opportunities =
                             stats.early_stop_opportunities.saturating_add(1);
                         stats.early_stops = stats.early_stops.saturating_add(1);
@@ -1420,10 +1447,10 @@ fn indexed_count_histogram_entries(
         if !candidates.contains(entry_offset) {
             return Ok(());
         }
-        rows_with_field.insert(entry_offset);
         let entry = file.entry_ref(entry_offset)?;
         let realtime = entry.header.realtime;
         drop(entry);
+        rows_with_field.insert(entry_offset);
         if !timestamp_in_range(query, realtime) {
             return Ok(());
         }
@@ -1540,9 +1567,15 @@ fn classify_data_for_accumulator(
     accumulator: &mut ExplorerAccumulator,
     needs_fts: bool,
     query: &ExplorerQuery,
+    column_fields: Option<&mut Vec<Vec<u8>>>,
     stats: &mut ExplorerStats,
 ) -> Result<OffsetClass> {
     if let Some(class) = accumulator.offset_cache.lookup(data_offset) {
+        if let Some(column_fields) = column_fields {
+            if let Some((field, _)) = read_payload_field(file, row, data_offset, stats)? {
+                column_fields.push(field);
+            }
+        }
         stats.data_cache_hits = stats.data_cache_hits.saturating_add(1);
         return Ok(class);
     }
@@ -1561,6 +1594,9 @@ fn classify_data_for_accumulator(
         stats.data_objects_classified = stats.data_objects_classified.saturating_add(1);
         return Ok(class);
     };
+    if let Some(column_fields) = column_fields {
+        column_fields.push(field.to_vec());
+    }
 
     let fts_matches = if needs_fts {
         stats.fts_scans = stats.fts_scans.saturating_add(1);
@@ -1580,6 +1616,21 @@ fn classify_data_for_accumulator(
     accumulator.offset_cache.insert(data_offset, class);
     stats.data_objects_classified = stats.data_objects_classified.saturating_add(1);
     Ok(class)
+}
+
+fn read_payload_field(
+    file: &JournalFile<Mmap>,
+    row: &mut CurrentRowView,
+    data_offset: NonZeroU64,
+    stats: &mut ExplorerStats,
+) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+    let was_compressed = file.data_ref(data_offset)?.is_compressed();
+    let payload = row.read_payload_at(file, data_offset)?;
+    if was_compressed {
+        stats.payloads_decompressed = stats.payloads_decompressed.saturating_add(1);
+    }
+    let payload = row.payload_slice(payload);
+    Ok(split_payload_bytes(payload).map(|(field, value)| (field.to_vec(), value.to_vec())))
 }
 
 fn classify_unstructured_payload(
@@ -1746,6 +1797,15 @@ fn parse_source_realtime(value: &[u8]) -> Option<u64> {
     std::str::from_utf8(value).ok()?.parse().ok()
 }
 
+fn effective_realtime_from_scan(source_realtime: Option<u64>, commit_realtime: u64) -> u64 {
+    match source_realtime {
+        Some(source_realtime) if source_realtime != 0 && source_realtime < commit_realtime => {
+            source_realtime
+        }
+        _ => commit_realtime,
+    }
+}
+
 fn matches_fts(value: &[u8], patterns: &[Vec<u8>]) -> bool {
     if patterns.is_empty() {
         return true;
@@ -1798,14 +1858,43 @@ fn stop_by_commit_time(query: &ExplorerQuery, commit_realtime: u64) -> bool {
     }
 }
 
+fn skip_by_commit_time(query: &ExplorerQuery, commit_realtime: u64) -> bool {
+    // With source-realtime slack enabled, commit time is only a coarse stop
+    // signal. Per-row effective realtime filtering decides whether to include
+    // or skip each candidate row.
+    if query.realtime_slack_usec != 0 {
+        return false;
+    }
+    match query.direction {
+        Direction::Forward => query
+            .after_realtime_usec
+            .is_some_and(|after| commit_realtime < after.saturating_sub(query.realtime_slack_usec)),
+        Direction::Backward => query.before_realtime_usec.is_some_and(|before| {
+            commit_realtime > before.saturating_add(query.realtime_slack_usec)
+        }),
+    }
+}
+
 fn new_histogram(field: &[u8], query: &ExplorerQuery) -> ExplorerHistogram {
     let (start, end) = histogram_bounds(query);
-    let bucket_count = query.histogram_target_buckets.max(1);
-    let width = end
+    let target_buckets = query.histogram_target_buckets.max(1);
+    let mut width = histogram_bar_width_usec(start, end, target_buckets);
+    let start = histogram_slot_baseline_usec(start, width);
+    let mut end = histogram_slot_baseline_usec(end, width).saturating_add(width);
+    let mut bucket_count = end
         .saturating_sub(start)
-        .checked_div(bucket_count as u64)
+        .checked_div(width)
         .unwrap_or(0)
-        .max(1);
+        .saturating_add(1) as usize;
+    if bucket_count > 1001 {
+        bucket_count = 1001;
+        width = end
+            .saturating_sub(start)
+            .checked_div(1000)
+            .unwrap_or(0)
+            .max(1);
+        end = start.saturating_add(width.saturating_mul(1000));
+    }
     let mut buckets = Vec::with_capacity(bucket_count);
     for index in 0..bucket_count {
         let bucket_start = start.saturating_add(width.saturating_mul(index as u64));
@@ -1824,6 +1913,26 @@ fn new_histogram(field: &[u8], query: &ExplorerQuery) -> ExplorerHistogram {
         field: field.to_vec(),
         buckets,
     }
+}
+
+fn histogram_bar_width_usec(after: u64, before: u64, target_buckets: usize) -> u64 {
+    const USEC_PER_SEC: u64 = 1_000_000;
+    const VALID_DURATIONS_SECONDS: &[u64] = &[
+        1, 2, 5, 10, 15, 30, 60, 120, 180, 300, 600, 900, 1800, 3600, 7200, 21600, 28800, 43200,
+        86400, 172800, 259200, 432000, 604800, 1209600, 2592000,
+    ];
+    let duration = before.saturating_sub(after);
+    for seconds in VALID_DURATIONS_SECONDS.iter().rev() {
+        let width = seconds.saturating_mul(USEC_PER_SEC);
+        if width != 0 && duration / width >= target_buckets as u64 {
+            return width;
+        }
+    }
+    USEC_PER_SEC
+}
+
+fn histogram_slot_baseline_usec(value: u64, width: u64) -> u64 {
+    value.saturating_sub(value % width.max(1))
 }
 
 fn histogram_bounds(query: &ExplorerQuery) -> (u64, u64) {
@@ -2238,7 +2347,7 @@ mod tests {
         assert_eq!(histogram.buckets.len(), 2);
         assert_eq!(histogram.buckets[0].values.get(b"a".as_slice()), Some(&1));
         assert_eq!(histogram.buckets[0].values.get(b"b".as_slice()), Some(&1));
-        assert_eq!(histogram.buckets[1].values.get(UNSET_VALUE), Some(&1));
+        assert_eq!(histogram.buckets[0].values.get(UNSET_VALUE), Some(&1));
     }
 
     #[test]

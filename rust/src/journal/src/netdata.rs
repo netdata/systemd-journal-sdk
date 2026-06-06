@@ -3,42 +3,52 @@ use crate::{
     ExplorerResult, ExplorerRow, ExplorerStats, ExplorerStrategy, FileReader, ReaderOptions,
     Result, SdkError,
 };
+use chrono::{DateTime, Utc};
 use serde_json::{Map, Value, json};
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(unix)]
+use std::ffi::CStr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_FUNCTION_NAME: &str = "systemd-journal";
 const DEFAULT_ITEMS_TO_RETURN: usize = 200;
 const DEFAULT_TIME_WINDOW_SECONDS: i64 = 3600;
-const DEFAULT_HISTOGRAM_BUCKETS: usize = 250;
+const API_RELATIVE_TIME_MAX_SECONDS: i64 = 3 * 365 * 86_400;
+const NETDATA_MISSING_AFTER_RELATIVE_SECONDS: i64 = 600;
+const DEFAULT_HISTOGRAM_BUCKETS: usize = 150;
 const EFFECTIVELY_DISABLED_TIMEOUT_SECONDS: u64 = 100 * 365 * 24 * 60 * 60;
+const NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC: u64 = 5_000_000;
+const NETDATA_JOURNAL_VS_REALTIME_DELTA_MAX_USEC: u64 = 2 * 60 * 1_000_000;
+const NETDATA_EMPTY_STRING_FACET_HASH_ID: &str = "CzGfAU2z3TC";
+const NETDATA_UNAVAILABLE_FIELD_LABEL: &str = "[unavailable field]";
+const NETDATA_FACET_MAX_VALUE_LENGTH: usize = 8192;
 
 const NETDATA_ACCEPTED_PARAMS: &[&str] = &[
     "info",
-    "delta",
-    "tail",
-    "slice",
-    "data_only",
-    "sampling",
+    "__logs_sources",
     "after",
     "before",
-    "if_modified_since",
     "anchor",
-    "last",
     "direction",
+    "last",
     "query",
-    "histogram",
     "facets",
-    "selections",
-    "timeout",
+    "histogram",
+    "if_modified_since",
+    "data_only",
+    "delta",
+    "tail",
+    "sampling",
+    "slice",
 ];
 
 const SYSTEMD_DEFAULT_VIEW_KEYS: &[&str] = &[
-    "PRIORITY",
     "_HOSTNAME",
     "ND_JOURNAL_PROCESS",
     "MESSAGE",
+    "PRIORITY",
     "SYSLOG_FACILITY",
     "ERRNO",
     "ND_JOURNAL_FILE",
@@ -60,52 +70,52 @@ const SYSTEMD_DEFAULT_VIEW_KEYS: &[&str] = &[
 ];
 
 const SYSTEMD_DEFAULT_FACETS: &[&str] = &[
-    "MESSAGE_ID",
+    "_HOSTNAME",
     "PRIORITY",
-    "CODE_FILE",
-    "CODE_FUNC",
-    "ERRNO",
     "SYSLOG_FACILITY",
+    "ERRNO",
     "SYSLOG_IDENTIFIER",
     "UNIT",
     "USER_UNIT",
-    "UNIT_RESULT",
-    "_UID",
-    "_GID",
-    "_COMM",
-    "_EXE",
-    "_AUDIT_LOGINUID",
-    "_SYSTEMD_CGROUP",
-    "_SYSTEMD_SLICE",
-    "_SYSTEMD_UNIT",
-    "_SYSTEMD_USER_UNIT",
-    "_SYSTEMD_USER_SLICE",
-    "_SYSTEMD_SESSION",
-    "_SYSTEMD_OWNER_UID",
-    "_SELINUX_CONTEXT",
+    "MESSAGE_ID",
     "_BOOT_ID",
-    "_MACHINE_ID",
-    "_HOSTNAME",
-    "_TRANSPORT",
-    "_NAMESPACE",
-    "_RUNTIME_SCOPE",
-    "_KERNEL_SUBSYSTEM",
-    "_UDEV_DEVNODE",
-    "OBJECT_UID",
-    "OBJECT_GID",
-    "OBJECT_COMM",
-    "OBJECT_EXE",
-    "OBJECT_AUDIT_LOGINUID",
-    "OBJECT_SYSTEMD_CGROUP",
-    "OBJECT_SYSTEMD_SESSION",
+    "_SYSTEMD_OWNER_UID",
+    "_UID",
     "OBJECT_SYSTEMD_OWNER_UID",
+    "OBJECT_UID",
+    "_GID",
+    "OBJECT_GID",
+    "_AUDIT_LOGINUID",
+    "OBJECT_AUDIT_LOGINUID",
+    "CODE_FILE",
+    "_SYSTEMD_UNIT",
+    "_SYSTEMD_USER_SLICE",
+    "CODE_FUNC",
+    "_TRANSPORT",
+    "_COMM",
+    "_RUNTIME_SCOPE",
+    "_MACHINE_ID",
+    "_SYSTEMD_SLICE",
+    "UNIT_RESULT",
+    "_SYSTEMD_CGROUP",
+    "_EXE",
+    "_SYSTEMD_USER_UNIT",
+    "_SYSTEMD_SESSION",
+    "COREDUMP_CGROUP",
+    "COREDUMP_USER_UNIT",
+    "COREDUMP_UNIT",
+    "COREDUMP_SIGNAL_NAME",
+    "COREDUMP_COMM",
+    "_UDEV_DEVNODE",
+    "_KERNEL_SUBSYSTEM",
+    "OBJECT_EXE",
+    "OBJECT_SYSTEMD_CGROUP",
+    "OBJECT_COMM",
     "OBJECT_SYSTEMD_UNIT",
     "OBJECT_SYSTEMD_USER_UNIT",
-    "COREDUMP_COMM",
-    "COREDUMP_UNIT",
-    "COREDUMP_USER_UNIT",
-    "COREDUMP_SIGNAL_NAME",
-    "COREDUMP_CGROUP",
+    "_SELINUX_CONTEXT",
+    "_NAMESPACE",
+    "OBJECT_SYSTEMD_SESSION",
     "CONTAINER_ID",
     "CONTAINER_NAME",
     "CONTAINER_TAG",
@@ -155,13 +165,31 @@ impl Default for NetdataFunctionConfig {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct DisplayContext {
+    boot_first_realtime: BTreeMap<Vec<u8>, u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum DisplayScope {
+    Data,
+    Facet,
+    Histogram,
+}
+
 pub trait NetdataFunctionProfile {
-    fn field_display_value(&self, _field: &str, value: &[u8]) -> Value {
+    fn field_display_value(
+        &self,
+        _context: &DisplayContext,
+        _scope: DisplayScope,
+        _field: &str,
+        value: &[u8],
+    ) -> Value {
         Value::String(String::from_utf8_lossy(value).into_owned())
     }
 
-    fn facet_option_name(&self, field: &str, raw_value: &[u8]) -> String {
-        match self.field_display_value(field, raw_value) {
+    fn facet_option_name(&self, context: &DisplayContext, field: &str, raw_value: &[u8]) -> String {
+        match self.field_display_value(context, DisplayScope::Facet, field, raw_value) {
             Value::String(value) => value,
             other => other.to_string(),
         }
@@ -178,16 +206,30 @@ pub trait NetdataFunctionProfile {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemdJournalProfile;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemdJournalPluginProfile;
+
 impl NetdataFunctionProfile for SystemdJournalProfile {
-    fn field_display_value(&self, field: &str, value: &[u8]) -> Value {
-        let raw = String::from_utf8_lossy(value);
-        match field {
-            "PRIORITY" => Value::String(priority_name(&raw).unwrap_or(&raw).to_string()),
-            "SYSLOG_FACILITY" => {
-                Value::String(syslog_facility_name(&raw).unwrap_or(&raw).to_string())
-            }
-            _ => Value::String(raw.into_owned()),
-        }
+    fn field_display_value(
+        &self,
+        context: &DisplayContext,
+        scope: DisplayScope,
+        field: &str,
+        value: &[u8],
+    ) -> Value {
+        systemd_field_display_value(context, scope, field, value, false)
+    }
+}
+
+impl NetdataFunctionProfile for SystemdJournalPluginProfile {
+    fn field_display_value(
+        &self,
+        context: &DisplayContext,
+        scope: DisplayScope,
+        field: &str,
+        value: &[u8],
+    ) -> Value {
+        systemd_field_display_value(context, scope, field, value, true)
     }
 }
 
@@ -232,6 +274,15 @@ impl NetdataJournalFunction<SystemdJournalProfile> {
     }
 }
 
+impl NetdataJournalFunction<SystemdJournalPluginProfile> {
+    pub fn systemd_journal_plugin_compatible() -> Self {
+        Self {
+            config: NetdataFunctionConfig::systemd_journal(),
+            profile: SystemdJournalPluginProfile,
+        }
+    }
+}
+
 impl<P> NetdataJournalFunction<P>
 where
     P: NetdataFunctionProfile,
@@ -259,9 +310,12 @@ where
             return Ok(self.info_response());
         }
 
-        let paths = collect_journal_files(directory)?;
+        let mut paths = collect_journal_files(directory)?;
+        sort_journal_files_for_request(&mut paths, request.direction, self.config.reader_options);
         let deadline = options.timeout.map(|timeout| Instant::now() + timeout);
         let mut combined = self.explore_paths(&paths, &request, deadline)?;
+        combined
+            .add_zero_count_facet_values_from_files(&request.facets, self.config.reader_options);
         if !request.filters.is_empty() {
             let mut vocabulary_request = request.clone();
             vocabulary_request.filters.clear();
@@ -317,6 +371,18 @@ where
                     continue;
                 }
             };
+            if !file_may_overlap_request(reader.header(), request) {
+                continue;
+            }
+            combined.matched_files = combined.matched_files.saturating_add(1);
+            combined.matched_paths.push(path.clone());
+            match reader.enumerate_fields_indexed() {
+                Ok(fields) => combined.add_column_fields(fields),
+                Err(err) => combined.file_errors.push(format!(
+                    "{}: FIELD index enumeration failed: {err}",
+                    path.display()
+                )),
+            }
             let result = match reader
                 .explore_with_strategy_cursor_rows(&query, self.config.explorer_strategy)
             {
@@ -340,11 +406,16 @@ where
             "_request": { "info": true },
             "versions": { "netdata_function_api": 1, "sdk": env!("CARGO_PKG_VERSION") },
             "v": 3,
-            "accepted_params": NETDATA_ACCEPTED_PARAMS,
+            "accepted_params": self.accepted_params_from_fields(&[]),
             "required_params": [],
-            "show_ids": false,
+            "show_ids": true,
             "has_history": true,
-            "pagination": true,
+            "pagination": {
+                "enabled": true,
+                "key": "anchor",
+                "column": "timestamp",
+                "units": "timestamp_usec",
+            },
             "status": 200,
             "type": "table",
             "help": "Netdata-compatible journal log function backed by the systemd journal SDK"
@@ -357,20 +428,28 @@ where
         paths: Vec<PathBuf>,
         combined: CombinedResult,
     ) -> Value {
-        let columns = self.build_columns(&request, &combined.rows, &combined.facets);
-        let data = self.build_data_rows(&columns.order, &combined.rows);
-        let facets = self.build_facets(&request.facets, &combined.facets);
+        let columns = self.build_columns(
+            &request,
+            &combined.rows,
+            &combined.facets,
+            &combined.column_fields,
+        );
+        let context = DisplayContext {
+            boot_first_realtime: collect_boot_first_realtime(&paths, self.config.reader_options),
+        };
+        let data = self.build_data_rows(&context, &columns.order, &combined.rows);
+        let facets = self.build_facets(&context, &request.facets, &combined.facets);
         let histogram = combined
             .histogram
             .as_ref()
-            .map(|histogram| self.build_histogram(histogram));
+            .map(|histogram| self.build_histogram(&context, histogram));
         let returned = data.len() as u64;
 
         json!({
             "_request": request.echo,
             "versions": { "netdata_function_api": 1, "sdk": env!("CARGO_PKG_VERSION") },
             "_journal_files": {
-                "matched": paths.len(),
+                "matched": combined.matched_files,
                 "skipped": combined.skipped_files,
                 "errors": combined.file_errors,
             },
@@ -381,16 +460,21 @@ where
             "update_every": 1,
             "help": null,
             "last_modified": 0,
-            "show_ids": false,
+            "show_ids": true,
             "has_history": true,
-            "pagination": true,
-            "accepted_params": NETDATA_ACCEPTED_PARAMS,
+            "pagination": {
+                "enabled": true,
+                "key": "anchor",
+                "column": "timestamp",
+                "units": "timestamp_usec",
+            },
+            "accepted_params": self.accepted_params_from_fields(&combined.reportable_facet_fields(&request.facets)),
             "facets": facets,
             "columns": columns.map,
             "data": data,
             "default_sort_column": "timestamp",
             "default_charts": [],
-            "available_histograms": self.available_histograms(&request),
+            "available_histograms": self.available_histograms(&request, &combined),
             "histogram": histogram,
             "items": {
                 "evaluated": combined.stats.rows_examined,
@@ -415,15 +499,34 @@ where
         request: &NetdataRequest,
         rows: &[LocatedRow],
         facets: &BTreeMap<Vec<u8>, BTreeMap<Vec<u8>, u64>>,
+        column_fields: &BTreeSet<String>,
     ) -> Columns {
         let mut order = vec!["timestamp".to_string(), "rowOptions".to_string()];
         push_unique_many(&mut order, &self.config.default_view_keys);
-        push_unique_many(&mut order, &request.facets_as_strings());
         if let Some(histogram) = &request.histogram {
             push_unique(&mut order, histogram);
         }
+        let default_facet_fields: BTreeSet<&str> = self
+            .config
+            .default_facets
+            .iter()
+            .map(String::as_str)
+            .collect();
+        for field in column_fields {
+            if default_facet_fields.contains(field.as_str())
+                && !facets
+                    .get(field.as_bytes())
+                    .is_some_and(facet_group_is_reportable)
+            {
+                continue;
+            }
+            push_unique(&mut order, field);
+        }
 
-        for field in facets.keys() {
+        for (field, values) in facets {
+            if !facet_group_is_reportable(values) {
+                continue;
+            }
             push_unique(&mut order, &String::from_utf8_lossy(field));
         }
         for row in rows {
@@ -440,7 +543,12 @@ where
         Columns { order, map }
     }
 
-    fn build_data_rows(&self, column_order: &[String], rows: &[LocatedRow]) -> Vec<Value> {
+    fn build_data_rows(
+        &self,
+        context: &DisplayContext,
+        column_order: &[String],
+        rows: &[LocatedRow],
+    ) -> Vec<Value> {
         rows.iter()
             .map(|located| {
                 let fields = row_fields(located);
@@ -450,7 +558,14 @@ where
                         "timestamp" => Value::from(located.row.realtime_usec),
                         "rowOptions" => self.profile.row_options(&fields),
                         field => first_value(&fields, field)
-                            .map(|value| self.profile.field_display_value(field, value))
+                            .map(|value| {
+                                self.profile.field_display_value(
+                                    context,
+                                    DisplayScope::Data,
+                                    field,
+                                    value,
+                                )
+                            })
                             .unwrap_or(Value::Null),
                     };
                     row.push(value);
@@ -462,6 +577,7 @@ where
 
     fn build_facets(
         &self,
+        context: &DisplayContext,
         requested: &[Vec<u8>],
         facets: &BTreeMap<Vec<u8>, BTreeMap<Vec<u8>, u64>>,
     ) -> Value {
@@ -470,18 +586,34 @@ where
             let Some(values) = facets.get(field) else {
                 continue;
             };
+            if !facet_group_is_reportable(values) {
+                continue;
+            }
             let field_name = String::from_utf8_lossy(field).into_owned();
             let mut options: Vec<_> = values
                 .iter()
-                .filter(|(value, _)| !value.is_empty() && value.as_slice() != b"-")
+                .filter(|(value, count)| {
+                    (!value.is_empty() && value.as_slice() != b"-")
+                        || (**count == 0 && value.is_empty())
+                })
                 .map(|(value, count)| {
+                    if *count == 0 && value.is_empty() {
+                        return json!({
+                            "id": NETDATA_EMPTY_STRING_FACET_HASH_ID,
+                            "name": NETDATA_UNAVAILABLE_FIELD_LABEL,
+                            "count": count,
+                        });
+                    }
                     json!({
                         "id": String::from_utf8_lossy(value).into_owned(),
-                        "name": self.profile.facet_option_name(&field_name, value),
+                        "name": self.profile.facet_option_name(context, &field_name, value),
                         "count": count,
                     })
                 })
                 .collect();
+            if options.is_empty() {
+                continue;
+            }
             sort_facet_options(&field_name, &mut options);
             for (idx, option) in options.iter_mut().enumerate() {
                 if let Some(object) = option.as_object_mut() {
@@ -498,34 +630,41 @@ where
         Value::Array(out)
     }
 
-    fn build_histogram(&self, histogram: &ExplorerHistogram) -> Value {
+    fn build_histogram(&self, context: &DisplayContext, histogram: &ExplorerHistogram) -> Value {
         let field = String::from_utf8_lossy(&histogram.field).into_owned();
         let mut dimension_ids = BTreeSet::new();
+        let mut buckets = Vec::with_capacity(histogram.buckets.len());
         for bucket in &histogram.buckets {
-            for value in bucket.values.keys() {
+            let mut values = BTreeMap::new();
+            for (value, count) in &bucket.values {
+                add_netdata_facet_count(&mut values, value, *count);
+            }
+            for value in values.keys() {
                 dimension_ids.insert(value.clone());
             }
+            buckets.push((bucket.start_realtime_usec, values));
         }
         let dimension_ids: Vec<Vec<u8>> = dimension_ids.into_iter().collect();
         let labels: Vec<Value> = std::iter::once(Value::String("time".to_string()))
-            .chain(
-                dimension_ids
-                    .iter()
-                    .map(|value| Value::String(self.profile.facet_option_name(&field, value))),
-            )
+            .chain(dimension_ids.iter().map(|value| {
+                match self.profile.field_display_value(
+                    context,
+                    DisplayScope::Histogram,
+                    &field,
+                    value,
+                ) {
+                    Value::String(value) => Value::String(value),
+                    other => Value::String(other.to_string()),
+                }
+            }))
             .collect();
-        let data: Vec<Value> = histogram
-            .buckets
+        let data: Vec<Value> = buckets
             .iter()
-            .map(|bucket| {
+            .map(|(start_realtime_usec, values)| {
                 let mut point = Vec::with_capacity(dimension_ids.len() + 1);
-                point.push(Value::from(bucket.start_realtime_usec / 1000));
+                point.push(Value::from(start_realtime_usec / 1000));
                 for value in &dimension_ids {
-                    point.push(json!([
-                        bucket.values.get(value).copied().unwrap_or(0),
-                        0,
-                        0
-                    ]));
+                    point.push(json!([values.get(value).copied().unwrap_or(0), 0, 0]));
                 }
                 Value::Array(point)
             })
@@ -550,13 +689,36 @@ where
         })
     }
 
-    fn available_histograms(&self, request: &NetdataRequest) -> Value {
-        let histogram = request
-            .histogram
-            .as_deref()
-            .or(self.config.default_histogram.as_deref())
-            .unwrap_or("PRIORITY");
-        json!([{ "id": histogram, "name": histogram }])
+    fn accepted_params_from_fields(&self, fields: &[String]) -> Value {
+        NETDATA_ACCEPTED_PARAMS
+            .iter()
+            .copied()
+            .chain(fields.iter().map(String::as_str))
+            .map(|field| Value::String(field.to_string()))
+            .collect()
+    }
+
+    fn available_histograms(&self, request: &NetdataRequest, combined: &CombinedResult) -> Value {
+        let fields = combined.reportable_facet_fields(&request.facets);
+        let mut sorted = fields.clone();
+        sorted.sort_by(|left, right| netdata_reorder_key(left).cmp(&netdata_reorder_key(right)));
+        let order_by_field: BTreeMap<String, usize> = sorted
+            .into_iter()
+            .enumerate()
+            .map(|(index, field)| (field, index + 1))
+            .collect();
+
+        fields
+            .into_iter()
+            .map(|field| {
+                let order = order_by_field.get(&field).copied().unwrap_or(0);
+                json!({
+                    "id": field,
+                    "name": field,
+                    "order": order,
+                })
+            })
+            .collect()
     }
 }
 
@@ -602,18 +764,35 @@ impl NetdataRequest {
             .into_iter()
             .map(Vec::from)
             .collect();
-        let histogram = get_str(object, "histogram")
-            .map(ToOwned::to_owned)
+        let requested_histogram = get_str(object, "histogram")
+            .filter(|histogram| !histogram.is_empty())
+            .map(ToOwned::to_owned);
+        let histogram = requested_histogram
+            .clone()
             .or_else(|| config.default_histogram.clone());
-        let fts_patterns = get_str(object, "query")
+        let requested_query = get_str(object, "query")
             .filter(|query| !query.is_empty())
+            .map(ToOwned::to_owned);
+        let fts_patterns = requested_query
+            .as_deref()
             .map(|query| vec![query.as_bytes().to_vec()])
             .unwrap_or_default();
         let filters = parse_filters(object.get("selections"));
 
+        let echo = normalized_request_echo(
+            info,
+            after_realtime_usec,
+            before_realtime_usec,
+            anchor,
+            direction,
+            limit,
+            requested_histogram.as_deref(),
+            requested_query.as_deref(),
+        );
+
         Ok(Self {
             info,
-            echo: value.clone(),
+            echo,
             after_realtime_usec,
             before_realtime_usec,
             anchor,
@@ -644,15 +823,9 @@ impl NetdataRequest {
             field_mode: ExplorerFieldMode::FirstValue,
             exclude_facet_field_filters: false,
             use_source_realtime: true,
-            realtime_slack_usec: 120_000_000,
+            realtime_slack_usec: NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC,
+            collect_column_fields: false,
         }
-    }
-
-    fn facets_as_strings(&self) -> Vec<String> {
-        self.facets
-            .iter()
-            .map(|field| String::from_utf8_lossy(field).into_owned())
-            .collect()
     }
 }
 
@@ -682,7 +855,10 @@ struct CombinedResult {
     rows: Vec<LocatedRow>,
     facets: BTreeMap<Vec<u8>, BTreeMap<Vec<u8>, u64>>,
     histogram: Option<ExplorerHistogram>,
+    column_fields: BTreeSet<String>,
     stats: ExplorerStats,
+    matched_files: u64,
+    matched_paths: Vec<PathBuf>,
     skipped_files: u64,
     file_errors: Vec<String>,
     partial: bool,
@@ -698,16 +874,28 @@ impl CombinedResult {
                 row,
             });
         }
+        for field in result.column_fields {
+            if let Ok(field) = String::from_utf8(field) {
+                self.column_fields.insert(field);
+            }
+        }
         for (field, values) in result.facets {
             let target = self.facets.entry(field).or_default();
             for (value, count) in values {
-                *target.entry(value).or_default() += count;
+                add_netdata_facet_count(target, &value, count);
             }
         }
         if let Some(histogram) = result.histogram {
             merge_histogram(&mut self.histogram, histogram);
         }
         self.sort_and_limit(direction, limit);
+    }
+
+    fn add_column_fields<I>(&mut self, fields: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        self.column_fields.extend(fields);
     }
 
     fn sort_and_limit(&mut self, direction: Direction, limit: usize) {
@@ -717,6 +905,7 @@ impl CombinedResult {
                 .rows
                 .sort_by(|left, right| right.row.realtime_usec.cmp(&left.row.realtime_usec)),
         }
+        make_row_timestamps_unique(&mut self.rows, direction);
         if self.rows.len() > limit {
             self.rows.truncate(limit);
         }
@@ -812,9 +1001,45 @@ impl CombinedResult {
         for (field, values) in vocabulary {
             let target = self.facets.entry(field.clone()).or_default();
             for value in values.keys() {
-                target.entry(value.clone()).or_insert(0);
+                add_netdata_facet_count(target, value, 0);
             }
         }
+    }
+
+    fn add_zero_count_facet_values_from_files(
+        &mut self,
+        fields: &[Vec<u8>],
+        reader_options: ReaderOptions,
+    ) {
+        for path in &self.matched_paths {
+            let Ok(mut reader) = FileReader::open_with_options(path, reader_options) else {
+                continue;
+            };
+            for field in fields {
+                let Ok(field_name) = std::str::from_utf8(field) else {
+                    continue;
+                };
+                let Ok(values) = reader.query_unique(field_name) else {
+                    continue;
+                };
+                let target = self.facets.entry(field.clone()).or_default();
+                for value in values {
+                    add_netdata_facet_count(target, &value, 0);
+                }
+            }
+        }
+    }
+
+    fn reportable_facet_fields(&self, requested: &[Vec<u8>]) -> Vec<String> {
+        requested
+            .iter()
+            .filter(|field| {
+                self.facets
+                    .get(*field)
+                    .is_some_and(facet_group_is_reportable)
+            })
+            .filter_map(|field| String::from_utf8(field.clone()).ok())
+            .collect()
     }
 }
 
@@ -832,6 +1057,95 @@ fn merge_histogram(target: &mut Option<ExplorerHistogram>, source: ExplorerHisto
         for (value, count) in source_bucket.values {
             *target_bucket.values.entry(value).or_default() += count;
         }
+    }
+}
+
+fn facet_group_is_reportable(values: &BTreeMap<Vec<u8>, u64>) -> bool {
+    values
+        .iter()
+        .any(|(value, count)| *count != 0 && !value.is_empty() && value.as_slice() != b"-")
+}
+
+fn netdata_facet_value(value: &[u8]) -> &[u8] {
+    if value.len() > NETDATA_FACET_MAX_VALUE_LENGTH {
+        &value[..NETDATA_FACET_MAX_VALUE_LENGTH]
+    } else {
+        value
+    }
+}
+
+fn add_netdata_facet_count(target: &mut BTreeMap<Vec<u8>, u64>, value: &[u8], count: u64) {
+    *target
+        .entry(netdata_facet_value(value).to_vec())
+        .or_default() += count;
+}
+
+fn file_may_overlap_request(header: crate::FileHeader, request: &NetdataRequest) -> bool {
+    if header.tail_entry_realtime == 0 {
+        return true;
+    }
+
+    let first = header
+        .head_entry_realtime
+        .saturating_sub(NETDATA_JOURNAL_VS_REALTIME_DELTA_MAX_USEC);
+    let last = header
+        .tail_entry_realtime
+        .saturating_add(NETDATA_JOURNAL_VS_REALTIME_DELTA_MAX_USEC);
+
+    if request
+        .after_realtime_usec
+        .is_some_and(|after| last < after)
+    {
+        return false;
+    }
+    if request
+        .before_realtime_usec
+        .is_some_and(|before| first > before)
+    {
+        return false;
+    }
+
+    true
+}
+
+fn collect_boot_first_realtime(
+    paths: &[PathBuf],
+    reader_options: ReaderOptions,
+) -> BTreeMap<Vec<u8>, u64> {
+    let mut out = BTreeMap::new();
+    for path in paths {
+        let Ok(mut reader) = FileReader::open_with_options(path, reader_options) else {
+            continue;
+        };
+        let Ok(boot_ids) = reader.query_unique("_BOOT_ID") else {
+            continue;
+        };
+        for boot_id in boot_ids {
+            let mut match_payload = b"_BOOT_ID=".to_vec();
+            match_payload.extend_from_slice(&boot_id);
+            reader.flush_matches();
+            reader.add_match(&match_payload);
+            reader.seek_head();
+            if !reader.next().unwrap_or(false) {
+                continue;
+            }
+            if let Ok(realtime) = reader.get_realtime_usec() {
+                record_boot_first_realtime(&mut out, boot_id, realtime);
+            }
+        }
+        reader.flush_matches();
+    }
+    out
+}
+
+fn record_boot_first_realtime(
+    target: &mut BTreeMap<Vec<u8>, u64>,
+    boot_id: Vec<u8>,
+    realtime_usec: u64,
+) {
+    let existing = target.entry(boot_id).or_insert(realtime_usec);
+    if realtime_usec < *existing {
+        *existing = realtime_usec;
     }
 }
 
@@ -860,20 +1174,43 @@ fn row_fields(row: &LocatedRow) -> BTreeMap<String, Vec<Vec<u8>>> {
 }
 
 fn dynamic_process_name(fields: &BTreeMap<String, Vec<Vec<u8>>>) -> String {
-    let base = first_value(fields, "SYSLOG_IDENTIFIER")
+    let base = first_value(fields, "CONTAINER_NAME")
+        .or_else(|| first_value(fields, "SYSLOG_IDENTIFIER"))
         .or_else(|| first_value(fields, "_COMM"))
-        .or_else(|| first_value(fields, "_EXE"))
         .map(|value| String::from_utf8_lossy(value).into_owned())
         .unwrap_or_default();
     if base.is_empty() {
-        return base;
+        return "-".to_string();
     }
-    let pid = first_value(fields, "SYSLOG_PID")
-        .or_else(|| first_value(fields, "_PID"))
-        .map(|value| String::from_utf8_lossy(value).into_owned());
+    let pid = first_value(fields, "_PID").map(|value| String::from_utf8_lossy(value).into_owned());
     match pid {
         Some(pid) if !pid.is_empty() => format!("{base}[{pid}]"),
         _ => base,
+    }
+}
+
+fn make_row_timestamps_unique(rows: &mut [LocatedRow], direction: Direction) {
+    let mut last_from = 0u64;
+    let mut last_to = 0u64;
+    let mut initialized = false;
+    for row in rows {
+        let timestamp = row.row.realtime_usec;
+        if initialized && timestamp >= last_from && timestamp <= last_to {
+            match direction {
+                Direction::Backward => {
+                    last_from = last_from.saturating_sub(1);
+                    row.row.realtime_usec = last_from;
+                }
+                Direction::Forward => {
+                    last_to = last_to.saturating_add(1);
+                    row.row.realtime_usec = last_to;
+                }
+            }
+        } else {
+            last_from = timestamp;
+            last_to = timestamp;
+            initialized = true;
+        }
     }
 }
 
@@ -893,12 +1230,16 @@ fn column_metadata(key: &str, index: usize) -> Value {
     let (visible, filter, full_width) = match key {
         "timestamp" => (true, "range", false),
         "rowOptions" => (false, "none", false),
-        "_HOSTNAME" | "ND_JOURNAL_PROCESS" | "MESSAGE" => (true, "none", key == "MESSAGE"),
+        "_HOSTNAME" => (true, "facet", false),
+        "ND_JOURNAL_PROCESS" | "MESSAGE" => (true, "none", key == "MESSAGE"),
         "ND_JOURNAL_FILE" | "_SOURCE_REALTIME_TIMESTAMP" => (false, "none", false),
-        _ => (false, "facet", false),
+        _ if systemd_column_is_facet(key) => (false, "facet", false),
+        _ => (false, "none", false),
     };
     let column_type = if key == "timestamp" {
         "timestamp"
+    } else if key == "rowOptions" {
+        "none"
     } else {
         "string"
     };
@@ -907,17 +1248,21 @@ fn column_metadata(key: &str, index: usize) -> Value {
     } else {
         "value"
     };
-    json!({
+    let mut metadata = json!({
         "index": index,
         "unique_key": key == "timestamp",
-        "name": key,
+        "name": if key == "timestamp" { "Timestamp" } else { key },
         "visible": visible,
         "type": column_type,
         "visualization": visualization,
         "value_options": {
             "transform": if key == "timestamp" { "datetime_usec" } else { "none" },
             "decimal_points": 0,
-            "default_value": if key == "timestamp" { Value::Null } else { Value::String("-".to_string()) },
+            "default_value": if key == "timestamp" || key == "rowOptions" {
+                Value::Null
+            } else {
+                Value::String("-".to_string())
+            },
         },
         "sort": "ascending",
         "sortable": false,
@@ -927,7 +1272,23 @@ fn column_metadata(key: &str, index: usize) -> Value {
         "full_width": full_width,
         "wrap": key != "rowOptions",
         "default_expanded_filter": matches!(key, "PRIORITY" | "SYSLOG_FACILITY" | "MESSAGE_ID"),
-    })
+    });
+    if key == "rowOptions" {
+        if let Some(object) = metadata.as_object_mut() {
+            object.insert("dummy".to_string(), Value::Bool(true));
+        }
+    }
+    metadata
+}
+
+fn systemd_column_is_facet(key: &str) -> bool {
+    if key == "MESSAGE_ID" {
+        return true;
+    }
+    if key.contains("MESSAGE") || key.contains("TIMESTAMP") || key.starts_with("__") {
+        return false;
+    }
+    true
 }
 
 fn sort_facet_options(field: &str, options: &mut [Value]) {
@@ -957,7 +1318,7 @@ fn parse_filters(value: Option<&Value>) -> Vec<ExplorerFilter> {
     };
     let mut filters = Vec::new();
     for (field, values) in selections {
-        if matches!(field.as_str(), "query" | "source") {
+        if matches!(field.as_str(), "query" | "source" | "__logs_sources") {
             continue;
         }
         let Some(values) = parse_string_array(Some(values)) else {
@@ -1016,29 +1377,103 @@ fn normalize_time_window(
     after: Option<i64>,
     before: Option<i64>,
 ) -> (Option<u64>, Option<u64>) {
-    let before = before.unwrap_or(now_seconds);
-    let after = after.unwrap_or(before.saturating_sub(DEFAULT_TIME_WINDOW_SECONDS));
+    let mut after = after.unwrap_or(0);
+    let mut before = before.unwrap_or(0);
+
+    if after == 0 && before == 0 {
+        before = now_seconds;
+        after = before.saturating_sub(DEFAULT_TIME_WINDOW_SECONDS);
+    } else {
+        (after, before) = relative_window_to_absolute(now_seconds, after, before);
+    }
+
+    if after > before {
+        std::mem::swap(&mut after, &mut before);
+    }
+    if after == before {
+        after = before.saturating_sub(DEFAULT_TIME_WINDOW_SECONDS);
+    }
+
     (
-        Some(normalize_after_timestamp_to_usec(now_seconds, after)),
-        Some(normalize_before_timestamp_to_usec(now_seconds, before)),
+        Some(normalize_timestamp_to_usec_with_rounding(
+            after.max(0) as u64,
+            false,
+        )),
+        Some(normalize_timestamp_to_usec_with_rounding(
+            before.max(0) as u64,
+            true,
+        )),
     )
 }
 
-fn normalize_after_timestamp_to_usec(now_seconds: i64, value: i64) -> u64 {
-    normalize_signed_timestamp_to_usec(now_seconds, value, false)
+fn relative_window_to_absolute(now_seconds: i64, after: i64, before: i64) -> (i64, i64) {
+    let mut after = after;
+    let mut before = before;
+
+    if before.unsigned_abs() <= API_RELATIVE_TIME_MAX_SECONDS as u64 {
+        if before > 0 {
+            before = -before;
+        }
+        before = now_seconds.saturating_add(before);
+    }
+
+    if after.unsigned_abs() <= API_RELATIVE_TIME_MAX_SECONDS as u64 {
+        if after > 0 {
+            after = -after;
+        }
+        if after == 0 {
+            after = -NETDATA_MISSING_AFTER_RELATIVE_SECONDS;
+        }
+        after = before.saturating_add(after).saturating_add(1);
+    }
+
+    if after > before {
+        std::mem::swap(&mut after, &mut before);
+    }
+
+    if before > now_seconds {
+        let delta = before.saturating_sub(now_seconds);
+        before = before.saturating_sub(delta);
+        after = after.saturating_sub(delta);
+    }
+
+    (after, before)
 }
 
-fn normalize_before_timestamp_to_usec(now_seconds: i64, value: i64) -> u64 {
-    normalize_signed_timestamp_to_usec(now_seconds, value, true)
-}
-
-fn normalize_signed_timestamp_to_usec(now_seconds: i64, value: i64, end_of_second: bool) -> u64 {
-    let absolute = if value < 0 {
-        now_seconds.saturating_add(value)
-    } else {
-        value
+fn normalized_request_echo(
+    info: bool,
+    after_realtime_usec: Option<u64>,
+    before_realtime_usec: Option<u64>,
+    anchor: ExplorerAnchor,
+    direction: Direction,
+    limit: usize,
+    histogram: Option<&str>,
+    query: Option<&str>,
+) -> Value {
+    let anchor_usec = match anchor {
+        ExplorerAnchor::Realtime(usec) => usec,
+        ExplorerAnchor::Auto | ExplorerAnchor::Head | ExplorerAnchor::Tail => 0,
     };
-    normalize_timestamp_to_usec_with_rounding(absolute.max(0) as u64, end_of_second)
+    json!({
+        "info": info,
+        "slice": true,
+        "data_only": false,
+        "delta": false,
+        "tail": false,
+        "sampling": 0,
+        "source_type": 1,
+        "after": after_realtime_usec.unwrap_or(0) / 1_000_000,
+        "before": before_realtime_usec.unwrap_or(0) / 1_000_000,
+        "if_modified_since": 0,
+        "anchor": anchor_usec,
+        "direction": match direction {
+            Direction::Forward => "forward",
+            Direction::Backward => "backward",
+        },
+        "last": limit,
+        "query": query,
+        "histogram": histogram,
+    })
 }
 
 fn normalize_timestamp_to_usec(value: u64) -> u64 {
@@ -1102,6 +1537,86 @@ fn collect_journal_files(path: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct JournalFileOrderInfo {
+    msg_first_realtime_usec: u64,
+    msg_last_realtime_usec: u64,
+    file_last_modified_usec: u64,
+}
+
+fn sort_journal_files_for_request(
+    paths: &mut [PathBuf],
+    direction: Direction,
+    reader_options: ReaderOptions,
+) {
+    let mut ordered: Vec<_> = paths
+        .iter()
+        .cloned()
+        .map(|path| {
+            let info = journal_file_order_info(&path, reader_options);
+            (path, info)
+        })
+        .collect();
+    ordered.sort_by(|(left_path, left_info), (right_path, right_info)| {
+        compare_journal_file_order(left_info, right_info, direction)
+            .then_with(|| left_path.cmp(right_path))
+    });
+    for (target, (path, _)) in paths.iter_mut().zip(ordered) {
+        *target = path;
+    }
+}
+
+fn journal_file_order_info(path: &Path, reader_options: ReaderOptions) -> JournalFileOrderInfo {
+    let file_last_modified_usec = std::fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_micros().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or_default();
+
+    let Ok(reader) = FileReader::open_with_options(path, reader_options) else {
+        return JournalFileOrderInfo {
+            msg_first_realtime_usec: 0,
+            msg_last_realtime_usec: file_last_modified_usec,
+            file_last_modified_usec,
+        };
+    };
+    let header = reader.header();
+    JournalFileOrderInfo {
+        msg_first_realtime_usec: header.head_entry_realtime,
+        msg_last_realtime_usec: if header.tail_entry_realtime == 0 {
+            file_last_modified_usec
+        } else {
+            header.tail_entry_realtime
+        },
+        file_last_modified_usec,
+    }
+}
+
+fn compare_journal_file_order(
+    left: &JournalFileOrderInfo,
+    right: &JournalFileOrderInfo,
+    direction: Direction,
+) -> Ordering {
+    let backward = right
+        .msg_last_realtime_usec
+        .cmp(&left.msg_last_realtime_usec)
+        .then_with(|| {
+            right
+                .file_last_modified_usec
+                .cmp(&left.file_last_modified_usec)
+        })
+        .then_with(|| {
+            right
+                .msg_first_realtime_usec
+                .cmp(&left.msg_first_realtime_usec)
+        });
+    match direction {
+        Direction::Backward => backward,
+        Direction::Forward => backward.reverse(),
+    }
+}
+
 fn is_journal_file_name(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -1143,6 +1658,12 @@ fn push_unique(target: &mut Vec<String>, value: impl AsRef<str>) {
     }
 }
 
+fn netdata_reorder_key(value: &str) -> String {
+    value
+        .trim_start_matches(|character: char| character.is_ascii_punctuation())
+        .to_ascii_lowercase()
+}
+
 fn histogram_update_every_seconds(histogram: &ExplorerHistogram) -> u64 {
     histogram
         .buckets
@@ -1158,9 +1679,25 @@ fn histogram_update_every_seconds(histogram: &ExplorerHistogram) -> u64 {
         .unwrap_or(1)
 }
 
+enum TimestampPrecision {
+    Seconds,
+    Micros,
+}
+
+fn format_realtime_usec(timestamp: u64, precision: TimestampPrecision) -> String {
+    let seconds = (timestamp / 1_000_000) as i64;
+    let micros = (timestamp % 1_000_000) as u32;
+    DateTime::<Utc>::from_timestamp(seconds, micros.saturating_mul(1000))
+        .map(|datetime| match precision {
+            TimestampPrecision::Seconds => datetime.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            TimestampPrecision::Micros => datetime.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string(),
+        })
+        .unwrap_or_else(|| timestamp.to_string())
+}
+
 fn priority_name(raw: &str) -> Option<&'static str> {
     match parse_priority(raw)? {
-        0 => Some("emergency"),
+        0 => Some("panic"),
         1 => Some("alert"),
         2 => Some("critical"),
         3 => Some("error"),
@@ -1174,7 +1711,7 @@ fn priority_name(raw: &str) -> Option<&'static str> {
 
 fn priority_name_to_number(value: &str) -> Option<&'static str> {
     match value {
-        "emergency" | "emerg" => Some("0"),
+        "panic" | "emergency" | "emerg" => Some("0"),
         "alert" => Some("1"),
         "critical" | "crit" => Some("2"),
         "error" | "err" => Some("3"),
@@ -1215,10 +1752,6 @@ fn syslog_facility_name(raw: &str) -> Option<&'static str> {
         9 => Some("cron"),
         10 => Some("authpriv"),
         11 => Some("ftp"),
-        12 => Some("ntp"),
-        13 => Some("security"),
-        14 => Some("console"),
-        15 => Some("solaris-cron"),
         16 => Some("local0"),
         17 => Some("local1"),
         18 => Some("local2"),
@@ -1231,28 +1764,504 @@ fn syslog_facility_name(raw: &str) -> Option<&'static str> {
     }
 }
 
+fn errno_name(raw: &str) -> Option<String> {
+    let errno = raw.parse::<u32>().ok()?;
+    let name = match errno {
+        1 => "EPERM",
+        2 => "ENOENT",
+        3 => "ESRCH",
+        4 => "EINTR",
+        5 => "EIO",
+        6 => "ENXIO",
+        7 => "E2BIG",
+        8 => "ENOEXEC",
+        9 => "EBADF",
+        10 => "ECHILD",
+        11 => "EAGAIN",
+        12 => "ENOMEM",
+        13 => "EACCES",
+        14 => "EFAULT",
+        15 => "ENOTBLK",
+        16 => "EBUSY",
+        17 => "EEXIST",
+        18 => "EXDEV",
+        19 => "ENODEV",
+        20 => "ENOTDIR",
+        21 => "EISDIR",
+        22 => "EINVAL",
+        23 => "ENFILE",
+        24 => "EMFILE",
+        25 => "ENOTTY",
+        26 => "ETXTBSY",
+        27 => "EFBIG",
+        28 => "ENOSPC",
+        29 => "ESPIPE",
+        30 => "EROFS",
+        31 => "EMLINK",
+        32 => "EPIPE",
+        33 => "EDOM",
+        34 => "ERANGE",
+        35 => "EDEADLK",
+        36 => "ENAMETOOLONG",
+        37 => "ENOLCK",
+        38 => "ENOSYS",
+        39 => "ENOTEMPTY",
+        40 => "ELOOP",
+        42 => "ENOMSG",
+        43 => "EIDRM",
+        44 => "ECHRNG",
+        45 => "EL2NSYNC",
+        46 => "EL3HLT",
+        47 => "EL3RST",
+        48 => "ELNRNG",
+        49 => "EUNATCH",
+        50 => "ENOCSI",
+        51 => "EL2HLT",
+        52 => "EBADE",
+        53 => "EBADR",
+        54 => "EXFULL",
+        55 => "ENOANO",
+        56 => "EBADRQC",
+        57 => "EBADSLT",
+        59 => "EBFONT",
+        60 => "ENOSTR",
+        61 => "ENODATA",
+        62 => "ETIME",
+        63 => "ENOSR",
+        64 => "ENONET",
+        65 => "ENOPKG",
+        66 => "EREMOTE",
+        67 => "ENOLINK",
+        68 => "EADV",
+        69 => "ESRMNT",
+        70 => "ECOMM",
+        71 => "EPROTO",
+        72 => "EMULTIHOP",
+        73 => "EDOTDOT",
+        74 => "EBADMSG",
+        75 => "EOVERFLOW",
+        76 => "ENOTUNIQ",
+        77 => "EBADFD",
+        78 => "EREMCHG",
+        79 => "ELIBACC",
+        80 => "ELIBBAD",
+        81 => "ELIBSCN",
+        82 => "ELIBMAX",
+        83 => "ELIBEXEC",
+        84 => "EILSEQ",
+        85 => "ERESTART",
+        86 => "ESTRPIPE",
+        87 => "EUSERS",
+        88 => "ENOTSOCK",
+        89 => "EDESTADDRREQ",
+        90 => "EMSGSIZE",
+        91 => "EPROTOTYPE",
+        92 => "ENOPROTOOPT",
+        93 => "EPROTONOSUPPORT",
+        94 => "ESOCKTNOSUPPORT",
+        95 => "ENOTSUP",
+        96 => "EPFNOSUPPORT",
+        97 => "EAFNOSUPPORT",
+        98 => "EADDRINUSE",
+        99 => "EADDRNOTAVAIL",
+        100 => "ENETDOWN",
+        101 => "ENETUNREACH",
+        102 => "ENETRESET",
+        103 => "ECONNABORTED",
+        104 => "ECONNRESET",
+        105 => "ENOBUFS",
+        106 => "EISCONN",
+        107 => "ENOTCONN",
+        108 => "ESHUTDOWN",
+        109 => "ETOOMANYREFS",
+        110 => "ETIMEDOUT",
+        111 => "ECONNREFUSED",
+        112 => "EHOSTDOWN",
+        113 => "EHOSTUNREACH",
+        114 => "EALREADY",
+        115 => "EINPROGRESS",
+        116 => "ESTALE",
+        117 => "EUCLEAN",
+        118 => "ENOTNAM",
+        119 => "ENAVAIL",
+        120 => "EISNAM",
+        121 => "EREMOTEIO",
+        122 => "EDQUOT",
+        123 => "ENOMEDIUM",
+        124 => "EMEDIUMTYPE",
+        125 => "ECANCELED",
+        126 => "ENOKEY",
+        127 => "EKEYEXPIRED",
+        128 => "EKEYREVOKED",
+        129 => "EKEYREJECTED",
+        130 => "EOWNERDEAD",
+        131 => "ENOTRECOVERABLE",
+        132 => "ERFKILL",
+        133 => "EHWPOISON",
+        _ => return None,
+    };
+    Some(format!("{errno} ({name})"))
+}
+
+fn cap_effective_display(raw: &str) -> String {
+    if !raw.bytes().next().is_some_and(|byte| byte.is_ascii_digit()) {
+        return raw.to_string();
+    }
+    let Ok(value) = u64::from_str_radix(raw, 16) else {
+        return raw.to_string();
+    };
+    if value == 0 {
+        return raw.to_string();
+    }
+    const CAPABILITIES: &[&str] = &[
+        "CHOWN",
+        "DAC_OVERRIDE",
+        "DAC_READ_SEARCH",
+        "FOWNER",
+        "FSETID",
+        "KILL",
+        "SETGID",
+        "SETUID",
+        "SETPCAP",
+        "LINUX_IMMUTABLE",
+        "NET_BIND_SERVICE",
+        "NET_BROADCAST",
+        "NET_ADMIN",
+        "NET_RAW",
+        "IPC_LOCK",
+        "IPC_OWNER",
+        "SYS_MODULE",
+        "SYS_RAWIO",
+        "SYS_CHROOT",
+        "SYS_PTRACE",
+        "SYS_PACCT",
+        "SYS_ADMIN",
+        "SYS_BOOT",
+        "SYS_NICE",
+        "SYS_RESOURCE",
+        "SYS_TIME",
+        "SYS_TTY_CONFIG",
+        "MKNOD",
+        "LEASE",
+        "AUDIT_WRITE",
+        "AUDIT_CONTROL",
+        "SETFCAP",
+        "MAC_OVERRIDE",
+        "MAC_ADMIN",
+        "SYSLOG",
+        "WAKE_ALARM",
+        "BLOCK_SUSPEND",
+        "AUDIT_READ",
+        "PERFMON",
+        "BPF",
+        "CHECKPOINT_RESTORE",
+    ];
+    let names: Vec<&str> = CAPABILITIES
+        .iter()
+        .enumerate()
+        .filter_map(|(index, name)| ((value & (1u64 << index)) != 0).then_some(*name))
+        .collect();
+    if names.is_empty() {
+        raw.to_string()
+    } else {
+        format!("{raw} ({})", names.join(" | "))
+    }
+}
+
+fn systemd_field_display_value(
+    context: &DisplayContext,
+    scope: DisplayScope,
+    field: &str,
+    value: &[u8],
+    resolve_user_group_names: bool,
+) -> Value {
+    let raw = String::from_utf8_lossy(value);
+    match field {
+        "PRIORITY" => Value::String(priority_name(&raw).unwrap_or(&raw).to_string()),
+        "SYSLOG_FACILITY" => Value::String(syslog_facility_name(&raw).unwrap_or(&raw).to_string()),
+        "ERRNO" => Value::String(errno_name(&raw).unwrap_or_else(|| raw.to_string())),
+        "MESSAGE_ID" => Value::String(match (message_id_name(&raw), scope) {
+            (Some(name), DisplayScope::Data) => format!("{raw} ({name})"),
+            (Some(name), DisplayScope::Facet | DisplayScope::Histogram) => name.to_string(),
+            (None, _) => raw.into_owned(),
+        }),
+        "_BOOT_ID" => Value::String(match (context.boot_first_realtime.get(value), scope) {
+            (Some(timestamp), DisplayScope::Data) => format!(
+                "{} ({})  ",
+                raw,
+                format_realtime_usec(*timestamp, TimestampPrecision::Seconds)
+            ),
+            (Some(timestamp), DisplayScope::Facet | DisplayScope::Histogram) => {
+                format_realtime_usec(*timestamp, TimestampPrecision::Seconds)
+            }
+            (None, _) => raw.into_owned(),
+        }),
+        "_UID"
+        | "_SYSTEMD_OWNER_UID"
+        | "OBJECT_SYSTEMD_OWNER_UID"
+        | "OBJECT_UID"
+        | "_AUDIT_LOGINUID"
+        | "OBJECT_AUDIT_LOGINUID" => {
+            if resolve_user_group_names {
+                Value::String(resolve_uid_name(&raw).unwrap_or_else(|| raw.into_owned()))
+            } else {
+                Value::String(raw.into_owned())
+            }
+        }
+        "_GID" | "OBJECT_GID" => {
+            if resolve_user_group_names {
+                Value::String(resolve_gid_name(&raw).unwrap_or_else(|| raw.into_owned()))
+            } else {
+                Value::String(raw.into_owned())
+            }
+        }
+        "_CAP_EFFECTIVE" => Value::String(cap_effective_display(&raw)),
+        "_SOURCE_REALTIME_TIMESTAMP" => Value::String(match raw.parse::<u64>() {
+            Ok(timestamp) if timestamp != 0 => {
+                format!(
+                    "{} ({})",
+                    raw,
+                    format_realtime_usec(timestamp, TimestampPrecision::Micros)
+                )
+            }
+            _ => raw.into_owned(),
+        }),
+        _ => Value::String(raw.into_owned()),
+    }
+}
+
+#[cfg(unix)]
+fn resolve_uid_name(raw: &str) -> Option<String> {
+    let uid = raw.parse::<libc::uid_t>().ok()?;
+    let mut pwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
+    let mut result = std::ptr::null_mut();
+    let mut buffer = vec![0i8; 16_384];
+    let rc = unsafe {
+        libc::getpwuid_r(
+            uid,
+            pwd.as_mut_ptr(),
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    if rc != 0 || result.is_null() {
+        return None;
+    }
+    let pwd = unsafe { pwd.assume_init() };
+    Some(
+        unsafe { CStr::from_ptr(pwd.pw_name) }
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+#[cfg(not(unix))]
+fn resolve_uid_name(_raw: &str) -> Option<String> {
+    None
+}
+
+#[cfg(unix)]
+fn resolve_gid_name(raw: &str) -> Option<String> {
+    let gid = raw.parse::<libc::gid_t>().ok()?;
+    let mut grp = std::mem::MaybeUninit::<libc::group>::uninit();
+    let mut result = std::ptr::null_mut();
+    let mut buffer = vec![0i8; 16_384];
+    let rc = unsafe {
+        libc::getgrgid_r(
+            gid,
+            grp.as_mut_ptr(),
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            &mut result,
+        )
+    };
+    if rc != 0 || result.is_null() {
+        return None;
+    }
+    let grp = unsafe { grp.assume_init() };
+    Some(
+        unsafe { CStr::from_ptr(grp.gr_name) }
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+#[cfg(not(unix))]
+fn resolve_gid_name(_raw: &str) -> Option<String> {
+    None
+}
+
+fn message_id_name(raw: &str) -> Option<&'static str> {
+    match raw {
+        "f77379a8490b408bbe5f6940505a777b" => Some("Journal started"),
+        "d93fb3c9c24d451a97cea615ce59c00b" => Some("Journal stopped"),
+        "a596d6fe7bfa4994828e72309e95d61e" => Some("Journal messages suppressed"),
+        "e9bf28e6e834481bb6f48f548ad13606" => Some("Journal messages missed"),
+        "ec387f577b844b8fa948f33cad9a75e6" => Some("Journal disk space usage"),
+        "fc2e22bc6ee647b6b90729ab34a250b1" => Some("Coredump"),
+        "5aadd8e954dc4b1a8c954d63fd9e1137" => Some("Coredump truncated"),
+        "1f4e0a44a88649939aaea34fc6da8c95" => Some("Backtrace"),
+        "8d45620c1a4348dbb17410da57c60c66" => Some("User Session created"),
+        "3354939424b4456d9802ca8333ed424a" => Some("User Session terminated"),
+        "fcbefc5da23d428093f97c82a9290f7b" => Some("Seat started"),
+        "e7852bfe46784ed0accde04bc864c2d5" => Some("Seat removed"),
+        "24d8d4452573402496068381a6312df2" => Some("VM or container started"),
+        "58432bd3bace477cb514b56381b8a758" => Some("VM or container stopped"),
+        "c7a787079b354eaaa9e77b371893cd27" => Some("Time change"),
+        "45f82f4aef7a4bbf942ce861d1f20990" => Some("Timezone change"),
+        "50876a9db00f4c40bde1a2ad381c3a1b" => Some("System configuration issues"),
+        "b07a249cd024414a82dd00cd181378ff" => Some("System start-up completed"),
+        "eed00a68ffd84e31882105fd973abdd1" => Some("User start-up completed"),
+        "6bbd95ee977941e497c48be27c254128" => Some("Sleep start"),
+        "8811e6df2a8e40f58a94cea26f8ebf14" => Some("Sleep stop"),
+        "98268866d1d54a499c4e98921d93bc40" => Some("System shutdown initiated"),
+        "c14aaf76ec284a5fa1f105f88dfb061c" => Some("System factory reset initiated"),
+        "d9ec5e95e4b646aaaea2fd05214edbda" => Some("Container init crashed"),
+        "3ed0163e868a4417ab8b9e210407a96c" => Some("System reboot failed after crash"),
+        "645c735537634ae0a32b15a7c6cba7d4" => Some("Init execution froze"),
+        "5addb3a06a734d3396b794bf98fb2d01" => Some("Init crashed no coredump"),
+        "5c9e98de4ab94c6a9d04d0ad793bd903" => Some("Init crashed no fork"),
+        "5e6f1f5e4db64a0eaee3368249d20b94" => Some("Init crashed unknown signal"),
+        "83f84b35ee264f74a3896a9717af34cb" => Some("Init crashed systemd signal"),
+        "3a73a98baf5b4b199929e3226c0be783" => Some("Init crashed process signal"),
+        "2ed18d4f78ca47f0a9bc25271c26adb4" => Some("Init crashed waitpid failed"),
+        "56b1cd96f24246c5b607666fda952356" => Some("Init crashed coredump failed"),
+        "4ac7566d4d7548f4981f629a28f0f829" => Some("Init crashed coredump"),
+        "38e8b1e039ad469291b18b44c553a5b7" => Some("Crash shell failed to fork"),
+        "872729b47dbe473eb768ccecd477beda" => Some("Crash shell failed to execute"),
+        "658a67adc1c940b3b3316e7e8628834a" => Some("Selinux failed"),
+        "e6f456bd92004d9580160b2207555186" => Some("Battery low warning"),
+        "267437d33fdd41099ad76221cc24a335" => Some("Battery low powering off"),
+        "79e05b67bc4545d1922fe47107ee60c5" => Some("Manager mainloop failed"),
+        "dbb136b10ef4457ba47a795d62f108c9" => Some("Manager no xdgdir path"),
+        "ed158c2df8884fa584eead2d902c1032" => {
+            Some("Init failed to drop capability bounding set of usermode")
+        }
+        "42695b500df048298bee37159caa9f2e" => Some("Init failed to drop capability bounding set"),
+        "bfc2430724ab44499735b4f94cca9295" => Some("User manager can't disable new privileges"),
+        "59288af523be43a28d494e41e26e4510" => Some("Manager failed to start default target"),
+        "689b4fcc97b4486ea5da92db69c9e314" => Some("Manager failed to isolate default target"),
+        "5ed836f1766f4a8a9fc5da45aae23b29" => {
+            Some("Manager failed to collect passed file descriptors")
+        }
+        "6a40fbfbd2ba4b8db02fb40c9cd090d7" => Some("Init failed to fix up environment variables"),
+        "0e54470984ac419689743d957a119e2e" => Some("Manager failed to allocate"),
+        "d67fa9f847aa4b048a2ae33535331adb" => Some("Manager failed to write Smack"),
+        "af55a6f75b544431b72649f36ff6d62c" => Some("System shutdown critical error"),
+        "d18e0339efb24a068d9c1060221048c2" => Some("Init failed to fork off valgrind"),
+        "7d4958e842da4a758f6c1cdc7b36dcc5" => Some("Unit starting"),
+        "39f53479d3a045ac8e11786248231fbf" => Some("Unit started"),
+        "be02cf6855d2428ba40df7e9d022f03d" => Some("Unit failed"),
+        "de5b426a63be47a7b6ac3eaac82e2f6f" => Some("Unit stopping"),
+        "9d1aaa27d60140bd96365438aad20286" => Some("Unit stopped"),
+        "d34d037fff1847e6ae669a370e694725" => Some("Unit reloading"),
+        "7b05ebc668384222baa8881179cfda54" => Some("Unit reloaded"),
+        "5eb03494b6584870a536b337290809b3" => Some("Unit restart scheduled"),
+        "ae8f7b866b0347b9af31fe1c80b127c0" => Some("Unit resources"),
+        "7ad2d189f7e94e70a38c781354912448" => Some("Unit success"),
+        "0e4284a0caca4bfc81c0bb6786972673" => Some("Unit skipped"),
+        "d9b373ed55a64feb8242e02dbe79a49c" => Some("Unit failure result"),
+        "641257651c1b4ec9a8624d7a40a9e1e7" => Some("Process execution failed"),
+        "98e322203f7a4ed290d09fe03c09fe15" => Some("Unit process exited"),
+        "0027229ca0644181a76c4e92458afa2e" => Some("Syslog forward missed"),
+        "1dee0369c7fc4736b7099b38ecb46ee7" => Some("Mount point is not empty"),
+        "d989611b15e44c9dbf31e3c81256e4ed" => Some("Unit oomd kill"),
+        "fe6faa94e7774663a0da52717891d8ef" => Some("Unit out of memory"),
+        "b72ea4a2881545a0b50e200e55b9b06f" => Some("Lid opened"),
+        "b72ea4a2881545a0b50e200e55b9b070" => Some("Lid closed"),
+        "f5f416b862074b28927a48c3ba7d51ff" => Some("System docked"),
+        "51e171bd585248568110144c517cca53" => Some("System undocked"),
+        "b72ea4a2881545a0b50e200e55b9b071" => Some("Power key"),
+        "3e0117101eb243c1b9a50db3494ab10b" => Some("Power key long press"),
+        "9fa9d2c012134ec385451ffe316f97d0" => Some("Reboot key"),
+        "f1c59a58c9d943668965c337caec5975" => Some("Reboot key long press"),
+        "b72ea4a2881545a0b50e200e55b9b072" => Some("Suspend key"),
+        "bfdaf6d312ab4007bc1fe40a15df78e8" => Some("Suspend key long press"),
+        "b72ea4a2881545a0b50e200e55b9b073" => Some("Hibernate key"),
+        "167836df6f7f428e98147227b2dc8945" => Some("Hibernate key long press"),
+        "c772d24e9a884cbeb9ea12625c306c01" => Some("Invalid configuration"),
+        "1675d7f172174098b1108bf8c7dc8f5d" => Some("DNSSEC validation failed"),
+        "4d4408cfd0d144859184d1e65d7c8a65" => Some("DNSSEC trust anchor revoked"),
+        "36db2dfa5a9045e1bd4af5f93e1cf057" => Some("DNSSEC turned off"),
+        "b61fdac612e94b9182285b998843061f" => Some("Username unsafe"),
+        "1b3bb94037f04bbf81028e135a12d293" => Some("Mount point path not suitable"),
+        "010190138f494e29a0ef6669749531aa" => Some("Device path not suitable"),
+        "b480325f9c394a7b802c231e51a2752c" => Some("Nobody user unsuitable"),
+        "1c0454c1bd2241e0ac6fefb4bc631433" => Some("Systemd udev settle deprecated"),
+        "7c8a41f37b764941a0e1780b1be2f037" => Some("Time initial sync"),
+        "7db73c8af0d94eeb822ae04323fe6ab6" => Some("Time initial bump"),
+        "9e7066279dc8403da79ce4b1a69064b2" => Some("Shutdown scheduled"),
+        "249f6fb9e6e2428c96f3f0875681ffa3" => Some("Shutdown canceled"),
+        "3f7d5ef3e54f4302b4f0b143bb270cab" => Some("TPM PCR Extended"),
+        "f9b0be465ad540d0850ad32172d57c21" => Some("Memory Trimmed"),
+        "a8fa8dacdb1d443e9503b8be367a6adb" => Some("SysV Service Found"),
+        "187c62eb1e7f463bb530394f52cb090f" => Some("Portable Service attached"),
+        "76c5c754d628490d8ecba4c9d042112b" => Some("Portable Service detached"),
+        "9cf56b8baf9546cf9478783a8de42113" => {
+            Some("systemd-networkd sysctl changed by foreign process")
+        }
+        "ad7089f928ac4f7ea00c07457d47ba8a" => Some("SRK into TPM authorization failure"),
+        "b2bcbaf5edf948e093ce50bbea0e81ec" => Some("Secure Attention Key (SAK) was pressed"),
+        "7fc63312330b479bb32e598d47cef1a8" => Some("dbus activate no unit"),
+        "ee9799dab1e24d81b7bee7759a543e1b" => Some("dbus activate masked unit"),
+        "a0fa58cafd6f4f0c8d003d16ccf9e797" => Some("dbus broker exited"),
+        "c8c6cde1c488439aba371a664353d9d8" => Some("dbus dirwatch"),
+        "8af3357071af4153af414daae07d38e7" => Some("dbus dispatch stats"),
+        "199d4300277f495f84ba4028c984214c" => Some("dbus no sopeergroup"),
+        "b209c0d9d1764ab38d13b8e00d1784d6" => Some("dbus protocol violation"),
+        "6fa70fa776044fa28be7a21daf42a108" => Some("dbus receive failed"),
+        "0ce0fa61d1a9433dabd67417f6b8e535" => Some("dbus service failed open"),
+        "24dc708d9e6a4226a3efe2033bb744de" => Some("dbus service invalid"),
+        "f15d2347662d483ea9bcd8aa1a691d28" => Some("dbus sighup"),
+        "0ce153587afa4095832d233c17a88001" => Some("Gnome SM startup succeeded"),
+        "10dd2dc188b54a5e98970f56499d1f73" => Some("Gnome SM unrecoverable failure"),
+        "f3ea493c22934e26811cd62abe8e203a" => Some("Gnome shell started"),
+        "c7b39b1e006b464599465e105b361485" => Some("Flatpak cache"),
+        "75ba3deb0af041a9a46272ff85d9e73e" => Some("Flathub pulls"),
+        "f02bce89a54e4efab3a94a797d26204a" => Some("Flathub pull errors"),
+        "dd11929c788e48bdbb6276fb5f26b08a" => Some("Boltd starting"),
+        "1e6061a9fbd44501b3ccc368119f2b69" => Some("Netdata startup"),
+        "ed4cdb8f1beb4ad3b57cb3cae2d162fa" => Some("Netdata connection from child"),
+        "6e2e3839067648968b646045dbf28d66" => Some("Netdata connection to parent"),
+        "9ce0cb58ab8b44df82c4bf1ad9ee22de" => Some("Netdata alert transition"),
+        "6db0018e83e34320ae2a659d78019fb7" => Some("Netdata alert notification"),
+        "23e93dfccbf64e11aac858b9410d8a82" => Some("Netdata fatal message"),
+        "8ddaf5ba33a74078b609250db1e951f3" => Some("Sensor state transition"),
+        "ec87a56120d5431bace51e2fb8bba243" => Some("Netdata log flood protection"),
+        "acb33cb95778476baac702eb7e4e151d" => Some("Netdata Cloud connection"),
+        "d1f59606dd4d41e3b217a0cfcae8e632" => Some("Netdata extreme cardinality"),
+        "02f47d350af5449197bf7a95b605a468" => Some("Netdata exit reason"),
+        "4fdf40816c124623a032b7fe73beacb8" => Some("Netdata dynamic configuration"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ExplorerHistogramBucket;
+    use std::collections::HashMap;
 
     #[test]
     fn parses_netdata_selections_as_and_fields_or_values() {
         let request = json!({
-            "after": 100,
-            "before": 200,
+            "after": 200_000_000,
+            "before": 200_000_100,
             "direction": "forward",
             "last": 25,
             "facets": ["PRIORITY"],
             "selections": {
                 "PRIORITY": ["warning", "error"],
                 "_HOSTNAME": ["node-a"],
+                "__logs_sources": ["all-local-system-logs"],
             }
         });
 
         let parsed = NetdataRequest::parse(&request, &NetdataFunctionConfig::systemd_journal())
             .expect("parse request");
-        assert_eq!(parsed.after_realtime_usec, Some(100_000_000));
-        assert_eq!(parsed.before_realtime_usec, Some(200_999_999));
+        assert_eq!(parsed.after_realtime_usec, Some(200_000_000_000_000));
+        assert_eq!(parsed.before_realtime_usec, Some(200_000_100_999_999));
         assert_eq!(parsed.direction, Direction::Forward);
         assert_eq!(parsed.limit, 25);
         assert_eq!(parsed.filters.len(), 2);
@@ -1263,17 +2272,300 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_missing_time_window_to_last_hour_like_plugin() {
+        assert_eq!(
+            normalize_time_window(1_000_000_000, None, None),
+            (Some(999_996_400_000_000), Some(1_000_000_000_999_999))
+        );
+    }
+
+    #[test]
+    fn normalizes_inverted_time_window_like_plugin() {
+        assert_eq!(
+            normalize_time_window(1_000_000_000, Some(200_000_100), Some(200_000_000)),
+            (Some(200_000_000_000_000), Some(200_000_100_999_999))
+        );
+    }
+
+    #[test]
+    fn normalizes_equal_time_window_like_plugin() {
+        assert_eq!(
+            normalize_time_window(1_000_000_000, Some(200_000_000), Some(200_000_000)),
+            (Some(199_996_400_000_000), Some(200_000_000_999_999))
+        );
+    }
+
+    #[test]
+    fn normalizes_relative_time_window_like_plugin() {
+        assert_eq!(
+            normalize_time_window(1_000_000_000, Some(100), Some(200)),
+            (Some(999_999_701_000_000), Some(999_999_800_999_999))
+        );
+    }
+
+    #[test]
+    fn normalizes_missing_after_with_supplied_before_like_plugin() {
+        assert_eq!(
+            normalize_time_window(1_000_000_000, None, Some(200_000_000)),
+            (Some(199_999_401_000_000), Some(200_000_000_999_999))
+        );
+    }
+
+    #[test]
     fn systemd_profile_transforms_priority_and_facility_for_display() {
         let profile = SystemdJournalProfile;
+        let context = DisplayContext::default();
         assert_eq!(
-            profile.field_display_value("PRIORITY", b"7"),
+            profile.field_display_value(&context, DisplayScope::Data, "PRIORITY", b"7"),
             json!("debug")
         );
         assert_eq!(
-            profile.field_display_value("SYSLOG_FACILITY", b"3"),
+            profile.field_display_value(&context, DisplayScope::Data, "SYSLOG_FACILITY", b"3"),
             json!("daemon")
         );
         assert_eq!(priority_to_row_severity(b"3"), "critical");
         assert_eq!(priority_to_row_severity(b"6"), "normal");
+    }
+
+    #[test]
+    fn dynamic_process_name_matches_plugin_fallback_order() {
+        let mut fields = BTreeMap::new();
+        fields.insert("SYSLOG_IDENTIFIER".to_string(), vec![b"syslog".to_vec()]);
+        fields.insert("_COMM".to_string(), vec![b"comm".to_vec()]);
+        fields.insert("_PID".to_string(), vec![b"42".to_vec()]);
+        fields.insert("SYSLOG_PID".to_string(), vec![b"99".to_vec()]);
+        assert_eq!(dynamic_process_name(&fields), "syslog[42]");
+
+        fields.insert("CONTAINER_NAME".to_string(), vec![b"container".to_vec()]);
+        assert_eq!(dynamic_process_name(&fields), "container[42]");
+
+        fields.remove("CONTAINER_NAME");
+        fields.remove("SYSLOG_IDENTIFIER");
+        fields.remove("_PID");
+        assert_eq!(dynamic_process_name(&fields), "comm");
+
+        fields.remove("_COMM");
+        fields.insert("_EXE".to_string(), vec![b"/usr/bin/app".to_vec()]);
+        assert_eq!(dynamic_process_name(&fields), "-");
+    }
+
+    #[test]
+    fn facet_values_are_truncated_and_collapsed_like_plugin() {
+        let prefix = vec![b'a'; NETDATA_FACET_MAX_VALUE_LENGTH];
+        let mut first = prefix.clone();
+        first.extend_from_slice(b"-first");
+        let mut second = prefix.clone();
+        second.extend_from_slice(b"-second");
+
+        let mut values = BTreeMap::new();
+        add_netdata_facet_count(&mut values, &first, 2);
+        add_netdata_facet_count(&mut values, &second, 3);
+
+        assert_eq!(values.len(), 1);
+        assert_eq!(values.get(&prefix), Some(&5));
+    }
+
+    #[test]
+    fn histogram_values_are_truncated_and_collapsed_like_plugin() {
+        let prefix = vec![b'b'; NETDATA_FACET_MAX_VALUE_LENGTH];
+        let mut first = prefix.clone();
+        first.extend_from_slice(b"-first");
+        let mut second = prefix.clone();
+        second.extend_from_slice(b"-second");
+
+        let mut values = HashMap::new();
+        values.insert(first, 2);
+        values.insert(second, 3);
+        let histogram = ExplorerHistogram {
+            field: b"TEST_FIELD".to_vec(),
+            buckets: vec![ExplorerHistogramBucket {
+                start_realtime_usec: 1_000_000,
+                end_realtime_usec: 2_000_000,
+                values,
+            }],
+        };
+
+        let function = NetdataJournalFunction::systemd_journal();
+        let rendered = function.build_histogram(&DisplayContext::default(), &histogram);
+        let labels = rendered["chart"]["result"]["labels"]
+            .as_array()
+            .expect("labels");
+        assert_eq!(labels.len(), 2);
+        assert_eq!(labels[1], Value::String(String::from_utf8(prefix).unwrap()));
+        assert_eq!(rendered["chart"]["result"]["data"][0][1][0], json!(5));
+    }
+
+    #[test]
+    fn duplicate_row_timestamps_match_plugin_direction_adjustment() {
+        let mut backward = vec![
+            test_located_row(100),
+            test_located_row(100),
+            test_located_row(100),
+            test_located_row(90),
+        ];
+        make_row_timestamps_unique(&mut backward, Direction::Backward);
+        assert_eq!(
+            backward
+                .iter()
+                .map(|row| row.row.realtime_usec)
+                .collect::<Vec<_>>(),
+            vec![100, 99, 98, 90]
+        );
+
+        let mut forward = vec![
+            test_located_row(90),
+            test_located_row(100),
+            test_located_row(100),
+            test_located_row(100),
+        ];
+        make_row_timestamps_unique(&mut forward, Direction::Forward);
+        assert_eq!(
+            forward
+                .iter()
+                .map(|row| row.row.realtime_usec)
+                .collect::<Vec<_>>(),
+            vec![90, 100, 101, 102]
+        );
+    }
+
+    #[test]
+    fn systemd_profile_keeps_user_group_ids_raw_by_default() {
+        let context = DisplayContext::default();
+        let profile = SystemdJournalProfile;
+        assert_eq!(
+            profile.field_display_value(&context, DisplayScope::Facet, "_UID", b"0"),
+            json!("0")
+        );
+        assert_eq!(
+            profile.field_display_value(&context, DisplayScope::Facet, "_GID", b"0"),
+            json!("0")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plugin_compatible_profile_resolves_user_group_ids_explicitly() {
+        let context = DisplayContext::default();
+        let profile = SystemdJournalPluginProfile;
+        assert_eq!(
+            profile.field_display_value(&context, DisplayScope::Facet, "_UID", b"0"),
+            json!("root")
+        );
+        assert_eq!(
+            profile.field_display_value(&context, DisplayScope::Facet, "_GID", b"0"),
+            json!("root")
+        );
+    }
+
+    #[test]
+    fn file_overlap_uses_netdata_max_realtime_slack() {
+        let file_first_seconds = 200_000_000u64;
+        let file_last_seconds = 200_000_100u64;
+        let slack_seconds = NETDATA_JOURNAL_VS_REALTIME_DELTA_MAX_USEC / 1_000_000;
+        let header = crate::FileHeader {
+            signature: *b"LPKSHHRH",
+            compatible_flags: 0,
+            incompatible_flags: 0,
+            state: 0,
+            header_size: 0,
+            head_entry_realtime: file_first_seconds * 1_000_000,
+            tail_entry_realtime: file_last_seconds * 1_000_000,
+            head_entry_seqnum: 0,
+            tail_entry_seqnum: 0,
+            tail_entry_boot_id: [0; 16],
+            seqnum_id: [0; 16],
+        };
+        let config = NetdataFunctionConfig::systemd_journal();
+
+        let inside_slack = NetdataRequest::parse(
+            &json!({
+                "after": file_last_seconds + slack_seconds - 1,
+                "before": file_last_seconds + slack_seconds + 500
+            }),
+            &config,
+        )
+        .expect("parse request");
+        assert!(file_may_overlap_request(header, &inside_slack));
+
+        let outside_slack = NetdataRequest::parse(
+            &json!({
+                "after": file_last_seconds + slack_seconds + 1,
+                "before": file_last_seconds + slack_seconds + 500
+            }),
+            &config,
+        )
+        .expect("parse request");
+        assert!(!file_may_overlap_request(header, &outside_slack));
+    }
+
+    #[test]
+    fn journal_file_order_matches_plugin_comparator_shape() {
+        let older = JournalFileOrderInfo {
+            msg_first_realtime_usec: 100,
+            msg_last_realtime_usec: 200,
+            file_last_modified_usec: 200,
+        };
+        let newer = JournalFileOrderInfo {
+            msg_first_realtime_usec: 100,
+            msg_last_realtime_usec: 300,
+            file_last_modified_usec: 100,
+        };
+        assert_eq!(
+            compare_journal_file_order(&newer, &older, Direction::Backward),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_journal_file_order(&newer, &older, Direction::Forward),
+            Ordering::Greater
+        );
+
+        let newer_mtime = JournalFileOrderInfo {
+            msg_first_realtime_usec: 100,
+            msg_last_realtime_usec: 200,
+            file_last_modified_usec: 300,
+        };
+        assert_eq!(
+            compare_journal_file_order(&newer_mtime, &older, Direction::Backward),
+            Ordering::Less
+        );
+
+        let newer_first = JournalFileOrderInfo {
+            msg_first_realtime_usec: 150,
+            msg_last_realtime_usec: 200,
+            file_last_modified_usec: 200,
+        };
+        assert_eq!(
+            compare_journal_file_order(&newer_first, &older, Direction::Backward),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn boot_first_realtime_keeps_earliest_timestamp_like_plugin() {
+        let mut boot_first = BTreeMap::new();
+        record_boot_first_realtime(&mut boot_first, b"boot-a".to_vec(), 300);
+        record_boot_first_realtime(&mut boot_first, b"boot-a".to_vec(), 100);
+        record_boot_first_realtime(&mut boot_first, b"boot-a".to_vec(), 200);
+
+        assert_eq!(boot_first.get(b"boot-a".as_slice()), Some(&100));
+    }
+
+    #[test]
+    fn disposed_journal_extension_matches_plugin_scan_contract() {
+        assert!(is_journal_file_name(Path::new("active.journal")));
+        assert!(is_journal_file_name(Path::new("archived.journal~")));
+        assert!(is_journal_file_name(Path::new("active.journal.zst")));
+        assert!(is_journal_file_name(Path::new("archived.journal~.zst")));
+    }
+
+    fn test_located_row(realtime_usec: u64) -> LocatedRow {
+        LocatedRow {
+            file_path: PathBuf::from("test.journal"),
+            row: ExplorerRow {
+                realtime_usec,
+                cursor: String::new(),
+                payloads: Vec::new(),
+            },
+        }
     }
 }
