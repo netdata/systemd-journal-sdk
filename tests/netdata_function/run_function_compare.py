@@ -69,7 +69,7 @@ def run_command(
     parsed = None
     parse_error = None
     json_prefix_bytes = 0
-    if exit_code == 0:
+    if stdout:
         parsed, parse_error, json_prefix_bytes = parse_stdout_json(stdout)
     return {
         "command_hash": hashlib.sha256("\0".join(command).encode()).hexdigest(),

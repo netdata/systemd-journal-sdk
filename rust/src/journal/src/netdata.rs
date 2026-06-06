@@ -517,6 +517,15 @@ where
         paths: Vec<PathBuf>,
         combined: CombinedResult,
     ) -> Value {
+        let not_modified = request.if_modified_since_usec != 0
+            && !combined.partial
+            && combined.stats.last_realtime_usec <= request.if_modified_since_usec;
+        if combined.cancelled {
+            return netdata_function_error(499, "Request cancelled.");
+        }
+        if not_modified {
+            return netdata_function_error(304, "No new data since the previous call.");
+        }
         let columns = self.build_columns(
             &request,
             &combined.rows,
@@ -532,21 +541,8 @@ where
             self.build_histogram(&context, histogram, combined.facets.get(&histogram.field))
         });
         let returned = data.len() as u64;
-        let not_modified = request.if_modified_since_usec != 0
-            && !combined.partial
-            && combined.stats.last_realtime_usec <= request.if_modified_since_usec;
-        let status = if combined.cancelled {
-            499
-        } else if not_modified {
-            304
-        } else {
-            200
-        };
-        let message = if combined.cancelled {
-            Value::String("Request cancelled.".to_string())
-        } else if not_modified {
-            Value::String("No new data since the previous call.".to_string())
-        } else if combined.timed_out {
+        let status = 200;
+        let message = if combined.timed_out {
             Value::String("Timed out".to_string())
         } else {
             Value::String("OK".to_string())
@@ -1386,6 +1382,13 @@ impl CombinedResult {
             .filter_map(|field| String::from_utf8(field.clone()).ok())
             .collect()
     }
+}
+
+fn netdata_function_error(status: u64, message: &str) -> Value {
+    json!({
+        "status": status,
+        "errorMessage": message,
+    })
 }
 
 fn merged_progress_stats(completed: &ExplorerStats, current: &ExplorerStats) -> ExplorerStats {
@@ -2939,8 +2942,12 @@ mod tests {
             .expect("run function");
 
         assert_eq!(response["status"], 499);
-        assert_eq!(response["partial"], true);
-        assert_eq!(response["message"], "Request cancelled.");
+        assert_eq!(response["errorMessage"], "Request cancelled.");
+        assert_eq!(
+            response.as_object().expect("response object").len(),
+            2,
+            "plugin-compatible function errors only include status and errorMessage"
+        );
     }
 
     #[test]

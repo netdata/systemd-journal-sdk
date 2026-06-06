@@ -690,6 +690,18 @@ Status mapping:
 
 Evidence: `systemd-journal-execute.h:651-712`.
 
+The installed plugin's offline test path returns compact function error
+envelopes for terminal error states instead of table responses. For example,
+tail/no-change returns:
+
+```json
+{"status":304,"errorMessage":"No new data since the previous call."}
+```
+
+The Rust SDK Netdata boundary mirrors this for cancellation and no-change
+responses. Timeout remains a partial table response so callers can consume the
+partial data and diagnostics.
+
 ## Output Model
 
 All successful query responses include:

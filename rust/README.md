@@ -144,7 +144,9 @@ Current reader scope:
   `NetdataFunctionRunOptions` to supply a timeout, progress callback, and
   cancellation callback. The Netdata boundary honors built-in
   `__logs_sources` groups for explicit directory inputs by classifying local,
-  namespace, user, system, uncategorized, and remote journal filenames;
+  namespace, user, system, uncategorized, and remote journal filenames.
+  Cancellation and no-change responses use Netdata's compact function error
+  envelope; timeout returns a partial table response;
 - `src/internal/testcmd/netdata_function_wrapper` exposes the SDK Netdata
   boundary through the same offline CLI shape as Netdata's plugin test path:
   `netdata_function_wrapper --test systemd-journal --dir <journal-dir>

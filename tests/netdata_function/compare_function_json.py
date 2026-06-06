@@ -281,6 +281,10 @@ def normalized_top_level(doc: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def is_function_error(doc: dict[str, Any]) -> bool:
+    return isinstance(doc.get("errorMessage"), str)
+
+
 def ignored_data_only_columns(left: dict[str, Any], right: dict[str, Any]) -> dict[str, list[str]]:
     if not (is_data_only(left) or is_data_only(right)):
         return {"left": [], "right": []}
@@ -341,6 +345,29 @@ def value_count(facets: Any) -> int:
 
 
 def compare(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    if is_function_error(left) or is_function_error(right):
+        left_error = normalize_json(left)
+        right_error = normalize_json(right)
+        ok = left_error == right_error
+        return {
+            "ok": ok,
+            "checks": {"function_error": ok},
+            "content_checks": {"function_error": ok},
+            "diffs": {"function_error": first_difference(left_error, right_error)},
+            "non_content": {},
+            "left": {
+                "top_level_keys": sorted(left),
+                "status": left.get("status"),
+                "errorMessage": left.get("errorMessage"),
+            },
+            "right": {
+                "top_level_keys": sorted(right),
+                "status": right.get("status"),
+                "errorMessage": right.get("errorMessage"),
+            },
+            "ignored_top_level_fields": sorted(VOLATILE_TOP_LEVEL_FIELDS),
+        }
+
     data_only = is_data_only(left) or is_data_only(right)
     allowed_columns = None
     if data_only:

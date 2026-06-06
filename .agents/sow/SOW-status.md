@@ -16,12 +16,13 @@ Last updated: 2026-06-06
   internal `netdata_function_wrapper`, semantic comparator, progress/cancel
   run-control API, directory-local source info metadata, explicit-directory
   built-in source selection, full-analysis Netdata catalog semantics,
-  data-only, and data-only delta now pass the repo-local seven-request
-  SDK-first comparison matrix. Remaining replacement gaps include sampling
-  estimates, tail, cancellation/timeout matrix parity, learned/persisted
-  realtime-drift state, and live registry/provider source metadata beyond
-  explicit-directory classification. NetFlow source analysis is design evidence
-  only for future grouped rollup/statistics APIs.
+  data-only, data-only delta, and tail/no-change `304` function-error
+  envelopes now pass the repo-local eight-request SDK-first comparison matrix.
+  Remaining replacement gaps include sampling estimates, cancellation/timeout
+  matrix parity, learned/persisted realtime-drift state, and live
+  registry/provider source metadata beyond explicit-directory classification.
+  NetFlow source analysis is design evidence only for future grouped
+  rollup/statistics APIs.
 
 ## Pending
 

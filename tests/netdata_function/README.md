@@ -21,6 +21,8 @@ The comparator checks function content, not byte-for-byte JSON serialization:
 - Histogram buckets by timestamp and dimension label.
 - Stable item counters: `matched`, `returned`, `max_to_return`, `after`,
   `before`, `unsampled`, and `estimated`.
+- Compact function error envelopes such as
+  `{"status":304,"errorMessage":"No new data since the previous call."}`.
 
 Dictionary and array emission order is not treated as content when Netdata
 derives that order from hash-table traversal. Runtime envelope fields such as
@@ -44,6 +46,10 @@ empty-string unavailable-field artifact:
 ```
 
 All other zero-count facet values remain content and must match.
+
+The runner parses JSON stdout even when a compared binary exits nonzero,
+because Netdata's plugin test path exits nonzero for function error responses
+such as HTTP 304 no-change.
 
 Sanitized reports should be written under `.local/`. Do not commit raw plugin
 or SDK JSON generated from real journal data.

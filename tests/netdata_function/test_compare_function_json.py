@@ -219,6 +219,21 @@ class CompareFunctionJsonTest(unittest.TestCase):
         self.assertFalse(report["checks"]["rows"])
         self.assertIn("CODE_FILE", report["diffs"]["rows"])
 
+    def test_matching_function_error_envelopes_pass(self) -> None:
+        error = {"status": 304, "errorMessage": "No new data since the previous call."}
+        report = compare(error, dict(error))
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["checks"]["function_error"])
+
+    def test_function_error_envelope_mismatch_fails(self) -> None:
+        report = compare(
+            {"status": 304, "errorMessage": "No new data since the previous call."},
+            {"status": 499, "errorMessage": "Request cancelled."},
+        )
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["checks"]["function_error"])
+        self.assertIn("errorMessage", report["diffs"]["function_error"])
+
 
 if __name__ == "__main__":
     unittest.main()

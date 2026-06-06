@@ -7,14 +7,15 @@ Status: in-progress
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
 Sub-state: strict SDK-first content comparison passes locally for the large
-default-facets full-analysis request and for the repo-local seven-request
+default-facets full-analysis request and for the repo-local eight-request
 matrix: `info`, full priority, filtered priority, full default facets,
-data-only, data-only delta, and built-in `__logs_sources` source selection.
-Rust SDK run-control API covers progress reporting, cancellation, timeout
-plumbing, request normalization for data-only/delta/tail, and `last_modified`.
-Remaining replacement gaps include sampling estimates, tail/cancellation/
-timeout matrix parity, learned/persisted realtime-drift state, and
-registry/provider source metadata beyond explicit-directory classification.
+data-only, data-only delta, built-in `__logs_sources` source selection, and
+tail/no-change `304` function-error responses. Rust SDK run-control API covers
+progress reporting, cancellation, timeout plumbing, request normalization for
+data-only/delta/tail, and `last_modified`. Remaining replacement gaps include
+sampling estimates, cancellation/timeout matrix parity, learned/persisted
+realtime-drift state, and registry/provider source metadata beyond
+explicit-directory classification.
 
 ## Requirements
 
@@ -976,8 +977,8 @@ Real-use evidence:
   - remaining gaps are intentionally recorded before calling this a complete
     replacement: sampling currently reports the selected mode and placeholder
     counters, learned realtime-drift state is not persisted by the SDK API yet,
-    and the strict comparator matrix still needs tail, sampling, cancellation,
-    and timeout fixtures.
+    and the strict comparator matrix still needs sampling, cancellation, and
+    timeout fixtures.
 - Netdata function boundary expansion on 2026-06-06:
   - request fixtures added:
     `tests/netdata_function/requests/window-last5-data-only.json` and
@@ -1050,6 +1051,34 @@ Real-use evidence:
     `python3 -m py_compile tests/netdata_function/run_function_compare.py tests/netdata_function/compare_function_json.py tests/netdata_function/test_compare_function_json.py`,
     `python3 tests/netdata_function/test_compare_function_json.py`,
     `git diff --check`, and `.agents/sow/audit.sh`.
+- Netdata tail/no-change function-error parity on 2026-06-06:
+  - request fixture added:
+    `tests/netdata_function/requests/window-last5-tail-no-change.json`;
+  - installed plugin evidence: the offline test path returns JSON
+    `{"status":304,"errorMessage":"No new data since the previous call."}` and
+    exits with status `1` for this function error;
+  - implementation shape:
+    SDK `journal::netdata` now returns plugin-compatible compact function
+    error envelopes for `304` no-change and `499` cancellation. Timeout remains
+    a partial table response;
+  - comparison harness shape:
+    `tests/netdata_function/run_function_compare.py` now parses JSON stdout
+    even when the compared binary exits nonzero, and
+    `tests/netdata_function/compare_function_json.py` compares compact
+    function error envelopes as content;
+  - strict SDK-first comparison report:
+    `.local/sow-0093/function-compare-run-control-validation.json`;
+  - all eight request cases passed strict semantic content comparison:
+    `info.json`, `window-last5-priority.json`,
+    `window-error-filter.json`, `window-last5-default-facets.json`,
+    `window-last5-data-only.json`,
+    `window-last5-data-only-delta.json`,
+    `window-last5-priority-source-system.json`, and
+    `window-last5-tail-no-change.json`;
+  - the tail/no-change case matched the compact function error envelope with
+    `checks.function_error=true`; SDK exit code was `0`, installed plugin exit
+    code was `1`, SDK wall time was `0.001302` seconds, and installed plugin
+    wall time was `0.004040` seconds.
 
 Implementation fixes after first reviewer batch:
 

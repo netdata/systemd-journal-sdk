@@ -1,0 +1,14 @@
+{
+  "after": 1666569601,
+  "before": 1666584438,
+  "last": 5,
+  "direction": "backward",
+  "data_only": true,
+  "tail": true,
+  "if_modified_since": 1666584438086856,
+  "slice": true,
+  "facets": [
+    "PRIORITY"
+  ],
+  "histogram": "PRIORITY"
+}
