@@ -7,26 +7,6 @@ Last updated: 2026-06-06
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
-- SOW-0093 - Netdata Function Boundary Reader Comparison: in-progress. Build
-  the SDK Netdata-specific function API boundary, wrapper, and comparison
-  harness for Netdata function-boundary output equality and performance using
-  semantic normalized function JSON and the shared `--test`, `--dir`, and
-  `--request` CLI shape; current comparison target is generic log-function
-  behavior versus `systemd-journal.plugin`. Rust `journal::netdata`, the
-  internal `netdata_function_wrapper`, semantic comparator, progress/cancel
-  run-control API, directory-local source info metadata, explicit-directory
-  built-in source selection, full-analysis Netdata catalog semantics,
-  data-only, data-only delta, and tail/no-change `304` function-error
-  envelopes now pass the repo-local eight-request SDK-first comparison matrix.
-  Timeout response shape matches the plugin in a repo-local hardlink timeout
-  probe with sampling disabled. Run-control now reports progress over
-  source/time-selected query files, emits file-end progress for fast files, and
-  validates cancellation before execution and during active scans; wrapper
-  diagnostics now exercise progress and cancellation through the same SDK API.
-  Remaining replacement gaps include sampling estimates, learned/persisted
-  realtime-drift state, and live registry/provider source metadata beyond
-  explicit-directory classification. NetFlow source analysis is design evidence
-  only for future grouped rollup/statistics APIs.
 
 ## Pending
 
@@ -53,8 +33,29 @@ Last updated: 2026-06-06
   cached `next_field_offset` chains when possible, and decompress only when
   facets or histogram requirements still need it; blocked until SOW-0093
   stabilizes and promotes the Explorer API.
+
 ## Recently Closed Or Completed
 
+- SOW-0093 - Netdata Function Boundary Reader Comparison: completed. The Rust
+  SDK `journal::netdata` API is now the replacement surface for Netdata's
+  generic `systemd-journal.plugin` logs function, with the internal
+  `netdata_function_wrapper` kept as a thin offline stdin test adapter over
+  that API. Rust `journal::netdata`, the wrapper, and the semantic comparator
+  pass the repo-local SDK-first ten-request comparison matrix for `info`, full
+  priority, filtered priority, full default facets, low-budget sampling,
+  data-only, data-only delta, built-in `__logs_sources` source selection,
+  FTS `|` OR / `!` negative query terms, and tail/no-change `304`
+  function-error responses. Run-control is an SDK API feature: callers provide
+  timeout, progress, cancellation, and optional state hooks; progress reports
+  source/time-selected query files and file-end completion, cancellation is
+  checked before files, during active Explorer scans, and after file-end
+  progress callbacks. The API exposes caller-owned state hooks for
+  registry-provided source metadata and learned per-file
+  journal-vs-source-realtime drift. Final validation passed, including 95 Rust
+  tests, 17 comparator tests, ten stdin SDK/plugin comparison requests,
+  single-file progress-triggered cancellation, `git diff --check`, and the SOW
+  audit. Final valid reviewer votes from glm, kimi, mimo, qwen, minimax, and
+  deepseek were all `PRODUCTION GRADE`.
 - SOW-0082 - Rust Optimized Journal Explorer API: completed after regression
   repair. Normal Netdata-shaped Explorer queries now use one candidate-row
   traversal for rows, facets, and histogram; the Netdata function wrapper keeps

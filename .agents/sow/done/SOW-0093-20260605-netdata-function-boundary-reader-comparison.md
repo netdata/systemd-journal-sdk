@@ -2,21 +2,24 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
 Sub-state: strict SDK-first content comparison passes locally for the large
-default-facets full-analysis request and for the repo-local eight-request
-matrix: `info`, full priority, filtered priority, full default facets,
-data-only, data-only delta, built-in `__logs_sources` source selection, and
-tail/no-change `304` function-error responses. Rust SDK run-control API covers
-query-file progress reporting, file-end progress, active-scan cancellation,
-timeout plumbing, request normalization for data-only/delta/tail, and
-`last_modified`; the wrapper exposes diagnostic progress/cancellation switches
-over the same SDK API. Remaining replacement gaps include sampling estimates,
-learned/persisted realtime-drift state, and registry/provider source metadata
-beyond explicit-directory classification.
+default-facets full-analysis request and for the repo-local matrix covering
+`info`, full priority, filtered priority, full default facets, low-budget
+sampling, data-only, data-only delta, built-in `__logs_sources` source
+selection, FTS `|` OR and `!` negative query terms, and tail/no-change `304`
+function-error responses. Rust SDK run-control API covers query-file progress
+reporting, file-end progress, active-scan cancellation, timeout plumbing,
+request normalization for data-only/delta/tail, sampling counters/estimates,
+and `last_modified`; the wrapper exposes diagnostic progress/cancellation
+switches over the same SDK API. The Netdata SDK API exposes caller-owned state
+hooks for registry-provided source metadata and learned per-file
+journal-vs-source-realtime drift. The final six-model same-scope reviewer rerun
+after the reviewer-disposition hardening pass returned production-grade votes
+from all valid reviewer runs.
 
 ## Requirements
 
@@ -34,7 +37,7 @@ The user requested a comparison plan:
   corpus;
 - create an SDK wrapper that accepts the same Netdata function test CLI shape
   the plugins will expose:
-  `/path/to/wrapper --test function-name --dir /path/to/backend-data/ --request /path/to/function/request/payload.json [additional options if required]`;
+  `/path/to/wrapper --test function-name --dir /path/to/backend-data/ --timeout SECONDS < /path/to/function/request/payload.json [additional options if required]`;
 - compare against `systemd-journal.plugin` after Netdata exposes the same
   standard CLI shape;
 - create representative request payloads for common and rare generic log-query
@@ -106,9 +109,9 @@ Unknowns:
 - Exact default facet sets, request shapes, sampling rules, volatile output
   fields, and function output canonicalization for the generic log-function
   path must be re-read from current Netdata source before implementation.
-- The wrapper must use the same `--test`, `--dir`, and `--request` command-line
-  contract as the Netdata `systemd-journal.plugin` binary so the benchmark
-  harness can swap binaries without changing payloads.
+- The wrapper must use the same `--test`, `--dir`, stdin request payload, and
+  `--timeout` command-line contract as the Netdata `systemd-journal.plugin`
+  binary so the benchmark harness can swap binaries without changing payloads.
 - The wrapper should be a thin CLI over the future SDK API. The reusable API
   should stay in a Netdata-specific module/layer, separate from the core
   journal file-format reader.
@@ -118,7 +121,7 @@ Unknowns:
 - Select and document representative sanitized multi-GB journal datasets from
   the local large journal corpus.
 - Add an SDK wrapper command with this CLI contract:
-  `/path/to/wrapper --test function-name --dir /path/to/backend-data/ --request /path/to/function/request/payload.json [additional options if required]`.
+  `/path/to/wrapper --test function-name --dir /path/to/backend-data/ --timeout SECONDS < /path/to/function/request/payload.json [additional options if required]`.
 - Treat Netdata-side plugin test entrypoints as external binaries with the same
   contract; do not implement or modify them in this repository.
 - Extract default/common facets from current `systemd-journal.plugin` source
@@ -353,7 +356,7 @@ Netdata offline test CLI evidence:
 
 - Checked `netdata/netdata @ 8c5c9b465e20` from PR
   `netdata/netdata#22638`.
-- `systemd-journal.plugin` now has the external CLI shape SOW-0093 needs:
+- `systemd-journal.plugin` initially had this external CLI shape for SOW-0093:
   `systemd-journal.plugin --test systemd-journal --dir <journal-dir>
   --request <payload.json>`. The parser accepts both split and equals forms,
   rejects duplicate/missing options, validates that `--dir` is a directory,
@@ -378,6 +381,10 @@ Netdata offline test CLI evidence:
   `src/collectors/systemd-journal.plugin/systemd-journal.c:316`
   `src/collectors/systemd-journal.plugin/systemd-journal.c:329`
   `src/collectors/systemd-journal.plugin/systemd-journal.c:337`
+- On 2026-06-06, the user changed the Netdata test-mode contract for security:
+  request payload JSON is read from stdin, and request filenames are no longer
+  accepted. The SDK wrapper and comparison harness must mirror that contract so
+  no privileged test binary reads a caller-supplied filename.
 - PR `netdata/netdata#22638` also adds a `netflow-plugin --test
   flows:netflow ... --no-persist` path. This remains non-normative design
   evidence for this SDK SOW because `flows:netflow` is not a current SDK
@@ -560,9 +567,9 @@ Open decisions:
 - 2026-06-05 repository-boundary decision: this repository will not modify
   `systemd-journal.plugin` or `netflow.plugin`. The user will create the
   `systemd-journal.plugin` CLI function payload entrypoint separately. This
-  SOW builds the SDK wrapper with the same `--test`, `--dir`, and `--request`
-  contract, plus the semantic normalized comparison harness that can call that
-  plugin CLI when it exists.
+  SOW builds the SDK wrapper with the same `--test`, `--dir`, stdin request
+  payload, and `--timeout` contract, plus the semantic normalized comparison
+  harness that can call that plugin CLI when it exists.
 - 2026-06-05 scope decision: a hardcoded NetFlow/`flows:netflow` function is
   not part of this SDK requirement. NetFlow analysis remains design evidence
   only. The current deliverable targets generic Netdata log-function behavior
@@ -607,8 +614,11 @@ Implementer:
 
 Reviewers:
 
-- Reviewer pool after complete implementation and local validation: minimax,
-  kimi, qwen, glm, and mimo.
+- Reviewer pool after complete implementation and local validation:
+  `llm-netdata-cloud/glm-5.1`, `llm-netdata-cloud/kimi-k2.6`,
+  `llm-netdata-cloud/mimo-v2.5-pro`, `llm-netdata-cloud/qwen3.6-plus`,
+  `llm-netdata-cloud/minimax-m3-coder`, and
+  `llm-netdata-cloud/deepseek-v4-pro`.
 
 Repository boundary block for every external-agent prompt:
 
@@ -660,7 +670,7 @@ Failure handling:
 - Added the internal Rust wrapper command
   `rust/src/internal/testcmd/netdata_function_wrapper`, using the same CLI
   shape as the external Netdata plugin:
-  `--test systemd-journal --dir <journal-dir> --request <request.json>`.
+  `--test systemd-journal --dir <journal-dir> --timeout <seconds> < <request.json>`.
 - Added `ExplorerQuery::exclude_facet_field_filters`. The explorer default
   remains `true` to preserve previous SDK behavior; the Netdata wrapper sets it
   to `false` to match `systemd-journal.plugin` facet counting with all filters
@@ -700,9 +710,13 @@ Failure handling:
 
 Acceptance criteria evidence:
 
-- Partial. Rust SDK API, wrapper CLI, semantic comparator, and repo-local
-  plugin smoke are implemented. Multi-GB dataset selection and repeated
-  performance matrix remain pending.
+- Complete for this SOW scope. Rust SDK API, wrapper CLI, semantic comparator,
+  repo-local plugin matrix, progress/cancellation/timeout validation,
+  caller-owned state hooks, sampling behavior, and the 4 GiB default-facets
+  large-request comparison are implemented and validated. The current SOW proves
+  content equivalence and realistic performance against `systemd-journal.plugin`
+  for the checked generic log-function scope; Netdata component integration is
+  tracked by the separate integration SOWs.
 
 Tests or equivalent validation:
 
@@ -944,7 +958,7 @@ Real-use evidence:
     Explorer row-cadence control path stops with the plugin-compatible compact
     `499` response.
   - the wrapper remains a thin SDK adapter for the standard `--test`, `--dir`,
-    `--request`, and `--timeout` shape, and now adds diagnostic-only
+    stdin request payload, and `--timeout` shape, and now adds diagnostic-only
     `--progress-jsonl`, `--cancel-immediately`, and
     `--cancel-after-progress` options. These validate wrapper wiring without
     writing progress frames into normal comparison stdout.
@@ -1017,6 +1031,35 @@ Real-use evidence:
     `.local/sow-0093/function-compare-wrapper-run-control-validation.json`
     passed with `overall: true` and all content checks true;
   - `git diff --check` and `.agents/sow/audit.sh` passed.
+- Netdata function sampling and state-hook implementation on 2026-06-06:
+  - Explorer now accepts `ExplorerSampling` and reports sampled, unsampled,
+    estimated, row-unsampled, row-estimated, and max
+    source-realtime-delta counters in `ExplorerStats`;
+  - Netdata full-analysis requests enable sampling only when plugin conditions
+    are met, preserve returned-row candidates as full rows, add `[unsampled]`
+    and `[estimated]` histogram values, and suppress `_sampling` for data-only
+    requests;
+  - the SDK Netdata API now exposes `NetdataFunctionState`, allowing Netdata
+    consumers to provide per-file source type/name metadata, per-file
+    first/last/modified timestamps, and per-file learned
+    journal-vs-source-realtime drift;
+  - source filtering uses caller metadata before filename fallback, and larger
+    `_SOURCE_REALTIME_TIMESTAMP` deltas learned during traversal are reported
+    back through the state hook, capped to Netdata's two-minute model;
+  - request fixture added:
+    `tests/netdata_function/requests/window-last5-default-facets-sampling20.json`;
+  - focused validation passed:
+    `cargo fmt --check && cargo test -p journal netdata_function_api --lib`,
+    `cargo test -p journal source_selection_uses_caller_metadata_before_filename_fallback --lib`,
+    and
+    `cargo test -p journal netdata_function_state_receives_learned_source_realtime_delta --lib`.
+  - full SDK-first fixture matrix including the sampling fixture passed again
+    after the state-hook implementation with report path
+    `.local/sow-0093/function-compare-with-state-sampling-final/summary.json`;
+    all stable content checks were true for nine request payloads:
+    `info`, full priority, filtered priority, full default facets,
+    low-budget sampling, data-only, data-only delta, built-in source selection,
+    and tail/no-change.
 - Netdata function boundary expansion on 2026-06-06:
   - request fixtures added:
     `tests/netdata_function/requests/window-last5-data-only.json` and
@@ -1297,6 +1340,245 @@ Reviewer findings:
   - Reviewers repeated the caveat that this proves content equivalence for the
     checked large default-facets request, not presentation-order identity,
     broader request-matrix coverage, or performance evidence.
+- Reviewer-finding fix pass on 2026-06-06:
+  - Qwen's later same-scope review returned `NOT PRODUCTION GRADE` because the
+    SOW still had stale partial-validation text and `merge_histogram()` relied
+    on an implicit same-bucket invariant. Fixed the code to reject inconsistent
+    histogram field/bucket shapes instead of silently truncating source buckets.
+  - The same pass clarified that `slice` is intentionally forced to indexed
+    slice semantics in the SDK replacement, changed explicit-directory journal
+    discovery to bounded recursive traversal with canonical-directory
+    de-duplication, and fixed caller metadata summaries so partial
+    `msg_first_realtime_usec` / `msg_last_realtime_usec` metadata still falls
+    back to the journal header for the missing side.
+  - Added focused Rust tests:
+    `merge_histogram_rejects_inconsistent_bucket_shape`,
+    `collect_journal_files_recurses_nested_directories`,
+    `collect_journal_files_deduplicates_symlinked_directories`, and
+    `source_summary_fills_missing_caller_metadata_from_header`.
+  - Validation after this fix pass:
+    `cargo fmt --check && cargo test -p journal` passed from `rust/` with 89
+    Rust tests; `python3 -m py_compile tests/netdata_function/run_function_compare.py
+    tests/netdata_function/compare_function_json.py
+    tests/netdata_function/test_compare_function_json.py` and
+    `python3 tests/netdata_function/test_compare_function_json.py` passed with
+    15 Python comparator tests; `cargo build --manifest-path rust/Cargo.toml
+    --release -p netdata_function_wrapper` passed.
+  - Fresh SDK-first nine-request comparison after the fix pass wrote
+    `.local/sow-0093/function-compare-after-review-fixes/summary.json` with
+    `overall: true`; all requests passed stable content checks for columns,
+    rows, facets, histogram, stable item counters, and function-error content
+    where applicable.
+- FTS reviewer-finding fix pass on 2026-06-06:
+  - The next same-scope reviewer pass found a blocking replacement gap: the
+    SDK request parser treated the full `query` string as one FTS pattern and
+    had no function-boundary FTS fixture. Evidence from
+    `netdata/netdata @ 83c17da3a898` showed `facets_set_query()` calls
+    `simple_pattern_create(query, "|", SIMPLE_PATTERN_SUBSTRING, false)` and
+    row processing rejects a row when no positive term matched or any negative
+    term matched.
+  - Fixed the Rust Explorer and Netdata request boundary to preserve ordered
+    FTS terms, `|` separators, leading `!` negative terms, escaped separators,
+    substring `*` parts, DATA offset-cache classification for negative terms,
+    and row-level negative rejection.
+  - Added focused Rust tests:
+    `parses_netdata_fts_query_like_simple_pattern` and
+    `explorer_fts_or_terms_and_negative_terms_filter_rows`.
+  - Added the function-boundary fixture
+    `tests/netdata_function/requests/window-last5-fts-or-negative.json`.
+  - Validation after this fix pass:
+    `cd rust && cargo fmt --check && cargo test -p journal netdata --lib &&
+    cargo test -p journal explorer_fts --lib` passed; `cd rust && cargo test
+    -p journal` passed with 91 Rust tests; `cargo build --release
+    -p netdata_function_wrapper` passed; the Python comparator compile check
+    and `python3 tests/netdata_function/test_compare_function_json.py` passed
+    with 15 tests.
+  - Fresh SDK-first ten-request comparison after the FTS fix wrote
+    `.local/sow-0093/function-compare-after-fts-fix/summary.json` with
+    `overall: true`; all requests, including
+    `window-last5-fts-or-negative`, passed stable content checks for columns,
+    rows, facets, histogram, stable item counters, and function-error content
+    where applicable.
+  - One read-only reviewer process violated its prompt and attempted local
+    edits. The specific reviewer PIDs were terminated, its partial edits were
+    not accepted as review output, and the FTS fix was implemented locally and
+    validated under the SOW.
+- Final progress/cancellation and robustness fix pass on 2026-06-06:
+  - made `CombinedResult::merge()` validate histogram field and bucket shape
+    before merging file stats, rows, columns, or facets, so an impossible
+    histogram-shape mismatch cannot leave a partially merged file result at the
+    SDK API boundary;
+  - preserved the previous fixes that clear FTS state during the zero-count
+    vocabulary pass and report unreadable subdirectories through
+    `_journal_files.errors` while continuing to scan readable siblings;
+  - focused validation passed:
+    `cargo fmt --check && cargo test -p journal netdata --lib &&
+    cargo test -p journal explorer_fts --lib`;
+  - full Rust validation passed:
+    `cd rust && cargo test -p journal` with 92 Rust tests;
+  - release wrapper and comparator validation passed:
+    `cargo build --release -p netdata_function_wrapper`,
+    `python3 -m py_compile tests/netdata_function/run_function_compare.py
+    tests/netdata_function/compare_function_json.py
+    tests/netdata_function/test_compare_function_json.py`, and
+    `python3 tests/netdata_function/test_compare_function_json.py` with 15
+    Python tests;
+  - fresh SDK-first ten-request comparison wrote
+    `.local/sow-0093/function-compare-after-final-progress-cancel-fixes/report.json`
+    and
+    `.local/sow-0093/function-compare-after-final-progress-cancel-fixes/summary.json`
+    with `ok: true`; all ten requests passed stable content checks for
+    columns, rows, facets, histogram, stable item counters, and function-error
+    content where applicable;
+  - wrapper run-control probes wrote
+    `.local/sow-0093/run-control-final/progress.jsonl`,
+    `.local/sow-0093/run-control-final/cancel-immediate.json`, and
+    `.local/sow-0093/run-control-final/cancel-after-progress.json`;
+    the progress probe emitted one selected-file progress event with
+    `current_file=1`, `total_files=1`, `matched_files=1`, and
+    `skipped_files=0`; both cancellation probes returned
+    `{"status":499,"errorMessage":"Request cancelled."}`;
+  - `git diff --check` and `.agents/sow/audit.sh` passed.
+- Stdin request security and reviewer-blocker fix pass on 2026-06-06:
+  - changed the SDK `netdata_function_wrapper` test adapter to read request
+    JSON from stdin instead of `--request <path>`, matching the current
+    Netdata plugin test-mode security contract for privileged binaries;
+  - changed the comparison harness so it still accepts fixture paths as harness
+    inputs but pipes request bytes to compared SDK/plugin binaries on stdin;
+  - documented the stdin test-mode contract in the Rust README, Netdata
+    function test README, and systemd-journal-plugin facets spec;
+  - normalized only the synthetic `ND_JOURNAL_FILE` path root in the comparator,
+    comparing the journal filename while treating `/proc/self/fd/<n>/...`
+    versus caller-supplied directory roots as hardened test-mode diagnostics;
+  - fixed reviewer findings by returning immediately after cancellation before
+    zero-count/vocabulary post-processing, including cursor identity in
+    returned-row expansion errors, reporting directory scan-limit truncation,
+    hardening histogram merge iteration, and replacing impossible public
+    boundary `expect()` calls with guarded behavior;
+  - updated the durable reviewer pool to the current six model IDs:
+    `llm-netdata-cloud/glm-5.1`, `llm-netdata-cloud/kimi-k2.6`,
+    `llm-netdata-cloud/mimo-v2.5-pro`, `llm-netdata-cloud/qwen3.6-plus`,
+    `llm-netdata-cloud/minimax-m3-coder`, and
+    `llm-netdata-cloud/deepseek-v4-pro`;
+  - focused validation passed:
+    `cargo fmt --check && cargo test -p journal netdata --lib &&
+    cargo test -p journal explorer_fts --lib`;
+  - full Rust validation passed:
+    `cd rust && cargo test -p journal` with 92 Rust tests;
+  - release wrapper and comparator validation passed:
+    `cargo build --release -p netdata_function_wrapper`,
+    `python3 -m py_compile tests/netdata_function/run_function_compare.py
+    tests/netdata_function/compare_function_json.py
+    tests/netdata_function/test_compare_function_json.py`, and
+    `python3 tests/netdata_function/test_compare_function_json.py` with 17
+    Python tests;
+  - fresh SDK-first ten-request stdin comparison wrote
+    `.local/sow-0093/function-compare-after-stdin-security-fix/report.json`
+    and `.local/sow-0093/function-compare-after-stdin-security-fix/summary.json`
+    with `overall: true`; all ten requests passed stable content checks;
+  - wrapper stdin run-control probes wrote
+    `.local/sow-0093/run-control-stdin-security-fix/progress.jsonl`,
+    `.local/sow-0093/run-control-stdin-security-fix/cancel-immediate.json`,
+    and
+    `.local/sow-0093/run-control-stdin-security-fix/cancel-after-progress-multifile.json`;
+    immediate cancellation and multi-file progress-triggered cancellation both
+    returned `{"status":499,"errorMessage":"Request cancelled."}`;
+  - `git diff --check` and `.agents/sow/audit.sh` passed.
+- Reviewer-disposition hardening pass on 2026-06-06:
+  - six-model read-only reviewer rerun used
+    `llm-netdata-cloud/glm-5.1`, `llm-netdata-cloud/kimi-k2.6`,
+    `llm-netdata-cloud/mimo-v2.5-pro`, `llm-netdata-cloud/qwen3.6-plus`,
+    `llm-netdata-cloud/minimax-m3-coder`, and
+    `llm-netdata-cloud/deepseek-v4-pro`;
+  - five reviewers returned production-grade votes before local hardening;
+    GLM raised blocking concerns for canonical-path deduplication and uncached
+    UID/GID display lookups; MiniMax returned production-grade but identified a
+    real single-file progress-triggered cancellation edge case;
+  - fixed canonical file de-duplication after traversal so symlinked journal
+    files that resolve to the same canonical path are read once;
+  - made directory scan-limit handling precise by refusing new directories once
+    the bounded unique-directory budget is reached, instead of inserting the
+    over-limit directory first;
+  - added per-query UID/GID display caches to the plugin-compatible display
+    context so repeated UID/GID values do not repeatedly invoke host
+    name-service lookup APIs;
+  - made `explore_files()` re-check the cancellation predicate immediately
+    after file-end progress callbacks, so progress-triggered cancellation is
+    honored even when the selected query has only one file;
+  - added focused Rust tests:
+    `netdata_function_api_honors_cancellation_after_final_file_progress`,
+    `plugin_compatible_profile_caches_user_group_resolution`, and
+    `collect_journal_files_deduplicates_symlinked_files`;
+  - focused validation passed:
+    `cargo fmt --check`, `cargo test -p journal
+    netdata_function_api_honors_cancellation_after_final_file_progress --lib`,
+    `cargo test -p journal
+    plugin_compatible_profile_caches_user_group_resolution --lib`, and
+    `cargo test -p journal
+    collect_journal_files_deduplicates_symlinked_files --lib`.
+  - full validation after the hardening pass passed:
+    `cargo fmt --check && cargo test -p journal netdata --lib &&
+    cargo test -p journal explorer_fts --lib` with 40 Netdata tests and 2 FTS
+    tests; `cargo test -p journal` with 95 Rust tests;
+    `cargo build --release -p netdata_function_wrapper`; Python compile check
+    for the three comparison scripts; and
+    `python3 tests/netdata_function/test_compare_function_json.py` with 17
+    tests.
+  - fresh SDK-first ten-request stdin comparison wrote
+    `.local/sow-0093/function-compare-after-reviewer-disposition-fixes/report.json`
+    and
+    `.local/sow-0093/function-compare-after-reviewer-disposition-fixes/summary.json`
+    with `overall: true`, `case_count: 10`, and no failed requests.
+  - wrapper run-control probes wrote
+    `.local/sow-0093/run-control-reviewer-disposition-fixes/progress.jsonl`,
+    `.local/sow-0093/run-control-reviewer-disposition-fixes/cancel-immediate.json`,
+    and
+    `.local/sow-0093/run-control-reviewer-disposition-fixes/cancel-after-progress-single-file.json`;
+    immediate cancellation and single-file progress-triggered cancellation both
+    returned `{"status":499,"errorMessage":"Request cancelled."}`;
+  - `git diff --check` and `.agents/sow/audit.sh` passed.
+- Final same-scope reviewer rerun after the reviewer-disposition hardening pass
+  on 2026-06-06:
+  - valid read-only reviewer votes:
+    `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`,
+    `llm-netdata-cloud/kimi-k2.6`: `PRODUCTION GRADE`,
+    `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`,
+    `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`,
+    `llm-netdata-cloud/minimax-m3-coder`: `PRODUCTION GRADE`, and
+    `llm-netdata-cloud/deepseek-v4-pro`: `PRODUCTION GRADE`;
+  - one MiniMax attempt was discarded because it violated the read-only
+    reviewer prompt by running `cargo check` and a targeted `cargo test`. The
+    process was stopped by exact PID after verification, and MiniMax was rerun
+    with the same full scope plus stricter no-build/no-test/no-check command
+    instructions. The valid MiniMax rerun used read-only inspection only and
+    returned `PRODUCTION GRADE`;
+  - reviewers found no blocking issues after the hardening pass;
+  - non-blocking finding disposition: invalid-UTF-8 stdout decoding in the
+    comparison harness is accepted as a harness diagnostics improvement, not a
+    function-boundary correctness issue, because compared binaries still fail
+    the case when stdout cannot parse as JSON. This is explicitly not tracked
+    as follow-up for SOW-0093 because it does not change SDK behavior or
+    comparison correctness;
+  - non-blocking finding disposition: diagnostic-only `--progress-jsonl <path>`
+    remains internal wrapper validation plumbing, not part of the Netdata
+    plugin contract or production SDK API. Production consumers use
+    `NetdataFunctionRunOptions::progress_callback`; the wrapper documentation
+    already marks diagnostic switches as SDK validation only;
+  - non-blocking finding disposition: `merge_histogram()` count addition is not
+    a practical overflow risk for journal row counts and did not affect
+    validation; no follow-up is required unless real corpus evidence shows
+    practical overflow risk;
+  - non-blocking finding disposition: `collect_journal_files()` bounds
+    directory traversal by unique directory count and depth. A separate
+    journal-file count cap is not required for this SOW because the selected
+    files are still explicit journal files under caller-provided directories,
+    and scan-limit truncation is reported. If a production deployment shows a
+    pathological flat directory with too many journal files, that belongs in a
+    focused operational-hardening SOW;
+  - non-blocking finding disposition: vocabulary padding reopens matched files
+    per facet field to mirror plugin-compatible zero-count value behavior. This
+    is tracked as accepted cost for plugin-compatible output and remains outside
+    the hot returned-row path.
 
 Same-failure scan:
 
@@ -1323,20 +1605,23 @@ Sensitive data gate:
 
 Artifact maintenance gate:
 
-- AGENTS.md: no update needed; repository-boundary and runtime purity
-  policies did not change.
-- Runtime project skills: no update yet; the Netdata function comparison
-  workflow is SOW-local until the full matrix is complete.
+- AGENTS.md: updated reviewer pool to the current six model IDs after the user
+  changed the approved reviewer set.
+- Runtime project skills: updated
+  `.agents/skills/project-agent-orchestration/SKILL.md` with the current six
+  reviewer model IDs. The Netdata function comparison workflow itself remains
+  SOW-local.
 - Specs: updated
   `.agents/sow/specs/systemd-journal-plugin-facets.md` with the Rust Netdata
   function boundary, wrapper CLI, same-field facet-filter switch, missing
   histogram value behavior, and zero-count vocabulary comparator rule.
 - End-user/operator docs: updated `rust/README.md` with the new
   `journal::netdata` API and wrapper command.
-- End-user/operator skills: pending closeout decision.
-- SOW lifecycle: current/in-progress; do not close until the multi-GB matrix is
-  complete or explicitly split.
-- SOW-status.md: updated when SOW state changes.
+- End-user/operator skills: no update needed; no exported/operator skill
+  changed.
+- SOW lifecycle: completed; move this file to `.agents/sow/done/` together with
+  the implementation and status updates.
+- SOW-status.md: updated for SOW completion.
 
 Specs update:
 
@@ -1345,7 +1630,8 @@ Specs update:
 
 Project skills update:
 
-- Not updated; no reusable project-wide work procedure has been accepted yet.
+- Updated `.agents/skills/project-agent-orchestration/SKILL.md` with the
+  current reviewer pool.
 
 End-user/operator docs update:
 
@@ -1370,9 +1656,10 @@ Lessons:
 
 Follow-up mapping:
 
-- Decide whether presentation-order identity is a required Netdata boundary
-  contract. If yes, this SOW must add comparator checks for column indexes and
-  histogram label order, then align the SDK output before close.
+- Presentation-order identity is explicitly not a closure requirement for this
+  SOW. The accepted contract is content equivalence by stable keys and labels.
+  A future SOW can make presentation order a hard contract if Netdata UI
+  integration proves it is required.
 - Deferred compressed-DATA Explorer optimization is tracked by SOW-0094. That
   SOW must not block this SOW's Explorer API stabilization unless current
   function-boundary validation proves decompression avoidance is required for
@@ -1380,15 +1667,35 @@ Follow-up mapping:
 
 ## Outcome
 
-Pending.
+Implementation and local validation are complete for the Rust SDK Netdata
+function boundary replacement scope. The final six-model same-scope reviewer
+rerun returned production-grade votes from all valid reviewer runs. SOW-0093 is
+complete for the accepted content-equivalence contract.
 
 ## Lessons Extracted
 
-Pending.
+- A plugin replacement boundary needs semantic JSON comparison, not byte-for-byte
+  response comparison. Column order, histogram label order, diagnostic counters,
+  and volatile runtime fields must be classified explicitly so real content
+  regressions are not hidden by noisy fields.
+- Netdata function progress and cancellation must be SDK API features, not
+  wrapper-only behavior. The wrapper is useful for test execution, but consumers
+  need direct `NetdataFunctionRunOptions` callbacks.
+- Caller-owned state is the correct boundary for source metadata and learned
+  realtime drift. The SDK should expose hooks and safe fallback behavior, while
+  Netdata owns persistence in its journal registry.
+- Invariants at merge boundaries must fail loudly. Silent histogram bucket
+  truncation would be worse than returning an SDK error because it could produce
+  believable but wrong charts.
 
 ## Followup
 
-None yet.
+- SOW-0094 tracks the deferred compressed-DATA Explorer optimization experiment.
+- Netdata component integration remains tracked by SOW-0047 through SOW-0050.
+- Presentation-order identity is not a closure requirement for this SOW. The
+  accepted boundary is content equivalence by stable keys and labels; a future
+  SOW can make presentation order a hard contract if Netdata UI integration
+  proves it is required.
 
 ## Regression Log
 

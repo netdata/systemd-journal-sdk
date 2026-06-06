@@ -234,6 +234,47 @@ class CompareFunctionJsonTest(unittest.TestCase):
         self.assertFalse(report["checks"]["function_error"])
         self.assertIn("errorMessage", report["diffs"]["function_error"])
 
+    def test_test_mode_journal_file_path_roots_are_non_content(self) -> None:
+        left = function_doc(
+            columns={
+                "timestamp": {"index": 0, "name": "Time"},
+                "ND_JOURNAL_FILE": {"index": 1, "name": "ND_JOURNAL_FILE"},
+            },
+        )
+        left["data"] = [[1000, "/proc/self/fd/3/system.journal"]]
+        right = function_doc(
+            columns={
+                "timestamp": {"index": 0, "name": "Time"},
+                "ND_JOURNAL_FILE": {"index": 1, "name": "ND_JOURNAL_FILE"},
+            },
+        )
+        right["data"] = [[1000, ".local/sow-0093/smoke-journals/system.journal"]]
+
+        report = compare(left, right)
+
+        self.assertTrue(report["ok"])
+
+    def test_test_mode_journal_file_basename_remains_content(self) -> None:
+        left = function_doc(
+            columns={
+                "timestamp": {"index": 0, "name": "Time"},
+                "ND_JOURNAL_FILE": {"index": 1, "name": "ND_JOURNAL_FILE"},
+            },
+        )
+        left["data"] = [[1000, "/proc/self/fd/3/system.journal"]]
+        right = function_doc(
+            columns={
+                "timestamp": {"index": 0, "name": "Time"},
+                "ND_JOURNAL_FILE": {"index": 1, "name": "ND_JOURNAL_FILE"},
+            },
+        )
+        right["data"] = [[1000, ".local/sow-0093/smoke-journals/other.journal"]]
+
+        report = compare(left, right)
+
+        self.assertFalse(report["ok"])
+        self.assertIn("ND_JOURNAL_FILE", report["diffs"]["rows"])
+
 
 if __name__ == "__main__":
     unittest.main()

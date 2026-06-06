@@ -70,9 +70,9 @@ Current reader scope:
 - `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst` files;
 - zstd-compressed fixture files;
 - zstd, lz4, and xz-compressed DATA objects through pure-Rust dependencies;
-- directory reading across active and archived files with stock-compatible
-  root plus one machine-id subdirectory traversal and interleaved multi-file
-  ordering, including mixed regular/compact, compressed/uncompressed,
+- directory reading across active and archived files with bounded recursive
+  traversal, symlink-cycle protection, and interleaved multi-file ordering,
+  including mixed regular/compact, compressed/uncompressed,
   sealed/unsealed, and whole-file `.journal.zst` files in one directory;
 - forward/backward iteration, cursors, realtime and monotonic timestamps,
   seqnum metadata, field enumeration, binary field values, repeated field
@@ -127,9 +127,10 @@ Current reader scope:
   index, fails if their logical outputs differ, and returns timing/counter
   diagnostics in `ExplorerResult::comparison`. There is no automatic planner
   because index aggregation is faster only for some query shapes;
-- `journal::netdata` provides the first Netdata-specific Rust function
-  boundary over the explorer. `NetdataJournalFunction::systemd_journal()` runs
-  a `systemd-journal` request JSON against a journal directory and returns
+- `journal::netdata` provides the Netdata-specific Rust function boundary over
+  the explorer. It is the SDK API intended to replace Netdata's generic
+  `systemd-journal.plugin` logs function. `NetdataJournalFunction::systemd_journal()`
+  runs a `systemd-journal` request JSON against a journal directory and returns
   Netdata-shaped function JSON. This layer owns Netdata request parsing,
   default facets, default display columns, histogram defaults, field
   presentation transforms, row options, and zero-count vocabulary padding for
@@ -137,24 +138,39 @@ Current reader scope:
   data and does not resolve host user or group names. The separate
   `NetdataJournalFunction::systemd_journal_plugin_compatible()` constructor
   opts into host user/group name presentation to emulate Netdata's installed
-  plugin. This layer is intentionally separate from the core journal file-format
-  reader. Consumers that need Netdata function control can use
+  plugin, with per-query UID/GID display caching so repeated values do not
+  repeatedly call host name-service lookups. This layer is intentionally
+  separate from the core journal file-format reader. Consumers that need
+  Netdata function control can use
   `run_directory_request_json_with_options()` or
   `run_directory_request_bytes_with_options()` with
-  `NetdataFunctionRunOptions` to supply a timeout, progress callback, and
-  cancellation callback. Progress is reported against the files selected for
-  the query after source and time-window preselection, including file-end
-  progress for small or fast files. Cancellation is checked before each
-  selected file and during active Explorer scans. The Netdata boundary honors
-  built-in
-  `__logs_sources` groups for explicit directory inputs by classifying local,
-  namespace, user, system, uncategorized, and remote journal filenames.
+  `NetdataFunctionRunOptions` to supply a timeout, progress callback,
+  cancellation callback, and optional caller-owned `NetdataFunctionState`.
+  Progress is reported against the files selected for the query after source
+  and time-window preselection, including file-end progress for small or fast
+  files. Cancellation is checked before each selected file, during active
+  Explorer scans, and after file-end progress callbacks. The optional state hook
+  lets Netdata pass registry-provided source type/name metadata and persist
+  per-file learned
+  journal-vs-source-realtime drift. Without state, the wrapper falls back to
+  journal headers and plugin-compatible filename classification for built-in
+  `__logs_sources` groups. Sampling uses plugin-compatible sampled,
+  unsampled, and estimated counters for full-analysis sliced requests and is
+  disabled for data-only requests. The `query` request member uses Netdata
+  `SIMPLE_PATTERN` behavior: ordered `|` terms, leading `!` negative terms,
+  escaped separators, substring `*` parts, and case-insensitive matching.
+  The SDK Netdata boundary always executes indexed slice semantics. The `slice`
+  request member is retained in the
+  normalized echo because it is part of the plugin request shape; it does not
+  select a slower non-slice fallback path.
   Cancellation and no-change responses use Netdata's compact function error
   envelope; timeout returns a partial table response;
-- `src/internal/testcmd/netdata_function_wrapper` exposes the SDK Netdata
-  boundary through the same offline CLI shape as Netdata's plugin test path:
+- `src/internal/testcmd/netdata_function_wrapper` is a thin offline test adapter
+  over the SDK Netdata boundary. It exposes the same CLI shape as Netdata's
+  plugin test path:
   `netdata_function_wrapper --test systemd-journal --dir <journal-dir>
-  --request <request.json>`. The comparison tools under
+  --timeout <seconds> < <request.json>`. The request JSON is read from stdin
+  to avoid privileged file reads in test binaries. The comparison tools under
   `../tests/netdata_function/` compare semantic function output against an
   external `systemd-journal.plugin` binary. The wrapper has diagnostic-only
   `--progress-jsonl`, `--cancel-immediately`, and `--cancel-after-progress`

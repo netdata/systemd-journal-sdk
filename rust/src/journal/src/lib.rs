@@ -18,8 +18,9 @@ mod verify_graph;
 pub use directory::DirectoryReader;
 pub use explorer::{
     ExplorerAnchor, ExplorerComparison, ExplorerControl, ExplorerFieldMode, ExplorerFilter,
-    ExplorerHistogram, ExplorerHistogramBucket, ExplorerProgress, ExplorerQuery, ExplorerResult,
-    ExplorerRow, ExplorerStats, ExplorerStopReason, ExplorerStrategy,
+    ExplorerFtsPattern, ExplorerHistogram, ExplorerHistogramBucket, ExplorerProgress,
+    ExplorerQuery, ExplorerResult, ExplorerRow, ExplorerSampling, ExplorerStats,
+    ExplorerStopReason, ExplorerStrategy,
 };
 pub use export::{export_entry, export_entry_bytes, format_entry_text, json_entry};
 pub use parse::{ParseError, ParsedCursor, parse_cursor, parse_match_bytes, parse_match_string};
@@ -294,6 +295,7 @@ pub struct FileHeader {
     pub incompatible_flags: u32,
     pub state: u8,
     pub header_size: u64,
+    pub n_entries: u64,
     pub head_entry_realtime: u64,
     pub tail_entry_realtime: u64,
     pub head_entry_seqnum: u64,
@@ -319,6 +321,7 @@ impl FileHeaderSnapshot {
                 incompatible_flags: header.incompatible_flags,
                 state: header.state,
                 header_size: header.header_size,
+                n_entries: header.n_entries,
                 head_entry_realtime: header.head_entry_realtime,
                 tail_entry_realtime: header.tail_entry_realtime,
                 head_entry_seqnum: header.head_entry_seqnum,

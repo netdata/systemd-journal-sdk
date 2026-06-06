@@ -32,7 +32,7 @@ def run_command(
     binary: Path,
     function: str,
     directory: Path,
-    request: Path,
+    request_payload: bytes,
     timeout_seconds: int,
     process_timeout_seconds: int,
 ) -> dict[str, Any]:
@@ -42,8 +42,6 @@ def run_command(
         function,
         "--dir",
         str(directory),
-        "--request",
-        str(request),
         "--timeout",
         str(timeout_seconds),
     ]
@@ -53,6 +51,7 @@ def run_command(
         completed = subprocess.run(
             command,
             check=False,
+            input=request_payload,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=process_timeout_seconds,
@@ -77,6 +76,7 @@ def run_command(
         "timed_out": timed_out,
         "process_timeout_seconds": process_timeout_seconds,
         "wall_seconds": elapsed,
+        "stdin_bytes": len(request_payload),
         "stdout_bytes": len(stdout),
         "stderr_bytes": len(stderr),
         "json_prefix_bytes": json_prefix_bytes,
@@ -97,12 +97,13 @@ def run_case(
     save_json_dir: Path | None,
 ) -> dict[str, Any]:
     runs = []
+    request_payload = request.read_bytes()
     for repetition in range(repetitions):
         sdk_run = run_command(
             sdk,
             function,
             directory,
-            request,
+            request_payload,
             timeout_seconds,
             process_timeout_seconds,
         )
@@ -110,7 +111,7 @@ def run_case(
             plugin,
             function,
             directory,
-            request,
+            request_payload,
             timeout_seconds,
             process_timeout_seconds,
         )
@@ -145,7 +146,7 @@ def run_case(
         )
     return {
         "request": str(request),
-        "request_sha256": hashlib.sha256(request.read_bytes()).hexdigest(),
+        "request_sha256": hashlib.sha256(request_payload).hexdigest(),
         "runs": runs,
         "ok": all(run["comparison"].get("ok") for run in runs),
     }

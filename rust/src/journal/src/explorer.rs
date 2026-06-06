@@ -7,8 +7,13 @@ const DEFAULT_HISTOGRAM_TARGET_BUCKETS: usize = 150;
 const DEFAULT_TIME_SLACK_USEC: u64 = 120_000_000;
 const EXPLORER_CONTROL_CHECK_EVERY_ROWS: u64 = 8192;
 const DEFAULT_ROWS_FULL_CHECK_EVERY_ROWS: u64 = 1;
+const EXPLORER_SAMPLING_SLOTS_MAX: usize = 1000;
+const EXPLORER_SAMPLING_RECALIBRATE_ROWS: u64 = 10_000;
+const EXPLORER_SAMPLING_ESTIMATE_AFTER_PROGRESS: f64 = 0.01;
 const SOURCE_REALTIME_FIELD: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP";
 const UNSET_VALUE: &[u8] = b"-";
+const EXPLORER_UNSAMPLED_VALUE: &[u8] = b"[unsampled]";
+const EXPLORER_ESTIMATED_VALUE: &[u8] = b"[estimated]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExplorerAnchor {
@@ -79,13 +84,16 @@ pub struct ExplorerQuery {
     pub facets: Vec<Vec<u8>>,
     pub histogram: Option<Vec<u8>>,
     pub histogram_target_buckets: usize,
+    pub fts_terms: Vec<ExplorerFtsPattern>,
     pub fts_patterns: Vec<Vec<u8>>,
+    pub fts_negative_patterns: Vec<Vec<u8>>,
     pub field_mode: ExplorerFieldMode,
     pub exclude_facet_field_filters: bool,
     pub use_source_realtime: bool,
     pub realtime_slack_usec: u64,
     pub stop_when_rows_full: bool,
     pub stop_when_rows_full_check_every: u64,
+    pub sampling: Option<ExplorerSampling>,
     /// Debug-only discrepancy tool. Production explorer callers must never set
     /// this; column catalogs belong to FIELD indexes, not row traversal.
     #[doc(hidden)]
@@ -104,15 +112,65 @@ impl Default for ExplorerQuery {
             facets: Vec::new(),
             histogram: None,
             histogram_target_buckets: DEFAULT_HISTOGRAM_TARGET_BUCKETS,
+            fts_terms: Vec::new(),
             fts_patterns: Vec::new(),
+            fts_negative_patterns: Vec::new(),
             field_mode: ExplorerFieldMode::FirstValue,
             exclude_facet_field_filters: true,
             use_source_realtime: true,
             realtime_slack_usec: DEFAULT_TIME_SLACK_USEC,
             stop_when_rows_full: false,
             stop_when_rows_full_check_every: DEFAULT_ROWS_FULL_CHECK_EVERY_ROWS,
+            sampling: None,
             debug_collect_column_fields_by_row_traversal: false,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExplorerSampling {
+    pub budget: u64,
+    pub matched_files: u64,
+    pub file_head_realtime_usec: u64,
+    pub file_tail_realtime_usec: u64,
+    pub file_head_seqnum: u64,
+    pub file_tail_seqnum: u64,
+    pub file_entries: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExplorerFtsPattern {
+    pub parts: Vec<Vec<u8>>,
+    pub negative: bool,
+}
+
+impl ExplorerFtsPattern {
+    pub fn substring(pattern: impl Into<Vec<u8>>, negative: bool) -> Self {
+        let pattern = pattern.into();
+        let parts = pattern
+            .split(|byte| *byte == b'*')
+            .filter(|part| !part.is_empty())
+            .map(|part| part.to_vec())
+            .collect();
+        Self { parts, negative }
+    }
+
+    fn matches(&self, value: &[u8]) -> bool {
+        if value.is_empty() {
+            return false;
+        }
+        if self.parts.is_empty() {
+            return true;
+        }
+
+        let mut haystack = value;
+        for part in &self.parts {
+            let Some(index) = find_ascii_case_insensitive(haystack, part) else {
+                return false;
+            };
+            haystack = &haystack[index.saturating_add(part.len())..];
+        }
+        true
     }
 }
 
@@ -137,7 +195,18 @@ impl ExplorerQuery {
     }
 
     pub fn with_fts_pattern(mut self, pattern: impl Into<Vec<u8>>) -> Self {
-        self.fts_patterns.push(pattern.into());
+        let pattern = pattern.into();
+        self.fts_terms
+            .push(ExplorerFtsPattern::substring(pattern.clone(), false));
+        self.fts_patterns.push(pattern);
+        self
+    }
+
+    pub fn with_fts_negative_pattern(mut self, pattern: impl Into<Vec<u8>>) -> Self {
+        let pattern = pattern.into();
+        self.fts_terms
+            .push(ExplorerFtsPattern::substring(pattern.clone(), true));
+        self.fts_negative_patterns.push(pattern);
         self
     }
 }
@@ -148,7 +217,13 @@ pub struct ExplorerStats {
     pub rows_matched: u64,
     pub facet_rows_matched: u64,
     pub rows_returned: u64,
+    pub rows_unsampled: u64,
+    pub rows_estimated: u64,
+    pub sampling_sampled: u64,
+    pub sampling_unsampled: u64,
+    pub sampling_estimated: u64,
     pub last_realtime_usec: u64,
+    pub max_source_realtime_delta_usec: u64,
     pub data_refs_seen: u64,
     pub data_refs_skipped: u64,
     pub data_payloads_loaded: u64,
@@ -312,10 +387,336 @@ impl Default for ExplorerControl<'_> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExplorerSamplingDecision {
+    Full {
+        sampled: bool,
+    },
+    SkipFields,
+    StopAndEstimate {
+        remaining_rows: u64,
+        from_realtime_usec: u64,
+        to_realtime_usec: u64,
+    },
+}
+
+#[derive(Debug)]
+struct ExplorerSamplingState {
+    start_realtime_usec: u64,
+    end_realtime_usec: u64,
+    file_head_realtime_usec: u64,
+    file_tail_realtime_usec: u64,
+    file_head_seqnum: u64,
+    file_tail_seqnum: u64,
+    file_entries: u64,
+    first_realtime_usec: Option<u64>,
+    step_realtime_usec: u64,
+    enable_after_samples: u64,
+    per_file_enable_after_samples: u64,
+    per_slot_enable_after_samples: u64,
+    sampled: u64,
+    per_file_sampled: u64,
+    per_file_unsampled: u64,
+    per_file_every: u64,
+    per_file_skipped: u64,
+    per_file_recalibrate: u64,
+    per_slot_sampled: Vec<u64>,
+    per_slot_unsampled: Vec<u64>,
+    matched_files: u64,
+    direction: Direction,
+}
+
+impl ExplorerSamplingState {
+    fn for_query(query: &ExplorerQuery, histogram_bucket_count: Option<usize>) -> Option<Self> {
+        let sampling = query.sampling?;
+        let start_realtime_usec = query.after_realtime_usec?;
+        let end_realtime_usec = query.before_realtime_usec?;
+        if sampling.budget == 0
+            || sampling.matched_files == 0
+            || start_realtime_usec >= end_realtime_usec
+        {
+            return None;
+        }
+
+        let slots = histogram_bucket_count
+            .unwrap_or(query.histogram_target_buckets)
+            .clamp(2, EXPLORER_SAMPLING_SLOTS_MAX);
+        let delta = end_realtime_usec.saturating_sub(start_realtime_usec);
+        let step_realtime_usec = (delta / slots as u64).saturating_sub(1).max(1);
+        let per_file_enable_after_samples =
+            ((sampling.budget / 4) / sampling.matched_files.max(1)).max(query.limit as u64);
+        let per_slot_enable_after_samples =
+            ((sampling.budget / 4) / slots as u64).max(query.limit as u64);
+
+        Some(Self {
+            start_realtime_usec,
+            end_realtime_usec,
+            file_head_realtime_usec: sampling.file_head_realtime_usec,
+            file_tail_realtime_usec: sampling.file_tail_realtime_usec,
+            file_head_seqnum: sampling.file_head_seqnum,
+            file_tail_seqnum: sampling.file_tail_seqnum,
+            file_entries: sampling.file_entries,
+            first_realtime_usec: None,
+            step_realtime_usec,
+            enable_after_samples: sampling.budget / 2,
+            per_file_enable_after_samples,
+            per_slot_enable_after_samples,
+            sampled: 0,
+            per_file_sampled: 0,
+            per_file_unsampled: 0,
+            per_file_every: 0,
+            per_file_skipped: 0,
+            per_file_recalibrate: 0,
+            per_slot_sampled: vec![0; slots],
+            per_slot_unsampled: vec![0; slots],
+            matched_files: sampling.matched_files.max(1),
+            direction: query.direction,
+        })
+    }
+
+    fn decide(
+        &mut self,
+        realtime_usec: u64,
+        seqnum: u64,
+        candidate_to_keep: bool,
+    ) -> ExplorerSamplingDecision {
+        if self.first_realtime_usec.is_none() {
+            self.first_realtime_usec = Some(realtime_usec);
+        }
+        if candidate_to_keep {
+            return ExplorerSamplingDecision::Full { sampled: false };
+        }
+
+        let slot = self.slot_for_realtime(realtime_usec);
+        let should_sample = if self.sampled < self.enable_after_samples
+            || self.per_file_sampled < self.per_file_enable_after_samples
+            || self.per_slot_sampled[slot] < self.per_slot_enable_after_samples
+        {
+            true
+        } else if self.per_file_recalibrate >= EXPLORER_SAMPLING_RECALIBRATE_ROWS
+            || self.per_file_every == 0
+        {
+            self.recalibrate(realtime_usec, seqnum);
+            true
+        } else if self.per_file_skipped >= self.per_file_every {
+            self.per_file_skipped = 0;
+            true
+        } else {
+            self.per_file_skipped = self.per_file_skipped.saturating_add(1);
+            false
+        };
+
+        if should_sample {
+            self.sampled = self.sampled.saturating_add(1);
+            self.per_file_sampled = self.per_file_sampled.saturating_add(1);
+            self.per_slot_sampled[slot] = self.per_slot_sampled[slot].saturating_add(1);
+            return ExplorerSamplingDecision::Full { sampled: true };
+        }
+
+        self.per_file_recalibrate = self.per_file_recalibrate.saturating_add(1);
+        self.per_file_unsampled = self.per_file_unsampled.saturating_add(1);
+        self.per_slot_unsampled[slot] = self.per_slot_unsampled[slot].saturating_add(1);
+
+        if self.per_file_unsampled > self.per_file_sampled
+            && self.progress_by_time(realtime_usec) > EXPLORER_SAMPLING_ESTIMATE_AFTER_PROGRESS
+        {
+            let remaining_rows = self.estimate_remaining_rows(realtime_usec, seqnum);
+            let (from_realtime_usec, to_realtime_usec) = self.remaining_range(realtime_usec);
+            return ExplorerSamplingDecision::StopAndEstimate {
+                remaining_rows,
+                from_realtime_usec,
+                to_realtime_usec,
+            };
+        }
+
+        ExplorerSamplingDecision::SkipFields
+    }
+
+    fn slot_for_realtime(&self, realtime_usec: u64) -> usize {
+        let clamped = realtime_usec.clamp(self.start_realtime_usec, self.end_realtime_usec);
+        let slot =
+            (clamped.saturating_sub(self.start_realtime_usec) / self.step_realtime_usec) as usize;
+        slot.min(self.per_slot_sampled.len().saturating_sub(1))
+    }
+
+    fn recalibrate(&mut self, realtime_usec: u64, seqnum: u64) {
+        let remaining_rows = self.estimate_remaining_rows(realtime_usec, seqnum);
+        let wanted_samples = (self.enable_after_samples / self.matched_files).max(1);
+        self.per_file_every = (remaining_rows / wanted_samples).max(1);
+        self.per_file_recalibrate = 0;
+    }
+
+    fn estimate_remaining_rows(&self, realtime_usec: u64, seqnum: u64) -> u64 {
+        if let Some(remaining) = self.estimate_remaining_rows_by_seqnum(seqnum) {
+            return remaining;
+        }
+        self.estimate_remaining_rows_by_time(realtime_usec)
+    }
+
+    fn estimate_remaining_rows_by_seqnum(&self, seqnum: u64) -> Option<u64> {
+        if self.file_entries == 0
+            || self.file_head_seqnum == 0
+            || self.file_tail_seqnum == 0
+            || seqnum == 0
+        {
+            return None;
+        }
+
+        let scanned_rows = self
+            .per_file_sampled
+            .saturating_add(self.per_file_unsampled)
+            .max(1);
+        let seqnum_span = match self.direction {
+            Direction::Forward => seqnum.checked_sub(self.file_head_seqnum)?,
+            Direction::Backward => self.file_tail_seqnum.checked_sub(seqnum)?,
+        };
+        if seqnum_span == 0 {
+            return None;
+        }
+        let mut proportion_of_all_lines_so_far = scanned_rows as f64 / seqnum_span as f64;
+        if proportion_of_all_lines_so_far > 1.0 {
+            proportion_of_all_lines_so_far = 1.0;
+        }
+        if proportion_of_all_lines_so_far <= 0.0 || !proportion_of_all_lines_so_far.is_finite() {
+            return None;
+        }
+        let expected_matching_logs =
+            (proportion_of_all_lines_so_far * self.file_entries as f64) as u64;
+        if expected_matching_logs == 0 {
+            return None;
+        }
+        let mut proportion_by_seqnum = scanned_rows as f64 / expected_matching_logs as f64;
+        if proportion_by_seqnum == 0.0
+            || proportion_by_seqnum > 1.0
+            || !proportion_by_seqnum.is_finite()
+        {
+            proportion_by_seqnum = 1.0;
+        }
+        let expected_total = (scanned_rows as f64 / proportion_by_seqnum) as u64;
+        Some(expected_total.saturating_sub(scanned_rows).max(1))
+    }
+
+    fn estimate_remaining_rows_by_time(&self, realtime_usec: u64) -> u64 {
+        let scanned_rows = self
+            .per_file_sampled
+            .saturating_add(self.per_file_unsampled)
+            .max(1);
+        let (after, before) = self.overlapping_timeframe(realtime_usec);
+        let total_time = self
+            .remaining_time_bounds(realtime_usec, after, before)
+            .0
+            .max(1);
+        let remaining_time = self.remaining_time_bounds(realtime_usec, after, before).1;
+        let elapsed = total_time.saturating_sub(remaining_time).max(1);
+        let mut proportion_by_time = elapsed as f64 / total_time as f64;
+        if proportion_by_time == 0.0 || proportion_by_time > 1.0 || !proportion_by_time.is_finite()
+        {
+            proportion_by_time = 1.0;
+        }
+        let mut expected_total = (scanned_rows as f64 / proportion_by_time) as u64;
+        if self.file_entries != 0 && expected_total > self.file_entries {
+            expected_total = self.file_entries;
+        }
+        expected_total.saturating_sub(scanned_rows).max(1)
+    }
+
+    fn progress_by_time(&self, realtime_usec: u64) -> f64 {
+        let (after, before) = self.overlapping_timeframe(realtime_usec);
+        let total_time = before.saturating_sub(after).max(1);
+        let elapsed = match self.direction {
+            Direction::Forward => realtime_usec.saturating_sub(after),
+            Direction::Backward => before.saturating_sub(realtime_usec),
+        }
+        .min(total_time);
+        elapsed as f64 / total_time as f64
+    }
+
+    fn overlapping_timeframe(&self, realtime_usec: u64) -> (u64, u64) {
+        match self.direction {
+            Direction::Forward => {
+                let mut oldest = self
+                    .first_realtime_usec
+                    .or((self.file_head_realtime_usec != 0).then_some(self.file_head_realtime_usec))
+                    .unwrap_or(self.start_realtime_usec);
+                let mut newest = if self.file_tail_realtime_usec != 0 {
+                    self.end_realtime_usec.min(self.file_tail_realtime_usec)
+                } else {
+                    self.end_realtime_usec
+                };
+                if newest <= oldest {
+                    newest = oldest.saturating_add(1);
+                }
+                if realtime_usec < oldest {
+                    oldest = realtime_usec.saturating_sub(1);
+                }
+                (oldest, newest)
+            }
+            Direction::Backward => {
+                let mut newest = self
+                    .first_realtime_usec
+                    .or((self.file_tail_realtime_usec != 0).then_some(self.file_tail_realtime_usec))
+                    .unwrap_or(self.end_realtime_usec);
+                let oldest = if self.file_head_realtime_usec != 0 {
+                    self.start_realtime_usec.max(self.file_head_realtime_usec)
+                } else {
+                    self.start_realtime_usec
+                };
+                if newest <= oldest {
+                    newest = oldest.saturating_add(1);
+                }
+                if newest < realtime_usec {
+                    newest = realtime_usec.saturating_add(1);
+                }
+                (oldest, newest)
+            }
+        }
+    }
+
+    fn remaining_range(&self, realtime_usec: u64) -> (u64, u64) {
+        let (after, before) = self.overlapping_timeframe(realtime_usec);
+        let (_, _, remaining_start, remaining_end) =
+            self.remaining_time_details(realtime_usec, after, before);
+        (remaining_start, remaining_end)
+    }
+
+    fn remaining_time_bounds(&self, realtime_usec: u64, after: u64, before: u64) -> (u64, u64) {
+        let (total, remaining, _, _) = self.remaining_time_details(realtime_usec, after, before);
+        (total, remaining)
+    }
+
+    fn remaining_time_details(
+        &self,
+        realtime_usec: u64,
+        mut after: u64,
+        mut before: u64,
+    ) -> (u64, u64, u64, u64) {
+        if realtime_usec <= after {
+            after = realtime_usec.saturating_sub(1);
+        }
+        if realtime_usec >= before {
+            before = realtime_usec.saturating_add(1);
+        }
+        if before <= after {
+            before = after.saturating_add(1);
+        }
+        let (remaining_start, remaining_end) = match self.direction {
+            Direction::Forward => (realtime_usec, before),
+            Direction::Backward => (after, realtime_usec),
+        };
+        (
+            before.saturating_sub(after).max(1),
+            remaining_end.saturating_sub(remaining_start),
+            remaining_start,
+            remaining_end,
+        )
+    }
+}
+
 #[derive(Default)]
 struct RowScan {
     timestamp: Option<u64>,
     fts_matches: bool,
+    fts_negative_match: bool,
     column_fields: Vec<Vec<u8>>,
 }
 
@@ -327,18 +728,21 @@ const FACET_SOURCE_REALTIME: u8 = 0x04;
 enum OffsetClass {
     Irrelevant,
     FtsMatch,
+    FtsNegativeMatch,
     Value(usize),
 }
 
 impl OffsetClass {
     const IRRELEVANT_RAW: usize = 1;
     const FTS_MATCH_RAW: usize = 2;
-    const VALUE_BASE: usize = 3;
+    const FTS_NEGATIVE_MATCH_RAW: usize = 3;
+    const VALUE_BASE: usize = 4;
 
     fn to_raw(self) -> usize {
         match self {
             Self::Irrelevant => Self::IRRELEVANT_RAW,
             Self::FtsMatch => Self::FTS_MATCH_RAW,
+            Self::FtsNegativeMatch => Self::FTS_NEGATIVE_MATCH_RAW,
             Self::Value(index) => Self::VALUE_BASE.saturating_add(index),
         }
     }
@@ -347,6 +751,7 @@ impl OffsetClass {
         match raw {
             Self::IRRELEVANT_RAW => Self::Irrelevant,
             Self::FTS_MATCH_RAW => Self::FtsMatch,
+            Self::FTS_NEGATIVE_MATCH_RAW => Self::FtsNegativeMatch,
             raw => Self::Value(raw.saturating_sub(Self::VALUE_BASE)),
         }
     }
@@ -1069,8 +1474,7 @@ impl FileReader {
                 continue;
             }
 
-            let scan = if accumulator.required_identity_count == 0 && query.fts_patterns.is_empty()
-            {
+            let scan = if accumulator.required_identity_count == 0 && !query_has_fts(query) {
                 result.stats.rows_examined = result.stats.rows_examined.saturating_add(1);
                 RowScan::default()
             } else {
@@ -1085,10 +1489,11 @@ impl FileReader {
                 )?
             };
             let effective_realtime = effective_realtime_from_scan(scan.timestamp, commit_realtime);
+            record_source_realtime_delta(&mut result.stats, scan.timestamp, commit_realtime);
             if !timestamp_in_range(query, effective_realtime) {
                 continue;
             }
-            if !query.fts_patterns.is_empty() && !scan.fts_matches {
+            if row_rejected_by_fts(query, &scan) {
                 continue;
             }
             if query.debug_collect_column_fields_by_row_traversal {
@@ -1135,6 +1540,13 @@ impl FileReader {
         let mut row_id = 0u64;
         let mut rows_seen = 0u64;
         let mut deferred_values = Vec::new();
+        let mut sampling = ExplorerSamplingState::for_query(
+            query,
+            result
+                .histogram
+                .as_ref()
+                .map(|histogram| histogram.buckets.len()),
+        );
         while self.step_for_explorer(query.direction)? {
             rows_seen = rows_seen.saturating_add(1);
             if let Some(control) = control.as_deref_mut() {
@@ -1153,8 +1565,73 @@ impl FileReader {
                 continue;
             }
 
-            let scan = if accumulator.required_identity_count == 0 && query.fts_patterns.is_empty()
-            {
+            if let Some(sampling) = sampling.as_mut() {
+                let candidate_to_keep = row_candidate_to_keep(query, &result.rows, commit_realtime);
+                match sampling.decide(commit_realtime, metadata.seqnum, candidate_to_keep) {
+                    ExplorerSamplingDecision::Full { sampled } => {
+                        if sampled {
+                            result.stats.sampling_sampled =
+                                result.stats.sampling_sampled.saturating_add(1);
+                        }
+                    }
+                    ExplorerSamplingDecision::SkipFields => {
+                        record_last_realtime(&mut result.stats, commit_realtime);
+                        if include_main {
+                            result.stats.rows_matched = result.stats.rows_matched.saturating_add(1);
+                        }
+                        if include_facets {
+                            result.stats.facet_rows_matched =
+                                result.stats.facet_rows_matched.saturating_add(1);
+                        }
+                        result.stats.rows_unsampled = result.stats.rows_unsampled.saturating_add(1);
+                        result.stats.sampling_unsampled =
+                            result.stats.sampling_unsampled.saturating_add(1);
+                        add_special_histogram_value(
+                            result.histogram.as_mut(),
+                            commit_realtime,
+                            EXPLORER_UNSAMPLED_VALUE,
+                            1,
+                            &mut result.stats,
+                        );
+                        continue;
+                    }
+                    ExplorerSamplingDecision::StopAndEstimate {
+                        remaining_rows,
+                        from_realtime_usec,
+                        to_realtime_usec,
+                    } => {
+                        record_last_realtime(&mut result.stats, commit_realtime);
+                        if include_main {
+                            result.stats.rows_matched =
+                                result.stats.rows_matched.saturating_add(remaining_rows);
+                        }
+                        if include_facets {
+                            result.stats.facet_rows_matched = result
+                                .stats
+                                .facet_rows_matched
+                                .saturating_add(remaining_rows);
+                        }
+                        result.stats.rows_estimated =
+                            result.stats.rows_estimated.saturating_add(remaining_rows);
+                        result.stats.sampling_unsampled =
+                            result.stats.sampling_unsampled.saturating_add(1);
+                        result.stats.sampling_estimated = result
+                            .stats
+                            .sampling_estimated
+                            .saturating_add(remaining_rows);
+                        add_estimated_histogram_range(
+                            result.histogram.as_mut(),
+                            from_realtime_usec,
+                            to_realtime_usec,
+                            remaining_rows,
+                            &mut result.stats,
+                        );
+                        break;
+                    }
+                }
+            }
+
+            let scan = if accumulator.required_identity_count == 0 && !query_has_fts(query) {
                 result.stats.rows_examined = result.stats.rows_examined.saturating_add(1);
                 RowScan::default()
             } else {
@@ -1169,10 +1646,11 @@ impl FileReader {
                 )?
             };
             let effective_realtime = effective_realtime_from_scan(scan.timestamp, commit_realtime);
+            record_source_realtime_delta(&mut result.stats, scan.timestamp, commit_realtime);
             if !timestamp_in_range(query, effective_realtime) {
                 continue;
             }
-            if !query.fts_patterns.is_empty() && !scan.fts_matches {
+            if row_rejected_by_fts(query, &scan) {
                 continue;
             }
             if query.debug_collect_column_fields_by_row_traversal {
@@ -1227,7 +1705,7 @@ impl FileReader {
         self.seek_for_explorer(query);
         let defer_apply = query.after_realtime_usec.is_some()
             || query.before_realtime_usec.is_some()
-            || !query.fts_patterns.is_empty();
+            || query_has_fts(query);
         let mut row_id = 0u64;
         let mut rows_seen = 0u64;
         let mut deferred_values = Vec::new();
@@ -1263,10 +1741,11 @@ impl FileReader {
                 self.scan_current_row(query, accumulator, row_id, ScanApply::Immediate, stats)?
             };
             let effective_realtime = effective_realtime_from_scan(scan.timestamp, commit_realtime);
+            record_source_realtime_delta(stats, scan.timestamp, commit_realtime);
             if !timestamp_in_range(query, effective_realtime) {
                 continue;
             }
-            if !query.fts_patterns.is_empty() && !scan.fts_matches {
+            if row_rejected_by_fts(query, &scan) {
                 continue;
             }
 
@@ -1293,7 +1772,7 @@ impl FileReader {
         stats.rows_examined = stats.rows_examined.saturating_add(1);
         let mut out = RowScan::default();
         let use_first_value = query.field_mode == ExplorerFieldMode::FirstValue;
-        let needs_fts = !query.fts_patterns.is_empty();
+        let needs_fts = query_has_fts(query);
         let mut fields_missing_from_row = if use_first_value {
             accumulator.required_identity_count
         } else {
@@ -1327,6 +1806,10 @@ impl FileReader {
                     match class {
                         OffsetClass::Irrelevant => {
                             stats.data_refs_skipped = stats.data_refs_skipped.saturating_add(1);
+                            continue;
+                        }
+                        OffsetClass::FtsNegativeMatch => {
+                            out.fts_negative_match = true;
                             continue;
                         }
                         OffsetClass::FtsMatch => {
@@ -1845,14 +2328,20 @@ fn classify_data_for_accumulator(
         column_fields.push(field.to_vec());
     }
 
-    let fts_matches = if needs_fts {
+    let (fts_matches, fts_negative_match) = if needs_fts {
         stats.fts_scans = stats.fts_scans.saturating_add(1);
-        matches_fts(value, &query.fts_patterns)
+        match match_fts_query(value, query) {
+            FtsTermMatch::Positive => (true, false),
+            FtsTermMatch::Negative => (false, true),
+            FtsTermMatch::None => (false, false),
+        }
     } else {
-        false
+        (false, false)
     };
 
-    let class = if let Some(field_index) = accumulator.field_lookup.get(field).copied() {
+    let class = if fts_negative_match {
+        OffsetClass::FtsNegativeMatch
+    } else if let Some(field_index) = accumulator.field_lookup.get(field).copied() {
         OffsetClass::Value(accumulator.add_value(field_index, data_offset, value, fts_matches))
     } else if fts_matches {
         OffsetClass::FtsMatch
@@ -1890,10 +2379,10 @@ fn classify_unstructured_payload(
         return OffsetClass::Irrelevant;
     }
     stats.fts_scans = stats.fts_scans.saturating_add(1);
-    if matches_fts(payload, &query.fts_patterns) {
-        OffsetClass::FtsMatch
-    } else {
-        OffsetClass::Irrelevant
+    match match_fts_query(payload, query) {
+        FtsTermMatch::Positive => OffsetClass::FtsMatch,
+        FtsTermMatch::Negative => OffsetClass::FtsNegativeMatch,
+        FtsTermMatch::None => OffsetClass::Irrelevant,
     }
 }
 
@@ -1962,7 +2451,7 @@ fn validate_indexed_query(query: &ExplorerQuery) -> Result<()> {
             "indexed explorer strategy requires ExplorerFieldMode::AllValues",
         ));
     }
-    if !query.fts_patterns.is_empty() {
+    if query_has_fts(query) {
         return Err(SdkError::Unsupported(
             "indexed explorer strategy does not support FTS",
         ));
@@ -2069,6 +2558,106 @@ fn should_stop_when_rows_full(
     }
 }
 
+fn row_candidate_to_keep(query: &ExplorerQuery, rows: &[ExplorerRow], realtime_usec: u64) -> bool {
+    if query.limit == 0 {
+        return false;
+    }
+    if rows.len() < query.limit {
+        return true;
+    }
+    match query.direction {
+        Direction::Backward => rows
+            .iter()
+            .map(|row| row.realtime_usec)
+            .min()
+            .is_some_and(|oldest| realtime_usec >= oldest),
+        Direction::Forward => rows
+            .iter()
+            .map(|row| row.realtime_usec)
+            .max()
+            .is_some_and(|newest| realtime_usec <= newest),
+    }
+}
+
+fn add_special_histogram_value(
+    histogram: Option<&mut ExplorerHistogram>,
+    realtime_usec: u64,
+    value: &[u8],
+    count: u64,
+    stats: &mut ExplorerStats,
+) {
+    let Some(histogram) = histogram else {
+        return;
+    };
+    let Some(bucket_index) = histogram_bucket_index(histogram, realtime_usec) else {
+        return;
+    };
+    if let Some(bucket) = histogram.buckets.get_mut(bucket_index) {
+        increment_counter_by(&mut bucket.values, value, count);
+        stats.histogram_updates = stats.histogram_updates.saturating_add(1);
+    }
+}
+
+fn add_estimated_histogram_range(
+    histogram: Option<&mut ExplorerHistogram>,
+    from_realtime_usec: u64,
+    to_realtime_usec: u64,
+    entries: u64,
+    stats: &mut ExplorerStats,
+) {
+    let Some(histogram) = histogram else {
+        return;
+    };
+    if entries == 0 || from_realtime_usec >= to_realtime_usec {
+        return;
+    }
+    let total = to_realtime_usec.saturating_sub(from_realtime_usec).max(1);
+    let mut remaining = entries;
+    let mut touched = 0u64;
+    for bucket in &mut histogram.buckets {
+        if bucket.start_realtime_usec >= to_realtime_usec {
+            break;
+        }
+        let overlap_start = bucket.start_realtime_usec.max(from_realtime_usec);
+        let overlap_end = bucket.end_realtime_usec.min(to_realtime_usec);
+        if overlap_start >= overlap_end {
+            continue;
+        }
+        let mut bucket_entries = (overlap_end
+            .saturating_sub(overlap_start)
+            .saturating_mul(entries))
+            / total;
+        if bucket_entries == 0 && remaining != 0 {
+            bucket_entries = 1;
+        }
+        let bucket_entries = bucket_entries.min(remaining);
+        if bucket_entries == 0 {
+            continue;
+        }
+        increment_counter_by(&mut bucket.values, EXPLORER_ESTIMATED_VALUE, bucket_entries);
+        remaining = remaining.saturating_sub(bucket_entries);
+        touched = touched.saturating_add(1);
+        if remaining == 0 {
+            break;
+        }
+    }
+    stats.histogram_updates = stats.histogram_updates.saturating_add(touched);
+}
+
+fn histogram_bucket_index(histogram: &ExplorerHistogram, realtime_usec: u64) -> Option<usize> {
+    let first = histogram.buckets.first()?;
+    let width = first
+        .end_realtime_usec
+        .saturating_sub(first.start_realtime_usec)
+        .max(1);
+    histogram_bucket_index_from_bounds(
+        realtime_usec,
+        first.start_realtime_usec,
+        width,
+        histogram.buckets.len(),
+    )
+}
+
 fn payload_from_parts(field: &[u8], value: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(field.len() + 1 + value.len());
     out.extend_from_slice(field);
@@ -2101,10 +2690,73 @@ fn record_last_realtime(stats: &mut ExplorerStats, commit_realtime: u64) {
     }
 }
 
-fn matches_fts(value: &[u8], patterns: &[Vec<u8>]) -> bool {
-    if patterns.is_empty() {
-        return true;
+fn record_source_realtime_delta(
+    stats: &mut ExplorerStats,
+    source_realtime: Option<u64>,
+    commit_realtime: u64,
+) {
+    let Some(source_realtime) = source_realtime else {
+        return;
+    };
+    if source_realtime == 0 || source_realtime >= commit_realtime {
+        return;
     }
+    let delta = commit_realtime.saturating_sub(source_realtime);
+    if delta > stats.max_source_realtime_delta_usec {
+        stats.max_source_realtime_delta_usec = delta;
+    }
+}
+
+fn query_has_fts(query: &ExplorerQuery) -> bool {
+    !query.fts_terms.is_empty()
+        || !query.fts_patterns.is_empty()
+        || !query.fts_negative_patterns.is_empty()
+}
+
+fn query_has_positive_fts(query: &ExplorerQuery) -> bool {
+    if !query.fts_terms.is_empty() {
+        query.fts_terms.iter().any(|term| !term.negative)
+    } else {
+        !query.fts_patterns.is_empty()
+    }
+}
+
+fn row_rejected_by_fts(query: &ExplorerQuery, scan: &RowScan) -> bool {
+    query_has_fts(query)
+        && (scan.fts_negative_match || query_has_positive_fts(query) && !scan.fts_matches)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FtsTermMatch {
+    None,
+    Positive,
+    Negative,
+}
+
+fn match_fts_query(value: &[u8], query: &ExplorerQuery) -> FtsTermMatch {
+    if !query.fts_terms.is_empty() {
+        for term in &query.fts_terms {
+            if term.matches(value) {
+                return if term.negative {
+                    FtsTermMatch::Negative
+                } else {
+                    FtsTermMatch::Positive
+                };
+            }
+        }
+        return FtsTermMatch::None;
+    }
+
+    if matches_fts(value, &query.fts_negative_patterns) {
+        FtsTermMatch::Negative
+    } else if matches_fts(value, &query.fts_patterns) {
+        FtsTermMatch::Positive
+    } else {
+        FtsTermMatch::None
+    }
+}
+
+fn matches_fts(value: &[u8], patterns: &[Vec<u8>]) -> bool {
     patterns
         .iter()
         .filter(|pattern| !pattern.is_empty())
@@ -2119,6 +2771,21 @@ fn contains_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
         return false;
     }
     haystack.windows(needle.len()).any(|window| {
+        window
+            .iter()
+            .zip(needle)
+            .all(|(left, right)| left.eq_ignore_ascii_case(right))
+    })
+}
+
+fn find_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    if haystack.len() < needle.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|window| {
         window
             .iter()
             .zip(needle)
@@ -3080,6 +3747,46 @@ mod tests {
                 .and_then(|values| values.get(b"one".as_slice())),
             Some(&1)
         );
+    }
+
+    #[test]
+    fn explorer_fts_or_terms_and_negative_terms_filter_rows() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("fts-negative.journal");
+        write_entries(
+            &path,
+            None,
+            &[
+                (&[b"TAG=alpha", b"MESSAGE=alpha keep"], 1_000),
+                (&[b"TAG=beta", b"MESSAGE=beta keep"], 2_000),
+                (&[b"TAG=debug", b"MESSAGE=alpha debug"], 3_000),
+                (&[b"TAG=other", b"MESSAGE=other"], 4_000),
+                (&[b"TAG=wild", b"MESSAGE=start middle end"], 5_000),
+            ],
+        );
+
+        let mut reader = FileReader::open(&path).expect("open reader");
+        let result = reader
+            .explore(&ExplorerQuery {
+                facets: vec![b"TAG".to_vec()],
+                fts_terms: vec![
+                    ExplorerFtsPattern::substring(b"alpha".to_vec(), false),
+                    ExplorerFtsPattern::substring(b"beta".to_vec(), false),
+                    ExplorerFtsPattern::substring(b"debug".to_vec(), true),
+                    ExplorerFtsPattern::substring(b"start*end".to_vec(), false),
+                ],
+                limit: 10,
+                ..ExplorerQuery::default()
+            })
+            .expect("explore");
+
+        let tag = result.facets.get(b"TAG".as_slice()).expect("TAG facet");
+        assert_eq!(result.rows.len(), 3);
+        assert_eq!(tag.get(b"alpha".as_slice()), Some(&1));
+        assert_eq!(tag.get(b"beta".as_slice()), Some(&1));
+        assert_eq!(tag.get(b"wild".as_slice()), Some(&1));
+        assert_eq!(tag.get(b"debug".as_slice()), None);
+        assert_eq!(tag.get(b"other".as_slice()), None);
     }
 
     #[test]

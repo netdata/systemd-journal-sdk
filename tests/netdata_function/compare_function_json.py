@@ -132,11 +132,17 @@ def normalized_rows(
         for field in ordered_columns:
             idx = indices.get(field)
             if idx is not None and 0 <= idx < len(row):
-                item[field] = normalize_json(row[idx])
+                item[field] = normalize_row_value(field, row[idx])
             else:
                 item[field] = None
         out.append(item)
     return out
+
+
+def normalize_row_value(field: str, value: Any) -> Any:
+    if field == "ND_JOURNAL_FILE" and isinstance(value, str):
+        return Path(value).name
+    return normalize_json(value)
 
 
 def normalized_facets(doc: dict[str, Any]) -> dict[str, Any]:

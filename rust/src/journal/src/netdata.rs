@@ -1,12 +1,14 @@
 use crate::{
     Direction, ExplorerAnchor, ExplorerControl, ExplorerFieldMode, ExplorerFilter,
-    ExplorerHistogram, ExplorerProgress, ExplorerQuery, ExplorerResult, ExplorerRow, ExplorerStats,
-    ExplorerStopReason, ExplorerStrategy, FileReader, ReaderOptions, Result, SdkError,
+    ExplorerFtsPattern, ExplorerHistogram, ExplorerProgress, ExplorerQuery, ExplorerResult,
+    ExplorerRow, ExplorerSampling, ExplorerStats, ExplorerStopReason, ExplorerStrategy, FileHeader,
+    FileReader, ReaderOptions, Result, SdkError,
 };
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value, json};
+use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 #[cfg(unix)]
 use std::ffi::CStr;
 use std::path::{Path, PathBuf};
@@ -26,6 +28,8 @@ const NETDATA_JOURNAL_VS_REALTIME_DELTA_MAX_USEC: u64 = 2 * 60 * 1_000_000;
 const NETDATA_EMPTY_STRING_FACET_HASH_ID: &str = "CzGfAU2z3TC";
 const NETDATA_UNAVAILABLE_FIELD_LABEL: &str = "[unavailable field]";
 const NETDATA_FACET_MAX_VALUE_LENGTH: usize = 8192;
+const NETDATA_MAX_DIRECTORY_SCAN_DEPTH: usize = 64;
+const NETDATA_MAX_DIRECTORY_SCAN_COUNT: usize = 8192;
 const SOURCE_TYPE_ALL: u64 = 1 << 0;
 const SOURCE_TYPE_LOCAL_ALL: u64 = 1 << 1;
 const SOURCE_TYPE_REMOTE_ALL: u64 = 1 << 2;
@@ -33,6 +37,14 @@ const SOURCE_TYPE_LOCAL_SYSTEM: u64 = 1 << 3;
 const SOURCE_TYPE_LOCAL_USER: u64 = 1 << 4;
 const SOURCE_TYPE_LOCAL_NAMESPACE: u64 = 1 << 5;
 const SOURCE_TYPE_LOCAL_OTHER: u64 = 1 << 6;
+
+pub const NETDATA_SOURCE_TYPE_ALL: u64 = SOURCE_TYPE_ALL;
+pub const NETDATA_SOURCE_TYPE_LOCAL_ALL: u64 = SOURCE_TYPE_LOCAL_ALL;
+pub const NETDATA_SOURCE_TYPE_REMOTE_ALL: u64 = SOURCE_TYPE_REMOTE_ALL;
+pub const NETDATA_SOURCE_TYPE_LOCAL_SYSTEM: u64 = SOURCE_TYPE_LOCAL_SYSTEM;
+pub const NETDATA_SOURCE_TYPE_LOCAL_USER: u64 = SOURCE_TYPE_LOCAL_USER;
+pub const NETDATA_SOURCE_TYPE_LOCAL_NAMESPACE: u64 = SOURCE_TYPE_LOCAL_NAMESPACE;
+pub const NETDATA_SOURCE_TYPE_LOCAL_OTHER: u64 = SOURCE_TYPE_LOCAL_OTHER;
 
 const NETDATA_ACCEPTED_PARAMS: &[&str] = &[
     "info",
@@ -177,6 +189,8 @@ impl Default for NetdataFunctionConfig {
 #[derive(Debug, Default)]
 pub struct DisplayContext {
     boot_first_realtime: BTreeMap<Vec<u8>, u64>,
+    uid_display_cache: RefCell<BTreeMap<String, String>>,
+    gid_display_cache: RefCell<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -258,10 +272,29 @@ pub struct NetdataFunctionProgress {
     pub elapsed: Duration,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NetdataJournalFileMetadata {
+    pub source_type: Option<u64>,
+    pub source_name: Option<String>,
+    pub file_last_modified_usec: Option<u64>,
+    pub msg_first_realtime_usec: Option<u64>,
+    pub msg_last_realtime_usec: Option<u64>,
+    pub journal_vs_realtime_delta_usec: Option<u64>,
+}
+
+pub trait NetdataFunctionState {
+    fn file_metadata(&self, _path: &Path) -> Option<NetdataJournalFileMetadata> {
+        None
+    }
+
+    fn update_file_journal_vs_realtime_delta_usec(&mut self, _path: &Path, _delta_usec: u64) {}
+}
+
 pub struct NetdataFunctionRunOptions<'a> {
     pub timeout: Option<Duration>,
     pub progress_callback: Option<&'a mut dyn FnMut(NetdataFunctionProgress)>,
     pub cancellation_callback: Option<&'a dyn Fn() -> bool>,
+    pub state: Option<&'a mut dyn NetdataFunctionState>,
     pub progress_interval: Duration,
 }
 
@@ -276,6 +309,7 @@ impl NetdataFunctionRunOptions<'_> {
             timeout: Some(Duration::from_secs(seconds)),
             progress_callback: None,
             cancellation_callback: None,
+            state: None,
             progress_interval: Duration::from_millis(250),
         }
     }
@@ -287,6 +321,7 @@ impl Default for NetdataFunctionRunOptions<'_> {
             timeout: Some(Duration::from_secs(EFFECTIVELY_DISABLED_TIMEOUT_SECONDS)),
             progress_callback: None,
             cancellation_callback: None,
+            state: None,
             progress_interval: Duration::from_millis(250),
         }
     }
@@ -333,22 +368,32 @@ where
         mut options: NetdataFunctionRunOptions<'_>,
     ) -> Result<Value> {
         let request = NetdataRequest::parse(request, &self.config)?;
-        let paths = collect_journal_files(directory)?;
+        let collection = collect_journal_files(directory)?;
+        let paths = collection.files;
         if request.info {
-            return Ok(self.info_response(request.echo, &paths));
+            return Ok(self.info_response(request.echo, &paths, &options));
         }
 
         let selected =
-            select_journal_files_for_request(paths, &request, self.config.reader_options);
+            select_journal_files_for_request(paths, &request, self.config.reader_options, &options);
         if request.if_modified_since_usec != 0 && !selected.files_are_newer {
             return Ok(netdata_function_error(
                 304,
                 "No new data since the previous call.",
             ));
         }
-        let paths = selected.paths;
+        let selected_files = selected.files;
         let deadline = options.timeout.map(|timeout| Instant::now() + timeout);
-        let mut combined = self.explore_paths(&paths, &request, deadline, &mut options)?;
+        let mut combined = self.explore_files(&selected_files, &request, deadline, &mut options)?;
+        combined.skipped_files = combined.skipped_files.saturating_add(collection.skipped);
+        combined.file_errors.extend(collection.errors);
+        let paths: Vec<PathBuf> = selected_files
+            .iter()
+            .map(|file| file.path.clone())
+            .collect();
+        if combined.cancelled {
+            return Ok(self.query_response(request, paths, combined));
+        }
         if !request.data_only {
             combined.add_zero_count_facet_values_from_files(
                 &request.facets,
@@ -360,8 +405,11 @@ where
             vocabulary_request.filters.clear();
             vocabulary_request.histogram = None;
             vocabulary_request.limit = 0;
+            vocabulary_request.fts_terms.clear();
+            vocabulary_request.fts_patterns.clear();
+            vocabulary_request.fts_negative_patterns.clear();
             let vocabulary =
-                self.explore_paths(&paths, &vocabulary_request, deadline, &mut options)?;
+                self.explore_files(&selected_files, &vocabulary_request, deadline, &mut options)?;
             combined.add_zero_count_facet_values(&vocabulary.facets);
         }
         Ok(self.query_response(request, paths, combined))
@@ -387,18 +435,24 @@ where
         self.run_directory_request_json_with_options(directory, &request, options)
     }
 
-    fn explore_paths(
+    fn explore_files(
         &self,
-        paths: &[PathBuf],
+        files: &[SelectedJournalFile],
         request: &NetdataRequest,
         deadline: Option<Instant>,
         options: &mut NetdataFunctionRunOptions<'_>,
     ) -> Result<CombinedResult> {
-        let query = request.to_explorer_query();
+        let query = request.to_explorer_query(
+            files.len() as u64,
+            None,
+            NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC,
+        );
         let mut combined = CombinedResult::default();
+        combined.sampling_enabled = query.sampling.is_some();
         let started = Instant::now();
-        let total_files = paths.len();
-        for (file_index, path) in paths.iter().enumerate() {
+        let total_files = files.len();
+        for (file_index, file) in files.iter().enumerate() {
+            let path = &file.path;
             if options
                 .cancellation_callback
                 .is_some_and(|is_cancelled| is_cancelled())
@@ -435,6 +489,11 @@ where
             };
             combined.matched_files = combined.matched_files.saturating_add(1);
             combined.matched_paths.push(path.clone());
+            let query = request.to_explorer_query(
+                files.len() as u64,
+                Some(reader.header()),
+                file.order.journal_vs_realtime_delta_usec,
+            );
             if !request.data_only {
                 match reader.enumerate_fields_indexed() {
                     Ok(fields) => combined.add_column_fields(fields),
@@ -481,7 +540,8 @@ where
                     continue;
                 }
             };
-            combined.merge(path, result, query.direction, query.limit);
+            update_learned_realtime_delta(options, path, &file.order, &result.stats);
+            combined.merge(path, result, query.direction, query.limit)?;
             emit_netdata_progress(
                 options,
                 NetdataFunctionProgress {
@@ -493,6 +553,14 @@ where
                     elapsed: started.elapsed(),
                 },
             );
+            if options
+                .cancellation_callback
+                .is_some_and(|is_cancelled| is_cancelled())
+            {
+                combined.partial = true;
+                combined.cancelled = true;
+                break;
+            }
             if let Some(reason) = stop_reason {
                 combined.partial = true;
                 match reason {
@@ -506,13 +574,18 @@ where
         Ok(combined)
     }
 
-    fn info_response(&self, echo: Value, paths: &[PathBuf]) -> Value {
+    fn info_response(
+        &self,
+        echo: Value,
+        paths: &[PathBuf],
+        options: &NetdataFunctionRunOptions<'_>,
+    ) -> Value {
         json!({
             "_request": echo,
             "versions": { "netdata_function_api": 1, "sdk": env!("CARGO_PKG_VERSION") },
             "v": 3,
             "accepted_params": self.accepted_params_from_fields(&[]),
-            "required_params": self.required_source_params(paths),
+            "required_params": self.required_source_params(paths, options),
             "show_ids": true,
             "has_history": true,
             "pagination": {
@@ -550,6 +623,7 @@ where
         );
         let context = DisplayContext {
             boot_first_realtime: collect_boot_first_realtime(&paths, self.config.reader_options),
+            ..DisplayContext::default()
         };
         let data = self.build_data_rows(&context, &columns.order, &combined.rows);
         let facets = self.build_facets(&context, &request.facets, &combined.facets);
@@ -558,20 +632,24 @@ where
         });
         let returned = data.len() as u64;
         let status = 200;
-        let message = if combined.timed_out {
-            timeout_message()
+        let message = query_message(combined.timed_out, &combined.stats);
+        let unsampled = combined.stats.rows_unsampled;
+        let estimated = combined.stats.rows_estimated;
+        let rows_after_returned = if unsampled != 0 || estimated != 0 {
+            combined.stats.rows_examined
         } else {
-            Value::String("OK".to_string())
-        };
+            combined.stats.rows_matched
+        }
+        .saturating_sub(returned);
         let items = json!({
-            "evaluated": combined.stats.rows_examined,
+            "evaluated": combined.stats.rows_examined.saturating_add(unsampled).saturating_add(estimated),
             "matched": combined.stats.rows_matched,
-            "unsampled": 0,
-            "estimated": 0,
+            "unsampled": unsampled,
+            "estimated": estimated,
             "returned": returned,
             "max_to_return": request.limit as u64,
             "before": 0,
-            "after": combined.stats.rows_matched.saturating_sub(returned),
+            "after": rows_after_returned,
         });
 
         let mut response = json!({
@@ -602,18 +680,12 @@ where
                 unix_now_seconds().saturating_add(3600)
             } else {
                 0
-            },
-            "_sampling": {
-                "enabled": request.sampling != 0,
-                "sampled": 0,
-                "unsampled": 0,
-                "estimated": 0,
             }
         });
 
-        let object = response
-            .as_object_mut()
-            .expect("Netdata response root must be an object");
+        let Some(object) = response.as_object_mut() else {
+            return netdata_function_error(500, "Internal Netdata function response error.");
+        };
         if !request.data_only {
             object.insert("message".to_string(), message);
             object.insert("update_every".to_string(), Value::from(1));
@@ -639,6 +711,17 @@ where
             object.insert(
                 "last_modified".to_string(),
                 Value::from(combined.stats.last_realtime_usec),
+            );
+        }
+        if combined.sampling_enabled {
+            object.insert(
+                "_sampling".to_string(),
+                json!({
+                    "enabled": true,
+                    "sampled": combined.stats.sampling_sampled,
+                    "unsampled": combined.stats.sampling_unsampled,
+                    "estimated": combined.stats.sampling_estimated,
+                }),
             );
         }
 
@@ -876,8 +959,12 @@ where
             .collect()
     }
 
-    fn required_source_params(&self, paths: &[PathBuf]) -> Value {
-        let summary = JournalSourceSummary::from_paths(paths, self.config.reader_options);
+    fn required_source_params(
+        &self,
+        paths: &[PathBuf],
+        options: &NetdataFunctionRunOptions<'_>,
+    ) -> Value {
+        let summary = JournalSourceSummary::from_paths(paths, self.config.reader_options, options);
         let options: Vec<Value> = ["all", "all-local-logs", "all-local-system-logs"]
             .into_iter()
             .map(|id| {
@@ -954,7 +1041,9 @@ struct NetdataRequest {
     filters: Vec<ExplorerFilter>,
     facets: Vec<Vec<u8>>,
     histogram: Option<String>,
+    fts_terms: Vec<ExplorerFtsPattern>,
     fts_patterns: Vec<Vec<u8>>,
+    fts_negative_patterns: Vec<Vec<u8>>,
 }
 
 impl NetdataRequest {
@@ -1013,9 +1102,9 @@ impl NetdataRequest {
         let requested_query = get_str(object, "query")
             .filter(|query| !query.is_empty())
             .map(ToOwned::to_owned);
-        let fts_patterns = requested_query
+        let (fts_terms, fts_patterns, fts_negative_patterns) = requested_query
             .as_deref()
-            .map(|query| vec![query.as_bytes().to_vec()])
+            .map(parse_fts_query_patterns)
             .unwrap_or_default();
         let source_selection = parse_source_selection(object.get("selections"));
         let filters = parse_filters(object.get("selections"));
@@ -1057,7 +1146,9 @@ impl NetdataRequest {
             filters,
             facets,
             histogram,
+            fts_terms,
             fts_patterns,
+            fts_negative_patterns,
         })
     }
 
@@ -1068,26 +1159,74 @@ impl NetdataRequest {
             .collect()
     }
 
-    fn matches_source(&self, path: &Path) -> bool {
+    fn matches_source(&self, path: &Path, metadata: Option<&NetdataJournalFileMetadata>) -> bool {
         if self.source_type == SOURCE_TYPE_ALL && self.exact_sources.is_empty() {
             return true;
         }
-        let file_source_type = journal_file_source_type(path);
+        if self.source_type & SOURCE_TYPE_ALL != 0 {
+            return true;
+        }
+        let file_source_type = metadata
+            .and_then(|metadata| metadata.source_type)
+            .unwrap_or_else(|| journal_file_source_type(path));
         if file_source_type & self.source_type != 0 {
             return true;
         }
         if self.exact_sources.is_empty() {
             return false;
         }
-        let source_name = journal_file_exact_source_name(path);
+        let source_name = metadata
+            .and_then(|metadata| metadata.source_name.as_deref().map(str::to_owned))
+            .or_else(|| journal_file_exact_source_name(path));
         self.exact_sources
             .iter()
             .any(|source| source_name.as_deref() == Some(source.as_str()))
     }
 
-    fn to_explorer_query(&self) -> ExplorerQuery {
+    fn to_explorer_query(
+        &self,
+        matched_files: u64,
+        file_header: Option<FileHeader>,
+        realtime_slack_usec: u64,
+    ) -> ExplorerQuery {
         let analysis_enabled = !self.data_only || self.delta;
         let tail_anchor = self.tail && matches!(self.anchor, ExplorerAnchor::Realtime(_));
+        let sampling = (analysis_enabled
+            && self.sampling != 0
+            && matched_files != 0
+            && self.after_realtime_usec.is_some()
+            && self.before_realtime_usec.is_some())
+        .then(|| {
+            let header = file_header.unwrap_or(FileHeader {
+                signature: [0; 8],
+                compatible_flags: 0,
+                incompatible_flags: 0,
+                state: 0,
+                header_size: 0,
+                n_entries: 0,
+                head_entry_realtime: 0,
+                tail_entry_realtime: 0,
+                head_entry_seqnum: 0,
+                tail_entry_seqnum: 0,
+                tail_entry_boot_id: [0; 16],
+                seqnum_id: [0; 16],
+            });
+            let messages_in_file = header
+                .tail_entry_seqnum
+                .checked_sub(header.head_entry_seqnum)
+                .and_then(|span| span.checked_add(1))
+                .filter(|_| header.head_entry_seqnum != 0 && header.tail_entry_seqnum != 0)
+                .unwrap_or(header.n_entries);
+            ExplorerSampling {
+                budget: self.sampling,
+                matched_files,
+                file_head_realtime_usec: header.head_entry_realtime,
+                file_tail_realtime_usec: header.tail_entry_realtime,
+                file_head_seqnum: header.head_entry_seqnum,
+                file_tail_seqnum: header.tail_entry_seqnum,
+                file_entries: messages_in_file,
+            }
+        });
         ExplorerQuery {
             after_realtime_usec: self.after_realtime_usec,
             before_realtime_usec: self.before_realtime_usec,
@@ -1106,13 +1245,16 @@ impl NetdataRequest {
                 })
                 .flatten(),
             histogram_target_buckets: DEFAULT_HISTOGRAM_BUCKETS,
+            fts_terms: self.fts_terms.clone(),
             fts_patterns: self.fts_patterns.clone(),
+            fts_negative_patterns: self.fts_negative_patterns.clone(),
             field_mode: ExplorerFieldMode::FirstValue,
             exclude_facet_field_filters: false,
             use_source_realtime: true,
-            realtime_slack_usec: NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC,
+            realtime_slack_usec: normalize_journal_vs_realtime_delta_usec(realtime_slack_usec),
             stop_when_rows_full: self.data_only && !tail_anchor,
             stop_when_rows_full_check_every: DATA_ONLY_CHECK_EVERY_ROWS,
+            sampling,
             debug_collect_column_fields_by_row_traversal: false,
         }
     }
@@ -1133,12 +1275,38 @@ struct JournalSourceSummary {
 }
 
 impl JournalSourceSummary {
-    fn from_paths(paths: &[PathBuf], reader_options: ReaderOptions) -> Self {
+    fn from_paths(
+        paths: &[PathBuf],
+        reader_options: ReaderOptions,
+        options: &NetdataFunctionRunOptions<'_>,
+    ) -> Self {
         let mut summary = Self::default();
         for path in paths {
+            let metadata = file_metadata(options, path);
             if let Ok(metadata) = std::fs::metadata(path) {
                 summary.files = summary.files.saturating_add(1);
                 summary.total_size = summary.total_size.saturating_add(metadata.len());
+            }
+            if let Some(metadata) = metadata.as_ref() {
+                let metadata_first = metadata.msg_first_realtime_usec;
+                let metadata_last = metadata.msg_last_realtime_usec;
+                if let Some(first) = metadata_first {
+                    summary.first_realtime_usec = Some(
+                        summary
+                            .first_realtime_usec
+                            .map_or(first, |current| current.min(first)),
+                    );
+                }
+                if let Some(last) = metadata_last {
+                    summary.last_realtime_usec = Some(
+                        summary
+                            .last_realtime_usec
+                            .map_or(last, |current| current.max(last)),
+                    );
+                }
+                if metadata_first.is_some() && metadata_last.is_some() {
+                    continue;
+                }
             }
             let Ok(reader) = FileReader::open_with_options(path, reader_options) else {
                 continue;
@@ -1217,32 +1385,50 @@ struct CombinedResult {
     partial: bool,
     timed_out: bool,
     cancelled: bool,
+    sampling_enabled: bool,
 }
 
 impl CombinedResult {
-    fn merge(&mut self, path: &Path, result: ExplorerResult, direction: Direction, limit: usize) {
-        self.merge_stats(result.stats);
-        for row in result.rows {
+    fn merge(
+        &mut self,
+        path: &Path,
+        result: ExplorerResult,
+        direction: Direction,
+        limit: usize,
+    ) -> Result<()> {
+        let ExplorerResult {
+            rows,
+            facets,
+            histogram,
+            stats,
+            column_fields,
+            ..
+        } = result;
+
+        if let Some(histogram) = histogram {
+            merge_histogram(&mut self.histogram, histogram)?;
+        }
+
+        self.merge_stats(stats);
+        for row in rows {
             self.rows.push(LocatedRow {
                 file_path: path.to_path_buf(),
                 row,
             });
         }
-        for field in result.column_fields {
+        for field in column_fields {
             if let Ok(field) = String::from_utf8(field) {
                 self.column_fields.insert(field);
             }
         }
-        for (field, values) in result.facets {
+        for (field, values) in facets {
             let target = self.facets.entry(field).or_default();
             for (value, count) in values {
                 add_netdata_facet_count(target, &value, count);
             }
         }
-        if let Some(histogram) = result.histogram {
-            merge_histogram(&mut self.histogram, histogram);
-        }
         self.sort_and_limit(direction, limit);
+        Ok(())
     }
 
     fn add_column_fields<I>(&mut self, fields: I)
@@ -1286,8 +1472,11 @@ impl CombinedResult {
                 }
                 Err(err) => {
                     self.partial = true;
-                    self.file_errors
-                        .push(format!("{}: {err}", located.file_path.display()));
+                    self.file_errors.push(format!(
+                        "{} cursor {}: {err}",
+                        located.file_path.display(),
+                        located.row.cursor
+                    ));
                 }
             }
         }
@@ -1303,8 +1492,31 @@ impl CombinedResult {
             .facet_rows_matched
             .saturating_add(stats.facet_rows_matched);
         self.stats.rows_returned = self.stats.rows_returned.saturating_add(stats.rows_returned);
+        self.stats.rows_unsampled = self
+            .stats
+            .rows_unsampled
+            .saturating_add(stats.rows_unsampled);
+        self.stats.rows_estimated = self
+            .stats
+            .rows_estimated
+            .saturating_add(stats.rows_estimated);
+        self.stats.sampling_sampled = self
+            .stats
+            .sampling_sampled
+            .saturating_add(stats.sampling_sampled);
+        self.stats.sampling_unsampled = self
+            .stats
+            .sampling_unsampled
+            .saturating_add(stats.sampling_unsampled);
+        self.stats.sampling_estimated = self
+            .stats
+            .sampling_estimated
+            .saturating_add(stats.sampling_estimated);
         if stats.last_realtime_usec > self.stats.last_realtime_usec {
             self.stats.last_realtime_usec = stats.last_realtime_usec;
+        }
+        if stats.max_source_realtime_delta_usec > self.stats.max_source_realtime_delta_usec {
+            self.stats.max_source_realtime_delta_usec = stats.max_source_realtime_delta_usec;
         }
         self.stats.data_refs_seen = self
             .stats
@@ -1407,11 +1619,53 @@ fn netdata_function_error(status: u64, message: &str) -> Value {
     })
 }
 
-fn timeout_message() -> Value {
+fn query_message(timed_out: bool, stats: &ExplorerStats) -> Value {
+    if !timed_out && stats.rows_unsampled == 0 && stats.rows_estimated == 0 {
+        return Value::String("OK".to_string());
+    }
+
+    let total = stats
+        .rows_examined
+        .saturating_add(stats.rows_unsampled)
+        .saturating_add(stats.rows_estimated)
+        .max(1);
+    let real_percent = stats.rows_examined as f64 * 100.0 / total as f64;
+    let unsampled_percent = stats.rows_unsampled as f64 * 100.0 / total as f64;
+    let estimated_percent = stats.rows_estimated as f64 * 100.0 / total as f64;
+
+    let mut title = String::new();
+    let mut description = String::new();
+    let mut status = "notice";
+    if timed_out {
+        title.push_str("Query timed-out, incomplete data. ");
+        description.push_str(
+            "QUERY TIMEOUT: The query timed out and may not include all the data of the selected window. ",
+        );
+        status = "warning";
+    }
+    if stats.rows_unsampled != 0 || stats.rows_estimated != 0 {
+        title.push_str(&format!("{real_percent:.2}% real data"));
+        description.push_str(&format!(
+            "ACTUAL DATA: The filters counters reflect {real_percent:.2}% of the data. "
+        ));
+    }
+    if stats.rows_unsampled != 0 {
+        title.push_str(&format!(", {unsampled_percent:.2}% unsampled"));
+        description.push_str(&format!(
+            "UNSAMPLED DATA: {unsampled_percent:.2}% of the events exist and have been counted, but their values have not been evaluated, so they are not included in the filters counters. "
+        ));
+    }
+    if stats.rows_estimated != 0 {
+        title.push_str(&format!(", {estimated_percent:.2}% estimated"));
+        description.push_str(&format!(
+            "ESTIMATED DATA: The query selected a large amount of data, so to avoid delaying too much, the presented data are estimated by {estimated_percent:.2}%. "
+        ));
+    }
+
     json!({
-        "title": "Query timed-out, incomplete data. ",
-        "status": "warning",
-        "description": "QUERY TIMEOUT: The query timed out and may not include all the data of the selected window. ",
+        "title": title,
+        "status": status,
+        "description": description,
     })
 }
 
@@ -1423,8 +1677,22 @@ fn merged_progress_stats(completed: &ExplorerStats, current: &ExplorerStats) -> 
         .facet_rows_matched
         .saturating_add(current.facet_rows_matched);
     stats.rows_returned = stats.rows_returned.saturating_add(current.rows_returned);
+    stats.rows_unsampled = stats.rows_unsampled.saturating_add(current.rows_unsampled);
+    stats.rows_estimated = stats.rows_estimated.saturating_add(current.rows_estimated);
+    stats.sampling_sampled = stats
+        .sampling_sampled
+        .saturating_add(current.sampling_sampled);
+    stats.sampling_unsampled = stats
+        .sampling_unsampled
+        .saturating_add(current.sampling_unsampled);
+    stats.sampling_estimated = stats
+        .sampling_estimated
+        .saturating_add(current.sampling_estimated);
     if current.last_realtime_usec > stats.last_realtime_usec {
         stats.last_realtime_usec = current.last_realtime_usec;
+    }
+    if current.max_source_realtime_delta_usec > stats.max_source_realtime_delta_usec {
+        stats.max_source_realtime_delta_usec = current.max_source_realtime_delta_usec;
     }
     stats.data_refs_seen = stats.data_refs_seen.saturating_add(current.data_refs_seen);
     stats.data_refs_skipped = stats
@@ -1465,16 +1733,40 @@ struct Columns {
     map: Map<String, Value>,
 }
 
-fn merge_histogram(target: &mut Option<ExplorerHistogram>, source: ExplorerHistogram) {
+fn merge_histogram(
+    target: &mut Option<ExplorerHistogram>,
+    source: ExplorerHistogram,
+) -> Result<()> {
     let Some(target) = target else {
         *target = Some(source);
-        return;
+        return Ok(());
     };
-    for (target_bucket, source_bucket) in target.buckets.iter_mut().zip(source.buckets) {
+    if target.field != source.field
+        || target.buckets.len() != source.buckets.len()
+        || target
+            .buckets
+            .iter()
+            .zip(source.buckets.iter())
+            .any(|(target_bucket, source_bucket)| {
+                target_bucket.start_realtime_usec != source_bucket.start_realtime_usec
+                    || target_bucket.end_realtime_usec != source_bucket.end_realtime_usec
+            })
+    {
+        return Err(SdkError::Unsupported(
+            "inconsistent Netdata histogram bucket shape",
+        ));
+    }
+    for (index, source_bucket) in source.buckets.into_iter().enumerate() {
+        let Some(target_bucket) = target.buckets.get_mut(index) else {
+            return Err(SdkError::Unsupported(
+                "inconsistent Netdata histogram bucket shape",
+            ));
+        };
         for (value, count) in source_bucket.values {
             *target_bucket.values.entry(value).or_default() += count;
         }
     }
+    Ok(())
 }
 
 fn facet_group_is_reportable(values: &BTreeMap<Vec<u8>, u64>) -> bool {
@@ -1504,6 +1796,41 @@ fn emit_netdata_progress(
     if let Some(callback) = options.progress_callback.as_deref_mut() {
         callback(progress);
     }
+}
+
+fn file_metadata(
+    options: &NetdataFunctionRunOptions<'_>,
+    path: &Path,
+) -> Option<NetdataJournalFileMetadata> {
+    options
+        .state
+        .as_deref()
+        .and_then(|state| state.file_metadata(path))
+}
+
+fn update_learned_realtime_delta(
+    options: &mut NetdataFunctionRunOptions<'_>,
+    path: &Path,
+    order: &JournalFileOrderInfo,
+    stats: &ExplorerStats,
+) {
+    let learned_delta = stats.max_source_realtime_delta_usec;
+    if learned_delta == 0 || learned_delta <= order.journal_vs_realtime_delta_usec {
+        return;
+    }
+    let learned_delta = normalize_journal_vs_realtime_delta_usec(learned_delta);
+    if learned_delta <= order.journal_vs_realtime_delta_usec {
+        return;
+    }
+    if let Some(state) = options.state.as_deref_mut() {
+        state.update_file_journal_vs_realtime_delta_usec(path, learned_delta);
+    }
+}
+
+fn normalize_journal_vs_realtime_delta_usec(delta_usec: u64) -> u64 {
+    delta_usec
+        .max(NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC)
+        .min(NETDATA_JOURNAL_VS_REALTIME_DELTA_MAX_USEC)
 }
 
 #[cfg(test)]
@@ -1543,7 +1870,7 @@ struct SelectedJournalFile {
 
 #[derive(Debug, Default)]
 struct SelectedJournalFiles {
-    paths: Vec<PathBuf>,
+    files: Vec<SelectedJournalFile>,
     files_are_newer: bool,
 }
 
@@ -1551,13 +1878,15 @@ fn select_journal_files_for_request(
     paths: Vec<PathBuf>,
     request: &NetdataRequest,
     reader_options: ReaderOptions,
+    options: &NetdataFunctionRunOptions<'_>,
 ) -> SelectedJournalFiles {
     let mut selected = Vec::new();
     for path in paths {
-        if !request.matches_source(&path) {
+        let metadata = file_metadata(options, &path);
+        if !request.matches_source(&path, metadata.as_ref()) {
             continue;
         }
-        let order = journal_file_order_info(&path, reader_options);
+        let order = journal_file_order_info(&path, reader_options, metadata.as_ref());
         if !journal_file_order_may_overlap_request(&order, request) {
             continue;
         }
@@ -1571,7 +1900,7 @@ fn select_journal_files_for_request(
         .iter()
         .any(|file| file.order.msg_last_realtime_usec > request.if_modified_since_usec);
     SelectedJournalFiles {
-        paths: selected.into_iter().map(|file| file.path).collect(),
+        files: selected,
         files_are_newer,
     }
 }
@@ -1811,6 +2140,64 @@ fn sort_facet_options(field: &str, options: &mut [Value]) {
     });
 }
 
+fn parse_fts_query_patterns(query: &str) -> (Vec<ExplorerFtsPattern>, Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    let bytes = query.as_bytes();
+    let mut index = 0usize;
+    let mut terms = Vec::new();
+    let mut positives = Vec::new();
+    let mut negatives = Vec::new();
+
+    while index < bytes.len() {
+        while index < bytes.len() && bytes[index] == b'|' {
+            index += 1;
+        }
+        if index >= bytes.len() {
+            break;
+        }
+
+        let negative = if bytes[index] == b'!' {
+            index += 1;
+            true
+        } else {
+            false
+        };
+        if index >= bytes.len() {
+            break;
+        }
+
+        let mut pattern = Vec::new();
+        let mut escaped = false;
+        while index < bytes.len() {
+            let byte = bytes[index];
+            index += 1;
+
+            if byte == b'\\' && !escaped {
+                escaped = true;
+                continue;
+            }
+            if byte == b'|' && !escaped {
+                break;
+            }
+
+            pattern.push(byte);
+            escaped = false;
+        }
+
+        if pattern.is_empty() {
+            continue;
+        }
+
+        terms.push(ExplorerFtsPattern::substring(pattern.clone(), negative));
+        if negative {
+            negatives.push(pattern);
+        } else {
+            positives.push(pattern);
+        }
+    }
+
+    (terms, positives, negatives)
+}
+
 fn parse_filters(value: Option<&Value>) -> Vec<ExplorerFilter> {
     let Some(Value::Object(selections)) = value else {
         return Vec::new();
@@ -2048,6 +2435,9 @@ fn normalized_request_echo(
     };
     let mut out = json!({
         "info": info,
+        // The SDK Netdata boundary always uses indexed slice semantics. The
+        // field remains in the echo because it is part of the plugin request
+        // shape and downstream fixtures compare normalized requests.
         "slice": true,
         "data_only": data_only,
         "delta": delta,
@@ -2067,15 +2457,15 @@ fn normalized_request_echo(
         "histogram": histogram,
     });
     if let Some(facets) = requested_facets {
-        out.as_object_mut()
-            .expect("Netdata request echo root must be an object")
-            .insert(
+        if let Some(object) = out.as_object_mut() {
+            object.insert(
                 "facets".to_string(),
                 facets
                     .iter()
                     .map(|field| Value::String(field.clone()))
                     .collect(),
             );
+        }
     }
     if let Some(Value::Object(selections)) = selections {
         let mut selections = selections.clone();
@@ -2084,9 +2474,9 @@ fn normalized_request_echo(
                 *source = Value::Null;
             }
         }
-        out.as_object_mut()
-            .expect("Netdata request echo root must be an object")
-            .insert("selections".to_string(), Value::Object(selections));
+        if let Some(object) = out.as_object_mut() {
+            object.insert("selections".to_string(), Value::Object(selections));
+        }
     }
     out
 }
@@ -2146,44 +2536,68 @@ fn human_duration_seconds(seconds: u64) -> String {
     parts.join(" ")
 }
 
-fn collect_journal_files(path: &Path) -> Result<Vec<PathBuf>> {
+#[derive(Debug, Default)]
+struct JournalFileCollection {
+    files: Vec<PathBuf>,
+    skipped: u64,
+    errors: Vec<String>,
+}
+
+fn collect_journal_files(path: &Path) -> Result<JournalFileCollection> {
     if !path.is_dir() {
         return Err(SdkError::InvalidPath(format!(
             "not a directory: {}",
             path.display()
         )));
     }
-    let mut files = Vec::new();
-    let entries: Vec<_> = std::fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
-    for entry in &entries {
-        let file_path = entry.path();
-        if file_path.is_file() && is_journal_file_name(&file_path) {
-            files.push(file_path);
-        }
-    }
-    for entry in &entries {
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+    let mut collection = JournalFileCollection::default();
+    let mut pending = VecDeque::from([(path.to_path_buf(), 0usize)]);
+    let mut visited = HashSet::new();
+    while let Some((directory, depth)) = pending.pop_front() {
+        let visited_key = std::fs::canonicalize(&directory).unwrap_or_else(|_| directory.clone());
+        if visited.contains(&visited_key) {
             continue;
+        }
+        if visited.len() >= NETDATA_MAX_DIRECTORY_SCAN_COUNT {
+            collection.skipped = collection.skipped.saturating_add(1);
+            collection.errors.push(format!(
+                "{}: directory scan limit reached",
+                directory.display()
+            ));
+            continue;
+        }
+        visited.insert(visited_key);
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(err) if directory == path => return Err(err.into()),
+            Err(err) => {
+                collection.skipped = collection.skipped.saturating_add(1);
+                collection
+                    .errors
+                    .push(format!("{}: {err}", directory.display()));
+                continue;
+            }
         };
-        if !is_journal_subdir_name(&name) {
-            continue;
-        }
-        let child_path = entry.path();
-        if !child_path.is_dir() {
-            continue;
-        }
-        let Ok(children) = std::fs::read_dir(&child_path) else {
-            continue;
-        };
-        for child in children.flatten() {
-            let file_path = child.path();
-            if file_path.is_file() && is_journal_file_name(&file_path) {
-                files.push(file_path);
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if entry_path.is_file() && is_journal_file_name(&entry_path) {
+                collection.files.push(entry_path);
+            } else if depth < NETDATA_MAX_DIRECTORY_SCAN_DEPTH && entry_path.is_dir() {
+                pending.push_back((entry_path, depth + 1));
             }
         }
     }
-    files.sort();
-    Ok(files)
+    collection.files.sort();
+    dedup_journal_files_by_canonical_path(&mut collection.files);
+    Ok(collection)
+}
+
+fn dedup_journal_files_by_canonical_path(files: &mut Vec<PathBuf>) {
+    let mut seen = HashSet::new();
+    files.retain(|path| {
+        let key = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+        seen.insert(key)
+    });
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2191,32 +2605,54 @@ struct JournalFileOrderInfo {
     msg_first_realtime_usec: u64,
     msg_last_realtime_usec: u64,
     file_last_modified_usec: u64,
+    journal_vs_realtime_delta_usec: u64,
 }
 
-fn journal_file_order_info(path: &Path, reader_options: ReaderOptions) -> JournalFileOrderInfo {
+fn journal_file_order_info(
+    path: &Path,
+    reader_options: ReaderOptions,
+    metadata: Option<&NetdataJournalFileMetadata>,
+) -> JournalFileOrderInfo {
     let file_last_modified_usec = std::fs::metadata(path)
         .ok()
         .and_then(|metadata| metadata.modified().ok())
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_micros().min(u128::from(u64::MAX)) as u64)
         .unwrap_or_default();
+    let file_last_modified_usec = metadata
+        .and_then(|metadata| metadata.file_last_modified_usec)
+        .unwrap_or(file_last_modified_usec);
+    let journal_vs_realtime_delta_usec = metadata
+        .and_then(|metadata| metadata.journal_vs_realtime_delta_usec)
+        .map(normalize_journal_vs_realtime_delta_usec)
+        .unwrap_or(NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC);
 
     let Ok(reader) = FileReader::open_with_options(path, reader_options) else {
         return JournalFileOrderInfo {
             msg_first_realtime_usec: 0,
             msg_last_realtime_usec: file_last_modified_usec,
             file_last_modified_usec,
+            journal_vs_realtime_delta_usec,
         };
     };
     let header = reader.header();
+    let msg_first_realtime_usec = metadata
+        .and_then(|metadata| metadata.msg_first_realtime_usec)
+        .unwrap_or(header.head_entry_realtime);
+    let msg_last_realtime_usec = metadata
+        .and_then(|metadata| metadata.msg_last_realtime_usec)
+        .unwrap_or_else(|| {
+            if header.tail_entry_realtime == 0 {
+                file_last_modified_usec
+            } else {
+                header.tail_entry_realtime
+            }
+        });
     JournalFileOrderInfo {
-        msg_first_realtime_usec: header.head_entry_realtime,
-        msg_last_realtime_usec: if header.tail_entry_realtime == 0 {
-            file_last_modified_usec
-        } else {
-            header.tail_entry_realtime
-        },
+        msg_first_realtime_usec,
+        msg_last_realtime_usec,
         file_last_modified_usec,
+        journal_vs_realtime_delta_usec,
     }
 }
 
@@ -2253,23 +2689,6 @@ fn is_journal_file_name(path: &Path) -> bool {
                 || name.ends_with(".journal.zst")
                 || name.ends_with(".journal~.zst")
         })
-}
-
-fn is_journal_subdir_name(name: &str) -> bool {
-    if name.contains('.') {
-        return false;
-    }
-    match name.len() {
-        32 => name.bytes().all(|byte| byte.is_ascii_hexdigit()),
-        36 => name.bytes().enumerate().all(|(idx, byte)| {
-            if matches!(idx, 8 | 13 | 18 | 23) {
-                byte == b'-'
-            } else {
-                byte.is_ascii_hexdigit()
-            }
-        }),
-        _ => false,
-    }
 }
 
 fn push_unique_many(target: &mut Vec<String>, values: &[String]) {
@@ -2630,14 +3049,14 @@ fn systemd_field_display_value(
         | "_AUDIT_LOGINUID"
         | "OBJECT_AUDIT_LOGINUID" => {
             if resolve_user_group_names {
-                Value::String(resolve_uid_name(&raw).unwrap_or_else(|| raw.into_owned()))
+                Value::String(cached_uid_display(context, raw.as_ref()))
             } else {
                 Value::String(raw.into_owned())
             }
         }
         "_GID" | "OBJECT_GID" => {
             if resolve_user_group_names {
-                Value::String(resolve_gid_name(&raw).unwrap_or_else(|| raw.into_owned()))
+                Value::String(cached_gid_display(context, raw.as_ref()))
             } else {
                 Value::String(raw.into_owned())
             }
@@ -2655,6 +3074,30 @@ fn systemd_field_display_value(
         }),
         _ => Value::String(raw.into_owned()),
     }
+}
+
+fn cached_uid_display(context: &DisplayContext, raw: &str) -> String {
+    if let Some(value) = context.uid_display_cache.borrow().get(raw) {
+        return value.clone();
+    }
+    let value = resolve_uid_name(raw).unwrap_or_else(|| raw.to_string());
+    context
+        .uid_display_cache
+        .borrow_mut()
+        .insert(raw.to_string(), value.clone());
+    value
+}
+
+fn cached_gid_display(context: &DisplayContext, raw: &str) -> String {
+    if let Some(value) = context.gid_display_cache.borrow().get(raw) {
+        return value.clone();
+    }
+    let value = resolve_gid_name(raw).unwrap_or_else(|| raw.to_string());
+    context
+        .gid_display_cache
+        .borrow_mut()
+        .insert(raw.to_string(), value.clone());
+    value
 }
 
 #[cfg(unix)]
@@ -2874,6 +3317,22 @@ mod tests {
     use std::collections::HashMap;
     use tempfile::TempDir;
 
+    #[derive(Default)]
+    struct TestNetdataState {
+        metadata: HashMap<PathBuf, NetdataJournalFileMetadata>,
+        updates: Vec<(PathBuf, u64)>,
+    }
+
+    impl NetdataFunctionState for TestNetdataState {
+        fn file_metadata(&self, path: &Path) -> Option<NetdataJournalFileMetadata> {
+            self.metadata.get(path).cloned()
+        }
+
+        fn update_file_journal_vs_realtime_delta_usec(&mut self, path: &Path, delta_usec: u64) {
+            self.updates.push((path.to_path_buf(), delta_usec));
+        }
+    }
+
     fn test_uuid(seed: u8) -> uuid::Uuid {
         uuid::Uuid::from_bytes([seed; 16])
     }
@@ -2893,6 +3352,16 @@ mod tests {
         count: usize,
         start_realtime_usec: u64,
     ) {
+        write_stepped_netdata_test_journal(directory, name, count, start_realtime_usec, 1);
+    }
+
+    fn write_stepped_netdata_test_journal(
+        directory: &std::path::Path,
+        name: &str,
+        count: usize,
+        start_realtime_usec: u64,
+        step_realtime_usec: u64,
+    ) {
         std::fs::create_dir_all(directory).expect("create journal dir");
         let path = directory.join(name);
         let repo_file = RepoFile::from_path(&path).expect("repo file");
@@ -2907,7 +3376,8 @@ mod tests {
                 b"SERVICE=odd".as_slice()
             };
             let payloads: [&[u8]; 3] = [message.as_bytes(), service, b"PRIORITY=6"];
-            let realtime = start_realtime_usec.saturating_add(index as u64);
+            let realtime = start_realtime_usec
+                .saturating_add((index as u64).saturating_mul(step_realtime_usec));
             writer
                 .add_entry(&mut file, &payloads, realtime, realtime)
                 .expect("write entry");
@@ -2944,6 +3414,49 @@ mod tests {
     }
 
     #[test]
+    fn parses_netdata_fts_query_like_simple_pattern() {
+        let (terms, positives, negatives) =
+            parse_fts_query_patterns(r"error|warning|!debug|escaped\|pipe|\!literal| a*B");
+
+        assert_eq!(
+            positives,
+            vec![
+                b"error".to_vec(),
+                b"warning".to_vec(),
+                b"escaped|pipe".to_vec(),
+                b"!literal".to_vec(),
+                b" a*B".to_vec(),
+            ]
+        );
+        assert_eq!(negatives, vec![b"debug".to_vec()]);
+        assert_eq!(terms.len(), 6);
+        assert!(!terms[0].negative);
+        assert!(terms[2].negative);
+        assert_eq!(
+            terms[5],
+            ExplorerFtsPattern {
+                parts: vec![b" a".to_vec(), b"B".to_vec()],
+                negative: false,
+            }
+        );
+
+        let request = json!({
+            "query": r"alpha|!debug|needle\|pipe",
+            "facets": ["PRIORITY"],
+        });
+        let parsed = NetdataRequest::parse(&request, &NetdataFunctionConfig::systemd_journal())
+            .expect("parse request");
+        let query =
+            parsed.to_explorer_query(1, None, NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC);
+        assert_eq!(
+            query.fts_patterns,
+            vec![b"alpha".to_vec(), b"needle|pipe".to_vec()]
+        );
+        assert_eq!(query.fts_negative_patterns, vec![b"debug".to_vec()]);
+        assert_eq!(query.fts_terms.len(), 3);
+    }
+
+    #[test]
     fn netdata_requests_never_enable_debug_row_traversal_column_collection() {
         let request = json!({
             "facets": ["PRIORITY", "_HOSTNAME"],
@@ -2953,7 +3466,8 @@ mod tests {
 
         let parsed = NetdataRequest::parse(&request, &NetdataFunctionConfig::systemd_journal())
             .expect("parse request");
-        let query = parsed.to_explorer_query();
+        let query =
+            parsed.to_explorer_query(1, None, NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC);
 
         assert!(!query.debug_collect_column_fields_by_row_traversal);
     }
@@ -3125,6 +3639,36 @@ mod tests {
     }
 
     #[test]
+    fn netdata_function_api_honors_cancellation_after_final_file_progress() {
+        let dir = TempDir::new().expect("tempdir");
+        write_netdata_test_journal(dir.path(), 10);
+        let request = json!({
+            "after": 1_700_000_000,
+            "before": 1_700_000_010,
+            "facets": ["SERVICE"],
+            "histogram": "SERVICE",
+            "last": 0
+        });
+        let function = NetdataJournalFunction::systemd_journal_plugin_compatible();
+        let should_cancel = Cell::new(false);
+        let mut progress = |_progress: NetdataFunctionProgress| {
+            should_cancel.set(true);
+        };
+        let is_cancelled = || should_cancel.get();
+        let mut options = NetdataFunctionRunOptions::from_timeout_seconds(0);
+        options.progress_callback = Some(&mut progress);
+        options.cancellation_callback = Some(&is_cancelled);
+
+        let response = function
+            .run_directory_request_json_with_options(dir.path(), &request, options)
+            .expect("run function");
+
+        assert_eq!(response["status"], 499);
+        assert_eq!(response["errorMessage"], "Request cancelled.");
+        assert!(should_cancel.get());
+    }
+
+    #[test]
     fn netdata_function_api_reports_timeout_as_partial_table() {
         let dir = TempDir::new().expect("tempdir");
         write_netdata_test_journal(dir.path(), 10);
@@ -3152,6 +3696,91 @@ mod tests {
             response["message"]["title"],
             "Query timed-out, incomplete data. "
         );
+    }
+
+    #[test]
+    fn netdata_function_api_reports_sampling_counters() {
+        let dir = TempDir::new().expect("tempdir");
+        write_stepped_netdata_test_journal(
+            dir.path(),
+            "netdata-api-test.journal",
+            5_000,
+            1_700_000_000_000_000,
+            1_000,
+        );
+        let request = json!({
+            "after": 1_700_000_000,
+            "before": 1_700_000_005,
+            "facets": ["SERVICE"],
+            "histogram": "SERVICE",
+            "last": 5,
+            "sampling": 20
+        });
+        let function = NetdataJournalFunction::systemd_journal_plugin_compatible();
+
+        let response = function
+            .run_directory_request_json_with_options(
+                dir.path(),
+                &request,
+                NetdataFunctionRunOptions::from_timeout_seconds(0),
+            )
+            .expect("run function");
+
+        assert_eq!(response["status"], 200);
+        assert!(
+            response["_sampling"]["sampled"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0
+        );
+        assert!(
+            response["_sampling"]["unsampled"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0
+        );
+        assert!(
+            response["_sampling"]["estimated"]
+                .as_u64()
+                .unwrap_or_default()
+                > 0
+        );
+        assert_eq!(
+            response["items"]["estimated"],
+            response["_sampling"]["estimated"]
+        );
+        assert!(
+            response["items"]["unsampled"].as_u64().unwrap_or_default()
+                < response["_sampling"]["unsampled"]
+                    .as_u64()
+                    .unwrap_or_default()
+        );
+        assert_eq!(response["message"]["status"], "notice");
+    }
+
+    #[test]
+    fn netdata_function_api_disables_sampling_for_data_only() {
+        let dir = TempDir::new().expect("tempdir");
+        write_netdata_test_journal(dir.path(), 5_000);
+        let request = json!({
+            "after": 1_700_000_000,
+            "before": 1_700_000_010,
+            "data_only": true,
+            "last": 5,
+            "sampling": 20
+        });
+        let function = NetdataJournalFunction::systemd_journal_plugin_compatible();
+
+        let response = function
+            .run_directory_request_json_with_options(
+                dir.path(),
+                &request,
+                NetdataFunctionRunOptions::from_timeout_seconds(0),
+            )
+            .expect("run function");
+
+        assert_eq!(response["status"], 200);
+        assert!(response.get("_sampling").is_none());
     }
 
     #[test]
@@ -3340,6 +3969,33 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn plugin_compatible_profile_caches_user_group_resolution() {
+        let context = DisplayContext::default();
+        let profile = SystemdJournalPluginProfile;
+
+        assert_eq!(
+            profile.field_display_value(&context, DisplayScope::Facet, "_UID", b"0"),
+            json!("root")
+        );
+        assert_eq!(
+            profile.field_display_value(&context, DisplayScope::Data, "_UID", b"0"),
+            json!("root")
+        );
+        assert_eq!(
+            profile.field_display_value(&context, DisplayScope::Facet, "_GID", b"0"),
+            json!("root")
+        );
+        assert_eq!(
+            profile.field_display_value(&context, DisplayScope::Data, "_GID", b"0"),
+            json!("root")
+        );
+
+        assert_eq!(context.uid_display_cache.borrow().len(), 1);
+        assert_eq!(context.gid_display_cache.borrow().len(), 1);
+    }
+
     #[test]
     fn file_overlap_uses_netdata_max_realtime_slack() {
         let file_first_seconds = 200_000_000u64;
@@ -3351,6 +4007,7 @@ mod tests {
             incompatible_flags: 0,
             state: 0,
             header_size: 0,
+            n_entries: 0,
             head_entry_realtime: file_first_seconds * 1_000_000,
             tail_entry_realtime: file_last_seconds * 1_000_000,
             head_entry_seqnum: 0,
@@ -3387,11 +4044,13 @@ mod tests {
             msg_first_realtime_usec: 100,
             msg_last_realtime_usec: 200,
             file_last_modified_usec: 200,
+            journal_vs_realtime_delta_usec: NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC,
         };
         let newer = JournalFileOrderInfo {
             msg_first_realtime_usec: 100,
             msg_last_realtime_usec: 300,
             file_last_modified_usec: 100,
+            journal_vs_realtime_delta_usec: NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC,
         };
         assert_eq!(
             compare_journal_file_order(&newer, &older, Direction::Backward),
@@ -3406,6 +4065,7 @@ mod tests {
             msg_first_realtime_usec: 100,
             msg_last_realtime_usec: 200,
             file_last_modified_usec: 300,
+            journal_vs_realtime_delta_usec: NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC,
         };
         assert_eq!(
             compare_journal_file_order(&newer_mtime, &older, Direction::Backward),
@@ -3416,6 +4076,7 @@ mod tests {
             msg_first_realtime_usec: 150,
             msg_last_realtime_usec: 200,
             file_last_modified_usec: 200,
+            journal_vs_realtime_delta_usec: NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC,
         };
         assert_eq!(
             compare_journal_file_order(&newer_first, &older, Direction::Backward),
@@ -3431,6 +4092,135 @@ mod tests {
         record_boot_first_realtime(&mut boot_first, b"boot-a".to_vec(), 200);
 
         assert_eq!(boot_first.get(b"boot-a".as_slice()), Some(&100));
+    }
+
+    #[test]
+    fn merge_histogram_rejects_inconsistent_bucket_shape() {
+        let mut target = Some(ExplorerHistogram {
+            field: b"PRIORITY".to_vec(),
+            buckets: vec![ExplorerHistogramBucket {
+                start_realtime_usec: 1_000_000,
+                end_realtime_usec: 2_000_000,
+                values: HashMap::new(),
+            }],
+        });
+        let source = ExplorerHistogram {
+            field: b"PRIORITY".to_vec(),
+            buckets: vec![ExplorerHistogramBucket {
+                start_realtime_usec: 1_000_000,
+                end_realtime_usec: 1_500_000,
+                values: HashMap::new(),
+            }],
+        };
+
+        let err = merge_histogram(&mut target, source).expect_err("shape mismatch");
+        assert!(matches!(
+            err,
+            SdkError::Unsupported("inconsistent Netdata histogram bucket shape")
+        ));
+    }
+
+    #[test]
+    fn collect_journal_files_recurses_nested_directories() {
+        let dir = TempDir::new().expect("tempdir");
+        let nested = dir.path().join("machine").join("nested");
+        write_named_netdata_test_journal(&nested, "system.journal", 1, 1_700_000_000_000_000);
+
+        let collection = collect_journal_files(dir.path()).expect("collect files");
+
+        assert_eq!(collection.files.len(), 1);
+        assert_eq!(collection.skipped, 0);
+        assert!(collection.errors.is_empty());
+        assert_eq!(
+            collection.files[0]
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("system.journal")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_journal_files_deduplicates_symlinked_directories() {
+        let dir = TempDir::new().expect("tempdir");
+        let real = dir.path().join("real");
+        let link = dir.path().join("link");
+        write_named_netdata_test_journal(&real, "system.journal", 1, 1_700_000_000_000_000);
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        let collection = collect_journal_files(dir.path()).expect("collect files");
+
+        assert_eq!(collection.files.len(), 1);
+        assert_eq!(collection.skipped, 0);
+        assert!(collection.errors.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_journal_files_deduplicates_symlinked_files() {
+        let dir = TempDir::new().expect("tempdir");
+        write_named_netdata_test_journal(dir.path(), "system.journal", 1, 1_700_000_000_000_000);
+        std::os::unix::fs::symlink(
+            dir.path().join("system.journal"),
+            dir.path().join("system-copy.journal"),
+        )
+        .expect("symlink");
+
+        let collection = collect_journal_files(dir.path()).expect("collect files");
+
+        assert_eq!(collection.files.len(), 1);
+        assert_eq!(collection.skipped, 0);
+        assert!(collection.errors.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_journal_files_reports_unreadable_subdirectories() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+
+        let dir = TempDir::new().expect("tempdir");
+        std::fs::write(dir.path().join("visible.journal"), b"").expect("journal");
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).expect("locked dir");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))
+            .expect("lock dir");
+
+        let collection = collect_journal_files(dir.path()).expect("collect files");
+
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700))
+            .expect("unlock dir");
+        assert_eq!(collection.files.len(), 1);
+        assert_eq!(collection.skipped, 1);
+        assert_eq!(collection.errors.len(), 1);
+        assert!(collection.errors[0].contains("locked"));
+    }
+
+    #[test]
+    fn source_summary_fills_missing_caller_metadata_from_header() {
+        let dir = TempDir::new().expect("tempdir");
+        write_named_netdata_test_journal(dir.path(), "system.journal", 2, 1_700_000_000_000_000);
+        let path = dir.path().join("system.journal");
+        let mut state = TestNetdataState::default();
+        state.metadata.insert(
+            path.clone(),
+            NetdataJournalFileMetadata {
+                msg_first_realtime_usec: Some(1_699_999_999_000_000),
+                ..NetdataJournalFileMetadata::default()
+            },
+        );
+        let options = NetdataFunctionRunOptions {
+            state: Some(&mut state),
+            ..NetdataFunctionRunOptions::default()
+        };
+
+        let summary = JournalSourceSummary::from_paths(&[path], ReaderOptions::default(), &options);
+
+        assert_eq!(summary.first_realtime_usec, Some(1_699_999_999_000_000));
+        assert_eq!(summary.last_realtime_usec, Some(1_700_000_000_000_001));
     }
 
     #[test]
@@ -3457,8 +4247,84 @@ mod tests {
                 .pointer("/selections/__logs_sources/0")
                 .is_some_and(Value::is_null)
         );
-        assert!(request.matches_source(Path::new("/var/log/journal/machine/system.journal")));
-        assert!(!request.matches_source(Path::new("/var/log/journal/machine/user-1000.journal")));
+        assert!(request.matches_source(Path::new("/var/log/journal/machine/system.journal"), None));
+        assert!(!request.matches_source(
+            Path::new("/var/log/journal/machine/user-1000.journal"),
+            None
+        ));
+    }
+
+    #[test]
+    fn source_selection_uses_caller_metadata_before_filename_fallback() {
+        let dir = TempDir::new().expect("tempdir");
+        write_named_netdata_test_journal(dir.path(), "user-1000.journal", 1, 1_700_000_000_000_000);
+        let path = dir.path().join("user-1000.journal");
+        let config = NetdataFunctionConfig::systemd_journal();
+        let request = NetdataRequest::parse(
+            &json!({
+                "after": 1_700_000_000,
+                "before": 1_700_000_001,
+                "selections": {
+                    "__logs_sources": ["all-local-system-logs"]
+                }
+            }),
+            &config,
+        )
+        .expect("parse source-filtered request");
+        assert!(!request.matches_source(&path, None));
+
+        let mut state = TestNetdataState::default();
+        state.metadata.insert(
+            path.clone(),
+            NetdataJournalFileMetadata {
+                source_type: Some(NETDATA_SOURCE_TYPE_LOCAL_SYSTEM),
+                source_name: Some("system-registry".to_string()),
+                ..NetdataJournalFileMetadata::default()
+            },
+        );
+        let options = NetdataFunctionRunOptions {
+            state: Some(&mut state),
+            ..NetdataFunctionRunOptions::default()
+        };
+        let selected =
+            select_journal_files_for_request(vec![path], &request, config.reader_options, &options);
+
+        assert_eq!(selected.files.len(), 1);
+    }
+
+    #[test]
+    fn netdata_function_state_receives_learned_source_realtime_delta() {
+        let dir = TempDir::new().expect("tempdir");
+        let commit_realtime_usec = 1_700_000_030_000_000;
+        let source_realtime_usec = commit_realtime_usec - 30_000_000;
+        write_source_realtime_delta_journal(
+            dir.path(),
+            "system.journal",
+            commit_realtime_usec,
+            source_realtime_usec,
+        );
+        let request = json!({
+            "after": 1_700_000_029,
+            "before": 1_700_000_031,
+            "facets": ["SERVICE"],
+            "histogram": "SERVICE",
+            "last": 1,
+            "sampling": 0
+        });
+        let function = NetdataJournalFunction::systemd_journal_plugin_compatible();
+        let mut state = TestNetdataState::default();
+        let options = NetdataFunctionRunOptions {
+            state: Some(&mut state),
+            ..NetdataFunctionRunOptions::from_timeout_seconds(0)
+        };
+
+        let response = function
+            .run_directory_request_json_with_options(dir.path(), &request, options)
+            .expect("run function");
+
+        assert_eq!(response["status"], 200);
+        assert_eq!(state.updates.len(), 1);
+        assert_eq!(state.updates[0].1, 30_000_000);
     }
 
     #[test]
@@ -3531,5 +4397,35 @@ mod tests {
                 payloads: Vec::new(),
             },
         }
+    }
+
+    fn write_source_realtime_delta_journal(
+        directory: &std::path::Path,
+        name: &str,
+        commit_realtime_usec: u64,
+        source_realtime_usec: u64,
+    ) {
+        std::fs::create_dir_all(directory).expect("create journal dir");
+        let path = directory.join(name);
+        let repo_file = RepoFile::from_path(&path).expect("repo file");
+        let options = JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3));
+        let mut file = JournalFile::<MmapMut>::create(&repo_file, options).expect("create journal");
+        let mut writer = JournalWriter::new(&mut file, 1, test_uuid(4)).expect("writer");
+        let source = format!("_SOURCE_REALTIME_TIMESTAMP={source_realtime_usec}");
+        let payloads: [&[u8]; 4] = [
+            b"MESSAGE=source lag test".as_slice(),
+            b"SERVICE=delta".as_slice(),
+            b"PRIORITY=6".as_slice(),
+            source.as_bytes(),
+        ];
+        writer
+            .add_entry(
+                &mut file,
+                &payloads,
+                commit_realtime_usec,
+                commit_realtime_usec,
+            )
+            .expect("write entry");
+        file.sync().expect("sync journal");
     }
 }

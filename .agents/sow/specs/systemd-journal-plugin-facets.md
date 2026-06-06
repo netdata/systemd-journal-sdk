@@ -92,8 +92,11 @@ Evidence note:
 
 ## SDK Netdata Function Boundary
 
-The Rust SDK exposes an additive Netdata-specific boundary under
-`journal::netdata`.
+The Rust SDK exposes the Netdata-specific boundary under `journal::netdata`.
+This API is the replacement surface for Netdata's generic
+`systemd-journal.plugin` logs function. The CLI wrapper exists to validate the
+SDK boundary against the plugin's offline test contract; production consumers
+should call `journal::netdata` directly.
 
 Current Rust entrypoints:
 
@@ -101,13 +104,24 @@ Current Rust entrypoints:
 - `NetdataJournalFunction::systemd_journal_plugin_compatible()`
 - `NetdataJournalFunction::run_directory_request_json()`
 - `NetdataJournalFunction::run_directory_request_bytes()`
+- `NetdataJournalFunction::run_directory_request_json_with_options()`
+- `NetdataJournalFunction::run_directory_request_bytes_with_options()`
 
-The first wrapper command is an internal test command named
-`netdata_function_wrapper`, with the same external shape as the Netdata plugin:
+The internal test command is named `netdata_function_wrapper`, with the same
+external shape as the Netdata plugin:
 
 ```bash
-netdata_function_wrapper --test systemd-journal --dir <journal-dir> --request <request.json>
+netdata_function_wrapper --test systemd-journal --dir <journal-dir> --timeout <seconds> < <request.json>
 ```
+
+The request JSON is read from stdin in test mode. The wrapper and comparison
+harness must not pass request payload filenames to compared binaries, because
+test binaries may run with elevated privileges.
+
+The comparison harness treats `ND_JOURNAL_FILE` directory roots as test-mode
+diagnostics and compares only the journal filename. Netdata's hardened plugin
+test path may expose selected files through transient `/proc/self/fd/<n>/...`
+paths, while the SDK wrapper reports the caller-supplied directory path.
 
 The wrapper also provides SDK-validation diagnostics:
 `--progress-jsonl`, `--cancel-immediately`, and `--cancel-after-progress`.
@@ -118,8 +132,24 @@ progress events into normal JSON comparison stdout.
 
 The Netdata boundary is not part of the core journal file-format layer. It owns
 Netdata request parsing, default facets, default display fields, default
-histogram, field presentation transforms, row options, and Netdata-shaped JSON.
-The core reader remains responsible for journal traversal and object access.
+histogram, field presentation transforms, row options, Netdata-shaped JSON,
+run-control hooks, and caller-owned state hooks. The core reader remains
+responsible for journal traversal and object access.
+
+Progress and cancellation are SDK API behavior, not wrapper behavior:
+
+- callers pass `NetdataFunctionRunOptions`;
+- `timeout` sets the request deadline;
+- `progress_callback` receives selected-file progress, cumulative Explorer
+  counters, skipped/matched file counts, and elapsed time;
+- progress is reported after source and time-window preselection, so
+  `current_file`/`total_files` match the files the query can actually scan;
+- file-end progress is emitted even for small or fast files;
+- `cancellation_callback` is checked before each selected file and at the
+  Explorer row cadence during active scans;
+- cancellation returns Netdata's compact `499` function error envelope;
+- no-change returns Netdata's compact `304` function error envelope;
+- timeout returns a partial table response with warning status/message.
 
 The Netdata-specific profile currently implements the `systemd-journal.plugin`
 field presentation needed by the comparison harness:
@@ -137,12 +167,45 @@ IDs and does not resolve host user or group names. The
 `systemd_journal_plugin_compatible()` constructor is the explicit opt-in profile
 for comparison with Netdata's installed plugin; it may resolve UID/GID display
 names through the host platform when the caller chooses that compatibility mode.
+Resolved and unresolved UID/GID display strings are cached per query so repeated
+values do not repeatedly call host name-service lookup APIs.
 
 The standalone SDK comparison wrapper accepts requests that contain
 `__logs_sources` and filters explicit-directory candidate files for the
 built-in source groups. It intentionally does not own Netdata's live journal
 registry/provider inventory; registry-level source discovery remains a Netdata
 integration concern above the SDK API.
+
+The SDK Netdata API exposes caller-owned run state for the parts that Netdata's
+plugin keeps in its journal-file registry:
+
+- callers may provide per-file source type and source name metadata; the SDK
+  uses that metadata for `__logs_sources` matching before falling back to
+  plugin-compatible filename classification;
+- callers may provide per-file message first/last timestamps, file modified
+  time, and learned journal-vs-source-realtime drift; the SDK uses them for
+  file selection, ordering, and per-file Explorer slack before falling back to
+  journal headers and filesystem metadata;
+- when `_SOURCE_REALTIME_TIMESTAMP` shows a larger commit-vs-source-realtime
+  gap during traversal, the SDK reports the capped learned value back through
+  the state hook so Netdata can persist it in its registry.
+
+The core journal reader does not persist this state. Persistence belongs to
+the Netdata integration layer that owns the registry.
+
+The SDK Netdata API also implements plugin-compatible sampling for full
+analysis requests when sampling is enabled, slice-style query bounds are
+available, and data-only mode is off. Sampling is disabled for data-only
+requests. The SDK uses the actual histogram bucket count as the sampling slot
+count, preserves returned-row candidates as full rows, reports skipped rows as
+`[unsampled]`, reports stop-and-estimate ranges as `[estimated]`, and follows
+the plugin's integer bucket distribution behavior without forcing leftover
+estimated rows into the final bucket.
+
+The SDK Netdata API always executes indexed slice semantics. The normalized
+request echo keeps `slice:true` because `slice` is part of the plugin request
+shape and the SDK replacement intentionally does not expose the plugin's slower
+non-slice fallback path.
 
 The Rust explorer now has an explicit
 `ExplorerQuery::exclude_facet_field_filters` switch:
@@ -327,6 +390,9 @@ Selection:
 - The scanner accepts both `.journal` and `.journal~` files. It follows
   symlinked directories and symlinked regular journal files during recursive
   scans (`systemd-journal-files.c:610-641`, `systemd-journal-files.c:643-705`).
+  The SDK replacement mirrors this with bounded recursive traversal and
+  canonical directory and file de-duplication to avoid symlink cycles and
+  duplicate journal-file reads.
 - Files without known message timestamps are included so scanning can update
   metadata (`systemd-journal-execute.h:490-493`).
 - `if_modified_since` returns HTTP 304 before scanning if no matched file has
@@ -423,6 +489,16 @@ the facets query uses substring mode and case-insensitive matching
 (`simple_pattern.h:9-12`, `simple_pattern.h:29`,
 `simple_pattern.c:47-68`, `simple_pattern.c:194-214`,
 `facets.c:1783`).
+
+The query parser uses `|` as the only separator for this call. Whitespace is
+therefore part of the pattern, not trimming syntax. A leading `!` immediately
+after a separator marks that term negative. Backslash escapes the next byte
+while parsing separators, and a trailing backslash contributes no pattern byte.
+With substring mode, `*` splits a term into ordered substring parts, so
+`foo*bar` matches values containing `foo` before `bar`. Terms are evaluated in
+query order; the first matching term determines whether that field value is a
+positive or negative FTS match (`simple_pattern.c:76-168`,
+`simple_pattern.c:285-299`).
 
 The systemd plugin creates facets with `FACETS_OPTION_ALL_KEYS_FTS`, so all keys
 are searchable unless a later implementation changes that option
@@ -678,9 +754,12 @@ Timeout/cancellation:
 - The Rust SDK Netdata function API exposes timeout and cancellation as
   caller-provided run options. Cancellation is a callback/token-equivalent
   predicate checked before starting each query-selected file and at the
-  Explorer row cadence during active scans. Timeout uses the same run-control
-  path and returns partial results with the stop reason recorded in the
-  response status/message.
+  Explorer row cadence during active scans. The SDK also re-checks the
+  cancellation predicate after file-end progress callbacks so a final selected
+  file can still return the compact cancellation envelope if the progress
+  callback requested cancellation. Timeout uses the same run-control path and
+  returns partial results with the stop reason recorded in the response
+  status/message.
 
 Evidence: `systemd-main.c:78-91`, `systemd-journal-function.h:10`,
 `systemd-journal.c:263-291`, `systemd-journal-execute.h:91-104`,

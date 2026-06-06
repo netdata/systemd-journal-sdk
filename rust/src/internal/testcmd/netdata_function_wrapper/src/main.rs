@@ -5,7 +5,7 @@ use journal::netdata::{
 };
 use serde_json::json;
 use std::cell::{Cell, RefCell};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -16,8 +16,6 @@ struct Args {
     function_name: String,
     #[arg(long = "dir")]
     directory: PathBuf,
-    #[arg(long = "request")]
-    request: PathBuf,
     #[arg(long = "timeout", default_value_t = 0)]
     timeout_seconds: u64,
     #[arg(long = "progress-jsonl")]
@@ -34,8 +32,10 @@ fn main() -> Result<()> {
         bail!("unsupported function '{}'", args.function_name);
     }
 
-    let request = std::fs::read(&args.request)
-        .with_context(|| format!("failed to read request {}", args.request.display()))?;
+    let mut request = Vec::new();
+    std::io::stdin()
+        .read_to_end(&mut request)
+        .context("failed to read request JSON from stdin")?;
     let function = NetdataJournalFunction::systemd_journal_plugin_compatible();
     let mut progress_writer = match &args.progress_jsonl {
         Some(path) => Some(

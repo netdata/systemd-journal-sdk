@@ -6,11 +6,13 @@ function wrapper with an external Netdata `systemd-journal.plugin` binary.
 The external plugin and the SDK wrapper use the same CLI shape:
 
 ```bash
-<binary> --test systemd-journal --dir <journal-dir> --request <request.json> --timeout <seconds>
+<binary> --test systemd-journal --dir <journal-dir> --timeout <seconds> < <request.json>
 ```
 
 `--timeout 0` disables the test timeout by mapping it to an effectively
 unreachable internal deadline. Nonzero values are seconds.
+The request JSON is read from stdin in test mode. Do not pass request filenames
+to compared binaries; test binaries may run with elevated privileges.
 
 The SDK wrapper also exposes diagnostic-only options for validating the SDK
 run-control API without changing the standard plugin-compatible shape:
@@ -19,7 +21,8 @@ run-control API without changing the standard plugin-compatible shape:
 - `--cancel-immediately` asks the SDK cancellation predicate to stop before
   work starts.
 - `--cancel-after-progress <n>` asks the progress callback to request
-  cancellation after `n` progress events.
+  cancellation after `n` progress events. The SDK checks that predicate during
+  active scans, before later selected files, and after file-end progress.
 
 These options are for SDK validation. Netdata production consumers should call
 the `journal::netdata` API directly and connect progress/cancellation to the
@@ -42,6 +45,19 @@ derives that order from hash-table traversal. Runtime envelope fields such as
 `_stats`, `_journal_files`, `expires`, and `last_modified` are diagnostics.
 `items.evaluated` is also diagnostic because it counts internal scan work, not
 journal content.
+`ND_JOURNAL_FILE` row values are compared by journal filename only. Netdata's
+hardened test mode may report the selected directory through a transient
+`/proc/self/fd/<n>/...` path, while the SDK wrapper reports the caller-supplied
+directory path.
+
+The request suite includes a low-budget sampling fixture. `_sampling` itself is
+reported as a diagnostic top-level object, but sampling changes stable content
+through `items.unsampled`, `items.estimated`, facet counts, and histogram
+`[unsampled]`/`[estimated]` buckets, so those values are compared strictly.
+
+The request suite also includes an FTS fixture. It verifies Netdata
+`SIMPLE_PATTERN` query behavior for `|`-separated OR terms and `!` negative
+terms at the function boundary.
 
 `data_only=true` has two extra compatibility rules:
 
