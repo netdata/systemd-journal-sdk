@@ -11,11 +11,12 @@ default-facets full-analysis request and for the repo-local eight-request
 matrix: `info`, full priority, filtered priority, full default facets,
 data-only, data-only delta, built-in `__logs_sources` source selection, and
 tail/no-change `304` function-error responses. Rust SDK run-control API covers
-progress reporting, cancellation, timeout plumbing, request normalization for
-data-only/delta/tail, and `last_modified`. Remaining replacement gaps include
-sampling estimates, cancellation integration-matrix coverage, learned/persisted
-realtime-drift state, and registry/provider source metadata beyond
-explicit-directory classification.
+query-file progress reporting, file-end progress, active-scan cancellation,
+timeout plumbing, request normalization for data-only/delta/tail, and
+`last_modified`; the wrapper exposes diagnostic progress/cancellation switches
+over the same SDK API. Remaining replacement gaps include sampling estimates,
+learned/persisted realtime-drift state, and registry/provider source metadata
+beyond explicit-directory classification.
 
 ## Requirements
 
@@ -934,6 +935,19 @@ Real-use evidence:
     `rust/src/journal/src/netdata.rs:464` check cancellation before each file,
     propagate deadline and cancellation into Explorer, emit cumulative progress
     during scans, and emit file-end progress for small or fast files.
+  - progress now reports over the same preselected query-file shape as the
+    plugin: source selection and time-window overlap are applied before
+    execution, then the callback reports current file versus total query files.
+    This avoids reporting progress over unrelated files in the directory.
+  - cancellation is validated both before execution and during an active scan:
+    a progress callback can flip a caller-owned cancellation predicate, and the
+    Explorer row-cadence control path stops with the plugin-compatible compact
+    `499` response.
+  - the wrapper remains a thin SDK adapter for the standard `--test`, `--dir`,
+    `--request`, and `--timeout` shape, and now adds diagnostic-only
+    `--progress-jsonl`, `--cancel-immediately`, and
+    `--cancel-after-progress` options. These validate wrapper wiring without
+    writing progress frames into normal comparison stdout.
   - the lower-level Explorer now has a reusable run-control primitive, so
     control checks happen in the traversal hot path rather than only in the
     wrapper. Evidence:
@@ -976,9 +990,33 @@ Real-use evidence:
     `rust/src/journal/src/netdata.rs:2608`.
   - remaining gaps are intentionally recorded before calling this a complete
     replacement: sampling currently reports the selected mode and placeholder
-    counters, learned realtime-drift state is not persisted by the SDK API yet,
-    and the strict comparator matrix still needs sampling and cancellation
-    fixtures.
+    counters, and learned realtime-drift state is not persisted by the SDK API
+    yet.
+- Netdata function run-control refinement on 2026-06-06:
+  - changed Rust query execution to preselect source/time-overlapping query
+    files before scanning, so progress reports use the plugin-equivalent query
+    file denominator instead of every file under the directory;
+  - added file-end progress emission for selected files that are small, fast,
+    or skipped after selection;
+  - added active-scan cancellation coverage where a progress callback flips a
+    caller-owned cancellation predicate and the SDK returns compact status
+    `499`;
+  - added wrapper diagnostic switches for progress JSONL and cancellation
+    probes while keeping normal stdout as JSON-only for comparison harnesses.
+  Validation:
+  - `cargo fmt --check && cargo build --release -p netdata_function_wrapper && cargo test -p journal`
+    passed from `rust/` with 81 Rust tests;
+  - `python3 -m py_compile tests/netdata_function/run_function_compare.py tests/netdata_function/compare_function_json.py tests/netdata_function/test_compare_function_json.py`
+    and `python3 tests/netdata_function/test_compare_function_json.py` passed
+    with 15 tests;
+  - wrapper progress probe wrote one event with
+    `current_file=1,total_files=1,matched_files=1,skipped_files=0`;
+  - wrapper immediate cancellation probe returned
+    `{"status":499,"errorMessage":"Request cancelled."}`;
+  - strict SDK-first eight-request comparison report
+    `.local/sow-0093/function-compare-wrapper-run-control-validation.json`
+    passed with `overall: true` and all content checks true;
+  - `git diff --check` and `.agents/sow/audit.sh` passed.
 - Netdata function boundary expansion on 2026-06-06:
   - request fixtures added:
     `tests/netdata_function/requests/window-last5-data-only.json` and

@@ -109,6 +109,13 @@ The first wrapper command is an internal test command named
 netdata_function_wrapper --test systemd-journal --dir <journal-dir> --request <request.json>
 ```
 
+The wrapper also provides SDK-validation diagnostics:
+`--progress-jsonl`, `--cancel-immediately`, and `--cancel-after-progress`.
+These switches are not part of Netdata's plugin test contract. They exist so
+this repository can validate the consumer-callable `journal::netdata`
+progress and cancellation callbacks through the CLI adapter without mixing
+progress events into normal JSON comparison stdout.
+
 The Netdata boundary is not part of the core journal file-format layer. It owns
 Netdata request parsing, default facets, default display fields, default
 histogram, field presentation transforms, row options, and Netdata-shaped JSON.
@@ -652,10 +659,12 @@ Progress:
   query time (`systemd-journal-function.h:11`,
   `systemd-journal-execute.h:607-613`).
 - The Rust SDK Netdata function API exposes progress as a caller-provided
-  callback instead of writing to stdout. The callback receives the current file
-  index, total selected files, matched/skipped file counts, cumulative explorer
-  stats, and elapsed time. The CLI wrapper remains a thin adapter over this
-  API.
+  callback instead of writing to stdout. The callback receives the current
+  query-file index, total query-selected files after source and time-window
+  preselection, matched/skipped file counts, cumulative explorer stats, and
+  elapsed time. The API emits file-end progress for small or fast files too, so
+  consumers are not dependent on long-running scans to observe completion. The
+  CLI wrapper remains a thin adapter over this API.
 
 Timeout/cancellation:
 
@@ -668,9 +677,10 @@ Timeout/cancellation:
   not a journal file-format rule.
 - The Rust SDK Netdata function API exposes timeout and cancellation as
   caller-provided run options. Cancellation is a callback/token-equivalent
-  predicate checked at the Explorer row cadence and before starting each file.
-  Timeout uses the same run-control path and returns partial results with the
-  stop reason recorded in the response status/message.
+  predicate checked before starting each query-selected file and at the
+  Explorer row cadence during active scans. Timeout uses the same run-control
+  path and returns partial results with the stop reason recorded in the
+  response status/message.
 
 Evidence: `systemd-main.c:78-91`, `systemd-journal-function.h:10`,
 `systemd-journal.c:263-291`, `systemd-journal-execute.h:91-104`,

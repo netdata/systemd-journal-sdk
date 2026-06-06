@@ -12,6 +12,19 @@ The external plugin and the SDK wrapper use the same CLI shape:
 `--timeout 0` disables the test timeout by mapping it to an effectively
 unreachable internal deadline. Nonzero values are seconds.
 
+The SDK wrapper also exposes diagnostic-only options for validating the SDK
+run-control API without changing the standard plugin-compatible shape:
+
+- `--progress-jsonl <path>` writes one progress event per line.
+- `--cancel-immediately` asks the SDK cancellation predicate to stop before
+  work starts.
+- `--cancel-after-progress <n>` asks the progress callback to request
+  cancellation after `n` progress events.
+
+These options are for SDK validation. Netdata production consumers should call
+the `journal::netdata` API directly and connect progress/cancellation to the
+Netdata function framework.
+
 The comparator checks function content, not byte-for-byte JSON serialization:
 
 - Stable top-level response fields.

@@ -142,7 +142,11 @@ Current reader scope:
   `run_directory_request_json_with_options()` or
   `run_directory_request_bytes_with_options()` with
   `NetdataFunctionRunOptions` to supply a timeout, progress callback, and
-  cancellation callback. The Netdata boundary honors built-in
+  cancellation callback. Progress is reported against the files selected for
+  the query after source and time-window preselection, including file-end
+  progress for small or fast files. Cancellation is checked before each
+  selected file and during active Explorer scans. The Netdata boundary honors
+  built-in
   `__logs_sources` groups for explicit directory inputs by classifying local,
   namespace, user, system, uncategorized, and remote journal filenames.
   Cancellation and no-change responses use Netdata's compact function error
@@ -152,7 +156,11 @@ Current reader scope:
   `netdata_function_wrapper --test systemd-journal --dir <journal-dir>
   --request <request.json>`. The comparison tools under
   `../tests/netdata_function/` compare semantic function output against an
-  external `systemd-journal.plugin` binary;
+  external `systemd-journal.plugin` binary. The wrapper has diagnostic-only
+  `--progress-jsonl`, `--cancel-immediately`, and `--cancel-after-progress`
+  switches to validate the SDK run-control API; production consumers should
+  call `journal::netdata` directly and wire callbacks to their own function
+  framework;
 - default reader options use live/windowed mmap with a 32 MiB window. Smaller
   windows are available for constrained environments, but high-cardinality
   indexed queries can become remap-bound with very small windows;

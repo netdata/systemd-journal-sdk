@@ -19,8 +19,11 @@ Last updated: 2026-06-06
   data-only, data-only delta, and tail/no-change `304` function-error
   envelopes now pass the repo-local eight-request SDK-first comparison matrix.
   Timeout response shape matches the plugin in a repo-local hardlink timeout
-  probe with sampling disabled. Remaining replacement gaps include sampling
-  estimates, cancellation integration-matrix coverage, learned/persisted
+  probe with sampling disabled. Run-control now reports progress over
+  source/time-selected query files, emits file-end progress for fast files, and
+  validates cancellation before execution and during active scans; wrapper
+  diagnostics now exercise progress and cancellation through the same SDK API.
+  Remaining replacement gaps include sampling estimates, learned/persisted
   realtime-drift state, and live registry/provider source metadata beyond
   explicit-directory classification. NetFlow source analysis is design evidence
   only for future grouped rollup/statistics APIs.

@@ -333,13 +333,20 @@ where
         mut options: NetdataFunctionRunOptions<'_>,
     ) -> Result<Value> {
         let request = NetdataRequest::parse(request, &self.config)?;
-        let mut paths = collect_journal_files(directory)?;
+        let paths = collect_journal_files(directory)?;
         if request.info {
             return Ok(self.info_response(request.echo, &paths));
         }
 
-        paths.retain(|path| request.matches_source(path));
-        sort_journal_files_for_request(&mut paths, request.direction, self.config.reader_options);
+        let selected =
+            select_journal_files_for_request(paths, &request, self.config.reader_options);
+        if request.if_modified_since_usec != 0 && !selected.files_are_newer {
+            return Ok(netdata_function_error(
+                304,
+                "No new data since the previous call.",
+            ));
+        }
+        let paths = selected.paths;
         let deadline = options.timeout.map(|timeout| Instant::now() + timeout);
         let mut combined = self.explore_paths(&paths, &request, deadline, &mut options)?;
         if !request.data_only {
@@ -412,12 +419,20 @@ where
                     combined
                         .file_errors
                         .push(format!("{}: {err}", path.display()));
+                    emit_netdata_progress(
+                        options,
+                        NetdataFunctionProgress {
+                            current_file: file_index + 1,
+                            total_files,
+                            matched_files: combined.matched_files,
+                            skipped_files: combined.skipped_files,
+                            stats: combined.stats.clone(),
+                            elapsed: started.elapsed(),
+                        },
+                    );
                     continue;
                 }
             };
-            if !file_may_overlap_request(reader.header(), request) {
-                continue;
-            }
             combined.matched_files = combined.matched_files.saturating_add(1);
             combined.matched_paths.push(path.clone());
             if !request.data_only {
@@ -467,16 +482,17 @@ where
                 }
             };
             combined.merge(path, result, query.direction, query.limit);
-            if let Some(callback) = options.progress_callback.as_deref_mut() {
-                callback(NetdataFunctionProgress {
+            emit_netdata_progress(
+                options,
+                NetdataFunctionProgress {
                     current_file: file_index + 1,
                     total_files,
                     matched_files: combined.matched_files,
                     skipped_files: combined.skipped_files,
                     stats: combined.stats.clone(),
                     elapsed: started.elapsed(),
-                });
-            }
+                },
+            );
             if let Some(reason) = stop_reason {
                 combined.partial = true;
                 match reason {
@@ -1481,6 +1497,16 @@ fn add_netdata_facet_count(target: &mut BTreeMap<Vec<u8>, u64>, value: &[u8], co
         .or_default() += count;
 }
 
+fn emit_netdata_progress(
+    options: &mut NetdataFunctionRunOptions<'_>,
+    progress: NetdataFunctionProgress,
+) {
+    if let Some(callback) = options.progress_callback.as_deref_mut() {
+        callback(progress);
+    }
+}
+
+#[cfg(test)]
 fn file_may_overlap_request(header: crate::FileHeader, request: &NetdataRequest) -> bool {
     if header.tail_entry_realtime == 0 {
         return true;
@@ -1491,6 +1517,78 @@ fn file_may_overlap_request(header: crate::FileHeader, request: &NetdataRequest)
         .saturating_sub(NETDATA_JOURNAL_VS_REALTIME_DELTA_MAX_USEC);
     let last = header
         .tail_entry_realtime
+        .saturating_add(NETDATA_JOURNAL_VS_REALTIME_DELTA_MAX_USEC);
+
+    if request
+        .after_realtime_usec
+        .is_some_and(|after| last < after)
+    {
+        return false;
+    }
+    if request
+        .before_realtime_usec
+        .is_some_and(|before| first > before)
+    {
+        return false;
+    }
+
+    true
+}
+
+#[derive(Debug)]
+struct SelectedJournalFile {
+    path: PathBuf,
+    order: JournalFileOrderInfo,
+}
+
+#[derive(Debug, Default)]
+struct SelectedJournalFiles {
+    paths: Vec<PathBuf>,
+    files_are_newer: bool,
+}
+
+fn select_journal_files_for_request(
+    paths: Vec<PathBuf>,
+    request: &NetdataRequest,
+    reader_options: ReaderOptions,
+) -> SelectedJournalFiles {
+    let mut selected = Vec::new();
+    for path in paths {
+        if !request.matches_source(&path) {
+            continue;
+        }
+        let order = journal_file_order_info(&path, reader_options);
+        if !journal_file_order_may_overlap_request(&order, request) {
+            continue;
+        }
+        selected.push(SelectedJournalFile { path, order });
+    }
+    selected.sort_by(|left, right| {
+        compare_journal_file_order(&left.order, &right.order, request.direction)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let files_are_newer = selected
+        .iter()
+        .any(|file| file.order.msg_last_realtime_usec > request.if_modified_since_usec);
+    SelectedJournalFiles {
+        paths: selected.into_iter().map(|file| file.path).collect(),
+        files_are_newer,
+    }
+}
+
+fn journal_file_order_may_overlap_request(
+    info: &JournalFileOrderInfo,
+    request: &NetdataRequest,
+) -> bool {
+    if info.msg_last_realtime_usec == 0 {
+        return true;
+    }
+
+    let first = info
+        .msg_first_realtime_usec
+        .saturating_sub(NETDATA_JOURNAL_VS_REALTIME_DELTA_MAX_USEC);
+    let last = info
+        .msg_last_realtime_usec
         .saturating_add(NETDATA_JOURNAL_VS_REALTIME_DELTA_MAX_USEC);
 
     if request
@@ -2093,28 +2191,6 @@ struct JournalFileOrderInfo {
     msg_first_realtime_usec: u64,
     msg_last_realtime_usec: u64,
     file_last_modified_usec: u64,
-}
-
-fn sort_journal_files_for_request(
-    paths: &mut [PathBuf],
-    direction: Direction,
-    reader_options: ReaderOptions,
-) {
-    let mut ordered: Vec<_> = paths
-        .iter()
-        .cloned()
-        .map(|path| {
-            let info = journal_file_order_info(&path, reader_options);
-            (path, info)
-        })
-        .collect();
-    ordered.sort_by(|(left_path, left_info), (right_path, right_info)| {
-        compare_journal_file_order(left_info, right_info, direction)
-            .then_with(|| left_path.cmp(right_path))
-    });
-    for (target, (path, _)) in paths.iter_mut().zip(ordered) {
-        *target = path;
-    }
 }
 
 fn journal_file_order_info(path: &Path, reader_options: ReaderOptions) -> JournalFileOrderInfo {
@@ -2794,6 +2870,7 @@ mod tests {
     use crate::ExplorerHistogramBucket;
     use journal_core::file::{JournalFile, JournalFileOptions, JournalWriter, MmapMut};
     use journal_core::repository::File as RepoFile;
+    use std::cell::Cell;
     use std::collections::HashMap;
     use tempfile::TempDir;
 
@@ -2802,8 +2879,22 @@ mod tests {
     }
 
     fn write_netdata_test_journal(directory: &std::path::Path, count: usize) {
+        write_named_netdata_test_journal(
+            directory,
+            "netdata-api-test.journal",
+            count,
+            1_700_000_000_000_000,
+        );
+    }
+
+    fn write_named_netdata_test_journal(
+        directory: &std::path::Path,
+        name: &str,
+        count: usize,
+        start_realtime_usec: u64,
+    ) {
         std::fs::create_dir_all(directory).expect("create journal dir");
-        let path = directory.join("netdata-api-test.journal");
+        let path = directory.join(name);
         let repo_file = RepoFile::from_path(&path).expect("repo file");
         let options = JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3));
         let mut file = JournalFile::<MmapMut>::create(&repo_file, options).expect("create journal");
@@ -2816,7 +2907,7 @@ mod tests {
                 b"SERVICE=odd".as_slice()
             };
             let payloads: [&[u8]; 3] = [message.as_bytes(), service, b"PRIORITY=6"];
-            let realtime = 1_700_000_000_000_000u64.saturating_add(index as u64);
+            let realtime = start_realtime_usec.saturating_add(index as u64);
             writer
                 .add_entry(&mut file, &payloads, realtime, realtime)
                 .expect("write entry");
@@ -2930,6 +3021,45 @@ mod tests {
     }
 
     #[test]
+    fn netdata_function_progress_counts_only_query_files() {
+        let dir = TempDir::new().expect("tempdir");
+        write_named_netdata_test_journal(
+            dir.path(),
+            "old-window.journal",
+            10,
+            1_600_000_000_000_000,
+        );
+        write_named_netdata_test_journal(
+            dir.path(),
+            "current-window.journal",
+            10,
+            1_700_000_000_000_000,
+        );
+        let request = json!({
+            "after": 1_700_000_000,
+            "before": 1_700_000_010,
+            "facets": ["SERVICE"],
+            "histogram": "SERVICE",
+            "last": 0
+        });
+        let function = NetdataJournalFunction::systemd_journal_plugin_compatible();
+        let mut reports = Vec::new();
+        let mut progress = |progress: NetdataFunctionProgress| {
+            reports.push((progress.current_file, progress.total_files));
+        };
+        let mut options = NetdataFunctionRunOptions::from_timeout_seconds(0);
+        options.progress_callback = Some(&mut progress);
+
+        let response = function
+            .run_directory_request_json_with_options(dir.path(), &request, options)
+            .expect("run function");
+
+        assert_eq!(response["status"], 200);
+        assert_eq!(response["_journal_files"]["matched"], 1);
+        assert_eq!(reports, vec![(1, 1)]);
+    }
+
+    #[test]
     fn netdata_function_api_reports_cancellation() {
         let dir = TempDir::new().expect("tempdir");
         write_netdata_test_journal(dir.path(), 9_000);
@@ -2956,6 +3086,42 @@ mod tests {
             2,
             "plugin-compatible function errors only include status and errorMessage"
         );
+    }
+
+    #[test]
+    fn netdata_function_api_cancels_during_active_scan() {
+        let dir = TempDir::new().expect("tempdir");
+        write_netdata_test_journal(dir.path(), 9_000);
+        let request = json!({
+            "after": 1_700_000_000,
+            "before": 1_700_000_010,
+            "facets": ["SERVICE"],
+            "histogram": "SERVICE",
+            "last": 0
+        });
+        let function = NetdataJournalFunction::systemd_journal_plugin_compatible();
+        let should_cancel = Cell::new(false);
+        let mut reports = 0u64;
+        let mut progress = |progress: NetdataFunctionProgress| {
+            reports = reports.saturating_add(1);
+            if progress.stats.rows_examined > 0 {
+                should_cancel.set(true);
+            }
+        };
+        let is_cancelled = || should_cancel.get();
+        let mut options = NetdataFunctionRunOptions::from_timeout_seconds(0);
+        options.progress_interval = Duration::ZERO;
+        options.progress_callback = Some(&mut progress);
+        options.cancellation_callback = Some(&is_cancelled);
+
+        let response = function
+            .run_directory_request_json_with_options(dir.path(), &request, options)
+            .expect("run function");
+
+        assert_eq!(response["status"], 499);
+        assert_eq!(response["errorMessage"], "Request cancelled.");
+        assert!(reports > 0);
+        assert!(should_cancel.get());
     }
 
     #[test]
