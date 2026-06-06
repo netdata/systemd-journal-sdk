@@ -6,10 +6,12 @@ Status: in-progress
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: strict SDK-first content comparison passes locally; reviewer rerun
-after the latest fixes and broader matrix validation remain pending. The
-previous semantic-subset comparator proved only a narrow stable subset of the
-Netdata-function response and is no longer sufficient for acceptance.
+Sub-state: strict SDK-first content comparison passes locally for the large
+default-facets full-analysis request; Rust SDK run-control API now covers
+progress reporting, cancellation, timeout plumbing, request normalization for
+data-only/delta/tail, and `last_modified`. Remaining replacement gaps include
+sampling estimates, source-registry selection, broader request-matrix parity,
+and learned/persisted realtime-drift state.
 
 ## Requirements
 
@@ -62,6 +64,13 @@ Extensibility note: the generic Netdata SDK layer should not block future APIs
 for grouped rollups, statistics, or Kibana/Elasticsearch-like log analytics.
 Those APIs are not part of the current acceptance criteria and need a separate
 SOW before implementation.
+
+On 2026-06-06, the user expanded the requirement: the Rust SDK Netdata function
+boundary must become a complete replacement for Netdata's
+`systemd-journal.plugin`, not only a comparison harness. The wrapper command
+remains useful for tests, but the deliverable is an SDK API that Netdata and
+other consumers can call directly. Progress reporting and cancellation are
+mandatory because Netdata needs them for function execution.
 
 ### Assistant Understanding
 
@@ -128,6 +137,18 @@ Unknowns:
 - Preserve separation of concerns: journal reading remains generic; Netdata
   function behavior, UI metadata, field catalogs, and enrichment callbacks live
   in the Netdata-specific SDK layer.
+- Expose the Netdata function behavior as an SDK API, not only as a CLI wrapper.
+  Consumers must be able to provide backend directories, default facet keys,
+  default view keys, a default histogram key, optional enrichment/presentation
+  callbacks, a progress callback, and a cancellation callback or cancellation
+  token.
+- Implement `systemd-journal.plugin` replacement semantics for full analysis,
+  data-only paging, delta output, tail/`if_modified_since` no-change behavior,
+  sampling with sampled/unsampled/estimated counters, timeout, cancellation,
+  progress reporting across matched files, source selection through
+  `__logs_sources`, learned or persisted journal-vs-source-realtime drift
+  compatible with the plugin's five-second default and two-minute maximum
+  model, and stable `last_modified` output.
 - Add rare-case payloads for selective filters, broad filters, narrow facets,
   many facets, histogram-only, returned rows, anchor/direction, and FTS where
   supported.
@@ -412,10 +433,29 @@ Evidence reviewed:
 - SOW-0081: Netdata plugin/facets behavior specification.
 - SOW-0082: optimized explorer traversal implementation and benchmark evidence.
 - SOW-0083: explicit index strategy and benchmark evidence.
+- Netdata progress/cancellation source evidence:
+  `ktsaou/netdata @ f6f857d46356`
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:92`
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:98`
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:608`
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:611`
+- Netdata sampling source evidence:
+  `ktsaou/netdata @ f6f857d46356`
+  `src/collectors/systemd-journal.plugin/systemd-journal-sampling.h:10`
+  `src/collectors/systemd-journal.plugin/systemd-journal-sampling.h:343`
+  `src/collectors/systemd-journal.plugin/systemd-journal-sampling.h:409`
+- Netdata realtime-drift source evidence:
+  `ktsaou/netdata @ f6f857d46356`
+  `src/collectors/systemd-journal.plugin/systemd-internals.h:86`
+  `src/collectors/systemd-journal.plugin/systemd-internals.h:87`
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:48`
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:114`
+  `src/libnetdata/facets/logs_query_status.h:154`
 
 Affected contracts and surfaces:
 
 - Rust SDK wrapper CLI.
+- Rust SDK Netdata function API.
 - Netdata function payload input/output contracts.
 - Netdata `systemd-journal.plugin` CLI contract as an external comparison
   dependency.
@@ -429,6 +469,8 @@ Existing patterns to reuse:
 - Sanitized report discipline from corpus-evaluation SOWs.
 - Netdata `systemd-journal.plugin` function request/response shapes from
   current Netdata source.
+- Existing `NetdataFunctionRunOptions` timeout shape in `rust/src/journal/src/netdata.rs`.
+- Existing Explorer traversal path and strict SOW-0093 comparator.
 
 Risk and blast radius:
 
@@ -450,18 +492,26 @@ Sensitive data handling plan:
 
 Implementation plan:
 
-1. Inventory current Netdata function defaults and request/response
-   contracts. This step is mandatory before implementation and must produce
-   the API boundary for the Netdata-specific SDK layer. NetFlow analysis is
-   design evidence only.
-2. Select datasets and create sanitized dataset manifests.
-3. Implement SDK wrapper and canonical semantic comparator.
-4. Invoke the Netdata `systemd-journal.plugin` CLI entrypoint when available;
-   do not edit Netdata
-   source from this repository.
-5. Build common and rare request payload suites.
-6. Run cold/warm repeated performance and equality matrices.
-7. Produce sanitized report and decision recommendation.
+1. Inventory current Netdata function defaults and request/response contracts.
+   This step is mandatory before implementation and must produce the API
+   boundary for the Netdata-specific SDK layer. NetFlow analysis is design
+   evidence only.
+2. Extend the Rust SDK Netdata function API with consumer-callable run options:
+   progress callback, cancellation callback/token, timeout, and a state hook for
+   per-file metadata such as realtime drift and last-modified tracking.
+3. Implement replacement behavior missing from the current wrapper:
+   source selection, data-only paging, delta/tail/`if_modified_since`,
+   sampling counters and estimates, progress reports, cancellation, stable
+   `last_modified`, and learned realtime drift.
+4. Keep the CLI wrapper as a thin adapter over the SDK API.
+5. Select datasets and create sanitized dataset manifests.
+6. Build common and rare request payload suites, including progress,
+   cancellation, sampling, data-only, delta, tail, source selection, and
+   realtime-drift cases.
+7. Invoke the Netdata `systemd-journal.plugin` CLI entrypoint when available;
+   do not edit Netdata source from this repository.
+8. Run cold/warm repeated performance and equality matrices.
+9. Produce sanitized report and replacement readiness recommendation.
 
 Validation plan:
 
@@ -703,6 +753,13 @@ Tests or equivalent validation:
     10 tests.
   - `git diff --check` passed.
   - `.agents/sow/audit.sh` passed.
+- Netdata function run-control validation:
+  - `cargo test -p journal explorer_control` passed: 2 tests.
+  - `cargo test -p journal netdata_function_api` passed: 3 tests.
+  - `cargo test -p journal
+    facade_compressed_data_payloads_remain_valid_for_current_row -- --nocapture`
+    passed.
+  - `cargo test -p journal` passed: 75 tests and 0 doctests.
 
 Real-use evidence:
 
@@ -858,6 +915,67 @@ Real-use evidence:
     facets, histogram, items, and top-level metadata; the known diagnostic
     `items.evaluated` accounting check remained the only non-content
     difference.
+- Netdata function run-control implementation on 2026-06-06:
+  - the reusable SDK API now exposes caller-owned run options instead of
+    hardwiring wrapper behavior. Evidence:
+    `rust/src/journal/src/netdata.rs:242` through
+    `rust/src/journal/src/netdata.rs:257` define
+    `NetdataFunctionProgress` and `NetdataFunctionRunOptions`, while
+    `rust/src/journal/src/netdata.rs:320` through
+    `rust/src/journal/src/netdata.rs:366` expose JSON and bytes request entry
+    points that accept those options.
+  - progress and cancellation are enforced in the directory/file execution
+    path. Evidence:
+    `rust/src/journal/src/netdata.rs:369` through
+    `rust/src/journal/src/netdata.rs:464` check cancellation before each file,
+    propagate deadline and cancellation into Explorer, emit cumulative progress
+    during scans, and emit file-end progress for small or fast files.
+  - the lower-level Explorer now has a reusable run-control primitive, so
+    control checks happen in the traversal hot path rather than only in the
+    wrapper. Evidence:
+    `rust/src/journal/src/explorer.rs:140` through
+    `rust/src/journal/src/explorer.rs:160` extend `ExplorerStats` with
+    `last_realtime_usec`; `rust/src/journal/src/explorer.rs:206` through
+    `rust/src/journal/src/explorer.rs:308` define
+    `ExplorerStopReason`, `ExplorerProgress`, and `ExplorerControl`;
+    `rust/src/journal/src/explorer.rs:727` through
+    `rust/src/journal/src/explorer.rs:768` expose controlled Explorer entry
+    points; and `rust/src/journal/src/explorer.rs:1040` through
+    `rust/src/journal/src/explorer.rs:1260` apply row-cadence checks in the
+    main, combined, and facet scan loops.
+  - Netdata request parsing now normalizes `if_modified_since`, `data_only`,
+    `delta`, `tail`, and `sampling` before query execution. Evidence:
+    `rust/src/journal/src/netdata.rs:865` through
+    `rust/src/journal/src/netdata.rs:978`.
+  - response shaping now returns cancellation status `499`, no-change status
+    `304`, plugin-style data-only delta keys, tail/full `last_modified`, and
+    sampling metadata placeholders. Evidence:
+    `rust/src/journal/src/netdata.rs:500` through
+    `rust/src/journal/src/netdata.rs:630`.
+  - the row-level data lifetime guarantee was repaired for compressed payloads:
+    uncompressed current-row DATA remains borrowed from the pinned mmap, while
+    compressed DATA is copied into row-owned stable chunks that remain valid
+    until row reset or reader advance. Evidence:
+    `rust/src/crates/journal-core/src/file/row_view.rs:20` through
+    `rust/src/crates/journal-core/src/file/row_view.rs:37`,
+    `rust/src/crates/journal-core/src/file/row_view.rs:139` through
+    `rust/src/crates/journal-core/src/file/row_view.rs:181`,
+    `rust/src/crates/journal-core/src/file/row_view.rs:206` through
+    `rust/src/crates/journal-core/src/file/row_view.rs:243`, and
+    `rust/README.md:94` through `rust/README.md:99`.
+  - focused tests cover Explorer progress/cancellation, Netdata function
+    progress/cancellation including small-file file-end progress, and the
+    compressed row-pointer lifetime regression. Evidence:
+    `rust/src/journal/src/explorer.rs:2266` through
+    `rust/src/journal/src/explorer.rs:2318` and
+    `rust/src/journal/src/netdata.rs:2545` through
+    `rust/src/journal/src/netdata.rs:2608`.
+  - remaining gaps are intentionally recorded before calling this a complete
+    replacement: sampling currently reports the selected mode and placeholder
+    counters, `__logs_sources` still needs a Netdata registry/provider
+    boundary, learned realtime-drift state is not persisted by the SDK API yet,
+    and the strict comparator matrix still needs data-only, delta, tail,
+    sampling, source-selection, cancellation, and timeout fixtures.
 
 Implementation fixes after first reviewer batch:
 

@@ -605,6 +605,11 @@ Progress:
 - plugin progress is emitted to stdout every 250 ms of accumulated per-file
   query time (`systemd-journal-function.h:11`,
   `systemd-journal-execute.h:607-613`).
+- The Rust SDK Netdata function API exposes progress as a caller-provided
+  callback instead of writing to stdout. The callback receives the current file
+  index, total selected files, matched/skipped file counts, cumulative explorer
+  stats, and elapsed time. The CLI wrapper remains a thin adapter over this
+  API.
 
 Timeout/cancellation:
 
@@ -615,6 +620,11 @@ Timeout/cancellation:
   registers `ND_SD_JOURNAL_DEFAULT_TIMEOUT` (`60` seconds) as its default
   function timeout, so timeout budget ownership is Netdata integration policy,
   not a journal file-format rule.
+- The Rust SDK Netdata function API exposes timeout and cancellation as
+  caller-provided run options. Cancellation is a callback/token-equivalent
+  predicate checked at the Explorer row cadence and before starting each file.
+  Timeout uses the same run-control path and returns partial results with the
+  stop reason recorded in the response status/message.
 
 Evidence: `systemd-main.c:78-91`, `systemd-journal-function.h:10`,
 `systemd-journal.c:263-291`, `systemd-journal-execute.h:91-104`,
@@ -689,6 +699,17 @@ Evidence: `systemd-journal-execute.h:719-783`, `facets.c:2597-2672`,
 Data-only plus delta emits `facets_delta`, `histogram_delta`, and `items_delta`
 instead of the full analysis names (`facets.c:2604-2616`,
 `facets.c:2846-2855`, `facets.c:2873-2884`).
+
+The Rust SDK Netdata function API validates and echoes `data_only`, `delta`,
+`tail`, `sampling`, and `if_modified_since` using the same high-level rules:
+
+- `delta` is effective only when `data_only=true`;
+- `tail` is effective only when both `data_only=true` and
+  `if_modified_since` is non-zero;
+- data-only delta responses use `facets_delta`, `histogram_delta`, and
+  `items_delta`;
+- full responses and tail responses include `last_modified`, derived from the
+  latest journal realtime among matched rows.
 
 ## Generic Explorer Semantics
 

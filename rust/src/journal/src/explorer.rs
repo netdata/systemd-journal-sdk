@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_HISTOGRAM_TARGET_BUCKETS: usize = 150;
 const DEFAULT_TIME_SLACK_USEC: u64 = 120_000_000;
+const EXPLORER_CONTROL_CHECK_EVERY_ROWS: u64 = 8192;
 const SOURCE_REALTIME_FIELD: &[u8] = b"_SOURCE_REALTIME_TIMESTAMP";
 const UNSET_VALUE: &[u8] = b"-";
 
@@ -142,6 +143,7 @@ pub struct ExplorerStats {
     pub rows_matched: u64,
     pub facet_rows_matched: u64,
     pub rows_returned: u64,
+    pub last_realtime_usec: u64,
     pub data_refs_seen: u64,
     pub data_refs_skipped: u64,
     pub data_payloads_loaded: u64,
@@ -199,6 +201,110 @@ pub struct ExplorerResult {
     pub column_fields: HashSet<Vec<u8>>,
     pub stats: ExplorerStats,
     pub comparison: Option<ExplorerComparison>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum ExplorerStopReason {
+    TimedOut,
+    Cancelled,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExplorerProgress {
+    pub stats: ExplorerStats,
+    pub elapsed: Duration,
+}
+
+pub struct ExplorerControl<'a> {
+    deadline: Option<Instant>,
+    cancellation: Option<&'a dyn Fn() -> bool>,
+    progress: Option<&'a mut dyn FnMut(ExplorerProgress)>,
+    progress_interval: Duration,
+    started: Instant,
+    last_progress: Instant,
+    next_check_rows: u64,
+    stop_reason: Option<ExplorerStopReason>,
+}
+
+impl<'a> ExplorerControl<'a> {
+    pub fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            deadline: None,
+            cancellation: None,
+            progress: None,
+            progress_interval: Duration::from_millis(250),
+            started: now,
+            last_progress: now,
+            next_check_rows: EXPLORER_CONTROL_CHECK_EVERY_ROWS,
+            stop_reason: None,
+        }
+    }
+
+    pub fn set_deadline(&mut self, deadline: Option<Instant>) {
+        self.deadline = deadline;
+    }
+
+    pub fn set_cancellation_callback(&mut self, cancellation: Option<&'a dyn Fn() -> bool>) {
+        self.cancellation = cancellation;
+    }
+
+    pub fn set_progress_callback(&mut self, progress: Option<&'a mut dyn FnMut(ExplorerProgress)>) {
+        self.progress = progress;
+    }
+
+    pub fn set_progress_interval(&mut self, interval: Duration) {
+        self.progress_interval = interval;
+    }
+
+    pub fn stop_reason(&self) -> Option<ExplorerStopReason> {
+        self.stop_reason
+    }
+
+    fn should_stop_after_rows(&mut self, rows_seen: u64, stats: &ExplorerStats) -> bool {
+        if self.stop_reason.is_some() {
+            return true;
+        }
+        if rows_seen < self.next_check_rows {
+            return false;
+        }
+        self.next_check_rows = rows_seen.saturating_add(EXPLORER_CONTROL_CHECK_EVERY_ROWS);
+        self.check(stats)
+    }
+
+    fn check(&mut self, stats: &ExplorerStats) -> bool {
+        let now = Instant::now();
+        if now.duration_since(self.last_progress) >= self.progress_interval {
+            self.emit_progress(stats, now);
+        }
+        if self.cancellation.is_some_and(|is_cancelled| is_cancelled()) {
+            self.stop_reason = Some(ExplorerStopReason::Cancelled);
+            self.emit_progress(stats, now);
+            return true;
+        }
+        if self.deadline.is_some_and(|deadline| now >= deadline) {
+            self.stop_reason = Some(ExplorerStopReason::TimedOut);
+            self.emit_progress(stats, now);
+            return true;
+        }
+        false
+    }
+
+    fn emit_progress(&mut self, stats: &ExplorerStats, now: Instant) {
+        self.last_progress = now;
+        if let Some(progress) = self.progress.as_deref_mut() {
+            progress(ExplorerProgress {
+                stats: stats.clone(),
+                elapsed: now.duration_since(self.started),
+            });
+        }
+    }
+}
+
+impl Default for ExplorerControl<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Default)]
@@ -618,6 +724,22 @@ impl FileReader {
         self.explore_with_strategy_and_payload_mode(query, strategy, ExplorerRowPayloadMode::Expand)
     }
 
+    pub fn explore_with_strategy_and_control(
+        &mut self,
+        query: &ExplorerQuery,
+        strategy: ExplorerStrategy,
+        control: &mut ExplorerControl<'_>,
+    ) -> Result<ExplorerResult> {
+        validate_no_debug_column_collection(query)?;
+        self.explore_with_strategy_and_payload_mode_unchecked(
+            query,
+            strategy,
+            ExplorerRowPayloadMode::Expand,
+            Some(control),
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn explore_with_strategy_cursor_rows(
         &mut self,
         query: &ExplorerQuery,
@@ -630,6 +752,21 @@ impl FileReader {
         )
     }
 
+    pub(crate) fn explore_with_strategy_cursor_rows_controlled(
+        &mut self,
+        query: &ExplorerQuery,
+        strategy: ExplorerStrategy,
+        control: &mut ExplorerControl<'_>,
+    ) -> Result<ExplorerResult> {
+        validate_no_debug_column_collection(query)?;
+        self.explore_with_strategy_and_payload_mode_unchecked(
+            query,
+            strategy,
+            ExplorerRowPayloadMode::CursorOnly,
+            Some(control),
+        )
+    }
+
     fn explore_with_strategy_and_payload_mode(
         &mut self,
         query: &ExplorerQuery,
@@ -637,7 +774,12 @@ impl FileReader {
         row_payload_mode: ExplorerRowPayloadMode,
     ) -> Result<ExplorerResult> {
         validate_no_debug_column_collection(query)?;
-        self.explore_with_strategy_and_payload_mode_unchecked(query, strategy, row_payload_mode)
+        self.explore_with_strategy_and_payload_mode_unchecked(
+            query,
+            strategy,
+            row_payload_mode,
+            None,
+        )
     }
 
     fn explore_with_strategy_and_payload_mode_unchecked(
@@ -645,10 +787,15 @@ impl FileReader {
         query: &ExplorerQuery,
         strategy: ExplorerStrategy,
         row_payload_mode: ExplorerRowPayloadMode,
+        mut control: Option<&mut ExplorerControl<'_>>,
     ) -> Result<ExplorerResult> {
         match strategy {
-            ExplorerStrategy::Traversal => self.explore_traversal(query, row_payload_mode),
-            ExplorerStrategy::Index => self.explore_indexed(query, row_payload_mode),
+            ExplorerStrategy::Traversal => {
+                self.explore_traversal(query, row_payload_mode, control.as_deref_mut())
+            }
+            ExplorerStrategy::Index => {
+                self.explore_indexed(query, row_payload_mode, control.as_deref_mut())
+            }
             ExplorerStrategy::Compare => self.explore_compare(query, row_payload_mode),
         }
     }
@@ -657,6 +804,7 @@ impl FileReader {
         &mut self,
         query: &ExplorerQuery,
         row_payload_mode: ExplorerRowPayloadMode,
+        mut control: Option<&mut ExplorerControl<'_>>,
     ) -> Result<ExplorerResult> {
         validate_query(query)?;
 
@@ -690,6 +838,7 @@ impl FileReader {
                     &mut result,
                     !facet_indices.is_empty(),
                     row_payload_mode,
+                    control.as_deref_mut(),
                 )?;
                 accumulator.finish_facets(&mut result);
                 accumulator.finish_histogram(result.histogram.as_mut());
@@ -700,18 +849,36 @@ impl FileReader {
         if query_needs_main_pass(query) {
             self.configure_explorer_filters(query, None)?;
             let mut accumulator = ExplorerAccumulator::for_main(query, result.histogram.as_ref());
-            self.scan_explorer_main(query, &mut accumulator, &mut result, row_payload_mode)?;
+            self.scan_explorer_main(
+                query,
+                &mut accumulator,
+                &mut result,
+                row_payload_mode,
+                control.as_deref_mut(),
+            )?;
             accumulator.finish_histogram(result.histogram.as_mut());
         }
 
         for group in facet_groups {
+            if control
+                .as_deref()
+                .and_then(ExplorerControl::stop_reason)
+                .is_some()
+            {
+                break;
+            }
             self.configure_explorer_filters(query, group.excluded_field.as_deref())?;
             let mut accumulator = ExplorerAccumulator::for_facets(
                 query,
                 &group.facet_indices,
                 facet_pass_needs_source_realtime(query),
             );
-            self.scan_explorer_facet(query, &mut accumulator, &mut result.stats)?;
+            self.scan_explorer_facet(
+                query,
+                &mut accumulator,
+                &mut result.stats,
+                control.as_deref_mut(),
+            )?;
             accumulator.finish_facets(&mut result);
         }
 
@@ -725,11 +892,11 @@ impl FileReader {
         row_payload_mode: ExplorerRowPayloadMode,
     ) -> Result<ExplorerResult> {
         let traversal_started = Instant::now();
-        let traversal = self.explore_traversal(query, row_payload_mode)?;
+        let traversal = self.explore_traversal(query, row_payload_mode, None)?;
         let traversal_duration = traversal_started.elapsed();
 
         let index_started = Instant::now();
-        let mut indexed = self.explore_indexed(query, row_payload_mode)?;
+        let mut indexed = self.explore_indexed(query, row_payload_mode, None)?;
         let index_duration = index_started.elapsed();
 
         if !explorer_outputs_match(&traversal, &indexed) {
@@ -750,6 +917,7 @@ impl FileReader {
         &mut self,
         query: &ExplorerQuery,
         row_payload_mode: ExplorerRowPayloadMode,
+        mut control: Option<&mut ExplorerControl<'_>>,
     ) -> Result<ExplorerResult> {
         validate_query(query)?;
         validate_indexed_query(query)?;
@@ -768,17 +936,35 @@ impl FileReader {
             row_query.histogram = None;
             self.configure_explorer_filters(&row_query, None)?;
             let mut accumulator = ExplorerAccumulator::for_main(&row_query, None);
-            self.scan_explorer_main(&row_query, &mut accumulator, &mut result, row_payload_mode)?;
+            self.scan_explorer_main(
+                &row_query,
+                &mut accumulator,
+                &mut result,
+                row_payload_mode,
+                control.as_deref_mut(),
+            )?;
         }
 
-        for group in facet_pass_groups(query) {
-            let candidates = self.indexed_candidate_set(query, group.excluded_field.as_deref())?;
-            self.inner.with_file(|file| {
-                indexed_count_facet_group(file, query, &group, &candidates, &mut result)
-            })?;
+        if control
+            .as_deref()
+            .and_then(ExplorerControl::stop_reason)
+            .is_none()
+        {
+            for group in facet_pass_groups(query) {
+                let candidates =
+                    self.indexed_candidate_set(query, group.excluded_field.as_deref())?;
+                self.inner.with_file(|file| {
+                    indexed_count_facet_group(file, query, &group, &candidates, &mut result)
+                })?;
+            }
         }
 
-        if query.histogram.is_some() {
+        if control
+            .as_deref()
+            .and_then(ExplorerControl::stop_reason)
+            .is_none()
+            && query.histogram.is_some()
+        {
             let candidates = self.indexed_candidate_set(query, None)?;
             self.inner
                 .with_file(|file| indexed_count_histogram(file, query, &candidates, &mut result))?;
@@ -854,11 +1040,19 @@ impl FileReader {
         accumulator: &mut ExplorerAccumulator,
         result: &mut ExplorerResult,
         row_payload_mode: ExplorerRowPayloadMode,
+        mut control: Option<&mut ExplorerControl<'_>>,
     ) -> Result<()> {
         self.seek_for_explorer(query);
         let mut row_id = 0u64;
+        let mut rows_seen = 0u64;
         let mut deferred_values = Vec::new();
         while self.step_for_explorer(query.direction)? {
+            rows_seen = rows_seen.saturating_add(1);
+            if let Some(control) = control.as_deref_mut() {
+                if control.should_stop_after_rows(rows_seen, &result.stats) {
+                    break;
+                }
+            }
             let Some(metadata) = self.row.metadata() else {
                 continue;
             };
@@ -896,6 +1090,7 @@ impl FileReader {
                 result.column_fields.extend(scan.column_fields);
             }
 
+            record_last_realtime(&mut result.stats, commit_realtime);
             result.stats.rows_matched = result.stats.rows_matched.saturating_add(1);
             for value_index in &deferred_values {
                 accumulator.apply_value(*value_index, Some(effective_realtime), &mut result.stats);
@@ -920,12 +1115,20 @@ impl FileReader {
         result: &mut ExplorerResult,
         include_facets: bool,
         row_payload_mode: ExplorerRowPayloadMode,
+        mut control: Option<&mut ExplorerControl<'_>>,
     ) -> Result<()> {
         self.seek_for_explorer(query);
         let include_main = query_needs_main_pass(query);
         let mut row_id = 0u64;
+        let mut rows_seen = 0u64;
         let mut deferred_values = Vec::new();
         while self.step_for_explorer(query.direction)? {
+            rows_seen = rows_seen.saturating_add(1);
+            if let Some(control) = control.as_deref_mut() {
+                if control.should_stop_after_rows(rows_seen, &result.stats) {
+                    break;
+                }
+            }
             let Some(metadata) = self.row.metadata() else {
                 continue;
             };
@@ -963,6 +1166,7 @@ impl FileReader {
                 result.column_fields.extend(scan.column_fields);
             }
 
+            record_last_realtime(&mut result.stats, commit_realtime);
             if include_main {
                 result.stats.rows_matched = result.stats.rows_matched.saturating_add(1);
             }
@@ -997,14 +1201,22 @@ impl FileReader {
         query: &ExplorerQuery,
         accumulator: &mut ExplorerAccumulator,
         stats: &mut ExplorerStats,
+        mut control: Option<&mut ExplorerControl<'_>>,
     ) -> Result<()> {
         self.seek_for_explorer(query);
         let defer_apply = query.after_realtime_usec.is_some()
             || query.before_realtime_usec.is_some()
             || !query.fts_patterns.is_empty();
         let mut row_id = 0u64;
+        let mut rows_seen = 0u64;
         let mut deferred_values = Vec::new();
         while self.step_for_explorer(query.direction)? {
+            rows_seen = rows_seen.saturating_add(1);
+            if let Some(control) = control.as_deref_mut() {
+                if control.should_stop_after_rows(rows_seen, stats) {
+                    break;
+                }
+            }
             let Some(metadata) = self.row.metadata() else {
                 continue;
             };
@@ -1037,6 +1249,7 @@ impl FileReader {
                 continue;
             }
 
+            record_last_realtime(stats, commit_realtime);
             stats.facet_rows_matched = stats.facet_rows_matched.saturating_add(1);
             if defer_apply {
                 for value_index in &deferred_values {
@@ -1828,6 +2041,12 @@ fn effective_realtime_from_scan(source_realtime: Option<u64>, commit_realtime: u
     }
 }
 
+fn record_last_realtime(stats: &mut ExplorerStats, commit_realtime: u64) {
+    if commit_realtime > stats.last_realtime_usec {
+        stats.last_realtime_usec = commit_realtime;
+    }
+}
+
 fn matches_fts(value: &[u8], patterns: &[Vec<u8>]) -> bool {
     if patterns.is_empty() {
         return true;
@@ -2024,6 +2243,78 @@ mod tests {
                 .expect("write entry");
         }
         file.sync().expect("sync journal");
+    }
+
+    fn write_many_entries(path: &std::path::Path, count: usize) {
+        let (mut file, mut writer) = create_writer(path, None);
+        for index in 0..count {
+            let message = format!("MESSAGE=row-{index}");
+            let service = if index % 2 == 0 {
+                b"SERVICE=even".as_slice()
+            } else {
+                b"SERVICE=odd".as_slice()
+            };
+            let payloads: [&[u8]; 2] = [message.as_bytes(), service];
+            let realtime = 1_700_000_000_000_000u64.saturating_add(index as u64);
+            writer
+                .add_entry(&mut file, &payloads, realtime, realtime)
+                .expect("write entry");
+        }
+        file.sync().expect("sync journal");
+    }
+
+    #[test]
+    fn explorer_control_reports_progress_during_large_scan() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("progress.journal");
+        write_many_entries(&path, 9_000);
+
+        let mut reports = Vec::new();
+        let mut progress = |progress: ExplorerProgress| {
+            reports.push(progress.stats.rows_examined);
+        };
+        let mut control = ExplorerControl::new();
+        control.set_progress_interval(Duration::ZERO);
+        control.set_progress_callback(Some(&mut progress));
+        let mut reader = FileReader::open(&path).expect("open reader");
+        let query = ExplorerQuery {
+            facets: vec![b"SERVICE".to_vec()],
+            limit: 0,
+            ..ExplorerQuery::default()
+        };
+
+        let result = reader
+            .explore_with_strategy_and_control(&query, ExplorerStrategy::Traversal, &mut control)
+            .expect("explore");
+
+        assert_eq!(control.stop_reason(), None);
+        assert_eq!(result.stats.rows_examined, 9_000);
+        assert!(!reports.is_empty());
+        assert!(reports.iter().any(|rows| *rows >= 8_191));
+    }
+
+    #[test]
+    fn explorer_control_cancels_inside_large_scan() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("cancel.journal");
+        write_many_entries(&path, 9_000);
+
+        let is_cancelled = || true;
+        let mut control = ExplorerControl::new();
+        control.set_cancellation_callback(Some(&is_cancelled));
+        let mut reader = FileReader::open(&path).expect("open reader");
+        let query = ExplorerQuery {
+            facets: vec![b"SERVICE".to_vec()],
+            limit: 0,
+            ..ExplorerQuery::default()
+        };
+
+        let result = reader
+            .explore_with_strategy_and_control(&query, ExplorerStrategy::Traversal, &mut control)
+            .expect("explore");
+
+        assert_eq!(control.stop_reason(), Some(ExplorerStopReason::Cancelled));
+        assert!(result.stats.rows_examined < 9_000);
     }
 
     #[test]

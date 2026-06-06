@@ -1,7 +1,7 @@
 use crate::{
-    Direction, ExplorerAnchor, ExplorerFieldMode, ExplorerFilter, ExplorerHistogram, ExplorerQuery,
-    ExplorerResult, ExplorerRow, ExplorerStats, ExplorerStrategy, FileReader, ReaderOptions,
-    Result, SdkError,
+    Direction, ExplorerAnchor, ExplorerControl, ExplorerFieldMode, ExplorerFilter,
+    ExplorerHistogram, ExplorerProgress, ExplorerQuery, ExplorerResult, ExplorerRow, ExplorerStats,
+    ExplorerStopReason, ExplorerStrategy, FileReader, ReaderOptions, Result, SdkError,
 };
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value, json};
@@ -239,12 +239,24 @@ pub struct NetdataJournalFunction<P = SystemdJournalProfile> {
     profile: P,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct NetdataFunctionRunOptions {
-    pub timeout: Option<Duration>,
+#[derive(Debug, Clone)]
+pub struct NetdataFunctionProgress {
+    pub current_file: usize,
+    pub total_files: usize,
+    pub matched_files: u64,
+    pub skipped_files: u64,
+    pub stats: ExplorerStats,
+    pub elapsed: Duration,
 }
 
-impl NetdataFunctionRunOptions {
+pub struct NetdataFunctionRunOptions<'a> {
+    pub timeout: Option<Duration>,
+    pub progress_callback: Option<&'a mut dyn FnMut(NetdataFunctionProgress)>,
+    pub cancellation_callback: Option<&'a dyn Fn() -> bool>,
+    pub progress_interval: Duration,
+}
+
+impl NetdataFunctionRunOptions<'_> {
     pub fn from_timeout_seconds(seconds: u64) -> Self {
         let seconds = if seconds == 0 {
             EFFECTIVELY_DISABLED_TIMEOUT_SECONDS
@@ -253,14 +265,20 @@ impl NetdataFunctionRunOptions {
         };
         Self {
             timeout: Some(Duration::from_secs(seconds)),
+            progress_callback: None,
+            cancellation_callback: None,
+            progress_interval: Duration::from_millis(250),
         }
     }
 }
 
-impl Default for NetdataFunctionRunOptions {
+impl Default for NetdataFunctionRunOptions<'_> {
     fn default() -> Self {
         Self {
             timeout: Some(Duration::from_secs(EFFECTIVELY_DISABLED_TIMEOUT_SECONDS)),
+            progress_callback: None,
+            cancellation_callback: None,
+            progress_interval: Duration::from_millis(250),
         }
     }
 }
@@ -303,7 +321,7 @@ where
         &self,
         directory: &Path,
         request: &Value,
-        options: NetdataFunctionRunOptions,
+        mut options: NetdataFunctionRunOptions<'_>,
     ) -> Result<Value> {
         let request = NetdataRequest::parse(request, &self.config)?;
         if request.info {
@@ -313,15 +331,16 @@ where
         let mut paths = collect_journal_files(directory)?;
         sort_journal_files_for_request(&mut paths, request.direction, self.config.reader_options);
         let deadline = options.timeout.map(|timeout| Instant::now() + timeout);
-        let mut combined = self.explore_paths(&paths, &request, deadline)?;
+        let mut combined = self.explore_paths(&paths, &request, deadline, &mut options)?;
         combined
             .add_zero_count_facet_values_from_files(&request.facets, self.config.reader_options);
-        if !request.filters.is_empty() {
+        if !combined.partial && !request.filters.is_empty() {
             let mut vocabulary_request = request.clone();
             vocabulary_request.filters.clear();
             vocabulary_request.histogram = None;
             vocabulary_request.limit = 0;
-            let vocabulary = self.explore_paths(&paths, &vocabulary_request, deadline)?;
+            let vocabulary =
+                self.explore_paths(&paths, &vocabulary_request, deadline, &mut options)?;
             combined.add_zero_count_facet_values(&vocabulary.facets);
         }
         Ok(self.query_response(request, paths, combined))
@@ -339,7 +358,7 @@ where
         &self,
         directory: &Path,
         request: &[u8],
-        options: NetdataFunctionRunOptions,
+        options: NetdataFunctionRunOptions<'_>,
     ) -> Result<Value> {
         let request: Value = serde_json::from_slice(request).map_err(|err| {
             SdkError::InvalidPath(format!("invalid Netdata function JSON: {err}"))
@@ -352,10 +371,21 @@ where
         paths: &[PathBuf],
         request: &NetdataRequest,
         deadline: Option<Instant>,
+        options: &mut NetdataFunctionRunOptions<'_>,
     ) -> Result<CombinedResult> {
         let query = request.to_explorer_query();
         let mut combined = CombinedResult::default();
-        for path in paths {
+        let started = Instant::now();
+        let total_files = paths.len();
+        for (file_index, path) in paths.iter().enumerate() {
+            if options
+                .cancellation_callback
+                .is_some_and(|is_cancelled| is_cancelled())
+            {
+                combined.partial = true;
+                combined.cancelled = true;
+                break;
+            }
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 combined.partial = true;
                 combined.timed_out = true;
@@ -383,9 +413,34 @@ where
                     path.display()
                 )),
             }
-            let result = match reader
-                .explore_with_strategy_cursor_rows(&query, self.config.explorer_strategy)
-            {
+            let explored = {
+                let mut explorer_progress = |progress: ExplorerProgress| {
+                    let stats = merged_progress_stats(&combined.stats, &progress.stats);
+                    if let Some(callback) = options.progress_callback.as_deref_mut() {
+                        callback(NetdataFunctionProgress {
+                            current_file: file_index + 1,
+                            total_files,
+                            matched_files: combined.matched_files,
+                            skipped_files: combined.skipped_files,
+                            stats,
+                            elapsed: started.elapsed(),
+                        });
+                    }
+                };
+                let mut control = ExplorerControl::new();
+                control.set_deadline(deadline);
+                control.set_cancellation_callback(options.cancellation_callback);
+                control.set_progress_interval(options.progress_interval);
+                control.set_progress_callback(Some(&mut explorer_progress));
+                let result = reader.explore_with_strategy_cursor_rows_controlled(
+                    &query,
+                    self.config.explorer_strategy,
+                    &mut control,
+                );
+                let stop_reason = control.stop_reason();
+                result.map(|result| (result, stop_reason))
+            };
+            let (result, stop_reason) = match explored {
                 Ok(result) => result,
                 Err(err) => {
                     combined.skipped_files = combined.skipped_files.saturating_add(1);
@@ -396,6 +451,24 @@ where
                 }
             };
             combined.merge(path, result, query.direction, query.limit);
+            if let Some(callback) = options.progress_callback.as_deref_mut() {
+                callback(NetdataFunctionProgress {
+                    current_file: file_index + 1,
+                    total_files,
+                    matched_files: combined.matched_files,
+                    skipped_files: combined.skipped_files,
+                    stats: combined.stats.clone(),
+                    elapsed: started.elapsed(),
+                });
+            }
+            if let Some(reason) = stop_reason {
+                combined.partial = true;
+                match reason {
+                    ExplorerStopReason::TimedOut => combined.timed_out = true,
+                    ExplorerStopReason::Cancelled => combined.cancelled = true,
+                }
+                break;
+            }
         }
         combined.expand_row_payloads(self.config.reader_options);
         Ok(combined)
@@ -444,8 +517,37 @@ where
             .as_ref()
             .map(|histogram| self.build_histogram(&context, histogram));
         let returned = data.len() as u64;
+        let not_modified = request.if_modified_since_usec != 0
+            && !combined.partial
+            && combined.stats.last_realtime_usec <= request.if_modified_since_usec;
+        let status = if combined.cancelled {
+            499
+        } else if not_modified {
+            304
+        } else {
+            200
+        };
+        let message = if combined.cancelled {
+            Value::String("Request cancelled.".to_string())
+        } else if not_modified {
+            Value::String("No new data since the previous call.".to_string())
+        } else if combined.timed_out {
+            Value::String("Timed out".to_string())
+        } else {
+            Value::String("OK".to_string())
+        };
+        let items = json!({
+            "evaluated": combined.stats.rows_examined,
+            "matched": combined.stats.rows_matched,
+            "unsampled": 0,
+            "estimated": 0,
+            "returned": returned,
+            "max_to_return": request.limit as u64,
+            "before": 0,
+            "after": combined.stats.rows_matched.saturating_sub(returned),
+        });
 
-        json!({
+        let mut response = json!({
             "_request": request.echo,
             "versions": { "netdata_function_api": 1, "sdk": env!("CARGO_PKG_VERSION") },
             "_journal_files": {
@@ -453,13 +555,9 @@ where
                 "skipped": combined.skipped_files,
                 "errors": combined.file_errors,
             },
-            "status": 200,
+            "status": status,
             "partial": combined.partial,
             "type": "table",
-            "message": if combined.timed_out { "Timed out" } else { "OK" },
-            "update_every": 1,
-            "help": null,
-            "last_modified": 0,
             "show_ids": true,
             "has_history": true,
             "pagination": {
@@ -468,30 +566,72 @@ where
                 "column": "timestamp",
                 "units": "timestamp_usec",
             },
-            "accepted_params": self.accepted_params_from_fields(&combined.reportable_facet_fields(&request.facets)),
-            "facets": facets,
             "columns": columns.map,
             "data": data,
-            "default_sort_column": "timestamp",
-            "default_charts": [],
-            "available_histograms": self.available_histograms(&request, &combined),
-            "histogram": histogram,
-            "items": {
-                "evaluated": combined.stats.rows_examined,
-                "matched": combined.stats.rows_matched,
-                "unsampled": 0,
-                "estimated": 0,
-                "returned": returned,
-                "max_to_return": request.limit as u64,
-                "before": 0,
-                "after": combined.stats.rows_matched.saturating_sub(returned),
-            },
             "_stats": {
                 "sdk_explorer": combined.stats,
             },
-            "expires": 0,
-            "_sampling": { "enabled": false }
-        })
+            "expires": if request.data_only {
+                unix_now_seconds().saturating_add(3600)
+            } else {
+                0
+            },
+            "_sampling": {
+                "enabled": request.sampling != 0,
+                "sampled": 0,
+                "unsampled": 0,
+                "estimated": 0,
+            }
+        });
+
+        let object = response
+            .as_object_mut()
+            .expect("Netdata response root must be an object");
+        if !request.data_only {
+            object.insert("message".to_string(), message);
+            object.insert("update_every".to_string(), Value::from(1));
+            object.insert("help".to_string(), Value::Null);
+            object.insert(
+                "accepted_params".to_string(),
+                self.accepted_params_from_fields(
+                    &combined.reportable_facet_fields(&request.facets),
+                ),
+            );
+            object.insert("default_sort_column".to_string(), Value::from("timestamp"));
+            object.insert("default_charts".to_string(), Value::Array(Vec::new()));
+            object.insert(
+                "available_histograms".to_string(),
+                self.available_histograms(&request, &combined),
+            );
+        }
+
+        if !request.data_only || request.tail {
+            object.insert(
+                "last_modified".to_string(),
+                Value::from(combined.stats.last_realtime_usec),
+            );
+        }
+
+        let facets_key = if request.data_only && request.delta {
+            "facets_delta"
+        } else {
+            "facets"
+        };
+        let histogram_key = if request.data_only && request.delta {
+            "histogram_delta"
+        } else {
+            "histogram"
+        };
+        let items_key = if request.data_only && request.delta {
+            "items_delta"
+        } else {
+            "items"
+        };
+        object.insert(facets_key.to_string(), facets);
+        object.insert(histogram_key.to_string(), histogram.unwrap_or(Value::Null));
+        object.insert(items_key.to_string(), items);
+
+        response
     }
 
     fn build_columns(
@@ -728,9 +868,14 @@ struct NetdataRequest {
     echo: Value,
     after_realtime_usec: Option<u64>,
     before_realtime_usec: Option<u64>,
+    if_modified_since_usec: u64,
     anchor: ExplorerAnchor,
     direction: Direction,
     limit: usize,
+    data_only: bool,
+    delta: bool,
+    tail: bool,
+    sampling: u64,
     filters: Vec<ExplorerFilter>,
     facets: Vec<Vec<u8>>,
     histogram: Option<String>,
@@ -748,14 +893,31 @@ impl NetdataRequest {
         let before = get_i64(object, "before");
         let (after_realtime_usec, before_realtime_usec) =
             normalize_time_window(now_seconds, after, before);
-        let direction = match get_str(object, "direction").unwrap_or("backward") {
+        let mut direction = match get_str(object, "direction").unwrap_or("backward") {
             "forward" | "forwards" | "next" => Direction::Forward,
             _ => Direction::Backward,
         };
-        let anchor = get_u64(object, "anchor")
+        let if_modified_since_usec = get_u64(object, "if_modified_since").unwrap_or_default();
+        let data_only = get_bool(object, "data_only").unwrap_or(false);
+        let delta = data_only && get_bool(object, "delta").unwrap_or(false);
+        let tail =
+            data_only && if_modified_since_usec != 0 && get_bool(object, "tail").unwrap_or(false);
+        let sampling = get_u64(object, "sampling").unwrap_or_default();
+        let mut anchor = get_u64(object, "anchor")
             .map(normalize_timestamp_to_usec)
             .map(ExplorerAnchor::Realtime)
             .unwrap_or(ExplorerAnchor::Auto);
+        if tail && matches!(anchor, ExplorerAnchor::Realtime(_)) {
+            direction = Direction::Backward;
+        }
+        if let ExplorerAnchor::Realtime(anchor_usec) = anchor {
+            let out_of_range = after_realtime_usec.is_some_and(|after| anchor_usec < after)
+                || before_realtime_usec.is_some_and(|before| anchor_usec > before);
+            if out_of_range {
+                anchor = ExplorerAnchor::Auto;
+                direction = Direction::Backward;
+            }
+        }
         let limit = get_u64(object, "last")
             .map(|value| value as usize)
             .unwrap_or(DEFAULT_ITEMS_TO_RETURN);
@@ -783,9 +945,14 @@ impl NetdataRequest {
             info,
             after_realtime_usec,
             before_realtime_usec,
+            if_modified_since_usec,
             anchor,
             direction,
             limit,
+            data_only,
+            delta,
+            tail,
+            sampling,
             requested_histogram.as_deref(),
             requested_query.as_deref(),
         );
@@ -795,9 +962,14 @@ impl NetdataRequest {
             echo,
             after_realtime_usec,
             before_realtime_usec,
+            if_modified_since_usec,
             anchor,
             direction,
             limit,
+            data_only,
+            delta,
+            tail,
+            sampling,
             filters,
             facets,
             histogram,
@@ -863,6 +1035,7 @@ struct CombinedResult {
     file_errors: Vec<String>,
     partial: bool,
     timed_out: bool,
+    cancelled: bool,
 }
 
 impl CombinedResult {
@@ -949,6 +1122,9 @@ impl CombinedResult {
             .facet_rows_matched
             .saturating_add(stats.facet_rows_matched);
         self.stats.rows_returned = self.stats.rows_returned.saturating_add(stats.rows_returned);
+        if stats.last_realtime_usec > self.stats.last_realtime_usec {
+            self.stats.last_realtime_usec = stats.last_realtime_usec;
+        }
         self.stats.data_refs_seen = self
             .stats
             .data_refs_seen
@@ -1041,6 +1217,51 @@ impl CombinedResult {
             .filter_map(|field| String::from_utf8(field.clone()).ok())
             .collect()
     }
+}
+
+fn merged_progress_stats(completed: &ExplorerStats, current: &ExplorerStats) -> ExplorerStats {
+    let mut stats = completed.clone();
+    stats.rows_examined = stats.rows_examined.saturating_add(current.rows_examined);
+    stats.rows_matched = stats.rows_matched.saturating_add(current.rows_matched);
+    stats.facet_rows_matched = stats
+        .facet_rows_matched
+        .saturating_add(current.facet_rows_matched);
+    stats.rows_returned = stats.rows_returned.saturating_add(current.rows_returned);
+    if current.last_realtime_usec > stats.last_realtime_usec {
+        stats.last_realtime_usec = current.last_realtime_usec;
+    }
+    stats.data_refs_seen = stats.data_refs_seen.saturating_add(current.data_refs_seen);
+    stats.data_refs_skipped = stats
+        .data_refs_skipped
+        .saturating_add(current.data_refs_skipped);
+    stats.data_payloads_loaded = stats
+        .data_payloads_loaded
+        .saturating_add(current.data_payloads_loaded);
+    stats.data_objects_classified = stats
+        .data_objects_classified
+        .saturating_add(current.data_objects_classified);
+    stats.data_cache_hits = stats
+        .data_cache_hits
+        .saturating_add(current.data_cache_hits);
+    stats.data_cache_misses = stats
+        .data_cache_misses
+        .saturating_add(current.data_cache_misses);
+    stats.payloads_decompressed = stats
+        .payloads_decompressed
+        .saturating_add(current.payloads_decompressed);
+    stats.fts_scans = stats.fts_scans.saturating_add(current.fts_scans);
+    stats.facet_updates = stats.facet_updates.saturating_add(current.facet_updates);
+    stats.histogram_updates = stats
+        .histogram_updates
+        .saturating_add(current.histogram_updates);
+    stats.returned_row_expansions = stats
+        .returned_row_expansions
+        .saturating_add(current.returned_row_expansions);
+    stats.early_stop_opportunities = stats
+        .early_stop_opportunities
+        .saturating_add(current.early_stop_opportunities);
+    stats.early_stops = stats.early_stops.saturating_add(current.early_stops);
+    stats
 }
 
 struct Columns {
@@ -1444,9 +1665,14 @@ fn normalized_request_echo(
     info: bool,
     after_realtime_usec: Option<u64>,
     before_realtime_usec: Option<u64>,
+    if_modified_since_usec: u64,
     anchor: ExplorerAnchor,
     direction: Direction,
     limit: usize,
+    data_only: bool,
+    delta: bool,
+    tail: bool,
+    sampling: u64,
     histogram: Option<&str>,
     query: Option<&str>,
 ) -> Value {
@@ -1457,14 +1683,14 @@ fn normalized_request_echo(
     json!({
         "info": info,
         "slice": true,
-        "data_only": false,
-        "delta": false,
-        "tail": false,
-        "sampling": 0,
+        "data_only": data_only,
+        "delta": delta,
+        "tail": tail,
+        "sampling": sampling,
         "source_type": 1,
         "after": after_realtime_usec.unwrap_or(0) / 1_000_000,
         "before": before_realtime_usec.unwrap_or(0) / 1_000_000,
-        "if_modified_since": 0,
+        "if_modified_since": if_modified_since_usec,
         "anchor": anchor_usec,
         "direction": match direction {
             Direction::Forward => "forward",
@@ -2241,7 +2467,37 @@ fn message_id_name(raw: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
     use crate::ExplorerHistogramBucket;
+    use journal_core::file::{JournalFile, JournalFileOptions, JournalWriter, MmapMut};
+    use journal_core::repository::File as RepoFile;
     use std::collections::HashMap;
+    use tempfile::TempDir;
+
+    fn test_uuid(seed: u8) -> uuid::Uuid {
+        uuid::Uuid::from_bytes([seed; 16])
+    }
+
+    fn write_netdata_test_journal(directory: &std::path::Path, count: usize) {
+        std::fs::create_dir_all(directory).expect("create journal dir");
+        let path = directory.join("netdata-api-test.journal");
+        let repo_file = RepoFile::from_path(&path).expect("repo file");
+        let options = JournalFileOptions::new(test_uuid(1), test_uuid(2), test_uuid(3));
+        let mut file = JournalFile::<MmapMut>::create(&repo_file, options).expect("create journal");
+        let mut writer = JournalWriter::new(&mut file, 1, test_uuid(4)).expect("writer");
+        for index in 0..count {
+            let message = format!("MESSAGE=row-{index}");
+            let service = if index % 2 == 0 {
+                b"SERVICE=even".as_slice()
+            } else {
+                b"SERVICE=odd".as_slice()
+            };
+            let payloads: [&[u8]; 3] = [message.as_bytes(), service, b"PRIORITY=6"];
+            let realtime = 1_700_000_000_000_000u64.saturating_add(index as u64);
+            writer
+                .add_entry(&mut file, &payloads, realtime, realtime)
+                .expect("write entry");
+        }
+        file.sync().expect("sync journal");
+    }
 
     #[test]
     fn parses_netdata_selections_as_and_fields_or_values() {
@@ -2284,6 +2540,93 @@ mod tests {
         let query = parsed.to_explorer_query();
 
         assert!(!query.debug_collect_column_fields_by_row_traversal);
+    }
+
+    #[test]
+    fn netdata_function_api_reports_progress() {
+        let dir = TempDir::new().expect("tempdir");
+        write_netdata_test_journal(dir.path(), 9_000);
+        let request = json!({
+            "after": 1_700_000_000,
+            "before": 1_700_000_010,
+            "facets": ["SERVICE"],
+            "histogram": "SERVICE",
+            "last": 0
+        });
+        let function = NetdataJournalFunction::systemd_journal_plugin_compatible();
+        let mut reports = 0u64;
+        let mut progress = |progress: NetdataFunctionProgress| {
+            reports = reports.saturating_add(1);
+            assert_eq!(progress.current_file, 1);
+            assert_eq!(progress.total_files, 1);
+            assert!(progress.stats.rows_examined <= 9_000);
+        };
+        let mut options = NetdataFunctionRunOptions::from_timeout_seconds(0);
+        options.progress_interval = Duration::ZERO;
+        options.progress_callback = Some(&mut progress);
+
+        let response = function
+            .run_directory_request_json_with_options(dir.path(), &request, options)
+            .expect("run function");
+
+        assert_eq!(response["status"], 200);
+        assert!(reports > 0);
+        assert_eq!(response["last_modified"], 1_700_000_000_008_999u64);
+    }
+
+    #[test]
+    fn netdata_function_api_reports_file_end_progress_for_small_scans() {
+        let dir = TempDir::new().expect("tempdir");
+        write_netdata_test_journal(dir.path(), 10);
+        let request = json!({
+            "after": 1_700_000_000,
+            "before": 1_700_000_010,
+            "facets": ["SERVICE"],
+            "histogram": "SERVICE",
+            "last": 0
+        });
+        let function = NetdataJournalFunction::systemd_journal_plugin_compatible();
+        let mut reports = 0u64;
+        let mut last_rows_examined = 0u64;
+        let mut progress = |progress: NetdataFunctionProgress| {
+            reports = reports.saturating_add(1);
+            last_rows_examined = progress.stats.rows_examined;
+        };
+        let mut options = NetdataFunctionRunOptions::from_timeout_seconds(0);
+        options.progress_callback = Some(&mut progress);
+
+        let response = function
+            .run_directory_request_json_with_options(dir.path(), &request, options)
+            .expect("run function");
+
+        assert_eq!(response["status"], 200);
+        assert_eq!(reports, 1);
+        assert_eq!(last_rows_examined, 10);
+    }
+
+    #[test]
+    fn netdata_function_api_reports_cancellation() {
+        let dir = TempDir::new().expect("tempdir");
+        write_netdata_test_journal(dir.path(), 9_000);
+        let request = json!({
+            "after": 1_700_000_000,
+            "before": 1_700_000_010,
+            "facets": ["SERVICE"],
+            "histogram": "SERVICE",
+            "last": 0
+        });
+        let function = NetdataJournalFunction::systemd_journal_plugin_compatible();
+        let is_cancelled = || true;
+        let mut options = NetdataFunctionRunOptions::from_timeout_seconds(0);
+        options.cancellation_callback = Some(&is_cancelled);
+
+        let response = function
+            .run_directory_request_json_with_options(dir.path(), &request, options)
+            .expect("run function");
+
+        assert_eq!(response["status"], 499);
+        assert_eq!(response["partial"], true);
+        assert_eq!(response["message"], "Request cancelled.");
     }
 
     #[test]

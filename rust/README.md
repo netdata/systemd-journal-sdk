@@ -93,9 +93,10 @@ Current reader scope:
   accepted as seek locations, while `test_cursor` checks exact current position;
 - current-entry facade data enumeration returns borrowed `FIELD=value` bytes
   for the current DATA object, matching libsystemd-style validity until the
-  next data/read-pointer operation; uncompressed DATA is returned directly from
-  the mmap-backed journal payload, while compressed DATA is returned from one
-  reusable reader-owned decompression buffer;
+  current row is reset or the reader advances; uncompressed DATA is returned
+  directly from the mmap-backed journal payload, while compressed DATA is copied
+  into row-owned stable storage so later compressed DATA reads cannot invalidate
+  earlier pointers from the same row;
 - direct facade unique queries return language-native `(field, value)` pairs;
   stateful unique enumeration returns full binary-safe `FIELD=value` payloads;
 - `FileReader::visit_unique_values()` and

@@ -26,7 +26,7 @@ pub struct CurrentRowView {
     data_index: usize,
     data_state_active: bool,
     decompressed: Vec<u8>,
-    row_arena: Vec<u8>,
+    row_arena: Vec<Vec<u8>>,
     row_pins_active: bool,
 }
 
@@ -34,7 +34,7 @@ pub struct CurrentRowView {
 #[derive(Debug, Clone, Copy)]
 pub enum CurrentRowPayload {
     Borrowed { ptr: *const u8, len: usize },
-    Arena { start: usize, end: usize },
+    Arena { chunk: usize },
 }
 
 impl CurrentRowView {
@@ -176,10 +176,9 @@ impl CurrentRowView {
             len,
             "decompressors must set the output buffer length before returning"
         );
-        let start = self.row_arena.len();
-        self.row_arena.extend_from_slice(&self.decompressed[..len]);
-        let end = self.row_arena.len();
-        Ok(Some(CurrentRowPayload::Arena { start, end }))
+        let chunk = self.row_arena.len();
+        self.row_arena.push(self.decompressed[..len].to_vec());
+        Ok(Some(CurrentRowPayload::Arena { chunk }))
     }
 
     #[inline(always)]
@@ -225,10 +224,9 @@ impl CurrentRowView {
             len,
             "decompressors must set the output buffer length before returning"
         );
-        let start = self.row_arena.len();
-        self.row_arena.extend_from_slice(&self.decompressed[..len]);
-        let end = self.row_arena.len();
-        Ok(CurrentRowPayload::Arena { start, end })
+        let chunk = self.row_arena.len();
+        self.row_arena.push(self.decompressed[..len].to_vec());
+        Ok(CurrentRowPayload::Arena { chunk })
     }
 
     #[inline(always)]
@@ -241,7 +239,7 @@ impl CurrentRowView {
                 // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
                 unsafe { std::slice::from_raw_parts(ptr, len) }
             }
-            CurrentRowPayload::Arena { start, end } => &self.row_arena[start..end],
+            CurrentRowPayload::Arena { chunk } => &self.row_arena[chunk],
         }
     }
 
