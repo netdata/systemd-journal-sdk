@@ -26,6 +26,13 @@ const NETDATA_JOURNAL_VS_REALTIME_DELTA_MAX_USEC: u64 = 2 * 60 * 1_000_000;
 const NETDATA_EMPTY_STRING_FACET_HASH_ID: &str = "CzGfAU2z3TC";
 const NETDATA_UNAVAILABLE_FIELD_LABEL: &str = "[unavailable field]";
 const NETDATA_FACET_MAX_VALUE_LENGTH: usize = 8192;
+const SOURCE_TYPE_ALL: u64 = 1 << 0;
+const SOURCE_TYPE_LOCAL_ALL: u64 = 1 << 1;
+const SOURCE_TYPE_REMOTE_ALL: u64 = 1 << 2;
+const SOURCE_TYPE_LOCAL_SYSTEM: u64 = 1 << 3;
+const SOURCE_TYPE_LOCAL_USER: u64 = 1 << 4;
+const SOURCE_TYPE_LOCAL_NAMESPACE: u64 = 1 << 5;
+const SOURCE_TYPE_LOCAL_OTHER: u64 = 1 << 6;
 
 const NETDATA_ACCEPTED_PARAMS: &[&str] = &[
     "info",
@@ -331,6 +338,7 @@ where
             return Ok(self.info_response(request.echo, &paths));
         }
 
+        paths.retain(|path| request.matches_source(path));
         sort_journal_files_for_request(&mut paths, request.direction, self.config.reader_options);
         let deadline = options.timeout.map(|timeout| Instant::now() + timeout);
         let mut combined = self.explore_paths(&paths, &request, deadline, &mut options)?;
@@ -929,6 +937,8 @@ struct NetdataRequest {
     delta: bool,
     tail: bool,
     sampling: u64,
+    source_type: u64,
+    exact_sources: Vec<String>,
     filters: Vec<ExplorerFilter>,
     facets: Vec<Vec<u8>>,
     histogram: Option<String>,
@@ -995,6 +1005,7 @@ impl NetdataRequest {
             .as_deref()
             .map(|query| vec![query.as_bytes().to_vec()])
             .unwrap_or_default();
+        let source_selection = parse_source_selection(object.get("selections"));
         let filters = parse_filters(object.get("selections"));
 
         let echo = normalized_request_echo(
@@ -1009,6 +1020,7 @@ impl NetdataRequest {
             delta,
             tail,
             sampling,
+            source_selection.source_type,
             requested_facets.as_deref(),
             object.get("selections"),
             requested_histogram.as_deref(),
@@ -1028,6 +1040,8 @@ impl NetdataRequest {
             delta,
             tail,
             sampling,
+            source_type: source_selection.source_type,
+            exact_sources: source_selection.exact_sources,
             filters,
             facets,
             histogram,
@@ -1040,6 +1054,23 @@ impl NetdataRequest {
             .iter()
             .filter_map(|field| String::from_utf8(field.clone()).ok())
             .collect()
+    }
+
+    fn matches_source(&self, path: &Path) -> bool {
+        if self.source_type == SOURCE_TYPE_ALL && self.exact_sources.is_empty() {
+            return true;
+        }
+        let file_source_type = journal_file_source_type(path);
+        if file_source_type & self.source_type != 0 {
+            return true;
+        }
+        if self.exact_sources.is_empty() {
+            return false;
+        }
+        let source_name = journal_file_exact_source_name(path);
+        self.exact_sources
+            .iter()
+            .any(|source| source_name.as_deref() == Some(source.as_str()))
     }
 
     fn to_explorer_query(&self) -> ExplorerQuery {
@@ -1693,6 +1724,91 @@ fn parse_filters(value: Option<&Value>) -> Vec<ExplorerFilter> {
     filters
 }
 
+#[derive(Debug, Clone)]
+struct SourceSelection {
+    source_type: u64,
+    exact_sources: Vec<String>,
+}
+
+fn parse_source_selection(value: Option<&Value>) -> SourceSelection {
+    let mut selection = SourceSelection {
+        source_type: SOURCE_TYPE_ALL,
+        exact_sources: Vec::new(),
+    };
+    let Some(Value::Object(selections)) = value else {
+        return selection;
+    };
+    let Some(values) = parse_string_array(selections.get("__logs_sources")) else {
+        return selection;
+    };
+    selection.source_type = 0;
+    for value in values {
+        match source_type_for_name(&value) {
+            Some(source_type) => selection.source_type |= source_type,
+            None => selection.exact_sources.push(value),
+        }
+    }
+    selection
+}
+
+fn source_type_for_name(value: &str) -> Option<u64> {
+    match value {
+        "all" => Some(SOURCE_TYPE_ALL),
+        "all-local-logs" => Some(SOURCE_TYPE_LOCAL_ALL),
+        "all-remote-systems" => Some(SOURCE_TYPE_REMOTE_ALL),
+        "all-local-system-logs" => Some(SOURCE_TYPE_LOCAL_SYSTEM),
+        "all-local-user-logs" => Some(SOURCE_TYPE_LOCAL_USER),
+        "all-local-namespaces" => Some(SOURCE_TYPE_LOCAL_NAMESPACE),
+        "all-uncategorized" => Some(SOURCE_TYPE_LOCAL_OTHER),
+        _ => None,
+    }
+}
+
+fn journal_file_source_type(path: &Path) -> u64 {
+    let text = path.to_string_lossy();
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return SOURCE_TYPE_ALL | SOURCE_TYPE_LOCAL_ALL | SOURCE_TYPE_LOCAL_OTHER;
+    };
+    if text.contains("/remote/") {
+        return SOURCE_TYPE_ALL | SOURCE_TYPE_REMOTE_ALL;
+    }
+    if local_namespace_source_name(path).is_some() {
+        return SOURCE_TYPE_ALL | SOURCE_TYPE_LOCAL_ALL | SOURCE_TYPE_LOCAL_NAMESPACE;
+    }
+    if name.starts_with("system") {
+        return SOURCE_TYPE_ALL | SOURCE_TYPE_LOCAL_ALL | SOURCE_TYPE_LOCAL_SYSTEM;
+    }
+    if name.starts_with("user") {
+        return SOURCE_TYPE_ALL | SOURCE_TYPE_LOCAL_ALL | SOURCE_TYPE_LOCAL_USER;
+    }
+    SOURCE_TYPE_ALL | SOURCE_TYPE_LOCAL_ALL | SOURCE_TYPE_LOCAL_OTHER
+}
+
+fn local_namespace_source_name(path: &Path) -> Option<String> {
+    let parent = path.parent()?.file_name()?.to_str()?;
+    let (_, namespace) = parent.rsplit_once('.')?;
+    (!namespace.is_empty()).then(|| format!("namespace-{namespace}"))
+}
+
+fn journal_file_exact_source_name(path: &Path) -> Option<String> {
+    let text = path.to_string_lossy();
+    if text.contains("/remote/") {
+        let name = path.file_name()?.to_str()?;
+        let source = name
+            .split_once('@')
+            .map(|(prefix, _)| prefix)
+            .unwrap_or_else(|| {
+                name.strip_suffix(".journal~.zst")
+                    .or_else(|| name.strip_suffix(".journal.zst"))
+                    .or_else(|| name.strip_suffix(".journal~"))
+                    .or_else(|| name.strip_suffix(".journal"))
+                    .unwrap_or(name)
+            });
+        return source.starts_with("remote-").then(|| source.to_string());
+    }
+    local_namespace_source_name(path)
+}
+
 fn normalize_filter_value(field: &str, value: &str) -> Vec<u8> {
     if field == "PRIORITY" {
         if let Some(priority) = priority_name_to_number(value) {
@@ -1811,6 +1927,7 @@ fn normalized_request_echo(
     delta: bool,
     tail: bool,
     sampling: u64,
+    source_type: u64,
     requested_facets: Option<&[String]>,
     selections: Option<&Value>,
     histogram: Option<&str>,
@@ -1827,7 +1944,7 @@ fn normalized_request_echo(
         "delta": delta,
         "tail": tail,
         "sampling": sampling,
-        "source_type": 1,
+        "source_type": source_type,
         "after": after_realtime_usec.unwrap_or(0) / 1_000_000,
         "before": before_realtime_usec.unwrap_or(0) / 1_000_000,
         "if_modified_since": if_modified_since_usec,
@@ -1852,9 +1969,15 @@ fn normalized_request_echo(
             );
     }
     if let Some(Value::Object(selections)) = selections {
+        let mut selections = selections.clone();
+        if let Some(Value::Array(sources)) = selections.get_mut("__logs_sources") {
+            for source in sources {
+                *source = Value::Null;
+            }
+        }
         out.as_object_mut()
             .expect("Netdata request echo root must be an object")
-            .insert("selections".to_string(), Value::Object(selections.clone()));
+            .insert("selections".to_string(), Value::Object(selections));
     }
     out
 }
@@ -3097,6 +3220,87 @@ mod tests {
         record_boot_first_realtime(&mut boot_first, b"boot-a".to_vec(), 200);
 
         assert_eq!(boot_first.get(b"boot-a".as_slice()), Some(&100));
+    }
+
+    #[test]
+    fn source_selection_echoes_and_filters_known_groups() {
+        let config = NetdataFunctionConfig::systemd_journal();
+        let request = NetdataRequest::parse(
+            &json!({
+                "selections": {
+                    "__logs_sources": ["all-local-system-logs"]
+                }
+            }),
+            &config,
+        )
+        .expect("parse source-filtered request");
+
+        assert_eq!(request.source_type, SOURCE_TYPE_LOCAL_SYSTEM);
+        assert_eq!(
+            request.echo.get("source_type").and_then(Value::as_u64),
+            Some(SOURCE_TYPE_LOCAL_SYSTEM)
+        );
+        assert!(
+            request
+                .echo
+                .pointer("/selections/__logs_sources/0")
+                .is_some_and(Value::is_null)
+        );
+        assert!(request.matches_source(Path::new("/var/log/journal/machine/system.journal")));
+        assert!(!request.matches_source(Path::new("/var/log/journal/machine/user-1000.journal")));
+    }
+
+    #[test]
+    fn source_classification_matches_plugin_filename_shape() {
+        assert_eq!(
+            journal_file_source_type(Path::new("/var/log/journal/machine/system.journal")),
+            SOURCE_TYPE_ALL | SOURCE_TYPE_LOCAL_ALL | SOURCE_TYPE_LOCAL_SYSTEM
+        );
+        assert_eq!(
+            journal_file_source_type(Path::new("/var/log/journal/machine/user-1000.journal")),
+            SOURCE_TYPE_ALL | SOURCE_TYPE_LOCAL_ALL | SOURCE_TYPE_LOCAL_USER
+        );
+        assert_eq!(
+            journal_file_source_type(Path::new("/var/log/journal/machine/other.journal")),
+            SOURCE_TYPE_ALL | SOURCE_TYPE_LOCAL_ALL | SOURCE_TYPE_LOCAL_OTHER
+        );
+        assert_eq!(
+            journal_file_source_type(Path::new(
+                "/var/log/journal/machine.namespace/system.journal"
+            )),
+            SOURCE_TYPE_ALL | SOURCE_TYPE_LOCAL_ALL | SOURCE_TYPE_LOCAL_NAMESPACE
+        );
+        assert_eq!(
+            journal_file_source_type(Path::new(
+                "/var/log/journal/remote/remote-host-a@machine.journal"
+            )),
+            SOURCE_TYPE_ALL | SOURCE_TYPE_REMOTE_ALL
+        );
+    }
+
+    #[test]
+    fn exact_source_names_follow_plugin_prefixes() {
+        assert_eq!(
+            journal_file_exact_source_name(Path::new(
+                "/var/log/journal/machine.namespace/system.journal"
+            ))
+            .as_deref(),
+            Some("namespace-namespace")
+        );
+        assert_eq!(
+            journal_file_exact_source_name(Path::new(
+                "/var/log/journal/remote/remote-host-a@machine.journal"
+            ))
+            .as_deref(),
+            Some("remote-host-a")
+        );
+        assert_eq!(
+            journal_file_exact_source_name(Path::new(
+                "/var/log/journal/remote/remote-host-b.journal~.zst"
+            ))
+            .as_deref(),
+            Some("remote-host-b")
+        );
     }
 
     #[test]

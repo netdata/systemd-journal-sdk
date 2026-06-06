@@ -138,7 +138,13 @@ Current reader scope:
   `NetdataJournalFunction::systemd_journal_plugin_compatible()` constructor
   opts into host user/group name presentation to emulate Netdata's installed
   plugin. This layer is intentionally separate from the core journal file-format
-  reader;
+  reader. Consumers that need Netdata function control can use
+  `run_directory_request_json_with_options()` or
+  `run_directory_request_bytes_with_options()` with
+  `NetdataFunctionRunOptions` to supply a timeout, progress callback, and
+  cancellation callback. The Netdata boundary honors built-in
+  `__logs_sources` groups for explicit directory inputs by classifying local,
+  namespace, user, system, uncategorized, and remote journal filenames;
 - `src/internal/testcmd/netdata_function_wrapper` exposes the SDK Netdata
   boundary through the same offline CLI shape as Netdata's plugin test path:
   `netdata_function_wrapper --test systemd-journal --dir <journal-dir>

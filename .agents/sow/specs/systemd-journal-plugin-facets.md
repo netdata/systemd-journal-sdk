@@ -132,9 +132,10 @@ for comparison with Netdata's installed plugin; it may resolve UID/GID display
 names through the host platform when the caller chooses that compatibility mode.
 
 The standalone SDK comparison wrapper accepts requests that contain
-`__logs_sources`, but it runs against an explicit `--dir` and does not implement
-Netdata's journal registry source-group filtering. Source-group filtering needs
-separate integration work at the Netdata registry boundary.
+`__logs_sources` and filters explicit-directory candidate files for the
+built-in source groups. It intentionally does not own Netdata's live journal
+registry/provider inventory; registry-level source discovery remains a Netdata
+integration concern above the SDK API.
 
 The Rust explorer now has an explicit
 `ExplorerQuery::exclude_facet_field_filters` switch:
@@ -226,8 +227,33 @@ The SDK Netdata function replacement builds the same source selector for its
 explicit directory input. It reports `__logs_sources` options for `all`,
 `all-local-logs`, and `all-local-system-logs`, deriving file count, total size,
 coverage, and last-entry timestamp from the selected journal files. This is
-directory-local source metadata; full Netdata registry/provider source
-selection remains a separate replacement requirement.
+directory-local source metadata.
+
+For query execution, the Rust SDK Netdata function boundary filters
+explicit-directory candidate files by the built-in source groups:
+
+- `all`
+- `all-local-logs`
+- `all-local-system-logs`
+- `all-local-user-logs`
+- `all-uncategorized`
+- `all-local-namespaces`
+- `all-remote-systems`
+
+The explicit-directory classification mirrors the plugin's filename shape:
+
+- paths under `/remote/` are remote;
+- local paths whose parent directory component has a namespace suffix are
+  local namespaces;
+- local basenames beginning with `system` are local system journals;
+- local basenames beginning with `user` are local user journals;
+- other local files are uncategorized.
+
+Exact source names are supported for remote filenames with the plugin's
+`remote-` prefix and local namespace names with the plugin's `namespace-`
+prefix. Full live registry/provider source discovery is still outside the
+standalone SDK wrapper; consumers that maintain a richer registry should pass
+explicit directories or add that registry layer above this API.
 
 ## Timeframe And Anchor Semantics
 

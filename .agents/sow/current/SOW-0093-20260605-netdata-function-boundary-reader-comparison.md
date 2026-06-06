@@ -7,14 +7,14 @@ Status: in-progress
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
 Sub-state: strict SDK-first content comparison passes locally for the large
-default-facets full-analysis request and for the repo-local six-request matrix:
-`info`, full priority, filtered priority, full default facets, data-only, and
-data-only delta. Rust SDK run-control API covers progress reporting,
-cancellation, timeout plumbing, request normalization for data-only/delta/tail,
-and `last_modified`. Remaining replacement gaps include sampling estimates,
-source-registry selection beyond the explicit directory source summary,
-tail/cancellation/timeout matrix parity, and learned/persisted realtime-drift
-state.
+default-facets full-analysis request and for the repo-local seven-request
+matrix: `info`, full priority, filtered priority, full default facets,
+data-only, data-only delta, and built-in `__logs_sources` source selection.
+Rust SDK run-control API covers progress reporting, cancellation, timeout
+plumbing, request normalization for data-only/delta/tail, and `last_modified`.
+Remaining replacement gaps include sampling estimates, tail/cancellation/
+timeout matrix parity, learned/persisted realtime-drift state, and
+registry/provider source metadata beyond explicit-directory classification.
 
 ## Requirements
 
@@ -975,10 +975,9 @@ Real-use evidence:
     `rust/src/journal/src/netdata.rs:2608`.
   - remaining gaps are intentionally recorded before calling this a complete
     replacement: sampling currently reports the selected mode and placeholder
-    counters, `__logs_sources` still needs a Netdata registry/provider
-    boundary, learned realtime-drift state is not persisted by the SDK API yet,
-    and the strict comparator matrix still needs data-only, delta, tail,
-    sampling, source-selection, cancellation, and timeout fixtures.
+    counters, learned realtime-drift state is not persisted by the SDK API yet,
+    and the strict comparator matrix still needs tail, sampling, cancellation,
+    and timeout fixtures.
 - Netdata function boundary expansion on 2026-06-06:
   - request fixtures added:
     `tests/netdata_function/requests/window-last5-data-only.json` and
@@ -1015,6 +1014,42 @@ Real-use evidence:
       `items_delta` like their full-analysis counterparts, while treating
       data-only all-null column-catalog artifacts as non-content only when no
       returned-row value exists on either side.
+- Netdata source-selection implementation on 2026-06-06:
+  - request fixture added:
+    `tests/netdata_function/requests/window-last5-priority-source-system.json`;
+  - implementation shape:
+    `__logs_sources` selections now filter the explicit `--dir` candidate
+    files for the built-in source groups `all`, `all-local-logs`,
+    `all-local-system-logs`, `all-local-user-logs`, `all-uncategorized`,
+    `all-local-namespaces`, and `all-remote-systems`;
+  - local file classification follows the plugin filename shape: `/remote/`
+    paths are remote, parent directory components containing a namespace suffix
+    are local namespaces, `system*` basenames are local system journals,
+    `user*` basenames are local user journals, and remaining local journals are
+    uncategorized;
+  - exact source names are supported for remote filenames with the plugin's
+    `remote-` prefix and namespace names with the plugin's `namespace-`
+    prefix, but the live Netdata registry/provider source inventory remains an
+    integration boundary outside this standalone explicit-directory wrapper;
+  - strict SDK-first comparison report:
+    `.local/sow-0093/function-compare-source-selection-validation.json`;
+  - all seven request cases passed strict semantic content comparison:
+    `info.json`, `window-last5-priority.json`,
+    `window-error-filter.json`, `window-last5-default-facets.json`,
+    `window-last5-data-only.json`,
+    `window-last5-data-only-delta.json`, and
+    `window-last5-priority-source-system.json`;
+  - every case matched stable top-level content, columns, returned rows,
+    facets, histogram, item counters, and diagnostic item counters.
+  - source-selection case timing from the same report:
+    SDK `0.005249` seconds, installed plugin `0.007592` seconds. Full matrix
+    timing ranged from SDK `0.001165` to `0.012661` seconds and installed
+    plugin `0.002899` to `0.012948` seconds on the repo-local fixture.
+  - validation commands passed:
+    `cargo fmt --check && cargo test -p journal`,
+    `python3 -m py_compile tests/netdata_function/run_function_compare.py tests/netdata_function/compare_function_json.py tests/netdata_function/test_compare_function_json.py`,
+    `python3 tests/netdata_function/test_compare_function_json.py`,
+    `git diff --check`, and `.agents/sow/audit.sh`.
 
 Implementation fixes after first reviewer batch:
 
@@ -1041,9 +1076,9 @@ Implementation fixes after first reviewer batch:
   through `systemd-journal-execute.h:179`, and
   `systemd-journal-execute.h:282` through
   `systemd-journal-execute.h:288`.
-- `__logs_sources` selections are explicitly ignored by this standalone
-  `--dir` wrapper. Source-group filtering depends on Netdata's journal registry
-  and is not implemented in this repository-local comparison wrapper yet.
+- `__logs_sources` selections now filter explicit-directory candidate files
+  for built-in source groups. Full live registry/provider source metadata is
+  still a Netdata integration boundary, not a core journal reader concern.
 - The SDK keeps the Netdata `_BOOT_ID` data-transform trailing two spaces
   because the installed plugin appends the same suffix. Evidence checked in
   `ktsaou/netdata @ f6f857d46356`:
@@ -1100,8 +1135,10 @@ Reviewer findings:
     behavior. Fixed in
     `.agents/sow/specs/systemd-journal-plugin-facets.md`.
   - `__logs_sources` was accepted but not implemented by the standalone
-    `--dir` wrapper. Disposition: documented as an explicit limitation because
-    source groups require the Netdata journal registry boundary.
+    `--dir` wrapper in the first implementation pass. Fixed for
+    explicit-directory built-in source groups and covered by
+    `window-last5-priority-source-system.json`; live registry/provider source
+    metadata remains outside this standalone wrapper.
 - Second read-only reviewer batch verified strict content comparison and
   SDK-first runner order. Reviewer votes received before the 8,192-byte finding:
   Kimi, Qwen, GLM, and Mimo: production-grade for the checked slice after

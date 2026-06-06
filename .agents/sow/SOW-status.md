@@ -14,13 +14,14 @@ Last updated: 2026-06-06
   `--request` CLI shape; current comparison target is generic log-function
   behavior versus `systemd-journal.plugin`. Rust `journal::netdata`, the
   internal `netdata_function_wrapper`, semantic comparator, progress/cancel
-  run-control API, directory-local source info metadata, full-analysis
-  Netdata catalog semantics, data-only, and data-only delta now pass the
-  repo-local six-request SDK-first comparison matrix. Remaining replacement
-  gaps include sampling estimates, full source-registry selection, tail,
-  cancellation/timeout matrix parity, and learned/persisted realtime-drift
-  state. NetFlow source analysis is design evidence only for future grouped
-  rollup/statistics APIs.
+  run-control API, directory-local source info metadata, explicit-directory
+  built-in source selection, full-analysis Netdata catalog semantics,
+  data-only, and data-only delta now pass the repo-local seven-request
+  SDK-first comparison matrix. Remaining replacement gaps include sampling
+  estimates, tail, cancellation/timeout matrix parity, learned/persisted
+  realtime-drift state, and live registry/provider source metadata beyond
+  explicit-directory classification. NetFlow source analysis is design evidence
+  only for future grouped rollup/statistics APIs.
 
 ## Pending
 
