@@ -543,7 +543,7 @@ where
         let returned = data.len() as u64;
         let status = 200;
         let message = if combined.timed_out {
-            Value::String("Timed out".to_string())
+            timeout_message()
         } else {
             Value::String("OK".to_string())
         };
@@ -1388,6 +1388,14 @@ fn netdata_function_error(status: u64, message: &str) -> Value {
     json!({
         "status": status,
         "errorMessage": message,
+    })
+}
+
+fn timeout_message() -> Value {
+    json!({
+        "title": "Query timed-out, incomplete data. ",
+        "status": "warning",
+        "description": "QUERY TIMEOUT: The query timed out and may not include all the data of the selected window. ",
     })
 }
 
@@ -2947,6 +2955,36 @@ mod tests {
             response.as_object().expect("response object").len(),
             2,
             "plugin-compatible function errors only include status and errorMessage"
+        );
+    }
+
+    #[test]
+    fn netdata_function_api_reports_timeout_as_partial_table() {
+        let dir = TempDir::new().expect("tempdir");
+        write_netdata_test_journal(dir.path(), 10);
+        let request = json!({
+            "after": 1_700_000_000,
+            "before": 1_700_000_010,
+            "facets": ["SERVICE"],
+            "histogram": "SERVICE",
+            "last": 0
+        });
+        let function = NetdataJournalFunction::systemd_journal_plugin_compatible();
+        let options = NetdataFunctionRunOptions {
+            timeout: Some(Duration::ZERO),
+            ..NetdataFunctionRunOptions::default()
+        };
+
+        let response = function
+            .run_directory_request_json_with_options(dir.path(), &request, options)
+            .expect("run function");
+
+        assert_eq!(response["status"], 200);
+        assert_eq!(response["partial"], true);
+        assert_eq!(response["message"]["status"], "warning");
+        assert_eq!(
+            response["message"]["title"],
+            "Query timed-out, incomplete data. "
         );
     }
 

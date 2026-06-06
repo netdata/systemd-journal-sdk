@@ -13,7 +13,7 @@ data-only, data-only delta, built-in `__logs_sources` source selection, and
 tail/no-change `304` function-error responses. Rust SDK run-control API covers
 progress reporting, cancellation, timeout plumbing, request normalization for
 data-only/delta/tail, and `last_modified`. Remaining replacement gaps include
-sampling estimates, cancellation/timeout matrix parity, learned/persisted
+sampling estimates, cancellation integration-matrix coverage, learned/persisted
 realtime-drift state, and registry/provider source metadata beyond
 explicit-directory classification.
 
@@ -977,8 +977,8 @@ Real-use evidence:
   - remaining gaps are intentionally recorded before calling this a complete
     replacement: sampling currently reports the selected mode and placeholder
     counters, learned realtime-drift state is not persisted by the SDK API yet,
-    and the strict comparator matrix still needs sampling, cancellation, and
-    timeout fixtures.
+    and the strict comparator matrix still needs sampling and cancellation
+    fixtures.
 - Netdata function boundary expansion on 2026-06-06:
   - request fixtures added:
     `tests/netdata_function/requests/window-last5-data-only.json` and
@@ -1079,6 +1079,26 @@ Real-use evidence:
     `checks.function_error=true`; SDK exit code was `0`, installed plugin exit
     code was `1`, SDK wall time was `0.001302` seconds, and installed plugin
     wall time was `0.004040` seconds.
+- Netdata timeout response-shape parity on 2026-06-06:
+  - repo-local timeout dataset:
+    `.local/sow-0093/timeout-journals`, built from 2,000 hard links to the
+    existing repo-local smoke journal fixture. The hard-link dataset exercises
+    a large logical scan while using only 8.2 MiB of disk and does not read the
+    live host journal;
+  - request:
+    `.local/sow-0093/timeout-request-default-facets-sampling0.json`, matching
+    the smoke fixture time window and default facets with `sampling:0`;
+  - SDK and installed plugin were both run with `--timeout 1`;
+  - both returned `status:200`, `partial:true`, and the same warning message
+    object:
+    `{"title":"Query timed-out, incomplete data. ","status":"warning","description":"QUERY TIMEOUT: The query timed out and may not include all the data of the selected window. "}`;
+  - the strict content comparison intentionally fails for timeout responses
+    because each implementation stops at a different row/file based on speed
+    and scheduling. This is not a content-equivalence fixture. It validates
+    response class and envelope shape only;
+  - sampling-enabled timeout responses still differ in the sampling/unsampled/
+    estimated counters and warning percentages. That remains part of the
+    sampling-estimate replacement gap.
 
 Implementation fixes after first reviewer batch:
 
