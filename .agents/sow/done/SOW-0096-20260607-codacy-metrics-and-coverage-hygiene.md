@@ -2,12 +2,12 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: started after the user reported that Codacy coverage includes tests
-and repository-level complexity and duplication remain too high.
+Sub-state: completed after local validation, reviewer closeout, GitHub scanner
+validation, and Codacy Cloud validation.
 
 ## Requirements
 
@@ -524,8 +524,22 @@ Tests or equivalent validation:
 
 Real-use evidence:
 
-- Remote Codacy coverage effect requires a pushed commit and completed GitHub
-  Coverage workflow. This remains pending until after local review and commit.
+- Final pushed implementation commit:
+  `7e3d3e5d93a1727785dacced673efbb7d55fad9d`.
+- GitHub Actions on the final implementation commit all passed:
+  - `Code Quality: Push on master` run `27096203407`.
+  - `CodeQL` run `27096203843`.
+  - `Codacy SARIF` run `27096203838`.
+  - `Coverage` run `27096203862`.
+- GitHub code scanning open alerts after the final implementation commit:
+  `[]`.
+- Codacy Cloud analyzed the final implementation commit and reported:
+  - `issuesCount = 0`;
+  - `coveragePercentage = 73`;
+  - `complexFilesPercentage = 46`;
+  - `duplicationPercentage = 30`.
+- `codacy issues gh netdata systemd-journal-sdk --output json` returned `0`
+  issues after the final implementation commit.
 
 Reviewer findings:
 
@@ -581,8 +595,8 @@ Reviewer findings:
   - Kept the Codacy Cloud CLI generated-client approach because the public
     CLI does not expose file-level metrics as a stable command; the tested CLI
     version is documented.
-  - Kept remote Codacy validation as an open post-push gate; SOW-0096 is not
-    completed until that dashboard/workflow evidence is recorded.
+  - Remote Codacy validation was kept as a post-push gate and completed before
+    this SOW was closed.
 
 Same-failure scan:
 
@@ -611,8 +625,8 @@ Artifact maintenance gate:
 - End-user/operator docs: updated `tests/coverage/README.md` for CI/coverage
   operator behavior.
 - End-user/operator skills: none affected.
-- SOW lifecycle: SOW-0096 remains current/in-progress until reviewer and remote
-  validation gates complete; SOW-0097 and SOW-0098 track follow-up metric debt.
+- SOW lifecycle: SOW-0096 is completed and moved to `done/`; SOW-0097 and
+  SOW-0098 track follow-up metric debt.
 - SOW-status.md: updated both root and `.agents/sow/` ledgers.
 
 Specs update:
@@ -648,7 +662,24 @@ Follow-up mapping:
 
 ## Outcome
 
-Pending.
+Completed.
+
+- Tests are excluded from the uploaded Go and Rust coverage reports before
+  Codacy upload; Python and Node.js coverage were verified to remain
+  source-scoped.
+- The committed Rust/Go file-level metrics audit classifies each Codacy
+  complexity and duplication signal as test/harness noise, acceptable file-size
+  pressure, low signal, or follow-up production debt.
+- Remote GitHub and Codacy scanner gates are clean on the final implementation
+  commit:
+  - GitHub code scanning open alerts: `[]`.
+  - Codacy issues: `0`.
+  - Codacy coverage: `73%`.
+  - Codacy complexity: `46%`.
+  - Codacy duplication: `30%`.
+- The remaining poor aggregate complexity/duplication percentages are tracked
+  as real follow-up work in SOW-0097 and SOW-0098 rather than hidden by broad
+  exclusions.
 
 ## Lessons Extracted
 

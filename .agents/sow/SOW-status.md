@@ -7,9 +7,6 @@ Last updated: 2026-06-07
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
-- SOW-0096 - Codacy Metrics And Coverage Hygiene: in progress. Exclude tests
-  from Codacy coverage reports and produce a Rust/Go file-by-file Codacy
-  complexity and duplication classification.
 
 ## Pending
 
@@ -46,6 +43,13 @@ Last updated: 2026-06-07
 
 ## Recently Closed Or Completed
 
+- SOW-0096 - Codacy Metrics And Coverage Hygiene: completed. Go and Rust
+  coverage reports now remove test/test-harness paths before Codacy upload;
+  Python and Node.js coverage were verified source-scoped. The Rust/Go
+  file-by-file Codacy metrics audit is committed, GitHub code scanning has zero
+  open alerts on final implementation commit `7e3d3e5d`, Codacy reports
+  `issuesCount = 0`, coverage `73%`, complexity `46%`, and duplication `30%`.
+  Remaining production metric debt is tracked by SOW-0097 and SOW-0098.
 - SOW-0084 - Code Scanning And Codacy Gate: completed after regression repair.
   GitHub CodeQL alert `3341` is closed on head `1d7006ae`; GitHub code
   scanning has zero open alerts; Codacy Cloud reports `issuesCount = 0` and

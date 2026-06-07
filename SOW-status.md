@@ -8,7 +8,6 @@ is `.agents/sow/SOW-status.md`.
 ## Current
 
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
-- `SOW-0096-20260607-codacy-metrics-and-coverage-hygiene.md` - in progress. Exclude tests from Codacy coverage reports and produce a Rust/Go file-by-file Codacy complexity and duplication classification.
 
 ## Pending
 
@@ -24,6 +23,7 @@ is `.agents/sow/SOW-status.md`.
 
 ## Done
 
+- `SOW-0096-20260607-codacy-metrics-and-coverage-hygiene.md` - completed. Go and Rust coverage uploads now exclude tests and harnesses, the Rust/Go Codacy metrics audit is committed, GitHub code scanning has zero open alerts on final implementation commit `7e3d3e5d`, Codacy reports `issuesCount = 0`, coverage `73%`, complexity `46%`, and duplication `30%`; remaining production metric debt is tracked by SOW-0097 and SOW-0098.
 - `SOW-0084-20260602-code-scanning-and-codacy-gate.md` - completed after regression repair. GitHub CodeQL alert `3341` is closed on head `1d7006ae`; GitHub code scanning has zero open alerts; Codacy Cloud reports `issuesCount = 0` and `codacy issues` returns zero issues on the same head.
 - `SOW-0095-20260607-go-explorer-netdata-parity.md`
 - `SOW-0075-20260601-vm-historical-systemd-validation.md`
