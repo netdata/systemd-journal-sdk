@@ -459,6 +459,28 @@ Tests or equivalent validation:
       passed with no threshold violations.
     - `awk 'length($0)>159 {print FILENAME ":" FNR ":" length($0)}' tests/code_scanning/summarize_codacy_file_metrics.py`:
       produced no output.
+- Third remote scanner repair validation:
+  - Commit `f6405839696526b568e3a35377a5fba7fc9e9ef6` pushed to `master`.
+  - GitHub Actions on that commit: `Coverage`, `CodeQL`, and `Codacy SARIF`
+    passed.
+  - Codacy analyzed commit `f6405839696526b568e3a35377a5fba7fc9e9ef6` and
+    reported `issuesCount = 1`: `write_markdown` had `103` NLOC against the
+    `100` NLOC threshold.
+  - GitHub code scanning still reported one CodeQL
+    `py/clear-text-storage-sensitive-data` alert because the suppression comment
+    was not placed directly before the write call.
+  - Repair: split the markdown writer into smaller append/write helpers, placed
+    the CodeQL suppression immediately before the deliberate sanitized report
+    write, and added a unit smoke test that executes `write_markdown()`.
+  - Local validation:
+    - `python3 -m pytest tests/code_scanning/test_summarize_findings.py`: `14`
+      tests passed.
+    - `python3 -m py_compile tests/code_scanning/summarize_codacy_file_metrics.py tests/code_scanning/test_summarize_findings.py`:
+      passed.
+    - `lizard -C 12 tests/code_scanning/summarize_codacy_file_metrics.py tests/code_scanning/test_summarize_findings.py`:
+      passed with no threshold violations.
+    - `awk 'length($0)>159 {print FILENAME ":" FNR ":" length($0)}' tests/code_scanning/summarize_codacy_file_metrics.py tests/code_scanning/test_summarize_findings.py`:
+      produced no output.
 
 Real-use evidence:
 

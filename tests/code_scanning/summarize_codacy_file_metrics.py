@@ -147,20 +147,12 @@ def source_field(source: dict[str, Any], name: str) -> str:
     return value if isinstance(value, str) else "unknown"
 
 
-def write_markdown(path: Path, source: dict[str, str], rows: list[dict[str, Any]]) -> None:
-    summary = build_summary(rows)
-    top_complexity = sorted(rows, key=lambda row: row["codacy_complexity"], reverse=True)[:20]
-    top_duplication = sorted(rows, key=lambda row: row["duplication"], reverse=True)[:20]
+def markdown_preamble(source: dict[str, str], summary: dict[str, Any]) -> list[str]:
     coverage_note = (
         "- Coverage values are Codacy file metrics at fetch time; coverage-report exclusions are "
         "validated separately by the coverage scripts and remote Codacy run."
     )
-    file_table_header = (
-        "| Path | Surface | Grade | Complexity | Max CCN | Duplication | Clones | "
-        "Coverage | LOC | Complexity Classification | Duplication Classification |"
-    )
-
-    lines = [
+    return [
         "# Codacy Rust/Go Metrics Audit",
         "",
         "## Scope",
@@ -199,12 +191,16 @@ def write_markdown(path: Path, source: dict[str, str], rows: list[dict[str, Any]
         "|---|---:|---:|---:|---:|---:|",
     ]
 
+
+def append_surface_summary(lines: list[str], summary: dict[str, Any]) -> None:
     for surface, values in sorted(summary["by_surface"].items()):
         lines.append(
             f"| `{surface}` | {values['files']} | {values['complex_files']} | "
             f"{values['duplicated_files']} | {values['complexity_sum']} | {values['duplication_sum']} |"
         )
 
+
+def append_top_complexity(lines: list[str], rows: list[dict[str, Any]]) -> None:
     lines.extend(
         [
             "",
@@ -214,13 +210,15 @@ def write_markdown(path: Path, source: dict[str, str], rows: list[dict[str, Any]
             "|---|---|---:|---:|---:|---:|---|",
         ]
     )
-    for row in top_complexity:
+    for row in rows:
         lines.append(
             f"| `{row['path']}` | `{row['surface']}` | {row['codacy_complexity']} | "
             f"{row['local_max_ccn']} | {row['duplication']} | {as_display(row['coverage'])} | "
             f"{row['complexity_classification']} |"
         )
 
+
+def append_top_duplication(lines: list[str], rows: list[dict[str, Any]]) -> None:
     lines.extend(
         [
             "",
@@ -230,13 +228,19 @@ def write_markdown(path: Path, source: dict[str, str], rows: list[dict[str, Any]
             "|---|---|---:|---:|---:|---:|---|",
         ]
     )
-    for row in top_duplication:
+    for row in rows:
         lines.append(
             f"| `{row['path']}` | `{row['surface']}` | {row['duplication']} | "
             f"{row['clones']} | {row['codacy_complexity']} | {as_display(row['coverage'])} | "
             f"{row['duplication_classification']} |"
         )
 
+
+def append_file_by_file(lines: list[str], rows: list[dict[str, Any]]) -> None:
+    file_table_header = (
+        "| Path | Surface | Grade | Complexity | Max CCN | Duplication | Clones | "
+        "Coverage | LOC | Complexity Classification | Duplication Classification |"
+    )
     lines.extend(
         [
             "",
@@ -254,10 +258,28 @@ def write_markdown(path: Path, source: dict[str, str], rows: list[dict[str, Any]
             f"{row['complexity_classification']} | {row['duplication_classification']} |"
         )
 
+
+def write_report_file(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    # codeql[py/clear-text-storage-sensitive-data]
     # Report rows are sanitized file paths and aggregate metrics only.
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # codeql[py/clear-text-storage-sensitive-data]
+    path.write_text(text, encoding="utf-8")
+
+
+def write_markdown(path: Path, source: dict[str, str], rows: list[dict[str, Any]]) -> None:
+    summary = build_summary(rows)
+    lines = markdown_preamble(source, summary)
+    append_surface_summary(lines, summary)
+    append_top_complexity(
+        lines,
+        sorted(rows, key=lambda row: row["codacy_complexity"], reverse=True)[:20],
+    )
+    append_top_duplication(
+        lines,
+        sorted(rows, key=lambda row: row["duplication"], reverse=True)[:20],
+    )
+    append_file_by_file(lines, sorted(rows, key=lambda item: item["path"]))
+    write_report_file(path, "\n".join(lines) + "\n")
 
 
 def main() -> int:
