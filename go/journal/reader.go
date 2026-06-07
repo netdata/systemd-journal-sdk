@@ -170,6 +170,10 @@ func OpenFile(path string) (*Reader, error) {
 }
 
 func OpenFileWithOptions(path string, opts ReaderOptions) (*Reader, error) {
+	return openFileWithOptions(path, opts, true)
+}
+
+func openFileWithOptions(path string, opts ReaderOptions, loadEntries bool) (*Reader, error) {
 	opts = opts.normalized()
 	f, cleanupPath, err := openJournalFile(path)
 	if err != nil {
@@ -215,9 +219,11 @@ func OpenFileWithOptions(path string, opts ReaderOptions) (*Reader, error) {
 		r.fileSize = mapping.size
 	}
 
-	if err := r.loadEntryArray(); err != nil {
-		_ = r.Close()
-		return nil, err
+	if loadEntries {
+		if err := r.loadEntryArray(); err != nil {
+			_ = r.Close()
+			return nil, err
+		}
 	}
 
 	return r, nil

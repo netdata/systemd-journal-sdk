@@ -25,6 +25,48 @@ func TestNetdataFunctionInfoResponse(t *testing.T) {
 	}
 }
 
+func TestNetdataCollectBootFirstRealtimeUsesBootIndex(t *testing.T) {
+	bootA := UUID{0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf}
+	bootB := UUID{0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf}
+	path := filepath.Join(t.TempDir(), "boots.journal")
+	w, err := Create(path, Options{BootID: bootA})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	rows := []struct {
+		boot     UUID
+		realtime uint64
+		message  string
+	}{
+		{boot: bootA, realtime: 100, message: "boot-a-early"},
+		{boot: bootB, realtime: 200, message: "boot-b"},
+		{boot: bootA, realtime: 300, message: "boot-a-late"},
+	}
+	for _, row := range rows {
+		err := w.Append([]Field{
+			StringField("MESSAGE", row.message),
+			StringField("_BOOT_ID", row.boot.String()),
+		}, EntryOptions{RealtimeUsec: row.realtime, RealtimeUsecSet: true, MonotonicUsec: row.realtime, MonotonicUsecSet: true, BootID: row.boot})
+		if err != nil {
+			t.Fatalf("Append(%s) error = %v", row.message, err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	got := collectBootFirstRealtime([]string{path}, DefaultReaderOptions(), map[string]struct{}{
+		bootA.String(): {},
+		bootB.String(): {},
+	})
+	if got[bootA.String()] != 100 {
+		t.Fatalf("boot A first realtime = %d, want 100", got[bootA.String()])
+	}
+	if got[bootB.String()] != 200 {
+		t.Fatalf("boot B first realtime = %d, want 200", got[bootB.String()])
+	}
+}
+
 func TestNetdataFunctionQueryFiltersFacetsHistogramAndRows(t *testing.T) {
 	base := uint64(1_700_000_000_000_000)
 	path := createExplorerRawJournal(t, []explorerTestEntry{

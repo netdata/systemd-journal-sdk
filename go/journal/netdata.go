@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"container/heap"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -626,12 +627,50 @@ type netdataPageCounters struct {
 	After   uint64
 }
 
+type netdataPageHeap struct {
+	Values []uint64
+	Max    bool
+}
+
+func (h netdataPageHeap) Len() int {
+	return len(h.Values)
+}
+
+func (h netdataPageHeap) Less(i, j int) bool {
+	if h.Max {
+		return h.Values[i] > h.Values[j]
+	}
+	return h.Values[i] < h.Values[j]
+}
+
+func (h netdataPageHeap) Swap(i, j int) {
+	h.Values[i], h.Values[j] = h.Values[j], h.Values[i]
+}
+
+func (h *netdataPageHeap) Push(value any) {
+	h.Values = append(h.Values, value.(uint64))
+}
+
+func (h *netdataPageHeap) Pop() any {
+	old := h.Values
+	value := old[len(old)-1]
+	h.Values = old[:len(old)-1]
+	return value
+}
+
+func (h netdataPageHeap) Peek() uint64 {
+	if len(h.Values) == 0 {
+		return 0
+	}
+	return h.Values[0]
+}
+
 type netdataPageWindow struct {
 	Direction          Direction
 	AnchorStartUsec    *uint64
 	AnchorStopUsec     *uint64
 	Limit              int
-	Retained           []uint64
+	Retained           netdataPageHeap
 	OldestRetainedUsec *uint64
 	NewestRetainedUsec *uint64
 	Matched            uint64
@@ -650,6 +689,7 @@ func newNetdataPageWindow(request netdataRequest) *netdataPageWindow {
 		Direction:       request.Direction,
 		AnchorStartUsec: anchor,
 		Limit:           request.Limit,
+		Retained:        netdataPageHeap{Max: request.Direction == DirectionForward},
 	}
 }
 
@@ -657,7 +697,7 @@ func (w *netdataPageWindow) candidateToKeep(realtimeUsec uint64) bool {
 	if w.Limit == 0 || !w.entryWithinAnchorReadonly(realtimeUsec) {
 		return false
 	}
-	if len(w.Retained) < w.Limit {
+	if w.Retained.Len() < w.Limit {
 		return true
 	}
 	return w.OldestRetainedUsec != nil && w.NewestRetainedUsec != nil &&
@@ -669,26 +709,28 @@ func (w *netdataPageWindow) observe(realtimeUsec uint64) {
 		return
 	}
 	w.Matched++
-	if len(w.Retained) < w.Limit {
-		w.Retained = append(w.Retained, realtimeUsec)
+	if w.Retained.Len() < w.Limit {
+		heap.Push(&w.Retained, realtimeUsec)
 		w.addRetainedBound(realtimeUsec)
 		return
 	}
 	switch w.Direction {
 	case DirectionBackward:
-		oldestIndex, oldest := minIndexUint64(w.Retained)
+		oldest := w.Retained.Peek()
 		if realtimeUsec < oldest {
 			w.SkipsAfter++
 			return
 		}
-		w.Retained[oldestIndex] = realtimeUsec
+		heap.Pop(&w.Retained)
+		heap.Push(&w.Retained, realtimeUsec)
 	case DirectionForward:
-		newestIndex, newest := maxIndexUint64(w.Retained)
+		newest := w.Retained.Peek()
 		if realtimeUsec > newest {
 			w.SkipsBefore++
 			return
 		}
-		w.Retained[newestIndex] = realtimeUsec
+		heap.Pop(&w.Retained)
+		heap.Push(&w.Retained, realtimeUsec)
 	}
 	w.refreshRetainedBounds()
 	w.Shifts++
@@ -706,14 +748,14 @@ func (w *netdataPageWindow) addRetainedBound(realtimeUsec uint64) {
 }
 
 func (w *netdataPageWindow) refreshRetainedBounds() {
-	if len(w.Retained) == 0 {
+	if w.Retained.Len() == 0 {
 		w.OldestRetainedUsec = nil
 		w.NewestRetainedUsec = nil
 		return
 	}
-	oldest := w.Retained[0]
-	newest := w.Retained[0]
-	for _, value := range w.Retained[1:] {
+	oldest := w.Retained.Values[0]
+	newest := w.Retained.Values[0]
+	for _, value := range w.Retained.Values[1:] {
 		if value < oldest {
 			oldest = value
 		}
@@ -778,15 +820,15 @@ func (w *netdataPageWindow) counters() netdataPageCounters {
 }
 
 func (w *netdataPageWindow) canStopDeltaFile(realtimeUsec, slackUsec uint64) bool {
-	if w.Limit == 0 || len(w.Retained) < w.Limit {
+	if w.Limit == 0 || w.Retained.Len() < w.Limit {
 		return false
 	}
 	switch w.Direction {
 	case DirectionBackward:
-		_, oldest := minIndexUint64(w.Retained)
+		oldest := w.Retained.Peek()
 		return realtimeUsec < saturatingSub(oldest, slackUsec)
 	case DirectionForward:
-		_, newest := maxIndexUint64(w.Retained)
+		newest := w.Retained.Peek()
 		return realtimeUsec > saturatingAdd(newest, slackUsec)
 	default:
 		return false
@@ -1040,7 +1082,7 @@ func (c *netdataCombinedResult) addZeroCountFacetValues(vocabulary map[string]ma
 
 func (c *netdataCombinedResult) addZeroCountFacetValuesFromFiles(fields [][]byte, readerOptions ReaderOptions) {
 	for _, path := range c.MatchedPaths {
-		reader, err := OpenFileWithOptions(path, readerOptions)
+		reader, err := openFileWithOptions(path, readerOptions, false)
 		if err != nil {
 			continue
 		}
@@ -1840,7 +1882,7 @@ func journalFileOrderInfo(path string, readerOptions ReaderOptions, metadata *Ne
 		FileLastModifiedUsec:       fileLastModified,
 		JournalVsRealtimeDeltaUsec: realtimeDelta,
 	}
-	reader, err := OpenFileWithOptions(path, readerOptions)
+	reader, err := openFileWithOptions(path, readerOptions, false)
 	if err != nil {
 		return info
 	}
@@ -2051,35 +2093,34 @@ func collectBootFirstRealtime(paths []string, readerOptions ReaderOptions, neede
 	if len(neededBootIDs) == 0 {
 		return out
 	}
+	bootField := []byte("_BOOT_ID")
 	for _, path := range paths {
-		reader, err := OpenFileWithOptions(path, readerOptions)
+		reader, err := openFileWithOptions(path, readerOptions, false)
 		if err != nil {
 			continue
 		}
-		bootIDs, err := reader.QueryUnique("_BOOT_ID")
-		if err != nil {
-			_ = reader.Close()
-			continue
-		}
-		for _, bootID := range bootIDs {
+		_ = reader.visitFieldDataObjects(bootField, func(_ uint64, header dataHeader, payload []byte) error {
+			field, bootID, ok := splitRawPayload(payload)
+			if !ok || !bytes.Equal(field, bootField) {
+				return nil
+			}
 			key := string(bootID)
 			if _, ok := neededBootIDs[key]; !ok {
-				continue
+				return nil
 			}
-			reader.FlushMatches()
-			reader.AddMatch(payloadFromParts([]byte("_BOOT_ID"), bootID))
-			if err := reader.SeekHead(); err != nil {
-				continue
+			entryOffset, ok, err := reader.firstDataEntryOffset(header)
+			if err != nil || !ok {
+				return err
 			}
-			if ok, err := reader.Step(); err == nil && ok {
-				if realtime, err := reader.GetRealtimeUsec(); err == nil {
-					if existing, ok := out[key]; !ok || realtime < existing {
-						out[key] = realtime
-					}
-				}
+			entryHeader, err := reader.readEntryHeaderAt(entryOffset)
+			if err != nil {
+				return err
 			}
-		}
-		reader.FlushMatches()
+			if existing, ok := out[key]; !ok || entryHeader.realtime < existing {
+				out[key] = entryHeader.realtime
+			}
+			return nil
+		})
 		_ = reader.Close()
 	}
 	return out
@@ -3526,36 +3567,6 @@ func anyToInt64OK(value any) (int64, bool) {
 		}
 	}
 	return 0, false
-}
-
-func minIndexUint64(values []uint64) (int, uint64) {
-	if len(values) == 0 {
-		return -1, 0
-	}
-	index := 0
-	value := values[0]
-	for i := 1; i < len(values); i++ {
-		if values[i] < value {
-			index = i
-			value = values[i]
-		}
-	}
-	return index, value
-}
-
-func maxIndexUint64(values []uint64) (int, uint64) {
-	if len(values) == 0 {
-		return -1, 0
-	}
-	index := 0
-	value := values[0]
-	for i := 1; i < len(values); i++ {
-		if values[i] > value {
-			index = i
-			value = values[i]
-		}
-	}
-	return index, value
 }
 
 func saturatingMul(a, b uint64) uint64 {

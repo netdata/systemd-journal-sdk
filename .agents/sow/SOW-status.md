@@ -14,8 +14,10 @@ Last updated: 2026-06-07
   implemented, locally validated, Rust/Go smoke-parity checked, and reviewed
   `PRODUCTION GRADE` by the approved reviewer pool. Go Netdata function API
   and wrapper are implemented and locally validated with 10/10
-  Go-wrapper-vs-Rust-wrapper Netdata function comparator cases passing;
-  full-SOW reviewer and benchmark/profile gates remain pending.
+  Go-wrapper-vs-Rust-wrapper Netdata function comparator cases passing. The
+  large SOW-0093 `/var/log/journal` request passes 3/3 Go-vs-Rust content
+  comparisons after profiling fixes, with Go averaging 3.534s and Rust
+  averaging 2.929s; the full-SOW reviewer gate remains pending.
 
 ## Pending
 

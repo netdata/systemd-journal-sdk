@@ -5,8 +5,8 @@
 Status: in-progress
 
 Sub-state: Go Explorer API chunk implemented and reviewed; Go Netdata function
-API and wrapper implemented and locally validated; full-SOW reviewer and
-benchmark/profile gates pending.
+API and wrapper implemented, locally validated, benchmarked, and profiled;
+full-SOW reviewer gate pending.
 
 ## Requirements
 
@@ -481,6 +481,52 @@ Failure handling:
 - Updated `go/API.md` with the Go Explorer and Netdata function API contract,
   including stdin request handling for privileged test wrappers and
   cancellation/timeout status behavior.
+- Found a large-query Go performance regression after comparing the Go wrapper
+  against the Rust wrapper on the real `/var/log/journal` window request from
+  SOW-0093. The same request selects 200 files and 5,341,590 matched rows with
+  131,362,149 DATA references. Initial Go behavior either made no visible
+  progress in 30 seconds or completed the main scan but timed out during
+  post-processing.
+- Profiled the Go wrapper and found the largest avoidable cost was opening
+  files through the full reader path in metadata and post-processing helpers.
+  The full path loaded global ENTRY arrays even when only header or FIELD/DATA
+  index information was needed.
+- Fixed the Go wrapper hot path by adding an internal header/index-only reader
+  open path, using it for file-order metadata and zero-count facet vocabulary
+  collection, replacing `_BOOT_ID` first-realtime discovery with an indexed
+  FIELD/DATA walk, compacting the Explorer DATA-offset classification cache,
+  using a heap for the retained page window, delaying unset facet accounting to
+  result finalization, and hoisting FTS detection out of per-DATA loops.
+- Added focused regression tests for header/index-only open and indexed boot
+  first-realtime discovery:
+  `TestReaderHeaderOnlyOpenSkipsEntryArrayAndKeepsIndexedUnique` and
+  `TestNetdataCollectBootFirstRealtimeUsesBootIndex`.
+- Local final validation after the performance fixes passed:
+  `gofmt -w go/journal/explorer.go go/journal/netdata.go go/journal/netdata_test.go go/journal/reader.go go/journal/reader_test.go`,
+  `cd go && go test ./...`,
+  `cd rust && cargo test -q -p journal netdata`, and `git diff --check`.
+- Wrapper build validation after the performance fixes passed:
+  `cd go && go build -o ../.local/sow-0095/go-netdata-function-wrapper-release ./internal/testcmd/netdata_function_wrapper`
+  and `cd rust && cargo build -q -p netdata_function_wrapper --release`.
+- Final committed-fixture comparator validation after the performance fixes
+  passed 10/10 SDK-first Go-wrapper vs Rust-wrapper request fixtures with
+  stable-content parity. Evidence reports are under
+  `.local/sow-0095/go-rust-comparator-final/`.
+- Final large-query comparator benchmark after the performance fixes passed
+  3/3 SDK-first Go-wrapper vs Rust-wrapper repetitions with stable-content
+  parity on the SOW-0093 `/var/log/journal` request. Measured wall-clock
+  seconds:
+  run 1 Go `3.488s`, Rust `2.921s`;
+  run 2 Go `3.624s`, Rust `2.942s`;
+  run 3 Go `3.490s`, Rust `2.924s`;
+  average Go `3.534s`, Rust `2.929s`, so Go is `1.21x` slower than Rust on
+  this query after the fixes. Evidence:
+  `.local/sow-0095/performance/go-vs-rust-default-facets-4g-final-3rep.json`.
+- Post-fix profile evidence shows remaining Go cost is in the expected
+  Explorer scan path, not in accidental ENTRY-array loading:
+  `scanExplorerCombined`, `handleRowValueClass`, `offsetClassCache.lookup`,
+  `readEntryDataOffsetsAt`, and offset-cache insertion/growth. Evidence:
+  `.local/sow-0095/performance/go-perf-after-fts-hoist.data`.
 
 ## Validation
 
@@ -504,8 +550,8 @@ Acceptance criteria evidence:
     `go/internal/testcmd/netdata_function_wrapper/main.go`.
   - The wrapper produces stable-content parity with the Rust wrapper for the
     committed 10-request Netdata function comparator matrix.
-- Full SOW evidence remains pending for reviewer rerun, benchmark/profile
-  comparison, specs finalization, and close gates.
+- Full SOW evidence remains pending for the final reviewer rerun and close
+  gates.
 
 Tests or equivalent validation:
 
@@ -520,8 +566,7 @@ Tests or equivalent validation:
   - `cd rust && cargo build -q -p netdata_function_wrapper` passed.
   - `tests/netdata_function/run_function_compare.py` passed 10/10 SDK-first
     Go-wrapper vs Rust-wrapper request fixtures with `ALL_OK True`.
-- Full SOW tests remain pending for reviewer rerun and benchmark/profile
-  comparison.
+- Full SOW tests remain pending for the final reviewer rerun and close gates.
 
 Real-use evidence:
 
@@ -535,6 +580,10 @@ Real-use evidence:
   `data_payloads_loaded=1114`, `data_cache_hits=8317`,
   `data_cache_misses=1114`, `payloads_decompressed=0`, and
   `returned_row_expansions=5`.
+- The Go and Rust Netdata function wrappers now also match on the larger real
+  `/var/log/journal` request from SOW-0093. The final three-repetition run
+  showed stable-content parity on every repetition and average wall time of
+  Go `3.534s` versus Rust `2.929s`.
 
 Reviewer findings:
 

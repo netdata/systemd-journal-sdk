@@ -1051,6 +1051,26 @@ func (r *Reader) readDataPayloadWithHeader(offset uint64, header dataHeader) ([]
 	return decompressDataPayload(header.object.flag, payload)
 }
 
+func (r *Reader) firstDataEntryOffset(header dataHeader) (uint64, bool, error) {
+	if header.nEntries == 0 {
+		return 0, false, nil
+	}
+	if header.entryOffset != 0 {
+		return header.entryOffset, true, nil
+	}
+	if header.entryArrayOffset == 0 {
+		return 0, false, nil
+	}
+	_, offsets, _, err := r.readEntryArrayChunk(header.entryArrayOffset, 1)
+	if err != nil {
+		return 0, false, err
+	}
+	if len(offsets) == 0 {
+		return 0, false, nil
+	}
+	return offsets[0], true, nil
+}
+
 func (r *Reader) visitDataEntryOffsets(header dataHeader, visit func(uint64) error) error {
 	if header.nEntries == 0 {
 		return nil
@@ -1238,10 +1258,42 @@ type offsetClass struct {
 	valueIndex int
 }
 
+const (
+	offsetClassIrrelevantRaw = 1
+	offsetClassFtsMatchRaw   = 2
+	offsetClassFtsNegRaw     = 3
+	offsetClassValueBase     = 4
+)
+
+func (c offsetClass) raw() int {
+	switch c.kind {
+	case offsetClassFtsMatch:
+		return offsetClassFtsMatchRaw
+	case offsetClassFtsNegative:
+		return offsetClassFtsNegRaw
+	case offsetClassValue:
+		return offsetClassValueBase + c.valueIndex
+	default:
+		return offsetClassIrrelevantRaw
+	}
+}
+
+func offsetClassFromRaw(raw int) offsetClass {
+	switch raw {
+	case offsetClassIrrelevantRaw:
+		return offsetClass{kind: offsetClassIrrelevant}
+	case offsetClassFtsMatchRaw:
+		return offsetClass{kind: offsetClassFtsMatch}
+	case offsetClassFtsNegRaw:
+		return offsetClass{kind: offsetClassFtsNegative}
+	default:
+		return offsetClass{kind: offsetClassValue, valueIndex: raw - offsetClassValueBase}
+	}
+}
+
 type offsetClassSlot struct {
-	offset uint64
-	class  offsetClass
-	used   bool
+	offset   uint64
+	classRaw int
 }
 
 type offsetClassCache struct {
@@ -1261,11 +1313,11 @@ func (c *offsetClassCache) lookup(offset uint64) (offsetClass, bool) {
 	index := offsetSlot(offset) & mask
 	for range c.slots {
 		slot := c.slots[index]
-		if !slot.used {
+		if slot.offset == 0 {
 			return offsetClass{}, false
 		}
 		if slot.offset == offset {
-			return slot.class, true
+			return offsetClassFromRaw(slot.classRaw), true
 		}
 		index = (index + 1) & mask
 	}
@@ -1282,7 +1334,7 @@ func (c *offsetClassCache) insert(offset uint64, class offsetClass) {
 	if (c.len+1)*4 >= len(c.slots)*3 {
 		c.grow()
 	}
-	c.insertRaw(offset, class)
+	c.insertRaw(offset, class.raw())
 }
 
 func (c *offsetClassCache) grow() {
@@ -1290,23 +1342,23 @@ func (c *offsetClassCache) grow() {
 	c.slots = make([]offsetClassSlot, maxInt(len(old)*2, 256))
 	c.len = 0
 	for _, slot := range old {
-		if slot.used {
-			c.insertRaw(slot.offset, slot.class)
+		if slot.offset != 0 {
+			c.insertRaw(slot.offset, slot.classRaw)
 		}
 	}
 }
 
-func (c *offsetClassCache) insertRaw(offset uint64, class offsetClass) {
+func (c *offsetClassCache) insertRaw(offset uint64, classRaw int) {
 	mask := len(c.slots) - 1
 	index := offsetSlot(offset) & mask
 	for {
-		if !c.slots[index].used {
-			c.slots[index] = offsetClassSlot{offset: offset, class: class, used: true}
+		if c.slots[index].offset == 0 {
+			c.slots[index] = offsetClassSlot{offset: offset, classRaw: classRaw}
 			c.len++
 			return
 		}
 		if c.slots[index].offset == offset {
-			c.slots[index].class = class
+			c.slots[index].classRaw = classRaw
 			return
 		}
 		index = (index + 1) & mask
@@ -1326,7 +1378,10 @@ type explorerAccumulator struct {
 	fields                    [][]byte
 	flags                     []uint8
 	lastSeenRowIDs            []uint64
+	fieldSeenRows             []uint64
 	unsetCounts               []uint64
+	facetRowsMatched          uint64
+	rowPublicFieldIndices     []int
 	valuesByField             [][]int
 	valueCounts               []uint64
 	valueFieldIndices         []int
@@ -1410,6 +1465,7 @@ func (a *explorerAccumulator) addField(field []byte, flags uint8) {
 	a.fields = append(a.fields, cloneBytes(field))
 	a.flags = append(a.flags, flags)
 	a.lastSeenRowIDs = append(a.lastSeenRowIDs, 0)
+	a.fieldSeenRows = append(a.fieldSeenRows, 0)
 	a.unsetCounts = append(a.unsetCounts, 0)
 	a.valuesByField = append(a.valuesByField, nil)
 	if flags&facetHistogram != 0 {
@@ -1469,13 +1525,11 @@ func (a *explorerAccumulator) applyValue(valueIndex int, realtimeUsec *uint64, s
 }
 
 func (a *explorerAccumulator) finishFacetRow(rowID uint64, stats *ExplorerStats) {
-	for fieldIndex := range a.fields {
-		if a.flags[fieldIndex]&facetPublic == 0 {
-			continue
-		}
-		if a.lastSeenRowIDs[fieldIndex] != rowID {
-			a.unsetCounts[fieldIndex]++
-			stats.FacetUpdates++
+	_ = stats
+	a.facetRowsMatched++
+	for _, fieldIndex := range a.rowPublicFieldIndices {
+		if a.lastSeenRowIDs[fieldIndex] == rowID {
+			a.fieldSeenRows[fieldIndex]++
 		}
 	}
 }
@@ -1497,6 +1551,11 @@ func (a *explorerAccumulator) finishFacets(result *ExplorerResult) {
 	for fieldIndex, field := range a.fields {
 		if a.flags[fieldIndex]&facetPublic == 0 {
 			continue
+		}
+		if a.facetRowsMatched > a.fieldSeenRows[fieldIndex] {
+			unset := a.facetRowsMatched - a.fieldSeenRows[fieldIndex]
+			a.unsetCounts[fieldIndex] += unset
+			result.Stats.FacetUpdates += unset
 		}
 		values := make(map[string]uint64)
 		for _, valueIndex := range a.valuesByField[fieldIndex] {
@@ -1538,6 +1597,7 @@ func (r *Reader) scanExplorerMain(query ExplorerQuery, candidates explorerCandid
 	candidates.prepare(query.Direction)
 	var rowID, rowsSeen uint64
 	var deferred []int
+	needsFTS := queryHasFTS(query)
 	for {
 		frame, ok, stop, err := r.nextExplorerRowFrame(query, &candidates, &rowsSeen, result.Stats, control)
 		if err != nil || stop {
@@ -1546,7 +1606,7 @@ func (r *Reader) scanExplorerMain(query ExplorerQuery, candidates explorerCandid
 		if !ok {
 			break
 		}
-		scan, err := r.scanRowDataOrDefault(query, acc, &rowID, &deferred, &result.Stats)
+		scan, err := r.scanRowDataOrDefault(query, acc, &rowID, &deferred, &result.Stats, needsFTS)
 		if err != nil {
 			return err
 		}
@@ -1581,6 +1641,7 @@ func (r *Reader) scanExplorerCombined(query ExplorerQuery, candidates explorerCa
 	var rowID, rowsSeen uint64
 	var deferred []int
 	sampling := samplingStateForCombined(query, result, control)
+	needsFTS := queryHasFTS(query)
 	for {
 		frame, ok, stop, err := r.nextExplorerRowFrame(query, &candidates, &rowsSeen, result.Stats, control)
 		if err != nil || stop {
@@ -1598,7 +1659,7 @@ func (r *Reader) scanExplorerCombined(query ExplorerQuery, candidates explorerCa
 				break
 			}
 		}
-		scan, err := r.scanRowDataOrDefault(query, acc, &rowID, &deferred, &result.Stats)
+		scan, err := r.scanRowDataOrDefault(query, acc, &rowID, &deferred, &result.Stats, needsFTS)
 		if err != nil {
 			return err
 		}
@@ -1645,6 +1706,7 @@ func (r *Reader) scanExplorerFacet(query ExplorerQuery, candidates explorerCandi
 	deferApply := query.AfterRealtimeUsec != nil || query.BeforeRealtimeUsec != nil || queryHasFTS(query)
 	var rowID, rowsSeen uint64
 	var deferred []int
+	needsFTS := queryHasFTS(query)
 	for {
 		frame, ok, stop, err := r.nextExplorerRowFrame(query, &candidates, &rowsSeen, *stats, control)
 		if err != nil || stop {
@@ -1659,7 +1721,7 @@ func (r *Reader) scanExplorerFacet(query ExplorerQuery, candidates explorerCandi
 		if deferApply {
 			apply = scanApplyDeferred
 		}
-		scan, err := r.scanCurrentRow(query, acc, rowID, apply, &deferred, stats)
+		scan, err := r.scanCurrentRow(query, acc, rowID, apply, &deferred, stats, needsFTS)
 		if err != nil {
 			return err
 		}
@@ -1749,14 +1811,14 @@ func (r *Reader) setCurrentEntryOffset(offset uint64, direction Direction) bool 
 	return true
 }
 
-func (r *Reader) scanRowDataOrDefault(query ExplorerQuery, acc *explorerAccumulator, rowID *uint64, deferred *[]int, stats *ExplorerStats) (rowScan, error) {
-	if acc.requiredIdentityCount == 0 && !queryHasFTS(query) {
+func (r *Reader) scanRowDataOrDefault(query ExplorerQuery, acc *explorerAccumulator, rowID *uint64, deferred *[]int, stats *ExplorerStats, needsFTS bool) (rowScan, error) {
+	if acc.requiredIdentityCount == 0 && !needsFTS {
 		stats.RowsExamined++
 		return rowScan{}, nil
 	}
 	*rowID++
 	*deferred = (*deferred)[:0]
-	return r.scanCurrentRow(query, acc, *rowID, scanApplyDeferred, deferred, stats)
+	return r.scanCurrentRow(query, acc, *rowID, scanApplyDeferred, deferred, stats, needsFTS)
 }
 
 type scanApplyMode int
@@ -1766,17 +1828,18 @@ const (
 	scanApplyDeferred
 )
 
-func (r *Reader) scanCurrentRow(query ExplorerQuery, acc *explorerAccumulator, rowID uint64, apply scanApplyMode, deferred *[]int, stats *ExplorerStats) (rowScan, error) {
+func (r *Reader) scanCurrentRow(query ExplorerQuery, acc *explorerAccumulator, rowID uint64, apply scanApplyMode, deferred *[]int, stats *ExplorerStats, needsFTS bool) (rowScan, error) {
 	stats.RowsExamined++
 	var out rowScan
-	state := newRowScanState(query, acc)
+	state := newRowScanState(query, acc, needsFTS)
+	acc.rowPublicFieldIndices = acc.rowPublicFieldIndices[:0]
 	offsets, err := r.currentEntryDataOffsets()
 	if err != nil {
 		return out, err
 	}
 	for _, dataOffset := range offsets {
 		stats.DataRefsSeen++
-		class, err := r.classifyDataForAccumulator(dataOffset, acc, queryHasFTS(query), query, stats)
+		class, err := r.classifyDataForAccumulator(dataOffset, acc, needsFTS, query, stats)
 		if err != nil {
 			return out, err
 		}
@@ -1796,13 +1859,13 @@ type rowScanState struct {
 	fieldsMissingInRow int
 }
 
-func newRowScanState(query ExplorerQuery, acc *explorerAccumulator) rowScanState {
+func newRowScanState(query ExplorerQuery, acc *explorerAccumulator, needsFTS bool) rowScanState {
 	useFirst := query.FieldMode == ExplorerFieldModeFirstValue
 	missing := 0
 	if useFirst {
 		missing = acc.requiredIdentityCount
 	}
-	return rowScanState{useFirstValue: useFirst, needsFTS: queryHasFTS(query), fieldsMissingInRow: missing}
+	return rowScanState{useFirstValue: useFirst, needsFTS: needsFTS, fieldsMissingInRow: missing}
 }
 
 func (s rowScanState) shouldStopRowScan() bool {
@@ -1893,6 +1956,9 @@ func handleRowValueClass(valueIndex int, acc *explorerAccumulator, rowID uint64,
 	}
 	if state.useFirstValue && firstForField {
 		state.fieldsMissingInRow--
+	}
+	if firstForField && acc.flags[fieldIndex]&facetPublic != 0 {
+		acc.rowPublicFieldIndices = append(acc.rowPublicFieldIndices, fieldIndex)
 	}
 	if state.useFirstValue && !firstForField {
 		return

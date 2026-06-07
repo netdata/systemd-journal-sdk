@@ -23,6 +23,36 @@ func TestReaderOpenFile(t *testing.T) {
 	}
 }
 
+func TestReaderHeaderOnlyOpenSkipsEntryArrayAndKeepsIndexedUnique(t *testing.T) {
+	path := createReaderMessageJournal(t, 5, []Field{
+		StringField("MESSAGE", "test-message"),
+		StringField("PRIORITY", "6"),
+	})
+
+	r, err := openFileWithOptions(path, DefaultReaderOptions(), false)
+	if err != nil {
+		t.Fatalf("openFileWithOptions(header-only) error: %v", err)
+	}
+	defer r.Close()
+
+	if r.Header().nEntries != 5 {
+		t.Fatalf("header n_entries = %d, want 5", r.Header().nEntries)
+	}
+	if r.entryOffsets != nil {
+		t.Fatalf("header-only open loaded %d entry offsets", len(r.entryOffsets))
+	}
+	values, err := r.QueryUnique("PRIORITY")
+	if err != nil {
+		t.Fatalf("QueryUnique(PRIORITY) error: %v", err)
+	}
+	if len(values) != 1 || string(values[0]) != "6" {
+		t.Fatalf("QueryUnique(PRIORITY) = %q, want [6]", values)
+	}
+	if r.entryOffsets != nil {
+		t.Fatalf("QueryUnique loaded %d entry offsets", len(r.entryOffsets))
+	}
+}
+
 func createReaderMessageJournal(t *testing.T, entries int, fields []Field) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "test.journal")
