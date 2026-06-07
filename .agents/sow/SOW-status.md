@@ -7,6 +7,13 @@ Last updated: 2026-06-07
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
+- SOW-0095 - Go Explorer And Netdata Function Parity: in-progress. Port the
+  Rust Explorer SDK API, generic Netdata logs function API, and Netdata
+  function wrapper to Go, including the Rust reader/Explorer performance work
+  from SOW-0083 through SOW-0092 where it affects Go. Go Explorer API chunk is
+  implemented, locally validated, Rust/Go smoke-parity checked, and reviewed
+  `PRODUCTION GRADE` by the approved reviewer pool; Go Netdata function API
+  and wrapper remain pending.
 
 ## Pending
 
@@ -38,8 +45,8 @@ Last updated: 2026-06-07
 
 - SOW-0084 - Code Scanning And Codacy Gate: completed after regression repair.
   The scanner gate is clean again on pushed head
-  `e0c87a111f831345f19f9e7ca8f032f008621419`: CodeQL run `27080958132`,
-  Codacy SARIF run `27080958128`, and Coverage run `27080958143` all passed;
+  `f1ca21c63e7acde4816bf2ffd0d828dbad6d4bd4`: CodeQL run `27081339115`,
+  Codacy SARIF run `27081339113`, and Coverage run `27081339119` all passed;
   GitHub code scanning reports zero open alerts; Codacy Cloud reports zero
   issues and zero security findings after exact `TestCode` disposition of the
   audited comparison-harness subprocess findings. Five read-only reviewers

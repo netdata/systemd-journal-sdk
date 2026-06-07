@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -35,20 +36,33 @@ type counts struct {
 	fields   uint64
 	bytes    uint64
 	checksum uint64
+	extra    map[string]interface{}
 }
 
 type benchConfig struct {
-	inputs       []string
-	mode         string
-	surface      string
-	direction    string
-	bounds       string
-	mmapStrategy string
-	windowSize   uint64
-	cpuProfile   string
-	memProfile   string
-	loops        int
-	options      journal.ReaderOptions
+	inputs                    []string
+	mode                      string
+	surface                   string
+	direction                 string
+	bounds                    string
+	mmapStrategy              string
+	windowSize                uint64
+	cpuProfile                string
+	memProfile                string
+	loops                     int
+	options                   journal.ReaderOptions
+	explorerFacets            []string
+	explorerFilters           []string
+	explorerHistogram         string
+	explorerLimit             int
+	explorerFTSPatterns       []string
+	explorerFieldMode         string
+	explorerUseSourceRealtime bool
+	explorerStrategy          string
+	explorerAfterUsec         uint64
+	explorerBeforeUsec        uint64
+	explorerAfterSet          bool
+	explorerBeforeSet         bool
 }
 
 func (c *counts) addRun(other counts) {
@@ -56,6 +70,9 @@ func (c *counts) addRun(other counts) {
 	c.fields += other.fields
 	c.bytes += other.bytes
 	c.checksum = bits.RotateLeft64(c.checksum, 11) ^ other.checksum
+	if other.extra != nil {
+		c.extra = other.extra
+	}
 }
 
 func (c *counts) addPayload(payload []byte) {
@@ -74,6 +91,20 @@ func checksumPayload(checksum uint64, payload []byte) uint64 {
 	if len(payload) > 0 {
 		checksum ^= uint64(payload[0]) << 8
 		checksum ^= uint64(payload[len(payload)-1])
+	}
+	return checksum
+}
+
+func checksumBytes(checksum uint64, payload []byte) uint64 {
+	checksum = bits.RotateLeft64(checksum, 11) ^ uint64(len(payload))
+	for index, value := range payload {
+		if index >= 8 {
+			break
+		}
+		checksum = bits.RotateLeft64(checksum, 3) ^ uint64(value)
+	}
+	if len(payload) > 0 {
+		checksum ^= uint64(payload[len(payload)-1]) << 17
 	}
 	return checksum
 }
@@ -97,6 +128,141 @@ func parseOptions(bounds, mmapStrategy string) (journal.ReaderOptions, error) {
 		return opts, fmt.Errorf("invalid --mmap-strategy: %s", mmapStrategy)
 	}
 	return opts, nil
+}
+
+func parseExplorerFieldMode(value string) (journal.ExplorerFieldMode, error) {
+	switch value {
+	case "all-values":
+		return journal.ExplorerFieldModeAllValues, nil
+	case "first-value":
+		return journal.ExplorerFieldModeFirstValue, nil
+	default:
+		return journal.ExplorerFieldModeFirstValue, fmt.Errorf("invalid --explorer-field-mode: %s", value)
+	}
+}
+
+func parseExplorerStrategy(value string) (journal.ExplorerStrategy, error) {
+	switch value {
+	case "traversal":
+		return journal.ExplorerStrategyTraversal, nil
+	case "index":
+		return journal.ExplorerStrategyIndex, nil
+	case "compare":
+		return journal.ExplorerStrategyCompare, nil
+	default:
+		return journal.ExplorerStrategyTraversal, fmt.Errorf("invalid --explorer-strategy: %s", value)
+	}
+}
+
+func parseExplorerFilters(rawFilters []string) ([]journal.ExplorerFilter, error) {
+	grouped := make(map[string][][]byte)
+	for _, rawFilter := range rawFilters {
+		field, value, ok := strings.Cut(rawFilter, "=")
+		if !ok || field == "" || strings.Contains(field, "=") {
+			return nil, fmt.Errorf("--explorer-filter must be FIELD=VALUE: %s", rawFilter)
+		}
+		grouped[field] = append(grouped[field], []byte(value))
+	}
+	out := make([]journal.ExplorerFilter, 0, len(grouped))
+	for field, values := range grouped {
+		out = append(out, journal.NewExplorerFilter([]byte(field), values...))
+	}
+	return out, nil
+}
+
+func explorerQueryFromConfig(cfg benchConfig) (journal.ExplorerQuery, error) {
+	fieldMode, err := parseExplorerFieldMode(cfg.explorerFieldMode)
+	if err != nil {
+		return journal.ExplorerQuery{}, err
+	}
+	filters, err := parseExplorerFilters(cfg.explorerFilters)
+	if err != nil {
+		return journal.ExplorerQuery{}, err
+	}
+	query := journal.DefaultExplorerQuery()
+	query.Direction = journal.DirectionForward
+	if cfg.direction == "backward" {
+		query.Direction = journal.DirectionBackward
+	}
+	query.Limit = cfg.explorerLimit
+	query.Filters = filters
+	query.FieldMode = fieldMode
+	query.UseSourceRealtime = cfg.explorerUseSourceRealtime
+	for _, field := range cfg.explorerFacets {
+		query.Facets = append(query.Facets, []byte(field))
+	}
+	if cfg.explorerHistogram != "" {
+		query.Histogram = []byte(cfg.explorerHistogram)
+	}
+	for _, pattern := range cfg.explorerFTSPatterns {
+		query = query.WithFTSPattern([]byte(pattern))
+	}
+	if cfg.explorerAfterSet {
+		value := cfg.explorerAfterUsec
+		query.AfterRealtimeUsec = &value
+	}
+	if cfg.explorerBeforeSet {
+		value := cfg.explorerBeforeUsec
+		query.BeforeRealtimeUsec = &value
+	}
+	return query, nil
+}
+
+func facetSummary(facets map[string]map[string]uint64) map[string]interface{} {
+	fields := make([]string, 0, len(facets))
+	for field := range facets {
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+	var valueCount, updates, checksum uint64
+	for _, field := range fields {
+		checksum = checksumBytes(checksum, []byte(field))
+		values := make([]string, 0, len(facets[field]))
+		for value := range facets[field] {
+			values = append(values, value)
+		}
+		sort.Strings(values)
+		valueCount += uint64(len(values))
+		for _, value := range values {
+			count := facets[field][value]
+			checksum = checksumBytes(checksum, []byte(value)) ^ count
+			updates += count
+		}
+	}
+	return map[string]interface{}{
+		"facet_fields":   uint64(len(fields)),
+		"facet_values":   valueCount,
+		"facet_updates":  updates,
+		"facet_checksum": checksum,
+	}
+}
+
+func histogramSummary(histogram *journal.ExplorerHistogram) map[string]interface{} {
+	if histogram == nil {
+		return nil
+	}
+	checksum := checksumBytes(0, histogram.Field)
+	var updates uint64
+	for _, bucket := range histogram.Buckets {
+		checksum ^= bits.RotateLeft64(bucket.StartRealtimeUsec, 13)
+		checksum ^= bits.RotateLeft64(bucket.EndRealtimeUsec, 17)
+		values := make([]string, 0, len(bucket.Values))
+		for value := range bucket.Values {
+			values = append(values, value)
+		}
+		sort.Strings(values)
+		for _, value := range values {
+			count := bucket.Values[value]
+			checksum = checksumBytes(checksum, []byte(value)) ^ count
+			updates += count
+		}
+	}
+	return map[string]interface{}{
+		"field_checksum":     checksumBytes(0, histogram.Field),
+		"buckets":            len(histogram.Buckets),
+		"value_updates":      updates,
+		"histogram_checksum": checksum,
+	}
 }
 
 func processStatusKB() map[string]uint64 {
@@ -335,8 +501,74 @@ func readFacade(surface, mode, direction string, inputs []string, opts journal.R
 	return result, nil
 }
 
+func readExplorerQuery(cfg benchConfig) (counts, error) {
+	if cfg.surface != "file" {
+		return counts{}, fmt.Errorf("explorer-query mode currently requires --surface file")
+	}
+	if len(cfg.inputs) != 1 {
+		return counts{}, fmt.Errorf("explorer-query mode requires exactly one --input")
+	}
+	reader, err := journal.OpenFileWithOptions(cfg.inputs[0], cfg.options)
+	if err != nil {
+		return counts{}, err
+	}
+	defer reader.Close()
+	query, err := explorerQueryFromConfig(cfg)
+	if err != nil {
+		return counts{}, err
+	}
+	strategy, err := parseExplorerStrategy(cfg.explorerStrategy)
+	if err != nil {
+		return counts{}, err
+	}
+	result, err := reader.ExploreWithStrategy(query, strategy)
+	if err != nil {
+		return counts{}, err
+	}
+	logicalRecords := result.Stats.RowsExamined
+	if result.Stats.FacetRowsMatched > logicalRecords {
+		logicalRecords = result.Stats.FacetRowsMatched
+	}
+	if result.Stats.RowsMatched > logicalRecords {
+		logicalRecords = result.Stats.RowsMatched
+	}
+	if result.Stats.HistogramUpdates > logicalRecords {
+		logicalRecords = result.Stats.HistogramUpdates
+	}
+	out := counts{
+		records:  logicalRecords,
+		fields:   result.Stats.DataRefsSeen,
+		checksum: 0,
+		extra:    make(map[string]interface{}),
+	}
+	for _, row := range result.Rows {
+		out.checksum = bits.RotateLeft64(out.checksum, 7) ^ row.RealtimeUsec
+		for _, payload := range row.Payloads {
+			out.bytes += uint64(len(payload))
+			out.checksum = checksumPayload(out.checksum, payload)
+		}
+	}
+	out.extra["facet_summary"] = facetSummary(result.Facets)
+	if summary := histogramSummary(result.Histogram); summary != nil {
+		out.extra["histogram_summary"] = summary
+	}
+	out.extra["explorer_stats"] = result.Stats
+	if result.Comparison != nil {
+		out.extra["explorer_comparison"] = map[string]interface{}{
+			"traversal_duration_ns": uint64(result.Comparison.TraversalDuration),
+			"index_duration_ns":     uint64(result.Comparison.IndexDuration),
+			"traversal_stats":       result.Comparison.TraversalStats,
+			"index_stats":           result.Comparison.IndexStats,
+		}
+	}
+	return out, nil
+}
+
 func parseBenchConfig() (benchConfig, error) {
 	var inputs inputsFlag
+	var explorerFacets inputsFlag
+	var explorerFilters inputsFlag
+	var explorerFTSPatterns inputsFlag
 	mode := flag.String("mode", "sdk-payloads", "")
 	surface := flag.String("surface", "file", "")
 	direction := flag.String("direction", "forward", "")
@@ -346,7 +578,17 @@ func parseBenchConfig() (benchConfig, error) {
 	cpuProfile := flag.String("cpuprofile", "", "")
 	memProfile := flag.String("memprofile", "", "")
 	loops := flag.Int("loops", 1, "")
+	explorerHistogram := flag.String("explorer-histogram", "", "")
+	explorerLimit := flag.Int("explorer-limit", 0, "")
+	explorerFieldMode := flag.String("explorer-field-mode", "first-value", "")
+	explorerUseSourceRealtime := flag.Bool("explorer-use-source-realtime", false, "")
+	explorerStrategy := flag.String("explorer-strategy", "traversal", "")
+	explorerAfterUsec := flag.Uint64("explorer-after-usec", 0, "")
+	explorerBeforeUsec := flag.Uint64("explorer-before-usec", 0, "")
 	flag.Var(&inputs, "input", "")
+	flag.Var(&explorerFacets, "explorer-facet", "")
+	flag.Var(&explorerFilters, "explorer-filter", "")
+	flag.Var(&explorerFTSPatterns, "explorer-fts", "")
 	flag.Parse()
 	if len(inputs) == 0 {
 		return benchConfig{}, errors.New("missing --input")
@@ -362,18 +604,40 @@ func parseBenchConfig() (benchConfig, error) {
 		return benchConfig{}, err
 	}
 	return benchConfig{
-		inputs:       inputs,
-		mode:         *mode,
-		surface:      *surface,
-		direction:    *direction,
-		bounds:       *bounds,
-		mmapStrategy: *mmapStrategy,
-		windowSize:   *windowSize,
-		cpuProfile:   *cpuProfile,
-		memProfile:   *memProfile,
-		loops:        *loops,
-		options:      opts,
+		inputs:                    inputs,
+		mode:                      *mode,
+		surface:                   *surface,
+		direction:                 *direction,
+		bounds:                    *bounds,
+		mmapStrategy:              *mmapStrategy,
+		windowSize:                *windowSize,
+		cpuProfile:                *cpuProfile,
+		memProfile:                *memProfile,
+		loops:                     *loops,
+		options:                   opts,
+		explorerFacets:            explorerFacets,
+		explorerFilters:           explorerFilters,
+		explorerHistogram:         *explorerHistogram,
+		explorerLimit:             *explorerLimit,
+		explorerFTSPatterns:       explorerFTSPatterns,
+		explorerFieldMode:         *explorerFieldMode,
+		explorerUseSourceRealtime: *explorerUseSourceRealtime,
+		explorerStrategy:          *explorerStrategy,
+		explorerAfterUsec:         *explorerAfterUsec,
+		explorerBeforeUsec:        *explorerBeforeUsec,
+		explorerAfterSet:          isFlagSet("explorer-after-usec"),
+		explorerBeforeSet:         isFlagSet("explorer-before-usec"),
 	}, nil
+}
+
+func isFlagSet(name string) bool {
+	found := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+	return found
 }
 
 func main() {
@@ -435,6 +699,8 @@ func readBenchOnce(cfg benchConfig) (counts, error) {
 		return readSDK(cfg.surface, cfg.mode, cfg.direction, cfg.inputs, cfg.options)
 	case "facade-next", "facade-data":
 		return readFacade(cfg.surface, cfg.mode, cfg.direction, cfg.inputs, cfg.options)
+	case "explorer-query":
+		return readExplorerQuery(cfg)
 	default:
 		return counts{}, fmt.Errorf("invalid --mode: %s", cfg.mode)
 	}
@@ -488,8 +754,32 @@ func benchOutput(
 		"process_status_before":  before,
 		"process_status_after":   after,
 		"errors":                 []string{},
+		"explorer": map[string]interface{}{
+			"facets":              cfg.explorerFacets,
+			"filters":             cfg.explorerFilters,
+			"histogram":           cfg.explorerHistogram,
+			"limit":               cfg.explorerLimit,
+			"fts_patterns":        cfg.explorerFTSPatterns,
+			"field_mode":          cfg.explorerFieldMode,
+			"use_source_realtime": cfg.explorerUseSourceRealtime,
+			"strategy":            cfg.explorerStrategy,
+			"after_usec":          optionalUint64(cfg.explorerAfterUsec, cfg.explorerAfterSet),
+			"before_usec":         optionalUint64(cfg.explorerBeforeUsec, cfg.explorerBeforeSet),
+		},
+	}
+	if result.extra == nil {
+		output["extra"] = map[string]interface{}{}
+	} else {
+		output["extra"] = result.extra
 	}
 	return json.Marshal(output)
+}
+
+func optionalUint64(value uint64, ok bool) interface{} {
+	if !ok {
+		return nil
+	}
+	return value
 }
 
 func absoluteInputs(inputs []string) []string {
