@@ -3,7 +3,7 @@
 Last updated: 2026-06-07
 
 This root file is a short convenience index. The canonical detailed SOW ledger
-is `.agents/sow/SOW-status.md`.
+is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
@@ -23,7 +23,7 @@ is `.agents/sow/SOW-status.md`.
 
 ## Done
 
-- `SOW-0096-20260607-codacy-metrics-and-coverage-hygiene.md` - completed. Go and Rust coverage uploads now exclude tests and harnesses, the Rust/Go Codacy metrics audit is committed, GitHub code scanning has zero open alerts on final implementation commit `7e3d3e5d`, Codacy reports `issuesCount = 0`, coverage `73%`, complexity `46%`, and duplication `30%`; remaining production metric debt is tracked by SOW-0097 and SOW-0098.
+- `SOW-0096-20260607-codacy-metrics-and-coverage-hygiene.md` - completed. Go and Rust coverage reports now remove test/test-harness paths before Codacy upload, the Rust/Go Codacy metrics audit is committed, GitHub code scanning has zero open alerts on final implementation commit `7e3d3e5d`, Codacy reports `issuesCount = 0`, coverage `73%`, complexity `46%`, and duplication `30%`; remaining production metric debt is tracked by SOW-0097 and SOW-0098.
 - `SOW-0084-20260602-code-scanning-and-codacy-gate.md` - completed after regression repair. GitHub CodeQL alert `3341` is closed on head `1d7006ae`; GitHub code scanning has zero open alerts; Codacy Cloud reports `issuesCount = 0` and `codacy issues` returns zero issues on the same head.
 - `SOW-0095-20260607-go-explorer-netdata-parity.md`
 - `SOW-0075-20260601-vm-historical-systemd-validation.md`

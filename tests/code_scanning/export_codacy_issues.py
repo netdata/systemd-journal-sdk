@@ -58,7 +58,7 @@ def run_codacy(args: list[str], timeout: int = DEFAULT_CLI_TIMEOUT_SECONDS) -> d
 
 
 def _request_json(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
-    _validate_https_url(url)
+    validate_https_url(url)
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -80,7 +80,7 @@ def _request_json(url: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         ) from error
 
 
-def _validate_https_url(url: str) -> None:
+def validate_https_url(url: str) -> None:
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != "https":
         raise RuntimeError(f"Codacy API URL must use https, got {parsed.scheme or '<empty>'}")

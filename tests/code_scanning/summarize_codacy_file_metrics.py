@@ -87,7 +87,22 @@ def load_lizard_max_ccn(path: Path) -> dict[str, int]:
 
 
 def as_int(value: Any) -> int:
-    return int(value) if isinstance(value, int | float) else 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return 0
+        try:
+            return int(text)
+        except ValueError:
+            try:
+                return int(float(text))
+            except ValueError:
+                return 0
+    return 0
 
 
 def as_display(value: Any) -> str:
@@ -119,7 +134,10 @@ def metric_row(file_metric: dict[str, Any], max_ccn: int) -> dict[str, Any]:
 
 def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     by_surface: dict[str, dict[str, Any]] = {}
-    for surface, group_iter in itertools_groupby_sorted(rows, "surface"):
+    for surface, group_iter in itertools.groupby(
+        sorted(rows, key=lambda row: row["surface"]),
+        key=lambda row: row["surface"],
+    ):
         group = list(group_iter)
         by_surface[surface] = {
             "files": len(group),
@@ -134,12 +152,6 @@ def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "duplicated_files": sum(1 for row in rows if row["duplication"] > 1),
         "by_surface": by_surface,
     }
-
-
-def itertools_groupby_sorted(rows: list[dict[str, Any]], key: str):
-    return itertools.groupby(sorted(rows, key=lambda row: row[key]), key=lambda row: row[key])
-
-
 def source_field(source: dict[str, Any], name: str) -> str:
     value = source.get(name)
     return value if isinstance(value, str) else "unknown"
@@ -262,7 +274,7 @@ def append_file_by_file(lines: list[str], rows: list[dict[str, Any]]) -> None:
             "|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|",
         ]
     )
-    for row in sorted(rows, key=lambda item: item["path"]):
+    for row in rows:
         lines.append(
             f"| `{row['path']}` | `{row['surface']}` | {as_display(row['grade'])} | "
             f"{row['codacy_complexity']} | {row['local_max_ccn']} | {row['duplication']} | "

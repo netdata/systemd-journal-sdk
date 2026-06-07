@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
+from tests.code_scanning.export_codacy_issues import parse_codacy_json, validate_https_url
 from tests.code_scanning.summarize_findings import (
     build_summary,
     findings_from_codacy_issues,
@@ -13,7 +15,6 @@ from tests.code_scanning.summarize_findings import (
     path_prefix,
     tool_from_rule,
 )
-from tests.code_scanning.export_codacy_issues import parse_codacy_json, _validate_https_url
 from tests.code_scanning.write_empty_codacy_sarif import (
     CODACY_TOOL_NAMES,
     build_empty_sarif,
@@ -33,7 +34,7 @@ def test_path_grouping_is_sanitized() -> None:
     assert path_prefix("rust/src/crates/journal-core/src/file.rs") == "rust/src"
 
 
-def test_sarif_summary_uses_rule_and_path_only(tmp_path) -> None:
+def test_sarif_summary_uses_rule_and_path_only(tmp_path: Path) -> None:
     sarif = {
         "version": "2.1.0",
         "runs": [
@@ -94,7 +95,7 @@ def test_empty_codacy_sarif_closeout_has_stale_alert_tools_only() -> None:
     assert "ESLint9" not in CODACY_TOOL_NAMES
 
 
-def test_codacy_issue_summary_handles_cloud_shape(tmp_path) -> None:
+def test_codacy_issue_summary_handles_cloud_shape(tmp_path: Path) -> None:
     export = {
         "data": [
             {
@@ -137,12 +138,12 @@ def test_rule_tool_detection_handles_current_and_historical_eslint() -> None:
 
 
 def test_codacy_api_url_requires_https() -> None:
-    _validate_https_url("https://app.codacy.com/api/v3")
+    validate_https_url("https://app.codacy.com/api/v3")
     with pytest.raises(RuntimeError):
-        _validate_https_url("http://app.codacy.com/api/v3")
+        validate_https_url("http://app.codacy.com/api/v3")
 
 
-def test_codacy_security_summary_handles_findings_shape(tmp_path) -> None:
+def test_codacy_security_summary_handles_findings_shape(tmp_path: Path) -> None:
     export = {
         "data": [
             {
@@ -230,6 +231,26 @@ def test_codacy_file_metric_row_is_sanitized_and_joinable() -> None:
     assert row["local_max_ccn"] == 12
     assert row["duplication"] == 111
     assert "token" not in json.dumps(row).lower()
+
+
+def test_codacy_file_metric_row_accepts_numeric_strings() -> None:
+    row = metric_row(
+        {
+            "path": "go/journal/explorer.go",
+            "gradeLetter": "B",
+            "complexity": "763",
+            "duplication": "111.0",
+            "numberOfClones": "",
+            "coverageWithDecimals": 78.46,
+            "linesOfCode": "not-a-number",
+        },
+        max_ccn=12,
+    )
+
+    assert row["codacy_complexity"] == 763
+    assert row["duplication"] == 111
+    assert row["clones"] == 0
+    assert row["loc"] == 0
 
 
 def test_codacy_file_metrics_markdown_renderer_smoke() -> None:
