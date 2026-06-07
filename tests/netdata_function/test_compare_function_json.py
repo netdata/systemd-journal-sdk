@@ -100,6 +100,33 @@ class CompareFunctionJsonTest(unittest.TestCase):
         self.assertFalse(report["checks"]["rows"])
         self.assertIn("MESSAGE", report["diffs"]["rows"])
 
+    def test_known_plugin_message_corruption_is_reported_not_content(self) -> None:
+        left = function_doc(
+            message="=pkexec /path/to/java --token=redacted _CMDLINE=pkexec /path/to/java"
+        )
+        right = function_doc(
+            message="user: Executing command [USER=root] [COMMAND=/path/to/java]"
+        )
+        left["data"][0][1] = left["data"][0][1].ljust(96, "x")
+        right["data"][0][1] = right["data"][0][1].ljust(96, "y")
+
+        report = compare(left, right)
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["checks"]["rows"])
+        self.assertEqual(
+            report["non_content"]["known_plugin_message_corruption_rows"], [0]
+        )
+
+    def test_similar_message_mismatch_without_plugin_shape_fails(self) -> None:
+        left = function_doc(message="=not the plugin corruption shape")
+        right = function_doc(message="different valid message")
+
+        report = compare(left, right)
+
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["checks"]["rows"])
+
     def test_column_catalog_mismatch_fails(self) -> None:
         report = compare(
             function_doc(),
@@ -114,6 +141,53 @@ class CompareFunctionJsonTest(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertFalse(report["checks"]["facets"])
         self.assertIn("count", report["diffs"]["facets"])
+
+    def test_selected_field_facet_quirk_is_reported_not_content(self) -> None:
+        left = function_doc(priority_count=1)
+        right = function_doc(priority_count=2)
+        request = {
+            "facets": ["PRIORITY", "SYSLOG_IDENTIFIER"],
+            "selections": {"PRIORITY": ["3"]},
+        }
+        left["_request"] = dict(request)
+        right["_request"] = dict(request)
+
+        report = compare(left, right)
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["checks"]["facets"])
+        self.assertEqual(report["non_content"]["selected_field_facet_quirks"], ["PRIORITY"])
+
+    def test_selected_field_facet_quirk_keeps_facet_metadata_as_content(self) -> None:
+        left = function_doc(priority_count=1)
+        right = function_doc(priority_count=2, facet_name="Severity")
+        request = {
+            "facets": ["PRIORITY", "SYSLOG_IDENTIFIER"],
+            "selections": {"PRIORITY": ["3"]},
+        }
+        left["_request"] = dict(request)
+        right["_request"] = dict(request)
+
+        report = compare(left, right)
+
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["checks"]["facets"])
+        self.assertIn("name", report["diffs"]["facets"])
+
+    def test_unselected_facet_count_mismatch_still_fails(self) -> None:
+        left = function_doc(priority_count=1)
+        right = function_doc(priority_count=2)
+        request = {
+            "facets": ["PRIORITY", "SYSLOG_IDENTIFIER"],
+            "selections": {"SYSLOG_IDENTIFIER": ["systemd"]},
+        }
+        left["_request"] = dict(request)
+        right["_request"] = dict(request)
+
+        report = compare(left, right)
+
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["checks"]["facets"])
 
     def test_facet_identity_mismatch_fails(self) -> None:
         report = compare(function_doc(), function_doc(facet_name="Severity"))
@@ -137,6 +211,23 @@ class CompareFunctionJsonTest(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertFalse(report["checks"]["top_level"])
         self.assertIn("status", report["diffs"]["top_level"])
+
+    def test_info_default_window_echo_timestamps_are_volatile(self) -> None:
+        left = {
+            "status": 200,
+            "type": "table",
+            "_request": {"info": True, "after": 100, "before": 200},
+        }
+        right = {
+            "status": 200,
+            "type": "table",
+            "_request": {"info": True, "after": 101, "before": 201},
+        }
+
+        report = compare(left, right)
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["checks"]["top_level"])
 
     def test_evaluated_is_diagnostic_not_content(self) -> None:
         report = compare(function_doc(evaluated=10), function_doc(evaluated=11))

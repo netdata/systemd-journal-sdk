@@ -1,3 +1,4 @@
+use crate::explorer::{ExplorerSamplingState, histogram_bucket_count_for_query};
 use crate::{
     Direction, ExplorerAnchor, ExplorerControl, ExplorerFieldMode, ExplorerFilter,
     ExplorerFtsPattern, ExplorerHistogram, ExplorerProgress, ExplorerQuery, ExplorerResult,
@@ -7,8 +8,8 @@ use crate::{
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value, json};
 use std::cell::RefCell;
-use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::cmp::{Ordering, Reverse};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet, VecDeque};
 #[cfg(unix)]
 use std::ffi::CStr;
 use std::path::{Path, PathBuf};
@@ -373,6 +374,7 @@ where
         if request.info {
             return Ok(self.info_response(request.echo, &paths, &options));
         }
+        let annotation_paths = paths.clone();
 
         let selected =
             select_journal_files_for_request(paths, &request, self.config.reader_options, &options);
@@ -387,18 +389,15 @@ where
         let mut combined = self.explore_files(&selected_files, &request, deadline, &mut options)?;
         combined.skipped_files = combined.skipped_files.saturating_add(collection.skipped);
         combined.file_errors.extend(collection.errors);
-        let paths: Vec<PathBuf> = selected_files
-            .iter()
-            .map(|file| file.path.clone())
-            .collect();
         if combined.cancelled {
-            return Ok(self.query_response(request, paths, combined));
+            return Ok(self.query_response(request, &annotation_paths, combined));
         }
         if !request.data_only {
             combined.add_zero_count_facet_values_from_files(
                 &request.facets,
                 self.config.reader_options,
             );
+            combined.add_zero_count_selected_filter_values(&request);
         }
         if !request.data_only && !combined.partial && !request.filters.is_empty() {
             let mut vocabulary_request = request.clone();
@@ -412,7 +411,7 @@ where
                 self.explore_files(&selected_files, &vocabulary_request, deadline, &mut options)?;
             combined.add_zero_count_facet_values(&vocabulary.facets);
         }
-        Ok(self.query_response(request, paths, combined))
+        Ok(self.query_response(request, &annotation_paths, combined))
     }
 
     pub fn run_directory_request_bytes(&self, directory: &Path, request: &[u8]) -> Result<Value> {
@@ -448,7 +447,11 @@ where
             NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC,
         );
         let mut combined = CombinedResult::default();
+        let page_window = RefCell::new(NetdataPageWindow::for_request(request));
         combined.sampling_enabled = query.sampling.is_some();
+        let mut sampling_state =
+            ExplorerSamplingState::for_query(&query, histogram_bucket_count_for_query(&query));
+        let realtime_adjuster = RefCell::new(NetdataRealtimeAdjuster::new(request.direction));
         let started = Instant::now();
         let total_files = files.len();
         for (file_index, file) in files.iter().enumerate() {
@@ -489,11 +492,14 @@ where
             };
             combined.matched_files = combined.matched_files.saturating_add(1);
             combined.matched_paths.push(path.clone());
-            let query = request.to_explorer_query(
+            let mut query = request.to_explorer_query(
                 files.len() as u64,
                 Some(reader.header()),
                 file.order.journal_vs_realtime_delta_usec,
             );
+            if request.data_only && request.delta {
+                query.stop_when_rows_full = false;
+            }
             if !request.data_only {
                 match reader.enumerate_fields_indexed() {
                     Ok(fields) => combined.add_column_fields(fields),
@@ -522,6 +528,25 @@ where
                 control.set_cancellation_callback(options.cancellation_callback);
                 control.set_progress_interval(options.progress_interval);
                 control.set_progress_callback(Some(&mut explorer_progress));
+                control.set_sampling_state(sampling_state.as_mut());
+                let mut candidate_row =
+                    |realtime_usec| page_window.borrow().candidate_to_keep(realtime_usec);
+                control.set_candidate_row_callback(Some(&mut candidate_row));
+                let mut adjust_realtime =
+                    |realtime_usec| realtime_adjuster.borrow_mut().adjust(realtime_usec);
+                control.set_realtime_adjust_callback(Some(&mut adjust_realtime));
+                let mut matched_row = |realtime_usec, rows_matched| {
+                    let mut page_window = page_window.borrow_mut();
+                    page_window.observe(realtime_usec);
+                    request.data_only
+                        && request.delta
+                        && rows_matched % DATA_ONLY_CHECK_EVERY_ROWS == 0
+                        && page_window.can_stop_delta_file(
+                            realtime_usec,
+                            file.order.journal_vs_realtime_delta_usec,
+                        )
+                };
+                control.set_matched_row_callback(Some(&mut matched_row));
                 let result = reader.explore_with_strategy_cursor_rows_controlled(
                     &query,
                     self.config.explorer_strategy,
@@ -541,7 +566,7 @@ where
                 }
             };
             update_learned_realtime_delta(options, path, &file.order, &result.stats);
-            combined.merge(path, result, query.direction, query.limit)?;
+            combined.merge(path, result, query.direction, request.limit)?;
             emit_netdata_progress(
                 options,
                 NetdataFunctionProgress {
@@ -569,8 +594,22 @@ where
                 }
                 break;
             }
+            if request.data_only
+                && !request.delta
+                && !request.tail
+                && combined.rows.len() >= request.limit
+                && remaining_files_cannot_affect_data_page(
+                    &combined,
+                    request,
+                    files,
+                    file_index + 1,
+                )
+            {
+                break;
+            }
         }
         combined.expand_row_payloads(self.config.reader_options);
+        combined.page_counters = Some(page_window.into_inner().counters());
         Ok(combined)
     }
 
@@ -603,30 +642,44 @@ where
     fn query_response(
         &self,
         request: NetdataRequest,
-        paths: Vec<PathBuf>,
+        annotation_paths: &[PathBuf],
         combined: CombinedResult,
     ) -> Value {
         let not_modified = request.if_modified_since_usec != 0
             && !combined.partial
-            && combined.stats.last_realtime_usec <= request.if_modified_since_usec;
+            && combined.stats.rows_matched == 0;
         if combined.cancelled {
             return netdata_function_error(499, "Request cancelled.");
         }
         if not_modified {
             return netdata_function_error(304, "No new data since the previous call.");
         }
+        let reportable_facet_fields = combined.reportable_facet_fields_bytes(&request.facets);
+        let reportable_facet_field_names = string_fields(&reportable_facet_fields);
         let columns = self.build_columns(
             &request,
+            &reportable_facet_fields,
             &combined.rows,
             &combined.facets,
             &combined.column_fields,
         );
+        let boot_ids = response_boot_ids(
+            &columns.order,
+            &combined.rows,
+            &combined.facets,
+            combined.histogram.as_ref(),
+        );
         let context = DisplayContext {
-            boot_first_realtime: collect_boot_first_realtime(&paths, self.config.reader_options),
+            boot_first_realtime: collect_boot_first_realtime(
+                annotation_paths,
+                self.config.reader_options,
+                &boot_ids,
+            ),
             ..DisplayContext::default()
         };
-        let data = self.build_data_rows(&context, &columns.order, &combined.rows);
-        let facets = self.build_facets(&context, &request.facets, &combined.facets);
+        let data =
+            self.build_data_rows(&context, &columns.order, &combined.rows, request.direction);
+        let facets = self.build_facets(&context, &reportable_facet_fields, &combined.facets);
         let histogram = combined.histogram.as_ref().map(|histogram| {
             self.build_histogram(&context, histogram, combined.facets.get(&histogram.field))
         });
@@ -635,21 +688,28 @@ where
         let message = query_message(combined.timed_out, &combined.stats);
         let unsampled = combined.stats.rows_unsampled;
         let estimated = combined.stats.rows_estimated;
-        let rows_after_returned = if unsampled != 0 || estimated != 0 {
+        let fallback_rows_after_returned = if unsampled != 0 || estimated != 0 {
             combined.stats.rows_examined
         } else {
             combined.stats.rows_matched
         }
         .saturating_sub(returned);
+        let page_counters = combined
+            .page_counters
+            .unwrap_or_else(|| NetdataPageCounters {
+                matched: combined.stats.rows_matched,
+                before: 0,
+                after: fallback_rows_after_returned,
+            });
         let items = json!({
             "evaluated": combined.stats.rows_examined.saturating_add(unsampled).saturating_add(estimated),
-            "matched": combined.stats.rows_matched,
+            "matched": page_counters.matched.saturating_add(unsampled).saturating_add(estimated),
             "unsampled": unsampled,
             "estimated": estimated,
             "returned": returned,
             "max_to_return": request.limit as u64,
-            "before": 0,
-            "after": rows_after_returned,
+            "before": page_counters.before,
+            "after": page_counters.after,
         });
 
         let mut response = json!({
@@ -692,7 +752,7 @@ where
             object.insert("help".to_string(), Value::Null);
             object.insert(
                 "accepted_params".to_string(),
-                self.accepted_params_from_fields(&request.facet_field_names()),
+                self.accepted_params_from_fields(&reportable_facet_field_names),
             );
             object.insert("default_sort_column".to_string(), Value::from("timestamp"));
             object.insert("default_charts".to_string(), Value::Array(Vec::new()));
@@ -752,13 +812,14 @@ where
     fn build_columns(
         &self,
         request: &NetdataRequest,
+        reportable_facet_fields: &[Vec<u8>],
         rows: &[LocatedRow],
         facets: &BTreeMap<Vec<u8>, BTreeMap<Vec<u8>, u64>>,
         column_fields: &BTreeSet<String>,
     ) -> Columns {
         let mut order = vec!["timestamp".to_string(), "rowOptions".to_string()];
         push_unique_many(&mut order, &self.config.default_view_keys);
-        push_unique_many(&mut order, &request.facet_field_names());
+        push_unique_many(&mut order, &string_fields(reportable_facet_fields));
         if let Some(histogram) = &request.histogram {
             push_unique(&mut order, histogram);
         }
@@ -791,8 +852,13 @@ where
         context: &DisplayContext,
         column_order: &[String],
         rows: &[LocatedRow],
+        direction: Direction,
     ) -> Vec<Value> {
-        rows.iter()
+        let row_iter: Box<dyn Iterator<Item = &LocatedRow> + '_> = match direction {
+            Direction::Forward => Box::new(rows.iter().rev()),
+            Direction::Backward => Box::new(rows.iter()),
+        };
+        row_iter
             .map(|located| {
                 let fields = row_fields(located);
                 let mut row = Vec::with_capacity(column_order.len());
@@ -964,37 +1030,80 @@ where
         paths: &[PathBuf],
         options: &NetdataFunctionRunOptions<'_>,
     ) -> Value {
-        let summary = JournalSourceSummary::from_paths(paths, self.config.reader_options, options);
-        let options: Vec<Value> = ["all", "all-local-logs", "all-local-system-logs"]
-            .into_iter()
-            .map(|id| {
-                json!({
-                    "id": id,
-                    "name": id,
-                    "info": summary.info(),
-                    "pill": human_binary_size(summary.total_size),
-                })
-            })
-            .collect();
+        let mut all = JournalSourceSummary::default();
+        let mut local = JournalSourceSummary::default();
+        let mut local_namespaces = JournalSourceSummary::default();
+        let mut local_system = JournalSourceSummary::default();
+        let mut local_user = JournalSourceSummary::default();
+        let mut remote = JournalSourceSummary::default();
+        let mut other = JournalSourceSummary::default();
+        let mut exact = BTreeMap::<String, JournalSourceSummary>::new();
+
+        for path in paths {
+            let metadata = file_metadata(options, path);
+            let source_type = metadata
+                .as_ref()
+                .and_then(|metadata| metadata.source_type)
+                .unwrap_or_else(|| journal_file_source_type(path));
+            all.add_path(path, self.config.reader_options, metadata.as_ref());
+            if source_type & SOURCE_TYPE_LOCAL_ALL != 0 {
+                local.add_path(path, self.config.reader_options, metadata.as_ref());
+            }
+            if source_type & SOURCE_TYPE_LOCAL_NAMESPACE != 0 {
+                local_namespaces.add_path(path, self.config.reader_options, metadata.as_ref());
+            }
+            if source_type & SOURCE_TYPE_LOCAL_SYSTEM != 0 {
+                local_system.add_path(path, self.config.reader_options, metadata.as_ref());
+            }
+            if source_type & SOURCE_TYPE_LOCAL_USER != 0 {
+                local_user.add_path(path, self.config.reader_options, metadata.as_ref());
+            }
+            if source_type & SOURCE_TYPE_REMOTE_ALL != 0 {
+                remote.add_path(path, self.config.reader_options, metadata.as_ref());
+            }
+            if source_type & SOURCE_TYPE_LOCAL_OTHER != 0 {
+                other.add_path(path, self.config.reader_options, metadata.as_ref());
+            }
+            let source_name = metadata
+                .as_ref()
+                .and_then(|metadata| metadata.source_name.as_deref().map(str::to_owned))
+                .or_else(|| journal_file_exact_source_name(path));
+            if let Some(source_name) = source_name {
+                exact.entry(source_name).or_default().add_path(
+                    path,
+                    self.config.reader_options,
+                    metadata.as_ref(),
+                );
+            }
+        }
+
+        let mut source_options = Vec::new();
+        push_source_option(&mut source_options, "all", &all);
+        push_source_option(&mut source_options, "all-local-logs", &local);
+        push_source_option(
+            &mut source_options,
+            "all-local-namespaces",
+            &local_namespaces,
+        );
+        push_source_option(&mut source_options, "all-local-system-logs", &local_system);
+        push_source_option(&mut source_options, "all-local-user-logs", &local_user);
+        push_source_option(&mut source_options, "all-remote-systems", &remote);
+        push_source_option(&mut source_options, "all-uncategorized", &other);
+        for (name, summary) in exact {
+            push_source_option(&mut source_options, &name, &summary);
+        }
+
         json!([{
             "id": "__logs_sources",
             "name": "Journal Sources",
             "help": "Select the logs source to query",
             "type": "multiselect",
-            "options": options,
+            "options": source_options,
         }])
     }
 
     fn available_histograms(&self, request: &NetdataRequest, combined: &CombinedResult) -> Value {
-        let mut fields = request.facet_field_names();
-        for field in combined.reportable_facet_fields(&request.facets) {
-            push_unique(&mut fields, &field);
-        }
-        for field in &request.facets {
-            if let Ok(field) = std::str::from_utf8(field) {
-                push_unique(&mut fields, field);
-            }
-        }
+        let mut fields = combined.reportable_facet_fields(&request.facets);
         if request.data_only {
             if let Some(histogram) = &request.histogram {
                 push_unique(&mut fields, histogram);
@@ -1082,10 +1191,11 @@ impl NetdataRequest {
                 direction = Direction::Backward;
             }
         }
-        let limit = get_u64(object, "last")
+        let requested_limit = get_u64(object, "last")
             .filter(|value| *value != 0)
             .map(|value| value as usize)
             .unwrap_or(DEFAULT_ITEMS_TO_RETURN);
+        let limit = requested_limit.max(2);
         let requested_facets = parse_string_array(object.get("facets"));
         let facets = requested_facets
             .clone()
@@ -1116,7 +1226,7 @@ impl NetdataRequest {
             if_modified_since_usec,
             anchor,
             direction,
-            limit,
+            requested_limit,
             data_only,
             delta,
             tail,
@@ -1150,13 +1260,6 @@ impl NetdataRequest {
             fts_patterns,
             fts_negative_patterns,
         })
-    }
-
-    fn facet_field_names(&self) -> Vec<String> {
-        self.facets
-            .iter()
-            .filter_map(|field| String::from_utf8(field.clone()).ok())
-            .collect()
     }
 
     fn matches_source(&self, path: &Path, metadata: Option<&NetdataJournalFileMetadata>) -> bool {
@@ -1249,7 +1352,7 @@ impl NetdataRequest {
             fts_patterns: self.fts_patterns.clone(),
             fts_negative_patterns: self.fts_negative_patterns.clone(),
             field_mode: ExplorerFieldMode::FirstValue,
-            exclude_facet_field_filters: false,
+            exclude_facet_field_filters: self.distinct_filter_fields() > 1,
             use_source_realtime: true,
             realtime_slack_usec: normalize_journal_vs_realtime_delta_usec(realtime_slack_usec),
             stop_when_rows_full: self.data_only && !tail_anchor,
@@ -1258,12 +1361,66 @@ impl NetdataRequest {
             debug_collect_column_fields_by_row_traversal: false,
         }
     }
+
+    fn distinct_filter_fields(&self) -> usize {
+        self.filters
+            .iter()
+            .map(|filter| filter.field.as_slice())
+            .collect::<HashSet<_>>()
+            .len()
+    }
 }
 
 #[derive(Debug, Clone)]
 struct LocatedRow {
     file_path: PathBuf,
     row: ExplorerRow,
+}
+
+#[derive(Debug)]
+struct NetdataRealtimeAdjuster {
+    direction: Direction,
+    last_realtime_from: u64,
+    last_realtime_to: u64,
+}
+
+impl NetdataRealtimeAdjuster {
+    fn new(direction: Direction) -> Self {
+        Self {
+            direction,
+            last_realtime_from: 0,
+            last_realtime_to: 0,
+        }
+    }
+
+    fn adjust(&mut self, realtime_usec: u64) -> u64 {
+        match self.direction {
+            Direction::Backward => {
+                if realtime_usec >= self.last_realtime_from
+                    && realtime_usec <= self.last_realtime_to
+                {
+                    self.last_realtime_from = self.last_realtime_from.saturating_sub(1);
+                    self.last_realtime_from
+                } else {
+                    self.last_realtime_from = realtime_usec;
+                    self.last_realtime_to = realtime_usec;
+                    realtime_usec
+                }
+            }
+            Direction::Forward => {
+                if realtime_usec >= self.last_realtime_from
+                    && realtime_usec <= self.last_realtime_to
+                {
+                    self.last_realtime_to = self.last_realtime_to.saturating_add(1);
+                    self.last_realtime_to
+                } else {
+                    self.last_realtime_from = realtime_usec;
+                    self.last_realtime_to = realtime_usec;
+                    realtime_usec
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1275,6 +1432,7 @@ struct JournalSourceSummary {
 }
 
 impl JournalSourceSummary {
+    #[cfg(test)]
     fn from_paths(
         paths: &[PathBuf],
         reader_options: ReaderOptions,
@@ -1283,55 +1441,60 @@ impl JournalSourceSummary {
         let mut summary = Self::default();
         for path in paths {
             let metadata = file_metadata(options, path);
-            if let Ok(metadata) = std::fs::metadata(path) {
-                summary.files = summary.files.saturating_add(1);
-                summary.total_size = summary.total_size.saturating_add(metadata.len());
-            }
-            if let Some(metadata) = metadata.as_ref() {
-                let metadata_first = metadata.msg_first_realtime_usec;
-                let metadata_last = metadata.msg_last_realtime_usec;
-                if let Some(first) = metadata_first {
-                    summary.first_realtime_usec = Some(
-                        summary
-                            .first_realtime_usec
-                            .map_or(first, |current| current.min(first)),
-                    );
-                }
-                if let Some(last) = metadata_last {
-                    summary.last_realtime_usec = Some(
-                        summary
-                            .last_realtime_usec
-                            .map_or(last, |current| current.max(last)),
-                    );
-                }
-                if metadata_first.is_some() && metadata_last.is_some() {
-                    continue;
-                }
-            }
-            let Ok(reader) = FileReader::open_with_options(path, reader_options) else {
-                continue;
-            };
-            let header = reader.header();
-            if header.head_entry_realtime != 0 {
-                summary.first_realtime_usec = Some(
-                    summary
-                        .first_realtime_usec
-                        .map_or(header.head_entry_realtime, |current| {
-                            current.min(header.head_entry_realtime)
-                        }),
-                );
-            }
-            if header.tail_entry_realtime != 0 {
-                summary.last_realtime_usec = Some(
-                    summary
-                        .last_realtime_usec
-                        .map_or(header.tail_entry_realtime, |current| {
-                            current.max(header.tail_entry_realtime)
-                        }),
-                );
-            }
+            summary.add_path(path, reader_options, metadata.as_ref());
         }
         summary
+    }
+
+    fn add_path(
+        &mut self,
+        path: &Path,
+        reader_options: ReaderOptions,
+        metadata: Option<&NetdataJournalFileMetadata>,
+    ) {
+        if let Ok(metadata) = std::fs::metadata(path) {
+            self.files = self.files.saturating_add(1);
+            self.total_size = self.total_size.saturating_add(metadata.len());
+        }
+        if let Some(metadata) = metadata {
+            let metadata_first = metadata.msg_first_realtime_usec;
+            let metadata_last = metadata.msg_last_realtime_usec;
+            if let Some(first) = metadata_first {
+                self.first_realtime_usec = Some(
+                    self.first_realtime_usec
+                        .map_or(first, |current| current.min(first)),
+                );
+            }
+            if let Some(last) = metadata_last {
+                self.last_realtime_usec = Some(
+                    self.last_realtime_usec
+                        .map_or(last, |current| current.max(last)),
+                );
+            }
+            if metadata_first.is_some() && metadata_last.is_some() {
+                return;
+            }
+        }
+        let Ok(reader) = FileReader::open_with_options(path, reader_options) else {
+            return;
+        };
+        let header = reader.header();
+        if header.head_entry_realtime != 0 {
+            self.first_realtime_usec = Some(
+                self.first_realtime_usec
+                    .map_or(header.head_entry_realtime, |current| {
+                        current.min(header.head_entry_realtime)
+                    }),
+            );
+        }
+        if header.tail_entry_realtime != 0 {
+            self.last_realtime_usec = Some(
+                self.last_realtime_usec
+                    .map_or(header.tail_entry_realtime, |current| {
+                        current.max(header.tail_entry_realtime)
+                    }),
+            );
+        }
     }
 
     fn info(&self) -> String {
@@ -1356,6 +1519,18 @@ impl JournalSourceSummary {
     }
 }
 
+fn push_source_option(target: &mut Vec<Value>, id: &str, summary: &JournalSourceSummary) {
+    if summary.files == 0 {
+        return;
+    }
+    target.push(json!({
+        "id": id,
+        "name": id,
+        "info": summary.info(),
+        "pill": human_binary_size(summary.total_size),
+    }));
+}
+
 fn expand_located_row_payloads(
     located: &mut LocatedRow,
     reader_options: ReaderOptions,
@@ -1378,6 +1553,7 @@ struct CombinedResult {
     histogram: Option<ExplorerHistogram>,
     column_fields: BTreeSet<String>,
     stats: ExplorerStats,
+    page_counters: Option<NetdataPageCounters>,
     matched_files: u64,
     matched_paths: Vec<PathBuf>,
     skipped_files: u64,
@@ -1386,6 +1562,269 @@ struct CombinedResult {
     timed_out: bool,
     cancelled: bool,
     sampling_enabled: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct NetdataPageCounters {
+    matched: u64,
+    before: u64,
+    after: u64,
+}
+
+#[derive(Debug)]
+enum NetdataPageHeap {
+    Backward(BinaryHeap<Reverse<u64>>),
+    Forward(BinaryHeap<u64>),
+}
+
+#[derive(Debug)]
+struct NetdataPageWindow {
+    direction: Direction,
+    anchor_start_usec: Option<u64>,
+    anchor_stop_usec: Option<u64>,
+    limit: usize,
+    heap: NetdataPageHeap,
+    oldest_retained_usec: Option<u64>,
+    newest_retained_usec: Option<u64>,
+    matched: u64,
+    skips_before: u64,
+    skips_after: u64,
+    shifts: u64,
+}
+
+impl NetdataPageWindow {
+    fn for_request(request: &NetdataRequest) -> Self {
+        let anchor_start_usec = match request.anchor {
+            ExplorerAnchor::Realtime(anchor) => Some(anchor),
+            _ => None,
+        };
+        let heap = match request.direction {
+            Direction::Backward => NetdataPageHeap::Backward(BinaryHeap::new()),
+            Direction::Forward => NetdataPageHeap::Forward(BinaryHeap::new()),
+        };
+        Self {
+            direction: request.direction,
+            anchor_start_usec,
+            anchor_stop_usec: None,
+            limit: request.limit,
+            heap,
+            oldest_retained_usec: None,
+            newest_retained_usec: None,
+            matched: 0,
+            skips_before: 0,
+            skips_after: 0,
+            shifts: 0,
+        }
+    }
+
+    fn candidate_to_keep(&self, realtime_usec: u64) -> bool {
+        if self.limit == 0 || !self.entry_within_anchor_readonly(realtime_usec) {
+            return false;
+        }
+        if self.retained_len() < self.limit {
+            return true;
+        }
+        self.oldest_retained_usec
+            .zip(self.newest_retained_usec)
+            .is_some_and(|(oldest, newest)| realtime_usec >= oldest && realtime_usec <= newest)
+    }
+
+    fn observe(&mut self, realtime_usec: u64) {
+        if !self.entry_within_anchor(realtime_usec) || self.limit == 0 {
+            return;
+        }
+        self.matched = self.matched.saturating_add(1);
+        match (&mut self.heap, self.direction) {
+            (NetdataPageHeap::Backward(heap), Direction::Backward) => {
+                if heap.len() < self.limit {
+                    heap.push(Reverse(realtime_usec));
+                    self.add_retained_bound(realtime_usec);
+                    return;
+                }
+                let Some(Reverse(oldest)) = heap.peek().copied() else {
+                    heap.push(Reverse(realtime_usec));
+                    self.refresh_retained_bounds();
+                    return;
+                };
+                if realtime_usec < oldest {
+                    self.skips_after = self.skips_after.saturating_add(1);
+                    return;
+                }
+                heap.pop();
+                heap.push(Reverse(realtime_usec));
+                self.refresh_retained_bounds();
+                self.shifts = self.shifts.saturating_add(1);
+            }
+            (NetdataPageHeap::Forward(heap), Direction::Forward) => {
+                if heap.len() < self.limit {
+                    heap.push(realtime_usec);
+                    self.add_retained_bound(realtime_usec);
+                    return;
+                }
+                let Some(newest) = heap.peek().copied() else {
+                    heap.push(realtime_usec);
+                    self.refresh_retained_bounds();
+                    return;
+                };
+                if realtime_usec > newest {
+                    self.skips_before = self.skips_before.saturating_add(1);
+                    return;
+                }
+                heap.pop();
+                heap.push(realtime_usec);
+                self.refresh_retained_bounds();
+                self.shifts = self.shifts.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+
+    fn retained_len(&self) -> usize {
+        match &self.heap {
+            NetdataPageHeap::Backward(heap) => heap.len(),
+            NetdataPageHeap::Forward(heap) => heap.len(),
+        }
+    }
+
+    fn add_retained_bound(&mut self, realtime_usec: u64) {
+        self.oldest_retained_usec = Some(
+            self.oldest_retained_usec
+                .map_or(realtime_usec, |current| current.min(realtime_usec)),
+        );
+        self.newest_retained_usec = Some(
+            self.newest_retained_usec
+                .map_or(realtime_usec, |current| current.max(realtime_usec)),
+        );
+    }
+
+    fn refresh_retained_bounds(&mut self) {
+        let (oldest, newest) = match &self.heap {
+            NetdataPageHeap::Backward(heap) => heap
+                .iter()
+                .map(|Reverse(usec)| *usec)
+                .fold((None, None), retained_bounds_fold),
+            NetdataPageHeap::Forward(heap) => heap
+                .iter()
+                .copied()
+                .fold((None, None), retained_bounds_fold),
+        };
+        self.oldest_retained_usec = oldest;
+        self.newest_retained_usec = newest;
+    }
+
+    fn entry_within_anchor(&mut self, realtime_usec: u64) -> bool {
+        match self.direction {
+            Direction::Backward => {
+                if self
+                    .anchor_start_usec
+                    .is_some_and(|anchor| realtime_usec >= anchor)
+                {
+                    self.skips_before = self.skips_before.saturating_add(1);
+                    return false;
+                }
+                if self
+                    .anchor_stop_usec
+                    .is_some_and(|anchor| realtime_usec <= anchor)
+                {
+                    self.skips_after = self.skips_after.saturating_add(1);
+                    return false;
+                }
+            }
+            Direction::Forward => {
+                if self
+                    .anchor_start_usec
+                    .is_some_and(|anchor| realtime_usec <= anchor)
+                {
+                    self.skips_after = self.skips_after.saturating_add(1);
+                    return false;
+                }
+                if self
+                    .anchor_stop_usec
+                    .is_some_and(|anchor| realtime_usec >= anchor)
+                {
+                    self.skips_before = self.skips_before.saturating_add(1);
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    fn entry_within_anchor_readonly(&self, realtime_usec: u64) -> bool {
+        match self.direction {
+            Direction::Backward => {
+                if self
+                    .anchor_start_usec
+                    .is_some_and(|anchor| realtime_usec >= anchor)
+                {
+                    return false;
+                }
+                if self
+                    .anchor_stop_usec
+                    .is_some_and(|anchor| realtime_usec <= anchor)
+                {
+                    return false;
+                }
+            }
+            Direction::Forward => {
+                if self
+                    .anchor_start_usec
+                    .is_some_and(|anchor| realtime_usec <= anchor)
+                {
+                    return false;
+                }
+                if self
+                    .anchor_stop_usec
+                    .is_some_and(|anchor| realtime_usec >= anchor)
+                {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    fn counters(&self) -> NetdataPageCounters {
+        NetdataPageCounters {
+            matched: self.matched,
+            before: self.skips_before,
+            after: self.skips_after.saturating_add(self.shifts),
+        }
+    }
+
+    fn can_stop_delta_file(&self, realtime_usec: u64, slack_usec: u64) -> bool {
+        if self.limit == 0 {
+            return false;
+        }
+        match (&self.heap, self.direction) {
+            (NetdataPageHeap::Backward(heap), Direction::Backward) => {
+                if heap.len() < self.limit {
+                    return false;
+                }
+                heap.peek().is_some_and(|Reverse(oldest)| {
+                    realtime_usec < oldest.saturating_sub(slack_usec)
+                })
+            }
+            (NetdataPageHeap::Forward(heap), Direction::Forward) => {
+                if heap.len() < self.limit {
+                    return false;
+                }
+                heap.peek()
+                    .is_some_and(|newest| realtime_usec > newest.saturating_add(slack_usec))
+            }
+            _ => false,
+        }
+    }
+}
+
+fn retained_bounds_fold(
+    (oldest, newest): (Option<u64>, Option<u64>),
+    realtime_usec: u64,
+) -> (Option<u64>, Option<u64>) {
+    (
+        Some(oldest.map_or(realtime_usec, |current| current.min(realtime_usec))),
+        Some(newest.map_or(realtime_usec, |current| current.max(realtime_usec))),
+    )
 }
 
 impl CombinedResult {
@@ -1591,6 +2030,9 @@ impl CombinedResult {
                 let Ok(values) = reader.query_unique(field_name) else {
                     continue;
                 };
+                if values.is_empty() {
+                    continue;
+                }
                 let target = self.facets.entry(field.clone()).or_default();
                 for value in values {
                     add_netdata_facet_count(target, &value, 0);
@@ -1599,7 +2041,27 @@ impl CombinedResult {
         }
     }
 
+    fn add_zero_count_selected_filter_values(&mut self, request: &NetdataRequest) {
+        let mut report_fields: HashSet<Vec<u8>> = request.facets.iter().cloned().collect();
+        if let Some(histogram) = &request.histogram {
+            report_fields.insert(histogram.as_bytes().to_vec());
+        }
+        for filter in &request.filters {
+            if !report_fields.contains(&filter.field) {
+                continue;
+            }
+            let target = self.facets.entry(filter.field.clone()).or_default();
+            for value in &filter.values {
+                add_netdata_facet_count(target, value, 0);
+            }
+        }
+    }
+
     fn reportable_facet_fields(&self, requested: &[Vec<u8>]) -> Vec<String> {
+        string_fields(&self.reportable_facet_fields_bytes(requested))
+    }
+
+    fn reportable_facet_fields_bytes(&self, requested: &[Vec<u8>]) -> Vec<Vec<u8>> {
         requested
             .iter()
             .filter(|field| {
@@ -1607,7 +2069,7 @@ impl CombinedResult {
                     .get(*field)
                     .is_some_and(facet_group_is_reportable)
             })
-            .filter_map(|field| String::from_utf8(field.clone()).ok())
+            .cloned()
             .collect()
     }
 }
@@ -1772,7 +2234,7 @@ fn merge_histogram(
 fn facet_group_is_reportable(values: &BTreeMap<Vec<u8>, u64>) -> bool {
     values
         .iter()
-        .any(|(value, count)| *count != 0 && !value.is_empty() && value.as_slice() != b"-")
+        .any(|(value, _count)| !value.is_empty() && value.as_slice() != b"-")
 }
 
 fn netdata_facet_value(value: &[u8]) -> &[u8] {
@@ -1905,6 +2367,34 @@ fn select_journal_files_for_request(
     }
 }
 
+fn remaining_files_cannot_affect_data_page(
+    combined: &CombinedResult,
+    request: &NetdataRequest,
+    files: &[SelectedJournalFile],
+    next_file_index: usize,
+) -> bool {
+    let Some(next) = files.get(next_file_index) else {
+        return true;
+    };
+    let slack = next.order.journal_vs_realtime_delta_usec;
+    match request.direction {
+        Direction::Backward => {
+            let Some(oldest_retained) = combined.rows.iter().map(|row| row.row.realtime_usec).min()
+            else {
+                return false;
+            };
+            next.order.msg_last_realtime_usec < oldest_retained.saturating_sub(slack)
+        }
+        Direction::Forward => {
+            let Some(newest_retained) = combined.rows.iter().map(|row| row.row.realtime_usec).max()
+            else {
+                return false;
+            };
+            next.order.msg_first_realtime_usec > newest_retained.saturating_add(slack)
+        }
+    }
+}
+
 fn journal_file_order_may_overlap_request(
     info: &JournalFileOrderInfo,
     request: &NetdataRequest,
@@ -1939,8 +2429,12 @@ fn journal_file_order_may_overlap_request(
 fn collect_boot_first_realtime(
     paths: &[PathBuf],
     reader_options: ReaderOptions,
+    needed_boot_ids: &BTreeSet<Vec<u8>>,
 ) -> BTreeMap<Vec<u8>, u64> {
     let mut out = BTreeMap::new();
+    if needed_boot_ids.is_empty() {
+        return out;
+    }
     for path in paths {
         let Ok(mut reader) = FileReader::open_with_options(path, reader_options) else {
             continue;
@@ -1949,6 +2443,9 @@ fn collect_boot_first_realtime(
             continue;
         };
         for boot_id in boot_ids {
+            if !needed_boot_ids.contains(&boot_id) {
+                continue;
+            }
             let mut match_payload = b"_BOOT_ID=".to_vec();
             match_payload.extend_from_slice(&boot_id);
             reader.flush_matches();
@@ -1964,6 +2461,43 @@ fn collect_boot_first_realtime(
         reader.flush_matches();
     }
     out
+}
+
+fn response_boot_ids(
+    column_order: &[String],
+    rows: &[LocatedRow],
+    facets: &BTreeMap<Vec<u8>, BTreeMap<Vec<u8>, u64>>,
+    histogram: Option<&ExplorerHistogram>,
+) -> BTreeSet<Vec<u8>> {
+    let mut boot_ids = BTreeSet::new();
+    let row_needs_boot_id = column_order.iter().any(|field| field == "_BOOT_ID");
+    if row_needs_boot_id {
+        for row in rows {
+            if let Some(values) = row_fields(row).get("_BOOT_ID") {
+                boot_ids.extend(values.iter().cloned());
+            }
+        }
+    }
+    if let Some(values) = facets.get(b"_BOOT_ID".as_slice()) {
+        boot_ids.extend(
+            values
+                .keys()
+                .filter(|value| !value.is_empty() && value.as_slice() != b"-")
+                .cloned(),
+        );
+    }
+    if let Some(histogram) = histogram.filter(|histogram| histogram.field == b"_BOOT_ID") {
+        for bucket in &histogram.buckets {
+            boot_ids.extend(
+                bucket
+                    .values
+                    .keys()
+                    .filter(|value| !value.is_empty() && value.as_slice() != b"-")
+                    .cloned(),
+            );
+        }
+    }
+    boot_ids
 }
 
 fn record_boot_first_realtime(
@@ -2515,15 +3049,37 @@ fn human_binary_size(bytes: u64) -> String {
     } else if value.fract() == 0.0 {
         format!("{value:.0}{}", UNITS[unit])
     } else {
-        format!("{value:.1}{}", UNITS[unit])
+        let mut formatted = format!("{value:.2}");
+        while formatted.contains('.') && formatted.ends_with('0') {
+            formatted.pop();
+        }
+        if formatted.ends_with('.') {
+            formatted.pop();
+        }
+        format!("{formatted}{}", UNITS[unit])
     }
 }
 
 fn human_duration_seconds(seconds: u64) -> String {
+    let years = seconds / (365 * 86_400);
+    let seconds = seconds % (365 * 86_400);
+    let months = seconds / (30 * 86_400);
+    let seconds = seconds % (30 * 86_400);
+    let days = seconds / 86_400;
+    let seconds = seconds % 86_400;
     let hours = seconds / 3600;
     let minutes = (seconds % 3600) / 60;
     let seconds = seconds % 60;
     let mut parts = Vec::new();
+    if years != 0 {
+        parts.push(format!("{years}y"));
+    }
+    if months != 0 {
+        parts.push(format!("{months}mo"));
+    }
+    if days != 0 {
+        parts.push(format!("{days}d"));
+    }
     if hours != 0 {
         parts.push(format!("{hours}h"));
     }
@@ -2695,6 +3251,13 @@ fn push_unique_many(target: &mut Vec<String>, values: &[String]) {
     for value in values {
         push_unique(target, value);
     }
+}
+
+fn string_fields(fields: &[Vec<u8>]) -> Vec<String> {
+    fields
+        .iter()
+        .filter_map(|field| String::from_utf8(field.clone()).ok())
+        .collect()
 }
 
 fn push_unique(target: &mut Vec<String>, value: impl AsRef<str>) {
@@ -3414,6 +3977,63 @@ mod tests {
     }
 
     #[test]
+    fn netdata_last_one_keeps_echo_and_uses_effective_minimum_two() {
+        let request = json!({
+            "after": 200_000_000,
+            "before": 200_000_100,
+            "last": 1
+        });
+
+        let parsed = NetdataRequest::parse(&request, &NetdataFunctionConfig::systemd_journal())
+            .expect("parse request");
+        let query =
+            parsed.to_explorer_query(1, None, NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC);
+
+        assert_eq!(parsed.echo.get("last").and_then(Value::as_u64), Some(1));
+        assert_eq!(parsed.limit, 2);
+        assert_eq!(query.limit, 2);
+    }
+
+    #[test]
+    fn netdata_facet_counts_use_native_sliced_filter_semantics() {
+        let request = json!({
+            "after": 200_000_000,
+            "before": 200_000_100,
+            "facets": ["PRIORITY"],
+            "selections": {
+                "PRIORITY": ["warning"]
+            }
+        });
+
+        let parsed = NetdataRequest::parse(&request, &NetdataFunctionConfig::systemd_journal())
+            .expect("parse request");
+        let query =
+            parsed.to_explorer_query(1, None, NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC);
+
+        assert!(!query.exclude_facet_field_filters);
+    }
+
+    #[test]
+    fn netdata_multi_filter_facet_counts_exclude_same_field_filter() {
+        let request = json!({
+            "after": 200_000_000,
+            "before": 200_000_100,
+            "facets": ["PRIORITY", "_BOOT_ID"],
+            "selections": {
+                "PRIORITY": ["warning"],
+                "_BOOT_ID": ["738043aea7b3417cbc3e9941ad26f769"]
+            }
+        });
+
+        let parsed = NetdataRequest::parse(&request, &NetdataFunctionConfig::systemd_journal())
+            .expect("parse request");
+        let query =
+            parsed.to_explorer_query(1, None, NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC);
+
+        assert!(query.exclude_facet_field_filters);
+    }
+
+    #[test]
     fn parses_netdata_fts_query_like_simple_pattern() {
         let (terms, positives, negatives) =
             parse_fts_query_patterns(r"error|warning|!debug|escaped\|pipe|\!literal| a*B");
@@ -3470,6 +4090,90 @@ mod tests {
             parsed.to_explorer_query(1, None, NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC);
 
         assert!(!query.debug_collect_column_fields_by_row_traversal);
+    }
+
+    #[test]
+    fn netdata_function_suppresses_absent_requested_facet_groups() {
+        let dir = TempDir::new().expect("tempdir");
+        write_netdata_test_journal(dir.path(), 10);
+        let request = json!({
+            "after": 1_700_000_000,
+            "before": 1_700_000_010,
+            "facets": ["SERVICE", "MISSING_FIELD"],
+            "histogram": "SERVICE",
+            "last": 5,
+            "slice": true
+        });
+        let function = NetdataJournalFunction::systemd_journal_plugin_compatible();
+
+        let response = function
+            .run_directory_request_json_with_options(
+                dir.path(),
+                &request,
+                NetdataFunctionRunOptions::from_timeout_seconds(0),
+            )
+            .expect("run function");
+
+        let columns = response["columns"].as_object().expect("columns");
+        assert!(columns.contains_key("SERVICE"));
+        assert!(!columns.contains_key("MISSING_FIELD"));
+        let facets = response["facets"].as_array().expect("facets");
+        assert_eq!(
+            facets
+                .iter()
+                .filter_map(|facet| facet["id"].as_str())
+                .collect::<Vec<_>>(),
+            vec!["SERVICE"]
+        );
+        let accepted = response["accepted_params"]
+            .as_array()
+            .expect("accepted params");
+        assert!(accepted.iter().any(|value| value == "SERVICE"));
+        assert!(!accepted.iter().any(|value| value == "MISSING_FIELD"));
+        let histograms = response["available_histograms"]
+            .as_array()
+            .expect("available histograms");
+        assert!(histograms.iter().any(|value| value["id"] == "SERVICE"));
+        assert!(
+            !histograms
+                .iter()
+                .any(|value| value["id"] == "MISSING_FIELD")
+        );
+    }
+
+    #[test]
+    fn netdata_function_reports_zero_count_existing_facets_for_empty_results() {
+        let dir = TempDir::new().expect("tempdir");
+        write_netdata_test_journal(dir.path(), 10);
+        let request = json!({
+            "after": 1_700_000_000,
+            "before": 1_700_000_010,
+            "facets": ["PRIORITY"],
+            "histogram": "PRIORITY",
+            "selections": {
+                "SERVICE": ["missing"]
+            },
+            "last": 5,
+            "slice": true
+        });
+        let function = NetdataJournalFunction::systemd_journal_plugin_compatible();
+
+        let response = function
+            .run_directory_request_json_with_options(
+                dir.path(),
+                &request,
+                NetdataFunctionRunOptions::from_timeout_seconds(0),
+            )
+            .expect("run function");
+
+        let facets = response["facets"].as_array().expect("facets");
+        assert_eq!(facets.len(), 1);
+        assert_eq!(facets[0]["id"], "PRIORITY");
+        let options = facets[0]["options"].as_array().expect("options");
+        assert!(options.iter().any(|option| {
+            option["id"] == "6" && option["name"] == "info" && option["count"] == 0
+        }));
+        assert_eq!(response["items"]["matched"], 0);
     }
 
     #[test]
@@ -3938,6 +4642,87 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![90, 100, 101, 102]
         );
+    }
+
+    #[test]
+    fn page_window_counts_forward_anchor_like_netdata_facets() {
+        let config = NetdataFunctionConfig::systemd_journal();
+        let request = NetdataRequest::parse(
+            &json!({
+                "after": 1_700_000_000,
+                "before": 1_700_000_010,
+                "anchor": 1_700_000_005_000_000u64,
+                "direction": "forward",
+                "last": 2
+            }),
+            &config,
+        )
+        .expect("parse request");
+        let mut window = NetdataPageWindow::for_request(&request);
+
+        for realtime_usec in [
+            1_700_000_003_000_000,
+            1_700_000_004_000_000,
+            1_700_000_006_000_000,
+            1_700_000_007_000_000,
+            1_700_000_008_000_000,
+        ] {
+            window.observe(realtime_usec);
+        }
+
+        let counters = window.counters();
+        assert_eq!(counters.matched, 3);
+        assert_eq!(counters.before, 1);
+        assert_eq!(counters.after, 2);
+    }
+
+    #[test]
+    fn page_window_counts_backward_anchor_like_netdata_facets() {
+        let config = NetdataFunctionConfig::systemd_journal();
+        let request = NetdataRequest::parse(
+            &json!({
+                "after": 1_700_000_000,
+                "before": 1_700_000_010,
+                "anchor": 1_700_000_008_000_000u64,
+                "direction": "backward",
+                "last": 2
+            }),
+            &config,
+        )
+        .expect("parse request");
+        let mut window = NetdataPageWindow::for_request(&request);
+
+        for realtime_usec in [
+            1_700_000_009_000_000,
+            1_700_000_007_000_000,
+            1_700_000_006_000_000,
+            1_700_000_005_000_000,
+        ] {
+            window.observe(realtime_usec);
+        }
+
+        let counters = window.counters();
+        assert_eq!(counters.matched, 3);
+        assert_eq!(counters.before, 1);
+        assert_eq!(counters.after, 1);
+    }
+
+    #[test]
+    fn realtime_adjuster_preserves_forward_state_across_file_boundaries() {
+        let mut adjuster = NetdataRealtimeAdjuster::new(Direction::Forward);
+
+        assert_eq!(adjuster.adjust(10), 10);
+        assert_eq!(adjuster.adjust(10), 11);
+        assert_eq!(adjuster.adjust(10), 12);
+    }
+
+    #[test]
+    fn realtime_adjuster_preserves_backward_state_across_file_boundaries() {
+        let mut adjuster = NetdataRealtimeAdjuster::new(Direction::Backward);
+
+        assert_eq!(adjuster.adjust(10), 10);
+        assert_eq!(adjuster.adjust(10), 9);
+        assert_eq!(adjuster.adjust(10), 8);
     }
 
     #[test]

@@ -299,6 +299,10 @@ pub struct ExplorerControl<'a> {
     deadline: Option<Instant>,
     cancellation: Option<&'a dyn Fn() -> bool>,
     progress: Option<&'a mut dyn FnMut(ExplorerProgress)>,
+    candidate_row: Option<&'a mut dyn FnMut(u64) -> bool>,
+    adjust_realtime: Option<&'a mut dyn FnMut(u64) -> u64>,
+    matched_row: Option<&'a mut dyn FnMut(u64, u64) -> bool>,
+    sampling: Option<&'a mut ExplorerSamplingState>,
     progress_interval: Duration,
     started: Instant,
     last_progress: Instant,
@@ -313,6 +317,10 @@ impl<'a> ExplorerControl<'a> {
             deadline: None,
             cancellation: None,
             progress: None,
+            candidate_row: None,
+            adjust_realtime: None,
+            matched_row: None,
+            sampling: None,
             progress_interval: Duration::from_millis(250),
             started: now,
             last_progress: now,
@@ -331,6 +339,31 @@ impl<'a> ExplorerControl<'a> {
 
     pub fn set_progress_callback(&mut self, progress: Option<&'a mut dyn FnMut(ExplorerProgress)>) {
         self.progress = progress;
+    }
+
+    pub(crate) fn set_candidate_row_callback(
+        &mut self,
+        candidate_row: Option<&'a mut dyn FnMut(u64) -> bool>,
+    ) {
+        self.candidate_row = candidate_row;
+    }
+
+    pub(crate) fn set_realtime_adjust_callback(
+        &mut self,
+        adjust_realtime: Option<&'a mut dyn FnMut(u64) -> u64>,
+    ) {
+        self.adjust_realtime = adjust_realtime;
+    }
+
+    pub fn set_matched_row_callback(
+        &mut self,
+        matched_row: Option<&'a mut dyn FnMut(u64, u64) -> bool>,
+    ) {
+        self.matched_row = matched_row;
+    }
+
+    pub(crate) fn set_sampling_state(&mut self, sampling: Option<&'a mut ExplorerSamplingState>) {
+        self.sampling = sampling;
     }
 
     pub fn set_progress_interval(&mut self, interval: Duration) {
@@ -379,6 +412,21 @@ impl<'a> ExplorerControl<'a> {
             });
         }
     }
+
+    fn emit_matched_row(&mut self, realtime_usec: u64, rows_matched: u64) -> bool {
+        if let Some(matched_row) = self.matched_row.as_deref_mut() {
+            return matched_row(realtime_usec, rows_matched);
+        }
+        false
+    }
+
+    fn adjust_realtime(&mut self, realtime_usec: u64) -> u64 {
+        self.adjust_realtime
+            .as_deref_mut()
+            .map_or(realtime_usec, |adjust_realtime| {
+                adjust_realtime(realtime_usec)
+            })
+    }
 }
 
 impl Default for ExplorerControl<'_> {
@@ -401,7 +449,7 @@ enum ExplorerSamplingDecision {
 }
 
 #[derive(Debug)]
-struct ExplorerSamplingState {
+pub(crate) struct ExplorerSamplingState {
     start_realtime_usec: u64,
     end_realtime_usec: u64,
     file_head_realtime_usec: u64,
@@ -427,7 +475,10 @@ struct ExplorerSamplingState {
 }
 
 impl ExplorerSamplingState {
-    fn for_query(query: &ExplorerQuery, histogram_bucket_count: Option<usize>) -> Option<Self> {
+    pub(crate) fn for_query(
+        query: &ExplorerQuery,
+        histogram_bucket_count: Option<usize>,
+    ) -> Option<Self> {
         let sampling = query.sampling?;
         let start_realtime_usec = query.after_realtime_usec?;
         let end_realtime_usec = query.before_realtime_usec?;
@@ -472,6 +523,20 @@ impl ExplorerSamplingState {
             matched_files: sampling.matched_files.max(1),
             direction: query.direction,
         })
+    }
+
+    fn begin_file(&mut self, sampling: ExplorerSampling) {
+        self.file_head_realtime_usec = sampling.file_head_realtime_usec;
+        self.file_tail_realtime_usec = sampling.file_tail_realtime_usec;
+        self.file_head_seqnum = sampling.file_head_seqnum;
+        self.file_tail_seqnum = sampling.file_tail_seqnum;
+        self.file_entries = sampling.file_entries;
+        self.first_realtime_usec = None;
+        self.per_file_sampled = 0;
+        self.per_file_unsampled = 0;
+        self.per_file_every = 0;
+        self.per_file_skipped = 0;
+        self.per_file_recalibrate = 0;
     }
 
     fn decide(
@@ -585,15 +650,10 @@ impl ExplorerSamplingState {
         if expected_matching_logs == 0 {
             return None;
         }
-        let mut proportion_by_seqnum = scanned_rows as f64 / expected_matching_logs as f64;
-        if proportion_by_seqnum == 0.0
-            || proportion_by_seqnum > 1.0
-            || !proportion_by_seqnum.is_finite()
-        {
-            proportion_by_seqnum = 1.0;
-        }
-        let expected_total = (scanned_rows as f64 / proportion_by_seqnum) as u64;
-        Some(expected_total.saturating_sub(scanned_rows).max(1))
+        // Match Netdata systemd-journal.plugin sampling_running_file_query_estimate_remaining_lines():
+        // remaining_logs_by_seqnum = expected_matching_logs_by_seqnum - scanned_lines,
+        // clamped to one when the subtraction reaches zero.
+        Some(expected_matching_logs.saturating_sub(scanned_rows).max(1))
     }
 
     fn estimate_remaining_rows_by_time(&self, realtime_usec: u64) -> u64 {
@@ -710,6 +770,13 @@ impl ExplorerSamplingState {
             remaining_end,
         )
     }
+}
+
+pub(crate) fn histogram_bucket_count_for_query(query: &ExplorerQuery) -> Option<usize> {
+    query
+        .histogram
+        .as_deref()
+        .map(|field| new_histogram(field, query).buckets.len())
 }
 
 #[derive(Default)]
@@ -1488,8 +1555,12 @@ impl FileReader {
                     &mut result.stats,
                 )?
             };
-            let effective_realtime = effective_realtime_from_scan(scan.timestamp, commit_realtime);
+            let mut effective_realtime =
+                effective_realtime_from_scan(scan.timestamp, commit_realtime);
             record_source_realtime_delta(&mut result.stats, scan.timestamp, commit_realtime);
+            if let Some(control) = control.as_deref_mut() {
+                effective_realtime = control.adjust_realtime(effective_realtime);
+            }
             if !timestamp_in_range(query, effective_realtime) {
                 continue;
             }
@@ -1502,16 +1573,24 @@ impl FileReader {
 
             record_last_realtime(&mut result.stats, commit_realtime);
             result.stats.rows_matched = result.stats.rows_matched.saturating_add(1);
+            let mut stop_after_matched_row = false;
+            if let Some(control) = control.as_deref_mut() {
+                stop_after_matched_row =
+                    control.emit_matched_row(effective_realtime, result.stats.rows_matched);
+            }
             for value_index in &deferred_values {
                 accumulator.apply_value(*value_index, Some(effective_realtime), &mut result.stats);
             }
             accumulator.finish_histogram_row(row_id, effective_realtime, &mut result.stats);
-            if result.rows.len() < query.limit {
+            if row_within_anchor(query, effective_realtime) && result.rows.len() < query.limit {
                 result.rows.push(self.current_explorer_row(
                     effective_realtime,
                     &mut result.stats,
                     row_payload_mode,
                 )?);
+            }
+            if stop_after_matched_row {
+                break;
             }
             if should_stop_when_rows_full(
                 query,
@@ -1547,6 +1626,13 @@ impl FileReader {
                 .as_ref()
                 .map(|histogram| histogram.buckets.len()),
         );
+        if let Some(control) = control.as_deref_mut() {
+            if let (Some(shared_sampling), Some(file_sampling)) =
+                (control.sampling.as_deref_mut(), query.sampling)
+            {
+                shared_sampling.begin_file(file_sampling);
+            }
+        }
         while self.step_for_explorer(query.direction)? {
             rows_seen = rows_seen.saturating_add(1);
             if let Some(control) = control.as_deref_mut() {
@@ -1565,9 +1651,34 @@ impl FileReader {
                 continue;
             }
 
-            if let Some(sampling) = sampling.as_mut() {
-                let candidate_to_keep = row_candidate_to_keep(query, &result.rows, commit_realtime);
-                match sampling.decide(commit_realtime, metadata.seqnum, candidate_to_keep) {
+            let candidate_to_keep = if let Some(control) = control.as_deref_mut() {
+                if let Some(candidate_row) = control.candidate_row.as_deref_mut() {
+                    candidate_row(commit_realtime)
+                } else {
+                    row_candidate_to_keep(query, &result.rows, commit_realtime)
+                }
+            } else {
+                row_candidate_to_keep(query, &result.rows, commit_realtime)
+            };
+            let sampling_decision = if let Some(control) = control.as_deref_mut() {
+                if let Some(shared_sampling) = control.sampling.as_deref_mut() {
+                    Some(shared_sampling.decide(
+                        commit_realtime,
+                        metadata.seqnum,
+                        candidate_to_keep,
+                    ))
+                } else {
+                    sampling.as_mut().map(|sampling| {
+                        sampling.decide(commit_realtime, metadata.seqnum, candidate_to_keep)
+                    })
+                }
+            } else {
+                sampling.as_mut().map(|sampling| {
+                    sampling.decide(commit_realtime, metadata.seqnum, candidate_to_keep)
+                })
+            };
+            if let Some(decision) = sampling_decision {
+                match decision {
                     ExplorerSamplingDecision::Full { sampled } => {
                         if sampled {
                             result.stats.sampling_sampled =
@@ -1645,8 +1756,12 @@ impl FileReader {
                     &mut result.stats,
                 )?
             };
-            let effective_realtime = effective_realtime_from_scan(scan.timestamp, commit_realtime);
+            let mut effective_realtime =
+                effective_realtime_from_scan(scan.timestamp, commit_realtime);
             record_source_realtime_delta(&mut result.stats, scan.timestamp, commit_realtime);
+            if let Some(control) = control.as_deref_mut() {
+                effective_realtime = control.adjust_realtime(effective_realtime);
+            }
             if !timestamp_in_range(query, effective_realtime) {
                 continue;
             }
@@ -1658,8 +1773,13 @@ impl FileReader {
             }
 
             record_last_realtime(&mut result.stats, commit_realtime);
+            let mut stop_after_matched_row = false;
             if include_main {
                 result.stats.rows_matched = result.stats.rows_matched.saturating_add(1);
+                if let Some(control) = control.as_deref_mut() {
+                    stop_after_matched_row =
+                        control.emit_matched_row(effective_realtime, result.stats.rows_matched);
+                }
             }
             if include_facets {
                 result.stats.facet_rows_matched = result.stats.facet_rows_matched.saturating_add(1);
@@ -1675,12 +1795,15 @@ impl FileReader {
             if include_facets {
                 accumulator.finish_facet_row(row_id, &mut result.stats);
             }
-            if result.rows.len() < query.limit {
+            if row_within_anchor(query, effective_realtime) && result.rows.len() < query.limit {
                 result.rows.push(self.current_explorer_row(
                     effective_realtime,
                     &mut result.stats,
                     row_payload_mode,
                 )?);
+            }
+            if stop_after_matched_row {
+                break;
             }
             if should_stop_when_rows_full(
                 query,
@@ -1868,8 +1991,13 @@ impl FileReader {
     }
 
     fn seek_for_explorer(&mut self, query: &ExplorerQuery) {
+        let anchor = if query.stop_when_rows_full {
+            query.anchor
+        } else {
+            ExplorerAnchor::Auto
+        };
         match query.direction {
-            Direction::Forward => match query.anchor {
+            Direction::Forward => match anchor {
                 ExplorerAnchor::Auto => {
                     if let Some(after) = query.after_realtime_usec {
                         self.seek_realtime(after.saturating_sub(query.realtime_slack_usec));
@@ -1887,7 +2015,7 @@ impl FileReader {
                     }
                 }
             },
-            Direction::Backward => match query.anchor {
+            Direction::Backward => match anchor {
                 ExplorerAnchor::Auto => {
                     if let Some(before) = query.before_realtime_usec {
                         self.seek_realtime(before.saturating_add(query.realtime_slack_usec));
@@ -2562,6 +2690,9 @@ fn row_candidate_to_keep(query: &ExplorerQuery, rows: &[ExplorerRow], realtime_u
     if query.limit == 0 {
         return false;
     }
+    if !row_within_anchor(query, realtime_usec) {
+        return false;
+    }
     if rows.len() < query.limit {
         return true;
     }
@@ -2576,6 +2707,14 @@ fn row_candidate_to_keep(query: &ExplorerQuery, rows: &[ExplorerRow], realtime_u
             .map(|row| row.realtime_usec)
             .max()
             .is_some_and(|newest| realtime_usec <= newest),
+    }
+}
+
+fn row_within_anchor(query: &ExplorerQuery, realtime_usec: u64) -> bool {
+    match (query.direction, query.anchor) {
+        (Direction::Forward, ExplorerAnchor::Realtime(anchor)) => realtime_usec > anchor,
+        (Direction::Backward, ExplorerAnchor::Realtime(anchor)) => realtime_usec <= anchor,
+        _ => true,
     }
 }
 
@@ -2611,11 +2750,23 @@ fn add_estimated_histogram_range(
     if entries == 0 || from_realtime_usec >= to_realtime_usec {
         return;
     }
+
+    let Some(first) = histogram.buckets.first() else {
+        return;
+    };
+    let Some(last) = histogram.buckets.last() else {
+        return;
+    };
+    let from_realtime_usec = from_realtime_usec.max(first.start_realtime_usec);
+    let to_realtime_usec = to_realtime_usec.min(last.end_realtime_usec);
+    if from_realtime_usec >= to_realtime_usec {
+        return;
+    }
+
     let total = to_realtime_usec.saturating_sub(from_realtime_usec).max(1);
-    let mut remaining = entries;
     let mut touched = 0u64;
     for bucket in &mut histogram.buckets {
-        if bucket.start_realtime_usec >= to_realtime_usec {
+        if bucket.start_realtime_usec > to_realtime_usec {
             break;
         }
         let overlap_start = bucket.start_realtime_usec.max(from_realtime_usec);
@@ -2623,23 +2774,12 @@ fn add_estimated_histogram_range(
         if overlap_start >= overlap_end {
             continue;
         }
-        let mut bucket_entries = (overlap_end
-            .saturating_sub(overlap_start)
-            .saturating_mul(entries))
-            / total;
-        if bucket_entries == 0 && remaining != 0 {
-            bucket_entries = 1;
+        let bucket_entries = ((overlap_end.saturating_sub(overlap_start) as u128 * entries as u128)
+            / total as u128) as u64;
+        if bucket_entries != 0 {
+            increment_counter_by(&mut bucket.values, EXPLORER_ESTIMATED_VALUE, bucket_entries);
         }
-        let bucket_entries = bucket_entries.min(remaining);
-        if bucket_entries == 0 {
-            continue;
-        }
-        increment_counter_by(&mut bucket.values, EXPLORER_ESTIMATED_VALUE, bucket_entries);
-        remaining = remaining.saturating_sub(bucket_entries);
         touched = touched.saturating_add(1);
-        if remaining == 0 {
-            break;
-        }
     }
     stats.histogram_updates = stats.histogram_updates.saturating_add(touched);
 }
@@ -2816,21 +2956,15 @@ fn stop_by_commit_time(query: &ExplorerQuery, commit_realtime: u64) -> bool {
         }),
         Direction::Backward => query
             .after_realtime_usec
-            .is_some_and(|after| commit_realtime < after.saturating_sub(query.realtime_slack_usec)),
+            .is_some_and(|after| commit_realtime < after),
     }
 }
 
 fn skip_by_commit_time(query: &ExplorerQuery, commit_realtime: u64) -> bool {
-    // With source-realtime slack enabled, commit time is only a coarse stop
-    // signal. Per-row effective realtime filtering decides whether to include
-    // or skip each candidate row.
-    if query.realtime_slack_usec != 0 {
-        return false;
-    }
     match query.direction {
         Direction::Forward => query
             .after_realtime_usec
-            .is_some_and(|after| commit_realtime < after.saturating_sub(query.realtime_slack_usec)),
+            .is_some_and(|after| commit_realtime < after),
         Direction::Backward => query.before_realtime_usec.is_some_and(|before| {
             commit_realtime > before.saturating_add(query.realtime_slack_usec)
         }),
@@ -3244,6 +3378,97 @@ mod tests {
             .flat_map(|bucket| bucket.values.values())
             .sum::<u64>();
         assert_eq!(histogram_total, 2);
+    }
+
+    #[test]
+    fn explorer_sampling_uses_actual_histogram_bucket_count() {
+        let query = ExplorerQuery {
+            after_realtime_usec: Some(1_733_494_460_000_000),
+            before_realtime_usec: Some(1_735_656_412_000_000),
+            histogram: Some(b"PRIORITY".to_vec()),
+            histogram_target_buckets: 300,
+            sampling: Some(ExplorerSampling {
+                budget: 20_000,
+                matched_files: 200,
+                file_head_realtime_usec: 1_733_494_460_000_000,
+                file_tail_realtime_usec: 1_735_656_412_000_000,
+                file_head_seqnum: 1,
+                file_tail_seqnum: 2,
+                file_entries: 2,
+            }),
+            ..ExplorerQuery::default()
+        };
+
+        let bucket_count = histogram_bucket_count_for_query(&query).expect("bucket count");
+        let sampling =
+            ExplorerSamplingState::for_query(&query, Some(bucket_count)).expect("sampling");
+
+        assert_eq!(bucket_count, 302);
+        assert_eq!(sampling.per_slot_sampled.len(), bucket_count);
+    }
+
+    #[test]
+    fn explorer_sampling_seqnum_estimate_clamps_over_scanned_to_one() {
+        let query = ExplorerQuery {
+            after_realtime_usec: Some(1),
+            before_realtime_usec: Some(100),
+            direction: Direction::Forward,
+            sampling: Some(ExplorerSampling {
+                budget: 20,
+                matched_files: 1,
+                file_head_realtime_usec: 1,
+                file_tail_realtime_usec: 100,
+                file_head_seqnum: 1,
+                file_tail_seqnum: 100,
+                file_entries: 3,
+            }),
+            ..ExplorerQuery::default()
+        };
+        let mut sampling = ExplorerSamplingState::for_query(&query, None).expect("sampling");
+        sampling.per_file_sampled = 10;
+
+        assert_eq!(sampling.estimate_remaining_rows_by_seqnum(5), Some(1));
+    }
+
+    #[test]
+    fn explorer_estimated_histogram_distribution_matches_netdata_integer_math() {
+        let mut histogram = ExplorerHistogram {
+            field: b"PRIORITY".to_vec(),
+            buckets: vec![
+                ExplorerHistogramBucket {
+                    start_realtime_usec: 0,
+                    end_realtime_usec: 10,
+                    values: HashMap::new(),
+                },
+                ExplorerHistogramBucket {
+                    start_realtime_usec: 10,
+                    end_realtime_usec: 20,
+                    values: HashMap::new(),
+                },
+                ExplorerHistogramBucket {
+                    start_realtime_usec: 20,
+                    end_realtime_usec: 30,
+                    values: HashMap::new(),
+                },
+            ],
+        };
+        let mut stats = ExplorerStats::default();
+
+        add_estimated_histogram_range(Some(&mut histogram), 0, 30, 10, &mut stats);
+
+        let counts = histogram
+            .buckets
+            .iter()
+            .map(|bucket| {
+                bucket
+                    .values
+                    .get(EXPLORER_ESTIMATED_VALUE)
+                    .copied()
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(counts, vec![3, 3, 3]);
+        assert_eq!(counts.iter().sum::<u64>(), 9);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-06-06
+Last updated: 2026-06-07
 
 ## Current
 
@@ -36,26 +36,15 @@ Last updated: 2026-06-06
 
 ## Recently Closed Or Completed
 
-- SOW-0093 - Netdata Function Boundary Reader Comparison: completed. The Rust
-  SDK `journal::netdata` API is now the replacement surface for Netdata's
-  generic `systemd-journal.plugin` logs function, with the internal
-  `netdata_function_wrapper` kept as a thin offline stdin test adapter over
-  that API. Rust `journal::netdata`, the wrapper, and the semantic comparator
-  pass the repo-local SDK-first ten-request comparison matrix for `info`, full
-  priority, filtered priority, full default facets, low-budget sampling,
-  data-only, data-only delta, built-in `__logs_sources` source selection,
-  FTS `|` OR / `!` negative query terms, and tail/no-change `304`
-  function-error responses. Run-control is an SDK API feature: callers provide
-  timeout, progress, cancellation, and optional state hooks; progress reports
-  source/time-selected query files and file-end completion, cancellation is
-  checked before files, during active Explorer scans, and after file-end
-  progress callbacks. The API exposes caller-owned state hooks for
-  registry-provided source metadata and learned per-file
-  journal-vs-source-realtime drift. Final validation passed, including 95 Rust
-  tests, 17 comparator tests, ten stdin SDK/plugin comparison requests,
-  single-file progress-triggered cancellation, `git diff --check`, and the SOW
-  audit. Final valid reviewer votes from glm, kimi, mimo, qwen, minimax, and
-  deepseek were all `PRODUCTION GRADE`.
+- SOW-0093 - Netdata Function Boundary Reader Comparison: completed after
+  regression repair. The Rust SDK Netdata function boundary now has a broad
+  SDK-first everyday-use matrix with 20/20 stable-content passes after sampling
+  parity repairs and explicit non-content classification for known
+  installed-plugin `MESSAGE` corruption plus selected-and-faceted same-field
+  quirks. The post-review-fix five-repetition default full-analysis benchmark
+  shows SDK mean `3.950s`, plugin mean `12.678s`, and `3.21x` ratio of means.
+  Final six-model reviewer rerun returned `PRODUCTION GRADE` from all approved
+  reviewers.
 - SOW-0082 - Rust Optimized Journal Explorer API: completed after regression
   repair. Normal Netdata-shaped Explorer queries now use one candidate-row
   traversal for rows, facets, and histogram; the Netdata function wrapper keeps

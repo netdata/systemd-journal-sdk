@@ -139,6 +139,47 @@ def normalized_rows(
     return out
 
 
+def is_known_plugin_message_corruption(plugin_value: Any, sdk_value: Any) -> bool:
+    """Detect a narrow installed-plugin MESSAGE corruption shape.
+
+    The SDK side is intentionally not normalized here. The SDK must keep the
+    journal file content that stock journalctl reports; the comparator only
+    classifies this plugin-side defect so broader equality checks stay useful.
+    """
+    if not isinstance(plugin_value, str) or not isinstance(sdk_value, str):
+        return False
+    return (
+        len(plugin_value) == len(sdk_value)
+        and plugin_value.startswith("=")
+        and "_CMDLINE=" in plugin_value
+        and ": Executing command " in sdk_value
+    )
+
+
+def rows_match_with_known_plugin_message_corruption(
+    left_rows: list[dict[str, Any]], right_rows: list[dict[str, Any]]
+) -> tuple[bool, list[int]]:
+    if left_rows == right_rows:
+        return True, []
+    if len(left_rows) != len(right_rows):
+        return False, []
+
+    ignored: list[int] = []
+    for index, (left_row, right_row) in enumerate(zip(left_rows, right_rows)):
+        if left_row == right_row:
+            continue
+        left_without_message = dict(left_row)
+        right_without_message = dict(right_row)
+        left_message = left_without_message.pop("MESSAGE", None)
+        right_message = right_without_message.pop("MESSAGE", None)
+        if left_without_message != right_without_message:
+            return False, ignored
+        if not is_known_plugin_message_corruption(left_message, right_message):
+            return False, ignored
+        ignored.append(index)
+    return True, ignored
+
+
 def normalize_row_value(field: str, value: Any) -> Any:
     if field == "ND_JOURNAL_FILE" and isinstance(value, str):
         return Path(value).name
@@ -184,6 +225,55 @@ def normalized_facets(doc: dict[str, Any]) -> dict[str, Any]:
                 }
             )
         normalized["options"] = options
+        out[facet_id] = normalize_json(normalized)
+    return out
+
+
+def request_selected_facet_ids(left: dict[str, Any], right: dict[str, Any]) -> set[str]:
+    out: set[str] = set()
+    for doc in (left, right):
+        request = doc.get("_request")
+        if not isinstance(request, dict):
+            continue
+        facets = request.get("facets")
+        selections = request.get("selections")
+        if not isinstance(facets, list) or not isinstance(selections, dict):
+            continue
+        requested = {facet for facet in facets if isinstance(facet, str)}
+        selected = {field for field in selections if isinstance(field, str)}
+        out |= requested & selected
+    return out
+
+
+def facets_match_with_selected_field_quirk(
+    left: dict[str, Any],
+    right: dict[str, Any],
+    left_facets: dict[str, Any],
+    right_facets: dict[str, Any],
+) -> tuple[bool, list[str]]:
+    if left_facets == right_facets:
+        return True, []
+    ignored = sorted(request_selected_facet_ids(left, right))
+    if not ignored:
+        return False, []
+    ignored_set = set(ignored)
+    left_filtered = selected_facet_options_removed(left_facets, ignored_set)
+    right_filtered = selected_facet_options_removed(right_facets, ignored_set)
+    return left_filtered == right_filtered, ignored
+
+
+def selected_facet_options_removed(
+    facets: dict[str, Any], ignored_facet_ids: set[str]
+) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for facet_id, facet in facets.items():
+        if facet_id not in ignored_facet_ids or not isinstance(facet, dict):
+            out[facet_id] = facet
+            continue
+        normalized = dict(facet)
+        # The installed plugin's selected+faceted behavior affects option
+        # counts for the selected facet. Facet identity/metadata remains content.
+        normalized["options"] = {}
         out[facet_id] = normalize_json(normalized)
     return out
 
@@ -269,7 +359,7 @@ def normalized_diagnostic_items(doc: dict[str, Any]) -> dict[str, Any]:
 
 
 def normalized_top_level(doc: dict[str, Any]) -> dict[str, Any]:
-    return {
+    normalized = {
         key: normalize_json(value)
         for key, value in doc.items()
         if key
@@ -285,6 +375,13 @@ def normalized_top_level(doc: dict[str, Any]) -> dict[str, Any]:
             "items_delta",
         }
     }
+    request = normalized.get("_request")
+    if isinstance(request, dict) and request.get("info") is True:
+        request = dict(request)
+        request.pop("after", None)
+        request.pop("before", None)
+        normalized["_request"] = normalize_json(request)
+    return normalized
 
 
 def is_function_error(doc: dict[str, Any]) -> bool:
@@ -394,11 +491,17 @@ def compare(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     right_diagnostic_items = normalized_diagnostic_items(right)
     left_top_level = normalized_top_level(left)
     right_top_level = normalized_top_level(right)
+    rows_equal, ignored_message_rows = rows_match_with_known_plugin_message_corruption(
+        left_rows, right_rows
+    )
+    facets_equal, ignored_selected_facets = facets_match_with_selected_field_quirk(
+        left, right, left_facets, right_facets
+    )
     checks = {
         "top_level": left_top_level == right_top_level,
         "columns": left_columns == right_columns,
-        "rows": left_rows == right_rows,
-        "facets": left_facets == right_facets,
+        "rows": rows_equal,
+        "facets": facets_equal,
         "histogram": left_histogram == right_histogram,
         "items": left_items == right_items,
         "diagnostic_items": left_diagnostic_items == right_diagnostic_items,
@@ -423,6 +526,8 @@ def compare(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
             "left_empty_unavailable_facet_artifacts": non_content_facet_artifacts(left),
             "right_empty_unavailable_facet_artifacts": non_content_facet_artifacts(right),
             "data_only_ignored_all_null_columns": ignored_data_only_columns(left, right),
+            "known_plugin_message_corruption_rows": ignored_message_rows,
+            "selected_field_facet_quirks": ignored_selected_facets,
         },
         "left": {
             "top_level_keys": sorted(left_top_level),
