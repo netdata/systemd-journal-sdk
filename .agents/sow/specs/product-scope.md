@@ -484,13 +484,14 @@ Accepted reader API layers:
   payloads. Convenience entry materialization APIs may build maps, repeated
   value maps, owned payload vectors, and cursor strings and are not the
   primary hot path.
-- Rust exposes `FileReader::explore()` as an optimized single-file
-  log-explorer query surface for exact indexed filters, selected facet
-  counters, optional histogram, optional FTS, and optional returned rows. It
-  uses native filter indexes for exact slicing, lazy candidate-row DATA-offset
-  classification caches to avoid reprocessing reusable `FIELD=value` objects
-  within each traversal pass, and owned cached value labels for required DATA
-  that must be returned in facet, histogram, FTS, or row results.
+- Rust and Go expose optimized single-file log-explorer query surfaces for
+  exact indexed filters, selected facet counters, optional histogram, optional
+  FTS, and optional returned rows. Rust exposes `FileReader::explore()`;
+  Go exposes `Reader.Explore()`. Both use native filter indexes for exact
+  slicing, lazy candidate-row DATA-offset classification caches to avoid
+  reprocessing reusable `FIELD=value` objects within each traversal pass, and
+  owned cached value labels for required DATA that must be returned in facet,
+  histogram, FTS, or row results.
   Facets with the same effective filter set are grouped into one traversal
   pass. `ExplorerAnchor::Auto` is the default scan-start policy, using the
   lower time bound or head for forward queries and the upper time bound or tail
@@ -505,9 +506,10 @@ Accepted reader API layers:
   `ExplorerFieldMode::AllValues` is an explicit slower mode for exact
   duplicate-value accounting and scans the whole row for repeated-field
   correctness.
-- Rust also exposes explicit explorer execution strategy controls through
-  `FileReader::explore_with_strategy()`. `ExplorerStrategy::Traversal` is the
-  default and remains the behavior of `FileReader::explore()`.
+- Rust and Go also expose explicit explorer execution strategy controls through
+  `FileReader::explore_with_strategy()` and `Reader.ExploreWithStrategy()`.
+  `ExplorerStrategy::Traversal` is the default and remains the behavior of
+  `FileReader::explore()` and `Reader.Explore()`.
   `ExplorerStrategy::Index` walks FIELD/DATA chains and DATA entry posting
   lists to derive facet and histogram counts without candidate-row field
   traversal, but it is intentionally limited to exact `AllValues` accounting,

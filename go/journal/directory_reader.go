@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+// DirectoryReader reads multiple journal files in journal order. A
+// DirectoryReader is not safe for concurrent use by multiple goroutines.
 type DirectoryReader struct {
 	files             []*Reader
 	index             int

@@ -3,7 +3,6 @@
 ## Current
 
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
-- `SOW-0095-20260607-go-explorer-netdata-parity.md` - in-progress. Port the Rust Explorer SDK API, generic Netdata logs function API, and Netdata function wrapper to Go, including the Rust reader/Explorer performance work from SOW-0083 through SOW-0092 where it affects Go. Go Explorer API chunk is implemented, locally validated, Rust/Go smoke-parity checked, and reviewed `PRODUCTION GRADE` by the approved reviewer pool. Go Netdata function API and wrapper are implemented and locally validated with 10/10 Go-wrapper-vs-Rust-wrapper Netdata function comparator cases passing. The large SOW-0093 `/var/log/journal` request passes 3/3 Go-vs-Rust content comparisons after profiling fixes, with Go averaging 3.534s and Rust averaging 2.929s; the full-SOW reviewer gate remains pending.
 
 ## Pending
 
@@ -16,6 +15,7 @@
 
 ## Done
 
+- `SOW-0095-20260607-go-explorer-netdata-parity.md`
 - `SOW-0084-20260602-code-scanning-and-codacy-gate.md`
 - `SOW-0075-20260601-vm-historical-systemd-validation.md`
 - `SOW-0076-20260601-independent-selective-real-corpus-verification.md`

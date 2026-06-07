@@ -1703,10 +1703,10 @@ func (r *Reader) scanExplorerCombined(query ExplorerQuery, candidates explorerCa
 func (r *Reader) scanExplorerFacet(query ExplorerQuery, candidates explorerCandidateSet, acc *explorerAccumulator, stats *ExplorerStats, control *ExplorerControl) error {
 	r.seekForExplorer(query)
 	candidates.prepare(query.Direction)
-	deferApply := query.AfterRealtimeUsec != nil || query.BeforeRealtimeUsec != nil || queryHasFTS(query)
+	needsFTS := queryHasFTS(query)
+	deferApply := query.AfterRealtimeUsec != nil || query.BeforeRealtimeUsec != nil || needsFTS
 	var rowID, rowsSeen uint64
 	var deferred []int
-	needsFTS := queryHasFTS(query)
 	for {
 		frame, ok, stop, err := r.nextExplorerRowFrame(query, &candidates, &rowsSeen, *stats, control)
 		if err != nil || stop {

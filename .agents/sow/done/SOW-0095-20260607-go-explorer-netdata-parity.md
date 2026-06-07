@@ -2,11 +2,11 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: Go Explorer API chunk implemented and reviewed; Go Netdata function
-API and wrapper implemented, locally validated, benchmarked, and profiled;
-full-SOW reviewer gate pending.
+Sub-state: Go Explorer API, Go Netdata function API, and Go stdin wrapper are
+implemented, locally validated, benchmarked, profiled, reviewed, and ready for
+repository push.
 
 ## Requirements
 
@@ -266,8 +266,8 @@ Artifact impact plan:
   help.
 - End-user/operator skills: no expected update; none currently exist for this
   surface.
-- SOW lifecycle: this SOW is current/in-progress; close only after code,
-  validation, reviewers, and follow-up mapping are complete.
+- SOW lifecycle: completion requires code, validation, reviewers, follow-up
+  mapping, status change, and move to `done/`.
 - SOW-status.md: update both project status ledgers when this SOW changes
   state.
 
@@ -527,6 +527,60 @@ Failure handling:
   `scanExplorerCombined`, `handleRowValueClass`, `offsetClassCache.lookup`,
   `readEntryDataOffsetsAt`, and offset-cache insertion/growth. Evidence:
   `.local/sow-0095/performance/go-perf-after-fts-hoist.data`.
+- Applied post-review low-risk cleanup and coverage:
+  - `scanExplorerFacet` now computes FTS need once and reuses it for deferred
+    apply selection.
+  - `netdataPageHeap.Push` now panics with a precise internal type-contract
+    message if called with a non-`uint64` value.
+  - `netdataJournalSourceSummary.addPath` now uses the header/index-only
+    reader open path because it only reads header metadata.
+  - Added focused tests for `offsetClassCache` zero-offset sentinel behavior,
+    cache growth retention, delayed unset facet accounting, page-window
+    direction retention, and `_BOOT_ID` first-realtime edge cases.
+- Current local validation after post-review cleanup passed:
+  `cd go && go test ./...`,
+  `cd rust && cargo test -q -p journal netdata`,
+  `git diff --check`, and
+  `tests/netdata_function/run_function_compare.py` with 10/10 SDK-first
+  Go-wrapper vs Rust-wrapper request fixtures passing against current wrapper
+  builds. Evidence report:
+  `.local/sow-0095/go-rust-comparator-current/all.json`.
+- Updated specs and Go API docs so the Explorer and Netdata function boundary
+  describe Rust and Go as current implementations, and recorded the
+  plugin-compatible UID/GID display-name parity nuance: Rust uses platform
+  user/group lookup APIs on Unix; Go keeps the no-CGO contract and uses
+  pure-Go passwd/group file lookup when available.
+- Added focused Go Netdata unit coverage for the behavior families that were
+  previously covered mainly by Rust tests and end-to-end comparator fixtures:
+  request parsing, time-window normalization, source selection/classification,
+  profile display transforms, UID display-cache fallback, realtime adjustment,
+  data-only mode, delta mode, tail/no-change mode, progress callbacks, timeout
+  partial responses, sampling counters, sampling-disabled data-only behavior,
+  and recursive journal-file collection.
+- Fixed `go/API.md` timeout wording to match the implemented
+  Netdata/plugin-compatible behavior: timeout is a controlled partial table
+  response with `status: 200` and a warning message, not a Go error and not a
+  `504` response.
+- Current local validation after adding the Go Netdata parity tests passed:
+  `cd go && go test ./...`,
+  `cd rust && cargo test -q -p journal netdata`, and
+  `tests/netdata_function/run_function_compare.py` with 10/10 SDK-first
+  Go-wrapper vs Rust-wrapper request fixtures passing against current wrapper
+  builds. Evidence report:
+  `.local/sow-0095/go-rust-comparator-current/all.json`.
+- Final full-SOW reviewer rerun completed. The final missing reviewer,
+  `llm-netdata-cloud/kimi-k2.6`, returned `PRODUCTION GRADE: YES` after
+  rerunning `go test ./...`, `cargo test -q -p journal netdata`,
+  wrapper build checks, `.agents/sow/audit.sh`, `git diff --check`, and
+  repeated-pattern scans.
+- Fixed Kimi's only concrete low finding by removing the duplicate
+  `expandRowPayloads()` call from the Netdata function top-level request path;
+  `exploreFiles()` already expands the retained rows before returning.
+- Revalidated after that cleanup with `cd go && go test ./...`,
+  `git diff --check`, wrapper rebuilds for Go and Rust, and
+  `tests/netdata_function/run_function_compare.py`; the comparator report
+  stayed `ok: true` with 10/10 cases passing.
+- `.agents/sow/audit.sh` passed clean before closeout.
 
 ## Validation
 
@@ -550,8 +604,9 @@ Acceptance criteria evidence:
     `go/internal/testcmd/netdata_function_wrapper/main.go`.
   - The wrapper produces stable-content parity with the Rust wrapper for the
     committed 10-request Netdata function comparator matrix.
-- Full SOW evidence remains pending for the final reviewer rerun and close
-  gates.
+- The whole-SOW reviewer rerun reached `PRODUCTION GRADE: YES` across the
+  approved reviewer pool, and local validation remained clean after the final
+  low-risk cleanup.
 
 Tests or equivalent validation:
 
@@ -566,7 +621,36 @@ Tests or equivalent validation:
   - `cd rust && cargo build -q -p netdata_function_wrapper` passed.
   - `tests/netdata_function/run_function_compare.py` passed 10/10 SDK-first
     Go-wrapper vs Rust-wrapper request fixtures with `ALL_OK True`.
-- Full SOW tests remain pending for the final reviewer rerun and close gates.
+- Post-review cleanup validation:
+  - `cd go && go test ./...` passed.
+  - `cd rust && cargo test -q -p journal netdata` passed.
+  - `cd go && go build -o ../.local/sow-0095/go-netdata-function-wrapper-current ./internal/testcmd/netdata_function_wrapper` passed.
+  - `cd rust && cargo build -q -p netdata_function_wrapper` passed.
+  - Current SDK-first comparator validation passed 10/10 Go-wrapper vs
+    Rust-wrapper request fixtures with stable-content parity. Evidence:
+    `.local/sow-0095/go-rust-comparator-current/all.json`.
+  - `git diff --check` passed.
+- Post-review test-gap repair validation:
+  - `cd go && go test ./...` passed after adding the focused Go Netdata
+    request/source/profile/response-mode unit tests.
+  - `cd go && go test ./journal -list 'Test(Netdata|Normalize)'` now lists
+    14 focused Go Netdata/time-normalization tests covering the behavior
+    clusters above.
+  - `cd rust && cargo test -q -p journal netdata` passed.
+  - Current SDK-first comparator validation still passed 10/10 Go-wrapper vs
+    Rust-wrapper request fixtures with stable-content parity.
+- Final cleanup validation:
+  - `llm-netdata-cloud/kimi-k2.6` reran `cd go && go test ./...`,
+    `cd rust && cargo test -q -p journal netdata`, Go wrapper build,
+    `.agents/sow/audit.sh`, and `git diff --check`; all passed.
+  - After removing the duplicate retained-row expansion call found by Kimi,
+    `cd go && go test ./...` passed.
+  - `git diff --check` passed.
+  - Go and Rust Netdata function wrappers rebuilt successfully.
+  - Current SDK-first comparator validation passed 10/10 Go-wrapper vs
+    Rust-wrapper request fixtures with stable-content parity. Evidence:
+    `.local/sow-0095/go-rust-comparator-current/all.json`.
+  - `.agents/sow/audit.sh` passed clean.
 
 Real-use evidence:
 
@@ -615,6 +699,32 @@ Reviewer findings:
   - `llm-netdata-cloud/deepseek-v4-pro`: replacement run returned
     `PRODUCTION GRADE`; the earlier final rerun session was unavailable after
     context transition.
+- Final whole-SOW reviewer rerun after Go Netdata API/wrapper, profiling
+  fixes, focused Go Netdata tests, and closeout cleanup:
+  - `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE: YES`.
+  - `llm-netdata-cloud/deepseek-v4-pro`: `PRODUCTION GRADE: YES`.
+  - `llm-netdata-cloud/qwen3.6-plus`: initial final run blocked on procedural
+    SOW closeout and test-evidence gaps; rerun returned
+    `PRODUCTION GRADE: YES`.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: initial final run blocked on procedural
+    SOW closeout and Go Netdata unit-test coverage depth; rerun returned
+    `PRODUCTION GRADE: YES`.
+  - `llm-netdata-cloud/minimax-m3-coder`: rerun returned
+    `PRODUCTION GRADE: YES`.
+  - `llm-netdata-cloud/kimi-k2.6`: final rerun returned
+    `PRODUCTION GRADE: YES`.
+- Final whole-SOW reviewer dispositions:
+  - Procedural SOW closeout gaps were fixed by populating outcome, lessons,
+    follow-up mapping, validation, and artifact gates.
+  - Go Netdata test-evidence gaps were fixed with focused
+    request/source/profile/progress/timeout/sampling/response-mode tests.
+  - Mimo's resource-safety and documentation observations were fixed by
+    deferring reader close in `addZeroCountFacetValuesFromFiles`, documenting
+    header/index-only open and reader concurrency, and clarifying timeout and
+    UID/GID profile docs.
+  - Kimi's duplicate retained-row expansion observation was fixed by removing
+    the top-level duplicate `expandRowPayloads()` call; local validation and
+    comparator parity still passed.
 - Final non-blocking reviewer observations:
   - Benchmark-only `/proc/self/status` memory telemetry is isolated to
     `go/internal/testcmd/reader_core_bench/main.go` and mirrors the Rust
@@ -629,55 +739,57 @@ Reviewer findings:
 
 Same-failure scan:
 
-- Explorer chunk only:
-  - `rg -n "GetEntry\(|debug_collect_column_fields_by_row_traversal|/proc|machine-id|exec\.Command|os/exec|TODO|FIXME|HACK|BUG" go/journal/explorer.go go/journal/explorer_test.go go/internal/testcmd/reader_core_bench/main.go`
-    found no `GetEntry()` calls in `go/journal/explorer.go` and no forbidden
-    host probing in core Explorer code.
-  - Matches are limited to the explicit debug-row-traversal rejection string in
-    `go/journal/explorer.go`, existing benchmark `sdk-entry` mode `GetEntry()`
-    use in `reader_core_bench`, and benchmark-only `/proc/self/status`
-    telemetry in `reader_core_bench`.
+- `rg -n "GetEntry\(|debug_collect_column_fields_by_row_traversal|/proc|machine-id|exec\.Command|os/exec|TODO|FIXME|HACK|BUG" go/journal/explorer.go go/journal/explorer_test.go go/journal/netdata.go go/journal/netdata_test.go go/internal/testcmd/netdata_function_wrapper/main.go go/internal/testcmd/reader_core_bench/main.go`
+  found no `GetEntry()` calls in `go/journal/explorer.go` and no forbidden
+  host probing in core Explorer or Netdata function code.
+- Matches are limited to the explicit debug-row-traversal rejection string in
+  `go/journal/explorer.go`, intended returned-row `GetEntry()` expansion in
+  `go/journal/netdata.go`, existing benchmark `sdk-entry` mode `GetEntry()`
+  use in `reader_core_bench`, and benchmark-only `/proc/self/status`
+  telemetry in `reader_core_bench`.
 
 Sensitive data gate:
 
-- Explorer chunk only: no raw journal payloads, customer identifiers, secrets,
-  tokens, private endpoints, or personal data were written to durable
-  artifacts. Reviewer summaries and validation evidence use sanitized file
-  paths, counters, checksums, and command names.
+- No raw journal payloads, customer identifiers, secrets, tokens, private
+  endpoints, or personal data were written to durable artifacts. Reviewer
+  summaries and validation evidence use sanitized file paths, counters,
+  checksums, and command names.
 
 Artifact maintenance gate:
 
-- AGENTS.md: no update needed for the Explorer chunk; no new project-wide
-  workflow rule was discovered.
-- Runtime project skills: no update needed for the Explorer chunk; existing
-  orchestration and journal compatibility skills covered the work.
-- Specs: pending for full SOW close after the Go Netdata function API/wrapper
-  is implemented.
-- End-user/operator docs: pending for full SOW close after the Go Netdata
-  function API/wrapper is implemented.
-- End-user/operator skills: no update needed for the Explorer chunk; none
-  exist for this surface.
-- SOW lifecycle: this SOW remains `in-progress` in `current/` because the Go
-  Netdata function API and wrapper are pending.
-- SOW-status.md: updated for the Explorer chunk in both status ledgers.
+- AGENTS.md: no update needed; no new project-wide workflow rule was
+  discovered.
+- Runtime project skills: no update needed; existing orchestration and journal
+  compatibility skills covered the work.
+- Specs: updated `.agents/sow/specs/product-scope.md` and
+  `.agents/sow/specs/systemd-journal-plugin-facets.md` to describe Rust and
+  Go as current Explorer/Netdata function implementations and to record the
+  UID/GID display-name parity nuance.
+- End-user/operator docs: updated `go/API.md` for Go Explorer, Netdata
+  function, stdin request, cancellation, timeout, and UID/GID profile behavior.
+- End-user/operator skills: no update needed; none exist for this surface.
+- SOW lifecycle: this SOW is completed and moves to `done/` with the
+  implementation, validation, docs/spec updates, and SOW lifecycle change in
+  one commit.
+- SOW-status.md: both status ledgers are updated during the final SOW move.
 
 Specs update:
 
-- Pending for full SOW close; Explorer chunk status is recorded here and in
-  status ledgers.
+- Updated `.agents/sow/specs/product-scope.md`.
+- Updated `.agents/sow/specs/systemd-journal-plugin-facets.md`.
 
 Project skills update:
 
-- No update needed for the Explorer chunk.
+- No update needed; no new reusable workflow rule or compatibility rule was
+  discovered.
 
 End-user/operator docs update:
 
-- Pending for full SOW close after the Go Netdata function API/wrapper is
-  implemented.
+- Updated `go/API.md`.
 
 End-user/operator skills update:
 
-- No update needed for the Explorer chunk.
+- No update needed; none exist for this surface.
 
 Lessons:
 
@@ -687,22 +799,45 @@ Lessons:
 - Shell reviewer prompts must avoid unescaped backticks; a final `qwen` rerun
   was required because shell expansion removed a literal identifier from the
   first replacement prompt.
+- End-to-end comparator parity was necessary but not sufficient for future
+  maintainability; focused Go Netdata unit tests were added for the
+  Rust-covered behavior clusters most likely to regress independently.
+- Timeout behavior must be documented at the Netdata function contract level,
+  not inferred from generic HTTP status semantics. The plugin-compatible
+  contract returns a partial table with warning status.
 
 Follow-up mapping:
 
-- Go Netdata function API and wrapper remain in this same SOW.
-- The indexed-strategy time-bounded candidate early-exit opportunity remains
-  inside this SOW's benchmark/profile stage unless later evidence shows it
-  deserves a separate focused SOW.
+- Go Netdata function API and wrapper: implemented in this SOW.
+- Indexed-strategy time-bounded candidate early-exit: rejected as a required
+  follow-up for this SOW. It is a possible future optimization, but the final
+  profiled large-query comparison shows Go is materially comparable to Rust
+  at `1.21x` slower and remaining cost is in expected scan paths, not in an
+  accidental full-entry expansion or correctness issue.
+- Go Netdata unit-test isolation gap: addressed in this SOW by adding focused
+  request/source/profile/progress/timeout/sampling/response-mode tests.
 
 ## Outcome
 
-Pending.
+Implemented the Go Explorer SDK API, generic Netdata logs function API, and
+stdin-based Netdata function wrapper. The Go wrapper matches the Rust wrapper
+on the committed Netdata function request matrix and the larger SOW-0093
+journal-window benchmark, and Go has focused unit coverage for the Rust-covered
+Netdata behavior clusters that are most likely to regress independently.
 
 ## Lessons Extracted
 
-Pending.
+- Whole-SOW reviewer prompts can validly fail closeout if the SOW still has
+  stale lifecycle text. Keep `Outcome`, `Lessons Extracted`, and `Followup`
+  populated before the final review run.
+- Comparator fixtures prove content parity, but focused unit tests are still
+  needed for maintainability where one language has a larger local test set.
+- Documentation needs explicit status-shape wording for controlled stops:
+  cancellation is a compact function error, while timeout is a partial table
+  with a warning.
 
 ## Followup
 
-Pending.
+No required follow-up remains for SOW-0095. Netdata component integration
+continues under SOW-0047 through SOW-0050, and the broader benchmark/profile
+umbrella remains SOW-0009.

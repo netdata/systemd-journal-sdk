@@ -127,8 +127,15 @@ request filename to privileged wrappers.
 
 `NetdataFunctionRunOptions` carries timeout, progress, cancellation, and
 optional state callbacks. A cancelled run returns a table response with status
-`499`; timeout returns status `504`. These are controlled stops, not Go
-errors.
+`499`; timeout returns a partial table response with status `200` and a
+warning message. These are controlled stops, not Go errors.
+
+The default Netdata profile keeps UID/GID journal fields as raw numeric
+strings. The plugin-compatible profile may resolve UID/GID display names for
+comparison with Netdata's installed `systemd-journal.plugin`, but the Go SDK
+keeps the no-CGO contract and uses a pure-Go passwd/group file lookup instead
+of NSS. Callers that need a different identity-display policy should provide a
+custom profile above the core journal reader.
 
 ## Directory Contract
 

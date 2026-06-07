@@ -122,6 +122,8 @@ func (o ReaderOptions) normalized() ReaderOptions {
 	return o
 }
 
+// Reader reads one journal file. A Reader is not safe for concurrent use by
+// multiple goroutines; callers should serialize access or open separate readers.
 type Reader struct {
 	file        *os.File
 	header      journalHeader
@@ -173,6 +175,8 @@ func OpenFileWithOptions(path string, opts ReaderOptions) (*Reader, error) {
 	return openFileWithOptions(path, opts, true)
 }
 
+// openFileWithOptions opens a journal file. loadEntries=false is only for
+// header and FIELD/DATA-index operations that never traverse ENTRY arrays.
 func openFileWithOptions(path string, opts ReaderOptions, loadEntries bool) (*Reader, error) {
 	opts = opts.normalized()
 	f, cleanupPath, err := openJournalFile(path)

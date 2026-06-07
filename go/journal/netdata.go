@@ -367,7 +367,6 @@ func (f NetdataJournalFunction) RunDirectoryRequestJSONWithOptions(directory str
 			combined.addZeroCountFacetValues(vocabulary.Facets)
 		}
 	}
-	combined.expandRowPayloads(f.Config.ReaderOptions)
 	return f.queryResponse(parsed, annotationPaths, combined), nil
 }
 
@@ -648,7 +647,11 @@ func (h netdataPageHeap) Swap(i, j int) {
 }
 
 func (h *netdataPageHeap) Push(value any) {
-	h.Values = append(h.Values, value.(uint64))
+	typed, ok := value.(uint64)
+	if !ok {
+		panic("netdataPageHeap.Push expects uint64")
+	}
+	h.Values = append(h.Values, typed)
 }
 
 func (h *netdataPageHeap) Pop() any {
@@ -1082,26 +1085,28 @@ func (c *netdataCombinedResult) addZeroCountFacetValues(vocabulary map[string]ma
 
 func (c *netdataCombinedResult) addZeroCountFacetValuesFromFiles(fields [][]byte, readerOptions ReaderOptions) {
 	for _, path := range c.MatchedPaths {
-		reader, err := openFileWithOptions(path, readerOptions, false)
-		if err != nil {
-			continue
-		}
-		for _, field := range fields {
-			fieldName := string(field)
-			values, err := reader.QueryUnique(fieldName)
-			if err != nil || len(values) == 0 {
-				continue
+		func() {
+			reader, err := openFileWithOptions(path, readerOptions, false)
+			if err != nil {
+				return
 			}
-			target := c.Facets[fieldName]
-			if target == nil {
-				target = make(map[string]uint64)
-				c.Facets[fieldName] = target
+			defer reader.Close()
+			for _, field := range fields {
+				fieldName := string(field)
+				values, err := reader.QueryUnique(fieldName)
+				if err != nil || len(values) == 0 {
+					continue
+				}
+				target := c.Facets[fieldName]
+				if target == nil {
+					target = make(map[string]uint64)
+					c.Facets[fieldName] = target
+				}
+				for _, value := range values {
+					addNetdataFacetCount(target, string(value), 0)
+				}
 			}
-			for _, value := range values {
-				addNetdataFacetCount(target, string(value), 0)
-			}
-		}
-		_ = reader.Close()
+		}()
 	}
 }
 
@@ -2038,7 +2043,7 @@ func (s *netdataJournalSourceSummary) addPath(path string, readerOptions ReaderO
 			return
 		}
 	}
-	reader, err := OpenFileWithOptions(path, readerOptions)
+	reader, err := openFileWithOptions(path, readerOptions, false)
 	if err != nil {
 		return
 	}

@@ -2,9 +2,11 @@ package journal
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNetdataFunctionInfoResponse(t *testing.T) {
@@ -64,6 +66,418 @@ func TestNetdataCollectBootFirstRealtimeUsesBootIndex(t *testing.T) {
 	}
 	if got[bootB.String()] != 200 {
 		t.Fatalf("boot B first realtime = %d, want 200", got[bootB.String()])
+	}
+}
+
+func TestNetdataCollectBootFirstRealtimeSkipsUnneededAndKeepsZeroRealtime(t *testing.T) {
+	bootA := UUID{0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xcb, 0xcc, 0xcd, 0xce, 0xcf}
+	bootB := UUID{0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf}
+	path := filepath.Join(t.TempDir(), "boot-edge.journal")
+	w, err := Create(path, Options{BootID: bootA})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	rows := []struct {
+		boot     UUID
+		realtime uint64
+		message  string
+	}{
+		{boot: bootA, realtime: 0, message: "boot-a-zero"},
+		{boot: bootB, realtime: 50, message: "boot-b-unneeded"},
+		{boot: bootA, realtime: 300, message: "boot-a-late"},
+	}
+	for _, row := range rows {
+		err := w.Append([]Field{
+			StringField("MESSAGE", row.message),
+			StringField("_BOOT_ID", row.boot.String()),
+		}, EntryOptions{RealtimeUsec: row.realtime, RealtimeUsecSet: true, MonotonicUsec: row.realtime, MonotonicUsecSet: true, BootID: row.boot})
+		if err != nil {
+			t.Fatalf("Append(%s) error = %v", row.message, err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	if got := collectBootFirstRealtime([]string{path}, DefaultReaderOptions(), nil); len(got) != 0 {
+		t.Fatalf("empty needed boot IDs returned %v, want empty", got)
+	}
+	got := collectBootFirstRealtime([]string{path, filepath.Join(filepath.Dir(path), "missing.journal")}, DefaultReaderOptions(), map[string]struct{}{
+		bootA.String(): {},
+	})
+	value, ok := got[bootA.String()]
+	if !ok || value != 0 {
+		t.Fatalf("boot A first realtime = %d, present=%v, want 0/present", value, ok)
+	}
+	if _, ok := got[bootB.String()]; ok {
+		t.Fatalf("unneeded boot B was collected: %v", got)
+	}
+}
+
+func TestNetdataPageWindowRetainsDirectionSpecificPage(t *testing.T) {
+	backward := &netdataPageWindow{Direction: DirectionBackward, Limit: 2}
+	backward.observe(100)
+	backward.observe(200)
+	backward.observe(300)
+	backward.observe(150)
+	if backward.Matched != 4 || backward.SkipsAfter != 1 || backward.Shifts != 1 {
+		t.Fatalf("backward counters = matched=%d skips_after=%d shifts=%d, want 4/1/1", backward.Matched, backward.SkipsAfter, backward.Shifts)
+	}
+	if backward.OldestRetainedUsec == nil || backward.NewestRetainedUsec == nil ||
+		*backward.OldestRetainedUsec != 200 || *backward.NewestRetainedUsec != 300 {
+		t.Fatalf("backward retained bounds = %v/%v, want 200/300", backward.OldestRetainedUsec, backward.NewestRetainedUsec)
+	}
+	if !backward.candidateToKeep(250) || backward.candidateToKeep(150) {
+		t.Fatal("backward candidateToKeep bounds are wrong")
+	}
+
+	forward := &netdataPageWindow{Direction: DirectionForward, Limit: 2, Retained: netdataPageHeap{Max: true}}
+	forward.observe(300)
+	forward.observe(200)
+	forward.observe(100)
+	forward.observe(250)
+	if forward.Matched != 4 || forward.SkipsBefore != 1 || forward.Shifts != 1 {
+		t.Fatalf("forward counters = matched=%d skips_before=%d shifts=%d, want 4/1/1", forward.Matched, forward.SkipsBefore, forward.Shifts)
+	}
+	if forward.OldestRetainedUsec == nil || forward.NewestRetainedUsec == nil ||
+		*forward.OldestRetainedUsec != 100 || *forward.NewestRetainedUsec != 200 {
+		t.Fatalf("forward retained bounds = %v/%v, want 100/200", forward.OldestRetainedUsec, forward.NewestRetainedUsec)
+	}
+	if !forward.candidateToKeep(150) || forward.candidateToKeep(250) {
+		t.Fatal("forward candidateToKeep bounds are wrong")
+	}
+}
+
+func TestNetdataRequestParsingModesFiltersAndSourceSelection(t *testing.T) {
+	request := map[string]any{
+		"after":     float64(200_000_000),
+		"before":    float64(200_000_100),
+		"direction": "forward",
+		"last":      float64(1),
+		"facets":    []any{"PRIORITY"},
+		"histogram": "PRIORITY",
+		"query":     `alpha|!debug|needle\|pipe`,
+		"selections": map[string]any{
+			"PRIORITY":       []any{"warning", "error"},
+			"_HOSTNAME":      []any{"node-a"},
+			"query":          []any{"ignored"},
+			"__logs_sources": []any{"all-local-system-logs", "namespace-blue"},
+		},
+	}
+	parsed, err := parseNetdataRequest(request, SystemdJournalNetdataFunctionConfig())
+	if err != nil {
+		t.Fatalf("parseNetdataRequest() error = %v", err)
+	}
+	if parsed.AfterRealtimeUsec == nil || *parsed.AfterRealtimeUsec != 200_000_000_000_000 {
+		t.Fatalf("after = %v, want 200000000000000", parsed.AfterRealtimeUsec)
+	}
+	if parsed.BeforeRealtimeUsec == nil || *parsed.BeforeRealtimeUsec != 200_000_100_999_999 {
+		t.Fatalf("before = %v, want 200000100999999", parsed.BeforeRealtimeUsec)
+	}
+	if parsed.Direction != DirectionForward {
+		t.Fatalf("direction = %v, want forward", parsed.Direction)
+	}
+	if parsed.Limit != 2 || numericUint64(parsed.Echo["last"]) != 1 {
+		t.Fatalf("limit/echo = %d/%v, want effective 2 and echoed 1", parsed.Limit, parsed.Echo["last"])
+	}
+	if len(parsed.Filters) != 2 {
+		t.Fatalf("filters = %d, want 2", len(parsed.Filters))
+	}
+	if string(parsed.Filters[0].Field) != "PRIORITY" || string(parsed.Filters[0].Values[0]) != "4" || string(parsed.Filters[0].Values[1]) != "3" {
+		t.Fatalf("priority filter = %#v, want warning/error normalized to 4/3", parsed.Filters[0])
+	}
+	if string(parsed.Filters[1].Field) != "_HOSTNAME" || string(parsed.Filters[1].Values[0]) != "node-a" {
+		t.Fatalf("hostname filter = %#v, want _HOSTNAME=node-a", parsed.Filters[1])
+	}
+	if parsed.SourceType != netdataSourceTypeLocalSystem {
+		t.Fatalf("source type = %#x, want local system", parsed.SourceType)
+	}
+	if len(parsed.ExactSources) != 1 || parsed.ExactSources[0] != "namespace-blue" {
+		t.Fatalf("exact sources = %#v, want namespace-blue", parsed.ExactSources)
+	}
+	if len(parsed.FTSTerms) != 3 || len(parsed.FTSPatterns) != 2 || len(parsed.FTSNegativePatterns) != 1 {
+		t.Fatalf("fts terms/patterns/negative = %d/%d/%d, want 3/2/1", len(parsed.FTSTerms), len(parsed.FTSPatterns), len(parsed.FTSNegativePatterns))
+	}
+	query := parsed.toExplorerQuery(1, nil, netdataJournalRealtimeDeltaDefault)
+	if query.Limit != 2 || query.DebugCollectColumnFieldsByRowTraversal {
+		t.Fatalf("explorer query limit/debug = %d/%v, want 2/false", query.Limit, query.DebugCollectColumnFieldsByRowTraversal)
+	}
+	if !query.ExcludeFacetFieldFilters {
+		t.Fatal("multi-filter facet query did not exclude same-field filter")
+	}
+}
+
+func TestNormalizeNetdataTimeWindowMatchesPluginEdges(t *testing.T) {
+	cases := []struct {
+		name       string
+		now        int64
+		after      *int64
+		before     *int64
+		wantAfter  uint64
+		wantBefore uint64
+	}{
+		{name: "missing", now: 1_000_000_000, wantAfter: 999_996_400_000_000, wantBefore: 1_000_000_000_999_999},
+		{name: "inverted", now: 1_000_000_000, after: i64p(200_000_100), before: i64p(200_000_000), wantAfter: 200_000_000_000_000, wantBefore: 200_000_100_999_999},
+		{name: "equal", now: 1_000_000_000, after: i64p(200_000_000), before: i64p(200_000_000), wantAfter: 199_996_400_000_000, wantBefore: 200_000_000_999_999},
+		{name: "relative", now: 1_000_000_000, after: i64p(100), before: i64p(200), wantAfter: 999_999_701_000_000, wantBefore: 999_999_800_999_999},
+		{name: "missing after", now: 1_000_000_000, before: i64p(200_000_000), wantAfter: 199_999_401_000_000, wantBefore: 200_000_000_999_999},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			after, before := normalizeNetdataTimeWindow(tc.now, tc.after, tc.before)
+			if after == nil || before == nil || *after != tc.wantAfter || *before != tc.wantBefore {
+				t.Fatalf("normalizeNetdataTimeWindow() = %v/%v, want %d/%d", after, before, tc.wantAfter, tc.wantBefore)
+			}
+		})
+	}
+}
+
+func TestNetdataProfileDisplayAndRealtimeAdjustment(t *testing.T) {
+	context := newDisplayContext()
+	profile := SystemdJournalProfile{}
+	if got := profile.FieldDisplayValue(context, DisplayScopeData, "PRIORITY", []byte("7")); got != "debug" {
+		t.Fatalf("PRIORITY display = %v, want debug", got)
+	}
+	if got := profile.FieldDisplayValue(context, DisplayScopeData, "SYSLOG_FACILITY", []byte("3")); got != "daemon" {
+		t.Fatalf("SYSLOG_FACILITY display = %v, want daemon", got)
+	}
+	if got := profile.FieldDisplayValue(context, DisplayScopeFacet, "_UID", []byte("0")); got != "0" {
+		t.Fatalf("default _UID display = %v, want raw 0", got)
+	}
+	fields := map[string][][]byte{"PRIORITY": [][]byte{[]byte("3")}}
+	options := anyMap(t, profile.RowOptions(fields))
+	if options["severity"] != "critical" {
+		t.Fatalf("row severity = %v, want critical", options["severity"])
+	}
+
+	plugin := SystemdJournalPluginProfile{}
+	missingUID := []byte("999999999")
+	if got := plugin.FieldDisplayValue(context, DisplayScopeFacet, "_UID", missingUID); got != string(missingUID) {
+		t.Fatalf("plugin missing _UID display = %v, want raw fallback", got)
+	}
+	if got := plugin.FieldDisplayValue(context, DisplayScopeData, "_UID", missingUID); got != string(missingUID) {
+		t.Fatalf("plugin cached missing _UID display = %v, want raw fallback", got)
+	}
+	if len(context.uidDisplayCache) != 1 {
+		t.Fatalf("uid display cache size = %d, want 1", len(context.uidDisplayCache))
+	}
+
+	forward := newNetdataRealtimeAdjuster(DirectionForward)
+	if got := []uint64{forward.adjust(10), forward.adjust(10), forward.adjust(10)}; got[0] != 10 || got[1] != 11 || got[2] != 12 {
+		t.Fatalf("forward realtime adjustment = %v, want 10/11/12", got)
+	}
+	backward := newNetdataRealtimeAdjuster(DirectionBackward)
+	if got := []uint64{backward.adjust(10), backward.adjust(10), backward.adjust(10)}; got[0] != 10 || got[1] != 9 || got[2] != 8 {
+		t.Fatalf("backward realtime adjustment = %v, want 10/9/8", got)
+	}
+}
+
+func TestNetdataDataOnlyDeltaTailSamplingAndNoChangeModes(t *testing.T) {
+	path := createExplorerManyJournal(t, 500)
+	dir := filepath.Dir(path)
+	function := SystemdJournalPluginCompatibleNetdataFunction()
+
+	dataOnly, err := function.RunDirectoryRequestJSONWithOptions(dir, map[string]any{
+		"after":     float64(1_700_000_000),
+		"before":    float64(1_800_000_000),
+		"data_only": true,
+		"last":      float64(5),
+		"sampling":  float64(20),
+	}, DefaultNetdataFunctionRunOptions())
+	if err != nil {
+		t.Fatalf("RunDirectoryRequestJSONWithOptions(data_only) error = %v", err)
+	}
+	if _, ok := dataOnly["_sampling"]; ok {
+		t.Fatal("data_only response has _sampling, want disabled")
+	}
+	if _, ok := dataOnly["facets"]; ok {
+		t.Fatal("data_only response has full facets, want data-only response")
+	}
+
+	delta, err := function.RunDirectoryRequestJSONWithOptions(dir, map[string]any{
+		"after":     float64(1_700_000_000),
+		"before":    float64(1_800_000_000),
+		"data_only": true,
+		"delta":     true,
+		"facets":    []any{"SERVICE"},
+		"histogram": "SERVICE",
+		"last":      float64(5),
+	}, DefaultNetdataFunctionRunOptions())
+	if err != nil {
+		t.Fatalf("RunDirectoryRequestJSONWithOptions(delta) error = %v", err)
+	}
+	if _, ok := delta["facets_delta"]; !ok {
+		t.Fatal("delta response missing facets_delta")
+	}
+	if _, ok := delta["items_delta"]; !ok {
+		t.Fatal("delta response missing items_delta")
+	}
+
+	noChange, err := function.RunDirectoryRequestJSONWithOptions(dir, map[string]any{
+		"after":             float64(1_700_000_000),
+		"before":            float64(1_800_000_000),
+		"if_modified_since": float64(9_999_999_999_999_999),
+		"data_only":         true,
+		"last":              float64(5),
+	}, DefaultNetdataFunctionRunOptions())
+	if err != nil {
+		t.Fatalf("RunDirectoryRequestJSONWithOptions(no-change) error = %v", err)
+	}
+	if got := numericUint64(noChange["status"]); got != 304 {
+		t.Fatalf("no-change status = %d, want 304", got)
+	}
+
+	tail, err := function.RunDirectoryRequestJSONWithOptions(dir, map[string]any{
+		"after":             float64(1_700_000_000),
+		"before":            float64(1_800_000_000),
+		"if_modified_since": float64(1),
+		"anchor":            float64(1_700_000_000_000_250),
+		"data_only":         true,
+		"tail":              true,
+		"last":              float64(5),
+	}, DefaultNetdataFunctionRunOptions())
+	if err != nil {
+		t.Fatalf("RunDirectoryRequestJSONWithOptions(tail) error = %v", err)
+	}
+	echo := anyMap(t, tail["_request"])
+	if echo["tail"] != true || echo["direction"] != "backward" {
+		t.Fatalf("tail echo = %#v, want tail=true direction=backward", echo)
+	}
+}
+
+func TestNetdataFunctionReportsProgressTimeoutAndSamplingCounters(t *testing.T) {
+	path := createExplorerManyJournal(t, 9_000)
+	dir := filepath.Dir(path)
+	function := SystemdJournalPluginCompatibleNetdataFunction()
+	request := map[string]any{
+		"after":     float64(1_700_000_000),
+		"before":    float64(1_800_000_000),
+		"facets":    []any{"SERVICE"},
+		"histogram": "SERVICE",
+		"last":      float64(0),
+	}
+
+	var progressReports int
+	options := DefaultNetdataFunctionRunOptions()
+	options.ProgressInterval = 0
+	options.ProgressCallback = func(progress NetdataFunctionProgress) {
+		progressReports++
+		if progress.CurrentFile != 1 || progress.TotalFiles != 1 {
+			t.Fatalf("progress file counters = %d/%d, want 1/1", progress.CurrentFile, progress.TotalFiles)
+		}
+	}
+	response, err := function.RunDirectoryRequestJSONWithOptions(dir, request, options)
+	if err != nil {
+		t.Fatalf("RunDirectoryRequestJSONWithOptions(progress) error = %v", err)
+	}
+	if got := numericUint64(response["status"]); got != 200 {
+		t.Fatalf("progress response status = %d, want 200", got)
+	}
+	if progressReports == 0 {
+		t.Fatal("progress callback was not called")
+	}
+
+	timeout := time.Duration(0)
+	timeoutOptions := DefaultNetdataFunctionRunOptions()
+	timeoutOptions.Timeout = &timeout
+	timeoutResponse, err := function.RunDirectoryRequestJSONWithOptions(dir, request, timeoutOptions)
+	if err != nil {
+		t.Fatalf("RunDirectoryRequestJSONWithOptions(timeout) error = %v", err)
+	}
+	if got := numericUint64(timeoutResponse["status"]); got != 200 {
+		t.Fatalf("timeout response status = %d, want partial table status 200", got)
+	}
+	if timeoutResponse["partial"] != true {
+		t.Fatalf("timeout partial = %v, want true", timeoutResponse["partial"])
+	}
+	message := anyMap(t, timeoutResponse["message"])
+	if message["status"] != "warning" {
+		t.Fatalf("timeout message status = %v, want warning", message["status"])
+	}
+}
+
+func TestNetdataFunctionReportsSamplingCounters(t *testing.T) {
+	base := uint64(1_700_000_000_000_000)
+	entries := make([]explorerTestEntry, 0, 5_000)
+	for i := 0; i < 5_000; i++ {
+		service := "odd"
+		if i%2 == 0 {
+			service = "even"
+		}
+		entries = append(entries, explorerTestEntry{
+			realtime: base + uint64(i)*1_000,
+			payloads: [][]byte{
+				[]byte("MESSAGE=sampled"),
+				[]byte("SERVICE=" + service),
+			},
+		})
+	}
+	path := createExplorerRawJournal(t, entries)
+	response, err := SystemdJournalPluginCompatibleNetdataFunction().RunDirectoryRequestJSONWithOptions(filepath.Dir(path), map[string]any{
+		"after":     float64(1_700_000_000),
+		"before":    float64(1_700_000_005),
+		"facets":    []any{"SERVICE"},
+		"histogram": "SERVICE",
+		"last":      float64(5),
+		"sampling":  float64(20),
+	}, DefaultNetdataFunctionRunOptions())
+	if err != nil {
+		t.Fatalf("RunDirectoryRequestJSONWithOptions(sampling) error = %v", err)
+	}
+	sampling := anyMap(t, response["_sampling"])
+	if sampling["enabled"] != true {
+		t.Fatalf("sampling enabled = %v, want true", sampling["enabled"])
+	}
+	if numericUint64(sampling["sampled"]) == 0 || numericUint64(sampling["unsampled"]) == 0 || numericUint64(sampling["estimated"]) == 0 {
+		t.Fatalf("sampling counters = %#v, want sampled/unsampled/estimated all positive", sampling)
+	}
+	items := anyMap(t, response["items"])
+	if numericUint64(items["estimated"]) != numericUint64(sampling["estimated"]) {
+		t.Fatalf("items estimated = %v, sampling estimated = %v", items["estimated"], sampling["estimated"])
+	}
+}
+
+func TestNetdataCollectJournalFilesRecursesAndClassifiesSources(t *testing.T) {
+	root := t.TempDir()
+	systemPath := filepath.Join(root, "system.journal")
+	userDir := filepath.Join(root, "user")
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(user) error = %v", err)
+	}
+	userPath := filepath.Join(userDir, "user-1000.journal")
+	writeNetdataTestJournalAt(t, systemPath, "system")
+	writeNetdataTestJournalAt(t, userPath, "user")
+	if err := os.WriteFile(filepath.Join(root, "ignored.txt"), []byte("not a journal"), 0o644); err != nil {
+		t.Fatalf("WriteFile(ignored) error = %v", err)
+	}
+
+	collection, err := collectNetdataJournalFiles(root)
+	if err != nil {
+		t.Fatalf("collectNetdataJournalFiles() error = %v", err)
+	}
+	if len(collection.Files) != 2 {
+		t.Fatalf("collected files = %#v, want 2 journal files", collection.Files)
+	}
+	request, err := parseNetdataRequest(map[string]any{
+		"selections": map[string]any{"__logs_sources": []any{"all-local-system-logs"}},
+	}, SystemdJournalNetdataFunctionConfig())
+	if err != nil {
+		t.Fatalf("parseNetdataRequest(source) error = %v", err)
+	}
+	if !request.matchesSource(systemPath, nil) {
+		t.Fatal("system.journal did not match all-local-system-logs")
+	}
+	if request.matchesSource(userPath, nil) {
+		t.Fatal("user journal matched all-local-system-logs")
+	}
+
+	namespacePath := filepath.Join(root, "ns.blue", "system.journal")
+	if got := localNamespaceSourceName(namespacePath); got != "namespace-blue" {
+		t.Fatalf("namespace source = %q, want namespace-blue", got)
+	}
+	remotePath := filepath.Join(root, "remote", "remote-node@abc.journal")
+	if got := journalFileExactSourceName(remotePath); got != "remote-node" {
+		t.Fatalf("remote exact source = %q, want remote-node", got)
 	}
 }
 
@@ -228,5 +642,29 @@ func numericUint64(value any) uint64 {
 		return uint64(typed)
 	default:
 		return 0
+	}
+}
+
+func i64p(value int64) *int64 {
+	return &value
+}
+
+func writeNetdataTestJournalAt(t *testing.T, path, message string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s) error = %v", filepath.Dir(path), err)
+	}
+	writer, err := Create(path, Options{})
+	if err != nil {
+		t.Fatalf("Create(%s) error = %v", path, err)
+	}
+	if err := writer.Append([]Field{
+		StringField("MESSAGE", message),
+		StringField("SERVICE", "unit-test"),
+	}, EntryOptions{RealtimeUsec: 1_700_000_000_000_000, RealtimeUsecSet: true, MonotonicUsec: 1, MonotonicUsecSet: true}); err != nil {
+		t.Fatalf("Append(%s) error = %v", path, err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close(%s) error = %v", path, err)
 	}
 }

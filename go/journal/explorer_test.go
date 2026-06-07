@@ -254,6 +254,70 @@ func TestExplorerFTSDisablesFirstValueEarlyStop(t *testing.T) {
 	}
 }
 
+func TestOffsetClassCacheRejectsZeroOffsetAndRoundTripsClasses(t *testing.T) {
+	cache := newOffsetClassCache()
+	cache.insert(0, offsetClass{kind: offsetClassValue, valueIndex: 99})
+	if _, ok := cache.lookup(0); ok {
+		t.Fatal("lookup(0) succeeded, want empty sentinel miss")
+	}
+
+	cases := []struct {
+		offset uint64
+		class  offsetClass
+	}{
+		{offset: 8, class: offsetClass{kind: offsetClassIrrelevant}},
+		{offset: 16, class: offsetClass{kind: offsetClassFtsMatch}},
+		{offset: 24, class: offsetClass{kind: offsetClassFtsNegative}},
+		{offset: 32, class: offsetClass{kind: offsetClassValue, valueIndex: 7}},
+	}
+	for _, tc := range cases {
+		cache.insert(tc.offset, tc.class)
+	}
+	for i := 0; i < 512; i++ {
+		cache.insert(uint64(i+10)*64, offsetClass{kind: offsetClassValue, valueIndex: i % 9})
+	}
+	for _, tc := range cases {
+		got, ok := cache.lookup(tc.offset)
+		if !ok {
+			t.Fatalf("lookup(%d) missed after cache growth", tc.offset)
+		}
+		if got.kind != tc.class.kind || got.valueIndex != tc.class.valueIndex {
+			t.Fatalf("lookup(%d) = %+v, want %+v", tc.offset, got, tc.class)
+		}
+	}
+}
+
+func TestExplorerUnsetFacetAccountingFinalizesWithoutPerRowLoop(t *testing.T) {
+	path := createExplorerRawJournal(t, []explorerTestEntry{
+		{realtime: 1_000, payloads: [][]byte{[]byte("A=one")}},
+		{realtime: 2_000, payloads: [][]byte{[]byte("B=two")}},
+		{realtime: 3_000, payloads: [][]byte{[]byte("MESSAGE=none")}},
+	})
+	reader := mustOpenReaderFile(t, path)
+	defer reader.Close()
+
+	query := DefaultExplorerQuery().
+		WithFacet([]byte("A")).
+		WithFacet([]byte("B")).
+		WithFacet([]byte("C"))
+	query.Limit = 0
+	result, err := reader.Explore(query)
+	if err != nil {
+		t.Fatalf("Explore(unset facets) error = %v", err)
+	}
+	assertExplorerFacetCount(t, result, "A", "one", 1)
+	assertExplorerFacetCount(t, result, "A", "-", 2)
+	assertExplorerFacetCount(t, result, "B", "two", 1)
+	assertExplorerFacetCount(t, result, "B", "-", 2)
+	assertExplorerFacetCount(t, result, "C", "-", 3)
+	if result.Stats.FacetRowsMatched != 3 {
+		t.Fatalf("facet rows matched = %d, want 3", result.Stats.FacetRowsMatched)
+	}
+	if result.Stats.FacetUpdates != 9 {
+		t.Fatalf("facet updates = %d, want 9", result.Stats.FacetUpdates)
+	}
+}
+
 func TestExplorerBackwardTimeBoundStopsAfterSlackWindow(t *testing.T) {
 	path := createExplorerRawJournal(t, []explorerTestEntry{
 		{realtime: 100_000_000, payloads: [][]byte{[]byte("SERVICE=a")}},

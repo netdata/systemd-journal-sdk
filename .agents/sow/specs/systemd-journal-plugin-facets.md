@@ -92,11 +92,11 @@ Evidence note:
 
 ## SDK Netdata Function Boundary
 
-The Rust SDK exposes the Netdata-specific boundary under `journal::netdata`.
-This API is the replacement surface for Netdata's generic
-`systemd-journal.plugin` logs function. The CLI wrapper exists to validate the
+Rust and Go expose the Netdata-specific boundary under their journal SDK
+packages. This API is the replacement surface for Netdata's generic
+`systemd-journal.plugin` logs function. The CLI wrappers exist to validate the
 SDK boundary against the plugin's offline test contract; production consumers
-should call `journal::netdata` directly.
+should call the SDK package APIs directly.
 
 Current Rust entrypoints:
 
@@ -106,6 +106,13 @@ Current Rust entrypoints:
 - `NetdataJournalFunction::run_directory_request_bytes()`
 - `NetdataJournalFunction::run_directory_request_json_with_options()`
 - `NetdataJournalFunction::run_directory_request_bytes_with_options()`
+
+Current Go entrypoints:
+
+- `SystemdJournalNetdataFunction()`
+- `SystemdJournalPluginCompatibleNetdataFunction()`
+- `NetdataJournalFunction.RunDirectoryRequestJSONWithOptions()`
+- `NetdataJournalFunction.RunDirectoryRequestBytesWithOptions()`
 
 The internal test command is named `netdata_function_wrapper`, with the same
 external shape as the Netdata plugin:
@@ -167,8 +174,10 @@ IDs and does not resolve host user or group names. The
 `systemd_journal_plugin_compatible()` constructor is the explicit opt-in profile
 for comparison with Netdata's installed plugin; it may resolve UID/GID display
 names through the host platform when the caller chooses that compatibility mode.
-Resolved and unresolved UID/GID display strings are cached per query so repeated
-values do not repeatedly call host name-service lookup APIs.
+Rust uses the platform user/group lookup APIs on Unix. Go preserves the
+no-CGO contract and resolves display names through direct passwd/group file
+lookup when available. Resolved and unresolved UID/GID display strings are
+cached per query so repeated values do not repeatedly call host lookup APIs.
 
 The standalone SDK comparison wrapper accepts requests that contain
 `__logs_sources` and filters explicit-directory candidate files for the
@@ -299,7 +308,7 @@ explicit directory input. It reports `__logs_sources` options for `all`,
 coverage, and last-entry timestamp from the selected journal files. This is
 directory-local source metadata.
 
-For query execution, the Rust SDK Netdata function boundary filters
+For query execution, the SDK Netdata function boundary filters
 explicit-directory candidate files by the built-in source groups:
 
 - `all`
@@ -734,7 +743,7 @@ Progress:
 - plugin progress is emitted to stdout every 250 ms of accumulated per-file
   query time (`systemd-journal-function.h:11`,
   `systemd-journal-execute.h:607-613`).
-- The Rust SDK Netdata function API exposes progress as a caller-provided
+- The Rust and Go SDK Netdata function APIs expose progress as a caller-provided
   callback instead of writing to stdout. The callback receives the current
   query-file index, total query-selected files after source and time-window
   preselection, matched/skipped file counts, cumulative explorer stats, and
@@ -751,7 +760,7 @@ Timeout/cancellation:
   registers `ND_SD_JOURNAL_DEFAULT_TIMEOUT` (`60` seconds) as its default
   function timeout, so timeout budget ownership is Netdata integration policy,
   not a journal file-format rule.
-- The Rust SDK Netdata function API exposes timeout and cancellation as
+- The Rust and Go SDK Netdata function APIs expose timeout and cancellation as
   caller-provided run options. Cancellation is a callback/token-equivalent
   predicate checked before starting each query-selected file and at the
   Explorer row cadence during active scans. The SDK also re-checks the
@@ -852,7 +861,7 @@ non-content only when those columns have no returned-row value on either side.
 This preserves the Explorer production rule that column catalogs come from
 FIELD indexes while still rejecting any missing non-null returned field.
 
-The Rust SDK Netdata function API validates and echoes `data_only`, `delta`,
+The Rust and Go SDK Netdata function APIs validate and echo `data_only`, `delta`,
 `tail`, `sampling`, and `if_modified_since` using the same high-level rules:
 
 - `delta` is effective only when `data_only=true`;
