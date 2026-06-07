@@ -14,35 +14,36 @@ from typing import Any
 
 
 TEST_OR_HARNESS_RE = re.compile(
-    r"(^|/)internal/testcmd/|_test\.go$|_tests?\.rs$|(^|/)tests\.rs$|(^|/)tests?/|(^|/)testdata/|(^|/)examples?/"
+    r"(^|/)internal/testcmd/"
+    r"|_test\.go$"
+    r"|_tests?\.rs$"
+    r"|(^|/)tests\.rs$"
+    r"|(^|/)tests?/"
+    r"|(^|/)testdata/"
+    r"|(^|/)examples?/"
+)
+
+SURFACE_PREFIXES = (
+    ("go/journal/", "go_sdk"),
+    ("go/cmd/", "cli"),
+    ("go/adapter/", "adapter"),
+    ("rust/src/crates/jf/", "legacy_jf"),
+    ("rust/src/crates/journal-core/", "rust_core"),
+    ("rust/src/journal/", "rust_public"),
+    ("rust/src/crates/journal-log-writer/", "rust_log_writer"),
+    ("rust/src/crates/journal-index/", "rust_index"),
+    ("rust/src/crates/journal-engine/", "rust_engine"),
+    ("rust/src/cmd/", "cli"),
+    ("rust/src/adapter/", "adapter"),
 )
 
 
 def path_surface(path: str) -> str:
     if TEST_OR_HARNESS_RE.search(path):
         return "test_or_harness"
-    if path.startswith("go/journal/"):
-        return "go_sdk"
-    if path.startswith("go/cmd/"):
-        return "cli"
-    if path.startswith("go/adapter/"):
-        return "adapter"
-    if path.startswith("rust/src/crates/jf/"):
-        return "legacy_jf"
-    if path.startswith("rust/src/crates/journal-core/"):
-        return "rust_core"
-    if path.startswith("rust/src/journal/"):
-        return "rust_public"
-    if path.startswith("rust/src/crates/journal-log-writer/"):
-        return "rust_log_writer"
-    if path.startswith("rust/src/crates/journal-index/"):
-        return "rust_index"
-    if path.startswith("rust/src/crates/journal-engine/"):
-        return "rust_engine"
-    if path.startswith("rust/src/cmd/"):
-        return "cli"
-    if path.startswith("rust/src/adapter/"):
-        return "adapter"
+    for prefix, surface in SURFACE_PREFIXES:
+        if path.startswith(prefix):
+            return surface
     return "other"
 
 
@@ -141,7 +142,12 @@ def itertools_groupby_sorted(rows: list[dict[str, Any]], key: str):
     return itertools.groupby(sorted(rows, key=lambda row: row[key]), key=lambda row: row[key])
 
 
-def write_markdown(path: Path, source: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+def source_field(source: dict[str, Any], name: str) -> str:
+    value = source.get(name)
+    return value if isinstance(value, str) else "unknown"
+
+
+def write_markdown(path: Path, source: dict[str, str], rows: list[dict[str, Any]]) -> None:
     summary = build_summary(rows)
     top_complexity = sorted(rows, key=lambda row: row["codacy_complexity"], reverse=True)[:20]
     top_duplication = sorted(rows, key=lambda row: row["duplication"], reverse=True)[:20]
@@ -151,8 +157,8 @@ def write_markdown(path: Path, source: dict[str, Any], rows: list[dict[str, Any]
         "",
         "## Scope",
         "",
-        f"- Codacy branch: `{source.get('branch', 'unknown')}`.",
-        f"- Codacy fetched at: `{source.get('fetchedAt', 'unknown')}`.",
+        f"- Codacy branch: `{source['branch']}`.",
+        f"- Codacy fetched at: `{source['fetched_at']}`.",
         f"- Files analyzed in this report: `{summary['files']}`.",
         "- Raw Codacy API responses stay under `.local/` and are not committed.",
         "",
@@ -162,7 +168,8 @@ def write_markdown(path: Path, source: dict[str, Any], rows: list[dict[str, Any]
         "- Local `lizard` max CCN is the highest single-function CCN found in the same tracked file set.",
         "- A high Codacy complexity with max CCN <= 12 means file-size/ownership pressure, not a single dangerous function.",
         "- Test and harness paths are classified separately because they should not drive production coverage decisions.",
-        "- Coverage values are Codacy file metrics at fetch time; coverage-report exclusions are validated separately by the coverage scripts and remote Codacy run.",
+        "- Coverage values are Codacy file metrics at fetch time; coverage-report exclusions are "
+        "validated separately by the coverage scripts and remote Codacy run.",
         "- This is a point-in-time audit snapshot. Regenerate it after substantial Rust/Go refactors or Codacy metric changes.",
         "",
         "## Regeneration",
@@ -176,8 +183,7 @@ def write_markdown(path: Path, source: dict[str, Any], rows: list[dict[str, Any]
         "python3 tests/code_scanning/summarize_codacy_file_metrics.py \\",
         "  --metrics .local/codacy/file-metrics-rust-go.json \\",
         "  --lizard-csv .local/codacy/lizard-rust-go.csv \\",
-        "  --markdown-output .agents/sow/specs/codacy-rust-go-metrics-audit.md \\",
-        "  --json-output .local/codacy/file-metrics-rust-go-summary.json",
+        "  --markdown-output .agents/sow/specs/codacy-rust-go-metrics-audit.md",
         "```",
         "",
         "## Surface Summary",
@@ -229,7 +235,8 @@ def write_markdown(path: Path, source: dict[str, Any], rows: list[dict[str, Any]
             "",
             "## File By File",
             "",
-            "| Path | Surface | Grade | Complexity | Max CCN | Duplication | Clones | Coverage | LOC | Complexity Classification | Duplication Classification |",
+            "| Path | Surface | Grade | Complexity | Max CCN | Duplication | Clones | "
+            "Coverage | LOC | Complexity Classification | Duplication Classification |",
             "|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|",
         ]
     )
@@ -250,10 +257,13 @@ def main() -> int:
     parser.add_argument("--metrics", required=True)
     parser.add_argument("--lizard-csv", required=True)
     parser.add_argument("--markdown-output", required=True)
-    parser.add_argument("--json-output")
     args = parser.parse_args()
 
     source = json.loads(Path(args.metrics).read_text(encoding="utf-8"))
+    report_source = {
+        "branch": source_field(source, "branch"),
+        "fetched_at": source_field(source, "fetchedAt"),
+    }
     max_ccn = load_lizard_max_ccn(Path(args.lizard_csv))
     rows = [
         metric_row(file_metric, max_ccn.get(str(file_metric["path"]), 0))
@@ -261,11 +271,7 @@ def main() -> int:
         if isinstance(file_metric, dict) and isinstance(file_metric.get("path"), str)
     ]
 
-    write_markdown(Path(args.markdown_output), source, rows)
-    if args.json_output:
-        output = {"summary": build_summary(rows), "files": rows}
-        Path(args.json_output).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.json_output).write_text(json.dumps(output, indent=2) + "\n", encoding="utf-8")
+    write_markdown(Path(args.markdown_output), report_source, rows)
     return 0
 
 

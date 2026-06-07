@@ -412,8 +412,31 @@ Tests or equivalent validation:
     `SF` records, and `83` `end_of_record` markers.
 - `tests/code_scanning/export_codacy_file_metrics.js --output .local/codacy/file-metrics-rust-go.validation.json --search go/ --search rust/`:
   passed and returned `217` files.
-- `python3 tests/code_scanning/summarize_codacy_file_metrics.py --metrics .local/codacy/file-metrics-rust-go.validation.json --lizard-csv .local/codacy/lizard-rust-go.csv --markdown-output .agents/sow/specs/codacy-rust-go-metrics-audit.md --json-output .local/codacy/file-metrics-rust-go-summary.json`:
+- `python3 tests/code_scanning/summarize_codacy_file_metrics.py --metrics .local/codacy/file-metrics-rust-go.validation.json --lizard-csv .local/codacy/lizard-rust-go.csv --markdown-output .agents/sow/specs/codacy-rust-go-metrics-audit.md`:
   passed.
+- Remote scanner repair validation:
+  - Commit `abb43e37b08bd57be6273577d212d2520411097c` pushed to `master`.
+  - GitHub Actions on that commit: `Coverage`, `CodeQL`, and `Codacy SARIF`
+    passed.
+  - GitHub code scanning still opened two `py/clear-text-storage-sensitive-data`
+    alerts on `tests/code_scanning/summarize_codacy_file_metrics.py`, lines
+    `245` and `268`.
+  - Codacy analyzed commit `abb43e37b08bd57be6273577d212d2520411097c` and
+    reported `issuesCount = 4`: two helper complexity findings and two line
+    length findings.
+  - Repair: table-driven Python path surface classification; split long
+    markdown strings; table-driven Node argument parsing; removed the optional
+    JSON summary output so the helper writes only the sanitized markdown audit.
+  - Local repair validation:
+    - `python3 -m pytest tests/code_scanning/test_summarize_findings.py`: `13`
+      tests passed.
+    - `python3 -m py_compile tests/code_scanning/summarize_codacy_file_metrics.py tests/code_scanning/test_summarize_findings.py`:
+      passed.
+    - `node --check tests/code_scanning/export_codacy_file_metrics.js`: passed.
+    - `lizard -C 12 tests/code_scanning/summarize_codacy_file_metrics.py tests/code_scanning/export_codacy_file_metrics.js`:
+      passed with no threshold violations.
+    - `git diff --check`: passed.
+    - `.agents/sow/audit.sh`: passed.
 
 Real-use evidence:
 

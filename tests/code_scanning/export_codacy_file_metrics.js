@@ -14,11 +14,11 @@ Options:
   --branch VALUE         Codacy branch, default: master
   --search VALUE         Path search prefix, repeatable, default: go/ and rust/
   --limit VALUE          Page size, default: 100
-`);
+	`);
 }
 
-function parseArgs(argv) {
-  const args = {
+function defaultArgs() {
+  return {
     provider: "gh",
     organization: "netdata",
     repository: "systemd-journal-sdk",
@@ -27,6 +27,42 @@ function parseArgs(argv) {
     limit: 100,
     output: "",
   };
+}
+
+function applyOption(args, flag, value) {
+  switch (flag) {
+    case "--provider":
+      args.provider = value;
+      break;
+    case "--organization":
+      args.organization = value;
+      break;
+    case "--repository":
+      args.repository = value;
+      break;
+    case "--branch":
+      args.branch = value;
+      break;
+    case "--search":
+      args.searches.push(value);
+      break;
+    case "--limit":
+      args.limit = Number.parseInt(value, 10);
+      if (!Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > 1000) {
+        throw new Error("--limit must be an integer from 1 to 1000");
+      }
+      break;
+    case "--output":
+      args.output = value;
+      break;
+    default:
+      usage();
+      process.exit(2);
+  }
+}
+
+function parseArgs(argv) {
+  const args = defaultArgs();
 
   for (let i = 2; i < argv.length; i += 1) {
     const flag = argv[i];
@@ -36,35 +72,7 @@ function parseArgs(argv) {
       process.exit(2);
     }
     i += 1;
-    switch (flag) {
-      case "--provider":
-        args.provider = value;
-        break;
-      case "--organization":
-        args.organization = value;
-        break;
-      case "--repository":
-        args.repository = value;
-        break;
-      case "--branch":
-        args.branch = value;
-        break;
-      case "--search":
-        args.searches.push(value);
-        break;
-      case "--limit":
-        args.limit = Number.parseInt(value, 10);
-        if (!Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > 1000) {
-          throw new Error("--limit must be an integer from 1 to 1000");
-        }
-        break;
-      case "--output":
-        args.output = value;
-        break;
-      default:
-        usage();
-        process.exit(2);
-    }
+    applyOption(args, flag, value);
   }
 
   if (!args.output) {
