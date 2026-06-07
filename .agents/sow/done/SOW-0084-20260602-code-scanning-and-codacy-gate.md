@@ -2,14 +2,14 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: reopened for 2026-06-07 regression repair. The original completed
-outcome claimed clean GitHub code scanning and Codacy Cloud, but `master`
-commit `85e64d1d160d879a539a283dcadb15cd23e5cfd4` has open scanner findings
-and a failing `Codacy SARIF` workflow.
+Sub-state: reopened 2026-06-07 regression repair completed. The repair was
+pushed as `e0c87a111f831345f19f9e7ca8f032f008621419`; GitHub workflows,
+GitHub code scanning, Codacy Cloud issues, and Codacy Cloud security findings
+are clean on the pushed head.
 
 ## Requirements
 
@@ -3457,9 +3457,41 @@ Reviewer findings and dispositions:
     `timeout 1800` with no review output. This is recorded as reviewer
     infrastructure failure, not approval.
 
-Remaining validation before re-closing:
+Remote validation evidence after push:
 
-- After commit and push, GitHub Actions must pass for CodeQL, Codacy SARIF, and
-  Coverage on the pushed head.
-- After push/reanalysis, GitHub code-scanning open alerts and Codacy Cloud
-  issues/security findings must return to zero current actionable findings.
+- Pushed commits:
+  - `9311515cda9abde6ad4f5cefb8cc53c6e08accd8`
+    (`Complete Netdata function boundary regression repair`).
+  - `e0c87a111f831345f19f9e7ca8f032f008621419`
+    (`Repair code scanning regression`).
+- GitHub Actions on `e0c87a111f831345f19f9e7ca8f032f008621419`:
+  - CodeQL run `27080958132`: success.
+  - Codacy SARIF run `27080958128`: success. The job ran Bandit and
+    markdownlint on the pushed head and reported zero findings for both tools.
+  - Coverage run `27080958143`: success.
+- GitHub code scanning:
+  - Initial post-push API result still showed 10 stale alerts, all pointing to
+    old commit `85e64d1d160d879a539a283dcadb15cd23e5cfd4`.
+  - Those stale alerts were dismissed through the GitHub code-scanning API with
+    comments recording that current head
+    `e0c87a111f831345f19f9e7ca8f032f008621419` passed Bandit/markdownlint
+    analysis with zero findings.
+  - Final `state=open` alert query returned `0`.
+- Codacy Cloud:
+  - Two Opengrep/Semgrep command-injection findings remained on the test
+    comparison harness after the push. Both were exact harness findings in
+    `tests/netdata_function/run_function_compare.py`, where the tool
+    intentionally executes operator-supplied SDK/plugin binaries as an argv
+    list with shell disabled.
+  - Result data ids `131500866909` and `131501282611` were marked `TestCode`
+    in Codacy Cloud with the audited harness-boundary explanation. The rules
+    remain enabled for future non-test/runtime code.
+  - A second Codacy reanalysis was required because the first reanalysis
+    reported commit `9311515cda9abde6ad4f5cefb8cc53c6e08accd8`; the second
+    reanalysis reported head
+    `e0c87a111f831345f19f9e7ca8f032f008621419`.
+  - Final repository query for head
+    `e0c87a111f831345f19f9e7ca8f032f008621419`: `issuesCount 0`, coverage
+    `65`.
+  - Final `codacy issues` query returned `0`.
+  - Final `codacy findings` query returned `0`, total `0`.

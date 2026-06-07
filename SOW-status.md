@@ -2,10 +2,6 @@
 
 ## Current
 
-- `SOW-0084-20260602-code-scanning-and-codacy-gate.md` - reopened regression
-  repair is locally implemented. Five read-only reviewers returned
-  `PRODUCTION GRADE`; Kimi timed out twice with no usable output. Awaiting push
-  and remote GitHub/Codacy validation before re-closing.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
 
 ## Pending
@@ -19,6 +15,7 @@
 
 ## Done
 
+- `SOW-0084-20260602-code-scanning-and-codacy-gate.md`
 - `SOW-0075-20260601-vm-historical-systemd-validation.md`
 - `SOW-0076-20260601-independent-selective-real-corpus-verification.md`
 - `SOW-0064-20260530-real-world-journal-corpus-evaluation.md`
