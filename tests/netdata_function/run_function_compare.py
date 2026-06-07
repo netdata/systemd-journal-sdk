@@ -6,7 +6,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import subprocess
+# Harness runs explicit SDK/plugin binaries supplied by the operator.
+import subprocess  # nosec B404
 import time
 from pathlib import Path
 from typing import Any
@@ -48,7 +49,9 @@ def run_command(
     started = time.perf_counter()
     timed_out = False
     try:
-        completed = subprocess.run(
+        # Command is an argv list; shell is never used.
+        # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
+        completed = subprocess.run(  # nosec B603
             command,
             check=False,
             input=request_payload,

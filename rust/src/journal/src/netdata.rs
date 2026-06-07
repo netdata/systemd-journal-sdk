@@ -378,40 +378,56 @@ where
 
         let selected =
             select_journal_files_for_request(paths, &request, self.config.reader_options, &options);
-        if request.if_modified_since_usec != 0 && !selected.files_are_newer {
-            return Ok(netdata_function_error(
-                304,
-                "No new data since the previous call.",
-            ));
+        if let Some(response) = not_modified_before_scan_response(&request, &selected) {
+            return Ok(response);
         }
         let selected_files = selected.files;
         let deadline = options.timeout.map(|timeout| Instant::now() + timeout);
         let mut combined = self.explore_files(&selected_files, &request, deadline, &mut options)?;
-        combined.skipped_files = combined.skipped_files.saturating_add(collection.skipped);
-        combined.file_errors.extend(collection.errors);
+        self.finalize_combined_result(
+            &request,
+            &selected_files,
+            deadline,
+            &mut options,
+            &mut combined,
+            collection.skipped,
+            collection.errors,
+        )?;
+        Ok(self.query_response(request, &annotation_paths, combined))
+    }
+
+    fn finalize_combined_result(
+        &self,
+        request: &NetdataRequest,
+        selected_files: &[SelectedJournalFile],
+        deadline: Option<Instant>,
+        options: &mut NetdataFunctionRunOptions<'_>,
+        combined: &mut CombinedResult,
+        skipped_files: u64,
+        file_errors: Vec<String>,
+    ) -> Result<()> {
+        combined.skipped_files = combined.skipped_files.saturating_add(skipped_files);
+        combined.file_errors.extend(file_errors);
         if combined.cancelled {
-            return Ok(self.query_response(request, &annotation_paths, combined));
+            return Ok(());
         }
         if !request.data_only {
             combined.add_zero_count_facet_values_from_files(
                 &request.facets,
                 self.config.reader_options,
             );
-            combined.add_zero_count_selected_filter_values(&request);
+            combined.add_zero_count_selected_filter_values(request);
         }
-        if !request.data_only && !combined.partial && !request.filters.is_empty() {
-            let mut vocabulary_request = request.clone();
-            vocabulary_request.filters.clear();
-            vocabulary_request.histogram = None;
-            vocabulary_request.limit = 0;
-            vocabulary_request.fts_terms.clear();
-            vocabulary_request.fts_patterns.clear();
-            vocabulary_request.fts_negative_patterns.clear();
-            let vocabulary =
-                self.explore_files(&selected_files, &vocabulary_request, deadline, &mut options)?;
+        if should_collect_unfiltered_facet_vocabulary(request, combined) {
+            let vocabulary = self.explore_files(
+                selected_files,
+                &request.unfiltered_vocabulary(),
+                deadline,
+                options,
+            )?;
             combined.add_zero_count_facet_values(&vocabulary.facets);
         }
-        Ok(self.query_response(request, &annotation_paths, combined))
+        Ok(())
     }
 
     pub fn run_directory_request_bytes(&self, directory: &Path, request: &[u8]) -> Result<Value> {
@@ -456,161 +472,127 @@ where
         let total_files = files.len();
         for (file_index, file) in files.iter().enumerate() {
             let path = &file.path;
-            if options
-                .cancellation_callback
-                .is_some_and(|is_cancelled| is_cancelled())
-            {
-                combined.partial = true;
-                combined.cancelled = true;
+            if should_stop_before_file(&mut combined, deadline, options) {
                 break;
             }
-            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                combined.partial = true;
-                combined.timed_out = true;
-                break;
-            }
-            let mut reader = match FileReader::open_with_options(path, self.config.reader_options) {
-                Ok(reader) => reader,
-                Err(err) => {
-                    combined.skipped_files = combined.skipped_files.saturating_add(1);
-                    combined
-                        .file_errors
-                        .push(format!("{}: {err}", path.display()));
-                    emit_netdata_progress(
-                        options,
-                        NetdataFunctionProgress {
-                            current_file: file_index + 1,
-                            total_files,
-                            matched_files: combined.matched_files,
-                            skipped_files: combined.skipped_files,
-                            stats: combined.stats.clone(),
-                            elapsed: started.elapsed(),
-                        },
-                    );
-                    continue;
-                }
+            let Some(mut reader) = self.open_file_for_explore(
+                path,
+                &mut combined,
+                options,
+                progress_context(file_index, total_files, started),
+            )?
+            else {
+                continue;
             };
             combined.matched_files = combined.matched_files.saturating_add(1);
             combined.matched_paths.push(path.clone());
-            let mut query = request.to_explorer_query(
-                files.len() as u64,
-                Some(reader.header()),
+            let query = request.file_query(files.len(), reader.header(), &file.order);
+            collect_column_fields_for_file(&mut reader, request, path, &mut combined);
+            let explored = self.explore_single_file(
+                &mut reader,
+                request,
+                &query,
+                deadline,
+                options,
+                &combined,
+                &page_window,
+                sampling_state.as_mut(),
+                &realtime_adjuster,
+                progress_context(file_index, total_files, started),
                 file.order.journal_vs_realtime_delta_usec,
             );
-            if request.data_only && request.delta {
-                query.stop_when_rows_full = false;
-            }
-            if !request.data_only {
-                match reader.enumerate_fields_indexed() {
-                    Ok(fields) => combined.add_column_fields(fields),
-                    Err(err) => combined.file_errors.push(format!(
-                        "{}: FIELD index enumeration failed: {err}",
-                        path.display()
-                    )),
-                }
-            }
-            let explored = {
-                let mut explorer_progress = |progress: ExplorerProgress| {
-                    let stats = merged_progress_stats(&combined.stats, &progress.stats);
-                    if let Some(callback) = options.progress_callback.as_deref_mut() {
-                        callback(NetdataFunctionProgress {
-                            current_file: file_index + 1,
-                            total_files,
-                            matched_files: combined.matched_files,
-                            skipped_files: combined.skipped_files,
-                            stats,
-                            elapsed: started.elapsed(),
-                        });
-                    }
-                };
-                let mut control = ExplorerControl::new();
-                control.set_deadline(deadline);
-                control.set_cancellation_callback(options.cancellation_callback);
-                control.set_progress_interval(options.progress_interval);
-                control.set_progress_callback(Some(&mut explorer_progress));
-                control.set_sampling_state(sampling_state.as_mut());
-                let mut candidate_row =
-                    |realtime_usec| page_window.borrow().candidate_to_keep(realtime_usec);
-                control.set_candidate_row_callback(Some(&mut candidate_row));
-                let mut adjust_realtime =
-                    |realtime_usec| realtime_adjuster.borrow_mut().adjust(realtime_usec);
-                control.set_realtime_adjust_callback(Some(&mut adjust_realtime));
-                let mut matched_row = |realtime_usec, rows_matched| {
-                    let mut page_window = page_window.borrow_mut();
-                    page_window.observe(realtime_usec);
-                    request.data_only
-                        && request.delta
-                        && rows_matched % DATA_ONLY_CHECK_EVERY_ROWS == 0
-                        && page_window.can_stop_delta_file(
-                            realtime_usec,
-                            file.order.journal_vs_realtime_delta_usec,
-                        )
-                };
-                control.set_matched_row_callback(Some(&mut matched_row));
-                let result = reader.explore_with_strategy_cursor_rows_controlled(
-                    &query,
-                    self.config.explorer_strategy,
-                    &mut control,
-                );
-                let stop_reason = control.stop_reason();
-                result.map(|result| (result, stop_reason))
+            let Some((result, stop_reason)) = record_explore_result(explored, path, &mut combined)
+            else {
+                continue;
             };
-            let (result, stop_reason) = match explored {
-                Ok(result) => result,
-                Err(err) => {
-                    combined.skipped_files = combined.skipped_files.saturating_add(1);
-                    combined
-                        .file_errors
-                        .push(format!("{}: {err}", path.display()));
-                    continue;
-                }
-            };
-            update_learned_realtime_delta(options, path, &file.order, &result.stats);
-            combined.merge(path, result, query.direction, request.limit)?;
-            emit_netdata_progress(
+            if finish_explored_file(
                 options,
-                NetdataFunctionProgress {
-                    current_file: file_index + 1,
-                    total_files,
-                    matched_files: combined.matched_files,
-                    skipped_files: combined.skipped_files,
-                    stats: combined.stats.clone(),
-                    elapsed: started.elapsed(),
-                },
-            );
-            if options
-                .cancellation_callback
-                .is_some_and(|is_cancelled| is_cancelled())
-            {
-                combined.partial = true;
-                combined.cancelled = true;
-                break;
-            }
-            if let Some(reason) = stop_reason {
-                combined.partial = true;
-                match reason {
-                    ExplorerStopReason::TimedOut => combined.timed_out = true,
-                    ExplorerStopReason::Cancelled => combined.cancelled = true,
-                }
-                break;
-            }
-            if request.data_only
-                && !request.delta
-                && !request.tail
-                && combined.rows.len() >= request.limit
-                && remaining_files_cannot_affect_data_page(
-                    &combined,
-                    request,
-                    files,
-                    file_index + 1,
-                )
-            {
+                request,
+                file,
+                &query,
+                result,
+                stop_reason,
+                &mut combined,
+                files,
+                file_index,
+                progress_context(file_index, total_files, started),
+            )? {
                 break;
             }
         }
         combined.expand_row_payloads(self.config.reader_options);
         combined.page_counters = Some(page_window.into_inner().counters());
         Ok(combined)
+    }
+
+    fn open_file_for_explore(
+        &self,
+        path: &Path,
+        combined: &mut CombinedResult,
+        options: &mut NetdataFunctionRunOptions<'_>,
+        progress: ProgressContext,
+    ) -> Result<Option<FileReader>> {
+        match FileReader::open_with_options(path, self.config.reader_options) {
+            Ok(reader) => Ok(Some(reader)),
+            Err(err) => {
+                combined.skipped_files = combined.skipped_files.saturating_add(1);
+                combined
+                    .file_errors
+                    .push(format!("{}: {err}", path.display()));
+                emit_progress_for_combined(options, combined, progress);
+                Ok(None)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn explore_single_file(
+        &self,
+        reader: &mut FileReader,
+        request: &NetdataRequest,
+        query: &ExplorerQuery,
+        deadline: Option<Instant>,
+        options: &mut NetdataFunctionRunOptions<'_>,
+        combined: &CombinedResult,
+        page_window: &RefCell<NetdataPageWindow>,
+        sampling_state: Option<&mut ExplorerSamplingState>,
+        realtime_adjuster: &RefCell<NetdataRealtimeAdjuster>,
+        progress: ProgressContext,
+        realtime_delta_usec: u64,
+    ) -> Result<(ExplorerResult, Option<ExplorerStopReason>)> {
+        let cancellation_callback = options.cancellation_callback;
+        let progress_interval = options.progress_interval;
+        let mut explorer_progress = |explorer_progress: ExplorerProgress| {
+            emit_explorer_progress(options, combined, explorer_progress, progress);
+        };
+        let mut control = ExplorerControl::new();
+        control.set_deadline(deadline);
+        control.set_cancellation_callback(cancellation_callback);
+        control.set_progress_interval(progress_interval);
+        control.set_progress_callback(Some(&mut explorer_progress));
+        control.set_sampling_state(sampling_state);
+        let mut candidate_row =
+            |realtime_usec| page_window.borrow().candidate_to_keep(realtime_usec);
+        control.set_candidate_row_callback(Some(&mut candidate_row));
+        let mut adjust_realtime =
+            |realtime_usec| realtime_adjuster.borrow_mut().adjust(realtime_usec);
+        control.set_realtime_adjust_callback(Some(&mut adjust_realtime));
+        let mut matched_row = |realtime_usec, rows_matched| {
+            delta_scan_can_stop(
+                request,
+                page_window,
+                realtime_usec,
+                rows_matched,
+                realtime_delta_usec,
+            )
+        };
+        control.set_matched_row_callback(Some(&mut matched_row));
+        let result = reader.explore_with_strategy_cursor_rows_controlled(
+            query,
+            self.config.explorer_strategy,
+            &mut control,
+        )?;
+        Ok((result, control.stop_reason()))
     }
 
     fn info_response(
@@ -645,6 +627,8 @@ where
         annotation_paths: &[PathBuf],
         combined: CombinedResult,
     ) -> Value {
+        // Match Netdata systemd-journal.plugin: if files are newer but no
+        // useful rows survive the query, the function returns 304.
         let not_modified = request.if_modified_since_usec != 0
             && !combined.partial
             && combined.stats.rows_matched == 0;
@@ -654,6 +638,21 @@ where
         if not_modified {
             return netdata_function_error(304, "No new data since the previous call.");
         }
+        let artifacts = self.query_response_artifacts(&request, annotation_paths, &combined);
+        let mut response = base_query_response(&request, &combined, &artifacts);
+        let Some(object) = response.as_object_mut() else {
+            return netdata_function_error(500, "Internal Netdata function response error.");
+        };
+        self.add_query_response_metadata(object, &request, &combined, artifacts);
+        response
+    }
+
+    fn query_response_artifacts(
+        &self,
+        request: &NetdataRequest,
+        annotation_paths: &[PathBuf],
+        combined: &CombinedResult,
+    ) -> QueryResponseArtifacts {
         let reportable_facet_fields = combined.reportable_facet_fields_bytes(&request.facets);
         let reportable_facet_field_names = string_fields(&reportable_facet_fields);
         let columns = self.build_columns(
@@ -683,130 +682,59 @@ where
         let histogram = combined.histogram.as_ref().map(|histogram| {
             self.build_histogram(&context, histogram, combined.facets.get(&histogram.field))
         });
-        let returned = data.len() as u64;
-        let status = 200;
         let message = query_message(combined.timed_out, &combined.stats);
-        let unsampled = combined.stats.rows_unsampled;
-        let estimated = combined.stats.rows_estimated;
-        let fallback_rows_after_returned = if unsampled != 0 || estimated != 0 {
-            combined.stats.rows_examined
-        } else {
-            combined.stats.rows_matched
+        let items = response_items(request, combined, data.len() as u64);
+        QueryResponseArtifacts {
+            reportable_facet_field_names,
+            columns,
+            data,
+            facets,
+            histogram,
+            message,
+            items,
         }
-        .saturating_sub(returned);
-        let page_counters = combined
-            .page_counters
-            .unwrap_or_else(|| NetdataPageCounters {
-                matched: combined.stats.rows_matched,
-                before: 0,
-                after: fallback_rows_after_returned,
-            });
-        let items = json!({
-            "evaluated": combined.stats.rows_examined.saturating_add(unsampled).saturating_add(estimated),
-            "matched": page_counters.matched.saturating_add(unsampled).saturating_add(estimated),
-            "unsampled": unsampled,
-            "estimated": estimated,
-            "returned": returned,
-            "max_to_return": request.limit as u64,
-            "before": page_counters.before,
-            "after": page_counters.after,
-        });
+    }
 
-        let mut response = json!({
-            "_request": request.echo,
-            "versions": { "netdata_function_api": 1, "sdk": env!("CARGO_PKG_VERSION") },
-            "_journal_files": {
-                "matched": combined.matched_files,
-                "skipped": combined.skipped_files,
-                "errors": combined.file_errors,
-            },
-            "status": status,
-            "partial": combined.partial,
-            "type": "table",
-            "show_ids": true,
-            "has_history": true,
-            "pagination": {
-                "enabled": true,
-                "key": "anchor",
-                "column": "timestamp",
-                "units": "timestamp_usec",
-            },
-            "columns": columns.map,
-            "data": data,
-            "_stats": {
-                "sdk_explorer": combined.stats,
-            },
-            "expires": if request.data_only {
-                unix_now_seconds().saturating_add(3600)
-            } else {
-                0
-            }
-        });
-
-        let Some(object) = response.as_object_mut() else {
-            return netdata_function_error(500, "Internal Netdata function response error.");
-        };
+    fn add_query_response_metadata(
+        &self,
+        object: &mut Map<String, Value>,
+        request: &NetdataRequest,
+        combined: &CombinedResult,
+        artifacts: QueryResponseArtifacts,
+    ) {
         if !request.data_only {
-            object.insert("message".to_string(), message);
-            object.insert("update_every".to_string(), Value::from(1));
-            object.insert("help".to_string(), Value::Null);
-            object.insert(
-                "accepted_params".to_string(),
-                self.accepted_params_from_fields(&reportable_facet_field_names),
-            );
-            object.insert("default_sort_column".to_string(), Value::from("timestamp"));
-            object.insert("default_charts".to_string(), Value::Array(Vec::new()));
-            object.insert(
-                "available_histograms".to_string(),
-                self.available_histograms(&request, &combined),
-            );
+            self.add_full_query_response_metadata(object, request, combined, &artifacts);
         } else if request.histogram.is_some() {
             object.insert(
                 "available_histograms".to_string(),
-                self.available_histograms(&request, &combined),
+                self.available_histograms(request, combined),
             );
         }
+        add_last_modified_if_needed(object, request, combined);
+        add_sampling_if_needed(object, combined);
+        add_analysis_outputs_if_needed(object, request, artifacts);
+    }
 
-        if !request.data_only || request.tail {
-            object.insert(
-                "last_modified".to_string(),
-                Value::from(combined.stats.last_realtime_usec),
-            );
-        }
-        if combined.sampling_enabled {
-            object.insert(
-                "_sampling".to_string(),
-                json!({
-                    "enabled": true,
-                    "sampled": combined.stats.sampling_sampled,
-                    "unsampled": combined.stats.sampling_unsampled,
-                    "estimated": combined.stats.sampling_estimated,
-                }),
-            );
-        }
-
-        if !request.data_only || request.delta {
-            let facets_key = if request.data_only {
-                "facets_delta"
-            } else {
-                "facets"
-            };
-            let histogram_key = if request.data_only {
-                "histogram_delta"
-            } else {
-                "histogram"
-            };
-            let items_key = if request.data_only {
-                "items_delta"
-            } else {
-                "items"
-            };
-            object.insert(facets_key.to_string(), facets);
-            object.insert(histogram_key.to_string(), histogram.unwrap_or(Value::Null));
-            object.insert(items_key.to_string(), items);
-        }
-
-        response
+    fn add_full_query_response_metadata(
+        &self,
+        object: &mut Map<String, Value>,
+        request: &NetdataRequest,
+        combined: &CombinedResult,
+        artifacts: &QueryResponseArtifacts,
+    ) {
+        object.insert("message".to_string(), artifacts.message.clone());
+        object.insert("update_every".to_string(), Value::from(1));
+        object.insert("help".to_string(), Value::Null);
+        object.insert(
+            "accepted_params".to_string(),
+            self.accepted_params_from_fields(&artifacts.reportable_facet_field_names),
+        );
+        object.insert("default_sort_column".to_string(), Value::from("timestamp"));
+        object.insert("default_charts".to_string(), Value::Array(Vec::new()));
+        object.insert(
+            "available_histograms".to_string(),
+            self.available_histograms(request, combined),
+        );
     }
 
     fn build_columns(
@@ -1166,52 +1094,26 @@ impl NetdataRequest {
         let before = get_i64(object, "before");
         let (after_realtime_usec, before_realtime_usec) =
             normalize_time_window(now_seconds, after, before);
-        let mut direction = match get_str(object, "direction").unwrap_or("backward") {
-            "forward" | "forwards" | "next" => Direction::Forward,
-            _ => Direction::Backward,
-        };
+        let direction = request_direction(object);
         let if_modified_since_usec = get_u64(object, "if_modified_since").unwrap_or_default();
         let data_only = get_bool(object, "data_only").unwrap_or(false);
-        let delta = data_only && get_bool(object, "delta").unwrap_or(false);
-        let tail =
-            data_only && if_modified_since_usec != 0 && get_bool(object, "tail").unwrap_or(false);
+        let delta = request_delta(data_only, object);
+        let tail = request_tail(data_only, if_modified_since_usec, object);
         let sampling = get_u64(object, "sampling").unwrap_or(DEFAULT_ITEMS_SAMPLING);
-        let mut anchor = get_u64(object, "anchor")
-            .map(normalize_timestamp_to_usec)
-            .map(ExplorerAnchor::Realtime)
-            .unwrap_or(ExplorerAnchor::Auto);
-        if tail && matches!(anchor, ExplorerAnchor::Realtime(_)) {
-            direction = Direction::Backward;
-        }
-        if let ExplorerAnchor::Realtime(anchor_usec) = anchor {
-            let out_of_range = after_realtime_usec.is_some_and(|after| anchor_usec < after)
-                || before_realtime_usec.is_some_and(|before| anchor_usec > before);
-            if out_of_range {
-                anchor = ExplorerAnchor::Auto;
-                direction = Direction::Backward;
-            }
-        }
-        let requested_limit = get_u64(object, "last")
-            .filter(|value| *value != 0)
-            .map(|value| value as usize)
-            .unwrap_or(DEFAULT_ITEMS_TO_RETURN);
+        let (anchor, direction) = request_anchor_and_direction(
+            object,
+            tail,
+            direction,
+            after_realtime_usec,
+            before_realtime_usec,
+        );
+        let requested_limit = request_limit(object);
         let limit = requested_limit.max(2);
         let requested_facets = parse_string_array(object.get("facets"));
-        let facets = requested_facets
-            .clone()
-            .unwrap_or_else(|| config.default_facets.clone())
-            .into_iter()
-            .map(Vec::from)
-            .collect();
-        let requested_histogram = get_str(object, "histogram")
-            .filter(|histogram| !histogram.is_empty())
-            .map(ToOwned::to_owned);
-        let histogram = requested_histogram
-            .clone()
-            .or_else(|| config.default_histogram.clone());
-        let requested_query = get_str(object, "query")
-            .filter(|query| !query.is_empty())
-            .map(ToOwned::to_owned);
+        let facets = request_facets(&requested_facets, config);
+        let requested_histogram = request_histogram(object);
+        let histogram = request_histogram_or_default(&requested_histogram, config);
+        let requested_query = request_query(object);
         let (fts_terms, fts_patterns, fts_negative_patterns) = requested_query
             .as_deref()
             .map(parse_fts_query_patterns)
@@ -1219,24 +1121,25 @@ impl NetdataRequest {
         let source_selection = parse_source_selection(object.get("selections"));
         let filters = parse_filters(object.get("selections"));
 
-        let echo = normalized_request_echo(
+        let echo_input = RequestEchoInput {
             info,
             after_realtime_usec,
             before_realtime_usec,
             if_modified_since_usec,
             anchor,
             direction,
-            requested_limit,
+            limit: requested_limit,
             data_only,
             delta,
             tail,
             sampling,
-            source_selection.source_type,
-            requested_facets.as_deref(),
-            object.get("selections"),
-            requested_histogram.as_deref(),
-            requested_query.as_deref(),
-        );
+            source_type: source_selection.source_type,
+            requested_facets: requested_facets.as_deref(),
+            selections: object.get("selections"),
+            histogram: requested_histogram.as_deref(),
+            query: requested_query.as_deref(),
+        };
+        let echo = normalized_request_echo(&echo_input);
 
         Ok(Self {
             info,
@@ -1360,6 +1263,34 @@ impl NetdataRequest {
             sampling,
             debug_collect_column_fields_by_row_traversal: false,
         }
+    }
+
+    fn file_query(
+        &self,
+        matched_files: usize,
+        file_header: FileHeader,
+        order: &JournalFileOrderInfo,
+    ) -> ExplorerQuery {
+        let mut query = self.to_explorer_query(
+            matched_files as u64,
+            Some(file_header),
+            order.journal_vs_realtime_delta_usec,
+        );
+        if self.data_only && self.delta {
+            query.stop_when_rows_full = false;
+        }
+        query
+    }
+
+    fn unfiltered_vocabulary(&self) -> Self {
+        let mut request = self.clone();
+        request.filters.clear();
+        request.histogram = None;
+        request.limit = 0;
+        request.fts_terms.clear();
+        request.fts_patterns.clear();
+        request.fts_negative_patterns.clear();
+        request
     }
 
     fn distinct_filter_fields(&self) -> usize {
@@ -1569,6 +1500,13 @@ struct NetdataPageCounters {
     matched: u64,
     before: u64,
     after: u64,
+}
+
+#[derive(Clone, Copy)]
+struct ProgressContext {
+    current_file: usize,
+    total_files: usize,
+    started: Instant,
 }
 
 #[derive(Debug)]
@@ -2195,6 +2133,137 @@ struct Columns {
     map: Map<String, Value>,
 }
 
+struct QueryResponseArtifacts {
+    reportable_facet_field_names: Vec<String>,
+    columns: Columns,
+    data: Vec<Value>,
+    facets: Value,
+    histogram: Option<Value>,
+    message: Value,
+    items: Value,
+}
+
+fn base_query_response(
+    request: &NetdataRequest,
+    combined: &CombinedResult,
+    artifacts: &QueryResponseArtifacts,
+) -> Value {
+    json!({
+        "_request": &request.echo,
+        "versions": { "netdata_function_api": 1, "sdk": env!("CARGO_PKG_VERSION") },
+        "_journal_files": {
+            "matched": combined.matched_files,
+            "skipped": combined.skipped_files,
+            "errors": &combined.file_errors,
+        },
+        "status": 200,
+        "partial": combined.partial,
+        "type": "table",
+        "show_ids": true,
+        "has_history": true,
+        "pagination": {
+            "enabled": true,
+            "key": "anchor",
+            "column": "timestamp",
+            "units": "timestamp_usec",
+        },
+        "columns": &artifacts.columns.map,
+        "data": &artifacts.data,
+        "_stats": {
+            "sdk_explorer": &combined.stats,
+        },
+        "expires": if request.data_only {
+            unix_now_seconds().saturating_add(3600)
+        } else {
+            0
+        }
+    })
+}
+
+fn response_items(request: &NetdataRequest, combined: &CombinedResult, returned: u64) -> Value {
+    let unsampled = combined.stats.rows_unsampled;
+    let estimated = combined.stats.rows_estimated;
+    let fallback_rows_after_returned =
+        response_fallback_rows_after_returned(&combined.stats, returned);
+    let page_counters = combined
+        .page_counters
+        .unwrap_or_else(|| NetdataPageCounters {
+            matched: combined.stats.rows_matched,
+            before: 0,
+            after: fallback_rows_after_returned,
+        });
+    json!({
+        "evaluated": combined.stats.rows_examined.saturating_add(unsampled).saturating_add(estimated),
+        "matched": page_counters.matched.saturating_add(unsampled).saturating_add(estimated),
+        "unsampled": unsampled,
+        "estimated": estimated,
+        "returned": returned,
+        "max_to_return": request.limit as u64,
+        "before": page_counters.before,
+        "after": page_counters.after,
+    })
+}
+
+fn response_fallback_rows_after_returned(stats: &ExplorerStats, returned: u64) -> u64 {
+    let source_rows = if stats.rows_unsampled != 0 || stats.rows_estimated != 0 {
+        stats.rows_examined
+    } else {
+        stats.rows_matched
+    };
+    source_rows.saturating_sub(returned)
+}
+
+fn add_last_modified_if_needed(
+    object: &mut Map<String, Value>,
+    request: &NetdataRequest,
+    combined: &CombinedResult,
+) {
+    if !request.data_only || request.tail {
+        object.insert(
+            "last_modified".to_string(),
+            Value::from(combined.stats.last_realtime_usec),
+        );
+    }
+}
+
+fn add_sampling_if_needed(object: &mut Map<String, Value>, combined: &CombinedResult) {
+    if combined.sampling_enabled {
+        object.insert(
+            "_sampling".to_string(),
+            json!({
+                "enabled": true,
+                "sampled": combined.stats.sampling_sampled,
+                "unsampled": combined.stats.sampling_unsampled,
+                "estimated": combined.stats.sampling_estimated,
+            }),
+        );
+    }
+}
+
+fn add_analysis_outputs_if_needed(
+    object: &mut Map<String, Value>,
+    request: &NetdataRequest,
+    artifacts: QueryResponseArtifacts,
+) {
+    if !request.data_only || request.delta {
+        let (facets_key, histogram_key, items_key) = response_analysis_keys(request.data_only);
+        object.insert(facets_key.to_string(), artifacts.facets);
+        object.insert(
+            histogram_key.to_string(),
+            artifacts.histogram.unwrap_or(Value::Null),
+        );
+        object.insert(items_key.to_string(), artifacts.items);
+    }
+}
+
+fn response_analysis_keys(data_only: bool) -> (&'static str, &'static str, &'static str) {
+    if data_only {
+        ("facets_delta", "histogram_delta", "items_delta")
+    } else {
+        ("facets", "histogram", "items")
+    }
+}
+
 fn merge_histogram(
     target: &mut Option<ExplorerHistogram>,
     source: ExplorerHistogram,
@@ -2251,6 +2320,35 @@ fn add_netdata_facet_count(target: &mut BTreeMap<Vec<u8>, u64>, value: &[u8], co
         .or_default() += count;
 }
 
+fn not_modified_before_scan_response(
+    request: &NetdataRequest,
+    selected: &SelectedJournalFiles,
+) -> Option<Value> {
+    if request.if_modified_since_usec != 0 && !selected.files_are_newer {
+        Some(netdata_function_error(
+            304,
+            "No new data since the previous call.",
+        ))
+    } else {
+        None
+    }
+}
+
+fn should_collect_unfiltered_facet_vocabulary(
+    request: &NetdataRequest,
+    combined: &CombinedResult,
+) -> bool {
+    !request.data_only && !combined.partial && !request.filters.is_empty()
+}
+
+fn progress_context(file_index: usize, total_files: usize, started: Instant) -> ProgressContext {
+    ProgressContext {
+        current_file: file_index + 1,
+        total_files,
+        started,
+    }
+}
+
 fn emit_netdata_progress(
     options: &mut NetdataFunctionRunOptions<'_>,
     progress: NetdataFunctionProgress,
@@ -2258,6 +2356,153 @@ fn emit_netdata_progress(
     if let Some(callback) = options.progress_callback.as_deref_mut() {
         callback(progress);
     }
+}
+
+fn emit_progress_for_combined(
+    options: &mut NetdataFunctionRunOptions<'_>,
+    combined: &CombinedResult,
+    context: ProgressContext,
+) {
+    emit_netdata_progress(
+        options,
+        NetdataFunctionProgress {
+            current_file: context.current_file,
+            total_files: context.total_files,
+            matched_files: combined.matched_files,
+            skipped_files: combined.skipped_files,
+            stats: combined.stats.clone(),
+            elapsed: context.started.elapsed(),
+        },
+    );
+}
+
+fn emit_explorer_progress(
+    options: &mut NetdataFunctionRunOptions<'_>,
+    combined: &CombinedResult,
+    progress: ExplorerProgress,
+    context: ProgressContext,
+) {
+    let stats = merged_progress_stats(&combined.stats, &progress.stats);
+    if let Some(callback) = options.progress_callback.as_deref_mut() {
+        callback(NetdataFunctionProgress {
+            current_file: context.current_file,
+            total_files: context.total_files,
+            matched_files: combined.matched_files,
+            skipped_files: combined.skipped_files,
+            stats,
+            elapsed: context.started.elapsed(),
+        });
+    }
+}
+
+fn request_cancelled(options: &NetdataFunctionRunOptions<'_>) -> bool {
+    options
+        .cancellation_callback
+        .is_some_and(|is_cancelled| is_cancelled())
+}
+
+fn should_stop_before_file(
+    combined: &mut CombinedResult,
+    deadline: Option<Instant>,
+    options: &NetdataFunctionRunOptions<'_>,
+) -> bool {
+    if request_cancelled(options) {
+        combined.partial = true;
+        combined.cancelled = true;
+        return true;
+    }
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        combined.partial = true;
+        combined.timed_out = true;
+        return true;
+    }
+    false
+}
+
+fn collect_column_fields_for_file(
+    reader: &mut FileReader,
+    request: &NetdataRequest,
+    path: &Path,
+    combined: &mut CombinedResult,
+) {
+    if request.data_only {
+        return;
+    }
+    match reader.enumerate_fields_indexed() {
+        Ok(fields) => combined.add_column_fields(fields),
+        Err(err) => combined.file_errors.push(format!(
+            "{}: FIELD index enumeration failed: {err}",
+            path.display()
+        )),
+    }
+}
+
+fn record_explore_result(
+    result: Result<(ExplorerResult, Option<ExplorerStopReason>)>,
+    path: &Path,
+    combined: &mut CombinedResult,
+) -> Option<(ExplorerResult, Option<ExplorerStopReason>)> {
+    match result {
+        Ok(result) => Some(result),
+        Err(err) => {
+            combined.skipped_files = combined.skipped_files.saturating_add(1);
+            combined
+                .file_errors
+                .push(format!("{}: {err}", path.display()));
+            None
+        }
+    }
+}
+
+fn delta_scan_can_stop(
+    request: &NetdataRequest,
+    page_window: &RefCell<NetdataPageWindow>,
+    realtime_usec: u64,
+    rows_matched: u64,
+    realtime_delta_usec: u64,
+) -> bool {
+    let mut page_window = page_window.borrow_mut();
+    page_window.observe(realtime_usec);
+    request.data_only
+        && request.delta
+        && rows_matched % DATA_ONLY_CHECK_EVERY_ROWS == 0
+        && page_window.can_stop_delta_file(realtime_usec, realtime_delta_usec)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_explored_file(
+    options: &mut NetdataFunctionRunOptions<'_>,
+    request: &NetdataRequest,
+    file: &SelectedJournalFile,
+    query: &ExplorerQuery,
+    result: ExplorerResult,
+    stop_reason: Option<ExplorerStopReason>,
+    combined: &mut CombinedResult,
+    files: &[SelectedJournalFile],
+    file_index: usize,
+    progress: ProgressContext,
+) -> Result<bool> {
+    update_learned_realtime_delta(options, &file.path, &file.order, &result.stats);
+    combined.merge(&file.path, result, query.direction, request.limit)?;
+    emit_progress_for_combined(options, combined, progress);
+    if request_cancelled(options) {
+        combined.partial = true;
+        combined.cancelled = true;
+        return Ok(true);
+    }
+    if let Some(reason) = stop_reason {
+        combined.partial = true;
+        match reason {
+            ExplorerStopReason::TimedOut => combined.timed_out = true,
+            ExplorerStopReason::Cancelled => combined.cancelled = true,
+        }
+        return Ok(true);
+    }
+    Ok(request.data_only
+        && !request.delta
+        && !request.tail
+        && combined.rows.len() >= request.limit
+        && remaining_files_cannot_affect_data_page(combined, request, files, file_index + 1))
 }
 
 fn file_metadata(
@@ -2681,55 +2926,78 @@ fn parse_fts_query_patterns(query: &str) -> (Vec<ExplorerFtsPattern>, Vec<Vec<u8
     let mut positives = Vec::new();
     let mut negatives = Vec::new();
 
-    while index < bytes.len() {
-        while index < bytes.len() && bytes[index] == b'|' {
-            index += 1;
-        }
-        if index >= bytes.len() {
-            break;
-        }
-
-        let negative = if bytes[index] == b'!' {
-            index += 1;
-            true
-        } else {
-            false
-        };
-        if index >= bytes.len() {
-            break;
-        }
-
-        let mut pattern = Vec::new();
-        let mut escaped = false;
-        while index < bytes.len() {
-            let byte = bytes[index];
-            index += 1;
-
-            if byte == b'\\' && !escaped {
-                escaped = true;
-                continue;
-            }
-            if byte == b'|' && !escaped {
-                break;
-            }
-
-            pattern.push(byte);
-            escaped = false;
-        }
-
-        if pattern.is_empty() {
-            continue;
-        }
-
-        terms.push(ExplorerFtsPattern::substring(pattern.clone(), negative));
-        if negative {
-            negatives.push(pattern);
-        } else {
-            positives.push(pattern);
-        }
+    while let Some((pattern, negative)) = next_fts_pattern(bytes, &mut index) {
+        push_fts_pattern(
+            pattern,
+            negative,
+            &mut terms,
+            &mut positives,
+            &mut negatives,
+        );
     }
 
     (terms, positives, negatives)
+}
+
+fn next_fts_pattern(bytes: &[u8], index: &mut usize) -> Option<(Vec<u8>, bool)> {
+    while *index < bytes.len() {
+        skip_fts_separators(bytes, index);
+        let negative = consume_fts_negative_marker(bytes, index);
+        let pattern = read_fts_pattern(bytes, index);
+        if !pattern.is_empty() {
+            return Some((pattern, negative));
+        }
+    }
+    None
+}
+
+fn skip_fts_separators(bytes: &[u8], index: &mut usize) {
+    while *index < bytes.len() && bytes[*index] == b'|' {
+        *index += 1;
+    }
+}
+
+fn consume_fts_negative_marker(bytes: &[u8], index: &mut usize) -> bool {
+    if bytes.get(*index) == Some(&b'!') {
+        *index += 1;
+        true
+    } else {
+        false
+    }
+}
+
+fn read_fts_pattern(bytes: &[u8], index: &mut usize) -> Vec<u8> {
+    let mut pattern = Vec::new();
+    let mut escaped = false;
+    while *index < bytes.len() {
+        let byte = bytes[*index];
+        *index += 1;
+        if byte == b'\\' && !escaped {
+            escaped = true;
+            continue;
+        }
+        if byte == b'|' && !escaped {
+            break;
+        }
+        pattern.push(byte);
+        escaped = false;
+    }
+    pattern
+}
+
+fn push_fts_pattern(
+    pattern: Vec<u8>,
+    negative: bool,
+    terms: &mut Vec<ExplorerFtsPattern>,
+    positives: &mut Vec<Vec<u8>>,
+    negatives: &mut Vec<Vec<u8>>,
+) {
+    terms.push(ExplorerFtsPattern::substring(pattern.clone(), negative));
+    if negative {
+        negatives.push(pattern);
+    } else {
+        positives.push(pattern);
+    }
 }
 
 fn parse_filters(value: Option<&Value>) -> Vec<ExplorerFilter> {
@@ -2861,6 +3129,94 @@ fn parse_string_array(value: Option<&Value>) -> Option<Vec<String>> {
     )
 }
 
+fn request_direction(object: &Map<String, Value>) -> Direction {
+    match get_str(object, "direction").unwrap_or("backward") {
+        "forward" | "forwards" | "next" => Direction::Forward,
+        _ => Direction::Backward,
+    }
+}
+
+fn request_delta(data_only: bool, object: &Map<String, Value>) -> bool {
+    data_only && get_bool(object, "delta").unwrap_or(false)
+}
+
+fn request_tail(data_only: bool, if_modified_since_usec: u64, object: &Map<String, Value>) -> bool {
+    data_only && if_modified_since_usec != 0 && get_bool(object, "tail").unwrap_or(false)
+}
+
+fn request_anchor_and_direction(
+    object: &Map<String, Value>,
+    tail: bool,
+    direction: Direction,
+    after_realtime_usec: Option<u64>,
+    before_realtime_usec: Option<u64>,
+) -> (ExplorerAnchor, Direction) {
+    let anchor = get_u64(object, "anchor")
+        .map(normalize_timestamp_to_usec)
+        .map(ExplorerAnchor::Realtime)
+        .unwrap_or(ExplorerAnchor::Auto);
+    if tail && matches!(anchor, ExplorerAnchor::Realtime(_)) {
+        return (anchor, Direction::Backward);
+    }
+    if anchor_outside_window(anchor, after_realtime_usec, before_realtime_usec) {
+        (ExplorerAnchor::Auto, Direction::Backward)
+    } else {
+        (anchor, direction)
+    }
+}
+
+fn anchor_outside_window(
+    anchor: ExplorerAnchor,
+    after_realtime_usec: Option<u64>,
+    before_realtime_usec: Option<u64>,
+) -> bool {
+    let ExplorerAnchor::Realtime(anchor_usec) = anchor else {
+        return false;
+    };
+    after_realtime_usec.is_some_and(|after| anchor_usec < after)
+        || before_realtime_usec.is_some_and(|before| anchor_usec > before)
+}
+
+fn request_limit(object: &Map<String, Value>) -> usize {
+    get_u64(object, "last")
+        .filter(|value| *value != 0)
+        .map(|value| value as usize)
+        .unwrap_or(DEFAULT_ITEMS_TO_RETURN)
+}
+
+fn request_facets(
+    requested_facets: &Option<Vec<String>>,
+    config: &NetdataFunctionConfig,
+) -> Vec<Vec<u8>> {
+    requested_facets
+        .clone()
+        .unwrap_or_else(|| config.default_facets.clone())
+        .into_iter()
+        .map(Vec::from)
+        .collect()
+}
+
+fn request_histogram(object: &Map<String, Value>) -> Option<String> {
+    get_str(object, "histogram")
+        .filter(|histogram| !histogram.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn request_histogram_or_default(
+    requested_histogram: &Option<String>,
+    config: &NetdataFunctionConfig,
+) -> Option<String> {
+    requested_histogram
+        .clone()
+        .or_else(|| config.default_histogram.clone())
+}
+
+fn request_query(object: &Map<String, Value>) -> Option<String> {
+    get_str(object, "query")
+        .filter(|query| !query.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn get_bool(object: &Map<String, Value>, key: &str) -> Option<bool> {
     object.get(key).and_then(Value::as_bool)
 }
@@ -2945,7 +3301,7 @@ fn relative_window_to_absolute(now_seconds: i64, after: i64, before: i64) -> (i6
     (after, before)
 }
 
-fn normalized_request_echo(
+struct RequestEchoInput<'a> {
     info: bool,
     after_realtime_usec: Option<u64>,
     before_realtime_usec: Option<u64>,
@@ -2958,39 +3314,41 @@ fn normalized_request_echo(
     tail: bool,
     sampling: u64,
     source_type: u64,
-    requested_facets: Option<&[String]>,
-    selections: Option<&Value>,
-    histogram: Option<&str>,
-    query: Option<&str>,
-) -> Value {
-    let anchor_usec = match anchor {
+    requested_facets: Option<&'a [String]>,
+    selections: Option<&'a Value>,
+    histogram: Option<&'a str>,
+    query: Option<&'a str>,
+}
+
+fn normalized_request_echo(input: &RequestEchoInput<'_>) -> Value {
+    let anchor_usec = match input.anchor {
         ExplorerAnchor::Realtime(usec) => usec,
         ExplorerAnchor::Auto | ExplorerAnchor::Head | ExplorerAnchor::Tail => 0,
     };
     let mut out = json!({
-        "info": info,
+        "info": input.info,
         // The SDK Netdata boundary always uses indexed slice semantics. The
         // field remains in the echo because it is part of the plugin request
         // shape and downstream fixtures compare normalized requests.
         "slice": true,
-        "data_only": data_only,
-        "delta": delta,
-        "tail": tail,
-        "sampling": sampling,
-        "source_type": source_type,
-        "after": after_realtime_usec.unwrap_or(0) / 1_000_000,
-        "before": before_realtime_usec.unwrap_or(0) / 1_000_000,
-        "if_modified_since": if_modified_since_usec,
+        "data_only": input.data_only,
+        "delta": input.delta,
+        "tail": input.tail,
+        "sampling": input.sampling,
+        "source_type": input.source_type,
+        "after": input.after_realtime_usec.unwrap_or(0) / 1_000_000,
+        "before": input.before_realtime_usec.unwrap_or(0) / 1_000_000,
+        "if_modified_since": input.if_modified_since_usec,
         "anchor": anchor_usec,
-        "direction": match direction {
+        "direction": match input.direction {
             Direction::Forward => "forward",
             Direction::Backward => "backward",
         },
-        "last": limit,
-        "query": query,
-        "histogram": histogram,
+        "last": input.limit,
+        "query": input.query,
+        "histogram": input.histogram,
     });
-    if let Some(facets) = requested_facets {
+    if let Some(facets) = input.requested_facets {
         if let Some(object) = out.as_object_mut() {
             object.insert(
                 "facets".to_string(),
@@ -3001,7 +3359,7 @@ fn normalized_request_echo(
             );
         }
     }
-    if let Some(Value::Object(selections)) = selections {
+    if let Some(Value::Object(selections)) = input.selections {
         let mut selections = selections.clone();
         if let Some(Value::Array(sources)) = selections.get_mut("__logs_sources") {
             for source in sources {
@@ -3373,142 +3731,145 @@ fn syslog_facility_name(raw: &str) -> Option<&'static str> {
     }
 }
 
+const ERRNO_NAMES: &[(u32, &str)] = &[
+    (1, "EPERM"),
+    (2, "ENOENT"),
+    (3, "ESRCH"),
+    (4, "EINTR"),
+    (5, "EIO"),
+    (6, "ENXIO"),
+    (7, "E2BIG"),
+    (8, "ENOEXEC"),
+    (9, "EBADF"),
+    (10, "ECHILD"),
+    (11, "EAGAIN"),
+    (12, "ENOMEM"),
+    (13, "EACCES"),
+    (14, "EFAULT"),
+    (15, "ENOTBLK"),
+    (16, "EBUSY"),
+    (17, "EEXIST"),
+    (18, "EXDEV"),
+    (19, "ENODEV"),
+    (20, "ENOTDIR"),
+    (21, "EISDIR"),
+    (22, "EINVAL"),
+    (23, "ENFILE"),
+    (24, "EMFILE"),
+    (25, "ENOTTY"),
+    (26, "ETXTBSY"),
+    (27, "EFBIG"),
+    (28, "ENOSPC"),
+    (29, "ESPIPE"),
+    (30, "EROFS"),
+    (31, "EMLINK"),
+    (32, "EPIPE"),
+    (33, "EDOM"),
+    (34, "ERANGE"),
+    (35, "EDEADLK"),
+    (36, "ENAMETOOLONG"),
+    (37, "ENOLCK"),
+    (38, "ENOSYS"),
+    (39, "ENOTEMPTY"),
+    (40, "ELOOP"),
+    (42, "ENOMSG"),
+    (43, "EIDRM"),
+    (44, "ECHRNG"),
+    (45, "EL2NSYNC"),
+    (46, "EL3HLT"),
+    (47, "EL3RST"),
+    (48, "ELNRNG"),
+    (49, "EUNATCH"),
+    (50, "ENOCSI"),
+    (51, "EL2HLT"),
+    (52, "EBADE"),
+    (53, "EBADR"),
+    (54, "EXFULL"),
+    (55, "ENOANO"),
+    (56, "EBADRQC"),
+    (57, "EBADSLT"),
+    (59, "EBFONT"),
+    (60, "ENOSTR"),
+    (61, "ENODATA"),
+    (62, "ETIME"),
+    (63, "ENOSR"),
+    (64, "ENONET"),
+    (65, "ENOPKG"),
+    (66, "EREMOTE"),
+    (67, "ENOLINK"),
+    (68, "EADV"),
+    (69, "ESRMNT"),
+    (70, "ECOMM"),
+    (71, "EPROTO"),
+    (72, "EMULTIHOP"),
+    (73, "EDOTDOT"),
+    (74, "EBADMSG"),
+    (75, "EOVERFLOW"),
+    (76, "ENOTUNIQ"),
+    (77, "EBADFD"),
+    (78, "EREMCHG"),
+    (79, "ELIBACC"),
+    (80, "ELIBBAD"),
+    (81, "ELIBSCN"),
+    (82, "ELIBMAX"),
+    (83, "ELIBEXEC"),
+    (84, "EILSEQ"),
+    (85, "ERESTART"),
+    (86, "ESTRPIPE"),
+    (87, "EUSERS"),
+    (88, "ENOTSOCK"),
+    (89, "EDESTADDRREQ"),
+    (90, "EMSGSIZE"),
+    (91, "EPROTOTYPE"),
+    (92, "ENOPROTOOPT"),
+    (93, "EPROTONOSUPPORT"),
+    (94, "ESOCKTNOSUPPORT"),
+    (95, "ENOTSUP"),
+    (96, "EPFNOSUPPORT"),
+    (97, "EAFNOSUPPORT"),
+    (98, "EADDRINUSE"),
+    (99, "EADDRNOTAVAIL"),
+    (100, "ENETDOWN"),
+    (101, "ENETUNREACH"),
+    (102, "ENETRESET"),
+    (103, "ECONNABORTED"),
+    (104, "ECONNRESET"),
+    (105, "ENOBUFS"),
+    (106, "EISCONN"),
+    (107, "ENOTCONN"),
+    (108, "ESHUTDOWN"),
+    (109, "ETOOMANYREFS"),
+    (110, "ETIMEDOUT"),
+    (111, "ECONNREFUSED"),
+    (112, "EHOSTDOWN"),
+    (113, "EHOSTUNREACH"),
+    (114, "EALREADY"),
+    (115, "EINPROGRESS"),
+    (116, "ESTALE"),
+    (117, "EUCLEAN"),
+    (118, "ENOTNAM"),
+    (119, "ENAVAIL"),
+    (120, "EISNAM"),
+    (121, "EREMOTEIO"),
+    (122, "EDQUOT"),
+    (123, "ENOMEDIUM"),
+    (124, "EMEDIUMTYPE"),
+    (125, "ECANCELED"),
+    (126, "ENOKEY"),
+    (127, "EKEYEXPIRED"),
+    (128, "EKEYREVOKED"),
+    (129, "EKEYREJECTED"),
+    (130, "EOWNERDEAD"),
+    (131, "ENOTRECOVERABLE"),
+    (132, "ERFKILL"),
+    (133, "EHWPOISON"),
+];
+
 fn errno_name(raw: &str) -> Option<String> {
     let errno = raw.parse::<u32>().ok()?;
-    let name = match errno {
-        1 => "EPERM",
-        2 => "ENOENT",
-        3 => "ESRCH",
-        4 => "EINTR",
-        5 => "EIO",
-        6 => "ENXIO",
-        7 => "E2BIG",
-        8 => "ENOEXEC",
-        9 => "EBADF",
-        10 => "ECHILD",
-        11 => "EAGAIN",
-        12 => "ENOMEM",
-        13 => "EACCES",
-        14 => "EFAULT",
-        15 => "ENOTBLK",
-        16 => "EBUSY",
-        17 => "EEXIST",
-        18 => "EXDEV",
-        19 => "ENODEV",
-        20 => "ENOTDIR",
-        21 => "EISDIR",
-        22 => "EINVAL",
-        23 => "ENFILE",
-        24 => "EMFILE",
-        25 => "ENOTTY",
-        26 => "ETXTBSY",
-        27 => "EFBIG",
-        28 => "ENOSPC",
-        29 => "ESPIPE",
-        30 => "EROFS",
-        31 => "EMLINK",
-        32 => "EPIPE",
-        33 => "EDOM",
-        34 => "ERANGE",
-        35 => "EDEADLK",
-        36 => "ENAMETOOLONG",
-        37 => "ENOLCK",
-        38 => "ENOSYS",
-        39 => "ENOTEMPTY",
-        40 => "ELOOP",
-        42 => "ENOMSG",
-        43 => "EIDRM",
-        44 => "ECHRNG",
-        45 => "EL2NSYNC",
-        46 => "EL3HLT",
-        47 => "EL3RST",
-        48 => "ELNRNG",
-        49 => "EUNATCH",
-        50 => "ENOCSI",
-        51 => "EL2HLT",
-        52 => "EBADE",
-        53 => "EBADR",
-        54 => "EXFULL",
-        55 => "ENOANO",
-        56 => "EBADRQC",
-        57 => "EBADSLT",
-        59 => "EBFONT",
-        60 => "ENOSTR",
-        61 => "ENODATA",
-        62 => "ETIME",
-        63 => "ENOSR",
-        64 => "ENONET",
-        65 => "ENOPKG",
-        66 => "EREMOTE",
-        67 => "ENOLINK",
-        68 => "EADV",
-        69 => "ESRMNT",
-        70 => "ECOMM",
-        71 => "EPROTO",
-        72 => "EMULTIHOP",
-        73 => "EDOTDOT",
-        74 => "EBADMSG",
-        75 => "EOVERFLOW",
-        76 => "ENOTUNIQ",
-        77 => "EBADFD",
-        78 => "EREMCHG",
-        79 => "ELIBACC",
-        80 => "ELIBBAD",
-        81 => "ELIBSCN",
-        82 => "ELIBMAX",
-        83 => "ELIBEXEC",
-        84 => "EILSEQ",
-        85 => "ERESTART",
-        86 => "ESTRPIPE",
-        87 => "EUSERS",
-        88 => "ENOTSOCK",
-        89 => "EDESTADDRREQ",
-        90 => "EMSGSIZE",
-        91 => "EPROTOTYPE",
-        92 => "ENOPROTOOPT",
-        93 => "EPROTONOSUPPORT",
-        94 => "ESOCKTNOSUPPORT",
-        95 => "ENOTSUP",
-        96 => "EPFNOSUPPORT",
-        97 => "EAFNOSUPPORT",
-        98 => "EADDRINUSE",
-        99 => "EADDRNOTAVAIL",
-        100 => "ENETDOWN",
-        101 => "ENETUNREACH",
-        102 => "ENETRESET",
-        103 => "ECONNABORTED",
-        104 => "ECONNRESET",
-        105 => "ENOBUFS",
-        106 => "EISCONN",
-        107 => "ENOTCONN",
-        108 => "ESHUTDOWN",
-        109 => "ETOOMANYREFS",
-        110 => "ETIMEDOUT",
-        111 => "ECONNREFUSED",
-        112 => "EHOSTDOWN",
-        113 => "EHOSTUNREACH",
-        114 => "EALREADY",
-        115 => "EINPROGRESS",
-        116 => "ESTALE",
-        117 => "EUCLEAN",
-        118 => "ENOTNAM",
-        119 => "ENAVAIL",
-        120 => "EISNAM",
-        121 => "EREMOTEIO",
-        122 => "EDQUOT",
-        123 => "ENOMEDIUM",
-        124 => "EMEDIUMTYPE",
-        125 => "ECANCELED",
-        126 => "ENOKEY",
-        127 => "EKEYEXPIRED",
-        128 => "EKEYREVOKED",
-        129 => "EKEYREJECTED",
-        130 => "EOWNERDEAD",
-        131 => "ENOTRECOVERABLE",
-        132 => "ERFKILL",
-        133 => "EHWPOISON",
-        _ => return None,
-    };
+    let name = ERRNO_NAMES
+        .iter()
+        .find_map(|(candidate, name)| (*candidate == errno).then_some(*name))?;
     Some(format!("{errno} ({name})"))
 }
 
@@ -3725,149 +4086,326 @@ fn resolve_gid_name(_raw: &str) -> Option<String> {
     None
 }
 
+const MESSAGE_ID_NAMES: &[(&str, &str)] = &[
+    ("f77379a8490b408bbe5f6940505a777b", "Journal started"),
+    ("d93fb3c9c24d451a97cea615ce59c00b", "Journal stopped"),
+    (
+        "a596d6fe7bfa4994828e72309e95d61e",
+        "Journal messages suppressed",
+    ),
+    (
+        "e9bf28e6e834481bb6f48f548ad13606",
+        "Journal messages missed",
+    ),
+    (
+        "ec387f577b844b8fa948f33cad9a75e6",
+        "Journal disk space usage",
+    ),
+    ("fc2e22bc6ee647b6b90729ab34a250b1", "Coredump"),
+    ("5aadd8e954dc4b1a8c954d63fd9e1137", "Coredump truncated"),
+    ("1f4e0a44a88649939aaea34fc6da8c95", "Backtrace"),
+    ("8d45620c1a4348dbb17410da57c60c66", "User Session created"),
+    (
+        "3354939424b4456d9802ca8333ed424a",
+        "User Session terminated",
+    ),
+    ("fcbefc5da23d428093f97c82a9290f7b", "Seat started"),
+    ("e7852bfe46784ed0accde04bc864c2d5", "Seat removed"),
+    (
+        "24d8d4452573402496068381a6312df2",
+        "VM or container started",
+    ),
+    (
+        "58432bd3bace477cb514b56381b8a758",
+        "VM or container stopped",
+    ),
+    ("c7a787079b354eaaa9e77b371893cd27", "Time change"),
+    ("45f82f4aef7a4bbf942ce861d1f20990", "Timezone change"),
+    (
+        "50876a9db00f4c40bde1a2ad381c3a1b",
+        "System configuration issues",
+    ),
+    (
+        "b07a249cd024414a82dd00cd181378ff",
+        "System start-up completed",
+    ),
+    (
+        "eed00a68ffd84e31882105fd973abdd1",
+        "User start-up completed",
+    ),
+    ("6bbd95ee977941e497c48be27c254128", "Sleep start"),
+    ("8811e6df2a8e40f58a94cea26f8ebf14", "Sleep stop"),
+    (
+        "98268866d1d54a499c4e98921d93bc40",
+        "System shutdown initiated",
+    ),
+    (
+        "c14aaf76ec284a5fa1f105f88dfb061c",
+        "System factory reset initiated",
+    ),
+    ("d9ec5e95e4b646aaaea2fd05214edbda", "Container init crashed"),
+    (
+        "3ed0163e868a4417ab8b9e210407a96c",
+        "System reboot failed after crash",
+    ),
+    ("645c735537634ae0a32b15a7c6cba7d4", "Init execution froze"),
+    (
+        "5addb3a06a734d3396b794bf98fb2d01",
+        "Init crashed no coredump",
+    ),
+    ("5c9e98de4ab94c6a9d04d0ad793bd903", "Init crashed no fork"),
+    (
+        "5e6f1f5e4db64a0eaee3368249d20b94",
+        "Init crashed unknown signal",
+    ),
+    (
+        "83f84b35ee264f74a3896a9717af34cb",
+        "Init crashed systemd signal",
+    ),
+    (
+        "3a73a98baf5b4b199929e3226c0be783",
+        "Init crashed process signal",
+    ),
+    (
+        "2ed18d4f78ca47f0a9bc25271c26adb4",
+        "Init crashed waitpid failed",
+    ),
+    (
+        "56b1cd96f24246c5b607666fda952356",
+        "Init crashed coredump failed",
+    ),
+    ("4ac7566d4d7548f4981f629a28f0f829", "Init crashed coredump"),
+    (
+        "38e8b1e039ad469291b18b44c553a5b7",
+        "Crash shell failed to fork",
+    ),
+    (
+        "872729b47dbe473eb768ccecd477beda",
+        "Crash shell failed to execute",
+    ),
+    ("658a67adc1c940b3b3316e7e8628834a", "Selinux failed"),
+    ("e6f456bd92004d9580160b2207555186", "Battery low warning"),
+    (
+        "267437d33fdd41099ad76221cc24a335",
+        "Battery low powering off",
+    ),
+    (
+        "79e05b67bc4545d1922fe47107ee60c5",
+        "Manager mainloop failed",
+    ),
+    ("dbb136b10ef4457ba47a795d62f108c9", "Manager no xdgdir path"),
+    (
+        "ed158c2df8884fa584eead2d902c1032",
+        "Init failed to drop capability bounding set of usermode",
+    ),
+    (
+        "42695b500df048298bee37159caa9f2e",
+        "Init failed to drop capability bounding set",
+    ),
+    (
+        "bfc2430724ab44499735b4f94cca9295",
+        "User manager can't disable new privileges",
+    ),
+    (
+        "59288af523be43a28d494e41e26e4510",
+        "Manager failed to start default target",
+    ),
+    (
+        "689b4fcc97b4486ea5da92db69c9e314",
+        "Manager failed to isolate default target",
+    ),
+    (
+        "5ed836f1766f4a8a9fc5da45aae23b29",
+        "Manager failed to collect passed file descriptors",
+    ),
+    (
+        "6a40fbfbd2ba4b8db02fb40c9cd090d7",
+        "Init failed to fix up environment variables",
+    ),
+    (
+        "0e54470984ac419689743d957a119e2e",
+        "Manager failed to allocate",
+    ),
+    (
+        "d67fa9f847aa4b048a2ae33535331adb",
+        "Manager failed to write Smack",
+    ),
+    (
+        "af55a6f75b544431b72649f36ff6d62c",
+        "System shutdown critical error",
+    ),
+    (
+        "d18e0339efb24a068d9c1060221048c2",
+        "Init failed to fork off valgrind",
+    ),
+    ("7d4958e842da4a758f6c1cdc7b36dcc5", "Unit starting"),
+    ("39f53479d3a045ac8e11786248231fbf", "Unit started"),
+    ("be02cf6855d2428ba40df7e9d022f03d", "Unit failed"),
+    ("de5b426a63be47a7b6ac3eaac82e2f6f", "Unit stopping"),
+    ("9d1aaa27d60140bd96365438aad20286", "Unit stopped"),
+    ("d34d037fff1847e6ae669a370e694725", "Unit reloading"),
+    ("7b05ebc668384222baa8881179cfda54", "Unit reloaded"),
+    ("5eb03494b6584870a536b337290809b3", "Unit restart scheduled"),
+    ("ae8f7b866b0347b9af31fe1c80b127c0", "Unit resources"),
+    ("7ad2d189f7e94e70a38c781354912448", "Unit success"),
+    ("0e4284a0caca4bfc81c0bb6786972673", "Unit skipped"),
+    ("d9b373ed55a64feb8242e02dbe79a49c", "Unit failure result"),
+    (
+        "641257651c1b4ec9a8624d7a40a9e1e7",
+        "Process execution failed",
+    ),
+    ("98e322203f7a4ed290d09fe03c09fe15", "Unit process exited"),
+    ("0027229ca0644181a76c4e92458afa2e", "Syslog forward missed"),
+    (
+        "1dee0369c7fc4736b7099b38ecb46ee7",
+        "Mount point is not empty",
+    ),
+    ("d989611b15e44c9dbf31e3c81256e4ed", "Unit oomd kill"),
+    ("fe6faa94e7774663a0da52717891d8ef", "Unit out of memory"),
+    ("b72ea4a2881545a0b50e200e55b9b06f", "Lid opened"),
+    ("b72ea4a2881545a0b50e200e55b9b070", "Lid closed"),
+    ("f5f416b862074b28927a48c3ba7d51ff", "System docked"),
+    ("51e171bd585248568110144c517cca53", "System undocked"),
+    ("b72ea4a2881545a0b50e200e55b9b071", "Power key"),
+    ("3e0117101eb243c1b9a50db3494ab10b", "Power key long press"),
+    ("9fa9d2c012134ec385451ffe316f97d0", "Reboot key"),
+    ("f1c59a58c9d943668965c337caec5975", "Reboot key long press"),
+    ("b72ea4a2881545a0b50e200e55b9b072", "Suspend key"),
+    ("bfdaf6d312ab4007bc1fe40a15df78e8", "Suspend key long press"),
+    ("b72ea4a2881545a0b50e200e55b9b073", "Hibernate key"),
+    (
+        "167836df6f7f428e98147227b2dc8945",
+        "Hibernate key long press",
+    ),
+    ("c772d24e9a884cbeb9ea12625c306c01", "Invalid configuration"),
+    (
+        "1675d7f172174098b1108bf8c7dc8f5d",
+        "DNSSEC validation failed",
+    ),
+    (
+        "4d4408cfd0d144859184d1e65d7c8a65",
+        "DNSSEC trust anchor revoked",
+    ),
+    ("36db2dfa5a9045e1bd4af5f93e1cf057", "DNSSEC turned off"),
+    ("b61fdac612e94b9182285b998843061f", "Username unsafe"),
+    (
+        "1b3bb94037f04bbf81028e135a12d293",
+        "Mount point path not suitable",
+    ),
+    (
+        "010190138f494e29a0ef6669749531aa",
+        "Device path not suitable",
+    ),
+    ("b480325f9c394a7b802c231e51a2752c", "Nobody user unsuitable"),
+    (
+        "1c0454c1bd2241e0ac6fefb4bc631433",
+        "Systemd udev settle deprecated",
+    ),
+    ("7c8a41f37b764941a0e1780b1be2f037", "Time initial sync"),
+    ("7db73c8af0d94eeb822ae04323fe6ab6", "Time initial bump"),
+    ("9e7066279dc8403da79ce4b1a69064b2", "Shutdown scheduled"),
+    ("249f6fb9e6e2428c96f3f0875681ffa3", "Shutdown canceled"),
+    ("3f7d5ef3e54f4302b4f0b143bb270cab", "TPM PCR Extended"),
+    ("f9b0be465ad540d0850ad32172d57c21", "Memory Trimmed"),
+    ("a8fa8dacdb1d443e9503b8be367a6adb", "SysV Service Found"),
+    (
+        "187c62eb1e7f463bb530394f52cb090f",
+        "Portable Service attached",
+    ),
+    (
+        "76c5c754d628490d8ecba4c9d042112b",
+        "Portable Service detached",
+    ),
+    (
+        "9cf56b8baf9546cf9478783a8de42113",
+        "systemd-networkd sysctl changed by foreign process",
+    ),
+    (
+        "ad7089f928ac4f7ea00c07457d47ba8a",
+        "SRK into TPM authorization failure",
+    ),
+    (
+        "b2bcbaf5edf948e093ce50bbea0e81ec",
+        "Secure Attention Key (SAK) was pressed",
+    ),
+    ("7fc63312330b479bb32e598d47cef1a8", "dbus activate no unit"),
+    (
+        "ee9799dab1e24d81b7bee7759a543e1b",
+        "dbus activate masked unit",
+    ),
+    ("a0fa58cafd6f4f0c8d003d16ccf9e797", "dbus broker exited"),
+    ("c8c6cde1c488439aba371a664353d9d8", "dbus dirwatch"),
+    ("8af3357071af4153af414daae07d38e7", "dbus dispatch stats"),
+    ("199d4300277f495f84ba4028c984214c", "dbus no sopeergroup"),
+    (
+        "b209c0d9d1764ab38d13b8e00d1784d6",
+        "dbus protocol violation",
+    ),
+    ("6fa70fa776044fa28be7a21daf42a108", "dbus receive failed"),
+    (
+        "0ce0fa61d1a9433dabd67417f6b8e535",
+        "dbus service failed open",
+    ),
+    ("24dc708d9e6a4226a3efe2033bb744de", "dbus service invalid"),
+    ("f15d2347662d483ea9bcd8aa1a691d28", "dbus sighup"),
+    (
+        "0ce153587afa4095832d233c17a88001",
+        "Gnome SM startup succeeded",
+    ),
+    (
+        "10dd2dc188b54a5e98970f56499d1f73",
+        "Gnome SM unrecoverable failure",
+    ),
+    ("f3ea493c22934e26811cd62abe8e203a", "Gnome shell started"),
+    ("c7b39b1e006b464599465e105b361485", "Flatpak cache"),
+    ("75ba3deb0af041a9a46272ff85d9e73e", "Flathub pulls"),
+    ("f02bce89a54e4efab3a94a797d26204a", "Flathub pull errors"),
+    ("dd11929c788e48bdbb6276fb5f26b08a", "Boltd starting"),
+    ("1e6061a9fbd44501b3ccc368119f2b69", "Netdata startup"),
+    (
+        "ed4cdb8f1beb4ad3b57cb3cae2d162fa",
+        "Netdata connection from child",
+    ),
+    (
+        "6e2e3839067648968b646045dbf28d66",
+        "Netdata connection to parent",
+    ),
+    (
+        "9ce0cb58ab8b44df82c4bf1ad9ee22de",
+        "Netdata alert transition",
+    ),
+    (
+        "6db0018e83e34320ae2a659d78019fb7",
+        "Netdata alert notification",
+    ),
+    ("23e93dfccbf64e11aac858b9410d8a82", "Netdata fatal message"),
+    (
+        "8ddaf5ba33a74078b609250db1e951f3",
+        "Sensor state transition",
+    ),
+    (
+        "ec87a56120d5431bace51e2fb8bba243",
+        "Netdata log flood protection",
+    ),
+    (
+        "acb33cb95778476baac702eb7e4e151d",
+        "Netdata Cloud connection",
+    ),
+    (
+        "d1f59606dd4d41e3b217a0cfcae8e632",
+        "Netdata extreme cardinality",
+    ),
+    ("02f47d350af5449197bf7a95b605a468", "Netdata exit reason"),
+    (
+        "4fdf40816c124623a032b7fe73beacb8",
+        "Netdata dynamic configuration",
+    ),
+];
+
 fn message_id_name(raw: &str) -> Option<&'static str> {
-    match raw {
-        "f77379a8490b408bbe5f6940505a777b" => Some("Journal started"),
-        "d93fb3c9c24d451a97cea615ce59c00b" => Some("Journal stopped"),
-        "a596d6fe7bfa4994828e72309e95d61e" => Some("Journal messages suppressed"),
-        "e9bf28e6e834481bb6f48f548ad13606" => Some("Journal messages missed"),
-        "ec387f577b844b8fa948f33cad9a75e6" => Some("Journal disk space usage"),
-        "fc2e22bc6ee647b6b90729ab34a250b1" => Some("Coredump"),
-        "5aadd8e954dc4b1a8c954d63fd9e1137" => Some("Coredump truncated"),
-        "1f4e0a44a88649939aaea34fc6da8c95" => Some("Backtrace"),
-        "8d45620c1a4348dbb17410da57c60c66" => Some("User Session created"),
-        "3354939424b4456d9802ca8333ed424a" => Some("User Session terminated"),
-        "fcbefc5da23d428093f97c82a9290f7b" => Some("Seat started"),
-        "e7852bfe46784ed0accde04bc864c2d5" => Some("Seat removed"),
-        "24d8d4452573402496068381a6312df2" => Some("VM or container started"),
-        "58432bd3bace477cb514b56381b8a758" => Some("VM or container stopped"),
-        "c7a787079b354eaaa9e77b371893cd27" => Some("Time change"),
-        "45f82f4aef7a4bbf942ce861d1f20990" => Some("Timezone change"),
-        "50876a9db00f4c40bde1a2ad381c3a1b" => Some("System configuration issues"),
-        "b07a249cd024414a82dd00cd181378ff" => Some("System start-up completed"),
-        "eed00a68ffd84e31882105fd973abdd1" => Some("User start-up completed"),
-        "6bbd95ee977941e497c48be27c254128" => Some("Sleep start"),
-        "8811e6df2a8e40f58a94cea26f8ebf14" => Some("Sleep stop"),
-        "98268866d1d54a499c4e98921d93bc40" => Some("System shutdown initiated"),
-        "c14aaf76ec284a5fa1f105f88dfb061c" => Some("System factory reset initiated"),
-        "d9ec5e95e4b646aaaea2fd05214edbda" => Some("Container init crashed"),
-        "3ed0163e868a4417ab8b9e210407a96c" => Some("System reboot failed after crash"),
-        "645c735537634ae0a32b15a7c6cba7d4" => Some("Init execution froze"),
-        "5addb3a06a734d3396b794bf98fb2d01" => Some("Init crashed no coredump"),
-        "5c9e98de4ab94c6a9d04d0ad793bd903" => Some("Init crashed no fork"),
-        "5e6f1f5e4db64a0eaee3368249d20b94" => Some("Init crashed unknown signal"),
-        "83f84b35ee264f74a3896a9717af34cb" => Some("Init crashed systemd signal"),
-        "3a73a98baf5b4b199929e3226c0be783" => Some("Init crashed process signal"),
-        "2ed18d4f78ca47f0a9bc25271c26adb4" => Some("Init crashed waitpid failed"),
-        "56b1cd96f24246c5b607666fda952356" => Some("Init crashed coredump failed"),
-        "4ac7566d4d7548f4981f629a28f0f829" => Some("Init crashed coredump"),
-        "38e8b1e039ad469291b18b44c553a5b7" => Some("Crash shell failed to fork"),
-        "872729b47dbe473eb768ccecd477beda" => Some("Crash shell failed to execute"),
-        "658a67adc1c940b3b3316e7e8628834a" => Some("Selinux failed"),
-        "e6f456bd92004d9580160b2207555186" => Some("Battery low warning"),
-        "267437d33fdd41099ad76221cc24a335" => Some("Battery low powering off"),
-        "79e05b67bc4545d1922fe47107ee60c5" => Some("Manager mainloop failed"),
-        "dbb136b10ef4457ba47a795d62f108c9" => Some("Manager no xdgdir path"),
-        "ed158c2df8884fa584eead2d902c1032" => {
-            Some("Init failed to drop capability bounding set of usermode")
-        }
-        "42695b500df048298bee37159caa9f2e" => Some("Init failed to drop capability bounding set"),
-        "bfc2430724ab44499735b4f94cca9295" => Some("User manager can't disable new privileges"),
-        "59288af523be43a28d494e41e26e4510" => Some("Manager failed to start default target"),
-        "689b4fcc97b4486ea5da92db69c9e314" => Some("Manager failed to isolate default target"),
-        "5ed836f1766f4a8a9fc5da45aae23b29" => {
-            Some("Manager failed to collect passed file descriptors")
-        }
-        "6a40fbfbd2ba4b8db02fb40c9cd090d7" => Some("Init failed to fix up environment variables"),
-        "0e54470984ac419689743d957a119e2e" => Some("Manager failed to allocate"),
-        "d67fa9f847aa4b048a2ae33535331adb" => Some("Manager failed to write Smack"),
-        "af55a6f75b544431b72649f36ff6d62c" => Some("System shutdown critical error"),
-        "d18e0339efb24a068d9c1060221048c2" => Some("Init failed to fork off valgrind"),
-        "7d4958e842da4a758f6c1cdc7b36dcc5" => Some("Unit starting"),
-        "39f53479d3a045ac8e11786248231fbf" => Some("Unit started"),
-        "be02cf6855d2428ba40df7e9d022f03d" => Some("Unit failed"),
-        "de5b426a63be47a7b6ac3eaac82e2f6f" => Some("Unit stopping"),
-        "9d1aaa27d60140bd96365438aad20286" => Some("Unit stopped"),
-        "d34d037fff1847e6ae669a370e694725" => Some("Unit reloading"),
-        "7b05ebc668384222baa8881179cfda54" => Some("Unit reloaded"),
-        "5eb03494b6584870a536b337290809b3" => Some("Unit restart scheduled"),
-        "ae8f7b866b0347b9af31fe1c80b127c0" => Some("Unit resources"),
-        "7ad2d189f7e94e70a38c781354912448" => Some("Unit success"),
-        "0e4284a0caca4bfc81c0bb6786972673" => Some("Unit skipped"),
-        "d9b373ed55a64feb8242e02dbe79a49c" => Some("Unit failure result"),
-        "641257651c1b4ec9a8624d7a40a9e1e7" => Some("Process execution failed"),
-        "98e322203f7a4ed290d09fe03c09fe15" => Some("Unit process exited"),
-        "0027229ca0644181a76c4e92458afa2e" => Some("Syslog forward missed"),
-        "1dee0369c7fc4736b7099b38ecb46ee7" => Some("Mount point is not empty"),
-        "d989611b15e44c9dbf31e3c81256e4ed" => Some("Unit oomd kill"),
-        "fe6faa94e7774663a0da52717891d8ef" => Some("Unit out of memory"),
-        "b72ea4a2881545a0b50e200e55b9b06f" => Some("Lid opened"),
-        "b72ea4a2881545a0b50e200e55b9b070" => Some("Lid closed"),
-        "f5f416b862074b28927a48c3ba7d51ff" => Some("System docked"),
-        "51e171bd585248568110144c517cca53" => Some("System undocked"),
-        "b72ea4a2881545a0b50e200e55b9b071" => Some("Power key"),
-        "3e0117101eb243c1b9a50db3494ab10b" => Some("Power key long press"),
-        "9fa9d2c012134ec385451ffe316f97d0" => Some("Reboot key"),
-        "f1c59a58c9d943668965c337caec5975" => Some("Reboot key long press"),
-        "b72ea4a2881545a0b50e200e55b9b072" => Some("Suspend key"),
-        "bfdaf6d312ab4007bc1fe40a15df78e8" => Some("Suspend key long press"),
-        "b72ea4a2881545a0b50e200e55b9b073" => Some("Hibernate key"),
-        "167836df6f7f428e98147227b2dc8945" => Some("Hibernate key long press"),
-        "c772d24e9a884cbeb9ea12625c306c01" => Some("Invalid configuration"),
-        "1675d7f172174098b1108bf8c7dc8f5d" => Some("DNSSEC validation failed"),
-        "4d4408cfd0d144859184d1e65d7c8a65" => Some("DNSSEC trust anchor revoked"),
-        "36db2dfa5a9045e1bd4af5f93e1cf057" => Some("DNSSEC turned off"),
-        "b61fdac612e94b9182285b998843061f" => Some("Username unsafe"),
-        "1b3bb94037f04bbf81028e135a12d293" => Some("Mount point path not suitable"),
-        "010190138f494e29a0ef6669749531aa" => Some("Device path not suitable"),
-        "b480325f9c394a7b802c231e51a2752c" => Some("Nobody user unsuitable"),
-        "1c0454c1bd2241e0ac6fefb4bc631433" => Some("Systemd udev settle deprecated"),
-        "7c8a41f37b764941a0e1780b1be2f037" => Some("Time initial sync"),
-        "7db73c8af0d94eeb822ae04323fe6ab6" => Some("Time initial bump"),
-        "9e7066279dc8403da79ce4b1a69064b2" => Some("Shutdown scheduled"),
-        "249f6fb9e6e2428c96f3f0875681ffa3" => Some("Shutdown canceled"),
-        "3f7d5ef3e54f4302b4f0b143bb270cab" => Some("TPM PCR Extended"),
-        "f9b0be465ad540d0850ad32172d57c21" => Some("Memory Trimmed"),
-        "a8fa8dacdb1d443e9503b8be367a6adb" => Some("SysV Service Found"),
-        "187c62eb1e7f463bb530394f52cb090f" => Some("Portable Service attached"),
-        "76c5c754d628490d8ecba4c9d042112b" => Some("Portable Service detached"),
-        "9cf56b8baf9546cf9478783a8de42113" => {
-            Some("systemd-networkd sysctl changed by foreign process")
-        }
-        "ad7089f928ac4f7ea00c07457d47ba8a" => Some("SRK into TPM authorization failure"),
-        "b2bcbaf5edf948e093ce50bbea0e81ec" => Some("Secure Attention Key (SAK) was pressed"),
-        "7fc63312330b479bb32e598d47cef1a8" => Some("dbus activate no unit"),
-        "ee9799dab1e24d81b7bee7759a543e1b" => Some("dbus activate masked unit"),
-        "a0fa58cafd6f4f0c8d003d16ccf9e797" => Some("dbus broker exited"),
-        "c8c6cde1c488439aba371a664353d9d8" => Some("dbus dirwatch"),
-        "8af3357071af4153af414daae07d38e7" => Some("dbus dispatch stats"),
-        "199d4300277f495f84ba4028c984214c" => Some("dbus no sopeergroup"),
-        "b209c0d9d1764ab38d13b8e00d1784d6" => Some("dbus protocol violation"),
-        "6fa70fa776044fa28be7a21daf42a108" => Some("dbus receive failed"),
-        "0ce0fa61d1a9433dabd67417f6b8e535" => Some("dbus service failed open"),
-        "24dc708d9e6a4226a3efe2033bb744de" => Some("dbus service invalid"),
-        "f15d2347662d483ea9bcd8aa1a691d28" => Some("dbus sighup"),
-        "0ce153587afa4095832d233c17a88001" => Some("Gnome SM startup succeeded"),
-        "10dd2dc188b54a5e98970f56499d1f73" => Some("Gnome SM unrecoverable failure"),
-        "f3ea493c22934e26811cd62abe8e203a" => Some("Gnome shell started"),
-        "c7b39b1e006b464599465e105b361485" => Some("Flatpak cache"),
-        "75ba3deb0af041a9a46272ff85d9e73e" => Some("Flathub pulls"),
-        "f02bce89a54e4efab3a94a797d26204a" => Some("Flathub pull errors"),
-        "dd11929c788e48bdbb6276fb5f26b08a" => Some("Boltd starting"),
-        "1e6061a9fbd44501b3ccc368119f2b69" => Some("Netdata startup"),
-        "ed4cdb8f1beb4ad3b57cb3cae2d162fa" => Some("Netdata connection from child"),
-        "6e2e3839067648968b646045dbf28d66" => Some("Netdata connection to parent"),
-        "9ce0cb58ab8b44df82c4bf1ad9ee22de" => Some("Netdata alert transition"),
-        "6db0018e83e34320ae2a659d78019fb7" => Some("Netdata alert notification"),
-        "23e93dfccbf64e11aac858b9410d8a82" => Some("Netdata fatal message"),
-        "8ddaf5ba33a74078b609250db1e951f3" => Some("Sensor state transition"),
-        "ec87a56120d5431bace51e2fb8bba243" => Some("Netdata log flood protection"),
-        "acb33cb95778476baac702eb7e4e151d" => Some("Netdata Cloud connection"),
-        "d1f59606dd4d41e3b217a0cfcae8e632" => Some("Netdata extreme cardinality"),
-        "02f47d350af5449197bf7a95b605a468" => Some("Netdata exit reason"),
-        "4fdf40816c124623a032b7fe73beacb8" => Some("Netdata dynamic configuration"),
-        _ => None,
-    }
+    MESSAGE_ID_NAMES
+        .iter()
+        .find_map(|(candidate, name)| (*candidate == raw).then_some(*name))
 }
 
 #[cfg(test)]

@@ -186,46 +186,62 @@ def normalize_row_value(field: str, value: Any) -> Any:
     return normalize_json(value)
 
 
-def normalized_facets(doc: dict[str, Any]) -> dict[str, Any]:
+def raw_facets(doc: dict[str, Any]) -> list[Any]:
     facets = doc.get("facets")
     if not isinstance(facets, list):
         facets = doc.get("facets_delta")
     if not isinstance(facets, list):
-        return {}
+        return []
+    return facets
+
+
+def ignored_unavailable_option(option_id: str, option: dict[str, Any]) -> bool:
+    return (
+        option_id == NETDATA_EMPTY_STRING_FACET_HASH_ID
+        and option.get("name") == NETDATA_UNAVAILABLE_FIELD_LABEL
+        and option.get("count") == 0
+    )
+
+
+def normalized_facet_options(facet: dict[str, Any]) -> dict[str, Any]:
+    options: dict[str, Any] = {}
+    raw_options = facet.get("options", [])
+    if not isinstance(raw_options, list):
+        return options
+    for option in raw_options:
+        if not isinstance(option, dict):
+            continue
+        option_id = option.get("id")
+        if not isinstance(option_id, str) or ignored_unavailable_option(option_id, option):
+            continue
+        options[option_id] = normalize_json(
+            {
+                key: value
+                for key, value in option.items()
+                if key not in VOLATILE_FACET_METADATA_FIELDS
+            }
+        )
+    return options
+
+
+def normalized_facet(facet: dict[str, Any]) -> dict[str, Any]:
+    normalized = {
+        key: value
+        for key, value in facet.items()
+        if key not in {*VOLATILE_FACET_METADATA_FIELDS, "options"}
+    }
+    normalized["options"] = normalized_facet_options(facet)
+    return normalize_json(normalized)
+
+
+def normalized_facets(doc: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    for facet in facets:
+    for facet in raw_facets(doc):
         if not isinstance(facet, dict):
             continue
         facet_id = facet.get("id")
-        if not isinstance(facet_id, str):
-            continue
-        normalized = {
-            key: value
-            for key, value in facet.items()
-            if key not in {*VOLATILE_FACET_METADATA_FIELDS, "options"}
-        }
-        options: dict[str, Any] = {}
-        for option in facet.get("options", []):
-            if not isinstance(option, dict):
-                continue
-            option_id = option.get("id")
-            if not isinstance(option_id, str):
-                continue
-            if (
-                option_id == NETDATA_EMPTY_STRING_FACET_HASH_ID
-                and option.get("name") == NETDATA_UNAVAILABLE_FIELD_LABEL
-                and option.get("count") == 0
-            ):
-                continue
-            options[option_id] = normalize_json(
-                {
-                    key: value
-                    for key, value in option.items()
-                    if key not in VOLATILE_FACET_METADATA_FIELDS
-                }
-            )
-        normalized["options"] = options
-        out[facet_id] = normalize_json(normalized)
+        if isinstance(facet_id, str):
+            out[facet_id] = normalized_facet(facet)
     return out
 
 
@@ -303,20 +319,26 @@ def non_content_facet_artifacts(doc: dict[str, Any]) -> dict[str, list[dict[str,
     return artifacts
 
 
-def normalized_histogram(doc: dict[str, Any]) -> Any:
+def raw_histogram(doc: dict[str, Any]) -> Any:
     histogram = doc.get("histogram")
     if not isinstance(histogram, dict):
         histogram = doc.get("histogram_delta")
-    if not isinstance(histogram, dict):
-        return normalize_json(histogram)
+    return histogram
+
+
+def normalized_histogram_result(histogram: dict[str, Any]) -> tuple[list[str], list[Any]] | None:
     result = histogram.get("chart", {}).get("result")
     if not isinstance(result, dict):
-        return normalize_json(histogram)
+        return None
     labels = result.get("labels")
     data = result.get("data")
     if not isinstance(labels, list) or not labels or not isinstance(data, list):
-        return normalize_json(histogram)
+        return None
     dimensions = [label for label in labels[1:] if isinstance(label, str)]
+    return dimensions, data
+
+
+def normalized_histogram_buckets(dimensions: list[str], data: list[Any]) -> dict[str, dict[str, Any]]:
     buckets: dict[str, dict[str, Any]] = {}
     for row in data:
         if not isinstance(row, list) or not row:
@@ -327,11 +349,22 @@ def normalized_histogram(doc: dict[str, Any]) -> Any:
             point = row[index] if index < len(row) else None
             values[dimension] = normalize_json(point)
         buckets[str(timestamp)] = values
+    return buckets
+
+
+def normalized_histogram(doc: dict[str, Any]) -> Any:
+    histogram = raw_histogram(doc)
+    if not isinstance(histogram, dict):
+        return normalize_json(histogram)
+    histogram_result = normalized_histogram_result(histogram)
+    if histogram_result is None:
+        return normalize_json(histogram)
+    dimensions, data = histogram_result
     return normalize_json(
         {
             "id": histogram.get("id"),
             "name": histogram.get("name"),
-            "buckets": buckets,
+            "buckets": normalized_histogram_buckets(dimensions, data),
         }
     )
 

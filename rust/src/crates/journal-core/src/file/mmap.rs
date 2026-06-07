@@ -553,34 +553,82 @@ impl<M: MemoryMap> WindowManager<M> {
         self.windows.len() - 1
     }
 
+    fn chunk_span_for_range(&self, position: u64, size_needed: u64) -> Result<(u64, u64)> {
+        let range_end = position
+            .checked_add(size_needed)
+            .ok_or(JournalError::ObjectExceedsFileBounds)?;
+        let window_start = self.get_chunk_aligned_start(position);
+        let window_end = self.get_chunk_aligned_end(range_end)?;
+        Ok((window_start, (window_end - window_start) / self.chunk_size))
+    }
+
+    fn push_new_window_for_range(&mut self, position: u64, size_needed: u64) -> Result<usize> {
+        let (window_start, num_chunks) = self.chunk_span_for_range(position, size_needed)?;
+        let new_window = self.create_window(window_start, num_chunks)?;
+        Ok(self.push_window(new_window))
+    }
+
+    fn replace_window_for_range(
+        &mut self,
+        idx: usize,
+        position: u64,
+        size_needed: u64,
+    ) -> Result<usize> {
+        let (window_start, num_chunks) = self.chunk_span_for_range(position, size_needed)?;
+        let _window = self.windows.remove(idx);
+        self.active_window_idx = None;
+        let new_window = self.create_window(window_start, num_chunks)?;
+        self.remap_count += 1;
+        Ok(self.push_window(new_window))
+    }
+
+    fn evict_unpinned_window_if_full(&mut self) -> bool {
+        if self.windows.len() < self.max_windows {
+            return true;
+        }
+        let Some(idx) = self.windows.iter().position(|window| !window.row_pinned) else {
+            return false;
+        };
+        self.windows.remove(idx);
+        self.eviction_count += 1;
+        self.active_window_idx = None;
+        true
+    }
+
+    fn make_room_for_new_window(&mut self) {
+        if self.windows.len() < self.max_windows {
+            return;
+        }
+        let idx = if self.row_pin_count == 0 {
+            Some(
+                if self.active_window_idx == Some(0) && self.windows.len() > 1 {
+                    1
+                } else {
+                    0
+                },
+            )
+        } else {
+            self.windows.iter().position(|window| !window.row_pinned)
+        };
+        if let Some(idx) = idx {
+            self.windows.remove(idx);
+            self.eviction_count += 1;
+            self.active_window_idx = None;
+        }
+    }
+
     fn get_window_index_preserving_row_pins(
         &mut self,
         position: u64,
         size_needed: u64,
     ) -> Result<Option<usize>> {
         if self.strategy == ExperimentalMmapStrategy::WholeFile {
-            let was_unpinned = {
-                let window = self.get_whole_file_window(position, size_needed)?;
-                let was_unpinned = !window.row_pinned;
-                window.row_pinned = true;
-                was_unpinned
-            };
-            if was_unpinned {
-                self.row_pin_count += 1;
-            }
-            return Ok(Some(0));
+            return self.get_whole_file_window_index_preserving_row_pins(position, size_needed);
         }
 
         if let Some(idx) = self.lookup_window_by_range(position, size_needed) {
             return Ok(Some(idx));
         }
-
-        let range_end = position
-            .checked_add(size_needed)
-            .ok_or(JournalError::ObjectExceedsFileBounds)?;
-        let window_start = self.get_chunk_aligned_start(position);
-        let window_end = self.get_chunk_aligned_end(range_end)?;
-        let num_chunks = (window_end - window_start) / self.chunk_size;
 
         if let Some(idx) = self.lookup_window_by_position(position) {
             if !self.windows[idx].row_pinned {
@@ -591,11 +639,11 @@ impl<M: MemoryMap> WindowManager<M> {
                 // payload can point into it. Replace it with a wider window;
                 // get_row_pinned_slice() pins the replacement before returning
                 // borrowed bytes to the reader.
-                let _window = self.windows.remove(idx);
-                self.active_window_idx = None;
-                let new_window = self.create_window(window_start, num_chunks)?;
-                self.remap_count += 1;
-                return Ok(Some(self.push_window(new_window)));
+                return Ok(Some(self.replace_window_for_range(
+                    idx,
+                    position,
+                    size_needed,
+                )?));
             }
             // The pinned window contains the requested start but not the full
             // requested range; lookup_window_by_range would have matched
@@ -603,133 +651,75 @@ impl<M: MemoryMap> WindowManager<M> {
             // into it. Map a wider overlapping window for this row instead.
         }
 
-        if self.windows.len() >= self.max_windows {
-            if let Some(idx) = self.windows.iter().position(|window| !window.row_pinned) {
-                self.windows.remove(idx);
-                self.eviction_count += 1;
-                self.active_window_idx = None;
-            } else {
-                return Ok(None);
-            }
+        if !self.evict_unpinned_window_if_full() {
+            return Ok(None);
         }
 
-        let new_window = self.create_window(window_start, num_chunks)?;
-        Ok(Some(self.push_window(new_window)))
+        Ok(Some(self.push_new_window_for_range(position, size_needed)?))
+    }
+
+    fn get_whole_file_window_index_preserving_row_pins(
+        &mut self,
+        position: u64,
+        size_needed: u64,
+    ) -> Result<Option<usize>> {
+        let idx = self.get_whole_file_window_index(position, size_needed)?;
+        if !self.windows[idx].row_pinned {
+            self.windows[idx].row_pinned = true;
+            self.row_pin_count += 1;
+        }
+        Ok(Some(idx))
+    }
+
+    fn get_window_index(&mut self, position: u64, size_needed: u64) -> Result<usize> {
+        if self.strategy == ExperimentalMmapStrategy::WholeFile {
+            return self.get_whole_file_window_index(position, size_needed);
+        }
+        if let Some(idx) = self.lookup_window_by_range(position, size_needed) {
+            self.active_window_idx = Some(idx);
+            return Ok(idx);
+        }
+        if let Some(idx) = self.lookup_window_by_position(position) {
+            return self.get_overlapping_window_index(idx, position, size_needed);
+        }
+        self.get_new_window_index(position, size_needed)
+    }
+
+    fn get_overlapping_window_index(
+        &mut self,
+        idx: usize,
+        position: u64,
+        size_needed: u64,
+    ) -> Result<usize> {
+        if self.row_pin_count > 0 && self.windows[idx].row_pinned {
+            // Non-row-pinned reads may use a transient window while row-pinned
+            // windows stay valid until the current row is released.
+            self.evict_unpinned_window_if_full();
+            let idx = self.push_new_window_for_range(position, size_needed)?;
+            self.active_window_idx = Some(idx);
+            return Ok(idx);
+        }
+        let idx = self.replace_window_for_range(idx, position, size_needed)?;
+        self.active_window_idx = Some(idx);
+        Ok(idx)
+    }
+
+    fn get_new_window_index(&mut self, position: u64, size_needed: u64) -> Result<usize> {
+        self.make_room_for_new_window();
+        let idx = self.push_new_window_for_range(position, size_needed)?;
+        self.active_window_idx = Some(idx);
+        Ok(idx)
     }
 
     fn get_window(&mut self, position: u64, size_needed: u64) -> Result<&mut Window<M>> {
-        if self.strategy == ExperimentalMmapStrategy::WholeFile {
-            return self.get_whole_file_window(position, size_needed);
-        }
-
-        if let Some(idx) = self.lookup_window_by_range(position, size_needed) {
-            // Use the existing window
-            self.active_window_idx = Some(idx);
-            Ok(&mut self.windows[idx])
-        } else if let Some(idx) = self.lookup_window_by_position(position) {
-            if self.row_pin_count > 0 && self.windows[idx].row_pinned {
-                let range_end = position
-                    .checked_add(size_needed)
-                    .ok_or(JournalError::ObjectExceedsFileBounds)?;
-                let window_start = self.get_chunk_aligned_start(position);
-                let window_end = self.get_chunk_aligned_end(range_end)?;
-                let num_chunks = (window_end - window_start) / self.chunk_size;
-
-                if self.windows.len() >= self.max_windows {
-                    if let Some(evict_idx) =
-                        self.windows.iter().position(|window| !window.row_pinned)
-                    {
-                        self.windows.remove(evict_idx);
-                        self.eviction_count += 1;
-                        self.active_window_idx = None;
-                    }
-                }
-
-                // If every cached window is row-pinned, retain row-valid
-                // payloads and use one replaceable transient window for this
-                // immediate non-row access. Later non-row accesses evict that
-                // unpinned transient window instead of growing with the row.
-                let new_window = self.create_window(window_start, num_chunks)?;
-                let idx = self.push_window(new_window);
-                self.active_window_idx = Some(idx);
-                return Ok(&mut self.windows[idx]);
-            }
-
-            // Remap the window
-
-            let _window = self.windows.remove(idx);
-            // Invalidate active_window_idx before removal to maintain consistency.
-            // If create_window fails, the index won't point to a non-existent window.
-            self.active_window_idx = None;
-
-            // Keep the remapped window chunk-aligned around the requested
-            // position instead of preserving the old window start. Preserving
-            // the old start lets sequential append access grow one mapping from
-            // the beginning of the file toward the tail, which defeats the
-            // intended bounded-window model.
-            let range_end = position
-                .checked_add(size_needed)
-                .ok_or(JournalError::ObjectExceedsFileBounds)?;
-            let window_start = self.get_chunk_aligned_start(position);
-            let window_end = self.get_chunk_aligned_end(range_end)?;
-            let num_chunks = (window_end - window_start) / self.chunk_size;
-
-            let new_window = self.create_window(window_start, num_chunks)?;
-
-            self.remap_count += 1;
-            self.windows.push(new_window);
-            self.record_mapped_bytes();
-            self.active_window_idx = Some(self.windows.len() - 1);
-            Ok(self.windows.last_mut().unwrap())
-        } else {
-            // Create a brand new window
-
-            if self.windows.len() >= self.max_windows {
-                if self.row_pin_count == 0 {
-                    let idx = if self.active_window_idx == Some(0) && self.windows.len() > 1 {
-                        1
-                    } else {
-                        0
-                    };
-                    self.windows.remove(idx);
-                    self.eviction_count += 1;
-                    // Invalidate active_window_idx after removal to maintain consistency.
-                    // If create_window fails below, the index won't point to a non-existent window.
-                    self.active_window_idx = None;
-                } else if let Some(idx) = self.windows.iter().position(|window| !window.row_pinned)
-                {
-                    self.windows.remove(idx);
-                    self.eviction_count += 1;
-                    // Invalidate active_window_idx after removal to maintain consistency.
-                    // If create_window fails below, the index won't point to a non-existent window.
-                    self.active_window_idx = None;
-                }
-            }
-
-            {
-                // Calculate window start for this position
-                let range_end = position
-                    .checked_add(size_needed)
-                    .ok_or(JournalError::ObjectExceedsFileBounds)?;
-                let window_start = self.get_chunk_aligned_start(position);
-                let window_end = self.get_chunk_aligned_end(range_end)?;
-                let num_chunks = (window_end - window_start) / self.chunk_size;
-
-                let new_window = self.create_window(window_start, num_chunks)?;
-
-                self.windows.push(new_window);
-                self.record_mapped_bytes();
-            }
-
-            self.active_window_idx = Some(self.windows.len() - 1);
-            Ok(self.windows.last_mut().unwrap())
-        }
+        let idx = self.get_window_index(position, size_needed)?;
+        Ok(&mut self.windows[idx])
     }
 
-    fn get_whole_file_window(&mut self, position: u64, size_needed: u64) -> Result<&mut Window<M>> {
+    fn get_whole_file_window_index(&mut self, position: u64, size_needed: u64) -> Result<usize> {
         if let Some(idx) = self.lookup_window_by_range(position, size_needed) {
             self.active_window_idx = Some(idx);
-            return Ok(&mut self.windows[idx]);
+            return Ok(idx);
         }
 
         let requested_end = position
@@ -757,10 +747,9 @@ impl<M: MemoryMap> WindowManager<M> {
         if had_windows {
             self.remap_count += 1;
         }
-        self.windows.push(new_window);
-        self.record_mapped_bytes();
-        self.active_window_idx = Some(0);
-        Ok(&mut self.windows[0])
+        let idx = self.push_window(new_window);
+        self.active_window_idx = Some(idx);
+        Ok(idx)
     }
 
     pub fn get_slice(&mut self, position: u64, size: u64) -> Result<&[u8]> {

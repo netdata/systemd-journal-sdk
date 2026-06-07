@@ -4,6 +4,13 @@ Last updated: 2026-06-07
 
 ## Current
 
+- SOW-0084 - Code Scanning And Codacy Gate: reopened regression repair is
+  locally implemented. GitHub code-scanning Bandit/markdownlint alerts were
+  fixed or narrowly suppressed, Codacy/Lizard complexity findings were
+  refactored where actionable, and the noisy file-level NLOC rule was disabled
+  while function-level complexity rules remain enabled. Five read-only
+  reviewers returned `PRODUCTION GRADE`; Kimi timed out twice with no usable
+  output. Awaiting push and remote scanner validation before re-closing.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
@@ -121,12 +128,6 @@ Last updated: 2026-06-07
   the Codacy coverage report. Final validation: GitHub Coverage run
   `26941281896` succeeded, Codacy analyzed commit `a822d23d`, coverage is
   62.0%, issues are 0, and security findings are 0.
-- SOW-0084 - Code Scanning And Codacy Gate: completed. GitHub CodeQL and
-  Codacy SARIF workflows are active; tuned Codacy runs enforce findings,
-  the no-token path uploads only a stale-alert closeout SARIF, GitHub
-  code scanning has zero open alerts, Codacy Cloud has zero quality
-  issues and zero security findings, and five read-only reviewers voted
-  `PRODUCTION GRADE`.
 - SOW-0075 - VM Historical systemd Validation: completed. Ubuntu
   18.04/systemd 237, Ubuntu 22.04/systemd 249, and Ubuntu 24.04/systemd 255
   VM-generated journals passed 18/18 cases with stock, Rust, Go, Python using

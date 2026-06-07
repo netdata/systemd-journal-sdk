@@ -334,30 +334,78 @@ impl<M: MemoryMap> JournalFile<M> {
     {
         self.window_manager.with_mut(|wm| {
             for offset in offsets.iter().copied() {
-                Self::validate_data_payload_offset(context, offset)?;
-                let info = Self::data_payload_info_from_window(wm, context, offset)?;
-                let data = if !info.is_compressed {
-                    wm.get_row_pinned_slice(offset.get(), info.size_needed)?
-                } else {
-                    Self::data_slice_from_window(wm, offset, info.size_needed)?
-                };
-                let payload = &data[context.payload_prefix_size as usize..];
-                if !info.is_compressed {
-                    visitor(RowPinnedPayload::Borrowed {
-                        ptr: payload.as_ptr(),
-                        len: payload.len(),
-                    })?;
-                    continue;
-                }
-
-                let object = DataObject::from_data(data, context.is_compact)
-                    .ok_or(JournalError::ZerocopyFailure)?;
-                decompressed.clear();
-                let len = object.decompress(decompressed)?;
-                visitor(RowPinnedPayload::Decompressed(&decompressed[..len]))?;
+                Self::visit_data_payload_row_pinned_from_window(
+                    wm,
+                    context,
+                    offset,
+                    decompressed,
+                    &mut visitor,
+                )?;
             }
             Ok(())
         })
+    }
+
+    fn visit_data_payload_row_pinned_from_window<F>(
+        wm: &mut WindowManager<M>,
+        context: DataPayloadReadContext,
+        offset: NonZeroU64,
+        decompressed: &mut Vec<u8>,
+        visitor: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut(RowPinnedPayload<'_>) -> Result<()>,
+    {
+        Self::validate_data_payload_offset(context, offset)?;
+        let info = Self::data_payload_info_from_window(wm, context, offset)?;
+        if info.is_compressed {
+            return Self::visit_compressed_row_payload(
+                wm,
+                context,
+                offset,
+                info,
+                decompressed,
+                visitor,
+            );
+        }
+        Self::visit_borrowed_row_payload(wm, context, offset, info, visitor)
+    }
+
+    fn visit_borrowed_row_payload<F>(
+        wm: &mut WindowManager<M>,
+        context: DataPayloadReadContext,
+        offset: NonZeroU64,
+        info: DataPayloadObjectInfo,
+        visitor: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut(RowPinnedPayload<'_>) -> Result<()>,
+    {
+        let data = wm.get_row_pinned_slice(offset.get(), info.size_needed)?;
+        let payload = &data[context.payload_prefix_size as usize..];
+        visitor(RowPinnedPayload::Borrowed {
+            ptr: payload.as_ptr(),
+            len: payload.len(),
+        })
+    }
+
+    fn visit_compressed_row_payload<F>(
+        wm: &mut WindowManager<M>,
+        context: DataPayloadReadContext,
+        offset: NonZeroU64,
+        info: DataPayloadObjectInfo,
+        decompressed: &mut Vec<u8>,
+        visitor: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut(RowPinnedPayload<'_>) -> Result<()>,
+    {
+        let data = Self::data_slice_from_window(wm, offset, info.size_needed)?;
+        let object =
+            DataObject::from_data(data, context.is_compact).ok_or(JournalError::ZerocopyFailure)?;
+        decompressed.clear();
+        let len = object.decompress(decompressed)?;
+        visitor(RowPinnedPayload::Decompressed(&decompressed[..len]))
     }
 
     pub fn find_data_offset(&self, hash: u64, payload: &[u8]) -> Result<Option<NonZeroU64>> {

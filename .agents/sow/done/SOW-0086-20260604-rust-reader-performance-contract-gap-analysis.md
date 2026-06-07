@@ -799,33 +799,35 @@ Findings:
      can use the same hot-path implementation.
 
 10. Header/cache ownership is unclear.
-    - Evidence:
-      `FileReader::header()` reconstructs a `FileHeader` from
-      `JournalFile::journal_header_ref()` at `rust/src/journal/src/lib.rs:423`.
-      `FileReader::step_valid()` reads the header while stepping rows at
-      `rust/src/journal/src/lib.rs:513`.
-      `reader_helpers::build_cursor()` obtains sequence metadata by calling
-      `reader.get_seqnum()` and then rereads the ENTRY at
-      `rust/src/journal/src/reader_helpers.rs:21`.
-      `DirectoryReader::from_readers()` sorts by header-derived values at
-      `rust/src/journal/src/directory.rs:98`.
-   - Why this is wrong separation: header fields needed by hot traversal,
-     cursor formatting, and directory ordering should be cached as snapshot
-     reader state. Today each layer decides when to read or copy header data.
-   - Required direction: cache immutable snapshot header fields once and expose
-     them through the row-view/file snapshot state. Live refresh behavior must be
-     explicit and separate.
+
+    Evidence: `FileReader::header()` reconstructs a `FileHeader` from
+    `JournalFile::journal_header_ref()` at `rust/src/journal/src/lib.rs:423`.
+    `FileReader::step_valid()` reads the header while stepping rows at
+    `rust/src/journal/src/lib.rs:513`. `reader_helpers::build_cursor()` obtains
+    sequence metadata by calling `reader.get_seqnum()` and then rereads the
+    ENTRY at `rust/src/journal/src/reader_helpers.rs:21`.
+    `DirectoryReader::from_readers()` sorts by header-derived values at
+    `rust/src/journal/src/directory.rs:98`.
+
+    Why this is wrong separation: header fields needed by hot traversal,
+    cursor formatting, and directory ordering should be cached as snapshot
+    reader state. Today each layer decides when to read or copy header data.
+
+    Required direction: cache immutable snapshot header fields once and expose
+    them through the row-view/file snapshot state. Live refresh behavior must be
+    explicit and separate.
 
 11. Verification/export/materialization helpers are separate enough, but they
     must not leak into hot paths.
-    - Evidence:
-      `read_entry_at()` builds owned `HashMap`, `Vec`, and cursor strings at
-      `rust/src/journal/src/reader_helpers.rs:44`.
-      `verify_journal_file_strict()` intentionally walks and validates every
-      object at `rust/src/journal/src/reader_helpers.rs:240`.
-      Export formatting lives in `rust/src/journal/src/export.rs`.
-   - Assessment: these are acceptable as non-hot paths. The problem is not their
-     existence; the problem is when facade metadata or hot traversal calls them.
+
+    Evidence: `read_entry_at()` builds owned `HashMap`, `Vec`, and cursor
+    strings at `rust/src/journal/src/reader_helpers.rs:44`.
+    `verify_journal_file_strict()` intentionally walks and validates every
+    object at `rust/src/journal/src/reader_helpers.rs:240`. Export formatting
+    lives in `rust/src/journal/src/export.rs`.
+
+    Assessment: these are acceptable as non-hot paths. The problem is not their
+    existence; the problem is when facade metadata or hot traversal calls them.
 
 Conclusion:
 

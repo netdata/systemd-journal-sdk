@@ -586,6 +586,29 @@ fn configure_reader_filters(reader: &mut FileReader, cfg: &ReadConfig<'_>) -> Re
     Ok(())
 }
 
+fn realtime_in_explorer_range(cfg: &ReadConfig<'_>, realtime: u64) -> bool {
+    !cfg.explorer_after_usec
+        .is_some_and(|after| realtime < after)
+        && !cfg
+            .explorer_before_usec
+            .is_some_and(|before| realtime > before)
+}
+
+fn record_facet_scan_payload(
+    payload: &[u8],
+    facet_set: &std::collections::HashSet<Vec<u8>>,
+    facets: &mut HashMap<Vec<u8>, HashMap<Vec<u8>, u64>>,
+    counts: &mut Counts,
+) {
+    counts.add_payload(black_box(payload));
+    let Some((field, value)) = split_benchmark_payload(payload) else {
+        return;
+    };
+    if facet_set.contains(field) {
+        increment_facet_count(facets, field, value);
+    }
+}
+
 fn read_sdk_facet_scan_file(path: &Path, cfg: &ReadConfig<'_>) -> Result<Counts> {
     let options = reader_options(cfg.bounds, cfg.strategy, cfg.window_size)?;
     let mut reader = FileReader::open_with_options(path, options).with_context(|| {
@@ -607,23 +630,12 @@ fn read_sdk_facet_scan_file(path: &Path, cfg: &ReadConfig<'_>) -> Result<Counts>
 
     while step_file_reader(&mut reader, cfg.direction)? {
         let realtime = reader.get_realtime_usec()?;
-        if cfg
-            .explorer_after_usec
-            .is_some_and(|after| realtime < after)
-            || cfg
-                .explorer_before_usec
-                .is_some_and(|before| realtime > before)
-        {
+        if !realtime_in_explorer_range(cfg, realtime) {
             continue;
         }
         counts.add_record_marker(realtime);
         reader.visit_entry_payloads(|payload| {
-            counts.add_payload(black_box(payload));
-            if let Some((field, value)) = split_benchmark_payload(payload) {
-                if facet_set.contains(field) {
-                    increment_facet_count(&mut facets, field, value);
-                }
-            }
+            record_facet_scan_payload(payload, &facet_set, &mut facets, &mut counts);
             Ok(())
         })?;
     }

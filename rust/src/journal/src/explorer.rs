@@ -619,32 +619,14 @@ impl ExplorerSamplingState {
     }
 
     fn estimate_remaining_rows_by_seqnum(&self, seqnum: u64) -> Option<u64> {
-        if self.file_entries == 0
-            || self.file_head_seqnum == 0
-            || self.file_tail_seqnum == 0
-            || seqnum == 0
-        {
-            return None;
-        }
-
-        let scanned_rows = self
-            .per_file_sampled
-            .saturating_add(self.per_file_unsampled)
-            .max(1);
-        let seqnum_span = match self.direction {
-            Direction::Forward => seqnum.checked_sub(self.file_head_seqnum)?,
-            Direction::Backward => self.file_tail_seqnum.checked_sub(seqnum)?,
-        };
+        self.validate_seqnum_estimate_inputs(seqnum)?;
+        let scanned_rows = self.scanned_file_rows();
+        let seqnum_span = self.seqnum_span_so_far(seqnum)?;
         if seqnum_span == 0 {
             return None;
         }
-        let mut proportion_of_all_lines_so_far = scanned_rows as f64 / seqnum_span as f64;
-        if proportion_of_all_lines_so_far > 1.0 {
-            proportion_of_all_lines_so_far = 1.0;
-        }
-        if proportion_of_all_lines_so_far <= 0.0 || !proportion_of_all_lines_so_far.is_finite() {
-            return None;
-        }
+        let proportion_of_all_lines_so_far =
+            bounded_positive_proportion(scanned_rows as f64 / seqnum_span as f64)?;
         let expected_matching_logs =
             (proportion_of_all_lines_so_far * self.file_entries as f64) as u64;
         if expected_matching_logs == 0 {
@@ -656,11 +638,29 @@ impl ExplorerSamplingState {
         Some(expected_matching_logs.saturating_sub(scanned_rows).max(1))
     }
 
-    fn estimate_remaining_rows_by_time(&self, realtime_usec: u64) -> u64 {
-        let scanned_rows = self
-            .per_file_sampled
+    fn validate_seqnum_estimate_inputs(&self, seqnum: u64) -> Option<()> {
+        (self.file_entries != 0
+            && self.file_head_seqnum != 0
+            && self.file_tail_seqnum != 0
+            && seqnum != 0)
+            .then_some(())
+    }
+
+    fn scanned_file_rows(&self) -> u64 {
+        self.per_file_sampled
             .saturating_add(self.per_file_unsampled)
-            .max(1);
+            .max(1)
+    }
+
+    fn seqnum_span_so_far(&self, seqnum: u64) -> Option<u64> {
+        match self.direction {
+            Direction::Forward => seqnum.checked_sub(self.file_head_seqnum),
+            Direction::Backward => self.file_tail_seqnum.checked_sub(seqnum),
+        }
+    }
+
+    fn estimate_remaining_rows_by_time(&self, realtime_usec: u64) -> u64 {
+        let scanned_rows = self.scanned_file_rows();
         let (after, before) = self.overlapping_timeframe(realtime_usec);
         let total_time = self
             .remaining_time_bounds(realtime_usec, after, before)
@@ -1188,6 +1188,13 @@ impl ExplorerAccumulator {
     }
 }
 
+fn bounded_positive_proportion(value: f64) -> Option<f64> {
+    if value <= 0.0 || !value.is_finite() {
+        return None;
+    }
+    Some(value.min(1.0))
+}
+
 impl FileReader {
     pub fn explore(&mut self, query: &ExplorerQuery) -> Result<ExplorerResult> {
         self.explore_with_strategy(query, ExplorerStrategy::Traversal)
@@ -1284,52 +1291,71 @@ impl FileReader {
         mut control: Option<&mut ExplorerControl<'_>>,
     ) -> Result<ExplorerResult> {
         validate_query(query)?;
-
-        let mut result = ExplorerResult {
-            histogram: query
-                .histogram
-                .as_ref()
-                .map(|field| new_histogram(field, query)),
-            ..ExplorerResult::default()
-        };
-
+        let mut result = explorer_result_for_query(query);
         let facet_groups = facet_pass_groups(query);
-        if facet_groups
-            .iter()
-            .all(|group| group.excluded_field.is_none())
-        {
-            let facet_indices: Vec<usize> = facet_groups
-                .iter()
-                .flat_map(|group| group.facet_indices.iter().copied())
-                .collect();
-            if query_needs_main_pass(query) || !facet_indices.is_empty() {
-                self.configure_explorer_filters(query, None)?;
-                let mut accumulator = ExplorerAccumulator::for_combined(
-                    query,
-                    &facet_indices,
-                    result.histogram.as_ref(),
-                );
-                self.scan_explorer_combined(
-                    query,
-                    &mut accumulator,
-                    &mut result,
-                    !facet_indices.is_empty(),
-                    row_payload_mode,
-                    control.as_deref_mut(),
-                )?;
-                accumulator.finish_facets(&mut result);
-                accumulator.finish_histogram(result.histogram.as_mut());
-            }
-            return Ok(result);
+        if can_run_combined_explorer_pass(&facet_groups) {
+            self.explore_traversal_combined(
+                query,
+                row_payload_mode,
+                &mut result,
+                &facet_groups,
+                control.as_deref_mut(),
+            )?;
+        } else {
+            self.explore_traversal_split(
+                query,
+                row_payload_mode,
+                &mut result,
+                facet_groups,
+                control.as_deref_mut(),
+            )?;
         }
+        self.configure_explorer_filters(query, None)?;
+        Ok(result)
+    }
 
+    fn explore_traversal_combined(
+        &mut self,
+        query: &ExplorerQuery,
+        row_payload_mode: ExplorerRowPayloadMode,
+        result: &mut ExplorerResult,
+        facet_groups: &[FacetPassGroup],
+        control: Option<&mut ExplorerControl<'_>>,
+    ) -> Result<()> {
+        let facet_indices = combined_facet_indices(facet_groups);
+        if query_needs_main_pass(query) || !facet_indices.is_empty() {
+            self.configure_explorer_filters(query, None)?;
+            let mut accumulator =
+                ExplorerAccumulator::for_combined(query, &facet_indices, result.histogram.as_ref());
+            self.scan_explorer_combined(
+                query,
+                &mut accumulator,
+                result,
+                !facet_indices.is_empty(),
+                row_payload_mode,
+                control,
+            )?;
+            accumulator.finish_facets(result);
+            accumulator.finish_histogram(result.histogram.as_mut());
+        }
+        Ok(())
+    }
+
+    fn explore_traversal_split(
+        &mut self,
+        query: &ExplorerQuery,
+        row_payload_mode: ExplorerRowPayloadMode,
+        result: &mut ExplorerResult,
+        facet_groups: Vec<FacetPassGroup>,
+        mut control: Option<&mut ExplorerControl<'_>>,
+    ) -> Result<()> {
         if query_needs_main_pass(query) {
             self.configure_explorer_filters(query, None)?;
             let mut accumulator = ExplorerAccumulator::for_main(query, result.histogram.as_ref());
             self.scan_explorer_main(
                 query,
                 &mut accumulator,
-                &mut result,
+                result,
                 row_payload_mode,
                 control.as_deref_mut(),
             )?;
@@ -1337,11 +1363,7 @@ impl FileReader {
         }
 
         for group in facet_groups {
-            if control
-                .as_deref()
-                .and_then(ExplorerControl::stop_reason)
-                .is_some()
-            {
+            if explorer_control_stopped(control.as_deref()) {
                 break;
             }
             self.configure_explorer_filters(query, group.excluded_field.as_deref())?;
@@ -1356,11 +1378,9 @@ impl FileReader {
                 &mut result.stats,
                 control.as_deref_mut(),
             )?;
-            accumulator.finish_facets(&mut result);
+            accumulator.finish_facets(result);
         }
-
-        self.configure_explorer_filters(query, None)?;
-        Ok(result)
+        Ok(())
     }
 
     fn explore_compare(
@@ -1398,57 +1418,68 @@ impl FileReader {
     ) -> Result<ExplorerResult> {
         validate_query(query)?;
         validate_indexed_query(query)?;
-
-        let mut result = ExplorerResult {
-            histogram: query
-                .histogram
-                .as_ref()
-                .map(|field| new_histogram(field, query)),
-            ..ExplorerResult::default()
-        };
-
-        if query.limit > 0 {
-            let mut row_query = query.clone();
-            row_query.facets.clear();
-            row_query.histogram = None;
-            self.configure_explorer_filters(&row_query, None)?;
-            let mut accumulator = ExplorerAccumulator::for_main(&row_query, None);
-            self.scan_explorer_main(
-                &row_query,
-                &mut accumulator,
-                &mut result,
-                row_payload_mode,
-                control.as_deref_mut(),
-            )?;
-        }
-
-        if control
-            .as_deref()
-            .and_then(ExplorerControl::stop_reason)
-            .is_none()
-        {
-            for group in facet_pass_groups(query) {
-                let candidates =
-                    self.indexed_candidate_set(query, group.excluded_field.as_deref())?;
-                self.inner.with_file(|file| {
-                    indexed_count_facet_group(file, query, &group, &candidates, &mut result)
-                })?;
-            }
-        }
-
-        if control
-            .as_deref()
-            .and_then(ExplorerControl::stop_reason)
-            .is_none()
-            && query.histogram.is_some()
-        {
-            let candidates = self.indexed_candidate_set(query, None)?;
-            self.inner
-                .with_file(|file| indexed_count_histogram(file, query, &candidates, &mut result))?;
-        }
-
+        let mut result = explorer_result_for_query(query);
+        self.indexed_collect_rows(query, row_payload_mode, &mut result, control.as_deref_mut())?;
+        self.indexed_collect_facets(query, &mut result, control.as_deref())?;
+        self.indexed_collect_histogram(query, &mut result, control.as_deref())?;
         self.configure_explorer_filters(query, None)?;
         Ok(result)
+    }
+
+    fn indexed_collect_rows(
+        &mut self,
+        query: &ExplorerQuery,
+        row_payload_mode: ExplorerRowPayloadMode,
+        result: &mut ExplorerResult,
+        control: Option<&mut ExplorerControl<'_>>,
+    ) -> Result<()> {
+        if query.limit == 0 {
+            return Ok(());
+        }
+        let mut row_query = query.clone();
+        row_query.facets.clear();
+        row_query.histogram = None;
+        self.configure_explorer_filters(&row_query, None)?;
+        let mut accumulator = ExplorerAccumulator::for_main(&row_query, None);
+        self.scan_explorer_main(
+            &row_query,
+            &mut accumulator,
+            result,
+            row_payload_mode,
+            control,
+        )
+    }
+
+    fn indexed_collect_facets(
+        &mut self,
+        query: &ExplorerQuery,
+        result: &mut ExplorerResult,
+        control: Option<&ExplorerControl<'_>>,
+    ) -> Result<()> {
+        if explorer_control_stopped(control) {
+            return Ok(());
+        }
+        for group in facet_pass_groups(query) {
+            let candidates = self.indexed_candidate_set(query, group.excluded_field.as_deref())?;
+            self.inner.with_file(|file| {
+                indexed_count_facet_group(file, query, &group, &candidates, result)
+            })?;
+        }
+        Ok(())
+    }
+
+    fn indexed_collect_histogram(
+        &mut self,
+        query: &ExplorerQuery,
+        result: &mut ExplorerResult,
+        control: Option<&ExplorerControl<'_>>,
+    ) -> Result<()> {
+        if query.histogram.is_none() || explorer_control_stopped(control) {
+            return Ok(());
+        }
+        let candidates = self.indexed_candidate_set(query, None)?;
+        self.inner
+            .with_file(|file| indexed_count_histogram(file, query, &candidates, result))
     }
 
     fn indexed_candidate_set(
@@ -1511,6 +1542,298 @@ impl FileReader {
         Ok(())
     }
 
+    fn next_explorer_row_frame(
+        &mut self,
+        query: &ExplorerQuery,
+        rows_seen: &mut u64,
+        stats: &ExplorerStats,
+        control: Option<&mut ExplorerControl<'_>>,
+    ) -> Result<ExplorerLoopStep> {
+        if !self.step_for_explorer(query.direction)? {
+            return Ok(ExplorerLoopStep::Stop);
+        }
+        *rows_seen = rows_seen.saturating_add(1);
+        if control.is_some_and(|control| control.should_stop_after_rows(*rows_seen, stats)) {
+            return Ok(ExplorerLoopStep::Stop);
+        }
+        let Some(metadata) = self.row.metadata() else {
+            return Ok(ExplorerLoopStep::Skip);
+        };
+        if stop_by_commit_time(query, metadata.realtime) {
+            return Ok(ExplorerLoopStep::Stop);
+        }
+        if skip_by_commit_time(query, metadata.realtime) {
+            return Ok(ExplorerLoopStep::Skip);
+        }
+        Ok(ExplorerLoopStep::Row(ExplorerRowFrame {
+            commit_realtime: metadata.realtime,
+            seqnum: metadata.seqnum,
+        }))
+    }
+
+    fn scan_row_data_or_default(
+        &mut self,
+        query: &ExplorerQuery,
+        accumulator: &mut ExplorerAccumulator,
+        row_id: &mut u64,
+        deferred_values: &mut Vec<usize>,
+        stats: &mut ExplorerStats,
+    ) -> Result<RowScan> {
+        if accumulator.required_identity_count == 0 && !query_has_fts(query) {
+            stats.rows_examined = stats.rows_examined.saturating_add(1);
+            return Ok(RowScan::default());
+        }
+        *row_id = row_id.saturating_add(1);
+        deferred_values.clear();
+        self.scan_current_row(
+            query,
+            accumulator,
+            *row_id,
+            ScanApply::Deferred(deferred_values),
+            stats,
+        )
+    }
+
+    fn accepted_effective_realtime(
+        query: &ExplorerQuery,
+        scan: &RowScan,
+        commit_realtime: u64,
+        stats: &mut ExplorerStats,
+        control: Option<&mut ExplorerControl<'_>>,
+    ) -> Option<u64> {
+        let mut effective_realtime = effective_realtime_from_scan(scan.timestamp, commit_realtime);
+        record_source_realtime_delta(stats, scan.timestamp, commit_realtime);
+        if let Some(control) = control {
+            effective_realtime = control.adjust_realtime(effective_realtime);
+        }
+        (timestamp_in_range(query, effective_realtime) && !row_rejected_by_fts(query, scan))
+            .then_some(effective_realtime)
+    }
+
+    fn push_explorer_row_if_wanted(
+        &mut self,
+        query: &ExplorerQuery,
+        result: &mut ExplorerResult,
+        row_payload_mode: ExplorerRowPayloadMode,
+        effective_realtime: u64,
+    ) -> Result<()> {
+        if row_within_anchor(query, effective_realtime) && result.rows.len() < query.limit {
+            result.rows.push(self.current_explorer_row(
+                effective_realtime,
+                &mut result.stats,
+                row_payload_mode,
+            )?);
+        }
+        Ok(())
+    }
+
+    fn apply_main_scanned_row(
+        &mut self,
+        query: &ExplorerQuery,
+        accumulator: &mut ExplorerAccumulator,
+        result: &mut ExplorerResult,
+        row_payload_mode: ExplorerRowPayloadMode,
+        scanned: MainScannedRow<'_>,
+        control: Option<&mut ExplorerControl<'_>>,
+    ) -> Result<bool> {
+        if query.debug_collect_column_fields_by_row_traversal {
+            result.column_fields.extend(scanned.scan.column_fields);
+        }
+        record_last_realtime(&mut result.stats, scanned.commit_realtime);
+        result.stats.rows_matched = result.stats.rows_matched.saturating_add(1);
+        let stop_after_matched_row = control.is_some_and(|control| {
+            control.emit_matched_row(scanned.effective_realtime, result.stats.rows_matched)
+        });
+        for value_index in scanned.deferred_values {
+            accumulator.apply_value(
+                *value_index,
+                Some(scanned.effective_realtime),
+                &mut result.stats,
+            );
+        }
+        accumulator.finish_histogram_row(
+            scanned.row_id,
+            scanned.effective_realtime,
+            &mut result.stats,
+        );
+        self.push_explorer_row_if_wanted(
+            query,
+            result,
+            row_payload_mode,
+            scanned.effective_realtime,
+        )?;
+        Ok(stop_after_matched_row
+            || should_stop_when_rows_full(
+                query,
+                &result.rows,
+                scanned.effective_realtime,
+                result.stats.rows_matched,
+            ))
+    }
+
+    fn sampling_state_for_combined(
+        query: &ExplorerQuery,
+        result: &ExplorerResult,
+        control: Option<&mut ExplorerControl<'_>>,
+    ) -> Option<ExplorerSamplingState> {
+        let sampling = ExplorerSamplingState::for_query(
+            query,
+            result
+                .histogram
+                .as_ref()
+                .map(|histogram| histogram.buckets.len()),
+        );
+        if let Some(control) = control {
+            if let (Some(shared_sampling), Some(file_sampling)) =
+                (control.sampling.as_deref_mut(), query.sampling)
+            {
+                shared_sampling.begin_file(file_sampling);
+            }
+        }
+        sampling
+    }
+
+    fn combined_sampling_decision(
+        query: &ExplorerQuery,
+        rows: &[ExplorerRow],
+        frame: ExplorerRowFrame,
+        sampling: &mut Option<ExplorerSamplingState>,
+        mut control: Option<&mut ExplorerControl<'_>>,
+    ) -> Option<ExplorerSamplingDecision> {
+        let candidate_to_keep = if let Some(control) = control.as_deref_mut() {
+            control.candidate_row.as_deref_mut().map_or_else(
+                || row_candidate_to_keep(query, rows, frame.commit_realtime),
+                |candidate_row| candidate_row(frame.commit_realtime),
+            )
+        } else {
+            row_candidate_to_keep(query, rows, frame.commit_realtime)
+        };
+        if let Some(control) = control {
+            if let Some(shared_sampling) = control.sampling.as_deref_mut() {
+                return Some(shared_sampling.decide(
+                    frame.commit_realtime,
+                    frame.seqnum,
+                    candidate_to_keep,
+                ));
+            }
+        }
+        sampling
+            .as_mut()
+            .map(|sampling| sampling.decide(frame.commit_realtime, frame.seqnum, candidate_to_keep))
+    }
+
+    fn apply_combined_sampling_decision(
+        decision: ExplorerSamplingDecision,
+        mode: CombinedScanMode,
+        result: &mut ExplorerResult,
+        frame: ExplorerRowFrame,
+    ) -> SamplingRowAction {
+        match decision {
+            ExplorerSamplingDecision::Full { sampled } => {
+                if sampled {
+                    result.stats.sampling_sampled = result.stats.sampling_sampled.saturating_add(1);
+                }
+                SamplingRowAction::Scan
+            }
+            ExplorerSamplingDecision::SkipFields => {
+                record_combined_unsampled_row(
+                    &mut result.stats,
+                    mode,
+                    frame.commit_realtime,
+                    1,
+                    true,
+                );
+                add_special_histogram_value(
+                    result.histogram.as_mut(),
+                    frame.commit_realtime,
+                    EXPLORER_UNSAMPLED_VALUE,
+                    1,
+                    &mut result.stats,
+                );
+                SamplingRowAction::Skip
+            }
+            ExplorerSamplingDecision::StopAndEstimate {
+                remaining_rows,
+                from_realtime_usec,
+                to_realtime_usec,
+            } => {
+                record_combined_unsampled_row(
+                    &mut result.stats,
+                    mode,
+                    frame.commit_realtime,
+                    remaining_rows,
+                    false,
+                );
+                result.stats.rows_estimated =
+                    result.stats.rows_estimated.saturating_add(remaining_rows);
+                result.stats.sampling_estimated = result
+                    .stats
+                    .sampling_estimated
+                    .saturating_add(remaining_rows);
+                add_estimated_histogram_range(
+                    result.histogram.as_mut(),
+                    from_realtime_usec,
+                    to_realtime_usec,
+                    remaining_rows,
+                    &mut result.stats,
+                );
+                SamplingRowAction::Stop
+            }
+        }
+    }
+
+    fn apply_combined_scanned_row(
+        &mut self,
+        query: &ExplorerQuery,
+        accumulator: &mut ExplorerAccumulator,
+        result: &mut ExplorerResult,
+        row_payload_mode: ExplorerRowPayloadMode,
+        mode: CombinedScanMode,
+        scanned: MainScannedRow<'_>,
+        control: Option<&mut ExplorerControl<'_>>,
+    ) -> Result<bool> {
+        if query.debug_collect_column_fields_by_row_traversal {
+            result.column_fields.extend(scanned.scan.column_fields);
+        }
+        record_last_realtime(&mut result.stats, scanned.commit_realtime);
+        let stop_after_matched_row = update_combined_matched_stats(
+            &mut result.stats,
+            mode,
+            scanned.effective_realtime,
+            control,
+        );
+        let value_realtime = query
+            .histogram
+            .is_some()
+            .then_some(scanned.effective_realtime);
+        for value_index in scanned.deferred_values {
+            accumulator.apply_value(*value_index, value_realtime, &mut result.stats);
+        }
+        if query.histogram.is_some() {
+            accumulator.finish_histogram_row(
+                scanned.row_id,
+                scanned.effective_realtime,
+                &mut result.stats,
+            );
+        }
+        if mode.include_facets {
+            accumulator.finish_facet_row(scanned.row_id, &mut result.stats);
+        }
+        self.push_explorer_row_if_wanted(
+            query,
+            result,
+            row_payload_mode,
+            scanned.effective_realtime,
+        )?;
+        Ok(stop_after_matched_row
+            || should_stop_when_rows_full(
+                query,
+                &result.rows,
+                scanned.effective_realtime,
+                result.stats.rows_matched,
+            ))
+    }
+
     fn scan_explorer_main(
         &mut self,
         query: &ExplorerQuery,
@@ -1523,81 +1846,48 @@ impl FileReader {
         let mut row_id = 0u64;
         let mut rows_seen = 0u64;
         let mut deferred_values = Vec::new();
-        while self.step_for_explorer(query.direction)? {
-            rows_seen = rows_seen.saturating_add(1);
-            if let Some(control) = control.as_deref_mut() {
-                if control.should_stop_after_rows(rows_seen, &result.stats) {
-                    break;
-                }
-            }
-            let Some(metadata) = self.row.metadata() else {
-                continue;
-            };
-            let commit_realtime = metadata.realtime;
-            if stop_by_commit_time(query, commit_realtime) {
-                break;
-            }
-            if skip_by_commit_time(query, commit_realtime) {
-                continue;
-            }
-
-            let scan = if accumulator.required_identity_count == 0 && !query_has_fts(query) {
-                result.stats.rows_examined = result.stats.rows_examined.saturating_add(1);
-                RowScan::default()
-            } else {
-                row_id = row_id.saturating_add(1);
-                deferred_values.clear();
-                self.scan_current_row(
-                    query,
-                    accumulator,
-                    row_id,
-                    ScanApply::Deferred(&mut deferred_values),
-                    &mut result.stats,
-                )?
-            };
-            let mut effective_realtime =
-                effective_realtime_from_scan(scan.timestamp, commit_realtime);
-            record_source_realtime_delta(&mut result.stats, scan.timestamp, commit_realtime);
-            if let Some(control) = control.as_deref_mut() {
-                effective_realtime = control.adjust_realtime(effective_realtime);
-            }
-            if !timestamp_in_range(query, effective_realtime) {
-                continue;
-            }
-            if row_rejected_by_fts(query, &scan) {
-                continue;
-            }
-            if query.debug_collect_column_fields_by_row_traversal {
-                result.column_fields.extend(scan.column_fields);
-            }
-
-            record_last_realtime(&mut result.stats, commit_realtime);
-            result.stats.rows_matched = result.stats.rows_matched.saturating_add(1);
-            let mut stop_after_matched_row = false;
-            if let Some(control) = control.as_deref_mut() {
-                stop_after_matched_row =
-                    control.emit_matched_row(effective_realtime, result.stats.rows_matched);
-            }
-            for value_index in &deferred_values {
-                accumulator.apply_value(*value_index, Some(effective_realtime), &mut result.stats);
-            }
-            accumulator.finish_histogram_row(row_id, effective_realtime, &mut result.stats);
-            if row_within_anchor(query, effective_realtime) && result.rows.len() < query.limit {
-                result.rows.push(self.current_explorer_row(
-                    effective_realtime,
-                    &mut result.stats,
-                    row_payload_mode,
-                )?);
-            }
-            if stop_after_matched_row {
-                break;
-            }
-            if should_stop_when_rows_full(
+        loop {
+            let frame = match self.next_explorer_row_frame(
                 query,
-                &result.rows,
+                &mut rows_seen,
+                &result.stats,
+                control.as_deref_mut(),
+            )? {
+                ExplorerLoopStep::Stop => break,
+                ExplorerLoopStep::Skip => continue,
+                ExplorerLoopStep::Row(frame) => frame,
+            };
+            let scan = self.scan_row_data_or_default(
+                query,
+                accumulator,
+                &mut row_id,
+                &mut deferred_values,
+                &mut result.stats,
+            )?;
+            let Some(effective_realtime) = Self::accepted_effective_realtime(
+                query,
+                &scan,
+                frame.commit_realtime,
+                &mut result.stats,
+                control.as_deref_mut(),
+            ) else {
+                continue;
+            };
+            let scanned = MainScannedRow {
+                row_id,
+                commit_realtime: frame.commit_realtime,
                 effective_realtime,
-                result.stats.rows_matched,
-            ) {
+                scan,
+                deferred_values: &deferred_values,
+            };
+            if self.apply_main_scanned_row(
+                query,
+                accumulator,
+                result,
+                row_payload_mode,
+                scanned,
+                control.as_deref_mut(),
+            )? {
                 break;
             }
         }
@@ -1615,202 +1905,70 @@ impl FileReader {
         mut control: Option<&mut ExplorerControl<'_>>,
     ) -> Result<()> {
         self.seek_for_explorer(query);
-        let include_main = query_needs_main_pass(query);
+        let mode = CombinedScanMode {
+            include_main: query_needs_main_pass(query),
+            include_facets,
+        };
         let mut row_id = 0u64;
         let mut rows_seen = 0u64;
         let mut deferred_values = Vec::new();
-        let mut sampling = ExplorerSamplingState::for_query(
-            query,
-            result
-                .histogram
-                .as_ref()
-                .map(|histogram| histogram.buckets.len()),
-        );
-        if let Some(control) = control.as_deref_mut() {
-            if let (Some(shared_sampling), Some(file_sampling)) =
-                (control.sampling.as_deref_mut(), query.sampling)
-            {
-                shared_sampling.begin_file(file_sampling);
-            }
-        }
-        while self.step_for_explorer(query.direction)? {
-            rows_seen = rows_seen.saturating_add(1);
-            if let Some(control) = control.as_deref_mut() {
-                if control.should_stop_after_rows(rows_seen, &result.stats) {
-                    break;
-                }
-            }
-            let Some(metadata) = self.row.metadata() else {
-                continue;
+        let mut sampling = Self::sampling_state_for_combined(query, result, control.as_deref_mut());
+        loop {
+            let frame = match self.next_explorer_row_frame(
+                query,
+                &mut rows_seen,
+                &result.stats,
+                control.as_deref_mut(),
+            )? {
+                ExplorerLoopStep::Stop => break,
+                ExplorerLoopStep::Skip => continue,
+                ExplorerLoopStep::Row(frame) => frame,
             };
-            let commit_realtime = metadata.realtime;
-            if stop_by_commit_time(query, commit_realtime) {
-                break;
-            }
-            if skip_by_commit_time(query, commit_realtime) {
-                continue;
-            }
-
-            let candidate_to_keep = if let Some(control) = control.as_deref_mut() {
-                if let Some(candidate_row) = control.candidate_row.as_deref_mut() {
-                    candidate_row(commit_realtime)
-                } else {
-                    row_candidate_to_keep(query, &result.rows, commit_realtime)
-                }
-            } else {
-                row_candidate_to_keep(query, &result.rows, commit_realtime)
-            };
-            let sampling_decision = if let Some(control) = control.as_deref_mut() {
-                if let Some(shared_sampling) = control.sampling.as_deref_mut() {
-                    Some(shared_sampling.decide(
-                        commit_realtime,
-                        metadata.seqnum,
-                        candidate_to_keep,
-                    ))
-                } else {
-                    sampling.as_mut().map(|sampling| {
-                        sampling.decide(commit_realtime, metadata.seqnum, candidate_to_keep)
-                    })
-                }
-            } else {
-                sampling.as_mut().map(|sampling| {
-                    sampling.decide(commit_realtime, metadata.seqnum, candidate_to_keep)
-                })
-            };
-            if let Some(decision) = sampling_decision {
-                match decision {
-                    ExplorerSamplingDecision::Full { sampled } => {
-                        if sampled {
-                            result.stats.sampling_sampled =
-                                result.stats.sampling_sampled.saturating_add(1);
-                        }
-                    }
-                    ExplorerSamplingDecision::SkipFields => {
-                        record_last_realtime(&mut result.stats, commit_realtime);
-                        if include_main {
-                            result.stats.rows_matched = result.stats.rows_matched.saturating_add(1);
-                        }
-                        if include_facets {
-                            result.stats.facet_rows_matched =
-                                result.stats.facet_rows_matched.saturating_add(1);
-                        }
-                        result.stats.rows_unsampled = result.stats.rows_unsampled.saturating_add(1);
-                        result.stats.sampling_unsampled =
-                            result.stats.sampling_unsampled.saturating_add(1);
-                        add_special_histogram_value(
-                            result.histogram.as_mut(),
-                            commit_realtime,
-                            EXPLORER_UNSAMPLED_VALUE,
-                            1,
-                            &mut result.stats,
-                        );
-                        continue;
-                    }
-                    ExplorerSamplingDecision::StopAndEstimate {
-                        remaining_rows,
-                        from_realtime_usec,
-                        to_realtime_usec,
-                    } => {
-                        record_last_realtime(&mut result.stats, commit_realtime);
-                        if include_main {
-                            result.stats.rows_matched =
-                                result.stats.rows_matched.saturating_add(remaining_rows);
-                        }
-                        if include_facets {
-                            result.stats.facet_rows_matched = result
-                                .stats
-                                .facet_rows_matched
-                                .saturating_add(remaining_rows);
-                        }
-                        result.stats.rows_estimated =
-                            result.stats.rows_estimated.saturating_add(remaining_rows);
-                        result.stats.sampling_unsampled =
-                            result.stats.sampling_unsampled.saturating_add(1);
-                        result.stats.sampling_estimated = result
-                            .stats
-                            .sampling_estimated
-                            .saturating_add(remaining_rows);
-                        add_estimated_histogram_range(
-                            result.histogram.as_mut(),
-                            from_realtime_usec,
-                            to_realtime_usec,
-                            remaining_rows,
-                            &mut result.stats,
-                        );
-                        break;
-                    }
-                }
-            }
-
-            let scan = if accumulator.required_identity_count == 0 && !query_has_fts(query) {
-                result.stats.rows_examined = result.stats.rows_examined.saturating_add(1);
-                RowScan::default()
-            } else {
-                row_id = row_id.saturating_add(1);
-                deferred_values.clear();
-                self.scan_current_row(
-                    query,
-                    accumulator,
-                    row_id,
-                    ScanApply::Deferred(&mut deferred_values),
-                    &mut result.stats,
-                )?
-            };
-            let mut effective_realtime =
-                effective_realtime_from_scan(scan.timestamp, commit_realtime);
-            record_source_realtime_delta(&mut result.stats, scan.timestamp, commit_realtime);
-            if let Some(control) = control.as_deref_mut() {
-                effective_realtime = control.adjust_realtime(effective_realtime);
-            }
-            if !timestamp_in_range(query, effective_realtime) {
-                continue;
-            }
-            if row_rejected_by_fts(query, &scan) {
-                continue;
-            }
-            if query.debug_collect_column_fields_by_row_traversal {
-                result.column_fields.extend(scan.column_fields);
-            }
-
-            record_last_realtime(&mut result.stats, commit_realtime);
-            let mut stop_after_matched_row = false;
-            if include_main {
-                result.stats.rows_matched = result.stats.rows_matched.saturating_add(1);
-                if let Some(control) = control.as_deref_mut() {
-                    stop_after_matched_row =
-                        control.emit_matched_row(effective_realtime, result.stats.rows_matched);
-                }
-            }
-            if include_facets {
-                result.stats.facet_rows_matched = result.stats.facet_rows_matched.saturating_add(1);
-            }
-
-            let value_realtime = query.histogram.is_some().then_some(effective_realtime);
-            for value_index in &deferred_values {
-                accumulator.apply_value(*value_index, value_realtime, &mut result.stats);
-            }
-            if query.histogram.is_some() {
-                accumulator.finish_histogram_row(row_id, effective_realtime, &mut result.stats);
-            }
-            if include_facets {
-                accumulator.finish_facet_row(row_id, &mut result.stats);
-            }
-            if row_within_anchor(query, effective_realtime) && result.rows.len() < query.limit {
-                result.rows.push(self.current_explorer_row(
-                    effective_realtime,
-                    &mut result.stats,
-                    row_payload_mode,
-                )?);
-            }
-            if stop_after_matched_row {
-                break;
-            }
-            if should_stop_when_rows_full(
+            if let Some(decision) = Self::combined_sampling_decision(
                 query,
                 &result.rows,
-                effective_realtime,
-                result.stats.rows_matched,
+                frame,
+                &mut sampling,
+                control.as_deref_mut(),
             ) {
+                match Self::apply_combined_sampling_decision(decision, mode, result, frame) {
+                    SamplingRowAction::Scan => {}
+                    SamplingRowAction::Skip => continue,
+                    SamplingRowAction::Stop => break,
+                }
+            }
+            let scan = self.scan_row_data_or_default(
+                query,
+                accumulator,
+                &mut row_id,
+                &mut deferred_values,
+                &mut result.stats,
+            )?;
+            let Some(effective_realtime) = Self::accepted_effective_realtime(
+                query,
+                &scan,
+                frame.commit_realtime,
+                &mut result.stats,
+                control.as_deref_mut(),
+            ) else {
+                continue;
+            };
+            let scanned = MainScannedRow {
+                row_id,
+                commit_realtime: frame.commit_realtime,
+                effective_realtime,
+                scan,
+                deferred_values: &deferred_values,
+            };
+            if self.apply_combined_scanned_row(
+                query,
+                accumulator,
+                result,
+                row_payload_mode,
+                mode,
+                scanned,
+                control.as_deref_mut(),
+            )? {
                 break;
             }
         }
@@ -1832,24 +1990,17 @@ impl FileReader {
         let mut row_id = 0u64;
         let mut rows_seen = 0u64;
         let mut deferred_values = Vec::new();
-        while self.step_for_explorer(query.direction)? {
-            rows_seen = rows_seen.saturating_add(1);
-            if let Some(control) = control.as_deref_mut() {
-                if control.should_stop_after_rows(rows_seen, stats) {
-                    break;
-                }
-            }
-            let Some(metadata) = self.row.metadata() else {
-                continue;
+        loop {
+            let frame = match self.next_explorer_row_frame(
+                query,
+                &mut rows_seen,
+                stats,
+                control.as_deref_mut(),
+            )? {
+                ExplorerLoopStep::Stop => break,
+                ExplorerLoopStep::Skip => continue,
+                ExplorerLoopStep::Row(frame) => frame,
             };
-            let commit_realtime = metadata.realtime;
-            if stop_by_commit_time(query, commit_realtime) {
-                break;
-            }
-            if skip_by_commit_time(query, commit_realtime) {
-                continue;
-            }
-
             row_id = row_id.saturating_add(1);
             deferred_values.clear();
             let scan = if defer_apply {
@@ -1863,16 +2014,12 @@ impl FileReader {
             } else {
                 self.scan_current_row(query, accumulator, row_id, ScanApply::Immediate, stats)?
             };
-            let effective_realtime = effective_realtime_from_scan(scan.timestamp, commit_realtime);
-            record_source_realtime_delta(stats, scan.timestamp, commit_realtime);
-            if !timestamp_in_range(query, effective_realtime) {
+            if Self::accepted_effective_realtime(query, &scan, frame.commit_realtime, stats, None)
+                .is_none()
+            {
                 continue;
             }
-            if row_rejected_by_fts(query, &scan) {
-                continue;
-            }
-
-            record_last_realtime(stats, commit_realtime);
+            record_last_realtime(stats, frame.commit_realtime);
             stats.facet_rows_matched = stats.facet_rows_matched.saturating_add(1);
             if defer_apply {
                 for value_index in &deferred_values {
@@ -1894,13 +2041,7 @@ impl FileReader {
     ) -> Result<RowScan> {
         stats.rows_examined = stats.rows_examined.saturating_add(1);
         let mut out = RowScan::default();
-        let use_first_value = query.field_mode == ExplorerFieldMode::FirstValue;
-        let needs_fts = query_has_fts(query);
-        let mut fields_missing_from_row = if use_first_value {
-            accumulator.required_identity_count
-        } else {
-            0
-        };
+        let mut state = RowScanState::new(query, accumulator);
 
         let inner = &mut self.inner;
         let row = &mut self.row;
@@ -1918,7 +2059,7 @@ impl FileReader {
                         row,
                         data_offset,
                         accumulator,
-                        needs_fts,
+                        state.needs_fts,
                         query,
                         query
                             .debug_collect_column_fields_by_row_traversal
@@ -1926,59 +2067,17 @@ impl FileReader {
                         stats,
                     )?;
 
-                    match class {
-                        OffsetClass::Irrelevant => {
-                            stats.data_refs_skipped = stats.data_refs_skipped.saturating_add(1);
-                            continue;
-                        }
-                        OffsetClass::FtsNegativeMatch => {
-                            out.fts_negative_match = true;
-                            continue;
-                        }
-                        OffsetClass::FtsMatch => {
-                            out.fts_matches = true;
-                            continue;
-                        }
-                        OffsetClass::Value(value_index) => {
-                            if accumulator.value_fts_matches[value_index] {
-                                out.fts_matches = true;
-                            }
-                            let field_index = accumulator.value_field_indices[value_index];
-                            let first_for_field = if use_first_value
-                                || accumulator.flags[field_index] & (FACET_PUBLIC | FACET_HISTOGRAM)
-                                    != 0
-                            {
-                                accumulator.mark_field_seen(field_index, row_id)
-                            } else {
-                                true
-                            };
-                            if use_first_value && first_for_field {
-                                fields_missing_from_row = fields_missing_from_row.saturating_sub(1);
-                            }
-                            if !use_first_value || first_for_field {
-                                if let Some(timestamp) =
-                                    accumulator.value_source_realtime[value_index]
-                                {
-                                    out.timestamp = Some(timestamp);
-                                }
-                                match &mut apply {
-                                    ScanApply::Immediate => {
-                                        accumulator.apply_value(value_index, None, stats)
-                                    }
-                                    ScanApply::Deferred(values) => values.push(value_index),
-                                }
-                            }
-                        }
-                    }
-
-                    if use_first_value
-                        && !needs_fts
-                        && !query.debug_collect_column_fields_by_row_traversal
-                        && fields_missing_from_row == 0
-                    {
-                        stats.early_stop_opportunities =
-                            stats.early_stop_opportunities.saturating_add(1);
-                        stats.early_stops = stats.early_stops.saturating_add(1);
+                    handle_row_offset_class(
+                        class,
+                        accumulator,
+                        row_id,
+                        &mut state,
+                        &mut out,
+                        &mut apply,
+                        stats,
+                    );
+                    if state.should_stop_row_scan() {
+                        record_row_scan_early_stop(stats);
                         break;
                     }
                 }
@@ -2066,6 +2165,68 @@ impl FileReader {
 enum ScanApply<'a> {
     Immediate,
     Deferred(&'a mut Vec<usize>),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExplorerRowFrame {
+    commit_realtime: u64,
+    seqnum: u64,
+}
+
+enum ExplorerLoopStep {
+    Stop,
+    Skip,
+    Row(ExplorerRowFrame),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CombinedScanMode {
+    include_main: bool,
+    include_facets: bool,
+}
+
+struct MainScannedRow<'a> {
+    row_id: u64,
+    commit_realtime: u64,
+    effective_realtime: u64,
+    scan: RowScan,
+    deferred_values: &'a [usize],
+}
+
+struct RowScanState {
+    use_first_value: bool,
+    needs_fts: bool,
+    collect_column_fields: bool,
+    fields_missing_from_row: usize,
+}
+
+impl RowScanState {
+    fn new(query: &ExplorerQuery, accumulator: &ExplorerAccumulator) -> Self {
+        let use_first_value = query.field_mode == ExplorerFieldMode::FirstValue;
+        Self {
+            use_first_value,
+            needs_fts: query_has_fts(query),
+            collect_column_fields: query.debug_collect_column_fields_by_row_traversal,
+            fields_missing_from_row: if use_first_value {
+                accumulator.required_identity_count
+            } else {
+                0
+            },
+        }
+    }
+
+    fn should_stop_row_scan(&self) -> bool {
+        self.use_first_value
+            && !self.needs_fts
+            && !self.collect_column_fields
+            && self.fields_missing_from_row == 0
+    }
+}
+
+enum SamplingRowAction {
+    Scan,
+    Skip,
+    Stop,
 }
 
 enum IndexedCandidateSet {
@@ -2418,26 +2579,96 @@ where
     Ok(())
 }
 
-fn classify_data_for_accumulator(
+fn handle_row_offset_class(
+    class: OffsetClass,
+    accumulator: &mut ExplorerAccumulator,
+    row_id: u64,
+    state: &mut RowScanState,
+    out: &mut RowScan,
+    apply: &mut ScanApply<'_>,
+    stats: &mut ExplorerStats,
+) {
+    match class {
+        OffsetClass::Irrelevant => {
+            stats.data_refs_skipped = stats.data_refs_skipped.saturating_add(1);
+        }
+        OffsetClass::FtsNegativeMatch => {
+            out.fts_negative_match = true;
+        }
+        OffsetClass::FtsMatch => {
+            out.fts_matches = true;
+        }
+        OffsetClass::Value(value_index) => {
+            handle_row_value_class(value_index, accumulator, row_id, state, out, apply, stats)
+        }
+    }
+}
+
+fn handle_row_value_class(
+    value_index: usize,
+    accumulator: &mut ExplorerAccumulator,
+    row_id: u64,
+    state: &mut RowScanState,
+    out: &mut RowScan,
+    apply: &mut ScanApply<'_>,
+    stats: &mut ExplorerStats,
+) {
+    if accumulator.value_fts_matches[value_index] {
+        out.fts_matches = true;
+    }
+    let field_index = accumulator.value_field_indices[value_index];
+    let first_for_field = if state.use_first_value
+        || accumulator.flags[field_index] & (FACET_PUBLIC | FACET_HISTOGRAM) != 0
+    {
+        accumulator.mark_field_seen(field_index, row_id)
+    } else {
+        true
+    };
+    if state.use_first_value && first_for_field {
+        state.fields_missing_from_row = state.fields_missing_from_row.saturating_sub(1);
+    }
+    if !state.use_first_value || first_for_field {
+        if let Some(timestamp) = accumulator.value_source_realtime[value_index] {
+            out.timestamp = Some(timestamp);
+        }
+        match apply {
+            ScanApply::Immediate => accumulator.apply_value(value_index, None, stats),
+            ScanApply::Deferred(values) => values.push(value_index),
+        }
+    }
+}
+
+fn record_row_scan_early_stop(stats: &mut ExplorerStats) {
+    stats.early_stop_opportunities = stats.early_stop_opportunities.saturating_add(1);
+    stats.early_stops = stats.early_stops.saturating_add(1);
+}
+
+fn cached_offset_class_for_accumulator(
     file: &JournalFile<Mmap>,
     row: &mut CurrentRowView,
     data_offset: NonZeroU64,
-    accumulator: &mut ExplorerAccumulator,
-    needs_fts: bool,
-    query: &ExplorerQuery,
+    accumulator: &ExplorerAccumulator,
     column_fields: Option<&mut Vec<Vec<u8>>>,
     stats: &mut ExplorerStats,
-) -> Result<OffsetClass> {
-    if let Some(class) = accumulator.offset_cache.lookup(data_offset) {
-        if let Some(column_fields) = column_fields {
-            if let Some((field, _)) = read_payload_field(file, row, data_offset, stats)? {
-                column_fields.push(field);
-            }
+) -> Result<Option<OffsetClass>> {
+    let Some(class) = accumulator.offset_cache.lookup(data_offset) else {
+        return Ok(None);
+    };
+    if let Some(column_fields) = column_fields {
+        if let Some((field, _)) = read_payload_field(file, row, data_offset, stats)? {
+            column_fields.push(field);
         }
-        stats.data_cache_hits = stats.data_cache_hits.saturating_add(1);
-        return Ok(class);
     }
+    stats.data_cache_hits = stats.data_cache_hits.saturating_add(1);
+    Ok(Some(class))
+}
 
+fn payload_for_classification<'a>(
+    file: &JournalFile<Mmap>,
+    row: &'a mut CurrentRowView,
+    data_offset: NonZeroU64,
+    stats: &mut ExplorerStats,
+) -> Result<&'a [u8]> {
     stats.data_cache_misses = stats.data_cache_misses.saturating_add(1);
     stats.data_payloads_loaded = stats.data_payloads_loaded.saturating_add(1);
     let was_compressed = file.data_ref(data_offset)?.is_compressed();
@@ -2445,7 +2676,67 @@ fn classify_data_for_accumulator(
     if was_compressed {
         stats.payloads_decompressed = stats.payloads_decompressed.saturating_add(1);
     }
-    let payload = row.payload_slice(payload);
+    Ok(row.payload_slice(payload))
+}
+
+fn fts_flags_for_value(
+    value: &[u8],
+    needs_fts: bool,
+    query: &ExplorerQuery,
+    stats: &mut ExplorerStats,
+) -> (bool, bool) {
+    if !needs_fts {
+        return (false, false);
+    }
+    stats.fts_scans = stats.fts_scans.saturating_add(1);
+    match match_fts_query(value, query) {
+        FtsTermMatch::Positive => (true, false),
+        FtsTermMatch::Negative => (false, true),
+        FtsTermMatch::None => (false, false),
+    }
+}
+
+fn structured_payload_class(
+    field: &[u8],
+    value: &[u8],
+    data_offset: NonZeroU64,
+    accumulator: &mut ExplorerAccumulator,
+    fts_matches: bool,
+    fts_negative_match: bool,
+) -> OffsetClass {
+    if fts_negative_match {
+        OffsetClass::FtsNegativeMatch
+    } else if let Some(field_index) = accumulator.field_lookup.get(field).copied() {
+        OffsetClass::Value(accumulator.add_value(field_index, data_offset, value, fts_matches))
+    } else if fts_matches {
+        OffsetClass::FtsMatch
+    } else {
+        OffsetClass::Irrelevant
+    }
+}
+
+fn classify_data_for_accumulator(
+    file: &JournalFile<Mmap>,
+    row: &mut CurrentRowView,
+    data_offset: NonZeroU64,
+    accumulator: &mut ExplorerAccumulator,
+    needs_fts: bool,
+    query: &ExplorerQuery,
+    mut column_fields: Option<&mut Vec<Vec<u8>>>,
+    stats: &mut ExplorerStats,
+) -> Result<OffsetClass> {
+    if let Some(class) = cached_offset_class_for_accumulator(
+        file,
+        row,
+        data_offset,
+        accumulator,
+        column_fields.as_mut().map(|fields| &mut **fields),
+        stats,
+    )? {
+        return Ok(class);
+    }
+
+    let payload = payload_for_classification(file, row, data_offset, stats)?;
     let Some((field, value)) = split_payload_bytes(payload) else {
         let class = classify_unstructured_payload(payload, needs_fts, query, stats);
         accumulator.offset_cache.insert(data_offset, class);
@@ -2456,27 +2747,15 @@ fn classify_data_for_accumulator(
         column_fields.push(field.to_vec());
     }
 
-    let (fts_matches, fts_negative_match) = if needs_fts {
-        stats.fts_scans = stats.fts_scans.saturating_add(1);
-        match match_fts_query(value, query) {
-            FtsTermMatch::Positive => (true, false),
-            FtsTermMatch::Negative => (false, true),
-            FtsTermMatch::None => (false, false),
-        }
-    } else {
-        (false, false)
-    };
-
-    let class = if fts_negative_match {
-        OffsetClass::FtsNegativeMatch
-    } else if let Some(field_index) = accumulator.field_lookup.get(field).copied() {
-        OffsetClass::Value(accumulator.add_value(field_index, data_offset, value, fts_matches))
-    } else if fts_matches {
-        OffsetClass::FtsMatch
-    } else {
-        OffsetClass::Irrelevant
-    };
-
+    let (fts_matches, fts_negative_match) = fts_flags_for_value(value, needs_fts, query, stats);
+    let class = structured_payload_class(
+        field,
+        value,
+        data_offset,
+        accumulator,
+        fts_matches,
+        fts_negative_match,
+    );
     accumulator.offset_cache.insert(data_offset, class);
     stats.data_objects_classified = stats.data_objects_classified.saturating_add(1);
     Ok(class)
@@ -2651,6 +2930,72 @@ fn facet_pass_needs_source_realtime(query: &ExplorerQuery) -> bool {
 
 fn query_needs_main_pass(query: &ExplorerQuery) -> bool {
     query.limit > 0 || query.histogram.is_some()
+}
+
+fn explorer_result_for_query(query: &ExplorerQuery) -> ExplorerResult {
+    ExplorerResult {
+        histogram: query
+            .histogram
+            .as_ref()
+            .map(|field| new_histogram(field, query)),
+        ..ExplorerResult::default()
+    }
+}
+
+fn explorer_control_stopped(control: Option<&ExplorerControl<'_>>) -> bool {
+    control.and_then(ExplorerControl::stop_reason).is_some()
+}
+
+fn can_run_combined_explorer_pass(facet_groups: &[FacetPassGroup]) -> bool {
+    facet_groups
+        .iter()
+        .all(|group| group.excluded_field.is_none())
+}
+
+fn combined_facet_indices(facet_groups: &[FacetPassGroup]) -> Vec<usize> {
+    facet_groups
+        .iter()
+        .flat_map(|group| group.facet_indices.iter().copied())
+        .collect()
+}
+
+fn record_combined_unsampled_row(
+    stats: &mut ExplorerStats,
+    mode: CombinedScanMode,
+    commit_realtime: u64,
+    row_count: u64,
+    count_rows_unsampled: bool,
+) {
+    record_last_realtime(stats, commit_realtime);
+    if mode.include_main {
+        stats.rows_matched = stats.rows_matched.saturating_add(row_count);
+    }
+    if mode.include_facets {
+        stats.facet_rows_matched = stats.facet_rows_matched.saturating_add(row_count);
+    }
+    if count_rows_unsampled {
+        stats.rows_unsampled = stats.rows_unsampled.saturating_add(row_count);
+    }
+    stats.sampling_unsampled = stats.sampling_unsampled.saturating_add(1);
+}
+
+fn update_combined_matched_stats(
+    stats: &mut ExplorerStats,
+    mode: CombinedScanMode,
+    effective_realtime: u64,
+    control: Option<&mut ExplorerControl<'_>>,
+) -> bool {
+    let mut stop_after_matched_row = false;
+    if mode.include_main {
+        stats.rows_matched = stats.rows_matched.saturating_add(1);
+        stop_after_matched_row = control
+            .map(|control| control.emit_matched_row(effective_realtime, stats.rows_matched))
+            .unwrap_or(false);
+    }
+    if mode.include_facets {
+        stats.facet_rows_matched = stats.facet_rows_matched.saturating_add(1);
+    }
+    stop_after_matched_row
 }
 
 fn should_stop_when_rows_full(
@@ -2950,6 +3295,9 @@ fn timestamp_in_range(query: &ExplorerQuery, timestamp: u64) -> bool {
 }
 
 fn stop_by_commit_time(query: &ExplorerQuery, commit_realtime: u64) -> bool {
+    // Netdata expands the seek/stop side by the learned journal-vs-source
+    // realtime delta, then still uses commit realtime for the fast boundary
+    // checks before row DATA is scanned for _SOURCE_REALTIME_TIMESTAMP.
     match query.direction {
         Direction::Forward => query.before_realtime_usec.is_some_and(|before| {
             commit_realtime > before.saturating_add(query.realtime_slack_usec)
