@@ -24,10 +24,24 @@ tests/code_scanning/export_codacy_file_metrics.js \
   --search go/ --search rust/
 git ls-files 'go/**/*.go' 'rust/**/*.rs' > .local/codacy/rust-go-source-files.txt
 lizard -C 12 --csv -f .local/codacy/rust-go-source-files.txt > .local/codacy/lizard-rust-go.csv
-python3 tests/code_scanning/summarize_codacy_file_metrics.py \
-  --metrics .local/codacy/file-metrics-rust-go.json \
-  --lizard-csv .local/codacy/lizard-rust-go.csv \
-  > .agents/sow/specs/codacy-rust-go-metrics-audit.md
+python3 - <<'PY' > .agents/sow/specs/codacy-rust-go-metrics-audit.md
+import json
+from pathlib import Path
+from tests.code_scanning.summarize_codacy_file_metrics import (
+    load_lizard_max_ccn, metric_row, render_markdown, source_field,
+)
+source = json.loads(Path('.local/codacy/file-metrics-rust-go.json').read_text(encoding='utf-8'))
+max_ccn = load_lizard_max_ccn(Path('.local/codacy/lizard-rust-go.csv'))
+rows = [
+    metric_row(file_metric, max_ccn.get(str(file_metric['path']), 0))
+    for file_metric in source.get('files', [])
+    if isinstance(file_metric, dict) and isinstance(file_metric.get('path'), str)
+]
+print(render_markdown({
+    'branch': source_field(source, 'branch'),
+    'fetched_at': source_field(source, 'fetchedAt'),
+}, rows), end='')
+PY
 ```
 
 ## Surface Summary

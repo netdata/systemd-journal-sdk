@@ -412,7 +412,8 @@ Tests or equivalent validation:
     `SF` records, and `83` `end_of_record` markers.
 - `tests/code_scanning/export_codacy_file_metrics.js --output .local/codacy/file-metrics-rust-go.validation.json --search go/ --search rust/`:
   passed and returned `217` files.
-- `python3 tests/code_scanning/summarize_codacy_file_metrics.py --metrics .local/codacy/file-metrics-rust-go.validation.json --lizard-csv .local/codacy/lizard-rust-go.csv > .agents/sow/specs/codacy-rust-go-metrics-audit.md`:
+- Inline regeneration command from
+  `.agents/sow/specs/codacy-rust-go-metrics-audit.md`:
   passed.
 - Remote scanner repair validation:
   - Commit `abb43e37b08bd57be6273577d212d2520411097c` pushed to `master`.
@@ -501,6 +502,25 @@ Tests or equivalent validation:
       passed with no threshold violations.
     - `awk 'length($0)>159 {print FILENAME ":" FNR ":" length($0)}' tests/code_scanning/summarize_codacy_file_metrics.py tests/code_scanning/test_summarize_findings.py`:
       produced no output.
+- Fifth remote scanner repair validation:
+  - Commit `e8d40662566bb53bf1eb94145c0de7f1a601da4c` pushed to `master`.
+  - GitHub CodeQL on that commit passed, and the previous
+    `py/clear-text-storage-sensitive-data` alert was gone.
+  - GitHub code scanning opened a new
+    `py/clear-text-logging-sensitive-data` alert on the metrics report
+    renderer's `stdout` write.
+  - Repair: removed the executable CLI path from
+    `tests/code_scanning/summarize_codacy_file_metrics.py`. The module now
+    exposes pure parsing/classification/rendering helpers only; the committed
+    regeneration recipe uses an inline Python command and explicit shell
+    redirection for the durable report.
+  - Local validation:
+    - `python3 -m pytest tests/code_scanning/test_summarize_findings.py`: `14`
+      tests passed.
+    - `python3 -m py_compile tests/code_scanning/summarize_codacy_file_metrics.py tests/code_scanning/test_summarize_findings.py`:
+      passed.
+    - `lizard -C 12 tests/code_scanning/summarize_codacy_file_metrics.py tests/code_scanning/test_summarize_findings.py`:
+      passed with no threshold violations.
 
 Real-use evidence:
 
