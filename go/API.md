@@ -104,6 +104,32 @@ refreshes/remaps the file, or closes. Callback payload slices passed to
 `GetEntryPayload`, `GetRaw`, `GetRawValues`, or an explicit copy when longer
 ownership is required.
 
+## Explorer And Netdata Function APIs
+
+`Reader.Explore`, `Reader.ExploreWithStrategy`, and
+`Reader.ExploreWithStrategyAndControl` expose the optimized Explorer API for
+log-viewer workloads. The Explorer API supports indexed filters, FTS,
+facets, histograms, row limits, direction, anchors, sampling, progress,
+cancellation, and timeout control while avoiding full-row expansion except for
+returned rows.
+
+`SystemdJournalNetdataFunction()` and
+`SystemdJournalPluginCompatibleNetdataFunction()` expose a Netdata-compatible
+generic logs function API over journal directories. Requests are JSON objects
+matching the systemd-journal function shape: `info`, `after`, `before`,
+`anchor`, `direction`, `last`, `query`, `facets`, `histogram`, `data_only`,
+`delta`, `tail`, `sampling`, and `selections`.
+
+Use `RunDirectoryRequestJSONWithOptions` when the caller already parsed the
+request. Use `RunDirectoryRequestBytesWithOptions` when the caller has raw
+JSON bytes. Test wrappers must read request bytes from stdin; do not pass a
+request filename to privileged wrappers.
+
+`NetdataFunctionRunOptions` carries timeout, progress, cancellation, and
+optional state callbacks. A cancelled run returns a table response with status
+`499`; timeout returns status `504`. These are controlled stops, not Go
+errors.
+
 ## Directory Contract
 
 `NewLog` takes the configured root directory. The SDK appends the machine ID and

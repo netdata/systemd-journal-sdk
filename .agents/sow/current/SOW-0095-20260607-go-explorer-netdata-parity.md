@@ -4,8 +4,9 @@
 
 Status: in-progress
 
-Sub-state: Go Explorer API chunk implemented, reviewed, and locally
-revalidated; Go Netdata function API and wrapper pending.
+Sub-state: Go Explorer API chunk implemented and reviewed; Go Netdata function
+API and wrapper implemented and locally validated; full-SOW reviewer and
+benchmark/profile gates pending.
 
 ## Requirements
 
@@ -447,6 +448,39 @@ Failure handling:
 - Rust/Go Explorer benchmark-smoke parity after the sampling parity fix still
   matched on `.local/sow-0093/smoke-journals/system.journal` for the same
   query and reported the same checksums and Explorer counters listed above.
+- Implemented the Go generic Netdata function API in `go/journal/netdata.go`,
+  including request parsing, source/file selection, indexed Explorer
+  orchestration, cursor-only row selection, final returned-row expansion,
+  plugin-compatible display profiles, progress, timeout, cancellation, and
+  state hooks.
+- Added the Go stdin-based test wrapper CLI in
+  `go/internal/testcmd/netdata_function_wrapper/main.go` with the same
+  privileged-safe request contract as Rust:
+  `--test systemd-journal --dir DIRECTORY --timeout SECONDS < request.json`.
+- Added focused Go API tests in `go/journal/netdata_test.go` for info
+  responses, filters, FTS, facets, histogram, returned rows, byte-request
+  execution, cancellation status, and invalid JSON rejection.
+- Mechanically aligned Go `ERRNO` and `MESSAGE_ID` display tables with the
+  Rust Netdata function profile tables, including 131 errno names and 133
+  message-id names.
+- Local Go Netdata validation passed:
+  `cd go && gofmt -w journal/netdata.go journal/netdata_test.go internal/testcmd/netdata_function_wrapper/main.go && go test ./journal -run 'TestNetdataFunction' -count=1 && go test ./...`.
+- Wrapper build validation passed:
+  `cd go && go build -o ../.local/sow-0095/go-netdata-function-wrapper ./internal/testcmd/netdata_function_wrapper`
+  and `cd rust && cargo build -q -p netdata_function_wrapper`.
+- Shared SDK-first comparator validation passed 10/10 request fixtures with no
+  stable-content diffs, comparing
+  `.local/sow-0095/go-netdata-function-wrapper` against
+  `rust/target/debug/netdata_function_wrapper` on
+  `.local/sow-0093/smoke-journals`:
+  `info`, `window-error-filter`, `window-last5-data-only-delta`,
+  `window-last5-data-only`, `window-last5-default-facets-sampling20`,
+  `window-last5-default-facets`, `window-last5-fts-or-negative`,
+  `window-last5-priority-source-system`, `window-last5-priority`, and
+  `window-last5-tail-no-change`.
+- Updated `go/API.md` with the Go Explorer and Netdata function API contract,
+  including stdin request handling for privileged test wrappers and
+  cancellation/timeout status behavior.
 
 ## Validation
 
@@ -463,8 +497,15 @@ Acceptance criteria evidence:
     probing.
   - Go `reader_core_bench` now has `explorer-query` mode and Explorer flags
     for Rust/Go parity and performance smoke checks.
-- Full SOW evidence remains pending for the Go Netdata function API, wrapper,
-  shared comparator integration, docs/spec finalization, and full close gates.
+- Go Netdata function API/wrapper chunk:
+  - Go now exposes the generic Netdata logs function API and a
+    plugin-compatible systemd-journal profile in `go/journal/netdata.go`.
+  - Go now provides the stdin-based wrapper CLI in
+    `go/internal/testcmd/netdata_function_wrapper/main.go`.
+  - The wrapper produces stable-content parity with the Rust wrapper for the
+    committed 10-request Netdata function comparator matrix.
+- Full SOW evidence remains pending for reviewer rerun, benchmark/profile
+  comparison, specs finalization, and close gates.
 
 Tests or equivalent validation:
 
@@ -472,7 +513,15 @@ Tests or equivalent validation:
   - `cd go && go test ./...` passed after Go Explorer and benchmark-driver
     changes.
   - `gofmt` was run on changed Go files before each local validation pass.
-- Full SOW tests remain pending for the Go Netdata function API and wrapper.
+- Go Netdata function API/wrapper chunk:
+  - `cd go && go test ./journal -run 'TestNetdataFunction' -count=1` passed.
+  - `cd go && go test ./...` passed.
+  - `cd go && go build -o ../.local/sow-0095/go-netdata-function-wrapper ./internal/testcmd/netdata_function_wrapper` passed.
+  - `cd rust && cargo build -q -p netdata_function_wrapper` passed.
+  - `tests/netdata_function/run_function_compare.py` passed 10/10 SDK-first
+    Go-wrapper vs Rust-wrapper request fixtures with `ALL_OK True`.
+- Full SOW tests remain pending for reviewer rerun and benchmark/profile
+  comparison.
 
 Real-use evidence:
 

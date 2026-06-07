@@ -12,8 +12,10 @@ Last updated: 2026-06-07
   function wrapper to Go, including the Rust reader/Explorer performance work
   from SOW-0083 through SOW-0092 where it affects Go. Go Explorer API chunk is
   implemented, locally validated, Rust/Go smoke-parity checked, and reviewed
-  `PRODUCTION GRADE` by the approved reviewer pool; Go Netdata function API
-  and wrapper remain pending.
+  `PRODUCTION GRADE` by the approved reviewer pool. Go Netdata function API
+  and wrapper are implemented and locally validated with 10/10
+  Go-wrapper-vs-Rust-wrapper Netdata function comparator cases passing;
+  full-SOW reviewer and benchmark/profile gates remain pending.
 
 ## Pending
 
