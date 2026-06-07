@@ -9,6 +9,7 @@ import csv
 import itertools
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -182,7 +183,7 @@ def markdown_preamble(source: dict[str, str], summary: dict[str, Any]) -> list[s
         "python3 tests/code_scanning/summarize_codacy_file_metrics.py \\",
         "  --metrics .local/codacy/file-metrics-rust-go.json \\",
         "  --lizard-csv .local/codacy/lizard-rust-go.csv \\",
-        "  --markdown-output .agents/sow/specs/codacy-rust-go-metrics-audit.md",
+        "  > .agents/sow/specs/codacy-rust-go-metrics-audit.md",
         "```",
         "",
         "## Surface Summary",
@@ -259,14 +260,7 @@ def append_file_by_file(lines: list[str], rows: list[dict[str, Any]]) -> None:
         )
 
 
-def write_report_file(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Report rows are sanitized file paths and aggregate metrics only.
-    # codeql[py/clear-text-storage-sensitive-data]
-    path.write_text(text, encoding="utf-8")
-
-
-def write_markdown(path: Path, source: dict[str, str], rows: list[dict[str, Any]]) -> None:
+def render_markdown(source: dict[str, str], rows: list[dict[str, Any]]) -> str:
     summary = build_summary(rows)
     lines = markdown_preamble(source, summary)
     append_surface_summary(lines, summary)
@@ -279,14 +273,13 @@ def write_markdown(path: Path, source: dict[str, str], rows: list[dict[str, Any]
         sorted(rows, key=lambda row: row["duplication"], reverse=True)[:20],
     )
     append_file_by_file(lines, sorted(rows, key=lambda item: item["path"]))
-    write_report_file(path, "\n".join(lines) + "\n")
+    return "\n".join(lines) + "\n"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--metrics", required=True)
     parser.add_argument("--lizard-csv", required=True)
-    parser.add_argument("--markdown-output", required=True)
     args = parser.parse_args()
 
     source = json.loads(Path(args.metrics).read_text(encoding="utf-8"))
@@ -301,7 +294,7 @@ def main() -> int:
         if isinstance(file_metric, dict) and isinstance(file_metric.get("path"), str)
     ]
 
-    write_markdown(Path(args.markdown_output), report_source, rows)
+    sys.stdout.write(render_markdown(report_source, rows))
     return 0
 
 

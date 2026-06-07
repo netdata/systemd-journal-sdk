@@ -27,7 +27,7 @@ lizard -C 12 --csv -f .local/codacy/rust-go-source-files.txt > .local/codacy/liz
 python3 tests/code_scanning/summarize_codacy_file_metrics.py \
   --metrics .local/codacy/file-metrics-rust-go.json \
   --lizard-csv .local/codacy/lizard-rust-go.csv \
-  --markdown-output .agents/sow/specs/codacy-rust-go-metrics-audit.md
+  > .agents/sow/specs/codacy-rust-go-metrics-audit.md
 ```
 
 ## Surface Summary

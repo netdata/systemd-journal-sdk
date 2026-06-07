@@ -23,7 +23,7 @@ from tests.code_scanning.summarize_codacy_file_metrics import (
     duplication_classification,
     metric_row,
     path_surface,
-    write_markdown,
+    render_markdown,
 )
 
 
@@ -232,8 +232,7 @@ def test_codacy_file_metric_row_is_sanitized_and_joinable() -> None:
     assert "token" not in json.dumps(row).lower()
 
 
-def test_codacy_file_metrics_markdown_writer_smoke(tmp_path) -> None:
-    path = tmp_path / "metrics.md"
+def test_codacy_file_metrics_markdown_renderer_smoke() -> None:
     rows = [
         metric_row(
             {
@@ -249,8 +248,6 @@ def test_codacy_file_metrics_markdown_writer_smoke(tmp_path) -> None:
         )
     ]
 
-    write_markdown(path, {"branch": "master", "fetched_at": "now"}, rows)
-
-    text = path.read_text(encoding="utf-8")
+    text = render_markdown({"branch": "master", "fetched_at": "now"}, rows)
     assert "# Codacy Rust/Go Metrics Audit" in text
     assert "go/journal/explorer.go" in text
