@@ -437,6 +437,28 @@ Tests or equivalent validation:
       passed with no threshold violations.
     - `git diff --check`: passed.
     - `.agents/sow/audit.sh`: passed.
+- Second remote scanner repair validation:
+  - Commit `01016c059588a08bc8991f4744cdd8da1cc2e6b4` pushed to `master`.
+  - GitHub Actions on that commit: `Coverage`, `CodeQL`, and `Codacy SARIF`
+    passed.
+  - Codacy analyzed commit `01016c059588a08bc8991f4744cdd8da1cc2e6b4` and
+    reported `issuesCount = 0`, coverage `73%`, complexity `46%`, and
+    duplication `30%`.
+  - GitHub code scanning still reported three CodeQL alerts:
+    `py/clear-text-storage-sensitive-data` on the deliberate sanitized markdown
+    report write, plus two `py/implicit-string-concatenation-in-list` alerts.
+  - Repair: removed the implicit list-string concatenations and added a narrow
+    CodeQL suppression to the markdown write, with an inline justification that
+    report rows contain sanitized file paths and aggregate metrics only.
+  - Local validation:
+    - `python3 -m pytest tests/code_scanning/test_summarize_findings.py`: `13`
+      tests passed.
+    - `python3 -m py_compile tests/code_scanning/summarize_codacy_file_metrics.py tests/code_scanning/test_summarize_findings.py`:
+      passed.
+    - `lizard -C 12 tests/code_scanning/summarize_codacy_file_metrics.py`:
+      passed with no threshold violations.
+    - `awk 'length($0)>159 {print FILENAME ":" FNR ":" length($0)}' tests/code_scanning/summarize_codacy_file_metrics.py`:
+      produced no output.
 
 Real-use evidence:
 

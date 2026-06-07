@@ -151,6 +151,14 @@ def write_markdown(path: Path, source: dict[str, str], rows: list[dict[str, Any]
     summary = build_summary(rows)
     top_complexity = sorted(rows, key=lambda row: row["codacy_complexity"], reverse=True)[:20]
     top_duplication = sorted(rows, key=lambda row: row["duplication"], reverse=True)[:20]
+    coverage_note = (
+        "- Coverage values are Codacy file metrics at fetch time; coverage-report exclusions are "
+        "validated separately by the coverage scripts and remote Codacy run."
+    )
+    file_table_header = (
+        "| Path | Surface | Grade | Complexity | Max CCN | Duplication | Clones | "
+        "Coverage | LOC | Complexity Classification | Duplication Classification |"
+    )
 
     lines = [
         "# Codacy Rust/Go Metrics Audit",
@@ -168,8 +176,7 @@ def write_markdown(path: Path, source: dict[str, str], rows: list[dict[str, Any]
         "- Local `lizard` max CCN is the highest single-function CCN found in the same tracked file set.",
         "- A high Codacy complexity with max CCN <= 12 means file-size/ownership pressure, not a single dangerous function.",
         "- Test and harness paths are classified separately because they should not drive production coverage decisions.",
-        "- Coverage values are Codacy file metrics at fetch time; coverage-report exclusions are "
-        "validated separately by the coverage scripts and remote Codacy run.",
+        coverage_note,
         "- This is a point-in-time audit snapshot. Regenerate it after substantial Rust/Go refactors or Codacy metric changes.",
         "",
         "## Regeneration",
@@ -235,8 +242,7 @@ def write_markdown(path: Path, source: dict[str, str], rows: list[dict[str, Any]
             "",
             "## File By File",
             "",
-            "| Path | Surface | Grade | Complexity | Max CCN | Duplication | Clones | "
-            "Coverage | LOC | Complexity Classification | Duplication Classification |",
+            file_table_header,
             "|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|",
         ]
     )
@@ -249,6 +255,8 @@ def write_markdown(path: Path, source: dict[str, str], rows: list[dict[str, Any]
         )
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    # codeql[py/clear-text-storage-sensitive-data]
+    # Report rows are sanitized file paths and aggregate metrics only.
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
