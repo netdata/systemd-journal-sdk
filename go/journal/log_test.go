@@ -643,7 +643,7 @@ func createEmptyOnlineContinuation(t *testing.T, dir string, previousPath string
 	nextSeqnum := snapshot.header.tailEntrySeqnum + 1
 	emptyPath := filepath.Join(
 		dir,
-		fmt.Sprintf("system@%s-%016x-%016x.journal", snapshot.header.seqnumID.String(), nextSeqnum, 1_700_002_272_000_010),
+		fmt.Sprintf("system@%s-%016x-%016x.journal", snapshot.header.seqnumID.String(), nextSeqnum, uint64(1_700_002_272_000_010)),
 	)
 	empty, err := Create(emptyPath, Options{
 		MachineID:  config.Options.MachineID,

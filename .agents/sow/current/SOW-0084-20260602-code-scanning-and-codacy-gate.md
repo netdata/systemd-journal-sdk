@@ -2,14 +2,12 @@
 
 ## Status
 
-Status: completed
+Status: in-progress
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: reopened 2026-06-07 regression repair completed. The repair was
-pushed as `e0c87a111f831345f19f9e7ca8f032f008621419`; GitHub workflows,
-GitHub code scanning, Codacy Cloud issues, and Codacy Cloud security findings
-are clean on the pushed head.
+Sub-state: reopened 2026-06-07 for a new CodeQL integer-conversion regression
+introduced on pushed head `59256cd0e3809b9b9bf69eee51e99bc1ade5f92c`.
 
 ## Requirements
 
@@ -3495,3 +3493,168 @@ Remote validation evidence after push:
     `65`.
   - Final `codacy issues` query returned `0`.
   - Final `codacy findings` query returned `0`, total `0`.
+
+## Regression - 2026-06-07 - Go Netdata Request Limit Integer Conversion
+
+What broke:
+
+- GitHub code scanning opened alert `3341` on pushed commit
+  `59256cd0e3809b9b9bf69eee51e99bc1ade5f92c`.
+- Tool: CodeQL.
+- Rule: `go/incorrect-integer-conversion`.
+- Severity: warning, security severity high.
+- Location: `go/journal/netdata.go:2573`.
+- Message: incorrect conversion of an unsigned 64-bit integer from
+  `strconv.ParseUint` to lower bit-size type `int` without an upper-bound
+  check.
+
+Evidence:
+
+- GitHub API:
+  `repos/netdata/systemd-journal-sdk/code-scanning/alerts?state=open`.
+- Alert URL:
+  `https://github.com/netdata/systemd-journal-sdk/security/code-scanning/3341`.
+- The affected code parsed the Netdata function `last` request parameter
+  through the generic unsigned JSON helper and then converted to `int` after a
+  clamp against `math.MaxInt`. The behavior was intended to clamp oversized
+  values, but CodeQL did not recognize the flow as safe.
+- Codacy Cloud repository query for commit
+  `59256cd0e3809b9b9bf69eee51e99bc1ade5f92c` reported `issuesCount: 20`,
+  coverage `66`, and zero security findings.
+- All 20 Codacy issues were Go complexity findings:
+  `Lizard_ccn-critical`, category `Complexity`, level `Error`.
+- Local reproduction with
+  `lizard -C 12 go/journal/netdata.go go/journal/explorer.go go/journal/netdata_test.go go/internal/testcmd/reader_core_bench/main.go`
+  matched the Codacy issue class before repair.
+
+Why previous validation missed it:
+
+- Local Go tests covered normal `last` values but did not include oversized
+  JSON-number or unsigned integer inputs for the Netdata request limit.
+- The CodeQL run completed after the push and surfaced the finding remotely.
+
+Repair plan:
+
+- Do not parse the `last` request parameter through the generic unsigned
+  timestamp helper.
+- Add a dedicated non-negative native-`int` parser for request limits that:
+  - accepts `int`, `int64`, `uint`, `uint64`, `float64`, and `json.Number`;
+  - clamps values above native `int` max;
+  - rejects negative values so the existing default limit applies;
+  - avoids a `strconv.ParseUint` to `int` conversion path for `last`.
+- Add a focused Go regression test for oversized `last` values.
+- Refactor Codacy-reported complexity hot spots without weakening the useful
+  complexity rule:
+  - split Netdata function response/source/column/histogram helpers into
+    smaller named functions;
+  - split broad tests and benchmark helper accounting into focused helpers;
+  - split Explorer query orchestration, candidate selection, row-frame stepping,
+    and combined-row finalization without changing the index/traversal
+    contracts.
+
+Validation plan:
+
+- `gofmt` on changed Go files.
+- `cd go && go test ./...`.
+- Local `lizard -C 12` on the Codacy-relevant Go files.
+- `git diff --check`.
+- `.agents/sow/audit.sh`.
+- Push and confirm CodeQL, Codacy SARIF, and Coverage pass on the new commit.
+- Confirm GitHub code scanning has no open alerts for the new head.
+- Confirm Codacy Cloud reports zero issues and zero findings on the pushed head.
+
+Implementation evidence:
+
+- `requestLimit()` now uses a dedicated non-negative native-`int` parser for
+  the Netdata function `last` parameter instead of the generic unsigned JSON
+  helper used by timestamp fields.
+- `TestNetdataRequestLimitClampsOversizedValues` covers oversized
+  `json.Number`, `uint64`, `uint`, and `float64` inputs, plus normal, zero,
+  and negative values.
+- Codacy complexity findings were resolved through code refactoring. No Lizard
+  rule was disabled and no `#lizard forgive` suppression was added.
+- Explorer hot-path refactors preserved the existing row-scan primitives and
+  split only orchestration, candidate-set preparation, row-frame stepping, and
+  row-finalization helpers.
+- Reviewer round 1 found one 32-bit clarity gap in the `json.Number` path for
+  `last`: the original repair used `strconv.ParseInt(..., 0)`, which Go
+  documents as native-`int` sized. The code was safe, but the intent was not
+  obvious. The repair now uses `strconv.IntSize` explicitly and adds a
+  3,000,000,000 boundary test with architecture-dependent expected value.
+- The focused 32-bit validation initially exposed an unrelated test portability
+  issue in `go/journal/log_test.go`, where a journal timestamp literal was
+  inferred as `int`. The test now casts that filename timestamp to `uint64`.
+
+Local validation evidence:
+
+- `gofmt -w go/journal/explorer.go go/journal/netdata.go go/journal/netdata_test.go go/internal/testcmd/reader_core_bench/main.go` passed.
+- `cd go && go test ./...` passed.
+- `lizard -C 12 go/journal/netdata.go go/journal/explorer.go go/journal/netdata_test.go go/internal/testcmd/reader_core_bench/main.go` reported:
+  `No thresholds exceeded` and `Warning cnt 0`.
+- `cd go && GOARCH=386 go test ./journal -run TestNetdataRequestLimitClampsOversizedValues -count=1` passed after the explicit `strconv.IntSize` repair and the unrelated `log_test.go` timestamp cast.
+- `git diff --check` passed.
+- `.agents/sow/audit.sh` passed with clean verdict.
+
+Reviewer round 1:
+
+- `llm-netdata-cloud/deepseek-v4-pro`: `PRODUCTION GRADE: YES`.
+- `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE: YES`.
+- `llm-netdata-cloud/glm-5.1`: no usable production-grade review. It reported local validation status and asked whether to commit/push instead of reviewing the changed code.
+- `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE: NO`.
+  Finding: requested stronger 32-bit proof for the `json.Number` request-limit
+  path. Disposition: fixed the clarity and validation gap by using
+  `strconv.IntSize`, adding the 3,000,000,000 boundary case, and validating the
+  focused request-limit test with `GOARCH=386`.
+- `llm-netdata-cloud/kimi-k2.6`: first-round review found the
+  `float64(maxInt)` boundary risk. Disposition: fixed with
+  `value >= float64(maxInt)`, added `float-native-boundary`,
+  `negative-float-uses-default`, and `nan-uses-default` request-limit tests.
+- `llm-netdata-cloud/minimax-m3-coder`: first-round run violated reviewer
+  expectations by attempting nested exploration and was stopped by exact PID.
+  Disposition: no first-round vote used.
+
+Reviewer round 2 after all fixes:
+
+- `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE: YES`.
+  It confirmed the CodeQL fix, Lizard cleanup, and absence of unwanted side
+  effects. It reported only minor non-blocking validation gaps; the
+  negative-float case was added before final validation.
+- `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE: YES`.
+  It reported one low-impact cancellation-status concern in
+  `exploreSelectedFile`. Disposition: not a regression. The pre-refactor code
+  also continued immediately on `exploreCursorRows` error before the later
+  cancellation-status check.
+- `llm-netdata-cloud/deepseek-v4-pro`: `PRODUCTION GRADE: YES`.
+  It also ran `go vet ./journal/...`, `GOARCH=386 go vet ./journal/...`,
+  `go test ./journal`, `go test ./...`, and the strict Lizard check.
+- `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE: YES`.
+  It independently compared the refactored helper paths against `HEAD`, ran
+  the focused request-limit test, and ran `.agents/sow/audit.sh`.
+- `llm-netdata-cloud/kimi-k2.6`: no usable final vote. The second-round run
+  advanced through code reads and Lizard output but stalled before the required
+  final vote; exact SOW-0084 PIDs were stopped. Disposition: recorded as
+  reviewer tooling failure, not approval.
+- `llm-netdata-cloud/minimax-m3-coder`: no usable final vote. The second-round
+  run stayed in scope and independently ran the focused request-limit tests on
+  amd64 and `GOARCH=386`, `go test ./...`, and strict Lizard, but repeated
+  analysis for too long without the required final vote. Disposition: recorded
+  as reviewer tooling failure, not approval.
+
+Final local validation before push:
+
+- `cd go && go test ./...` passed.
+- `cd go && GOARCH=386 go test ./journal -run TestNetdataRequestLimitClampsOversizedValues -count=1` passed.
+- `lizard -C 12 go/journal/netdata.go go/journal/explorer.go go/journal/netdata_test.go go/internal/testcmd/reader_core_bench/main.go` reported zero warnings.
+- `git diff --check` passed.
+- `.agents/sow/audit.sh` passed.
+
+Remote validation is pending until the repair is pushed. The SOW remains
+`in-progress` until CodeQL, Codacy SARIF, GitHub code scanning, and Codacy
+Cloud are clean on the pushed head.
+
+Artifact updates:
+
+- SOW-0084 is reopened from `done/` to `current/` while the scanner regression
+  is repaired.
+- Both SOW status ledgers are updated while the SOW is active and will be
+  updated again when the SOW is reclosed.

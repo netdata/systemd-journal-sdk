@@ -7,6 +7,10 @@ Last updated: 2026-06-07
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
+- SOW-0084 - Code Scanning And Codacy Gate: reopened regression. GitHub
+  CodeQL alert `3341` reports `go/incorrect-integer-conversion` in
+  `go/journal/netdata.go` for the Netdata function `last` request limit on
+  pushed head `59256cd0`; repair is in progress.
 
 ## Pending
 
@@ -45,14 +49,6 @@ Last updated: 2026-06-07
   tests cover 14 request/source/profile/progress/timeout/sampling/time
   behavior clusters, and all approved reviewers returned
   `PRODUCTION GRADE: YES`.
-- SOW-0084 - Code Scanning And Codacy Gate: completed after regression repair.
-  The scanner gate is clean again on pushed head
-  `f1ca21c63e7acde4816bf2ffd0d828dbad6d4bd4`: CodeQL run `27081339115`,
-  Codacy SARIF run `27081339113`, and Coverage run `27081339119` all passed;
-  GitHub code scanning reports zero open alerts; Codacy Cloud reports zero
-  issues and zero security findings after exact `TestCode` disposition of the
-  audited comparison-harness subprocess findings. Five read-only reviewers
-  returned `PRODUCTION GRADE`; Kimi timed out twice with no usable output.
 - SOW-0093 - Netdata Function Boundary Reader Comparison: completed after
   regression repair. The Rust SDK Netdata function boundary now has a broad
   SDK-first everyday-use matrix with 20/20 stable-content passes after sampling

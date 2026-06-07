@@ -448,28 +448,7 @@ func newExplorerSamplingState(query ExplorerQuery, histogramBucketCount int) *ex
 	if sampling.Budget == 0 || sampling.MatchedFiles == 0 || *query.AfterRealtimeUsec >= *query.BeforeRealtimeUsec {
 		return nil
 	}
-	slots := histogramBucketCount
-	if slots == 0 {
-		slots = query.HistogramBuckets
-	}
-	if slots < 2 {
-		slots = 2
-	}
-	if slots > explorerSamplingSlotsMax {
-		slots = explorerSamplingSlotsMax
-	}
-	step := saturatingSub(deltaValue(*query.BeforeRealtimeUsec, *query.AfterRealtimeUsec)/uint64(slots), 1)
-	if step == 0 {
-		step = 1
-	}
-	perFileEnable := ((sampling.Budget / 4) / maxU64(sampling.MatchedFiles, 1))
-	if perFileEnable < uint64(query.Limit) {
-		perFileEnable = uint64(query.Limit)
-	}
-	perSlotEnable := ((sampling.Budget / 4) / uint64(slots))
-	if perSlotEnable < uint64(query.Limit) {
-		perSlotEnable = uint64(query.Limit)
-	}
+	slots := explorerSamplingSlotCount(query, histogramBucketCount)
 	return &explorerSamplingState{
 		startRealtimeUsec:    *query.AfterRealtimeUsec,
 		endRealtimeUsec:      *query.BeforeRealtimeUsec,
@@ -478,15 +457,45 @@ func newExplorerSamplingState(query ExplorerQuery, histogramBucketCount int) *ex
 		fileHeadSeqnum:       sampling.FileHeadSeqnum,
 		fileTailSeqnum:       sampling.FileTailSeqnum,
 		fileEntries:          sampling.FileEntries,
-		stepRealtimeUsec:     step,
+		stepRealtimeUsec:     explorerSamplingStep(*query.AfterRealtimeUsec, *query.BeforeRealtimeUsec, slots),
 		enableAfterSamples:   sampling.Budget / 2,
-		perFileEnableAfter:   perFileEnable,
-		perSlotEnableAfter:   perSlotEnable,
+		perFileEnableAfter:   explorerSamplingEnableAfter(sampling.Budget, maxU64(sampling.MatchedFiles, 1), query.Limit),
+		perSlotEnableAfter:   explorerSamplingEnableAfter(sampling.Budget, uint64(slots), query.Limit),
 		perSlotSampled:       make([]uint64, slots),
 		perSlotUnsampled:     make([]uint64, slots),
 		matchedFiles:         maxU64(sampling.MatchedFiles, 1),
 		direction:            query.Direction,
 	}
+}
+
+func explorerSamplingSlotCount(query ExplorerQuery, histogramBucketCount int) int {
+	slots := histogramBucketCount
+	if slots == 0 {
+		slots = query.HistogramBuckets
+	}
+	if slots < 2 {
+		return 2
+	}
+	if slots > explorerSamplingSlotsMax {
+		return explorerSamplingSlotsMax
+	}
+	return slots
+}
+
+func explorerSamplingStep(after, before uint64, slots int) uint64 {
+	step := saturatingSub(deltaValue(before, after)/uint64(slots), 1)
+	if step == 0 {
+		return 1
+	}
+	return step
+}
+
+func explorerSamplingEnableAfter(budget, divisor uint64, limit int) uint64 {
+	value := (budget / 4) / maxU64(divisor, 1)
+	if value < uint64(limit) {
+		return uint64(limit)
+	}
+	return value
 }
 
 func (s *explorerSamplingState) beginFile(sampling ExplorerSampling) {
@@ -759,47 +768,77 @@ func (r *Reader) exploreTraversal(query ExplorerQuery, rowPayloadMode explorerRo
 	}
 	groups := facetPassGroups(query)
 	if canRunCombinedExplorerPass(groups) {
-		indices := combinedFacetIndices(groups)
-		if queryNeedsMainPass(query) || len(indices) != 0 {
-			candidates, err := r.explorerCandidateSet(query, nil, false)
-			if err != nil {
-				return ExplorerResult{}, err
-			}
-			acc := newExplorerAccumulator(query, indices, result.Histogram)
-			if err := r.scanExplorerCombined(query, candidates, acc, &result, len(indices) != 0, rowPayloadMode, control); err != nil {
-				return ExplorerResult{}, err
-			}
-			acc.finishFacets(&result)
-			acc.finishHistogram(result.Histogram)
+		if err := r.exploreTraversalCombined(query, groups, rowPayloadMode, control, &result); err != nil {
+			return ExplorerResult{}, err
 		}
 		return result, nil
 	}
-	if queryNeedsMainPass(query) {
-		candidates, err := r.explorerCandidateSet(query, nil, false)
-		if err != nil {
-			return ExplorerResult{}, err
-		}
-		acc := newExplorerAccumulator(query, nil, result.Histogram)
-		if err := r.scanExplorerMain(query, candidates, acc, &result, rowPayloadMode, control); err != nil {
-			return ExplorerResult{}, err
-		}
-		acc.finishHistogram(result.Histogram)
+	if err := r.exploreTraversalMain(query, rowPayloadMode, control, &result); err != nil {
+		return ExplorerResult{}, err
 	}
-	for _, group := range groups {
-		if control != nil && control.StopReason() != ExplorerStopNone {
-			break
-		}
-		candidates, err := r.explorerCandidateSet(query, group.excludedField, false)
-		if err != nil {
-			return ExplorerResult{}, err
-		}
-		acc := newExplorerFacetAccumulator(query, group.facetIndices, facetPassNeedsSourceRealtime(query))
-		if err := r.scanExplorerFacet(query, candidates, acc, &result.Stats, control); err != nil {
-			return ExplorerResult{}, err
-		}
-		acc.finishFacets(&result)
+	if err := r.exploreTraversalFacetGroups(query, groups, control, &result); err != nil {
+		return ExplorerResult{}, err
 	}
 	return result, nil
+}
+
+func (r *Reader) exploreTraversalCombined(query ExplorerQuery, groups []facetPassGroup, rowPayloadMode explorerRowPayloadMode, control *ExplorerControl, result *ExplorerResult) error {
+	indices := combinedFacetIndices(groups)
+	if !queryNeedsMainPass(query) && len(indices) == 0 {
+		return nil
+	}
+	candidates, err := r.explorerCandidateSet(query, nil, false)
+	if err != nil {
+		return err
+	}
+	acc := newExplorerAccumulator(query, indices, result.Histogram)
+	if err := r.scanExplorerCombined(query, candidates, acc, result, len(indices) != 0, rowPayloadMode, control); err != nil {
+		return err
+	}
+	acc.finishFacets(result)
+	acc.finishHistogram(result.Histogram)
+	return nil
+}
+
+func (r *Reader) exploreTraversalMain(query ExplorerQuery, rowPayloadMode explorerRowPayloadMode, control *ExplorerControl, result *ExplorerResult) error {
+	if !queryNeedsMainPass(query) {
+		return nil
+	}
+	candidates, err := r.explorerCandidateSet(query, nil, false)
+	if err != nil {
+		return err
+	}
+	acc := newExplorerAccumulator(query, nil, result.Histogram)
+	if err := r.scanExplorerMain(query, candidates, acc, result, rowPayloadMode, control); err != nil {
+		return err
+	}
+	acc.finishHistogram(result.Histogram)
+	return nil
+}
+
+func (r *Reader) exploreTraversalFacetGroups(query ExplorerQuery, groups []facetPassGroup, control *ExplorerControl, result *ExplorerResult) error {
+	for _, group := range groups {
+		if explorerStopped(control) {
+			return nil
+		}
+		if err := r.exploreTraversalFacetGroup(query, group, control, result); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Reader) exploreTraversalFacetGroup(query ExplorerQuery, group facetPassGroup, control *ExplorerControl, result *ExplorerResult) error {
+	candidates, err := r.explorerCandidateSet(query, group.excludedField, false)
+	if err != nil {
+		return err
+	}
+	acc := newExplorerFacetAccumulator(query, group.facetIndices, facetPassNeedsSourceRealtime(query))
+	if err := r.scanExplorerFacet(query, candidates, acc, &result.Stats, control); err != nil {
+		return err
+	}
+	acc.finishFacets(result)
+	return nil
 }
 
 func (r *Reader) exploreCompare(query ExplorerQuery, rowPayloadMode explorerRowPayloadMode) (ExplorerResult, error) {
@@ -840,40 +879,62 @@ func (r *Reader) exploreIndexed(query ExplorerQuery, rowPayloadMode explorerRowP
 	if err != nil {
 		return ExplorerResult{}, err
 	}
-	if query.Limit != 0 {
-		rowQuery := query
-		rowQuery.Facets = nil
-		rowQuery.Histogram = nil
-		candidates, err := r.explorerCandidateSet(rowQuery, nil, true)
-		if err != nil {
-			return ExplorerResult{}, err
-		}
-		acc := newExplorerAccumulator(rowQuery, nil, nil)
-		if err := r.scanExplorerMain(rowQuery, candidates, acc, &result, rowPayloadMode, control); err != nil {
-			return ExplorerResult{}, err
-		}
+	if err := r.exploreIndexedRows(query, rowPayloadMode, control, &result); err != nil {
+		return ExplorerResult{}, err
 	}
-	if control == nil || control.StopReason() == ExplorerStopNone {
-		for _, group := range facetPassGroups(query) {
-			candidates, err := r.explorerCandidateSet(query, group.excludedField, true)
-			if err != nil {
-				return ExplorerResult{}, err
-			}
-			if err := r.indexedCountFacetGroup(query, group, candidates, &result); err != nil {
-				return ExplorerResult{}, err
-			}
-		}
+	if err := r.exploreIndexedFacets(query, control, &result); err != nil {
+		return ExplorerResult{}, err
 	}
-	if query.Histogram != nil && (control == nil || control.StopReason() == ExplorerStopNone) {
-		candidates, err := r.explorerCandidateSet(query, nil, true)
-		if err != nil {
-			return ExplorerResult{}, err
-		}
-		if err := r.indexedCountHistogram(query, candidates, &result); err != nil {
-			return ExplorerResult{}, err
-		}
+	if err := r.exploreIndexedHistogram(query, control, &result); err != nil {
+		return ExplorerResult{}, err
 	}
 	return result, nil
+}
+
+func (r *Reader) exploreIndexedRows(query ExplorerQuery, rowPayloadMode explorerRowPayloadMode, control *ExplorerControl, result *ExplorerResult) error {
+	if query.Limit == 0 {
+		return nil
+	}
+	rowQuery := query
+	rowQuery.Facets = nil
+	rowQuery.Histogram = nil
+	candidates, err := r.explorerCandidateSet(rowQuery, nil, true)
+	if err != nil {
+		return err
+	}
+	acc := newExplorerAccumulator(rowQuery, nil, nil)
+	return r.scanExplorerMain(rowQuery, candidates, acc, result, rowPayloadMode, control)
+}
+
+func (r *Reader) exploreIndexedFacets(query ExplorerQuery, control *ExplorerControl, result *ExplorerResult) error {
+	if explorerStopped(control) {
+		return nil
+	}
+	for _, group := range facetPassGroups(query) {
+		candidates, err := r.explorerCandidateSet(query, group.excludedField, true)
+		if err != nil {
+			return err
+		}
+		if err := r.indexedCountFacetGroup(query, group, candidates, result); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Reader) exploreIndexedHistogram(query ExplorerQuery, control *ExplorerControl, result *ExplorerResult) error {
+	if query.Histogram == nil || explorerStopped(control) {
+		return nil
+	}
+	candidates, err := r.explorerCandidateSet(query, nil, true)
+	if err != nil {
+		return err
+	}
+	return r.indexedCountHistogram(query, candidates, result)
+}
+
+func explorerStopped(control *ExplorerControl) bool {
+	return control != nil && control.StopReason() != ExplorerStopNone
 }
 
 type explorerCandidateSet struct {
@@ -933,8 +994,29 @@ func (s *explorerCandidateSet) nextOffset(direction Direction) (uint64, bool) {
 }
 
 func (r *Reader) explorerCandidateSet(query ExplorerQuery, excludedField []byte, includeTimeFilter bool) (explorerCandidateSet, error) {
-	active := make([]ExplorerFilter, 0, len(query.Filters))
-	for _, filter := range query.Filters {
+	active := activeExplorerFilters(query.Filters, excludedField)
+	needsTimeFilter := includeTimeFilter && (query.AfterRealtimeUsec != nil || query.BeforeRealtimeUsec != nil)
+	if len(active) == 0 && !needsTimeFilter {
+		return explorerCandidateSet{all: true, count: uint64(len(r.entryOffsets))}, nil
+	}
+	current, err := r.entryOffsetsForFilters(active)
+	if err != nil {
+		return explorerCandidateSet{}, err
+	}
+	if current == nil {
+		current = r.allEntryOffsetSet()
+	}
+	if needsTimeFilter {
+		if err := r.applyCandidateTimeFilter(query, current); err != nil {
+			return explorerCandidateSet{}, err
+		}
+	}
+	return newExplorerCandidateSet(current), nil
+}
+
+func activeExplorerFilters(filters []ExplorerFilter, excludedField []byte) []ExplorerFilter {
+	active := make([]ExplorerFilter, 0, len(filters))
+	for _, filter := range filters {
 		if len(filter.Values) == 0 {
 			continue
 		}
@@ -943,65 +1025,80 @@ func (r *Reader) explorerCandidateSet(query ExplorerQuery, excludedField []byte,
 		}
 		active = append(active, filter)
 	}
-	needsTimeFilter := includeTimeFilter && (query.AfterRealtimeUsec != nil || query.BeforeRealtimeUsec != nil)
-	if len(active) == 0 && !needsTimeFilter {
-		return explorerCandidateSet{all: true, count: uint64(len(r.entryOffsets))}, nil
-	}
+	return active
+}
 
+func (r *Reader) entryOffsetsForFilters(filters []ExplorerFilter) (map[uint64]struct{}, error) {
 	var current map[uint64]struct{}
-	for _, filter := range active {
-		fieldSet := make(map[uint64]struct{})
-		for _, value := range filter.Values {
-			payload := payloadFromParts(filter.Field, value)
-			offset, ok, err := r.findDataOffsetByPayload(payload)
-			if err != nil {
-				return explorerCandidateSet{}, err
-			}
-			if !ok {
-				continue
-			}
-			header, err := r.readDataHeaderAt(offset)
-			if err != nil {
-				return explorerCandidateSet{}, err
-			}
-			if err := r.visitDataEntryOffsets(header, func(entryOffset uint64) error {
-				fieldSet[entryOffset] = struct{}{}
-				return nil
-			}); err != nil {
-				return explorerCandidateSet{}, err
-			}
+	for _, filter := range filters {
+		fieldSet, err := r.entryOffsetsForFilter(filter)
+		if err != nil {
+			return nil, err
 		}
-		if current == nil {
-			current = fieldSet
-			continue
-		}
-		for offset := range current {
-			if _, ok := fieldSet[offset]; !ok {
-				delete(current, offset)
-			}
-		}
+		current = intersectEntryOffsetSets(current, fieldSet)
 		if len(current) == 0 {
 			break
 		}
 	}
+	return current, nil
+}
+
+func (r *Reader) entryOffsetsForFilter(filter ExplorerFilter) (map[uint64]struct{}, error) {
+	fieldSet := make(map[uint64]struct{})
+	for _, value := range filter.Values {
+		if err := r.addEntryOffsetsForFilterValue(fieldSet, filter.Field, value); err != nil {
+			return nil, err
+		}
+	}
+	return fieldSet, nil
+}
+
+func (r *Reader) addEntryOffsetsForFilterValue(fieldSet map[uint64]struct{}, field, value []byte) error {
+	offset, ok, err := r.findDataOffsetByPayload(payloadFromParts(field, value))
+	if err != nil || !ok {
+		return err
+	}
+	header, err := r.readDataHeaderAt(offset)
+	if err != nil {
+		return err
+	}
+	return r.visitDataEntryOffsets(header, func(entryOffset uint64) error {
+		fieldSet[entryOffset] = struct{}{}
+		return nil
+	})
+}
+
+func intersectEntryOffsetSets(current, fieldSet map[uint64]struct{}) map[uint64]struct{} {
 	if current == nil {
-		current = make(map[uint64]struct{}, len(r.entryOffsets))
-		for _, offset := range r.entryOffsets {
-			current[offset] = struct{}{}
+		return fieldSet
+	}
+	for offset := range current {
+		if _, ok := fieldSet[offset]; !ok {
+			delete(current, offset)
 		}
 	}
-	if needsTimeFilter {
-		for offset := range current {
-			header, err := r.readEntryHeaderAt(offset)
-			if err != nil {
-				return explorerCandidateSet{}, err
-			}
-			if !timestampInRange(query, header.realtime) {
-				delete(current, offset)
-			}
+	return current
+}
+
+func (r *Reader) allEntryOffsetSet() map[uint64]struct{} {
+	current := make(map[uint64]struct{}, len(r.entryOffsets))
+	for _, offset := range r.entryOffsets {
+		current[offset] = struct{}{}
+	}
+	return current
+}
+
+func (r *Reader) applyCandidateTimeFilter(query ExplorerQuery, current map[uint64]struct{}) error {
+	for offset := range current {
+		header, err := r.readEntryHeaderAt(offset)
+		if err != nil {
+			return err
+		}
+		if !timestampInRange(query, header.realtime) {
+			delete(current, offset)
 		}
 	}
-	return newExplorerCandidateSet(current), nil
+	return nil
 }
 
 func (r *Reader) findDataOffsetByPayload(payload []byte) (uint64, bool, error) {
@@ -1650,14 +1747,12 @@ func (r *Reader) scanExplorerCombined(query ExplorerQuery, candidates explorerCa
 		if !ok {
 			break
 		}
-		if decision, ok := combinedSamplingDecision(query, result.Rows, frame, sampling, control); ok {
-			action := applyCombinedSamplingDecision(decision, mode, result, frame)
-			if action == samplingRowSkip {
-				continue
-			}
-			if action == samplingRowStop {
-				break
-			}
+		action := applyCombinedSamplingIfNeeded(query, mode, sampling, control, result, frame)
+		if action == samplingRowSkip {
+			continue
+		}
+		if action == samplingRowStop {
+			break
 		}
 		scan, err := r.scanRowDataOrDefault(query, acc, &rowID, &deferred, &result.Stats, needsFTS)
 		if err != nil {
@@ -1668,27 +1763,7 @@ func (r *Reader) scanExplorerCombined(query ExplorerQuery, candidates explorerCa
 			continue
 		}
 		recordLastRealtime(&result.Stats, frame.commitRealtime)
-		stopAfterMatched := false
-		if mode.includeMain {
-			result.Stats.RowsMatched++
-			stopAfterMatched = control != nil && control.emitMatchedRow(effective, result.Stats.RowsMatched)
-		}
-		if mode.includeFacets {
-			result.Stats.FacetRowsMatched++
-		}
-		var histogramRealtime *uint64
-		if query.Histogram != nil {
-			histogramRealtime = &effective
-		}
-		for _, valueIndex := range deferred {
-			acc.applyValue(valueIndex, histogramRealtime, &result.Stats)
-		}
-		if query.Histogram != nil {
-			acc.finishHistogramRow(rowID, effective, &result.Stats)
-		}
-		if mode.includeFacets {
-			acc.finishFacetRow(rowID, &result.Stats)
-		}
+		stopAfterMatched := finishCombinedExplorerRow(query, mode, acc, result, rowID, effective, deferred, control)
 		if err := r.pushExplorerRowIfWanted(query, result, rowPayloadMode, effective); err != nil {
 			return err
 		}
@@ -1698,6 +1773,48 @@ func (r *Reader) scanExplorerCombined(query ExplorerQuery, candidates explorerCa
 	}
 	result.Stats.RowsReturned = uint64(len(result.Rows))
 	return nil
+}
+
+func applyCombinedSamplingIfNeeded(query ExplorerQuery, mode combinedScanMode, sampling *explorerSamplingState, control *ExplorerControl, result *ExplorerResult, frame explorerRowFrame) samplingRowAction {
+	decision, ok := combinedSamplingDecision(query, result.Rows, frame, sampling, control)
+	if !ok {
+		return samplingRowScan
+	}
+	return applyCombinedSamplingDecision(decision, mode, result, frame)
+}
+
+func finishCombinedExplorerRow(query ExplorerQuery, mode combinedScanMode, acc *explorerAccumulator, result *ExplorerResult, rowID, effective uint64, deferred []int, control *ExplorerControl) bool {
+	stopAfterMatched := updateCombinedRowCounters(mode, result, effective, control)
+	applyCombinedDeferredValues(query, acc, result, effective, deferred)
+	if query.Histogram != nil {
+		acc.finishHistogramRow(rowID, effective, &result.Stats)
+	}
+	if mode.includeFacets {
+		acc.finishFacetRow(rowID, &result.Stats)
+	}
+	return stopAfterMatched
+}
+
+func updateCombinedRowCounters(mode combinedScanMode, result *ExplorerResult, effective uint64, control *ExplorerControl) bool {
+	stopAfterMatched := false
+	if mode.includeMain {
+		result.Stats.RowsMatched++
+		stopAfterMatched = control != nil && control.emitMatchedRow(effective, result.Stats.RowsMatched)
+	}
+	if mode.includeFacets {
+		result.Stats.FacetRowsMatched++
+	}
+	return stopAfterMatched
+}
+
+func applyCombinedDeferredValues(query ExplorerQuery, acc *explorerAccumulator, result *ExplorerResult, effective uint64, deferred []int) {
+	var histogramRealtime *uint64
+	if query.Histogram != nil {
+		histogramRealtime = &effective
+	}
+	for _, valueIndex := range deferred {
+		acc.applyValue(valueIndex, histogramRealtime, &result.Stats)
+	}
 }
 
 func (r *Reader) scanExplorerFacet(query ExplorerQuery, candidates explorerCandidateSet, acc *explorerAccumulator, stats *ExplorerStats, control *ExplorerControl) error {
@@ -1747,54 +1864,81 @@ type explorerRowFrame struct {
 
 func (r *Reader) nextExplorerRowFrame(query ExplorerQuery, candidates *explorerCandidateSet, rowsSeen *uint64, stats ExplorerStats, control *ExplorerControl) (explorerRowFrame, bool, bool, error) {
 	for {
-		var offset uint64
-		if candidates != nil && !candidates.all {
-			var ok bool
-			offset, ok = candidates.nextOffset(query.Direction)
-			if !ok {
-				return explorerRowFrame{}, false, false, nil
-			}
-			if !r.setCurrentEntryOffset(offset, query.Direction) {
-				continue
-			}
-		} else {
-			var err error
-			if query.Direction == DirectionBackward {
-				err = r.Previous()
-			} else {
-				err = r.Next()
-			}
-			if err != nil {
-				if errors.Is(err, errEndOfEntries) || errors.Is(err, errStartOfEntries) {
-					return explorerRowFrame{}, false, false, nil
-				}
-				return explorerRowFrame{}, false, false, err
-			}
-			var offsetErr error
-			offset, offsetErr = r.currentEntryOffset()
-			if offsetErr != nil {
-				return explorerRowFrame{}, false, false, offsetErr
-			}
-			if candidates != nil && !candidates.contains(offset) {
-				continue
-			}
+		offset, ok, err := r.nextExplorerOffset(query.Direction, candidates)
+		if err != nil || !ok {
+			return explorerRowFrame{}, false, false, err
 		}
 		*rowsSeen++
 		if control != nil && control.shouldStopAfterRows(*rowsSeen, stats) {
 			return explorerRowFrame{}, false, true, nil
 		}
-		header, err := r.readEntryHeaderAt(offset)
-		if err != nil {
-			return explorerRowFrame{}, false, false, err
+		frame, keep, stop, err := r.explorerFrameForOffset(query, offset)
+		if err != nil || stop {
+			return explorerRowFrame{}, false, stop, err
 		}
-		if stopByCommitTime(query, header.realtime) {
-			return explorerRowFrame{}, false, true, nil
-		}
-		if skipByCommitTime(query, header.realtime) {
+		if !keep {
 			continue
 		}
-		return explorerRowFrame{commitRealtime: header.realtime, seqnum: header.seqnum}, true, false, nil
+		return frame, true, false, nil
 	}
+}
+
+func (r *Reader) nextExplorerOffset(direction Direction, candidates *explorerCandidateSet) (uint64, bool, error) {
+	if candidates != nil && !candidates.all {
+		return r.nextCandidateExplorerOffset(direction, candidates)
+	}
+	return r.nextSequentialExplorerOffset(direction, candidates)
+}
+
+func (r *Reader) nextCandidateExplorerOffset(direction Direction, candidates *explorerCandidateSet) (uint64, bool, error) {
+	for {
+		offset, ok := candidates.nextOffset(direction)
+		if !ok {
+			return 0, false, nil
+		}
+		if r.setCurrentEntryOffset(offset, direction) {
+			return offset, true, nil
+		}
+	}
+}
+
+func (r *Reader) nextSequentialExplorerOffset(direction Direction, candidates *explorerCandidateSet) (uint64, bool, error) {
+	for {
+		if err := r.stepExplorerDirection(direction); err != nil {
+			if errors.Is(err, errEndOfEntries) || errors.Is(err, errStartOfEntries) {
+				return 0, false, nil
+			}
+			return 0, false, err
+		}
+		offset, err := r.currentEntryOffset()
+		if err != nil {
+			return 0, false, err
+		}
+		if candidates == nil || candidates.contains(offset) {
+			return offset, true, nil
+		}
+	}
+}
+
+func (r *Reader) stepExplorerDirection(direction Direction) error {
+	if direction == DirectionBackward {
+		return r.Previous()
+	}
+	return r.Next()
+}
+
+func (r *Reader) explorerFrameForOffset(query ExplorerQuery, offset uint64) (explorerRowFrame, bool, bool, error) {
+	header, err := r.readEntryHeaderAt(offset)
+	if err != nil {
+		return explorerRowFrame{}, false, false, err
+	}
+	if stopByCommitTime(query, header.realtime) {
+		return explorerRowFrame{}, false, true, nil
+	}
+	if skipByCommitTime(query, header.realtime) {
+		return explorerRowFrame{}, false, false, nil
+	}
+	return explorerRowFrame{commitRealtime: header.realtime, seqnum: header.seqnum}, true, false, nil
 }
 
 func (r *Reader) setCurrentEntryOffset(offset uint64, direction Direction) bool {
@@ -2015,46 +2159,53 @@ func (r *Reader) seekForExplorer(query ExplorerQuery) {
 	if !query.StopWhenRowsFull {
 		anchor = DefaultExplorerAnchor()
 	}
-	switch query.Direction {
-	case DirectionBackward:
-		switch anchor.Kind {
-		case ExplorerAnchorRealtime:
-			r.seekExplorerBackwardRealtime(anchor.RealtimeUsec)
-		case ExplorerAnchorHead:
-			_ = r.SeekHead()
-		case ExplorerAnchorTail:
-			if query.BeforeRealtimeUsec != nil {
-				r.seekExplorerBackwardRealtime(saturatingAdd(*query.BeforeRealtimeUsec, query.RealtimeSlackUsec))
-			} else {
-				_ = r.SeekTail()
-			}
-		default:
-			if query.BeforeRealtimeUsec != nil {
-				r.seekExplorerBackwardRealtime(saturatingAdd(*query.BeforeRealtimeUsec, query.RealtimeSlackUsec))
-			} else {
-				_ = r.SeekTail()
-			}
-		}
-	default:
-		switch anchor.Kind {
-		case ExplorerAnchorRealtime:
-			_ = r.SeekRealtimeUsec(anchor.RealtimeUsec)
-		case ExplorerAnchorTail:
-			_ = r.SeekTail()
-		case ExplorerAnchorHead:
-			if query.AfterRealtimeUsec != nil {
-				_ = r.SeekRealtimeUsec(saturatingSub(*query.AfterRealtimeUsec, query.RealtimeSlackUsec))
-			} else {
-				_ = r.SeekHead()
-			}
-		default:
-			if query.AfterRealtimeUsec != nil {
-				_ = r.SeekRealtimeUsec(saturatingSub(*query.AfterRealtimeUsec, query.RealtimeSlackUsec))
-			} else {
-				_ = r.SeekHead()
-			}
-		}
+	if query.Direction == DirectionBackward {
+		r.seekForExplorerBackward(query, anchor)
+		return
 	}
+	r.seekForExplorerForward(query, anchor)
+}
+
+func (r *Reader) seekForExplorerBackward(query ExplorerQuery, anchor ExplorerAnchor) {
+	switch anchor.Kind {
+	case ExplorerAnchorRealtime:
+		r.seekExplorerBackwardRealtime(anchor.RealtimeUsec)
+	case ExplorerAnchorHead:
+		_ = r.SeekHead()
+	case ExplorerAnchorTail:
+		r.seekExplorerBackwardTail(query)
+	default:
+		r.seekExplorerBackwardTail(query)
+	}
+}
+
+func (r *Reader) seekExplorerBackwardTail(query ExplorerQuery) {
+	if query.BeforeRealtimeUsec != nil {
+		r.seekExplorerBackwardRealtime(saturatingAdd(*query.BeforeRealtimeUsec, query.RealtimeSlackUsec))
+		return
+	}
+	_ = r.SeekTail()
+}
+
+func (r *Reader) seekForExplorerForward(query ExplorerQuery, anchor ExplorerAnchor) {
+	switch anchor.Kind {
+	case ExplorerAnchorRealtime:
+		_ = r.SeekRealtimeUsec(anchor.RealtimeUsec)
+	case ExplorerAnchorTail:
+		_ = r.SeekTail()
+	case ExplorerAnchorHead:
+		r.seekExplorerForwardHead(query)
+	default:
+		r.seekExplorerForwardHead(query)
+	}
+}
+
+func (r *Reader) seekExplorerForwardHead(query ExplorerQuery) {
+	if query.AfterRealtimeUsec != nil {
+		_ = r.SeekRealtimeUsec(saturatingSub(*query.AfterRealtimeUsec, query.RealtimeSlackUsec))
+		return
+	}
+	_ = r.SeekHead()
 }
 
 func (r *Reader) seekExplorerBackwardRealtime(usec uint64) {

@@ -69,6 +69,29 @@ var netdataAcceptedParams = []string{
 	"slice",
 }
 
+var syslogFacilityNames = map[string]string{
+	"0":  "kern",
+	"1":  "user",
+	"2":  "mail",
+	"3":  "daemon",
+	"4":  "auth",
+	"5":  "syslog",
+	"6":  "lpr",
+	"7":  "news",
+	"8":  "uucp",
+	"9":  "cron",
+	"10": "authpriv",
+	"11": "ftp",
+	"16": "local0",
+	"17": "local1",
+	"18": "local2",
+	"19": "local3",
+	"20": "local4",
+	"21": "local5",
+	"22": "local6",
+	"23": "local7",
+}
+
 var systemdDefaultViewKeys = []string{
 	"_HOSTNAME",
 	"ND_JOURNAL_PROCESS",
@@ -515,26 +538,6 @@ func (r netdataRequest) matchesSource(path string, metadata *NetdataJournalFileM
 func (r netdataRequest) toExplorerQuery(matchedFiles uint64, header *journalHeader, realtimeSlackUsec uint64) ExplorerQuery {
 	analysisEnabled := !r.DataOnly || r.Delta
 	tailAnchor := r.Tail && r.Anchor.Kind == ExplorerAnchorRealtime
-	var sampling *ExplorerSampling
-	if analysisEnabled && r.Sampling != 0 && matchedFiles != 0 && r.AfterRealtimeUsec != nil && r.BeforeRealtimeUsec != nil {
-		var fileHeader journalHeader
-		if header != nil {
-			fileHeader = *header
-		}
-		messages := fileHeader.nEntries
-		if fileHeader.headEntrySeqnum != 0 && fileHeader.tailEntrySeqnum != 0 && fileHeader.tailEntrySeqnum >= fileHeader.headEntrySeqnum {
-			messages = fileHeader.tailEntrySeqnum - fileHeader.headEntrySeqnum + 1
-		}
-		sampling = &ExplorerSampling{
-			Budget:               r.Sampling,
-			MatchedFiles:         matchedFiles,
-			FileHeadRealtimeUsec: fileHeader.headEntryRealtime,
-			FileTailRealtimeUsec: fileHeader.tailEntryRealtime,
-			FileHeadSeqnum:       fileHeader.headEntrySeqnum,
-			FileTailSeqnum:       fileHeader.tailEntrySeqnum,
-			FileEntries:          messages,
-		}
-	}
 	query := DefaultExplorerQuery()
 	query.AfterRealtimeUsec = r.AfterRealtimeUsec
 	query.BeforeRealtimeUsec = r.BeforeRealtimeUsec
@@ -558,9 +561,35 @@ func (r netdataRequest) toExplorerQuery(matchedFiles uint64, header *journalHead
 	query.RealtimeSlackUsec = normalizeJournalVsRealtimeDeltaUsec(realtimeSlackUsec)
 	query.StopWhenRowsFull = r.DataOnly && !tailAnchor
 	query.StopWhenRowsFullEvery = netdataDataOnlyCheckEveryRows
-	query.Sampling = sampling
+	query.Sampling = r.explorerSampling(analysisEnabled, matchedFiles, header)
 	query.DebugCollectColumnFieldsByRowTraversal = false
 	return query
+}
+
+func (r netdataRequest) explorerSampling(analysisEnabled bool, matchedFiles uint64, header *journalHeader) *ExplorerSampling {
+	if !analysisEnabled || r.Sampling == 0 || matchedFiles == 0 || r.AfterRealtimeUsec == nil || r.BeforeRealtimeUsec == nil {
+		return nil
+	}
+	fileHeader := journalHeader{}
+	if header != nil {
+		fileHeader = *header
+	}
+	return &ExplorerSampling{
+		Budget:               r.Sampling,
+		MatchedFiles:         matchedFiles,
+		FileHeadRealtimeUsec: fileHeader.headEntryRealtime,
+		FileTailRealtimeUsec: fileHeader.tailEntryRealtime,
+		FileHeadSeqnum:       fileHeader.headEntrySeqnum,
+		FileTailSeqnum:       fileHeader.tailEntrySeqnum,
+		FileEntries:          sampledEntryCount(fileHeader),
+	}
+}
+
+func sampledEntryCount(header journalHeader) uint64 {
+	if header.headEntrySeqnum != 0 && header.tailEntrySeqnum != 0 && header.tailEntrySeqnum >= header.headEntrySeqnum {
+		return header.tailEntrySeqnum - header.headEntrySeqnum + 1
+	}
+	return header.nEntries
 }
 
 func (r netdataRequest) fileQuery(matchedFiles int, header *journalHeader, order netdataJournalFileOrderInfo) ExplorerQuery {
@@ -883,79 +912,11 @@ func (f NetdataJournalFunction) exploreFiles(files []netdataSelectedJournalFile,
 		if shouldStopBeforeFile(&combined, deadline, options) {
 			break
 		}
-		progress := netdataProgressContext{CurrentFile: index + 1, TotalFiles: totalFiles, Started: started}
-		reader, err := OpenFileWithOptions(file.Path, f.Config.ReaderOptions)
+		stop, err := f.exploreSelectedFile(file, index, totalFiles, started, request, deadline, options, pageWindow, samplingState, realtimeAdjuster, &combined)
 		if err != nil {
-			combined.SkippedFiles++
-			combined.FileErrors = append(combined.FileErrors, fmt.Sprintf("%s: %v", file.Path, err))
-			emitProgressForCombined(options, combined, progress)
-			continue
-		}
-		combined.MatchedFiles++
-		combined.MatchedPaths = append(combined.MatchedPaths, file.Path)
-		if !request.DataOnly {
-			if fields, err := reader.EnumerateFields(); err == nil {
-				combined.addColumnFields(fields)
-			} else {
-				combined.FileErrors = append(combined.FileErrors, fmt.Sprintf("%s: FIELD index enumeration failed: %v", file.Path, err))
-			}
-		}
-		fileQuery := request.fileQuery(len(files), reader.Header(), file.Order)
-		control := NewExplorerControl()
-		control.SetDeadline(deadline)
-		control.SetCancellationCallback(options.CancellationCallback)
-		control.SetProgressInterval(options.ProgressInterval)
-		control.SetProgressCallback(func(progress ExplorerProgress) {
-			emitExplorerProgress(options, combined, progress, netdataProgressContext{CurrentFile: index + 1, TotalFiles: totalFiles, Started: started})
-		})
-		control.setSamplingState(samplingState)
-		control.setCandidateRowCallback(func(realtimeUsec uint64) bool {
-			return pageWindow.candidateToKeep(realtimeUsec)
-		})
-		control.setRealtimeAdjustCallback(func(realtimeUsec uint64) uint64 {
-			return realtimeAdjuster.adjust(realtimeUsec)
-		})
-		realtimeDelta := file.Order.JournalVsRealtimeDeltaUsec
-		control.SetMatchedRowCallback(func(realtimeUsec, rowsMatched uint64) bool {
-			pageWindow.observe(realtimeUsec)
-			return request.DataOnly && request.Delta &&
-				rowsMatched%netdataDataOnlyCheckEveryRows == 0 &&
-				pageWindow.canStopDeltaFile(realtimeUsec, realtimeDelta)
-		})
-		result, err := reader.exploreCursorRows(fileQuery, f.Config.ExplorerStrategy, control)
-		stopReason := control.StopReason()
-		closeErr := reader.Close()
-		if err != nil {
-			combined.SkippedFiles++
-			combined.FileErrors = append(combined.FileErrors, fmt.Sprintf("%s: %v", file.Path, err))
-			continue
-		}
-		if closeErr != nil {
-			combined.FileErrors = append(combined.FileErrors, fmt.Sprintf("%s: close: %v", file.Path, closeErr))
-		}
-		updateLearnedRealtimeDelta(options, file.Path, file.Order, result.Stats)
-		if err := combined.merge(file.Path, result, fileQuery.Direction, request.Limit); err != nil {
 			return combined, err
 		}
-		emitProgressForCombined(options, combined, progress)
-		if options.CancellationCallback != nil && options.CancellationCallback() {
-			combined.Partial = true
-			combined.Cancelled = true
-			break
-		}
-		if stopReason != ExplorerStopNone {
-			combined.Partial = true
-			if stopReason == ExplorerStopTimedOut {
-				combined.TimedOut = true
-			}
-			if stopReason == ExplorerStopCancelled {
-				combined.Cancelled = true
-			}
-			break
-		}
-		if request.DataOnly && !request.Delta && !request.Tail &&
-			len(combined.Rows) >= request.Limit &&
-			remainingFilesCannotAffectDataPage(combined, request, files, index+1) {
+		if stop || canStopNetdataFileLoop(combined, request, files, index+1) {
 			break
 		}
 	}
@@ -963,6 +924,105 @@ func (f NetdataJournalFunction) exploreFiles(files []netdataSelectedJournalFile,
 	combined.PageCounters = pageWindow.counters()
 	combined.HasPageCounters = true
 	return combined, nil
+}
+
+func (f NetdataJournalFunction) exploreSelectedFile(file netdataSelectedJournalFile, index, totalFiles int, started time.Time, request netdataRequest, deadline *time.Time, options NetdataFunctionRunOptions, pageWindow *netdataPageWindow, samplingState *explorerSamplingState, realtimeAdjuster *netdataRealtimeAdjuster, combined *netdataCombinedResult) (bool, error) {
+	progress := netdataProgressContext{CurrentFile: index + 1, TotalFiles: totalFiles, Started: started}
+	reader, ok := f.openExplorerFile(file.Path, request, options, progress, combined)
+	if !ok {
+		return false, nil
+	}
+	fileQuery := request.fileQuery(totalFiles, reader.Header(), file.Order)
+	control := configureNetdataExplorerControl(request, file.Order, deadline, options, progress, pageWindow, samplingState, realtimeAdjuster, combined)
+	result, err := reader.exploreCursorRows(fileQuery, f.Config.ExplorerStrategy, control)
+	stopReason := control.StopReason()
+	closeErr := reader.Close()
+	if err != nil {
+		combined.SkippedFiles++
+		combined.FileErrors = append(combined.FileErrors, fmt.Sprintf("%s: %v", file.Path, err))
+		return false, nil
+	}
+	if closeErr != nil {
+		combined.FileErrors = append(combined.FileErrors, fmt.Sprintf("%s: close: %v", file.Path, closeErr))
+	}
+	updateLearnedRealtimeDelta(options, file.Path, file.Order, result.Stats)
+	if err := combined.merge(file.Path, result, fileQuery.Direction, request.Limit); err != nil {
+		return false, err
+	}
+	emitProgressForCombined(options, *combined, progress)
+	return applyExplorerStopReason(stopReason, options, combined), nil
+}
+
+func (f NetdataJournalFunction) openExplorerFile(path string, request netdataRequest, options NetdataFunctionRunOptions, progress netdataProgressContext, combined *netdataCombinedResult) (*Reader, bool) {
+	reader, err := OpenFileWithOptions(path, f.Config.ReaderOptions)
+	if err != nil {
+		combined.SkippedFiles++
+		combined.FileErrors = append(combined.FileErrors, fmt.Sprintf("%s: %v", path, err))
+		emitProgressForCombined(options, *combined, progress)
+		return nil, false
+	}
+	combined.MatchedFiles++
+	combined.MatchedPaths = append(combined.MatchedPaths, path)
+	f.addExplorerColumnFields(path, request, reader, combined)
+	return reader, true
+}
+
+func (f NetdataJournalFunction) addExplorerColumnFields(path string, request netdataRequest, reader *Reader, combined *netdataCombinedResult) {
+	if request.DataOnly {
+		return
+	}
+	fields, err := reader.EnumerateFields()
+	if err != nil {
+		combined.FileErrors = append(combined.FileErrors, fmt.Sprintf("%s: FIELD index enumeration failed: %v", path, err))
+		return
+	}
+	combined.addColumnFields(fields)
+}
+
+func configureNetdataExplorerControl(request netdataRequest, order netdataJournalFileOrderInfo, deadline *time.Time, options NetdataFunctionRunOptions, progress netdataProgressContext, pageWindow *netdataPageWindow, samplingState *explorerSamplingState, realtimeAdjuster *netdataRealtimeAdjuster, combined *netdataCombinedResult) *ExplorerControl {
+	control := NewExplorerControl()
+	control.SetDeadline(deadline)
+	control.SetCancellationCallback(options.CancellationCallback)
+	control.SetProgressInterval(options.ProgressInterval)
+	control.SetProgressCallback(func(explorerProgress ExplorerProgress) {
+		emitExplorerProgress(options, *combined, explorerProgress, progress)
+	})
+	control.setSamplingState(samplingState)
+	control.setCandidateRowCallback(func(realtimeUsec uint64) bool {
+		return pageWindow.candidateToKeep(realtimeUsec)
+	})
+	control.setRealtimeAdjustCallback(func(realtimeUsec uint64) uint64 {
+		return realtimeAdjuster.adjust(realtimeUsec)
+	})
+	realtimeDelta := order.JournalVsRealtimeDeltaUsec
+	control.SetMatchedRowCallback(func(realtimeUsec, rowsMatched uint64) bool {
+		pageWindow.observe(realtimeUsec)
+		return request.DataOnly && request.Delta &&
+			rowsMatched%netdataDataOnlyCheckEveryRows == 0 &&
+			pageWindow.canStopDeltaFile(realtimeUsec, realtimeDelta)
+	})
+	return control
+}
+
+func applyExplorerStopReason(stopReason ExplorerStopReason, options NetdataFunctionRunOptions, combined *netdataCombinedResult) bool {
+	if options.CancellationCallback != nil && options.CancellationCallback() {
+		combined.Partial = true
+		combined.Cancelled = true
+		return true
+	}
+	if stopReason == ExplorerStopNone {
+		return false
+	}
+	combined.Partial = true
+	combined.TimedOut = stopReason == ExplorerStopTimedOut
+	combined.Cancelled = stopReason == ExplorerStopCancelled
+	return true
+}
+
+func canStopNetdataFileLoop(combined netdataCombinedResult, request netdataRequest, files []netdataSelectedJournalFile, nextIndex int) bool {
+	return request.DataOnly && !request.Delta && !request.Tail &&
+		len(combined.Rows) >= request.Limit &&
+		remainingFilesCannotAffectDataPage(combined, request, files, nextIndex)
 }
 
 func histogramBucketCountForNetdataQuery(query ExplorerQuery) int {
@@ -1236,6 +1296,14 @@ func (f NetdataJournalFunction) queryResponse(request netdataRequest, annotation
 		},
 		"expires": netdataExpires(request),
 	}
+	f.addQueryMetadata(response, request, artifacts, combined)
+	addQueryLastModified(response, request, combined)
+	addQuerySampling(response, combined)
+	addQueryAnalysis(response, request, artifacts)
+	return response
+}
+
+func (f NetdataJournalFunction) addQueryMetadata(response map[string]any, request netdataRequest, artifacts netdataQueryResponseArtifacts, combined netdataCombinedResult) {
 	if !request.DataOnly {
 		response["message"] = queryMessage(combined.TimedOut, combined.Stats)
 		response["update_every"] = 1
@@ -1244,31 +1312,43 @@ func (f NetdataJournalFunction) queryResponse(request netdataRequest, annotation
 		response["default_sort_column"] = "timestamp"
 		response["default_charts"] = []any{}
 		response["available_histograms"] = f.availableHistograms(request, combined)
-	} else if request.Histogram != "" {
+		return
+	}
+	if request.Histogram != "" {
 		response["available_histograms"] = f.availableHistograms(request, combined)
 	}
+}
+
+func addQueryLastModified(response map[string]any, request netdataRequest, combined netdataCombinedResult) {
 	if !request.DataOnly || request.Tail {
 		response["last_modified"] = combined.Stats.LastRealtimeUsec
 	}
-	if combined.SamplingEnabled {
-		response["_sampling"] = map[string]any{
-			"enabled":   true,
-			"sampled":   combined.Stats.SamplingSampled,
-			"unsampled": combined.Stats.SamplingUnsampled,
-			"estimated": combined.Stats.SamplingEstimated,
-		}
+}
+
+func addQuerySampling(response map[string]any, combined netdataCombinedResult) {
+	if !combined.SamplingEnabled {
+		return
 	}
-	if !request.DataOnly || request.Delta {
-		facetsKey, histogramKey, itemsKey := responseAnalysisKeys(request.DataOnly)
-		response[facetsKey] = artifacts.Facets
-		if artifacts.Histogram != nil {
-			response[histogramKey] = artifacts.Histogram
-		} else {
-			response[histogramKey] = nil
-		}
-		response[itemsKey] = artifacts.Items
+	response["_sampling"] = map[string]any{
+		"enabled":   true,
+		"sampled":   combined.Stats.SamplingSampled,
+		"unsampled": combined.Stats.SamplingUnsampled,
+		"estimated": combined.Stats.SamplingEstimated,
 	}
-	return response
+}
+
+func addQueryAnalysis(response map[string]any, request netdataRequest, artifacts netdataQueryResponseArtifacts) {
+	if request.DataOnly && !request.Delta {
+		return
+	}
+	facetsKey, histogramKey, itemsKey := responseAnalysisKeys(request.DataOnly)
+	response[facetsKey] = artifacts.Facets
+	if artifacts.Histogram != nil {
+		response[histogramKey] = artifacts.Histogram
+	} else {
+		response[histogramKey] = nil
+	}
+	response[itemsKey] = artifacts.Items
 }
 
 type netdataColumns struct {
@@ -1428,61 +1508,15 @@ func (f NetdataJournalFunction) buildFacets(context *DisplayContext, requested [
 
 func (f NetdataJournalFunction) buildHistogram(context *DisplayContext, histogram *ExplorerHistogram, knownValues map[string]uint64) any {
 	field := string(histogram.Field)
-	dimensionSet := make(map[string]struct{})
-	actualSet := make(map[string]struct{})
-	bucketValues := make([]map[string]uint64, 0, len(histogram.Buckets))
-	for _, bucket := range histogram.Buckets {
-		values := make(map[string]uint64)
-		for value, count := range bucket.Values {
-			truncated := netdataFacetValue(value)
-			values[truncated] += count
-		}
-		for value := range values {
-			dimensionSet[value] = struct{}{}
-			actualSet[value] = struct{}{}
-		}
-		bucketValues = append(bucketValues, values)
-	}
-	for value := range knownValues {
-		if value == "" || value == "-" {
-			continue
-		}
-		dimensionSet[value] = struct{}{}
-	}
-	dimensions := make([]string, 0, len(dimensionSet))
-	for value := range dimensionSet {
-		dimensions = append(dimensions, value)
-	}
-	sort.Strings(dimensions)
-	labels := make([]any, 0, len(dimensions)+1)
-	labels = append(labels, "time")
-	for _, value := range dimensions {
-		labels = append(labels, displayValueString(f.Profile.FieldDisplayValue(context, DisplayScopeHistogram, field, []byte(value))))
-	}
-	data := make([]any, 0, len(histogram.Buckets))
-	for i, bucket := range histogram.Buckets {
-		point := make([]any, 0, len(dimensions)+1)
-		point = append(point, bucket.StartRealtimeUsec/1000)
-		for _, value := range dimensions {
-			count, ok := bucketValues[i][value]
-			if ok {
-				point = append(point, []any{count, 0, 0})
-			} else if _, actual := actualSet[value]; actual {
-				point = append(point, []any{0, 0, 0})
-			} else {
-				point = append(point, []any{nil, 0, 0})
-			}
-		}
-		data = append(data, point)
-	}
+	bucketValues, actualSet, dimensions := histogramDimensions(histogram, knownValues)
 	return map[string]any{
 		"id":   field,
 		"name": field,
 		"chart": map[string]any{
 			"result": map[string]any{
-				"labels": labels,
+				"labels": f.histogramLabels(context, field, dimensions),
 				"point":  map[string]any{"value": 0, "arp": 1, "pa": 2},
-				"data":   data,
+				"data":   histogramData(histogram, bucketValues, actualSet, dimensions),
 			},
 			"view": map[string]any{
 				"title":        fmt.Sprintf("Events Distribution by %s", field),
@@ -1492,6 +1526,85 @@ func (f NetdataJournalFunction) buildHistogram(context *DisplayContext, histogra
 			},
 		},
 	}
+}
+
+func histogramDimensions(histogram *ExplorerHistogram, knownValues map[string]uint64) ([]map[string]uint64, map[string]struct{}, []string) {
+	dimensionSet := make(map[string]struct{})
+	actualSet := make(map[string]struct{})
+	bucketValues := make([]map[string]uint64, 0, len(histogram.Buckets))
+	for _, bucket := range histogram.Buckets {
+		values := normalizedHistogramBucket(bucket)
+		for value := range values {
+			dimensionSet[value] = struct{}{}
+			actualSet[value] = struct{}{}
+		}
+		bucketValues = append(bucketValues, values)
+	}
+	addKnownHistogramValues(dimensionSet, knownValues)
+	dimensions := sortedStringKeys(dimensionSet)
+	return bucketValues, actualSet, dimensions
+}
+
+func normalizedHistogramBucket(bucket ExplorerHistogramBucket) map[string]uint64 {
+	values := make(map[string]uint64)
+	for value, count := range bucket.Values {
+		values[netdataFacetValue(value)] += count
+	}
+	return values
+}
+
+func addKnownHistogramValues(dimensionSet map[string]struct{}, knownValues map[string]uint64) {
+	for value := range knownValues {
+		if value != "" && value != "-" {
+			dimensionSet[value] = struct{}{}
+		}
+	}
+}
+
+func sortedStringKeys(values map[string]struct{}) []string {
+	out := make([]string, 0, len(values))
+	for value := range values {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (f NetdataJournalFunction) histogramLabels(context *DisplayContext, field string, dimensions []string) []any {
+	labels := make([]any, 0, len(dimensions)+1)
+	labels = append(labels, "time")
+	for _, value := range dimensions {
+		display := f.Profile.FieldDisplayValue(context, DisplayScopeHistogram, field, []byte(value))
+		labels = append(labels, displayValueString(display))
+	}
+	return labels
+}
+
+func histogramData(histogram *ExplorerHistogram, bucketValues []map[string]uint64, actualSet map[string]struct{}, dimensions []string) []any {
+	data := make([]any, 0, len(histogram.Buckets))
+	for i, bucket := range histogram.Buckets {
+		data = append(data, histogramPoint(bucket, bucketValues[i], actualSet, dimensions))
+	}
+	return data
+}
+
+func histogramPoint(bucket ExplorerHistogramBucket, values map[string]uint64, actualSet map[string]struct{}, dimensions []string) []any {
+	point := make([]any, 0, len(dimensions)+1)
+	point = append(point, bucket.StartRealtimeUsec/1000)
+	for _, value := range dimensions {
+		point = append(point, histogramDimensionValue(values, actualSet, value))
+	}
+	return point
+}
+
+func histogramDimensionValue(values map[string]uint64, actualSet map[string]struct{}, value string) []any {
+	if count, ok := values[value]; ok {
+		return []any{count, 0, 0}
+	}
+	if _, actual := actualSet[value]; actual {
+		return []any{0, 0, 0}
+	}
+	return []any{nil, 0, 0}
 }
 
 func (f NetdataJournalFunction) infoResponse(echo map[string]any, paths []string, options NetdataFunctionRunOptions) map[string]any {
@@ -1530,79 +1643,106 @@ func (f NetdataJournalFunction) acceptedParamsFromFields(fields []string) []any 
 }
 
 func (f NetdataJournalFunction) requiredSourceParams(paths []string, options NetdataFunctionRunOptions) []any {
-	all := netdataJournalSourceSummary{}
-	local := netdataJournalSourceSummary{}
-	localNamespaces := netdataJournalSourceSummary{}
-	localSystem := netdataJournalSourceSummary{}
-	localUser := netdataJournalSourceSummary{}
-	remote := netdataJournalSourceSummary{}
-	other := netdataJournalSourceSummary{}
-	exact := make(map[string]*netdataJournalSourceSummary)
-
+	summaries := newNetdataSourceSummaries()
 	for _, path := range paths {
 		metadata := fileMetadata(options, path)
 		sourceType := journalFileSourceType(path)
 		if metadata != nil && metadata.SourceType != nil {
 			sourceType = *metadata.SourceType
 		}
-		all.addPath(path, f.Config.ReaderOptions, metadata)
-		if sourceType&netdataSourceTypeLocalAll != 0 {
-			local.addPath(path, f.Config.ReaderOptions, metadata)
-		}
-		if sourceType&netdataSourceTypeLocalNamespace != 0 {
-			localNamespaces.addPath(path, f.Config.ReaderOptions, metadata)
-		}
-		if sourceType&netdataSourceTypeLocalSystem != 0 {
-			localSystem.addPath(path, f.Config.ReaderOptions, metadata)
-		}
-		if sourceType&netdataSourceTypeLocalUser != 0 {
-			localUser.addPath(path, f.Config.ReaderOptions, metadata)
-		}
-		if sourceType&netdataSourceTypeRemoteAll != 0 {
-			remote.addPath(path, f.Config.ReaderOptions, metadata)
-		}
-		if sourceType&netdataSourceTypeLocalOther != 0 {
-			other.addPath(path, f.Config.ReaderOptions, metadata)
-		}
-		sourceName := ""
-		if metadata != nil {
-			sourceName = metadata.SourceName
-		}
-		if sourceName == "" {
-			sourceName = journalFileExactSourceName(path)
-		}
-		if sourceName != "" {
-			summary := exact[sourceName]
-			if summary == nil {
-				summary = &netdataJournalSourceSummary{}
-				exact[sourceName] = summary
-			}
-			summary.addPath(path, f.Config.ReaderOptions, metadata)
-		}
-	}
-	optionsOut := make([]any, 0)
-	pushSourceOption(&optionsOut, "all", all)
-	pushSourceOption(&optionsOut, "all-local-logs", local)
-	pushSourceOption(&optionsOut, "all-local-namespaces", localNamespaces)
-	pushSourceOption(&optionsOut, "all-local-system-logs", localSystem)
-	pushSourceOption(&optionsOut, "all-local-user-logs", localUser)
-	pushSourceOption(&optionsOut, "all-remote-systems", remote)
-	pushSourceOption(&optionsOut, "all-uncategorized", other)
-	exactNames := make([]string, 0, len(exact))
-	for name := range exact {
-		exactNames = append(exactNames, name)
-	}
-	sort.Strings(exactNames)
-	for _, name := range exactNames {
-		pushSourceOption(&optionsOut, name, *exact[name])
+		summaries.add(path, sourceType, metadata, f.Config.ReaderOptions)
 	}
 	return []any{map[string]any{
 		"id":      "__logs_sources",
 		"name":    "Journal Sources",
 		"help":    "Select the logs source to query",
 		"type":    "multiselect",
-		"options": optionsOut,
+		"options": summaries.options(),
 	}}
+}
+
+type netdataSourceSummaries struct {
+	all             netdataJournalSourceSummary
+	local           netdataJournalSourceSummary
+	localNamespaces netdataJournalSourceSummary
+	localSystem     netdataJournalSourceSummary
+	localUser       netdataJournalSourceSummary
+	remote          netdataJournalSourceSummary
+	other           netdataJournalSourceSummary
+	exact           map[string]*netdataJournalSourceSummary
+}
+
+func newNetdataSourceSummaries() netdataSourceSummaries {
+	return netdataSourceSummaries{exact: make(map[string]*netdataJournalSourceSummary)}
+}
+
+func (s *netdataSourceSummaries) add(path string, sourceType uint64, metadata *NetdataJournalFileMetadata, readerOptions ReaderOptions) {
+	s.all.addPath(path, readerOptions, metadata)
+	s.addGrouped(path, sourceType, metadata, readerOptions)
+	if sourceName := netdataSourceName(path, metadata); sourceName != "" {
+		s.exactFor(sourceName).addPath(path, readerOptions, metadata)
+	}
+}
+
+func (s *netdataSourceSummaries) addGrouped(path string, sourceType uint64, metadata *NetdataJournalFileMetadata, readerOptions ReaderOptions) {
+	if sourceType&netdataSourceTypeLocalAll != 0 {
+		s.local.addPath(path, readerOptions, metadata)
+	}
+	if sourceType&netdataSourceTypeLocalNamespace != 0 {
+		s.localNamespaces.addPath(path, readerOptions, metadata)
+	}
+	if sourceType&netdataSourceTypeLocalSystem != 0 {
+		s.localSystem.addPath(path, readerOptions, metadata)
+	}
+	if sourceType&netdataSourceTypeLocalUser != 0 {
+		s.localUser.addPath(path, readerOptions, metadata)
+	}
+	if sourceType&netdataSourceTypeRemoteAll != 0 {
+		s.remote.addPath(path, readerOptions, metadata)
+	}
+	if sourceType&netdataSourceTypeLocalOther != 0 {
+		s.other.addPath(path, readerOptions, metadata)
+	}
+}
+
+func netdataSourceName(path string, metadata *NetdataJournalFileMetadata) string {
+	if metadata != nil && metadata.SourceName != "" {
+		return metadata.SourceName
+	}
+	return journalFileExactSourceName(path)
+}
+
+func (s *netdataSourceSummaries) exactFor(name string) *netdataJournalSourceSummary {
+	summary := s.exact[name]
+	if summary == nil {
+		summary = &netdataJournalSourceSummary{}
+		s.exact[name] = summary
+	}
+	return summary
+}
+
+func (s *netdataSourceSummaries) options() []any {
+	optionsOut := make([]any, 0)
+	pushSourceOption(&optionsOut, "all", s.all)
+	pushSourceOption(&optionsOut, "all-local-logs", s.local)
+	pushSourceOption(&optionsOut, "all-local-namespaces", s.localNamespaces)
+	pushSourceOption(&optionsOut, "all-local-system-logs", s.localSystem)
+	pushSourceOption(&optionsOut, "all-local-user-logs", s.localUser)
+	pushSourceOption(&optionsOut, "all-remote-systems", s.remote)
+	pushSourceOption(&optionsOut, "all-uncategorized", s.other)
+	for _, name := range sortedSourceNames(s.exact) {
+		pushSourceOption(&optionsOut, name, *s.exact[name])
+	}
+	return optionsOut
+}
+
+func sortedSourceNames(exact map[string]*netdataJournalSourceSummary) []string {
+	names := make([]string, 0, len(exact))
+	for name := range exact {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (f NetdataJournalFunction) availableHistograms(request netdataRequest, combined netdataCombinedResult) []any {
@@ -1945,6 +2085,11 @@ type netdataJournalFileCollection struct {
 	Errors  []string
 }
 
+type netdataDirectoryScanItem struct {
+	Path  string
+	Depth int
+}
+
 func collectNetdataJournalFiles(path string) (netdataJournalFileCollection, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -1954,53 +2099,66 @@ func collectNetdataJournalFiles(path string) (netdataJournalFileCollection, erro
 		return netdataJournalFileCollection{}, fmt.Errorf("%w: not a directory: %s", errInvalidJournal, path)
 	}
 	var collection netdataJournalFileCollection
-	pending := []struct {
-		Path  string
-		Depth int
-	}{{Path: path}}
+	pending := []netdataDirectoryScanItem{{Path: path}}
 	visited := make(map[string]struct{})
 	for len(pending) != 0 {
 		item := pending[0]
 		pending = pending[1:]
-		key, err := filepath.EvalSymlinks(item.Path)
-		if err != nil {
-			key = item.Path
-		}
-		if _, ok := visited[key]; ok {
+		if skip := markNetdataScanVisited(item, visited, &collection); skip {
 			continue
 		}
-		if len(visited) >= netdataMaxDirectoryScanCount {
-			collection.Skipped++
-			collection.Errors = append(collection.Errors, fmt.Sprintf("%s: directory scan limit reached", item.Path))
-			continue
-		}
-		visited[key] = struct{}{}
 		entries, err := os.ReadDir(item.Path)
 		if err != nil {
 			if item.Path == path {
 				return collection, err
 			}
-			collection.Skipped++
-			collection.Errors = append(collection.Errors, fmt.Sprintf("%s: %v", item.Path, err))
+			collection.addScanError(item.Path, err)
 			continue
 		}
-		for _, entry := range entries {
-			entryPath := filepath.Join(item.Path, entry.Name())
-			if entry.Type().IsRegular() && isJournalFileName(entry.Name()) {
-				collection.Files = append(collection.Files, entryPath)
-				continue
-			}
-			if item.Depth < netdataMaxDirectoryScanDepth && entry.IsDir() {
-				pending = append(pending, struct {
-					Path  string
-					Depth int
-				}{Path: entryPath, Depth: item.Depth + 1})
-			}
-		}
+		pending = collection.collectScanEntries(item, entries, pending)
 	}
 	sort.Strings(collection.Files)
 	collection.Files = dedupNetdataJournalFiles(collection.Files)
 	return collection, nil
+}
+
+func markNetdataScanVisited(item netdataDirectoryScanItem, visited map[string]struct{}, collection *netdataJournalFileCollection) bool {
+	key, err := filepath.EvalSymlinks(item.Path)
+	if err != nil {
+		key = item.Path
+	}
+	if _, ok := visited[key]; ok {
+		return true
+	}
+	if len(visited) >= netdataMaxDirectoryScanCount {
+		collection.addScanMessage(item.Path, "directory scan limit reached")
+		return true
+	}
+	visited[key] = struct{}{}
+	return false
+}
+
+func (c *netdataJournalFileCollection) collectScanEntries(item netdataDirectoryScanItem, entries []os.DirEntry, pending []netdataDirectoryScanItem) []netdataDirectoryScanItem {
+	for _, entry := range entries {
+		entryPath := filepath.Join(item.Path, entry.Name())
+		if entry.Type().IsRegular() && isJournalFileName(entry.Name()) {
+			c.Files = append(c.Files, entryPath)
+			continue
+		}
+		if item.Depth < netdataMaxDirectoryScanDepth && entry.IsDir() {
+			pending = append(pending, netdataDirectoryScanItem{Path: entryPath, Depth: item.Depth + 1})
+		}
+	}
+	return pending
+}
+
+func (c *netdataJournalFileCollection) addScanError(path string, err error) {
+	c.addScanMessage(path, err.Error())
+}
+
+func (c *netdataJournalFileCollection) addScanMessage(path, message string) {
+	c.Skipped++
+	c.Errors = append(c.Errors, fmt.Sprintf("%s: %s", path, message))
 }
 
 func dedupNetdataJournalFiles(files []string) []string {
@@ -2234,46 +2392,15 @@ func firstFieldValue(fields map[string][][]byte, field string) ([]byte, bool) {
 }
 
 func columnMetadata(key string, index int) map[string]any {
-	visible := false
-	filter := "none"
-	fullWidth := false
-	switch {
-	case key == "timestamp":
-		visible = true
-		filter = "range"
-	case key == "rowOptions":
-	case key == "_HOSTNAME":
-		visible = true
-		filter = "facet"
-	case key == "ND_JOURNAL_PROCESS" || key == "MESSAGE":
-		visible = true
-		fullWidth = key == "MESSAGE"
-	case key == "ND_JOURNAL_FILE" || key == "_SOURCE_REALTIME_TIMESTAMP":
-	case systemdColumnIsFacet(key):
-		filter = "facet"
-	}
-	columnType := "string"
-	if key == "timestamp" {
-		columnType = "timestamp"
-	} else if key == "rowOptions" {
-		columnType = "none"
-	}
-	visualization := "value"
-	if key == "rowOptions" {
-		visualization = "rowOptions"
-	}
-	defaultValue := any("-")
-	if key == "timestamp" || key == "rowOptions" {
-		defaultValue = nil
-	}
+	visible, filter, fullWidth := columnDisplayFlags(key)
 	metadata := map[string]any{
 		"index":                   index,
 		"unique_key":              key == "timestamp",
 		"name":                    mapTimestampName(key),
 		"visible":                 visible,
-		"type":                    columnType,
-		"visualization":           visualization,
-		"value_options":           map[string]any{"transform": mapTimestampTransform(key), "decimal_points": 0, "default_value": defaultValue},
+		"type":                    columnType(key),
+		"visualization":           columnVisualization(key),
+		"value_options":           columnValueOptions(key),
 		"sort":                    "ascending",
 		"sortable":                false,
 		"sticky":                  false,
@@ -2287,6 +2414,58 @@ func columnMetadata(key string, index int) map[string]any {
 		metadata["dummy"] = true
 	}
 	return metadata
+}
+
+func columnDisplayFlags(key string) (bool, string, bool) {
+	switch {
+	case key == "timestamp":
+		return true, "range", false
+	case key == "_HOSTNAME":
+		return true, "facet", false
+	case key == "rowOptions" || key == "ND_JOURNAL_FILE" || key == "_SOURCE_REALTIME_TIMESTAMP":
+		return false, "none", false
+	case key == "ND_JOURNAL_PROCESS":
+		return true, "none", false
+	case key == "MESSAGE":
+		return true, "none", true
+	case systemdColumnIsFacet(key):
+		return false, "facet", false
+	default:
+		return false, "none", false
+	}
+}
+
+func columnType(key string) string {
+	switch key {
+	case "timestamp":
+		return "timestamp"
+	case "rowOptions":
+		return "none"
+	default:
+		return "string"
+	}
+}
+
+func columnVisualization(key string) string {
+	if key == "rowOptions" {
+		return "rowOptions"
+	}
+	return "value"
+}
+
+func columnValueOptions(key string) map[string]any {
+	return map[string]any{
+		"transform":      mapTimestampTransform(key),
+		"decimal_points": 0,
+		"default_value":  columnDefaultValue(key),
+	}
+}
+
+func columnDefaultValue(key string) any {
+	if key == "timestamp" || key == "rowOptions" {
+		return nil
+	}
+	return "-"
 }
 
 func mapTimestampName(key string) string {
@@ -2566,13 +2745,94 @@ func anchorOutsideWindow(anchor ExplorerAnchor, after, before *uint64) bool {
 }
 
 func requestLimit(object map[string]any) int {
-	if value, ok := getJSONUint64OK(object, "last"); ok && value != 0 {
-		if value > uint64(math.MaxInt) {
-			return math.MaxInt
-		}
-		return int(value)
+	if value, ok := getJSONNonNegativeIntClampedOK(object, "last"); ok && value != 0 {
+		return value
 	}
 	return defaultNetdataItemsToReturn
+}
+
+func getJSONNonNegativeIntClampedOK(object map[string]any, key string) (int, bool) {
+	value, ok := object[key]
+	if !ok {
+		return 0, false
+	}
+	return anyToNonNegativeIntClampedOK(value)
+}
+
+func anyToNonNegativeIntClampedOK(value any) (int, bool) {
+	maxInt := maxNativeIntValue()
+	switch typed := value.(type) {
+	case int:
+		return nonNegativeIntOK(typed)
+	case int64:
+		return nonNegativeInt64ClampedOK(typed, maxInt)
+	case uint64:
+		return uint64ToIntClamped(typed, maxInt), true
+	case uint:
+		return uintToIntClamped(typed, maxInt), true
+	case float64:
+		return nonNegativeFloat64ToIntClampedOK(typed, maxInt)
+	case json.Number:
+		return jsonNumberToNonNegativeIntClampedOK(typed, maxInt)
+	}
+	return 0, false
+}
+
+func maxNativeIntValue() int {
+	return int(^uint(0) >> 1)
+}
+
+func nonNegativeIntOK(value int) (int, bool) {
+	if value < 0 {
+		return 0, false
+	}
+	return value, true
+}
+
+func nonNegativeInt64ClampedOK(value int64, maxInt int) (int, bool) {
+	if value < 0 {
+		return 0, false
+	}
+	if value > int64(maxInt) {
+		return maxInt, true
+	}
+	return int(value), true
+}
+
+func uint64ToIntClamped(value uint64, maxInt int) int {
+	if value > uint64(maxInt) {
+		return maxInt
+	}
+	return int(value)
+}
+
+func uintToIntClamped(value uint, maxInt int) int {
+	if value > uint(maxInt) {
+		return maxInt
+	}
+	return int(value)
+}
+
+func nonNegativeFloat64ToIntClampedOK(value float64, maxInt int) (int, bool) {
+	if value < 0 || math.IsNaN(value) {
+		return 0, false
+	}
+	if value >= float64(maxInt) {
+		return maxInt, true
+	}
+	return int(value), true
+}
+
+func jsonNumberToNonNegativeIntClampedOK(value json.Number, maxInt int) (int, bool) {
+	parsed, err := strconv.ParseInt(string(value), 10, strconv.IntSize)
+	if err == nil {
+		return nonNegativeInt64ClampedOK(parsed, maxInt)
+	}
+	if numErr, ok := err.(*strconv.NumError); ok && numErr.Err == strconv.ErrRange &&
+		!strings.HasPrefix(string(value), "-") {
+		return maxInt, true
+	}
+	return 0, false
 }
 
 func requestFacets(requested []string, hasRequested bool, config NetdataFunctionConfig) [][]byte {
@@ -2989,50 +3249,10 @@ func priorityToRowSeverity(raw []byte) string {
 }
 
 func syslogFacilityName(raw string) string {
-	switch raw {
-	case "0":
-		return "kern"
-	case "1":
-		return "user"
-	case "2":
-		return "mail"
-	case "3":
-		return "daemon"
-	case "4":
-		return "auth"
-	case "5":
-		return "syslog"
-	case "6":
-		return "lpr"
-	case "7":
-		return "news"
-	case "8":
-		return "uucp"
-	case "9":
-		return "cron"
-	case "10":
-		return "authpriv"
-	case "11":
-		return "ftp"
-	case "16":
-		return "local0"
-	case "17":
-		return "local1"
-	case "18":
-		return "local2"
-	case "19":
-		return "local3"
-	case "20":
-		return "local4"
-	case "21":
-		return "local5"
-	case "22":
-		return "local6"
-	case "23":
-		return "local7"
-	default:
-		return raw
+	if name, ok := syslogFacilityNames[raw]; ok {
+		return name
 	}
+	return raw
 }
 
 func systemdFieldDisplayValue(context *DisplayContext, scope DisplayScope, field string, value []byte, resolveUserGroupNames bool) any {
@@ -3045,44 +3265,68 @@ func systemdFieldDisplayValue(context *DisplayContext, scope DisplayScope, field
 	case "ERRNO":
 		return errnoName(raw)
 	case "MESSAGE_ID":
-		if name := messageIDName(raw); name != "" {
-			if scope == DisplayScopeData {
-				return fmt.Sprintf("%s (%s)", raw, name)
-			}
-			return name
-		}
-		return raw
+		return displayMessageID(scope, raw)
 	case "_BOOT_ID":
-		if context != nil {
-			if timestamp, ok := context.BootFirstRealtime[raw]; ok {
-				formatted := formatRealtimeUsec(timestamp, false)
-				if scope == DisplayScopeData {
-					return fmt.Sprintf("%s (%s)  ", raw, formatted)
-				}
-				return formatted
-			}
-		}
-		return raw
+		return displayBootID(context, scope, raw)
 	case "_UID", "_SYSTEMD_OWNER_UID", "OBJECT_SYSTEMD_OWNER_UID", "OBJECT_UID", "_AUDIT_LOGINUID", "OBJECT_AUDIT_LOGINUID":
-		if resolveUserGroupNames {
-			return cachedUIDDisplay(context, raw)
-		}
-		return raw
+		return displayUID(context, raw, resolveUserGroupNames)
 	case "_GID", "OBJECT_GID":
-		if resolveUserGroupNames {
-			return cachedGIDDisplay(context, raw)
-		}
-		return raw
+		return displayGID(context, raw, resolveUserGroupNames)
 	case "_CAP_EFFECTIVE":
 		return capEffectiveDisplay(raw)
 	case "_SOURCE_REALTIME_TIMESTAMP":
-		if timestamp, err := strconv.ParseUint(raw, 10, 64); err == nil && timestamp != 0 {
-			return fmt.Sprintf("%s (%s)", raw, formatRealtimeUsec(timestamp, true))
-		}
-		return raw
+		return displaySourceRealtime(raw)
 	default:
 		return raw
 	}
+}
+
+func displayMessageID(scope DisplayScope, raw string) any {
+	name := messageIDName(raw)
+	if name == "" {
+		return raw
+	}
+	if scope == DisplayScopeData {
+		return fmt.Sprintf("%s (%s)", raw, name)
+	}
+	return name
+}
+
+func displayBootID(context *DisplayContext, scope DisplayScope, raw string) any {
+	if context == nil {
+		return raw
+	}
+	timestamp, ok := context.BootFirstRealtime[raw]
+	if !ok {
+		return raw
+	}
+	formatted := formatRealtimeUsec(timestamp, false)
+	if scope == DisplayScopeData {
+		return fmt.Sprintf("%s (%s)  ", raw, formatted)
+	}
+	return formatted
+}
+
+func displayUID(context *DisplayContext, raw string, resolve bool) any {
+	if resolve {
+		return cachedUIDDisplay(context, raw)
+	}
+	return raw
+}
+
+func displayGID(context *DisplayContext, raw string, resolve bool) any {
+	if resolve {
+		return cachedGIDDisplay(context, raw)
+	}
+	return raw
+}
+
+func displaySourceRealtime(raw string) any {
+	timestamp, err := strconv.ParseUint(raw, 10, 64)
+	if err == nil && timestamp != 0 {
+		return fmt.Sprintf("%s (%s)", raw, formatRealtimeUsec(timestamp, true))
+	}
+	return raw
 }
 
 func displayValueString(value any) string {

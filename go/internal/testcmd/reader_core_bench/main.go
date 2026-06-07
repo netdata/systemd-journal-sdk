@@ -525,43 +525,57 @@ func readExplorerQuery(cfg benchConfig) (counts, error) {
 	if err != nil {
 		return counts{}, err
 	}
-	logicalRecords := result.Stats.RowsExamined
-	if result.Stats.FacetRowsMatched > logicalRecords {
-		logicalRecords = result.Stats.FacetRowsMatched
-	}
-	if result.Stats.RowsMatched > logicalRecords {
-		logicalRecords = result.Stats.RowsMatched
-	}
-	if result.Stats.HistogramUpdates > logicalRecords {
-		logicalRecords = result.Stats.HistogramUpdates
-	}
 	out := counts{
-		records:  logicalRecords,
+		records:  explorerLogicalRecords(result.Stats),
 		fields:   result.Stats.DataRefsSeen,
 		checksum: 0,
 		extra:    make(map[string]interface{}),
 	}
-	for _, row := range result.Rows {
+	addExplorerRowChecksums(&out, result.Rows)
+	out.extra["facet_summary"] = facetSummary(result.Facets)
+	if summary := histogramSummary(result.Histogram); summary != nil {
+		out.extra["histogram_summary"] = summary
+	}
+	out.extra["explorer_stats"] = result.Stats
+	addExplorerComparison(out.extra, result.Comparison)
+	return out, nil
+}
+
+func explorerLogicalRecords(stats journal.ExplorerStats) uint64 {
+	logicalRecords := stats.RowsExamined
+	logicalRecords = maxBenchCount(logicalRecords, stats.FacetRowsMatched)
+	logicalRecords = maxBenchCount(logicalRecords, stats.RowsMatched)
+	logicalRecords = maxBenchCount(logicalRecords, stats.HistogramUpdates)
+	return logicalRecords
+}
+
+func maxBenchCount(left, right uint64) uint64 {
+	if right > left {
+		return right
+	}
+	return left
+}
+
+func addExplorerRowChecksums(out *counts, rows []journal.ExplorerRow) {
+	for _, row := range rows {
 		out.checksum = bits.RotateLeft64(out.checksum, 7) ^ row.RealtimeUsec
 		for _, payload := range row.Payloads {
 			out.bytes += uint64(len(payload))
 			out.checksum = checksumPayload(out.checksum, payload)
 		}
 	}
-	out.extra["facet_summary"] = facetSummary(result.Facets)
-	if summary := histogramSummary(result.Histogram); summary != nil {
-		out.extra["histogram_summary"] = summary
+}
+
+func addExplorerComparison(extra map[string]interface{}, comparison *journal.ExplorerComparison) {
+	if comparison == nil {
+		return
 	}
-	out.extra["explorer_stats"] = result.Stats
-	if result.Comparison != nil {
-		out.extra["explorer_comparison"] = map[string]interface{}{
-			"traversal_duration_ns": uint64(result.Comparison.TraversalDuration),
-			"index_duration_ns":     uint64(result.Comparison.IndexDuration),
-			"traversal_stats":       result.Comparison.TraversalStats,
-			"index_stats":           result.Comparison.IndexStats,
-		}
+	extra["explorer_comparison"] = map[string]interface{}{
+		"traversal_duration_ns": uint64(comparison.TraversalDuration),
+		"index_duration_ns":     uint64(comparison.IndexDuration),
+		"traversal_stats":       comparison.TraversalStats,
+		"index_stats":           comparison.IndexStats,
 	}
-	return out, nil
 }
 
 func parseBenchConfig() (benchConfig, error) {

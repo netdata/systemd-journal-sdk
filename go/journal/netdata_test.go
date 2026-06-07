@@ -1,7 +1,9 @@
 package journal
 
 import (
+	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,7 +116,43 @@ func TestNetdataCollectBootFirstRealtimeSkipsUnneededAndKeepsZeroRealtime(t *tes
 	}
 }
 
-func TestNetdataPageWindowRetainsDirectionSpecificPage(t *testing.T) {
+func TestNetdataRequestLimitClampsOversizedValues(t *testing.T) {
+	maxInt := maxNativeIntValue()
+	beyondInt32 := int64(3_000_000_000)
+	wantBeyondInt32 := maxInt
+	if int64(maxInt) >= beyondInt32 {
+		wantBeyondInt32 = int(beyondInt32)
+	}
+	cases := []struct {
+		name  string
+		value any
+		want  int
+	}{
+		{name: "json-number-native-overflow", value: json.Number("9223372036854775808"), want: maxInt},
+		{name: "json-number-32-bit-boundary", value: json.Number("3000000000"), want: wantBeyondInt32},
+		{name: "uint64-overflow", value: ^uint64(0), want: maxInt},
+		{name: "uint-overflow-or-max", value: ^uint(0), want: maxInt},
+		{name: "float-overflow", value: float64(maxInt) * 2, want: maxInt},
+		{name: "float-native-boundary", value: float64(maxInt), want: maxInt},
+		{name: "int64-overflow-on-32-bit", value: int64(3_000_000_000), want: wantBeyondInt32},
+		{name: "int-normal", value: 15, want: 15},
+		{name: "normal-json-number", value: json.Number("15"), want: 15},
+		{name: "zero-uses-default", value: json.Number("0"), want: defaultNetdataItemsToReturn},
+		{name: "negative-uses-default", value: json.Number("-1"), want: defaultNetdataItemsToReturn},
+		{name: "negative-float-uses-default", value: float64(-1), want: defaultNetdataItemsToReturn},
+		{name: "nan-uses-default", value: math.NaN(), want: defaultNetdataItemsToReturn},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := requestLimit(map[string]any{"last": tc.value})
+			if got != tc.want {
+				t.Fatalf("requestLimit(last=%v) = %d, want %d", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNetdataPageWindowRetainsBackwardPage(t *testing.T) {
 	backward := &netdataPageWindow{Direction: DirectionBackward, Limit: 2}
 	backward.observe(100)
 	backward.observe(200)
@@ -130,7 +168,9 @@ func TestNetdataPageWindowRetainsDirectionSpecificPage(t *testing.T) {
 	if !backward.candidateToKeep(250) || backward.candidateToKeep(150) {
 		t.Fatal("backward candidateToKeep bounds are wrong")
 	}
+}
 
+func TestNetdataPageWindowRetainsForwardPage(t *testing.T) {
 	forward := &netdataPageWindow{Direction: DirectionForward, Limit: 2, Retained: netdataPageHeap{Max: true}}
 	forward.observe(300)
 	forward.observe(200)
@@ -148,7 +188,8 @@ func TestNetdataPageWindowRetainsDirectionSpecificPage(t *testing.T) {
 	}
 }
 
-func TestNetdataRequestParsingModesFiltersAndSourceSelection(t *testing.T) {
+func parseNetdataRequestFixture(t *testing.T) netdataRequest {
+	t.Helper()
 	request := map[string]any{
 		"after":     float64(200_000_000),
 		"before":    float64(200_000_100),
@@ -168,6 +209,11 @@ func TestNetdataRequestParsingModesFiltersAndSourceSelection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseNetdataRequest() error = %v", err)
 	}
+	return parsed
+}
+
+func TestNetdataRequestParsingTimeDirectionLimitAndQuery(t *testing.T) {
+	parsed := parseNetdataRequestFixture(t)
 	if parsed.AfterRealtimeUsec == nil || *parsed.AfterRealtimeUsec != 200_000_000_000_000 {
 		t.Fatalf("after = %v, want 200000000000000", parsed.AfterRealtimeUsec)
 	}
@@ -180,6 +226,13 @@ func TestNetdataRequestParsingModesFiltersAndSourceSelection(t *testing.T) {
 	if parsed.Limit != 2 || numericUint64(parsed.Echo["last"]) != 1 {
 		t.Fatalf("limit/echo = %d/%v, want effective 2 and echoed 1", parsed.Limit, parsed.Echo["last"])
 	}
+	if len(parsed.FTSTerms) != 3 || len(parsed.FTSPatterns) != 2 || len(parsed.FTSNegativePatterns) != 1 {
+		t.Fatalf("fts terms/patterns/negative = %d/%d/%d, want 3/2/1", len(parsed.FTSTerms), len(parsed.FTSPatterns), len(parsed.FTSNegativePatterns))
+	}
+}
+
+func TestNetdataRequestParsingFiltersAndSources(t *testing.T) {
+	parsed := parseNetdataRequestFixture(t)
 	if len(parsed.Filters) != 2 {
 		t.Fatalf("filters = %d, want 2", len(parsed.Filters))
 	}
@@ -195,9 +248,10 @@ func TestNetdataRequestParsingModesFiltersAndSourceSelection(t *testing.T) {
 	if len(parsed.ExactSources) != 1 || parsed.ExactSources[0] != "namespace-blue" {
 		t.Fatalf("exact sources = %#v, want namespace-blue", parsed.ExactSources)
 	}
-	if len(parsed.FTSTerms) != 3 || len(parsed.FTSPatterns) != 2 || len(parsed.FTSNegativePatterns) != 1 {
-		t.Fatalf("fts terms/patterns/negative = %d/%d/%d, want 3/2/1", len(parsed.FTSTerms), len(parsed.FTSPatterns), len(parsed.FTSNegativePatterns))
-	}
+}
+
+func TestNetdataRequestParsingExplorerQuery(t *testing.T) {
+	parsed := parseNetdataRequestFixture(t)
 	query := parsed.toExplorerQuery(1, nil, netdataJournalRealtimeDeltaDefault)
 	if query.Limit != 2 || query.DebugCollectColumnFieldsByRowTraversal {
 		t.Fatalf("explorer query limit/debug = %d/%v, want 2/false", query.Limit, query.DebugCollectColumnFieldsByRowTraversal)
@@ -232,7 +286,7 @@ func TestNormalizeNetdataTimeWindowMatchesPluginEdges(t *testing.T) {
 	}
 }
 
-func TestNetdataProfileDisplayAndRealtimeAdjustment(t *testing.T) {
+func TestNetdataProfileDisplay(t *testing.T) {
 	context := newDisplayContext()
 	profile := SystemdJournalProfile{}
 	if got := profile.FieldDisplayValue(context, DisplayScopeData, "PRIORITY", []byte("7")); got != "debug" {
@@ -261,7 +315,9 @@ func TestNetdataProfileDisplayAndRealtimeAdjustment(t *testing.T) {
 	if len(context.uidDisplayCache) != 1 {
 		t.Fatalf("uid display cache size = %d, want 1", len(context.uidDisplayCache))
 	}
+}
 
+func TestNetdataRealtimeAdjustment(t *testing.T) {
 	forward := newNetdataRealtimeAdjuster(DirectionForward)
 	if got := []uint64{forward.adjust(10), forward.adjust(10), forward.adjust(10)}; got[0] != 10 || got[1] != 11 || got[2] != 12 {
 		t.Fatalf("forward realtime adjustment = %v, want 10/11/12", got)
