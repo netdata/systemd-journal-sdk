@@ -930,6 +930,54 @@ func TestReaderCursor(t *testing.T) {
 	}
 }
 
+func TestReaderSeekCursorMatchesFullCursor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cursor.journal")
+	createMessageJournal(t, path, []messageRow{
+		{message: "first", realtime: 1_700_000_000},
+		{message: "second", realtime: 1_700_000_000},
+	})
+	r, err := OpenFile(path)
+	if err != nil {
+		t.Fatalf("OpenFile error: %v", err)
+	}
+	defer r.Close()
+
+	if ok, err := r.Step(); err != nil || !ok {
+		t.Fatalf("Step first = %v, %v", ok, err)
+	}
+	first, err := r.GetEntry()
+	if err != nil {
+		t.Fatalf("GetEntry first error: %v", err)
+	}
+	if ok, err := r.Step(); err != nil || !ok {
+		t.Fatalf("Step second = %v, %v", ok, err)
+	}
+	second, err := r.GetEntry()
+	if err != nil {
+		t.Fatalf("GetEntry second error: %v", err)
+	}
+
+	assertReaderCursorSeeksToMessage(t, r, second.Cursor, "second")
+	assertReaderCursorSeeksToMessage(t, r, first.Cursor, "first")
+	if err := r.SeekCursor("invalid-cursor"); err == nil {
+		t.Fatal("SeekCursor accepted invalid cursor")
+	}
+}
+
+func assertReaderCursorSeeksToMessage(t *testing.T, r *Reader, cursor string, want string) {
+	t.Helper()
+	if err := r.SeekCursor(cursor); err != nil {
+		t.Fatalf("SeekCursor(%s) error: %v", want, err)
+	}
+	got, err := r.GetEntry()
+	if err != nil {
+		t.Fatalf("GetEntry after %s cursor error: %v", want, err)
+	}
+	if string(got.Fields["MESSAGE"]) != want {
+		t.Fatalf("cursor seek landed on %q, want %s", got.Fields["MESSAGE"], want)
+	}
+}
+
 func TestReaderUniqueFields(t *testing.T) {
 	priorities := []string{"0", "3", "6", "7"}
 	path := createReaderPriorityJournal(t, priorities)

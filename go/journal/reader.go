@@ -921,6 +921,44 @@ func (r *Reader) GetCursor() (string, error) {
 	return r.makeCursor(offset, hdr), nil
 }
 
+// SeekCursor positions the reader at the first entry at or after cursor. A
+// syntactically valid cursor that is not present leaves the reader at the next
+// later entry, matching libsystemd seek-cursor behavior.
+func (r *Reader) SeekCursor(cursor string) error {
+	wantSeqnumID, wantBootID, wantRealtime, wantSeqnum, err := ParseCursor(cursor)
+	if err != nil {
+		return ErrInvalidCursor
+	}
+
+	if err := r.SeekRealtimeUsec(wantRealtime); err != nil {
+		return err
+	}
+
+	for {
+		if err := r.Next(); err != nil {
+			if errors.Is(err, errEndOfEntries) {
+				return nil
+			}
+			return err
+		}
+		current, err := r.GetCursor()
+		if err != nil {
+			return err
+		}
+		gotSeqnumID, gotBootID, gotRealtime, gotSeqnum, err := ParseCursor(current)
+		if err != nil {
+			return err
+		}
+		done, ok := cursorSeekPositionReached(
+			gotSeqnumID, gotBootID, gotRealtime, gotSeqnum,
+			wantSeqnumID, wantBootID, wantRealtime, wantSeqnum,
+		)
+		if done || ok {
+			return nil
+		}
+	}
+}
+
 func (r *Reader) TestCursor(cursor string) (bool, error) {
 	current, err := r.GetCursor()
 	if err != nil {
