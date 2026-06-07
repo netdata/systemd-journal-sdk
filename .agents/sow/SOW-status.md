@@ -7,10 +7,6 @@ Last updated: 2026-06-07
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
-- SOW-0084 - Code Scanning And Codacy Gate: reopened regression. GitHub
-  CodeQL alert `3341` reports `go/incorrect-integer-conversion` in
-  `go/journal/netdata.go` for the Netdata function `last` request limit on
-  pushed head `59256cd0`; repair is in progress.
 
 ## Pending
 
@@ -40,6 +36,10 @@ Last updated: 2026-06-07
 
 ## Recently Closed Or Completed
 
+- SOW-0084 - Code Scanning And Codacy Gate: completed after regression repair.
+  GitHub CodeQL alert `3341` is closed on head `1d7006ae`; GitHub code
+  scanning has zero open alerts; Codacy Cloud reports `issuesCount = 0` and
+  `codacy issues` returns zero issues on the same head.
 - SOW-0095 - Go Explorer And Netdata Function Parity: completed. Go now
   exposes Explorer, generic Netdata logs function, and stdin-based Netdata
   function wrapper APIs as Rust peers. The committed 10-request comparator

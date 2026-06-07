@@ -2,12 +2,13 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: reopened 2026-06-07 for a new CodeQL integer-conversion regression
-introduced on pushed head `59256cd0e3809b9b9bf69eee51e99bc1ade5f92c`.
+Sub-state: completed after repairing the CodeQL integer-conversion regression
+and the 20 Codacy Lizard complexity issues reported on pushed head
+`59256cd0e3809b9b9bf69eee51e99bc1ade5f92c`.
 
 ## Requirements
 
@@ -3648,13 +3649,36 @@ Final local validation before push:
 - `git diff --check` passed.
 - `.agents/sow/audit.sh` passed.
 
-Remote validation is pending until the repair is pushed. The SOW remains
-`in-progress` until CodeQL, Codacy SARIF, GitHub code scanning, and Codacy
-Cloud are clean on the pushed head.
+Remote validation after repair push:
+
+- Repair commit:
+  `1d7006aea18f49c6280827f150c6072471b2afc6`
+  (`Repair Go scanner gate regressions`).
+- GitHub Actions on `1d7006aea18f49c6280827f150c6072471b2afc6`:
+  - CodeQL run `27093135228`: success.
+  - Codacy SARIF run `27093135226`: success.
+  - Coverage run `27093135224`: success.
+- GitHub code scanning:
+  - Final open alert query returned `[]`.
+  - The previous CodeQL alert `3341` is no longer open on the repaired head.
+- Codacy Cloud:
+  - Reanalysis was explicitly requested after the push because the repository
+    dashboard initially remained on the old commit.
+  - Final repository query reported
+    `lastAnalysedCommit.sha = 1d7006aea18f49c6280827f150c6072471b2afc6`,
+    `issuesCount = 0`, and coverage `66`.
+  - Final `codacy issues gh netdata systemd-journal-sdk --output json` query
+    returned `0` issues.
+
+Closure note:
+
+- This closure is intentionally a second commit after the repair push. Remote
+  CodeQL/Codacy validation can only be recorded after GitHub and Codacy analyze
+  the pushed commit.
 
 Artifact updates:
 
-- SOW-0084 is reopened from `done/` to `current/` while the scanner regression
-  is repaired.
-- Both SOW status ledgers are updated while the SOW is active and will be
-  updated again when the SOW is reclosed.
+- SOW-0084 is moved back to `done/` after remote validation on the repaired
+  commit.
+- Both SOW status ledgers are updated to record that the scanner gate is clean
+  again.

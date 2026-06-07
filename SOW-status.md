@@ -3,7 +3,6 @@
 ## Current
 
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
-- `SOW-0084-20260602-code-scanning-and-codacy-gate.md` - reopened regression. GitHub CodeQL alert `3341` reports `go/incorrect-integer-conversion` in `go/journal/netdata.go` for the Netdata function `last` request limit on pushed head `59256cd0`; repair is in progress.
 
 ## Pending
 
@@ -16,6 +15,7 @@
 
 ## Done
 
+- `SOW-0084-20260602-code-scanning-and-codacy-gate.md` - completed after regression repair. GitHub CodeQL alert `3341` is closed on head `1d7006ae`; GitHub code scanning has zero open alerts; Codacy Cloud reports `issuesCount = 0` and `codacy issues` returns zero issues on the same head.
 - `SOW-0095-20260607-go-explorer-netdata-parity.md`
 - `SOW-0075-20260601-vm-historical-systemd-validation.md`
 - `SOW-0076-20260601-independent-selective-real-corpus-verification.md`
