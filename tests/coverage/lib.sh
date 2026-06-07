@@ -73,3 +73,87 @@ normalize_coverprofile_prefix() {
     { print }
   ' "${input}" > "${output}"
 }
+
+filter_go_coverage_paths() {
+  local input="$1"
+  local output="$2"
+
+  awk '
+    NR == 1 && $0 ~ /^mode: / {
+      print
+      next
+    }
+    {
+      path = $0
+      sub(/:.*/, "", path)
+      if (path ~ /(^|\/)internal\/testcmd\//) next
+      if (path ~ /(^|\/)tests?\//) next
+      if (path ~ /(^|\/)testdata\//) next
+      if (path ~ /_test\.go$/) next
+      print
+    }
+  ' "${input}" > "${output}"
+}
+
+filter_lcov_sf_paths() {
+  local input="$1"
+  local output="$2"
+
+  awk '
+    /^SF:/ {
+      skip = 0
+      path = substr($0, 4)
+      if (path ~ /(^|\/)internal\/testcmd\//) skip = 1
+      if (path ~ /(^|\/)tests?\//) skip = 1
+      if (path ~ /(^|\/)tests\.rs$/) skip = 1
+      if (path ~ /(^|\/)testdata\//) skip = 1
+      if (path ~ /_tests?\.rs$/) skip = 1
+      if (path ~ /(^|\/)examples?\//) skip = 1
+    }
+    !skip { print }
+    /^end_of_record$/ { skip = 0 }
+  ' "${input}" > "${output}"
+}
+
+validate_lcov_records() {
+  local report="$1"
+  local sf_count
+  local end_count
+
+  sf_count=$(awk 'BEGIN { count = 0 } /^SF:/ { count += 1 } END { print count }' "${report}")
+  end_count=$(awk 'BEGIN { count = 0 } /^end_of_record$/ { count += 1 } END { print count }' "${report}")
+  if [ "${sf_count}" = "${end_count}" ]; then
+    return 0
+  fi
+
+  printf >&2 '%b[ERROR]%b LCOV report has %s SF records but %s end_of_record markers: %s\n' \
+    "${RED}" "${NC}" "${sf_count}" "${end_count}" "${report}"
+  exit 1
+}
+
+assert_no_coverage_test_paths() {
+  local report="$1"
+  local format="$2"
+  local leaked=""
+
+  case "${format}" in
+    go)
+      leaked=$(awk 'NR > 1 { path = $0; sub(/:.*/, "", path); if (path ~ /(^|\/)internal\/testcmd\// || path ~ /(^|\/)tests?\// || path ~ /(^|\/)testdata\// || path ~ /_test\.go$/) print path }' "${report}")
+      ;;
+    lcov)
+      leaked=$(awk '/^SF:/ { path = substr($0, 4); if (path ~ /(^|\/)internal\/testcmd\// || path ~ /(^|\/)tests?\// || path ~ /(^|\/)tests\.rs$/ || path ~ /(^|\/)testdata\// || path ~ /_tests?\.rs$/ || path ~ /(^|\/)examples?\//) print path }' "${report}")
+      ;;
+    *)
+      printf >&2 '%b[ERROR]%b Unknown coverage report format: %s\n' "${RED}" "${NC}" "${format}"
+      exit 1
+      ;;
+  esac
+
+  if [ -z "${leaked}" ]; then
+    return 0
+  fi
+
+  printf >&2 '%b[ERROR]%b Coverage report contains test or test-harness paths: %s\n' "${RED}" "${NC}" "${report}"
+  printf >&2 '%s\n' "${leaked}"
+  exit 1
+}

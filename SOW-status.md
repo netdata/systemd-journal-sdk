@@ -1,8 +1,14 @@
 # SOW Status
 
+Last updated: 2026-06-07
+
+This root file is a short convenience index. The canonical detailed SOW ledger
+is `.agents/sow/SOW-status.md`.
+
 ## Current
 
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
+- `SOW-0096-20260607-codacy-metrics-and-coverage-hygiene.md` - in progress. Exclude tests from Codacy coverage reports and produce a Rust/Go file-by-file Codacy complexity and duplication classification.
 
 ## Pending
 
@@ -12,6 +18,9 @@
 - `SOW-0048-20260528-netdata-otel-writer-sdk-integration.md` - open. Integrate the SDK compact-default structured writer into Netdata OTEL logs ingestion after the inventory and writer gates are accepted.
 - `SOW-0049-20260528-netdata-reader-plugin-sdk-integration.md` - open. Integrate SDK reader/facade paths into Netdata OTEL signal viewer, no-libsystemd systemd-journal plugin mode, and static packaging after reader gates are accepted.
 - `SOW-0050-20260528-netdata-vendored-journal-removal.md` - open. Remove old Netdata vendored journal code only after all Netdata component integrations are complete and fresh searches prove no production references remain.
+- `SOW-0094-20260606-rust-explorer-lazy-compressed-field-inference.md` - open. Deferred Rust Explorer optimization experiment for compressed DATA field inference and delayed decompression.
+- `SOW-0097-20260607-go-codacy-metric-debt-refactor.md` - open. Follow-up from the Codacy Rust/Go metrics audit for Go production file-size/ownership and duplication reduction.
+- `SOW-0098-20260607-rust-legacy-core-duplication-debt.md` - open. Follow-up from the Codacy Rust/Go metrics audit for real Rust `jf`/`journal-core` duplication reduction.
 
 ## Done
 

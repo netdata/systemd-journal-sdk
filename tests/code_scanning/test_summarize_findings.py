@@ -18,6 +18,12 @@ from tests.code_scanning.write_empty_codacy_sarif import (
     CODACY_TOOL_NAMES,
     build_empty_sarif,
 )
+from tests.code_scanning.summarize_codacy_file_metrics import (
+    complexity_classification,
+    duplication_classification,
+    metric_row,
+    path_surface,
+)
 
 
 def test_path_grouping_is_sanitized() -> None:
@@ -162,3 +168,64 @@ def test_codacy_security_summary_handles_findings_shape(tmp_path) -> None:
             "count": 1,
         }
     ]
+
+
+def test_codacy_file_metrics_classifies_tests_and_harnesses() -> None:
+    assert path_surface("go/internal/testcmd/reader/main.go") == "test_or_harness"
+    assert path_surface("go/journal/reader_test.go") == "test_or_harness"
+    assert path_surface("rust/src/crates/journal-core/src/file/tests.rs") == "test_or_harness"
+    assert path_surface("rust/src/crates/jf/journal_file/src/file_test.rs") == "test_or_harness"
+
+
+def test_codacy_file_metrics_classifies_rust_and_go_surfaces() -> None:
+    assert path_surface("go/journal/netdata.go") == "go_sdk"
+    assert path_surface("go/cmd/journalctl/main.go") == "cli"
+    assert path_surface("rust/src/crates/journal-core/src/file/file.rs") == "rust_core"
+    assert path_surface("rust/src/crates/jf/journal_file/src/file.rs") == "legacy_jf"
+
+
+def test_codacy_file_metrics_separates_file_size_from_function_complexity() -> None:
+    assert (
+        complexity_classification("go/journal/netdata.go", complexity=870, max_ccn=12)
+        == "real file-size/ownership pressure; functions stay below CCN gate"
+    )
+    assert (
+        complexity_classification("go/journal/netdata.go", complexity=50, max_ccn=13)
+        == "actionable function complexity; inspect before accepting"
+    )
+
+
+def test_codacy_file_metrics_flags_legacy_core_duplication_debt() -> None:
+    assert (
+        duplication_classification(
+            "rust/src/crates/jf/journal_file/src/file.rs",
+            duplication=686,
+        )
+        == "real legacy/core overlap; architecture debt, not scanner noise"
+    )
+    assert (
+        duplication_classification("go/journal/explorer.go", duplication=111)
+        == "high production duplication; follow-up refactor candidate"
+    )
+
+
+def test_codacy_file_metric_row_is_sanitized_and_joinable() -> None:
+    row = metric_row(
+        {
+            "path": "go/journal/explorer.go",
+            "gradeLetter": "B",
+            "complexity": 763,
+            "duplication": 111,
+            "numberOfClones": 4,
+            "coverageWithDecimals": 78.46,
+            "linesOfCode": 2316,
+        },
+        max_ccn=12,
+    )
+
+    assert row["path"] == "go/journal/explorer.go"
+    assert row["surface"] == "go_sdk"
+    assert row["codacy_complexity"] == 763
+    assert row["local_max_ccn"] == 12
+    assert row["duplication"] == 111
+    assert "token" not in json.dumps(row).lower()

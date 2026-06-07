@@ -7,6 +7,9 @@ Last updated: 2026-06-07
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
+- SOW-0096 - Codacy Metrics And Coverage Hygiene: in progress. Exclude tests
+  from Codacy coverage reports and produce a Rust/Go file-by-file Codacy
+  complexity and duplication classification.
 
 ## Pending
 
@@ -33,6 +36,13 @@ Last updated: 2026-06-07
   cached `next_field_offset` chains when possible, and decompress only when
   facets or histogram requirements still need it; blocked until SOW-0093
   stabilizes and promotes the Explorer API.
+- SOW-0097 - Go Codacy Metric Debt Refactor: open. Follow-up from SOW-0096 to
+  reduce Go production file-size/ownership and duplication metrics only where
+  the refactor improves maintainability without hurting compatibility or
+  performance.
+- SOW-0098 - Rust Legacy Core Duplication Debt: open. Follow-up from SOW-0096
+  to analyze and reduce real Rust `jf`/`journal-core` duplication only where
+  shared primitives preserve historical compatibility and reader performance.
 
 ## Recently Closed Or Completed
 
