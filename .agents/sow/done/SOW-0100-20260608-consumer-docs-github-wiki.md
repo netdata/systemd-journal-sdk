@@ -2,11 +2,9 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: local regression repair validated; wiki backing repository
-initialized by the GitHub Wiki UI; waiting for repaired workflow validation on
-GitHub Actions.
+Sub-state: regression repaired and validated on GitHub Actions.
 
 ## Requirements
 
@@ -481,10 +479,25 @@ Validation:
   https://github.com/netdata/systemd-journal-sdk.wiki.git HEAD` returned HEAD
   `457257cfdf063daa32c689b0f927d1af5f31f0ca`.
 
-Remaining validation:
+GitHub Actions validation:
 
-- Push the repaired workflow/docs/validator changes to `master` and verify that
-  the `Publish Wiki` workflow publishes `docs/` to the now-initialized wiki.
+- Repair commit `1b5fdc1a4c70155a0f8ce50ef381ff28ae84bbb3` was pushed to
+  `master`.
+- `Publish Wiki` run `27134486131`: passed. `Validate wiki docs` and `Publish
+  docs to GitHub wiki` both completed successfully.
+- Wiki HEAD after publication:
+  `96544031d0d540c1137a415d7cea7f7ab7eab50f`.
+- Same-commit CI summary:
+  - `CodeQL` run `27134486174`: passed.
+  - `Codacy SARIF` run `27134486132`: passed.
+  - `Coverage` run `27134486232`: passed.
+  - `Code Quality: Push on master` run `27134484892`: passed.
+
+Closure note:
+
+- The repair commit kept this SOW in-progress because the final publication
+  proof required a pushed GitHub Actions run. This closure commit records the
+  successful remote evidence and moves the SOW back to `done/`.
 
 Artifact updates needed:
 
