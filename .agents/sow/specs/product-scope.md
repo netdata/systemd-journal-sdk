@@ -33,6 +33,15 @@ Netdata Rust integrations:
 - `systemd-journal-sdk-index`
 - `systemd-journal-sdk-engine`
 
+## Consumer Documentation
+
+Committed consumer documentation lives under `docs/` as GitHub wiki source.
+The docs explain package selection, reader and writer API layers, Explorer and
+Netdata-shaped query APIs, hot-path behavior, production profiles, and options
+that can make a consumer accidentally leave the optimized path. The repository
+publishes these pages to the GitHub wiki on trusted `master` pushes through the
+wiki publication workflow.
+
 ## Delivery Priority
 
 - Current exception: Rust writer parity/API work in SOW-0037 is allowed before

@@ -56,6 +56,15 @@ explicit accepted reason.
 Shared tests, interoperability matrices, corpus evaluation tooling, and
 benchmarks live under `tests/`.
 
+## Documentation
+
+Consumer documentation lives under `docs/` and is published to the repository
+GitHub wiki. Start with [docs/Home.md](docs/Home.md) for API selection,
+hot-path guidance, production profiles, and wiki publishing details.
+
+The `documentation/` directory contains project/internal operational notes.
+It is not the consumer wiki source.
+
 ## Rust Package
 
 The Rust SDK is published as the crates.io package `systemd-journal-sdk`.

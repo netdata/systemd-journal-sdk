@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: open
+Status: completed
 
-Sub-state: requirements captured; implementation not started.
+Sub-state: completed after local validation and whole-SOW reviewer rerun.
 
 ## Requirements
 
@@ -182,9 +182,21 @@ Artifact impact plan:
 
 Open-source reference evidence:
 
-- No external repository was checked yet. Implementation should inspect current
-  GitHub Actions documentation and, if useful, comparable wiki publish workflows
-  from open-source repositories.
+- GitHub documentation was checked for wiki and Actions behavior:
+  - GitHub Docs, `communities/documenting-your-project-with-wikis/about-wikis`:
+    wikis host long-form project documentation, can be edited locally, and are
+    public or private according to repository access.
+  - GitHub Docs,
+    `communities/documenting-your-project-with-wikis/adding-or-editing-wiki-pages`:
+    wikis are Git repositories and can be cloned with
+    `https://github.com/YOUR-USERNAME/YOUR-REPOSITORY.wiki.git` after the first
+    wiki page exists.
+  - GitHub Docs, `actions/concepts/security/github_token`: `GITHUB_TOKEN`
+    permissions are limited to the repository that contains the workflow.
+- Related repository pattern checked read-only:
+  - `netdata/ai-agent`, `.github/workflows/wiki-sync.yml`: checks out
+    `${{ github.repository }}.wiki` with `actions/checkout` and
+    `token: ${{ secrets.GITHUB_TOKEN }}`, with job-level `contents: write`.
 
 Open decisions:
 
@@ -245,78 +257,168 @@ Failure handling:
 
 - Created the SOW from the user's documentation and GitHub wiki publication
   request.
+- Activated the SOW for local implementation.
+- Added the committed `docs/` GitHub wiki source, wiki publication workflow,
+  and local wiki docs validator.
+- Replaced the initial dedicated-token wiki publish design with the
+  `GITHUB_TOKEN`-based wiki checkout pattern already used in `netdata/ai-agent`.
+- Added an explicit options reference page so performance-sensitive options are
+  visible in one place.
+- First reviewer pass found documentation ambiguity and workflow hardening
+  issues. Fixed policy-name mapping, Rust low-level type locations, PR-time
+  docs validation, pinned checkout actions, missing-`docs/` publish guard,
+  Node/Python performance warnings, `documentation/` vs `docs/` scope, reader
+  facade hot-path wording, Explorer anchor wording, and validator edge cases.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Pending.
+- `docs/` contains GitHub wiki source pages:
+  - `Home.md`
+  - `_Sidebar.md`
+  - `Getting-Started.md`
+  - `Rust-Crates-And-Packages.md`
+  - `Reader-APIs.md`
+  - `Writer-APIs.md`
+  - `Explorer-And-Netdata-Queries.md`
+  - `Hot-Path-Guide.md`
+  - `Production-Profiles.md`
+  - `Options-Reference.md`
+  - `Wiki-Publishing.md`
+- `.github/workflows/wiki.yml` publishes `docs/` to
+  `${{ github.repository }}.wiki` on trusted `master` pushes using the
+  `GITHUB_TOKEN` pattern already used by `netdata/ai-agent`.
+- `README.md` points consumers to `docs/Home.md`.
+- `.agents/sow/specs/product-scope.md` records `docs/` as the committed
+  consumer documentation and wiki source.
 
 Tests or equivalent validation:
 
-- Pending.
+- `python3 tests/docs/check_wiki_docs.py`: passed; validates 11 wiki Markdown
+  files.
+- Workflow YAML parse for all `.github/workflows/*.yml`: passed.
+- Sensitive/local-path scan over changed durable artifacts: passed; no raw
+  token assignments, local user path, or personal-name artifacts found.
+- `git diff --check`: passed.
 
 Real-use evidence:
 
-- Pending.
+- Full GitHub wiki publication cannot be executed locally. The workflow matches
+  the known working pattern from `netdata/ai-agent` and will be validated by
+  the first trusted `master` workflow run after merge/push.
 
 Reviewer findings:
 
-- Pending.
+- First pass, `llm-netdata-cloud/glm-5.1`: PRODUCTION GRADE with minor
+  documentation concerns. Disposition: fixed Rust low-level type location
+  wording and pinned checkout actions.
+- First pass, `llm-netdata-cloud/kimi-k2.6`: unavailable because the provider
+  returned a usage-limit error. Disposition: recorded as unavailable; no result
+  was fabricated.
+- First pass, `llm-netdata-cloud/mimo-v2.5-pro`: NOT PRODUCTION GRADE.
+  Findings: language-neutral field policy names looked like exact API names;
+  PR-time docs validation was missing; Node/Python performance warning was too
+  vague. Disposition: fixed with spec/Rust/Go policy-name mapping, split
+  validate/publish workflow jobs, and measured performance warning text.
+- First pass, `llm-netdata-cloud/minimax-m3-coder`: PRODUCTION GRADE with
+  minor recommendations. Disposition: pinned checkout actions and verified the
+  required wiki pages list already includes `_Sidebar.md`.
+- First pass, `llm-netdata-cloud/deepseek-v4-pro`: NOT PRODUCTION GRADE.
+  Findings: `SealOptions` / writer-lock Rust locations were ambiguous, checkout
+  actions were not pinned, and `documentation/` vs `docs/` scope was not clear.
+  Disposition: fixed docs and workflow.
+- First pass, `llm-netdata-cloud/qwen3.6-plus`: NOT PRODUCTION GRADE.
+  Findings: field policy names were ambiguous, wiki publish should fail before
+  wiping if `docs/` is missing, validator should handle forbidden-text and
+  query-string link edge cases, reader facade hot-path wording needed more
+  nuance, and Explorer anchor behavior was not documented. Disposition: fixed.
+- Second pass, `llm-netdata-cloud/glm-5.1`: PRODUCTION GRADE.
+  Disposition: no blocking findings; minor observations were non-blocking.
+- Second pass, `llm-netdata-cloud/kimi-k2.6`: unavailable because the provider
+  returned the same usage-limit error. Disposition: recorded as unavailable; no
+  result was fabricated.
+- Second pass, `llm-netdata-cloud/mimo-v2.5-pro`: PRODUCTION GRADE.
+  Disposition: low/info observations only; no blocking fix required.
+- Second pass, `llm-netdata-cloud/qwen3.6-plus`: PRODUCTION GRADE.
+  Disposition: low observations only; no blocking fix required.
+- Second pass, `llm-netdata-cloud/minimax-m3-coder`: PRODUCTION GRADE.
+  Disposition: minor observations only; no blocking fix required.
+- Second pass, `llm-netdata-cloud/deepseek-v4-pro`: PRODUCTION GRADE.
+  Disposition: no blocking findings; minor observations were non-blocking.
 
 Same-failure scan:
 
-- Pending.
+- Checked existing repo docs/workflows and the related `netdata/ai-agent`
+  wiki sync workflow. The relevant existing pattern uses `GITHUB_TOKEN`, not a
+  custom wiki token.
 
 Sensitive data gate:
 
-- Pending.
+- Passed. No raw secrets or local personal paths were written. The workflow
+  uses `secrets.GITHUB_TOKEN` only through `actions/checkout`.
 
 Artifact maintenance gate:
 
-- AGENTS.md: Pending.
-- Runtime project skills: Pending.
-- Specs: Pending.
-- End-user/operator docs: Pending.
-- End-user/operator skills: Pending.
-- SOW lifecycle: Pending.
-- SOW-status.md: Pending.
+- AGENTS.md: no update needed; repository-wide workflow rules did not change.
+- Runtime project skills: no update needed; release/orchestration process did
+  not change.
+- Specs: updated `.agents/sow/specs/product-scope.md`.
+- End-user/operator docs: added `docs/` wiki pages and README pointer.
+- End-user/operator skills: no output/reference skills exist for this SDK.
+- SOW lifecycle: SOW moved from `pending/` to `current/` for implementation
+  and then to `done/` for completion.
+- SOW-status.md: updated root and canonical ledgers for completed state.
 
 Specs update:
 
-- Pending.
+- Updated `.agents/sow/specs/product-scope.md` with consumer documentation and
+  wiki source contract.
 
 Project skills update:
 
-- Pending.
+- No project skill update required. This SOW adds consumer docs and a CI wiki
+  sync workflow; it does not change how future assistants perform repository
+  work beyond normal SOW artifact maintenance.
 
 End-user/operator docs update:
 
-- Pending.
+- Added 11 wiki source pages under `docs/` and linked them from `README.md`.
 
 End-user/operator skills update:
 
-- Pending.
+- No output/reference skills exist for this SDK, so none were affected.
 
 Lessons:
 
-- Pending.
+- Wiki publication workflows are easier to reason about when validation and
+  publishing are separate jobs. Pull requests should validate docs, while only
+  trusted branch events publish.
+- Consumer docs should separate language-neutral spec names from exact
+  per-language API identifiers.
 
 Follow-up mapping:
 
-- Pending.
+- No follow-up is required from this SOW. Reviewers raised only non-blocking
+  observations after the second pass.
 
 ## Outcome
 
-Pending.
+Completed. The repository now has a committed `docs/` GitHub wiki source,
+local docs validation, and a secure wiki publication workflow that validates
+pull requests and publishes from trusted non-PR events with `GITHUB_TOKEN`.
 
 ## Lessons Extracted
 
-Pending.
+- Split validation and publication jobs for documentation publishing workflows.
+  This lets pull requests prove docs health without exposing write-capable
+  publication steps.
+- Use language-neutral spec names only when the docs also show exact
+  per-language API identifiers.
 
 ## Followup
 
-None yet.
+None.
 
 ## Regression Log
 

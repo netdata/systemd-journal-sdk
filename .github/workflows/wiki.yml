@@ -1,0 +1,88 @@
+name: Publish Wiki
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - docs/**
+      - tests/docs/check_wiki_docs.py
+      - .github/workflows/wiki.yml
+  pull_request:
+    paths:
+      - docs/**
+      - tests/docs/check_wiki_docs.py
+      - .github/workflows/wiki.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wiki-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate wiki docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Validate wiki docs
+        run: python3 tests/docs/check_wiki_docs.py
+
+  publish:
+    name: Publish docs to GitHub wiki
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: validate
+    if: github.event_name != 'pull_request' && github.repository == 'netdata/systemd-journal-sdk'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Checkout wiki
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          repository: ${{ github.repository }}.wiki
+          path: wiki
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish wiki
+        run: |
+          set -euo pipefail
+
+          wiki_dir="wiki"
+          if [ ! -d docs ]; then
+            echo "docs/ is required for wiki publication." >&2
+            exit 1
+          fi
+
+          find "${wiki_dir}" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -R docs/. "${wiki_dir}/"
+
+          cd "${wiki_dir}"
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+          git add -u -- .
+          find . -mindepth 1 -maxdepth 1 ! -name .git -print0 | xargs -0 --no-run-if-empty git add --
+
+          if git diff --cached --quiet; then
+            echo "Wiki is already up to date."
+            exit 0
+          fi
+
+          git commit -m "Update consumer wiki"
+          git push
