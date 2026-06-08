@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: reopened for GitHub code-scanning stale alert closeout regression.
+Sub-state: regression repaired, validated, and closed.
 
 ## Requirements
 
@@ -608,6 +608,11 @@ Validation:
   passed.
 - `git diff --check`: passed.
 - `.agents/sow/audit.sh`: passed.
+- Repair commit `063b5e9e8d42267360b37e1f595ddc1338619246` was pushed to
+  `master`.
+- `Codacy SARIF` run `27137079004`: passed. The workflow wrote and uploaded
+  the explicit Codacy tool closeout SARIF.
+- GitHub code scanning open alert count after the closeout upload: `0`.
 
 Artifact updates needed:
 
