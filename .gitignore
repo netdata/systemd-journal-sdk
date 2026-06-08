@@ -1,6 +1,7 @@
 .local/
 *.local.md
 .cate/
+.env
 
 # Rust build artifacts
 rust/target/
