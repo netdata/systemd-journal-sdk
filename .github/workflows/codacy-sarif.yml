@@ -106,6 +106,22 @@ jobs:
           sarif_file: .local/codacy/codacy-analysis.sarif
           category: codacy-analysis-cli
 
+      - name: Write Codacy tool closeout SARIF
+        if: ${{ steps.analyze.outputs.codacy_enforce == 'true' && steps.analyze.outputs.codacy_status == '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 tests/code_scanning/write_empty_codacy_sarif.py \
+            .local/codacy/codacy-tool-closeout.sarif
+
+      - name: Upload Codacy tool closeout SARIF
+        if: ${{ steps.analyze.outputs.codacy_enforce == 'true' && steps.analyze.outputs.codacy_status == '0' }}
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: .local/codacy/codacy-tool-closeout.sarif
+          category: codacy-analysis-cli
+
       - name: Export Codacy cloud issues when token is available
         shell: bash
         env:

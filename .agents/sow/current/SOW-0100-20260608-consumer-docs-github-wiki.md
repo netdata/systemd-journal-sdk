@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: completed
+Status: in-progress
 
-Sub-state: regression repaired, validated, and closed.
+Sub-state: reopened for GitHub code-scanning stale alert closeout regression.
 
 ## Requirements
 
@@ -561,4 +561,55 @@ Artifact updates needed:
 
 - `SOW-status.md`
 - `.agents/sow/SOW-status.md`
+- This SOW regression section.
+
+### Regression - 2026-06-08 - Code Scanning Stale Tool Alerts
+
+What broke:
+
+- Final close commit `6e22884a` passed the `Codacy SARIF` workflow, but GitHub
+  code scanning still reported four open alerts:
+  - `markdownlint_MD032` in `SOW-status.md`;
+  - `markdownlint_MD022` in `SOW-status.md`;
+  - `markdownlint_MD032` in `.agents/sow/SOW-status.md`;
+  - `markdownlint_MD022` in `.agents/sow/SOW-status.md`.
+- GitHub code-scanning analysis evidence shows why they stayed open:
+  - failed commit `d0ff0462` uploaded category `codacy-analysis-cli` with tool
+    `markdownlint` and `results_count: 4`;
+  - clean commit `6e22884a` uploaded category `codacy-analysis-cli` with tool
+    `codacy-analysis` and `results_count: 0`.
+- GitHub treats those as different tools, so the clean `codacy-analysis`
+  upload did not close the stale `markdownlint` alerts.
+
+Why previous validation missed it:
+
+- The workflow passed after the Codacy Analysis CLI returned zero findings, but
+  the code-scanning alert list was not checked until after the SOW was closed.
+- The existing empty-SARIF closeout helper was only used by the no-token
+  fallback path, not by the normal clean analysis path.
+
+Repair plan:
+
+1. When enforced Codacy analysis is clean, write and upload an explicit empty
+   SARIF file for the known analyzer-specific tool names.
+2. Keep this closeout conditional on `codacy_status == 0`, so it cannot hide
+   current findings when Codacy Analysis CLI reports problems.
+3. Push and verify GitHub code scanning open alerts return to zero.
+
+Validation:
+
+- `python3 tests/docs/check_wiki_docs.py`: passed.
+- Workflow YAML parse for all `.github/workflows/*.yml`: passed.
+- `python3 tests/code_scanning/write_empty_codacy_sarif.py
+  .local/codacy/test-closeout.sarif`: passed.
+- Closeout SARIF sanity check: passed. The helper wrote 10 empty tool runs,
+  including `markdownlint`.
+- `markdownlint --disable MD013 -- SOW-status.md .agents/sow/SOW-status.md`:
+  passed.
+- `git diff --check`: passed.
+- `.agents/sow/audit.sh`: passed.
+
+Artifact updates needed:
+
+- `.github/workflows/codacy-sarif.yml`
 - This SOW regression section.
