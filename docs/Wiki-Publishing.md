@@ -66,3 +66,21 @@ files:
 ```sh
 DOCS_FORBIDDEN_TERMS="term1,term2" python3 tests/docs/check_wiki_docs.py
 ```
+
+## Internal Links
+
+Internal wiki navigation must use GitHub wiki page links:
+
+```markdown
+[[API-Overview|API Overview]]
+```
+
+Do not link internal wiki pages as Markdown files:
+
+```markdown
+[API Overview](API-Overview.md)
+```
+
+The validator rejects internal `*.md` links because they can render as
+repository file/raw-style links in the published GitHub wiki instead of wiki
+page links.

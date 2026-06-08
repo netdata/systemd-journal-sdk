@@ -48,3 +48,6 @@ these surfaces.
 Avoid depending directly on internal packages only to save compile time. That
 creates a tighter coupling to internal layering without improving runtime
 performance.
+
+See [[Rust-API|Rust API]] for examples and [[API-Overview|API Overview]] for
+the layer model.

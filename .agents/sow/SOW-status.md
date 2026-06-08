@@ -44,11 +44,10 @@ Last updated: 2026-06-08
 ## Recently Closed Or Completed
 
 - SOW-0100 - Consumer Docs And GitHub Wiki Publication: completed after
-  regression repair. The GitHub wiki was initialized and published; `Publish
-  Wiki` run `27134486131` passed, wiki HEAD is
-  `96544031d0d540c1137a415d7cea7f7ab7eab50f`, Codacy SARIF run `27137079004`
-  passed with explicit stale-tool closeout, and GitHub code scanning open
-  alert count is `0`.
+  regression repair. GitHub wiki navigation now uses `[[Target|Label]]` wiki
+  links, the wiki has professional API overview plus Rust and Go language
+  guides with examples, and the docs validator rejects production `*.md` wiki
+  links while allowing fenced anti-pattern examples.
 - SOW-0099 - Rust crates.io Publication: completed. Rust SDK packages were
   published to crates.io at `0.6.0` under `systemd-journal-sdk` and
   project-prefixed internal package names; release tags are created on the SOW

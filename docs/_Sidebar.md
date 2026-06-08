@@ -1,10 +1,13 @@
-- [Home](Home.md)
-- [Getting Started](Getting-Started.md)
-- [Rust Crates And Packages](Rust-Crates-And-Packages.md)
-- [Reader APIs](Reader-APIs.md)
-- [Writer APIs](Writer-APIs.md)
-- [Explorer And Netdata Queries](Explorer-And-Netdata-Queries.md)
-- [Hot Path Guide](Hot-Path-Guide.md)
-- [Production Profiles](Production-Profiles.md)
-- [Options Reference](Options-Reference.md)
-- [Wiki Publishing](Wiki-Publishing.md)
+- [[Home|Home]]
+- [[Getting-Started|Getting Started]]
+- [[API-Overview|API Overview]]
+- [[Rust-API|Rust API]]
+- [[Go-API|Go API]]
+- [[Rust-Crates-And-Packages|Rust Crates And Packages]]
+- [[Reader-APIs|Reader APIs]]
+- [[Writer-APIs|Writer APIs]]
+- [[Explorer-And-Netdata-Queries|Explorer And Netdata Queries]]
+- [[Hot-Path-Guide|Hot Path Guide]]
+- [[Production-Profiles|Production Profiles]]
+- [[Options-Reference|Options Reference]]
+- [[Wiki-Publishing|Wiki Publishing]]

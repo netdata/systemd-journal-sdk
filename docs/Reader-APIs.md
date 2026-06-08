@@ -1,115 +1,162 @@
 # Reader APIs
 
-## Reader Layers
+The reader API is intentionally layered. Each layer answers a different
+consumer problem and carries a different cost.
+
+## Quick Selection
+
+| Consumer Need | Rust | Go | Use This When |
+|---|---|---|---|
+| one file, scan rows | `FileReader` | `Reader` | caller owns file ordering |
+| many files, journal order | `DirectoryReader` | `DirectoryReader` | directory behaves like file-backed `journalctl` |
+| current-row payload bytes | `visit_entry_payloads` | `VisitEntryPayloads` | callback can process `FIELD=value` bytes |
+| row-lifetime DATA enumeration | `enumerate_entry_payload` | `EnumerateEntryPayload` | porting libsystemd-style DATA loops |
+| convenient maps | `get_entry` | `GetEntry` | selected rows, not hot inner loops |
+| fields and unique values | `enumerate_fields`, `visit_unique_values` | `EnumerateFields`, `VisitUnique` | use FIELD/DATA indexes |
+| libsystemd-style port | `SdJournal*` facade | `SdJournalOpen*` functions returning a facade handle | compatibility with existing call shape |
+| facets/histogram/FTS | Explorer | Explorer | log explorer or UI query |
+| Netdata function output | `journal::netdata` | Netdata function API | Netdata request/response shape |
+| integrity validation | `verify_file` | `VerifyFile` | diagnostics and corpus gates |
+
+## Data Ownership
+
+The reader has three ownership modes:
+
+- borrowed current-row bytes: fastest path for uncompressed DATA;
+- row-owned temporary bytes: used for compressed DATA that had to be
+  decompressed;
+- caller-owned maps/vectors: convenient but slower.
+
+The row-level guarantee is:
 
 ```text
-Consumer
-  |
-  +-- FileReader / DirectoryReader
-  |     idiomatic entries, metadata, matches, field and unique queries
-  |
-  +-- Payload visitor
-  |     current-entry borrowed FIELD=value bytes, low allocation
-  |
-  +-- Facade API
-  |     libsystemd-like open/seek/next/get_data/query_unique behavior
-  |
-  +-- Explorer API
-  |     filters, facets, histogram, FTS, returned rows
-  |
-  +-- Formatter / file-backed journalctl
-        text, json, export, verify, query CLI behavior
+read row
+  -> enumerate current-row payloads
+  -> use or copy payloads
+advance row
+  -> previous current-row payloads are invalid
 ```
 
-All reader paths ultimately use the same journal file parser and object access
-primitives. Choose the layer that returns exactly what the consumer needs.
+Consumers that keep values after advancing must copy them.
 
-## FileReader
+## File Reader
 
-Use `FileReader` for one journal file when the caller controls ordering and
-query shape.
+Use the file reader when the caller controls one file and wants direct access to
+entries, metadata, matches, field indexes, unique values, or Explorer.
 
-Good for:
+Good uses:
 
-- high-throughput scans;
-- exact cursor/realtime navigation;
-- direct field or unique-value queries;
-- Explorer queries on one file;
-- verification and export helpers.
+- high-throughput row scans;
+- exact cursor and realtime navigation;
+- field-name and unique-value queries;
+- single-file Explorer queries;
+- verification or export on one file.
 
-Hot-path notes:
+Performance rules:
 
-- default Rust readers use live/windowed mmap;
-- snapshot bounds are better when the caller accepts the file as it existed at
-  open time;
-- field-name enumeration should walk FIELD indexes;
-- unique-value enumeration should walk one FIELD object's DATA chain;
-- entry materialization into maps is a convenience path, not the fastest scan.
+- use snapshot bounds for query workloads that do not need appended rows;
+- use payload visitors for hot scans;
+- use field and unique APIs for index-backed metadata queries;
+- use full entry maps only for rows that will be returned or displayed.
 
-## DirectoryReader
+## Directory Reader
 
-Use `DirectoryReader` when the caller needs stock-like file-backed directory
-ordering across active and archived files.
+Use the directory reader when the caller needs stock-like ordering across active
+and archived files.
 
-Good for:
+The directory reader:
 
-- mixed directories containing regular, compact, compressed, sealed, and
-  unsealed files;
-- multi-file cursor/realtime ordering;
-- file-backed `journalctl --directory` behavior.
+- discovers journal files in the configured directory;
+- opens supported `.journal`, `.journal~`, `.journal.zst`, and
+  `.journal~.zst` files;
+- merges files in journal order;
+- supports file-backed match, seek, cursor, field, and unique behavior.
 
-Directory traversal is more expensive than one file because the reader must
-select files, merge order, and de-duplicate cross-file unique values where
-needed.
+Directory reading costs more than one file because it must merge candidate
+entries across files. Use a file reader when the consumer already knows the
+exact file.
 
 ## Payload Visitor
 
-Use payload visitors when the consumer already works with `FIELD=value` bytes.
+Payload visitors are the reader hot path when the consumer can process raw
+`FIELD=value` bytes.
 
-This path avoids:
+They avoid:
 
-- building string maps;
+- entry map allocation;
+- repeated field/value splitting unless the callback does it;
 - copying uncompressed DATA;
-- splitting values unless the callback does it;
-- materializing repeated-value structures.
+- repeated-value map materialization.
 
-Uncompressed payloads are borrowed from mmap-backed journal data where the
-language can support that safely. Compressed DATA must be decompressed into
-row-owned storage before being returned.
+Use this path for scanners, digest tools, filters that inspect only a few
+fields, and consumers that already parse `FIELD=value`.
+
+## Stateful DATA Enumeration
+
+The stateful current-row enumerator mirrors the libsystemd pattern:
+
+```text
+seek or step to row
+restart DATA enumeration
+while DATA exists:
+  read FIELD=value payload
+advance to next row
+```
+
+This is the correct compatibility path for code that used
+`SD_JOURNAL_FOREACH_DATA`.
+
+## Field Names And Unique Values
+
+Field-name enumeration and unique-value queries must use journal indexes.
+
+- Field names are stored as FIELD objects.
+- Unique values for one field are reachable from that FIELD object's DATA
+  chain.
+- Row scans for unfiltered field names or unique values are regressions unless
+  an active SOW records a compatibility fallback.
+
+Use list-return APIs only when the caller needs the full owned result set. Use
+visitor APIs when streaming is enough.
 
 ## Facade API
 
-Use the facade when porting code that expects libsystemd-style behavior:
+The facade is for ports from libsystemd or Netdata `jf`-style code.
 
-- open file, directory, or explicit file list;
+It supports:
+
+- open file, directory, or file list;
 - seek head, tail, realtime, or cursor;
-- next, previous, skip;
-- add matches, conjunctions, and disjunctions;
-- enumerate current-entry DATA;
-- enumerate fields and unique values;
-- read realtime, monotonic, seqnum, boot, and cursor metadata.
+- next, previous, and skip;
+- match groups, disjunctions, and conjunctions;
+- current-entry DATA enumeration;
+- field and unique enumeration;
+- realtime, monotonic, seqnum, cursor, and boot metadata.
 
-Current-entry facade DATA enumeration uses the same row-scoped borrowed payload
-contract as the lower-level reader path where the language can support it
-safely. The facade is compatibility-oriented in call shape, not a license to
-copy every payload.
+The facade should reuse the row-level borrowed-data contract. It should not
+copy every payload just because the call shape is libsystemd-like.
 
-New code that does not need libsystemd-compatible call shapes should still use
-the idiomatic reader or Explorer API.
+## Explorer
 
-## Export, JSON, And Text
+Explorer is not a generic row iterator. It is a query engine for log explorer
+workloads:
 
-Formatting APIs are for output generation:
+- indexed filters;
+- selected facets;
+- selected histogram;
+- optional FTS;
+- selected returned rows;
+- progress, cancellation, and timeout control.
+
+See [[Explorer-And-Netdata-Queries|Explorer And Netdata Queries]].
+
+## Formatting And Verification
+
+Formatting APIs are output boundaries:
 
 - export output uses systemd's size-prefixed binary field encoding;
 - JSON preserves UTF-8 strings and encodes binary values as byte arrays;
 - text output is display-oriented.
 
-Do not use formatters as an internal data API for high-throughput pipelines.
-They do presentation work that the hot path does not need.
-
-## Verification
-
-Verification reads the object graph to prove file integrity. It is a correctness
-tool, not a fast query path. Use it at ingestion boundaries, corpus validation,
-or diagnostics, not inside normal read loops.
+Verification reads the object graph to prove integrity. It is not a query hot
+path.

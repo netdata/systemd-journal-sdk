@@ -12,6 +12,7 @@ DOCS_DIR = REPO_ROOT / "docs"
 
 MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 WIKI_LINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
+FENCED_CODE_RE = re.compile(r"```.*?```", re.DOTALL)
 LOCAL_HOME_PATH_RE = re.compile(r"/home/[A-Za-z0-9._-]+(?:/|\b)")
 EXTRA_FORBIDDEN_TERMS = tuple(
     term.strip() for term in os.getenv("DOCS_FORBIDDEN_TERMS", "").split(",") if term.strip()
@@ -53,17 +54,15 @@ def link_target_exists(source: Path, target: str, page_names: set[str]) -> bool:
     if not target:
         return True
     if target.endswith(".md"):
-        resolved = (source.parent / target).resolve()
-        try:
-            resolved.relative_to(DOCS_DIR)
-        except ValueError:
-            return False
-        return resolved.is_file()
+        fail(
+            f"{source.relative_to(REPO_ROOT)} uses repository Markdown link "
+            f"{target!r}; use a GitHub wiki page link instead"
+        )
     return target in page_names
 
 
 def check_markdown_links(path: Path, page_names: set[str]) -> None:
-    text = path.read_text(encoding="utf-8")
+    text = FENCED_CODE_RE.sub("", path.read_text(encoding="utf-8"))
     for match in MARKDOWN_LINK_RE.finditer(text):
         target = match.group(1)
         if not link_target_exists(path, target, page_names):
@@ -71,10 +70,10 @@ def check_markdown_links(path: Path, page_names: set[str]) -> None:
 
 
 def check_wiki_links(path: Path, page_names: set[str]) -> None:
-    text = path.read_text(encoding="utf-8")
+    text = FENCED_CODE_RE.sub("", path.read_text(encoding="utf-8"))
     for match in WIKI_LINK_RE.finditer(text):
         raw = match.group(1)
-        target = raw.split("|")[-1].strip()
+        target = raw.split("|", 1)[0].strip()
         if target not in page_names:
             fail(f"{path.relative_to(REPO_ROOT)} links to missing wiki page {target!r}")
 

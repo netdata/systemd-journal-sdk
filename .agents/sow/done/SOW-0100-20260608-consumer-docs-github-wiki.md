@@ -4,7 +4,7 @@
 
 Status: completed
 
-Sub-state: regression repaired, validated, and closed.
+Sub-state: professional API documentation and wiki navigation repair completed.
 
 ## Requirements
 
@@ -617,4 +617,90 @@ Validation:
 Artifact updates needed:
 
 - `.github/workflows/codacy-sarif.yml`
+- This SOW regression section.
+
+### Regression - 2026-06-08 - Professional API Documentation And Wiki Links
+
+What broke:
+
+- The published wiki sidebar used repository-style Markdown links to `*.md`
+  files, for example `docs/_Sidebar.md` linked to `Home.md`,
+  `Getting-Started.md`, and other Markdown filenames. In the GitHub wiki this
+  rendered as links to file/raw-style pages instead of stable wiki page links.
+- The wiki documentation was too shallow for consumer API use. It described
+  broad concepts and option costs, but did not provide a professional API guide
+  that starts from the API model and then documents Rust and Go with concrete
+  examples.
+- The docs validator allowed `*.md` internal links and interpreted MediaWiki
+  links as if the part after `|` were always the target. GitHub documents wiki
+  MediaWiki syntax as `[[Nameofwikipage|Link Text]]`, so the validator could
+  accept invalid wiki-link direction.
+
+Why previous validation missed it:
+
+- The local validator checked that Markdown `*.md` targets existed under
+  `docs/`, but it did not model how GitHub wiki navigation resolves internal
+  page links.
+- The acceptance criteria required consumer documentation, but review focused
+  on the presence of hot-path and option pages, not on professional
+  language-specific API usability.
+- The workflow proved publication, not rendered-link behavior or documentation
+  depth.
+
+Repair plan:
+
+1. Replace sidebar and internal wiki navigation with GitHub wiki page links,
+   avoiding `*.md` links for internal wiki pages.
+2. Strengthen `tests/docs/check_wiki_docs.py` so internal `*.md` links fail
+   and MediaWiki links resolve `[[Target|Label]]` correctly.
+3. Add an API overview that explains the reader, writer, explorer, facade,
+   verification, and Netdata function layers.
+4. Add Rust API documentation with installation, reader, writer, Explorer,
+   Netdata wrapper, and performance examples grounded in the current Rust API.
+5. Add Go API documentation with import, reader, writer, directory writer,
+   Explorer, Netdata wrapper, and performance examples grounded in the current
+   Go API.
+6. Update existing pages to use the new structure and link model.
+7. Validate locally, publish the wiki, and verify the published sidebar links
+   resolve as GitHub wiki pages.
+
+Validation:
+
+- Official GitHub wiki documentation checked for `[[Target|Label]]` internal
+  links and `_Sidebar.md` behavior:
+  <https://docs.github.com/en/communities/documenting-your-project-with-wikis/editing-wiki-content>
+  and
+  <https://docs.github.com/en/communities/documenting-your-project-with-wikis/creating-a-footer-or-sidebar-for-your-wiki>.
+- `python3 tests/docs/check_wiki_docs.py`: passed, `validated 14 wiki markdown
+  files`.
+- `DOCS_FORBIDDEN_TERMS='private-term' python3 tests/docs/check_wiki_docs.py`:
+  passed, proving configurable forbidden-term scanning still works.
+- `rg -n "\[[^\]]+\]\([^)]*\.md(?:#[^)]*)?\)" docs`: no production wiki
+  content uses repository-style `*.md` links; the only match is the intentional
+  fenced anti-pattern example in `docs/Wiki-Publishing.md`.
+- `git diff --check`: passed.
+- `.agents/sow/audit.sh`: passed with clean verdict.
+- Reviewer status before final close:
+  - `llm-netdata-cloud/glm-5.1`: PRODUCTION GRADE; no blocker. Cosmetic
+    source-order note for `FieldNamePolicy` addressed.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: PRODUCTION GRADE; no blocker. Go
+    standard-library import context added.
+  - `llm-netdata-cloud/qwen3.6-plus`: PRODUCTION GRADE; no blocker. SOW
+    validation ledger updated with the three new API pages.
+  - `llm-netdata-cloud/deepseek-v4-pro`: PRODUCTION GRADE; no blocker.
+  - `llm-netdata-cloud/kimi-k2.6`: unavailable due provider quota.
+  - `llm-netdata-cloud/minimax-m3-coder`: partial read-only review remained
+    running beyond useful output and was stopped by exact PID after it created
+    temporary validator probe files despite the read-only prompt. Concrete
+    findings were the expected in-progress validation state and imprecise Go
+    facade wording; both were addressed before close.
+- New professional API pages are included in the validation scope:
+  `docs/API-Overview.md`, `docs/Rust-API.md`, and `docs/Go-API.md`.
+
+Artifact updates needed:
+
+- `docs/`
+- `tests/docs/check_wiki_docs.py`
+- `.agents/sow/SOW-status.md`
+- `SOW-status.md`
 - This SOW regression section.

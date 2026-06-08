@@ -82,4 +82,4 @@ Benchmark the API path the consumer will actually use. A benchmark using raw
 append, debug traversal, all-values mode, or full entry materialization is not
 evidence for a structured producer, normal Explorer query, or payload visitor.
 
-For option-by-option behavior, see [Options Reference](Options-Reference.md).
+For option-by-option behavior, see [[Options-Reference|Options Reference]].
