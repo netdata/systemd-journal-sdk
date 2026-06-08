@@ -1,5 +1,6 @@
 [package]
 name = "adapter"
+publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,7 +12,7 @@ name = "adapter"
 path = "main.rs"
 
 [dependencies]
-journal = { path = "../journal" }
+journal = { package = "systemd-journal-sdk", path = "../journal" }
 journal-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -1,9 +1,19 @@
 [package]
-license = "GPL-3.0-or-later"
-name = "journal-index"
+name = "systemd-journal-sdk-index"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "Index structures and query helpers for the pure Rust systemd journal SDK"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/systemd-journal-sdk-index"
+readme = "../../../README.md"
+keywords = ["systemd", "journal", "logging", "sdk"]
+categories = ["filesystem", "parser-implementations"]
+
+[lib]
+name = "journal_index"
 
 [lints]
 workspace = true

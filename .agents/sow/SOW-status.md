@@ -1,12 +1,16 @@
 # SOW Status
 
-Last updated: 2026-06-07
+Last updated: 2026-06-08
 
 ## Current
 
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
+- SOW-0099 - Rust crates.io Publication: paused. Rust package publishing is
+  publish-ready under project-prefixed crates.io names with `0.6.0` as the
+  target release version; publication is blocked only by missing Cargo registry
+  credentials in this environment.
 
 ## Pending
 

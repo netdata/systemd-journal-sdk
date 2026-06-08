@@ -1,5 +1,6 @@
 [package]
 name = "journalctl"
+publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,7 +12,7 @@ name = "journalctl"
 path = "main.rs"
 
 [dependencies]
-journal = { path = "../../journal" }
+journal = { package = "systemd-journal-sdk", path = "../../journal" }
 clap = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }

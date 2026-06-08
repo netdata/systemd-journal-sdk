@@ -1,5 +1,6 @@
 [package]
 name = "livewriter"
+publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,6 +9,6 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
-journal = { path = "../../../journal" }
-journal-core = { path = "../../../crates/journal-core" }
+journal = { package = "systemd-journal-sdk", path = "../../../journal" }
+journal-core.workspace = true
 uuid.workspace = true

@@ -1,10 +1,19 @@
 [package]
-name = "journal"
+name = "systemd-journal-sdk"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 description = "Pure-Rust systemd journal reader and writer SDK"
 license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/systemd-journal-sdk"
+readme = "../../README.md"
+keywords = ["systemd", "journal", "logging", "sdk"]
+categories = ["filesystem", "parser-implementations"]
+
+[lib]
+name = "journal"
 
 [dependencies]
 # Internal crates

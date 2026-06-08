@@ -55,3 +55,24 @@ explicit accepted reason.
 
 Shared tests, interoperability matrices, corpus evaluation tooling, and
 benchmarks live under `tests/`.
+
+## Rust Package
+
+The Rust SDK is published as the crates.io package `systemd-journal-sdk`.
+Consumers that want the existing `journal::...` crate path should use a Cargo
+dependency alias:
+
+```toml
+[dependencies]
+journal = { package = "systemd-journal-sdk", version = "0.6.0" }
+```
+
+Advanced Rust consumers that need lower-level building blocks can also depend
+on the project-prefixed internal packages:
+
+- `systemd-journal-sdk-common`
+- `systemd-journal-sdk-core`
+- `systemd-journal-sdk-registry`
+- `systemd-journal-sdk-log-writer`
+- `systemd-journal-sdk-index`
+- `systemd-journal-sdk-engine`

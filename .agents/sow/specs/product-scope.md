@@ -11,6 +11,28 @@ This project produces pure SDKs and file-backed journalctl-compatible tools for 
 - Node.js
 - Python
 
+## Rust Registry Packages
+
+The Rust SDK's public crates.io package is `systemd-journal-sdk`. Consumers may
+alias it as `journal` in Cargo dependencies to keep the existing
+`journal::...` source path:
+
+```toml
+[dependencies]
+journal = { package = "systemd-journal-sdk", version = "0.6.0" }
+```
+
+The Rust workspace also publishes lower-level project-prefixed packages for
+consumers that need the same internal layers used by the SDK and by current
+Netdata Rust integrations:
+
+- `systemd-journal-sdk-common`
+- `systemd-journal-sdk-core`
+- `systemd-journal-sdk-registry`
+- `systemd-journal-sdk-log-writer`
+- `systemd-journal-sdk-index`
+- `systemd-journal-sdk-engine`
+
 ## Delivery Priority
 
 - Current exception: Rust writer parity/API work in SOW-0037 is allowed before

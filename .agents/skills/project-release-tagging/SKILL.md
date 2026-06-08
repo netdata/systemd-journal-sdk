@@ -28,6 +28,14 @@ Use this skill when:
   example `go/v0.2.0`.
 - The root release tag and the Go submodule release tag must point to the same
   commit unless a SOW records a deliberate split release decision.
+- Rust crates.io publication uses project-prefixed package names. The public
+  SDK package is `systemd-journal-sdk`; lower-level packages are
+  `systemd-journal-sdk-common`, `systemd-journal-sdk-registry`,
+  `systemd-journal-sdk-core`, `systemd-journal-sdk-log-writer`,
+  `systemd-journal-sdk-index`, and `systemd-journal-sdk-engine`.
+- Rust crates must be publish-dry-run and published in dependency order:
+  common, registry, core, log-writer, index, engine, public SDK. If a SOW
+  changes dependencies, update the order in that SOW and this skill.
 - Go's module reference defines this rule: if a module is defined in a
   repository subdirectory, the semantic version tag name is prefixed with the
   module subdirectory followed by `/`.
@@ -81,6 +89,32 @@ Use this skill when:
 
 9. Report the peeled tag commit hashes to the user.
 
+## Rust crates.io Workflow
+
+Before publishing Rust crates:
+
+1. Verify `rust/Cargo.toml` workspace package version matches the intended
+   release.
+2. Verify publishable internal dependencies include both `package = ...` and
+   `version = ...` so Cargo can replace path dependencies with registry
+   dependencies.
+3. Run `cargo publish --dry-run` for each publishable package in dependency
+   order:
+
+   ```bash
+   cargo publish --manifest-path rust/src/crates/journal-common/Cargo.toml --dry-run
+   cargo publish --manifest-path rust/src/crates/journal-registry/Cargo.toml --dry-run
+   cargo publish --manifest-path rust/src/crates/journal-core/Cargo.toml --dry-run
+   cargo publish --manifest-path rust/src/crates/journal-log-writer/Cargo.toml --dry-run
+   cargo publish --manifest-path rust/src/crates/journal-index/Cargo.toml --dry-run
+   cargo publish --manifest-path rust/src/crates/journal-engine/Cargo.toml --dry-run
+   cargo publish --manifest-path rust/src/journal/Cargo.toml --dry-run
+   ```
+
+4. Publish in the same dependency order only after dry-runs pass and the SOW
+   review gate is satisfied.
+5. Never record crates.io tokens or credential details in durable artifacts.
+
 ## Validation Checklist
 
 - Root tag exists locally and remotely.
@@ -88,6 +122,10 @@ Use this skill when:
 - Both peeled tag targets are the same commit.
 - The branch containing that commit is pushed.
 - `git status --short --branch` is clean after release work.
+- Rust crates.io dry-runs pass for all publishable Rust packages when Rust
+  packages are part of the release.
+- Rust package publication is recorded in the SOW with package names and
+  versions, without credential details.
 
 ## Evidence
 

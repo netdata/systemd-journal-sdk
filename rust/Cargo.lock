@@ -4,14 +4,14 @@ version = 4
 
 [[package]]
 name = "adapter"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
- "journal",
- "journal-core",
  "ruzstd",
  "serde",
  "serde_json",
+ "systemd-journal-sdk",
+ "systemd-journal-sdk-core",
  "tempfile",
  "uuid",
  "walkdir",
@@ -403,41 +403,41 @@ dependencies = [
 
 [[package]]
 name = "corpus_digest"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "clap",
- "journal",
  "serde_json",
  "sha2 0.10.9",
+ "systemd-journal-sdk",
 ]
 
 [[package]]
 name = "corpus_experiment"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "clap",
  "hex",
- "journal",
- "journal-core",
- "journal-registry",
  "serde_json",
  "sha2 0.10.9",
+ "systemd-journal-sdk",
+ "systemd-journal-sdk-core",
+ "systemd-journal-sdk-registry",
  "uuid",
  "walkdir",
 ]
 
 [[package]]
 name = "corpus_regenerate"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "clap",
- "journal",
- "journal-core",
- "journal-registry",
  "serde_json",
+ "systemd-journal-sdk",
+ "systemd-journal-sdk-core",
+ "systemd-journal-sdk-registry",
  "uuid",
 ]
 
@@ -559,15 +559,15 @@ dependencies = [
 
 [[package]]
 name = "dataset_ingester"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "base64",
  "clap",
- "journal-core",
- "journal-registry",
  "serde",
  "serde_json",
+ "systemd-journal-sdk-core",
+ "systemd-journal-sdk-registry",
  "uuid",
 ]
 
@@ -623,7 +623,7 @@ dependencies = [
 
 [[package]]
 name = "error"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "static_assertions",
  "thiserror",
@@ -1164,172 +1164,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "journal"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "hex",
- "hmac",
- "journal-common",
- "journal-core",
- "journal-log-writer",
- "journal-registry",
- "libc",
- "lz4_flex",
- "lzma-rust2",
- "memmap2",
- "ouroboros",
- "ruzstd",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror",
- "uuid",
- "walkdir",
-]
-
-[[package]]
-name = "journal-common"
-version = "0.1.0"
-dependencies = [
- "allocative",
- "libc",
- "rustc-hash",
- "serde",
- "uuid",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "journal-core"
-version = "0.1.0"
-dependencies = [
- "allocative",
- "anyhow",
- "chrono",
- "clap",
- "crossbeam-channel",
- "hashers",
- "hex",
- "hmac",
- "journal-common",
- "journal-registry",
- "libc",
- "lz4_flex",
- "lzma-rust2",
- "md5",
- "memmap2",
- "notify",
- "num-bigint",
- "parking_lot",
- "rand 0.9.4",
- "rayon",
- "regex",
- "rustc-hash",
- "ruzstd",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "siphasher",
- "static_assertions",
- "tempfile",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "twox-hash",
- "uuid",
- "walkdir",
- "windows-sys 0.61.2",
- "zerocopy 0.9.0-alpha.0",
- "zstd",
-]
-
-[[package]]
-name = "journal-engine"
-version = "0.1.0"
-dependencies = [
- "allocative",
- "async-stream",
- "async-trait",
- "chrono",
- "foyer",
- "futures",
- "journal-common",
- "journal-core",
- "journal-index",
- "journal-registry",
- "lru",
- "parking_lot",
- "rayon",
- "serde",
- "serde_json",
- "static_assertions",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "journal-index"
-version = "0.1.0"
-dependencies = [
- "allocative",
- "journal-common",
- "journal-core",
- "journal-registry",
- "regex",
- "roaring",
- "serde",
- "static_assertions",
- "tempfile",
- "thiserror",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "journal-log-writer"
-version = "0.1.0"
-dependencies = [
- "itoa",
- "journal-common",
- "journal-core",
- "journal-registry",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "journal-registry"
-version = "0.1.0"
-dependencies = [
- "allocative",
- "journal-common",
- "notify",
- "parking_lot",
- "serde",
- "tempfile",
- "thiserror",
- "tokio",
- "tracing",
- "uuid",
- "walkdir",
-]
-
-[[package]]
 name = "journal_file"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "error",
  "hashers",
@@ -1346,7 +1182,7 @@ dependencies = [
 
 [[package]]
 name = "journal_reader_ffi"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "cbindgen",
  "error",
@@ -1359,15 +1195,15 @@ dependencies = [
 
 [[package]]
 name = "journalctl"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "chrono",
  "clap",
  "hex",
- "journal",
- "journal-core",
  "ruzstd",
+ "systemd-journal-sdk",
+ "systemd-journal-sdk-core",
  "tempfile",
  "uuid",
 ]
@@ -1442,12 +1278,12 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "livewriter"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "clap",
- "journal",
- "journal-core",
+ "systemd-journal-sdk",
+ "systemd-journal-sdk-core",
  "uuid",
 ]
 
@@ -1633,12 +1469,12 @@ dependencies = [
 
 [[package]]
 name = "netdata_function_wrapper"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "clap",
- "journal",
  "serde_json",
+ "systemd-journal-sdk",
 ]
 
 [[package]]
@@ -1970,13 +1806,13 @@ dependencies = [
 
 [[package]]
 name = "reader_core_bench"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "clap",
- "journal",
- "journal-core",
  "serde_json",
+ "systemd-journal-sdk",
+ "systemd-journal-sdk-core",
 ]
 
 [[package]]
@@ -2183,7 +2019,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "sigbus"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "error",
  "libc",
@@ -2286,6 +2122,170 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "systemd-journal-sdk"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "hex",
+ "hmac",
+ "libc",
+ "lz4_flex",
+ "lzma-rust2",
+ "memmap2",
+ "ouroboros",
+ "ruzstd",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "systemd-journal-sdk-common",
+ "systemd-journal-sdk-core",
+ "systemd-journal-sdk-log-writer",
+ "systemd-journal-sdk-registry",
+ "tempfile",
+ "thiserror",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
+name = "systemd-journal-sdk-common"
+version = "0.6.0"
+dependencies = [
+ "allocative",
+ "libc",
+ "rustc-hash",
+ "serde",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "systemd-journal-sdk-core"
+version = "0.6.0"
+dependencies = [
+ "allocative",
+ "anyhow",
+ "chrono",
+ "clap",
+ "crossbeam-channel",
+ "hashers",
+ "hex",
+ "hmac",
+ "libc",
+ "lz4_flex",
+ "lzma-rust2",
+ "md5",
+ "memmap2",
+ "notify",
+ "num-bigint",
+ "parking_lot",
+ "rand 0.9.4",
+ "rayon",
+ "regex",
+ "rustc-hash",
+ "ruzstd",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "siphasher",
+ "static_assertions",
+ "systemd-journal-sdk-common",
+ "systemd-journal-sdk-registry",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "twox-hash",
+ "uuid",
+ "walkdir",
+ "windows-sys 0.61.2",
+ "zerocopy 0.9.0-alpha.0",
+ "zstd",
+]
+
+[[package]]
+name = "systemd-journal-sdk-engine"
+version = "0.6.0"
+dependencies = [
+ "allocative",
+ "async-stream",
+ "async-trait",
+ "chrono",
+ "foyer",
+ "futures",
+ "lru",
+ "parking_lot",
+ "rayon",
+ "serde",
+ "serde_json",
+ "static_assertions",
+ "systemd-journal-sdk-common",
+ "systemd-journal-sdk-core",
+ "systemd-journal-sdk-index",
+ "systemd-journal-sdk-registry",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "systemd-journal-sdk-index"
+version = "0.6.0"
+dependencies = [
+ "allocative",
+ "regex",
+ "roaring",
+ "serde",
+ "static_assertions",
+ "systemd-journal-sdk-common",
+ "systemd-journal-sdk-core",
+ "systemd-journal-sdk-registry",
+ "tempfile",
+ "thiserror",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "systemd-journal-sdk-log-writer"
+version = "0.6.0"
+dependencies = [
+ "itoa",
+ "serde",
+ "serde_json",
+ "systemd-journal-sdk-common",
+ "systemd-journal-sdk-core",
+ "systemd-journal-sdk-registry",
+ "tempfile",
+ "thiserror",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "systemd-journal-sdk-registry"
+version = "0.6.0"
+dependencies = [
+ "allocative",
+ "notify",
+ "parking_lot",
+ "serde",
+ "systemd-journal-sdk-common",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+ "walkdir",
 ]
 
 [[package]]
@@ -2721,7 +2721,7 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "window_manager"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "error",
  "memmap2",
@@ -3053,14 +3053,14 @@ dependencies = [
 
 [[package]]
 name = "writer_core_bench"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "clap",
- "journal-core",
- "journal-log-writer",
- "journal-registry",
  "serde_json",
+ "systemd-journal-sdk-core",
+ "systemd-journal-sdk-log-writer",
+ "systemd-journal-sdk-registry",
  "uuid",
 ]
 

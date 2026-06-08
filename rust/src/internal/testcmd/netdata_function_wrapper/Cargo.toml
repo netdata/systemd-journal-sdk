@@ -1,5 +1,6 @@
 [package]
 name = "netdata_function_wrapper"
+publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,5 +9,5 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-journal = { path = "../../../journal" }
+journal = { package = "systemd-journal-sdk", path = "../../../journal" }
 serde_json.workspace = true

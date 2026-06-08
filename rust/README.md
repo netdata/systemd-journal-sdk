@@ -4,6 +4,26 @@ This workspace contains pure-Rust systemd journal reader and writer components.
 It does not link to libsystemd or other system journal libraries for SDK
 behavior.
 
+## crates.io Usage
+
+The public Rust SDK package is `systemd-journal-sdk`. Use a Cargo dependency
+alias if existing code should import it as `journal`:
+
+```toml
+[dependencies]
+journal = { package = "systemd-journal-sdk", version = "0.6.0" }
+```
+
+The workspace also publishes project-prefixed lower-level packages for
+consumers that need direct access to the same internal layers used by the SDK:
+
+- `systemd-journal-sdk-common`
+- `systemd-journal-sdk-core`
+- `systemd-journal-sdk-registry`
+- `systemd-journal-sdk-log-writer`
+- `systemd-journal-sdk-index`
+- `systemd-journal-sdk-engine`
+
 Current writer scope:
 
 - regular journal files by default and compact journal files with

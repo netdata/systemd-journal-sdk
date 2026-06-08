@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-06-07
+Last updated: 2026-06-08
 
 This root file is a short convenience index. The canonical detailed SOW ledger
 is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
@@ -8,6 +8,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 ## Current
 
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
+- `SOW-0099-20260608-rust-crates-io-publication.md` - paused. Rust crates.io publication is publish-ready under `systemd-journal-sdk` and project-prefixed internal package names; publication is blocked only by missing Cargo registry credentials in this environment.
 
 ## Pending
 

@@ -1,9 +1,19 @@
 [package]
-license = "GPL-3.0-or-later"
-name = "journal-log-writer"
+name = "systemd-journal-sdk-log-writer"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "High-level pure Rust systemd journal directory writer"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/systemd-journal-sdk-log-writer"
+readme = "../../../README.md"
+keywords = ["systemd", "journal", "logging", "sdk"]
+categories = ["filesystem", "parser-implementations"]
+
+[lib]
+name = "journal_log_writer"
 
 [lints]
 workspace = true

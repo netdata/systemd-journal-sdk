@@ -1,9 +1,19 @@
 [package]
-license = "GPL-3.0-or-later"
-name = "journal-engine"
+name = "systemd-journal-sdk-engine"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+description = "Async query engine components for the pure Rust systemd journal SDK"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/systemd-journal-sdk-engine"
+readme = "../../../README.md"
+keywords = ["systemd", "journal", "logging", "sdk"]
+categories = ["filesystem", "parser-implementations"]
+
+[lib]
+name = "journal_engine"
 
 [lints]
 workspace = true
