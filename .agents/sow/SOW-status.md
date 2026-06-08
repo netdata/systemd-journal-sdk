@@ -7,9 +7,6 @@ Last updated: 2026-06-08
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
-- SOW-0100 - Consumer Docs And GitHub Wiki Publication: in-progress regression
-  repair. The post-closure Codacy SARIF run failed on markdownlint spacing in
-  the SOW status ledgers.
 
 ## Pending
 
@@ -46,6 +43,12 @@ Last updated: 2026-06-08
 
 ## Recently Closed Or Completed
 
+- SOW-0100 - Consumer Docs And GitHub Wiki Publication: completed after
+  regression repair. The GitHub wiki was initialized and published; `Publish
+  Wiki` run `27134486131` passed, wiki HEAD is
+  `96544031d0d540c1137a415d7cea7f7ab7eab50f`, and post-closure Codacy
+  markdownlint regression repair commit `4bdfa098` passed `Codacy SARIF` run
+  `27135538465`.
 - SOW-0099 - Rust crates.io Publication: completed. Rust SDK packages were
   published to crates.io at `0.6.0` under `systemd-journal-sdk` and
   project-prefixed internal package names; release tags are created on the SOW

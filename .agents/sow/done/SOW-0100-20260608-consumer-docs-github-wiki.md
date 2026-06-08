@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: reopened for post-closure Codacy SARIF markdownlint regression.
+Sub-state: regression repaired, validated, and closed.
 
 ## Requirements
 
@@ -549,6 +549,13 @@ Validation:
   passed. `MD013` is disabled for this local spot check because the failed
   Codacy SARIF run did not enable/report line-length findings; the repaired
   failure class was heading/list blank-line spacing.
+- Repair commit `4bdfa0984f695a151c6ee94f8b217b3bc777f370` was pushed to
+  `master`.
+- `Codacy SARIF` run `27135538465`: passed. The `Generate Codacy SARIF` step
+  completed successfully and the `Fail on Codacy analysis findings` step was
+  skipped because no local Codacy Analysis CLI findings were reported.
+- `CodeQL` run `27135538488`: passed.
+- `Code Quality: Push on master` run `27135537592`: passed.
 
 Artifact updates needed:
 

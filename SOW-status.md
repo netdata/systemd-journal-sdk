@@ -8,7 +8,6 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 ## Current
 
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
-- `SOW-0100-20260608-consumer-docs-github-wiki.md` - in-progress regression repair. The post-closure Codacy SARIF run failed on markdownlint spacing in the SOW status ledgers.
 
 ## Pending
 
@@ -24,6 +23,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Done
 
+- `SOW-0100-20260608-consumer-docs-github-wiki.md` - completed after regression repair. The GitHub wiki was initialized and published; `Publish Wiki` run `27134486131` passed, wiki HEAD is `96544031d0d540c1137a415d7cea7f7ab7eab50f`, and post-closure Codacy markdownlint regression repair commit `4bdfa098` passed `Codacy SARIF` run `27135538465`.
 - `SOW-0099-20260608-rust-crates-io-publication.md` - completed. Rust SDK packages were published to crates.io at `0.6.0` under `systemd-journal-sdk` plus project-prefixed internal package names; release tags are created on the SOW close commit.
 - `SOW-0096-20260607-codacy-metrics-and-coverage-hygiene.md` - completed. Go and Rust coverage reports now remove test/test-harness paths before Codacy upload, the Rust/Go Codacy metrics audit is committed, GitHub code scanning has zero open alerts on final implementation commit `7e3d3e5d`, Codacy reports `issuesCount = 0`, coverage `73%`, complexity `46%`, and duplication `30%`; remaining production metric debt is tracked by SOW-0097 and SOW-0098.
 - `SOW-0084-20260602-code-scanning-and-codacy-gate.md` - completed after regression repair. GitHub CodeQL alert `3341` is closed on head `1d7006ae`; GitHub code scanning has zero open alerts; Codacy Cloud reports `issuesCount = 0` and `codacy issues` returns zero issues on the same head.
