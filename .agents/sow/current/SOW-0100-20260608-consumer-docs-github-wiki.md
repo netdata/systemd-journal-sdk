@@ -2,9 +2,11 @@
 
 ## Status
 
-Status: completed
+Status: in-progress
 
-Sub-state: completed after local validation and whole-SOW reviewer rerun.
+Sub-state: local regression repair validated; wiki backing repository
+initialized by the GitHub Wiki UI; waiting for repaired workflow validation on
+GitHub Actions.
 
 ## Requirements
 
@@ -422,4 +424,71 @@ None.
 
 ## Regression Log
 
-None yet.
+### Regression - 2026-06-08
+
+What broke:
+
+- The `Publish Wiki` workflow on commit `c5caa984` failed in the `Checkout
+  wiki` step. GitHub Actions log evidence from run `27128997916` shows
+  `fatal: repository 'https://github.com/netdata/systemd-journal-sdk.wiki/' not
+  found`.
+- GitHub repository metadata reports `hasWikiEnabled: true`, so the wiki feature
+  is enabled, but the backing `.wiki` repository had not been initialized.
+- The docs validator contained a hardcoded personal-name forbidden term, used
+  `Path.resolve()` without ensuring Markdown links stay under `docs/`, and
+  reported forbidden-text failures without enough category/line context.
+
+Why previous validation missed it:
+
+- Local validation could prove `docs/` contents and workflow syntax, but could
+  not prove that the remote GitHub wiki repository existed.
+- The workflow used `actions/checkout` for `${{ github.repository }}.wiki`,
+  which cannot create the initial wiki repository when it is missing.
+- Reviewer checks focused on credential and PR safety, but did not require the
+  publish path to detect and report an uninitialized wiki repository before the
+  checkout step failed.
+
+Repair plan:
+
+1. Replace the wiki checkout step with an authenticated shell clone and an
+   explicit preflight check for the backing `.wiki` repository.
+2. Fail with a clear setup error when GitHub reports that the wiki feature is
+   enabled but the backing wiki Git repository has not been initialized by the
+   first Wiki UI page.
+3. Push with an ephemeral `GITHUB_TOKEN` authorization header instead of storing
+   a tokenized remote URL.
+4. Remove hardcoded personal terms from the validator and support optional
+   comma-separated forbidden terms through `DOCS_FORBIDDEN_TERMS`.
+5. Restrict `.md` link targets to paths under `docs/`.
+6. Improve forbidden-text diagnostics with category and line number, without
+   printing the matched sensitive text.
+7. Record that GitHub UI first-page creation is the remaining external setup
+   requirement if the wiki repository is still missing.
+
+Validation:
+
+- `python3 tests/docs/check_wiki_docs.py`: passed.
+- `DOCS_FORBIDDEN_TERMS='private-term' python3
+  tests/docs/check_wiki_docs.py`: passed.
+- Markdown path-containment probe for `docs/Home.md` links: passed; valid
+  in-docs links are accepted and `../README.md` plus `/etc/passwd` are
+  rejected.
+- Workflow YAML parse for all `.github/workflows/*.yml`: passed.
+- `git diff --check`: passed.
+- `.agents/sow/audit.sh`: passed.
+- Remote wiki preflight after one-time GitHub Wiki UI initialization: passed.
+  Authenticated `git ls-remote
+  https://github.com/netdata/systemd-journal-sdk.wiki.git HEAD` returned HEAD
+  `457257cfdf063daa32c689b0f927d1af5f31f0ca`.
+
+Remaining validation:
+
+- Push the repaired workflow/docs/validator changes to `master` and verify that
+  the `Publish Wiki` workflow publishes `docs/` to the now-initialized wiki.
+
+Artifact updates needed:
+
+- `.github/workflows/wiki.yml`
+- `tests/docs/check_wiki_docs.py`
+- `docs/Wiki-Publishing.md`
+- SOW status ledgers and this regression section.

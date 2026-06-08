@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -11,7 +12,18 @@ DOCS_DIR = REPO_ROOT / "docs"
 
 MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 WIKI_LINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
-FORBIDDEN_RE = re.compile(r"(/home/[A-Za-z0-9._-]+(?:/|\b)|\bcosta\b)", re.IGNORECASE)
+LOCAL_HOME_PATH_RE = re.compile(r"/home/[A-Za-z0-9._-]+(?:/|\b)")
+EXTRA_FORBIDDEN_TERMS = tuple(
+    term.strip() for term in os.getenv("DOCS_FORBIDDEN_TERMS", "").split(",") if term.strip()
+)
+EXTRA_FORBIDDEN_RE = (
+    re.compile(
+        r"\b(?:%s)\b" % "|".join(re.escape(term) for term in EXTRA_FORBIDDEN_TERMS),
+        re.IGNORECASE,
+    )
+    if EXTRA_FORBIDDEN_TERMS
+    else None
+)
 
 
 def fail(message: str) -> None:
@@ -41,7 +53,12 @@ def link_target_exists(source: Path, target: str, page_names: set[str]) -> bool:
     if not target:
         return True
     if target.endswith(".md"):
-        return (source.parent / target).resolve().is_file()
+        resolved = (source.parent / target).resolve()
+        try:
+            resolved.relative_to(DOCS_DIR)
+        except ValueError:
+            return False
+        return resolved.is_file()
     return target in page_names
 
 
@@ -64,9 +81,20 @@ def check_wiki_links(path: Path, page_names: set[str]) -> None:
 
 def check_forbidden_text(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
-    match = FORBIDDEN_RE.search(text)
-    if match:
-        fail(f"{path.relative_to(REPO_ROOT)} contains forbidden local/private text")
+    checks = (
+        ("local home path", LOCAL_HOME_PATH_RE),
+        ("configured forbidden term", EXTRA_FORBIDDEN_RE),
+    )
+    for label, pattern in checks:
+        if pattern is None:
+            continue
+        match = pattern.search(text)
+        if match:
+            line = text.count("\n", 0, match.start()) + 1
+            fail(
+                f"{path.relative_to(REPO_ROOT)} contains forbidden local/private "
+                f"text ({label}) on line {line}"
+            )
 
 
 def main() -> int:

@@ -52,22 +52,33 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Checkout wiki
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          repository: ${{ github.repository }}.wiki
-          path: wiki
-          token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Publish wiki
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
           wiki_dir="wiki"
+          wiki_url="https://github.com/${GITHUB_REPOSITORY}.wiki.git"
+          auth_header="$(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 | tr -d '\n')"
+
           if [ ! -d docs ]; then
             echo "docs/ is required for wiki publication." >&2
             exit 1
           fi
+
+          rm -rf "${wiki_dir}"
+          if ! git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}" \
+            ls-remote "${wiki_url}" HEAD >/dev/null; then
+            {
+              echo "::error::GitHub wiki repository is not initialized."
+              echo "Enable the Wiki feature and create the first page from the GitHub Wiki UI once."
+              echo "After the first page exists, rerun this workflow."
+            } >&2
+            exit 1
+          fi
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}" \
+            clone --depth=1 "${wiki_url}" "${wiki_dir}"
 
           find "${wiki_dir}" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
           cp -R docs/. "${wiki_dir}/"
@@ -85,4 +96,5 @@ jobs:
           fi
 
           git commit -m "Update consumer wiki"
-          git push
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}" \
+            push origin HEAD:master

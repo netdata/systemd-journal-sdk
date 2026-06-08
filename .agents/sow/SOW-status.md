@@ -7,6 +7,12 @@ Last updated: 2026-06-08
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
+- SOW-0100 - Consumer Docs And GitHub Wiki Publication: in-progress regression
+  repair. The first wiki publish workflow failed because the GitHub wiki
+  repository was enabled but not initialized; repair adds a clear publish
+  preflight, setup instructions, and validator hygiene fixes. Local validation
+  is clean and the wiki backing repository has been initialized; closure is
+  pending repaired GitHub Actions publish validation.
 
 ## Pending
 
@@ -43,11 +49,6 @@ Last updated: 2026-06-08
 
 ## Recently Closed Or Completed
 
-- SOW-0100 - Consumer Docs And GitHub Wiki Publication: completed. Added
-  committed `docs/` GitHub wiki source, a PR-safe validator/publish workflow
-  using `GITHUB_TOKEN`, local docs validation, and consumer documentation for
-  SDK API layers, hot paths, performance-sensitive options, production
-  recommendations, and anti-patterns.
 - SOW-0099 - Rust crates.io Publication: completed. Rust SDK packages were
   published to crates.io at `0.6.0` under `systemd-journal-sdk` and
   project-prefixed internal package names; release tags are created on the SOW
