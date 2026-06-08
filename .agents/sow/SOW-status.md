@@ -7,10 +7,6 @@ Last updated: 2026-06-08
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
-- SOW-0099 - Rust crates.io Publication: paused. Rust package publishing is
-  publish-ready under project-prefixed crates.io names with `0.6.0` as the
-  target release version; publication is blocked only by missing Cargo registry
-  credentials in this environment.
 
 ## Pending
 
@@ -44,9 +40,17 @@ Last updated: 2026-06-08
 - SOW-0098 - Rust Legacy Core Duplication Debt: open. Follow-up from SOW-0096
   to analyze and reduce real Rust `jf`/`journal-core` duplication only where
   shared primitives preserve historical compatibility and reader performance.
+- SOW-0100 - Consumer Docs And GitHub Wiki Publication: open. Add committed
+  `docs/` GitHub wiki source, publish it to the GitHub wiki on trusted
+  `master` merges, and document SDK API layers, hot paths, performance-sensitive
+  options, production recommendations, and anti-patterns.
 
 ## Recently Closed Or Completed
 
+- SOW-0099 - Rust crates.io Publication: completed. Rust SDK packages were
+  published to crates.io at `0.6.0` under `systemd-journal-sdk` and
+  project-prefixed internal package names; release tags are created on the SOW
+  close commit.
 - SOW-0096 - Codacy Metrics And Coverage Hygiene: completed. Go and Rust
   coverage reports now remove test/test-harness paths before Codacy upload;
   Python and Node.js coverage were verified source-scoped. The Rust/Go

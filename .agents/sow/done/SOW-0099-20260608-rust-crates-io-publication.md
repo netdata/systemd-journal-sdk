@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: paused
+Status: completed
 
-Sub-state: publish-ready; blocked on crates.io credentials.
+Sub-state: published to crates.io; release tags pending commit/tag push.
 
 ## Requirements
 
@@ -42,10 +42,8 @@ Inferences:
 
 Unknowns:
 
-- Whether valid crates.io credentials are available in this environment.
-- Whether crates.io will accept every package name at publish time. The local
-  index says the names are currently unused, but publish-time registry checks
-  are authoritative.
+- None remaining for this SOW. Crates.io accepted every planned package name
+  and version.
 
 ### Acceptance Criteria
 
@@ -286,6 +284,16 @@ Failure handling:
 - Rechecked planned package-name availability; all planned names still returned
   not found in the crates.io index.
 - Paused before publishing because Cargo has no registry credential configured.
+- Resumed after the user configured Cargo registry credentials locally.
+- Published crates in dependency order:
+  `systemd-journal-sdk-common`, `systemd-journal-sdk-registry`,
+  `systemd-journal-sdk-core`, `systemd-journal-sdk-log-writer`,
+  `systemd-journal-sdk-index`, `systemd-journal-sdk-engine`, and
+  `systemd-journal-sdk`.
+- Crates.io rate-limited new crate publication twice. The release waited until
+  the registry-provided retry time and retried the affected package without
+  changing package contents.
+- Verified all seven packages with `cargo info`.
 
 ## Validation
 
@@ -311,6 +319,7 @@ Acceptance criteria evidence:
   `systemd-journal-sdk-log-writer`, `systemd-journal-sdk-index`, and
   `systemd-journal-sdk-engine`. Publish-time registry checks remain
   authoritative.
+- `cargo info` confirms all planned packages now exist at version `0.6.0`.
 
 Tests or equivalent validation:
 
@@ -325,6 +334,8 @@ Tests or equivalent validation:
   accepted manifest defect.
 - Publication credential check: blocked. No Cargo registry token or Cargo
   credential file is configured in this environment.
+- Crates.io publication: PASS. All seven planned crates were accepted and are
+  visible to `cargo info` at version `0.6.0`.
 - `git diff --check`: PASS.
 - `.agents/sow/audit.sh`: PASS.
 
@@ -423,9 +434,8 @@ Artifact maintenance gate:
 - End-user/operator docs: `README.md` and `rust/README.md` updated with Rust
   crates.io dependency examples.
 - End-user/operator skills: no output/reference skill is affected.
-- SOW lifecycle: this SOW remains in `current/` and `Status: paused` because
-  crates.io credentials are an external blocker. It must not move to `done/`
-  until publication/tagging succeeds or the user explicitly changes the scope.
+- SOW lifecycle: `Status: completed`; this file is moved to `.agents/sow/done/`
+  together with the release evidence commit.
 - SOW-status.md: root and detailed SOW status ledgers updated.
 
 Specs update:
@@ -458,14 +468,20 @@ Lessons:
 
 Follow-up mapping:
 
-- No deferred implementation item is accepted for this SOW. Publication itself
-  remains blocked on crates.io credentials.
+- No deferred implementation item remains for this SOW. Consumer documentation
+  and GitHub wiki publication are tracked separately by SOW-0100.
 
 ## Outcome
 
-Paused: publish-ready changes are implemented, validated, reviewed, and ready
-for crates.io publication once a Cargo registry token is provided in the
-environment or Cargo credentials are configured.
+Completed: Rust SDK packages were published to crates.io at version `0.6.0`:
+
+- `systemd-journal-sdk`
+- `systemd-journal-sdk-common`
+- `systemd-journal-sdk-core`
+- `systemd-journal-sdk-registry`
+- `systemd-journal-sdk-log-writer`
+- `systemd-journal-sdk-index`
+- `systemd-journal-sdk-engine`
 
 ## Lessons Extracted
 
@@ -475,10 +491,10 @@ environment or Cargo credentials are configured.
   exists in crates.io.
 - Publication credentials are an operational prerequisite and must be checked
   before the irreversible publish step.
+- crates.io enforces a rate limit on new crate creation. Multi-crate first
+  publication may need timed waits between uploads even when all package
+  manifests are valid.
 
 ## Followup
 
-- Resume this SOW after crates.io credentials are configured. Required next
-  commands are the publish sequence in
-  `.agents/skills/project-release-tagging/SKILL.md`, followed by final SOW
-  completion, commit/tag push, and remote tag verification.
+- None for this SOW.
