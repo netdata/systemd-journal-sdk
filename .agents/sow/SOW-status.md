@@ -7,6 +7,10 @@ Last updated: 2026-06-08
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
+- SOW-0100 - Consumer Docs And GitHub Wiki Publication: in-progress regression
+  repair. The post-closure Codacy SARIF run failed on markdownlint spacing in
+  the SOW status ledgers.
+
 ## Pending
 
 - SOW-0047 - Netdata NetFlow SDK Integration: open. Component integration for
@@ -42,14 +46,6 @@ Last updated: 2026-06-08
 
 ## Recently Closed Or Completed
 
-- SOW-0100 - Consumer Docs And GitHub Wiki Publication: completed after
-  regression repair. The first wiki publish failed because GitHub had enabled
-  the wiki feature but had not initialized the backing wiki Git repository.
-  The validator now avoids hardcoded personal terms, constrains Markdown link
-  resolution under `docs/`, and reports safe category/line diagnostics.
-  After one-time Wiki UI initialization, repair commit `1b5fdc1a` passed
-  `Publish Wiki` run `27134486131`; wiki HEAD is
-  `96544031d0d540c1137a415d7cea7f7ab7eab50f`.
 - SOW-0099 - Rust crates.io Publication: completed. Rust SDK packages were
   published to crates.io at `0.6.0` under `systemd-journal-sdk` and
   project-prefixed internal package names; release tags are created on the SOW

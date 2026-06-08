@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: completed
+Status: in-progress
 
-Sub-state: regression repaired and validated on GitHub Actions.
+Sub-state: reopened for post-closure Codacy SARIF markdownlint regression.
 
 ## Requirements
 
@@ -505,3 +505,53 @@ Artifact updates needed:
 - `tests/docs/check_wiki_docs.py`
 - `docs/Wiki-Publishing.md`
 - SOW status ledgers and this regression section.
+
+### Regression - 2026-06-08 - Post-Closure Codacy Markdownlint
+
+What broke:
+
+- The closure commit `d0ff0462` triggered `Codacy SARIF` run `27134943299`,
+  which failed after local Codacy Analysis CLI reported four markdownlint
+  findings.
+- GitHub Actions log evidence from run `27134943299` shows:
+  - `markdownlint`: 4 issues in 154 files;
+  - `markdownlint_MD022`: headings not surrounded by blank lines;
+  - `markdownlint_MD032`: lists not surrounded by blank lines.
+- Codacy Cloud issue evidence identifies the affected durable artifacts:
+  - `SOW-status.md`, line 11: `## Pending`;
+  - `SOW-status.md`, line 10: current SOW bullet before the heading;
+  - `.agents/sow/SOW-status.md`, line 10: `## Pending`;
+  - `.agents/sow/SOW-status.md`, line 9: wrapped current SOW bullet before the
+    heading.
+
+Why previous validation missed it:
+
+- The closure validation ran the wiki docs checker, `git diff --check`, and
+  the SOW audit. It did not run the Codacy Analysis CLI markdownlint path that
+  the pushed workflow runs.
+- The status ledger edits were small lifecycle edits, but they still affected
+  Markdown files scanned by Codacy.
+
+Repair plan:
+
+1. Add the required blank line between the current SOW list and the `Pending`
+   heading in both SOW status ledgers.
+2. Reopen this SOW while the CI regression is repaired.
+3. Push the repair and verify the `Codacy SARIF` workflow is green before
+   closing the SOW again.
+
+Validation:
+
+- `python3 tests/docs/check_wiki_docs.py`: passed.
+- `git diff --check`: passed.
+- `.agents/sow/audit.sh`: passed.
+- `markdownlint --disable MD013 -- SOW-status.md .agents/sow/SOW-status.md`:
+  passed. `MD013` is disabled for this local spot check because the failed
+  Codacy SARIF run did not enable/report line-length findings; the repaired
+  failure class was heading/list blank-line spacing.
+
+Artifact updates needed:
+
+- `SOW-status.md`
+- `.agents/sow/SOW-status.md`
+- This SOW regression section.
