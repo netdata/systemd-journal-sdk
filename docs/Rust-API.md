@@ -4,7 +4,7 @@ The normal Rust dependency is the public SDK package:
 
 ```toml
 [dependencies]
-journal = { package = "systemd-journal-sdk", version = "0.6.0" }
+journal = { package = "systemd-journal-sdk", version = "0.6.1" }
 ```
 
 Use the lower-level packages only when the public package does not expose the
@@ -13,8 +13,8 @@ type you need. For example, structured directory writes currently use
 
 ```toml
 [dependencies]
-journal = { package = "systemd-journal-sdk", version = "0.6.0" }
-journal_log_writer = { package = "systemd-journal-sdk-log-writer", version = "0.6.0" }
+journal = { package = "systemd-journal-sdk", version = "0.6.1" }
+journal_log_writer = { package = "systemd-journal-sdk-log-writer", version = "0.6.1" }
 ```
 
 ## Read One File

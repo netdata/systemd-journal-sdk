@@ -369,6 +369,76 @@ def normalized_histogram(doc: dict[str, Any]) -> Any:
     )
 
 
+def histogram_chart_schema_errors(doc: dict[str, Any]) -> list[str]:
+    histogram = raw_histogram(doc)
+    if not isinstance(histogram, dict):
+        return []
+    chart = histogram.get("chart")
+    if not isinstance(chart, dict):
+        return ["histogram.chart"]
+    errors: list[str] = []
+    required_chart_objects = ("summary", "totals", "result", "db", "view")
+    for key in required_chart_objects:
+        if not isinstance(chart.get(key), dict):
+            errors.append(f"histogram.chart.{key}")
+    if not isinstance(chart.get("agents"), list):
+        errors.append("histogram.chart.agents")
+
+    result = chart.get("result")
+    if isinstance(result, dict):
+        if not isinstance(result.get("labels"), list):
+            errors.append("histogram.chart.result.labels")
+        if not isinstance(result.get("point"), dict):
+            errors.append("histogram.chart.result.point")
+        if not isinstance(result.get("data"), list):
+            errors.append("histogram.chart.result.data")
+
+    db = chart.get("db")
+    if isinstance(db, dict):
+        db_dimensions = db.get("dimensions")
+        if not isinstance(db_dimensions, dict):
+            errors.append("histogram.chart.db.dimensions")
+        else:
+            for key in ("ids", "names", "units"):
+                if not isinstance(db_dimensions.get(key), list):
+                    errors.append(f"histogram.chart.db.dimensions.{key}")
+            append_histogram_sts_schema_errors(
+                errors,
+                "histogram.chart.db.dimensions.sts",
+                db_dimensions.get("sts"),
+            )
+        if not isinstance(db.get("per_tier"), list):
+            errors.append("histogram.chart.db.per_tier")
+
+    view = chart.get("view")
+    if isinstance(view, dict):
+        view_dimensions = view.get("dimensions")
+        if not isinstance(view_dimensions, dict):
+            errors.append("histogram.chart.view.dimensions")
+        else:
+            for key in ("grouped_by", "ids", "names", "colors", "units"):
+                if not isinstance(view_dimensions.get(key), list):
+                    errors.append(f"histogram.chart.view.dimensions.{key}")
+            append_histogram_sts_schema_errors(
+                errors,
+                "histogram.chart.view.dimensions.sts",
+                view_dimensions.get("sts"),
+            )
+
+    return errors
+
+
+def append_histogram_sts_schema_errors(
+    errors: list[str], prefix: str, value: Any
+) -> None:
+    if not isinstance(value, dict):
+        errors.append(prefix)
+        return
+    for key in ("min", "max", "avg", "arp", "con"):
+        if not isinstance(value.get(key), list):
+            errors.append(f"{prefix}.{key}")
+
+
 def normalized_items(doc: dict[str, Any]) -> dict[str, Any]:
     items = doc.get("items")
     if not isinstance(items, dict):
@@ -518,6 +588,8 @@ def compare(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     right_facets = normalized_facets(right)
     left_histogram = normalized_histogram(left)
     right_histogram = normalized_histogram(right)
+    left_histogram_schema_errors = histogram_chart_schema_errors(left)
+    right_histogram_schema_errors = histogram_chart_schema_errors(right)
     left_items = normalized_items(left)
     right_items = normalized_items(right)
     left_diagnostic_items = normalized_diagnostic_items(left)
@@ -536,6 +608,8 @@ def compare(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
         "rows": rows_equal,
         "facets": facets_equal,
         "histogram": left_histogram == right_histogram,
+        "histogram_schema": not left_histogram_schema_errors
+        and not right_histogram_schema_errors,
         "items": left_items == right_items,
         "diagnostic_items": left_diagnostic_items == right_diagnostic_items,
     }
@@ -552,6 +626,12 @@ def compare(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
             "rows": first_difference(left_rows, right_rows),
             "facets": first_difference(left_facets, right_facets),
             "histogram": first_difference(left_histogram, right_histogram),
+            "histogram_schema": {
+                "left": left_histogram_schema_errors,
+                "right": right_histogram_schema_errors,
+            }
+            if left_histogram_schema_errors or right_histogram_schema_errors
+            else None,
             "items": first_difference(left_items, right_items),
             "diagnostic_items": first_difference(left_diagnostic_items, right_diagnostic_items),
         },

@@ -630,6 +630,14 @@ Output:
 - histogram dimensions that occur in at least one bucket use numeric zero in
   buckets where that value is absent. Dimensions known only from the facet
   vocabulary use JSON `null` in every bucket where the value was not observed.
+- histogram chart metadata must preserve the libnetdata facets chart shape:
+  `chart.summary`, `chart.totals`, `chart.result`, `chart.db`, `chart.view`,
+  and `chart.agents` are part of the UI-facing contract. In particular,
+  `chart.view.dimensions.names` and the sibling `ids`, `colors`, `units`, and
+  `sts` members must exist as arrays/objects even when the selected time window
+  has no values for the histogram field. Missing these members is a Netdata
+  function compatibility bug even if `chart.result.labels` and bucket counts
+  are otherwise correct.
 
 Evidence: `facets.c:2817-2868`, `facets.c:1209-1609`.
 

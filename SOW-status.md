@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-06-08
+Last updated: 2026-06-09
 
 This root file is a short convenience index. The canonical detailed SOW ledger
 is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
@@ -23,6 +23,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Done
 
+- `SOW-0093-20260605-netdata-function-boundary-reader-comparison.md` - completed after 2026-06-09 regression repair and `v0.6.1` patch release. Rust and Go Netdata histogram responses now emit the libnetdata chart metadata tree, the comparator rejects missing histogram chart schema, four requested reviewers returned `PRODUCTION GRADE`, and Rust crates were published to crates.io at `0.6.1`.
 - `SOW-0100-20260608-consumer-docs-github-wiki.md` - completed after regression repair. GitHub wiki navigation now uses `[[Target|Label]]` wiki links, the wiki has professional API overview plus Rust and Go language guides with examples, and the docs validator rejects production `*.md` wiki links while allowing fenced anti-pattern examples.
 - `SOW-0099-20260608-rust-crates-io-publication.md` - completed. Rust SDK packages were published to crates.io at `0.6.0` under `systemd-journal-sdk` plus project-prefixed internal package names; release tags are created on the SOW close commit.
 - `SOW-0096-20260607-codacy-metrics-and-coverage-hygiene.md` - completed. Go and Rust coverage reports now remove test/test-harness paths before Codacy upload, the Rust/Go Codacy metrics audit is committed, GitHub code scanning has zero open alerts on final implementation commit `7e3d3e5d`, Codacy reports `issuesCount = 0`, coverage `73%`, complexity `46%`, and duplication `30%`; remaining production metric debt is tracked by SOW-0097 and SOW-0098.

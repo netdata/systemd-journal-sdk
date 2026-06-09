@@ -889,19 +889,13 @@ where
             }
         }
         let dimension_ids: Vec<Vec<u8>> = dimension_ids.into_iter().collect();
-        let labels: Vec<Value> = std::iter::once(Value::String("time".to_string()))
-            .chain(dimension_ids.iter().map(|value| {
-                match self.profile.field_display_value(
-                    context,
-                    DisplayScope::Histogram,
-                    &field,
-                    value,
-                ) {
-                    Value::String(value) => Value::String(value),
-                    other => Value::String(other.to_string()),
-                }
-            }))
-            .collect();
+        let metadata = self.histogram_chart_metadata(
+            context,
+            &field,
+            &buckets,
+            &actual_dimension_ids,
+            &dimension_ids,
+        );
         let data: Vec<Value> = buckets
             .iter()
             .map(|(start_realtime_usec, values)| {
@@ -929,19 +923,183 @@ where
             "id": field,
             "name": field,
             "chart": {
+                "summary": metadata.summary,
+                "totals": metadata.totals,
                 "result": {
-                    "labels": labels,
+                    "labels": metadata.result_labels,
                     "point": { "value": 0, "arp": 1, "pa": 2 },
                     "data": data,
+                },
+                "db": {
+                    "tiers": 1,
+                    "update_every": histogram_update_every_seconds(histogram),
+                    "units": "events",
+                    "dimensions": {
+                        "ids": metadata.ids.clone(),
+                        "names": metadata.names.clone(),
+                        "units": metadata.units.clone(),
+                        "sts": metadata.stats.clone(),
+                    },
+                    "per_tier": [{
+                        "tier": 0,
+                        "queries": 1,
+                        "points": metadata.points,
+                        "update_every": histogram_update_every_seconds(histogram),
+                    }],
                 },
                 "view": {
                     "title": format!("Events Distribution by {}", String::from_utf8_lossy(&histogram.field)),
                     "update_every": histogram_update_every_seconds(histogram),
+                    "after": histogram_after_seconds(histogram),
+                    "before": histogram_before_seconds(histogram),
                     "units": "events",
                     "chart_type": "stackedBar",
-                }
+                    "dimensions": {
+                        "grouped_by": ["dimension"],
+                        "ids": metadata.ids,
+                        "names": metadata.names,
+                        "colors": metadata.colors,
+                        "units": metadata.units,
+                        "sts": metadata.stats,
+                    },
+                    "min": metadata.min,
+                    "max": metadata.max,
+                },
+                "agents": [{
+                    "mg": "default",
+                    "nm": "facets.histogram",
+                    "now": now_unix_seconds(),
+                    "ai": 0,
+                }],
             }
         })
+    }
+
+    fn histogram_chart_metadata(
+        &self,
+        context: &DisplayContext,
+        field: &str,
+        buckets: &[(u64, BTreeMap<Vec<u8>, u64>)],
+        actual_dimensions: &BTreeSet<Vec<u8>>,
+        dimensions: &[Vec<u8>],
+    ) -> HistogramChartMetadata {
+        let mut ids = Vec::with_capacity(dimensions.len());
+        let mut names = Vec::with_capacity(dimensions.len());
+        let mut colors = Vec::with_capacity(dimensions.len());
+        let mut units = Vec::with_capacity(dimensions.len());
+        let mut min_values = Vec::with_capacity(dimensions.len());
+        let mut max_values = Vec::with_capacity(dimensions.len());
+        let mut avg_values = Vec::with_capacity(dimensions.len());
+        let mut arp_values = Vec::with_capacity(dimensions.len());
+        let mut con_values = Vec::with_capacity(dimensions.len());
+        let mut summary_dimensions = Vec::with_capacity(dimensions.len());
+        let mut result_labels = vec![Value::String("time".to_string())];
+
+        let total: u64 = dimensions
+            .iter()
+            .map(|dimension| {
+                buckets
+                    .iter()
+                    .map(|(_, values)| values.get(dimension).copied().unwrap_or(0))
+                    .sum::<u64>()
+            })
+            .sum();
+
+        let mut min = 0;
+        let mut max = 0;
+        let mut points = 0;
+        for (priority, dimension) in dimensions.iter().enumerate() {
+            let id = String::from_utf8_lossy(dimension).into_owned();
+            let display = match self.profile.field_display_value(
+                context,
+                DisplayScope::Histogram,
+                field,
+                dimension,
+            ) {
+                Value::String(value) => value,
+                other => other.to_string(),
+            };
+            let (dimension_min, dimension_max, dimension_sum, actual) =
+                histogram_dimension_stats(buckets, actual_dimensions, dimension);
+            let dimension_average = if actual && !buckets.is_empty() {
+                dimension_sum as f64 / buckets.len() as f64
+            } else {
+                0.0
+            };
+            if actual {
+                if points == 0 || dimension_min < min {
+                    min = dimension_min;
+                }
+                if dimension_max > max {
+                    max = dimension_max;
+                }
+                points += buckets.len() as u64;
+            }
+            let contribution = if total > 0 {
+                dimension_sum as f64 * 100.0 / total as f64
+            } else {
+                0.0
+            };
+
+            ids.push(Value::String(id.clone()));
+            names.push(Value::String(display.clone()));
+            colors.push(Value::Null);
+            units.push(Value::String("events".to_string()));
+            result_labels.push(Value::String(display.clone()));
+            min_values.push(Value::from(dimension_min));
+            max_values.push(Value::from(dimension_max));
+            avg_values.push(Value::from(dimension_average));
+            arp_values.push(Value::from(0));
+            con_values.push(Value::from(contribution));
+            summary_dimensions.push(json!({
+                "id": id,
+                "nm": display,
+                "ds": { "sl": bool_to_u64(actual), "qr": bool_to_u64(actual) },
+                "sts": {
+                    "min": dimension_min,
+                    "max": dimension_max,
+                    "avg": dimension_average,
+                    "con": contribution,
+                },
+                "pri": priority as u64,
+            }));
+        }
+
+        let stats = json!({
+            "min": min_values,
+            "max": max_values,
+            "avg": avg_values,
+            "arp": arp_values,
+            "con": con_values,
+        });
+        let summary_stats = json!({
+            "min": min,
+            "max": max,
+            "avg": histogram_average(total, points),
+            "con": 100.0,
+        });
+        let dimensions_len = dimensions.len() as u64;
+
+        HistogramChartMetadata {
+            ids,
+            names,
+            colors,
+            units,
+            stats,
+            summary: json!({
+                "nodes": [histogram_summary_node(dimensions_len, points, &summary_stats)],
+                "contexts": [histogram_summary_context(dimensions_len, points, &summary_stats)],
+                "instances": [histogram_summary_instance(dimensions_len, points, &summary_stats)],
+                "dimensions": summary_dimensions,
+                "labels": [],
+                "alerts": [],
+            }),
+            totals: histogram_totals(dimensions_len),
+            result_labels,
+            min,
+            max,
+            points,
+        }
     }
 
     fn accepted_params_from_fields(&self, fields: &[String]) -> Value {
@@ -1057,6 +1215,141 @@ where
             })
             .collect()
     }
+}
+
+struct HistogramChartMetadata {
+    ids: Vec<Value>,
+    names: Vec<Value>,
+    colors: Vec<Value>,
+    units: Vec<Value>,
+    stats: Value,
+    summary: Value,
+    totals: Value,
+    result_labels: Vec<Value>,
+    min: u64,
+    max: u64,
+    points: u64,
+}
+
+fn histogram_dimension_stats(
+    buckets: &[(u64, BTreeMap<Vec<u8>, u64>)],
+    actual_dimensions: &BTreeSet<Vec<u8>>,
+    dimension: &[u8],
+) -> (u64, u64, u64, bool) {
+    if !actual_dimensions.contains(dimension) {
+        return (0, 0, 0, false);
+    }
+    let mut min = 0;
+    let mut max = 0;
+    let mut sum = 0;
+    for (idx, (_, values)) in buckets.iter().enumerate() {
+        let count = values.get(dimension).copied().unwrap_or(0);
+        if idx == 0 || count < min {
+            min = count;
+        }
+        if count > max {
+            max = count;
+        }
+        sum += count;
+    }
+    (min, max, sum, true)
+}
+
+fn histogram_average(total: u64, points: u64) -> f64 {
+    if points == 0 {
+        0.0
+    } else {
+        total as f64 / points as f64
+    }
+}
+
+fn histogram_summary_node(dimensions: u64, points: u64, stats: &Value) -> Value {
+    let mut node = json!({
+        "mg": "default",
+        "nm": "facets.histogram",
+        "ni": 0,
+        "st": { "ai": 0, "code": 200, "msg": "" },
+    });
+    add_histogram_summary_shape(&mut node, dimensions, points, stats, true);
+    node
+}
+
+fn histogram_summary_context(dimensions: u64, points: u64, stats: &Value) -> Value {
+    let mut context = json!({ "id": "facets.histogram" });
+    add_histogram_summary_shape(&mut context, dimensions, points, stats, true);
+    context
+}
+
+fn histogram_summary_instance(dimensions: u64, points: u64, stats: &Value) -> Value {
+    let mut instance = json!({ "id": "facets.histogram", "ni": 0 });
+    add_histogram_summary_shape(&mut instance, dimensions, points, stats, false);
+    instance
+}
+
+fn add_histogram_summary_shape(
+    object: &mut Value,
+    dimensions: u64,
+    points: u64,
+    stats: &Value,
+    include_instances: bool,
+) {
+    let Some(map) = object.as_object_mut() else {
+        return;
+    };
+    if dimensions > 0 {
+        if include_instances {
+            map.insert("is".to_string(), json!({ "sl": 1, "qr": 1 }));
+        }
+        map.insert(
+            "ds".to_string(),
+            json!({ "sl": dimensions, "qr": dimensions }),
+        );
+    }
+    if points > 0 {
+        map.insert("sts".to_string(), stats.clone());
+    }
+}
+
+fn histogram_totals(dimensions: u64) -> Value {
+    let mut totals = json!({ "nodes": { "sl": 1, "qr": 1 } });
+    if dimensions > 0 {
+        if let Some(map) = totals.as_object_mut() {
+            map.insert("contexts".to_string(), json!({ "sl": 1, "qr": 1 }));
+            map.insert("instances".to_string(), json!({ "sl": 1, "qr": 1 }));
+            map.insert(
+                "dimensions".to_string(),
+                json!({ "sl": dimensions, "qr": dimensions }),
+            );
+        }
+    }
+    totals
+}
+
+fn bool_to_u64(value: bool) -> u64 {
+    if value { 1 } else { 0 }
+}
+
+fn histogram_after_seconds(histogram: &ExplorerHistogram) -> u64 {
+    histogram
+        .buckets
+        .first()
+        .map(|bucket| bucket.start_realtime_usec / 1_000_000)
+        .unwrap_or(0)
+}
+
+fn histogram_before_seconds(histogram: &ExplorerHistogram) -> u64 {
+    histogram
+        .buckets
+        .last()
+        .map(|bucket| bucket.end_realtime_usec / 1_000_000)
+        .unwrap_or(0)
+}
+
+fn now_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 #[derive(Debug, Clone)]
@@ -5147,6 +5440,51 @@ mod tests {
         assert_eq!(labels.len(), 2);
         assert_eq!(labels[1], Value::String(String::from_utf8(prefix).unwrap()));
         assert_eq!(rendered["chart"]["result"]["data"][0][1][0], json!(5));
+    }
+
+    #[test]
+    fn histogram_chart_metadata_includes_empty_dimension_arrays() {
+        let function = NetdataJournalFunction::systemd_journal_plugin_compatible();
+        let empty = function.build_histogram(
+            &DisplayContext::default(),
+            &ExplorerHistogram {
+                field: b"TRAP_SEVERITY".to_vec(),
+                buckets: vec![ExplorerHistogramBucket {
+                    start_realtime_usec: 1_700_000_000_000_000,
+                    end_realtime_usec: 1_700_000_005_000_000,
+                    values: HashMap::new(),
+                }],
+            },
+            None,
+        );
+
+        assert_eq!(empty["chart"]["view"]["dimensions"]["names"], json!([]));
+        assert_eq!(empty["chart"]["view"]["dimensions"]["ids"], json!([]));
+        assert_eq!(empty["chart"]["db"]["dimensions"]["names"], json!([]));
+
+        let mut values = HashMap::new();
+        values.insert(b"warning".to_vec(), 7);
+        let with_value = function.build_histogram(
+            &DisplayContext::default(),
+            &ExplorerHistogram {
+                field: b"TRAP_SEVERITY".to_vec(),
+                buckets: vec![ExplorerHistogramBucket {
+                    start_realtime_usec: 1_700_000_000_000_000,
+                    end_realtime_usec: 1_700_000_005_000_000,
+                    values,
+                }],
+            },
+            None,
+        );
+
+        assert_eq!(
+            with_value["chart"]["view"]["dimensions"]["names"],
+            json!(["warning"])
+        );
+        assert_eq!(
+            with_value["chart"]["view"]["dimensions"]["sts"]["min"],
+            json!([7])
+        );
     }
 
     #[test]

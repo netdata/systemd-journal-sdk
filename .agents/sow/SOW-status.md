@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-06-08
+Last updated: 2026-06-09
 
 ## Current
 
@@ -43,6 +43,13 @@ Last updated: 2026-06-08
 
 ## Recently Closed Or Completed
 
+- SOW-0093 - Netdata Function Boundary Reader Comparison: completed after
+  2026-06-09 regression repair and `v0.6.1` patch release. Rust and Go Netdata
+  histogram responses now emit the libnetdata chart metadata tree, including
+  `histogram.chart.view.dimensions.names`; the comparator rejects missing
+  histogram chart schema and missing `sts` members; four requested reviewers
+  returned `PRODUCTION GRADE`; Rust crates were published to crates.io at
+  `0.6.1`; root and Go module tags are created on the close commit.
 - SOW-0100 - Consumer Docs And GitHub Wiki Publication: completed after
   regression repair. GitHub wiki navigation now uses `[[Target|Label]]` wiki
   links, the wiki has professional API overview plus Rust and Go language
@@ -72,15 +79,6 @@ Last updated: 2026-06-08
   tests cover 14 request/source/profile/progress/timeout/sampling/time
   behavior clusters, and all approved reviewers returned
   `PRODUCTION GRADE: YES`.
-- SOW-0093 - Netdata Function Boundary Reader Comparison: completed after
-  regression repair. The Rust SDK Netdata function boundary now has a broad
-  SDK-first everyday-use matrix with 20/20 stable-content passes after sampling
-  parity repairs and explicit non-content classification for known
-  installed-plugin `MESSAGE` corruption plus selected-and-faceted same-field
-  quirks. The post-review-fix five-repetition default full-analysis benchmark
-  shows SDK mean `3.950s`, plugin mean `12.678s`, and `3.21x` ratio of means.
-  Final six-model reviewer rerun returned `PRODUCTION GRADE` from all approved
-  reviewers.
 - SOW-0082 - Rust Optimized Journal Explorer API: completed after regression
   repair. Normal Netdata-shaped Explorer queries now use one candidate-row
   traversal for rows, facets, and histogram; the Netdata function wrapper keeps

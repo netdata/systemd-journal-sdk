@@ -3,7 +3,7 @@
 Install the Go submodule:
 
 ```sh
-go get github.com/netdata/systemd-journal-sdk/go@v0.6.0
+go get github.com/netdata/systemd-journal-sdk/go@v0.6.1
 ```
 
 Import the journal package:

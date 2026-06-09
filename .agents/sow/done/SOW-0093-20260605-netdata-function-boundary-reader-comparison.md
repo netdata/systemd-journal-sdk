@@ -6,7 +6,8 @@ Status: completed
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: completed after regression repair. Earlier strict SDK-first
+Sub-state: completed after 2026-06-09 regression repair and `v0.6.1` patch
+release. Earlier strict SDK-first
 content comparison passed locally for the large default-facets full-analysis
 request and for the repo-local matrix covering `info`, full priority, filtered
 priority, full default facets, low-budget sampling, data-only, data-only delta,
@@ -25,8 +26,14 @@ stable-content passes. The current default full-analysis speedup is
 approximately `3.21x` by ratio of means against the installed
 `systemd-journal.plugin`; profiling shows the remaining time is in Explorer
 traversal, not wrapper glue or JSON shaping. The final whole-SOW reviewer
-rerun returned production-grade votes from the six approved reviewers; SOW
-lifecycle closeout is pending.
+rerun returned production-grade votes from the six approved reviewers. A later
+SNMP traps Netdata function integration exposed a UI-breaking histogram chart
+metadata gap: the SDK emitted `chart.result` plus a shallow `chart.view`, while
+libnetdata facets emits the full chart metadata tree including
+`chart.view.dimensions.names`. The regression repair now emits the required
+histogram chart metadata in Rust and Go, the shared comparator rejects missing
+histogram chart schema, four requested reviewers returned `PRODUCTION GRADE`
+after hardening, and Rust packages were published to crates.io at `0.6.1`.
 
 ## Requirements
 
@@ -2141,3 +2148,236 @@ Reviewer findings and dispositions:
 - Test-name precision and explanatory comments suggested by reviewers are
   non-blocking and do not affect the shipped contract. No follow-up is
   required.
+
+## Regression - 2026-06-09
+
+### What Broke
+
+The Go SDK Netdata function response used by the SNMP traps integration
+returned a successful table response but omitted histogram chart view dimension
+metadata. The local authenticated request returned:
+
+- `status=200`;
+- `histogram.chart.result.labels=["time"]`;
+- `histogram.chart.view.dimensions=null`.
+
+The Netdata UI stack then failed while reading a `names` member from an
+undefined dimensions object. The raw browser cookies and tokens from the
+reported request were not copied into this SOW or any durable artifact.
+
+### Evidence
+
+Local response shape checked with a sanitized local request:
+
+- top-level `columns` exists as a Netdata table column map;
+- `columns.names` is not part of the table-column contract;
+- `histogram.chart.view.dimensions` is missing;
+- `available_histograms` is an empty array for the tested SNMP traps interval.
+
+Netdata/libnetdata source evidence:
+
+- `netdata/netdata @ local worktree checked read-only`
+- `src/libnetdata/facets/facets.c:1209` starts
+  `facets_histogram_generate()`.
+- `src/libnetdata/facets/facets.c:1253-1430` emits
+  `chart.summary`.
+- `src/libnetdata/facets/facets.c:1432-1463` emits
+  `chart.totals`.
+- `src/libnetdata/facets/facets.c:1465-1508` emits
+  `chart.result`.
+- `src/libnetdata/facets/facets.c:1510-1552` emits
+  `chart.db`.
+- `src/libnetdata/facets/facets.c:1554-1595` emits `chart.view`, including
+  `view.dimensions.grouped_by`, `ids`, `names`, `colors`, `units`, and `sts`.
+- `src/libnetdata/facets/facets.c:1597-1608` emits `chart.agents`.
+
+SDK evidence:
+
+- `go/journal/netdata.go:1509-1528` emits only `chart.result` and a shallow
+  `chart.view` without `view.dimensions`.
+- `rust/src/journal/src/netdata.rs:863-944` has the same omission in the Rust
+  reference path.
+- `tests/netdata_function/compare_function_json.py:329-369` normalized only
+  histogram `result.labels` and `result.data`, so it could not catch missing
+  UI-facing chart metadata.
+
+### Why Previous Validation Missed It
+
+The strict comparator intentionally normalized histogram content by bucket and
+label to tolerate presentation-order differences. That was valid for content
+equality, but incomplete for UI replacement. It did not assert the presence of
+Netdata chart metadata consumed by the dashboard.
+
+### Repair Plan
+
+1. Extend Rust and Go Netdata histogram builders to emit libnetdata-compatible
+   histogram chart metadata:
+   - `summary`;
+   - `totals`;
+   - `result`;
+   - `db`;
+   - `view`, including `dimensions.names`;
+   - `agents`.
+2. Keep row/facet/histogram traversal behavior unchanged.
+3. Add focused Rust and Go tests that assert empty-dimension histograms still
+   include the UI-facing dimension arrays and objects.
+4. Extend the shared comparator or schema checks so future Netdata function
+   parity cannot pass when required chart metadata is missing.
+5. Validate with the local SNMP traps request shape without writing sensitive
+   browser/session data to durable artifacts.
+
+### Validation Plan
+
+- Rust focused Netdata tests.
+- Go focused Netdata tests.
+- Shared Netdata comparator/schema tests.
+- Local sanitized request against the running SNMP traps function, checking
+  `histogram.chart.view.dimensions.names` exists as an array.
+- `git diff --check`.
+- `.agents/sow/audit.sh`.
+- Whole-SOW reviewer rerun after local implementation and validation.
+
+### Artifact Updates Required
+
+- Specs: update `.agents/sow/specs/systemd-journal-plugin-facets.md` with the
+  full histogram chart metadata contract.
+- End-user docs: update API docs if public Netdata function response examples
+  omit the required chart metadata.
+- SOW status: update `.agents/sow/SOW-status.md` after the repair outcome is
+  known.
+
+### Implementation Progress
+
+Local repair on 2026-06-09:
+
+- Rust and Go Netdata histogram builders now emit the libnetdata-compatible
+  histogram chart envelope:
+  - `chart.summary`;
+  - `chart.totals`;
+  - `chart.result`;
+  - `chart.db`;
+  - `chart.view`, including `view.dimensions.grouped_by`, `ids`, `names`,
+    `colors`, `units`, and `sts`;
+  - `chart.agents`.
+- Empty-dimension histograms preserve empty arrays/objects instead of omitting
+  the dimension metadata.
+- The shared Netdata function comparator now has a histogram chart schema gate,
+  so missing UI-facing chart metadata fails comparison independently from
+  normalized bucket content.
+- Specs and consumer docs now record the chart metadata contract.
+
+Focused hardening after reviewer observations:
+
+- Removed the unused Go `histogramLabels()` helper after the metadata builder
+  replaced it.
+- Strengthened the comparator schema gate to require `sts.min`, `sts.max`,
+  `sts.avg`, `sts.arp`, and `sts.con` arrays under both
+  `chart.db.dimensions.sts` and `chart.view.dimensions.sts`.
+- Added a Python regression test proving a missing `sts.con` member fails the
+  histogram schema check.
+
+### Local Validation
+
+Validation on 2026-06-09 after focused hardening:
+
+- `cd go && go test ./journal -run 'TestNetdataHistogramChartMetadata|TestNetdataFunctionQueryFilters' -count=1`:
+  passed.
+- `cd rust && cargo test -p systemd-journal-sdk netdata --lib`: passed, 51
+  tests.
+- `python3 -m unittest tests.netdata_function.test_compare_function_json`:
+  passed, 25 tests.
+- `python3 -m py_compile tests/netdata_function/compare_function_json.py
+  tests/netdata_function/test_compare_function_json.py`: passed.
+- `rg -n 'histogramLabels|histogram_labels' go/journal/netdata.go
+  rust/src/journal/src/netdata.rs`: no matches.
+- `git diff --check`: passed.
+- `.agents/sow/audit.sh`: passed with clean verdict.
+
+### Reviewer Batch
+
+First focused reviewer batch on 2026-06-09 used the current configured models
+from `~/.AGENTS.md` for the requested aliases:
+
+- `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/minimax-m3-coder`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/qwen3.7-plus`: `PRODUCTION GRADE`.
+
+Reviewer findings and dispositions:
+
+- Missing histogram metadata: all reviewers agreed the Rust and Go output now
+  emits the required chart metadata and fixes the UI-facing regression.
+- Rust/Go parity: all reviewers accepted the changed algorithms as equivalent
+  for the histogram metadata contract.
+- Dead Go helper: accepted and fixed by removing `histogramLabels()`.
+- Comparator `sts` subkey schema gap: accepted and fixed by requiring the
+  expected `sts` array members in the schema validator.
+- Empty-histogram `view.min` sentinel difference: accepted as non-blocking.
+  The SDK emits `0`; libnetdata initializes an internal empty sentinel as
+  `UINT32_MAX`. No shipped UI-facing requirement was found for reproducing the
+  sentinel, and reviewers did not treat it as a production blocker.
+
+Final focused reviewer rerun after hardening fixes:
+
+- `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/minimax-m3-coder`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/qwen3.7-plus`: `PRODUCTION GRADE`.
+
+Final reviewer findings and dispositions:
+
+- Empty-histogram `view.min`/`view.max` sentinel difference remains accepted as
+  non-blocking. The SDK emits `0` for no data; no UI-facing requirement was
+  found for reproducing libnetdata's internal empty sentinel.
+- Histogram summary point counting uses dimensions multiplied by bucket count,
+  matching the libnetdata summary-statistics shape; no change required.
+- The Python comparator fixture uses simplified `summary` arrays because the
+  comparator intentionally schema-checks metadata shape and compares histogram
+  content through normalized buckets; no change required.
+- Sensitive data gate: the reported browser request contained cookies and
+  bearer tokens, but this SOW records only sanitized response-shape evidence and
+  no raw credentials, tokens, cookies, or private endpoint data.
+
+### Patch Release Plan
+
+The Netdata integration needs a consumable release containing this regression
+repair. The selected patch release is `v0.6.1`:
+
+- Rust workspace version: `0.6.1`.
+- Rust internal publishable package dependency versions: `0.6.1`.
+- Root release tag: `v0.6.1`.
+- Go submodule release tag: `go/v0.6.1`.
+
+Tag check on 2026-06-09:
+
+- `git ls-remote --tags origin refs/tags/v0.6.1 refs/tags/v0.6.1^{}
+  refs/tags/go/v0.6.1 refs/tags/go/v0.6.1^{}` returned no rows, so there is no
+  remote tag collision before release.
+
+Release validation added after the version bump:
+
+- `cd rust && cargo metadata --format-version 1`: passed and refreshed
+  `rust/Cargo.lock`.
+- `cd go && go test ./journal -run 'TestNetdataHistogramChartMetadata|TestNetdataFunctionQueryFilters' -count=1`:
+  passed.
+- `cd rust && cargo test -p systemd-journal-sdk netdata --lib`: passed, 51
+  tests, compiling the changed packages at `0.6.1`.
+- `python3 -m unittest tests.netdata_function.test_compare_function_json`:
+  passed, 25 tests.
+- `python3 tests/docs/check_wiki_docs.py`: passed, 14 wiki markdown files.
+
+Rust crates.io publication on 2026-06-09:
+
+- `systemd-journal-sdk-common 0.6.1`: published.
+- `systemd-journal-sdk-registry 0.6.1`: published.
+- `systemd-journal-sdk-core 0.6.1`: published.
+- `systemd-journal-sdk-log-writer 0.6.1`: published.
+- `systemd-journal-sdk-index 0.6.1`: published.
+- `systemd-journal-sdk-engine 0.6.1`: published.
+- `systemd-journal-sdk 0.6.1`: published.
+
+Each crate was dry-run verified immediately before publishing. The first
+dependent-crate dry-run showed that crates.io requires each new internal
+dependency version to be published before the next dependent crate can resolve
+it, so the release used the dependency-ordered dry-run-then-publish sequence.
+No registry tokens or credential material were written to durable artifacts.

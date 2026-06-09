@@ -65,10 +65,70 @@ def function_doc(
                 "id": "PRIORITY",
                 "name": "PRIORITY",
                 "chart": {
+                    "summary": {
+                        "nodes": [],
+                        "contexts": [],
+                        "instances": [],
+                        "dimensions": [],
+                        "labels": [],
+                        "alerts": [],
+                    },
+                    "totals": {"nodes": {"sl": 1, "qr": 1}},
                     "result": {
                         "labels": ["time", "info"],
+                        "point": {"value": 0, "arp": 1, "pa": 2},
                         "data": [[1000, [histogram_value, 0, 0]]],
-                    }
+                    },
+                    "db": {
+                        "tiers": 1,
+                        "update_every": 5,
+                        "units": "events",
+                        "dimensions": {
+                            "ids": ["DwMLdkCaS0P"],
+                            "names": ["info"],
+                            "units": ["events"],
+                            "sts": {
+                                "min": [histogram_value],
+                                "max": [histogram_value],
+                                "avg": [histogram_value],
+                                "arp": [0],
+                                "con": [100],
+                            },
+                        },
+                        "per_tier": [
+                            {
+                                "tier": 0,
+                                "queries": 1,
+                                "points": 1,
+                                "update_every": 5,
+                            }
+                        ],
+                    },
+                    "view": {
+                        "title": "Events Distribution by PRIORITY",
+                        "update_every": 5,
+                        "after": 1,
+                        "before": 2,
+                        "units": "events",
+                        "chart_type": "stackedBar",
+                        "dimensions": {
+                            "grouped_by": ["dimension"],
+                            "ids": ["DwMLdkCaS0P"],
+                            "names": ["info"],
+                            "colors": [None],
+                            "units": ["events"],
+                            "sts": {
+                                "min": [histogram_value],
+                                "max": [histogram_value],
+                                "avg": [histogram_value],
+                                "arp": [0],
+                                "con": [100],
+                            },
+                        },
+                        "min": histogram_value,
+                        "max": histogram_value,
+                    },
+                    "agents": [],
                 },
             }
             if include_histogram
@@ -205,6 +265,32 @@ class CompareFunctionJsonTest(unittest.TestCase):
         report = compare(function_doc(), function_doc(include_histogram=False))
         self.assertFalse(report["ok"])
         self.assertFalse(report["checks"]["histogram"])
+
+    def test_missing_histogram_chart_view_dimensions_fails_schema(self) -> None:
+        broken = function_doc()
+        del broken["histogram"]["chart"]["view"]["dimensions"]
+
+        report = compare(broken, function_doc())
+
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["checks"]["histogram_schema"])
+        self.assertIn(
+            "histogram.chart.view.dimensions",
+            report["diffs"]["histogram_schema"]["left"],
+        )
+
+    def test_missing_histogram_chart_sts_member_fails_schema(self) -> None:
+        broken = function_doc()
+        del broken["histogram"]["chart"]["view"]["dimensions"]["sts"]["con"]
+
+        report = compare(broken, function_doc())
+
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["checks"]["histogram_schema"])
+        self.assertIn(
+            "histogram.chart.view.dimensions.sts.con",
+            report["diffs"]["histogram_schema"]["left"],
+        )
 
     def test_stable_top_level_mismatch_fails(self) -> None:
         report = compare(function_doc(status=200), function_doc(status=500))

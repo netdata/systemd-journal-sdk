@@ -118,4 +118,9 @@ That layer handles:
 - timeout behavior;
 - plugin-compatible response envelopes.
 
+Histogram responses include the libnetdata-style chart envelope used by the
+Netdata UI: `summary`, `totals`, `result`, `db`, `view`, and `agents`.
+`view.dimensions.names` and sibling dimension arrays are present even when the
+selected time window has no values for the histogram field.
+
 The generic SDK Explorer stays separate from Netdata-specific response shaping.

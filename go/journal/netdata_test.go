@@ -597,6 +597,47 @@ func TestNetdataFunctionQueryFiltersFacetsHistogramAndRows(t *testing.T) {
 	}
 }
 
+func TestNetdataHistogramChartMetadataIncludesDimensionArrays(t *testing.T) {
+	function := SystemdJournalPluginCompatibleNetdataFunction()
+	empty := function.buildHistogram(newDisplayContext(), &ExplorerHistogram{
+		Field: []byte("TRAP_SEVERITY"),
+		Buckets: []ExplorerHistogramBucket{{
+			StartRealtimeUsec: 1_700_000_000_000_000,
+			EndRealtimeUsec:   1_700_000_005_000_000,
+			Values:            map[string]uint64{},
+		}},
+	}, nil)
+	emptyChart := anyMap(t, anyMap(t, empty)["chart"])
+	emptyViewDimensions := anyMap(t, anyMap(t, emptyChart["view"])["dimensions"])
+	if got := anySlice(t, emptyViewDimensions["names"]); len(got) != 0 {
+		t.Fatalf("empty histogram view dimensions names = %v, want empty array", got)
+	}
+	if got := anySlice(t, emptyViewDimensions["ids"]); len(got) != 0 {
+		t.Fatalf("empty histogram view dimensions ids = %v, want empty array", got)
+	}
+	emptyDBDimensions := anyMap(t, anyMap(t, emptyChart["db"])["dimensions"])
+	if got := anySlice(t, emptyDBDimensions["names"]); len(got) != 0 {
+		t.Fatalf("empty histogram db dimensions names = %v, want empty array", got)
+	}
+
+	withValue := function.buildHistogram(newDisplayContext(), &ExplorerHistogram{
+		Field: []byte("TRAP_SEVERITY"),
+		Buckets: []ExplorerHistogramBucket{{
+			StartRealtimeUsec: 1_700_000_000_000_000,
+			EndRealtimeUsec:   1_700_000_005_000_000,
+			Values:            map[string]uint64{"warning": 7},
+		}},
+	}, nil)
+	valueChart := anyMap(t, anyMap(t, withValue)["chart"])
+	valueViewDimensions := anyMap(t, anyMap(t, valueChart["view"])["dimensions"])
+	if got := anySlice(t, valueViewDimensions["names"]); len(got) != 1 || got[0] != "warning" {
+		t.Fatalf("histogram view dimension names = %v, want [warning]", got)
+	}
+	if got := anySlice(t, anyMap(t, valueViewDimensions["sts"])["min"]); len(got) != 1 || numericUint64(got[0]) != 7 {
+		t.Fatalf("histogram view dimension min = %v, want [7]", got)
+	}
+}
+
 func TestNetdataFunctionRequestBytesAndCancellation(t *testing.T) {
 	path := createExplorerManyJournal(t, 9_000)
 	request := []byte(`{"after":1700000000,"before":1800000000,"last":5,"facets":["SERVICE"],"histogram":"SERVICE"}`)

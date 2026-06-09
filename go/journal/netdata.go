@@ -1509,23 +1509,281 @@ func (f NetdataJournalFunction) buildFacets(context *DisplayContext, requested [
 func (f NetdataJournalFunction) buildHistogram(context *DisplayContext, histogram *ExplorerHistogram, knownValues map[string]uint64) any {
 	field := string(histogram.Field)
 	bucketValues, actualSet, dimensions := histogramDimensions(histogram, knownValues)
+	metadata := f.histogramChartMetadata(context, field, bucketValues, actualSet, dimensions)
 	return map[string]any{
 		"id":   field,
 		"name": field,
 		"chart": map[string]any{
+			"summary": metadata.Summary,
+			"totals":  metadata.Totals,
 			"result": map[string]any{
-				"labels": f.histogramLabels(context, field, dimensions),
+				"labels": metadata.ResultLabels,
 				"point":  map[string]any{"value": 0, "arp": 1, "pa": 2},
 				"data":   histogramData(histogram, bucketValues, actualSet, dimensions),
+			},
+			"db": map[string]any{
+				"tiers":        1,
+				"update_every": histogramUpdateEverySeconds(histogram),
+				"units":        "events",
+				"dimensions": map[string]any{
+					"ids":   metadata.IDs,
+					"names": metadata.Names,
+					"units": metadata.Units,
+					"sts":   metadata.Stats,
+				},
+				"per_tier": []any{
+					map[string]any{
+						"tier":         0,
+						"queries":      1,
+						"points":       metadata.Points,
+						"update_every": histogramUpdateEverySeconds(histogram),
+					},
+				},
 			},
 			"view": map[string]any{
 				"title":        fmt.Sprintf("Events Distribution by %s", field),
 				"update_every": histogramUpdateEverySeconds(histogram),
+				"after":        histogramAfterSeconds(histogram),
+				"before":       histogramBeforeSeconds(histogram),
 				"units":        "events",
 				"chart_type":   "stackedBar",
+				"dimensions": map[string]any{
+					"grouped_by": []any{"dimension"},
+					"ids":        metadata.IDs,
+					"names":      metadata.Names,
+					"colors":     metadata.Colors,
+					"units":      metadata.Units,
+					"sts":        metadata.Stats,
+				},
+				"min": metadata.Min,
+				"max": metadata.Max,
+			},
+			"agents": []any{
+				map[string]any{
+					"mg":  "default",
+					"nm":  "facets.histogram",
+					"now": time.Now().Unix(),
+					"ai":  0,
+				},
 			},
 		},
 	}
+}
+
+type netdataHistogramChartMetadata struct {
+	IDs          []any
+	Names        []any
+	Colors       []any
+	Units        []any
+	Stats        map[string]any
+	Summary      map[string]any
+	Totals       map[string]any
+	ResultLabels []any
+	Min          uint64
+	Max          uint64
+	Points       uint64
+}
+
+func (f NetdataJournalFunction) histogramChartMetadata(context *DisplayContext, field string, bucketValues []map[string]uint64, actualSet map[string]struct{}, dimensions []string) netdataHistogramChartMetadata {
+	ids := make([]any, 0, len(dimensions))
+	names := make([]any, 0, len(dimensions))
+	colors := make([]any, 0, len(dimensions))
+	units := make([]any, 0, len(dimensions))
+	minValues := make([]any, 0, len(dimensions))
+	maxValues := make([]any, 0, len(dimensions))
+	avgValues := make([]any, 0, len(dimensions))
+	arpValues := make([]any, 0, len(dimensions))
+	conValues := make([]any, 0, len(dimensions))
+	summaryDimensions := make([]any, 0, len(dimensions))
+	labels := make([]any, 0, len(dimensions)+1)
+	labels = append(labels, "time")
+
+	var total uint64
+	for _, value := range dimensions {
+		for _, bucket := range bucketValues {
+			total += bucket[value]
+		}
+	}
+
+	minValue := uint64(0)
+	maxValue := uint64(0)
+	var pointCount uint64
+	var priority uint64
+	for _, value := range dimensions {
+		display := displayValueString(f.Profile.FieldDisplayValue(context, DisplayScopeHistogram, field, []byte(value)))
+		ids = append(ids, value)
+		names = append(names, display)
+		colors = append(colors, nil)
+		units = append(units, "events")
+		labels = append(labels, display)
+
+		dimensionMin, dimensionMax, dimensionSum, actual := histogramDimensionStats(bucketValues, actualSet, value)
+		dimensionAverage := 0.0
+		if actual && len(bucketValues) > 0 {
+			dimensionAverage = float64(dimensionSum) / float64(len(bucketValues))
+			if pointCount == 0 || dimensionMin < minValue {
+				minValue = dimensionMin
+			}
+			if dimensionMax > maxValue {
+				maxValue = dimensionMax
+			}
+			pointCount += uint64(len(bucketValues))
+		}
+		contribution := 0.0
+		if total > 0 {
+			contribution = float64(dimensionSum) * 100.0 / float64(total)
+		}
+
+		minValues = append(minValues, dimensionMin)
+		maxValues = append(maxValues, dimensionMax)
+		avgValues = append(avgValues, dimensionAverage)
+		arpValues = append(arpValues, uint64(0))
+		conValues = append(conValues, contribution)
+		summaryDimensions = append(summaryDimensions, map[string]any{
+			"id": value,
+			"nm": display,
+			"ds": map[string]any{"sl": boolToUint64(actual), "qr": boolToUint64(actual)},
+			"sts": map[string]any{
+				"min": dimensionMin,
+				"max": dimensionMax,
+				"avg": dimensionAverage,
+				"con": contribution,
+			},
+			"pri": priority,
+		})
+		priority++
+	}
+
+	stats := map[string]any{
+		"min": minValues,
+		"max": maxValues,
+		"avg": avgValues,
+		"arp": arpValues,
+		"con": conValues,
+	}
+	summaryStats := map[string]any{
+		"min": minValue,
+		"max": maxValue,
+		"avg": histogramAverage(total, pointCount),
+		"con": 100.0,
+	}
+	summary := map[string]any{
+		"nodes": []any{histogramSummaryNode(len(dimensions), pointCount, summaryStats)},
+		"contexts": []any{
+			histogramSummaryContext(len(dimensions), pointCount, summaryStats),
+		},
+		"instances": []any{
+			histogramSummaryInstance(len(dimensions), pointCount, summaryStats),
+		},
+		"dimensions": summaryDimensions,
+		"labels":     []any{},
+		"alerts":     []any{},
+	}
+	totals := map[string]any{
+		"nodes": map[string]any{"sl": 1, "qr": 1},
+	}
+	if len(dimensions) > 0 {
+		totals["contexts"] = map[string]any{"sl": 1, "qr": 1}
+		totals["instances"] = map[string]any{"sl": 1, "qr": 1}
+		totals["dimensions"] = map[string]any{"sl": uint64(len(dimensions)), "qr": uint64(len(dimensions))}
+	}
+
+	return netdataHistogramChartMetadata{
+		IDs:          ids,
+		Names:        names,
+		Colors:       colors,
+		Units:        units,
+		Stats:        stats,
+		Summary:      summary,
+		Totals:       totals,
+		ResultLabels: labels,
+		Min:          minValue,
+		Max:          maxValue,
+		Points:       pointCount,
+	}
+}
+
+func histogramDimensionStats(bucketValues []map[string]uint64, actualSet map[string]struct{}, value string) (uint64, uint64, uint64, bool) {
+	if _, actual := actualSet[value]; !actual {
+		return 0, 0, 0, false
+	}
+	var minValue uint64
+	var maxValue uint64
+	var sum uint64
+	for i, bucket := range bucketValues {
+		count := bucket[value]
+		if i == 0 || count < minValue {
+			minValue = count
+		}
+		if count > maxValue {
+			maxValue = count
+		}
+		sum += count
+	}
+	return minValue, maxValue, sum, true
+}
+
+func histogramAverage(total, points uint64) float64 {
+	if points == 0 {
+		return 0
+	}
+	return float64(total) / float64(points)
+}
+
+func histogramSummaryNode(dimensions int, pointCount uint64, stats map[string]any) map[string]any {
+	node := map[string]any{
+		"mg": "default",
+		"nm": "facets.histogram",
+		"ni": uint64(0),
+		"st": map[string]any{"ai": uint64(0), "code": uint64(200), "msg": ""},
+	}
+	addHistogramSummaryShape(node, dimensions, pointCount, stats, true)
+	return node
+}
+
+func histogramSummaryContext(dimensions int, pointCount uint64, stats map[string]any) map[string]any {
+	context := map[string]any{"id": "facets.histogram"}
+	addHistogramSummaryShape(context, dimensions, pointCount, stats, true)
+	return context
+}
+
+func histogramSummaryInstance(dimensions int, pointCount uint64, stats map[string]any) map[string]any {
+	instance := map[string]any{"id": "facets.histogram", "ni": uint64(0)}
+	addHistogramSummaryShape(instance, dimensions, pointCount, stats, false)
+	return instance
+}
+
+func addHistogramSummaryShape(object map[string]any, dimensions int, pointCount uint64, stats map[string]any, includeInstances bool) {
+	if dimensions > 0 {
+		if includeInstances {
+			object["is"] = map[string]any{"sl": uint64(1), "qr": uint64(1)}
+		}
+		object["ds"] = map[string]any{"sl": uint64(dimensions), "qr": uint64(dimensions)}
+	}
+	if pointCount > 0 {
+		object["sts"] = stats
+	}
+}
+
+func boolToUint64(value bool) uint64 {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func histogramAfterSeconds(histogram *ExplorerHistogram) uint64 {
+	if len(histogram.Buckets) == 0 {
+		return 0
+	}
+	return histogram.Buckets[0].StartRealtimeUsec / 1_000_000
+}
+
+func histogramBeforeSeconds(histogram *ExplorerHistogram) uint64 {
+	if len(histogram.Buckets) == 0 {
+		return 0
+	}
+	return histogram.Buckets[len(histogram.Buckets)-1].EndRealtimeUsec / 1_000_000
 }
 
 func histogramDimensions(histogram *ExplorerHistogram, knownValues map[string]uint64) ([]map[string]uint64, map[string]struct{}, []string) {
@@ -1568,16 +1826,6 @@ func sortedStringKeys(values map[string]struct{}) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-func (f NetdataJournalFunction) histogramLabels(context *DisplayContext, field string, dimensions []string) []any {
-	labels := make([]any, 0, len(dimensions)+1)
-	labels = append(labels, "time")
-	for _, value := range dimensions {
-		display := f.Profile.FieldDisplayValue(context, DisplayScopeHistogram, field, []byte(value))
-		labels = append(labels, displayValueString(display))
-	}
-	return labels
 }
 
 func histogramData(histogram *ExplorerHistogram, bucketValues []map[string]uint64, actualSet map[string]struct{}, dimensions []string) []any {
