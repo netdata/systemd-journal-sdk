@@ -73,7 +73,7 @@ dependency alias:
 
 ```toml
 [dependencies]
-journal = { package = "systemd-journal-sdk", version = "0.6.1" }
+journal = { package = "systemd-journal-sdk", version = "0.6.2" }
 ```
 
 Advanced Rust consumers that need lower-level building blocks can also depend
