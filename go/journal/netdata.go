@@ -538,10 +538,23 @@ func (r netdataRequest) matchesSource(path string, metadata *NetdataJournalFileM
 func (r netdataRequest) toExplorerQuery(matchedFiles uint64, header *journalHeader, realtimeSlackUsec uint64) ExplorerQuery {
 	analysisEnabled := !r.DataOnly || r.Delta
 	tailAnchor := r.Tail && r.Anchor.Kind == ExplorerAnchorRealtime
+	backwardPageAnchor := r.DataOnly && !tailAnchor && r.Direction == DirectionBackward && r.Anchor.Kind == ExplorerAnchorRealtime
 	query := DefaultExplorerQuery()
-	query.AfterRealtimeUsec = r.AfterRealtimeUsec
-	query.BeforeRealtimeUsec = r.BeforeRealtimeUsec
-	query.Anchor = r.Anchor
+	if tailAnchor {
+		query.AfterRealtimeUsec = tailAfterRealtimeBound(r.AfterRealtimeUsec, r.Anchor)
+	} else {
+		query.AfterRealtimeUsec = r.AfterRealtimeUsec
+	}
+	if backwardPageAnchor {
+		query.BeforeRealtimeUsec = beforeRealtimeBoundExcludingAnchor(r.BeforeRealtimeUsec, r.Anchor)
+	} else {
+		query.BeforeRealtimeUsec = r.BeforeRealtimeUsec
+	}
+	if tailAnchor || backwardPageAnchor {
+		query.Anchor = DefaultExplorerAnchor()
+	} else {
+		query.Anchor = r.Anchor
+	}
 	query.Direction = r.Direction
 	query.Limit = r.Limit
 	query.Filters = cloneExplorerFilters(r.Filters)
@@ -561,13 +574,37 @@ func (r netdataRequest) toExplorerQuery(matchedFiles uint64, header *journalHead
 	query.RealtimeSlackUsec = normalizeJournalVsRealtimeDeltaUsec(realtimeSlackUsec)
 	query.StopWhenRowsFull = r.DataOnly && !tailAnchor
 	query.StopWhenRowsFullEvery = netdataDataOnlyCheckEveryRows
-	query.Sampling = r.explorerSampling(analysisEnabled, matchedFiles, header)
+	query.Sampling = r.explorerSampling(analysisEnabled, matchedFiles, header, query.AfterRealtimeUsec, query.BeforeRealtimeUsec)
 	query.DebugCollectColumnFieldsByRowTraversal = false
 	return query
 }
 
-func (r netdataRequest) explorerSampling(analysisEnabled bool, matchedFiles uint64, header *journalHeader) *ExplorerSampling {
-	if !analysisEnabled || r.Sampling == 0 || matchedFiles == 0 || r.AfterRealtimeUsec == nil || r.BeforeRealtimeUsec == nil {
+func tailAfterRealtimeBound(after *uint64, anchor ExplorerAnchor) *uint64 {
+	if anchor.Kind != ExplorerAnchorRealtime {
+		return after
+	}
+	tailAfter := saturatingAdd(anchor.RealtimeUsec, 1)
+	if after != nil && *after > tailAfter {
+		value := *after
+		return &value
+	}
+	return &tailAfter
+}
+
+func beforeRealtimeBoundExcludingAnchor(before *uint64, anchor ExplorerAnchor) *uint64 {
+	if anchor.Kind != ExplorerAnchorRealtime {
+		return before
+	}
+	beforeAnchor := saturatingSub(anchor.RealtimeUsec, 1)
+	if before != nil && *before < beforeAnchor {
+		value := *before
+		return &value
+	}
+	return &beforeAnchor
+}
+
+func (r netdataRequest) explorerSampling(analysisEnabled bool, matchedFiles uint64, header *journalHeader, after, before *uint64) *ExplorerSampling {
+	if !analysisEnabled || r.Sampling == 0 || matchedFiles == 0 || after == nil || before == nil {
 		return nil
 	}
 	fileHeader := journalHeader{}
@@ -712,14 +749,20 @@ type netdataPageWindow struct {
 }
 
 func newNetdataPageWindow(request netdataRequest) *netdataPageWindow {
-	var anchor *uint64
+	var anchorStart *uint64
+	var anchorStop *uint64
 	if request.Anchor.Kind == ExplorerAnchorRealtime {
 		value := request.Anchor.RealtimeUsec
-		anchor = &value
+		if request.Tail {
+			anchorStop = &value
+		} else {
+			anchorStart = &value
+		}
 	}
 	return &netdataPageWindow{
 		Direction:       request.Direction,
-		AnchorStartUsec: anchor,
+		AnchorStartUsec: anchorStart,
+		AnchorStopUsec:  anchorStop,
 		Limit:           request.Limit,
 		Retained:        netdataPageHeap{Max: request.Direction == DirectionForward},
 	}
@@ -2974,7 +3017,9 @@ func requestDirection(object map[string]any) Direction {
 func requestAnchorAndDirection(object map[string]any, tail bool, direction Direction, after, before *uint64) (ExplorerAnchor, Direction) {
 	anchor := DefaultExplorerAnchor()
 	if value, ok := getJSONUint64OK(object, "anchor"); ok {
-		anchor = RealtimeExplorerAnchor(normalizeTimestampToUsec(value))
+		if value != 0 {
+			anchor = RealtimeExplorerAnchor(normalizeTimestampToUsec(value))
+		}
 	}
 	if tail && anchor.Kind == ExplorerAnchorRealtime {
 		return anchor, DirectionBackward

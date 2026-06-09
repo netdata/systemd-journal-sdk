@@ -188,6 +188,32 @@ func TestNetdataPageWindowRetainsForwardPage(t *testing.T) {
 	}
 }
 
+func TestNetdataPageWindowTailAnchorUsesStopSide(t *testing.T) {
+	anchor := uint64(1_700_000_008_000_000)
+	request := netdataRequest{
+		Anchor:              RealtimeExplorerAnchor(anchor),
+		Direction:           DirectionBackward,
+		IfModifiedSinceUsec: anchor,
+		DataOnly:            true,
+		Tail:                true,
+		Limit:               2,
+	}
+	window := newNetdataPageWindow(request)
+
+	for _, value := range []uint64{
+		1_700_000_009_000_000,
+		1_700_000_008_000_000,
+		1_700_000_007_000_000,
+	} {
+		window.observe(value)
+	}
+
+	counters := window.counters()
+	if counters.Matched != 1 || counters.Before != 0 || counters.After != 2 {
+		t.Fatalf("tail counters = %+v, want matched=1 before=0 after=2", counters)
+	}
+}
+
 func parseNetdataRequestFixture(t *testing.T) netdataRequest {
 	t.Helper()
 	request := map[string]any{
@@ -258,6 +284,29 @@ func TestNetdataRequestParsingExplorerQuery(t *testing.T) {
 	}
 	if !query.ExcludeFacetFieldFilters {
 		t.Fatal("multi-filter facet query did not exclude same-field filter")
+	}
+}
+
+func TestNetdataExplorerSamplingUsesEffectiveAnchorBounds(t *testing.T) {
+	before := uint64(1_700_000_010_999_999)
+	request := netdataRequest{
+		BeforeRealtimeUsec:  &before,
+		Anchor:              RealtimeExplorerAnchor(1_700_000_008_000_000),
+		Direction:           DirectionBackward,
+		Limit:               5,
+		DataOnly:            true,
+		Delta:               true,
+		Tail:                true,
+		Sampling:            20,
+		IfModifiedSinceUsec: 1_700_000_008_000_000,
+	}
+
+	query := request.toExplorerQuery(1, nil, netdataJournalRealtimeDeltaDefault)
+	if query.AfterRealtimeUsec == nil || *query.AfterRealtimeUsec != 1_700_000_008_000_001 {
+		t.Fatalf("effective after = %v, want anchor+1", query.AfterRealtimeUsec)
+	}
+	if query.Sampling == nil {
+		t.Fatal("sampling disabled, want enabled from effective tail anchor bounds")
 	}
 }
 
@@ -398,6 +447,171 @@ func TestNetdataDataOnlyDeltaTailSamplingAndNoChangeModes(t *testing.T) {
 	echo := anyMap(t, tail["_request"])
 	if echo["tail"] != true || echo["direction"] != "backward" {
 		t.Fatalf("tail echo = %#v, want tail=true direction=backward", echo)
+	}
+}
+
+func TestNetdataTailAnchorWithNoNewFilteredRowsReturns304(t *testing.T) {
+	startRealtime := uint64(1_700_000_000_000_000)
+	path := createExplorerRawJournal(t, []explorerTestEntry{
+		{
+			realtime: startRealtime,
+			payloads: [][]byte{
+				[]byte("MESSAGE=old-visible"),
+				[]byte("SERVICE=keep"),
+			},
+		},
+		{
+			realtime: startRealtime + 1_000_000,
+			payloads: [][]byte{
+				[]byte("MESSAGE=new-filtered-out"),
+				[]byte("SERVICE=other"),
+			},
+		},
+	})
+	function := SystemdJournalPluginCompatibleNetdataFunction()
+
+	response, err := function.RunDirectoryRequestJSONWithOptions(filepath.Dir(path), map[string]any{
+		"after":             float64(1_700_000_000),
+		"before":            float64(1_700_000_002),
+		"anchor":            float64(startRealtime),
+		"if_modified_since": float64(startRealtime),
+		"data_only":         true,
+		"tail":              true,
+		"last":              float64(5),
+		"selections": map[string]any{
+			"SERVICE": []any{"keep"},
+		},
+	}, DefaultNetdataFunctionRunOptions())
+	if err != nil {
+		t.Fatalf("RunDirectoryRequestJSONWithOptions(tail no new filtered rows) error = %v", err)
+	}
+	if got := numericUint64(response["status"]); got != 304 {
+		t.Fatalf("tail no-change status = %d, want 304 (response=%#v)", got, response)
+	}
+	if response["errorMessage"] != "No new data since the previous call." {
+		t.Fatalf("tail no-change error = %v", response["errorMessage"])
+	}
+}
+
+func TestNetdataFunctionPagesWithAnchorWithoutDuplicateOrMissingRows(t *testing.T) {
+	const startRealtime = uint64(1_700_000_000_000_000)
+	path := createExplorerManyJournal(t, 7)
+	dir := filepath.Dir(path)
+
+	backward := collectNetdataPages(t, dir, "backward", 2)
+	assertStringSlice(t, backward.messages, []string{"row-6", "row-5", "row-4", "row-3", "row-2", "row-1", "row-0"})
+	assertUniqueMessages(t, backward.messages)
+	assertUint64Slice(t, backward.timestamps, []uint64{
+		startRealtime + 6,
+		startRealtime + 5,
+		startRealtime + 4,
+		startRealtime + 3,
+		startRealtime + 2,
+		startRealtime + 1,
+		startRealtime,
+	})
+
+	forward := collectNetdataPages(t, dir, "forward", 2)
+	assertStringSlice(t, forward.messages, []string{"row-1", "row-0", "row-3", "row-2", "row-5", "row-4", "row-6"})
+	assertUniqueMessages(t, forward.messages)
+	assertUint64Slice(t, forward.timestamps, []uint64{
+		startRealtime + 1,
+		startRealtime,
+		startRealtime + 3,
+		startRealtime + 2,
+		startRealtime + 5,
+		startRealtime + 4,
+		startRealtime + 6,
+	})
+}
+
+func TestNetdataFunctionTailPollsReturnOnlyRowsAfterAnchorThen304(t *testing.T) {
+	const startRealtime = uint64(1_700_000_000_000_000)
+	path := createExplorerManyJournal(t, 5)
+	dir := filepath.Dir(path)
+	anchor := startRealtime + 2
+
+	for _, requestedDirection := range []string{"backward", "forward"} {
+		response := runNetdataContractRequest(t, dir, map[string]any{
+			"after":             float64(1_700_000_000),
+			"before":            float64(1_700_000_010),
+			"last":              float64(5),
+			"direction":         requestedDirection,
+			"data_only":         true,
+			"tail":              true,
+			"if_modified_since": float64(anchor),
+			"anchor":            float64(anchor),
+		})
+		if got := numericUint64(response["status"]); got != 200 {
+			t.Fatalf("tail status = %d, want 200 (response=%#v)", got, response)
+		}
+		echo := anyMap(t, response["_request"])
+		if echo["direction"] != "backward" {
+			t.Fatalf("tail direction echo = %v, want backward", echo["direction"])
+		}
+		assertStringSlice(t, responseColumnStrings(t, response, "MESSAGE"), []string{"row-4", "row-3"})
+		assertUint64Slice(t, responseColumnUint64s(t, response, "timestamp"), []uint64{startRealtime + 4, startRealtime + 3})
+	}
+
+	noChange := runNetdataContractRequest(t, dir, map[string]any{
+		"after":             float64(1_700_000_000),
+		"before":            float64(1_700_000_010),
+		"last":              float64(5),
+		"direction":         "backward",
+		"data_only":         true,
+		"tail":              true,
+		"if_modified_since": float64(startRealtime + 4),
+		"anchor":            float64(startRealtime + 4),
+	})
+	if got := numericUint64(noChange["status"]); got != 304 {
+		t.Fatalf("tail no-change status = %d, want 304 (response=%#v)", got, noChange)
+	}
+	if noChange["errorMessage"] != "No new data since the previous call." {
+		t.Fatalf("tail no-change error = %v", noChange["errorMessage"])
+	}
+}
+
+func TestNetdataFunctionTailDeltaReportsExactIncrementalFacetsAndHistogram(t *testing.T) {
+	const startRealtime = uint64(1_700_000_000_000_000)
+	path := createExplorerManyJournal(t, 5)
+	anchor := startRealtime + 1
+
+	response := runNetdataContractRequest(t, filepath.Dir(path), map[string]any{
+		"after":             float64(1_700_000_000),
+		"before":            float64(1_700_000_010),
+		"last":              float64(2),
+		"direction":         "backward",
+		"data_only":         true,
+		"delta":             true,
+		"tail":              true,
+		"if_modified_since": float64(anchor),
+		"anchor":            float64(anchor),
+		"facets":            []any{"SERVICE"},
+		"histogram":         "SERVICE",
+	})
+
+	if got := numericUint64(response["status"]); got != 200 {
+		t.Fatalf("tail delta status = %d, want 200 (response=%#v)", got, response)
+	}
+	assertStringSlice(t, responseColumnStrings(t, response, "MESSAGE"), []string{"row-4", "row-3"})
+	if got := responseFacetCount(t, response, "facets_delta", "SERVICE", "even"); got != 2 {
+		t.Fatalf("facets_delta SERVICE=even = %d, want 2", got)
+	}
+	if got := responseFacetCount(t, response, "facets_delta", "SERVICE", "odd"); got != 1 {
+		t.Fatalf("facets_delta SERVICE=odd = %d, want 1", got)
+	}
+	if got := responseHistogramTotal(t, response, "histogram_delta", "even"); got != 2 {
+		t.Fatalf("histogram_delta even = %d, want 2", got)
+	}
+	if got := responseHistogramTotal(t, response, "histogram_delta", "odd"); got != 1 {
+		t.Fatalf("histogram_delta odd = %d, want 1", got)
+	}
+	items := anyMap(t, response["items_delta"])
+	if got := numericUint64(items["matched"]); got != 3 {
+		t.Fatalf("items_delta.matched = %d, want 3", got)
+	}
+	if got := numericUint64(items["returned"]); got != 2 {
+		t.Fatalf("items_delta.returned = %d, want 2", got)
 	}
 }
 
@@ -696,6 +910,194 @@ func assertNetdataFacetCount(t *testing.T, response map[string]any, field, value
 		t.Fatalf("facet %s missing value %s", field, value)
 	}
 	t.Fatalf("missing facet %s", field)
+}
+
+type netdataCollectedPages struct {
+	messages   []string
+	timestamps []uint64
+}
+
+func collectNetdataPages(t *testing.T, dir, direction string, pageSize int) netdataCollectedPages {
+	t.Helper()
+	var out netdataCollectedPages
+	var anchor *uint64
+	for page := 0; page < 100; page++ {
+		request := map[string]any{
+			"after":     float64(1_700_000_000),
+			"before":    float64(1_800_000_000),
+			"last":      float64(pageSize),
+			"direction": direction,
+			"data_only": true,
+		}
+		if anchor != nil {
+			request["anchor"] = float64(*anchor)
+		}
+		response := runNetdataContractRequest(t, dir, request)
+		if got := numericUint64(response["status"]); got != 200 {
+			t.Fatalf("page %d status = %d, want 200 (response=%#v)", page, got, response)
+		}
+		messages := responseColumnStrings(t, response, "MESSAGE")
+		timestamps := responseColumnUint64s(t, response, "timestamp")
+		if len(messages) != len(timestamps) {
+			t.Fatalf("page %d messages=%d timestamps=%d", page, len(messages), len(timestamps))
+		}
+		if len(messages) == 0 {
+			break
+		}
+		out.messages = append(out.messages, messages...)
+		out.timestamps = append(out.timestamps, timestamps...)
+		nextAnchor := timestamps[len(timestamps)-1]
+		if direction == "forward" {
+			nextAnchor = timestamps[0]
+		}
+		anchor = &nextAnchor
+		if len(messages) < pageSize {
+			break
+		}
+	}
+	if len(out.messages) == 0 {
+		t.Fatal("pagination returned no rows")
+	}
+	return out
+}
+
+func runNetdataContractRequest(t *testing.T, dir string, request map[string]any) map[string]any {
+	t.Helper()
+	response, err := SystemdJournalPluginCompatibleNetdataFunction().
+		RunDirectoryRequestJSONWithOptions(dir, request, DefaultNetdataFunctionRunOptions())
+	if err != nil {
+		t.Fatalf("RunDirectoryRequestJSONWithOptions(%#v) error = %v", request, err)
+	}
+	return response
+}
+
+func responseColumnStrings(t *testing.T, response map[string]any, field string) []string {
+	t.Helper()
+	index := responseColumnIndex(t, response, field)
+	rows := anySlice(t, response["data"])
+	out := make([]string, 0, len(rows))
+	for _, rowAny := range rows {
+		row := anySlice(t, rowAny)
+		if index >= len(row) {
+			t.Fatalf("field %s index %d outside row with %d columns", field, index, len(row))
+		}
+		value, ok := row[index].(string)
+		if !ok {
+			t.Fatalf("field %s value = %T, want string", field, row[index])
+		}
+		out = append(out, value)
+	}
+	return out
+}
+
+func responseColumnUint64s(t *testing.T, response map[string]any, field string) []uint64 {
+	t.Helper()
+	index := responseColumnIndex(t, response, field)
+	rows := anySlice(t, response["data"])
+	out := make([]uint64, 0, len(rows))
+	for _, rowAny := range rows {
+		row := anySlice(t, rowAny)
+		if index >= len(row) {
+			t.Fatalf("field %s index %d outside row with %d columns", field, index, len(row))
+		}
+		out = append(out, numericUint64(row[index]))
+	}
+	return out
+}
+
+func responseColumnIndex(t *testing.T, response map[string]any, field string) int {
+	t.Helper()
+	columns := anyMap(t, response["columns"])
+	column := anyMap(t, columns[field])
+	return int(numericUint64(column["index"]))
+}
+
+func responseFacetCount(t *testing.T, response map[string]any, key, field, value string) uint64 {
+	t.Helper()
+	for _, facetAny := range anySlice(t, response[key]) {
+		facet := anyMap(t, facetAny)
+		if facet["id"] != field {
+			continue
+		}
+		for _, optionAny := range anySlice(t, facet["options"]) {
+			option := anyMap(t, optionAny)
+			if option["id"] == value {
+				return numericUint64(option["count"])
+			}
+		}
+		t.Fatalf("%s facet %s missing value %s", key, field, value)
+	}
+	t.Fatalf("%s missing facet %s", key, field)
+	return 0
+}
+
+func responseHistogramTotal(t *testing.T, response map[string]any, key, value string) uint64 {
+	t.Helper()
+	histogram := anyMap(t, response[key])
+	chart := anyMap(t, histogram["chart"])
+	view := anyMap(t, chart["view"])
+	dimensions := anyMap(t, view["dimensions"])
+	names := anySlice(t, dimensions["names"])
+	dimensionIndex := -1
+	for index, nameAny := range names {
+		if nameAny == value {
+			dimensionIndex = index
+			break
+		}
+	}
+	if dimensionIndex == -1 {
+		t.Fatalf("%s histogram missing dimension %s", key, value)
+	}
+	result := anyMap(t, chart["result"])
+	var total uint64
+	for _, pointAny := range anySlice(t, result["data"]) {
+		point := anySlice(t, pointAny)
+		cellIndex := dimensionIndex + 1
+		if cellIndex >= len(point) {
+			t.Fatalf("%s histogram point has %d cells, need index %d", key, len(point), cellIndex)
+		}
+		cell := anySlice(t, point[cellIndex])
+		if len(cell) == 0 {
+			t.Fatalf("%s histogram point cell is empty", key)
+		}
+		total += numericUint64(cell[0])
+	}
+	return total
+}
+
+func assertStringSlice(t *testing.T, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("strings = %v, want %v", got, want)
+	}
+	for index := range got {
+		if got[index] != want[index] {
+			t.Fatalf("strings = %v, want %v", got, want)
+		}
+	}
+}
+
+func assertUint64Slice(t *testing.T, got, want []uint64) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("uint64s = %v, want %v", got, want)
+	}
+	for index := range got {
+		if got[index] != want[index] {
+			t.Fatalf("uint64s = %v, want %v", got, want)
+		}
+	}
+}
+
+func assertUniqueMessages(t *testing.T, messages []string) {
+	t.Helper()
+	seen := make(map[string]struct{}, len(messages))
+	for _, message := range messages {
+		if _, ok := seen[message]; ok {
+			t.Fatalf("duplicate message %q in %v", message, messages)
+		}
+		seen[message] = struct{}{}
+	}
 }
 
 func anySlice(t *testing.T, value any) []any {

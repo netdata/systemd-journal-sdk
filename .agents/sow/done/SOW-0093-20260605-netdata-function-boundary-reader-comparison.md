@@ -6,8 +6,13 @@ Status: completed
 
 `completed` is the successful terminal status. `done` is a directory name, not a status value. Do not use `Status: done` or `Status: complete`.
 
-Sub-state: completed after 2026-06-09 regression repair and `v0.6.1` patch
-release. Earlier strict SDK-first
+Sub-state: completed after 2026-06-09 tail-anchor regression repair. Rust and
+Go now match libnetdata tail stop-anchor semantics, backward page anchors are
+exclusive, tail no-change returns `304`, and delta facets/histogram are covered
+by focused contract tests. Five available reviewers returned `PRODUCTION
+GRADE`; `llm-netdata-cloud/kimi-k2.6` was unavailable due quota during the
+final reviewer batch. The previous completed state remains below for historical
+context. Earlier strict SDK-first
 content comparison passed locally for the large default-facets full-analysis
 request and for the repo-local matrix covering `info`, full priority, filtered
 priority, full default facets, low-budget sampling, data-only, data-only delta,
@@ -2381,3 +2386,199 @@ dependent-crate dry-run showed that crates.io requires each new internal
 dependency version to be published before the next dependent crate can resolve
 it, so the release used the dependency-ordered dry-run-then-publish sequence.
 No registry tokens or credential material were written to durable artifacts.
+
+## Regression - 2026-06-09 Tail Anchor No-Change
+
+### What Broke
+
+Netdata UI tail polling against a Netdata function backed by the SDK can receive
+the same final rows repeatedly instead of a `304` no-change function error.
+This contradicts the SOW's completed claim that tail/`if_modified_since`
+behavior matched `systemd-journal.plugin`.
+
+### Evidence
+
+- `ktsaou/netdata @ b5e92cb4862c`
+  `src/libnetdata/facets/logs_query_status.h:791`-`798`: libnetdata treats a
+  tail request with an anchor as a backward query with `anchor.stop_ut` set to
+  the caller's anchor.
+- `ktsaou/netdata @ b5e92cb4862c`
+  `src/libnetdata/facets/facets.c:2130`-`2155`: backward `anchor.stop_ut`
+  rejects rows with timestamps `<= anchor`, so useful tail rows are strictly
+  newer than the anchor.
+- `ktsaou/netdata @ b5e92cb4862c`
+  `src/libnetdata/facets/facets.c:2136`-`2154`: normal page anchors are also
+  exclusive. Backward pages reject rows `>= anchor.start_ut`; forward pages
+  reject rows `<= anchor.start_ut`.
+- `ktsaou/netdata @ b5e92cb4862c`
+  `src/libnetdata/facets/facets.c:2749`-`2761`: function table rows are emitted
+  newest-first. Forward paging therefore advances with the first returned row as
+  the next anchor, while backward paging advances with the last returned row.
+- `ktsaou/netdata @ b5e92cb4862c`
+  `src/collectors/systemd-journal.plugin/systemd-journal-execute.h:688`-`692`:
+  after scanning, `if_modified_since` plus zero useful rows returns a `304`
+  function error.
+- `rust/src/journal/src/netdata.rs:3447`-`3453`: the SDK currently maps a tail
+  request with an anchor to a generic backward `ExplorerAnchor::Realtime`.
+- `rust/src/journal/src/explorer.rs:3058`-`3064`: the generic backward anchor
+  keeps rows with timestamps `<= anchor`, the opposite side from libnetdata
+  tail mode.
+- `go/journal/netdata.go:2974`-`2980` has the same tail-anchor mapping as Rust.
+
+### Root-Cause Model
+
+The SDK reused the generic backward page anchor for tail requests. Generic
+backward paging asks for older rows at or before the anchor. Libnetdata tail
+polling asks for the newest rows after the anchor while scanning backward from
+the end of the selected window. When no newer row exists, libnetdata records no
+useful rows and returns `304`; the SDK can instead return the already-seen rows
+at or before the anchor.
+
+### Repair Plan
+
+1. Add failing Rust and Go tests that issue a `data_only:true`, `tail:true`,
+   `anchor`, and matching `if_modified_since` request against a small journal
+   whose newest entry is exactly the anchor.
+2. Fix the Netdata request-to-page-window mapping so tail anchors populate the
+   Netdata stop-anchor side and the Explorer generic anchor does not select the
+   old side of the page.
+3. Preserve normal non-tail backward/forward anchor semantics.
+4. Run targeted Rust and Go tests, then broader Netdata function tests and the
+   SOW audit.
+
+### Sensitive Data Handling
+
+The browser request that exposed the issue contained session cookies and
+authorization material. This regression record intentionally stores only the
+sanitized behavioral contract and source evidence; no raw request headers,
+tokens, cookies, or private identifiers are written to durable artifacts.
+
+### Test-First Failure Evidence
+
+The regression tests were added before changing runtime code.
+
+- `cd rust && cargo test -p systemd-journal-sdk tail_anchor --lib`: failed
+  before the fix. `page_window_counts_tail_anchor_like_netdata_facets` produced
+  `before=2` instead of `before=0`, and
+  `netdata_function_tail_anchor_with_no_new_filtered_rows_returns_304`
+  returned status `200` instead of `304`.
+- `cd go && go test ./journal -run 'TestNetdataPageWindowTailAnchorUsesStopSide|TestNetdataTailAnchorWithNoNewFilteredRowsReturns304' -count=1`:
+  failed before the fix. The page-window counters were
+  `{Matched:1 Before:2 After:0}` instead of `{Matched:1 Before:0 After:2}`,
+  and the end-to-end function returned status `200` with the old matching row.
+- The broadened trust tests then found a second real gap before the final fix:
+  ordinary backward paging duplicated the anchor row on every page. Rust
+  `netdata_function_pages_with_anchor_without_duplicate_or_missing_rows`
+  returned `row-6,row-5,row-5,row-4,...`; Go
+  `TestNetdataFunctionPagesWithAnchorWithoutDuplicateOrMissingRows` showed the
+  same duplicate-row class before the backward-page query bound was added.
+
+### Implementation
+
+- Rust `NetdataRequest::to_explorer_query()` now treats a tail realtime anchor
+  as a strict lower time bound by setting `after_realtime_usec` to at least
+  `anchor + 1` and clearing the generic Explorer anchor for the tail scan.
+- Rust `NetdataRequest::to_explorer_query()` now treats non-tail data-only
+  backward page anchors as strict upper realtime bounds by setting
+  `before_realtime_usec` to at most `anchor - 1` and clearing the generic
+  Explorer anchor for the page scan.
+- Rust `NetdataPageWindow::for_request()` now stores tail anchors in
+  `anchor_stop_usec`, matching libnetdata's tail-anchor side.
+- Go `netdataRequest.toExplorerQuery()` and `newNetdataPageWindow()` now mirror
+  the Rust behavior.
+- Rust and Go parse `anchor:0` as no anchor, matching libnetdata's zero-value
+  guard.
+- Go sampling eligibility now uses the effective Explorer time bounds after
+  tail/backward-anchor tightening, matching Rust's computed-bound behavior.
+- Normal non-tail forward realtime anchors keep the existing strict-forward
+  Explorer anchor behavior. Tests advance the next forward page with the first
+  returned row because the Netdata function output is newest-first.
+
+### Contract Tests Added
+
+- Rust:
+  `netdata_function_pages_with_anchor_without_duplicate_or_missing_rows`,
+  `netdata_function_tail_polls_return_only_rows_after_anchor_then_304`, and
+  `netdata_function_tail_delta_reports_exact_incremental_facets_and_histogram`.
+- Go:
+  `TestNetdataFunctionPagesWithAnchorWithoutDuplicateOrMissingRows`,
+  `TestNetdataFunctionTailPollsReturnOnlyRowsAfterAnchorThen304`, and
+  `TestNetdataFunctionTailDeltaReportsExactIncrementalFacetsAndHistogram`.
+- The paging tests cover backward and forward page chains over a seven-row
+  journal and assert no duplicate or missing `MESSAGE` rows.
+- The tail polling tests cover requested backward and requested forward tail
+  calls, verify that both normalize to backward, return only rows strictly newer
+  than the anchor, and return `304` when the anchor reaches the newest row.
+- The delta test verifies tail incremental `facets_delta`, `histogram_delta`,
+  and `items_delta` against the rows strictly newer than the anchor, independent
+  from the smaller returned table window.
+- Go `TestNetdataExplorerSamplingUsesEffectiveAnchorBounds` verifies that
+  sampling remains enabled when a tail anchor supplies the effective lower
+  bound used by the Explorer query.
+
+### Local Validation
+
+- `cd rust && cargo test -p systemd-journal-sdk tail_anchor --lib`: passed
+  after the fix, 2 tests.
+- `cd go && go test ./journal -run 'TestNetdataPageWindowTailAnchorUsesStopSide|TestNetdataTailAnchorWithNoNewFilteredRowsReturns304' -count=1`:
+  passed after the fix.
+- `cd rust && cargo test -p systemd-journal-sdk netdata_function_pages_with_anchor_without_duplicate_or_missing_rows --lib`: passed.
+- `cd rust && cargo test -p systemd-journal-sdk netdata_function_tail_polls_return_only_rows_after_anchor_then_304 --lib`: passed.
+- `cd rust && cargo test -p systemd-journal-sdk netdata_function_tail_delta_reports_exact_incremental_facets_and_histogram --lib`: passed.
+- `cd go && go test ./journal -run 'TestNetdataFunctionPagesWithAnchorWithoutDuplicateOrMissingRows|TestNetdataFunctionTailPollsReturnOnlyRowsAfterAnchorThen304|TestNetdataFunctionTailDeltaReportsExactIncrementalFacetsAndHistogram|TestNetdataPageWindowTailAnchorUsesStopSide|TestNetdataTailAnchorWithNoNewFilteredRowsReturns304' -count=1`: passed.
+- `cd go && go test ./journal -run 'TestNetdataExplorerSamplingUsesEffectiveAnchorBounds|TestNetdataFunctionPagesWithAnchorWithoutDuplicateOrMissingRows|TestNetdataFunctionTailPollsReturnOnlyRowsAfterAnchorThen304|TestNetdataFunctionTailDeltaReportsExactIncrementalFacetsAndHistogram|TestNetdataPageWindowTailAnchorUsesStopSide|TestNetdataTailAnchorWithNoNewFilteredRowsReturns304' -count=1`: passed.
+- `cd rust && cargo test -p systemd-journal-sdk netdata --lib`: passed, 56
+  tests.
+- `cd go && go test ./journal -run 'TestNetdata' -count=1`: passed.
+- `python3 -m unittest tests.netdata_function.test_compare_function_json`:
+  passed, 25 tests.
+- `cd rust && cargo test -p systemd-journal-sdk --lib`: passed, 113 tests.
+- `cd go && go test ./...`: passed.
+- `git diff --check`: passed.
+- `.agents/sow/audit.sh`: passed with clean verdict.
+
+### Reviewer Gate
+
+Final read-only reviewer batch on 2026-06-09:
+
+- `llm-netdata-cloud/glm-5.1`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/minimax-m3-coder`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/qwen3.6-plus`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/deepseek-v4-pro`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/kimi-k2.6`: unavailable due quota; no replacement model
+  was used because the approved pool already had five clean votes for this
+  regression repair.
+
+Reviewer findings and dispositions:
+
+- Go sampling parity concern: fixed before the final reviewer batch by passing
+  effective tail/backward-anchor bounds into Go `explorerSampling()` and adding
+  `TestNetdataExplorerSamplingUsesEffectiveAnchorBounds`.
+- Forward paging anchor advancement: reviewers verified rows are emitted
+  newest-first, so forward pagination advances with the first returned row and
+  backward pagination advances with the last returned row.
+- Tail stop-anchor behavior: reviewers verified tail requests force backward,
+  return only rows strictly newer than the anchor, and return `304` when no
+  useful newer rows match.
+- Delta mode: reviewers verified `facets_delta`, `histogram_delta`, and
+  `items_delta` are computed over all rows strictly newer than the anchor,
+  independent from the smaller returned table window.
+- Security and sensitive-data gate: reviewers found no new injection, path, or
+  credential exposure risk. The browser request that exposed the issue
+  contained sensitive headers, but this SOW stores only sanitized behavioral
+  evidence and source citations.
+- Documentation: no end-user/operator docs change was required for this
+  regression because it restores the existing Netdata function contract.
+
+Final close validation:
+
+- `cd rust && cargo test -p systemd-journal-sdk netdata --lib`: passed, 56
+  tests.
+- `cd rust && cargo test -p systemd-journal-sdk --lib`: passed, 113 tests.
+- `cd go && go test ./journal -run 'TestNetdata' -count=1`: passed.
+- `cd go && go test ./...`: passed.
+- `python3 -m unittest tests.netdata_function.test_compare_function_json`:
+  passed, 25 tests.
+- `git diff --check`: passed.
+- `.agents/sow/audit.sh`: passed with clean verdict.

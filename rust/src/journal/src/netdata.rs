@@ -1490,11 +1490,30 @@ impl NetdataRequest {
     ) -> ExplorerQuery {
         let analysis_enabled = !self.data_only || self.delta;
         let tail_anchor = self.tail && matches!(self.anchor, ExplorerAnchor::Realtime(_));
+        let backward_page_anchor = self.data_only
+            && !tail_anchor
+            && self.direction == Direction::Backward
+            && matches!(self.anchor, ExplorerAnchor::Realtime(_));
+        let after_realtime_usec = if tail_anchor {
+            tail_after_realtime_bound(self.after_realtime_usec, self.anchor)
+        } else {
+            self.after_realtime_usec
+        };
+        let before_realtime_usec = if backward_page_anchor {
+            before_realtime_bound_excluding_anchor(self.before_realtime_usec, self.anchor)
+        } else {
+            self.before_realtime_usec
+        };
+        let anchor = if tail_anchor || backward_page_anchor {
+            ExplorerAnchor::Auto
+        } else {
+            self.anchor
+        };
         let sampling = (analysis_enabled
             && self.sampling != 0
             && matched_files != 0
-            && self.after_realtime_usec.is_some()
-            && self.before_realtime_usec.is_some())
+            && after_realtime_usec.is_some()
+            && before_realtime_usec.is_some())
         .then(|| {
             let header = file_header.unwrap_or(FileHeader {
                 signature: [0; 8],
@@ -1527,9 +1546,9 @@ impl NetdataRequest {
             }
         });
         ExplorerQuery {
-            after_realtime_usec: self.after_realtime_usec,
-            before_realtime_usec: self.before_realtime_usec,
-            anchor: self.anchor,
+            after_realtime_usec,
+            before_realtime_usec,
+            anchor,
             direction: self.direction,
             limit: self.limit,
             filters: self.filters.clone(),
@@ -1825,9 +1844,10 @@ struct NetdataPageWindow {
 
 impl NetdataPageWindow {
     fn for_request(request: &NetdataRequest) -> Self {
-        let anchor_start_usec = match request.anchor {
-            ExplorerAnchor::Realtime(anchor) => Some(anchor),
-            _ => None,
+        let (anchor_start_usec, anchor_stop_usec) = match (request.tail, request.anchor) {
+            (true, ExplorerAnchor::Realtime(anchor)) => (None, Some(anchor)),
+            (false, ExplorerAnchor::Realtime(anchor)) => (Some(anchor), None),
+            _ => (None, None),
         };
         let heap = match request.direction {
             Direction::Backward => NetdataPageHeap::Backward(BinaryHeap::new()),
@@ -1836,7 +1856,7 @@ impl NetdataPageWindow {
         Self {
             direction: request.direction,
             anchor_start_usec,
-            anchor_stop_usec: None,
+            anchor_stop_usec,
             limit: request.limit,
             heap,
             oldest_retained_usec: None,
@@ -3437,6 +3457,36 @@ fn request_tail(data_only: bool, if_modified_since_usec: u64, object: &Map<Strin
     data_only && if_modified_since_usec != 0 && get_bool(object, "tail").unwrap_or(false)
 }
 
+fn tail_after_realtime_bound(
+    after_realtime_usec: Option<u64>,
+    anchor: ExplorerAnchor,
+) -> Option<u64> {
+    let ExplorerAnchor::Realtime(anchor) = anchor else {
+        return after_realtime_usec;
+    };
+    let tail_after = anchor.saturating_add(1);
+    Some(
+        after_realtime_usec
+            .map(|after| after.max(tail_after))
+            .unwrap_or(tail_after),
+    )
+}
+
+fn before_realtime_bound_excluding_anchor(
+    before_realtime_usec: Option<u64>,
+    anchor: ExplorerAnchor,
+) -> Option<u64> {
+    let ExplorerAnchor::Realtime(anchor) = anchor else {
+        return before_realtime_usec;
+    };
+    let before_anchor = anchor.saturating_sub(1);
+    Some(
+        before_realtime_usec
+            .map(|before| before.min(before_anchor))
+            .unwrap_or(before_anchor),
+    )
+}
+
 fn request_anchor_and_direction(
     object: &Map<String, Value>,
     tail: bool,
@@ -3445,6 +3495,7 @@ fn request_anchor_and_direction(
     before_realtime_usec: Option<u64>,
 ) -> (ExplorerAnchor, Direction) {
     let anchor = get_u64(object, "anchor")
+        .filter(|value| *value != 0)
         .map(normalize_timestamp_to_usec)
         .map(ExplorerAnchor::Realtime)
         .unwrap_or(ExplorerAnchor::Auto);
@@ -4779,6 +4830,157 @@ mod tests {
         file.sync().expect("sync journal");
     }
 
+    struct NetdataCollectedPages {
+        messages: Vec<String>,
+        timestamps: Vec<u64>,
+    }
+
+    fn collect_netdata_pages(
+        directory: &std::path::Path,
+        direction: Direction,
+        page_size: usize,
+    ) -> NetdataCollectedPages {
+        let mut out = NetdataCollectedPages {
+            messages: Vec::new(),
+            timestamps: Vec::new(),
+        };
+        let mut anchor = None;
+        for page in 0..100 {
+            let mut request = json!({
+                "after": 1_700_000_000,
+                "before": 1_800_000_000,
+                "last": page_size,
+                "direction": direction_name(direction),
+                "data_only": true,
+            });
+            if let Some(anchor) = anchor {
+                request["anchor"] = Value::from(anchor);
+            }
+            let response = run_netdata_contract_request(directory, request);
+            assert_eq!(
+                response["status"], 200,
+                "page {page} response = {response:#}"
+            );
+            let messages = response_column_strings(&response, "MESSAGE");
+            let timestamps = response_column_u64s(&response, "timestamp");
+            assert_eq!(messages.len(), timestamps.len());
+            if messages.is_empty() {
+                break;
+            }
+            out.messages.extend(messages);
+            out.timestamps.extend(timestamps.iter().copied());
+            anchor = Some(match direction {
+                Direction::Forward => timestamps[0],
+                Direction::Backward => *timestamps.last().expect("page timestamp"),
+            });
+            if timestamps.len() < page_size {
+                break;
+            }
+        }
+        assert!(!out.messages.is_empty(), "pagination returned no rows");
+        out
+    }
+
+    fn run_netdata_contract_request(directory: &std::path::Path, request: Value) -> Value {
+        NetdataJournalFunction::systemd_journal_plugin_compatible()
+            .run_directory_request_json_with_options(
+                directory,
+                &request,
+                NetdataFunctionRunOptions::from_timeout_seconds(0),
+            )
+            .expect("run function")
+    }
+
+    fn direction_name(direction: Direction) -> &'static str {
+        match direction {
+            Direction::Forward => "forward",
+            Direction::Backward => "backward",
+        }
+    }
+
+    fn response_column_strings(response: &Value, field: &str) -> Vec<String> {
+        let index = response_column_index(response, field);
+        response["data"]
+            .as_array()
+            .expect("data")
+            .iter()
+            .map(|row| {
+                row.as_array().expect("row")[index]
+                    .as_str()
+                    .expect("string cell")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    fn response_column_u64s(response: &Value, field: &str) -> Vec<u64> {
+        let index = response_column_index(response, field);
+        response["data"]
+            .as_array()
+            .expect("data")
+            .iter()
+            .map(|row| {
+                row.as_array().expect("row")[index]
+                    .as_u64()
+                    .expect("u64 cell")
+            })
+            .collect()
+    }
+
+    fn response_column_index(response: &Value, field: &str) -> usize {
+        response["columns"][field]["index"]
+            .as_u64()
+            .expect("column index") as usize
+    }
+
+    fn response_facet_count(response: &Value, key: &str, field: &str, value: &str) -> u64 {
+        for facet in response[key].as_array().expect("facets") {
+            if facet["id"] != field {
+                continue;
+            }
+            for option in facet["options"].as_array().expect("facet options") {
+                if option["id"] == value {
+                    return option["count"].as_u64().expect("facet count");
+                }
+            }
+            panic!("{key} facet {field} missing value {value}");
+        }
+        panic!("{key} missing facet {field}");
+    }
+
+    fn response_histogram_total(response: &Value, key: &str, value: &str) -> u64 {
+        let chart = &response[key]["chart"];
+        let names = chart["view"]["dimensions"]["names"]
+            .as_array()
+            .expect("histogram names");
+        let dimension_index = names
+            .iter()
+            .position(|name| name.as_str() == Some(value))
+            .expect("histogram dimension");
+        chart["result"]["data"]
+            .as_array()
+            .expect("histogram data")
+            .iter()
+            .map(|point| {
+                point.as_array().expect("histogram point")[dimension_index + 1]
+                    .as_array()
+                    .expect("histogram cell")[0]
+                    .as_u64()
+                    .unwrap_or_default()
+            })
+            .sum()
+    }
+
+    fn assert_unique_messages(messages: &[String]) {
+        let mut seen = HashSet::new();
+        for message in messages {
+            assert!(
+                seen.insert(message),
+                "duplicate message {message} in {messages:?}"
+            );
+        }
+    }
+
     #[test]
     fn parses_netdata_selections_as_and_fields_or_values() {
         let request = json!({
@@ -5581,6 +5783,248 @@ mod tests {
         assert_eq!(counters.matched, 3);
         assert_eq!(counters.before, 1);
         assert_eq!(counters.after, 1);
+    }
+
+    #[test]
+    fn page_window_counts_tail_anchor_like_netdata_facets() {
+        let config = NetdataFunctionConfig::systemd_journal();
+        let request = NetdataRequest::parse(
+            &json!({
+                "after": 1_700_000_000,
+                "before": 1_700_000_010,
+                "anchor": 1_700_000_008_000_000u64,
+                "if_modified_since": 1_700_000_008_000_000u64,
+                "data_only": true,
+                "tail": true,
+                "last": 2
+            }),
+            &config,
+        )
+        .expect("parse request");
+        let mut window = NetdataPageWindow::for_request(&request);
+
+        for realtime_usec in [
+            1_700_000_009_000_000,
+            1_700_000_008_000_000,
+            1_700_000_007_000_000,
+        ] {
+            window.observe(realtime_usec);
+        }
+
+        let counters = window.counters();
+        assert_eq!(counters.matched, 1);
+        assert_eq!(counters.before, 0);
+        assert_eq!(counters.after, 2);
+    }
+
+    #[test]
+    fn netdata_function_tail_anchor_with_no_new_filtered_rows_returns_304() {
+        let dir = TempDir::new().expect("tempdir");
+        let start_realtime_usec = 1_700_000_000_000_000;
+        write_stepped_netdata_test_journal(
+            dir.path(),
+            "netdata-api-test.journal",
+            2,
+            start_realtime_usec,
+            1_000_000,
+        );
+        let request = json!({
+            "after": 1_700_000_000,
+            "before": 1_700_000_002,
+            "anchor": start_realtime_usec,
+            "if_modified_since": start_realtime_usec,
+            "data_only": true,
+            "tail": true,
+            "last": 5,
+            "selections": {
+                "SERVICE": ["even"]
+            }
+        });
+        let function = NetdataJournalFunction::systemd_journal_plugin_compatible();
+
+        let response = function
+            .run_directory_request_json_with_options(
+                dir.path(),
+                &request,
+                NetdataFunctionRunOptions::from_timeout_seconds(0),
+            )
+            .expect("run function");
+
+        assert_eq!(response["status"], 304);
+        assert_eq!(
+            response["errorMessage"],
+            "No new data since the previous call."
+        );
+    }
+
+    #[test]
+    fn netdata_function_pages_with_anchor_without_duplicate_or_missing_rows() {
+        let dir = TempDir::new().expect("tempdir");
+        let start_realtime_usec = 1_700_000_000_000_000;
+        write_stepped_netdata_test_journal(
+            dir.path(),
+            "paging-contract.journal",
+            7,
+            start_realtime_usec,
+            1,
+        );
+
+        let backward = collect_netdata_pages(dir.path(), Direction::Backward, 2);
+        assert_eq!(
+            backward.messages,
+            vec![
+                "row-6", "row-5", "row-4", "row-3", "row-2", "row-1", "row-0"
+            ]
+        );
+        assert_unique_messages(&backward.messages);
+        assert_eq!(
+            backward.timestamps,
+            vec![
+                start_realtime_usec + 6,
+                start_realtime_usec + 5,
+                start_realtime_usec + 4,
+                start_realtime_usec + 3,
+                start_realtime_usec + 2,
+                start_realtime_usec + 1,
+                start_realtime_usec,
+            ]
+        );
+
+        let forward = collect_netdata_pages(dir.path(), Direction::Forward, 2);
+        assert_eq!(
+            forward.messages,
+            vec![
+                "row-1", "row-0", "row-3", "row-2", "row-5", "row-4", "row-6"
+            ]
+        );
+        assert_unique_messages(&forward.messages);
+        assert_eq!(
+            forward.timestamps,
+            vec![
+                start_realtime_usec + 1,
+                start_realtime_usec,
+                start_realtime_usec + 3,
+                start_realtime_usec + 2,
+                start_realtime_usec + 5,
+                start_realtime_usec + 4,
+                start_realtime_usec + 6,
+            ]
+        );
+    }
+
+    #[test]
+    fn netdata_function_tail_polls_return_only_rows_after_anchor_then_304() {
+        let dir = TempDir::new().expect("tempdir");
+        let start_realtime_usec = 1_700_000_000_000_000;
+        write_stepped_netdata_test_journal(
+            dir.path(),
+            "tail-contract.journal",
+            5,
+            start_realtime_usec,
+            1,
+        );
+        let anchor = start_realtime_usec + 2;
+
+        for requested_direction in [Direction::Backward, Direction::Forward] {
+            let response = run_netdata_contract_request(
+                dir.path(),
+                json!({
+                    "after": 1_700_000_000,
+                    "before": 1_700_000_010,
+                    "last": 5,
+                    "direction": direction_name(requested_direction),
+                    "data_only": true,
+                    "tail": true,
+                    "if_modified_since": anchor,
+                    "anchor": anchor,
+                }),
+            );
+            assert_eq!(response["status"], 200);
+            assert_eq!(response["_request"]["direction"], "backward");
+            assert_eq!(
+                response_column_strings(&response, "MESSAGE"),
+                vec!["row-4", "row-3"]
+            );
+            assert_eq!(
+                response_column_u64s(&response, "timestamp"),
+                vec![start_realtime_usec + 4, start_realtime_usec + 3]
+            );
+        }
+
+        let no_change = run_netdata_contract_request(
+            dir.path(),
+            json!({
+                "after": 1_700_000_000,
+                "before": 1_700_000_010,
+                "last": 5,
+                "direction": "backward",
+                "data_only": true,
+                "tail": true,
+                "if_modified_since": start_realtime_usec + 4,
+                "anchor": start_realtime_usec + 4,
+            }),
+        );
+        assert_eq!(no_change["status"], 304);
+        assert_eq!(
+            no_change["errorMessage"],
+            "No new data since the previous call."
+        );
+    }
+
+    #[test]
+    fn netdata_function_tail_delta_reports_exact_incremental_facets_and_histogram() {
+        let dir = TempDir::new().expect("tempdir");
+        let start_realtime_usec = 1_700_000_000_000_000;
+        write_stepped_netdata_test_journal(
+            dir.path(),
+            "delta-contract.journal",
+            5,
+            start_realtime_usec,
+            1,
+        );
+        let anchor = start_realtime_usec + 1;
+
+        let response = run_netdata_contract_request(
+            dir.path(),
+            json!({
+                "after": 1_700_000_000,
+                "before": 1_700_000_010,
+                "last": 2,
+                "direction": "backward",
+                "data_only": true,
+                "delta": true,
+                "tail": true,
+                "if_modified_since": anchor,
+                "anchor": anchor,
+                "facets": ["SERVICE"],
+                "histogram": "SERVICE",
+            }),
+        );
+
+        assert_eq!(response["status"], 200);
+        assert_eq!(
+            response_column_strings(&response, "MESSAGE"),
+            vec!["row-4", "row-3"]
+        );
+        assert_eq!(
+            response_facet_count(&response, "facets_delta", "SERVICE", "even"),
+            2
+        );
+        assert_eq!(
+            response_facet_count(&response, "facets_delta", "SERVICE", "odd"),
+            1
+        );
+        assert_eq!(
+            response_histogram_total(&response, "histogram_delta", "even"),
+            2
+        );
+        assert_eq!(
+            response_histogram_total(&response, "histogram_delta", "odd"),
+            1
+        );
+        let items = response["items_delta"].as_object().expect("items_delta");
+        assert_eq!(items["matched"], 3);
+        assert_eq!(items["returned"], 2);
     }
 
     #[test]
