@@ -48,7 +48,9 @@ Last updated: 2026-06-09
   tests for anchors, forward/backward paging, tail 304 behavior, filtered tail
   empty-200 behavior, and delta facets/histograms. Final validation passed 10/10
   one-shot request fixtures plus all five stateful sequences; Rust and Go also
-  have focused boundary tests for the repaired wrapper behavior.
+  have focused boundary tests for the repaired wrapper behavior. Rust crates
+  were published to crates.io at `0.6.3`, and release tags are `v0.6.3` plus
+  `go/v0.6.3`.
 - SOW-0093 - Netdata Function Boundary Reader Comparison: completed after
   tail-anchor regression repair. Rust and Go now use libnetdata-compatible
   tail stop-anchor semantics, backward page anchors are exclusive, tail

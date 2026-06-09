@@ -425,6 +425,50 @@ found plugin-content gaps.
 
 None.
 
+### Patch Release v0.6.3
+
+The Netdata integration needs a consumable release containing the stateful
+Netdata function parity repairs from this SOW. The selected patch release is
+`v0.6.3`:
+
+- Rust workspace version: `0.6.3`.
+- Rust internal publishable package dependency versions: `0.6.3`.
+- Root release tag: `v0.6.3`.
+- Go submodule release tag: `go/v0.6.3`.
+
+Tag check before release on 2026-06-09:
+
+- `git tag -l 'v0.6.3' 'go/v0.6.3'`: returned no local tags.
+- `git ls-remote --tags origin refs/tags/v0.6.3 refs/tags/v0.6.3^{}
+  refs/tags/go/v0.6.3 refs/tags/go/v0.6.3^{}`: returned no rows, so there is
+  no remote tag collision before release.
+
+Release validation before publishing:
+
+- `cargo metadata --manifest-path rust/Cargo.toml --format-version 1`: passed
+  and refreshed `rust/Cargo.lock`.
+- `cargo test --manifest-path rust/Cargo.toml -p systemd-journal-sdk`: passed,
+  114 tests.
+- `cd go && go test ./...`: passed.
+- `python -m unittest tests.netdata_function.test_compare_function_json
+  tests.netdata_function.test_stateful_function_compare`: passed, 32 tests.
+- `git diff --check`: passed before the release metadata commit.
+
+Rust crates.io publication on 2026-06-09:
+
+- `systemd-journal-sdk-common 0.6.3`: dry-run passed, published.
+- `systemd-journal-sdk-registry 0.6.3`: dry-run passed, published.
+- `systemd-journal-sdk-core 0.6.3`: dry-run passed, published.
+- `systemd-journal-sdk-log-writer 0.6.3`: dry-run passed, published.
+- `systemd-journal-sdk-index 0.6.3`: dry-run passed, published.
+- `systemd-journal-sdk-engine 0.6.3`: dry-run passed, published.
+- `systemd-journal-sdk 0.6.3`: dry-run passed, published.
+
+The release used dependency-ordered dry-run-then-publish because dependent
+crate dry-runs require lower-level internal `0.6.3` crates to be visible on
+crates.io first. No registry tokens or credential material were written to
+durable artifacts.
+
 ## Regression Log
 
 None yet.
