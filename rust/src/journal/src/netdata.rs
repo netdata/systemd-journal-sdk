@@ -1,4 +1,6 @@
-use crate::explorer::{ExplorerSamplingState, histogram_bucket_count_for_query};
+use crate::explorer::{
+    ExplorerSamplingState, empty_histogram_for_query, histogram_bucket_count_for_query,
+};
 use crate::{
     Direction, ExplorerAnchor, ExplorerControl, ExplorerFieldMode, ExplorerFilter,
     ExplorerFtsPattern, ExplorerHistogram, ExplorerProgress, ExplorerQuery, ExplorerResult,
@@ -627,16 +629,8 @@ where
         annotation_paths: &[PathBuf],
         combined: CombinedResult,
     ) -> Value {
-        // Match Netdata systemd-journal.plugin: if files are newer but no
-        // useful rows survive the query, the function returns 304.
-        let not_modified = request.if_modified_since_usec != 0
-            && !combined.partial
-            && combined.stats.rows_matched == 0;
         if combined.cancelled {
             return netdata_function_error(499, "Request cancelled.");
-        }
-        if not_modified {
-            return netdata_function_error(304, "No new data since the previous call.");
         }
         let artifacts = self.query_response_artifacts(&request, annotation_paths, &combined);
         let mut response = base_query_response(&request, &combined, &artifacts);
@@ -679,9 +673,7 @@ where
         let data =
             self.build_data_rows(&context, &columns.order, &combined.rows, request.direction);
         let facets = self.build_facets(&context, &reportable_facet_fields, &combined.facets);
-        let histogram = combined.histogram.as_ref().map(|histogram| {
-            self.build_histogram(&context, histogram, combined.facets.get(&histogram.field))
-        });
+        let histogram = self.query_histogram_artifact(request, combined, &context);
         let message = query_message(combined.timed_out, &combined.stats);
         let items = response_items(request, combined, data.len() as u64);
         QueryResponseArtifacts {
@@ -713,6 +705,36 @@ where
         add_last_modified_if_needed(object, request, combined);
         add_sampling_if_needed(object, combined);
         add_analysis_outputs_if_needed(object, request, artifacts);
+    }
+
+    fn query_histogram_artifact(
+        &self,
+        request: &NetdataRequest,
+        combined: &CombinedResult,
+        context: &DisplayContext,
+    ) -> Option<Value> {
+        if let Some(histogram) = combined.histogram.as_ref() {
+            return Some(self.build_histogram(
+                context,
+                histogram,
+                combined.facets.get(&histogram.field),
+            ));
+        }
+        let histogram_field = request.histogram.as_ref()?;
+        if request.data_only && !request.delta {
+            return None;
+        }
+        let query = request.to_explorer_query(
+            combined.matched_files,
+            None,
+            NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC,
+        );
+        let histogram = empty_histogram_for_query(histogram_field.as_bytes(), &query);
+        Some(self.build_histogram(
+            context,
+            &histogram,
+            combined.facets.get(histogram.field.as_slice()),
+        ))
     }
 
     fn add_full_query_response_metadata(
@@ -1562,6 +1584,8 @@ impl NetdataRequest {
                         .map(|field| field.as_bytes().to_vec())
                 })
                 .flatten(),
+            histogram_after_realtime_usec: self.after_realtime_usec,
+            histogram_before_realtime_usec: self.before_realtime_usec,
             histogram_target_buckets: DEFAULT_HISTOGRAM_BUCKETS,
             fts_terms: self.fts_terms.clone(),
             fts_patterns: self.fts_patterns.clone(),
@@ -1742,10 +1766,10 @@ impl JournalSourceSummary {
 
     fn info(&self) -> String {
         let coverage = match (self.first_realtime_usec, self.last_realtime_usec) {
-            (Some(first), Some(last)) if last >= first => {
+            (Some(first), Some(last)) if last > first && (last - first) >= 1_000_000 => {
                 human_duration_seconds((last - first) / 1_000_000)
             }
-            _ => "0s".to_string(),
+            _ => "off".to_string(),
         };
         let last_entry = self
             .last_realtime_usec
@@ -1863,7 +1887,14 @@ impl NetdataPageWindow {
             newest_retained_usec: None,
             matched: 0,
             skips_before: 0,
-            skips_after: 0,
+            skips_after: if request.tail
+                && request.delta
+                && matches!(request.anchor, ExplorerAnchor::Realtime(_))
+            {
+                1
+            } else {
+                0
+            },
             shifts: 0,
         }
     }
@@ -2313,15 +2344,13 @@ impl CombinedResult {
     }
 
     fn reportable_facet_fields_bytes(&self, requested: &[Vec<u8>]) -> Vec<Vec<u8>> {
-        requested
-            .iter()
-            .filter(|field| {
-                self.facets
-                    .get(*field)
-                    .is_some_and(facet_group_is_reportable)
-            })
-            .cloned()
-            .collect()
+        let mut fields = Vec::new();
+        for field in requested {
+            if !fields.contains(field) {
+                fields.push(field.clone());
+            }
+        }
+        fields
     }
 }
 
@@ -3102,11 +3131,26 @@ fn dynamic_process_name(fields: &BTreeMap<String, Vec<Vec<u8>>>) -> String {
     if base.is_empty() {
         return "-".to_string();
     }
-    let pid = first_value(fields, "_PID").map(|value| String::from_utf8_lossy(value).into_owned());
-    match pid {
-        Some(pid) if !pid.is_empty() => format!("{base}[{pid}]"),
-        _ => base,
+    match first_value(fields, "_PID") {
+        Some(pid) if !pid.is_empty() => {
+            let pid = String::from_utf8_lossy(pid);
+            format!("{base}[{pid}]")
+        }
+        Some(_) => base,
+        None => format!("{base}[-]"),
     }
+}
+
+fn first_value<'a>(fields: &'a BTreeMap<String, Vec<Vec<u8>>>, field: &str) -> Option<&'a [u8]> {
+    fields
+        .get(field)
+        .and_then(|values| values.first())
+        .map(Vec::as_slice)
+}
+
+fn split_payload(payload: &[u8]) -> Option<(&[u8], &[u8])> {
+    let split = payload.iter().position(|byte| *byte == b'=')?;
+    Some((&payload[..split], &payload[split + 1..]))
 }
 
 fn make_row_timestamps_unique(rows: &mut [LocatedRow], direction: Direction) {
@@ -3132,18 +3176,6 @@ fn make_row_timestamps_unique(rows: &mut [LocatedRow], direction: Direction) {
             initialized = true;
         }
     }
-}
-
-fn first_value<'a>(fields: &'a BTreeMap<String, Vec<Vec<u8>>>, field: &str) -> Option<&'a [u8]> {
-    fields
-        .get(field)
-        .and_then(|values| values.first())
-        .map(Vec::as_slice)
-}
-
-fn split_payload(payload: &[u8]) -> Option<(&[u8], &[u8])> {
-    let split = payload.iter().position(|byte| *byte == b'=')?;
-    Some((&payload[..split], &payload[split + 1..]))
 }
 
 fn column_metadata(key: &str, index: usize) -> Value {
@@ -5126,7 +5158,7 @@ mod tests {
     }
 
     #[test]
-    fn netdata_function_suppresses_absent_requested_facet_groups() {
+    fn netdata_function_reports_requested_facet_groups_even_when_absent() {
         let dir = TempDir::new().expect("tempdir");
         write_netdata_test_journal(dir.path(), 10);
         let request = json!({
@@ -5149,26 +5181,30 @@ mod tests {
 
         let columns = response["columns"].as_object().expect("columns");
         assert!(columns.contains_key("SERVICE"));
-        assert!(!columns.contains_key("MISSING_FIELD"));
+        assert!(columns.contains_key("MISSING_FIELD"));
         let facets = response["facets"].as_array().expect("facets");
         assert_eq!(
             facets
                 .iter()
                 .filter_map(|facet| facet["id"].as_str())
                 .collect::<Vec<_>>(),
-            vec!["SERVICE"]
+            vec!["SERVICE", "MISSING_FIELD"]
+        );
+        assert_eq!(
+            facets[1]["options"].as_array().expect("missing options"),
+            &Vec::<Value>::new()
         );
         let accepted = response["accepted_params"]
             .as_array()
             .expect("accepted params");
         assert!(accepted.iter().any(|value| value == "SERVICE"));
-        assert!(!accepted.iter().any(|value| value == "MISSING_FIELD"));
+        assert!(accepted.iter().any(|value| value == "MISSING_FIELD"));
         let histograms = response["available_histograms"]
             .as_array()
             .expect("available histograms");
         assert!(histograms.iter().any(|value| value["id"] == "SERVICE"));
         assert!(
-            !histograms
+            histograms
                 .iter()
                 .any(|value| value["id"] == "MISSING_FIELD")
         );
@@ -5591,9 +5627,13 @@ mod tests {
         fields.remove("CONTAINER_NAME");
         fields.remove("SYSLOG_IDENTIFIER");
         fields.remove("_PID");
+        assert_eq!(dynamic_process_name(&fields), "comm[-]");
+
+        fields.insert("_PID".to_string(), vec![Vec::new()]);
         assert_eq!(dynamic_process_name(&fields), "comm");
 
         fields.remove("_COMM");
+        fields.remove("_PID");
         fields.insert("_EXE".to_string(), vec![b"/usr/bin/app".to_vec()]);
         assert_eq!(dynamic_process_name(&fields), "-");
     }
@@ -5818,7 +5858,7 @@ mod tests {
     }
 
     #[test]
-    fn netdata_function_tail_anchor_with_no_new_filtered_rows_returns_304() {
+    fn netdata_function_tail_anchor_with_newer_filtered_out_rows_returns_empty_200() {
         let dir = TempDir::new().expect("tempdir");
         let start_realtime_usec = 1_700_000_000_000_000;
         write_stepped_netdata_test_journal(
@@ -5850,10 +5890,10 @@ mod tests {
             )
             .expect("run function");
 
-        assert_eq!(response["status"], 304);
+        assert_eq!(response["status"], 200);
         assert_eq!(
-            response["errorMessage"],
-            "No new data since the previous call."
+            response_column_strings(&response, "MESSAGE"),
+            Vec::<String>::new()
         );
     }
 
@@ -6025,6 +6065,7 @@ mod tests {
         let items = response["items_delta"].as_object().expect("items_delta");
         assert_eq!(items["matched"], 3);
         assert_eq!(items["returned"], 2);
+        assert_eq!(items["after"], 2);
     }
 
     #[test]
@@ -6326,6 +6367,22 @@ mod tests {
 
         assert_eq!(summary.first_realtime_usec, Some(1_699_999_999_000_000));
         assert_eq!(summary.last_realtime_usec, Some(1_700_000_000_000_001));
+    }
+
+    #[test]
+    fn source_summary_coverage_is_off_below_one_second() {
+        let first = 1_700_000_000_000_000;
+        let mut summary = JournalSourceSummary {
+            files: 1,
+            total_size: 0,
+            first_realtime_usec: Some(first),
+            last_realtime_usec: Some(first + 999_999),
+        };
+
+        assert!(summary.info().contains("covering off"));
+
+        summary.last_realtime_usec = Some(first + 1_000_000);
+        assert!(summary.info().contains("covering 1s"));
     }
 
     #[test]

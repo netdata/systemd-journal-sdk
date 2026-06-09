@@ -366,6 +366,42 @@ func TestNetdataProfileDisplay(t *testing.T) {
 	}
 }
 
+func TestNetdataDynamicProcessNameMatchesPluginFallbackOrder(t *testing.T) {
+	fields := map[string][][]byte{
+		"SYSLOG_IDENTIFIER": [][]byte{[]byte("syslog")},
+		"_COMM":             [][]byte{[]byte("comm")},
+		"_PID":              [][]byte{[]byte("42")},
+		"SYSLOG_PID":        [][]byte{[]byte("99")},
+	}
+	if got := dynamicProcessName(fields); got != "syslog[42]" {
+		t.Fatalf("dynamicProcessName(syslog pid) = %q, want syslog[42]", got)
+	}
+
+	fields["CONTAINER_NAME"] = [][]byte{[]byte("container")}
+	if got := dynamicProcessName(fields); got != "container[42]" {
+		t.Fatalf("dynamicProcessName(container pid) = %q, want container[42]", got)
+	}
+
+	delete(fields, "CONTAINER_NAME")
+	delete(fields, "SYSLOG_IDENTIFIER")
+	delete(fields, "_PID")
+	if got := dynamicProcessName(fields); got != "comm[-]" {
+		t.Fatalf("dynamicProcessName(missing pid) = %q, want comm[-]", got)
+	}
+
+	fields["_PID"] = [][]byte{[]byte("")}
+	if got := dynamicProcessName(fields); got != "comm" {
+		t.Fatalf("dynamicProcessName(empty pid) = %q, want comm", got)
+	}
+
+	delete(fields, "_COMM")
+	delete(fields, "_PID")
+	fields["_EXE"] = [][]byte{[]byte("/usr/bin/app")}
+	if got := dynamicProcessName(fields); got != "-" {
+		t.Fatalf("dynamicProcessName(no identifier) = %q, want -", got)
+	}
+}
+
 func TestNetdataRealtimeAdjustment(t *testing.T) {
 	forward := newNetdataRealtimeAdjuster(DirectionForward)
 	if got := []uint64{forward.adjust(10), forward.adjust(10), forward.adjust(10)}; got[0] != 10 || got[1] != 11 || got[2] != 12 {
@@ -450,7 +486,7 @@ func TestNetdataDataOnlyDeltaTailSamplingAndNoChangeModes(t *testing.T) {
 	}
 }
 
-func TestNetdataTailAnchorWithNoNewFilteredRowsReturns304(t *testing.T) {
+func TestNetdataTailAnchorWithNewerFilteredOutRowsReturnsEmpty200(t *testing.T) {
 	startRealtime := uint64(1_700_000_000_000_000)
 	path := createExplorerRawJournal(t, []explorerTestEntry{
 		{
@@ -485,11 +521,11 @@ func TestNetdataTailAnchorWithNoNewFilteredRowsReturns304(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunDirectoryRequestJSONWithOptions(tail no new filtered rows) error = %v", err)
 	}
-	if got := numericUint64(response["status"]); got != 304 {
-		t.Fatalf("tail no-change status = %d, want 304 (response=%#v)", got, response)
+	if got := numericUint64(response["status"]); got != 200 {
+		t.Fatalf("filtered tail status = %d, want 200 (response=%#v)", got, response)
 	}
-	if response["errorMessage"] != "No new data since the previous call." {
-		t.Fatalf("tail no-change error = %v", response["errorMessage"])
+	if got := responseColumnStrings(t, response, "MESSAGE"); len(got) != 0 {
+		t.Fatalf("filtered tail rows = %v, want empty", got)
 	}
 }
 
@@ -612,6 +648,9 @@ func TestNetdataFunctionTailDeltaReportsExactIncrementalFacetsAndHistogram(t *te
 	}
 	if got := numericUint64(items["returned"]); got != 2 {
 		t.Fatalf("items_delta.returned = %d, want 2", got)
+	}
+	if got := numericUint64(items["after"]); got != 2 {
+		t.Fatalf("items_delta.after = %d, want 2", got)
 	}
 }
 
@@ -849,6 +888,26 @@ func TestNetdataHistogramChartMetadataIncludesDimensionArrays(t *testing.T) {
 	}
 	if got := anySlice(t, anyMap(t, valueViewDimensions["sts"])["min"]); len(got) != 1 || numericUint64(got[0]) != 7 {
 		t.Fatalf("histogram view dimension min = %v, want [7]", got)
+	}
+}
+
+func TestNetdataSourceSummaryCoverageUsesOffBelowOneSecond(t *testing.T) {
+	first := uint64(1_700_000_000_000_000)
+	subSecond := first + 999_999
+	oneSecond := first + 1_000_000
+	summary := netdataJournalSourceSummary{
+		Files:             1,
+		FirstRealtimeUsec: &first,
+		LastRealtimeUsec:  &subSecond,
+	}
+
+	if got := summary.info(); !strings.Contains(got, "covering off") {
+		t.Fatalf("summary.info() = %q, want coverage off", got)
+	}
+
+	summary.LastRealtimeUsec = &oneSecond
+	if got := summary.info(); !strings.Contains(got, "covering 1s") {
+		t.Fatalf("summary.info() = %q, want coverage 1s", got)
 	}
 }
 

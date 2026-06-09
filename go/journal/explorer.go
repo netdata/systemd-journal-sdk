@@ -84,19 +84,21 @@ func NewExplorerFilter(field []byte, values ...[]byte) ExplorerFilter {
 }
 
 type ExplorerQuery struct {
-	AfterRealtimeUsec  *uint64
-	BeforeRealtimeUsec *uint64
-	Anchor             ExplorerAnchor
-	Direction          Direction
-	Limit              int
-	Filters            []ExplorerFilter
-	Facets             [][]byte
-	Histogram          []byte
-	HistogramBuckets   int
-	FTSTerms           []ExplorerFtsPattern
-	FTSPatterns        [][]byte
-	FTSNegative        [][]byte
-	FieldMode          ExplorerFieldMode
+	AfterRealtimeUsec   *uint64
+	BeforeRealtimeUsec  *uint64
+	Anchor              ExplorerAnchor
+	Direction           Direction
+	Limit               int
+	Filters             []ExplorerFilter
+	Facets              [][]byte
+	Histogram           []byte
+	HistogramAfterUsec  *uint64
+	HistogramBeforeUsec *uint64
+	HistogramBuckets    int
+	FTSTerms            []ExplorerFtsPattern
+	FTSPatterns         [][]byte
+	FTSNegative         [][]byte
+	FieldMode           ExplorerFieldMode
 
 	ExcludeFacetFieldFilters bool
 	UseSourceRealtime        bool
@@ -2741,11 +2743,15 @@ func histogramSlotBaselineUsec(value, width uint64) uint64 {
 
 func histogramBounds(query ExplorerQuery) (uint64, uint64) {
 	start := uint64(0)
-	if query.AfterRealtimeUsec != nil {
+	if query.HistogramAfterUsec != nil {
+		start = *query.HistogramAfterUsec
+	} else if query.AfterRealtimeUsec != nil {
 		start = *query.AfterRealtimeUsec
 	}
 	end := start + 3_600_000_000
-	if query.BeforeRealtimeUsec != nil {
+	if query.HistogramBeforeUsec != nil {
+		end = *query.HistogramBeforeUsec
+	} else if query.BeforeRealtimeUsec != nil {
 		end = *query.BeforeRealtimeUsec
 	}
 	if end <= start {

@@ -80,5 +80,20 @@ The runner parses JSON stdout even when a compared binary exits nonzero,
 because Netdata's plugin test path exits nonzero for function error responses
 such as HTTP 304 no-change.
 
+`run_stateful_function_compare.py` covers request sequences where later calls
+depend on earlier responses. It runs the SDK wrapper first, then the external
+plugin, compares every step with the same semantic comparator, and derives
+anchors from response rows. The committed sequence suite covers:
+
+- backward paging without duplicate or missing rows;
+- forward paging without duplicate or missing rows;
+- tail polling that returns only rows newer than the anchor and then `304`;
+- filtered tail polling where newer rows exist but no newer matching rows
+  returns `200` with empty data, matching `systemd-journal.plugin`;
+- data-only delta output for facets, histogram, and item counters.
+
+The stateful harness uses `after=1` as its default lower bound. In Netdata
+request semantics, `after=0` is a relative UI window, not the Unix epoch.
+
 Sanitized reports should be written under `.local/`. Do not commit raw plugin
 or SDK JSON generated from real journal data.

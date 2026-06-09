@@ -564,6 +564,8 @@ func (r netdataRequest) toExplorerQuery(matchedFiles uint64, header *journalHead
 			query.Histogram = []byte(r.Histogram)
 		}
 	}
+	query.HistogramAfterUsec = r.AfterRealtimeUsec
+	query.HistogramBeforeUsec = r.BeforeRealtimeUsec
 	query.HistogramBuckets = netdataDefaultHistogramBuckets
 	query.FTSTerms = cloneFTSTerms(r.FTSTerms)
 	query.FTSPatterns = cloneByteSlices(r.FTSPatterns)
@@ -765,7 +767,15 @@ func newNetdataPageWindow(request netdataRequest) *netdataPageWindow {
 		AnchorStopUsec:  anchorStop,
 		Limit:           request.Limit,
 		Retained:        netdataPageHeap{Max: request.Direction == DirectionForward},
+		SkipsAfter:      netdataInitialSkipsAfter(request),
 	}
+}
+
+func netdataInitialSkipsAfter(request netdataRequest) uint64 {
+	if request.Tail && request.Delta && request.Anchor.Kind == ExplorerAnchorRealtime {
+		return 1
+	}
+	return 0
 }
 
 func (w *netdataPageWindow) candidateToKeep(realtimeUsec uint64) bool {
@@ -1241,9 +1251,7 @@ func (c netdataCombinedResult) reportableFacetFields(requested [][]byte) []strin
 	var fields []string
 	for _, field := range requested {
 		fieldName := string(field)
-		if values, ok := c.Facets[fieldName]; ok && facetGroupIsReportable(values) {
-			fields = append(fields, fieldName)
-		}
+		pushUnique(&fields, fieldName)
 	}
 	return fields
 }
@@ -1302,12 +1310,8 @@ func shouldCollectUnfilteredFacetVocabulary(request netdataRequest, combined net
 }
 
 func (f NetdataJournalFunction) queryResponse(request netdataRequest, annotationPaths []string, combined netdataCombinedResult) map[string]any {
-	notModified := request.IfModifiedSinceUsec != 0 && !combined.Partial && combined.Stats.RowsMatched == 0
 	if combined.Cancelled {
 		return netdataFunctionError(499, "Request cancelled.")
-	}
-	if notModified {
-		return netdataFunctionError(304, "No new data since the previous call.")
 	}
 	artifacts := f.queryResponseArtifacts(request, annotationPaths, combined)
 	response := map[string]any{
@@ -1419,6 +1423,10 @@ func (f NetdataJournalFunction) queryResponseArtifacts(request netdataRequest, a
 	var histogram any
 	if combined.Histogram != nil {
 		histogram = f.buildHistogram(context, combined.Histogram, combined.Facets[string(combined.Histogram.Field)])
+	} else if request.Histogram != "" && (!request.DataOnly || request.Delta) {
+		query := request.toExplorerQuery(combined.MatchedFiles, nil, netdataJournalRealtimeDeltaDefault)
+		emptyHistogram := newExplorerHistogram([]byte(request.Histogram), query)
+		histogram = f.buildHistogram(context, &emptyHistogram, combined.Facets[string(emptyHistogram.Field)])
 	}
 	return netdataQueryResponseArtifacts{
 		ReportableFacetFieldNames: reportableFacetFields,
@@ -2519,8 +2527,8 @@ func (s *netdataJournalSourceSummary) addLast(value uint64) {
 }
 
 func (s netdataJournalSourceSummary) info() string {
-	coverage := "0s"
-	if s.FirstRealtimeUsec != nil && s.LastRealtimeUsec != nil && *s.LastRealtimeUsec >= *s.FirstRealtimeUsec {
+	coverage := "off"
+	if s.FirstRealtimeUsec != nil && s.LastRealtimeUsec != nil && *s.LastRealtimeUsec > *s.FirstRealtimeUsec && *s.LastRealtimeUsec-*s.FirstRealtimeUsec >= 1_000_000 {
 		coverage = humanDurationSeconds((*s.LastRealtimeUsec - *s.FirstRealtimeUsec) / 1_000_000)
 	}
 	lastEntry := "unknown"
@@ -2645,10 +2653,13 @@ func dynamicProcessName(fields map[string][][]byte) string {
 	if base == "" {
 		return "-"
 	}
-	if pid, ok := firstFieldValue(fields, "_PID"); ok && len(pid) != 0 {
-		return fmt.Sprintf("%s[%s]", base, pid)
+	if pid, ok := firstFieldValue(fields, "_PID"); ok {
+		if len(pid) != 0 {
+			return fmt.Sprintf("%s[%s]", base, pid)
+		}
+		return base
 	}
-	return base
+	return fmt.Sprintf("%s[-]", base)
 }
 
 func makeRowTimestampsUnique(rows []netdataLocatedRow, direction Direction) {

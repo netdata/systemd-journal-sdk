@@ -83,6 +83,8 @@ pub struct ExplorerQuery {
     pub filters: Vec<ExplorerFilter>,
     pub facets: Vec<Vec<u8>>,
     pub histogram: Option<Vec<u8>>,
+    pub histogram_after_realtime_usec: Option<u64>,
+    pub histogram_before_realtime_usec: Option<u64>,
     pub histogram_target_buckets: usize,
     pub fts_terms: Vec<ExplorerFtsPattern>,
     pub fts_patterns: Vec<Vec<u8>>,
@@ -111,6 +113,8 @@ impl Default for ExplorerQuery {
             filters: Vec::new(),
             facets: Vec::new(),
             histogram: None,
+            histogram_after_realtime_usec: None,
+            histogram_before_realtime_usec: None,
             histogram_target_buckets: DEFAULT_HISTOGRAM_TARGET_BUCKETS,
             fts_terms: Vec::new(),
             fts_patterns: Vec::new(),
@@ -3359,6 +3363,10 @@ fn new_histogram(field: &[u8], query: &ExplorerQuery) -> ExplorerHistogram {
     }
 }
 
+pub(crate) fn empty_histogram_for_query(field: &[u8], query: &ExplorerQuery) -> ExplorerHistogram {
+    new_histogram(field, query)
+}
+
 fn histogram_bar_width_usec(after: u64, before: u64, target_buckets: usize) -> u64 {
     const USEC_PER_SEC: u64 = 1_000_000;
     const VALID_DURATIONS_SECONDS: &[u64] = &[
@@ -3380,9 +3388,13 @@ fn histogram_slot_baseline_usec(value: u64, width: u64) -> u64 {
 }
 
 fn histogram_bounds(query: &ExplorerQuery) -> (u64, u64) {
-    let start = query.after_realtime_usec.unwrap_or(0);
+    let start = query
+        .histogram_after_realtime_usec
+        .or(query.after_realtime_usec)
+        .unwrap_or(0);
     let end = query
-        .before_realtime_usec
+        .histogram_before_realtime_usec
+        .or(query.before_realtime_usec)
         .unwrap_or_else(|| start.saturating_add(3_600_000_000));
     if end <= start {
         (start, start.saturating_add(1))

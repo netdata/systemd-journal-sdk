@@ -43,6 +43,12 @@ Last updated: 2026-06-09
 
 ## Recently Closed Or Completed
 
+- SOW-0101 - Netdata Function Stateful Equivalence: completed. Added stateful
+  SDK-wrapper versus installed Netdata `systemd-journal.plugin` side-by-side
+  tests for anchors, forward/backward paging, tail 304 behavior, filtered tail
+  empty-200 behavior, and delta facets/histograms. Final validation passed 10/10
+  one-shot request fixtures plus all five stateful sequences; Rust and Go also
+  have focused boundary tests for the repaired wrapper behavior.
 - SOW-0093 - Netdata Function Boundary Reader Comparison: completed after
   tail-anchor regression repair. Rust and Go now use libnetdata-compatible
   tail stop-anchor semantics, backward page anchors are exclusive, tail
