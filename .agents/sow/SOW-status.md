@@ -47,8 +47,9 @@ Last updated: 2026-06-09
   tail-anchor regression repair. Rust and Go now use libnetdata-compatible
   tail stop-anchor semantics, backward page anchors are exclusive, tail
   no-change returns `304`, focused paging/tail/delta contract tests pass, five
-  available reviewers returned `PRODUCTION GRADE`, and Kimi was unavailable due
-  quota.
+  available reviewers returned `PRODUCTION GRADE`, Kimi was unavailable due
+  quota, Rust crates were published to crates.io at `0.6.2`, and release tags
+  are `v0.6.2` plus `go/v0.6.2`.
 - SOW-0100 - Consumer Docs And GitHub Wiki Publication: completed after
   regression repair. GitHub wiki navigation now uses `[[Target|Label]]` wiki
   links, the wiki has professional API overview plus Rust and Go language

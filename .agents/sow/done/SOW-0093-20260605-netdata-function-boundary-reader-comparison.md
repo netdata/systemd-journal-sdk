@@ -2582,3 +2582,47 @@ Final close validation:
   passed, 25 tests.
 - `git diff --check`: passed.
 - `.agents/sow/audit.sh`: passed with clean verdict.
+
+### Patch Release v0.6.2
+
+The Netdata integration needs a consumable release containing the tail-anchor
+regression repair. The selected patch release is `v0.6.2`:
+
+- Rust workspace version: `0.6.2`.
+- Rust internal publishable package dependency versions: `0.6.2`.
+- Root release tag: `v0.6.2`.
+- Go submodule release tag: `go/v0.6.2`.
+
+Tag check before release on 2026-06-09:
+
+- `git tag -l 'v0.6.2' 'go/v0.6.2'`: returned no local tags.
+- `git ls-remote --tags origin refs/tags/v0.6.2 refs/tags/v0.6.2^{}
+  refs/tags/go/v0.6.2 refs/tags/go/v0.6.2^{}`: returned no rows, so there is
+  no remote tag collision before release.
+
+Release validation before publishing:
+
+- `cd rust && cargo metadata --format-version 1`: passed and refreshed
+  `rust/Cargo.lock`.
+- `cd rust && cargo test -p systemd-journal-sdk netdata --lib`: passed, 56
+  tests, compiling the changed packages at `0.6.2`.
+- `cd go && go test ./journal -run 'TestNetdataExplorerSamplingUsesEffectiveAnchorBounds|TestNetdataFunctionPagesWithAnchorWithoutDuplicateOrMissingRows|TestNetdataFunctionTailPollsReturnOnlyRowsAfterAnchorThen304|TestNetdataFunctionTailDeltaReportsExactIncrementalFacetsAndHistogram|TestNetdataPageWindowTailAnchorUsesStopSide|TestNetdataTailAnchorWithNoNewFilteredRowsReturns304' -count=1`:
+  passed.
+- `python3 -m unittest tests.netdata_function.test_compare_function_json`:
+  passed, 25 tests.
+- `git diff --check`: passed before the release metadata commit.
+
+Rust crates.io publication on 2026-06-09:
+
+- `systemd-journal-sdk-common 0.6.2`: dry-run passed, published.
+- `systemd-journal-sdk-registry 0.6.2`: dry-run passed, published.
+- `systemd-journal-sdk-core 0.6.2`: dry-run passed, published.
+- `systemd-journal-sdk-log-writer 0.6.2`: dry-run passed, published.
+- `systemd-journal-sdk-index 0.6.2`: dry-run passed, published.
+- `systemd-journal-sdk-engine 0.6.2`: dry-run passed, published.
+- `systemd-journal-sdk 0.6.2`: dry-run passed, published.
+
+The release used dependency-ordered dry-run-then-publish because dependent
+crate dry-runs require lower-level internal `0.6.2` crates to be visible on
+crates.io first. No registry tokens or credential material were written to
+durable artifacts.
