@@ -2,10 +2,11 @@
 
 ## Status
 
-Status: open
+Status: in-progress
 
-Sub-state: pending; activates after SOW-0103 closes (program order decided by
-the user on 2026-06-11).
+Sub-state: activated 2026-06-11 after SOW-0103 completed (close commit
+`05996902`); pre-implementation gate refreshed with the fresh API-diff
+inventory; implementation starting.
 
 ## Requirements
 
@@ -100,11 +101,46 @@ Risks:
 
 ## Pre-Implementation Gate
 
-Status: blocked
+Status: ready
 
-Blocked on: SOW-0103 close (user-decided program order). At activation, the
-gate must be refreshed with the fresh API-diff inventory results before
-implementation starts. All other gate content is prepared:
+Gate refreshed 2026-06-11 at activation with a fresh API-diff inventory of
+the public Python surface against Rust (full working copy under
+`.local/sow-0104/api-diff-inventory.md`; key results below are the durable
+record):
+
+- Confirmed missing entirely: Explorer API (Rust reference
+  `rust/src/journal/src/explorer.rs`, public surface at lines 19-379:
+  4 enums, ExplorerQuery with 22 public fields and documented defaults,
+  FTS case-insensitive `*`-split substring semantics at lines 151-178,
+  ExplorerControl callbacks with 250ms progress interval and ~8192-row
+  control checks, ExplorerStats with 24 serialized counters).
+- Confirmed missing entirely: Netdata function API (Rust reference
+  `rust/src/journal/src/netdata.rs`: 7 `NETDATA_SOURCE_TYPE_*` constants,
+  16 accepted request parameters, NetdataFunctionConfig with
+  SOW-0102 source selector fields and 60-facet/18-view-key defaults,
+  profile trait with Data/Facet/Histogram display scopes, plugin versus
+  standard profile flag, run options with effectively-disabled-timeout
+  translation, response envelope `summary/totals/result/db/view/agents`).
+- Confirmed missing entirely: stdin Netdata function wrapper command
+  (Rust/Go testcmd peers; flags `--test`, `--dir`, `--timeout`,
+  `--progress-jsonl`, `--cancel-immediately`, `--cancel-after-progress`;
+  stdin JSON request, stdout JSON response, progress JSONL lines), and the
+  comparator integration (`tests/netdata_function/run_function_compare.py`
+  invokes wrappers as `binary --test <fn> --dir <dir> --timeout <s>` with
+  the request on stdin).
+- Smaller drift found by the sweep (dispositions): facade
+  `SdJournalVisitUniqueValues` missing in Python (port it for facade
+  completeness); `parse_cursor`, `export_entry_bytes`,
+  `format_entry_text` not exported in Python (accepted: internal-use
+  surface, not part of the cross-language public contract; record only).
+- Everything else verified at parity (readers, writers, directory writer,
+  compression, FSS, verification, locks, facade core, journalctl rewrite
+  flags), consistent with the shared matrices.
+- Go port deviations to NOT copy into Python: Go's struct-based anchor and
+  pointer-optionals are Go idioms; Python mirrors Rust semantics with
+  enums/dataclasses and `Optional`.
+
+Original prepared gate content follows:
 
 Problem / root-cause model:
 
@@ -225,6 +261,16 @@ Failure handling:
 
 - Created as pending child of the docs-and-parity program; activates after
   SOW-0103.
+- Activated after SOW-0103 closed (`05996902`). Gate refreshed with the
+  fresh API-diff inventory (durable summary in the gate; working copy at
+  `.local/sow-0104/api-diff-inventory.md`). One additional facade gap found
+  by the sweep (`SdJournalVisitUniqueValues`) added to scope; three
+  internal-use exports recorded as accepted non-gaps.
+- Implementation chunk plan: (1) Explorer port with focused tests;
+  (2) Netdata function API, profiles, source selector labels with focused
+  tests; (3) wrapper CLI, comparator third-peer integration,
+  `pyproject.toml`, README/exports/facade completion; then full validation,
+  reviewer rounds, audit, close.
 
 ## Validation
 

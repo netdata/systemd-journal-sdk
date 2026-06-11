@@ -4,6 +4,12 @@ Last updated: 2026-06-11
 
 ## Current
 
+- SOW-0104 - Python Explorer And Netdata Parity To Rust: in-progress.
+  Activated after SOW-0103 completed; gate refreshed with a fresh API-diff
+  inventory. Ports Explorer, the Netdata function API, the stdin wrapper,
+  and source selector labels to Python; joins the Netdata comparator
+  matrices as third peer; adds `pyproject.toml` (no publication) and the
+  missing facade unique-values visitor.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.

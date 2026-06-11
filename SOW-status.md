@@ -7,11 +7,10 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
+- `SOW-0104-20260611-python-explorer-netdata-parity.md` - in-progress. Activated after SOW-0103 completed; gate refreshed with a fresh API-diff inventory. Ports Explorer, the Netdata function API, the stdin wrapper, and source selector labels to Python; joins the Netdata comparator matrices as third peer; adds `pyproject.toml` (no publication) and the missing facade unique-values visitor.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
 
 ## Pending
-
-- `SOW-0104-20260611-python-explorer-netdata-parity.md` - open. Activates after SOW-0103. Ports Explorer, Netdata function API, stdin wrapper, and source selector labels to Python; joins the Netdata function comparator matrices; adds `pyproject.toml` (no publication).
 - `SOW-0105-20260611-node-explorer-netdata-parity.md` - open. Activates after SOW-0104. Same parity surface for Node.js plus hand-written `.d.ts` TypeScript definitions with CI type-check; pure JS, no native addons.
 - `SOW-0106-20260611-python-node-docs-and-verified-examples.md` - open. Activates after SOW-0105. Adds Python-API/Node-API wiki pages and Python/Node columns to shared pages; extends the verified-examples harness to all four languages.
 - `SOW-0066-20260530-v1-release-and-registry-publication.md` - open. Publish the final stable `v1.0.0` SDK across language registries and versioned module tags after compatibility, portability, real-corpus validation, parity closure, and release checks pass.
