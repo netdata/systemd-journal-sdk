@@ -385,6 +385,49 @@ as `Trap Jobs` without changing the stable request/selection wire id.
 No implementation follow-up remains. The requested `0.6.4` release is handled
 after this SOW through the project release-tagging workflow.
 
+### Patch Release v0.6.4
+
+The Netdata SNMP traps integration needs a consumable release containing the
+source selector metadata API from this SOW. The selected patch release is
+`v0.6.4`:
+
+- Rust workspace version: `0.6.4`.
+- Rust internal publishable package dependency versions: `0.6.4`.
+- Root release tag: `v0.6.4`.
+- Go submodule release tag: `go/v0.6.4`.
+
+Tag check before release on 2026-06-11:
+
+- `git tag -l 'v0.6.4' 'go/v0.6.4'`: returned no local tags.
+- `git ls-remote --tags origin refs/tags/v0.6.4 refs/tags/v0.6.4^{}
+  refs/tags/go/v0.6.4 refs/tags/go/v0.6.4^{}`: returned no rows, so there is
+  no remote tag collision before release.
+
+Release validation before publishing:
+
+- `cargo metadata --manifest-path rust/Cargo.toml --format-version 1`: passed
+  and refreshed `rust/Cargo.lock`.
+- `cargo test --manifest-path rust/Cargo.toml -p systemd-journal-sdk`: passed,
+  117 tests.
+- `cd go && go test ./...`: passed.
+- `python3 tests/docs/check_wiki_docs.py`: passed, 15 wiki markdown files.
+- `git diff --check`: passed before the release metadata commit.
+
+Rust crates.io publication on 2026-06-11:
+
+- `systemd-journal-sdk-common 0.6.4`: dry-run passed, published.
+- `systemd-journal-sdk-registry 0.6.4`: dry-run passed, published.
+- `systemd-journal-sdk-core 0.6.4`: dry-run passed, published.
+- `systemd-journal-sdk-log-writer 0.6.4`: dry-run passed, published.
+- `systemd-journal-sdk-index 0.6.4`: dry-run passed, published.
+- `systemd-journal-sdk-engine 0.6.4`: dry-run passed, published.
+- `systemd-journal-sdk 0.6.4`: dry-run passed, published.
+
+The release used dependency-ordered dry-run-then-publish because dependent
+crate dry-runs require lower-level internal `0.6.4` crates to be visible on
+crates.io first. No registry tokens or credential material were written to
+durable artifacts.
+
 ## Regression Log
 
 None yet.

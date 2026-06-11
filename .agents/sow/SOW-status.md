@@ -47,7 +47,9 @@ Last updated: 2026-06-11
   the stable `__logs_sources` wire id, preserving `Journal Sources` defaults
   while allowing consumers such as SNMP traps to show domain wording like
   `Trap Jobs`. Focused Rust and Go tests passed, docs/specs were updated, and
-  all six approved reviewers returned `PRODUCTION GRADE`.
+  all six approved reviewers returned `PRODUCTION GRADE`. Rust crates were
+  published to crates.io at `0.6.4`, and release tags are `v0.6.4` plus
+  `go/v0.6.4`.
 - SOW-0101 - Netdata Function Stateful Equivalence: completed. Added stateful
   SDK-wrapper versus installed Netdata `systemd-journal.plugin` side-by-side
   tests for anchors, forward/backward paging, tail 304 behavior, filtered tail
