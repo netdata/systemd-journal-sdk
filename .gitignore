@@ -18,3 +18,4 @@ node_modules/
 
 # Go build artifacts
 go/adapter/adapter
+python/*.egg-info/

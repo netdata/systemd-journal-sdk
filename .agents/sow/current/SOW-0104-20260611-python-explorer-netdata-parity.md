@@ -354,6 +354,22 @@ Failure handling:
   state hook consulted and updated per `netdata.rs:2872-2889`).
   Final: 134/134 netdata tests, 22/22 explorer tests, package suite
   green — all re-run by the project manager; repo root clean.
+- Chunk 2 committed as `67265023`.
+- Chunk 3 completed and verified: wrapper CLI with the exact Rust
+  contract; Python added as an optional third peer to both comparator
+  runners (`--python`/`--python-interpreter`; default 2-peer behavior
+  unchanged, `python_peer: null` when absent); `python/pyproject.toml`
+  (setuptools, metadata only, lz4 dependency; editable install verified
+  into a throwaway venv, version 0.1.0); facade
+  `SdJournalVisitUniqueValues` ported with abort-by-exception callback
+  semantics; README documents Explorer, Netdata API, wrapper, and pip
+  path. 143 netdata tests (9 new), 22 explorer, package suite — all
+  re-run by the project manager. Independent project-manager wrapper
+  smoke on a synthetic directory: default window correctly returns zero
+  matches for old timestamps (mirrors Rust's 3600s default window);
+  explicit window returns 12/12 rows, 4 PRIORITY facet options,
+  histogram present, status 200. Editable-install `egg-info` metadata
+  removed from the tree and the pattern added to `.gitignore`.
 - Chunk 1 continuation closed 2026-06-11 (run 2):
   - ScanApply Immediate/Deferred refactor complete; `_handle_value_class`
     takes `_ScanApplyImmediate` / `_ScanApplyDeferred(deferred=...)`

@@ -319,6 +319,123 @@ python3 cmd/journalctl.py --directory ./journals --boot=all --since @1700000000 
 python3 cmd/journalctl.py --file ./active.journal --follow --no-tail --boot=all
 ```
 
+## Netdata Function API
+
+The Python port of the Rust `NetdataJournalFunction` exposes the
+same Netdata plugin-compatible function over a directory of journal
+files. It mirrors the chunk-1 Explorer (query and result types) and
+the chunk-2 NetdataLayer (request parsing, source discovery, and the
+full data-response envelope).
+
+```python
+from journal import NetdataJournalFunction
+
+fn = NetdataJournalFunction.systemd_journal_plugin_compatible()
+response = fn.run_directory_request_json('/path/to/journal-dir', {
+    "last": 50,
+    "after": 1700000000,
+    "before": 1700003600,
+    "direction": "backward",
+    "facets": ["PRIORITY", "SYSLOG_IDENTIFIER"],
+    "histogram": "PRIORITY",
+})
+# response["data"], response["facets"], response["histogram"], ...
+```
+
+The Explorer is also reachable directly through
+`journal.explorer.ExplorerQuery` and `journal.explorer.Explorer` for
+callers that need to drive their own query control flow. The
+Explorer walks the journal's index structures (FIELD/DATA chains,
+offset arrays, mmap-backed reads) and the function layer above it
+aggregates per-file results with the same `CombinedResult.merge`
+semantics the Rust and Go ports use.
+
+Performance note: this Python port runs in pure Python, so
+throughput is materially lower than the Rust and Go ports. The
+hot-path algorithms are identical (use FIELD/DATA index traversal
+where the file permits, fall back to entry-scan only when the
+index cannot be walked safely), so correctness and behaviour match
+the sibling ports, but absolute seconds per request are higher.
+
+## Netdata Function Wrapper CLI
+
+The CLI wrapper `python/cmd/netdata_function_wrapper.py` is the
+exact contract consumed by the comparator harness
+(`tests/netdata_function/run_function_compare.py` and
+`run_stateful_function_compare.py`). It mirrors the Rust and Go
+wrappers on the wire.
+
+```bash
+echo '{"info": true}' | python3 python/cmd/netdata_function_wrapper.py \
+    --test systemd-journal --dir /path/to/journal-dir
+
+# With progress reporting and a per-request timeout:
+echo '{"last": 50, "after": 1700000000, "before": 1700003600}' \
+  | python3 python/cmd/netdata_function_wrapper.py \
+    --test systemd-journal --dir /path/to/journal-dir \
+    --timeout 30 --progress-jsonl /tmp/progress.jsonl
+
+# Cancel-immediately returns the 499 envelope without scanning:
+echo '{"last": 50, "after": 1700000000, "before": 1700003600}' \
+  | python3 python/cmd/netdata_function_wrapper.py \
+    --test systemd-journal --dir /path/to/journal-dir \
+    --cancel-immediately true
+```
+
+Flags (all named with `--` and the same spelling as the Rust/Go
+wrappers):
+
+- `--test <name>` (required) - Netdata function name. Only
+  `systemd-journal` is supported; the wrapper exits 1 with an
+  "unsupported function" stderr message otherwise.
+- `--dir <path>` (required) - Journal directory to scan. Never
+  read from `/proc` or host machine-id; the directory is the only
+  source.
+- `--timeout <seconds>` (default 0) - Per-request timeout. `0`
+  disables it.
+- `--progress-jsonl <path>` - When set, write one JSON line per
+  progress callback with the exact keys
+  `current_file, total_files, matched_files, skipped_files, elapsed_seconds, stats`.
+- `--cancel-immediately <bool>` - Cancel before scanning starts;
+  the response is the same 499 envelope the Rust wrapper returns
+  in that case.
+- `--cancel-after-progress <N>` - Cancel after N progress
+  callbacks have fired.
+
+The comparator runners accept an optional `--python` flag (and
+`--python-interpreter`, defaulting to the current `sys.executable`)
+to add the Python wrapper as a third peer:
+
+```bash
+python3 tests/netdata_function/run_function_compare.py \
+    --sdk path/to/journal-netdata-function \
+    --plugin path/to/journal-netdata-plugin \
+    --python python/cmd/netdata_function_wrapper.py \
+    --dir /path/to/journal-dir \
+    --request request.json \
+    --out /tmp/report.json
+```
+
+When `--python` is omitted the runner behaves exactly as before
+(sdk vs plugin only); the new flag is purely additive.
+
+## Installation (editable)
+
+Install the package into a virtual environment for development
+testing without touching the system Python:
+
+```bash
+python3 -m venv .local/sow-0104/pip-venv
+.local/sow-0104/pip-venv/bin/pip install -e python/
+.local/sow-0104/pip-venv/bin/python3 -c "import journal; print(journal.__version__)"
+```
+
+The `pyproject.toml` is metadata-only (no PyPI publication config).
+It declares the `lz4==4.4.5` runtime dependency the rest of the
+package already requires through `python/requirements.txt`. The
+`journal` package import path is `python/journal/`; `pip install -e
+python/` makes it importable from anywhere.
+
 ## API
 
 ### Reader API
@@ -422,7 +539,9 @@ Uses Python standard library modules and one compression dependency:
 - `os`, `struct`, `tempfile`, `time`, `json` - Core I/O and utilities
 - `compression.zstd` - Zstd compression and decompression (Python 3.14+)
 - `lzma` - XZ compression and decompression
-- `lz4==4.4.5` - LZ4 block compression and decompression
+- `lz4==4.4.5` - LZ4 block compression and decompression. Declared
+  in `pyproject.toml` and `requirements.txt`; installed automatically
+  by `pip install -e python/`.
 
 ## Conformance
 

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "systemd-journal-sdk"
+version = "0.1.0"
+description = "Pure-Python readers and writers for systemd journal files. No native journal bindings, no CGO, no system journal library linkage."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT-0"}
+authors = [
+    {name = "systemd-journal-sdk contributors"},
+]
+dependencies = [
+    "lz4==4.4.5",
+]
+
+[project.optional-dependencies]
+
+[tool.setuptools]
+package-dir = {"" = "."}

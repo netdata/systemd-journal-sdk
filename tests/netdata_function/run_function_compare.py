@@ -8,9 +8,10 @@ import hashlib
 import json
 # Harness runs explicit SDK/plugin binaries supplied by the operator.
 import subprocess  # nosec B404
+import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from compare_function_json import compare
 
@@ -29,15 +30,30 @@ def parse_stdout_json(stdout: bytes) -> tuple[Any | None, str | None, int]:
         return None, str(err), len(text[:start].encode("utf-8"))
 
 
-def run_command(
+def build_command(
     binary: Path,
     function: str,
     directory: Path,
-    request_payload: bytes,
     timeout_seconds: int,
-    process_timeout_seconds: int,
-) -> dict[str, Any]:
-    command = [
+    *,
+    python_interpreter: Optional[Path] = None,
+) -> list[str]:
+    if python_interpreter is not None:
+        # Python wrappers are invoked as `interpreter wrapper.py ...` so
+        # the operator can pin a specific Python without compiling a
+        # binary. The wrapper script receives the same flags as the
+        # Rust/Go wrappers.
+        return [
+            str(python_interpreter),
+            str(binary),
+            "--test",
+            function,
+            "--dir",
+            str(directory),
+            "--timeout",
+            str(timeout_seconds),
+        ]
+    return [
         str(binary),
         "--test",
         function,
@@ -46,6 +62,25 @@ def run_command(
         "--timeout",
         str(timeout_seconds),
     ]
+
+
+def run_command(
+    binary: Path,
+    function: str,
+    directory: Path,
+    request_payload: bytes,
+    timeout_seconds: int,
+    process_timeout_seconds: int,
+    *,
+    python_interpreter: Optional[Path] = None,
+) -> dict[str, Any]:
+    command = build_command(
+        binary,
+        function,
+        directory,
+        timeout_seconds,
+        python_interpreter=python_interpreter,
+    )
     started = time.perf_counter()
     timed_out = False
     try:
@@ -98,6 +133,8 @@ def run_case(
     timeout_seconds: int,
     process_timeout_seconds: int,
     save_json_dir: Path | None,
+    python: Optional[Path] = None,
+    python_interpreter: Optional[Path] = None,
 ) -> dict[str, Any]:
     runs = []
     request_payload = request.read_bytes()
@@ -118,6 +155,17 @@ def run_case(
             timeout_seconds,
             process_timeout_seconds,
         )
+        python_run: Optional[dict[str, Any]] = None
+        if python is not None:
+            python_run = run_command(
+                python,
+                function,
+                directory,
+                request_payload,
+                timeout_seconds,
+                process_timeout_seconds,
+                python_interpreter=python_interpreter,
+            )
         comparison = {
             "ok": False,
             "checks": {},
@@ -125,6 +173,27 @@ def run_case(
         }
         if isinstance(plugin_run["json"], dict) and isinstance(sdk_run["json"], dict):
             comparison = compare(plugin_run["json"], sdk_run["json"])
+        if python is not None and isinstance(python_run, dict):
+            python_vs_sdk = (
+                compare(python_run["json"], sdk_run["json"])
+                if isinstance(python_run["json"], dict) and isinstance(sdk_run["json"], dict)
+                else {"ok": False, "checks": {}, "reason": "python or sdk missing JSON"}
+            )
+            python_vs_plugin = (
+                compare(python_run["json"], plugin_run["json"])
+                if isinstance(python_run["json"], dict) and isinstance(plugin_run["json"], dict)
+                else {"ok": False, "checks": {}, "reason": "python or plugin missing JSON"}
+            )
+            comparison = {
+                **comparison,
+                "python_vs_sdk": python_vs_sdk,
+                "python_vs_plugin": python_vs_plugin,
+                "ok": (
+                    comparison.get("ok", False)
+                    and python_vs_sdk.get("ok", False)
+                    and python_vs_plugin.get("ok", False)
+                ),
+            }
         if save_json_dir is not None:
             save_json_dir.mkdir(parents=True, exist_ok=True)
             case_name = request.stem
@@ -138,15 +207,21 @@ def run_case(
                     json.dumps(plugin_run["json"], indent=2, sort_keys=True) + "\n",
                     encoding="utf-8",
                 )
+            if isinstance(python_run, dict) and isinstance(python_run["json"], dict):
+                (save_json_dir / f"{case_name}-run{repetition + 1}-python.json").write_text(
+                    json.dumps(python_run["json"], indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
         plugin_report = {k: v for k, v in plugin_run.items() if k != "json"}
         sdk_report = {k: v for k, v in sdk_run.items() if k != "json"}
-        runs.append(
-            {
-                "plugin": plugin_report,
-                "sdk": sdk_report,
-                "comparison": comparison,
-            }
-        )
+        run_entry: dict[str, Any] = {
+            "plugin": plugin_report,
+            "sdk": sdk_report,
+            "comparison": comparison,
+        }
+        if python is not None and isinstance(python_run, dict):
+            run_entry["python"] = {k: v for k, v in python_run.items() if k != "json"}
+        runs.append(run_entry)
     return {
         "request": str(request),
         "request_sha256": hashlib.sha256(request_payload).hexdigest(),
@@ -159,6 +234,24 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sdk", type=Path, required=True)
     parser.add_argument("--plugin", type=Path, required=True)
+    parser.add_argument(
+        "--python",
+        type=Path,
+        default=None,
+        help=(
+            "Optional third peer: path to the Python Netdata function "
+            "wrapper script (e.g. python/cmd/netdata_function_wrapper.py). "
+            "When provided, the runner invokes it as "
+            "`<interpreter> <python> ...` and compares the response "
+            "against the SDK and plugin peers."
+        ),
+    )
+    parser.add_argument(
+        "--python-interpreter",
+        type=Path,
+        default=Path(sys.executable),
+        help="Python interpreter used to run --python (default: current interpreter).",
+    )
     parser.add_argument("--function", default="systemd-journal")
     parser.add_argument("--dir", type=Path, required=True)
     parser.add_argument("--request", type=Path, action="append", required=True)
@@ -179,6 +272,11 @@ def main() -> int:
         "directory": str(args.dir),
         "directory_name": args.dir.name,
         "repetitions": args.repetitions,
+        "python_peer": (
+            {"wrapper": str(args.python), "interpreter": str(args.python_interpreter)}
+            if args.python is not None
+            else None
+        ),
         "cases": [
             run_case(
                 args.sdk,
@@ -190,6 +288,8 @@ def main() -> int:
                 args.timeout,
                 args.process_timeout,
                 args.save_json_dir,
+                python=args.python,
+                python_interpreter=args.python_interpreter,
             )
             for request in args.request
         ],

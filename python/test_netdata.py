@@ -20,13 +20,16 @@ platforms where the runtime purity boundary forbids it, or fall back
 to the no-resolution path if the value is unknown.
 """
 
+import json
 import os
 import pathlib
 import pwd
+import subprocess  # nosec B404
 import sys
 import tempfile
 import time
 import unittest
+from typing import Optional
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -681,7 +684,7 @@ def _make_two_machine_dir(tmp: str, base_time_usec: int = 1_700_000_000_000_000,
 
     dir_path = pathlib.Path(tmp)
     sub_a = dir_path / "aabbccdd-1111-1111-1111-111111111111"
-    sub_b = dir_path / "eeffgghh-2222-2222-2222-222222222222"
+    sub_b = dir_path / "eeff00aa-2222-2222-2222-222222222222"
     sub_a.mkdir()
     sub_b.mkdir()
     file_a = sub_a / "system.journal"
@@ -1813,6 +1816,259 @@ class StateHook(unittest.TestCase):
                 state,
             )
         )
+
+
+class SdJournalVisitUniqueValuesFacade(unittest.TestCase):
+    """`SdJournalVisitUniqueValues` mirrors the Rust
+    `rust/src/journal/src/facade.rs::SdJournalVisitUniqueValues`.
+    The visitor is called once per unique value, dedup across
+    multiple files, with raw `bytes` values. The facade
+    function delegates to `SdJournal.visit_unique_values`.
+    """
+
+    def test_visit_emits_unique_values_in_order(self):
+        from journal import SdJournalOpen, SdJournalVisitUniqueValues
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_two_machine_dir(tmp)
+            journal = SdJournalOpen(tmp, 0)
+            try:
+                collected = []
+
+                def visitor(value):
+                    collected.append(bytes(value))
+                    return None
+
+                SdJournalVisitUniqueValues(journal, "PRIORITY", visitor)
+                # Machine A has PRIORITY=3 (5 rows), machine B has
+                # PRIORITY=6 (3 rows). Unique values: {"3", "6"}.
+                self.assertEqual(set(collected), {b"3", b"6"})
+                self.assertEqual(len(collected), 2)
+            finally:
+                journal.close()
+
+    def test_visit_propagates_visitor_exception(self):
+        # Mirrors the Rust behaviour where the visitor's `Err` is
+        # surfaced to the caller.
+        from journal import SdJournalOpen, SdJournalVisitUniqueValues
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_two_machine_dir(tmp)
+            journal = SdJournalOpen(tmp, 0)
+            try:
+
+                def visitor(_value):
+                    raise RuntimeError("visitor failed")
+
+                with self.assertRaises(RuntimeError):
+                    SdJournalVisitUniqueValues(journal, "PRIORITY", visitor)
+            finally:
+                journal.close()
+
+    def test_visit_unknown_field_returns_empty(self):
+        from journal import SdJournalOpen, SdJournalVisitUniqueValues
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_two_machine_dir(tmp)
+            journal = SdJournalOpen(tmp, 0)
+            try:
+                collected = []
+
+                def visitor(value):
+                    collected.append(bytes(value))
+
+                SdJournalVisitUniqueValues(journal, "DOES_NOT_EXIST", visitor)
+                self.assertEqual(collected, [])
+            finally:
+                journal.close()
+
+    def test_visit_value_passthrough_to_query_unique(self):
+        # `visit_unique_values` and `query_unique` must return the
+        # same set of bytes for the same field.
+        from journal import SdJournalOpen, SdJournalQueryUnique, SdJournalVisitUniqueValues
+
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_two_machine_dir(tmp)
+            journal = SdJournalOpen(tmp, 0)
+            try:
+                queried = sorted(
+                    bytes(value) for name, value in SdJournalQueryUnique(journal, "SERVICE")
+                )
+                visited = []
+
+                def visitor(value):
+                    visited.append(bytes(value))
+
+                SdJournalVisitUniqueValues(journal, "SERVICE", visitor)
+                self.assertEqual(sorted(visited), queried)
+            finally:
+                journal.close()
+
+
+class NetdataFunctionWrapper(unittest.TestCase):
+    """End-to-end tests for `python/cmd/netdata_function_wrapper.py`.
+
+    The wrapper is invoked as a real subprocess against a synthetic
+    directory. We verify:
+
+    - The request is read from stdin and a JSON envelope is written
+      to stdout followed by a newline.
+    - `--progress-jsonl` produces a JSONL file with the exact key
+      shape mandated by the Rust/Go wrappers.
+    - `--cancel-immediately` short-circuits with status 499 and the
+      499 envelope is the response payload.
+    """
+
+    WRAPPER = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "cmd",
+        "netdata_function_wrapper.py",
+    )
+
+    def _run_wrapper(
+        self,
+        args: list,
+        request_payload: bytes,
+        cwd: Optional[str] = None,
+    ) -> tuple[int, bytes, bytes, str]:
+        env = dict(os.environ)
+        # Make sure the in-repo python/ directory is importable for
+        # the child process even when the harness runs outside venv.
+        env["PYTHONPATH"] = (
+            os.path.dirname(os.path.abspath(__file__))
+            + os.pathsep
+            + env.get("PYTHONPATH", "")
+        )
+        completed = subprocess.run(
+            [sys.executable, self.WRAPPER, *args],
+            input=request_payload,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=cwd,
+            env=env,
+            timeout=60,
+        )
+        return (
+            completed.returncode,
+            completed.stdout,
+            completed.stderr,
+            completed.stderr.decode("utf-8", errors="replace"),
+        )
+
+    def test_envelope_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_two_machine_dir(tmp)
+            request = json.dumps({
+                "last": 10,
+                "after": 1577836800,
+                "before": 1893456000,
+            }).encode("utf-8")
+            exit_code, stdout, _stderr, _msg = self._run_wrapper(
+                ["--test", "systemd-journal", "--dir", tmp],
+                request,
+            )
+            self.assertEqual(exit_code, 0, msg=f"stdout={stdout!r}")
+            self.assertTrue(stdout.endswith(b"\n"), msg=f"stdout={stdout!r}")
+            envelope = json.loads(stdout.decode("utf-8").strip())
+            for key in (
+                "_request", "versions", "status", "type", "show_ids",
+                "has_history", "pagination", "columns", "data",
+                "facets", "histogram", "items", "last_modified",
+            ):
+                self.assertIn(key, envelope, msg=f"missing {key!r}")
+            self.assertEqual(envelope["status"], 200)
+
+    def test_progress_jsonl_shape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_two_machine_dir(tmp)
+            request = json.dumps({
+                "last": 10,
+                "after": 1577836800,
+                "before": 1893456000,
+            }).encode("utf-8")
+            progress_path = os.path.join(tmp, "progress.jsonl")
+            exit_code, _stdout, _stderr, _msg = self._run_wrapper(
+                [
+                    "--test",
+                    "systemd-journal",
+                    "--dir",
+                    tmp,
+                    "--progress-jsonl",
+                    progress_path,
+                ],
+                request,
+            )
+            self.assertEqual(exit_code, 0)
+            with open(progress_path, "r", encoding="utf-8") as fh:
+                lines = [line for line in fh.read().splitlines() if line]
+            self.assertGreater(len(lines), 0)
+            for line in lines:
+                obj = json.loads(line)
+                self.assertEqual(
+                    set(obj.keys()),
+                    {
+                        "current_file",
+                        "total_files",
+                        "matched_files",
+                        "skipped_files",
+                        "elapsed_seconds",
+                        "stats",
+                    },
+                )
+                self.assertIsInstance(obj["current_file"], int)
+                self.assertIsInstance(obj["total_files"], int)
+                self.assertIsInstance(obj["matched_files"], int)
+                self.assertIsInstance(obj["skipped_files"], int)
+                self.assertIsInstance(obj["elapsed_seconds"], (int, float))
+                self.assertIsInstance(obj["stats"], dict)
+
+    def test_cancel_immediately_returns_499_envelope(self):
+        # The Rust wrapper sees a "499 Request cancelled." response
+        # envelope when the cancellation callback fires before the
+        # first file is processed. Mirror that behaviour.
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_two_machine_dir(tmp)
+            request = json.dumps({
+                "last": 10,
+                "after": 1577836800,
+                "before": 1893456000,
+            }).encode("utf-8")
+            exit_code, stdout, _stderr, _msg = self._run_wrapper(
+                [
+                    "--test",
+                    "systemd-journal",
+                    "--dir",
+                    tmp,
+                    "--cancel-immediately",
+                    "true",
+                ],
+                request,
+            )
+            self.assertEqual(exit_code, 0, msg=f"stdout={stdout!r}")
+            envelope = json.loads(stdout.decode("utf-8").strip())
+            self.assertEqual(envelope["status"], 499)
+
+    def test_unsupported_function_exits_1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_two_machine_dir(tmp)
+            request = json.dumps({"info": True}).encode("utf-8")
+            exit_code, _stdout, stderr, _msg = self._run_wrapper(
+                ["--test", "not-a-function", "--dir", tmp],
+                request,
+            )
+            self.assertEqual(exit_code, 1)
+            self.assertIn(b"unsupported function", stderr)
+
+    def test_missing_dir_flag_exits_nonzero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_two_machine_dir(tmp)
+            request = json.dumps({"info": True}).encode("utf-8")
+            exit_code, _stdout, _stderr, _msg = self._run_wrapper(
+                ["--test", "systemd-journal"],
+                request,
+            )
+            self.assertNotEqual(exit_code, 0)
 
 
 if __name__ == "__main__":

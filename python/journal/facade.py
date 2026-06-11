@@ -368,6 +368,16 @@ class SdJournal:
         values = self._reader.query_unique(field_name)
         return [(field_name, v) for v in values]
 
+    def visit_unique_values(self, field_name, visitor):
+        seen = set()
+        for value in self._reader.query_unique(field_name):
+            key = bytes(value)
+            if key in seen:
+                continue
+            seen.add(key)
+            visitor(key)
+        return None
+
     def query_unique_state(self, field_name):
         values = self._reader.query_unique(field_name)
         self._unique_items = [_payload_from_field_value(field_name, value) for value in values]
@@ -525,6 +535,19 @@ def SdJournalEnumerateField(journal):
 
 def SdJournalQueryUnique(journal, field_name):
     return journal.query_unique(field_name)
+
+
+def SdJournalVisitUniqueValues(journal, field_name, visitor):
+    """libsystemd-style visitor for unique values of `field_name`.
+
+    Mirrors `rust/src/journal/src/facade.rs::SdJournalVisitUniqueValues`.
+    `visitor` is a callable that takes a `bytes` value; it must
+    return a falsy value on success (matches the Rust `Result::Ok`)
+    or raise to abort enumeration (matches the Rust `Result::Err`
+    visitor that propagates the original error).
+    """
+    journal.visit_unique_values(field_name, visitor)
+    return None
 
 
 def SdJournalQueryUniqueState(journal, field_name):

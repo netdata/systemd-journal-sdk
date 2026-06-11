@@ -33,6 +33,8 @@ class CommandConfig:
     timeout_seconds: int
     process_timeout_seconds: int
     save_json_dir: Path | None
+    python: Path | None = None
+    python_interpreter: Path | None = None
 
 
 @dataclass
@@ -191,6 +193,17 @@ def run_pair(
         config.timeout_seconds,
         config.process_timeout_seconds,
     )
+    python_run: dict[str, Any] | None = None
+    if config.python is not None:
+        python_run = run_command(
+            config.python,
+            config.function,
+            config.directory,
+            payload,
+            config.timeout_seconds,
+            config.process_timeout_seconds,
+            python_interpreter=config.python_interpreter,
+        )
     comparison = {
         "ok": False,
         "reason": "one or both commands did not return JSON",
@@ -198,6 +211,27 @@ def run_pair(
     }
     if isinstance(plugin_run["json"], dict) and isinstance(sdk_run["json"], dict):
         comparison = compare(plugin_run["json"], sdk_run["json"])
+    if python_run is not None:
+        python_vs_sdk = (
+            compare(python_run["json"], sdk_run["json"])
+            if isinstance(python_run["json"], dict) and isinstance(sdk_run["json"], dict)
+            else {"ok": False, "checks": {}, "reason": "python or sdk missing JSON"}
+        )
+        python_vs_plugin = (
+            compare(python_run["json"], plugin_run["json"])
+            if isinstance(python_run["json"], dict) and isinstance(plugin_run["json"], dict)
+            else {"ok": False, "checks": {}, "reason": "python or plugin missing JSON"}
+        )
+        comparison = {
+            **comparison,
+            "python_vs_sdk": python_vs_sdk,
+            "python_vs_plugin": python_vs_plugin,
+            "ok": (
+                comparison.get("ok", False)
+                and python_vs_sdk.get("ok", False)
+                and python_vs_plugin.get("ok", False)
+            ),
+        }
     if config.save_json_dir is not None:
         config.save_json_dir.mkdir(parents=True, exist_ok=True)
         prefix = f"{sequence}-{step}"
@@ -211,7 +245,12 @@ def run_pair(
                 json.dumps(plugin_run["json"], indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-    return {
+        if python_run is not None and isinstance(python_run["json"], dict):
+            (config.save_json_dir / f"{prefix}-python.json").write_text(
+                json.dumps(python_run["json"], indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+    out: dict[str, Any] = {
         "step": step,
         "request_sha256": request_digest(request),
         "sdk": {key: value for key, value in sdk_run.items() if key != "json"},
@@ -220,10 +259,18 @@ def run_pair(
         "sdk_json": sdk_run["json"],
         "plugin_json": plugin_run["json"],
     }
+    if python_run is not None:
+        out["python"] = {key: value for key, value in python_run.items() if key != "json"}
+        out["python_json"] = python_run["json"]
+    return out
 
 
 def clean_step_report(step: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in step.items() if key not in {"sdk_json", "plugin_json"}}
+    return {
+        key: value
+        for key, value in step.items()
+        if key not in {"sdk_json", "plugin_json", "python_json"}
+    }
 
 
 def validate_step_json(sequence: str, step: str, result: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -388,6 +435,24 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sdk", type=Path, required=True)
     parser.add_argument("--plugin", type=Path, required=True)
+    parser.add_argument(
+        "--python",
+        type=Path,
+        default=None,
+        help=(
+            "Optional third peer: path to the Python Netdata function "
+            "wrapper script (e.g. python/cmd/netdata_function_wrapper.py). "
+            "When provided, the runner invokes it as "
+            "`<interpreter> <python> ...` and compares the response "
+            "against the SDK and plugin peers."
+        ),
+    )
+    parser.add_argument(
+        "--python-interpreter",
+        type=Path,
+        default=Path(sys.executable),
+        help="Python interpreter used to run --python (default: current interpreter).",
+    )
     parser.add_argument("--function", default="systemd-journal")
     parser.add_argument("--dir", type=Path, required=True)
     parser.add_argument("--sequence", action="append", default=[])
@@ -408,6 +473,8 @@ def main() -> int:
         timeout_seconds=args.timeout,
         process_timeout_seconds=args.process_timeout,
         save_json_dir=args.save_json_dir,
+        python=args.python,
+        python_interpreter=args.python_interpreter,
     )
     report: dict[str, Any] = {
         "function": args.function,
@@ -415,6 +482,11 @@ def main() -> int:
         "directory_name": args.dir.name,
         "page_size": args.page_size,
         "expected_paging_rows": args.expected_paging_rows,
+        "python_peer": (
+            {"wrapper": str(args.python), "interpreter": str(args.python_interpreter)}
+            if args.python is not None
+            else None
+        ),
         "sequences": [],
     }
     ok = True
