@@ -117,7 +117,10 @@ record):
 - Confirmed missing entirely: Netdata function API (Rust reference
   `rust/src/journal/src/netdata.rs`: 7 `NETDATA_SOURCE_TYPE_*` constants,
   16 accepted request parameters, NetdataFunctionConfig with
-  SOW-0102 source selector fields and 60-facet/18-view-key defaults,
+  SOW-0102 source selector fields and 58-facet/22-view-key defaults
+  (corrected 2026-06-11: the activation inventory miscounted these as
+  60/18; the chunk-2a implementer flagged it and the project manager
+  verified the real counts against `netdata.rs:73-157`),
   profile trait with Data/Facet/Histogram display scopes, plugin versus
   standard profile flag, run options with effectively-disabled-timeout
   translation, response envelope `summary/totals/result/db/view/agents`).
@@ -305,6 +308,52 @@ Failure handling:
   (`.local/sow-0104/implementer-chunk1c.md`): remove the public
   directory-explore API, keep reusable internals as private helpers for
   the Netdata-layer chunk.
+- Surgical fix verified (no directory explore methods; 22 explorer tests
+  and the package suite pass; `python/journal/directory_reader.py` fully
+  reverted). Chunk 1 committed as `086fb2fc`.
+- Chunk 2 run 1 (`.local/sow-0104/implementer-chunk2.md`, the whole
+  Netdata port in one prompt) spent its full 1800s window on source
+  recon and produced zero file changes. Re-scoped into three sub-chunks
+  with exact Rust line ranges to read: 2a foundation (constants, config,
+  profiles, the `systemd_field_display_value` transformation family),
+  2b request handling + source discovery + `explore_files` merge +
+  response envelope, 2c anchors/tail-304/delta/if_modified_since +
+  progress/state/run options + remaining tests.
+- Project-manager pre-verification for the uid/gid display question:
+  Rust's Netdata display layer itself calls `libc::getpwuid_r`
+  (`rust/src/journal/src/netdata.rs:4422`) behind the DisplayContext
+  cache, so the Python port mirroring it with stdlib `pwd`/`grp` lookups
+  is sanctioned by the source of truth in this presentation layer (core
+  reader/writer purity is unaffected).
+- Chunk 2a launched (`.local/sow-0104/implementer-chunk2a.md`).
+- Chunk 2a completed and verified: constants, config, profiles,
+  DisplayContext, and the `systemd_field_display_value` family
+  (877 lines + 662 test lines). The implementer correctly rejected the
+  activation inventory's facet/view-key counts (60/18) and copied the
+  real Rust arrays; project-manager verification against
+  `netdata.rs:73-157` confirmed 58 facets / 22 view keys and byte-equal
+  Python lists; the gate and the working inventory were corrected.
+  uid/gid display resolution mirrors Rust's own `getpwuid_r` path
+  (gated to the plugin-compatible profile, cached in DisplayContext).
+- Chunk 2b completed and verified: request decoding for all 16
+  parameters, BFS source discovery with depth-64/count-8192 limits and
+  symlink-loop guard, `explore_files`/`record_explore_result` merge
+  (additive counters; max-only `last_realtime_usec` and
+  `max_source_realtime_delta_usec`; histogram per-bucket sums with
+  first-file positions; rows append + direction sort + limit +
+  unique-timestamp pass), full envelope with
+  `summary/totals/result/db/view/agents` and always-present
+  `view.dimensions.names`. The Forward-direction output inversion claim
+  was verified against `netdata.rs:820` (`rows.iter().rev()`).
+  113 netdata tests passed (project-manager rerun).
+- Chunk 2c completed and verified: data_only short-circuit, SOW-0093
+  tail contract (tail stop-anchor, exclusive backward page anchors, tail
+  no-change 304, filtered-tail empty 200), delta, if_modified_since 304,
+  sampling budget with sampling_*/rows_unsampled/rows_estimated stats,
+  run options fully wired (deadline, cancellation, 250ms progress,
+  state hook consulted and updated per `netdata.rs:2872-2889`).
+  Final: 134/134 netdata tests, 22/22 explorer tests, package suite
+  green — all re-run by the project manager; repo root clean.
 - Chunk 1 continuation closed 2026-06-11 (run 2):
   - ScanApply Immediate/Deferred refactor complete; `_handle_value_class`
     takes `_ScanApplyImmediate` / `_ScanApplyDeferred(deferred=...)`
