@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "adapter"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "ruzstd",
@@ -403,7 +403,7 @@ dependencies = [
 
 [[package]]
 name = "corpus_digest"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -414,7 +414,7 @@ dependencies = [
 
 [[package]]
 name = "corpus_experiment"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -430,7 +430,7 @@ dependencies = [
 
 [[package]]
 name = "corpus_regenerate"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -559,7 +559,7 @@ dependencies = [
 
 [[package]]
 name = "dataset_ingester"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "base64",
@@ -623,7 +623,7 @@ dependencies = [
 
 [[package]]
 name = "error"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "static_assertions",
  "thiserror",
@@ -1165,7 +1165,7 @@ dependencies = [
 
 [[package]]
 name = "journal_file"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "error",
  "hashers",
@@ -1182,7 +1182,7 @@ dependencies = [
 
 [[package]]
 name = "journal_reader_ffi"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "cbindgen",
  "error",
@@ -1195,7 +1195,7 @@ dependencies = [
 
 [[package]]
 name = "journalctl"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1278,7 +1278,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "livewriter"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -1469,7 +1469,7 @@ dependencies = [
 
 [[package]]
 name = "netdata_function_wrapper"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -1806,7 +1806,7 @@ dependencies = [
 
 [[package]]
 name = "reader_core_bench"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -2019,7 +2019,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "sigbus"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "error",
  "libc",
@@ -2126,7 +2126,7 @@ dependencies = [
 
 [[package]]
 name = "systemd-journal-sdk"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2153,7 +2153,7 @@ dependencies = [
 
 [[package]]
 name = "systemd-journal-sdk-common"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "allocative",
  "libc",
@@ -2165,7 +2165,7 @@ dependencies = [
 
 [[package]]
 name = "systemd-journal-sdk-core"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "allocative",
  "anyhow",
@@ -2210,7 +2210,7 @@ dependencies = [
 
 [[package]]
 name = "systemd-journal-sdk-engine"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "allocative",
  "async-stream",
@@ -2239,7 +2239,7 @@ dependencies = [
 
 [[package]]
 name = "systemd-journal-sdk-index"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "allocative",
  "regex",
@@ -2257,7 +2257,7 @@ dependencies = [
 
 [[package]]
 name = "systemd-journal-sdk-log-writer"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "itoa",
  "serde",
@@ -2273,7 +2273,7 @@ dependencies = [
 
 [[package]]
 name = "systemd-journal-sdk-registry"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "allocative",
  "notify",
@@ -2721,7 +2721,7 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "window_manager"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "error",
  "memmap2",
@@ -3053,7 +3053,7 @@ dependencies = [
 
 [[package]]
 name = "writer_core_bench"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "clap",
