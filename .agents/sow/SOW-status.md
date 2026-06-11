@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-06-09
+Last updated: 2026-06-11
 
 ## Current
 
@@ -40,6 +40,10 @@ Last updated: 2026-06-09
 - SOW-0098 - Rust Legacy Core Duplication Debt: open. Follow-up from SOW-0096
   to analyze and reduce real Rust `jf`/`journal-core` duplication only where
   shared primitives preserve historical compatibility and reader performance.
+- SOW-0102 - Netdata Function Source Selector Labels: open. Add SDK-level
+  configuration for the Netdata function `__logs_sources` selector name/help so
+  consumers such as SNMP traps can show domain wording like `Trap Jobs` while
+  the systemd-journal default remains `Journal Sources`.
 
 ## Recently Closed Or Completed
 

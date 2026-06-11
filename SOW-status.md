@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-06-09
+Last updated: 2026-06-11
 
 This root file is a short convenience index. The canonical detailed SOW ledger
 is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
@@ -20,6 +20,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - `SOW-0094-20260606-rust-explorer-lazy-compressed-field-inference.md` - open. Deferred Rust Explorer optimization experiment for compressed DATA field inference and delayed decompression.
 - `SOW-0097-20260607-go-codacy-metric-debt-refactor.md` - open. Follow-up from the Codacy Rust/Go metrics audit for Go production file-size/ownership and duplication reduction.
 - `SOW-0098-20260607-rust-legacy-core-duplication-debt.md` - open. Follow-up from the Codacy Rust/Go metrics audit for real Rust `jf`/`journal-core` duplication reduction.
+- `SOW-0102-20260611-netdata-function-source-selector-labels.md` - open. Add common Rust and Go SDK configuration for the Netdata function `__logs_sources` selector name/help so consumers such as SNMP traps can show domain wording like `Trap Jobs` while the systemd-journal default remains `Journal Sources`.
 
 ## Done
 
