@@ -4,6 +4,12 @@ Last updated: 2026-06-11
 
 ## Current
 
+- SOW-0103 - Docs API Perception Restructure And Verified Examples:
+  in-progress. First SOW of the 2026-06-11 docs-and-parity program. Restructures
+  the wiki around how developers should perceive the API surfaces and adds a
+  harness that compiles/runs every Rust and Go doc example in CI. Program
+  routing: implementer `llm-netdata-cloud/minimax-m3-coder`, five
+  `llm-netdata-cloud` read-only reviewers, Rust/Go sources frozen.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
@@ -19,10 +25,17 @@ Last updated: 2026-06-11
   packaging after reader gates.
 - SOW-0050 - Netdata Vendored Journal Removal: open. Final cleanup after all
   Netdata component integrations are complete.
-- SOW-0065 - Parallel Language Parity Closure: open. Future per-language
-  parity/performance closure after Rust is stable and corpus validation is
-  complete, using isolated worktrees and one language per authorized agent if
-  the user approves parallel implementation.
+- SOW-0104 - Python Explorer And Netdata Parity To Rust: open. Activates after
+  SOW-0103. Ports Explorer, Netdata function API, stdin wrapper, and source
+  selector labels to Python; joins the Netdata function comparator matrices;
+  adds `pyproject.toml` (no publication).
+- SOW-0105 - Node.js Explorer And Netdata Parity To Rust: open. Activates
+  after SOW-0104. Same parity surface for Node.js plus hand-written `.d.ts`
+  TypeScript definitions with CI type-check; pure JS, no native addons.
+- SOW-0106 - Python And Node.js Docs With Verified Examples: open. Activates
+  after SOW-0105. Adds Python-API/Node-API wiki pages and Python/Node columns
+  to shared pages; extends the verified-examples harness to all four
+  languages.
 - SOW-0066 - V1 Release And Registry Publication: open. Final `v1.0.0`
   release, language registry/package publication, and clean consumer install
   validation after compatibility, portability, corpus, integration, and parity
@@ -42,6 +55,14 @@ Last updated: 2026-06-11
   shared primitives preserve historical compatibility and reader performance.
 ## Recently Closed Or Completed
 
+- SOW-0065 - Parallel Language Parity Closure: closed without implementation
+  on 2026-06-11, superseded by the user-approved docs-and-parity program
+  SOW-0103 through SOW-0106. All prerequisites had completed and Go parity was
+  already delivered by SOW-0095/SOW-0102, so the remaining Python and Node.js
+  scope moved into focused sequential child SOWs. The user resolved the open
+  execution-topology decision: sequential SOWs, no worktrees, external
+  implementer `llm-netdata-cloud/minimax-m3-coder`, all other
+  `llm-netdata-cloud` pool models as read-only reviewers.
 - SOW-0102 - Netdata Function Source Selector Labels: completed. Rust and Go
   Netdata function configs now expose source selector name/help metadata for
   the stable `__logs_sources` wire id, preserving `Journal Sources` defaults

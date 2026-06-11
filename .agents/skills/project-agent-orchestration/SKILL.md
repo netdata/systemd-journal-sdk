@@ -24,9 +24,9 @@ Do not use this skill for:
 
 ## Mandatory Knowledge
 
-- The project manager does not personally perform the terminal technical review for implementation SOWs. Current user routing is local implementation by the project manager and external models as read-only reviewers only. Evidence: `AGENTS.md`.
+- The project manager does not personally perform the terminal technical review for implementation SOWs. Current user routing (2026-06-11) delegates code implementation to the external implementer model `llm-netdata-cloud/minimax-m3-coder` (fallback `llm-netdata-cloud/glm-5.1`, failure recorded in the active SOW) in normal coding mode; all other pool models are read-only reviewers; only `llm-netdata-cloud` models may be used. The project manager writes documentation prose, validates all delegated work, and owns the outcome. Evidence: `AGENTS.md`.
 - Current review cadence is whole-SOW batching: finish the complete active SOW locally, run local validation, update SOW evidence, then run external reviewers against the entire SOW and changed surface as one meaningful batch. Do not run external reviewers after small local edits or partial fixes unless the user explicitly asks for early review, or a blocking design/security/compatibility decision needs an independent read-only opinion before implementation can continue. Evidence: `AGENTS.md`.
-- Do not run external implementer agents unless the user explicitly changes the current routing decision. Reviewer models are `llm-netdata-cloud/glm-5.1`, `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/mimo-v2.5-pro`, `llm-netdata-cloud/qwen3.6-plus`, `llm-netdata-cloud/minimax-m3-coder`, and `llm-netdata-cloud/deepseek-v4-pro`. Evidence: `AGENTS.md`.
+- Pool models are `llm-netdata-cloud/glm-5.1`, `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/mimo-v2.5-pro`, `llm-netdata-cloud/qwen3.7-plus`, `llm-netdata-cloud/minimax-m3-coder`, and `llm-netdata-cloud/deepseek-v4-pro`. One pool model implements (currently `minimax-m3-coder`); the implementer never reviews its own SOW; the other five review read-only. Only `llm-netdata-cloud` models may be used. Evidence: `AGENTS.md`.
 - CRITICAL: Do not make changes outside this repository. This applies to all assistants and all delegated agents.
 - The only write exception outside the repository is `/tmp`; prefer `.local/` inside this repository for scratch files.
 - After each implementation chunk is implemented, reviewed, and verified, prefer committing that chunk before starting the next chunk. Stage explicit files only; never use `git add -A` or `git add .`.
@@ -71,8 +71,8 @@ CRITICAL REPOSITORY BOUNDARY:
 ## Workflow Checklist
 
 1. Confirm the active SOW has a completed pre-implementation gate.
-2. Implement locally unless the user explicitly re-enables external implementer agents.
-3. If an external implementer is explicitly approved, write the implementer prompt from the SOW, include repository boundary rules, run it in normal coding mode without `--agent code-reviewer`, and capture its summary and changed files.
+2. Delegate code implementation to the current implementer model recorded in `AGENTS.md`; the project manager writes documentation prose and validates all delegated output.
+3. Write the implementer prompt from the SOW, include repository boundary rules, run it in normal coding mode without `--agent code-reviewer`, and capture its summary and changed files.
 4. Run reviewer agents in parallel with read-only prompts and reviewer mode only after the whole SOW is locally implemented and validated.
 5. Record every finding in the SOW with disposition.
 6. Iterate implementation and reviewer cycles until phase gates are satisfied.

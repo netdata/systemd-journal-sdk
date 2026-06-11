@@ -137,9 +137,9 @@ explicitly asks to repair or upgrade the SOW framework.
 The project manager does not personally perform the terminal technical review for implementation SOWs.
 Any exception needs an explicit user routing decision recorded in the active SOW.
 By default implementation can be delegated to external agents.
-The current user routing decision is local implementation by the project manager, with external models used as read-only reviewers only.
+The current user routing decision (2026-06-11) is: one external implementer model writes the code, and all other pool models are read-only reviewers; only `llm-netdata-cloud` models may be used. The selected implementer is `llm-netdata-cloud/minimax-m3-coder` (fallback `llm-netdata-cloud/glm-5.1`, with the failure recorded in the active SOW). The implementer model never reviews its own work. The project manager writes documentation prose, orchestrates, validates, and remains responsible for the outcome.
 
-Current review cadence: implement the whole active SOW locally, finish local validation, then run external reviewers against the complete SOW as one meaningful batch.
+Current review cadence: implement the whole active SOW, finish local validation, then run external reviewers against the complete SOW as one meaningful batch.
 Do not run external reviewers after small local edits or partial fixes unless the user explicitly asks for early review.
 An exception is allowed when a blocking design, security, or compatibility decision needs an independent read-only opinion before implementation can continue.
 
@@ -448,8 +448,9 @@ Output/reference skills:
 - Do not implement daemon-only journalctl commands, including daemon sync, flush, rotate, and relinquish-var operations.
 - Common compression-library dependencies are allowed after dependency review. Journal parsing/writing must not depend on systemd/libjournal; CGO, native Node.js runtime addon loading/linking, and linking to system journal libraries remain disallowed unless the user explicitly changes those separate constraints. Dependency packages may ship native artifacts if the SDK runtime path is constrained and tested to use only non-native implementations (e.g. WASM) and does not load or link native code at runtime.
 - Before Netdata integration or stable release work advances, GitHub code scanning and Codacy analysis findings must be fixed or explicitly dispositioned under the active SOW policy. Raw SARIF, Codacy exports, and scanner logs must stay under `.local/`; durable artifacts may contain only sanitized aggregate summaries and evidence.
-- Current implementation routing: do implementation locally in this repository; do not run external implementer agents unless the user explicitly changes this decision.
-- Reviewer pool: `llm-netdata-cloud/glm-5.1`, `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/mimo-v2.5-pro`, `llm-netdata-cloud/qwen3.6-plus`, `llm-netdata-cloud/minimax-m3-coder`, and `llm-netdata-cloud/deepseek-v4-pro`.
+- Current implementation routing (user decision 2026-06-11): code implementation is delegated to the external implementer model `llm-netdata-cloud/minimax-m3-coder` (fallback `llm-netdata-cloud/glm-5.1`, failure recorded in the active SOW), run in normal coding mode via `opencode run`. Only `llm-netdata-cloud` models may be used for implementer and reviewer runs. The project manager writes documentation prose and validates all delegated work.
+- Reviewer pool: `llm-netdata-cloud/glm-5.1`, `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/mimo-v2.5-pro`, `llm-netdata-cloud/qwen3.7-plus`, `llm-netdata-cloud/minimax-m3-coder`, and `llm-netdata-cloud/deepseek-v4-pro`. The model acting as implementer for a SOW is excluded from reviewing that SOW; the other five review. The `qwen3.6-plus` entry was updated to `qwen3.7-plus` on 2026-06-11 to match the available pool.
+- Rust and Go sources are frozen for the 2026-06-11 docs-and-parity program (SOW-0103 through SOW-0106). Problems found in Rust or Go become pending SOWs; they are not fixed inside the program SOWs.
 - Current review cadence: finish the complete active SOW locally first, including local validation and SOW evidence.
 - After local validation, run the reviewer pool against the entire SOW and changed surface as one batch. Do not run reviewers after every small edit.
 - A phase cannot advance until the local implementation or explicitly approved implementer run has completed the active SOW and reviewer findings have been resolved or explicitly dispositioned in the SOW.

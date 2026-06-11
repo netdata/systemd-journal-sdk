@@ -7,12 +7,15 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
+- `SOW-0103-20260611-docs-api-perception-and-verified-examples.md` - in-progress. First SOW of the 2026-06-11 docs-and-parity program: restructures the wiki around how developers should perceive the API surfaces and adds a CI harness that compiles/runs every Rust and Go doc example.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
 
 ## Pending
 
+- `SOW-0104-20260611-python-explorer-netdata-parity.md` - open. Activates after SOW-0103. Ports Explorer, Netdata function API, stdin wrapper, and source selector labels to Python; joins the Netdata function comparator matrices; adds `pyproject.toml` (no publication).
+- `SOW-0105-20260611-node-explorer-netdata-parity.md` - open. Activates after SOW-0104. Same parity surface for Node.js plus hand-written `.d.ts` TypeScript definitions with CI type-check; pure JS, no native addons.
+- `SOW-0106-20260611-python-node-docs-and-verified-examples.md` - open. Activates after SOW-0105. Adds Python-API/Node-API wiki pages and Python/Node columns to shared pages; extends the verified-examples harness to all four languages.
 - `SOW-0066-20260530-v1-release-and-registry-publication.md` - open. Publish the final stable `v1.0.0` SDK across language registries and versioned module tags after compatibility, portability, real-corpus validation, parity closure, and release checks pass.
-- `SOW-0065-20260530-parallel-language-parity-closure.md` - open. Future post-stabilization phase to close remaining Go/Python/Node.js parity and performance gaps against Rust, potentially using one approved worktree and implementation agent per language after prerequisite gates close.
 - `SOW-0047-20260528-netdata-netflow-sdk-integration.md` - open. Integrate the SDK into Netdata NetFlow writer and reader/query paths after the inventory and performance gates are accepted.
 - `SOW-0048-20260528-netdata-otel-writer-sdk-integration.md` - open. Integrate the SDK compact-default structured writer into Netdata OTEL logs ingestion after the inventory and writer gates are accepted.
 - `SOW-0049-20260528-netdata-reader-plugin-sdk-integration.md` - open. Integrate SDK reader/facade paths into Netdata OTEL signal viewer, no-libsystemd systemd-journal plugin mode, and static packaging after reader gates are accepted.
@@ -22,6 +25,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - `SOW-0098-20260607-rust-legacy-core-duplication-debt.md` - open. Follow-up from the Codacy Rust/Go metrics audit for real Rust `jf`/`journal-core` duplication reduction.
 ## Done
 
+- `SOW-0065-20260530-parallel-language-parity-closure.md` - closed without implementation on 2026-06-11, superseded by the docs-and-parity program SOW-0103 through SOW-0106 after all prerequisites completed and Go parity was already delivered by SOW-0095/SOW-0102; the user chose sequential SOWs with external implementer `llm-netdata-cloud/minimax-m3-coder` and the other `llm-netdata-cloud` pool models as read-only reviewers.
 - `SOW-0102-20260611-netdata-function-source-selector-labels.md` - completed. Rust and Go Netdata function configs now expose source selector name/help metadata for the stable `__logs_sources` wire id, preserving `Journal Sources` defaults while allowing consumers such as SNMP traps to show domain wording like `Trap Jobs`; focused tests passed, docs/specs were updated, all six approved reviewers returned `PRODUCTION GRADE`, Rust crates were published to crates.io at `0.6.4`, and release tags are `v0.6.4` plus `go/v0.6.4`.
 - `SOW-0101-20260609-netdata-function-stateful-equivalence.md` - completed. Added stateful SDK-wrapper versus installed Netdata `systemd-journal.plugin` side-by-side tests for anchors, forward/backward paging, tail 304 behavior, filtered tail empty-200 behavior, and delta facets/histograms; final validation passed 10/10 one-shot request fixtures plus all five stateful sequences. Rust crates were published to crates.io at `0.6.3`, and release tags are `v0.6.3` plus `go/v0.6.3`.
 - `SOW-0093-20260605-netdata-function-boundary-reader-comparison.md` - completed after tail-anchor regression repair. Rust and Go now use libnetdata-compatible tail stop-anchor semantics, backward page anchors are exclusive, tail no-change returns `304`, focused paging/tail/delta contract tests pass, five available reviewers returned `PRODUCTION GRADE`, Kimi was unavailable due quota, Rust crates were published to crates.io at `0.6.2`, and release tags are `v0.6.2` plus `go/v0.6.2`.

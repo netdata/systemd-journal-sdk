@@ -2,10 +2,16 @@
 
 ## Status
 
-Status: open
+Status: closed
 
-Sub-state: pending future multi-agent/per-language parity and performance
-closure after Rust is stable and corpus validation is complete.
+Sub-state: superseded on 2026-06-11 by the user-approved docs-and-parity
+program SOW-0103, SOW-0104, SOW-0105, and SOW-0106. All prerequisites
+(SOW-0055, SOW-0063, SOW-0064, SOW-0026) had completed; Go parity was already
+delivered by SOW-0095/SOW-0102, so the remaining scope (Python and Node.js
+parity to Rust) moved into focused sequential child SOWs with the user's
+2026-06-11 execution-topology decision: sequential local SOWs, external
+implementer model `llm-netdata-cloud/minimax-m3-coder`, all other
+`llm-netdata-cloud` pool models as read-only reviewers, no git worktrees.
 
 ## Requirements
 
@@ -361,15 +367,31 @@ Follow-up mapping:
 
 ## Outcome
 
-Pending.
+Closed without implementation on 2026-06-11, superseded by the user-approved
+docs-and-parity program:
+
+- SOW-0103 - docs API perception restructure and verified examples (active).
+- SOW-0104 - Python Explorer/Netdata parity to Rust (pending).
+- SOW-0105 - Node.js Explorer/Netdata parity to Rust (pending).
+- SOW-0106 - Python and Node.js docs with verified examples (pending).
+
+The open execution-topology decision was resolved by the user on 2026-06-11:
+sequential SOWs (no parallel worktrees), external implementer
+`llm-netdata-cloud/minimax-m3-coder` with fallback
+`llm-netdata-cloud/glm-5.1`, all other `llm-netdata-cloud` pool models as
+read-only reviewers. Go needed no parity child SOW because SOW-0095 and
+SOW-0102 already delivered Go parity with Rust.
 
 ## Lessons Extracted
 
-Pending.
+- A pending umbrella SOW that predates its activation conditions is best
+  superseded by focused child SOWs once the real scope is known; the Go share
+  of this SOW was delivered through other SOWs before activation.
 
 ## Followup
 
-None yet.
+- Tracked: SOW-0104 (Python parity), SOW-0105 (Node parity), SOW-0106
+  (Python/Node docs); SOW-0103 carries the program decisions ledger.
 
 ## Regression Log
 
