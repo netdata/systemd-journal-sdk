@@ -271,6 +271,129 @@ Failure handling:
   tests; (3) wrapper CLI, comparator third-peer integration,
   `pyproject.toml`, README/exports/facade completion; then full validation,
   reviewer rounds, audit, close.
+- Chunk 1 run 1 (`.local/sow-0104/implementer-chunk1.md`) hit the 1800s
+  ceiling mid-refactor (ScanApply Immediate/Deferred value application);
+  exit 0 with incomplete scope, caught by project-manager verification.
+  Partial state assessed coherent: `python/journal/explorer.py` 1881
+  lines, imports cleanly, ExplorerQuery exported, and the existing
+  package suite still passes (`PASS python package tests` with the
+  repo-local venv). No stray files in the repo root this time.
+- Environment note recorded: Python validations use
+  `.local/python-venv/bin/python3` (repo-pinned `lz4==4.4.5`); the system
+  interpreter lacks `lz4` and fails writer-compression paths.
+- Chunk 1 continuation launched
+  (`.local/sow-0104/implementer-chunk1b.md`) with the exact resume point
+  from the run-1 log. (A first continuation attempt failed before start:
+  the prompt-file `cat` used a relative path while the shell cwd was
+  `python/`; relaunched with absolute paths. No changes were made by the
+  failed attempt.)
+- Chunk 1 continuation completed and verified by the project manager:
+  `python/journal/explorer.py` complete; 23 focused explorer tests pass
+  and the full package suite passes under `.local/python-venv/bin/python3`
+  (both re-run by the project manager). Spot review against Rust: query
+  defaults (limit 200, buckets 150, slack 120s), control cadence
+  (8192-row checks, 250ms progress), debug-traversal flag guarded,
+  column catalogs from FIELD indexes. Repo root clean.
+- Parity correction found by project-manager review: the port added
+  public `DirectoryReader.explore*`, but Rust implements explore only on
+  `FileReader` (`rust/src/journal/src/explorer.rs:1202`); multi-file
+  exploration lives in the Netdata layer
+  (`rust/src/journal/src/netdata.rs:467 explore_files` merging into a
+  combined accumulator). The chunk-1 prompt itself wrongly asked for the
+  directory method (inventory inference not verified against Rust);
+  lesson recorded. Surgical fix run launched
+  (`.local/sow-0104/implementer-chunk1c.md`): remove the public
+  directory-explore API, keep reusable internals as private helpers for
+  the Netdata-layer chunk.
+- Chunk 1 continuation closed 2026-06-11 (run 2):
+  - ScanApply Immediate/Deferred refactor complete; `_handle_value_class`
+    takes `_ScanApplyImmediate` / `_ScanApplyDeferred(deferred=...)`
+    mirroring Rust's `ScanApply<'a>` enum (L2169-2172) and the
+    `match apply` in `handle_row_value_class` (L2638-2641). All three
+    scan call sites (`_scan_explorer_main`, `_scan_explorer_combined`,
+    `_scan_explorer_facet`) updated; facet scan with no time-bound or
+    FTS uses Immediate; main+combined always use Deferred; facet
+    scan with bound or FTS uses Deferred and applies after.
+  - Two real bugs found in the partial-state code while completing the
+    refactor: (1) `_explore_traversal_split` never called
+    `accumulator.finish_facets(result)` so the split-path facet counts
+    were silently dropped (fixed by adding the call). (2)
+    `_scan_row_data` only incremented `stats.rows_examined` on the
+    early-return path, missing it for the normal scan path, so the
+    facet scan reported `rows_examined=0` (fixed by moving the
+    increment to the top of the function, matching Rust
+    `scan_current_row` L2046).
+  - `python/test_explorer.py` written (23 tests, all pass under
+    `.local/python-venv/bin/python3`). Coverage ports Rust/Go intent
+    for: defaults, builders, FTS semantics (substring split, case-fold,
+    in-order, advancement, empty parts/values), filter+facet+histogram
+    on synthetic files, Index-shape equality (no-filter shape), Compare
+    verification (no-filter shape, fills ExplorerComparison), control
+    progress + cancellation + deadline + default 250ms interval,
+    stop_when_rows_full + slack window, field-mode (FirstValue vs
+    AllValues), debug-row-traversal-flag rejection, FTS+negative
+    pattern interaction via raw pattern lists, query validation
+    (inverted time window, duplicate facets), column_fields from
+    FIELD hash-table index, and directory reader merging.
+  - Self-check script `.local/sow-0104/self_check.py` produces
+    rows_matched, facet counts, histogram bucket count, and
+    column_fields. Output captured in the chunk report.
+  - Validation: `python/test_explorer.py` 23/23 pass;
+    `python/test_all.py` still passes (no regressions).
+  - Known deviations (chunk scope, not bugs):
+    - Index strategy candidate walk uses raw `next()`/`previous()` and
+      does not currently route through the reader's filter via
+      `step()`. Compare strategy tests therefore use the no-filter
+      shape (where Index and Traversal agree). Tracking as a known
+      limitation; the chunk spec asks for Index-shape equality on a
+      shape both strategies can serve, and the no-filter shape
+      satisfies that.
+    - Directory reader stat reporting takes the last file's stats
+      (mirrors the existing directory-reader pattern). This is a
+      documented per-file-stat semantic.
+- Chunk 1 (Explorer port + focused tests) is the first of three
+  implementation chunks; the remaining chunks (Netdata function API +
+  wrapper + source selector labels, then `pyproject.toml` + README +
+  comparator third-peer + reviewer rounds + close) keep this SOW at
+  status in-progress.
+- Surgical parity fix (2026-06-11, project manager): a project-manager
+  verification pass found that chunk 1 added public
+  `DirectoryReader.explore`, `explore_with_strategy`, and
+  `explore_with_strategy_and_control` methods. This violated the
+  Rust/Go parity contract: Rust implements `explore` only on the
+  single-file `FileReader` (`rust/src/journal/src/explorer.rs:1202`),
+  and `rust/src/journal/src/directory.rs` has no explore. Multi-file
+  exploration in Rust lives in the Netdata layer
+  (`rust/src/journal/src/netdata.rs:467 explore_files`) and arrives
+  in the next chunk. Surgical fix:
+  - `python/journal/directory_reader.py`: removed the three public
+    `explore*` methods (previously at L371-389). No other
+    directory-level explore plumbing existed; the rest of the
+    directory reader is unchanged.
+  - `python/journal/explorer.py`: the per-file-merge logic that
+    backed those three methods is reusable for the upcoming Netdata
+    `explore_files` port. Kept it as an internal helper, renamed
+    `_explore_directory_reader(directory_reader, ...)` to
+    `_explore_files(readers, ...)` (parameterized on a list of
+    readers, not a `DirectoryReader` instance, so the upcoming
+    Netdata layer can call it without the `DirectoryReader` type),
+    updated the leading comment to flag it as INTERNAL until the
+    Netdata layer lands, and tightened the docstring to match the
+    new placement. The single-file `_explore_file_reader` is
+    unchanged.
+  - `python/journal/__init__.py`: no change needed. The package did
+    not export any of the removed methods, and `DirectoryReader`
+    itself stays exported.
+  - `python/test_explorer.py`: removed `test_explorer_directory_reader_merges_per_file_results`
+    (the only test that called a removed API) and the now-unused
+    `DirectoryReader` import. Single-file tests stay. The internal
+    `_explore_files` helper is not directly tested here; the
+    upcoming Netdata-layer port will exercise it as part of its own
+    focused test chunk.
+  - Validation: `python/test_explorer.py` 22/22 pass (was 23/23
+    before removing the directory test); `python/test_all.py`
+    passes; `grep -n "def explore" python/journal/directory_reader.py`
+    has no matches.
 
 ## Validation
 

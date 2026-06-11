@@ -32,6 +32,17 @@ from .directory_writer import (
     LOG_LIFECYCLE_REASON_APPEND, LOG_LIFECYCLE_REASON_EAGER_OPEN,
     LOG_LIFECYCLE_REASON_ROTATION, LOG_LIFECYCLE_REASON_RETENTION,
 )
+from .explorer import (
+    DEFAULT_HISTOGRAM_TARGET_BUCKETS, DEFAULT_TIME_SLACK_USEC,
+    EXPLORER_CONTROL_CHECK_EVERY_ROWS, EXPLORER_PROGRESS_INTERVAL_MS,
+    Direction, ExplorerAnchor, ExplorerAnchorKind, ExplorerComparison,
+    ExplorerControl, ExplorerError, ExplorerFieldMode, ExplorerFilter,
+    ExplorerFtsPattern, ExplorerHistogram, ExplorerHistogramBucket,
+    ExplorerProgress, ExplorerQuery, ExplorerResult, ExplorerRow,
+    ExplorerSampling, ExplorerStats, ExplorerStopReason, ExplorerStrategy,
+    ExplorerUnsupported,
+    SOURCE_REALTIME_FIELD, UNSET_VALUE,
+)
 from .hash import parse_match_string, sip_hash_24, jenkins_hash_64
 from .verify import verify_file, verify_file_with_key, VerificationError
 
@@ -61,6 +72,15 @@ __all__ = [
     'LOG_LIFECYCLE_CREATED', 'LOG_LIFECYCLE_ROTATED', 'LOG_LIFECYCLE_DELETED',
     'LOG_LIFECYCLE_REASON_APPEND', 'LOG_LIFECYCLE_REASON_EAGER_OPEN',
     'LOG_LIFECYCLE_REASON_ROTATION', 'LOG_LIFECYCLE_REASON_RETENTION',
+    'Direction', 'ExplorerAnchor', 'ExplorerAnchorKind', 'ExplorerComparison',
+    'ExplorerControl', 'ExplorerError', 'ExplorerFieldMode', 'ExplorerFilter',
+    'ExplorerFtsPattern', 'ExplorerHistogram', 'ExplorerHistogramBucket',
+    'ExplorerProgress', 'ExplorerQuery', 'ExplorerResult', 'ExplorerRow',
+    'ExplorerSampling', 'ExplorerStats', 'ExplorerStopReason', 'ExplorerStrategy',
+    'ExplorerUnsupported',
+    'DEFAULT_HISTOGRAM_TARGET_BUCKETS', 'DEFAULT_TIME_SLACK_USEC',
+    'EXPLORER_CONTROL_CHECK_EVERY_ROWS', 'EXPLORER_PROGRESS_INTERVAL_MS',
+    'SOURCE_REALTIME_FIELD', 'UNSET_VALUE',
     'parse_match_string', 'sip_hash_24', 'jenkins_hash_64',
     'verify_file', 'verify_file_with_key', 'VerificationError',
 ]

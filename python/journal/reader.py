@@ -823,6 +823,69 @@ class FileReader:
     def _offset_array_item_size(self):
         return self._offset_array_item_size_value
 
+    def _UNPACK_U64(self, offset):
+        return _UNPACK_U64_FROM(self._buffer, offset)[0]
+
+    def _data_object_was_compressed(self, offset):
+        """Return True if the DATA object header carries a compression flag."""
+
+        if len(self._buffer) < offset + DATA_OBJECT_HEADER_SIZE:
+            return False
+        return bool(self._buffer[offset + 1] & (
+            OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4 | OBJECT_COMPRESSED_ZSTD
+        ))
+
+    def _index_for_entry_offset(self, entry_offset):
+        """Linear search the entry array for the given entry offset.
+        Returns the index or None.
+        """
+
+        try:
+            return self._entry_offsets.index(entry_offset)
+        except ValueError:
+            return None
+
+    def _position_at_index(self, index, direction):
+        """Position the reader on `index` and set the direction."""
+
+        self._reset_cached_entry_data_state()
+        self._entry_index = index
+        self._direction = 0 if direction == 0 else 1
+        self._realtime_seek = None
+
+    def _entry_realtime_at_offset(self, entry_offset):
+        return _UNPACK_U64_FROM(self._buffer, entry_offset + OBJECT_HEADER_SIZE + 8)[0]
+
+    def explore(self, query):
+        """Run an explorer query with the default Traversal strategy.
+
+        Mirrors `rust::FileReader::explore` (L1203-1205). The full
+        query semantics, defaults, and validation live in
+        `journal.explorer`; this method only dispatches.
+        """
+
+        from .explorer import ExplorerStrategy, _explore_file_reader
+        return _explore_file_reader(self, query, ExplorerStrategy.TRAVERSAL, None)
+
+    def explore_with_strategy(self, query, strategy):
+        """Run an explorer query with the requested strategy.
+
+        Mirrors `rust::FileReader::explore_with_strategy` (L1207-1213).
+        """
+
+        from .explorer import _explore_file_reader
+        return _explore_file_reader(self, query, strategy, None)
+
+    def explore_with_strategy_and_control(self, query, strategy, control):
+        """Run an explorer query with the requested strategy and
+        a control object. Mirrors
+        `rust::FileReader::explore_with_strategy_and_control`
+        (L1215-1228).
+        """
+
+        from .explorer import _explore_file_reader
+        return _explore_file_reader(self, query, strategy, control)
+
 
 def _map_file_readonly(path):
     fd = os.open(path, os.O_RDONLY)
