@@ -2,9 +2,9 @@
 
 ## Status
 
-Status: open
+Status: completed
 
-Sub-state: queued; opened for Netdata SNMP traps integration so SDK consumers can customize the `__logs_sources` selector wording without response post-processing.
+Sub-state: implemented, locally validated, reviewed by the full approved reviewer pool, and ready for release packaging.
 
 ## Requirements
 
@@ -248,78 +248,142 @@ Failure handling:
 - Opened pending SOW from Netdata SNMP traps integration feedback.
 - Recorded user decision that the source selector metadata API must be common
   across active SDK language wrappers, not a Go-only extension.
+- Moved the SOW to current and implemented common source selector metadata
+  config in Rust and Go:
+  - Rust `NetdataFunctionConfig` now has `source_selector_name` and
+    `source_selector_help`, initialized by `NetdataFunctionConfig::systemd_journal()`.
+  - Go `NetdataFunctionConfig` now has `SourceSelectorName` and
+    `SourceSelectorHelp`, initialized by `SystemdJournalNetdataFunctionConfig()`
+    and filled by `NewNetdataJournalFunction()` for zero-value configs.
+  - Rust `required_source_params` and Go `requiredSourceParams` now emit
+    configured metadata while preserving the fixed `__logs_sources` wire id.
+- Added focused Rust and Go tests for default metadata and custom `Trap Jobs`
+  metadata.
+- Added reviewer-requested coverage for Rust empty selector metadata fallback
+  and explicit default-path `__logs_sources` id assertions.
+- Verified Node.js and Python do not expose an equivalent Netdata function
+  wrapper surface in this repository, so no language parity edit was needed.
+- Updated Rust and Go API documentation plus the Netdata function/facets spec.
+- Recorded API compatibility note: Rust's public `NetdataFunctionConfig` is a
+  public struct, so adding fields is a source-level API change for consumers
+  using direct struct literals. The SDK is still pre-1.0, and the user decision
+  for a common config API takes priority here. Runtime defaults remain
+  unchanged for constructors and default configs.
+- First reviewer pass returned production-grade votes and non-blocking cleanup
+  notes. Added explicit default-path id assertions, Rust empty-selector
+  fallback coverage, and removed stale validation placeholders.
+- Final same-scope reviewer pass returned production-grade votes from all
+  approved reviewers.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Pending implementation.
+- Rust consumers can set `source_selector_name = "Trap Jobs"` and
+  `source_selector_help = "Select the trap job to query"` through
+  `NetdataFunctionConfig`.
+- Go consumers can set `SourceSelectorName = "Trap Jobs"` and
+  `SourceSelectorHelp = "Select the trap job to query"` through
+  `NetdataFunctionConfig`.
+- Rust and Go default constructors still emit `Journal Sources` and `Select the
+  logs source to query`.
+- Rust and Go still emit the stable `__logs_sources` id; no request/selection
+  protocol changes were made.
+- Node.js/Python search for `NetdataFunction`, `__logs_sources`, `Journal
+  Sources`, `required_params`, and `RunDirectoryRequest` found no equivalent
+  wrapper surface to update.
+- Public docs now describe the source selector metadata fields:
+  - `docs/Rust-API.md`
+  - `docs/Go-API.md`
+  - `go/API.md`
+  - `rust/README.md`
+- Product/API spec now records that `__logs_sources` is the fixed wire id while
+  selector name/help are SDK metadata:
+  - `.agents/sow/specs/systemd-journal-plugin-facets.md`
 
 Tests or equivalent validation:
 
-- Pending implementation.
+- `cargo fmt --manifest-path rust/Cargo.toml --all`: passed.
+- `gofmt -w go/journal/netdata.go go/journal/netdata_test.go`: passed.
+- `cargo test --manifest-path rust/Cargo.toml -p systemd-journal-sdk source_selector_metadata`: passed, 3 tests after reviewer cleanup.
+- `cargo test --manifest-path rust/Cargo.toml -p systemd-journal-sdk netdata`: passed, 60 tests after reviewer cleanup.
+- `go test ./journal` from `go/`: passed.
+- `go test ./...` from `go/`: passed.
+- `python3 tests/docs/check_wiki_docs.py`: passed, 15 wiki markdown files.
+- `git diff --check`: passed.
+- `.agents/sow/audit.sh`: passed; verdict `SOW initialization complete and clean`.
 
-Real-use evidence:
+Reviewer findings and dispositions:
 
-- Pending implementation.
+- `llm-netdata-cloud/glm-5.1`: PRODUCTION GRADE. No blocking findings.
+- `llm-netdata-cloud/mimo-v2.5-pro`: PRODUCTION GRADE. No blocking findings.
+- `llm-netdata-cloud/qwen3.6-plus`: PRODUCTION GRADE. Suggested explicit
+  default-path id assertions and removing stale validation placeholders.
+  Disposition: implemented.
+- `llm-netdata-cloud/kimi-k2.6`: PRODUCTION GRADE. Suggested optional Rust
+  empty-selector fallback coverage. Disposition: implemented.
+- `llm-netdata-cloud/minimax-m3-coder`: PRODUCTION GRADE. Noted stale SOW
+  validation placeholders. Disposition: removed.
+- `llm-netdata-cloud/deepseek-v4-pro`: PRODUCTION GRADE on final same-scope
+  rerun after cleanup. No blocking findings.
 
-Reviewer findings:
+Same-failure search:
 
-- Pending implementation.
-
-Same-failure scan:
-
-- Pending implementation.
+- `rg -n "NetdataFunction|netdata function|__logs_sources|Journal Sources|required_params|RunDirectoryRequest" node python -S`: no equivalent Node.js/Python wrapper surface.
+- `rg -n "Journal Sources|Select the logs source" rust/src go docs README.md rust/README.md go/API.md`: remaining occurrences are defaults, tests, and docs/spec text.
 
 Sensitive data gate:
 
-- No sensitive data recorded; examples use generic selector names only.
+- Passed. Durable artifacts use generic labels only; no real trap job names,
+  hostnames, IP addresses, SNMP communities, credentials, or customer data were
+  recorded.
 
 Artifact maintenance gate:
 
-- AGENTS.md: no update expected for opening this SOW.
-- Runtime project skills: no update expected for opening this SOW.
-- Specs: pending implementation.
-- End-user/operator docs: pending implementation.
-- End-user/operator skills: no output/reference skill expected.
-- SOW lifecycle: opened under `.agents/sow/pending/` with `Status: open`.
-- SOW-status.md: updated with SOW-0102 pending entry.
-
-Specs update:
-
-- Pending implementation.
-
-Project skills update:
-
-- Pending implementation.
-
-End-user/operator docs update:
-
-- Pending implementation.
-
-End-user/operator skills update:
-
-- Pending implementation.
-
-Lessons:
-
-- None yet.
+- `AGENTS.md`: no update needed; no workflow or project-wide guardrail changed.
+- Runtime project skills: no update needed; no reusable work procedure changed.
+- Specs: updated `.agents/sow/specs/systemd-journal-plugin-facets.md`.
+- End-user/operator docs: updated Rust and Go API docs plus Rust README and Go
+  package API reference.
+- End-user/operator skills: no output/reference skill affected.
+- SOW lifecycle: moved from pending to current for implementation; completion
+  moves this SOW to done; status ledgers updated.
+- `.agents/sow/SOW-status.md`: updated.
 
 Follow-up mapping:
 
-- None yet.
+- No valid deferred implementation item remains. The user requested a `0.6.4`
+  release for Netdata consumption after this SOW; release work is separate from
+  this SOW and must use the project release-tagging workflow.
 
 ## Outcome
 
-Pending.
+Completed. Rust and Go now expose common Netdata source selector metadata
+configuration for the fixed `__logs_sources` selector:
+
+- Rust: `NetdataFunctionConfig::source_selector_name` and
+  `NetdataFunctionConfig::source_selector_help`.
+- Go: `NetdataFunctionConfig.SourceSelectorName` and
+  `NetdataFunctionConfig.SourceSelectorHelp`.
+
+The default systemd-journal metadata remains `Journal Sources` and `Select the
+logs source to query`. Consumers such as SNMP traps can set domain wording such
+as `Trap Jobs` without changing the stable request/selection wire id.
 
 ## Lessons Extracted
 
-Pending.
+- The `__logs_sources` field id is protocol state; selector name/help are
+  display metadata. Keeping that split explicit avoids UI-specific rewrites and
+  request compatibility risk.
+- A pre-1.0 public struct field addition can still affect direct struct-literal
+  users, so public docs and tests must make the default constructor path clear.
+- Reviewer cleanup should always include a stale-placeholder scan before the
+  final SOW closeout.
 
 ## Followup
 
-None yet.
+No implementation follow-up remains. The requested `0.6.4` release is handled
+after this SOW through the project release-tagging workflow.
 
 ## Regression Log
 

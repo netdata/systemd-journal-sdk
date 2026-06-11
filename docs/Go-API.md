@@ -388,6 +388,18 @@ if err != nil {
 fmt.Println(string(encoded))
 ```
 
+Customize `NetdataFunctionConfig.SourceSelectorName` and
+`SourceSelectorHelp` when the same function shape serves a domain-specific
+journal backend. The wire id remains `__logs_sources`; only the label and help
+shown by Netdata change.
+
+```go
+config := journal.SystemdJournalNetdataFunctionConfig()
+config.SourceSelectorName = "Trap Jobs"
+config.SourceSelectorHelp = "Select the trap job to query"
+function := journal.NewNetdataJournalFunction(config, journal.SystemdJournalProfile{})
+```
+
 This layer is Netdata-specific. Generic log explorers should use Explorer
 directly unless they need the Netdata request and response shape.
 

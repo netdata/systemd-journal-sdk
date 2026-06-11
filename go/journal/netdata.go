@@ -16,6 +16,8 @@ import (
 
 const (
 	defaultNetdataFunctionName                = "systemd-journal"
+	defaultNetdataSourceSelectorName          = "Journal Sources"
+	defaultNetdataSourceSelectorHelp          = "Select the logs source to query"
 	defaultNetdataItemsToReturn               = 200
 	defaultNetdataTimeWindowSeconds           = int64(3600)
 	defaultNetdataItemsSampling               = uint64(1_000_000)
@@ -179,22 +181,26 @@ var systemdDefaultFacets = []string{
 }
 
 type NetdataFunctionConfig struct {
-	FunctionName     string
-	DefaultFacets    []string
-	DefaultViewKeys  []string
-	DefaultHistogram string
-	ReaderOptions    ReaderOptions
-	ExplorerStrategy ExplorerStrategy
+	FunctionName       string
+	SourceSelectorName string
+	SourceSelectorHelp string
+	DefaultFacets      []string
+	DefaultViewKeys    []string
+	DefaultHistogram   string
+	ReaderOptions      ReaderOptions
+	ExplorerStrategy   ExplorerStrategy
 }
 
 func SystemdJournalNetdataFunctionConfig() NetdataFunctionConfig {
 	return NetdataFunctionConfig{
-		FunctionName:     defaultNetdataFunctionName,
-		DefaultFacets:    append([]string(nil), systemdDefaultFacets...),
-		DefaultViewKeys:  append([]string(nil), systemdDefaultViewKeys...),
-		DefaultHistogram: "PRIORITY",
-		ReaderOptions:    DefaultReaderOptions().WithSnapshot(true),
-		ExplorerStrategy: ExplorerStrategyTraversal,
+		FunctionName:       defaultNetdataFunctionName,
+		SourceSelectorName: defaultNetdataSourceSelectorName,
+		SourceSelectorHelp: defaultNetdataSourceSelectorHelp,
+		DefaultFacets:      append([]string(nil), systemdDefaultFacets...),
+		DefaultViewKeys:    append([]string(nil), systemdDefaultViewKeys...),
+		DefaultHistogram:   "PRIORITY",
+		ReaderOptions:      DefaultReaderOptions().WithSnapshot(true),
+		ExplorerStrategy:   ExplorerStrategyTraversal,
 	}
 }
 
@@ -261,6 +267,12 @@ type NetdataJournalFunction struct {
 func NewNetdataJournalFunction(config NetdataFunctionConfig, profile NetdataFunctionProfile) NetdataJournalFunction {
 	if config.FunctionName == "" {
 		config.FunctionName = defaultNetdataFunctionName
+	}
+	if config.SourceSelectorName == "" {
+		config.SourceSelectorName = defaultNetdataSourceSelectorName
+	}
+	if config.SourceSelectorHelp == "" {
+		config.SourceSelectorHelp = defaultNetdataSourceSelectorHelp
 	}
 	if config.DefaultFacets == nil {
 		config.DefaultFacets = append([]string(nil), systemdDefaultFacets...)
@@ -1953,8 +1965,8 @@ func (f NetdataJournalFunction) requiredSourceParams(paths []string, options Net
 	}
 	return []any{map[string]any{
 		"id":      "__logs_sources",
-		"name":    "Journal Sources",
-		"help":    "Select the logs source to query",
+		"name":    f.Config.SourceSelectorName,
+		"help":    f.Config.SourceSelectorHelp,
 		"type":    "multiselect",
 		"options": summaries.options(),
 	}}

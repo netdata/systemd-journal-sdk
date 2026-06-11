@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_FUNCTION_NAME: &str = "systemd-journal";
+const DEFAULT_SOURCE_SELECTOR_NAME: &str = "Journal Sources";
+const DEFAULT_SOURCE_SELECTOR_HELP: &str = "Select the logs source to query";
 const DEFAULT_ITEMS_TO_RETURN: usize = 200;
 const DEFAULT_TIME_WINDOW_SECONDS: i64 = 3600;
 const DEFAULT_ITEMS_SAMPLING: u64 = 1_000_000;
@@ -157,6 +159,8 @@ const SYSTEMD_DEFAULT_FACETS: &[&str] = &[
 #[derive(Debug, Clone)]
 pub struct NetdataFunctionConfig {
     pub function_name: String,
+    pub source_selector_name: String,
+    pub source_selector_help: String,
     pub default_facets: Vec<String>,
     pub default_view_keys: Vec<String>,
     pub default_histogram: Option<String>,
@@ -168,6 +172,8 @@ impl NetdataFunctionConfig {
     pub fn systemd_journal() -> Self {
         Self {
             function_name: DEFAULT_FUNCTION_NAME.to_string(),
+            source_selector_name: DEFAULT_SOURCE_SELECTOR_NAME.to_string(),
+            source_selector_help: DEFAULT_SOURCE_SELECTOR_HELP.to_string(),
             default_facets: SYSTEMD_DEFAULT_FACETS
                 .iter()
                 .map(|field| (*field).to_string())
@@ -352,7 +358,13 @@ impl<P> NetdataJournalFunction<P>
 where
     P: NetdataFunctionProfile,
 {
-    pub fn new(config: NetdataFunctionConfig, profile: P) -> Self {
+    pub fn new(mut config: NetdataFunctionConfig, profile: P) -> Self {
+        if config.source_selector_name.is_empty() {
+            config.source_selector_name = DEFAULT_SOURCE_SELECTOR_NAME.to_string();
+        }
+        if config.source_selector_help.is_empty() {
+            config.source_selector_help = DEFAULT_SOURCE_SELECTOR_HELP.to_string();
+        }
         Self { config, profile }
     }
 
@@ -1203,8 +1215,8 @@ where
 
         json!([{
             "id": "__logs_sources",
-            "name": "Journal Sources",
-            "help": "Select the logs source to query",
+            "name": self.config.source_selector_name.as_str(),
+            "help": self.config.source_selector_help.as_str(),
             "type": "multiselect",
             "options": source_options,
         }])
@@ -6383,6 +6395,70 @@ mod tests {
 
         summary.last_realtime_usec = Some(first + 1_000_000);
         assert!(summary.info().contains("covering 1s"));
+    }
+
+    #[test]
+    fn netdata_function_uses_default_source_selector_metadata() {
+        let dir = TempDir::new().expect("tempdir");
+        let response = NetdataJournalFunction::systemd_journal_plugin_compatible()
+            .run_directory_request_json(dir.path(), &json!({"info": true}))
+            .expect("run info request");
+        let source = response["required_params"]
+            .as_array()
+            .expect("required params")
+            .iter()
+            .find(|param| param["id"] == "__logs_sources")
+            .expect("source selector param");
+
+        assert_eq!(source["id"], "__logs_sources");
+        assert_eq!(source["name"], DEFAULT_SOURCE_SELECTOR_NAME);
+        assert_eq!(source["help"], DEFAULT_SOURCE_SELECTOR_HELP);
+    }
+
+    #[test]
+    fn netdata_function_uses_custom_source_selector_metadata() {
+        let dir = TempDir::new().expect("tempdir");
+        let mut config = NetdataFunctionConfig::systemd_journal();
+        config.source_selector_name = "Trap Jobs".to_string();
+        config.source_selector_help = "Select the trap job to query".to_string();
+        let function = NetdataJournalFunction::new(config, SystemdJournalPluginProfile);
+
+        let response = function
+            .run_directory_request_json(dir.path(), &json!({"info": true}))
+            .expect("run info request");
+        let source = response["required_params"]
+            .as_array()
+            .expect("required params")
+            .iter()
+            .find(|param| param["id"] == "__logs_sources")
+            .expect("source selector param");
+
+        assert_eq!(source["id"], "__logs_sources");
+        assert_eq!(source["name"], "Trap Jobs");
+        assert_eq!(source["help"], "Select the trap job to query");
+    }
+
+    #[test]
+    fn netdata_function_empty_source_selector_metadata_falls_back_to_defaults() {
+        let dir = TempDir::new().expect("tempdir");
+        let mut config = NetdataFunctionConfig::systemd_journal();
+        config.source_selector_name.clear();
+        config.source_selector_help.clear();
+        let function = NetdataJournalFunction::new(config, SystemdJournalPluginProfile);
+
+        let response = function
+            .run_directory_request_json(dir.path(), &json!({"info": true}))
+            .expect("run info request");
+        let source = response["required_params"]
+            .as_array()
+            .expect("required params")
+            .iter()
+            .find(|param| param["id"] == "__logs_sources")
+            .expect("source selector param");
+
+        assert_eq!(source["id"], "__logs_sources");
+        assert_eq!(source["name"], DEFAULT_SOURCE_SELECTOR_NAME);
+        assert_eq!(source["help"], DEFAULT_SOURCE_SELECTOR_HELP);
     }
 
     #[test]

@@ -125,6 +125,11 @@ request. Use `RunDirectoryRequestBytesWithOptions` when the caller has raw
 JSON bytes. Test wrappers must read request bytes from stdin; do not pass a
 request filename to privileged wrappers.
 
+Use `NetdataFunctionConfig.SourceSelectorName` and `SourceSelectorHelp` when a
+consumer needs domain-specific wording for the `__logs_sources` selector. The
+systemd-journal defaults remain `Journal Sources` and `Select the logs source
+to query`.
+
 `NetdataFunctionRunOptions` carries timeout, progress, cancellation, and
 optional state callbacks. A cancelled run returns a table response with status
 `499`; timeout returns a partial table response with status `200` and a

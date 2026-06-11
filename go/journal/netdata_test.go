@@ -27,6 +27,72 @@ func TestNetdataFunctionInfoResponse(t *testing.T) {
 	if got := versions["sdk"]; got != "go" {
 		t.Fatalf("versions.sdk = %v, want go", got)
 	}
+	source := requiredSourceParamForTest(t, response)
+	if got := source["id"]; got != "__logs_sources" {
+		t.Fatalf("source selector id = %v, want __logs_sources", got)
+	}
+	if got := source["name"]; got != defaultNetdataSourceSelectorName {
+		t.Fatalf("source selector name = %v, want %q", got, defaultNetdataSourceSelectorName)
+	}
+	if got := source["help"]; got != defaultNetdataSourceSelectorHelp {
+		t.Fatalf("source selector help = %v, want %q", got, defaultNetdataSourceSelectorHelp)
+	}
+}
+
+func TestNetdataFunctionCustomSourceSelectorMetadata(t *testing.T) {
+	config := SystemdJournalNetdataFunctionConfig()
+	config.SourceSelectorName = "Trap Jobs"
+	config.SourceSelectorHelp = "Select the trap job to query"
+	fn := NewNetdataJournalFunction(config, SystemdJournalPluginProfile{})
+
+	response, err := fn.RunDirectoryRequestJSONWithOptions(t.TempDir(), map[string]any{"info": true}, DefaultNetdataFunctionRunOptions())
+	if err != nil {
+		t.Fatalf("RunDirectoryRequestJSONWithOptions(info) error = %v", err)
+	}
+	source := requiredSourceParamForTest(t, response)
+	if got := source["id"]; got != "__logs_sources" {
+		t.Fatalf("source selector id = %v, want __logs_sources", got)
+	}
+	if got := source["name"]; got != "Trap Jobs" {
+		t.Fatalf("source selector name = %v, want Trap Jobs", got)
+	}
+	if got := source["help"]; got != "Select the trap job to query" {
+		t.Fatalf("source selector help = %v, want custom help", got)
+	}
+}
+
+func TestNetdataFunctionZeroValueConfigUsesDefaultSourceSelectorMetadata(t *testing.T) {
+	fn := NewNetdataJournalFunction(NetdataFunctionConfig{}, nil)
+	response, err := fn.RunDirectoryRequestJSONWithOptions(t.TempDir(), map[string]any{"info": true}, DefaultNetdataFunctionRunOptions())
+	if err != nil {
+		t.Fatalf("RunDirectoryRequestJSONWithOptions(info) error = %v", err)
+	}
+	source := requiredSourceParamForTest(t, response)
+	if got := source["name"]; got != defaultNetdataSourceSelectorName {
+		t.Fatalf("source selector name = %v, want %q", got, defaultNetdataSourceSelectorName)
+	}
+	if got := source["help"]; got != defaultNetdataSourceSelectorHelp {
+		t.Fatalf("source selector help = %v, want %q", got, defaultNetdataSourceSelectorHelp)
+	}
+}
+
+func requiredSourceParamForTest(t *testing.T, response map[string]any) map[string]any {
+	t.Helper()
+	params, ok := response["required_params"].([]any)
+	if !ok {
+		t.Fatalf("required_params = %T, want array", response["required_params"])
+	}
+	for _, param := range params {
+		source, ok := param.(map[string]any)
+		if !ok {
+			t.Fatalf("required param = %T, want object", param)
+		}
+		if source["id"] == "__logs_sources" {
+			return source
+		}
+	}
+	t.Fatalf("required_params missing __logs_sources: %#v", params)
+	return nil
 }
 
 func TestNetdataCollectBootFirstRealtimeUsesBootIndex(t *testing.T) {

@@ -315,7 +315,10 @@ accept invalid systemd field names.
 Use `journal::netdata` when the consumer needs Netdata-shaped function output.
 
 ```rust
-use journal::netdata::{NetdataFunctionRunOptions, NetdataJournalFunction};
+use journal::netdata::{
+    NetdataFunctionConfig, NetdataFunctionRunOptions, NetdataJournalFunction,
+    SystemdJournalProfile,
+};
 use serde_json::json;
 use std::path::Path;
 
@@ -335,6 +338,18 @@ let response = function.run_directory_request_json_with_options(
 )?;
 println!("{}", serde_json::to_string(&response)?);
 # Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Customize `NetdataFunctionConfig::source_selector_name` and
+`source_selector_help` when the same function shape serves a domain-specific
+journal backend. The wire id remains `__logs_sources`; only the label and help
+shown by Netdata change.
+
+```rust
+let mut config = NetdataFunctionConfig::systemd_journal();
+config.source_selector_name = "Trap Jobs".to_string();
+config.source_selector_help = "Select the trap job to query".to_string();
+let function = NetdataJournalFunction::new(config, SystemdJournalProfile);
 ```
 
 This layer is Netdata-specific. Generic log explorers should use Explorer

@@ -174,9 +174,12 @@ Current reader scope:
   per-file learned
   journal-vs-source-realtime drift. Without state, the wrapper falls back to
   journal headers and plugin-compatible filename classification for built-in
-  `__logs_sources` groups. Sampling uses plugin-compatible sampled,
-  unsampled, and estimated counters for full-analysis sliced requests and is
-  disabled for data-only requests. The `query` request member uses Netdata
+  `__logs_sources` groups. `NetdataFunctionConfig::source_selector_name` and
+  `source_selector_help` customize only the displayed selector label/help
+  while preserving the `__logs_sources` wire id. Sampling uses
+  plugin-compatible sampled, unsampled, and estimated counters for
+  full-analysis sliced requests and is disabled for data-only requests. The
+  `query` request member uses Netdata
   `SIMPLE_PATTERN` behavior: ordered `|` terms, leading `!` negative terms,
   escaped separators, substring `*` parts, and case-insensitive matching.
   The SDK Netdata boundary always executes indexed slice semantics. The `slice`

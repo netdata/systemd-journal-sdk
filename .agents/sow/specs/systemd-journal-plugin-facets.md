@@ -277,6 +277,12 @@ GET shape:
 The source selection parameter is `__logs_sources`, reserved so it cannot
 conflict with journal fields (`logs_query_status.h:19`).
 
+For SDK Netdata function consumers, `__logs_sources` is the stable wire id.
+The displayed selector name/help are metadata, not request protocol. Rust and
+Go expose source-selector name/help fields on their Netdata function config so
+domain-specific backends can display wording such as `Trap Jobs` while the
+systemd-journal default remains `Journal Sources`.
+
 Built-in source names are:
 
 - `all`

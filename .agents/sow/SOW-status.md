@@ -40,13 +40,14 @@ Last updated: 2026-06-11
 - SOW-0098 - Rust Legacy Core Duplication Debt: open. Follow-up from SOW-0096
   to analyze and reduce real Rust `jf`/`journal-core` duplication only where
   shared primitives preserve historical compatibility and reader performance.
-- SOW-0102 - Netdata Function Source Selector Labels: open. Add SDK-level
-  configuration for the Netdata function `__logs_sources` selector name/help so
-  consumers such as SNMP traps can show domain wording like `Trap Jobs` while
-  the systemd-journal default remains `Journal Sources`.
-
 ## Recently Closed Or Completed
 
+- SOW-0102 - Netdata Function Source Selector Labels: completed. Rust and Go
+  Netdata function configs now expose source selector name/help metadata for
+  the stable `__logs_sources` wire id, preserving `Journal Sources` defaults
+  while allowing consumers such as SNMP traps to show domain wording like
+  `Trap Jobs`. Focused Rust and Go tests passed, docs/specs were updated, and
+  all six approved reviewers returned `PRODUCTION GRADE`.
 - SOW-0101 - Netdata Function Stateful Equivalence: completed. Added stateful
   SDK-wrapper versus installed Netdata `systemd-journal.plugin` side-by-side
   tests for anchors, forward/backward paging, tail 304 behavior, filtered tail
