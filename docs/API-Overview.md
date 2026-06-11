@@ -1,12 +1,17 @@
 # API Overview
 
 This page explains the public API model. The language pages show exact Rust
-and Go code.
+and Go code, and every Rust and Go example on those pages is compiled and
+executed against synthetic fixtures by repository CI. Examples are contracts,
+not illustrations, unless a page explicitly marks a block illustrative-only.
 
 ## Layer Map
 
 ```text
-Application
+Application                          Operator / script
+  |                                    |
+  |                                    +-- journalctl rewrite (CLI)
+  |                                          file-backed stock-like behavior
   |
   +-- Netdata function boundary
   |     Netdata request JSON -> Explorer -> Netdata response JSON
@@ -29,6 +34,31 @@ core file parser and writer primitives. Choose the highest layer that matches
 the contract you need without forcing extra decoding, allocation, or
 presentation work.
 
+## Choosing An API Surface
+
+Start from the consumer problem, not from the lowest layer:
+
+1. "I produce log entries" - structured append on the directory writer
+   (`Log`). Use the direct-file writer only when the caller owns one file's
+   lifecycle. Use raw append only when valid `KEY=value` bytes already exist.
+2. "I read rows programmatically" - file or directory reader. Inside hot
+   loops use payload visitors; materialize full entry maps only for rows that
+   will be returned or displayed.
+3. "I am porting libsystemd or sd_journal-style code" - the facade API. Keep
+   the row-scoped data lifetime; do not add copies the original code did not
+   have.
+4. "I build a log explorer UI or API" - Explorer. Filters use indexes;
+   only facets, histogram, FTS, and returned rows expand data.
+5. "I serve Netdata logs functions" - the Netdata function boundary over
+   Explorer.
+6. "An operator or script needs journalctl behavior" - the
+   [[Journalctl-CLI|journalctl rewrite CLI]].
+7. "I must prove a file is intact" - verifier APIs. Verification is an
+   integrity path, not a query path.
+
+When two surfaces both work, prefer the one that decodes, allocates, and
+presents less. The layers below explain what each surface costs.
+
 ## Reader Surfaces
 
 | Surface | Best For | Performance Notes |
@@ -39,6 +69,7 @@ presentation work.
 | facade API | libsystemd-style ports | compatibility call shape over SDK reader primitives |
 | Explorer | filters, facets, histogram, FTS, returned rows | expands only requested data where possible |
 | Netdata function boundary | Netdata logs function request/response | Explorer plus Netdata request parsing and presentation |
+| journalctl rewrite (CLI) | operator and script access without systemd | same reader paths; adds process startup and text/JSON output cost |
 | verifier | integrity checks | correctness path, not a query path |
 
 ## Writer Surfaces

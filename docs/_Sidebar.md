@@ -7,6 +7,7 @@
 - [[Reader-APIs|Reader APIs]]
 - [[Writer-APIs|Writer APIs]]
 - [[Explorer-And-Netdata-Queries|Explorer And Netdata Queries]]
+- [[Journalctl-CLI|Journalctl CLI]]
 - [[Hot-Path-Guide|Hot Path Guide]]
 - [[Production-Profiles|Production Profiles]]
 - [[Options-Reference|Options Reference]]

@@ -21,6 +21,12 @@ answer the request.
   Netdata function boundary.
 - [[Hot-Path-Guide|Hot Path Guide]]: performance rules that affect production
   ingestion and query speed.
+- [[Journalctl-CLI|Journalctl CLI]]: the file-backed journalctl rewrites for
+  operators and scripts.
+
+Every Rust and Go code example in this wiki is compiled and executed against
+synthetic fixtures by repository CI, except blocks explicitly marked
+illustrative-only.
 
 ## Production Rule
 

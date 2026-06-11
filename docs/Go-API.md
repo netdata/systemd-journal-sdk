@@ -1,13 +1,18 @@
 # Go API
 
+Every example on this page is compiled and executed by repository CI against
+synthetic fixtures, except blocks marked illustrative-only.
+
 Install the Go submodule:
 
+<!-- illustrative-only: registry install command -->
 ```sh
 go get github.com/netdata/systemd-journal-sdk/go@v0.6.4
 ```
 
 Import the journal package:
 
+<!-- illustrative-only: import fragment shown alone -->
 ```go
 import "github.com/netdata/systemd-journal-sdk/go/journal"
 ```
@@ -21,6 +26,7 @@ The Go SDK is pure Go and does not use CGO.
 
 Use `OpenFile` for one journal file.
 
+<!-- verify-example: lang=go id=go-read-one-file -->
 ```go
 r, err := journal.OpenFile("/var/log/journal/example/system.journal")
 if err != nil {
@@ -53,6 +59,7 @@ not the lowest-cost scan path.
 
 Use `VisitEntryPayloads` when the consumer can work with `FIELD=value` bytes.
 
+<!-- verify-example: lang=go id=go-visit-payloads -->
 ```go
 r, err := journal.OpenFile("/var/log/journal/example/system.journal")
 if err != nil {
@@ -84,8 +91,9 @@ to inspect.
 ## Enumerate Current-Row DATA With Row Lifetime
 
 Use `EntryDataRestart` plus `EnumerateEntryPayload` for facade-style
-current-row enumeration.
+current-row enumeration. The snippet continues from an open reader `r`.
 
+<!-- verify-example: lang=go id=go-entry-data-enumeration prelude=open-reader -->
 ```go
 if ok, err := r.Step(); err != nil || !ok {
     return err
@@ -110,6 +118,7 @@ Copy when longer ownership is required.
 
 Use `OpenDirectory` for stock-like ordering across active and archived files.
 
+<!-- verify-example: lang=go id=go-read-directory -->
 ```go
 dr, err := journal.OpenDirectory("/var/log/journal")
 if err != nil {
@@ -139,6 +148,7 @@ level and merges files in journal order.
 The default Go reader uses mmap-backed live bounds on Unix. Use snapshot bounds
 when a query may ignore entries appended after it starts.
 
+<!-- verify-example: lang=go id=go-snapshot-bounds -->
 ```go
 opts := journal.DefaultReaderOptions().
     WithBounds(journal.ReaderBoundsSnapshot)
@@ -158,6 +168,7 @@ for diagnostics or constrained environments.
 
 ## Query Unique Values Through Indexes
 
+<!-- verify-example: lang=go id=go-unique-values -->
 ```go
 r, err := journal.OpenFile("/var/log/journal/example/system.journal")
 if err != nil {
@@ -181,6 +192,7 @@ Use `QueryUnique` only when the caller needs an owned slice of all values.
 Explorer is the API for filters, facets, histogram, FTS, and selected returned
 rows.
 
+<!-- verify-example: lang=go id=go-explorer-query -->
 ```go
 r, err := journal.OpenFile("/var/log/journal/example/system.journal")
 if err != nil {
@@ -212,6 +224,9 @@ Do not set `DebugCollectColumnFieldsByRowTraversal` in production.
 
 ## Compare Explorer Strategies
 
+The snippet continues from an open reader `r`.
+
+<!-- verify-example: lang=go id=go-explorer-compare prelude=open-reader -->
 ```go
 query := journal.DefaultExplorerQuery().
     WithFacet([]byte("PRIORITY"))
@@ -234,6 +249,7 @@ strategy for a query shape.
 
 Use direct-file writing when the caller owns the file lifecycle.
 
+<!-- verify-example: lang=go id=go-write-one-file -->
 ```go
 w, err := journal.Create("/var/log/journal-sdk/example.journal", journal.Options{})
 if err != nil {
@@ -253,12 +269,14 @@ and values split.
 
 ## Write Binary Fields
 
+The snippet continues from an open writer `w`.
+
+<!-- verify-example: lang=go id=go-write-binary prelude=open-writer -->
 ```go
-err := w.Append([]journal.Field{
+if err := w.Append([]journal.Field{
     journal.StringField("MESSAGE", "sample with binary payload"),
     {Name: "BINARY_PAYLOAD", Value: []byte{0x00, 0x01, 0x02, 0xff}},
-}, journal.EntryOptions{})
-if err != nil {
+}, journal.EntryOptions{}); err != nil {
     return err
 }
 ```
@@ -267,14 +285,18 @@ Binary values are preserved as field values. The field name remains text.
 
 ## Raw Append
 
-Use `AppendRaw` only when the caller already has `KEY=value` payloads.
+Use `AppendRaw` only when the caller already has `KEY=value` payloads. The
+snippet continues from an open writer `w`.
 
+<!-- verify-example: lang=go id=go-raw-append prelude=open-writer -->
 ```go
-err := w.AppendRaw([][]byte{
+if err := w.AppendRaw([][]byte{
     []byte("MESSAGE=prebuilt payload"),
     []byte("_HOSTNAME=synthetic-host"),
     []byte("BINARY_PAYLOAD=\x00\x01\x02\xff"),
-}, journal.EntryOptions{})
+}, journal.EntryOptions{}); err != nil {
+    return err
+}
 ```
 
 The first `=` byte splits the field name from the value. Later `=` bytes and
@@ -282,6 +304,7 @@ arbitrary value bytes are preserved.
 
 ## Directory Writer With Rotation And Retention
 
+<!-- verify-example: lang=go id=go-directory-writer -->
 ```go
 machineID, err := journal.ParseUUID("00112233445566778899aabbccddeeff")
 if err != nil {
@@ -328,10 +351,15 @@ consumer needs `<source>.journal` active naming.
 
 ## Field-Name Policy
 
+<!-- verify-example: lang=go id=go-field-name-policy -->
 ```go
 w, err := journal.Create("/tmp/example.journal", journal.Options{
     FieldNamePolicy: journal.FieldNamePolicyJournald,
 })
+if err != nil {
+    return err
+}
+defer w.Close()
 ```
 
 Use:
@@ -348,6 +376,7 @@ accept invalid systemd field names.
 Core writers do not lock. Acquire the optional cooperating-writer lock helper
 when the deployment needs SDK-level exclusion.
 
+<!-- verify-example: lang=go id=go-writer-lock -->
 ```go
 lock, err := journal.AcquireWriterLock("/var/log/journal-sdk/example.journal")
 if err != nil {
@@ -363,6 +392,7 @@ This helper is independent from systemd compatibility.
 Use the Netdata function API when the consumer needs Netdata-shaped logs
 function output.
 
+<!-- verify-example: lang=go id=go-netdata-function -->
 ```go
 function := journal.SystemdJournalNetdataFunction()
 request := map[string]any{
@@ -393,11 +423,13 @@ Customize `NetdataFunctionConfig.SourceSelectorName` and
 journal backend. The wire id remains `__logs_sources`; only the label and help
 shown by Netdata change.
 
+<!-- verify-example: lang=go id=go-netdata-source-selector mode=build -->
 ```go
 config := journal.SystemdJournalNetdataFunctionConfig()
 config.SourceSelectorName = "Trap Jobs"
 config.SourceSelectorHelp = "Select the trap job to query"
 function := journal.NewNetdataJournalFunction(config, journal.SystemdJournalProfile{})
+_ = function // run requests with it as in the previous example
 ```
 
 This layer is Netdata-specific. Generic log explorers should use Explorer
@@ -405,6 +437,7 @@ directly unless they need the Netdata request and response shape.
 
 ## Verify A File
 
+<!-- verify-example: lang=go id=go-verify-file -->
 ```go
 if err := journal.VerifyFile("/var/log/journal/example/system.journal"); err != nil {
     return err

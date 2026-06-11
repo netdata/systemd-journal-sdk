@@ -24,6 +24,7 @@ journal = { package = "systemd-journal-sdk", version = "0.6.4" }
 
 The alias keeps imports short:
 
+<!-- illustrative-only: import fragment shown alone -->
 ```rust
 use journal::{FileReader, Log};
 ```
@@ -40,6 +41,7 @@ go get github.com/netdata/systemd-journal-sdk/go@v0.6.4
 
 Then import:
 
+<!-- illustrative-only: import fragment shown alone -->
 ```go
 import "github.com/netdata/systemd-journal-sdk/go/journal"
 ```
@@ -57,6 +59,7 @@ examples.
 | Porting libsystemd-style code | facade API |
 | Facets, histogram, filters, FTS, returned rows | Explorer API |
 | Netdata-shaped logs function output | Netdata function boundary |
+| Operator or script, no code | [[Journalctl-CLI|journalctl rewrite CLI]] |
 | Integrity check | verifier APIs |
 
 Details are in [[API-Overview|API Overview]] and

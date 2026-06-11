@@ -1,7 +1,11 @@
 # Rust API
 
+Every example on this page is compiled and executed by repository CI against
+synthetic fixtures, except blocks marked illustrative-only.
+
 The normal Rust dependency is the public SDK package:
 
+<!-- illustrative-only: crates.io dependency declaration -->
 ```toml
 [dependencies]
 journal = { package = "systemd-journal-sdk", version = "0.6.4" }
@@ -11,6 +15,7 @@ Use the lower-level packages only when the public package does not expose the
 type you need. For example, structured directory writes currently use
 `StructuredField` from `systemd-journal-sdk-log-writer`:
 
+<!-- illustrative-only: crates.io dependency declaration -->
 ```toml
 [dependencies]
 journal = { package = "systemd-journal-sdk", version = "0.6.4" }
@@ -21,6 +26,7 @@ journal_log_writer = { package = "systemd-journal-sdk-log-writer", version = "0.
 
 Use `FileReader` when the caller owns ordering and reads one journal file.
 
+<!-- verify-example: lang=rust id=rust-read-one-file -->
 ```rust
 use journal::FileReader;
 
@@ -45,6 +51,7 @@ not the lowest-cost scan path.
 Use `visit_entry_payloads()` when the consumer can work with `FIELD=value`
 bytes directly.
 
+<!-- verify-example: lang=rust id=rust-visit-entry-payloads -->
 ```rust
 use journal::FileReader;
 
@@ -72,6 +79,7 @@ inside the callback for this visitor shape.
 Use `entry_data_restart()` and `enumerate_entry_payload()` when a facade-like
 caller needs current-row payloads that stay valid until the row changes.
 
+<!-- verify-example: lang=rust id=rust-entry-data-enumeration -->
 ```rust
 use journal::FileReader;
 
@@ -95,6 +103,7 @@ required.
 
 Use `DirectoryReader` for stock-like ordering across active and archived files.
 
+<!-- verify-example: lang=rust id=rust-read-directory -->
 ```rust
 use journal::DirectoryReader;
 
@@ -117,6 +126,7 @@ for `journalctl --directory` style behavior.
 The default reader is live. Use snapshot bounds when a query may ignore entries
 appended after it starts.
 
+<!-- verify-example: lang=rust id=rust-snapshot-bounds -->
 ```rust
 use journal::{FileReader, ReaderOptions};
 
@@ -133,6 +143,7 @@ Snapshot bounds avoid live-file refresh work during long scans.
 Unique values for one field should use the FIELD object's DATA chain, not a row
 scan.
 
+<!-- verify-example: lang=rust id=rust-unique-values -->
 ```rust
 use journal::FileReader;
 
@@ -151,6 +162,7 @@ Use `query_unique()` only when the caller needs an owned vector of all values.
 Explorer is the API for filters, facets, histogram, FTS, and selected returned
 rows.
 
+<!-- verify-example: lang=rust id=rust-explorer-query -->
 ```rust
 use journal::{ExplorerQuery, FileReader};
 
@@ -180,6 +192,7 @@ Do not enable `debug_collect_column_fields_by_row_traversal` in production.
 Use `ExplorerStrategy::Compare` to validate a query shape before using the
 index strategy.
 
+<!-- verify-example: lang=rust id=rust-explorer-compare -->
 ```rust
 use journal::{ExplorerFieldMode, ExplorerQuery, ExplorerStrategy, FileReader};
 
@@ -207,6 +220,7 @@ universal faster mode.
 
 Use `Log` for production ingestion directories.
 
+<!-- verify-example: lang=rust id=rust-write-directory -->
 ```rust
 use journal::{Config, Log, Origin, RetentionPolicy, RotationPolicy, Source};
 use std::path::Path;
@@ -254,6 +268,7 @@ Netdata-compatible chain active names. Use
 Use structured fields when the producer already has field names and values
 split.
 
+<!-- verify-example: lang=rust id=rust-write-structured-fields -->
 ```rust
 use journal::{Config, Log, Origin, RetentionPolicy, RotationPolicy, Source};
 use journal_log_writer::StructuredField;
@@ -285,6 +300,7 @@ This avoids constructing `KEY=value` bytes only to split them again.
 
 ## Field-Name Policy
 
+<!-- verify-example: lang=rust id=rust-field-name-policy mode=build -->
 ```rust
 use journal::{Config, FieldNamePolicy, Origin, RetentionPolicy, RotationPolicy, Source};
 
@@ -314,6 +330,7 @@ accept invalid systemd field names.
 
 Use `journal::netdata` when the consumer needs Netdata-shaped function output.
 
+<!-- verify-example: lang=rust id=rust-netdata-function -->
 ```rust
 use journal::netdata::{
     NetdataFunctionConfig, NetdataFunctionRunOptions, NetdataJournalFunction,
@@ -345,6 +362,7 @@ Customize `NetdataFunctionConfig::source_selector_name` and
 journal backend. The wire id remains `__logs_sources`; only the label and help
 shown by Netdata change.
 
+<!-- verify-example: lang=rust id=rust-netdata-source-selector mode=build prelude=netdata-config-imports -->
 ```rust
 let mut config = NetdataFunctionConfig::systemd_journal();
 config.source_selector_name = "Trap Jobs".to_string();
@@ -357,6 +375,7 @@ directly unless they need the Netdata request and response shape.
 
 ## Verify A File
 
+<!-- verify-example: lang=rust id=rust-verify-file -->
 ```rust
 use journal::verify_file;
 

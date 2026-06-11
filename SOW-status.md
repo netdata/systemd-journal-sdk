@@ -7,7 +7,6 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- `SOW-0103-20260611-docs-api-perception-and-verified-examples.md` - in-progress. First SOW of the 2026-06-11 docs-and-parity program: restructures the wiki around how developers should perceive the API surfaces and adds a CI harness that compiles/runs every Rust and Go doc example.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
 
 ## Pending
@@ -25,6 +24,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - `SOW-0098-20260607-rust-legacy-core-duplication-debt.md` - open. Follow-up from the Codacy Rust/Go metrics audit for real Rust `jf`/`journal-core` duplication reduction.
 ## Done
 
+- `SOW-0103-20260611-docs-api-perception-and-verified-examples.md` - completed. Consumer wiki restructured around API-perception decision paths with a new `Journalctl-CLI` page; all 31 Rust/Go wiki examples are machine-verified against synthetic fixtures by `tests/docs/verify_examples.py`, enforced by the extended wiki validator and the new `docs-examples.yml` workflow; new `project-docs-authoring` skill; reviewer round 3 returned 5/5 `PRODUCTION GRADE: YES`.
 - `SOW-0065-20260530-parallel-language-parity-closure.md` - closed without implementation on 2026-06-11, superseded by the docs-and-parity program SOW-0103 through SOW-0106 after all prerequisites completed and Go parity was already delivered by SOW-0095/SOW-0102; the user chose sequential SOWs with external implementer `llm-netdata-cloud/minimax-m3-coder` and the other `llm-netdata-cloud` pool models as read-only reviewers.
 - `SOW-0102-20260611-netdata-function-source-selector-labels.md` - completed. Rust and Go Netdata function configs now expose source selector name/help metadata for the stable `__logs_sources` wire id, preserving `Journal Sources` defaults while allowing consumers such as SNMP traps to show domain wording like `Trap Jobs`; focused tests passed, docs/specs were updated, all six approved reviewers returned `PRODUCTION GRADE`, Rust crates were published to crates.io at `0.6.4`, and release tags are `v0.6.4` plus `go/v0.6.4`.
 - `SOW-0101-20260609-netdata-function-stateful-equivalence.md` - completed. Added stateful SDK-wrapper versus installed Netdata `systemd-journal.plugin` side-by-side tests for anchors, forward/backward paging, tail 304 behavior, filtered tail empty-200 behavior, and delta facets/histograms; final validation passed 10/10 one-shot request fixtures plus all five stateful sequences. Rust crates were published to crates.io at `0.6.3`, and release tags are `v0.6.3` plus `go/v0.6.3`.

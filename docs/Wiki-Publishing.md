@@ -55,10 +55,43 @@ Run:
 
 ```sh
 python3 tests/docs/check_wiki_docs.py
+python3 tests/docs/verify_examples.py
 ```
 
 The validator checks required wiki files, local Markdown links, wiki-style
-links, and accidental local/private path leakage.
+links, accidental local/private path leakage, and that every `rust` and `go`
+fenced block carries a verified-example or illustrative-only marker.
+
+The example verifier extracts marked examples, compiles them against the
+local Rust workspace and Go module, and runs them against synthetic fixtures.
+CI runs both on every docs change; a failing example blocks publication.
+
+## Verified Examples
+
+Mark a runnable example with an HTML comment directly above the fence; the
+marker is invisible in the rendered wiki:
+
+```markdown
+<!-- verify-example: lang=rust id=read-one-file -->
+```
+
+Attributes: `lang` (`rust` or `go`), unique `id` (`[a-z0-9-]+` across all
+pages), optional `mode=build` for compile-only blocks, optional
+`fixture` (default `basic`), optional `prelude=<name>` for fragments that
+need registered setup code from `tests/docs/verify_examples.py`.
+
+Blocks that must not be executed (registry installs, host-dependent
+commands, intentionally partial fragments) are marked:
+
+```markdown
+<!-- illustrative-only: reason text -->
+```
+
+Examples use only the documented placeholder paths
+(`/var/log/journal/example/system.journal`, `/var/log/journal`,
+`/var/log/journal-sdk`, `/tmp/example.journal`); the verifier substitutes
+them with fixture and scratch paths at run time. New examples must pass
+`python3 tests/docs/verify_examples.py` locally before push.
 
 Optional private terms can be checked without hardcoding them into repository
 files:

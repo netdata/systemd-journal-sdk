@@ -11,6 +11,7 @@ journal = { package = "systemd-journal-sdk", version = "0.6.4" }
 
 The alias keeps source imports in the form:
 
+<!-- illustrative-only: import fragment shown alone -->
 ```rust
 use journal::{FileReader, Log};
 ```

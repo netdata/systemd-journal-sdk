@@ -4,12 +4,6 @@ Last updated: 2026-06-11
 
 ## Current
 
-- SOW-0103 - Docs API Perception Restructure And Verified Examples:
-  in-progress. First SOW of the 2026-06-11 docs-and-parity program. Restructures
-  the wiki around how developers should perceive the API surfaces and adds a
-  harness that compiles/runs every Rust and Go doc example in CI. Program
-  routing: implementer `llm-netdata-cloud/minimax-m3-coder`, five
-  `llm-netdata-cloud` read-only reviewers, Rust/Go sources frozen.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
@@ -55,6 +49,18 @@ Last updated: 2026-06-11
   shared primitives preserve historical compatibility and reader performance.
 ## Recently Closed Or Completed
 
+- SOW-0103 - Docs API Perception Restructure And Verified Examples:
+  completed. The consumer wiki is restructured around API-perception
+  decision paths with the journalctl rewrite CLI documented as the fifth
+  consumption surface (new `Journalctl-CLI` page), and every Rust and Go
+  wiki example is now machine-verified: 31 examples compile against the
+  local workspace/module and run against synthetic fixtures via
+  `tests/docs/verify_examples.py`, enforced by the extended wiki validator
+  and the new `docs-examples.yml` CI workflow. A new
+  `project-docs-authoring` skill records the authoring rules. Reviewer
+  round 3 returned 5/5 `PRODUCTION GRADE: YES` (glm, kimi, mimo, qwen,
+  deepseek); audit clean. First SOW of the 2026-06-11 docs-and-parity
+  program; SOW-0104 (Python parity) activates next.
 - SOW-0065 - Parallel Language Parity Closure: closed without implementation
   on 2026-06-11, superseded by the user-approved docs-and-parity program
   SOW-0103 through SOW-0106. All prerequisites had completed and Go parity was

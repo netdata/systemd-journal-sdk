@@ -1,0 +1,74 @@
+name: Verify Doc Examples
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - docs/**
+      - tests/docs/**
+      - rust/**
+      - go/**
+      - python/**
+      - .github/workflows/docs-examples.yml
+  pull_request:
+    paths:
+      - docs/**
+      - tests/docs/**
+      - rust/**
+      - go/**
+      - python/**
+      - .github/workflows/docs-examples.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-examples-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify documentation examples
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: go/go.mod
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+
+      - name: Cache docs-examples harness directories
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .local/docs-examples/caches
+          key: docs-examples-${{ hashFiles('rust/Cargo.lock', 'go/go.sum') }}
+          restore-keys: |
+            docs-examples-
+
+      - name: Unit tests for the harness
+        run: python3 tests/docs/test_verify_examples.py
+
+      - name: Unit tests for the wiki validator
+        run: python3 tests/docs/test_check_wiki_docs.py
+
+      - name: Validate wiki docs
+        run: python3 tests/docs/check_wiki_docs.py
+
+      - name: Verify examples against the testdata fixtures
+        run: python3 tests/docs/verify_examples.py --docs-dir tests/docs/testdata
+
+      - name: Verify examples against the real wiki docs
+        run: python3 tests/docs/verify_examples.py
