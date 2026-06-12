@@ -447,11 +447,19 @@ Key classes:
   limit, `dataOnly`/`delta`/`tail` flags, sampling, source selection,
   filters, facets, histogram field, FTS query. `static parse(value,
   config)` decodes a raw JSON payload.
-- `NetdataJournalFunction` - Orchestrates source discovery, request
-  handling, and envelope assembly. `configure(config)` sets the
-  function config; `discover()` finds journal files; `info(response)`
-  builds a Netdata-compatible info envelope; `execute(request)` runs
-  the query and returns a Netdata-compatible response.
+- `NetdataJournalFunction` - Orchestrates request handling and
+  response assembly across journal files in a directory.
+  `static systemdJournal()` returns a default instance with the
+  systemd-journal profile; `static systemdJournalPluginCompatible()`
+  returns an instance with UID/GID resolution; `static new(config,
+  profile)` creates an instance with a custom config and profile.
+  `runDirectoryRequestJson(directory, request)` and
+  `runDirectoryRequestBytes(directory, request)` process a full
+  request and return a Netdata-compatible response.
+  `runDirectoryRequestJsonWithOptions(directory, request, options)`
+  and `runDirectoryRequestBytesWithOptions(directory, request,
+  options)` accept optional timeout, progress callback, cancellation
+  callback, and state.
 - `CombinedResult` - Merges per-file `ExplorerResult` outputs with
   time-sorted deduplication, facet accumulation, and histogram merging.
 - `JournalFileCollection`, `normalizeTimeWindow()`,

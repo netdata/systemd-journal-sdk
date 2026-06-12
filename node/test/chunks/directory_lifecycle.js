@@ -426,6 +426,15 @@ export async function run() {
   }
 
   {
+    // Verify package.json "files" array includes index.d.ts so the
+    // declared "types" field actually ships in the npm tarball.
+    const pkg = JSON.parse(safeReadFileSync(join(packageRoot, 'package.json'), 'utf8'));
+    assert.ok(Array.isArray(pkg.files), 'package.json must have a "files" array');
+    assert.ok(pkg.files.includes('index.d.ts'),
+      'package.json "files" must include index.d.ts for the "types" field');
+  }
+
+  {
     // Node writer -> Node reader round-trip with XZ-compressed DATA.
     const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
     try {

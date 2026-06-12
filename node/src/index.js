@@ -54,6 +54,7 @@ import {
 
 // Re-export everything
 export { FileReader, DirectoryReader, Writer, Log };
+export { WriterLock } from './lib/lock.js';
 export {
   Direction,
   ExplorerAnchor,

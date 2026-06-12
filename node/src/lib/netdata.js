@@ -409,21 +409,21 @@ const CAPABILITIES = [
 
 function capEffectiveDisplay(raw) {
   if (!raw) return raw;
-  const first = raw[0];
-  if (!first || !(first >= '0' && first <= '9')) return raw;
+  const text = Buffer.isBuffer(raw) ? raw.toString('latin1') : String(raw);
+  if (!text || !/^[0-9a-fA-F]+$/.test(text)) return text;
   let value;
   try {
-    value = parseInt(raw, 16);
+    value = BigInt(`0x${text}`);
   } catch {
-    return raw;
+    return text;
   }
-  if (!Number.isFinite(value) || value === 0) return raw;
+  if (value === 0n) return text;
   const names = [];
   for (let i = 0; i < CAPABILITIES.length; i++) {
-    if ((value >>> i) & 1) names.push(CAPABILITIES[i]);
+    if ((value >> BigInt(i)) & 1n) names.push(CAPABILITIES[i]);
   }
-  if (names.length === 0) return raw;
-  return `${raw} (${names.join(' | ')})`;
+  if (names.length === 0) return text;
+  return `${text} (${names.join(' | ')})`;
 }
 
 const MESSAGE_ID_NAMES = {
@@ -689,6 +689,7 @@ import {
   ExplorerStrategy,
   ExplorerStopReason,
   exploreWithStrategy,
+  exploreWithStrategyAndControl,
   _newHistogram,
 } from './explorer.js';
 import { isJournalFileName } from './compress.js';
@@ -703,11 +704,25 @@ function _unixNowSeconds(injectableNow) {
   return Math.floor(Date.now() / 1000);
 }
 
+function _normalizeTimestampToUsec(value) {
+  if (value < 0) value = 0;
+  if (value >= 1_000_000_000_000) return Math.floor(value);
+  return value * 1_000_000;
+}
+
 function _normalizeTimestampToUsecWithRounding(value, endOfSecond) {
   if (value < 0) value = 0;
   if (value >= 1_000_000_000_000) return Math.floor(value);
   if (endOfSecond) return Math.floor(value) * 1_000_000 + 999_999;
   return Math.floor(value) * 1_000_000;
+}
+
+function _anchorOutsideWindow(anchor, afterUsec, beforeUsec) {
+  if (anchor.kind !== ExplorerAnchorKind.Realtime) return false;
+  const anchorUsec = Number(anchor.realtimeUsec);
+  if (afterUsec != null && anchorUsec < afterUsec) return true;
+  if (beforeUsec != null && anchorUsec > beforeUsec) return true;
+  return false;
 }
 
 function _relativeWindowToAbsolute(nowSeconds, after, before) {
@@ -1020,11 +1035,16 @@ export class NetdataRequest {
     let sampling = _getU64(value, 'sampling');
     if (sampling == null) sampling = DEFAULT_ITEMS_SAMPLING;
     const anchorValue = _getU64(value, 'anchor');
-    const anchor = (anchorValue != null && anchorValue !== 0)
-      ? ExplorerAnchorClass.realtime(anchorValue)
+    let anchor = (anchorValue != null && anchorValue !== 0)
+      ? ExplorerAnchorClass.realtime(_normalizeTimestampToUsec(anchorValue))
       : ExplorerAnchorClass.auto();
     let dir = direction;
-    if (tail && anchor.kind === ExplorerAnchorKind.Realtime) dir = ExplorerDirection.Backward;
+    if (tail && anchor.kind === ExplorerAnchorKind.Realtime) {
+      dir = ExplorerDirection.Backward;
+    } else if (_anchorOutsideWindow(anchor, afterUsec, beforeUsec)) {
+      anchor = ExplorerAnchorClass.auto();
+      dir = ExplorerDirection.Backward;
+    }
     const requestedLimit = _requestLimit(value);
     const limit = Math.max(2, requestedLimit);
     const requestedFacets = _parseStringArray(value.facets);
@@ -2227,7 +2247,7 @@ export class NetdataJournalFunction {
         if (options?.progressInterval != null) control.setProgressIntervalMs(options.progressInterval * 1000);
         let result;
         try {
-          result = exploreWithStrategy(reader, fileQuery, ExplorerStrategy.Traversal);
+          result = exploreWithStrategyAndControl(reader, fileQuery, ExplorerStrategy.Traversal, control);
         } catch (err) { combined.skippedFiles += 1; combined.fileErrors.push(`${pathStr}: ${err.message}`); continue; }
         if (control.stopReason === ExplorerStopReason.Cancelled) combined.cancelled = true;
         else if (control.stopReason === ExplorerStopReason.TimedOut) combined.timedOut = true;

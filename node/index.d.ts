@@ -106,6 +106,10 @@ declare module "@netdata/systemd-journal-sdk" {
 
     enumerateFields(): Set<string>;
     queryUnique(fieldName: string | Bytes): string[];
+
+    explore(query: ExplorerQuery): ExplorerResult;
+    exploreWithStrategy(query: ExplorerQuery, strategy: ExplorerStrategy): ExplorerResult;
+    exploreWithStrategyAndControl(query: ExplorerQuery, strategy: ExplorerStrategy, control: ExplorerControl): ExplorerResult;
   }
 
   class DirectoryReader {
@@ -602,14 +606,14 @@ declare module "@netdata/systemd-journal-sdk" {
     deadline: number | null;
     cancellation: (() => boolean) | null;
     progress: ((p: ExplorerProgress) => void) | null;
-    matchedRow: ((row: ExplorerRow) => void) | null;
+    matchedRow: ((realtimeUsec: bigint, rowsMatched: bigint) => boolean | void) | null;
     progressIntervalMs: number;
     stopReason: ExplorerStopReason | null;
 
     setDeadline(deadline: number): void;
     setCancellationCallback(cb: () => boolean): void;
     setProgressCallback(cb: (p: ExplorerProgress) => void): void;
-    setMatchedRowCallback(cb: (row: ExplorerRow) => void): void;
+    setMatchedRowCallback(cb: (realtimeUsec: bigint, rowsMatched: bigint) => boolean | void): void;
     setProgressIntervalMs(ms: number): void;
   }
 
@@ -618,19 +622,6 @@ declare module "@netdata/systemd-journal-sdk" {
   const DEFAULT_TIME_SLACK_USEC: bigint;
   const EXPLORER_CONTROL_CHECK_EVERY_ROWS: bigint;
   const EXPLORER_PROGRESS_INTERVAL_MS: number;
-
-  function exploreWithStrategy(
-    reader: FileReader,
-    query: ExplorerQuery,
-    strategy: ExplorerStrategy,
-  ): ExplorerResult;
-
-  function exploreWithStrategyAndControl(
-    reader: FileReader,
-    query: ExplorerQuery,
-    strategy: ExplorerStrategy,
-    control: ExplorerControl,
-  ): ExplorerResult;
 
   // -----------------------------------------------------------------------
   // SdJournal facade
@@ -910,16 +901,16 @@ declare module "@netdata/systemd-journal-sdk" {
   }
 
   class NetdataJournalFunction {
-    config: NetdataFunctionConfig;
-    paths: string[];
+    constructor(config: NetdataFunctionConfig, profile: NetdataFunctionProfile);
 
-    configure(config?: NetdataFunctionConfig): void;
-    discover(): void;
-    info(response: Record<string, unknown>): Record<string, unknown>;
-    execute(
-      request: NetdataRequest,
-      opts?: NetdataFunctionRunOptions | null,
-    ): Record<string, unknown>;
+    static systemdJournal(): NetdataJournalFunction;
+    static systemdJournalPluginCompatible(): NetdataJournalFunction;
+    static new(config: NetdataFunctionConfig, profile: NetdataFunctionProfile): NetdataJournalFunction;
+
+    runDirectoryRequestJson(directory: string, request: Record<string, unknown>): Record<string, unknown>;
+    runDirectoryRequestJsonWithOptions(directory: string, request: Record<string, unknown>, options?: NetdataFunctionRunOptions | null): Record<string, unknown>;
+    runDirectoryRequestBytes(directory: string, request: string | Bytes): Record<string, unknown>;
+    runDirectoryRequestBytesWithOptions(directory: string, request: string | Bytes, options?: NetdataFunctionRunOptions | null): Record<string, unknown>;
   }
 
   // -----------------------------------------------------------------------
