@@ -7,8 +7,8 @@ It provides:
 
 - The seven `NETDATA_SOURCE_TYPE_*` constants (bit flags).
 - The 16 accepted request parameter names.
-- `SYSTEMD_DEFAULT_VIEW_KEYS` (18 names) and `SYSTEMD_DEFAULT_FACETS`
-  (60 names) copied EXACTLY from the Rust source (order preserved).
+- `SYSTEMD_DEFAULT_VIEW_KEYS` (22 names) and `SYSTEMD_DEFAULT_FACETS`
+  (58 names) copied EXACTLY from the Rust source (order preserved).
 - `NetdataFunctionConfig` dataclass and the `systemd_journal()`
   factory.
 - `DisplayScope`, `DisplayContext`, and the `NetdataFunctionProfile`

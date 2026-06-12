@@ -2,11 +2,12 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: activated 2026-06-11 after SOW-0103 completed (close commit
-`05996902`); pre-implementation gate refreshed with the fresh API-diff
-inventory; implementation starting.
+Sub-state: delivered and parity-proven by three-peer comparator gates
+(one-shot 10/10 live, stateful 5/5 frozen fixture); 5/5 PRODUCTION GRADE
+reviewer verdicts in round 1; audited clean; closed with the work in one
+commit on 2026-06-12.
 
 ## Requirements
 
@@ -624,67 +625,178 @@ Failure handling:
 
 Acceptance criteria evidence:
 
-- Pending implementation.
+- Explorer: `python/journal/explorer.py` mirrors the Rust surface
+  (enums, 22-field query with Rust defaults, FTS semantics, strategies
+  with Index exactness and Compare equality verification, control
+  callbacks, 24 stats counters); explore methods on the single-file
+  reader only, matching Rust placement; 22 focused tests.
+- Netdata function API: `python/journal/netdata.py` mirrors constants,
+  16 request parameters, config with SOW-0102 source selector labels
+  and the exact 58/22 default lists, profiles with the display
+  transformation family, `explore_files` merge, verbatim window
+  normalization, delta keys, tail contract, sampling, run options;
+  196+ focused tests.
+- Wrapper and comparators: `python/cmd/netdata_function_wrapper.py`
+  implements the exact wrapper contract; both comparator runners accept
+  Python as optional third peer with defaults unchanged.
+- PARITY GATES: one-shot comparator 10/10 (three peers, live
+  `/var/log/journal` read-only); stateful 5/5 with full step counts
+  (three peers, frozen fresh-data fixture). One transient live
+  `info` flake during a sweep was root-caused to a rotation window
+  changing per-source file counts between peer invocations (strict by
+  design); targeted rerun green; documented above.
+- `pyproject.toml` added under `python/` (metadata only, lz4
+  dependency); `pip install -e python/` verified into a throwaway venv.
+- Facade `SdJournalVisitUniqueValues` ported and exported.
+- Rust/Go/Node unmodified across the entire SOW (verified repeatedly by
+  `git status`, the commit range, and all five reviewers).
 
 Tests or equivalent validation:
 
-- Pending implementation.
+- `python/test_netdata.py` (196+ tests incl. value-pinning,
+  injected-now window tests, entry-point envelope assertions) green.
+- `python/test_explorer.py` (22 tests) green; `python/test_all.py`
+  package suite green.
+- Comparator unit suites (`test_compare_function_json.py`,
+  `test_stateful_function_compare.py`) green.
+- All runs executed by the project manager with
+  `.local/python-venv/bin/python3` (repo-pinned `lz4==4.4.5`).
 
 Real-use evidence:
 
-- Pending implementation.
+- The Python wrapper served the 10 committed one-shot requests and the
+  5 stateful sequences against real and synthetic journals, compared
+  content-for-content against the installed Netdata
+  `systemd-journal.plugin` and the Rust SDK wrapper.
 
 Reviewer findings:
 
-- Pending implementation.
+- Round 1: glm YES (implementer conflict declared in-review; extra
+  scrutiny applied elsewhere), mimo YES (nothing above LOW), qwen YES
+  (3 LOW cosmetic), deepseek YES (1 cosmetic), kimi YES after one
+  recorded mid-review cutoff and retry (4 minor notes). 5/5
+  PRODUCTION GRADE in one round.
+- Dispositions: unused `subprocess` import removed
+  (`python/cmd/netdata_function_wrapper.py`); stale 18/60 docstring
+  counts corrected to 22/58 (`python/journal/netdata.py`); both
+  typo-class fixes applied by the project manager and re-verified.
+  Accepted as-is with reasons: function-level imports (no import
+  cycle exists; negligible cached-lookup cost), exact `lz4==4.4.5`
+  pin (matches `python/requirements.txt` until SOW-0066 packaging
+  decisions), string-quoted type hints (file-internal consistency),
+  docstring Rust line references (they cite in-repo frozen sources),
+  Explorer-vs-Netdata test distribution (Explorer is additionally
+  exercised through every comparator gate), broad except in header
+  bounds reading (mirrors Rust's map_or absorption).
 
 Same-failure scan:
 
-- Pending implementation.
+- Scope-cut comment scan across `netdata.py` performed in fix 3 (one
+  real cut found and fixed; rest dispositioned, results under
+  `.local/sow-0104/fix3/`).
+- Wiring-class failures (helpers built but not connected) recurred
+  across fixes 4/4b/11/11b; countered with mandatory call-site
+  evidence in fix prompts and entry-point-level tests; final gates
+  prove the wired paths.
+- Toolchain-hardcode class: after the go-directive finding, the Rust
+  edition twin was found and both now read canonical manifests.
 
 Sensitive data gate:
 
-- This SOW contains no raw sensitive data.
+- Durable artifacts contain no secrets, credentials, identities, or
+  raw host journal content; comparator raw reports and debug step
+  responses stay under `.local/sow-0104/`; the SOW records sanitized
+  counts, paths, and rule citations only.
 
 Artifact maintenance gate:
 
-- Pending close.
+- AGENTS.md: no change needed (routing recorded at program start;
+  no rule changes emerged).
+- Runtime project skills: no skill update needed — the durable
+  workflow lessons (read reference source before prompting; anti-
+  vacuity checks; call-site evidence demands) are SOW-ledger material
+  inherited by SOW-0105 via its activation read of this SOW; the
+  orchestration skill's existing rules already cover reviewer cadence
+  and boundaries.
+- Specs: no `.agents/sow/specs/` update needed — no Rust/Go behavior
+  changed; the Netdata facets spec
+  (`systemd-journal-plugin-facets.md`) describes plugin behavior that
+  is unchanged; Python now conforms to it.
+- End-user/operator docs: `python/README.md` updated in chunk 3 (the
+  wiki pages arrive in SOW-0106 per program order);
+  `tests/netdata_function/README.md` documents the two bounded
+  tolerances and the frozen-fixture protocol.
+- End-user/operator skills: none exist for this surface.
+- SOW lifecycle: closed as completed and moved to `done/` together
+  with the final cleanup in one commit; SOW-0105 activates next per
+  the program order.
+- SOW-status.md: both ledgers updated at close.
 
 Specs update:
 
-- Pending implementation.
+- Not needed (see artifact gate): no public Rust/Go contract changed;
+  Python joined existing contracts.
 
 Project skills update:
 
-- Pending implementation.
+- Not needed (see artifact gate reasoning).
 
 End-user/operator docs update:
 
-- Pending implementation.
+- `python/README.md` (Explorer, Netdata API, wrapper, pip path);
+  `tests/netdata_function/README.md` (tolerances, fixture protocol).
 
 End-user/operator skills update:
 
-- Pending implementation.
+- None exist for this surface; nothing affected.
 
 Lessons:
 
-- Pending implementation.
+- Reference behavior must be read from source; observed agreement of
+  co-scheduled fast processes is not evidence of determinism (the
+  window-rule saga: two wrong premises until the static-snapshot
+  experiment and direct source read).
+- Implementer-green is not done: exit 0 with silently dropped scope,
+  helpers-without-wiring, format-only tests, and a vacuous `ok: true`
+  all appeared and were caught only by independent project-manager
+  verification (reruns, anti-vacuity checks, code reading).
+- Fix-prompt quality determines fix quality: symptom-level prompts
+  failed repeatedly; verbatim-mechanism prompts (fix 10, fix 13)
+  landed first-try.
+- Model routing within the pool matters: minimax repeatedly mis-wired
+  in this file area; glm landed every scoped fix; the fallback clause
+  earned its place.
+- Live-source comparison gates need either co-scheduled peers or
+  frozen fixtures; bounded tolerances belong only on content that
+  embeds invocation time by reference design.
 
 Follow-up mapping:
 
-- Pending implementation.
+- Tracked: SOW-0105 (Node parity; inherits this SOW's lessons and the
+  comparator/fixture infrastructure), SOW-0106 (Python/Node docs).
+- Implemented in-SOW: all reviewer dispositions above; no deferred
+  items remain (scan of defer/later/follow-up/future/TODO/pending maps
+  to the entries above or completed work).
 
 ## Outcome
 
-Pending.
+Delivered. The Python SDK now carries the full Rust feature surface:
+Explorer (filters, facets, histogram, FTS, strategies, control),
+the Netdata logs function API (profiles, source selector labels, the
+complete request/response contract including tail/delta/sampling), the
+stdin function wrapper, packaging metadata, and the facade unique-values
+visitor. Parity is proven by three-peer content comparison against the
+Rust wrapper and the installed Netdata plugin: 10/10 one-shot fixtures
+on the live journal and 5/5 stateful sequences on a frozen fixture. All
+five pool reviewers returned PRODUCTION GRADE: YES in a single round.
 
 ## Lessons Extracted
 
-Pending.
+See Validation - Lessons; inherited by SOW-0105 at activation.
 
 ## Followup
 
-None yet.
+- SOW-0105 (Node parity) activates next; SOW-0106 closes the program.
 
 ## Regression Log
 

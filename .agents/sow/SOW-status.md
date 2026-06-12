@@ -4,12 +4,6 @@ Last updated: 2026-06-11
 
 ## Current
 
-- SOW-0104 - Python Explorer And Netdata Parity To Rust: in-progress.
-  Activated after SOW-0103 completed; gate refreshed with a fresh API-diff
-  inventory. Ports Explorer, the Netdata function API, the stdin wrapper,
-  and source selector labels to Python; joins the Netdata comparator
-  matrices as third peer; adds `pyproject.toml` (no publication) and the
-  missing facade unique-values visitor.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
@@ -55,6 +49,22 @@ Last updated: 2026-06-11
   shared primitives preserve historical compatibility and reader performance.
 ## Recently Closed Or Completed
 
+- SOW-0104 - Python Explorer And Netdata Parity To Rust: completed. The
+  Python SDK now carries the full Rust feature surface: Explorer
+  (filters, facets, histogram, FTS, Traversal/Index/Compare strategies,
+  control callbacks), the Netdata logs function API (profiles, SOW-0102
+  source selector labels, the complete request/response contract
+  including verbatim window normalization, delta keys, the SOW-0093
+  tail contract, and sampling), the stdin function wrapper,
+  `python/pyproject.toml` (metadata only), and the facade unique-values
+  visitor. Parity proven by three-peer content comparison against the
+  Rust wrapper and the installed Netdata plugin: 10/10 one-shot
+  fixtures on the live journal (read-only) and 5/5 stateful sequences
+  on a frozen fresh-data fixture; the comparators gained two documented
+  bounded tolerances for invocation-time content and a frozen-fixture
+  protocol for slow third peers. All five pool reviewers returned
+  `PRODUCTION GRADE: YES` in a single round; audit clean. SOW-0105
+  (Node parity) activates next.
 - SOW-0103 - Docs API Perception Restructure And Verified Examples:
   completed. The consumer wiki is restructured around API-perception
   decision paths with the journalctl rewrite CLI documented as the fifth
