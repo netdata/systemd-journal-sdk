@@ -21,6 +21,7 @@ import {
 import { decompressZstToTemp, isZstFile } from './compress.js';
 import { parseEntryObject, parseDataPayload } from './entry.js';
 import { jenkinsHash64, sipHash24 } from './hash.js';
+import { exploreWithStrategy, exploreWithStrategyAndControl } from './explorer.js';
 
 const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
 const SUPPORTED_INCOMPATIBLE_FLAGS = INCOMPATIBLE_KEYED_HASH |
@@ -579,6 +580,71 @@ export class FileReader {
       this.cleanupPath = null;
     }
     this.buffer = null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Explorer integration (SOW-0105 chunk 1).
+  //
+  // These methods exist solely so the explorer module can walk DATA-object
+  // entry references (entry_offset + entry_array chain) when implementing
+  // the indexed strategy. They mirror the Reader shim that
+  // python/journal/explorer.py's _data_entry_offsets uses, which in turn
+  // mirrors the Rust FileReader::field_data_objects_with_offsets visitor
+  // in rust/src/journal/src/explorer.rs (L2294-2394).
+  //
+  // The two helpers are not part of the public API; they are private and
+  // only used by ./explorer.js. We do not expose them on DirectoryReader
+  // because Rust has no directory-level Explorer and SOW-0105 chunk 1
+  // delivers single-file Explorer only.
+  // -------------------------------------------------------------------------
+
+  _readEntryArrayObject(offset) {
+    const pos = Number(offset);
+    if (this.buffer.length < pos + OFFSET_ARRAY_OBJECT_HEADER_SIZE) {
+      throw new Error('buffer too small for entry array object');
+    }
+    const oh = parseObjectHeader(this.buffer, pos);
+    if (!oh || oh.type !== OBJECT_TYPE_ENTRY_ARRAY) {
+      throw new Error('corrupt ENTRY_ARRAY object');
+    }
+    const itemSize = this.offsetArrayItemSizeValue;
+    const payloadSize = oh.size - BigInt(OFFSET_ARRAY_OBJECT_HEADER_SIZE);
+    if (payloadSize < 0n || payloadSize % BigInt(itemSize) !== 0n) {
+      throw new Error('entry array payload has invalid alignment');
+    }
+    const capacity = Number(payloadSize / BigInt(itemSize));
+    return {
+      dataStart: pos + OFFSET_ARRAY_OBJECT_HEADER_SIZE,
+      itemSize,
+      capacity,
+      nextOffset: readUint64LE(this.buffer, pos + 16),
+    };
+  }
+
+  _readEntryArrayItemOffset(byteOffset) {
+    if (this._isCompact()) {
+      const v = this.buffer.readUInt32LE(byteOffset);
+      return v === 0 ? 0n : BigInt(v);
+    }
+    return readUint64LE(this.buffer, byteOffset);
+  }
+
+  _entryRealtimeAtOffset(offset) {
+    return readUint64LE(this.buffer, Number(offset) + OBJECT_HEADER_SIZE + 8);
+  }
+
+  // Public Explorer entry points. Implemented in ./explorer.js to keep
+  // this reader file focused on binary IO.
+  explore(query) {
+    return exploreWithStrategy(this, query, 'traversal');
+  }
+
+  exploreWithStrategy(query, strategy) {
+    return exploreWithStrategy(this, query, strategy);
+  }
+
+  exploreWithStrategyAndControl(query, strategy, control) {
+    return exploreWithStrategyAndControl(this, query, strategy, control);
   }
 
   _isCompact() {

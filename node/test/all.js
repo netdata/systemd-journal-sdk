@@ -6,8 +6,9 @@ import { run as runChunk3 } from './chunks/directory_lifecycle.js';
 import { run as runChunk4 } from './chunks/directory_retention_policy.js';
 import { run as runChunk5 } from './chunks/facade_reader_verify.js';
 import { run as runChunk6 } from './chunks/seal_conformance.js';
+import { run as runChunk7 } from './chunks/explorer.js';
 
-for (const runChunk of [runChunk1, runChunk2, runChunk3, runChunk4, runChunk5, runChunk6]) {
+for (const runChunk of [runChunk1, runChunk2, runChunk3, runChunk4, runChunk5, runChunk6, runChunk7]) {
   await runChunk();
 }
 
