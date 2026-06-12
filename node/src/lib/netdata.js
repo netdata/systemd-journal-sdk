@@ -689,9 +689,10 @@ import {
   ExplorerStrategy,
   ExplorerStopReason,
   exploreWithStrategy,
+  _newHistogram,
 } from './explorer.js';
 import { isJournalFileName } from './compress.js';
-import { FileReader } from './reader.js';
+import { FileReader, readFileHeader } from './reader.js';
 
 const NETDATA_REMOTE_PATH_FRAGMENT = '/remote/';
 const API_RELATIVE_TIME_MAX_SECONDS = 3 * 365 * 86_400;
@@ -1187,6 +1188,64 @@ export class CombinedResult {
     s.earlyStops += stats.earlyStops;
   }
 
+  add_zero_count_facet_values_from_files(fields) {
+    if (!fields || fields.length === 0 || this.matchedPaths.length === 0) return;
+    for (const pathStr of this.matchedPaths) {
+      let reader;
+      try { reader = FileReader.open(pathStr); }
+      catch { continue; }
+      try {
+        for (const field of fields) {
+          if (!field) continue;
+          const fieldName = Buffer.isBuffer(field) ? field.toString('utf8') : field;
+          if (!fieldName) continue;
+          let values;
+          try { values = reader.queryUnique(fieldName); }
+          catch { continue; }
+          if (!values || values.length === 0) continue;
+          const fieldHex = Buffer.isBuffer(field) ? field.toString('hex') : Buffer.from(field).toString('hex');
+          let target = this.facets.get(fieldHex);
+          if (!target) { target = new Map(); this.facets.set(fieldHex, target); }
+          for (const value of values) {
+            if (!value || value.length === 0) continue;
+            const valueStr = value.toString('utf8');
+            if (valueStr === '-' || valueStr === '') continue;
+            const valueHex = value.toString('hex');
+            if (!target.has(valueHex)) target.set(valueHex, 0n);
+          }
+        }
+      } finally {
+        try { reader.close(); } catch {}
+      }
+    }
+  }
+
+  add_zero_count_selected_filter_values(request) {
+    if (!request || !request.filters || request.filters.length === 0) return;
+    const reportFields = new Set();
+    for (const f of request.facets) {
+      const fieldBytes = Buffer.isBuffer(f) ? f : Buffer.from(f);
+      reportFields.add(fieldBytes.toString('hex'));
+    }
+    if (request.histogram != null) {
+      reportFields.add(Buffer.from(request.histogram, 'utf8').toString('hex'));
+    }
+    for (const f of request.filters) {
+      if (!f || !f.field || !f.values || f.values.length === 0) continue;
+      const fieldHex = f.field.toString('hex');
+      if (!reportFields.has(fieldHex)) continue;
+      let target = this.facets.get(fieldHex);
+      if (!target) { target = new Map(); this.facets.set(fieldHex, target); }
+      for (const value of f.values) {
+        if (!value || value.length === 0) continue;
+        const valueStr = value.toString('utf8');
+        if (valueStr === '-' || valueStr === '') continue;
+        const valueHex = value.toString('hex');
+        if (!target.has(valueHex)) target.set(valueHex, 0n);
+      }
+    }
+  }
+
   _sortAndLimit(direction, limit) {
     if (direction === ExplorerDirection.Forward) {
       this.rows.sort((a, b) => a.realtimeUsec - b.realtimeUsec);
@@ -1273,7 +1332,7 @@ function _summaryToSourceOption(name, summary) {
   };
 }
 
-function _buildSourceSummary(paths) {
+function _buildSourceSummary(paths, state) {
   const all = { files: 0, totalSize: 0, firstRealtimeUsec: null, lastRealtimeUsec: null };
   const local = { files: 0, totalSize: 0, firstRealtimeUsec: null, lastRealtimeUsec: null };
   const ns = { files: 0, totalSize: 0, firstRealtimeUsec: null, lastRealtimeUsec: null };
@@ -1287,18 +1346,19 @@ function _buildSourceSummary(paths) {
     try { stat = statSync(p); } catch { continue; }
     const sz = stat.size;
     const st = journalFileSourceType(p);
-    _addSummaryPath(all, p, sz);
-    if (st & NETDATA_SOURCE_TYPE_LOCAL_ALL) _addSummaryPath(local, p, sz);
-    if (st & NETDATA_SOURCE_TYPE_LOCAL_NAMESPACE) _addSummaryPath(ns, p, sz);
-    if (st & NETDATA_SOURCE_TYPE_LOCAL_SYSTEM) _addSummaryPath(sys, p, sz);
-    if (st & NETDATA_SOURCE_TYPE_LOCAL_USER) _addSummaryPath(user, p, sz);
-    if (st & NETDATA_SOURCE_TYPE_REMOTE_ALL) _addSummaryPath(remote, p, sz);
-    if (st & NETDATA_SOURCE_TYPE_LOCAL_OTHER) _addSummaryPath(other, p, sz);
+    const metadata = _stateFileMetadata(state, p);
+    _addSummaryPath(all, p, sz, metadata);
+    if (st & NETDATA_SOURCE_TYPE_LOCAL_ALL) _addSummaryPath(local, p, sz, metadata);
+    if (st & NETDATA_SOURCE_TYPE_LOCAL_NAMESPACE) _addSummaryPath(ns, p, sz, metadata);
+    if (st & NETDATA_SOURCE_TYPE_LOCAL_SYSTEM) _addSummaryPath(sys, p, sz, metadata);
+    if (st & NETDATA_SOURCE_TYPE_LOCAL_USER) _addSummaryPath(user, p, sz, metadata);
+    if (st & NETDATA_SOURCE_TYPE_REMOTE_ALL) _addSummaryPath(remote, p, sz, metadata);
+    if (st & NETDATA_SOURCE_TYPE_LOCAL_OTHER) _addSummaryPath(other, p, sz, metadata);
     const exactName = _journalFileExactSourceName(p);
     if (exactName != null) {
       let bucket = exact.get(exactName);
       if (!bucket) { bucket = { files: 0, totalSize: 0, firstRealtimeUsec: null, lastRealtimeUsec: null }; exact.set(exactName, bucket); }
-      _addSummaryPath(bucket, p, sz);
+      _addSummaryPath(bucket, p, sz, metadata);
     }
   }
   const options = [];
@@ -1313,13 +1373,47 @@ function _buildSourceSummary(paths) {
   return { id: '__logs_sources', options };
 }
 
-function _addSummaryPath(summary, _path, size) {
-  summary.files += 1;
-  summary.totalSize += size;
+function _minRealtime(current, candidate) {
+  if (current == null) return candidate;
+  return current < candidate ? current : candidate;
 }
 
-function _buildInfoResponse(echo, paths, config) {
-  const sourceSummary = _buildSourceSummary(paths);
+function _maxRealtime(current, candidate) {
+  if (current == null) return candidate;
+  return current > candidate ? current : candidate;
+}
+
+function _addSummaryPath(summary, path, size, metadata) {
+  summary.files += 1;
+  summary.totalSize += size;
+  if (metadata != null) {
+    const metadataFirst = metadata.msgFirstRealtimeUsec;
+    const metadataLast = metadata.msgLastRealtimeUsec;
+    if (metadataFirst != null) {
+      summary.firstRealtimeUsec = _minRealtime(summary.firstRealtimeUsec, metadataFirst);
+    }
+    if (metadataLast != null) {
+      summary.lastRealtimeUsec = _maxRealtime(summary.lastRealtimeUsec, metadataLast);
+    }
+    if (metadataFirst != null && metadataLast != null) return;
+  }
+  try {
+    const header = readFileHeader(path);
+    if (header.head_entry_realtime != null) {
+      const head = Number(header.head_entry_realtime);
+      if (head !== 0) summary.firstRealtimeUsec = _minRealtime(summary.firstRealtimeUsec, head);
+    }
+    if (header.tail_entry_realtime != null) {
+      const tail = Number(header.tail_entry_realtime);
+      if (tail !== 0) summary.lastRealtimeUsec = _maxRealtime(summary.lastRealtimeUsec, tail);
+    }
+  } catch {
+    // File header unreadable; bounds stay unchanged, file still contributes files+totalSize.
+  }
+}
+
+function _buildInfoResponse(echo, paths, config, state) {
+  const sourceSummary = _buildSourceSummary(paths, state);
   return {
     _request: { ...echo },
     versions: { netdata_function_api: 1, sdk: '0.1.0' },
@@ -1341,7 +1435,7 @@ function _buildInfoResponse(echo, paths, config) {
   };
 }
 
-function _buildLogsSourcesResponse(echo, paths, config) {
+function _buildLogsSourcesResponse(echo, paths, config, state) {
   return {
     _request: { ...echo },
     status: 200,
@@ -1349,7 +1443,7 @@ function _buildLogsSourcesResponse(echo, paths, config) {
     id: '__logs_sources',
     name: config.sourceSelectorName,
     help: config.sourceSelectorHelp,
-    options: _buildSourceSummary(paths).options,
+    options: _buildSourceSummary(paths, state).options,
   };
 }
 
@@ -1823,7 +1917,13 @@ function _buildQueryResponse(request, config, combined, _paths, profile) {
   if (!request.dataOnly || request.delta) {
     body.facets = _buildFacetsPayload(request, config, combined, profile);
     if (histogramField != null) {
-      body.histogram = _buildHistogramPayload(histogramField, combined.histogram, combined, request, profile);
+      let histogram = combined.histogram;
+      if (histogram == null) {
+        const emptyQuery = _requestToExplorerQuery(request, combined.matchedFiles, null);
+        emptyQuery.histogram = Buffer.from(histogramField, 'utf8');
+        histogram = _newHistogram(Buffer.from(histogramField, 'utf8'), emptyQuery);
+      }
+      body.histogram = _buildHistogramPayload(histogramField, histogram, combined, request, profile);
     } else {
       body.histogram = null;
     }
@@ -1935,7 +2035,7 @@ function _updateLearnedRealtimeDelta(state, path, orderDeltaUsec, stats) {
 }
 
 // ---------------------------------------------------------------------------
-// 304 pre-scan short-circuit (mirror Rust L2677-2689)
+// 304 pre-scan short-circuit (mirror Rust L2677-2689 + L2938-2967)
 // ---------------------------------------------------------------------------
 
 function _notModifiedBeforeScanResponse(request, paths, state) {
@@ -1943,22 +2043,28 @@ function _notModifiedBeforeScanResponse(request, paths, state) {
   for (const pathStr of paths) {
     if (!_pathMatchesRequest(pathStr, request, state)) continue;
     const metadata = _stateFileMetadata(state, pathStr);
-    let last;
-    if (metadata != null && metadata.msgLastRealtimeUsec != null) {
+    let first, last;
+    if (metadata != null && metadata.msgFirstRealtimeUsec != null && metadata.msgLastRealtimeUsec != null) {
+      first = metadata.msgFirstRealtimeUsec;
       last = metadata.msgLastRealtimeUsec;
-    } else if (metadata != null && metadata.fileLastModifiedUsec != null) {
-      last = metadata.fileLastModifiedUsec;
     } else {
       try {
-        const reader = FileReader.open(pathStr);
-        const header = reader.header ?? {};
-        let tail = Number(header.tail_entry_realtime || 0);
-        if (tail === 0) {
+        const header = readFileHeader(pathStr);
+        first = metadata?.msgFirstRealtimeUsec ?? Number(header.head_entry_realtime || 0);
+        const tail = Number(header.tail_entry_realtime || 0);
+        if (metadata?.msgLastRealtimeUsec != null) {
+          last = metadata.msgLastRealtimeUsec;
+        } else if (metadata?.fileLastModifiedUsec != null) {
+          last = metadata.fileLastModifiedUsec;
+        } else if (tail === 0) {
           try { const st = statSync(pathStr); last = Math.floor(st.mtimeMs * 1000); } catch { last = 0; }
-        } else { last = tail; }
-        try { reader.close(); } catch {}
-      } catch { last = 0; }
+        } else {
+          last = tail;
+        }
+      } catch { first = 0; last = 0; }
     }
+    if (first === 0 && last === 0) continue;
+    if (!_journalFileOrderMayOverlapRequest(first, last, request.afterRealtimeUsec, request.beforeRealtimeUsec)) continue;
     if (last > request.ifModifiedSinceUsec) return null;
   }
   return _netdataFunctionError(304, 'No new data since the previous call.');
@@ -1999,6 +2105,36 @@ function _emitProgressForCombined(options, combined, currentFile, totalFiles, de
 }
 
 // ---------------------------------------------------------------------------
+// File time-window pre-filter (mirror Rust L2997-3026, Python L3959-3983)
+// ---------------------------------------------------------------------------
+
+function _journalFileOrderMayOverlapRequest(firstUsec, lastUsec, afterUsec, beforeUsec) {
+  if (lastUsec === 0 || lastUsec == null) return true;
+  const first = (firstUsec ?? 0) - NETDATA_JOURNAL_VS_REALTIME_DELTA_MAX_USEC;
+  const last = lastUsec + NETDATA_JOURNAL_VS_REALTIME_DELTA_MAX_USEC;
+  if (afterUsec != null && last < afterUsec) return false;
+  if (beforeUsec != null && first > beforeUsec) return false;
+  return true;
+}
+
+function _fileOverlapsRequestWindow(pathStr, metadata, afterUsec, beforeUsec) {
+  if (metadata != null && metadata.msgLastRealtimeUsec != null && metadata.msgLastRealtimeUsec !== 0) {
+    return _journalFileOrderMayOverlapRequest(
+      metadata.msgFirstRealtimeUsec, metadata.msgLastRealtimeUsec, afterUsec, beforeUsec);
+  }
+  let h;
+  try { h = readFileHeader(pathStr); } catch (_) { return true; }
+  try {
+    const last = Number(h.tail_entry_realtime ?? 0);
+    if (last === 0) return true;
+    const first = Number(h.head_entry_realtime ?? 0);
+    return _journalFileOrderMayOverlapRequest(first, last, afterUsec, beforeUsec);
+  } catch (_) {
+    return true;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // NetdataJournalFunction class
 // ---------------------------------------------------------------------------
 
@@ -2031,8 +2167,8 @@ export class NetdataJournalFunction {
     const parsed = NetdataRequest.parse(request || {}, this._config, injectableNow);
     const collection = collectJournalFiles(directory);
     const paths = collection.files;
-    if (parsed.info) return _buildInfoResponse(parsed.echo, paths, this._config);
-    if (request && request.__logs_sources) return _buildLogsSourcesResponse(parsed.echo, paths, this._config);
+    if (parsed.info) return _buildInfoResponse(parsed.echo, paths, this._config, options?.state);
+    if (request && request.__logs_sources) return _buildLogsSourcesResponse(parsed.echo, paths, this._config, options?.state);
     const notModified = _notModifiedBeforeScanResponse(parsed, paths, options?.state);
     if (notModified != null) return notModified;
     const combined = this._exploreFiles(paths, parsed, options, collection.skipped, collection.errors);
@@ -2071,6 +2207,11 @@ export class NetdataJournalFunction {
     for (const pathStr of matchedPaths) {
       if (_shouldStopBeforeFile(combined, deadline, options)) break;
       const metadata = _stateFileMetadata(state, pathStr);
+      if (!_fileOverlapsRequestWindow(pathStr, metadata, request.afterRealtimeUsec, request.beforeRealtimeUsec)) {
+        combined.skippedFiles += 1;
+        _emitProgressForCombined(options, combined, combined.matchedPaths.length + 1, totalFiles, deadline);
+        continue;
+      }
       let realtimeSlack = NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC;
       if (metadata != null && metadata.journalVsRealtimeDeltaUsec != null) {
         realtimeSlack = metadata.journalVsRealtimeDeltaUsec;
@@ -2102,6 +2243,10 @@ export class NetdataJournalFunction {
       } finally {
         try { reader.close(); } catch {}
       }
+    }
+    if (!request.dataOnly && !combined.cancelled) {
+      combined.add_zero_count_facet_values_from_files(request.facets);
+      combined.add_zero_count_selected_filter_values(request);
     }
     const analysisEnabled = !request.dataOnly || request.delta;
     if (analysisEnabled && request.sampling !== 0 && matchedFilesCount !== 0) {

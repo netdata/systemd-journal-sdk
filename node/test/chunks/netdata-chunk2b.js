@@ -354,6 +354,55 @@ function testRequestParsing() {
   assert.equal(req.echo.query, 'test');
 }
 
+function testWindowPrefilterSkipsOutOfWindowFiles() {
+  const dir = mkdtempSync(join(tmpdir(), 'netdata-prefilter-'));
+  try {
+    const enc = (s) => Buffer.from(s, 'utf8');
+    const baseUsec = 1700000000_000000n;
+    const inWindowEntries = [];
+    const outOfWindowEntries = [];
+    for (let i = 0; i < 3; i++) {
+      inWindowEntries.push({
+        realtimeUsec: baseUsec + BigInt(i * 1_000_000),
+        fields: [
+          { name: 'MESSAGE', value: enc(`in-window-msg-${i}`) },
+          { name: 'PRIORITY', value: enc('6') },
+        ],
+      });
+    }
+    for (let i = 0; i < 3; i++) {
+      outOfWindowEntries.push({
+        realtimeUsec: baseUsec + 250_000_000n + BigInt(i * 1_000_000),
+        fields: [
+          { name: 'MESSAGE', value: enc(`out-of-window-msg-${i}`) },
+          { name: 'PRIORITY', value: enc('3') },
+        ],
+      });
+    }
+    writeSyntheticJournal(dir, 'system.journal', inWindowEntries);
+    writeSyntheticJournal(dir, 'system2.journal', outOfWindowEntries);
+
+    const fn = NetdataJournalFunction.systemdJournal();
+    const injectableNow = Number(baseUsec / 1000n);
+    const result = fn.runDirectoryRequestJsonWithOptions(
+      dir,
+      { after: 1700000000, before: 1700000010, last: 100 },
+      { _injectableNow: injectableNow },
+    );
+
+    assert.equal(result.status, 200, `expected 200, got ${result.status}: ${JSON.stringify(result).slice(0, 200)}`);
+    assert.ok(result._journal_files, 'must have _journal_files');
+    assert.equal(result._journal_files.matched, 1, 'only the in-window file should be matched');
+    assert.ok(result._journal_files.skipped >= 1, `expected skipped >= 1, got ${result._journal_files.skipped}`);
+    assert.ok(Array.isArray(result.data), 'must have data');
+    for (const row of result.data) {
+      assert.ok(Array.isArray(row), 'row must be array');
+    }
+  } finally {
+    try { rmSync(dir, { recursive: true }); } catch {}
+  }
+}
+
 export async function run() {
   setup();
   try {
@@ -369,6 +418,7 @@ export async function run() {
     await testFullDataRequestOnMultiFile();
     testAcceptedParamsExtension();
     testNDJournalFilePerRow();
+    testWindowPrefilterSkipsOutOfWindowFiles();
     console.log('  PASS netdata chunk 2b (request handling, discovery, envelope)');
   } finally {
     teardown();

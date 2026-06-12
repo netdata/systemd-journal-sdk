@@ -11,8 +11,9 @@ import { run as runChunk8 } from './chunks/netdata.js';
 import { run as runChunk9 } from './chunks/netdata-chunk2b.js';
 import { run as runChunk10 } from './chunks/netdata-chunk2c.js';
 import { run as runChunk11 } from './chunks/wrapper.js';
+import { run as runChunk12 } from './chunks/header-only-read.js';
 
-for (const runChunk of [runChunk1, runChunk2, runChunk3, runChunk4, runChunk5, runChunk6, runChunk7, runChunk8, runChunk9, runChunk10, runChunk11]) {
+for (const runChunk of [runChunk1, runChunk2, runChunk3, runChunk4, runChunk5, runChunk6, runChunk7, runChunk8, runChunk9, runChunk10, runChunk11, runChunk12]) {
   await runChunk();
 }
 

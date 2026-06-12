@@ -726,6 +726,212 @@ function testDataOnlyDedupesWhenHistogramInFacets() {
 }
 
 // ---------------------------------------------------------------------------
+// Histogram bucket grid value-pinning (SOW-0105 comparator fix 4)
+// ---------------------------------------------------------------------------
+
+function testHistogramBucketKeysAreGridSnapped() {
+  withTmp((tmp) => {
+    const sub = join(tmp, 'aabbccdd111111111111111111111111');
+    mkdirSync(sub, { recursive: true });
+    const file = join(sub, 'system.journal');
+    const baseSec = 1666569600;
+    const w = Writer.create(file, {
+      machineId: Buffer.alloc(16, 0x11),
+      bootId: Buffer.alloc(16, 0xaa),
+      seqnumId: Buffer.alloc(16, 0x33),
+    });
+    for (let i = 0; i < 5; i++) {
+      w.append([
+        { name: 'MESSAGE', value: enc(`msg-${i}`) },
+        { name: 'PRIORITY', value: enc(String(3 + (i % 3))) },
+      ], { realtimeUsec: (baseSec + 10 + i * 600) * 1_000_000 });
+    }
+    w.close();
+    const fn = NetdataJournalFunction.systemdJournal();
+    const after = baseSec + 1;
+    const before = baseSec + 15000;
+    const snapAfterUsec = (after - (after % 60)) * 1_000_000;
+    const snapBeforeUsec = (before - (before % 60) + 60) * 1_000_000;
+    const widthUsec = 60 * 1_000_000;
+    const bucketCount = ((snapBeforeUsec - snapAfterUsec) / widthUsec) + 1;
+    const expectedBucketKeys = [];
+    for (let i = 0; i < bucketCount; i++) {
+      expectedBucketKeys.push((snapAfterUsec + i * widthUsec) / 1000);
+    }
+    const response = fn.runDirectoryRequestJson(tmp, {
+      after, before,
+      facets: ['PRIORITY'],
+      histogram: 'PRIORITY',
+    });
+    assert.equal(response.status, 200);
+    const chart = response.histogram.chart;
+    const data = chart.result.data;
+    assert.ok(data.length > 0, 'histogram data must not be empty');
+    const actualBucketKeys = data.map(p => p[0]);
+    assert.deepEqual(actualBucketKeys, expectedBucketKeys, 'bucket keys must match grid-snapped multiples');
+    const firstBucketMs = actualBucketKeys[0];
+    assert.equal(firstBucketMs % 60000, 0, 'first bucket key must be a round grid multiple');
+  });
+}
+
+function testHistogramEmptyDataProducesGridSnappedBuckets() {
+  withTmp((tmp) => {
+    const sub = join(tmp, 'aabbccdd111111111111111111111111');
+    mkdirSync(sub, { recursive: true });
+    const file = join(sub, 'system.journal');
+    const baseSec = 1666569600;
+    const w = Writer.create(file, {
+      machineId: Buffer.alloc(16, 0x11),
+      bootId: Buffer.alloc(16, 0xaa),
+      seqnumId: Buffer.alloc(16, 0x33),
+    });
+    for (let i = 0; i < 3; i++) {
+      w.append([
+        { name: 'MESSAGE', value: enc(`early-${i}`) },
+        { name: 'PRIORITY', value: enc('4') },
+      ], { realtimeUsec: (baseSec + 1 + i * 10) * 1_000_000 });
+    }
+    w.close();
+    const fn = NetdataJournalFunction.systemdJournal();
+    const options = new NetdataFunctionRunOptions();
+    options._injectableNow = (baseSec + 1000000) * 1000;
+    const response = fn.runDirectoryRequestJsonWithOptions(tmp, {
+      after: baseSec + 5000,
+      before: baseSec + 5200,
+      facets: ['PRIORITY'],
+      histogram: 'PRIORITY',
+    }, options);
+    assert.equal(response.status, 200);
+    const histogram = response.histogram;
+    assert.ok(histogram != null);
+    assert.ok(histogram.chart != null);
+    const view = histogram.chart.view;
+    assert.equal(view.dimensions.names.length, 0, 'empty window has empty dimension names');
+    const gridAfterSec = Math.floor((baseSec + 5000));
+    const gridBeforeSec = Math.floor((baseSec + 5200) + 1);
+    assert.equal(view.after, gridAfterSec);
+    assert.equal(view.before, gridBeforeSec);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Compact 304 envelope key set (SOW-0105 comparator fix 4)
+// ---------------------------------------------------------------------------
+
+function test304EnvelopeHasOnlyStatusAndErrorMessage() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp);
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      data_only: true,
+      if_modified_since: 1_700_000_000_500_000,
+      after: 1577836800,
+      before: 1893456000,
+    });
+    assert.equal(response.status, 304);
+    const keys = Object.keys(response).sort();
+    assert.deepEqual(keys, ['errorMessage', 'status'], '304 envelope must have exactly status and errorMessage');
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Filtered-field facet vocabulary zero-count post-passes
+// (SOW-0105 comparator fix 5 — exclude-own-field-filter facet semantics)
+// ---------------------------------------------------------------------------
+
+function testFilterValueSurfacesInFacetEvenWithZeroMatches() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp, { countA: 0, countB: 0 });
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      last: 5,
+      after: 1577836800,
+      before: 1893456000,
+      data_only: false,
+      facets: ['PRIORITY'],
+      histogram: 'PRIORITY',
+      selections: { PRIORITY: ['3'] },
+    });
+    assert.equal(response.status, 200);
+    const priorityFacet = response.facets.find(f => f.id === 'PRIORITY');
+    assert.ok(priorityFacet, 'PRIORITY facet must exist');
+    const priorityMap = {};
+    for (const o of priorityFacet.options) priorityMap[o.id] = o.count;
+    assert.ok('3' in priorityMap, '"3" must surface as zero-count from selected filter value');
+    assert.equal(priorityMap['3'], 0);
+    assert.equal(response.data.length, 0);
+  });
+}
+
+function testFilterValueSurfacesInHistogramDimensions() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp, { countA: 0, countB: 0 });
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      last: 5,
+      after: 1577836800,
+      before: 1893456000,
+      data_only: false,
+      facets: ['PRIORITY'],
+      histogram: 'PRIORITY',
+      selections: { PRIORITY: ['3'] },
+    });
+    assert.equal(response.status, 200);
+    const h = response.histogram;
+    assert.ok(h != null, 'histogram must exist');
+    const ids = h.chart.db.dimensions.ids;
+    const names = h.chart.view.dimensions.names;
+    assert.ok(ids.includes('3'), 'histogram dimension ids must include "3"');
+    assert.ok(names.includes('error'), 'histogram dimension names must include "error"');
+    assert.equal(ids.length, names.length);
+  });
+}
+
+function testFileVocabularyWidensFacetWithUnselectedValues() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp, { countA: 5, countB: 3 });
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      last: 100,
+      after: 1577836800,
+      before: 1893456000,
+      data_only: false,
+      facets: ['PRIORITY'],
+      selections: { PRIORITY: ['3'] },
+    });
+    const priorityFacet = response.facets.find(f => f.id === 'PRIORITY');
+    assert.ok(priorityFacet);
+    const priorityMap = {};
+    for (const o of priorityFacet.options) priorityMap[o.id] = o.count;
+    assert.equal(priorityMap['3'], 5, 'PRIORITY=3 must have count 5 from file_a');
+    assert.equal(priorityMap['6'], 0, 'PRIORITY=6 must surface as zero-count via vocabulary widening');
+  });
+}
+
+function testMultiFilterExcludesOwnFieldFacetHasRealCounts() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp, { countA: 5, countB: 3 });
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      last: 100,
+      after: 1577836800,
+      before: 1893456000,
+      data_only: false,
+      facets: ['PRIORITY'],
+      selections: { PRIORITY: ['3'], SERVICE: ['svc-b'] },
+    });
+    const priorityFacet = response.facets.find(f => f.id === 'PRIORITY');
+    assert.ok(priorityFacet);
+    const priorityMap = {};
+    for (const o of priorityFacet.options) priorityMap[o.id] = o.count;
+    assert.equal(priorityMap['6'], 3,
+      'PRIORITY=6 must have real count 3 — file_b rows match SERVICE=svc-b and the own-field filter is excluded');
+    assert.equal(priorityMap['3'], 0,
+      'PRIORITY=3 must be zero-count — file_a rows do not match SERVICE=svc-b');
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
 
@@ -770,6 +976,15 @@ export async function run() {
 
   testTailItemsAfterIncludesAnchor();
   testNonTailItemsAfterHasNoAnchorPlusOne();
+
+  testHistogramBucketKeysAreGridSnapped();
+  testHistogramEmptyDataProducesGridSnappedBuckets();
+  test304EnvelopeHasOnlyStatusAndErrorMessage();
+
+  testFilterValueSurfacesInFacetEvenWithZeroMatches();
+  testFilterValueSurfacesInHistogramDimensions();
+  testFileVocabularyWidensFacetWithUnselectedValues();
+  testMultiFilterExcludesOwnFieldFacetHasRealCounts();
 
   console.log('  PASS netdata chunk 2c (stateful semantics completion)');
 }

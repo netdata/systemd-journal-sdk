@@ -515,7 +515,7 @@ function _histogramSlotBaselineUsec(value, width) {
   return value - (value % w);
 }
 
-function _newHistogram(field, query) {
+export function _newHistogram(field, query) {
   const [startRaw, endRaw] = _histogramBounds(query);
   const target = Math.max(1, Math.trunc(query.histogramTargetBuckets));
   let width = _histogramBarWidthUsec(startRaw, endRaw, target);

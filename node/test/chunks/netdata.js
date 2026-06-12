@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   NETDATA_SOURCE_TYPE_ALL,
   NETDATA_SOURCE_TYPE_LOCAL_ALL,
@@ -20,10 +23,14 @@ import {
   DisplayContext,
   NetdataFunctionConfig,
   NetdataFunctionProfile,
+  NetdataFunctionState,
+  NetdataJournalFileMetadata,
+  NetdataJournalFunction,
   SystemdJournalProfile,
   SystemdJournalPluginProfile,
   priorityToRowSeverity,
 } from '../../src/lib/netdata.js';
+import { Writer } from '../../src/lib/writer.js';
 
 function testConstants() {
   assert.equal(NETDATA_SOURCE_TYPE_ALL, 1);
@@ -195,6 +202,162 @@ function testFacetOptionName() {
   assert.equal(profile.facetOptionName(ctx, 'UNKNOWN', enc('hello')), 'hello');
 }
 
+// ---------------------------------------------------------------------------
+// Source summary bounds tests (SOW-0105 comparator fix 1)
+// ---------------------------------------------------------------------------
+
+const BASE_USEC = 1_700_000_000_000_000; // 2023-11-14T22:13:20Z
+
+function makeJournalFile(dir, machineId, count, realtimeOffset, stepUsec) {
+  const sub = join(dir, machineId);
+  mkdirSync(sub, { recursive: true });
+  const path = join(sub, 'system.journal');
+  const w = Writer.create(path, {
+    machineId: Buffer.from(machineId, 'hex'),
+    bootId: Buffer.from('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'hex'),
+    seqnumId: Buffer.from('33333333333333333333333333333333', 'hex'),
+  });
+  const enc = (s) => Buffer.from(s, 'utf8');
+  for (let i = 0; i < count; i++) {
+    w.append(
+      [{ name: 'MESSAGE', value: enc(`msg-${i}`) }],
+      { realtimeUsec: BigInt(BASE_USEC + realtimeOffset + i * stepUsec) },
+    );
+  }
+  w.close();
+  return path;
+}
+
+function sourceOptionByName(options, name) {
+  return options.find(o => o.id === name);
+}
+
+function testSourceSummarySingleFileRealBounds() {
+  const dir = mkdtempSync(join(tmpdir(), 'netdata-ss-'));
+  try {
+    const machineId = '11'.repeat(16);
+    makeJournalFile(dir, machineId, 3, 0, 1_000_000);
+
+    const fn = NetdataJournalFunction.systemdJournal();
+    const result = fn.runDirectoryRequestJsonWithOptions(dir, { info: true });
+    assert.equal(result.status, 200);
+    const allOpt = sourceOptionByName(result.required_params[0].options, 'all');
+    assert.ok(allOpt);
+    assert.match(allOpt.info, /1 files/);
+    assert.match(allOpt.info, /covering 2s, last entry at 2023-11-14T22:13:22Z/);
+  } finally {
+    try { rmSync(dir, { recursive: true }); } catch {}
+  }
+}
+
+function testSourceSummaryMultiFileUnionRealBounds() {
+  const dir = mkdtempSync(join(tmpdir(), 'netdata-ss-'));
+  try {
+    makeJournalFile(dir, '11'.repeat(16), 3, 0, 1_000_000);
+    makeJournalFile(dir, '22'.repeat(16), 3, 10_000_000, 1_000_000);
+    makeJournalFile(dir, '33'.repeat(16), 3, 20_000_000, 1_000_000);
+
+    const fn = NetdataJournalFunction.systemdJournal();
+    const result = fn.runDirectoryRequestJsonWithOptions(dir, { info: true });
+    assert.equal(result.status, 200);
+    const allOpt = sourceOptionByName(result.required_params[0].options, 'all');
+    assert.ok(allOpt);
+    assert.match(allOpt.info, /3 files/);
+    assert.match(allOpt.info, /covering 22s, last entry at 2023-11-14T22:13:42Z/);
+  } finally {
+    try { rmSync(dir, { recursive: true }); } catch {}
+  }
+}
+
+function testSourceSummaryTooSmallFileOffUnknown() {
+  const dir = mkdtempSync(join(tmpdir(), 'netdata-ss-'));
+  try {
+    writeFileSync(join(dir, 'small.journal'), Buffer.alloc(10));
+
+    const fn = NetdataJournalFunction.systemdJournal();
+    const result = fn.runDirectoryRequestJsonWithOptions(dir, { info: true });
+    assert.equal(result.status, 200);
+    const allOpt = sourceOptionByName(result.required_params[0].options, 'all');
+    assert.ok(allOpt);
+    assert.match(allOpt.info, /covering off, last entry at unknown/);
+    assert.ok(allOpt.info.includes('1 files'));
+  } finally {
+    try { rmSync(dir, { recursive: true }); } catch {}
+  }
+}
+
+function testSourceSummaryBadMagicOffUnknown() {
+  const dir = mkdtempSync(join(tmpdir(), 'netdata-ss-'));
+  try {
+    const buf = Buffer.alloc(256);
+    Buffer.from('NOTAJOUR').copy(buf);
+    writeFileSync(join(dir, 'bad.journal'), buf);
+
+    const fn = NetdataJournalFunction.systemdJournal();
+    const result = fn.runDirectoryRequestJsonWithOptions(dir, { info: true });
+    assert.equal(result.status, 200);
+    const allOpt = sourceOptionByName(result.required_params[0].options, 'all');
+    assert.ok(allOpt);
+    assert.match(allOpt.info, /covering off, last entry at unknown/);
+    assert.ok(allOpt.info.includes('1 files'));
+  } finally {
+    try { rmSync(dir, { recursive: true }); } catch {}
+  }
+}
+
+function testSourceSummaryZeroEntryFileOffUnknown() {
+  const dir = mkdtempSync(join(tmpdir(), 'netdata-ss-'));
+  try {
+    const sub = join(dir, '11'.repeat(16));
+    mkdirSync(sub, { recursive: true });
+    const path = join(sub, 'system.journal');
+    const w = Writer.create(path, {
+      machineId: Buffer.from('11'.repeat(16), 'hex'),
+      bootId: Buffer.from('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'hex'),
+      seqnumId: Buffer.from('33333333333333333333333333333333', 'hex'),
+    });
+    w.close();
+
+    const fn = NetdataJournalFunction.systemdJournal();
+    const result = fn.runDirectoryRequestJsonWithOptions(dir, { info: true });
+    assert.equal(result.status, 200);
+    const allOpt = sourceOptionByName(result.required_params[0].options, 'all');
+    assert.ok(allOpt);
+    assert.match(allOpt.info, /covering off, last entry at unknown/);
+    assert.ok(allOpt.info.includes('1 files'));
+  } finally {
+    try { rmSync(dir, { recursive: true }); } catch {}
+  }
+}
+
+function testSourceSummaryNullStateDoesNotCrash() {
+  const dir = mkdtempSync(join(tmpdir(), 'netdata-ss-'));
+  try {
+    makeJournalFile(dir, '11'.repeat(16), 3, 0, 1_000_000);
+
+    const fn = NetdataJournalFunction.systemdJournal();
+    const result = fn.runDirectoryRequestJsonWithOptions(dir, { info: true }, { state: null });
+    assert.equal(result.status, 200);
+    const allOpt = sourceOptionByName(result.required_params[0].options, 'all');
+    assert.ok(allOpt);
+    assert.match(allOpt.info, /covering 2s, last entry at 2023-11-14T22:13:22Z/);
+  } finally {
+    try { rmSync(dir, { recursive: true }); } catch {}
+  }
+}
+
+function testSourceSummaryEmptyDirNoSources() {
+  const dir = mkdtempSync(join(tmpdir(), 'netdata-ss-'));
+  try {
+    const fn = NetdataJournalFunction.systemdJournal();
+    const result = fn.runDirectoryRequestJsonWithOptions(dir, { info: true });
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.required_params[0].options, []);
+  } finally {
+    try { rmSync(dir, { recursive: true }); } catch {}
+  }
+}
+
 export async function run() {
   testConstants();
   testViewKeysAndFacets();
@@ -204,5 +367,12 @@ export async function run() {
   testSeverityMapping();
   testRowOptions();
   testFacetOptionName();
+  testSourceSummarySingleFileRealBounds();
+  testSourceSummaryMultiFileUnionRealBounds();
+  testSourceSummaryTooSmallFileOffUnknown();
+  testSourceSummaryBadMagicOffUnknown();
+  testSourceSummaryZeroEntryFileOffUnknown();
+  testSourceSummaryNullStateDoesNotCrash();
+  testSourceSummaryEmptyDirNoSources();
   console.log('  PASS netdata foundation (chunk 2a)');
 }

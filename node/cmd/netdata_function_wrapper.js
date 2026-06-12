@@ -146,7 +146,13 @@ async function main() {
       process.stderr.write(writeError + '\n');
       exitCode = 1;
     } else {
-      process.stdout.write(JSON.stringify(response) + '\n');
+      const ok = process.stdout.write(JSON.stringify(response) + '\n');
+      if (!ok) {
+        await new Promise((resolve) => {
+          process.stdout.once('drain', resolve);
+          process.stdout.once('error', resolve);
+        });
+      }
     }
   } catch (err) {
     if (err instanceof Error) {
@@ -158,7 +164,7 @@ async function main() {
   } finally {
     recorder.close();
   }
-  process.exit(exitCode);
+  process.exitCode = exitCode;
 }
 
 main();

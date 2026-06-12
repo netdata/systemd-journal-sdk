@@ -846,6 +846,43 @@ export class FileReader {
   }
 }
 
+// Read and parse the file header without loading the entire file.
+// For .zst whole-file-compressed files, decompresses the archive
+// but reads only the header bytes from the decompressed output.
+// Returns the parsed header object (same shape as FileReader.header).
+export function readFileHeader(path) {
+  let cleanupPath = null;
+
+  try {
+    let openPath = path;
+    if (isZstFile(path)) {
+      cleanupPath = decompressZstToTemp(path, 'node-sdk-journal-header');
+      openPath = cleanupPath;
+    }
+
+    const fd = safeOpenSync(openPath, 'r');
+    try {
+      const headerBuf = Buffer.alloc(HEADER_SIZE);
+      const bytesRead = readSync(fd, headerBuf, 0, HEADER_SIZE, 0);
+      if (bytesRead < HEADER_MIN_SIZE) {
+        throw new Error('file too small for journal header');
+      }
+      return parseFileHeader(headerBuf.subarray(0, bytesRead));
+    } finally {
+      closeSync(fd);
+    }
+  } finally {
+    if (cleanupPath) {
+      try { safeUnlinkSync(cleanupPath); } catch {
+        // Best-effort cleanup.
+      }
+      try { safeRmdirSync(dirname(cleanupPath)); } catch {
+        // Best-effort cleanup.
+      }
+    }
+  }
+}
+
 // Match filter (mirrors Go filterBuilder).
 export class FilterBuilder {
   constructor() { this.level0 = []; this.level1 = []; this.current = []; }

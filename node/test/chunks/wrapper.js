@@ -192,6 +192,46 @@ function testInvalidJsonRequest() {
     `stderr should mention JSON error, got: ${result.stderr}`);
 }
 
+function testLargeResponseNotTruncated() {
+  const journalDir = join(tmpDir, 'aabbccdd111111111111111111111111', 'system.journal');
+  mkdirSync(join(tmpDir, 'aabbccdd111111111111111111111111'), { recursive: true });
+  const writer = Writer.create(journalDir, {
+    machineId: Buffer.from('aabbccdd11111111aabbccdd11111111', 'hex'),
+    bootId: Buffer.from('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'hex'),
+    seqnumId: Buffer.from('33333333333333333333333333333333', 'hex'),
+  });
+  const numRows = 800;
+  const padding = 'x'.repeat(80);
+  const nowUsec = Math.floor(Date.now() / 1000) * 1_000_000;
+  for (let i = 0; i < numRows; i++) {
+    writer.append([
+      { name: 'MESSAGE', value: Buffer.from(`large-response-msg-${String(i).padStart(5, '0')}-${padding}`, 'utf8') },
+      { name: 'PRIORITY', value: Buffer.from(String(5 + (i % 3)), 'utf8') },
+      { name: 'SYSLOG_IDENTIFIER', value: Buffer.from(`large-resp-${String(i % 10).padStart(3, '0')}`, 'utf8') },
+      { name: 'UNIT', value: Buffer.from(`test-unit-${String(i % 5).padStart(3, '0')}.service`, 'utf8') },
+      { name: '_HOSTNAME', value: Buffer.from(`host-${String(i % 3).padStart(3, '0')}`, 'utf8') },
+    ], { realtimeUsec: BigInt(nowUsec - 1800_000_000 + i * 100_000) });
+  }
+  writer.close();
+
+  const dataRequest = JSON.stringify({ after: 0, before: 0, last: numRows });
+  const result = runWrapper({ dir: tmpDir }, dataRequest);
+  assert.equal(result.exitCode, 0, `exit code ${result.exitCode}, stderr: ${result.stderr}`);
+
+  const rawBytes = Buffer.byteLength(result.stdout, 'utf8');
+  assert.ok(rawBytes > 65536, `response must exceed 64 KiB for drain test, got ${rawBytes} bytes`);
+
+  let response;
+  try {
+    response = JSON.parse(result.stdout);
+  } catch (e) {
+    assert.fail(`stdout is not valid JSON (likely truncated): ${e.message}. First 200 chars: ${result.stdout.slice(0, 200)}`);
+  }
+  assert.equal(response.status, 200, `expected 200, got ${response.status}`);
+  assert.ok(Array.isArray(response.data), 'response must have data array');
+  assert.equal(response.data.length, numRows, `expected ${numRows} rows, got ${response.data.length}`);
+}
+
 export async function run() {
   setup();
   try { testEnvelopeKeysPresent(); } finally { teardown(); }
@@ -209,5 +249,7 @@ export async function run() {
   try { testProgressFileCreateError(); } finally { teardown(); }
   setup();
   try { testInvalidJsonRequest(); } finally { teardown(); }
+  setup();
+  try { testLargeResponseNotTruncated(); } finally { teardown(); }
   console.log('  PASS netdata function wrapper');
 }
