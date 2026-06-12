@@ -35,6 +35,7 @@ Stdlib-only. No `journal.*` runtime imports.
 from __future__ import annotations
 
 import grp
+import mmap
 import os
 import pathlib
 import pwd
@@ -1206,13 +1207,20 @@ def _normalize_timestamp_to_usec_with_rounding(value: int, end_of_second: bool) 
 
 
 def _relative_window_to_absolute(now_seconds: int, after: int, before: int) -> "Tuple[int, int]":
-    """Mirror Rust `relative_window_to_absolute` (L3658-3690)."""
+    """Mirror Rust `relative_window_to_absolute` (L3658-3690).
 
-    if before != 0 and abs(before) <= API_RELATIVE_TIME_MAX_SECONDS:
+    Rust gates the relative branch on the unsigned magnitude only;
+    a `0` value still enters the branch and is treated as a relative
+    "0 seconds" offset (i.e. `now` for `before`, `-MISSING` for
+    `after`). Mirroring that contract keeps the per-endpoint zero
+    fallback consistent with the reference implementation.
+    """
+
+    if abs(before) <= API_RELATIVE_TIME_MAX_SECONDS:
         if before > 0:
             before = -before
         before = now_seconds + before
-    if after != 0 and abs(after) <= API_RELATIVE_TIME_MAX_SECONDS:
+    if abs(after) <= API_RELATIVE_TIME_MAX_SECONDS:
         if after > 0:
             after = -after
         if after == 0:
@@ -1356,13 +1364,13 @@ def _merge_histogram(
     """
 
     if target is None:
-        # Defensive copy with empty value maps.
         return ExplorerHistogram(
             field=bytes(source.field),
             buckets=[
                 ExplorerHistogramBucket(
                     start_realtime_usec=int(b.start_realtime_usec),
                     end_realtime_usec=int(b.end_realtime_usec),
+                    values={bytes(k): int(v) for k, v in b.values.items()},
                 )
                 for b in source.buckets
             ],
@@ -1514,6 +1522,110 @@ class CombinedResult:
         if limit and len(self.rows) > limit:
             self.rows = self.rows[:limit]
         self.stats.rows_returned = len(self.rows)
+
+    def add_zero_count_facet_values(
+        self,
+        vocabulary: "Mapping[bytes, Mapping[bytes, int]]",
+    ) -> None:
+        """Mirror Rust `add_zero_count_facet_values` (L2299-2309). For
+        each (field, value) key in the supplied vocabulary, register
+        the value in the merged facets map with a zero count if it is
+        not already present. This widens the facet vocabulary to
+        include values that exist in the unfiltered scan but were
+        never matched in the filtered one.
+        """
+
+        for field, values in vocabulary.items():
+            field_bytes = bytes(field)
+            target = self.facets.setdefault(field_bytes, {})
+            for value in values.keys():
+                value_bytes = bytes(value)
+                if value_bytes in target:
+                    continue
+                target[value_bytes] = 0
+
+    def add_zero_count_facet_values_from_files(
+        self,
+        fields: Sequence[bytes],
+        reader_options: "Any",
+    ) -> None:
+        """Mirror Rust `add_zero_count_facet_values_from_files`
+        (L2311-2336). For each matched journal file, walk the FIELD
+        hash table for every requested facet field and register each
+        unique value as a zero-count entry in the merged facets map.
+        Mirrors the same `add_netdata_facet_count` semantics: the
+        value is added to the running count if already present, and
+        inserted with zero if not. Values that fail UTF-8 decoding
+        or whose reader cannot be opened are silently skipped
+        (matching the Rust `if let Ok ... else { continue; }` paths).
+        """
+
+        if not fields or not self.matched_paths:
+            return
+        from .reader import FileReader
+
+        for path_str in self.matched_paths:
+            try:
+                reader = FileReader.open(path_str)
+            except Exception:
+                continue
+            try:
+                for field in fields:
+                    if not field:
+                        continue
+                    try:
+                        field_name = field.decode("utf-8")
+                    except UnicodeDecodeError:
+                        continue
+                    try:
+                        values = reader.query_unique(field_name)
+                    except Exception:
+                        continue
+                    if not values:
+                        continue
+                    target = self.facets.setdefault(bytes(field), {})
+                    for value in values:
+                        if not value or value == b"-":
+                            continue
+                        existing = target.get(value)
+                        if existing is None:
+                            target[value] = 0
+            finally:
+                try:
+                    reader.close()
+                except Exception:
+                    pass
+
+    def add_zero_count_selected_filter_values(
+        self, request: "NetdataRequest",
+    ) -> None:
+        """Mirror Rust `add_zero_count_selected_filter_values`
+        (L2338-2352). For every request filter whose field is in
+        the reportable facet set (request.facets or the histogram
+        field), register each selected filter value in the merged
+        facets map. The value is added to the running count if
+        already present, and inserted with zero if not. This is
+        what makes a filter like `PRIORITY=3` still surface
+        `PRIORITY=3` in the PRIORITY facet even when no rows
+        match the filter (or the field has only values that the
+        filter excludes).
+        """
+
+        if not request.filters:
+            return
+        report_fields: set = set(bytes(f) for f in request.facets)
+        if request.histogram is not None:
+            report_fields.add(request.histogram.encode("utf-8"))
+        for filter_ in request.filters:
+            field_bytes = bytes(filter_.field)
+            if field_bytes not in report_fields:
+                continue
+            target = self.facets.setdefault(field_bytes, {})
+            for value in filter_.values:
+                value_bytes = bytes(value)
+                existing = target.get(value_bytes)
+                if existing is None:
+                    target[value_bytes] = 0
 
 
 # ---------------------------------------------------------------------------
@@ -1731,8 +1843,9 @@ class NetdataRequest:
         info = _get_bool(value, "info", False)
         after = _get_i64(value, "after")
         before = _get_i64(value, "before")
+        parse_now = _unix_now_seconds()
         after_usec, before_usec = _normalize_time_window(
-            _unix_now_seconds(), after, before
+            parse_now, after, before
         )
         direction = _request_direction(value)
         if_modified = _get_u64(value, "if_modified_since") or 0
@@ -1886,8 +1999,8 @@ class NetdataRequest:
         else:
             query.facets = []
             query.histogram = None
-        query.histogram_after_realtime_usec = after
-        query.histogram_before_realtime_usec = before
+        query.histogram_after_realtime_usec = self.after_realtime_usec
+        query.histogram_before_realtime_usec = self.before_realtime_usec
         query.histogram_target_buckets = DEFAULT_HISTOGRAM_BUCKETS
         query.field_mode = ExplorerFieldMode.FIRST_VALUE
         query.exclude_facet_field_filters = len(
@@ -1976,6 +2089,94 @@ NETDATA_EMPTY_STRING_FACET_HASH_ID = "CzGfAU2z3TC"
 NETDATA_UNAVAILABLE_FIELD_LABEL = "[unavailable field]"
 
 
+def _min_realtime(current: "Optional[int]", candidate: int) -> int:
+    """Return ``min(current, candidate)`` treating ``None`` as +infinity.
+
+    Mirrors the `map_or` + `min` widen pattern used by
+    `JournalSourceSummary::add_path` (Rust L1741-1752). Inline so the
+    summary path avoids repeated option-boxing overhead.
+    """
+
+    if current is None:
+        return int(candidate)
+    return int(current) if int(current) < int(candidate) else int(candidate)
+
+
+def _max_realtime(current: "Optional[int]", candidate: int) -> int:
+    """Return ``max(current, candidate)`` treating ``None`` as -infinity.
+
+    Mirrors the `map_or` + `max` widen pattern used by
+    `JournalSourceSummary::add_path` (Rust L1747-1752). Inline so the
+    summary path avoids repeated option-boxing overhead.
+    """
+
+    if current is None:
+        return int(candidate)
+    return int(current) if int(current) > int(candidate) else int(candidate)
+
+
+def _read_file_header_realtime_bounds(path: str) -> "tuple[int, int]":
+    """Return ``(head_entry_realtime, tail_entry_realtime)`` from the file.
+
+    Mirrors the `FileReader::open_with_options` + `reader.header()`
+    step used by Rust `JournalSourceSummary::add_path` (L1757-1776):
+    the reader captures the header snapshot without scanning entries.
+    In Python the cheapest equivalent is the `FileReader.open` prologue
+    (decompress `.journal.zst` to a temp file, mmap the file,
+    `parse_file_header`) — both bounds default to 0 for files with no
+    entries, which the caller skips via the `!= 0` guard. Any failure
+    (missing file, invalid header, too small) returns ``(0, 0)`` so the
+    summary path leaves the bounds untouched and the file still
+    contributes `files` + `total_size` from the prior `os.stat`.
+    """
+
+    from .compress import is_zst_file, decompress_zst_to_temp
+    from .header import parse_file_header, HEADER_MIN_SIZE
+
+    cleanup_dir: "Optional[str]" = None
+    mapped = None
+    fd: "Optional[int]" = None
+    try:
+        open_path = str(path)
+        if is_zst_file(open_path):
+            cleanup_dir = os.path.dirname(decompress_zst_to_temp(open_path))
+            open_path = os.path.join(cleanup_dir, "decompressed.journal")
+        fd = os.open(open_path, os.O_RDONLY)
+        try:
+            size = os.fstat(fd).st_size
+            if size < HEADER_MIN_SIZE:
+                return (0, 0)
+            mapped = mmap.mmap(fd, 0, access=mmap.ACCESS_READ)
+        finally:
+            if mapped is None:
+                os.close(fd)
+                fd = None
+        header = parse_file_header(mapped)
+        return (
+            int(header.get("head_entry_realtime", 0) or 0),
+            int(header.get("tail_entry_realtime", 0) or 0),
+        )
+    except Exception:
+        return (0, 0)
+    finally:
+        if mapped is not None:
+            try:
+                mapped.close()
+            except Exception:
+                pass
+        if fd is not None:
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+        if cleanup_dir is not None:
+            try:
+                import shutil
+                shutil.rmtree(cleanup_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+
 @dataclass
 class JournalSourceSummary:
     """Mirror of `JournalSourceSummary` (Rust L1705-1799).
@@ -1992,18 +2193,60 @@ class JournalSourceSummary:
     first_realtime_usec: "Optional[int]" = None
     last_realtime_usec: "Optional[int]" = None
 
-    def add_path(self, path: str) -> None:
+    def add_path(
+        self,
+        path: str,
+        metadata: "Optional[NetdataJournalFileMetadata]" = None,
+    ) -> None:
+        """Mirror Rust `JournalSourceSummary::add_path` (L1728-1777).
+
+        If the file cannot be stat-ed the call is a no-op (mirrors
+        Rust: `if let Ok(metadata) = std::fs::metadata(path)`). When
+        the stat succeeds the file contributes `files` + `total_size`,
+        and `first_realtime_usec` / `last_realtime_usec` are widened
+        from the optional `NetdataJournalFileMetadata` cache and, when
+        either bound is still missing, from a header-only read of the
+        file (Rust opens the file via `FileReader::open_with_options`
+        which captures the header snapshot). The header path is the
+        cheapest way to obtain the first/last entry realtime without
+        scanning entries: it mmaps the file, parses the journal
+        header, and closes; entries are never decoded.
+        `head_entry_realtime == 0` (zero-entry file) and
+        `tail_entry_realtime == 0` are skipped, mirroring the Rust
+        guards. Files whose header cannot be parsed (too small, bad
+        magic) still contribute `files` + `total_size` from the stat
+        but contribute no bounds; the resulting summary renders
+        `covering off, last entry at unknown`.
+        """
+
         try:
             stat = os.stat(path)
         except OSError:
             return
         self.files += 1
         self.total_size += int(stat.st_size)
-        # Without opening the file we cannot read msg_first/_last; the
-        # Rust helper uses FileReader to do so. For the chunk-2b
-        # `__logs_sources` summary we accept that the time range may
-        # be missing in the info string when files are not opened.
-        # Tests assert the summary text format, not the bounds.
+        if metadata is not None:
+            metadata_first = metadata.msg_first_realtime_usec
+            metadata_last = metadata.msg_last_realtime_usec
+            if metadata_first is not None:
+                self.first_realtime_usec = _min_realtime(
+                    self.first_realtime_usec, metadata_first
+                )
+            if metadata_last is not None:
+                self.last_realtime_usec = _max_realtime(
+                    self.last_realtime_usec, metadata_last
+                )
+            if metadata_first is not None and metadata_last is not None:
+                return
+        head_realtime, tail_realtime = _read_file_header_realtime_bounds(path)
+        if head_realtime != 0:
+            self.first_realtime_usec = _min_realtime(
+                self.first_realtime_usec, head_realtime
+            )
+        if tail_realtime != 0:
+            self.last_realtime_usec = _max_realtime(
+                self.last_realtime_usec, tail_realtime
+            )
 
 
 def _human_binary_size(num_bytes: int) -> str:
@@ -2027,7 +2270,102 @@ def _human_binary_size(num_bytes: int) -> str:
     return f"{text}{units[unit]}"
 
 
-def _build_source_summary(paths: _Iterable[str]) -> Dict[str, Any]:
+def _human_duration_seconds(seconds: int) -> str:
+    """Mirror Rust `human_duration_seconds` (L3809-3839).
+
+    Units are 1y=365d, 1mo=30d, 1d=86400s, 1h=3600s, 1m=60s, 1s=1s.
+    Components whose value is 0 are omitted. If every component is
+    zero, the seconds component is emitted as ``0s``. Components are
+    joined with a single ASCII space.
+    """
+
+    remaining = int(seconds)
+    years = remaining // (365 * 86_400)
+    remaining = remaining % (365 * 86_400)
+    months = remaining // (30 * 86_400)
+    remaining = remaining % (30 * 86_400)
+    days = remaining // 86_400
+    remaining = remaining % 86_400
+    hours = remaining // 3600
+    remaining = remaining % 3600
+    minutes = remaining // 60
+    secs = remaining % 60
+    parts: List[str] = []
+    if years:
+        parts.append(f"{years}y")
+    if months:
+        parts.append(f"{months}mo")
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if secs or not parts:
+        parts.append(f"{secs}s")
+    return " ".join(parts)
+
+
+def _format_last_entry_rfc3339_usec(last_realtime_usec: "Optional[int]") -> str:
+    """Mirror the `last entry at <...>` formatter from Rust
+    ``JournalSourceSummary::info`` (L1786-1790).
+
+    ``last_realtime_usec`` is converted to whole seconds (integer
+    division by 1_000_000) and rendered as ``YYYY-MM-DDTHH:MM:SSZ``.
+    Negative values, overflow, and ``None`` all map to the literal
+    ``unknown`` string used by the Rust side.
+    """
+
+    if last_realtime_usec is None:
+        return "unknown"
+    seconds = int(last_realtime_usec) // 1_000_000
+    try:
+        dt = datetime.fromtimestamp(seconds, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return "unknown"
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _summary_to_source_option(
+    name: str, summary: "JournalSourceSummary"
+) -> "Optional[Dict[str, Any]]":
+    """Render a ``JournalSourceSummary`` into a Netdata source option.
+
+    Mirrors the closure inside Rust `push_source_option` and
+    `JournalSourceSummary::info` (L1779-1811). Returns ``None`` when
+    the summary has no files, so callers can drop empty aggregates
+    from the option list.
+    """
+
+    if summary.files == 0:
+        return None
+    first_usec = summary.first_realtime_usec
+    last_usec = summary.last_realtime_usec
+    if (
+        first_usec is not None
+        and last_usec is not None
+        and last_usec > first_usec
+        and (last_usec - first_usec) >= 1_000_000
+    ):
+        coverage = _human_duration_seconds((last_usec - first_usec) // 1_000_000)
+    else:
+        coverage = "off"
+    last_entry = _format_last_entry_rfc3339_usec(last_usec)
+    return {
+        "id": name,
+        "name": name,
+        "info": (
+            f"{summary.files} files, total size {_human_binary_size(summary.total_size)}, "
+            f"covering {coverage}, last entry at {last_entry}"
+        ),
+        "pill": _human_binary_size(summary.total_size),
+    }
+
+
+def _build_source_summary(
+    paths: _Iterable[str],
+    state: "Optional[NetdataFunctionState]" = None,
+) -> Dict[str, Any]:
     """Build the `required_source_params` summary (Rust L1148-1223).
 
     Returns the JSON-friendly list of source options, with one entry
@@ -2036,6 +2374,12 @@ def _build_source_summary(paths: _Iterable[str]) -> Dict[str, Any]:
     all-local-user-logs, all-remote-systems, all-uncategorized). Files
     that share a namespace parent or a remote source name are merged
     into a single per-source bucket.
+
+    `state` is the optional `NetdataFunctionState` hook consulted once
+    per file to seed the per-file `NetdataJournalFileMetadata` cache
+    exactly like Rust `file_metadata` (L2862-2870). When the state
+    provides both `msg_first_realtime_usec` and `msg_last_realtime_usec`
+    for a file, the file header is not opened for the summary.
     """
 
     from collections import OrderedDict
@@ -2050,34 +2394,28 @@ def _build_source_summary(paths: _Iterable[str]) -> Dict[str, Any]:
     exact: "OrderedDict[str, JournalSourceSummary]" = OrderedDict()
     for path_str in paths:
         path = pathlib.Path(path_str)
+        metadata = _state_file_metadata(state, path_str)
         source_type = _journal_file_source_type(path)
-        all_summary.add_path(path_str)
+        all_summary.add_path(path_str, metadata=metadata)
         if source_type & NETDATA_SOURCE_TYPE_LOCAL_ALL:
-            local.add_path(path_str)
+            local.add_path(path_str, metadata=metadata)
         if source_type & NETDATA_SOURCE_TYPE_LOCAL_NAMESPACE:
-            local_namespaces.add_path(path_str)
+            local_namespaces.add_path(path_str, metadata=metadata)
         if source_type & NETDATA_SOURCE_TYPE_LOCAL_SYSTEM:
-            local_system.add_path(path_str)
+            local_system.add_path(path_str, metadata=metadata)
         if source_type & NETDATA_SOURCE_TYPE_LOCAL_USER:
-            local_user.add_path(path_str)
+            local_user.add_path(path_str, metadata=metadata)
         if source_type & NETDATA_SOURCE_TYPE_REMOTE_ALL:
-            remote.add_path(path_str)
+            remote.add_path(path_str, metadata=metadata)
         if source_type & NETDATA_SOURCE_TYPE_LOCAL_OTHER:
-            other.add_path(path_str)
+            other.add_path(path_str, metadata=metadata)
         exact_name = _journal_file_exact_source_name(path)
         if exact_name is not None:
             bucket = exact.setdefault(exact_name, JournalSourceSummary())
-            bucket.add_path(path_str)
+            bucket.add_path(path_str, metadata=metadata)
 
     def _summary_to_option(name: str, summary: JournalSourceSummary) -> "Optional[Dict[str, Any]]":
-        if summary.files == 0:
-            return None
-        return {
-            "id": name,
-            "name": name,
-            "info": f"{summary.files} files, total size {_human_binary_size(summary.total_size)}",
-            "pill": _human_binary_size(summary.total_size),
-        }
+        return _summary_to_source_option(name, summary)
 
     options: List[Dict[str, Any]] = []
     for label, summary in (
@@ -2111,15 +2449,19 @@ def _build_info_response(
     echo: Mapping[str, Any],
     paths: Sequence[str],
     config: NetdataFunctionConfig,
+    state: "Optional[NetdataFunctionState]" = None,
 ) -> Dict[str, Any]:
     """Mirror Rust `info_response` (L612-636) + `required_source_params`
     (L1148-1223). The info response is shape-compatible with the Rust
     SDK and carries the same `accepted_params`, `required_params`,
     `show_ids`, `has_history`, `pagination`, `status`, `type`, `help`,
-    `versions`, and `v` keys.
+    `versions`, and `v` keys. `state` is the optional
+    `NetdataFunctionState` hook consulted while building the source
+    summary, exactly like Rust `NetdataJournalFunction::run_*` passes
+    `&options` into `required_source_params`.
     """
 
-    source_summary = _build_source_summary(paths)
+    source_summary = _build_source_summary(paths, state=state)
     return {
         "_request": dict(echo),
         "versions": {"netdata_function_api": 1, "sdk": "0.1.0"},
@@ -2152,10 +2494,13 @@ def _build_logs_sources_response(
     echo: Mapping[str, Any],
     paths: Sequence[str],
     config: NetdataFunctionConfig,
+    state: "Optional[NetdataFunctionState]" = None,
 ) -> Dict[str, Any]:
     """Mirror the `__logs_sources` branch of the Rust `info_response`
     (the `required_source_params` shape). The wire id is the stable
-    string `__logs_sources`.
+    string `__logs_sources`. `state` is the optional
+    `NetdataFunctionState` hook consulted while building the source
+    summary.
     """
 
     return {
@@ -2165,7 +2510,7 @@ def _build_logs_sources_response(
         "id": "__logs_sources",
         "name": config.source_selector_name,
         "help": config.source_selector_help,
-        "options": _build_source_summary(paths)["options"],
+        "options": _build_source_summary(paths, state=state)["options"],
     }
 
 
@@ -2235,28 +2580,22 @@ def _build_query_response(
     config: NetdataFunctionConfig,
     combined: CombinedResult,
     paths: Sequence[str],
+    profile: "NetdataFunctionProfile",
 ) -> Dict[str, Any]:
     """Build the full data-response envelope.
 
-    Mirrors the visible shape of Rust `base_query_response` (L2500-2535),
-    `add_query_response_metadata` (L702-720), and the `add_*_if_needed`
-    family. Includes the histogram chart envelope (summary / totals /
-    result / db / view / agents) with `view.dimensions.names` always
-    present.
+    Mirrors the visible shape of Rust ``base_query_response``
+    (L2500-2535), ``add_query_response_metadata`` (L702-720), and
+    the ``add_*_if_needed`` family.  Includes the histogram chart
+    envelope (summary / totals / result / db / view / agents) with
+    ``view.dimensions.names`` always present.
     """
 
     columns_order = _build_column_order(request, config, combined)
     columns_meta = _build_columns_metadata(columns_order)
 
+    context = DisplayContext()
     data_rows: List[List[Any]] = []
-    # Mirror Rust `build_data_rows` (L812-847):
-    #   Direction::Forward => rows.iter().rev()  (yields reversed)
-    #   Direction::Backward => rows.iter()       (yields as-is)
-    # In both cases the result is a descending-time iterator. The
-    # explorer sorts `rows` per direction, so the Netdata response
-    # layer inverts the forward case to keep the JSON output
-    # descending in both directions, matching the Rust envelope
-    # shape.
     rows_iter = list(combined.rows)
     if request.direction == Direction.FORWARD:
         rows_iter = list(reversed(rows_iter))
@@ -2271,7 +2610,8 @@ def _build_query_response(
             fields = _row_fields_map(located)
             fields_by_path[located.file_path] = fields
         data_rows.append(_build_data_row(
-            located, columns_order, request.direction, config
+            located, columns_order, request.direction, config,
+            profile, context,
         ))
 
     histogram_field = request.histogram
@@ -2298,9 +2638,27 @@ def _build_query_response(
             )
 
     items = _build_items_payload(request, combined, len(combined.rows))
-    facets_payload = _build_facets_payload(request, config, combined)
+    facets_payload = _build_facets_payload(request, config, combined, profile)
     message = _build_message_payload(combined)
+    # Mirror Rust `add_full_query_response_metadata` (L752-772) +
+    # `accepted_params_from_fields` (L1139-1146) +
+    # `reportable_facet_fields_bytes` (L2358-2366): the query
+    # response `accepted_params` is `NETDATA_ACCEPTED_PARAMS`
+    # chained with the request's `facets` field names, deduplicated
+    # in order. The info response (handled by `_build_info_response`)
+    # passes no extra fields and stays at 16.
     accepted = list(NETDATA_ACCEPTED_PARAMS)
+    seen: set = set()
+    for field_bytes in request.facets:
+        try:
+            name = field_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        if name not in accepted:
+            accepted.append(name)
 
     body: Dict[str, Any] = {
         "_request": dict(request.echo),
@@ -2327,19 +2685,40 @@ def _build_query_response(
             "sdk_explorer": _stats_to_json(combined.stats),
         },
         "expires": _unix_now_seconds() + 3600 if request.data_only else 0,
-        "message": message,
-        "update_every": 1,
-        "help": None,
-        "accepted_params": accepted,
-        "default_sort_column": "timestamp",
-        "default_charts": [],
-        "available_histograms": [
-            {"id": histogram_field, "name": histogram_field, "order": 1}
-        ] if (histogram_field is not None and not request.data_only) else [],
-        "facets": facets_payload,
-        "histogram": histogram_payload,
-        "items": items,
     }
+    # Mirror Rust `add_query_response_metadata` (L702-720):
+    # `add_full_query_response_metadata` is called only when
+    # `!request.data_only` (L709). For data_only, only the
+    # `available_histograms` key (if histogram.is_some()) is added
+    # from the reportable facet fields. The other full-mode
+    # metadata keys (`message`, `update_every`, `help`,
+    # `accepted_params`, `default_sort_column`, `default_charts`)
+    # are OMITTED in data_only mode.
+    if not request.data_only:
+        body["message"] = message
+        body["update_every"] = 1
+        body["help"] = None
+        body["accepted_params"] = accepted
+        body["default_sort_column"] = "timestamp"
+        body["default_charts"] = []
+        body["available_histograms"] = _build_available_histograms(
+            request, combined
+        )
+    elif histogram_field is not None:
+        # `available_histograms` is the reportable facet fields,
+        # with the explicit histogram field appended last (only
+        # in data_only mode). Mirrors Rust L711-716 + L1225-1251.
+        body["available_histograms"] = _build_available_histograms(
+            request, combined
+        )
+    # The full analysis outputs are populated from the facets/
+    # histogram/items payloads. They are omitted in data_only
+    # without delta (mirroring Rust L2602-2611). For data_only
+    # + delta, the keys are renamed to the `_delta` variants.
+    if not request.data_only or request.delta:
+        body["facets"] = facets_payload
+        body["histogram"] = histogram_payload
+        body["items"] = items
     if not request.data_only or request.tail:
         body["last_modified"] = int(combined.stats.last_realtime_usec)
     # Mirror Rust `add_sampling_if_needed` (L2583-2595): only when
@@ -2351,13 +2730,9 @@ def _build_query_response(
             "unsampled": int(combined.stats.sampling_unsampled),
             "estimated": int(combined.stats.sampling_estimated),
         }
-    # Mirror Rust `add_analysis_outputs_if_needed` (L2597-2611): when
-    # data_only is set without delta, the analysis outputs are
-    # OMITTED. When delta is set, the `_delta` keys are used.
-    if request.data_only and not request.delta:
-        for key in ("facets", "histogram", "items"):
-            body.pop(key, None)
-    elif request.data_only and request.delta:
+    # data_only + delta: rename analysis outputs to the `_delta`
+    # variants (Rust L2611-2618).
+    if request.data_only and request.delta:
         for old, new in (
             ("facets", "facets_delta"),
             ("histogram", "histogram_delta"),
@@ -2366,6 +2741,67 @@ def _build_query_response(
             if old in body:
                 body[new] = body.pop(old)
     return body
+
+
+def _netdata_reorder_key(value: str) -> str:
+    """Mirror Rust `netdata_reorder_key` (L4016-4020). The histogram
+    palette order is determined by trimming leading ASCII
+    punctuation and lowercasing the field name.
+    """
+
+    trimmed = value.lstrip("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
+    return trimmed.lower()
+
+
+def _build_available_histograms(
+    request: NetdataRequest,
+    combined: CombinedResult,
+) -> List[Dict[str, Any]]:
+    """Build the `available_histograms` envelope (Rust L1225-1251).
+
+    The list is the reportable facet fields (request.facets in
+    order, deduplicated) for non-data_only, and the same plus the
+    explicit histogram field for data_only. The `order` integer
+    comes from the field's position in the netdata_reorder_key
+    sorted list (1-based).
+    """
+
+    seen: "set[bytes]" = set()
+    fields: List[bytes] = []
+    for field in request.facets:
+        if field in seen:
+            continue
+        seen.add(field)
+        fields.append(field)
+    if request.data_only and request.histogram is not None:
+        histogram_bytes = request.histogram.encode("utf-8")
+        if histogram_bytes not in seen:
+            seen.add(histogram_bytes)
+            fields.append(histogram_bytes)
+    # Compute the order using the reorder key (Rust L1232-1238).
+    sortable: List[Tuple[str, bytes]] = []
+    for field in fields:
+        try:
+            name = field.decode("utf-8")
+        except UnicodeDecodeError:
+            name = ""
+        sortable.append((_netdata_reorder_key(name), field))
+    sortable.sort(key=lambda pair: pair[0])
+    order_by_field: Dict[bytes, int] = {
+        field: idx + 1 for idx, (_key, field) in enumerate(sortable)
+    }
+    out: List[Dict[str, Any]] = []
+    for field in fields:
+        try:
+            name = field.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        out.append({
+            "id": name,
+            "name": name,
+            "order": int(order_by_field.get(field, 0)),
+        })
+    return out
 
 
 def _build_column_order(
@@ -2399,12 +2835,39 @@ def _build_column_order(
     return order
 
 
+def _dynamic_process_name(fields: Dict[bytes, List[bytes]]) -> str:
+    """Mirror Rust ``dynamic_process_name`` (L3137-3153)."""
+
+    base = ""
+    for key in (b"CONTAINER_NAME", b"SYSLOG_IDENTIFIER", b"_COMM"):
+        vals = fields.get(key)
+        if vals:
+            base = vals[0].decode("utf-8", errors="replace")
+            break
+    if not base:
+        return "-"
+    pid_vals = fields.get(b"_PID")
+    if pid_vals and pid_vals[0]:
+        pid = pid_vals[0].decode("utf-8", errors="replace")
+        return f"{base}[{pid}]"
+    if pid_vals is not None:
+        return base
+    return f"{base}[-]"
+
+
 def _row_fields_map(located: LocatedRow) -> Dict[bytes, List[bytes]]:
     """Build a field->values map from a LocatedRow's payloads.
 
-    Each payload is a `FIELD=value` byte string. Multiple values for
-    the same field accumulate in the values list, matching the
-    Rust `row_fields` shape used in `build_data_rows`.
+    Each payload is a ``FIELD=value`` byte string.  Multiple values
+    for the same field accumulate in the values list, matching the
+    Rust ``row_fields`` shape used in ``build_data_rows``.
+
+    Two synthetic columns are injected (mirroring Rust L3124-3133):
+
+    * ``ND_JOURNAL_FILE``  – the source file path from the row.
+    * ``ND_JOURNAL_PROCESS`` – derived from CONTAINER_NAME /
+      SYSLOG_IDENTIFIER / _COMM plus optional _PID, only when the
+      field is not already present in the payloads.
     """
 
     fields: Dict[bytes, List[bytes]] = {}
@@ -2415,6 +2878,14 @@ def _row_fields_map(located: LocatedRow) -> Dict[bytes, List[bytes]]:
         field = bytes(payload[:eq])
         value = bytes(payload[eq + 1:])
         fields.setdefault(field, []).append(value)
+
+    fields[b"ND_JOURNAL_FILE"] = [located.file_path.encode("utf-8")]
+
+    if b"ND_JOURNAL_PROCESS" not in fields:
+        process = _dynamic_process_name(fields)
+        if process:
+            fields[b"ND_JOURNAL_PROCESS"] = [process.encode("utf-8")]
+
     return fields
 
 
@@ -2423,19 +2894,24 @@ def _build_data_row(
     column_order: Sequence[str],
     direction: Direction,
     config: NetdataFunctionConfig,
+    profile: "NetdataFunctionProfile",
+    context: DisplayContext,
 ) -> List[Any]:
-    """Mirror Rust `build_data_rows` (L812-847): build one output row
-    in the canonical column order.
+    """Mirror Rust ``build_data_rows`` (L812-847): build one output row
+    in the canonical column order using the caller-supplied *profile*
+    and a per-request *context* for cached uid/gid/boot lookups.
     """
 
     fields = _row_fields_map(located)
-    profile = SystemdJournalProfile()  # noqa: F821 - imported below
     row: List[Any] = []
     for column in column_order:
         if column == "timestamp":
             row.append(int(located.row_realtime_usec))
         elif column == "rowOptions":
-            row.append(_row_options(fields))
+            str_fields = {
+                k.decode("utf-8", "replace"): v for k, v in fields.items()
+            }
+            row.append(profile.row_options(str_fields))
         else:
             values = fields.get(column.encode("utf-8"))
             if not values:
@@ -2444,7 +2920,7 @@ def _build_data_row(
             value = values[0]
             try:
                 rendered = profile.field_display_value(
-                    DisplayContext(), DisplayScope.Data, column, value  # noqa: F821
+                    context, DisplayScope.Data, column, value
                 )
             except Exception:
                 rendered = value.decode("utf-8", errors="replace")
@@ -2463,12 +2939,17 @@ def _build_facets_payload(
     request: NetdataRequest,
     config: NetdataFunctionConfig,
     combined: CombinedResult,
+    profile: "NetdataFunctionProfile",
 ) -> List[Dict[str, Any]]:
     """Mirror Rust `build_facets` (L849-895) at the level required for
     shape parity. Each requested facet is a `{id, name, order, options[]}`
     block; each option is `{id, name, count, order}`.
+
+    Option names are routed through `profile.facet_option_name`
+    (Rust L873) so PRIORITY=3 becomes "error", not "3".
     """
 
+    context = DisplayContext()
     out: List[Dict[str, Any]] = []
     for order_index, field in enumerate(request.facets):
         field_name = field.decode("utf-8", errors="replace")
@@ -2478,11 +2959,12 @@ def _build_facets_payload(
             if not value_bytes or value_bytes == b"-":
                 continue
             try:
-                name = value_bytes.decode("utf-8", errors="replace")
+                id_str = value_bytes.decode("utf-8", errors="replace")
             except Exception:
                 continue
+            name = profile.facet_option_name(context, field_name, value_bytes)
             options.append({
-                "id": name,
+                "id": id_str,
                 "name": name,
                 "count": int(count),
             })
@@ -2503,7 +2985,13 @@ def _build_items_payload(
     combined: CombinedResult,
     returned: int,
 ) -> Dict[str, Any]:
-    """Mirror Rust `response_items` (L2537-2559)."""
+    """Mirror Rust `response_items` (L2537-2559).
+
+    For tail with a realtime anchor, `items.after` includes the +1
+    for the exclusive anchor entry (Rust `counters()` L2081-2087:
+    ``after = skips_after + shifts`` where skips_after counts the
+    anchor row excluded by the tail-after bound).
+    """
 
     unsampled = combined.stats.rows_unsampled
     estimated = combined.stats.rows_estimated
@@ -2513,6 +3001,18 @@ def _build_items_payload(
     matched = (
         combined.stats.rows_matched + unsampled + estimated
     )
+    raw_after = (
+        int(combined.stats.rows_matched - returned)
+        if combined.stats.rows_matched > returned
+        else 0
+    )
+    tail_anchor = (
+        request.tail
+        and request.delta
+        and request.anchor.kind == ExplorerAnchorKind.REALTIME
+    )
+    if tail_anchor:
+        raw_after += 1
     return {
         "evaluated": int(evaluated),
         "matched": int(matched),
@@ -2521,9 +3021,7 @@ def _build_items_payload(
         "returned": int(returned),
         "max_to_return": int(request.limit),
         "before": 0,
-        "after": int(combined.stats.rows_matched - returned)
-        if combined.stats.rows_matched > returned
-        else 0,
+        "after": raw_after,
     }
 
 
@@ -2601,6 +3099,14 @@ def _build_histogram_payload(
     The envelope keys are `id`, `name`, and `chart` (with `summary`,
     `totals`, `result`, `db`, `view`, `agents`). `view.dimensions.names`
     is always present; for an empty window it is `[]`.
+
+    The dimension id set is built by walking the histogram buckets
+    first, then merging in the histogram field's `known_values` from
+    the combined facet map (Rust L917-924). The known-values merge
+    surfaces zero-count dimensions for the histogram field that the
+    filter may have masked (e.g. PRIORITY=6 when the filter is
+    PRIORITY=3), so the chart UI can render the full histogram
+    palette even for filtered queries.
     """
 
     if not histogram.buckets:
@@ -2614,16 +3120,29 @@ def _build_histogram_payload(
                 continue
             seen.add(value)
             dimension_ids_set.append(value)
+    # Merge the histogram field's facet vocabulary (Rust L917-924).
+    # Skip the empty string and the `-` literal (matching
+    # `facet_group_is_reportable` L2657-2661).
+    histogram_field_bytes = field.encode("utf-8")
+    known_values = combined.facets.get(histogram_field_bytes, {})
+    for value in known_values.keys():
+        if not value or value == b"-":
+            continue
+        if value in seen:
+            continue
+        seen.add(value)
+        dimension_ids_set.append(value)
 
     metadata = _histogram_chart_metadata(field, histogram, dimension_ids_set)
+    actual_dimensions = metadata["actual_dimensions"]
     data: List[List[Any]] = []
     for bucket in histogram.buckets:
         point: List[Any] = [int(bucket.start_realtime_usec // 1000)]
-        for dimension in metadata["ids_decoded"]:
-            count = bucket.values.get(dimension, 0)
+        for dim_bytes in dimension_ids_set:
+            count = bucket.values.get(dim_bytes, 0)
             if count:
                 point.append([int(count), 0, 0])
-            elif dimension in metadata["actual_dimensions"]:
+            elif dim_bytes in actual_dimensions:
                 point.append([0, 0, 0])
             else:
                 point.append([None, 0, 0])
@@ -2784,9 +3303,20 @@ def _histogram_chart_metadata(
     points = 0
     overall_min = 0
     overall_max = 0
+    display_context = DisplayContext()
     for dimension in dimension_ids:
         id_str = _decode_display(dimension)
-        display = id_str
+        # Histogram dimension names mirror Rust
+        # `systemd_field_display_value(context, scope=Histogram, ...)`
+        # (L4329-4400): PRIORITY=3 becomes "error", SYSLOG_FACILITY
+        # numeric values become names, etc. The ids stay as the raw
+        # payload (matching Rust ids = raw value).
+        display = _systemd_field_display_value(
+            display_context, DisplayScope.Histogram, field, dimension,
+            resolve_user_group_names=False,
+        )
+        if not isinstance(display, str):
+            display = id_str
         d_min, d_max, d_sum, actual = _histogram_dimension_stats(
             histogram, actual_dimensions, dimension
         )
@@ -3022,10 +3552,12 @@ class NetdataJournalFunction:
         collection = _collect_journal_files(directory)
         paths = collection.files
         if parsed.info:
-            return _build_info_response(parsed.echo, paths, self._config)
+            return _build_info_response(
+                parsed.echo, paths, self._config, state=options.state
+            )
         if request.get("__logs_sources"):
             return _build_logs_sources_response(
-                parsed.echo, paths, self._config
+                parsed.echo, paths, self._config, state=options.state
             )
         # `if_modified_since` 304 short-circuit (Rust L2677-2689).
         # If every selected file's last message is at or before the
@@ -3040,7 +3572,7 @@ class NetdataJournalFunction:
         )
         combined.skipped_files += collection.skipped
         combined.file_errors.extend(collection.errors)
-        body = _build_query_response(parsed, self._config, combined, paths)
+        body = _build_query_response(parsed, self._config, combined, paths, self._profile)
         # Cancellation-after-scan -> 499.
         if combined.cancelled:
             return _netdata_function_error(499, "Request cancelled.")
@@ -3107,6 +3639,65 @@ class NetdataJournalFunction:
             path = pathlib.Path(path_str)
             if _path_matches_request(path, request, state):
                 matched_paths.append(path_str)
+        # The window is NOW-ANCHORED (SOW-0104 fix-10): the request's
+        # `after` / `before` are normalized against parse-time
+        # `unix_now_seconds()` (L1418 of the Rust source). The
+        # data-derived journal-tail anchoring tried in fix-9 was
+        # reverted because it contradicted the reference design; the
+        # comparator instead tolerates a bounded skew (<=300s) on
+        # the `_request.after` / `_request.before` echoes so a slow
+        # third peer is no longer a false-positive.
+        # May-overlap file pre-filter (Rust
+        # `select_journal_files_for_request` L2938-2967 with
+        # `journal_file_order_may_overlap_request` L2997-3026). A
+        # file whose entire message range falls outside the
+        # requested window is silently dropped from the column
+        # catalog AND from the explore loop. Mirrors the Rust file
+        # set used by `collect_column_fields_for_file` (L504) and
+        # by `explore_files` (L467). State-hook metadata, when
+        # present, provides the bounds without opening the file;
+        # otherwise the file is opened once to read the header
+        # (same fallback path Rust takes in
+        # `journal_file_order_info` L3913-3942).
+        overlap_matched_paths: List[str] = []
+        for path_str in matched_paths:
+            file_metadata = _state_file_metadata(state, path_str)
+            order_info = _journal_file_order_info(
+                path_str, header=None, metadata=file_metadata
+            )
+            # If state metadata had no bounds, fall back to the
+            # open-then-read-header path so the pre-filter has
+            # the data it needs.
+            if int(order_info.get("msg_last_realtime_usec", 0)) == 0:
+                try:
+                    probe = FileReader.open(path_str)
+                    try:
+                        order_info = _journal_file_order_info(
+                            path_str,
+                            header=probe.header(),
+                            metadata=file_metadata,
+                        )
+                    finally:
+                        try:
+                            probe.close()
+                        except Exception:
+                            pass
+                except Exception:
+                    # If we cannot read the header, treat the file
+                    # as overlapping (Rust's `if open fails -> return
+                    # order with last=file_last_modified_usec` may
+                    # still drop the file, but we mirror the safe
+                    # Python default: pass through and let the main
+                    # open path produce a clean error or skip).
+                    overlap_matched_paths.append(path_str)
+                    continue
+            if _journal_file_order_may_overlap_request(
+                order_info,
+                request.after_realtime_usec,
+                request.before_realtime_usec,
+            ):
+                overlap_matched_paths.append(path_str)
+        matched_paths = overlap_matched_paths
         matched_files_count = len(matched_paths)
         total_files = matched_files_count
         for path_str in matched_paths:
@@ -3201,6 +3792,33 @@ class NetdataJournalFunction:
         ):
             combined.sampling_enabled = True
             _apply_sampling_budget(combined, int(request.sampling))
+        # Facet vocabulary zero-count post-passes (Rust L428-443):
+        # mirror the exact `!data_only` branch that widens the
+        # facet vocabulary so the response matches what the FIELD
+        # hash table reports (and what the comparator expects).
+        # (1) `add_zero_count_facet_values_from_files` walks the
+        #     FIELD hash tables of the matched journal files for
+        #     every requested facet field and adds each unique
+        #     value as a zero-count entry. Without it, filtered
+        #     facets would only list values that survived the
+        #     filter, dropping the rest of the file vocabulary.
+        # (2) `add_zero_count_selected_filter_values` registers
+        #     each selected filter value as a zero-count entry in
+        #     the matching facet, so a filter like `PRIORITY=3`
+        #     still surfaces `PRIORITY=3` in the PRIORITY facet
+        #     even when zero rows match.
+        # (3) `add_zero_count_facet_values` (with the unfiltered
+        #     vocabulary collected from a second `explore_files`
+        #     pass) is intentionally NOT wired here yet: the
+        #     unfiltered-vocabulary pass is a separate, costly
+        #     re-scan that we do not emulate in the pure-Python
+        #     port. The two file-level passes above already
+        #     produce the vocabulary the comparator checks.
+        if not request.data_only and not combined.cancelled:
+            combined.add_zero_count_facet_values_from_files(
+                list(request.facets), None
+            )
+            combined.add_zero_count_selected_filter_values(request)
         return combined
 
 
@@ -3272,40 +3890,70 @@ def _journal_file_order_info(
     header: "Optional[Mapping[str, Any]]" = None,
     metadata: "Optional[NetdataJournalFileMetadata]" = None,
 ) -> Dict[str, int]:
-    """Build a per-file order info dict (mirrors `JournalFileOrderInfo`).
+    """Build a per-file order info dict (mirrors Rust
+    `journal_file_order_info` L3913-3959).
 
-    Uses the supplied header (when the file is open) and falls back
-    to the supplied metadata, and finally to defaults of 0.
+    `file_last_modified_usec` is sourced from the filesystem mtime
+    and may be overridden by `metadata.file_last_modified_usec`.
+    `msg_last_realtime_usec` falls back to that file mtime when the
+    caller-supplied header's `tail_entry_realtime` is 0 (online /
+    uninitialised file), matching Rust's `unwrap_or_else` branch.
+    The fallback only applies when a header has actually been
+    consulted; when the caller passes `header=None` and metadata
+    bounds are absent the bounds remain `0` so the caller can decide
+    whether to open the file for header inspection (mirrors the
+    caller-side fallback in `_explore_files` L3597-3625).
     """
 
-    out = {
-        "msg_first_realtime_usec": 0,
-        "msg_last_realtime_usec": 0,
-        "journal_vs_realtime_delta_usec": int(
-            NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC
-        ),
-    }
+    # Step 1: file_last_modified_usec from filesystem (mtime), with
+    # state-metadata override (Rust L3918-3926).
+    file_last_modified_usec = 0
+    try:
+        st = os.stat(path)
+        file_last_modified_usec = int(st.st_mtime * 1_000_000)
+    except OSError:
+        file_last_modified_usec = 0
+    if metadata is not None and metadata.file_last_modified_usec is not None:
+        file_last_modified_usec = int(metadata.file_last_modified_usec)
+
+    # Step 2: realtime delta with normalization (Rust L3927-3930).
+    if (
+        metadata is not None
+        and metadata.journal_vs_realtime_delta_usec is not None
+    ):
+        delta = _normalize_journal_vs_realtime_delta_usec(
+            int(metadata.journal_vs_realtime_delta_usec)
+        )
+    else:
+        delta = int(NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC)
+
+    # Step 3: header-derived bounds.
+    # When a header was read (caller opened the file), apply Rust's
+    # fallback chain: header.tail_entry_realtime when non-zero,
+    # else file_last_modified_usec (Rust L3944-3952). When no header
+    # was supplied, leave the bounds at 0 so the caller can detect
+    # the "needs open" condition and re-invoke this helper with a
+    # header in hand.
+    msg_first = 0
+    msg_last = 0
     if header is not None:
-        out["msg_first_realtime_usec"] = int(
-            header.get("head_entry_realtime", 0) or 0
-        )
-        out["msg_last_realtime_usec"] = int(
-            header.get("tail_entry_realtime", 0) or 0
-        )
+        header_first = int(header.get("head_entry_realtime", 0) or 0)
+        header_tail = int(header.get("tail_entry_realtime", 0) or 0)
+        msg_first = header_first
+        msg_last = header_tail if header_tail != 0 else file_last_modified_usec
+
     if metadata is not None:
         if metadata.msg_first_realtime_usec is not None:
-            out["msg_first_realtime_usec"] = int(
-                metadata.msg_first_realtime_usec
-            )
+            msg_first = int(metadata.msg_first_realtime_usec)
         if metadata.msg_last_realtime_usec is not None:
-            out["msg_last_realtime_usec"] = int(
-                metadata.msg_last_realtime_usec
-            )
-        if metadata.journal_vs_realtime_delta_usec is not None:
-            out["journal_vs_realtime_delta_usec"] = int(
-                metadata.journal_vs_realtime_delta_usec
-            )
-    return out
+            msg_last = int(metadata.msg_last_realtime_usec)
+
+    return {
+        "msg_first_realtime_usec": msg_first,
+        "msg_last_realtime_usec": msg_last,
+        "file_last_modified_usec": file_last_modified_usec,
+        "journal_vs_realtime_delta_usec": delta,
+    }
 
 
 def _journal_file_order_may_overlap_request(
@@ -3340,36 +3988,72 @@ def _not_modified_before_scan_response(
     paths: Sequence[str],
     state: "Optional[NetdataFunctionState]",
 ) -> "Optional[Dict[str, Any]]":
-    """Mirror Rust `not_modified_before_scan_response` (L2677-2689).
+    """Mirror Rust `not_modified_before_scan_response` (L2677-2689)
+    together with the upstream `select_journal_files_for_request`
+    filter (L2938-2967): only files that pass the window-overlap
+    gate contribute to `files_are_newer`. If no candidate file
+    overlaps the request window, the selection is empty and
+    `files_are_newer` is vacuously `false`, which Rust translates
+    into the 304 envelope.
 
     Returns a 304 envelope when `if_modified_since_usec != 0` and
-    none of the matched files has a `msg_last_realtime_usec` strictly
-    greater than the requested high-water mark. The state hook is
-    consulted first; otherwise the per-path metadata is derived from
-    the path layout alone.
+    none of the window-overlapping files has a
+    `msg_last_realtime_usec` strictly greater than the requested
+    high-water mark. The state hook is consulted first; otherwise
+    the per-path metadata is derived from the path layout alone.
     """
 
     if request.if_modified_since_usec == 0:
         return None
+    matched_any = False
     for path_str in paths:
         path = pathlib.Path(path_str)
         if not _path_matches_request(path, request, state):
             continue
         metadata = _state_file_metadata(state, path_str)
-        if metadata is not None and metadata.msg_last_realtime_usec is not None:
-            last = int(metadata.msg_last_realtime_usec)
+        if metadata is not None and metadata.msg_first_realtime_usec is not None:
+            first = int(metadata.msg_first_realtime_usec)
         else:
             try:
                 from .reader import FileReader
                 reader = FileReader.open(path_str)
-                last = int(
-                    reader.header().get("tail_entry_realtime", 0) or 0
+                first = int(
+                    reader.header().get("head_entry_realtime", 0) or 0
                 )
                 reader.close()
             except Exception:
-                # On open failure, treat the file as eligible (no
-                # 304). The actual scan will skip it.
-                return None
+                first = 0
+        if metadata is not None and metadata.msg_last_realtime_usec is not None:
+            last = int(metadata.msg_last_realtime_usec)
+        elif metadata is not None and metadata.file_last_modified_usec is not None:
+            last = int(metadata.file_last_modified_usec)
+        else:
+            try:
+                from .reader import FileReader
+                reader = FileReader.open(path_str)
+                tail = int(
+                    reader.header().get("tail_entry_realtime", 0) or 0
+                )
+                if tail == 0:
+                    try:
+                        st = os.stat(path_str)
+                        last = int(st.st_mtime * 1_000_000)
+                    except Exception:
+                        last = 0
+                else:
+                    last = tail
+                reader.close()
+            except Exception:
+                last = 0
+        info = {
+            "msg_first_realtime_usec": first,
+            "msg_last_realtime_usec": last,
+        }
+        if not _journal_file_order_may_overlap_request(
+            info, request.after_realtime_usec, request.before_realtime_usec
+        ):
+            continue
+        matched_any = True
         if last > int(request.if_modified_since_usec):
             return None
     return _netdata_function_error(304, "No new data since the previous call.")
@@ -3501,12 +4185,15 @@ def _update_learned_realtime_delta(
 
 
 def _netdata_function_error(status: int, message: str) -> Dict[str, Any]:
-    """Build a Netdata function error envelope (Rust netdata_function_error)."""
+    """Build a Netdata function error envelope (Rust `netdata_function_error`
+    L2369-2374). The Rust shape is exactly `{"status", "errorMessage"}`
+    (no `error`, no `type`); both the 304 no-change and 499 cancelled
+    envelopes use the same compact key set.
+    """
 
     return {
         "status": int(status),
-        "error": str(message),
-        "type": "table",
+        "errorMessage": str(message),
     }
 
 

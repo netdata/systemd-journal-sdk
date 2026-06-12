@@ -1094,6 +1094,28 @@ def _flush_reader_filters(reader):
     reader.flush_matches()
 
 
+def _reader_filter_matches(reader):
+    """Check if the reader has an active filter and whether the current
+    entry matches it.
+
+    Rust applies filters at the index level during ``next()`` /
+    ``previous()`` using the journal's DATA hash table.  The Python
+    reader does not implement index-based filtering, so we perform a
+    manual entry-level check after stepping to a new entry.
+
+    Returns True when no filter is set or the current entry matches.
+    """
+    if reader._filter is None:
+        return True
+    try:
+        entry = reader._read_entry_at(
+            reader._entry_offsets[reader._entry_index]
+        )
+    except Exception:
+        return True
+    return reader._filter.matches(entry)
+
+
 def _configure_filters(reader, query, excluded_field):
     """Push active filters into the reader for index-based row skipping.
 
@@ -1421,6 +1443,8 @@ def _scan_explorer_main(reader, query, accumulator, result, control):
             break
         if _skip_by_commit_time(query, commit_realtime):
             continue
+        if not _reader_filter_matches(reader):
+            continue
         apply.deferred.clear()
         row_id += 1
         fts_match, fts_negative = _scan_row_data(reader, query, accumulator, row_id, apply, result.stats, needs_fts)
@@ -1469,6 +1493,8 @@ def _scan_explorer_combined(reader, query, accumulator, result, include_facets, 
         if _stop_by_commit_time(query, commit_realtime):
             break
         if _skip_by_commit_time(query, commit_realtime):
+            continue
+        if not _reader_filter_matches(reader):
             continue
         apply.deferred.clear()
         row_id += 1
@@ -1533,6 +1559,8 @@ def _scan_explorer_facet(reader, query, accumulator, stats, control):
         if _stop_by_commit_time(query, commit_realtime):
             break
         if _skip_by_commit_time(query, commit_realtime):
+            continue
+        if not _reader_filter_matches(reader):
             continue
         if isinstance(apply, _ScanApplyDeferred):
             apply.deferred.clear()

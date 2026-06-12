@@ -45,6 +45,63 @@ derives that order from hash-table traversal. Runtime envelope fields such as
 `_stats`, `_journal_files`, `expires`, and `last_modified` are diagnostics.
 `items.evaluated` is also diagnostic because it counts internal scan work, not
 journal content.
+
+The source-option `info` string for a journal source embeds two
+live-volatile components derived from the tail of the journal at the
+time the peer ran the request:
+
+```text
+N files, total size S, covering <duration>, last entry at <iso>
+```
+
+The two `covering` (duration) and `last entry at` (RFC-3339 UTC)
+components are reported from the live tail. With a third peer added
+(Python, SOW-0104) the slow peer can see a tail several seconds newer
+than the fast peers; observed up to ~6 seconds while SDK and plugin
+agree to the second. The 2-peer design relied on back-to-back
+invocations; with a third slow peer the race is structural, not a
+transient timing bug.
+
+The comparator therefore accepts a bounded skew on those two
+components only:
+
+- `N files` and `total size S` are compared exactly.
+- `<duration>` is parsed back to seconds (using the same `y/mo/d/h/m/s`
+  unit grammar that produced it, with `1y = 365d`, `1mo = 30d`) and
+  accepted when `|delta| <= 300` seconds. The literal `off` only
+  equals `off`.
+- `<iso>` is parsed as a UTC RFC-3339 timestamp and accepted when
+  `|delta| <= 300` seconds. The literal `unknown` only equals
+  `unknown`.
+- Strings that do not match the shape fall back to exact comparison.
+
+The rule is `|delta| <= 300` seconds (the 300 second bound includes
+both endpoints), and the tolerance is symmetric for every peer pair
+because the comparison is shape-based, not peer-based. The
+tolerated skews are surfaced in the comparison's
+`non_content.source_option_info_skew_tolerances` list (one entry per
+tolerated pair, with the field name, the parsed left/right seconds,
+the delta, and the bound) so reports show what was tolerated, with
+values. File counts and total sizes stay strict: a real divergence
+in those components still fails the comparison.
+
+The response `_request.after` / `_request.before` echoes embed parse-time
+`unix_now_seconds()` by reference design (Rust L1418 -> L3624-3690). Two
+peers invoked seconds apart legitimately produce different echoes; the
+slow third peer is not a real content mismatch. The comparator
+therefore accepts a bounded skew on those two echoes ONLY
+(`REQUEST_WINDOW_SKEW_TOLERANCE_SECONDS = 300`, same value and
+diagnostic style as the source-info tolerance). Other `_request`
+fields stay strict: a real divergence in `data_only`, `direction`,
+`facets`, `last`, etc. still fails the comparison. The tolerated
+pair is reported in
+`non_content.request_window_skew_tolerances` (one entry per
+tolerated field, with the field name, the two raw echo values,
+the delta in seconds, and the bound) so reports show what was
+tolerated, with values. The rule is `|delta| <= 300` seconds
+and the tolerance is symmetric for every peer pair because the
+comparison is shape-based, not peer-based.
+
 `ND_JOURNAL_FILE` row values are compared by journal filename only. Netdata's
 hardened test mode may report the selected directory through a transient
 `/proc/self/fd/<n>/...` path, while the SDK wrapper reports the caller-supplied
@@ -94,6 +151,18 @@ anchors from response rows. The committed sequence suite covers:
 
 The stateful harness uses `after=1` as its default lower bound. In Netdata
 request semantics, `after=0` is a relative UI window, not the Unix epoch.
+
+The three-peer stateful gate (SDK, plugin, Python) freezes a fresh-data
+synthetic fixture so a slow third peer is not divergent because of live
+tail movement. The runner exposes `--make-static-fixture <dir>` which
+generates a fresh fixture (100 entries by default, timestamped in
+`[now-3000s, now-600s]`, well inside every peer's `[now-3600, now]`
+window even with the ±60s parse skew observed at the 3-peer stateful
+gate) using the in-repo Python SDK, and writes a JSON report describing
+the fixture. The runner does not invoke the SDK/plugin binaries in
+fixture mode. Default behavior (no flag) is unchanged: the runner
+expects `--dir` to point at an existing directory and runs the sequences
+against it.
 
 Sanitized reports should be written under `.local/`. Do not commit raw plugin
 or SDK JSON generated from real journal data.

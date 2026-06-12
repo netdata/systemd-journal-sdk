@@ -453,5 +453,586 @@ class CompareFunctionJsonTest(unittest.TestCase):
         self.assertIn("ND_JOURNAL_FILE", report["diffs"]["rows"])
 
 
+def _doc_with_source_option_info(info: str) -> dict:
+    """Return a function doc with the source-option `info` string set.
+
+    The base `function_doc()` already emits an `info` facet option
+    because the option `name` is `info`; this helper replaces its
+    `info` field with the caller-supplied value so tests can pin the
+    exact string.
+    """
+
+    doc = function_doc()
+    doc["facets"][0]["options"][0]["info"] = info
+    return doc
+
+
+class SourceOptionInfoSkewToleranceTest(unittest.TestCase):
+    """Live-journal race: the source-option `info` string embeds
+    `covering <duration>, last entry at <iso>` from the live tail. A
+    slow peer (Python) can see a tail seconds newer than the fast
+    peers (Rust/Go). The comparator tolerates a bounded skew on
+    ONLY those two components. File counts and total sizes stay
+    strict. `off`/`unknown` literals compare exactly.
+    """
+
+    def test_equal_info_strings_pass(self) -> None:
+        info = "3 files, total size 5MiB, covering 1s, last entry at 2023-11-14T22:13:22Z"
+        report = compare(_doc_with_source_option_info(info), _doc_with_source_option_info(info))
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["checks"]["facets"])
+        self.assertEqual(report["non_content"]["source_option_info_skew_tolerances"], [])
+
+    def test_last_entry_skew_within_bound_is_tolerated_and_surfaced(self) -> None:
+        left = _doc_with_source_option_info(
+            "3 files, total size 5MiB, covering 1s, last entry at 2023-11-14T22:13:22Z"
+        )
+        right = _doc_with_source_option_info(
+            "3 files, total size 5MiB, covering 1s, last entry at 2023-11-14T22:13:25Z"
+        )
+
+        report = compare(left, right)
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["checks"]["facets"])
+        skews = report["non_content"]["source_option_info_skew_tolerances"]
+        self.assertEqual(len(skews), 1)
+        self.assertEqual(skews[0]["facet_id"], "PRIORITY")
+        self.assertEqual(skews[0]["skew_bound_seconds"], 300)
+        self.assertEqual(skews[0]["fields"]["last_entry"]["delta_seconds"], 3)
+        self.assertEqual(skews[0]["fields"]["last_entry"]["bound_seconds"], 300)
+        self.assertEqual(skews[0]["fields"]["last_entry"]["left_seconds"], 1_700_000_002)
+        self.assertEqual(skews[0]["fields"]["last_entry"]["right_seconds"], 1_700_000_005)
+
+    def test_covering_duration_skew_within_bound_is_tolerated(self) -> None:
+        # 1s vs 100s delta = 99s, well within 300s.
+        left = _doc_with_source_option_info(
+            "3 files, total size 5MiB, covering 1s, last entry at 2023-11-14T22:13:22Z"
+        )
+        right = _doc_with_source_option_info(
+            "3 files, total size 5MiB, covering 100s, last entry at 2023-11-14T22:13:22Z"
+        )
+
+        report = compare(left, right)
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["checks"]["facets"])
+        skews = report["non_content"]["source_option_info_skew_tolerances"]
+        self.assertEqual(len(skews), 1)
+        self.assertIn("covering", skews[0]["fields"])
+        self.assertEqual(skews[0]["fields"]["covering"]["delta_seconds"], 99)
+
+    def test_both_fields_within_bound_are_tolerated_together(self) -> None:
+        left = _doc_with_source_option_info(
+            "3 files, total size 5MiB, covering 1s, last entry at 2023-11-14T22:13:22Z"
+        )
+        right = _doc_with_source_option_info(
+            "3 files, total size 5MiB, covering 6s, last entry at 2023-11-14T22:13:25Z"
+        )
+
+        report = compare(left, right)
+
+        self.assertTrue(report["ok"])
+        skews = report["non_content"]["source_option_info_skew_tolerances"]
+        self.assertEqual(len(skews), 1)
+        self.assertIn("covering", skews[0]["fields"])
+        self.assertIn("last_entry", skews[0]["fields"])
+
+    def test_exact_bound_is_tolerated(self) -> None:
+        # Exactly 300s delta must be tolerated (the rule is |delta| <= 300).
+        left = _doc_with_source_option_info(
+            "3 files, total size 5MiB, covering 1s, last entry at 2023-11-14T22:13:22Z"
+        )
+        right = _doc_with_source_option_info(
+            "3 files, total size 5MiB, covering 1s, last entry at 2023-11-14T22:18:22Z"
+        )
+
+        report = compare(left, right)
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["checks"]["facets"])
+        skews = report["non_content"]["source_option_info_skew_tolerances"]
+        self.assertEqual(skews[0]["fields"]["last_entry"]["delta_seconds"], 300)
+
+    def test_last_entry_skew_beyond_bound_is_rejected(self) -> None:
+        left = _doc_with_source_option_info(
+            "3 files, total size 5MiB, covering 1s, last entry at 2023-11-14T22:13:22Z"
+        )
+        right = _doc_with_source_option_info(
+            "3 files, total size 5MiB, covering 1s, last entry at 2023-11-14T22:18:23Z"
+        )
+
+        report = compare(left, right)
+
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["checks"]["facets"])
+        self.assertEqual(report["non_content"]["source_option_info_skew_tolerances"], [])
+
+    def test_covering_duration_skew_beyond_bound_is_rejected(self) -> None:
+        # 1s vs 600s = 599s beyond the 300s bound.
+        left = _doc_with_source_option_info(
+            "3 files, total size 5MiB, covering 1s, last entry at 2023-11-14T22:13:22Z"
+        )
+        right = _doc_with_source_option_info(
+            "3 files, total size 5MiB, covering 600s, last entry at 2023-11-14T22:13:22Z"
+        )
+
+        report = compare(left, right)
+
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["checks"]["facets"])
+
+    def test_off_versus_duration_is_rejected(self) -> None:
+        # off is a literal; a duration value must not be considered equal.
+        left = _doc_with_source_option_info(
+            "2 files, total size 2KiB, covering off, last entry at unknown"
+        )
+        right = _doc_with_source_option_info(
+            "2 files, total size 2KiB, covering 1s, last entry at 2023-11-14T22:13:22Z"
+        )
+
+        report = compare(left, right)
+
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["checks"]["facets"])
+
+    def test_unknown_versus_timestamp_is_rejected(self) -> None:
+        left = _doc_with_source_option_info(
+            "2 files, total size 2KiB, covering off, last entry at unknown"
+        )
+        right = _doc_with_source_option_info(
+            "2 files, total size 2KiB, covering off, last entry at 2023-11-14T22:13:22Z"
+        )
+
+        report = compare(left, right)
+
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["checks"]["facets"])
+
+    def test_off_equals_off_even_without_skew(self) -> None:
+        info = "2 files, total size 2KiB, covering off, last entry at unknown"
+        report = compare(_doc_with_source_option_info(info), _doc_with_source_option_info(info))
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["non_content"]["source_option_info_skew_tolerances"], [])
+
+    def test_files_count_mismatch_is_rejected(self) -> None:
+        # Strict: file count must match exactly.
+        left = _doc_with_source_option_info(
+            "3 files, total size 5MiB, covering 1s, last entry at 2023-11-14T22:13:22Z"
+        )
+        right = _doc_with_source_option_info(
+            "2 files, total size 5MiB, covering 1s, last entry at 2023-11-14T22:13:22Z"
+        )
+
+        report = compare(left, right)
+
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["checks"]["facets"])
+
+    def test_total_size_mismatch_is_rejected(self) -> None:
+        left = _doc_with_source_option_info(
+            "3 files, total size 5MiB, covering 1s, last entry at 2023-11-14T22:13:22Z"
+        )
+        right = _doc_with_source_option_info(
+            "3 files, total size 7MiB, covering 1s, last entry at 2023-11-14T22:13:22Z"
+        )
+
+        report = compare(left, right)
+
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["checks"]["facets"])
+
+    def test_non_matching_shape_falls_back_to_exact(self) -> None:
+        # Free-form strings that don't match the shape are compared exactly.
+        left = _doc_with_source_option_info("hello world")
+        right_equal = _doc_with_source_option_info("hello world")
+        right_diff = _doc_with_source_option_info("hello earth")
+
+        equal_report = compare(left, right_equal)
+        self.assertTrue(equal_report["ok"])
+        self.assertEqual(equal_report["non_content"]["source_option_info_skew_tolerances"], [])
+
+        diff_report = compare(left, right_diff)
+        self.assertFalse(diff_report["ok"])
+        self.assertFalse(diff_report["checks"]["facets"])
+
+    def test_tolerance_is_symmetric_across_peer_pairs(self) -> None:
+        # The same tolerance logic runs in both directions because the
+        # comparison is shape-based; a left/right swap must agree on
+        # the structural outcome (skew accepted/rejected and the
+        # bound/delta), even though the per-side left/right timestamps
+        # swap in the diagnostic.
+        a = _doc_with_source_option_info(
+            "3 files, total size 5MiB, covering 1s, last entry at 2023-11-14T22:13:22Z"
+        )
+        b = _doc_with_source_option_info(
+            "3 files, total size 5MiB, covering 1s, last entry at 2023-11-14T22:13:25Z"
+        )
+        forward = compare(a, b)
+        reverse = compare(b, a)
+        self.assertTrue(forward["ok"])
+        self.assertTrue(reverse["ok"])
+        for direction in (forward, reverse):
+            skews = direction["non_content"]["source_option_info_skew_tolerances"]
+            self.assertEqual(len(skews), 1)
+            field = skews[0]["fields"]["last_entry"]
+            self.assertEqual(field["delta_seconds"], 3)
+            self.assertEqual(field["bound_seconds"], 300)
+            self.assertEqual(skews[0]["skew_bound_seconds"], 300)
+
+
+def _info_response_doc(
+    *,
+    required_params_info: str,
+    extra_top_level: dict | None = None,
+) -> dict:
+    """Return a full info-response document (the shape the
+    ``compare()`` runner consumes) with a single
+    ``required_params[0].options[0]`` source option whose ``info``
+    string is the caller-supplied value.
+
+    ``extra_top_level`` lets the test override or add top-level
+    fields (e.g. to assert a non-info top-level difference still
+    fails).
+    """
+
+    doc = {
+        "_request": {"info": True, "after": 0, "before": 0},
+        "accepted_params": ["info", "__logs_sources", "after", "before"],
+        "has_history": True,
+        "help": "Netdata-compatible journal log function backed by the systemd journal SDK",
+        "pagination": {
+            "column": "timestamp",
+            "enabled": True,
+            "key": "anchor",
+            "units": "timestamp_usec",
+        },
+        "required_params": [
+            {
+                "help": "Select the logs source to query",
+                "id": "__logs_sources",
+                "name": "Journal Sources",
+                "options": [
+                    {
+                        "id": "all",
+                        "info": required_params_info,
+                        "name": "all",
+                        "pill": "144.32GiB",
+                    }
+                ],
+                "type": "multiselect",
+            }
+        ],
+        "show_ids": True,
+        "status": 200,
+        "type": "table",
+        "v": 3,
+    }
+    if extra_top_level:
+        doc.update(extra_top_level)
+    return doc
+
+
+class RequiredParamsSourceInfoSkewToleranceTest(unittest.TestCase):
+    """The same live-journal race applies to the source-option
+    ``info`` strings exposed under the top-level ``required_params``
+    envelope of an info response. The skew tolerance must be wired
+    into the top-level comparison path (not just the facets path)
+    so a slow peer does not produce a false-positive top-level
+    mismatch."""
+
+    def test_seven_second_skew_in_required_params_is_tolerated(self) -> None:
+        left = _info_response_doc(
+            required_params_info=(
+                "7337 files, total size 144.32GiB, "
+                "covering 2y 6mo 24d 11h 24m 25s, "
+                "last entry at 2026-06-11T22:05:49Z"
+            )
+        )
+        right = _info_response_doc(
+            required_params_info=(
+                "7337 files, total size 144.32GiB, "
+                "covering 2y 6mo 24d 11h 24m 32s, "
+                "last entry at 2026-06-11T22:05:56Z"
+            )
+        )
+
+        report = compare(left, right)
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["checks"]["top_level"])
+        skews = report["non_content"][
+            "required_params_source_info_skew_tolerances"
+        ]
+        self.assertEqual(len(skews), 1)
+        self.assertEqual(skews[0]["source"], "required_params")
+        self.assertEqual(skews[0]["option_id"], "all")
+        self.assertEqual(
+            skews[0]["path"], "$.required_params[0].options[0]"
+        )
+        self.assertEqual(skews[0]["skew_bound_seconds"], 300)
+        self.assertIn("covering", skews[0]["fields"])
+        self.assertIn("last_entry", skews[0]["fields"])
+        self.assertEqual(skews[0]["fields"]["last_entry"]["delta_seconds"], 7)
+        self.assertEqual(skews[0]["fields"]["covering"]["delta_seconds"], 7)
+        # The facets-path diagnostics are not impacted by this test.
+        self.assertEqual(
+            report["non_content"]["source_option_info_skew_tolerances"], []
+        )
+
+    def test_skew_beyond_three_hundred_seconds_is_rejected(self) -> None:
+        left = _info_response_doc(
+            required_params_info=(
+                "7337 files, total size 144.32GiB, "
+                "covering 2y 6mo 24d 11h 24m 25s, "
+                "last entry at 2026-06-11T22:05:49Z"
+            )
+        )
+        right = _info_response_doc(
+            required_params_info=(
+                "7337 files, total size 144.32GiB, "
+                "covering 2y 6mo 24d 11h 34m 25s, "
+                "last entry at 2026-06-11T22:15:49Z"
+            )
+        )
+
+        report = compare(left, right)
+
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["checks"]["top_level"])
+        # Diff wording matches the original: names the option path
+        # and shows both `info` values with the value-differs phrasing.
+        diff = report["diffs"]["top_level"]
+        self.assertIsNotNone(diff)
+        self.assertIn("$.required_params[0].options[0].info", diff)
+        self.assertIn("value differs", diff)
+        self.assertIn(left["required_params"][0]["options"][0]["info"], diff)
+        self.assertIn(right["required_params"][0]["options"][0]["info"], diff)
+        # No tolerance was applied on the rejected pair.
+        self.assertEqual(
+            report["non_content"][
+                "required_params_source_info_skew_tolerances"
+            ],
+            [],
+        )
+
+    def test_non_info_top_level_difference_still_fails(self) -> None:
+        # Same info string on both sides so skew is irrelevant; the
+        # accepted_params lists differ. This guards against an
+        # over-permissive strip that would hide real top-level
+        # diffs.
+        info = (
+            "7337 files, total size 144.32GiB, "
+            "covering 2y 6mo 24d 11h 24m 25s, "
+            "last entry at 2026-06-11T22:05:49Z"
+        )
+        left = _info_response_doc(
+            required_params_info=info,
+            extra_top_level={"accepted_params": ["info", "after", "before"]},
+        )
+        right = _info_response_doc(
+            required_params_info=info,
+            extra_top_level={
+                "accepted_params": ["info", "after", "before", "facets"]
+            },
+        )
+
+        report = compare(left, right)
+
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["checks"]["top_level"])
+        self.assertIn("accepted_params", report["diffs"]["top_level"])
+        # No skew tolerance should be reported when the only
+        # difference is unrelated to the source-option `info` strings.
+        self.assertEqual(
+            report["non_content"][
+                "required_params_source_info_skew_tolerances"
+            ],
+            [],
+        )
+
+
+def _request_window_echo_doc(
+    *,
+    after: int,
+    before: int,
+    info: bool = False,
+    extra_request: dict | None = None,
+) -> dict:
+    """A minimal document with the `_request` echo shape. Mirrors
+    the real wire format closely enough to exercise the top-level
+    comparison path through the new tolerance."""
+
+    request: dict = {
+        "data_only": True,
+        "after": after,
+        "before": before,
+    }
+    if info:
+        request["info"] = True
+    if extra_request:
+        request.update(extra_request)
+    return {
+        "status": 200,
+        "type": "table",
+        "_request": request,
+        "columns": {},
+        "data": [],
+        "facets": [],
+        "histogram": None,
+        "items": {
+            "matched": 0,
+            "returned": 0,
+            "max_to_return": 200,
+            "after": 0,
+            "before": 0,
+            "unsampled": 0,
+            "estimated": 0,
+        },
+    }
+
+
+class RequestWindowSkewToleranceTest(unittest.TestCase):
+    """SOW-0104 fix-10: the ``_request.after`` / ``_request.before``
+    echoes embed parse-time ``unix_now_seconds()`` by reference
+    design (Rust L1418 -> L3624-3690). Two peers invoked seconds
+    apart legitimately produce different echoes; a slow third
+    peer must not surface as a false-positive content mismatch.
+    The comparator tolerates a bounded skew (<=300s) on those two
+    fields ONLY. Other ``_request`` fields stay strict. Mirrors
+    the fix-4 source-info tolerance precedent (same 300s bound,
+    same diagnostics style)."""
+
+    def test_equal_window_echoes_pass_without_tolerance(self) -> None:
+        report = compare(
+            _request_window_echo_doc(after=1_700_000_000, before=1_700_000_010),
+            _request_window_echo_doc(after=1_700_000_000, before=1_700_000_010),
+        )
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["checks"]["top_level"])
+        self.assertEqual(report["non_content"]["request_window_skew_tolerances"], [])
+
+    def test_seven_second_skew_on_after_is_tolerated_and_surfaced(self) -> None:
+        report = compare(
+            _request_window_echo_doc(after=1_781_225_642, before=1_781_229_642),
+            _request_window_echo_doc(after=1_781_225_649, before=1_781_229_649),
+        )
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["checks"]["top_level"])
+        skews = report["non_content"]["request_window_skew_tolerances"]
+        self.assertEqual(len(skews), 2)
+        after_entry = next(s for s in skews if s["field"] == "after")
+        before_entry = next(s for s in skews if s["field"] == "before")
+        self.assertEqual(after_entry["delta_seconds"], 7)
+        self.assertEqual(before_entry["delta_seconds"], 7)
+        self.assertEqual(after_entry["bound_seconds"], 300)
+        self.assertEqual(after_entry["left_seconds"], 1_781_225_642)
+        self.assertEqual(after_entry["right_seconds"], 1_781_225_649)
+        self.assertEqual(before_entry["left_seconds"], 1_781_229_642)
+        self.assertEqual(before_entry["right_seconds"], 1_781_229_649)
+
+    def test_only_after_skew_within_bound_is_tolerated(self) -> None:
+        report = compare(
+            _request_window_echo_doc(after=1_781_225_642, before=1_781_229_642),
+            _request_window_echo_doc(after=1_781_225_700, before=1_781_229_642),
+        )
+
+        self.assertTrue(report["ok"])
+        skews = report["non_content"]["request_window_skew_tolerances"]
+        self.assertEqual(len(skews), 1)
+        self.assertEqual(skews[0]["field"], "after")
+        self.assertEqual(skews[0]["delta_seconds"], 58)
+
+    def test_exact_bound_is_tolerated(self) -> None:
+        report = compare(
+            _request_window_echo_doc(after=1_700_000_000, before=1_700_000_010),
+            _request_window_echo_doc(after=1_700_000_300, before=1_700_000_310),
+        )
+
+        self.assertTrue(report["ok"])
+        skews = report["non_content"]["request_window_skew_tolerances"]
+        self.assertEqual(len(skews), 2)
+        for entry in skews:
+            self.assertEqual(entry["delta_seconds"], 300)
+
+    def test_skew_beyond_bound_is_rejected(self) -> None:
+        report = compare(
+            _request_window_echo_doc(after=1_700_000_000, before=1_700_000_010),
+            _request_window_echo_doc(after=1_700_000_301, before=1_700_000_311),
+        )
+
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["checks"]["top_level"])
+        # No tolerance was applied on the rejected pair.
+        self.assertEqual(report["non_content"]["request_window_skew_tolerances"], [])
+        # The diff surfaces the exact field path and both values.
+        diff = report["diffs"]["top_level"]
+        self.assertIsNotNone(diff)
+        self.assertIn("$._request.after", diff)
+        self.assertIn("value differs", diff)
+
+    def test_only_before_skew_beyond_bound_rejects(self) -> None:
+        report = compare(
+            _request_window_echo_doc(after=1_700_000_000, before=1_700_000_010),
+            _request_window_echo_doc(after=1_700_000_000, before=1_700_000_311),
+        )
+
+        self.assertFalse(report["ok"])
+        skews = report["non_content"]["request_window_skew_tolerances"]
+        self.assertEqual(len(skews), 0)
+
+    def test_other_request_field_mismatch_still_fails(self) -> None:
+        # The tolerance is scoped to after/before ONLY. A
+        # mismatch on another _request field must still fail.
+        report = compare(
+            _request_window_echo_doc(
+                after=1_700_000_000, before=1_700_000_010,
+                extra_request={"last": 5},
+            ),
+            _request_window_echo_doc(
+                after=1_700_000_000, before=1_700_000_010,
+                extra_request={"last": 6},
+            ),
+        )
+
+        self.assertFalse(report["ok"])
+        self.assertFalse(report["checks"]["top_level"])
+        self.assertEqual(report["non_content"]["request_window_skew_tolerances"], [])
+
+    def test_tolerance_is_symmetric_across_peer_pairs(self) -> None:
+        # The same tolerance logic runs in both directions because
+        # the comparison is shape-based; a left/right swap must
+        # agree on the structural outcome (skew accepted/rejected
+        # and the bound/delta), even though the per-side
+        # left/right values swap in the diagnostic.
+        a = _request_window_echo_doc(after=1_781_225_642, before=1_781_229_642)
+        b = _request_window_echo_doc(after=1_781_225_649, before=1_781_229_649)
+        forward = compare(a, b)
+        reverse = compare(b, a)
+        self.assertTrue(forward["ok"])
+        self.assertTrue(reverse["ok"])
+        for direction in (forward, reverse):
+            skews = direction["non_content"]["request_window_skew_tolerances"]
+            self.assertEqual(len(skews), 2)
+            for entry in skews:
+                self.assertEqual(entry["delta_seconds"], 7)
+                self.assertEqual(entry["bound_seconds"], 300)
+
+    def test_request_without_window_fields_skips_tolerance(self) -> None:
+        # An info response (after/before popped by normalized_top_level)
+        # produces empty window fields. The tolerance must skip them.
+        report = compare(
+            _request_window_echo_doc(after=0, before=0, info=True),
+            _request_window_echo_doc(after=0, before=0, info=True),
+        )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["non_content"]["request_window_skew_tolerances"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

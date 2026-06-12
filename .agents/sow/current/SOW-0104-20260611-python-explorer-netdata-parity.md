@@ -370,6 +370,166 @@ Failure handling:
   explicit window returns 12/12 rows, 4 PRIORITY facet options,
   histogram present, status 200. Editable-install `egg-info` metadata
   removed from the tree and the pattern added to `.gitignore`.
+- Chunk 3 committed as `39517e25`.
+- SOW-level validation started (project-manager-run, host journal
+  read-only per SOW-0093 precedent). Rust wrapper built release. First
+  three-peer comparator run (`info` fixture, sanitized): every
+  structural check passes for python-vs-sdk and python-vs-plugin
+  (columns, facets, histogram, histogram_schema, items, rows); the only
+  content diff is the source-option info string missing the
+  `, covering <duration>, last entry at <iso>` suffix. Targeted fix run
+  launched (`.local/sow-0104/implementer-fix1.md`) porting the exact
+  Rust composition and duration formatter. Raw comparator reports stay
+  under `.local/sow-0104/compare/`.
+- Fix 1 added the suffix but rendered absent-metadata fallbacks
+  (`covering off, last entry at unknown`) on the real journal. Fix 2
+  (metadata aggregation) passed its synthetic tests but the real
+  comparator still failed identically. Project-manager code reading
+  found the true root cause: `JournalSourceSummary.add_path`
+  (`python/journal/netdata.py:1995`) carried a chunk-2b comment openly
+  accepting that summaries never read entry timestamps ("Tests assert
+  the summary text format, not the bounds") — a silent scope cut that
+  both fix rounds missed because fix 2 wired metadata into the
+  order-info pre-filter path instead. Fix 3 launched with the exact
+  mechanism (header-only reads mirroring the Rust summary helper) plus
+  a mandated same-failure-class sweep for other scope-cut comments in
+  the module. Lesson queued: implementer-authored tests that assert
+  "format, not bounds" are how scope cuts hide; comparator-grade
+  assertions must pin real values.
+- Fix 3 verified: summaries now widen bounds from header-only reads
+  mirroring the Rust helper; 12 new value-pinning tests (178 netdata
+  tests total); the module-wide scope-cut comment scan found the fixed
+  one as the only metadata-class cut, the rest dispositioned as stale
+  notes (`.local/sow-0104/fix3/scope_cut_comment_scan.md`).
+- 2026-06-12 comparator policy decision (project manager): the real
+  comparator now fails the info fixture only on a structural
+  live-journal race — the source-option info string embeds
+  `covering`/`last entry at` derived from the live tail, the slow
+  Python peer runs seconds after the fast peers, observed 6s skew while
+  SDK and plugin agree to the second. The 2-peer design relied on
+  back-to-back invocations. Decision: bounded skew tolerance (300s) in
+  the comparator for ONLY those two live-volatile components, symmetric
+  for all peer pairs, surfaced in the report diagnostics; file counts
+  and total sizes stay strict; `off`/`unknown` literals compare
+  exactly. Documented in `tests/netdata_function/README.md`. Fix 4
+  launched for the comparator change with unit tests.
+- Fix 4 helpers were correct but wired into the facets path only; the
+  failing string lives in `required_params` under the top-level
+  equality (`compare_function_json.py:878-891`). Project manager
+  located the mis-wiring; fix 4b wired the tolerance into the top-level
+  path with tests through the full document-comparison entry point.
+  After 4b: info fixture `ok: true` against both peers.
+- First full-gate run (2026-06-12): info passes; all 9 window fixtures
+  fail on two SHARED diffs, diagnosed by direct wrapper comparison:
+  (1) Rust appends the request's filter field names to the response
+  `accepted_params` (17 vs Python's 16 base names); (2) Python's column
+  catalog includes fields from files outside the requested window
+  (host-specific `ACTION`/`AI_*` fields), so the catalog file set is
+  not bounded by the window pre-filter as Rust's is. Fix 5 launched
+  with both mechanisms to mirror, entry-point-level tests, and
+  mandatory call-site wiring evidence in the report.
+- After fix 5: 4/10 fixtures green. Remaining six clustered into four
+  causes (facet exclude-own-filter semantics; data_only envelope keys;
+  `available_histograms` source, 1 vs 29; non-compact 304 envelope).
+  Fix 6 landed three of four; its own new vocabulary-widening test
+  carried a wrong expectation (expects 0 where exclude-own-filter
+  legitimately counts 3; implementation vindicated by the
+  window-error-filter fixture passing against the installed plugin).
+- After fix 6: 9/10 green. Fix 7 fixed the 304 envelope
+  (`window-last5-tail-no-change` now green -> comparator fixtures
+  10/10) but skipped the instructed test-expectation fix for the second
+  consecutive run. Persistent-failure clause invoked: the surgical test
+  fix escalated to fallback implementer `llm-netdata-cloud/glm-5.1`
+  (`.local/sow-0104/implementer-fix7b-glm.md`). Review note recorded:
+  glm contributed fix-7b, so its reviewer verdict on that file weighs
+  accordingly; the other four reviewers cover it independently.
+- glm fix-7b verified: 196 netdata tests green; one-shot comparator gate
+  10/10 against the live journal.
+- Stateful gate first run: all five sequences fail at their first step.
+  Page-1 debugging with saved raw responses: identical request bytes to
+  all peers, but the references echo a REWRITTEN `_request.after`
+  (data-derived — two processes ~1s apart agree exactly) while Python
+  echoes a wall-clock-now-derived value 7-8s later and returns 0 rows
+  where references return 5. Fix 8 was launched on the project
+  manager's initially WRONG premise ("Rust echoes the request
+  unchanged") and changed nothing on the live run; the premise was
+  corrected with evidence (the seed sends absolute `after: 1`, so the
+  references' identical rewritten echoes must derive from journal
+  data). Lesson: the project manager's diagnosis prompts are also
+  fallible inputs — premises must be marked as hypotheses unless
+  verified, and fix prompts now carry the evidence trail. Fix 9
+  launched: mirror Rust's data-derived effective-window derivation and
+  echo, with wall-clock-leak-detecting tests on past-dated fixtures.
+- Fix 9 also failed on the live gate. Decisive project-manager
+  experiment: a STATIC archived-file snapshot flipped the roles —
+  Python (post-fix-9) anchored at the snapshot's data tail and returned
+  rows; Rust anchored at wall-clock now and returned none. The fix-9
+  premise (data-derived) was therefore ALSO wrong; the references had
+  agreed on live runs only through same-second invocation.
+- The project manager then read the actual Rust rule from source:
+  `normalize_time_window` (`netdata.rs:3624`) and
+  `relative_window_to_absolute` (`netdata.rs:3658`) — the stateful
+  seed's `after: 1` is RELATIVE (small-magnitude rule), collapses onto
+  `before`, future-clamps to parse-time `unix_now_seconds()`, equal
+  bounds expand to `[now-3600, now]` with start/end-of-second usec
+  rounding. The window is now-anchored BY REFERENCE DESIGN.
+- Resolution (fix 10, all three pieces): verbatim Python port of the
+  two normalization functions with injectable now for tests; bounded
+  comparator tolerance (<=300s) for the `_request.after/before` echoes
+  only (same precedent as the fix-4 info-string tolerance; the echo
+  embeds parse-time now by design); stateful-gate protocol gains a
+  frozen fresh-data synthetic fixture mode (entries in
+  [now-3000, now-600]) because live tail movement makes a slow third
+  peer diverge legitimately. Lessons: (1) reference behavior must be
+  read from source, never inferred from observed agreement of
+  co-scheduled processes; (2) two fast peers agreeing is not evidence
+  of determinism.
+- Fix 10 verified: window normalization byte-identical
+  (`_request.after/before` echoes equal on the frozen fixture); live
+  one-shot gate re-confirmed 10/10 after the change. The
+  `--make-static-fixture` mode deviated from spec (generate-only, no
+  sequences, emitting a vacuous `ok: true`) — caught by the
+  project-manager anti-vacuity check; the two-step protocol (generate,
+  then `--dir`) is acceptable, the vacuous ok emission queued for
+  cleanup.
+- Fix 11 (minimax) passed its tests but left ND_JOURNAL_FILE null in
+  real output. Project-manager reading of `_build_data_row` found the
+  defect cluster: synthetic ND_JOURNAL_FILE looked up in journal fields
+  instead of `located.file_path`; hardcoded `SystemdJournalProfile`
+  ignoring the configured (plugin-compatible) profile; per-value
+  `DisplayContext` defeating caches. Fix 11b routed to glm with pinned
+  sites.
+- After glm fix 11b: stateful sequences 3/5 PASS with full step counts
+  (paging-forward 20, paging-backward 20, tail-newer-then-304 3).
+  Remaining: tail-delta (profile-less delta facet names, null delta
+  histogram dimension value, items.after off-by-one missing the
+  exclusive-anchor +1) and tail-filtered-no-change (returns rows; the
+  SOW-0093 contract wants empty-200). Fix 12 routed to glm with all
+  four diagnosed.
+- glm fix 12 missed (its own new tests failed; sequences unmoved). The
+  project manager read the Rust delta/tail code directly and pinned the
+  decisive mechanism: `response_analysis_keys` (`netdata.rs:2613`) —
+  data_only responses emit `facets_delta`/`histogram_delta`/
+  `items_delta`, gated by `!data_only || delta` (`netdata.rs:2602`);
+  plus `merge_histogram` strict-bucket sums (L2621), tail+delta
+  `skips_after` init (L1903), and the pre-scan-304 versus post-scan
+  empty-200 distinction (L2677). glm fix 13 with these mechanisms:
+  tail-delta sequence green (4/5).
+- Final sequence failure was FIXTURE DESIGN, not SDK behavior: all
+  three peers agreed; the generator wrote every row PRIORITY=3, the
+  exact value the filtered-tail sequence selects, violating its
+  premise. glm fix 14: priority cycle excluding 3, plus removal of the
+  vacuous `ok: true` from generate-only mode. STATEFUL GATE: 5/5 with
+  full step counts (20/20/3/2/2).
+- FINAL PARITY EVIDENCE (2026-06-12): one-shot comparator gate 10/10
+  (three peers, live `/var/log/journal`, read-only); stateful gate 5/5
+  (three peers, frozen fresh-data fixture); 196+ netdata, 22 explorer,
+  and package suites green; repo root clean. One transient `info: False`
+  during a consolidated sweep was analyzed: a live rotation window
+  changed per-source file counts between peer invocations — counts are
+  strict by design; a targeted rerun is green. Disposition: documented
+  rare live-source flake; widening tolerance to absorb count drift
+  rejected to preserve real-bug detection.
 - Chunk 1 continuation closed 2026-06-11 (run 2):
   - ScanApply Immediate/Deferred refactor complete; `_handle_value_class`
     takes `_ScanApplyImmediate` / `_ScanApplyDeferred(deferred=...)`
