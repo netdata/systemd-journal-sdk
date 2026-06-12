@@ -330,6 +330,40 @@ Failure handling:
   surfaces are covered independently by the four non-author reviewers.
 - Chunk 3b launched on deepseek (d.ts + facade visitor + lint tidy +
   README).
+- Chunk 3b landed on retry: 966-line `node/index.d.ts` with strict tsc
+  typecheck script (verified green), facade `SdJournalVisitUniqueValues`
+  with tests, lint tidy, README sections. Chunk 3 committed as
+  `9583e5bb` (amended to include the visitor test files initially
+  missed in staging — caught by project-manager status review).
+- Validation phase (2026-06-12/13, all comparator runs by the project
+  manager against the live journal read-only; ~half of implementer
+  launches stalled at the 1800s guard and were retried, recorded):
+  - Fix 1 (deepseek): header-derived source-summary bounds — the same
+    chunk-scope gap Python had; info fixture green after.
+  - Fix 2: wrapper stdout-drain (responses beyond one 8KiB pipe buffer
+    were truncated by process.exit — found by the project manager from
+    the run record's exact stdout_bytes=8192) plus window prefilter.
+  - Fix 3: HEADER-ONLY per-file bounds reads — project-manager-unified
+    root cause: FileReader.open in the no-mmap design reads whole
+    files, so bounds for 7338 files meant 144GiB of I/O; info wall
+    314s -> 0.4s after; data requests stopped burning their budgets
+    into partial responses. Performance-contract item with truncation
+    tests.
+  - Fix 4: histogram bucket boundaries snapped to the origin grid
+    (seven fixtures shared the one diff) and the compact 304 envelope.
+  - Fix 5: exclude-own-field-filter facet semantics; its own grid test
+    raced on Date.now() and was repaired to pinned values in fix 6.
+  - Fix 6: zero-count selected-filter-value inclusion in facet options
+    and histogram dimensions (`add_zero_count_selected_filter_values`
+    peer) — found by the project manager extracting both sides' actual
+    facet options (references emit the selected value at count 0).
+  - One-shot validation chunk committed as `314dade1`.
+- FINAL PARITY EVIDENCE: one-shot comparator gate 10/10 (node_vs_sdk
+  and node_vs_plugin, live `/var/log/journal` read-only); stateful gate
+  5/5 first try with full step counts (frozen fresh-data fixture);
+  full Node package suite green incl. typecheck. Node needed 6
+  comparator fix rounds versus Python's 14 — the inherited playbook
+  halved convergence.
 
 
 ## Validation
