@@ -4,6 +4,14 @@ Last updated: 2026-06-11
 
 ## Current
 
+- SOW-0105 - Node.js Explorer And Netdata Parity To Rust: in-progress.
+  Activated after SOW-0104 completed; gate refreshed with a project-
+  manager-verified API-diff inventory (two inventory claims refuted
+  against code before entering the gate). Ports Explorer, the Netdata
+  function API, the stdin wrapper, source selector labels, and the
+  facade unique-values visitor to Node.js; adds hand-written `.d.ts`
+  with CI type-check; joins the Netdata comparator matrices; inherits
+  the SOW-0104 porting playbook with frontloaded Rust mechanisms.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.

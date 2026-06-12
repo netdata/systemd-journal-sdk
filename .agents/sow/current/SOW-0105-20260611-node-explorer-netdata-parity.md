@@ -2,10 +2,12 @@
 
 ## Status
 
-Status: open
+Status: in-progress
 
-Sub-state: pending; activates after SOW-0104 closes (program order decided by
-the user on 2026-06-11).
+Sub-state: activated 2026-06-12 after SOW-0104 completed (close commit
+`ee5d0d20`); gate refreshed with a fresh Node-vs-Rust API-diff inventory
+(project-manager-verified); implementation starting with the SOW-0104
+porting playbook inherited.
 
 ## Requirements
 
@@ -103,12 +105,55 @@ Risks:
 
 ## Pre-Implementation Gate
 
-Status: blocked
+Status: ready
 
-Blocked on: SOW-0104 close (user-decided program order; one implementation SOW
-at a time). At activation, the gate must be refreshed with the fresh API-diff
-inventory results before implementation starts. All other gate content is
-prepared:
+Gate refreshed 2026-06-12 at activation with a fresh Node-vs-Rust API-diff
+inventory; inventory claims were verified against code by the project
+manager before entering this gate (working copy under
+`.local/sow-0105/api-diff-inventory.md`):
+
+- Confirmed missing entirely (same four as Python at its activation):
+  Explorer API, Netdata function API, stdin function wrapper, SOW-0102
+  source selector labels — no explorer/netdata code under `node/src/`.
+- Confirmed additional gap: the facade streaming unique-values visitor
+  (`SdJournalVisitUniqueValues` peer) is absent in Node
+  (`node/src/facade.js`; `queryUnique` exists at
+  `node/src/lib/reader.js:506`, the visitor variant does not) — same
+  gap class Python closed in SOW-0104.
+- Inventory claims REFUTED by project-manager code verification and
+  excluded from scope: "DATA decompression not implemented" (zstd
+  whole-file path at `node/src/lib/reader.js:21,83`; per-DATA codecs in
+  `compress.js`/`lz4-block.js`/`xz-block.js`, proven by the compression
+  matrices since SOW-0054) and "FIELD index traversal missing"
+  (`node/src/lib/reader.js:527-535` `_enumerateFieldsIndexed` with the
+  documented entry-scan fallback, from SOW-0027).
+- The inventory's "minimal JSDoc instead of .d.ts" suggestion is
+  REJECTED: the user's recorded 2026-06-11 decision stands — hand-
+  written `.d.ts` with CI type-check is in scope.
+- SOW-0104 porting playbook inherited; the Rust mechanisms that cost
+  Python the most rework are frontloaded into the chunk prompts with
+  their verified line references: `normalize_time_window` /
+  `relative_window_to_absolute` (`netdata.rs:3624/3658`, parse-time
+  now-anchoring, relative small-magnitude rule, end-of-second
+  rounding); `response_analysis_keys` delta keys (`netdata.rs:2613`)
+  gated by `!data_only || delta` (`netdata.rs:2602`); synthetic
+  `ND_JOURNAL_FILE` from the located file in row building; configured-
+  profile threading and per-request DisplayContext; source-summary
+  bounds from header-only reads; `accepted_params` filter-field
+  extension; window-bounded column catalogs; `merge_histogram` strict
+  bucket sums (`netdata.rs:2621`); tail+delta `skips_after` init
+  (`netdata.rs:1903`); pre-scan-304 vs post-scan empty-200
+  (`netdata.rs:2677`). The Python port is a secondary porting
+  reference; Rust remains the authority on any conflict.
+- Comparator integration: the runners take a `--python` third peer; the
+  Node wrapper joins via the same pattern (`--node`/`--node-interpreter`
+  or generalized peer flags — implementer follows the existing adapter
+  shape; defaults unchanged).
+- Runtime constraints for the port: pure ESM, no native addons, no
+  mmap (whole-file Buffer reads and positioned access), `node:zlib`
+  zstd, `lz4js`, vendored XZ WASM, Node >=22.15.0.
+
+Original prepared gate content follows:
 
 Problem / root-cause model:
 
