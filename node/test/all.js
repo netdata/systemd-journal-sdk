@@ -7,8 +7,11 @@ import { run as runChunk4 } from './chunks/directory_retention_policy.js';
 import { run as runChunk5 } from './chunks/facade_reader_verify.js';
 import { run as runChunk6 } from './chunks/seal_conformance.js';
 import { run as runChunk7 } from './chunks/explorer.js';
+import { run as runChunk8 } from './chunks/netdata.js';
+import { run as runChunk9 } from './chunks/netdata-chunk2b.js';
+import { run as runChunk10 } from './chunks/netdata-chunk2c.js';
 
-for (const runChunk of [runChunk1, runChunk2, runChunk3, runChunk4, runChunk5, runChunk6, runChunk7]) {
+for (const runChunk of [runChunk1, runChunk2, runChunk3, runChunk4, runChunk5, runChunk6, runChunk7, runChunk8, runChunk9, runChunk10]) {
   await runChunk();
 }
 

@@ -1,0 +1,775 @@
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import {
+  NetdataJournalFunction,
+  NetdataFunctionConfig,
+  NetdataFunctionRunOptions,
+  NetdataFunctionProgress,
+  NetdataFunctionState,
+  NetdataJournalFileMetadata,
+  SystemdJournalProfile,
+  NETDATA_ACCEPTED_PARAMS,
+} from '../../src/lib/netdata.js';
+import { Writer } from '../../src/lib/writer.js';
+
+const enc = (s) => Buffer.from(s, 'utf8');
+
+function makeTwoMachineDir(tmp, {
+  baseTimeUsec = 1700000000_000000n,
+  countA = 5,
+  countB = 3,
+  machineIdA = Buffer.alloc(16, 0x11),
+  machineIdB = Buffer.alloc(16, 0x22),
+  bootIdA = Buffer.alloc(16, 0xaa),
+  bootIdB = Buffer.alloc(16, 0xbb),
+} = {}) {
+  const subA = join(tmp, 'aabbccdd-1111-1111-1111-111111111111');
+  const subB = join(tmp, 'eeff00aa-2222-2222-2222-222222222222');
+  mkdirSync(subA, { recursive: true });
+  mkdirSync(subB, { recursive: true });
+  const fileA = join(subA, 'system.journal');
+  const fileB = join(subB, 'system.journal');
+  const wA = Writer.create(fileA, {
+    machineId: machineIdA,
+    bootId: bootIdA,
+    seqnumId: Buffer.alloc(16, 0x33),
+  });
+  for (let i = 0; i < countA; i++) {
+    wA.append([
+      { name: 'MESSAGE', value: enc(`from-a-${i}`) },
+      { name: 'PRIORITY', value: enc('3') },
+      { name: 'SERVICE', value: enc('svc-a') },
+    ], { realtimeUsec: baseTimeUsec + BigInt(i) * 1000n });
+  }
+  wA.close();
+  const wB = Writer.create(fileB, {
+    machineId: machineIdB,
+    bootId: bootIdB,
+    seqnumId: Buffer.alloc(16, 0x33),
+  });
+  for (let i = 0; i < countB; i++) {
+    wB.append([
+      { name: 'MESSAGE', value: enc(`from-b-${i}`) },
+      { name: 'PRIORITY', value: enc('6') },
+      { name: 'SERVICE', value: enc('svc-b') },
+    ], { realtimeUsec: baseTimeUsec + 100000n + BigInt(i) * 1000n });
+  }
+  wB.close();
+  return { dir: tmp, fileA, fileB };
+}
+
+function withTmp(fn) {
+  const dir = mkdtempSync(join(tmpdir(), 'netdata-2c-'));
+  try { fn(dir); }
+  finally { try { rmSync(dir, { recursive: true }); } catch {} }
+}
+
+// ---------------------------------------------------------------------------
+// State / metadata defaults
+// ---------------------------------------------------------------------------
+
+function testStateFieldDefaults() {
+  const state = new NetdataFunctionState();
+  assert.equal(state.fileMetadata('/no/such/path'), null);
+  state.updateFileJournalVsRealtimeDeltaUsec('/no', 123);
+}
+
+function testMetadataDefaults() {
+  const meta = new NetdataJournalFileMetadata();
+  assert.equal(meta.sourceType, null);
+  assert.equal(meta.sourceName, null);
+  assert.equal(meta.fileLastModifiedUsec, null);
+  assert.equal(meta.msgFirstRealtimeUsec, null);
+  assert.equal(meta.msgLastRealtimeUsec, null);
+  assert.equal(meta.journalVsRealtimeDeltaUsec, null);
+}
+
+function testDefaultProgressInterval250ms() {
+  const opts = new NetdataFunctionRunOptions();
+  assert.equal(opts.progressInterval, 0.25);
+}
+
+function testFromTimeoutSecondsZero() {
+  const opts = NetdataFunctionRunOptions.fromTimeoutSeconds(0);
+  assert.equal(opts.timeout, null);
+}
+
+// ---------------------------------------------------------------------------
+// data_only shape
+// ---------------------------------------------------------------------------
+
+function testDataOnlyDropsFacets() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp);
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      last: 10,
+      after: 1577836800,
+      before: 1893456000,
+      data_only: true,
+      facets: ['PRIORITY'],
+    });
+    assert.ok(response._request.data_only);
+    assert.equal('facets_delta' in response, false);
+    assert.equal('histogram_delta' in response, false);
+    assert.equal('items_delta' in response, false);
+    assert.equal('facets' in response, false);
+    assert.equal('histogram' in response, false);
+    assert.equal('items' in response, false);
+    assert.ok(response.expires > 0);
+  });
+}
+
+function testDataOnlyDropsColumnsEnvelope() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp);
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      last: 10,
+      after: 1577836800,
+      before: 1893456000,
+      data_only: true,
+    });
+    assert.equal('available_histograms' in response, false);
+    assert.equal('last_modified' in response, false);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Delta keys
+// ---------------------------------------------------------------------------
+
+function testDeltaKeysPresent() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp);
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      last: 10,
+      after: 1577836800,
+      before: 1893456000,
+      data_only: true,
+      delta: true,
+      facets: ['PRIORITY'],
+      histogram: 'PRIORITY',
+    });
+    assert.ok('facets_delta' in response);
+    assert.ok('histogram_delta' in response);
+    assert.ok('items_delta' in response);
+    assert.equal('facets' in response, false);
+    assert.equal('histogram' in response, false);
+    const items = response.items_delta;
+    for (const key of ['evaluated', 'matched', 'unsampled', 'estimated', 'returned', 'max_to_return', 'before', 'after']) {
+      assert.ok(key in items, `items_delta missing key ${key}`);
+    }
+    const priority = response.facets_delta.find(f => f.id === 'PRIORITY');
+    assert.ok(priority);
+    const priorityMap = {};
+    for (const o of priority.options) priorityMap[o.name] = o.count;
+    assert.equal(priorityMap.error, 5);
+    assert.equal(priorityMap.info, 3);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// data_only omits full metadata keys (Rust L702-720)
+// ---------------------------------------------------------------------------
+
+function testDataOnlyOmitsFullMetadataKeys() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp, { countA: 5, countB: 3 });
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      last: 10,
+      after: 1577836800,
+      before: 1893456000,
+      data_only: true,
+      facets: ['PRIORITY'],
+      histogram: 'PRIORITY',
+    });
+    assert.equal(response.status, 200);
+    for (const forbidden of ['accepted_params', 'default_sort_column', 'default_charts', 'message', 'update_every', 'help']) {
+      assert.equal(forbidden in response, false, `data_only must not carry ${forbidden}`);
+    }
+  });
+}
+
+function testDataOnlyDeltaUsesDeltaVariantKeys() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp, { countA: 5, countB: 3 });
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      last: 10,
+      after: 1577836800,
+      before: 1893456000,
+      data_only: true,
+      delta: true,
+      facets: ['PRIORITY'],
+      histogram: 'PRIORITY',
+    });
+    assert.equal(response.status, 200);
+    for (const forbidden of ['accepted_params', 'default_sort_column', 'default_charts', 'message', 'update_every', 'help']) {
+      assert.equal(forbidden in response, false);
+    }
+    assert.ok('facets_delta' in response);
+    assert.ok('histogram_delta' in response);
+    assert.ok('items_delta' in response);
+    assert.equal('facets' in response, false);
+    assert.equal('histogram' in response, false);
+    assert.equal('items' in response, false);
+    assert.ok(response.available_histograms.length >= 1);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 304 short-circuit
+// ---------------------------------------------------------------------------
+
+function testIfModifiedSinceUnchangedReturns304() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp);
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      data_only: true,
+      if_modified_since: 1_700_000_000_500_000,
+      after: 1577836800,
+      before: 1893456000,
+    });
+    assert.equal(response.status, 304);
+    assert.ok('errorMessage' in response);
+    assert.equal('error' in response, false, 'must use errorMessage, not error');
+  });
+}
+
+function testIfModifiedSinceNewerRunsScan() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp);
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      data_only: true,
+      if_modified_since: 0,
+      after: 1577836800,
+      before: 1893456000,
+    });
+    assert.equal(response.status, 200);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Sampling
+// ---------------------------------------------------------------------------
+
+function testSamplingMathSmallBudget() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp, { countA: 5, countB: 3 });
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      sampling: 2,
+      after: 1577836800,
+      before: 1893456000,
+      facets: ['PRIORITY'],
+    });
+    assert.ok('_sampling' in response);
+    const sampling = response._sampling;
+    assert.equal(sampling.enabled, true);
+    for (const key of ['sampled', 'unsampled', 'estimated']) {
+      assert.ok(key in sampling, `_sampling missing ${key}`);
+    }
+    const stats = response._stats.sdk_explorer;
+    const totalSampling = sampling.sampled + sampling.unsampled + sampling.estimated;
+    assert.ok(totalSampling >= Number(stats.rows_matched), 'total sampling >= rows_matched');
+  });
+}
+
+function testSamplingZeroKeepsLegacyFields() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp, { countA: 5, countB: 3 });
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      sampling: 0,
+      after: 1577836800,
+      before: 1893456000,
+      facets: ['PRIORITY'],
+    });
+    assert.equal('_sampling' in response, false);
+  });
+}
+
+function testSamplingSkippedInDataOnlyWithoutDelta() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp, { countA: 5, countB: 3 });
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      data_only: true,
+      sampling: 20,
+      after: 1577836800,
+      before: 1893456000,
+    });
+    assert.equal('_sampling' in response, false);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Run options: progress, cancellation, timeout
+// ---------------------------------------------------------------------------
+
+function testProgressCallbackFires() {
+  const seen = [];
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp, { countA: 3, countB: 2 });
+    const fn = NetdataJournalFunction.systemdJournal();
+    const opts = new NetdataFunctionRunOptions({ progressCallback: (p) => seen.push(p) });
+    const response = fn.runDirectoryRequestJsonWithOptions(tmp, {
+      last: 10,
+      after: 1577836800,
+      before: 1893456000,
+    }, opts);
+    assert.equal(response.status, 200);
+  });
+  assert.ok(seen.length >= 2, `expected >= 2 progress events, got ${seen.length}`);
+  const first = seen[0];
+  assert.ok(first.currentFile >= 1);
+  assert.ok(first.totalFiles >= 2);
+  assert.ok(first.elapsed >= 0);
+}
+
+function testCancellationCallbackShortCircuits() {
+  let n = 0;
+  const cancel = () => { n++; return n > 1; };
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp, { countA: 4, countB: 4 });
+    const fn = NetdataJournalFunction.systemdJournal();
+    const opts = new NetdataFunctionRunOptions({ cancellationCallback: cancel });
+    const response = fn.runDirectoryRequestJsonWithOptions(tmp, {
+      last: 10,
+      after: 1577836800,
+      before: 1893456000,
+    }, opts);
+    assert.equal(response.status, 499);
+  });
+}
+
+function testTimeoutZeroMeansNoDeadline() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp, { countA: 2, countB: 2 });
+    const fn = NetdataJournalFunction.systemdJournal();
+    const opts = NetdataFunctionRunOptions.fromTimeoutSeconds(0);
+    assert.equal(opts.timeout, null);
+    const response = fn.runDirectoryRequestJsonWithOptions(tmp, {
+      last: 10,
+      after: 1577836800,
+      before: 1893456000,
+    }, opts);
+    assert.equal(response.status, 200);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// State hook
+// ---------------------------------------------------------------------------
+
+function testStateFileMetadataOverridesClassification() {
+  let calls = 0;
+  class TestState extends NetdataFunctionState {
+    fileMetadata(path) {
+      calls++;
+      return new NetdataJournalFileMetadata({ msgLastRealtimeUsec: 0 });
+    }
+  }
+  const state = new TestState();
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp);
+    const fn = NetdataJournalFunction.systemdJournal();
+    const opts = new NetdataFunctionRunOptions({ state });
+    const response = fn.runDirectoryRequestJsonWithOptions(tmp, {
+      data_only: true,
+      if_modified_since: 1,
+      after: 1577836800,
+      before: 1893456000,
+    }, opts);
+    assert.equal(response.status, 304);
+    assert.ok(calls > 0, 'state.file_metadata must have been called');
+  });
+}
+
+function testStateLearnsRealtimeDelta() {
+  const updates = [];
+  class TestState extends NetdataFunctionState {
+    updateFileJournalVsRealtimeDeltaUsec(path, delta) {
+      updates.push({ path, delta });
+    }
+  }
+  const state = new TestState();
+  const baseUsec = 1700000000_000000n;
+  const sourceOffsetUsec = 6_000_000n;
+  withTmp((tmp) => {
+    const sub = join(tmp, 'aa-bb-cc-dd-1111-111111111111');
+    mkdirSync(sub, { recursive: true });
+    const file = join(sub, 'system.journal');
+    const w = Writer.create(file, {
+      machineId: Buffer.alloc(16, 0x11),
+      bootId: Buffer.alloc(16, 0xaa),
+      seqnumId: Buffer.alloc(16, 0x33),
+    });
+    for (let i = 0; i < 3; i++) {
+      const rt = baseUsec + BigInt(i) * 1000n;
+      w.append([
+        { name: 'MESSAGE', value: enc(`msg-${i}`) },
+        { name: 'PRIORITY', value: enc('3') },
+        { name: '_SOURCE_REALTIME_TIMESTAMP', value: enc(String(rt - sourceOffsetUsec)) },
+      ], { realtimeUsec: rt });
+    }
+    w.close();
+    const fn = NetdataJournalFunction.systemdJournal();
+    const opts = new NetdataFunctionRunOptions({ state });
+    fn.runDirectoryRequestJsonWithOptions(tmp, {
+      last: 10,
+      after: 1577836800,
+      before: 1893456000,
+    }, opts);
+  });
+  assert.ok(updates.length > 0, 'state must have been updated with learned delta');
+}
+
+// ---------------------------------------------------------------------------
+// Full response carries full metadata keys
+// ---------------------------------------------------------------------------
+
+function testFullResponseCarriesFullMetadataKeys() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp, { countA: 5, countB: 3 });
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      last: 10,
+      after: 1577836800,
+      before: 1893456000,
+      facets: ['PRIORITY'],
+      histogram: 'PRIORITY',
+    });
+    assert.equal(response.status, 200);
+    for (const required of ['accepted_params', 'default_sort_column', 'default_charts', 'message', 'update_every', 'help', 'last_modified']) {
+      assert.ok(required in response, `full response must carry ${required}`);
+    }
+    assert.ok(response.accepted_params.length >= NETDATA_ACCEPTED_PARAMS.length);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Delta facet option names use profile rendering
+// ---------------------------------------------------------------------------
+
+function testDeltaFacetsUseProfileRenderedNames() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp);
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      last: 100,
+      after: 1577836800,
+      before: 1893456000,
+      data_only: true,
+      delta: true,
+      facets: ['PRIORITY'],
+      histogram: 'PRIORITY',
+    });
+    assert.ok('facets_delta' in response);
+    const priority = response.facets_delta.find(f => f.id === 'PRIORITY');
+    assert.ok(priority);
+    const names = new Set(priority.options.map(o => o.name));
+    assert.ok(names.has('error'), 'must have error, not 3');
+    assert.ok(names.has('info'), 'must have info, not 6');
+    assert.equal(names.has('3'), false);
+    assert.equal(names.has('6'), false);
+  });
+}
+
+function testNonDeltaFacetsUseProfileRenderedNames() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp);
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      last: 100,
+      after: 1577836800,
+      before: 1893456000,
+      facets: ['PRIORITY'],
+    });
+    assert.ok('facets' in response);
+    const priority = response.facets.find(f => f.id === 'PRIORITY');
+    assert.ok(priority);
+    const names = new Set(priority.options.map(o => o.name));
+    assert.ok(names.has('error'));
+    assert.ok(names.has('info'));
+    assert.equal(names.has('3'), false);
+    assert.equal(names.has('6'), false);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Delta histogram integer values
+// ---------------------------------------------------------------------------
+
+function testDeltaHistogramActualDimensionsAreInteger() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp);
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      last: 100,
+      after: 1577836800,
+      before: 1893456000,
+      data_only: true,
+      delta: true,
+      facets: ['PRIORITY'],
+      histogram: 'PRIORITY',
+    });
+    assert.ok('histogram_delta' in response);
+    const chart = response.histogram_delta.chart;
+    const data = chart.result.data;
+    assert.ok(data.length > 0);
+    for (const point of data) {
+      for (const entry of point.slice(1)) {
+        assert.ok(Array.isArray(entry), `histogram entry must be array, got ${typeof entry}`);
+        assert.equal(entry.length, 3);
+        const value = entry[0];
+        if (value != null) {
+          assert.equal(typeof value, 'number', `histogram dimension value must be number, got ${typeof value}: ${value}`);
+          assert.ok(Number.isInteger(value), `histogram dimension value must be integer: ${value}`);
+        }
+      }
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Tail items.after includes +1 for exclusive anchor
+// ---------------------------------------------------------------------------
+
+function testTailItemsAfterIncludesAnchor() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp, { countA: 5, countB: 3 });
+    const fn = NetdataJournalFunction.systemdJournal();
+    const base = 1_700_000_000_000_000;
+    const response = fn.runDirectoryRequestJson(tmp, {
+      data_only: true,
+      delta: true,
+      tail: true,
+      if_modified_since: base - 1_000_000,
+      anchor: base + 2 * 1000,
+      after: 1577836800,
+      before: 1893456000,
+      last: 100,
+      facets: ['PRIORITY'],
+    });
+    assert.equal(response.status, 200);
+    const items = response.items_delta;
+    const returned = response.data.length;
+    const rowsMatched = Number(response._stats.sdk_explorer.rows_matched);
+    const rawAfter = rowsMatched > returned ? rowsMatched - returned : 0;
+    assert.equal(items.after, rawAfter + 1, 'items_delta.after must include +1 for exclusive anchor');
+  });
+}
+
+function testNonTailItemsAfterHasNoAnchorPlusOne() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp, { countA: 5, countB: 3 });
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      last: 3,
+      after: 1577836800,
+      before: 1893456000,
+      facets: ['PRIORITY'],
+    });
+    assert.equal(response.status, 200);
+    const items = response.items;
+    const returned = response.data.length;
+    const rowsMatched = Number(response._stats.sdk_explorer.rows_matched);
+    let rawAfter = rowsMatched - returned;
+    if (rawAfter < 0) rawAfter = 0;
+    assert.equal(items.after, rawAfter);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Filtered tail: empty 200 vs unfiltered 304
+// ---------------------------------------------------------------------------
+
+function testFilteredTailNoMatchReturnsEmpty200() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp, { countA: 5, countB: 3 });
+    const fn = NetdataJournalFunction.systemdJournal();
+    const base = 1_700_000_000_000_000;
+    const response = fn.runDirectoryRequestJson(tmp, {
+      data_only: true,
+      tail: true,
+      if_modified_since: base - 1_000_000,
+      anchor: base + 4 * 1000,
+      after: 1577836800,
+      before: 1893456000,
+      last: 100,
+      selections: { SERVICE: ['svc-a'] },
+    });
+    assert.equal(response.status, 200);
+    assert.ok(Array.isArray(response.data));
+    assert.equal(response.data.length, 0);
+    for (const key of ['status', 'type', 'columns', 'data', 'expires']) {
+      assert.ok(key in response, `200 empty envelope missing key ${key}`);
+    }
+  });
+}
+
+function testUnfilteredTailNoNewDataReturns304() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp, { countA: 5, countB: 3 });
+    const fn = NetdataJournalFunction.systemdJournal();
+    const base = 1_700_000_000_000_000;
+    const response = fn.runDirectoryRequestJson(tmp, {
+      data_only: true,
+      tail: true,
+      if_modified_since: base + 200_000,
+      after: 1577836800,
+      before: 1893456000,
+      last: 100,
+    });
+    assert.equal(response.status, 304);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// last_modified present unless data_only without tail
+// ---------------------------------------------------------------------------
+
+function testLastModifiedPresentUnlessDataOnly() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp, { countA: 5, countB: 3 });
+    const fn = NetdataJournalFunction.systemdJournal();
+    const fullResponse = fn.runDirectoryRequestJson(tmp, {
+      last: 10,
+      after: 1577836800,
+      before: 1893456000,
+      facets: ['PRIORITY'],
+    });
+    assert.ok('last_modified' in fullResponse);
+
+    const dataOnlyResponse = fn.runDirectoryRequestJson(tmp, {
+      last: 10,
+      after: 1577836800,
+      before: 1893456000,
+      data_only: true,
+      if_modified_since: 0,
+      facets: ['PRIORITY'],
+    });
+    assert.equal('last_modified' in dataOnlyResponse, false, 'data_only without tail must not have last_modified');
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Available histograms content
+// ---------------------------------------------------------------------------
+
+function testNonDataOnlyListMatchesRequestFacets() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp, { countA: 5, countB: 3 });
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      last: 10,
+      after: 1577836800,
+      before: 1893456000,
+      data_only: false,
+      facets: ['PRIORITY', 'SERVICE', 'SYSLOG_IDENTIFIER'],
+      histogram: 'PRIORITY',
+    });
+    assert.equal(response.status, 200);
+    const ids = response.available_histograms.map(e => e.id);
+    assert.deepEqual(ids, ['PRIORITY', 'SERVICE', 'SYSLOG_IDENTIFIER']);
+    for (const entry of response.available_histograms) {
+      assert.ok('order' in entry);
+      assert.equal(typeof entry.order, 'number');
+      assert.ok(entry.order >= 1);
+    }
+  });
+}
+
+function testDataOnlyAppendsHistogramField() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp, { countA: 5, countB: 3 });
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      last: 10,
+      after: 1577836800,
+      before: 1893456000,
+      data_only: true,
+      delta: true,
+      facets: ['PRIORITY', 'SERVICE'],
+      histogram: 'SYSLOG_IDENTIFIER',
+    });
+    assert.equal(response.status, 200);
+    const ids = response.available_histograms.map(e => e.id);
+    assert.deepEqual(ids, ['PRIORITY', 'SERVICE', 'SYSLOG_IDENTIFIER']);
+  });
+}
+
+function testDataOnlyDedupesWhenHistogramInFacets() {
+  withTmp((tmp) => {
+    makeTwoMachineDir(tmp, { countA: 5, countB: 3 });
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      last: 10,
+      after: 1577836800,
+      before: 1893456000,
+      data_only: true,
+      delta: true,
+      facets: ['PRIORITY'],
+      histogram: 'PRIORITY',
+    });
+    const ids = response.available_histograms.map(e => e.id);
+    assert.deepEqual(ids, ['PRIORITY']);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Run
+// ---------------------------------------------------------------------------
+
+export async function run() {
+  testStateFieldDefaults();
+  testMetadataDefaults();
+  testDefaultProgressInterval250ms();
+  testFromTimeoutSecondsZero();
+
+  testDataOnlyDropsFacets();
+  testDataOnlyDropsColumnsEnvelope();
+  testDataOnlyOmitsFullMetadataKeys();
+  testDataOnlyDeltaUsesDeltaVariantKeys();
+
+  testDeltaKeysPresent();
+  testDeltaFacetsUseProfileRenderedNames();
+  testNonDeltaFacetsUseProfileRenderedNames();
+  testDeltaHistogramActualDimensionsAreInteger();
+
+  testIfModifiedSinceUnchangedReturns304();
+  testIfModifiedSinceNewerRunsScan();
+  testFilteredTailNoMatchReturnsEmpty200();
+  testUnfilteredTailNoNewDataReturns304();
+
+  testSamplingMathSmallBudget();
+  testSamplingZeroKeepsLegacyFields();
+  testSamplingSkippedInDataOnlyWithoutDelta();
+
+  testProgressCallbackFires();
+  testCancellationCallbackShortCircuits();
+  testTimeoutZeroMeansNoDeadline();
+
+  testStateFileMetadataOverridesClassification();
+  testStateLearnsRealtimeDelta();
+
+  testFullResponseCarriesFullMetadataKeys();
+  testLastModifiedPresentUnlessDataOnly();
+
+  testNonDataOnlyListMatchesRequestFacets();
+  testDataOnlyAppendsHistogramField();
+  testDataOnlyDedupesWhenHistogramInFacets();
+
+  testTailItemsAfterIncludesAnchor();
+  testNonTailItemsAfterHasNoAnchorPlusOne();
+
+  console.log('  PASS netdata chunk 2c (stateful semantics completion)');
+}

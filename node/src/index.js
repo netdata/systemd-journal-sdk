@@ -45,6 +45,12 @@ import {
 import {
   SdJournal, SdJournalOpen, SdJournalOpenDirectory,
 } from './facade.js';
+import {
+  NetdataJournalFunction,
+  NetdataRequest,
+  CombinedResult,
+  JournalFileCollection,
+} from './lib/netdata.js';
 
 // Re-export everything
 export { FileReader, DirectoryReader, Writer, Log };
@@ -86,6 +92,15 @@ export {
   LOG_LIFECYCLE_REASON_ROTATION, LOG_LIFECYCLE_REASON_RETENTION,
 } from './lib/directory-writer.js';
 export { FilterBuilder } from './lib/reader.js';
+export {
+  NetdataJournalFunction,
+  NetdataRequest,
+  CombinedResult,
+  JournalFileCollection,
+  normalizeTimeWindow,
+  journalFileSourceType,
+  collectJournalFiles,
+} from './lib/netdata.js';
 export {
   SdJournal, SdJournalOpen, SdJournalOpenFile, SdJournalOpenDirectory, SdJournalOpenFiles,
   SdJournalClose,
@@ -156,6 +171,10 @@ export default {
   ExplorerStopReason,
   ExplorerStrategy,
   ExplorerUnsupported,
+  NetdataJournalFunction,
+  NetdataRequest,
+  CombinedResult,
+  JournalFileCollection,
   SdJournal, SdJournalOpen, SdJournalOpenDirectory,
   openJournal, createJournal, stringField, binaryField,
   FIELD_NAME_POLICY_JOURNALD, FIELD_NAME_POLICY_JOURNAL_APP, FIELD_NAME_POLICY_RAW,
