@@ -275,6 +275,63 @@ Failure handling:
 - Created as pending child of the docs-and-parity program; activates after
   SOW-0104.
 
+### 2026-06-12
+
+- Activated 2026-06-12; activation committed as `bd776ac7`.
+- Chunk 1 (Explorer port): the first minimax run died silently (0-byte
+  output, no changes); the relaunch delivered `node/src/lib/explorer.js`
+  (1781 lines) plus wiring and tests but ended mid-debug; the
+  continuation run also died silently (second 0-byte minimax failure,
+  recorded). The remaining defect was pinned by the project manager: a
+  test assert-throws validator regexed `ALL_VALUES` against the actual
+  `AllValues` message — typo-class, fixed directly along with four
+  unused test imports. Verification by the project manager: full Node
+  package suite green (conformance manifest + package tests); defaults
+  spot-checked (limit 200, buckets 150, 8192-row control checks, 250ms
+  progress); no directory-explore extension exists (parity-faithful
+  from the start, unlike the Python chunk 1). Chunk 1 committed as
+  `c2d2c11f`.
+- Chunk 2 begins with the Python-proven sub-chunk split (2a foundation,
+  2b request/discovery/merge/envelope, 2c stateful semantics); on a
+  third silent minimax failure the chunk series moves to glm per the
+  failure-handling clause.
+- The third silent minimax failure occurred on the first chunk-2a
+  launch (0-byte output, no files). ROUTING CHANGE RECORDED: the
+  chunk-2 series implementer is now `llm-netdata-cloud/glm-5.1`;
+  minimax is excluded from further implementation in this SOW and
+  available as a reviewer for surfaces it did not implement (chunk 1
+  Explorer remains minimax work; glm's netdata work gets the same
+  conflict treatment in reviews as in SOW-0104, with the other four
+  reviewers covering each implementer's surfaces independently).
+- glm chunk 2a landed first-try (netdata foundation, 58/22 byte-exact,
+  verified). Chunk 2b: first launch produced nothing (run stalled); the
+  relaunch delivered request handling/discovery/merge/envelope (1689
+  lines, verified green). Chunk 2c took four launches: two stall-kills
+  (EXIT=124 at the 1800s guard, buffered output lost), one productive
+  kill mid-iteration, then a solo success delivering the stateful
+  semantics. Along the way the project manager pinned and fixed (typo-
+  class) a property-vs-call bug in the pre-scan 304 path
+  (`reader.header` is a property; the call threw into a broad catch
+  making every file look stale -> wrongful 304), and identified the
+  filtered-tail failure as MISSING page-window anchor machinery, which
+  the final 2c run ported. Chunk 2 committed as `cb1d0899` (+3576).
+- Infrastructure diagnosis recorded: the stall-kills cluster on the
+  nova-hosted model slots (minimax 3x, glm 4x) including under an IDLE
+  nova, while externally-backed pool members completed reliably all
+  day. Chunk 3 first launches on glm stalled twice (full and compact
+  prompts); ROUTING ROTATION RECORDED: chunk 3 implementer is
+  `llm-netdata-cloud/deepseek-v4-pro`. deepseek landed chunk 3a
+  first-try: wrapper CLI with 8 end-to-end tests (cancel-immediately
+  -> 499 per the Rust wrapper), `--node`/`--node-interpreter` fourth
+  peer in both comparator runners with defaults unchanged; verified
+  green by the project manager.
+- Review-conflict ledger: minimax implemented chunk 1 (Explorer); glm
+  chunks 2a-2c; deepseek chunk 3; at review time each implementer's
+  surfaces are covered independently by the four non-author reviewers.
+- Chunk 3b launched on deepseek (d.ts + facade visitor + lint tidy +
+  README).
+
+
 ## Validation
 
 Acceptance criteria evidence:

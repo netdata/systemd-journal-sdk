@@ -1,7 +1,7 @@
 import * as support from '../support.js';
 
 export async function run() {
-  const { mkdtempSync, rmSync, tmpdir, join, assert, Log, FileReader, fsprgGenMK, fsprgGenState0, fsprgEvolve, fsprgSeek, fsprgGetKey, fsprgGetEpoch, verifyFile, VerificationError, safeReadFileSync, safeReaddirSync, packageRoot, repoRoot, listJavaScriptFiles, run, journalFiles, verifyJournalFileIfAvailable, journalctlDirectoryRowsIfAvailable } = support;
+  const { mkdtempSync, rmSync, tmpdir, join, assert, Log, FileReader, SdJournalOpen, SdJournalNext, SdJournalVisitUniqueValues, fsprgGenMK, fsprgGenState0, fsprgEvolve, fsprgSeek, fsprgGetKey, fsprgGetEpoch, verifyFile, VerificationError, safeReadFileSync, safeReaddirSync, packageRoot, repoRoot, listJavaScriptFiles, run, journalFiles, verifyJournalFileIfAvailable, journalctlDirectoryRowsIfAvailable } = support;
 
   {
     const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
@@ -468,6 +468,55 @@ export async function run() {
           assert.deepEqual(key, Buffer.from(k.key_hex, 'hex'), `key mismatch for ${vec.seed_desc} epoch ${ep.epoch} idx ${k.idx}`);
         }
       }
+    }
+  }
+
+  // SdJournalVisitUniqueValues tests
+  {
+    const tempDir = mkdtempSync(join(tmpdir(), 'node-journal-test-'));
+    try {
+      const config = {
+        source: 'system',
+        machineId: Buffer.from('00112233445566778899aabbccddeeff', 'hex'),
+      };
+      const log = new Log(tempDir, config);
+      for (let i = 0; i < 10; i++) {
+        log.append([
+          { name: 'MESSAGE', value: `visit-unique-${i}` },
+          { name: 'PRIORITY', value: String(5 + (i % 3)) },
+        ]);
+      }
+      log.close();
+
+      const journal = SdJournalOpen(log.journalDirectory(), 0);
+      SdJournalNext(journal);
+
+      const collected = [];
+      SdJournalVisitUniqueValues(journal, 'PRIORITY', (value) => {
+        collected.push(value.toString('utf8'));
+      });
+      assert.deepEqual(collected.sort(), ['5', '6', '7']);
+
+      // Empty field returns empty collection
+      const empty = [];
+      SdJournalVisitUniqueValues(journal, 'NONEXISTENT', (value) => {
+        empty.push(value);
+      });
+      assert.deepEqual(empty, []);
+
+      // Visitor throw aborts enumeration (Python-compatible abort-by-exception)
+      const aborted = [];
+      assert.throws(() => {
+        SdJournalVisitUniqueValues(journal, 'PRIORITY', (value) => {
+          aborted.push(value.toString('utf8'));
+          if (aborted.length >= 2) throw new Error('abort');
+        });
+      }, /abort/);
+      assert.equal(aborted.length, 2);
+
+      journal.close();
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
     }
   }
 

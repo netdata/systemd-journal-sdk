@@ -334,6 +334,10 @@ node cmd/journalctl/index.js --file ./active.journal --follow --no-tail --boot=a
 - `SdJournalRestartFields(journal)` / `SdJournalEnumerateField(journal)` -
   stateful field-name enumeration
 - `SdJournalQueryUnique(journal, fieldName)` - Get unique `[fieldName, Buffer]` values for a field
+- `SdJournalVisitUniqueValues(journal, fieldName, visitor)` - Visit each unique value
+  with a callback; the visitor receives a `Buffer` per distinct value and should
+  return `undefined` (or any falsy) to continue. Throwing aborts enumeration
+  (Python-compatible abort-by-exception).
 - `SdJournalQueryUniqueState(journal, fieldName)` /
   `SdJournalRestartUnique(journal)` /
   `SdJournalEnumerateAvailableUnique(journal)` - stateful unique-value enumeration
@@ -381,6 +385,120 @@ retention should copy the returned `Buffer`.
 - `log.journalDirectory()` - Return the machine-id journal directory
 - `log.machineID()`, `log.bootID()`, `log.sourceName()` - Return the writer
   identity and source prefix
+
+### Explorer API
+
+The Explorer provides structured querying, filtering, faceting, and
+histogram aggregation over journal files. All classes are exported from
+`@netdata/systemd-journal-sdk`.
+
+```javascript
+import {
+  ExplorerQuery, ExplorerFilter, ExplorerControl,
+  ExplorerStrategy, ExplorerResult, ExplorerStats,
+  Direction, ExplorerAnchor, ExplorerAnchorKind,
+  exploreWithStrategy, exploreWithStrategyAndControl,
+} from '@netdata/systemd-journal-sdk';
+```
+
+Key classes:
+
+- `ExplorerQuery` - Query configuration: time window (`afterRealtimeUsec`,
+  `beforeRealtimeUsec`), `anchor`, `direction`, `limit`, field `filters`,
+  `facets`, `histogram` field, `ftsPatterns`, `sampling` budget, and
+  `stopWhenRowsFull`.
+- `ExplorerFilter` / `ExplorerFtsPattern` - Field-value filters and
+  full-text search patterns with wildcard (`*`) support.
+- `ExplorerControl` - Deadline, cancellation, progress, and
+  matched-row callbacks.
+- `ExplorerResult` - Rows (`ExplorerRow`), facets (`Map<field, Map<value, count>>`),
+  `ExplorerHistogram`, `columnFields`, `ExplorerStats`, and optional
+  `ExplorerComparison` for index-vs-traversal benchmarking.
+- `ExplorerStats` - Detailed counters for rows examined, matched,
+  unsampled, estimated, DATA-object cache hits/misses, FTS scans,
+  facet/histogram updates, and early-stop events.
+- `exploreWithStrategy(reader, query, strategy)` and
+  `exploreWithStrategyAndControl(reader, query, strategy, control)` run
+  queries against a `FileReader`.
+
+### Netdata Function API
+
+The Netdata function surface provides the logs query UI that Netdata
+dashboards use. It includes request decoding, source discovery, merging
+results across files, and building response envelopes.
+
+```javascript
+import {
+  NetdataJournalFunction, NetdataFunctionConfig,
+  NetdataRequest, CombinedResult, JournalFileCollection,
+  SystemdJournalProfile, SystemdJournalPluginProfile,
+  DisplayContext, normalizeTimeWindow,
+  journalFileSourceType, collectJournalFiles,
+} from '@netdata/systemd-journal-sdk';
+```
+
+Key classes:
+
+- `NetdataFunctionConfig` - Configuration with field-name lists
+  (`defaultFacets`, `defaultViewKeys`), histogram default, reader
+  options, and explorer strategy. `static systemdJournal()` returns
+  the default config.
+- `NetdataRequest` - Parsed request: time window, anchor, direction,
+  limit, `dataOnly`/`delta`/`tail` flags, sampling, source selection,
+  filters, facets, histogram field, FTS query. `static parse(value,
+  config)` decodes a raw JSON payload.
+- `NetdataJournalFunction` - Orchestrates source discovery, request
+  handling, and envelope assembly. `configure(config)` sets the
+  function config; `discover()` finds journal files; `info(response)`
+  builds a Netdata-compatible info envelope; `execute(request)` runs
+  the query and returns a Netdata-compatible response.
+- `CombinedResult` - Merges per-file `ExplorerResult` outputs with
+  time-sorted deduplication, facet accumulation, and histogram merging.
+- `JournalFileCollection`, `normalizeTimeWindow()`,
+  `journalFileSourceType()`, `collectJournalFiles()` - Source
+  discovery and time-window normalization.
+- `NetdataFunctionProfile` / `SystemdJournalProfile` /
+  `SystemdJournalPluginProfile` - Field-value display transformations
+  for systemd journal fields (priority names, syslog facilities,
+  errno names, capability bitmap decoding, message-ID names, and
+  boot-ID timestamp resolution).
+
+### netdata_function_wrapper CLI
+
+The wrapper CLI runs the Netdata function as a standalone process for
+testing and integration with Netdata's plugins system:
+
+```bash
+node cmd/netdata_function_wrapper.js --test systemd-journal \
+  --dir /var/log/journal
+```
+
+Options:
+
+- `--test <function-name>` - Function name (required: `systemd-journal`)
+- `--dir <path>` - Journal directory to scan
+- `--timeout <seconds>` - Per-request timeout (0 = none)
+- `--progress-jsonl <path>` - Write progress reports as JSONL lines
+- `--cancel-immediately` - Cancel request before processing any file
+- `--cancel-after-progress <n>` - Cancel after `n` progress reports
+
+### TypeScript Types
+
+TypeScript type definitions are provided in `index.d.ts` (hand-written,
+not generated). The `types` field in `package.json` points to this file,
+so importing the package gives full type support in TypeScript projects.
+
+The definitions cover the complete public surface: `FileReader`,
+`DirectoryReader`, `Writer`, `Log`, the Explorer classes, the `SdJournal`
+facade and standalone wrapper functions, Netdata function classes,
+utility functions (binary, hash, compression, entry, header parsing),
+verification, Forward Secure Sealing, and writer locking.
+
+Run the typecheck:
+
+```bash
+npm run typecheck
+```
 
 ## Limitations
 

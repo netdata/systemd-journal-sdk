@@ -378,6 +378,17 @@ export class SdJournal {
     return values.map(v => [fieldName, Buffer.from(v)]);
   }
 
+  visitUniqueValues(fieldName, visitor) {
+    const seen = new Set();
+    for (const value of this.reader.queryUnique(fieldName)) {
+      const key = Buffer.isBuffer(value) ? value.toString('binary') : String(value);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      visitor(Buffer.from(value));
+    }
+    return null;
+  }
+
   queryUniqueState(fieldName) {
     const values = this.reader.queryUnique(fieldName);
     this.uniqueItems = values.map(v => payloadFromFieldValue(fieldName, v));
@@ -532,6 +543,11 @@ export function SdJournalEnumerateField(journal) {
 
 export function SdJournalQueryUnique(journal, fieldName) {
   return journal.queryUnique(fieldName);
+}
+
+export function SdJournalVisitUniqueValues(journal, fieldName, visitor) {
+  journal.visitUniqueValues(fieldName, visitor);
+  return null;
 }
 
 export function SdJournalQueryUniqueState(journal, fieldName) {

@@ -5,6 +5,7 @@
   "license": "GPL-3.0-or-later",
   "type": "module",
   "main": "src/index.js",
+  "types": "index.d.ts",
   "bin": {
     "journalctl": "cmd/journalctl/index.js",
     "adapter": "adapter/index.js"
@@ -12,7 +13,8 @@
   "scripts": {
     "test": "node test/all.js",
     "adapter": "node adapter/index.js",
-    "journalctl": "node cmd/journalctl/index.js"
+    "journalctl": "node cmd/journalctl/index.js",
+    "typecheck": "npx --cache ../.local/caches/npm tsc --noEmit --strict index.d.ts"
   },
   "engines": {
     "node": ">=22.15.0"

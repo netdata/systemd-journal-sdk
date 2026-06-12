@@ -19,6 +19,7 @@ import { DirectoryReader } from '../src/lib/directory-reader.js';
 import { parseDataObject, parseEntryObject } from '../src/lib/entry.js';
 import {
   exportEntry, jsonEntry, SdJournalOpen, SdJournalOpenFiles, SdJournalQueryUnique,
+  SdJournalVisitUniqueValues,
   SdJournalNext, SdJournalPrevious, SdJournalSeekRealtimeUsec,
   SdJournalSeekCursor,
   SdJournalGetEntry, SdJournalGetCursor, SdJournalTestCursor,
@@ -264,6 +265,7 @@ export {
   SdJournalOpen,
   SdJournalOpenFiles,
   SdJournalQueryUnique,
+  SdJournalVisitUniqueValues,
   SdJournalNext,
   SdJournalPrevious,
   SdJournalSeekRealtimeUsec,

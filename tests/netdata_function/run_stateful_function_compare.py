@@ -52,6 +52,8 @@ class CommandConfig:
     save_json_dir: Path | None
     python: Path | None = None
     python_interpreter: Path | None = None
+    node: Path | None = None
+    node_interpreter: Path | None = None
 
 
 @dataclass
@@ -221,6 +223,17 @@ def run_pair(
             config.process_timeout_seconds,
             python_interpreter=config.python_interpreter,
         )
+    node_run: dict[str, Any] | None = None
+    if config.node is not None:
+        node_run = run_command(
+            config.node,
+            config.function,
+            config.directory,
+            payload,
+            config.timeout_seconds,
+            config.process_timeout_seconds,
+            node_interpreter=config.node_interpreter,
+        )
     comparison = {
         "ok": False,
         "reason": "one or both commands did not return JSON",
@@ -243,12 +256,32 @@ def run_pair(
             **comparison,
             "python_vs_sdk": python_vs_sdk,
             "python_vs_plugin": python_vs_plugin,
-            "ok": (
-                comparison.get("ok", False)
-                and python_vs_sdk.get("ok", False)
-                and python_vs_plugin.get("ok", False)
-            ),
         }
+    if node_run is not None:
+        node_vs_sdk = (
+            compare(node_run["json"], sdk_run["json"])
+            if isinstance(node_run["json"], dict) and isinstance(sdk_run["json"], dict)
+            else {"ok": False, "checks": {}, "reason": "node or sdk missing JSON"}
+        )
+        node_vs_plugin = (
+            compare(node_run["json"], plugin_run["json"])
+            if isinstance(node_run["json"], dict) and isinstance(plugin_run["json"], dict)
+            else {"ok": False, "checks": {}, "reason": "node or plugin missing JSON"}
+        )
+        comparison = {
+            **comparison,
+            "node_vs_sdk": node_vs_sdk,
+            "node_vs_plugin": node_vs_plugin,
+        }
+    # Aggregate ok across all peer pairs present.
+    ok_keys = [comparison.get("ok", False)]
+    if "python_vs_sdk" in comparison:
+        ok_keys.append(comparison["python_vs_sdk"].get("ok", False))
+        ok_keys.append(comparison["python_vs_plugin"].get("ok", False))
+    if "node_vs_sdk" in comparison:
+        ok_keys.append(comparison["node_vs_sdk"].get("ok", False))
+        ok_keys.append(comparison["node_vs_plugin"].get("ok", False))
+    comparison["ok"] = all(ok_keys)
     if config.save_json_dir is not None:
         config.save_json_dir.mkdir(parents=True, exist_ok=True)
         prefix = f"{sequence}-{step}"
@@ -267,6 +300,11 @@ def run_pair(
                 json.dumps(python_run["json"], indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
+        if node_run is not None and isinstance(node_run["json"], dict):
+            (config.save_json_dir / f"{prefix}-node.json").write_text(
+                json.dumps(node_run["json"], indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
     out: dict[str, Any] = {
         "step": step,
         "request_sha256": request_digest(request),
@@ -279,6 +317,9 @@ def run_pair(
     if python_run is not None:
         out["python"] = {key: value for key, value in python_run.items() if key != "json"}
         out["python_json"] = python_run["json"]
+    if node_run is not None:
+        out["node"] = {key: value for key, value in node_run.items() if key != "json"}
+        out["node_json"] = node_run["json"]
     return out
 
 
@@ -286,7 +327,7 @@ def clean_step_report(step: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in step.items()
-        if key not in {"sdk_json", "plugin_json", "python_json"}
+        if key not in {"sdk_json", "plugin_json", "python_json", "node_json"}
     }
 
 
@@ -604,6 +645,24 @@ def main() -> int:
         default=Path(sys.executable),
         help="Python interpreter used to run --python (default: current interpreter).",
     )
+    parser.add_argument(
+        "--node",
+        type=Path,
+        default=None,
+        help=(
+            "Optional fourth peer: path to the Node Netdata function "
+            "wrapper script (e.g. node/cmd/netdata_function_wrapper.js). "
+            "When provided, the runner invokes it as "
+            "`<node-interpreter> <node> ...` and compares the response "
+            "against the SDK and plugin peers."
+        ),
+    )
+    parser.add_argument(
+        "--node-interpreter",
+        type=Path,
+        default=Path("node"),
+        help="Node interpreter used to run --node (default: node).",
+    )
     parser.add_argument("--function", default="systemd-journal")
     parser.add_argument(
         "--dir",
@@ -734,6 +793,8 @@ def main() -> int:
         save_json_dir=args.save_json_dir,
         python=args.python,
         python_interpreter=args.python_interpreter,
+        node=args.node,
+        node_interpreter=args.node_interpreter,
     )
     report: dict[str, Any] = {
         "function": args.function,
@@ -744,6 +805,11 @@ def main() -> int:
         "python_peer": (
             {"wrapper": str(args.python), "interpreter": str(args.python_interpreter)}
             if args.python is not None
+            else None
+        ),
+        "node_peer": (
+            {"wrapper": str(args.node), "interpreter": str(args.node_interpreter)}
+            if args.node is not None
             else None
         ),
         "sequences": [],

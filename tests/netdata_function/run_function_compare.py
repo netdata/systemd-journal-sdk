@@ -37,6 +37,7 @@ def build_command(
     timeout_seconds: int,
     *,
     python_interpreter: Optional[Path] = None,
+    node_interpreter: Optional[Path] = None,
 ) -> list[str]:
     if python_interpreter is not None:
         # Python wrappers are invoked as `interpreter wrapper.py ...` so
@@ -45,6 +46,20 @@ def build_command(
         # Rust/Go wrappers.
         return [
             str(python_interpreter),
+            str(binary),
+            "--test",
+            function,
+            "--dir",
+            str(directory),
+            "--timeout",
+            str(timeout_seconds),
+        ]
+    if node_interpreter is not None:
+        # Node wrappers are invoked as `node wrapper.js ...` so the
+        # operator can pin a specific Node binary. The wrapper script
+        # receives the same flags as the Rust/Go/Python wrappers.
+        return [
+            str(node_interpreter),
             str(binary),
             "--test",
             function,
@@ -73,6 +88,7 @@ def run_command(
     process_timeout_seconds: int,
     *,
     python_interpreter: Optional[Path] = None,
+    node_interpreter: Optional[Path] = None,
 ) -> dict[str, Any]:
     command = build_command(
         binary,
@@ -80,6 +96,7 @@ def run_command(
         directory,
         timeout_seconds,
         python_interpreter=python_interpreter,
+        node_interpreter=node_interpreter,
     )
     started = time.perf_counter()
     timed_out = False
@@ -135,6 +152,8 @@ def run_case(
     save_json_dir: Path | None,
     python: Optional[Path] = None,
     python_interpreter: Optional[Path] = None,
+    node: Optional[Path] = None,
+    node_interpreter: Optional[Path] = None,
 ) -> dict[str, Any]:
     runs = []
     request_payload = request.read_bytes()
@@ -166,6 +185,17 @@ def run_case(
                 process_timeout_seconds,
                 python_interpreter=python_interpreter,
             )
+        node_run: Optional[dict[str, Any]] = None
+        if node is not None:
+            node_run = run_command(
+                node,
+                function,
+                directory,
+                request_payload,
+                timeout_seconds,
+                process_timeout_seconds,
+                node_interpreter=node_interpreter,
+            )
         comparison = {
             "ok": False,
             "checks": {},
@@ -188,12 +218,32 @@ def run_case(
                 **comparison,
                 "python_vs_sdk": python_vs_sdk,
                 "python_vs_plugin": python_vs_plugin,
-                "ok": (
-                    comparison.get("ok", False)
-                    and python_vs_sdk.get("ok", False)
-                    and python_vs_plugin.get("ok", False)
-                ),
             }
+        if node is not None and isinstance(node_run, dict):
+            node_vs_sdk = (
+                compare(node_run["json"], sdk_run["json"])
+                if isinstance(node_run["json"], dict) and isinstance(sdk_run["json"], dict)
+                else {"ok": False, "checks": {}, "reason": "node or sdk missing JSON"}
+            )
+            node_vs_plugin = (
+                compare(node_run["json"], plugin_run["json"])
+                if isinstance(node_run["json"], dict) and isinstance(plugin_run["json"], dict)
+                else {"ok": False, "checks": {}, "reason": "node or plugin missing JSON"}
+            )
+            comparison = {
+                **comparison,
+                "node_vs_sdk": node_vs_sdk,
+                "node_vs_plugin": node_vs_plugin,
+            }
+        # Aggregate ok across all peer pairs present.
+        ok_keys = [comparison.get("ok", False)]
+        if "python_vs_sdk" in comparison:
+            ok_keys.append(comparison["python_vs_sdk"].get("ok", False))
+            ok_keys.append(comparison["python_vs_plugin"].get("ok", False))
+        if "node_vs_sdk" in comparison:
+            ok_keys.append(comparison["node_vs_sdk"].get("ok", False))
+            ok_keys.append(comparison["node_vs_plugin"].get("ok", False))
+        comparison["ok"] = all(ok_keys)
         if save_json_dir is not None:
             save_json_dir.mkdir(parents=True, exist_ok=True)
             case_name = request.stem
@@ -212,6 +262,11 @@ def run_case(
                     json.dumps(python_run["json"], indent=2, sort_keys=True) + "\n",
                     encoding="utf-8",
                 )
+            if isinstance(node_run, dict) and isinstance(node_run["json"], dict):
+                (save_json_dir / f"{case_name}-run{repetition + 1}-node.json").write_text(
+                    json.dumps(node_run["json"], indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
         plugin_report = {k: v for k, v in plugin_run.items() if k != "json"}
         sdk_report = {k: v for k, v in sdk_run.items() if k != "json"}
         run_entry: dict[str, Any] = {
@@ -221,6 +276,8 @@ def run_case(
         }
         if python is not None and isinstance(python_run, dict):
             run_entry["python"] = {k: v for k, v in python_run.items() if k != "json"}
+        if node is not None and isinstance(node_run, dict):
+            run_entry["node"] = {k: v for k, v in node_run.items() if k != "json"}
         runs.append(run_entry)
     return {
         "request": str(request),
@@ -252,6 +309,24 @@ def main() -> int:
         default=Path(sys.executable),
         help="Python interpreter used to run --python (default: current interpreter).",
     )
+    parser.add_argument(
+        "--node",
+        type=Path,
+        default=None,
+        help=(
+            "Optional fourth peer: path to the Node Netdata function "
+            "wrapper script (e.g. node/cmd/netdata_function_wrapper.js). "
+            "When provided, the runner invokes it as "
+            "`<node-interpreter> <node> ...` and compares the response "
+            "against the SDK and plugin peers."
+        ),
+    )
+    parser.add_argument(
+        "--node-interpreter",
+        type=Path,
+        default=Path("node"),
+        help="Node interpreter used to run --node (default: node).",
+    )
     parser.add_argument("--function", default="systemd-journal")
     parser.add_argument("--dir", type=Path, required=True)
     parser.add_argument("--request", type=Path, action="append", required=True)
@@ -277,6 +352,11 @@ def main() -> int:
             if args.python is not None
             else None
         ),
+        "node_peer": (
+            {"wrapper": str(args.node), "interpreter": str(args.node_interpreter)}
+            if args.node is not None
+            else None
+        ),
         "cases": [
             run_case(
                 args.sdk,
@@ -290,6 +370,8 @@ def main() -> int:
                 args.save_json_dir,
                 python=args.python,
                 python_interpreter=args.python_interpreter,
+                node=args.node,
+                node_interpreter=args.node_interpreter,
             )
             for request in args.request
         ],

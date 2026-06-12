@@ -113,7 +113,7 @@ export {
   SdJournalGetCursor, SdJournalTestCursor,
   SdJournalEnumerateFields, SdJournalRestartFields, SdJournalEnumerateField,
   SdJournalQueryUnique, SdJournalQueryUniqueState, SdJournalRestartUnique,
-  SdJournalEnumerateAvailableUnique, SdJournalListBoots,
+  SdJournalEnumerateAvailableUnique, SdJournalVisitUniqueValues, SdJournalListBoots,
   SdJournalSetOutputMode, SdJournalProcessOutput,
   OUTPUT_MODE_DEFAULT, OUTPUT_MODE_JSON, OUTPUT_MODE_EXPORT,
 } from './facade.js';

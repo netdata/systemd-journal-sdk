@@ -238,7 +238,7 @@ export class NetdataFunctionConfig {
 // ---------------------------------------------------------------------------
 
 export class NetdataFunctionProfile {
-  fieldDisplayValue(context, scope, field, value) {
+  fieldDisplayValue(_context, _scope, _field, value) {
     return bytesToText(value);
   }
 
@@ -685,7 +685,6 @@ import {
   ExplorerFieldMode,
   ExplorerFilter,
   ExplorerQuery,
-  ExplorerResult,
   ExplorerStats,
   ExplorerStrategy,
   ExplorerStopReason,
@@ -1314,7 +1313,7 @@ function _buildSourceSummary(paths) {
   return { id: '__logs_sources', options };
 }
 
-function _addSummaryPath(summary, path, size) {
+function _addSummaryPath(summary, _path, size) {
   summary.files += 1;
   summary.totalSize += size;
 }
@@ -1434,7 +1433,7 @@ function _rowFieldsMap(located) {
   return fields;
 }
 
-function _buildDataRow(located, columnOrder, direction, config, profile, context) {
+function _buildDataRow(located, columnOrder, _direction, _config, profile, context) {
   const fields = _rowFieldsMap(located);
   const row = [];
   for (const column of columnOrder) {
@@ -1457,7 +1456,7 @@ function _buildDataRow(located, columnOrder, direction, config, profile, context
   return row;
 }
 
-function _buildFacetsPayload(request, config, combined, profile) {
+function _buildFacetsPayload(request, _config, combined, profile) {
   const context = new DisplayContext();
   const out = [];
   for (let orderIndex = 0; orderIndex < request.facets.length; orderIndex++) {
@@ -1545,7 +1544,6 @@ function _histogramChartMetadata(field, histogram, dimensionIds, profile) {
   const ids = [];
   const names = [];
   const colors = new Array(dimensionIds.length).fill(null);
-  const units = new Array(dimensionIds.length).fill('events');
   const minValues = [];
   const maxValues = [];
   const avgValues = [];
@@ -1613,7 +1611,7 @@ function _histogramChartMetadata(field, histogram, dimensionIds, profile) {
   };
 }
 
-function _buildHistogramPayload(field, histogram, combined, request, profile) {
+function _buildHistogramPayload(field, histogram, combined, _request, profile) {
   if (!histogram || !histogram.buckets || histogram.buckets.length === 0) {
     return _emptyHistogramChartEnvelope(field);
   }
@@ -1783,7 +1781,7 @@ export class NetdataFunctionRunOptions {
   }
 }
 
-function _buildQueryResponse(request, config, combined, paths, profile) {
+function _buildQueryResponse(request, config, combined, _paths, profile) {
   const columnsOrder = _buildColumnOrder(request, config, combined);
   const columnsMeta = _buildColumnsMetadata(columnsOrder);
   const context = new DisplayContext();
@@ -1859,7 +1857,7 @@ function _netdataReorderKey(value) {
   return trimmed.toLowerCase();
 }
 
-function _buildAvailableHistograms(request, combined) {
+function _buildAvailableHistograms(request, _combined) {
   const seenFields = new Set();
   const fields = [];
   for (const field of request.facets) {
