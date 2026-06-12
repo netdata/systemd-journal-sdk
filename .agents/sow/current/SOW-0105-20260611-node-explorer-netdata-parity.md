@@ -364,6 +364,32 @@ Failure handling:
   full Node package suite green incl. typecheck. Node needed 6
   comparator fix rounds versus Python's 14 — the inherited playbook
   halved convergence.
+- Reviewer round 1: glm YES (treated the d.ts drift as non-blocking on
+  a typecheck-passes argument — overruled by the SOW's own ".d.ts
+  covers the public API" criterion), mimo NO, qwen NO, deepseek NO,
+  kimi produced findings but no verdict (cutoff; also went off-script
+  offering to implement — it changed nothing; retried in round 2).
+  Project-manager-validated blockers, all fixed:
+  - per-file ExplorerControl never passed to the explore call (qwen;
+    dead deadline/cancel mid-file, masked by between-file checks);
+  - capEffectiveDisplay 32-bit `>>>` truncation dropping capabilities
+    32+ (qwen); BigInt rewrite;
+  - fabricated NetdataJournalFunction/.d.ts surface + wrong matchedRow
+    type (deepseek/mimo/qwen/kimi); rewritten to the real surface plus
+    a mechanical conformance test (tsc cannot catch declaration-vs-JS
+    drift) whose FIRST RUN caught WriterLock missing from the public
+    exports — exported (project-manager mechanical fix);
+  - anchor-outside-window reset-to-Auto missing (kimi; ported);
+  - index.d.ts absent from the npm files array (kimi; the declared
+    types would not have shipped);
+  - README documented the same fabricated API (kimi; corrected);
+  - 'binary' -> 'latin1' encoding minors (deepseek).
+  Both parity gates reconfirmed post-fixes (10/10, 5/5); suite and
+  typecheck green. Fixes committed; round 2 launches with identical
+  scope plus fix notes.
+- Follow-up noted for mapping: port the d.ts-style export-conformance
+  test pattern to Python (its __init__ exports lack an equivalent
+  mechanical check) — SOW-0106 or a hygiene SOW.
 
 
 ## Validation
