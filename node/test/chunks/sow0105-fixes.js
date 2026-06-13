@@ -396,6 +396,72 @@ function testConformanceMethods() {
   }
 }
 
+// d.ts static methods declared on these classes must exist (round-4 review
+// found a phantom FileReader.openBuffer static).
+const DECLARED_STATICS = {
+  FileReader: ['open'],
+  DirectoryReader: ['open', 'openFiles'],
+};
+
+// Static methods that must NOT exist (removed phantoms — guards re-addition).
+const FORBIDDEN_STATICS = {
+  FileReader: ['openBuffer'],
+};
+
+function testConformanceStatics() {
+  for (const [className, statics] of Object.entries(DECLARED_STATICS)) {
+    const cls = actualModule[className];
+    for (const s of statics) {
+      assert.equal(typeof cls[s], 'function',
+        `d.ts declares static ${className}.${s}() but it is missing`);
+    }
+  }
+  for (const [className, statics] of Object.entries(FORBIDDEN_STATICS)) {
+    const cls = actualModule[className];
+    for (const s of statics) {
+      assert.equal(cls[s], undefined,
+        `static ${className}.${s} should not exist (phantom removed from d.ts)`);
+    }
+  }
+}
+
+// The FileHeader interface must match the runtime header object's keys, so
+// camelCase/snake_case drift (round-4 review) fails the suite.
+function testConformanceFileHeader() {
+  const tmp = mkdtempSync(join(tmpdir(), 'node-hdr-conf-'));
+  try {
+    const p = join(tmp, 'h.journal');
+    const w = Writer.create(p, {
+      machineId: Buffer.from('33'.repeat(16), 'hex'),
+      bootId: Buffer.from('11'.repeat(16), 'hex'),
+      seqnumId: Buffer.from('22'.repeat(16), 'hex'),
+      fileId: Buffer.from('44'.repeat(16), 'hex'),
+    });
+    w.append([{ name: 'MESSAGE', value: 'x' }], { realtimeUsec: 1700000000000000n });
+    w.closeOffline();
+    const r = FileReader.open(p);
+    const header = r.header;
+    // Every field the d.ts FileHeader interface documents (kept in sync here)
+    // must exist on the runtime header object.
+    const declared = ['signature', 'compatible_flags', 'incompatible_flags',
+      'state', 'file_id', 'machine_id', 'tail_entry_boot_id', 'seqnum_id',
+      'header_size', 'arena_size', 'data_hash_table_offset', 'data_hash_table_size',
+      'field_hash_table_offset', 'field_hash_table_size', 'tail_object_offset',
+      'n_objects', 'n_entries', 'tail_entry_seqnum', 'head_entry_seqnum',
+      'entry_array_offset', 'head_entry_realtime', 'tail_entry_realtime',
+      'tail_entry_monotonic', 'n_data', 'n_fields', 'n_tags', 'n_entry_arrays',
+      'data_hash_chain_depth', 'field_hash_chain_depth', 'tail_entry_array_offset',
+      'tail_entry_array_n_entries', 'tail_entry_offset'];
+    for (const field of declared) {
+      assert.ok(field in header,
+        `d.ts FileHeader declares ${field} but it is missing from the runtime header`);
+    }
+    r.close();
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 function testConformanceConstants() {
   for (const name of DECLARED_CONSTANTS) {
     assert.ok(actualModule[name] !== undefined, `d.ts constant ${name} is missing from module`);
@@ -616,6 +682,49 @@ function testPriorityFacetSortsNumerically() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Fix 7 (round 4): FTS query is applied, not echo-only (Rust
+// parse_fts_query_patterns netdata.rs:3279 + to_explorer_query 1602-1604).
+// The shared comparator FTS fixture window is empty on most hosts, so this
+// triggering fixture is the regression guard.
+// ---------------------------------------------------------------------------
+
+function testFtsQueryIsApplied() {
+  const tmp = mkdtempSync(join(tmpdir(), 'node-fts-'));
+  try {
+    const machineId = 'aabbccddeeff00112233445566778899';
+    mkdirSync(join(tmp, machineId), { recursive: true });
+    const w = Writer.create(join(tmp, machineId, 'system.journal'), {
+      machineId: Buffer.from(machineId, 'hex'),
+      bootId: Buffer.from('11'.repeat(16), 'hex'),
+      seqnumId: Buffer.from('22'.repeat(16), 'hex'),
+      fileId: Buffer.from('33'.repeat(16), 'hex'),
+    });
+    const msgs = ['Linux kernel started', 'Machine reboot now', 'RTPROP noise',
+      'Linux and Machine both', 'plain text'];
+    msgs.forEach((m, i) => w.append(
+      [{ name: 'MESSAGE', value: m }, { name: 'PRIORITY', value: '6' }],
+      { realtimeUsec: 1700000000000000n + BigInt(i) * 1000000n }));
+    w.closeOffline();
+
+    const fn = NetdataJournalFunction.systemdJournal();
+    const resp = fn.runDirectoryRequestJson(tmp, {
+      after: 1699999999, before: 1700001000, last: 50, data_only: false,
+      query: 'Linux|Machine|!RTPROP', facets: ['PRIORITY'],
+    });
+    const cols = resp.columns || {};
+    const mi = (cols.MESSAGE || {}).index;
+    const got = (resp.data || []).map(r => r[mi]).sort();
+    // Linux OR Machine, excluding any RTPROP row. "RTPROP noise" and
+    // "plain text" must be filtered out; "Linux and Machine both" stays.
+    assert.deepEqual(got,
+      ['Linux and Machine both', 'Linux kernel started', 'Machine reboot now'],
+      `FTS must filter to Linux|Machine !RTPROP rows, got ${JSON.stringify(got)}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 export async function run() {
   testCancelDuringSingleFileScan();
   testCancelDuringCombinedPass();
@@ -624,6 +733,8 @@ export async function run() {
   testConformanceFunctions();
   testConformanceConstants();
   testConformanceMethods();
+  testConformanceStatics();
+  testConformanceFileHeader();
   testNoExtraneousFreeExploreFunctions();
   testFileReaderHasExplorerMethods();
   testNetdataFunctionSurface();
@@ -631,5 +742,6 @@ export async function run() {
   testAnchorOutsideWindowReset();
   testDataOnlyStopWhenRowsFull();
   testPriorityFacetSortsNumerically();
-  console.log('  PASS SOW-0105 fixes (rounds 1-3)');
+  testFtsQueryIsApplied();
+  console.log('  PASS SOW-0105 fixes (rounds 1-4)');
 }

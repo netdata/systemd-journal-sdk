@@ -78,9 +78,7 @@ declare module "@netdata/systemd-journal-sdk" {
 
   class FileReader {
     static open(path: string): FileReader;
-    static openBuffer(buf: Bytes): FileReader;
     close(): void;
-    readonly closed: boolean;
     readonly path: string | null;
     readonly header: FileHeader;
 
@@ -121,8 +119,6 @@ declare module "@netdata/systemd-journal-sdk" {
     static open(path: string): DirectoryReader;
     static openFiles(paths: string[]): DirectoryReader;
     close(): void;
-    readonly closed: boolean;
-    readonly files: string[];
 
     addMatch(data: string | Bytes): void;
     addDisjunction(): void;
@@ -159,33 +155,41 @@ declare module "@netdata/systemd-journal-sdk" {
   // Header parsing
   // -----------------------------------------------------------------------
 
+  // Field names and types match the snake_case keys returned by
+  // parseFileHeader at runtime (verified against a live header object).
   interface FileHeader {
     signature: string;
-    compatibleFlags: number;
-    incompatibleFlags: number;
+    compatible_flags: number;
+    incompatible_flags: number;
     state: number;
-    headerSize: number;
-    arenaSize: bigint;
-    dataHashTableOffset: bigint;
-    dataHashTableSize: bigint;
-    fieldHashTableOffset: bigint;
-    fieldHashTableSize: bigint;
-    tailObjectOffset: bigint;
-    nEntries: bigint;
-    nEntriesArray: bigint;
-    nData: bigint;
-    nFields: bigint;
-    nTags: bigint;
-    entryArrayOffset: bigint;
-    headEntryRealtime: bigint;
-    tailEntryRealtime: bigint;
-    tailEntryMonotonic: bigint;
-    nDataHashTables: number;
-    nFieldHashTables: number;
-    machineId: Bytes;
-    bootId: Bytes;
-    seqnumId: Bytes;
-    fileId: Bytes;
+    file_id: Bytes;
+    machine_id: Bytes;
+    tail_entry_boot_id: Bytes;
+    seqnum_id: Bytes;
+    header_size: bigint;
+    arena_size: bigint;
+    data_hash_table_offset: bigint;
+    data_hash_table_size: bigint;
+    field_hash_table_offset: bigint;
+    field_hash_table_size: bigint;
+    tail_object_offset: bigint;
+    n_objects: bigint;
+    n_entries: bigint;
+    tail_entry_seqnum: bigint;
+    head_entry_seqnum: bigint;
+    entry_array_offset: bigint;
+    head_entry_realtime: bigint;
+    tail_entry_realtime: bigint;
+    tail_entry_monotonic: bigint;
+    n_data: bigint;
+    n_fields: bigint;
+    n_tags: bigint;
+    n_entry_arrays: bigint;
+    data_hash_chain_depth: bigint;
+    field_hash_chain_depth: bigint;
+    tail_entry_array_offset: number;
+    tail_entry_array_n_entries: number;
+    tail_entry_offset: bigint;
   }
 
   interface ObjectHeader {

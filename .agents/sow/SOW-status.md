@@ -18,7 +18,7 @@ Last updated: 2026-06-11
 
 ## Pending
 
-- SOW-0107 - Python Explorer Sampling Engine And Facet-Sort Parity: open. Discovered
+- SOW-0107 - Python And Node Explorer Engine Parity Gaps: open. Discovered
   during SOW-0105 round-2 review: the Rust `ExplorerSamplingState` budget-based
   sampling/estimation engine is unported in both the Python and Node Explorer
   traversals (only the data structures and stats plumbing shipped). Zero

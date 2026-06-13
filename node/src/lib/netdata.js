@@ -684,6 +684,7 @@ import {
   ExplorerControl,
   ExplorerFieldMode,
   ExplorerFilter,
+  ExplorerFtsPattern,
   ExplorerQuery,
   ExplorerStats,
   ExplorerStrategy,
@@ -1076,9 +1077,51 @@ export class NetdataRequest {
     req.facets = facets;
     req.histogram = histogram;
     req.query = requestedQuery;
+    // Parse the FTS query into terms/positives/negatives at request time
+    // (Rust netdata.rs:1443-1446); to_explorer_query clones them onto the
+    // per-file query. Without this, a `query` parameter was echoed but never
+    // applied, silently returning unfiltered results on the production path.
+    const fts = _parseFtsQueryPatterns(requestedQuery);
+    req.ftsTerms = fts.terms;
+    req.ftsPatterns = fts.positives;
+    req.ftsNegativePatterns = fts.negatives;
     req._explicitKeys = typeof value === 'object' && value !== null ? new Set(Object.keys(value)) : new Set();
     return req;
   }
+}
+
+// Port of Rust `parse_fts_query_patterns` (netdata.rs:3279): split on `|`
+// (backslash-escapable), each segment optionally prefixed with `!` for a
+// negative term. Returns ExplorerFtsPattern terms plus the raw positive and
+// negative pattern byte buffers.
+function _parseFtsQueryPatterns(query) {
+  const terms = [];
+  const positives = [];
+  const negatives = [];
+  if (query == null || query === '') return { terms, positives, negatives };
+  const bytes = Buffer.from(String(query), 'utf8');
+  let i = 0;
+  while (i < bytes.length) {
+    while (i < bytes.length && bytes[i] === 0x7c /* | */) i += 1;
+    let negative = false;
+    if (bytes[i] === 0x21 /* ! */) { negative = true; i += 1; }
+    const pat = [];
+    let escaped = false;
+    while (i < bytes.length) {
+      const b = bytes[i];
+      i += 1;
+      if (b === 0x5c /* \ */ && !escaped) { escaped = true; continue; }
+      if (b === 0x7c /* | */ && !escaped) break;
+      pat.push(b);
+      escaped = false;
+    }
+    if (pat.length === 0) continue;
+    const buf = Buffer.from(pat);
+    terms.push(ExplorerFtsPattern.substring(buf, negative));
+    if (negative) negatives.push(buf);
+    else positives.push(buf);
+  }
+  return { terms, positives, negatives };
 }
 
 function _buildEcho(input) {
@@ -2371,6 +2414,11 @@ export function _requestToExplorerQuery(
   query.direction = request.direction;
   query.limit = request.limit;
   query.filters = [...request.filters];
+  // FTS terms/patterns derived from the `query` parameter (Rust
+  // to_explorer_query, netdata.rs:1602-1604).
+  query.ftsTerms = [...(request.ftsTerms || [])];
+  query.ftsPatterns = [...(request.ftsPatterns || [])];
+  query.ftsNegativePatterns = [...(request.ftsNegativePatterns || [])];
   const analysisEnabled = !request.dataOnly || request.delta;
   if (analysisEnabled) {
     query.facets = request.facets.map(f => Buffer.isBuffer(f) ? f : Buffer.from(f));
