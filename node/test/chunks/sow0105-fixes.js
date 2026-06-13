@@ -25,6 +25,7 @@ import {
   DisplayScope,
   NetdataFunctionConfig,
   NetdataRequest,
+  _requestToExplorerQuery,
 } from '../../src/lib/netdata.js';
 import { ExplorerAnchorKind } from '../../src/lib/explorer.js';
 import * as actualModule from '../../src/index.js';
@@ -506,6 +507,46 @@ function testAnchorOutsideWindowReset() {
     'tail anchor must force Backward (tail overrides outside-window check)');
 }
 
+// ---------------------------------------------------------------------------
+// Fix 5 (round 2): data-only early-stop parity (stopWhenRowsFull)
+// Rust netdata.rs:1609-1610 (to_explorer_query) + 1627-1629 (file_query):
+// stop_when_rows_full = data_only && !tail_anchor, disabled for delta re-scans.
+// ---------------------------------------------------------------------------
+
+function testDataOnlyStopWhenRowsFull() {
+  const config = NetdataFunctionConfig.systemdJournal();
+  const win = { after: 100000000, before: 200000000 };
+
+  // data_only, no tail, no delta -> early-stop enabled.
+  const plainDataOnly = NetdataRequest.parse({ ...win, data_only: true }, config);
+  let q = _requestToExplorerQuery(plainDataOnly, 1, null);
+  assert.equal(q.stopWhenRowsFull, true,
+    'data_only without tail/delta must enable stopWhenRowsFull');
+  assert.equal(Number(q.stopWhenRowsFullCheckEvery), 128,
+    'check-every must be DATA_ONLY_CHECK_EVERY_ROWS (128)');
+
+  // Non data_only -> never early-stop (full facet/histogram analysis).
+  const analytic = NetdataRequest.parse({ ...win, data_only: false }, config);
+  q = _requestToExplorerQuery(analytic, 1, null);
+  assert.equal(q.stopWhenRowsFull, false,
+    'analytic (non data_only) request must not early-stop');
+
+  // data_only + delta (no tail) -> override disables early-stop (Rust file_query).
+  const deltaNoTail = NetdataRequest.parse(
+    { ...win, data_only: true, delta: true }, config);
+  q = _requestToExplorerQuery(deltaNoTail, 1, null);
+  assert.equal(q.stopWhenRowsFull, false,
+    'data_only delta re-scan must disable stopWhenRowsFull');
+
+  // data_only + tail -> tail anchor already bounds the window; no early-stop.
+  const tail = NetdataRequest.parse(
+    { anchor: 150000000, ...win, data_only: true, if_modified_since: 1, tail: true },
+    config);
+  q = _requestToExplorerQuery(tail, 1, null);
+  assert.equal(q.stopWhenRowsFull, false,
+    'tail-anchored data_only must not early-stop');
+}
+
 export async function run() {
   testCancelDuringSingleFileScan();
   testCancelDuringCombinedPass();
@@ -518,5 +559,6 @@ export async function run() {
   testNetdataFunctionSurface();
   testExplorerControlMatchedRowType();
   testAnchorOutsideWindowReset();
+  testDataOnlyStopWhenRowsFull();
   console.log('  PASS SOW-0105 fixes (round 1)');
 }

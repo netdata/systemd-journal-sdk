@@ -688,7 +688,6 @@ import {
   ExplorerStats,
   ExplorerStrategy,
   ExplorerStopReason,
-  exploreWithStrategy,
   exploreWithStrategyAndControl,
   _newHistogram,
 } from './explorer.js';
@@ -1859,8 +1858,8 @@ export class NetdataJournalFileMetadata {
 }
 
 export class NetdataFunctionState {
-  fileMetadata(path) { return null; }
-  updateFileJournalVsRealtimeDeltaUsec(path, deltaUsec) {}
+  fileMetadata(_path) { return null; }
+  updateFileJournalVsRealtimeDeltaUsec(_path, _deltaUsec) {}
 }
 
 export class NetdataFunctionProgress {
@@ -2240,7 +2239,7 @@ export class NetdataJournalFunction {
       try { reader = FileReader.open(pathStr); }
       catch (err) { combined.skippedFiles += 1; combined.fileErrors.push(`${pathStr}: ${err.message}`); _emitProgressForCombined(options, combined, combined.matchedPaths.length + 1, totalFiles, deadline); continue; }
       try {
-        const fileQuery = _requestToExplorerQuery(request, matchedFilesCount, reader);
+        const fileQuery = _requestToExplorerQuery(request, matchedFilesCount, reader, realtimeSlack);
         const control = new ExplorerControl();
         if (deadline != null) control.setDeadline(deadline);
         if (options?.cancellationCallback) control.setCancellationCallback(options.cancellationCallback);
@@ -2312,7 +2311,14 @@ function _beforeRealtimeBoundExcludingAnchor(beforeRealtimeUsec, anchor) {
   return Math.min(Number(beforeRealtimeUsec), beforeAnchor);
 }
 
-function _requestToExplorerQuery(request, matchedFiles, reader) {
+// Exported for internal tests only; not part of the public src/index.js surface.
+// `_matchedFiles` and `_reader` are reserved for the sampling-budget query
+// construction (Rust ExplorerSamplingState, explorer.rs:456-590), which is
+// not yet ported here or in the Python explorer; tracked by SOW-0107.
+export function _requestToExplorerQuery(
+  request, _matchedFiles, _reader,
+  realtimeSlackUsec = NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC,
+) {
   const tailAnchor = request.tail
     && request.anchor.kind === ExplorerAnchorKind.Realtime;
   const backwardPageAnchor = request.dataOnly
@@ -2352,6 +2358,16 @@ function _requestToExplorerQuery(request, matchedFiles, reader) {
   query.fieldMode = ExplorerFieldMode.FirstValue;
   query.excludeFacetFieldFilters = new Set(request.filters.map(f => f.field.toString('hex'))).size > 1;
   query.useSourceRealtime = true;
-  query.realtimeSlackUsec = BigInt(NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC);
+  // Per-file learned journal-vs-realtime delta (Rust netdata.rs:1625),
+  // defaulting to the global default on the first request for a file.
+  query.realtimeSlackUsec = BigInt(
+    _normalizeJournalVsRealtimeDeltaUsec(Number(realtimeSlackUsec)));
+  // Data-only requests early-stop a file once its page is full (Rust
+  // to_explorer_query, netdata.rs:1609-1610). A tail anchor already
+  // bounds the window, and a delta re-scan must read the whole file
+  // (Rust file_query override, netdata.rs:1627-1629), so neither
+  // early-stops. The combined guard equals Rust's two-step result.
+  query.stopWhenRowsFull = request.dataOnly && !tailAnchor && !request.delta;
+  query.stopWhenRowsFullCheckEvery = DATA_ONLY_CHECK_EVERY_ROWS;
   return query;
 }

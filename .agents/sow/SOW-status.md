@@ -18,6 +18,13 @@ Last updated: 2026-06-11
 
 ## Pending
 
+- SOW-0107 - Python And Node Explorer Sampling Engine Parity: open. Discovered
+  during SOW-0105 round-2 review: the Rust `ExplorerSamplingState` budget-based
+  sampling/estimation engine is unported in both the Python and Node Explorer
+  traversals (only the data structures and stats plumbing shipped). Zero
+  observable impact on every validated fixture/gate because no fixture exceeds
+  the sampling budget; needs a high-row fixture to validate and a faithful
+  engine port in both languages.
 - SOW-0047 - Netdata NetFlow SDK Integration: open. Component integration for
   NetFlow reader and writer paths after inventory and performance gates.
 - SOW-0048 - Netdata OTEL Writer SDK Integration: open. Component integration
