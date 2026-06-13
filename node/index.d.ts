@@ -59,11 +59,17 @@ declare module "@netdata/systemd-journal-sdk" {
     last_realtime: bigint;
   }
 
-  /** Filter builder returned by reader.match(). */
-  interface FilterBuilder {
-    and(field: string | Bytes, value: string | Bytes): FilterBuilder;
-    or(field: string | Bytes, value: string | Bytes): FilterBuilder;
-    build(): void;
+  /**
+   * Cooperating match filter used by the readers. Repeated `addMatch`
+   * calls for the same field are OR alternatives; `addDisjunction` /
+   * `addConjunction` group them like the libsystemd match API.
+   */
+  class FilterBuilder {
+    constructor();
+    addMatch(data: string | Bytes): void;
+    addDisjunction(): void;
+    addConjunction(): void;
+    matches(entry: JournalEntry): boolean;
   }
 
   // -----------------------------------------------------------------------
@@ -78,8 +84,7 @@ declare module "@netdata/systemd-journal-sdk" {
     readonly path: string | null;
     readonly header: FileHeader;
 
-    match(field: string | Bytes, value: string | Bytes): FilterBuilder;
-    addMatch(match: { field: Bytes; value: Bytes; equalsOperator?: boolean }): void;
+    addMatch(data: string | Bytes): void;
     addDisjunction(): void;
     addConjunction(): void;
     flushMatches(): void;
@@ -119,7 +124,7 @@ declare module "@netdata/systemd-journal-sdk" {
     readonly closed: boolean;
     readonly files: string[];
 
-    addMatch(match: { field: Bytes; value: Bytes; equalsOperator?: boolean }): void;
+    addMatch(data: string | Bytes): void;
     addDisjunction(): void;
     addConjunction(): void;
     flushMatches(): void;

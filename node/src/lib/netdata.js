@@ -1569,6 +1569,30 @@ function _buildDataRow(located, columnOrder, _direction, _config, profile, conte
   return row;
 }
 
+// Mirror Rust `sort_facet_options` (netdata.rs:3258). PRIORITY sorts by the
+// numeric severity ascending (non-numeric ids first, matching Option ordering);
+// every other field sorts by count descending, then id ascending by code unit.
+function _parsePriorityForSort(id) {
+  if (!/^\d+$/.test(id)) return null;
+  const value = Number(id);
+  return Number.isInteger(value) && value >= 0 && value <= 255 ? value : null;
+}
+
+function _sortFacetOptions(field, options) {
+  options.sort((a, b) => {
+    if (field === 'PRIORITY') {
+      const pa = _parsePriorityForSort(a.id);
+      const pb = _parsePriorityForSort(b.id);
+      if (pa === null && pb === null) return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+      if (pa === null) return -1;
+      if (pb === null) return 1;
+      return pa - pb;
+    }
+    if (b.count !== a.count) return b.count - a.count;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+}
+
 function _buildFacetsPayload(request, _config, combined, profile) {
   const context = new DisplayContext();
   const out = [];
@@ -1585,7 +1609,7 @@ function _buildFacetsPayload(request, _config, combined, profile) {
       const name = profile.facetOptionName(context, fieldName, valueBytes);
       options.push({ id: text, name, count: Number(count) });
     }
-    options.sort((a, b) => b.count - a.count || a.id.localeCompare(b.id));
+    _sortFacetOptions(fieldName, options);
     for (let idx = 0; idx < options.length; idx++) options[idx].order = idx + 1;
     out.push({ id: fieldName, name: fieldName, order: orderIndex + 1, options });
   }

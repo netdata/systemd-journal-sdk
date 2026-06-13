@@ -24,6 +24,7 @@ import {
   DisplayContext,
   DisplayScope,
   NetdataFunctionConfig,
+  NetdataJournalFunction,
   NetdataRequest,
   _requestToExplorerQuery,
 } from '../../src/lib/netdata.js';
@@ -371,6 +372,30 @@ function testConformanceFunctions() {
   }
 }
 
+// d.ts methods declared on these classes must exist on the prototype.
+// tsc cannot catch declaration-vs-JS drift; this does (round-3 review found
+// FileReader.match() and FilterBuilder.and/or/build declared but absent).
+const DECLARED_METHODS = {
+  FileReader: ['close', 'addMatch', 'addDisjunction', 'addConjunction',
+    'flushMatches', 'seekHead', 'seekTail', 'seekRealtimeUsec', 'queryUnique',
+    'enumerateFields'],
+  DirectoryReader: ['close', 'addMatch', 'addDisjunction', 'addConjunction',
+    'flushMatches', 'seekHead', 'seekTail'],
+  FilterBuilder: ['addMatch', 'addDisjunction', 'addConjunction', 'matches'],
+  SdJournal: ['visitUniqueValues', 'queryUnique'],
+};
+
+function testConformanceMethods() {
+  for (const [className, methods] of Object.entries(DECLARED_METHODS)) {
+    const cls = actualModule[className];
+    assert.ok(typeof cls === 'function', `class ${className} missing from module`);
+    for (const method of methods) {
+      assert.equal(typeof cls.prototype[method], 'function',
+        `d.ts declares ${className}.${method}() but it is missing from the prototype`);
+    }
+  }
+}
+
 function testConformanceConstants() {
   for (const name of DECLARED_CONSTANTS) {
     assert.ok(actualModule[name] !== undefined, `d.ts constant ${name} is missing from module`);
@@ -547,6 +572,50 @@ function testDataOnlyStopWhenRowsFull() {
     'tail-anchored data_only must not early-stop');
 }
 
+// ---------------------------------------------------------------------------
+// Fix 6 (round 3): PRIORITY facet options sort numerically (Rust
+// sort_facet_options, netdata.rs:3258); other facets by count desc then id.
+// ---------------------------------------------------------------------------
+
+function testPriorityFacetSortsNumerically() {
+  const tmp = mkdtempSync(join(tmpdir(), 'node-prio-sort-'));
+  try {
+    const machineId = 'aabbccddeeff00112233445566778899';
+    mkdirSync(join(tmp, machineId), { recursive: true });
+    const w = Writer.create(join(tmp, machineId, 'system.journal'), {
+      machineId: Buffer.from(machineId, 'hex'),
+      bootId: Buffer.from('11'.repeat(16), 'hex'),
+      seqnumId: Buffer.from('22'.repeat(16), 'hex'),
+      fileId: Buffer.from('33'.repeat(16), 'hex'),
+    });
+    // Priorities written out of order and with skewed counts so a numeric
+    // sort and a count sort would disagree: 6 appears most, 3 least.
+    const plan = [['6', 5], ['3', 1], ['4', 3]];
+    let i = 0;
+    for (const [pri, n] of plan) {
+      for (let k = 0; k < n; k++, i++) {
+        w.append(
+          [{ name: 'MESSAGE', value: `m${i}` }, { name: 'PRIORITY', value: pri }],
+          { realtimeUsec: 1700000000000000n + BigInt(i) * 1000000n });
+      }
+    }
+    w.closeOffline();
+
+    const fn = NetdataJournalFunction.systemdJournal();
+    const resp = fn.runDirectoryRequestJson(tmp, {
+      after: 1699999999, before: 1700001000, last: 50, facets: ['PRIORITY'],
+    });
+    const pri = (resp.facets || []).find(f => (f.id || f.name) === 'PRIORITY');
+    assert.ok(pri, 'PRIORITY facet present');
+    const ids = pri.options.map(o => o.id);
+    // Numeric ascending (3,4,6), NOT count descending (6,4,3).
+    assert.deepEqual(ids, ['3', '4', '6'],
+      `PRIORITY options must sort numerically ascending, got ${ids.join(',')}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 export async function run() {
   testCancelDuringSingleFileScan();
   testCancelDuringCombinedPass();
@@ -554,11 +623,13 @@ export async function run() {
   testConformanceClasses();
   testConformanceFunctions();
   testConformanceConstants();
+  testConformanceMethods();
   testNoExtraneousFreeExploreFunctions();
   testFileReaderHasExplorerMethods();
   testNetdataFunctionSurface();
   testExplorerControlMatchedRowType();
   testAnchorOutsideWindowReset();
   testDataOnlyStopWhenRowsFull();
-  console.log('  PASS SOW-0105 fixes (round 1)');
+  testPriorityFacetSortsNumerically();
+  console.log('  PASS SOW-0105 fixes (rounds 1-3)');
 }

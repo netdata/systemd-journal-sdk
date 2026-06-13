@@ -1,4 +1,4 @@
-# SOW-0107 - Python And Node Explorer Sampling Engine Parity
+# SOW-0107 - Python Explorer Sampling Engine And Facet-Sort Parity
 
 ## Status
 
@@ -222,12 +222,29 @@ Failure handling:
 - As in SOW-0105: record stalls, retry, and rotate implementer models on
   repeated failure.
 
+## Additional Scope - Python facet-option sort (2026-06-13)
+
+SOW-0105 round-3 review (kimi) found a second Rust behavior unported in the
+Python netdata layer: `sort_facet_options` (`rust/src/journal/src/netdata.rs:3258`)
+sorts facet options (PRIORITY numerically ascending; other fields by count
+descending then id ascending). The Node port was fixed in SOW-0105
+(`_sortFacetOptions`), but Python still sorts all facets by count and uses a
+locale-sensitive id tiebreak. The three-peer comparator normalizes facet
+options to an unordered map (`normalized_facet_options` keys by id), so the
+gap is invisible to the gates but produces a user-visible option-order
+divergence (e.g. PRIORITY shown by frequency instead of severity). Port
+`sort_facet_options` to `python/journal/netdata.py` with a value-pinning test
+on PRIORITY option order. This is small and independent from the sampling
+engine work; it may be done first.
+
 ## Execution Log
 
 ### 2026-06-13
 
 - Created from the SOW-0105 round-2 discovery that the Explorer sampling
   decision engine is unported in both Python and Node.
+- Expanded 2026-06-13 with the Python facet-option-sort gap found in
+  SOW-0105 round-3 review (Node side fixed in SOW-0105).
 
 ## Validation
 
