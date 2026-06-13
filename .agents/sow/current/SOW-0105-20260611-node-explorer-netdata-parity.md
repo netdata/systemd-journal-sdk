@@ -390,6 +390,32 @@ Failure handling:
 - Follow-up noted for mapping: port the d.ts-style export-conformance
   test pattern to Python (its __init__ exports lack an equivalent
   mechanical check) — SOW-0106 or a hygiene SOW.
+- Review rounds 2-4 (cumulative, never-narrow scope; each round found a
+  strictly smaller class of issue, confirming convergence):
+  - Round 2: qwen NO -> data-only `stopWhenRowsFull` never set (dead
+    early-stop). Fixed + tested (`5e77d77f`). Investigating it, the
+    project manager found two same-class gaps: per-file realtime slack
+    not threaded (fixed) and the Rust `ExplorerSamplingState` budget
+    engine unported in BOTH Node and Python (zero gate impact; no
+    fixture exceeds the budget) -> tracked in pending SOW-0107.
+  - Round 3: mimo/glm/qwen/deepseek YES; kimi NO -> `.d.ts` METHOD drift
+    (`FileReader.match()` and `FilterBuilder.and/or/build` declared but
+    absent; wrong `addMatch` signature) that the round-1 conformance
+    test missed because it only checked class existence; plus PRIORITY
+    facet options not sorted numerically (Rust `sort_facet_options`).
+    Fixed (`cc33aa14`): d.ts corrected, conformance test extended to
+    assert prototype methods, Node `_sortFacetOptions` ported with a
+    value-pinning test; the Python facet-sort twin added to SOW-0107.
+  - Round 4: re-confirm the four usable reviewers on the FINAL code
+    (rounds 2-3 YES verdicts predated the `cc33aa14` fixes). kimi is
+    recorded UNUSABLE as a reviewer for this SOW: twice it broke the
+    read-only review role and tried to orchestrate (round 1 offered to
+    implement; round 4 attempted to spawn its own reviewer batch); its
+    substantive findings were nonetheless captured and fixed. Per the
+    SOW-0093 precedent (a reviewer unavailable while the others pass),
+    the close rests on the other four returning production-grade on the
+    final code, with kimi's findings incorporated and mechanically
+    guarded by the extended conformance test.
 
 
 ## Validation
