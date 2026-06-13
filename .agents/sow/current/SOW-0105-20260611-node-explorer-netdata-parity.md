@@ -2,12 +2,14 @@
 
 ## Status
 
-Status: in-progress
+Status: paused
 
 Sub-state: activated 2026-06-12 after SOW-0104 completed (close commit
 `ee5d0d20`); gate refreshed with a fresh Node-vs-Rust API-diff inventory
 (project-manager-verified); implementation starting with the SOW-0104
-porting playbook inherited.
+porting playbook inherited. Paused 2026-06-14 by explicit user decision so
+SOW-0108 can become the active implementation SOW first; this SOW remains the
+tracker for the remaining Node.js Explorer and Netdata parity work.
 
 ## Requirements
 

@@ -1,33 +1,26 @@
 # SOW Status
 
-Last updated: 2026-06-11
+Last updated: 2026-06-14
 
 ## Current
 
-- SOW-0105 - Node.js Explorer And Netdata Parity To Rust: in-progress.
-  Activated after SOW-0104 completed; gate refreshed with a project-
-  manager-verified API-diff inventory (two inventory claims refuted
-  against code before entering the gate). Ports Explorer, the Netdata
-  function API, the stdin wrapper, source selector labels, and the
-  facade unique-values visitor to Node.js; adds hand-written `.d.ts`
-  with CI type-check; joins the Netdata comparator matrices; inherits
-  the SOW-0104 porting playbook with frontloaded Rust mechanisms.
+- SOW-0108 - Cross-Language Reader Window Accessor Architecture:
+  in-progress. Activated 2026-06-14 after the user explicitly chose to
+  pause SOW-0105 and prioritize the foundational reader memory architecture.
+  Implements a single logical reader accessor API hiding rolling mmap or
+  rolling positioned-read windows behind equivalent `Auto` / explicit mmap /
+  explicit pread-style modes. Implementation order is Rust -> Go -> Python ->
+  Node.js. The Rust phase starts first.
+- SOW-0105 - Node.js Explorer And Netdata Parity To Rust: paused. Paused
+  2026-06-14 by explicit user decision so SOW-0108 can become the active
+  implementation SOW first; remains the tracker for the remaining Node.js
+  Explorer and Netdata parity work.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
 
 ## Pending
 
-- SOW-0108 - Node Reader Memory Architecture: open. The Node reader loads
-  whole files into resident memory (`readFileSync`) and OOMs on real large
-  journals (a live-journal query reached ~49 GB RSS and was OOM-killed),
-  whereas Rust uses rolling-window mmap and Go/Python use demand-paged mmap
-  plus positioned-read fallbacks. User decision (2026-06-14): add a unified
-  `Accessor` abstraction with a pure-JS positioned-read rolling-window default
-  and an OPTIONAL native mmap backend (`@riaskov/mmap-io`, consumer-installed,
-  never an SDK dependency, dynamically loaded only when `accessMode: Mmap`) -
-  the single approved exception to the no-native-addon purity policy, due to
-  the nature of Node. Blocked on SOW-0105 close.
 - SOW-0107 - Python And Node Explorer Engine Parity Gaps: open. Discovered
   during SOW-0105 round-2 review: the Rust `ExplorerSamplingState` budget-based
   sampling/estimation engine is unported in both the Python and Node Explorer

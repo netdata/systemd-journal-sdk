@@ -1,13 +1,14 @@
 # SOW Status
 
-Last updated: 2026-06-11
+Last updated: 2026-06-14
 
 This root file is a short convenience index. The canonical detailed SOW ledger
 is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- `SOW-0105-20260611-node-explorer-netdata-parity.md` - in-progress. Activated after SOW-0104 completed; gate refreshed with a project-manager-verified API-diff inventory. Ports Explorer, the Netdata function API, the stdin wrapper, source selector labels, and the facade unique-values visitor to Node.js; adds hand-written `.d.ts` with CI type-check; joins the Netdata comparator matrices; inherits the SOW-0104 porting playbook.
+- `SOW-0108-20260614-cross-language-reader-window-accessor.md` - in-progress. Activated 2026-06-14 after the user explicitly chose to pause SOW-0105 and prioritize the foundational reader memory architecture. Implements a single logical reader accessor API hiding rolling mmap or rolling positioned-read windows behind equivalent `Auto` / explicit mmap / explicit pread-style modes. Implementation order is Rust -> Go -> Python -> Node.js. The Rust phase starts first.
+- `SOW-0105-20260611-node-explorer-netdata-parity.md` - paused. Paused 2026-06-14 by explicit user decision so SOW-0108 can become the active implementation SOW first; remains the tracker for the remaining Node.js Explorer and Netdata parity work.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
 
 ## Pending
