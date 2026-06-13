@@ -1,4 +1,4 @@
-# SOW-0107 - Python Explorer Sampling Engine And Facet-Sort Parity
+# SOW-0107 - Python And Node Explorer Engine Parity Gaps
 
 ## Status
 
@@ -221,6 +221,37 @@ Failure handling:
 
 - As in SOW-0105: record stalls, retry, and rotate implementer models on
   repeated failure.
+
+## Additional Scope - Python FTS application + Node/Python Index strategy (2026-06-13)
+
+SOW-0105 round-4 review (glm) found two more Rust behaviors of the same
+"invisible to the gates" class:
+
+1. FULL-TEXT SEARCH NOT APPLIED ON THE NETDATA PATH (Python). The `query`
+   parameter is parsed into the response echo but never converted to FTS
+   patterns and applied as a filter, so a logs query with text search returns
+   UNFILTERED results — a correctness bug on the production path. Rust parses
+   it (`parse_fts_query_patterns`, netdata.rs:3279) and threads
+   `fts_terms`/`fts_patterns`/`fts_negative_patterns` into the per-file query
+   (`to_explorer_query`, netdata.rs:1602-1604). The Node side was fixed in
+   SOW-0105 (`_parseFtsQueryPatterns` + query threading + a synthetic
+   triggering fixture). The shared comparator FTS fixture
+   (`window-last5-fts-or-negative.json`) hides this because its Oct-2022
+   window is empty on the validation host (zero rows for every peer). Port the
+   FTS parsing/application to `python/journal/netdata.py` with a synthetic
+   triggering fixture, then add a non-empty FTS comparator fixture so all four
+   peers exercise it.
+
+2. INDEX EXPLORER STRATEGY (Node and Python). The Index strategy is a
+   secondary public Explorer surface (the Netdata path uses Traversal), is not
+   exercised by any comparator fixture, and has two concerns flagged in
+   review: a potential field-filter handling divergence, and an O(N^2)
+   `entryOffsets.indexOf` per candidate in row collection
+   (`node/src/lib/explorer.js` `_indexedCollectRows`). Validate Index against
+   Traversal with `ExplorerStrategy.Compare` equality on filtered queries in
+   both languages, fix the O(N^2) collection, and add Compare-mode tests.
+   Rust documents Index as exact only for all-values/commit-realtime/no-FTS
+   shapes; the validation must respect that contract.
 
 ## Additional Scope - Python facet-option sort (2026-06-13)
 

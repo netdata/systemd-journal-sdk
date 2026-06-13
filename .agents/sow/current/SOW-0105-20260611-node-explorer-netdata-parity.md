@@ -406,16 +406,38 @@ Failure handling:
     Fixed (`cc33aa14`): d.ts corrected, conformance test extended to
     assert prototype methods, Node `_sortFacetOptions` ported with a
     value-pinning test; the Python facet-sort twin added to SOW-0107.
-  - Round 4: re-confirm the four usable reviewers on the FINAL code
-    (rounds 2-3 YES verdicts predated the `cc33aa14` fixes). kimi is
-    recorded UNUSABLE as a reviewer for this SOW: twice it broke the
-    read-only review role and tried to orchestrate (round 1 offered to
+  - Round 4: deepseek YES; glm NO with four validated findings (it
+    reversed its own round-3 YES, the value of independent deep review):
+    (1) FTS parsed but never APPLIED on the Netdata production path -
+    a correctness bug (queries with text search returned unfiltered
+    results), symmetric with Python, hidden because the shared FTS
+    fixture's Oct-2022 window is empty on the host; FIXED in Node with
+    `_parseFtsQueryPatterns` + query threading + a synthetic triggering
+    test proving Node now filters identically to Rust; Python twin
+    tracked in SOW-0107. (2) FTS cache-hit row-drop - did not manifest
+    once FTS was applied (the triggering test matches Rust exactly).
+    (3) Index strategy O(N^2) collection + filter-validation - secondary
+    public surface not on the Netdata path and not gate-exercised;
+    tracked in SOW-0107 for dedicated Compare-mode validation.
+    (4) d.ts drift the conformance test could not see (entire FileHeader
+    interface camelCase vs snake_case runtime; phantom
+    `FileReader.openBuffer`/`closed`, `DirectoryReader.closed`/`files`);
+    FIXED and the conformance test extended to assert statics, forbidden
+    phantom statics, and FileHeader fields against a real runtime header
+    object. kimi recorded UNUSABLE as a reviewer: twice it broke the
+    read-only role and tried to orchestrate (round 1 offered to
     implement; round 4 attempted to spawn its own reviewer batch); its
-    substantive findings were nonetheless captured and fixed. Per the
-    SOW-0093 precedent (a reviewer unavailable while the others pass),
-    the close rests on the other four returning production-grade on the
-    final code, with kimi's findings incorporated and mechanically
-    guarded by the extended conformance test.
+    round-3 findings were captured and fixed regardless. After the
+    round-4 fixes (`0afd96dc`) both parity gates reconfirmed (one-shot
+    10/10, stateful 5/5); a round-5 re-confirm of the usable reviewers
+    on the final code follows.
+  - Cross-cutting lesson (also in SOW-0107): the comparator gates
+    validate only what their fixtures exercise. FTS (empty window),
+    sampling (sub-budget rows), and the Index strategy (unfixtured) were
+    all stubbed-or-partial in BOTH the Node and the already-closed
+    Python ports and still passed. Triggering fixtures are now mandatory
+    for threshold/conditional features; the Python twins are tracked in
+    SOW-0107 for the user's decision on depth.
 
 
 ## Validation
