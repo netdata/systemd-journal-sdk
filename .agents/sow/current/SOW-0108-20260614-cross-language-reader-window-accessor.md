@@ -15,7 +15,9 @@ has been implemented locally, passed local Python/interoperability validation,
 and completed production review round 1 with two valid blocking findings. The
 round-1 fixes were implemented, locally revalidated, and production review
 round 2 passed with all six reviewers voting `PRODUCTION GRADE`. The Python
-phase is accepted; the next active language phase is Node.js pre-code analysis.
+phase is accepted. The active language phase is Node.js pre-code analysis;
+review round 5 passed with all six reviewers voting `READY FOR IMPLEMENTATION`.
+Node.js implementation may start from the recorded plan.
 
 ## Requirements
 
@@ -2435,6 +2437,618 @@ Validation caveat:
   because that interpreter lacked `lz4.block`. The same command passed with the
   repository Python venv, which contains the Python compression dependencies.
 
+### Node.js Pre-Code Design Analysis - 2026-06-14
+
+Status: Node.js pre-code reviewer round 5 passed the implementation-readiness
+gate. Node.js implementation may start from the plan below.
+
+Ground-truth facts from the current Node.js implementation:
+
+- `FileReader` owns a whole-file resident Buffer:
+  `node/src/lib/reader.js:52`, `node/src/lib/reader.js:54`.
+- `FileReader.open()` reads normal journals with `safeReadFileSync()` and
+  `.journal.zst` temporary journals with `safeReadFileSync()` after
+  decompression: `node/src/lib/reader.js:78`, `node/src/lib/reader.js:83`,
+  `node/src/lib/reader.js:85`, `node/src/lib/reader.js:87`.
+- Reader refresh still reloads the whole file into a new Buffer:
+  `node/src/lib/reader.js:218`, `node/src/lib/reader.js:222`,
+  `node/src/lib/reader.js:226`.
+- Entry-array, ENTRY, DATA, FIELD, and hash-table paths read directly from
+  `this.buffer`: `node/src/lib/reader.js:140`, `node/src/lib/reader.js:154`,
+  `node/src/lib/reader.js:163`, `node/src/lib/reader.js:272`,
+  `node/src/lib/reader.js:386`, `node/src/lib/reader.js:543`,
+  `node/src/lib/reader.js:768`, `node/src/lib/reader.js:775`,
+  `node/src/lib/reader.js:779`, `node/src/lib/reader.js:798`.
+- `entry.js` parser helpers assume a whole Buffer with `buf.length`,
+  `buf.read*()`, and `buf.slice()/subarray()`:
+  `node/src/lib/entry.js:16`, `node/src/lib/entry.js:28`,
+  `node/src/lib/entry.js:73`, `node/src/lib/entry.js:88`,
+  `node/src/lib/entry.js:92`.
+- Directory readers eagerly open per-file readers and do not accept or pass
+  reader options: `node/src/lib/directory-reader.js:22`,
+  `node/src/lib/directory-reader.js:27`, `node/src/lib/directory-reader.js:34`,
+  `node/src/lib/directory-reader.js:40`.
+- Facade open paths do not accept reader options and delegate to
+  `FileReader.open()` / `DirectoryReader.open()`:
+  `node/src/facade.js:224`, `node/src/facade.js:231`,
+  `node/src/facade.js:235`, `node/src/facade.js:239`.
+- Explorer has at least one direct `reader.buffer` probe:
+  `node/src/lib/explorer.js:1036`, `node/src/lib/explorer.js:1038`,
+  `node/src/lib/explorer.js:1039`.
+- The Netdata wrapper has a `readerOptions` config field but does not pass it
+  to `FileReader.open()`:
+  `node/src/lib/netdata.js:199`, `node/src/lib/netdata.js:207`,
+  `node/src/lib/netdata.js:216`, `node/src/lib/netdata.js:1257`,
+  `node/src/lib/netdata.js:2306`.
+- Verification reads the whole file and then verifies whole Buffers:
+  `node/src/lib/verify.js:43`, `node/src/lib/verify.js:45`,
+  `node/src/lib/verify.js:67`, `node/src/lib/verify.js:116`,
+  `node/src/lib/verify.js:118`, `node/src/lib/verify.js:150`,
+  `node/src/lib/verify.js:155`, `node/src/lib/verify.js:157`.
+- Sealed verification HMAC currently walks object bodies by slicing the
+  whole-file Buffer:
+  `node/src/lib/verify.js:455`, `node/src/lib/verify.js:457`,
+  `node/src/lib/verify.js:478`, `node/src/lib/verify.js:482`,
+  `node/src/lib/verify.js:552`, `node/src/lib/verify.js:554`,
+  `node/src/lib/verify.js:563`, `node/src/lib/verify.js:570`,
+  `node/src/lib/verify.js:575`.
+- Object-graph verification is whole-Buffer based:
+  `node/src/lib/verify-graph.js:62`, `node/src/lib/verify-graph.js:67`,
+  `node/src/lib/verify-graph.js:92`, `node/src/lib/verify-graph.js:103`,
+  `node/src/lib/verify-graph.js:173`, `node/src/lib/verify-graph.js:319`.
+- The Node reader benchmark accepts window/access arguments but ignores them:
+  `node/cmd/reader_core_bench.js:58`, `node/cmd/reader_core_bench.js:61`,
+  `node/cmd/reader_core_bench.js:144`, `node/cmd/reader_core_bench.js:160`,
+  `node/cmd/reader_core_bench.js:206`.
+- TypeScript definitions expose no reader options today:
+  `node/index.d.ts:79`, `node/index.d.ts:118`, `node/index.d.ts:653`,
+  `node/index.d.ts:702`.
+- The Node conformance adapter opens readers directly and must either use
+  default reader options intentionally or participate in option propagation
+  where the adapter CLI exposes reader options:
+  `node/adapter/index.js:175`, `node/adapter/index.js:257`,
+  `node/adapter/index.js:300`, `node/adapter/index.js:386`,
+  `node/adapter/index.js:398`, `node/adapter/index.js:426`,
+  `node/adapter/index.js:437`, `node/adapter/index.js:471`.
+
+Official/runtime API evidence:
+
+- Node.js v26.3.0 official `fs` docs expose positioned synchronous reads via
+  `fs.readSync(fd, buffer, offset, length[, position])`; `position` can be a
+  number, bigint, or null, and the caller provides the destination Buffer.
+  Source checked: `https://nodejs.org/api/fs.html#fsreadsyncfd-buffer-offset-length-position`.
+- Node.js v26.3.0 official `zlib` docs say compression/decompression is built
+  around Streams and include Zstd support.
+  Source checked: `https://nodejs.org/api/zlib.html`.
+- Node.js v26.3.0 official `Buffer` docs state `Buffer.subarray()` returns a
+  new Buffer referencing the same memory as the original.
+  Source checked: `https://nodejs.org/api/buffer.html#bufsubarraystart-end`.
+- Local Node runtime for this SOW is `v26.2.0`. It exposes
+  `createZstdDecompress` and `zstdDecompressSync` in `node:zlib`.
+- Local Node runtime has `fs.readSync()` but no `fs.mmap` function. The
+  official `fs` API index also has no mmap entry. Therefore Node core does not
+  provide a production mmap API for this SOW. Verified locally with
+  `node -e "console.log(Object.keys(require('fs')).filter(k => /mmap/i.test(k)))"`,
+  which returned an empty list on Node `v26.2.0`.
+
+Node.js design decisions recorded before code:
+
+1. Node.js implements a rolling positioned-read accessor, not mmap.
+   - Rationale: Node core has positioned reads, Buffer views, and Zstd streams,
+     but no mmap API. The project forbids native runtime addon loading unless
+     the user explicitly changes that policy.
+   - Implication: Node cannot match Rust/Go mmap mechanics, but it can match
+     the bounded-window, row-lifetime, and snapshot/live semantics.
+   - Risk: positioned reads pay syscall/copy cost on window misses. This is
+     unavoidable without accepting a native mmap dependency.
+
+2. Node.js explicit `accessMode: "mmap"` fails clearly.
+   - Rationale: silently mapping `"mmap"` to read-at would violate the user's
+     requirement that mmap be mandatory when available and explicit modes not
+     silently downgrade.
+   - Implication: `accessMode: "auto"` and `accessMode: "read-at"` work;
+     `accessMode: "mmap"` throws an unsupported-backend error in Node.js core.
+   - Error contract: add `UnsupportedAccessModeError extends Error` from
+     `node/src/lib/reader-access.js`. `FileReader.open()`,
+     `DirectoryReader.open()`, `DirectoryReader.openFiles()`, facade open
+     helpers, benchmark opens, adapter opens, and Netdata opens must surface the
+     same error class when the normalized options explicitly request
+     `accessMode: "mmap"`.
+   - Risk: callers expecting a fake mmap mode will need to use `auto` or
+     `read-at`. This is correct because Node currently has no real core mmap.
+
+3. Node.js default `accessMode: "auto"` selects rolling positioned reads.
+   - Rationale: this is the only core runtime backend that can meet the
+     bounded-memory contract.
+   - Implication: benchmark and stats must report selected backend
+     `read-at`, not `buffer`, so no report can pretend a whole Buffer path is
+     still valid.
+   - Risk: existing benchmark CLI values such as `--mmap-strategy buffer` need
+     compatibility handling. The value may be accepted as a deprecated alias
+     for `auto`, but the reported selected backend must be `read-at`.
+
+4. Node.js exposes an idiomatic `ReaderOptions` object.
+- Proposed fields:
+  - `accessMode: "auto" | "read-at" | "mmap"`.
+  - `bounds: "live" | "snapshot"`.
+  - `windowSizeBytes`.
+  - `maxWindows`.
+  - `maxRowArenaBytes`.
+  - `rowArenaSegmentBytes`.
+   - Defaults should mirror the accepted Python/Go values unless local Node
+     benchmarking proves a different value is needed before production review:
+     32 MiB windows, four active windows, and 256 MiB row arena.
+   - Public open APIs accept options in a backward-compatible optional
+     parameter:
+     `FileReader.open(path, options = {})`,
+     `DirectoryReader.open(path, options = {})`,
+     `DirectoryReader.openFiles(paths, options = {})`,
+     `SdJournal.open*(_, flags?, options?)`, and benchmark/Netdata paths.
+   - TypeScript definitions must document the options and the returned access
+     stats.
+
+5. Node.js introduces `node/src/lib/reader-access.js`.
+   - Responsibilities:
+     - open and close the file descriptor;
+     - record visible size at open for snapshot bounds;
+     - refresh visible size only at controlled live points;
+   - perform positioned `readSync()` into bounded window Buffers;
+   - align windows to configured boundaries;
+   - track LRU windows and eviction;
+     - pin windows that back current-row returned Buffer views;
+     - maintain a row-scoped append-only arena for compressed DATA and
+       cross-window/oversized row-returned payloads;
+   - expose scalar helpers (`u8`, `u32`, `u64`), temporary views, row views,
+     copied bytes, chunk iterators for HMAC, and access stats.
+   - The accessor must never call `safeReadFileSync()` for production reads.
+   - The accessor must never allocate per scalar read. Scalar reads use an
+     internal fixed scratch Buffer or a window view.
+   - Window bases are offset-relative and rounded down to the configured
+     window-size boundary. No OS page alignment is required because Node uses
+     positioned `readSync()`, not mmap.
+   - A short read at the visible file end is normal and produces a truncated
+     final window. A short read before the accessor-visible size is a
+     controlled corruption/short-read error.
+   - Window misses allocate or reuse one bounded window Buffer. They do not
+     allocate a second copy of the same bytes. Evicted unpinned window Buffers
+     may be reused after row advance; pinned current-row windows must never be
+     overwritten or reused.
+   - Window-reuse invariant: a window Buffer may be overwritten only when the
+     LRU candidate has no current-row pin and no returned same-row `Buffer`
+     view can reference its underlying memory. This is the Node equivalent of
+     Rust's row-pinned window guarantee. A temporary parse view that does not
+     escape the immediate parse may use scratch memory, but a row-returned view
+     must pin the backing window until row advance.
+   - Temporary reads may return a borrowed window slice only when the requested
+     range fits inside one loaded window. Cross-window, oversized, or
+     all-windows-pinned temporary reads must use bounded scratch/copy memory and
+     must not increase `maxWindows`.
+   - If a temporary parse read needs a new window while all configured windows
+     are row-pinned, the accessor uses bounded scratch/copy memory for that
+     temporary read instead of exceeding `maxWindows` or overwriting pinned
+     row views.
+
+6. Row lifetime is explicit state.
+   - `next()`, `previous()`, seek operations, file switch, and `close()` clear
+     row pins, row arena segments, and current-row DATA enumeration state.
+   - `enumerateEntryPayload()`, `visitEntryPayloads()`, `getEntryPayload()`,
+     and Explorer row scanning return Buffer views valid until the next row
+     advance or close.
+   - Uncompressed DATA returns a Buffer `subarray()` from a pinned window when
+     the full payload fits one window.
+   - Compressed DATA expands into row arena memory and returns a row-arena
+     Buffer view.
+   - DATA that crosses a window boundary or is larger than one window is copied
+     into row arena memory before returning.
+   - Owned `getEntry()` may keep returning owned `Buffer.from()` copies for
+     compatibility; it must not be used to prove low-level zero-copy behavior.
+   - Same-row operations must not clear row pins or row arena memory. This
+     includes `entryDataRestart()`, `clearEntryDataState()`,
+     end-of-enumeration, `getEntry()`, `visitEntryPayloads()`,
+     `collectEntryPayloads()`, and `getEntryPayload()`. These operations may
+     reset only enumeration cursors or owned-result caches.
+   - Row arena storage uses fixed-size Buffer segments, default 1 MiB, that are
+     allocated once and never resized while any returned view may exist.
+     Appending compressed DATA or cross-window payload copies writes into the
+     current segment or allocates a new fixed segment. Returned arena
+     `Buffer.subarray()` views therefore keep stable backing memory until row
+     advance or close.
+   - `maxRowArenaBytes` limits total live row-arena segment bytes. If one row
+     exceeds the limit, the reader returns a controlled row-arena-limit error
+     instead of exhausting memory.
+   - Node.js does not use Python-style retired mmap windows. `Buffer.subarray()`
+     keeps the underlying ArrayBuffer alive through V8 GC, so there is no
+     `mmap.close()` / `BufferError` equivalent. Post-row retained Buffer views
+     are outside the documented contract and may observe stale data after row
+     advance.
+
+7. Parser migration should be accessor-backed, not whole-buffer emulation.
+   - Keep existing `entry.js` exported whole-Buffer helpers for tests and
+     direct callers that already provide an owned Buffer.
+   - Add accessor-backed parser helpers, either in a new internal module or as
+     private `FileReader` methods:
+     - `_readObjectHeaderAt(offset)`;
+     - `_readEntryObjectAt(offset, includeItems)`;
+     - `_readDataHeaderAt(offset)`;
+     - `_readDataPayloadTemp(offset)` for compressed-hash or temporary parsing;
+     - `_readDataPayloadRow(offset)` for row-lifetime returned payloads;
+     - `_readFieldObjectAt(offset)`;
+     - `_readEntryArrayObject(offset)`;
+     - `_readEntryArrayItemOffset(byteOffset)`;
+     - `_readHashBucketOffset(tableOffset, bucket)`.
+   - Existing exported `parseEntryObject(buf, offset, compact)`,
+     `parseDataObject(buf, offset, compact)`, and
+     `parseDataPayload(buf, offset, compact)` remain source-compatible for
+     callers that already own a Buffer.
+   - Do not create a fake object with `.length` and `.read*()` that silently
+     pages in arbitrary ranges and hides whole-file behavior from tests.
+
+8. Verification must be migrated with the reader, not left as a whole-file
+   exception.
+   - Add `node/src/lib/verify-adapter.js` with an accessor-backed byte source.
+     Required interface:
+     - `get length()`;
+     - `u8(offset)`;
+     - `u32(offset)`;
+     - `u64(offset)`;
+     - `bytes(offset, length)` returning a bounded Buffer copy for small
+       metadata or hash payloads;
+     - `view(offset, length)` returning a temporary bounded view when safe;
+     - `updateHmac(hmac, offset, length, chunkSize = 1 << 20)` updating the
+       HMAC in bounded chunks without whole-file slices.
+   - `verifyObjectGraph()` may keep accepting owned Buffers for compatibility,
+     but `verifyFile()` / `verifyFileWithKey()` must verify through bounded
+     accessor reads.
+   - The byte-source object is the canonical verifier input. A direct Buffer
+     adapter is allowed for `verifyObjectGraph(data)` compatibility and tests,
+     but file-path verification must construct the byte source from the
+     bounded accessor. `GraphVerifier` must not retain production direct
+     `this.data.read*()`, `this.data.slice()`, or `this.data.subarray()`
+     whole-Buffer paths after migration.
+   - `node/src/lib/verify-adapter.js` is the single file-based verification
+     input contract. `verifyFile()` and `verifyFileWithKey()` construct one
+     accessor-backed byte source and pass it to graph verification, sealed HMAC
+     verification, and strict ENTRY/DATA verification. The strict verification
+     path must accept this byte source directly; it must not open a separate
+     `FileReader` and must not read or retain a whole-file Buffer.
+   - `verifyFile()` must be rewritten over the same accessor-backed byte-source
+     helper as `verifyFileWithKey()`. It must remove the current
+     `FileReader.open(path); const buf = r.buffer` strict-verification path
+     and must not access a reader-owned whole-file Buffer.
+   - Seal/HMAC verification updates HMAC state in bounded chunks from the
+     accessor, not by slicing the whole file.
+   - `verifyTagHmac()`, `hmacSealedObjectRange()`, and `hmacObject()` must be
+     migrated explicitly. Their current `data.slice(...); hm.update(...)`
+     object-body paths must become byte-source `updateHmac()` calls, including
+     DATA, FIELD, ENTRY, and TAG object body ranges.
+   - Strict entry/DATA verification uses accessor-backed parse helpers.
+   - `verifyFileWithKey()` must not do the current double whole-file read. It
+     should create one verification byte source for graph verification, sealed
+     HMAC verification when needed, and strict entry/DATA verification.
+   - `verify-graph.js` must be refactored so `GraphVerifier` reads through the
+     byte-source methods. Direct `Buffer` callers can be supported by wrapping
+     the Buffer in the same byte-source interface.
+
+9. `.journal.zst` whole-file support must stream to a temp `.journal`.
+   - The current public Node.js reader/verify/header APIs are synchronous, and
+     Node core Zstd streaming is stream/async based. Do not silently make
+     `FileReader.open()`, `verifyFile()`, or `readFileHeader()` async in this
+     SOW.
+   - Add `node/src/lib/zst-stream.js` and replace `decompressZstToTemp()` for
+     reader-open/header/verify use with a synchronous wrapper around a
+     worker-thread streaming pipeline:
+     - main thread creates the temp directory and output path;
+     - worker thread runs `pipeline(createReadStream(input),
+       createZstdDecompress(), createWriteStream(output))`;
+     - a `SharedArrayBuffer` status word plus `Atomics.wait()` / notify lets
+       the synchronous caller wait without converting the public API to async;
+     - worker writes only a bounded sanitized error message to a temp-sidecar
+       path on failure;
+     - main thread owns temp cleanup on success and failure.
+   - Required helper shape:
+     - `streamZstToTempSync(inputPath, options = {})` returns
+       `{ path, cleanup }`, where `path` is the decompressed temporary journal
+       path and `cleanup()` is idempotent.
+     - The worker never deletes the temp directory. It only writes the output
+       file and optional bounded sidecar error. The main thread wrapper and
+       callers use one `finally` path to call `cleanup()`, avoiding cleanup
+       ownership races.
+     - `options.timeoutMs` is bounded and documented. The default may be high
+       enough for large files, but the timeout must be finite and surfaced in
+       accessor/header/verify errors as a sanitized class of failure.
+   - `Atomics.wait()` must use a bounded timeout and the main thread must
+     handle worker startup failure, worker `error`, worker early `exit`, and
+     timeout by terminating the worker where needed and cleaning temp paths.
+   - The worker-thread path uses Node core only. It does not execute external
+     programs, load native addons, or probe host state.
+   - If worker threads or Zstd streaming are unavailable in a Node runtime,
+     `.journal.zst` open/verify/header calls fail clearly with an unsupported
+     whole-file-zstd-streaming error. Normal `.journal` readers are unaffected.
+   - After streaming, open the temporary `.journal` through the same bounded
+     accessor using the caller's normalized `ReaderOptions`; the temporary
+     accessor's visible size is fixed at streaming completion and uses
+     `bounds: "snapshot"` regardless of the caller's live-tail preference,
+     because a decompressed temporary file is immutable for that query.
+   - Remove `decompressZstToTemp()` from production code rather than merely
+     deprecating it. Reader open, verification, directory-reader discovery,
+     Netdata header probing, journalctl rewrite, adapter paths, and
+     `readFileHeader()` must use the streaming helper for whole-file zstd
+     inputs.
+   - Keep `decompressZstSync()` only as an explicit bytes helper if needed by
+     direct callers/tests; it must not be used by production reader open,
+     directory reader, Netdata wrapper, journalctl rewrite, or verification.
+   - `readFileHeader(path)` is an exported production helper and must be
+     migrated too. For `.journal` input it reads bounded header bytes through
+     the accessor or direct bounded header read. For `.journal.zst` input it
+     uses the same sync worker streaming helper to produce a temp journal, then
+     reads only the header from that temp and cleans up.
+   - Empty input, truncated zstd frames, trailing-garbage decode failures, and
+     I/O failures must produce controlled sanitized open/verify/header errors.
+     Worker errors must delete partial temp output and temp directories before
+     returning. Concurrent opens of the same `.journal.zst` must use distinct
+     temp directories.
+
+10. Directory/facade/Explorer/Netdata/journalctl all use the same accessor.
+    - Directory readers pass options into every `FileReader.open()`.
+    - Facade open methods accept optional options and preserve old calls.
+    - Explorer removes direct `reader.buffer` access; compression-state probes
+      use a reader method backed by accessor scalar reads.
+    - Netdata passes `config.readerOptions` to every file reader. The existing
+      `FileReader.open(pathStr)` call sites in `node/src/lib/netdata.js` must
+      become `FileReader.open(pathStr, config.readerOptions ?? {})` or an
+      equivalent helper that preserves the configured options.
+    - `node/cmd/journalctl/index.js` must pass options where it constructs
+      readers if command-line options are added; otherwise it uses defaults.
+    - `node/adapter/index.js` must keep journal-file access through
+      `FileReader.open(path, options)` / `DirectoryReader.open(path, options)`.
+      If the adapter CLI exposes no reader-option flags in this SOW, it must
+      still use a single normalized default options object so the adapter
+      exercises the same accessor path as production readers.
+    - `node/cmd/reader_core_bench.js` must translate its parsed
+      `--window-size`, `--max-windows`, `--mmap-strategy` / `--access-mode`,
+      and `--bounds` arguments into real `ReaderOptions`, pass them to file,
+      directory, SDK, and facade reader opens, and report the resulting
+      accessor stats.
+    - `getEntry()` may keep returning owned `Buffer.from()` copies for
+      compatibility, but its owned results must survive row advance and must
+      not be implemented as row-lifetime views.
+    - `_resetCachedEntryDataState()` and `_invalidateEntryDataState()` must
+      reset only DATA enumeration cursors / caches. They must not call the
+      accessor row-clear operation. Row pins and row arena are cleared only by
+      row advance, successful seek, file switch, and close.
+    - `_enumerateFieldsIndexed()`, `_findFieldHeadDataOffset()`,
+      `_readFieldObjectAt()`, `_readDataHeaderAt()`, `_readEntryArrayObject()`,
+      `_readEntryArrayItemOffset()`, and the Explorer compressed-object flag
+      probe must use accessor-backed scalar/object helpers. No indexed-field
+      path may keep `this.buffer` or `reader.buffer`.
+
+11. Access stats are part of validation evidence.
+    - Expose at least:
+      `requestedAccessMode`, `selectedAccessMode`, `selectedBackend`,
+      `fallbackReason`, `bounds`, `visibleSize`, `windowSizeBytes`,
+      `maxWindows`, `windowsCreated`, `windowHits`, `windowMisses`,
+      `evictions`, `pinnedWindows`, `readBufferBytes`,
+      `rowArenaPeakBytes`, `tempCopyBytes`, `shortReads`, and
+      `readSyncUsesPosition`.
+    - Benchmark output must include these stats for SDK and facade surfaces.
+
+12. Direct refresh has explicit rollback semantics.
+    - Before any refresh reads a new header or visible size, snapshot logical
+      reader state, entry offsets, current index, layout cache, current-row
+      pins, row arena, and accessor visible bounds.
+    - Read the current header through bounded accessor/direct header reads.
+    - If the header/size is unchanged, update only safe header metadata and
+      preserve current-row pins.
+    - If changed, reload entry-array offsets into temporary arrays using the
+      accessor's refreshed visible bounds.
+    - Commit new header/layout/entry arrays only after all temporary work
+      succeeds.
+    - On failure, restore prior visible bounds and logical reader state without
+      clearing row pins or row arena for the current row.
+    - The snapshot must include accessor visible bounds before temporary header
+      and entry-array reload work begins. Failure restoration must restore
+      those accessor bounds as well as logical reader fields.
+    - Direct refresh on the same row must preserve current DATA enumeration
+      cursors (`entryDataOffsets`, `entryDataIndex`, and active state) in
+      addition to preserving returned row views.
+    - Current-row returned Buffer views must survive a direct `refresh()` while
+      the reader remains on the same row.
+
+13. Bypass detection is mechanical.
+    - Add a Node test that scans production reader surfaces and fails on
+      forbidden whole-file reader patterns.
+    - Forbidden production patterns include:
+      `safeReadFileSync`, `readFileSync`, `decompressZstToTemp`,
+      `readJournalFileForVerify`, `r.buffer`, `reader.buffer`,
+      `this.buffer` inside reader-like classes, `this.data.read`,
+      `this.data.slice`, `this.data.subarray`, and
+      `parseEntryObject(this.buffer` / `parseDataObject(this.buffer` /
+      `parseDataPayload(this.buffer`.
+    - The bypass scan must be precise, not a blind repo-wide `.buffer` grep.
+      Legitimate non-reader Buffer conversions such as
+      `Buffer.from(value.buffer, value.byteOffset, value.byteLength)`, WASM
+      bytes handling, and explicit owned bytes helper APIs are allowlisted only
+      when the surrounding code is not reading a journal file through a
+      reader-owned whole-file Buffer.
+    - Forbidden surfaces include `node/src/lib/reader.js`,
+      `node/src/lib/directory-reader.js`, `node/src/facade.js`,
+      `node/src/lib/explorer.js`, `node/src/lib/netdata.js`,
+      `node/src/lib/verify.js`, `node/src/lib/verify-graph.js`,
+      `node/src/lib/compress.js` import/caller sites,
+      `node/cmd/journalctl/index.js`, `node/cmd/reader_core_bench.js`, and
+      `node/adapter/index.js`.
+    - Allowlisted non-reader uses include tests, writer code, `fs-safe.js`,
+      `platform.js`, `lock.js`, `xz-block.js` WASM loading, benchmark process
+      status reads, and explicit bytes helper APIs such as direct
+      `decompressZstSync()` when they are not used by production reader paths.
+      Adapter stdin/request payload reads may stay allowlisted, but adapter
+      journal-file reads must go through the reader APIs and must not access a
+      reader-owned whole-file Buffer.
+
+Implementation plan for Node.js after reviewer approval:
+
+1. Add `reader-access.js` with option normalization, explicit unsupported mmap
+   error, rolling positioned-read windows, row pinning, row arena, live/snapshot
+   bounds, stats, and close/error cleanup.
+2. Add streaming `.journal.zst` temp-file decompression and switch reader open,
+   header read, directory read, and verification to the streaming helper.
+3. Refactor `FileReader` to own an accessor instead of `this.buffer`; migrate
+   every object/entry/DATA/FIELD/hash-table read to accessor-backed helpers.
+4. Preserve existing owned `getEntry()` results while making low-level payload
+   traversal return row-lifetime Buffer views.
+5. Propagate reader options through `DirectoryReader`, facade, Netdata, CLI
+   benchmark, and TypeScript definitions.
+6. Migrate `verify.js` and `verify-graph.js` file-based verification to the
+   bounded byte source while keeping direct Buffer verification helpers
+   source-compatible.
+7. Replace direct refresh with accessor-bounds snapshot/commit/restore logic
+   that preserves current-row pins on same-row refresh.
+8. Add bypass/same-failure tests that fail if production Node reader,
+   directory reader, Explorer, Netdata wrapper, journalctl rewrite, or
+   verification reintroduces `safeReadFileSync()` / whole-file Buffer reads.
+9. Add focused row-lifetime, eviction, cross-window, large-object, compressed
+   DATA, `.journal.zst`, live/snapshot, verification, directory, facade,
+   Netdata, and benchmark tests.
+10. Run local validation and benchmark smokes before production reviewer round 1.
+
+Tests required before the Node.js phase can pass:
+
+- Node package tests:
+  - `npm_config_cache=.local/npm-cache npm test` or the repository equivalent
+    that uses `.local/` cache.
+- Focused accessor tests:
+  - default `auto` selects `read-at`;
+  - explicit `read-at` selects `read-at`;
+  - explicit `mmap` fails clearly;
+  - configured window size and max windows are enforced;
+  - scalar reads and temporary views do not allocate per access;
+  - cross-window object headers and DATA payloads work;
+  - oversized or cross-window returned payloads go to row arena;
+  - uncompressed same-window DATA returns a Buffer view backed by a pinned
+    window;
+  - compressed DATA returns row-arena memory;
+  - row data remains valid after unrelated window eviction and until next row;
+  - row-arena growth across multiple fixed segments does not invalidate earlier
+    same-row compressed/cross-window returned Buffer views;
+  - a hostile row that would exceed `maxRowArenaBytes` fails with the
+    controlled row-arena-limit error without invalidating prior same-row views;
+  - same-row operations reset only enumeration state and do not clear row pins;
+  - `visitEntryPayloads()` callback payload views remain valid for the
+    callback duration, and tests document that callers must copy data retained
+    beyond the callback / current row;
+  - `getEntry()` owned payload Buffers survive row advance independently of
+    row-lifetime window/arena views;
+  - end-of-enumeration after `entryDataRestart()` and
+    `enumerateEntryPayload()` does not invalidate row-lifetime views returned
+    earlier in the same row;
+  - advancing clears pins and arenas;
+  - snapshot readers never read beyond open size;
+  - live readers refresh only at controlled tail/refresh points;
+  - direct `refresh()` preserves current-row returned Buffer views and rolls
+    back visible bounds on failure;
+  - direct `refresh()` failure restores accessor visible bounds and preserves
+    current DATA enumeration cursors when the reader remains on the same row;
+  - short positioned reads and invalid offsets fail predictably;
+  - close-after-error releases descriptors and temp paths.
+- `.journal.zst` tests:
+  - reader open streams to temp and reads through accessor;
+  - verify path streams to temp and reads through accessor;
+  - `readFileHeader()` on `.journal.zst` uses streaming temp decompression,
+    reads only bounded header bytes from the temporary journal, and cleans up;
+  - temp cleanup occurs on success and failure.
+  - empty input, truncated zstd input, worker startup failure, worker timeout,
+    and worker early exit/error produce controlled errors and remove partial
+    temp output.
+- Verification tests:
+  - positive regular, compact, compressed DATA, and sealed/FSS cases pass;
+  - existing negative corruption cases still fail;
+  - HMAC verification does not materialize whole-file slices.
+  - `verifyFile()` uses the accessor-backed byte source and has no `r.buffer`
+    strict-verification path.
+  - `verifyFileWithKey()` uses one accessor-backed byte source for graph
+    verification, sealed HMAC verification, and strict entry/DATA verification;
+    it must not reopen the same journal for a second whole-file or
+    verification pass.
+  - `verifyObjectGraph()` remains source-compatible for direct Buffer callers,
+    while file-based graph verification uses the byte-source adapter and does
+    not keep production direct `this.data.*` Buffer access.
+- Bypass detection:
+  - fail if production reader/verify/explorer/netdata/journalctl code paths
+    call `safeReadFileSync()` or keep `reader.buffer` as a public/internal file
+    content source. Test helper code may still use file reads to build fixtures.
+  - fail if `node/adapter/index.js` accesses a reader-owned whole-file Buffer
+    or performs journal-file reads outside `FileReader`/`DirectoryReader`;
+    stdin/request payload reads may remain explicit allowlisted file reads.
+  - fail if `node/src/lib/compress.js` or production import/caller sites expose
+    `decompressZstToTemp()` for journal file inputs after the streaming helper
+    is added.
+  - fail if `node/src/lib/netdata.js` calls `FileReader.open()` without
+    passing `config.readerOptions` or the normalized equivalent.
+  - fail if `node/cmd/reader_core_bench.js` parses access/window options but
+    does not pass them to reader opens.
+- Interoperability/matrix validation:
+  - `python3 tests/interoperability/run_matrix.py --writers node --readers node stock --entries 10`
+  - `python3 tests/interoperability/run_directory_matrix.py --readers node stock`
+  - `python3 tests/interoperability/run_verify_matrix.py --skip-build`
+  - `python3 tests/interoperability/run_mixed_directory_matrix.py --readers node stock`
+  - `python3 tests/interoperability/run_journalctl_query_matrix.py`
+  - `python3 tests/interoperability/run_live_matrix.py --entries 10 --readers node stock --features regular zstd compact sealed`
+- Benchmark smoke:
+  - `node/cmd/reader_core_bench.js` in `sdk-payloads`, `sdk-entry`,
+    `facade-data`, and `facade-next` modes, with explicit window size and
+    snapshot bounds, reporting `selectedBackend: read-at` and bounded
+    `readBufferBytes`.
+
+Reviewer gate for Node.js:
+
+- Run the full reviewer pool read-only against this SOW, the current Node.js
+  reader/verification code, and the Node.js plan above.
+- Required vote text: `READY FOR IMPLEMENTATION` or `PLAN NOT READY`.
+- Reviewers must specifically check:
+  - whether Node core mmap has been correctly rejected without native addons;
+  - whether positioned reads can provide row-level Buffer lifetime safely;
+  - whether every whole-file reader, verification, Explorer, Netdata,
+    journalctl, and benchmark path is covered by the plan;
+  - whether `.journal.zst` streaming is sufficiently specified;
+  - whether tests are strong enough to catch accidental whole-file reads;
+  - whether the plan preserves public API compatibility while adding options.
+
+Node.js pre-code reviewer round 1:
+
+- Gate result: failed. Node.js implementation must not start.
+- Votes captured:
+  - `mimo`: `READY FOR IMPLEMENTATION`.
+  - `glm`: `PLAN NOT READY`.
+  - `kimi`: `PLAN NOT READY`.
+  - `minimax`: `PLAN NOT READY`.
+  - `qwen`: output not captured due reviewer session handle loss; rerun
+    required.
+  - `deepseek`: output not captured due reviewer session handle loss; rerun
+    required.
+- Accepted blocker dispositions already incorporated into the Node.js plan:
+  - Synchronous `.journal.zst` public APIs now use a worker-thread streaming
+    pipeline to a temporary `.journal` instead of whole-file decompression or
+    silently changing `FileReader.open()`, `verifyFile()`, or
+    `readFileHeader()` to async APIs.
+  - Row arena storage is now specified as fixed-size append-only Buffer
+    segments, so same-row returned Buffer views cannot be invalidated by
+    segment growth.
+  - Same-row operations are separated from row-advance operations, so
+    enumeration reset, owned `getEntry()`, visitor paths, and end-of-entry do
+    not clear row pins or row arena memory.
+  - Verification now has a concrete accessor-backed byte-source adapter,
+    including chunked HMAC update and a migration path for `verify-graph.js`.
+  - Parser migration now names concrete accessor-backed helper methods instead
+    of relying on a fake whole-Buffer emulation layer.
+  - Direct `refresh()` now has snapshot/temporary reload/commit/rollback
+    semantics that preserve current-row returned Buffer views on failure.
+  - `readFileHeader()` and `.journal.zst` header probing are explicitly in
+    scope.
+  - Mechanical bypass detection now names forbidden patterns, production
+    surfaces, and allowlisted non-reader paths.
+  - Node-specific stats use `readSyncUsesPosition`; the Node-inappropriate
+    retired-window setting was removed in favor of `rowArenaSegmentBytes`.
+
 ## Validation
 
 Acceptance criteria evidence:
@@ -2566,6 +3180,130 @@ Reviewer findings:
   - Round 2: `glm`, `kimi`, `mimo`, `qwen`, `deepseek`, and `minimax` all voted
     `PRODUCTION GRADE` using the latest model names from `~/.AGENTS.md`.
   - Disposition: Python phase review gate passed.
+- 2026-06-14 Node.js pre-code review round 1:
+  - `mimo` voted `READY FOR IMPLEMENTATION`.
+  - `glm`, `kimi`, and `minimax` voted `PLAN NOT READY`.
+  - `qwen` and `deepseek` outputs were not captured due reviewer session
+    handle loss.
+  - Disposition: valid blockers were accepted and folded into the Node.js
+    plan before round 2.
+- 2026-06-14 Node.js pre-code review round 2:
+  - Reviewer outputs are stored under
+    `.local/agent-reviews/sow-0108-node-precode-round2/`.
+  - Votes:
+    - `glm`: `READY FOR IMPLEMENTATION`.
+    - `kimi`: `READY FOR IMPLEMENTATION`.
+    - `mimo`: `READY FOR IMPLEMENTATION`.
+    - `qwen`: `READY FOR IMPLEMENTATION`.
+    - `deepseek`: `READY FOR IMPLEMENTATION`.
+    - `minimax`: `PLAN NOT READY`.
+  - Gate result: failed. Node.js implementation must not start.
+  - `minimax` blockers accepted:
+    - `node/adapter/index.js` was not explicitly listed in the production
+      bypass/reader-surface scope.
+    - The sealed verification HMAC body path in
+      `node/src/lib/verify.js:455-475` and `node/src/lib/verify.js:552-585`
+      needed explicit migration wording to byte-source `updateHmac()`.
+    - The Node accessor short-read and window-alignment policy needed to be
+      specified.
+    - `verifyFileWithKey()` needed a focused single-byte-source / no double
+      reopen test requirement.
+  - Disposition: accepted and fixed in the SOW. Round 3 pending with the full
+    reviewer pool and the same whole-scope prompt.
+- 2026-06-14 Node.js pre-code review round 3:
+  - Reviewer outputs are stored under
+    `.local/agent-reviews/sow-0108-node-precode-round3/`.
+  - Votes:
+    - `glm`: `READY FOR IMPLEMENTATION`.
+    - `kimi`: `READY FOR IMPLEMENTATION`.
+    - `qwen`: `READY FOR IMPLEMENTATION`.
+    - `deepseek`: `READY FOR IMPLEMENTATION`.
+    - `minimax`: `PLAN NOT READY`.
+    - `mimo`: no final vote; the process stalled after source reads and was
+      stopped by exact PID after the round was already invalidated by the
+      `minimax` blocking vote.
+  - Gate result: failed. Node.js implementation must not start.
+  - `minimax` blockers accepted:
+    - `verifyFile()` itself needed an explicit accessor-backed byte-source
+      rewrite and focused test, not only `verifyFileWithKey()`.
+    - `decompressZstToTemp()` needed an explicit remove/forbid requirement
+      for Node production paths.
+    - `readFileHeader()` needed explicit `.journal.zst` streaming and cleanup
+      validation.
+    - `node/adapter/index.js` and `node/src/lib/netdata.js` option propagation
+      and bypass scope needed to be mechanically testable.
+    - `verify-graph.js` needed the byte-source API to be canonical for file
+      verification, with direct Buffer support only as a compatibility adapter.
+    - Worker-thread `.journal.zst` error cases needed truncated/empty/concurrent
+      temp cleanup requirements.
+    - Benchmark CLI options needed to be wired to real `ReaderOptions`, not
+      just parsed/reported.
+    - `getEntry()` owned-copy lifetime, DATA-enumeration cursor preservation,
+      indexed-field helper migration, and direct refresh accessor-bound
+      rollback needed explicit implementation/test requirements.
+  - Disposition: accepted and fixed in the SOW. Round 4 pending with the full
+    reviewer pool and the same whole-scope prompt.
+- 2026-06-14 Node.js pre-code review round 4:
+  - Reviewer outputs are stored under
+    `.local/agent-reviews/sow-0108-node-precode-round4/`.
+  - Votes:
+    - `glm`: `READY FOR IMPLEMENTATION`.
+    - `kimi`: `READY FOR IMPLEMENTATION`.
+    - `mimo`: `READY FOR IMPLEMENTATION`.
+    - `qwen`: `READY FOR IMPLEMENTATION`.
+    - `deepseek`: `READY FOR IMPLEMENTATION`.
+    - `minimax`: `PLAN NOT READY`.
+  - Gate result: failed. Node.js implementation must not start.
+  - `minimax` blockers accepted:
+    - The SOW status and round ledger were stale after round 3 and did not
+      record round 4 as the current gate state.
+    - The Node plan needed a stable unsupported-mmap error contract shared by
+      `FileReader`, `DirectoryReader`, facade, adapter, benchmark, and Netdata
+      opens.
+    - The rolling window plan needed an explicit no-overwrite invariant for
+      current-row returned `Buffer` views, plus a cross-window temporary read
+      policy.
+    - The verification plan needed to name the exact
+      `node/src/lib/verify-adapter.js` byte-source contract as the single
+      canonical input for `verifyFile()`, `verifyFileWithKey()`, graph
+      verification, sealed HMAC verification, and strict ENTRY/DATA
+      verification.
+    - The `.journal.zst` plan needed a concrete `node/src/lib/zst-stream.js`
+      helper API, a single temp-cleanup owner, a bounded timeout option, and
+      explicit immutable snapshot bounds for temporary decompressed journals.
+    - The bypass scan needed to be file-scoped and precise so legitimate
+      `Buffer.from(value.buffer, ...)` conversions do not become false
+      positives while reader-owned whole-file Buffer reads remain forbidden.
+    - The Node no-mmap evidence needed the literal local `fs` export check.
+  - Disposition: accepted and fixed in the SOW. Round 5 pending with the full
+    reviewer pool and the same whole-scope prompt.
+- 2026-06-14 Node.js pre-code review round 5:
+  - Reviewer outputs are stored under
+    `.local/agent-reviews/sow-0108-node-precode-round5/`.
+  - Votes:
+    - `glm`: `READY FOR IMPLEMENTATION`.
+    - `kimi`: `READY FOR IMPLEMENTATION`.
+    - `mimo`: `READY FOR IMPLEMENTATION`.
+    - `qwen`: `READY FOR IMPLEMENTATION`.
+    - `deepseek`: `READY FOR IMPLEMENTATION`.
+    - `minimax`: `READY FOR IMPLEMENTATION`.
+  - Gate result: passed. Node.js implementation may start.
+  - Non-blocking watchpoints to carry into implementation:
+    - Keep Netdata, adapter, journalctl, and benchmark option propagation
+      mechanically testable at every open call site.
+    - Preserve the `UnsupportedAccessModeError` contract and test it through
+      all public open surfaces.
+    - Ensure `verifyFileWithKey()` does not call `verifyFile(path)` as a
+      subroutine and uses one accessor-backed byte source for graph,
+      seal/HMAC, and strict ENTRY/DATA verification.
+    - Keep `.journal.zst` cleanup ownership in the main thread and force
+      snapshot bounds for decompressed temporary journals.
+    - Keep bypass detection precise enough to allow legitimate
+      `Buffer.from(value.buffer, ...)` conversions while rejecting reader-owned
+      whole-file access.
+    - Document the minimum supported Node runtime for the worker-thread Zstd
+      path after implementation.
+  - Disposition: pre-code gate passed. Node.js code changes can start.
 
 Same-failure scan:
 
