@@ -6,8 +6,14 @@ Status: in-progress
 
 Sub-state: activated 2026-06-14 after the user explicitly chose to pause
 SOW-0105 and prioritize this foundational reader memory architecture work.
-Rust phase is first. User design decisions recorded before any code, per the
-project decision-recording rule.
+Rust pread work was dropped by user decision after platform evidence showed
+Rust already has mmap support on Linux, FreeBSD, macOS, and Windows through
+`memmap2`. The current active planning target is Go. The first Go pre-code
+review round returned `PLAN NOT READY`; the Go plan has since been expanded
+with concrete accessor, lifetime, Windows mmap, `.journal.zst`, test, and
+benchmark requirements. Go implementation remains blocked until the full
+reviewer pool votes `READY FOR IMPLEMENTATION`. User design decisions are
+recorded before any code, per the project decision-recording rule.
 
 ## Requirements
 
@@ -40,7 +46,8 @@ than Node:
 - Node.js uses whole-file resident Buffer reads.
 
 The user then approved turning this SOW from a Node-only fix into a
-multi-language reader memory architecture SOW. Required implementation sequence:
+multi-language reader memory architecture SOW. Initial required implementation
+sequence was:
 
 1. Rust.
 2. Go.
@@ -50,24 +57,37 @@ multi-language reader memory architecture SOW. Required implementation sequence:
 The user also required a single logical API that hides whether the backend is
 mmap or positioned reads, depending on availability.
 
+2026-06-14 update: after Rust platform support was checked, the user agreed that
+Rust should not be refactored to add a positioned-read backend just for symmetry
+because `memmap2` supports the four target OS families in scope. Rust remains
+the mmap/windowing reference. The first implementation target for this SOW is
+therefore Go.
+
 ### Mandatory Reader Window Contract
 
 All languages must converge on the same reader-memory contract:
 
 - Readers use a `WindowAccessor`-style internal abstraction.
-- Public options expose the same concepts in idiomatic language form:
-  - `Auto`: default. Use rolling mmap where it is supported and selected by the
-    implementation policy; fall back to rolling positioned reads when mmap is
-    unavailable or unsuitable.
+- Public options expose the same concepts in idiomatic language form where the
+  target language/runtime needs them:
+  - `Auto`: default. Use rolling mmap on the supported OS families where mmap
+    exists and is implemented by that language. If the initial mmap backend
+    probe fails before any public data is returned, `Auto` may fall back to
+    rolling positioned reads only with a recorded selected backend and fallback
+    reason. Do not silently downgrade an mmap-capable production target to a
+    slower whole-file copy path after mmap has been selected.
   - `Mmap`: explicit rolling mmap. If mmap cannot be used, fail clearly; do not
     silently change behavior in this explicit mode.
-  - `Pread` / `ReadAt`: explicit rolling positioned-read windows.
+  - `Pread` / `ReadAt`: optional explicit rolling positioned-read windows for
+    runtimes without mmap or for existing compatibility/diagnostic surfaces. It
+    is not required for languages where rolling mmap covers Linux, FreeBSD,
+    macOS, and Windows.
 - Whole-file resident reads are forbidden in production reader paths.
 - Whole-file mmap is not the default. It may remain only as an explicit
   experimental/benchmark option where already present, with bounded-window mode
   remaining the production default.
 - The bounded memory envelope is:
-  `window_size * max_windows + row_arena + fixed reader metadata`.
+  `window_size * max_windows + max_row_arena_bytes + scratch + fixed reader metadata`.
 - Uncompressed DATA returned to consumers should borrow from the active window
   whenever possible.
 - Compressed DATA expands into a row-scoped append-only arena.
@@ -84,17 +104,29 @@ All languages must converge on the same reader-memory contract:
     start;
   - live readers may refresh bounds only at controlled points and must not add
     a metadata syscall to every object access.
+- Journal files are append-only for the reader contract. High-level file and
+  directory queries may treat each selected file as the file existed when that
+  query started. Query-scoped readers may cache file size, header-derived
+  metadata, hash-table metadata, index boundaries, and derived lookup state for
+  the lifetime of that query. They must not refresh these structures on every
+  object or field access merely because a writer might append more data.
+- Live readers are the explicit exception. They may refresh append-visible
+  bounds only at controlled live/tail points, and any newly visible data is
+  outside the immutable snapshot assumed by an already-running query pass.
 - Directory readers must inherit the same per-file accessor behavior; they must
   not bypass it.
-- `.journal.zst` whole-file decompression remains a separate compatibility
-  path, but the decompressed temporary file must be read through the same
-  bounded accessor.
+- `.journal.zst` whole-file decompression is an SDK repository extension, not
+  standard systemd runtime journal behavior. It must mirror Rust behavior in
+  every language that supports it: stream-decompress the whole-file zstd input
+  into a temporary `.journal`, then read that temporary journal through the same
+  bounded accessor as normal files.
 
 ### Assistant Understanding
 
 Facts verified 2026-06-14 by code inspection:
 
-1. Rust has the closest target architecture.
+1. Rust has the closest target architecture and does not need a pread backend
+   for the supported target OS list in this SOW.
    - `rust/src/crates/journal-core/src/file/mmap.rs:187` defines
      `WindowManager`.
    - `rust/src/crates/journal-core/src/file/mmap.rs:212` constructs it with
@@ -103,18 +135,42 @@ Facts verified 2026-06-14 by code inspection:
      as 32 MiB.
    - `rust/src/journal/src/lib.rs:176` defaults `ReaderOptions` to live bounds
      and `ExperimentalMmapStrategy::Windowed`.
-   - `rust/src/crates/journal-core/src/file/mmap.rs:60` maps through
-     `memmap2`; mmap failures propagate instead of falling back to positioned
-     read windows.
+   - `rust/Cargo.toml` depends on `memmap2`.
+   - Local dependency source for `memmap2-0.9.10` selects Unix, Windows, or
+     stub implementations with `#[cfg_attr(unix, path = "unix.rs")]`,
+     `#[cfg_attr(windows, path = "windows.rs")]`, and
+     `#[cfg_attr(not(any(unix, windows)), path = "stub.rs")]`.
+   - Linux, FreeBSD, and macOS are Go/Rust Unix-family targets; Windows is a
+     Windows-family target. All four target OS families therefore have a
+     `memmap2` mmap implementation.
 
-2. Go is not rolling-window today.
+2. Go is not rolling-window today and has a misleading explicit mmap mode on
+   non-Unix targets.
    - `go/journal/reader.go:64` defines `ReaderAccessMode`.
+   - `go/journal/reader.go:67` defines `ReaderAccessReadAt`.
+   - `go/journal/reader.go:68` defines `ReaderAccessMmap`.
    - `go/journal/reader.go:83` defaults to `ReaderAccessMmap`.
    - `go/journal/mmap_unix.go:134` opens a read-only mapping.
    - `go/journal/mmap_unix.go:143` maps the entire file with
      `syscall.Mmap(fd, 0, int(size), ...)`.
    - `go/journal/mmap_other.go:97` remaps by allocating a byte slice for the
      entire file and reading it with `ReadAt`.
+   - `go/journal/mmap_other.go:1` is built for `!unix`, so Windows explicit
+     `ReaderAccessMmap` currently does not mmap; it silently becomes a
+  whole-file resident `ReadAt` copy.
+   - `go/journal/reader.go:328` routes copied reads through the mapping when
+     present.
+   - `go/journal/reader.go:336` returns slices from the mapping when present,
+     otherwise allocates a new buffer per request.
+   - `go/journal/reader_entry.go:19` documents `VisitEntryPayloads` as the
+     current DATA payload visitor path.
+   - `go/journal/reader_entry.go:111` documents
+     `EnumerateEntryPayload` as the libsystemd-style current-row payload path.
+   - `go/journal/reader_entry.go:205` reads DATA objects and decompresses when
+     needed.
+   - `go/journal/directory_reader.go:34` and `go/journal/directory_reader.go:56`
+     pass `ReaderOptions` into per-file readers, so directory readers inherit
+     the file-reader backend.
 
 3. Python is not rolling-window today.
    - `python/journal/reader.py:890` opens the file for readonly mapping.
@@ -137,9 +193,14 @@ Inferences:
 - Rust should be the design authority because it already has the row pinning,
   row overflow arena, window stats, live/snapshot bounds model, and windowed
   mmap default.
-- Go should reuse its existing `ReaderAccessMode` surface but replace both the
-  Unix whole-file mmap and non-Unix whole-file copy with a rolling window
-  accessor.
+- Go should reuse and extend its existing `ReaderAccessMode` surface but
+  replace both the Unix whole-file mmap and non-Unix whole-file copy with a
+  rolling window accessor.
+- Go explicit `ReaderAccessMmap` must fail clearly where mmap is not actually
+  implemented; it must not silently use a resident whole-file copy.
+- Go needs an explicit `Auto` mode so default behavior can choose rolling mmap
+  on Unix-family targets and Windows, or a recorded rolling `ReadAt` fallback
+  only when the initial mmap backend probe fails before public data is returned.
 - Python and Node need deeper internal reader surgery because their current
   APIs are built around whole-file byte containers.
 - The public API should expose concepts, not identical names. Names should be
@@ -147,20 +208,27 @@ Inferences:
 
 Unknowns to resolve at activation:
 
-- Whether Rust's current `WindowManager<M: MemoryMap>` should become a generic
-  `WindowAccessor` over mmap and pread backends, or whether a thinner adapter
-  layer should wrap it to minimize risk.
 - Default `window_size` and `max_windows` for Go, Python, and Node. Rust's
   current 32 MiB default is the starting point, not automatically final.
 - Whether Node.js optional native mmap remains in scope for this SOW or is
   deferred after the pure positioned-read backend is production-grade. Node core
   has no mmap; native addons remain opt-in only if used.
+- Go native Windows mmap is in scope for this SOW. The user decision is to
+  replicate Rust where possible; since Rust uses mmap across Linux, FreeBSD,
+  macOS, and Windows, Go should implement rolling mmap for Unix-family targets
+  and Windows rather than defaulting Windows to positioned reads.
+- Whether Go should cache hash tables as query-scoped metadata slices or keep
+  them window-backed. The current pre-code recommendation is to cache fixed
+  header-derived hash table metadata at reader open/query start only when this
+  improves hot-path locality and remains inside the declared memory envelope.
 
 ### Acceptance Criteria
 
-- Rust, Go, Python, and Node.js expose equivalent reader access options:
-  `Auto`, explicit rolling `Mmap`, and explicit rolling positioned-read where
-  each language/runtime can represent them.
+- Rust, Go, Python, and Node.js expose equivalent reader access concepts in the
+  forms each runtime can safely support. Rolling `Mmap` is the production path
+  where supported. Explicit rolling positioned-read remains optional/legacy
+  where mmap covers the target OS list, and required only where mmap is not
+  available.
 - Default behavior in every language is bounded by the window budget and never
   loads a whole journal file into resident memory.
 - Explicit `Mmap` mode fails clearly if mmap is unavailable; explicit
@@ -285,11 +353,13 @@ Node.js has no core mmap. If optional native mmap is implemented, it must be:
 
 ## Pre-Implementation Gate
 
-Status: ready for Rust phase
+Status: Go plan revised after pre-code review blockers. Go implementation is
+still blocked until the full reviewer pool votes `READY FOR IMPLEMENTATION`.
 
 Activation context: SOW-0105 is paused by explicit user decision. This SOW is
-the active implementation SOW. The Rust phase starts first, then Go, Python,
-and Node.js.
+the active implementation SOW. Rust mmap-only scope was accepted after evidence
+review. Go is the first implementation target for the rolling mmap / rolling
+`ReadAt` accessor work.
 
 Problem / root-cause model:
 
@@ -302,11 +372,19 @@ Evidence reviewed:
 - Rust window manager and default options:
   `rust/src/crates/journal-core/src/file/mmap.rs:187`,
   `rust/src/journal/src/lib.rs:161`, `rust/src/journal/src/lib.rs:176`.
-- Rust mmap dependency/no fallback:
-  `rust/src/crates/journal-core/src/file/mmap.rs:60`.
+- Rust mmap support evidence:
+  `rust/Cargo.toml`, local `memmap2-0.9.10` source cfg attributes for Unix and
+  Windows.
 - Go access modes and whole-file backends:
   `go/journal/reader.go:64`, `go/journal/reader.go:83`,
   `go/journal/mmap_unix.go:143`, `go/journal/mmap_other.go:106`.
+- Go reader hot-path and facade surfaces:
+  `go/journal/reader.go:328`, `go/journal/reader.go:336`,
+  `go/journal/reader_entry.go:19`, `go/journal/reader_entry.go:111`,
+  `go/journal/reader_entry.go:205`, `go/journal/facade.go:448`.
+- Go directory inheritance:
+  `go/journal/directory_reader.go:34`, `go/journal/directory_reader.go:56`,
+  `go/journal/directory_reader.go:276`, `go/journal/directory_reader.go:324`.
 - Python whole-file mmap:
   `python/journal/reader.py:890`, `python/journal/reader.py:896`.
 - Node whole-file resident Buffer:
@@ -338,9 +416,9 @@ Existing patterns to reuse:
 Risk and blast radius:
 
 - Very high. This is the foundation under all reader APIs and query tools.
-- Mitigation: implement in the required order Rust -> Go -> Python -> Node,
-  commit each verified language phase before advancing, and require phase
-  validation plus final whole-SOW reviewer consensus.
+- Mitigation: keep Rust as the reference, implement in the executable order
+  Go -> Python -> Node, commit each verified language phase before advancing,
+  and require phase validation plus final whole-SOW reviewer consensus.
 
 Sensitive data handling plan:
 
@@ -351,19 +429,50 @@ Sensitive data handling plan:
 
 Implementation plan:
 
-1. Rust phase:
-   - Refactor or wrap the existing `WindowManager` behind the final
-     `WindowAccessor` contract.
-   - Add a positioned-read window backend.
-   - Preserve rolling mmap as the production default where supported.
-   - Add backend selection/stats and explicit mmap/pread/auto options.
-   - Prove row-level lifetime, eviction safety, live/snapshot bounds, and
-     performance are not regressed.
+1. Rust reference confirmation:
+   - No pread implementation in this SOW.
+   - Preserve the existing rolling mmap default and whole-file mmap benchmark
+     option.
+   - Add only documentation/spec clarification if needed: Rust uses mmap for
+     Linux, FreeBSD, macOS, and Windows; unsupported targets fail clearly.
+   - Keep Rust as the row-level window lifetime reference for Go/Python/Node.
 2. Go phase:
-   - Replace whole-file Unix mmap with rolling mmap windows.
-   - Replace non-Unix whole-file resident copy with rolling `ReadAt` windows.
+   - Introduce an internal reader accessor abstraction for readers only. Do not
+     touch writer `mappedArena` except if required to split reader and writer
+     types cleanly.
+   - Replace Unix whole-file mmap with rolling mmap windows.
+   - Replace Windows/non-Unix whole-file resident copy with native rolling mmap
+     on Windows, matching Rust's mmap-first architecture.
+   - Keep any explicit `ReadAt` mode as a rolling-window compatibility/
+     diagnostic backend only where the public API already exposes it or where a
+     platform truly has no mmap backend.
+   - Add `ReaderAccessAuto` while keeping existing `ReaderAccessReadAt` and
+     `ReaderAccessMmap` source-compatible.
+   - Make `DefaultReaderOptions()` use `ReaderAccessAuto`.
+  - Select rolling mmap for `Auto` on Unix-family targets and Windows. If the
+    initial mmap backend probe fails before any public data is returned, `Auto`
+    may fall back to rolling `ReadAt` with the selected backend and fallback
+    reason exposed in stats. Once `Auto` has selected mmap, later mapping
+    failures are surfaced as read errors rather than silently changing backend.
+   - Make explicit `ReaderAccessMmap` fail clearly on targets where Go mmap is
+     not implemented instead of silently using resident `ReadAt`.
+   - Add window size, max windows, selected backend, and accessor stats to
+     `ReaderOptions` / diagnostics in idiomatic Go form.
    - Preserve public access-mode compatibility while adding missing window
      sizing/stats where needed.
+   - Preserve snapshot semantics by capturing file size/header-derived
+     metadata at open/query start. Live mode may refresh only at controlled
+     `Refresh()` / tail points, not per object access.
+   - Preserve row-level guarantees for `EnumerateEntryPayload` and
+     `SdJournalEnumerateAvailableData` by pinning windows that back current-row
+     uncompressed payload slices until row advance, seek/file switch, or close.
+   - Keep `VisitEntryPayloads` callback-scoped unless a later API change
+     explicitly upgrades it; implementation still must not invalidate a slice
+     before the callback returns.
+   - Store compressed DATA in a row-scoped arena that is cleared only at row
+     advance, seek/file switch, or close.
+   - Ensure window eviction cannot unmap or overwrite any window backing
+     current-row returned slices.
    - Match Rust behavior and benchmark against Rust.
 3. Python phase:
    - Replace whole-file mmap with the same rolling accessor model.
@@ -431,18 +540,536 @@ Artifact impact plan:
   memory envelope, and hot-path implications for Rust, Go, Python, and Node.js.
 - SOW lifecycle: update `.agents/sow/SOW-status.md` and root `SOW-status.md`.
 
-Open decisions:
+Resolved Go implementation decisions:
 
-- No user-blocking decisions for the Rust phase.
-- Final public option names per language should reuse existing names where
-  cleanly possible and use idiomatic peer names otherwise. Any incompatible
-  public API change returns for a user decision before implementation.
-- Whether Node optional native mmap is implemented in this SOW or split after
-  the pure rolling positioned-read backend is complete. This is not blocking
-  Rust, Go, or Python.
-- Exact default `window_size` and `max_windows` per language are measurement
-  decisions. Existing defaults are preserved unless benchmarks justify a change
-  and the SOW records the evidence.
+- Native Windows rolling mmap is in scope now. This follows the user's decision
+  that Rust is the reference and Go should not default Windows to a slower
+  positioned-read path when mmap is available.
+- Go defaults are `ReaderAccessAuto`, 32 MiB windows, and four active windows
+  per file reader. These values mirror Rust's window size and keep the first Go
+  implementation bounded and measurable. A later benchmark may justify tuning,
+  but implementation starts with these explicit values.
+- Go default `max_row_arena_bytes` is 256 MiB per reader. This bounds
+  compressed DATA expansion and cross-window/oversized row-returned copies
+  while remaining far above normal row sizes. If a single row needs more
+  row-arena memory, the reader returns a controlled row-arena-limit error
+  instead of exhausting process memory. Explicit options may raise the limit for
+  trusted workloads, and stats must report row arena peak bytes.
+- Go hash-table and index reads remain window-backed in this phase. Do not add
+  a separate hash-table metadata cache while replacing whole-file access. A
+  cache can be added only after profiling proves window churn and the SOW
+  records the memory cost inside the accessor budget.
+- Go directory readers keep the current eager-open structure for this phase.
+  The memory envelope is explicitly per selected file:
+  `selected_files * (window_size * max_windows + max_row_arena_bytes + scratch + fixed metadata)`.
+  A shared directory-level window budget is useful future work, but it is not
+  required to remove the current whole-file mmap/copy behavior.
+- Direct `Refresh()` preserves current-row returned slices. If refresh
+  discovers new live bounds, it updates accessor-visible metadata without
+  unmapping or overwriting row-pinned windows or row-arena memory. If an error
+  occurs, already returned current-row slices still remain valid until row
+  advance, seek/file switch, or close.
+- Go `.journal.zst` support is fixed in this phase. It must stream-decompress
+  into a temporary `.journal`, then open that temporary journal through the
+  same bounded accessor. `os.ReadFile` and whole-file `DecodeAll` are forbidden
+  for `.journal.zst` reader open.
+- `openFileWithOptions` must create the accessor for every access mode through
+  one constructor path. The current `if opts.AccessMode == ReaderAccessMmap {
+  newReadOnlyMapping(...) }` shape is replaced by a single constructor that
+  accepts normalized options, opens/probes the selected backend, records
+  `ReaderAccessAuto` fallback if needed, and returns the concrete accessor plus
+  selected access stats.
+- Node optional native mmap remains a later Node-phase decision. It does not
+  block Go or Python planning.
+
+### Go Pre-Code Design Analysis - 2026-06-14
+
+Status: Go plan is ready for the next pre-code reviewer gate. The completed
+reviewers were correct to block the first Go plan. The revised plan below
+defines the accessor API, build-tag layout, row lifetime state machine,
+cross-window fallback, live refresh behavior, Windows mmap requirements, public
+options, `.journal.zst` streaming behavior, and validation scope.
+
+Ground-truth facts:
+
+- Current Go `ReaderAccessMmap` on Unix maps the whole file:
+  `go/journal/mmap_unix.go:134`, `go/journal/mmap_unix.go:142`,
+  `go/journal/mmap_unix.go:168`.
+- Current Go `ReaderAccessMmap` on non-Unix is not mmap. It allocates a
+  resident whole-file byte slice and reads the entire file:
+  `go/journal/mmap_other.go:89`, `go/journal/mmap_other.go:97`,
+  `go/journal/mmap_other.go:106`.
+- Current Go `ReaderAccessReadAt` avoids whole-file loading but allocates a new
+  buffer for every `readSlice` call:
+  `go/journal/reader.go:328`, `go/journal/reader.go:336`,
+  `go/journal/reader.go:343`.
+- Current Go live refresh reads the header and file size directly from the file,
+  bypassing the mapping/access path:
+  `go/journal/reader.go:391`, `go/journal/reader.go:404`.
+- Current Go refresh can replace the mapping and clears current-row state:
+  `go/journal/reader.go:430`, `go/journal/reader.go:436`,
+  `go/journal/reader.go:437`, `go/journal/reader.go:446`.
+- Current Go `.journal.zst` handling reads and decodes the entire compressed
+  file in memory before writing a temporary decompressed journal:
+  `go/journal/reader.go:258`, `go/journal/reader.go:264`,
+  `go/journal/reader.go:274`.
+- Current Go directory readers open all selected file readers at construction:
+  `go/journal/directory_reader.go:34`, `go/journal/directory_reader.go:40`,
+  `go/journal/directory_reader.go:56`.
+- Current Go writer `mappedArena` lives in the same platform files as reader
+  `readOnlyMapping`, so reader changes can accidentally modify writer behavior:
+  `go/journal/mmap_unix.go:12`, `go/journal/mmap_unix.go:18`,
+  `go/journal/mmap_other.go:12`, `go/journal/mmap_other.go:17`.
+- Rust has the reference semantics:
+  - `WindowManager` tracks window count, row pin count, mapped bytes, map count,
+    remap count, evictions, and row overflow objects:
+    `rust/src/crates/journal-core/src/file/mmap.rs:27`,
+    `rust/src/crates/journal-core/src/file/mmap.rs:187`.
+  - `get_slice()` is the ordinary internal parse path:
+    `rust/src/crates/journal-core/src/file/mmap.rs:755`.
+  - `get_row_pinned_slice()` is the row-returned-data path:
+    `rust/src/crates/journal-core/src/file/mmap.rs:530`.
+  - row pins are cleared before row advance/reset:
+    `rust/src/crates/journal-core/src/file/row_view.rs:86`,
+    `rust/src/crates/journal-core/src/file/row_view.rs:246`.
+  - when pinning would exceed the row pin limit, Rust copies into row overflow
+    storage instead of invalidating existing row slices:
+    `rust/src/crates/journal-core/src/file/mmap.rs:511`,
+    `rust/src/crates/journal-core/src/file/mmap.rs:518`,
+    `rust/src/crates/journal-core/src/file/mmap.rs:530`.
+
+Official platform docs checked:
+
+- Go build constraints support file suffixes and `//go:build` constraints, so
+  the reader accessor can be split by platform without affecting unrelated
+  writer code. Source: `go/build` documentation, Build Constraints.
+- Go standard-library source exposes Windows mapping primitives through
+  `syscall`: `CreateFileMapping`, `MapViewOfFile`, and `UnmapViewOfFile`.
+  Evidence: Go `src/syscall/syscall_windows.go`.
+- Go standard-library source exposes Windows constants `PAGE_READONLY` and
+  `FILE_MAP_READ`. Evidence: Go `src/syscall/types_windows.go`.
+- Go standard-library source has an internal example that converts a Windows
+  mapped view address into a Go byte slice with `unsafe.Slice`. Evidence:
+  Go `src/internal/fuzz/sys_windows.go`.
+- Microsoft documents `MapViewOfFile` as mapping a selected view of a file.
+  The high/low file offset must be aligned to system allocation granularity.
+  Evidence: Microsoft Learn `MapViewOfFile` documentation.
+- Microsoft documents "Creating a View Within a File" as the correct method for
+  mapping a subsection of a file: align the view start down to allocation
+  granularity, then offset inside the mapped view to reach the requested bytes.
+  Evidence: Microsoft Learn "Creating a View Within a File".
+- Microsoft documents that `UnmapViewOfFile` invalidates the view address
+  range. This confirms why row-pinned Windows views must not be unmapped while
+  returned slices can still be used.
+- `go doc runtime.KeepAlive` and `go doc unsafe.Slice` were checked for mapped
+  view lifetime and slice construction rules. The implementation must keep the
+  accessor and mapping handles live for the lifetime of every slice derived from
+  a view.
+
+Design principle:
+
+- Go must copy Rust's lifetime model, not Rust's type system.
+- Internal parsing uses short-lived accessor slices or copied scratch buffers.
+- Only APIs that return borrowed current-row payload slices request row-lifetime
+  storage.
+- Compressed DATA and cross-window DATA returned to consumers use a row arena.
+- The accessor is reader-only. Writer `mappedArena` must be separated or left
+  untouched with tests proving writer behavior is unchanged.
+
+Go reader surfaces and required lifetime class:
+
+| Surface | Current behavior | Required accessor lifetime |
+|---|---|---|
+| `GetEntry()` | returns owned copies | temporary/internal slices only |
+| `VisitEntryPayloads()` | callback-scoped payloads; docs forbid retention | temporary/internal slices only; valid until callback returns |
+| `CollectEntryPayloads()` | owned copies via visitor | temporary/internal slices only |
+| `GetEntryPayload()`, `GetRaw()`, `GetRawValues()` | owned copies | temporary/internal slices only |
+| `EntryDataRestart()` + `EnumerateEntryPayload()` | libsystemd-style current-row borrowed payloads | row-lifetime slices |
+| `SdJournalEnumerateAvailableData()` | facade current-row borrowed payloads | row-lifetime slices |
+| Explorer row scan and filters | internal classification, no borrowed data exposed | temporary/internal slices only |
+| Explorer returned rows | currently collected as owned payload copies | temporary/internal slices only, then copy |
+| `VisitUnique()` / field enumeration | callback data is not current-row data | temporary/internal slices unless API docs are expanded |
+
+Proposed Go internal accessor API:
+
+```text
+readerAccessor:
+  kind() ReaderSelectedAccess
+  size() uint64
+  readAt(dst []byte, offset uint64) error
+  tempSlice(offset, size uint64) ([]byte, error)
+  rowSlice(offset, size uint64) ([]byte, error)
+  clearRow() error
+  snapshotVisibleBounds() readerAccessorVisibleSnapshot
+  restoreVisibleBounds(snapshot readerAccessorVisibleSnapshot)
+  refreshVisibleBounds() (header journalHeader, changed bool, size uint64, error)
+  stats() ReaderAccessStats
+  close() error
+```
+
+Semantics:
+
+- `tempSlice()` is for parsing and callback-scoped reads. It may return a
+  borrowed window slice if the range fits one window, or a reusable scratch copy
+  if the range crosses windows, exceeds one window, or no evictable window is
+  available.
+- `VisitEntryPayloads()` uses `tempSlice()` and preserves the existing
+  per-callback lifetime: the payload slice is valid until that callback returns,
+  not until the outer visitor loop completes. The implementation may evict or
+  reuse the temporary window/scratch after the callback returns. The public docs
+  must state this clearly.
+- `rowSlice()` is for data returned by `EnumerateEntryPayload()` and facade
+  enumeration. It returns a borrowed slice only when the range fits one window
+  that can be row-pinned. If not, it copies the range into the row arena.
+- DATA payload routing is split by lifetime class:
+  - `readDataPayloadTemp(offset)` reads the DATA header and payload through
+    `tempSlice()`. It calls the existing pure `decompressDataPayload(flag,
+    payload)` helper when needed. Uncompressed output may be the temporary
+    slice; compressed output may be a temporary allocation. Callers that return
+    owned data clone it after this call.
+  - `readDataPayloadRow(offset)` reads the DATA header through `tempSlice()`.
+    For uncompressed DATA, it reads the payload through `rowSlice()`, so the
+    returned slice is window-pinned or row-arena-backed until the row is left.
+    For compressed DATA, it reads compressed bytes through `tempSlice()`, calls
+    the existing pure `decompressDataPayload(flag, payload)` helper, appends the
+    decompressed bytes into the row arena with `max_row_arena_bytes` accounting,
+    and returns the arena-backed slice.
+  - The existing `decompressDataPayload` function remains pure and does not
+    know about accessors or arenas. Lifetime ownership is handled by the caller.
+  - `VisitEntryPayloads`, `GetEntry`, `GetEntryPayload`, `GetRaw`,
+    `GetRawValues`, Explorer, field/unique APIs, and verification paths use the
+    temp variant unless they explicitly return owned copies.
+  - `EnumerateEntryPayload` and `SdJournalEnumerateAvailableData` use the row
+    variant.
+- `clearRow()` unpins row windows and clears the row arena only when the current
+  row is left: `Next`, `Previous`, seek operations, `setCurrentEntryOffset`
+  when it changes the row, directory file switches, and `Close`.
+- `EntryDataRestart()` and DATA enumeration reset operations must not call
+  `clearRow()` while staying on the same row. They may reset enumeration
+  cursors, but row-returned slices from the same row remain valid until the row
+  is left.
+- `snapshotVisibleBounds()` and `restoreVisibleBounds()` capture and restore
+  only the accessor's logical visible file-size/header bounds used by snapshot
+  and live reads. They do not copy, clear, or restore row-pinned windows or row
+  arena memory.
+- `refreshVisibleBounds()` reads the current file size and header through the
+  accessor/file descriptor path only at explicit live refresh points. It must
+  not invalidate current-row slices. It may map additional windows for newly
+  visible file regions, but it must preserve all row-pinned views and row-arena
+  allocations until the row is left.
+- `stats()` must expose selected backend, file size, window size, max windows,
+  current windows, row pins, row overflow objects/bytes, mapped/read buffer
+  bytes, map/read count, eviction count, temp-copy count, and fallback count.
+
+Proposed Go backend split:
+
+- `reader_access.go`: common interface, options, stats, row arena, constants.
+- `reader_access_mmap_unix.go`: rolling mmap windows for Unix targets only.
+- `reader_access_mmap_windows.go`: rolling mmap windows for Windows.
+- `reader_access_readat.go`: rolling positioned-read windows for explicit
+  legacy/diagnostic use or unsupported mmap targets.
+- `reader_access_mmap_unsupported.go`: explicit mmap unsupported constructor
+  for targets where the Go SDK has no mmap backend.
+- Existing writer arena code must either remain in existing files untouched or
+  move to writer-named files in a mechanical split. Any move must be
+  behavior-preserving and validated by writer tests/benchmarks.
+
+Concrete Go file/build-tag contract:
+
+- Keep writer `mappedArena` behavior unchanged. Reader work must not change the
+  writer arena API, writer growth, or writer mmap/read/write paths unless a
+  compile split forces a mechanical move with no behavior changes.
+- Remove reader-only `readOnlyMapping` responsibility from `mmap_unix.go` and
+  `mmap_other.go`; those files should stop deciding reader behavior.
+- `reader_access.go` owns `ReaderAccessMode`, `ReaderOptions` normalization,
+  `ReaderAccessStats`, the `readerAccessor` interface, row arena, and common
+  bounds helpers.
+- `reader_access_mmap_unix.go` uses `//go:build unix` and maps aligned windows
+  with `syscall.Mmap`. Window bases are aligned down to the OS page size.
+- `reader_access_mmap_windows.go` uses `//go:build windows` and maps aligned
+  windows with `CreateFileMapping` plus `MapViewOfFile`. Window bases are
+  aligned down to the Windows allocation granularity obtained from
+  `GetSystemInfo`, not merely the page size.
+- `reader_access_mmap_unsupported.go` uses `//go:build !unix && !windows` and
+  provides a clear unsupported-mmap constructor for explicit `ReaderAccessMmap`.
+- `reader_access_readat.go` is platform-independent and implements explicit
+  rolling positioned-read windows. It reuses fixed window buffers and must not
+  allocate a fresh buffer on every `readSlice`.
+- `reader.go` must call the accessor for all reader byte access after the
+  initial file open/options validation. Direct `file.ReadAt` calls in
+  `readSlice`, `readCurrentHeader`, live refresh, and DATA/header helpers must
+  be removed or routed through the accessor.
+- `openFileWithOptions` replaces the current mapping-specific branch with one
+  accessor constructor call for `ReaderAccessAuto`, `ReaderAccessMmap`, and
+  `ReaderAccessReadAt`. `ReadAt` must not keep the old per-call allocation
+  behavior; it is a rolling-window accessor backend.
+- Accessor constructor shape:
+  `newReaderAccessor(file *os.File, opts ReaderOptions) (readerAccessor, ReaderAccessStats, error)`.
+  The constructor owns backend selection, initial file-size capture, initial
+  mmap probe, fallback cleanup, selected backend stats, and fallback reason.
+  `openFileWithOptions` parses the journal header only after this accessor is
+  constructed, by reading the header through `accessor.readAt()`.
+- `ReaderAccessAuto` mmap probe:
+  - The probe maps the first real rolling window: `min(file_size, window_size)`
+    bytes, aligned according to the backend. This becomes the first cached
+    window if mmap succeeds. For files smaller than one window, the probe maps
+    the whole visible file.
+  - If the probe fails before any public data is returned, the constructor
+    closes and discards all partial mmap state, constructs the rolling `ReadAt`
+    accessor, and records selected backend plus fallback reason in stats.
+  - If explicit `ReaderAccessMmap` probe fails, the constructor closes partial
+    mmap state and returns a clear error.
+  - `loadEntryArray` and all header/object reads after open use the accessor
+    returned by this constructor; they must not run on a temporary
+    pre-accessor file-read path.
+- The `Reader` struct removes `mapping *readOnlyMapping` and replaces it with
+  `accessor readerAccessor`. `Reader.Close()` calls `accessor.close()`.
+  `Reader.readAt()` delegates to `accessor.readAt()`. `Reader.readSlice()` is
+  removed or becomes an internal `tempSlice()` wrapper that delegates to the
+  accessor; row-returned APIs must not call it.
+- `readerRefreshSnapshot` removes `mapping *readOnlyMapping`. It stores only
+  logical reader state that may need rollback: header, entry offsets, current
+  index, visible file size, and an accessor visible-bounds snapshot. It does
+  not copy or reset row-pinned windows or row arena.
+- Benchmark support files are part of the Go phase:
+  `go/internal/testcmd/reader_core_bench/main.go` and
+  `tests/benchmarks/run_reader_core_benchmarks.py` must understand the new
+  `auto`, rolling mmap, explicit `read-at`, window size, max windows, selected
+  backend, and accessor stats so the no-regression benchmark evidence proves
+  the intended path.
+
+Windows mmap details:
+
+- The implementation must create one read-only file mapping handle per reader
+  and map/unmap views per accessor window.
+- File offsets passed to `MapViewOfFile` must be split into high/low DWORDs and
+  aligned to allocation granularity. The returned Go slice begins at
+  `mapped_view[requested_offset - aligned_base:]`.
+- `unsafe.Slice` is acceptable only inside the Windows mmap backend, where the
+  view lifetime is owned by the accessor. The accessor must keep mapping handles
+  and view records live until the corresponding window is evicted or row-pinned
+  state is cleared after the row is left.
+- Each Windows mmap window struct must store the exact `uintptr` returned by
+  `MapViewOfFile`, the aligned base, mapped length, logical slice, row-pin
+  state, and LRU state. The accessor's live window list and row-pin list are the
+  owners keeping that window struct live. `UnmapViewOfFile` uses the stored
+  `uintptr` from the window being evicted, never a derived slice pointer.
+- `UnmapViewOfFile` must never run on a row-pinned view. This is mandatory
+  because unmapping invalidates the virtual address range used by returned Go
+  slices.
+- `ReaderAccessReadAt` remains available on Windows only when the caller asks
+  for it explicitly. It is not the default Windows production path.
+
+Proposed Go public options:
+
+- Add `ReaderAccessAuto` without changing the existing integer values. Since
+  `ReaderAccessMode` values are public, changing existing values may be a
+  breaking change. Recommended shape: keep `ReaderAccessReadAt = 0`, keep
+  `ReaderAccessMmap = 1`, add `ReaderAccessAuto = 2`, and make
+  `DefaultReaderOptions()` explicitly select `ReaderAccessAuto`.
+- Keep `WithMmap(true)` as explicit mmap, not auto.
+- Keep `WithMmap(false)` as explicit `ReadAt`.
+- Add `WithWindowSize(bytes uint64)` and `WithMaxWindows(count int)`.
+- Add `WithMaxRowArenaBytes(bytes uint64)` and report
+  `RowArenaBytes`, `RowArenaPeakBytes`, and `RowArenaLimitBytes` in accessor
+  stats.
+- Add `SelectedAccessMode()` or equivalent diagnostics so tests and callers can
+  prove whether `Auto` selected mmap or read windows.
+- `ReaderOptions.normalized()` must not collapse unknown/non-mmap modes into
+  `ReadAt`; it must validate known modes and preserve `Auto`.
+- Update Go public doc strings:
+  - `VisitEntryPayloads()` slices are valid only until the callback returns.
+  - `EnumerateEntryPayload()` and `SdJournalEnumerateAvailableData()` slices
+    are valid until the reader advances, seeks, switches files, or closes.
+    DATA restart/exhaustion and direct `Refresh()` do not invalidate them while
+    staying on the same row.
+
+Recommended Go backend policy:
+
+- On Unix-family targets: `Auto` selects rolling mmap.
+- On Windows: `Auto` selects native rolling mmap.
+- On Unix-family targets and Windows, `Auto` probes rolling mmap at open by
+  mapping the initial header/window. If that initial probe fails before public
+  data is returned, `Auto` may fall back to rolling `ReadAt` and must record the
+  fallback reason in `ReaderAccessStats`. If the mmap probe succeeds, the
+  backend is fixed to mmap for the reader lifetime and later map failures return
+  errors.
+- On other targets without an implemented mmap backend, `Auto` may select
+  rolling `ReadAt` only if that target remains in supported scope; otherwise it
+  should fail clearly.
+- Explicit `Mmap` on targets without an implemented Go mmap backend fails at
+  open with a clear unsupported-mode error.
+- Native Windows mmap is part of the Go phase because Rust is the reference and
+  Rust already has mmap support on Windows through `memmap2`.
+
+Window and row memory model:
+
+- Default starting point: `window_size = 32 MiB`, matching Rust.
+- Default starting point: `max_windows = 4`, subject to benchmark adjustment.
+- Memory envelope per reader:
+  `window_size * max_windows + max_row_arena_bytes + scratch + fixed metadata`.
+- Row-pinned windows count against `max_windows`. If a new row slice cannot be
+  pinned without invalidating an older row slice, copy the requested range into
+  the row arena.
+- If a temporary parse read needs a new window while all windows are row-pinned,
+  use scratch/copy for that temporary read instead of exceeding the window
+  budget.
+- Rolling `ReadAt` windows follow the same pinning discipline as mmap windows.
+  A `rowSlice()` from a `ReadAt` backend pins the window buffer until the row is
+  left. A later `tempSlice()` must not reuse or overwrite a row-pinned `ReadAt`
+  buffer. If no unpinned window buffer is available, `tempSlice()` uses scratch
+  copy memory and records the fallback in stats.
+- If a requested range crosses a window boundary or is larger than one window:
+  - temporary/internal path uses scratch/copy;
+  - row-returned path uses row arena;
+  - no public borrowed slice may point to memory that needs two windows to stay
+    valid unless the implementation explicitly proves both windows are pinned
+    inside the budget.
+- Row-arena append checks the configured `max_row_arena_bytes` before copying.
+  Crossing the limit returns a controlled reader error and leaves previously
+  returned current-row slices valid until the row is left.
+
+Live and snapshot model:
+
+- Snapshot mode captures file size and header-derived boundaries at open/query
+  start and never extends them.
+- Live mode may refresh at `Refresh()`, `Next()` after tail, and realtime seek
+  refresh points already present in the code. It must not add file stat/header
+  reads to normal object access.
+- `readCurrentHeader()` should be folded into the accessor refresh path so live
+  header and file-size refresh is centralized.
+- Current-row returned slices must remain valid until the row is left. A direct
+  `Refresh()` while on a row preserves row pins and row arena. If implementation
+  analysis finds this impossible in Go, the work must stop for a user decision
+  before code changes weaken the contract.
+- `refreshEntryOffsets()` must remove the current success-path call to
+  `clearCurrentEntryState()` when serving direct `Refresh()` on the same row.
+  It must not call accessor `clearRow()` while the current row is still active.
+- The rolling accessor is not replaced wholesale during direct refresh. Refresh
+  updates visible file size/header-derived bounds and reloads entry-array state
+  through the accessor. Existing row-pinned windows and row-arena allocations
+  remain owned by the accessor until the row is left.
+- Direct refresh sequence:
+  1. Snapshot logical reader state and accessor visible bounds.
+  2. Call accessor refresh to read current header/size through the accessor path
+     and update provisional visible bounds.
+  3. Reload entry-array state into temporary local data.
+  4. On success, commit header, visible size, entry offsets, and current index
+     without clearing row pins or row arena.
+  5. On failure, restore the prior header, visible size, entry offsets, current
+     index, and accessor visible bounds; row pins and row arena remain untouched.
+- Internal refreshes that happen after tail or as part of seeking may leave the
+  row first and then call `clearRow()`. The code path must make that explicit;
+  direct `Refresh()` must not use that row-clearing path.
+
+Directory-reader memory model:
+
+- Current `DirectoryReader` opens every selected file reader eagerly. With
+  bounded per-file windows, the worst-case resident/mapped budget is still:
+  `selected_files * window_size * max_windows`.
+- For this Go phase, the minimum acceptable improvement is that no reader maps
+  or copies a whole file. However, large directories still need a documented
+  budget.
+- Recommended first implementation: keep eager open, but expose stats and a
+  `ReaderOptions` budget so directory benchmarks can measure real memory.
+- Required follow-up decision before calling the directory design final:
+  whether to add a directory-level shared window budget / lazy file reader
+  opening. This is not needed to fix the whole-file mapping bug, but it may be
+  needed for very large journal directories.
+
+`.journal.zst` model:
+
+- The current Go path is an explicit whole-file memory violation.
+- User decision: Go must do the same as Rust for this SDK extension.
+- Implementation inside this SOW: stream-decompress `.journal.zst` into the
+  existing temporary journal file path, then read the decompressed temp file
+  through the same accessor.
+- `.journal.zst` must not remain a whole-file memory exception in Go.
+
+Tests that must exist before the Go phase can pass:
+
+- `ReaderAccessAuto` selects rolling mmap on Unix-family targets and Windows.
+  Cross-compile, injected backend tests, or native Windows tests must verify
+  both platform families.
+- `ReaderAccessAuto` fallback is tested by forcing the initial mmap probe to
+  fail before public data is returned. The reader must select rolling `ReadAt`,
+  expose selected backend plus fallback reason, and still pass read correctness.
+  A later mmap failure after mmap has been selected must return an error, not
+  silently switch backend.
+- Explicit `ReaderAccessMmap` fails on targets where no Go mmap backend exists.
+- Explicit `ReaderAccessReadAt` never maps.
+- A small-window test forces multiple windows and proves correct reads.
+- A row-lifetime test keeps slices from `EnumerateEntryPayload()`, forces window
+  pressure by reading other offsets in the same row, and verifies retained
+  slices remain valid until row advance.
+- The same row-lifetime test must run under explicit `ReaderAccessReadAt` and
+  prove row-pinned `ReadAt` window buffers are not overwritten by later
+  temporary reads.
+- A row-advance test verifies old slices are no longer guaranteed after `Next`
+  or `Previous`; tests must not rely on unsafe use after invalidation, but stats
+  must show row pins cleared.
+- A DATA restart/exhaustion test verifies `EntryDataRestart()`,
+  `ClearEntryDataState()`, and end-of-enumeration state changes do not clear
+  row-pinned windows or row arena while staying on the same row.
+- A cross-window DATA object test proves row-returned data is copied into row
+  arena and remains valid.
+- An object-larger-than-window test proves the same arena fallback.
+- A compressed DATA test proves decompressed payloads are row-arena-backed for
+  row-returned APIs and temporary/scratch-backed for internal parse paths.
+- A row-arena-limit hostile-file test creates a row that would exceed
+  `max_row_arena_bytes` through compressed DATA or cross-window row copies and
+  proves the reader returns the controlled limit error without invalidating
+  prior current-row slices.
+- A live refresh test proves refresh after append sees new rows without
+  invalidating current-row slices.
+- A direct `Refresh()` failure-path test forces entry-array reload/header
+  refresh failure and proves previous visible state and current-row returned
+  slices remain valid.
+- A `VisitEntryPayloads()` callback lifetime test proves a slice remains valid
+  until its callback returns and that callers must copy before retaining beyond
+  the callback.
+- A snapshot bounds test proves appended rows are invisible.
+- A directory memory test opens many files and proves no whole-file file copy or
+  mapping occurs.
+- A `.journal.zst` test proves streaming temp-file decode, not whole-file
+  `os.ReadFile` + `DecodeAll`.
+- Compact, sealed/FSS, historical unkeyed, and compressed DATA fixtures must
+  continue to pass existing matrices.
+- Benchmarks must compare pre-SOW Go whole-file mmap vs post-SOW Go rolling
+  mmap on large files and report selected backend/stats. Any meaningful Unix
+  mmap slowdown requires a user decision.
+
+Recorded Go decisions before code:
+
+1. Windows Go mmap scope.
+   - Decision: implement native Windows rolling mmap now, using Rust as the
+     behavior reference.
+   - Implication: Go Windows uses the same mmap-first production model as Rust,
+     rather than a slower positioned-read default.
+   - Risk: Windows mapping APIs add handle lifetime, allocation-granularity, and
+     view-lifetime complexity. This must be covered by focused tests and
+     reviewer scrutiny.
+2. Directory memory budget.
+   - Decision: keep eager directory open for the Go phase and record per-file
+     budget/stats.
+   - Implication: this removes the current whole-file map/copy bug without
+     redesigning directory traversal.
+   - Risk: large directories can still multiply the per-file window budget.
+     This risk is explicit and measurable through directory stats; a shared
+     directory-level window budget can be a later SOW if real measurements show
+     it is needed.
+3. Direct `Refresh()` row-lifetime contract.
+   - Decision: preserve current-row returned slices across refresh.
+   - Implication: refresh is a live-boundary update, not a row-lifetime reset.
+   - Risk: implementation is more complex, but weakening the row-level
+     guarantee would violate the user contract.
+4. `.journal.zst` scope.
+   - Decision: fix `.journal.zst` streaming in the Go phase.
+   - Rationale: Rust already supports `.journal.zst` as an SDK repository
+     extension by streaming decompression to a temporary journal and opening the
+     temp file normally. Go should do the same.
+   - Implication: Go must remove the current whole-file compressed/decompressed
+     in-memory path for `.journal.zst`.
 
 ## Implications And Decisions
 
@@ -454,10 +1081,16 @@ Open decisions:
    - Risk: larger SOW, but less risk of fixing one language while leaving the
      same architectural bug elsewhere.
 
-2. 2026-06-14 implementation order (user decision)
-   - Decision: implement in this order: Rust -> Go -> Python -> Node.js.
-   - Implication: Rust becomes the reference; Go ports the optimized model;
-     Python and Node follow the proven design.
+2. 2026-06-14 implementation order (user decision, revised after Rust platform
+   evidence)
+   - Initial decision: implement in this order: Rust -> Go -> Python ->
+     Node.js.
+   - Revised decision: do not add Rust pread. Keep Rust's existing rolling mmap
+     implementation as the reference and implement the new bounded accessor
+     work first in Go, then Python, then Node.js.
+   - Implication: Rust remains the row-lifetime and windowing reference; Go
+     ports the optimized model without forcing a risky Rust refactor that no
+     supported target currently needs.
    - Risk: Node's urgent OOM remains pending until the reference architecture
      is correct. This is accepted because a wrong low-level design would be
      worse than a delayed implementation.
@@ -469,29 +1102,52 @@ Open decisions:
    - Risk: the accessor abstraction must be extremely lean; abstraction
      overhead in the hot path must be measured and minimized.
 
-4. 2026-06-14 explicit mode semantics (project-manager recommendation pending
-   activation confirmation)
-   - Recommendation: `Auto` may fall back from mmap to positioned reads at
-     open-time only and must expose the selected backend; explicit `Mmap` fails
-     if mmap is unavailable; explicit `Pread` never tries mmap.
+4. 2026-06-14 explicit mode semantics (user decision)
+   - Decision: `Auto` may fall back from mmap to positioned reads only on
+     targets where mmap is not implemented or not available, at open-time only,
+     and must expose the selected backend; explicit `Mmap` fails if mmap is
+     unavailable; explicit `Pread` never tries mmap.
    - Rationale: production defaults remain robust, while benchmarks and tests
      can force exact behavior.
-   - Status: record as proposed unless the user changes it before activation.
+   - Status: accepted for the Go/Python/Node accessor work. Rust keeps existing
+     mmap strategy options because Rust pread is not in this SOW.
+
+5. 2026-06-14 `.journal.zst` Go behavior (user decision)
+   - Decision: Go must mirror Rust for `.journal.zst`.
+   - Evidence: upstream systemd treats only `.journal` and `.journal~` as
+     standard runtime journal files, while Rust supports `.journal.zst` as a
+     repository extension by stream-decompressing to a temporary `.journal`.
+   - Implication: Go keeps `.journal.zst` support for SDK/test/archive
+     compatibility, but implements it as bounded streaming decompression to a
+     temp journal followed by normal bounded reader access. Go must not
+     `os.ReadFile` the compressed input or `DecodeAll` the whole decompressed
+     journal into memory.
+
+6. 2026-06-14 Go Windows mmap behavior (user decision)
+   - Decision: Go should replicate Rust's mmap-first reader architecture on
+     Windows too.
+   - Evidence: Rust uses `memmap2`, whose supported implementations include
+     Unix and Windows. The earlier Go plan to make Windows `Auto` use
+     positioned reads would make Go slower than necessary on a supported target.
+   - Implication: the Go phase must include a native Windows rolling mmap
+     backend. `ReaderAccessReadAt` may remain only as an explicit legacy/
+     diagnostic path or unsupported-target fallback, not as the Windows
+     production default.
 
 ## Plan
 
-1. Refresh current code state for the Rust reader.
-2. Rust phase: accessor contract + mmap backend preservation + positioned-read
-   backend + tests + benchmark + commit.
-3. Go phase: rolling mmap/read windows + tests + benchmark + Rust comparison +
+1. Rust reference confirmation: keep existing rolling mmap architecture;
+   document that no pread backend is required for Linux, FreeBSD, macOS, and
+   Windows in this SOW.
+2. Go phase: rolling mmap/read windows + tests + benchmark + Rust comparison +
    commit.
-4. Python phase: rolling mmap/read windows + tests + benchmark + Rust/Go
+3. Python phase: rolling mmap/read windows + tests + benchmark + Rust/Go
    comparison + commit.
-5. Node.js phase: rolling positioned-read windows, optional mmap decision,
+4. Node.js phase: rolling positioned-read windows, optional mmap decision,
    tests + benchmark + commit.
-6. Whole-SOW validation across shared matrices and cross-platform hosts.
-7. Reviewer pool review until every reviewer votes `PRODUCTION GRADE`.
-8. Update specs, docs, skills, status ledgers, audit, close.
+5. Whole-SOW validation across shared matrices and cross-platform hosts.
+6. Reviewer pool review until every reviewer votes `PRODUCTION GRADE`.
+7. Update specs, docs, skills, status ledgers, audit, close.
 
 ## Delegation Plan
 
@@ -552,12 +1208,144 @@ CRITICAL REPOSITORY BOUNDARY:
 - Recorded mandatory implementation order: Rust -> Go -> Python -> Node.js.
 - User explicitly chose to pause SOW-0105 and activate SOW-0108 now, and to
   commit the SOW planning before implementation begins.
+- User asked for all external reviewers to review planning gaps once per
+  language, starting with Rust.
+- Rust planning review round ran read-only reviewers `glm`, `kimi`, `mimo`,
+  `qwen`, `minimax`, and `deepseek`. All six returned `PLAN NOT READY`.
+  Consensus blockers: unresolved Rust accessor architecture, pread storage and
+  row-lifetime semantics, hash-table handling under the memory contract, public
+  API migration, whole-file mode semantics, missing pread benchmark mode, and
+  missing tests for pread row lifetime / mmap no-regression.
+- User asked whether Rust really needs a pread path. Local evidence showed
+  `memmap2` supports Unix and Windows implementations, covering Linux,
+  FreeBSD, macOS, and Windows. User agreed Rust should not be refactored for
+  pread when mmap is already available on the supported target OS list.
+- Rust reviewer blockers are therefore dispositioned by removing Rust pread
+  implementation from SOW-0108 scope. Rust remains the mmap/window-lifetime
+  reference model.
+- Go pre-code analysis recorded:
+  - Go's public `ReaderAccessMode` exists, but it has only `ReadAt` and `Mmap`
+    modes, with no `Auto`.
+  - Unix `ReaderAccessMmap` maps the whole file.
+  - Non-Unix `ReaderAccessMmap` silently loads the whole file into resident
+    memory through `ReadAt`.
+  - Directory readers, facade, Explorer, and Netdata wrapper all inherit the
+    file-reader backend through `ReaderOptions`.
+  - `GetEntry` returns owned copies, while `VisitEntryPayloads`,
+    `EnumerateEntryPayload`, and `SdJournalEnumerateAvailableData` are the
+    relevant hot paths for borrowed/current-row payload data.
+- Go pre-code reviewer round:
+  - Completed reviewer outputs captured from `glm`, `kimi`, `mimo`, and
+    `minimax`. All four returned `PLAN NOT READY`.
+  - `qwen` and `deepseek` did not produce captured final reviews. The user
+    interrupted/stopped further reviewer work after deciding the existing
+    answers were enough and that more analysis is required.
+  - Consensus blockers:
+    - no concrete Go `WindowAccessor` interface or file/build-tag layout;
+    - no Go row-pin state machine for mmap slices and mutable `ReadAt` window
+      buffers;
+    - no defined cross-window / object-larger-than-window semantics;
+    - no complete row arena model for compressed DATA and cross-window copies;
+    - no safe live refresh behavior for pinned windows and visible file-size
+      changes;
+    - missing `readCurrentHeader` / direct file access integration into the
+      accessor;
+    - missing hash-table metadata caching decision;
+    - missing directory-reader memory envelope across many open files;
+    - public API compatibility not fully specified for `ReaderAccessAuto`,
+      `WithMmap`, normalization, window size, max windows, selected backend,
+      and stats;
+    - `.journal.zst` whole-file read/decode memory exception not explicitly
+      dispositioned;
+    - validation lacks concrete tests for eviction, cross-window objects,
+      oversized objects, compressed DATA arena, Windows explicit mmap failure,
+      large-file memory ceiling, compact/sealed files, live refresh, and
+      no-regression benchmarks.
+- User clarified that Go should mirror Rust where mmap is available, including
+  Windows, and that `.journal.zst` support should mirror Rust's streaming temp
+  journal behavior.
+- Revised Go pre-code plan:
+  - native rolling mmap is required for Go on Unix-family targets and Windows;
+  - `ReaderAccessReadAt` remains explicit legacy/diagnostic/fallback, not the
+    Windows default;
+  - defaults are `ReaderAccessAuto`, 32 MiB windows, and four active windows;
+  - current-row returned slices survive DATA enumeration restart and `Refresh()`
+    until the row is left;
+  - `.journal.zst` must stream-decompress to a temp journal before normal
+    bounded accessor reads;
+  - hash-table/index reads remain window-backed until profiling proves a
+    separate metadata cache is needed.
+- Go pre-code review round 3:
+  - `glm`, `kimi`, `mimo`, and `deepseek` voted `READY FOR IMPLEMENTATION`.
+  - `qwen` voted `PLAN NOT READY`.
+  - `minimax` timed out before producing a final vote.
+  - Qwen blockers:
+    - `readerRefreshSnapshot` and direct refresh accessor migration were not
+      mechanically specified;
+    - row arena was included in the memory envelope but did not have a limit;
+    - `Reader` struct migration from `mapping *readOnlyMapping` to the new
+      accessor was not specified.
+- Round 3 blocker resolutions recorded before rerun:
+  - `Reader` owns `accessor readerAccessor`, not `mapping *readOnlyMapping`;
+  - `readerRefreshSnapshot` captures only logical reader state and accessor
+    visible bounds, not row-pinned windows or row arena;
+  - direct refresh snapshots visible state, refreshes bounds through the
+    accessor, reloads entry-array state into temporary data, commits on success,
+    and restores visible state on failure without touching row pins;
+  - Go row arena is bounded by `max_row_arena_bytes`, default 256 MiB, with a
+    controlled limit error and stats;
+  - accessor interface now includes visible-bound snapshot/restore methods and
+    `refreshVisibleBounds()`.
+- Go pre-code review round 4:
+  - `glm`, `kimi`, `mimo`, `minimax`, and `deepseek` voted
+    `READY FOR IMPLEMENTATION`.
+  - `qwen` voted `PLAN NOT READY`.
+  - Qwen blockers:
+    - the `ReaderAccessAuto` mmap probe and fallback cleanup path were not
+      mechanically specified;
+    - compressed DATA routing to temporary storage versus row arena was not
+      mechanically specified.
+- Round 4 blocker resolutions recorded before rerun:
+  - `newReaderAccessor(file *os.File, opts ReaderOptions)` owns initial file
+    size capture, backend selection, first-window mmap probe, partial mmap
+    cleanup, `Auto` fallback, selected-backend stats, and fallback reason;
+  - the `Auto` probe maps the first real rolling window
+    `min(file_size, window_size)` and keeps it as the first cached window on
+    success;
+  - explicit `ReaderAccessMmap` probe failure is a clear error after cleanup;
+  - all header/object reads after open use the returned accessor;
+  - DATA payload reading is split into `readDataPayloadTemp()` and
+    `readDataPayloadRow()`, with the existing pure `decompressDataPayload`
+    remaining accessor/arena agnostic and row-lifetime compressed data appended
+    to the bounded row arena.
+- Go pre-code review round 5:
+  - `glm`, `kimi`, `mimo`, `qwen`, `minimax`, and `deepseek` all voted
+    `READY FOR IMPLEMENTATION`.
+  - Non-blocking watchpoints to carry into implementation:
+    - Go stdlib `syscall` provides `CreateFileMapping`, `MapViewOfFile`,
+      `UnmapViewOfFile`, `PAGE_READONLY`, and `FILE_MAP_READ`, but not a public
+      `GetSystemInfo` wrapper. Windows allocation granularity must be obtained
+      with a local `kernel32!GetSystemInfo` call or another explicitly reviewed
+      mechanism; using page size is invalid.
+    - `reader_core_bench` currently treats `whole-file` as an alias for mmap.
+      The Go phase must update benchmark mode naming so rolling mmap,
+      `Auto`, explicit `ReadAt`, and any whole-file benchmark-only mode are not
+      confused.
+    - `restoreRefreshSnapshot()` and direct `Refresh()` must avoid any call path
+      that reaches accessor `clearRow()` while staying on the same row.
+    - `readDataPayloadWithHeader()` in Explorer and unique/field helpers must
+      use the temp payload path, not the row-lifetime path.
+    - Existing tests that iterate only `ReaderAccessReadAt` and
+      `ReaderAccessMmap` must include or separately cover `ReaderAccessAuto`.
+  - Gate result: Go implementation may start.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Pending implementation.
+- Go pre-code gate: passed. Round 5 reviewers `glm`, `kimi`, `mimo`, `qwen`,
+  `minimax`, and `deepseek` all voted `READY FOR IMPLEMENTATION` for the Go
+  implementation plan.
 
 Tests or equivalent validation:
 
@@ -569,7 +1357,40 @@ Real-use evidence:
 
 Reviewer findings:
 
-- Pending implementation.
+- 2026-06-14 Rust planning review round:
+  - `glm`: `PLAN NOT READY`; blocker is unresolved `FileReader`/`ReaderCell`
+    architecture around the `ouroboros` self-referencing `JournalFile<Mmap>`
+    storage and missing `max_windows` / pread benchmark planning.
+  - `kimi`: `PLAN NOT READY`; blockers are undefined `WindowAccessor`
+    abstraction, missing positioned-read backend design, and missing public API
+    transition from mmap strategy to access mode.
+  - `mimo`: `PLAN NOT READY`; blockers are `MemoryMap`/pread representation,
+    hash-table map policy, pread row-lifetime storage, and missing
+    `JournalFile` generic/parallel-type plan.
+  - `qwen`: `PLAN NOT READY`; blockers are missing `pread` backend trait,
+    conflict between `ExperimentalMmapStrategy` and `Auto/Mmap/Pread`, and
+    `JournalFile<M: MemoryMap>` being unable to host pread as currently
+    shaped.
+  - `minimax`: `PLAN NOT READY`; blockers are missing concrete SOW gate
+    decisions, unspecified pread storage lifecycle, unresolved whole-file mode,
+    undefined live/snapshot refresh under the new accessor, and missing
+    benchmark baseline.
+  - `deepseek`: `PLAN NOT READY`; blockers are `MemoryMap:
+    Deref<Target=[u8]>` semantics, unresolved core architectural choice, and
+    undefined zero-copy semantics for pread.
+  - Disposition: these findings were valid for the abandoned Rust pread plan.
+    They are not blockers for the current Rust scope because Rust pread is no
+    longer being implemented in this SOW. They remain useful negative evidence:
+    do not refactor Rust around pread unless a later SOW reopens that design
+    with a concrete need.
+- 2026-06-14 Go planning review rounds:
+  - Rounds 1, 3, and 4 found valid `PLAN NOT READY` blockers around accessor
+    construction, row lifetime, refresh, Windows mmap ownership, `ReadAt`
+    pinning, row-arena limits, `Reader` struct migration, and DATA
+    decompression routing.
+  - The SOW was revised after each round with concrete mechanical decisions and
+    validation requirements.
+  - Round 5 result: all six reviewers voted `READY FOR IMPLEMENTATION`.
 
 Same-failure scan:
 
