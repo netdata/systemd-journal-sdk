@@ -3,13 +3,11 @@
 # Uses entry-array-based iteration.
 
 import contextlib
-import mmap
 import os
-import struct
 from .binary import uuid_to_string
 from .header import (
     parse_file_header, parse_object_header,
-    HEADER_MIN_SIZE, OBJECT_TYPE_ENTRY, OBJECT_TYPE_ENTRY_ARRAY,
+    HEADER_MIN_SIZE, HEADER_SIZE, OBJECT_TYPE_ENTRY, OBJECT_TYPE_ENTRY_ARRAY,
     OBJECT_TYPE_DATA, OBJECT_TYPE_FIELD, OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE,
     DATA_OBJECT_HEADER_SIZE, OFFSET_ARRAY_OBJECT_HEADER_SIZE,
     REGULAR_ENTRY_ITEM_SIZE, INCOMPATIBLE_KEYED_HASH, INCOMPATIBLE_COMPACT,
@@ -22,23 +20,23 @@ from .header import (
 from .compress import (
     _HAS_ZSTD,
     MAX_UNCOMPRESSED_SIZE,
-    decompress_zst_to_temp,
+    stream_zst_to_temp,
     decompress_zst_sync,
     decompress_xz_sync,
     decompress_lz4_sync,
     is_zst_file,
 )
 from .hash import jenkins_hash_64, sip_hash_24
+from .reader_access import open_reader_accessor
+from .reader_access import READER_BOUNDS_LIVE
 
 
 class FileReader:
-    def __init__(self, buffer, header, path, cleanup_path=None, fd=None, mmap_obj=None):
-        self._buffer = buffer
+    def __init__(self, accessor, header, path, cleanup_path=None):
+        self._accessor = accessor
         self._header = header
         self._path = path
         self._cleanup_path = cleanup_path
-        self._fd = fd
-        self._mmap = mmap_obj
         self._entry_offsets = []
         self._entry_index = -1
         self._direction = 0
@@ -70,37 +68,64 @@ class FileReader:
         return False
 
     @staticmethod
-    def open(path):
+    def open(path, *, options=None):
         cleanup_path = None
-        buffer = None
-        fd = None
-        mapped = None
+        accessor = None
         try:
+            open_path = path
             if is_zst_file(path):
-                cleanup_path = decompress_zst_to_temp(path, 'python-sdk-journal')
-                fd, mapped, buffer = _map_file_readonly(cleanup_path)
-            else:
-                fd, mapped, buffer = _map_file_readonly(path)
+                cleanup_path = stream_zst_to_temp(path, prefix='python-sdk-journal')
+                open_path = cleanup_path
 
-            if len(buffer) < HEADER_MIN_SIZE:
+            accessor = open_reader_accessor(open_path, options)
+            if accessor.size() < HEADER_MIN_SIZE:
                 raise ValueError('file too small for journal header')
 
-            header = parse_file_header(buffer)
+            header = parse_file_header(accessor.read_bytes(0, min(accessor.size(), HEADER_SIZE)))
             _ensure_supported_header(header)
 
-            return FileReader(buffer, header, path, cleanup_path, fd, mapped)
+            return FileReader(accessor, header, path, cleanup_path)
         except Exception:
-            if mapped is not None:
+            if accessor is not None:
                 with contextlib.suppress(Exception):
-                    mapped.close()
-            if fd is not None:
-                with contextlib.suppress(Exception):
-                    os.close(fd)
+                    accessor.close()
             if cleanup_path:
                 with contextlib.suppress(Exception):
                     os.unlink(cleanup_path)
                     os.rmdir(os.path.dirname(cleanup_path))
             raise
+
+    def selected_access_mode(self):
+        return self._accessor.selected_access_mode()
+
+    def access_stats(self):
+        return self._accessor.stats()
+
+    def _visible_size(self):
+        return self._accessor.size()
+
+    def _temp_view(self, offset, size):
+        return self._accessor.temp_view(offset, size)
+
+    def _read_bytes(self, offset, size):
+        return self._accessor.read_bytes(offset, size)
+
+    def _u8(self, offset):
+        return self._accessor.u8(offset)
+
+    def _u32(self, offset):
+        return self._accessor.u32(offset)
+
+    def _u64(self, offset):
+        return self._accessor.u64(offset)
+
+    def _object_header_at(self, offset):
+        return parse_object_header(self._temp_view(offset, OBJECT_HEADER_SIZE), 0)
+
+    def _leave_current_row(self):
+        self._reset_cached_entry_data_state()
+        if self._accessor is not None:
+            self._accessor.clear_row()
 
     def _load_entry_array(self):
         self._entry_offsets = self._read_entry_array_offsets()
@@ -132,7 +157,7 @@ class FileReader:
         return offsets
 
     def _read_entry_array_object(self, offset):
-        oh = parse_object_header(self._buffer, offset)
+        oh = self._object_header_at(offset)
         if not oh or oh['type'] != OBJECT_TYPE_ENTRY_ARRAY:
             return None
 
@@ -149,7 +174,7 @@ class FileReader:
             'data_start': offset + OFFSET_ARRAY_OBJECT_HEADER_SIZE,
             'capacity': item_bytes // item_size,
             'item_size': item_size,
-            'next_offset': _UNPACK_U64_FROM(self._buffer, offset + 16)[0],
+            'next_offset': self._u64(offset + 16),
         }
 
     def _append_entry_array_offsets(self, offsets, array, to_read):
@@ -161,8 +186,8 @@ class FileReader:
 
     def _read_entry_array_item_offset(self, item_offset):
         if self._compact:
-            return _UNPACK_U32_FROM(self._buffer, item_offset)[0]
-        return _UNPACK_U64_FROM(self._buffer, item_offset)[0]
+            return self._u32(item_offset)
+        return self._u64(item_offset)
 
     def _next_entry_array_offset(self, current_offset, next_offset):
         if next_offset != 0 and next_offset <= current_offset:
@@ -178,43 +203,32 @@ class FileReader:
             return False
 
         snapshot = self._refresh_snapshot()
-        new_fd = None
-        new_mmap = None
-        mapped_new_file = False
 
         try:
-            new_size = self._refresh_file_size()
-            if new_size is None:
-                return False
-
-            mapped_new_file, new_fd, new_mmap = self._maybe_remap_for_refresh(
-                snapshot['size'],
-                new_size,
-            )
+            _, new_size = self._accessor.refresh_visible_bounds()
             unchanged = self._load_refresh_header_and_offsets(new_size, snapshot)
             if unchanged:
                 return False
         except Exception:
-            self._restore_refresh_snapshot(snapshot, mapped_new_file, new_fd, new_mmap)
+            self._restore_refresh_snapshot(snapshot)
             return False
 
-        if mapped_new_file:
-            self._close_refresh_snapshot_mapping(snapshot)
         self._entry_index = min(snapshot['index'], len(self._entry_offsets))
-        self._reset_cached_entry_data_state()
         return self._entry_offsets_changed(snapshot['offsets'])
 
     def _can_refresh(self):
-        return not self._cleanup_path and self._fd is not None and self._mmap is not None
+        return (
+            not self._cleanup_path
+            and self._accessor is not None
+            and self._accessor.bounds_mode() == READER_BOUNDS_LIVE
+        )
 
     def _refresh_snapshot(self):
         return {
             'offsets': self._entry_offsets,
             'index': self._entry_index,
-            'size': len(self._buffer),
-            'fd': self._fd,
-            'mmap': self._mmap,
-            'buffer': self._buffer,
+            'size': self._visible_size(),
+            'visible_bounds': self._accessor.snapshot_visible_bounds(),
             'header': self._header,
             'compact': self._compact,
             'entry_item_size': self._entry_item_size,
@@ -222,24 +236,8 @@ class FileReader:
             'data_payload_offset': self._data_payload_offset_value,
         }
 
-    def _refresh_file_size(self):
-        try:
-            new_size = os.fstat(self._fd).st_size
-        except OSError:
-            return None
-        return new_size if new_size > 0 else None
-
-    def _maybe_remap_for_refresh(self, old_size, new_size):
-        if new_size == old_size:
-            return False, None, None
-        new_fd, new_mmap, new_buffer = _map_file_readonly(self._path)
-        self._fd = new_fd
-        self._mmap = new_mmap
-        self._buffer = new_buffer
-        return True, new_fd, new_mmap
-
     def _load_refresh_header_and_offsets(self, new_size, snapshot):
-        header = parse_file_header(self._buffer)
+        header = parse_file_header(self._read_bytes(0, min(self._visible_size(), HEADER_SIZE)))
         _ensure_supported_header(header)
         if self._refresh_header_unchanged(header, new_size, snapshot):
             self._header = header
@@ -269,17 +267,8 @@ class FileReader:
             COMPACT_DATA_OBJECT_HEADER_SIZE if self._compact else DATA_OBJECT_HEADER_SIZE
         )
 
-    def _restore_refresh_snapshot(self, snapshot, mapped_new_file, new_fd, new_mmap):
-        if mapped_new_file:
-            self._fd = snapshot['fd']
-            self._mmap = snapshot['mmap']
-            self._buffer = snapshot['buffer']
-            if new_mmap is not None:
-                with contextlib.suppress(Exception):
-                    new_mmap.close()
-            if new_fd is not None:
-                with contextlib.suppress(Exception):
-                    os.close(new_fd)
+    def _restore_refresh_snapshot(self, snapshot):
+        self._accessor.restore_visible_bounds(snapshot['visible_bounds'])
         self._header = snapshot['header']
         self._compact = snapshot['compact']
         self._entry_item_size = snapshot['entry_item_size']
@@ -287,13 +276,6 @@ class FileReader:
         self._data_payload_offset_value = snapshot['data_payload_offset']
         self._entry_offsets = snapshot['offsets']
         self._entry_index = min(snapshot['index'], len(self._entry_offsets))
-        self._reset_cached_entry_data_state()
-
-    def _close_refresh_snapshot_mapping(self, snapshot):
-        try:
-            snapshot['mmap'].close()
-        finally:
-            os.close(snapshot['fd'])
 
     def _entry_offsets_changed(self, old_offsets):
         if len(self._entry_offsets) != len(old_offsets):
@@ -302,9 +284,9 @@ class FileReader:
 
     def _valid_entry_offset(self, offset):
         off = offset
-        if off + OBJECT_HEADER_SIZE > len(self._buffer):
+        if off + OBJECT_HEADER_SIZE > self._visible_size():
             return False
-        oh = parse_object_header(self._buffer, off)
+        oh = self._object_header_at(off)
         if not oh:
             return False
         if oh['type'] == 0 and oh['size'] == 0:
@@ -312,23 +294,23 @@ class FileReader:
         return oh['type'] == OBJECT_TYPE_ENTRY
 
     def seek_head(self):
-        self._reset_cached_entry_data_state()
+        self._leave_current_row()
         self._entry_index = -1
         self._direction = 0
         self._realtime_seek = None
 
     def seek_tail(self):
-        self._reset_cached_entry_data_state()
+        self._leave_current_row()
         self._entry_index = len(self._entry_offsets)
         self._direction = 1
         self._realtime_seek = None
 
     def seek_realtime_usec(self, usec):
-        self._reset_cached_entry_data_state()
+        self._leave_current_row()
         self._realtime_seek = int(usec)
 
     def next(self):
-        self._reset_cached_entry_data_state()
+        self._leave_current_row()
         if self._realtime_seek is not None:
             idx = self._first_realtime_index_at_or_after(self._realtime_seek)
             if idx >= len(self._entry_offsets) and self._refresh_entry_offsets():
@@ -359,7 +341,7 @@ class FileReader:
         return True
 
     def previous(self):
-        self._reset_cached_entry_data_state()
+        self._leave_current_row()
         if self._realtime_seek is not None:
             idx = self._last_realtime_index_at_or_before(self._realtime_seek)
             self._realtime_seek = None
@@ -400,7 +382,7 @@ class FileReader:
 
     def _entry_realtime_at_index(self, index):
         offset = self._entry_offsets[index]
-        return _UNPACK_U64_FROM(self._buffer, offset + OBJECT_HEADER_SIZE + 8)[0]
+        return self._u64(offset + OBJECT_HEADER_SIZE + 8)
 
     def step(self):
         while self.next():
@@ -493,7 +475,7 @@ class FileReader:
         if self._entry_index < 0 or self._entry_index >= len(self._entry_offsets):
             return 0
         offset = self._entry_offsets[self._entry_index]
-        return _UNPACK_U64_FROM(self._buffer, offset + OBJECT_HEADER_SIZE + 8)[0]
+        return self._u64(offset + OBJECT_HEADER_SIZE + 8)
 
     def get_cursor(self):
         if self._entry_index < 0 or self._entry_index >= len(self._entry_offsets):
@@ -552,9 +534,9 @@ class FileReader:
         buckets = table_size // HASH_ITEM_SIZE
         for bucket in range(buckets):
             bucket_offset = table_offset + bucket * HASH_ITEM_SIZE
-            if len(self._buffer) < bucket_offset + HASH_ITEM_SIZE:
+            if self._visible_size() < bucket_offset + HASH_ITEM_SIZE:
                 raise ValueError('field hash bucket exceeds buffer')
-            offset = _UNPACK_U64_FROM(self._buffer, bucket_offset)[0]
+            offset = self._u64(bucket_offset)
             while offset:
                 field = self._read_field_object_at(offset)
                 try:
@@ -581,23 +563,17 @@ class FileReader:
         return self._header
 
     def close(self):
-        self._reset_cached_entry_data_state()
-        if self._mmap is not None:
+        self._leave_current_row()
+        if self._accessor is not None:
             try:
-                self._mmap.close()
+                self._accessor.close()
             finally:
-                self._mmap = None
-        if self._fd is not None:
-            try:
-                os.close(self._fd)
-            finally:
-                self._fd = None
+                self._accessor = None
         if self._cleanup_path:
             with contextlib.suppress(Exception):
                 os.unlink(self._cleanup_path)
                 os.rmdir(os.path.dirname(self._cleanup_path))
             self._cleanup_path = None
-        self._buffer = None
 
     def current_entry_key(self):
         if self._entry_index < 0 or self._entry_index >= len(self._entry_offsets):
@@ -659,7 +635,7 @@ class FileReader:
         data_offset = self._entry_data_offsets[self._entry_data_index]
         self._entry_data_index += 1
         self._entry_data_state_active = True
-        return self._read_data_payload_at(data_offset)
+        return self._read_data_payload_row(data_offset)
 
     def clear_entry_data_state(self):
         self._reset_cached_entry_data_state()
@@ -685,27 +661,24 @@ class FileReader:
         return self._entry_data_offsets
 
     def _read_entry_metadata_and_offsets(self, offset, include_offsets=True):
-        if len(self._buffer) < offset + ENTRY_OBJECT_HEADER_SIZE:
+        if self._visible_size() < offset + ENTRY_OBJECT_HEADER_SIZE:
             raise ValueError('buffer too small for entry object')
-        obj_type = self._buffer[offset]
+        obj_type = self._u8(offset)
         if obj_type != OBJECT_TYPE_ENTRY:
             raise ValueError(f'expected ENTRY (type {OBJECT_TYPE_ENTRY}), got type {obj_type} at offset {offset}')
-        buf = self._buffer
-        unpack_u64 = _UNPACK_U64_FROM
-        unpack_u32 = _UNPACK_U32_FROM
-        obj_size = unpack_u64(buf, offset + 8)[0]
+        obj_size = self._u64(offset + 8)
         if obj_size < ENTRY_OBJECT_HEADER_SIZE:
             raise ValueError(f'entry object too small: {obj_size}')
-        if offset + obj_size > len(buf):
+        if offset + obj_size > self._visible_size():
             raise ValueError(f'entry object exceeds buffer at offset {offset}')
 
         e_off = offset + OBJECT_HEADER_SIZE
         entry = {
-            'seqnum': unpack_u64(buf, e_off)[0],
-            'realtime': unpack_u64(buf, e_off + 8)[0],
-            'monotonic': unpack_u64(buf, e_off + 16)[0],
-            'boot_id': bytes(buf[e_off + 24:e_off + 40]),
-            'xor_hash': unpack_u64(buf, e_off + 40)[0],
+            'seqnum': self._u64(e_off),
+            'realtime': self._u64(e_off + 8),
+            'monotonic': self._u64(e_off + 16),
+            'boot_id': self._read_bytes(e_off + 24, 16),
+            'xor_hash': self._u64(e_off + 40),
         }
         if not include_offsets:
             return entry, []
@@ -719,74 +692,87 @@ class FileReader:
         for i in range(n_items):
             item_offset = items_start + i * item_size
             if self._compact:
-                data_offset = unpack_u32(buf, item_offset)[0]
+                data_offset = self._u32(item_offset)
             else:
-                data_offset = unpack_u64(buf, item_offset)[0]
+                data_offset = self._u64(item_offset)
             if data_offset != 0:
                 offsets.append(data_offset)
         return entry, offsets
 
     def _read_data_payload_at(self, offset):
+        return bytes(self._read_data_payload_temp(offset))
+
+    def _read_data_payload_temp(self, offset):
+        return self._read_data_payload(offset, row_lifetime=False)
+
+    def _read_data_payload_row(self, offset):
+        return self._read_data_payload(offset, row_lifetime=True)
+
+    def _read_data_payload(self, offset, row_lifetime):
         payload_offset = self._data_payload_offset_value
-        buf = self._buffer
-        if len(buf) < offset + payload_offset:
+        if self._visible_size() < offset + payload_offset:
             raise ValueError('buffer too small for data object')
-        obj_type = buf[offset]
-        obj_flags = buf[offset + 1]
-        obj_size = _UNPACK_U64_FROM(buf, offset + 8)[0]
+        obj_type = self._u8(offset)
+        obj_flags = self._u8(offset + 1)
+        obj_size = self._u64(offset + 8)
         if obj_type != OBJECT_TYPE_DATA:
             raise ValueError(f'expected DATA (type {OBJECT_TYPE_DATA}), got type {obj_type}')
         if obj_size < payload_offset:
             raise ValueError(f'data object too small: {obj_size}')
-        if offset + obj_size > len(buf):
+        if offset + obj_size > self._visible_size():
             raise ValueError(f'data object exceeds buffer at offset {offset}')
-        payload = buf[offset + payload_offset:offset + obj_size]
+        payload_size = obj_size - payload_offset
+        payload_offset_abs = offset + payload_offset
         if obj_flags == 0:
-            return payload
+            if row_lifetime:
+                return self._accessor.row_view(payload_offset_abs, payload_size)
+            return self._accessor.temp_view(payload_offset_abs, payload_size)
+        payload = self._accessor.temp_view(payload_offset_abs, payload_size)
         unsupported = obj_flags & ~(OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4 | OBJECT_COMPRESSED_ZSTD)
         if unsupported != 0:
             raise ValueError(f'unsupported DATA object flags: 0x{obj_flags:x}')
         if obj_flags & OBJECT_COMPRESSED_XZ:
-            return decompress_xz_sync(payload, max_output_size=MAX_UNCOMPRESSED_SIZE)
+            data = decompress_xz_sync(payload, max_output_size=MAX_UNCOMPRESSED_SIZE)
+            return self._accessor.row_bytes(data) if row_lifetime else data
         if obj_flags & OBJECT_COMPRESSED_LZ4:
-            return decompress_lz4_sync(payload)
+            data = decompress_lz4_sync(payload)
+            return self._accessor.row_bytes(data) if row_lifetime else data
         if obj_flags & OBJECT_COMPRESSED_ZSTD:
             if not _HAS_ZSTD:
                 raise RuntimeError('zstd decompression not available')
-            return decompress_zst_sync(payload, max_output_size=MAX_UNCOMPRESSED_SIZE)
-        return payload
+            data = decompress_zst_sync(payload, max_output_size=MAX_UNCOMPRESSED_SIZE)
+            return self._accessor.row_bytes(data) if row_lifetime else data
+        return self._accessor.row_bytes(payload) if row_lifetime else payload
 
     def _read_data_header_at(self, offset):
-        buf = self._buffer
-        if len(buf) < offset + DATA_OBJECT_HEADER_SIZE:
+        if self._visible_size() < offset + DATA_OBJECT_HEADER_SIZE:
             raise ValueError('buffer too small for data object')
-        oh = parse_object_header(buf, offset)
+        oh = self._object_header_at(offset)
         if not oh or oh['type'] != OBJECT_TYPE_DATA or oh['size'] < self._data_payload_offset_value:
             raise ValueError('corrupt DATA object')
         return {
-            'hash': _UNPACK_U64_FROM(buf, offset + 16)[0],
-            'next_hash_offset': _UNPACK_U64_FROM(buf, offset + 24)[0],
-            'next_field_offset': _UNPACK_U64_FROM(buf, offset + 32)[0],
-            'entry_offset': _UNPACK_U64_FROM(buf, offset + 40)[0],
-            'entry_array_offset': _UNPACK_U64_FROM(buf, offset + 48)[0],
-            'n_entries': _UNPACK_U64_FROM(buf, offset + 56)[0],
+            'hash': self._u64(offset + 16),
+            'next_hash_offset': self._u64(offset + 24),
+            'next_field_offset': self._u64(offset + 32),
+            'entry_offset': self._u64(offset + 40),
+            'entry_array_offset': self._u64(offset + 48),
+            'n_entries': self._u64(offset + 56),
         }
 
     def _read_field_object_at(self, offset):
-        buf = self._buffer
-        if len(buf) < offset + FIELD_OBJECT_HEADER_SIZE:
+        if self._visible_size() < offset + FIELD_OBJECT_HEADER_SIZE:
             raise ValueError('buffer too small for field object')
-        oh = parse_object_header(buf, offset)
+        oh = self._object_header_at(offset)
         if not oh or oh['type'] != OBJECT_TYPE_FIELD or oh['size'] < FIELD_OBJECT_HEADER_SIZE:
             raise ValueError('corrupt FIELD object')
         size = oh['size']
-        if offset + size > len(buf):
+        if offset + size > self._visible_size():
             raise ValueError(f'field object exceeds buffer at offset {offset}')
         return {
-            'hash': _UNPACK_U64_FROM(buf, offset + 16)[0],
-            'next_hash_offset': _UNPACK_U64_FROM(buf, offset + 24)[0],
-            'head_data_offset': _UNPACK_U64_FROM(buf, offset + 32)[0],
-            'payload': bytes(buf[offset + FIELD_OBJECT_HEADER_SIZE:offset + size]),
+            'hash': self._u64(offset + 16),
+            'next_hash_offset': self._u64(offset + 24),
+            'head_data_offset': self._u64(offset + 32),
+            'payload': self._read_bytes(offset + FIELD_OBJECT_HEADER_SIZE, size - FIELD_OBJECT_HEADER_SIZE),
         }
 
     def _find_field_head_data_offset(self, field_name):
@@ -799,9 +785,9 @@ class FileReader:
         if buckets == 0:
             return 0
         bucket_offset = table_offset + (h % buckets) * HASH_ITEM_SIZE
-        if len(self._buffer) < bucket_offset + HASH_ITEM_SIZE:
+        if self._visible_size() < bucket_offset + HASH_ITEM_SIZE:
             raise ValueError('field hash bucket exceeds buffer')
-        offset = _UNPACK_U64_FROM(self._buffer, bucket_offset)[0]
+        offset = self._u64(bucket_offset)
         while offset:
             field = self._read_field_object_at(offset)
             if field['hash'] == h and field['payload'] == field_name:
@@ -824,14 +810,14 @@ class FileReader:
         return self._offset_array_item_size_value
 
     def _UNPACK_U64(self, offset):
-        return _UNPACK_U64_FROM(self._buffer, offset)[0]
+        return self._u64(offset)
 
     def _data_object_was_compressed(self, offset):
         """Return True if the DATA object header carries a compression flag."""
 
-        if len(self._buffer) < offset + DATA_OBJECT_HEADER_SIZE:
+        if self._visible_size() < offset + DATA_OBJECT_HEADER_SIZE:
             return False
-        return bool(self._buffer[offset + 1] & (
+        return bool(self._u8(offset + 1) & (
             OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4 | OBJECT_COMPRESSED_ZSTD
         ))
 
@@ -848,13 +834,13 @@ class FileReader:
     def _position_at_index(self, index, direction):
         """Position the reader on `index` and set the direction."""
 
-        self._reset_cached_entry_data_state()
+        self._leave_current_row()
         self._entry_index = index
         self._direction = 0 if direction == 0 else 1
         self._realtime_seek = None
 
     def _entry_realtime_at_offset(self, entry_offset):
-        return _UNPACK_U64_FROM(self._buffer, entry_offset + OBJECT_HEADER_SIZE + 8)[0]
+        return self._u64(entry_offset + OBJECT_HEADER_SIZE + 8)
 
     def explore(self, query):
         """Run an explorer query with the default Traversal strategy.
@@ -887,19 +873,6 @@ class FileReader:
         return _explore_file_reader(self, query, strategy, control)
 
 
-def _map_file_readonly(path):
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        size = os.fstat(fd).st_size
-        if size < HEADER_MIN_SIZE:
-            raise ValueError('file too small for journal header')
-        mapped = mmap.mmap(fd, 0, access=mmap.ACCESS_READ)
-        return fd, mapped, mapped
-    except Exception:
-        os.close(fd)
-        raise
-
-
 def _ensure_supported_header(header):
     if header['header_size'] < HEADER_MIN_SIZE:
         raise ValueError('unsupported journal: header size too small')
@@ -911,10 +884,6 @@ def _ensure_supported_header(header):
     )
     if header['incompatible_flags'] & ~supported:
         raise ValueError(f'unsupported journal: incompatible flags 0x{header["incompatible_flags"]:x}')
-
-
-_UNPACK_U64_FROM = struct.Struct('<Q').unpack_from
-_UNPACK_U32_FROM = struct.Struct('<I').unpack_from
 
 
 def _field_name_bytes(field_name):

@@ -55,18 +55,31 @@ from test_directory_writer_lifecycle import (
 )
 from test_reader_facade import (
     test_directory_reader_query_unique_deduplicates_indexed_values_across_files,
+    test_default_file_reader_selects_rolling_mmap_when_available,
+    test_directory_reader_options_reach_every_file,
     test_facade_compressed_mixed_data_payloads_remain_valid_for_current_row,
     test_facade_data_payloads_remain_valid_for_current_row,
     test_facade_unique_binary_values,
+    test_file_reader_auto_falls_back_to_read_at_when_mmap_probe_fails,
+    test_file_reader_explicit_mmap_access_mode_reads_entries,
+    test_file_reader_oversized_payload_uses_row_arena,
+    test_file_reader_read_at_access_mode_keeps_row_view_until_next_row,
     test_file_reader_refresh_failure_preserves_current_mapping,
     test_file_reader_refreshes_published_appends,
     test_file_reader_rejects_entry_object_extending_past_buffer,
+    test_file_reader_snapshot_bounds_do_not_refresh_appended_rows,
+    test_file_reader_streams_whole_file_zstd_before_bounded_access,
     test_jf_facade_stateful_reader_operations,
     test_python_resource_close_hardening,
     test_python_resource_context_managers_and_bytes_facade_payloads,
+    test_python_reader_bypass_scan_blocks_whole_file_reader_paths,
     test_query_unique_uses_field_index_without_entry_offsets,
     test_reader_preserves_raw_byte_field_names,
+    test_reader_access_large_sparse_file_stays_within_window_budget,
+    test_reader_access_same_base_growth_preserves_row_pinned_window,
     test_reader_rejects_non_utf8_match_field_names,
+    test_reader_row_arena_segments_are_fixed_size_and_bounded,
+    test_verify_adapter_supports_chunked_hmac_without_whole_file_read,
 )
 from test_verify_seal import (
     test_compact_sealed_writer_stock_verify,
@@ -191,6 +204,19 @@ def main():
     test_python_resource_close_hardening()
     test_file_reader_refresh_failure_preserves_current_mapping()
     test_file_reader_rejects_entry_object_extending_past_buffer()
+    test_file_reader_explicit_mmap_access_mode_reads_entries()
+    test_file_reader_read_at_access_mode_keeps_row_view_until_next_row()
+    test_file_reader_streams_whole_file_zstd_before_bounded_access()
+    test_file_reader_auto_falls_back_to_read_at_when_mmap_probe_fails()
+    test_default_file_reader_selects_rolling_mmap_when_available()
+    test_file_reader_snapshot_bounds_do_not_refresh_appended_rows()
+    test_reader_access_same_base_growth_preserves_row_pinned_window()
+    test_reader_access_large_sparse_file_stays_within_window_budget()
+    test_reader_row_arena_segments_are_fixed_size_and_bounded()
+    test_file_reader_oversized_payload_uses_row_arena()
+    test_directory_reader_options_reach_every_file()
+    test_verify_adapter_supports_chunked_hmac_without_whole_file_read()
+    test_python_reader_bypass_scan_blocks_whole_file_reader_paths()
     test_file_reader_refreshes_published_appends()
     test_reader_rejects_non_utf8_match_field_names()
     test_fsprg_vectors()

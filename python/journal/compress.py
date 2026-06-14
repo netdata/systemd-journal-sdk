@@ -53,8 +53,7 @@ def decompress_lz4_sync(input_data):
     if isinstance(input_data, (bytes, bytearray, memoryview)):
         src = input_data
     else:
-        with open(input_data, 'rb') as f:
-            src = f.read()
+        raise TypeError('compressed DATA payload must be bytes-like')
     if len(src) < 8:
         raise ValueError('lz4 data too short for size prefix')
     uncompressed_size = int.from_bytes(src[:8], 'little')
@@ -67,8 +66,7 @@ def decompress_lz4_sync(input_data):
 def _read_compressed_input(input_data):
     if isinstance(input_data, (bytes, bytearray, memoryview)):
         return bytes(input_data)
-    with open(input_data, 'rb') as f:
-        return f.read()
+    raise TypeError('compressed DATA payload must be bytes-like')
 
 
 def _zstd_frame_content_size(src):
@@ -121,13 +119,21 @@ def _zstd_frame_content_size_len(fcs_flag, single_segment):
     return 8
 
 
-def decompress_zst_to_temp(input_path, prefix='python-journal'):
-    data = decompress_zst_sync(input_path)
+def stream_zst_to_temp(input_path, prefix='python-journal', chunk_size=1024 * 1024):
+    if not _HAS_ZSTD:
+        raise RuntimeError('zstd decompression not available')
+    chunk_size = int(chunk_size)
+    if chunk_size <= 0:
+        raise ValueError('chunk_size must be positive')
     temp_dir = tempfile.mkdtemp(prefix=prefix + '-')
     try:
         temp_path = os.path.join(temp_dir, 'decompressed.journal')
-        with open(temp_path, 'wb') as f:
-            f.write(data)
+        with compression.zstd.open(input_path, 'rb') as src, open(temp_path, 'wb') as dst:
+            while True:
+                chunk = src.read(chunk_size)
+                if not chunk:
+                    break
+                dst.write(chunk)
         return temp_path
     except Exception:
         shutil.rmtree(temp_dir, ignore_errors=True)

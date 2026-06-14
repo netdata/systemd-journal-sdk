@@ -165,29 +165,32 @@ class SdJournal:
         return False
 
     @staticmethod
-    def open(path):
+    def open(path, *, options=None):
         name = path.split('/')[-1] if isinstance(path, str) else str(path).split('/')[-1]
         if is_journal_file_name(name):
-            return SdJournal.open_file(path)
-        return SdJournal.open_directory(path)
+            return SdJournal.open_file(path, options=options)
+        return SdJournal.open_directory(path, options=options)
 
     @staticmethod
-    def open_file(path):
-        return SdJournal(FileReader.open(path))
+    def open_file(path, *, options=None):
+        return SdJournal(FileReader.open(path, options=options))
 
     @staticmethod
-    def open_directory(path):
-        return SdJournal(DirectoryReader.open(path))
+    def open_directory(path, *, options=None):
+        return SdJournal(DirectoryReader.open(path, options=options))
 
     @staticmethod
-    def open_files(paths):
+    def open_files(paths, *, options=None):
         if len(paths) == 1:
-            return SdJournal.open_file(paths[0])
-        return SdJournal(DirectoryReader.open_files(paths))
+            return SdJournal.open_file(paths[0], options=options)
+        return SdJournal(DirectoryReader.open_files(paths, options=options))
 
     def close(self):
         self._reset_iterators()
         self._reader.close()
+
+    def access_stats(self):
+        return self._reader.access_stats()
 
     def _reset_iterators(self):
         if self._data_reader_active and hasattr(self._reader, 'clear_entry_data_state'):
@@ -399,28 +402,28 @@ OUTPUT_MODE_JSON = 'json'
 OUTPUT_MODE_EXPORT = 'export'
 
 
-def SdJournalOpen(path, flags):
+def SdJournalOpen(path, flags, *, options=None):
     if flags != 0:
         raise ValueError('unsupported sd_journal_open flags')
-    return SdJournal.open(path)
+    return SdJournal.open(path, options=options)
 
 
-def SdJournalOpenFile(path, flags):
+def SdJournalOpenFile(path, flags, *, options=None):
     if flags != 0:
         raise ValueError('unsupported sd_journal_open_file flags')
-    return SdJournal.open_file(path)
+    return SdJournal.open_file(path, options=options)
 
 
-def SdJournalOpenDirectory(path, flags):
+def SdJournalOpenDirectory(path, flags, *, options=None):
     if flags != 0:
         raise ValueError('unsupported sd_journal_open_directory flags')
-    return SdJournal.open_directory(path)
+    return SdJournal.open_directory(path, options=options)
 
 
-def SdJournalOpenFiles(paths, flags):
+def SdJournalOpenFiles(paths, flags, *, options=None):
     if flags != 0:
         raise ValueError('unsupported sd_journal_open_files flags')
-    return SdJournal.open_files(paths)
+    return SdJournal.open_files(paths, options=options)
 
 
 def SdJournalClose(journal):

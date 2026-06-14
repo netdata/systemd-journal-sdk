@@ -4,9 +4,10 @@
 
 import hmac as hmac_mod
 import hashlib
-import os
 
+from ._verify_adapter import _AccessorBytesAdapter
 from .reader import FileReader
+from .reader_access import ReaderOptions, READER_BOUNDS_SNAPSHOT
 from .entry import parse_entry_object, parse_data_object
 from .header import (
     INCOMPATIBLE_COMPACT, INCOMPATIBLE_COMPRESSED_XZ, INCOMPATIBLE_COMPRESSED_LZ4,
@@ -18,7 +19,6 @@ from .header import (
     OBJECT_COMPRESSED_XZ, OBJECT_COMPRESSED_LZ4, OBJECT_COMPRESSED_ZSTD,
     parse_file_header,
 )
-from .compress import is_zst_file, decompress_zst_to_temp
 from .fss import gen_mk, gen_state0, seek, get_key, RECOMMENDED_SECPAR
 from .seal import TAG_LENGTH, OBJECT_TYPE_TAG
 from .verify_graph import ObjectGraphVerificationError, verify_object_graph
@@ -45,9 +45,22 @@ def verify_file(path, verify_key=None):
         verify_file_with_key(path, verify_key)
         return None
 
-    _verify_object_graph_bytes(_read_journal_file_bytes(path))
-    _verify_reader_entry_payloads(path)
+    try:
+        with FileReader.open(path, options=ReaderOptions(bounds=READER_BOUNDS_SNAPSHOT)) as reader:
+            _verify_open_reader(reader)
+    except VerificationError:
+        raise
+    except Exception as err:
+        raise VerificationError(
+            f"journal verification failed: corrupt or unreadable file: {err}"
+        ) from err
     return None
+
+
+def _verify_open_reader(reader):
+    adapter = _AccessorBytesAdapter(reader)
+    _verify_object_graph_bytes(adapter)
+    _verify_reader_entry_offsets(reader, adapter)
 
 
 def _verify_object_graph_bytes(data):
@@ -61,26 +74,15 @@ def _verify_object_graph_bytes(data):
         ) from err
 
 
-def _verify_reader_entry_payloads(path):
-    try:
-        with FileReader.open(path) as reader:
-            _verify_reader_entry_offsets(reader)
-    except Exception as err:
-        raise VerificationError(
-            f"journal verification failed: corrupt or unreadable file: {err}"
-        ) from err
-
-
-def _verify_reader_entry_offsets(reader):
+def _verify_reader_entry_offsets(reader, data):
     # Verification walks internal parser state so corrupt data objects fail
     # instead of being skipped by the normal reader tolerance path.
-    buf = reader._buffer
     compact = (reader._header['incompatible_flags'] & INCOMPATIBLE_COMPACT) != 0
     monotonic_state = {'set': False, 'value': 0, 'boot_id': b'\x00' * 16}
     for offset in reader._entry_offsets:
-        entry = _parse_strict_entry(buf, offset, compact)
+        entry = _parse_strict_entry(data, offset, compact)
         _validate_entry_monotonic(offset, entry, monotonic_state)
-        _parse_strict_entry_data(buf, offset, entry, compact)
+        _parse_strict_entry_data(data, offset, entry, compact)
 
 
 def _parse_strict_entry(buf, offset, compact):
@@ -122,50 +124,26 @@ def verify_file_with_key(path, verification_key):
     For unsealed files, behaves like verify_file.
     """
     try:
-        data = _read_journal_file_bytes(path)
+        reader = FileReader.open(path, options=ReaderOptions(bounds=READER_BOUNDS_SNAPSHOT))
     except Exception as err:
         raise VerificationError(
             f"journal verification failed: corrupt or unreadable file: {err}"
         ) from err
-
-    if len(data) < HEADER_MIN_SIZE:
-        raise VerificationError('journal verification failed: file too small')
-
-    try:
-        verify_object_graph(data)
-    except ObjectGraphVerificationError as err:
-        raise VerificationError(f'journal verification failed: corrupt object graph: {err}') from err
-
-    try:
-        header = parse_file_header(data)
-    except Exception as err:
-        raise VerificationError(f'journal verification failed: invalid header: {err}') from err
-    sealed = (header['compatible_flags'] & COMPATIBLE_SEALED) != 0
-
-    if not sealed:
-        return verify_file(path)
-
-    seed, start_epoch, interval_usec = _parse_verification_key(verification_key)
-    _verify_sealed(data, header, seed, start_epoch, interval_usec)
-    return verify_file(path)
-
-
-def _read_journal_file_bytes(path):
-    cleanup_path = None
-    try:
-        if is_zst_file(path):
-            cleanup_path = decompress_zst_to_temp(path, 'python-sdk-verify')
-            with open(cleanup_path, 'rb') as f:
-                return f.read()
-        with open(path, 'rb') as f:
-            return f.read()
-    finally:
-        if cleanup_path:
-            try:
-                os.unlink(cleanup_path)
-                os.rmdir(os.path.dirname(cleanup_path))
-            except OSError:
-                pass
+    with reader:
+        data = _AccessorBytesAdapter(reader)
+        if len(data) < HEADER_MIN_SIZE:
+            raise VerificationError('journal verification failed: file too small')
+        _verify_object_graph_bytes(data)
+        try:
+            header = parse_file_header(data)
+        except Exception as err:
+            raise VerificationError(f'journal verification failed: invalid header: {err}') from err
+        sealed = (header['compatible_flags'] & COMPATIBLE_SEALED) != 0
+        if sealed:
+            seed, start_epoch, interval_usec = _parse_verification_key(verification_key)
+            _verify_sealed(data, header, seed, start_epoch, interval_usec)
+        _verify_reader_entry_offsets(reader, data)
+    return None
 
 
 def _parse_verification_key(key):
@@ -522,15 +500,23 @@ def _hmac_object(hm, data, offset, typ, size, is_compact):
         if is_compact:
             payload_offset = COMPACT_DATA_OBJECT_HEADER_SIZE
         if size > payload_offset:
-            hm.update(data[offset + payload_offset:offset + size])
+            _hmac_update(hm, data, offset + payload_offset, size - payload_offset)
     elif typ == OBJECT_TYPE_FIELD:
         hm.update(data[offset + 16:offset + 24])
         if size > FIELD_OBJECT_HEADER_SIZE:
-            hm.update(data[offset + FIELD_OBJECT_HEADER_SIZE:offset + size])
+            _hmac_update(hm, data, offset + FIELD_OBJECT_HEADER_SIZE, size - FIELD_OBJECT_HEADER_SIZE)
     elif typ == OBJECT_TYPE_ENTRY:
         if size > OBJECT_HEADER_SIZE:
-            hm.update(data[offset + OBJECT_HEADER_SIZE:offset + size])
+            _hmac_update(hm, data, offset + OBJECT_HEADER_SIZE, size - OBJECT_HEADER_SIZE)
     elif typ in (OBJECT_TYPE_DATA_HASH_TABLE, OBJECT_TYPE_FIELD_HASH_TABLE, OBJECT_TYPE_ENTRY_ARRAY):
         pass
     elif typ == OBJECT_TYPE_TAG:
         hm.update(data[offset + OBJECT_HEADER_SIZE:offset + OBJECT_HEADER_SIZE + 16])
+
+
+def _hmac_update(hm, data, offset, size):
+    updater = getattr(data, 'update_hmac', None)
+    if updater is not None:
+        updater(hm, offset, size)
+    else:
+        hm.update(data[offset:offset + size])

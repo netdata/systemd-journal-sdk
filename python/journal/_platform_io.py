@@ -8,11 +8,14 @@ import threading
 _IS_WINDOWS = os.name == 'nt'
 _FALLBACK_IO_LOCK = threading.RLock()
 
+def read_at_uses_pread():
+    return hasattr(os, 'pread')
+
 
 def read_at(fd, size, offset):
     if size < 0 or offset < 0:
         raise ValueError('read_at bounds must be non-negative')
-    if hasattr(os, 'pread'):
+    if read_at_uses_pread():
         return os.pread(fd, size, offset)
     with _FALLBACK_IO_LOCK:
         original = os.lseek(fd, 0, os.SEEK_CUR)

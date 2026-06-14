@@ -4,6 +4,7 @@ from test_support import (
     FIELD_NAME_POLICY_RAW,
     FileReader,
     OBJECT_TYPE_ENTRY,
+    REPO_ROOT,
     SdJournalEnumerateAvailableData,
     SdJournalEnumerateAvailableUnique,
     SdJournalEnumerateField,
@@ -34,6 +35,16 @@ from test_support import (
     write_object_header,
     zstd_available,
 )
+from journal.reader_access import (
+    READER_ACCESS_AUTO,
+    READER_ACCESS_MMAP,
+    READER_ACCESS_READ_AT,
+    READER_BOUNDS_SNAPSHOT,
+    ReaderOptions,
+    open_reader_accessor,
+)
+from journal import reader_access as reader_access_module
+from journal._verify_adapter import _AccessorBytesAdapter
 
 def test_facade_unique_binary_values():
     with tempfile.TemporaryDirectory() as td:
@@ -365,15 +376,15 @@ def test_file_reader_refresh_failure_preserves_current_mapping():
 
         reader = FileReader.open(path)
         original_parse = reader_module.parse_file_header
-        old_fd = reader._fd
-        old_mmap = reader._mmap
-        old_buffer = reader._buffer
+        old_stats = reader.access_stats()
         old_offsets = list(reader._entry_offsets)
         try:
             reader.seek_head()
             assert reader.step()
             reader.entry_data_restart()
             assert reader._entry_data_state_active is True
+            payload = reader.enumerate_entry_payload()
+            assert bytes(payload) == b'MESSAGE=refresh guard'
             os.truncate(path, os.path.getsize(path) + 4096)
 
             def fail_parse(_buffer):
@@ -383,29 +394,425 @@ def test_file_reader_refresh_failure_preserves_current_mapping():
             assert reader.refresh() is False
         finally:
             reader_module.parse_file_header = original_parse
-        assert reader._fd == old_fd
-        assert reader._mmap is old_mmap
-        assert reader._buffer is old_buffer
+        new_stats = reader.access_stats()
+        assert new_stats['selected_backend'] == old_stats['selected_backend']
+        assert new_stats['visible_size'] == old_stats['visible_size']
         assert reader._entry_offsets == old_offsets
-        assert reader._entry_data_state_active is False
-        assert reader._entry_data_offsets == []
+        assert reader._entry_data_state_active is True
+        assert bytes(payload) == b'MESSAGE=refresh guard'
         reader.seek_head()
         assert reader.step()
         reader.close()
 
 
 def test_file_reader_rejects_entry_object_extending_past_buffer():
-    reader = FileReader.__new__(FileReader)
-    reader._buffer = bytearray(ENTRY_OBJECT_HEADER_SIZE)
-    reader._entry_item_size = 16
-    reader._compact = False
-    write_object_header(reader._buffer, 0, OBJECT_TYPE_ENTRY, 0, ENTRY_OBJECT_HEADER_SIZE + 8)
-    try:
-        reader._read_entry_metadata_and_offsets(0)
-    except ValueError as e:
-        assert 'entry object exceeds buffer' in str(e)
-    else:
-        raise AssertionError('expected oversized entry object rejection')
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'oversized-entry.journal')
+        data = bytearray(ENTRY_OBJECT_HEADER_SIZE)
+        write_object_header(data, 0, OBJECT_TYPE_ENTRY, 0, ENTRY_OBJECT_HEADER_SIZE + 8)
+        with open(path, 'wb') as f:
+            f.write(data)
+
+        reader = FileReader.__new__(FileReader)
+        reader._accessor = open_reader_accessor(
+            path,
+            ReaderOptions(access_mode=READER_ACCESS_READ_AT, window_size=64, max_windows=1),
+        )
+        reader._entry_item_size = 16
+        reader._compact = False
+        try:
+            try:
+                reader._read_entry_metadata_and_offsets(0)
+            except ValueError as e:
+                assert 'entry object exceeds buffer' in str(e)
+            else:
+                raise AssertionError('expected oversized entry object rejection')
+        finally:
+            reader._accessor.close()
+
+
+def test_file_reader_explicit_mmap_access_mode_reads_entries():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'explicit-mmap.journal')
+        writer = Writer.create(path)
+        writer.append([
+            {'name': 'MESSAGE', 'value': 'mmap reader'},
+        ], {'realtime_usec': 1_700_004_018_000_000, 'monotonic_usec': 1})
+        writer.close()
+
+        reader = FileReader.open(path, options=ReaderOptions(access_mode=READER_ACCESS_MMAP))
+        try:
+            assert reader.selected_access_mode() == READER_ACCESS_MMAP
+            assert reader.step()
+            assert reader.get_entry()['fields']['MESSAGE'] == b'mmap reader'
+        finally:
+            reader.close()
+
+
+def test_file_reader_read_at_access_mode_keeps_row_view_until_next_row():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'explicit-read-at.journal')
+        writer = Writer.create(path)
+        writer.append([
+            {'name': 'MESSAGE', 'value': 'read-at reader'},
+            {'name': 'LARGE', 'value': b'x' * 512},
+        ], {'realtime_usec': 1_700_004_018_000_000, 'monotonic_usec': 1})
+        writer.close()
+
+        reader = FileReader.open(
+            path,
+            options=ReaderOptions(access_mode=READER_ACCESS_READ_AT, window_size=64, max_windows=1),
+        )
+        try:
+            assert reader.selected_access_mode() == READER_ACCESS_READ_AT
+            assert reader.step()
+            reader.entry_data_restart()
+            payload = reader.enumerate_entry_payload()
+            assert bytes(payload) == b'MESSAGE=read-at reader'
+            reader._accessor.temp_view(reader._visible_size() - 1, 1)
+            assert bytes(payload) == b'MESSAGE=read-at reader'
+        finally:
+            reader.close()
+
+
+def test_file_reader_streams_whole_file_zstd_before_bounded_access():
+    if not zstd_available():
+        return
+    import compression.zstd
+
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'source.journal')
+        zst_path = os.path.join(td, 'source.journal.zst')
+        writer = Writer.create(path)
+        writer.append([
+            {'name': 'MESSAGE', 'value': 'zst stream reader'},
+        ], {'realtime_usec': 1_700_004_019_000_000, 'monotonic_usec': 1})
+        writer.close()
+
+        with open(path, 'rb') as src, compression.zstd.open(zst_path, 'wb') as dst:
+            while True:
+                chunk = src.read(128)
+                if not chunk:
+                    break
+                dst.write(chunk)
+
+        reader = FileReader.open(
+            zst_path,
+            options=ReaderOptions(access_mode=READER_ACCESS_READ_AT, window_size=128, max_windows=1),
+        )
+        cleanup_path = reader._cleanup_path
+        try:
+            assert cleanup_path is not None
+            assert os.path.exists(cleanup_path)
+            assert reader.step()
+            assert reader.get_entry()['fields']['MESSAGE'] == b'zst stream reader'
+        finally:
+            reader.close()
+        assert not os.path.exists(cleanup_path)
+
+
+def test_file_reader_auto_falls_back_to_read_at_when_mmap_probe_fails():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'auto-fallback.journal')
+        writer = Writer.create(path)
+        writer.append([
+            {'name': 'MESSAGE', 'value': 'auto fallback'},
+        ], {'realtime_usec': 1_700_004_019_500_000, 'monotonic_usec': 1})
+        writer.close()
+
+        original_mmap = reader_access_module.mmap.mmap
+
+        def fail_mmap(*_args, **_kwargs):
+            raise OSError('forced mmap probe failure')
+
+        reader_access_module.mmap.mmap = fail_mmap
+        try:
+            read_at_reader = FileReader.open(path, options=ReaderOptions(access_mode=READER_ACCESS_READ_AT))
+            try:
+                assert read_at_reader.selected_access_mode() == READER_ACCESS_READ_AT
+                assert read_at_reader.step()
+            finally:
+                read_at_reader.close()
+
+            reader = FileReader.open(path, options=ReaderOptions(access_mode=READER_ACCESS_AUTO))
+            try:
+                assert reader.selected_access_mode() == READER_ACCESS_READ_AT
+                assert 'forced mmap probe failure' in reader.access_stats()['fallback_reason']
+                assert reader.step()
+                assert reader.get_entry()['fields']['MESSAGE'] == b'auto fallback'
+            finally:
+                reader.close()
+
+            try:
+                FileReader.open(path, options=ReaderOptions(access_mode=READER_ACCESS_MMAP))
+            except OSError as e:
+                assert 'forced mmap probe failure' in str(e)
+            else:
+                raise AssertionError('explicit mmap mode must not fall back silently')
+        finally:
+            reader_access_module.mmap.mmap = original_mmap
+
+
+def test_default_file_reader_selects_rolling_mmap_when_available():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'default-mmap.journal')
+        writer = Writer.create(path)
+        writer.append([
+            {'name': 'MESSAGE', 'value': 'default mmap'},
+        ], {'realtime_usec': 1_700_004_019_550_000, 'monotonic_usec': 1})
+        writer.close()
+
+        reader = FileReader.open(path)
+        try:
+            assert reader.selected_access_mode() == READER_ACCESS_MMAP
+            assert reader.access_stats()['mapped_bytes'] <= (
+                reader.access_stats()['window_size'] * reader.access_stats()['max_windows']
+            )
+        finally:
+            reader.close()
+
+
+def test_file_reader_snapshot_bounds_do_not_refresh_appended_rows():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'snapshot-bounds.journal')
+        writer = Writer.create(path, {'live_publish_every_entries': 1})
+        try:
+            writer.append([
+                {'name': 'MESSAGE', 'value': 'first'},
+            ], {'realtime_usec': 1_700_004_019_600_000, 'monotonic_usec': 1})
+            writer.sync()
+
+            reader = FileReader.open(path, options=ReaderOptions(bounds=READER_BOUNDS_SNAPSHOT))
+            try:
+                assert reader.step()
+                assert reader.get_entry()['fields']['MESSAGE'] == b'first'
+                assert reader.next() is False
+
+                writer.append([
+                    {'name': 'MESSAGE', 'value': 'second'},
+                ], {'realtime_usec': 1_700_004_019_600_001, 'monotonic_usec': 2})
+                writer.sync()
+
+                assert reader.refresh() is False
+                assert reader.next() is False
+            finally:
+                reader.close()
+        finally:
+            writer.close()
+
+
+def test_reader_access_same_base_growth_preserves_row_pinned_window():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'same-base.bin')
+        data = bytes((i % 251 for i in range(1024)))
+        with open(path, 'wb') as f:
+            f.write(data)
+
+        cases = [
+            (READER_ACCESS_MMAP, 10, 135),
+            (READER_ACCESS_READ_AT, 10, 120),
+        ]
+        for mode, row_offset, temp_offset in cases:
+            accessor = open_reader_accessor(
+                path,
+                ReaderOptions(access_mode=mode, window_size=128, max_windows=4),
+            )
+            try:
+                row = accessor.row_view(row_offset, 10)
+                assert bytes(row) == data[row_offset:row_offset + 10]
+                assert accessor.stats()['row_pinned_windows'] == 1
+                temp = accessor.temp_view(temp_offset, 16)
+                assert bytes(temp) == data[temp_offset:temp_offset + 16]
+                assert bytes(row) == data[row_offset:row_offset + 10]
+                stats = accessor.stats()
+                assert stats['row_pinned_windows'] == 1
+                assert stats['temp_copy_count'] >= 1
+                accessor.clear_row()
+                assert accessor.stats()['row_pinned_windows'] == 0
+            finally:
+                accessor.close()
+
+
+def test_reader_access_large_sparse_file_stays_within_window_budget():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'large-sparse.bin')
+        window_size = 64 * 1024
+        max_windows = 2
+        size = window_size * max_windows + 64 * 1024 * 1024
+        with open(path, 'wb') as f:
+            f.truncate(size)
+            f.seek(size - 1)
+            f.write(b'\xff')
+
+        budget = window_size * max_windows
+        for mode, stat_key in (
+            (READER_ACCESS_MMAP, 'mapped_bytes'),
+            (READER_ACCESS_READ_AT, 'read_buffer_bytes'),
+        ):
+            accessor = open_reader_accessor(
+                path,
+                ReaderOptions(access_mode=mode, window_size=window_size, max_windows=max_windows),
+            )
+            try:
+                assert bytes(accessor.temp_view(0, 1)) == b'\x00'
+                assert bytes(accessor.temp_view(window_size, 1)) == b'\x00'
+                assert bytes(accessor.temp_view(size - 1, 1)) == b'\xff'
+                assert accessor.stats()[stat_key] <= budget
+            finally:
+                accessor.close()
+
+
+def test_reader_row_arena_segments_are_fixed_size_and_bounded():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'row-arena.bin')
+        with open(path, 'wb') as f:
+            f.write(b'x')
+
+        accessor = open_reader_accessor(
+            path,
+            ReaderOptions(
+                access_mode=READER_ACCESS_READ_AT,
+                max_row_arena_bytes=16,
+                row_arena_segment_bytes=8,
+            ),
+        )
+        try:
+            first = accessor.row_bytes(b'abcd')
+            second = accessor.row_bytes(b'efgh')
+            third = accessor.row_bytes(b'ijklmnop')
+            assert bytes(first) == b'abcd'
+            assert bytes(second) == b'efgh'
+            assert bytes(third) == b'ijklmnop'
+            stats = accessor.stats()
+            assert stats['row_arena_current_bytes'] == 16
+            assert stats['row_arena_active_segments'] == 2
+            try:
+                accessor.row_bytes(b'q')
+            except RuntimeError as e:
+                assert 'row arena limit exceeded' in str(e)
+            else:
+                raise AssertionError('expected row arena limit error')
+            assert bytes(first) == b'abcd'
+        finally:
+            accessor.close()
+
+
+def test_file_reader_oversized_payload_uses_row_arena():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'oversized-payload.journal')
+        large = b'x' * 256
+        writer = Writer.create(path)
+        writer.append([
+            {'name': 'MESSAGE', 'value': large},
+        ], {'realtime_usec': 1_700_004_019_700_000, 'monotonic_usec': 1})
+        writer.close()
+
+        reader = FileReader.open(
+            path,
+            options=ReaderOptions(access_mode=READER_ACCESS_READ_AT, window_size=64, max_windows=1),
+        )
+        try:
+            assert reader.step()
+            reader.entry_data_restart()
+            payload = reader.enumerate_entry_payload()
+            assert bytes(payload) == b'MESSAGE=' + large
+            assert reader.access_stats()['row_arena_current_bytes'] >= len(payload)
+            reader.entry_data_restart()
+            assert bytes(payload) == b'MESSAGE=' + large
+            assert reader.get_entry()['fields']['MESSAGE'] == large
+            assert bytes(payload) == b'MESSAGE=' + large
+            reader._accessor.temp_view(reader._visible_size() - 1, 1)
+            assert bytes(payload) == b'MESSAGE=' + large
+            assert reader.next() is False
+            assert reader.access_stats()['row_arena_current_bytes'] == 0
+        finally:
+            reader.close()
+
+
+def test_directory_reader_options_reach_every_file():
+    with tempfile.TemporaryDirectory() as td:
+        paths = []
+        for idx in range(2):
+            path = os.path.join(td, f'dir-options-{idx}.journal')
+            writer = Writer.create(path)
+            writer.append([
+                {'name': 'MESSAGE', 'value': f'entry {idx}'},
+            ], {'realtime_usec': 1_700_004_019_800_000 + idx, 'monotonic_usec': idx + 1})
+            writer.close()
+            paths.append(path)
+
+        reader = DirectoryReader.open_files(
+            paths,
+            options=ReaderOptions(access_mode=READER_ACCESS_READ_AT, window_size=128, max_windows=1),
+        )
+        try:
+            stats = reader.access_stats()
+            assert len(stats) == 2
+            assert {item['selected_backend'] for item in stats} == {READER_ACCESS_READ_AT}
+            assert reader.step()
+        finally:
+            reader.close()
+
+
+def test_verify_adapter_supports_chunked_hmac_without_whole_file_read():
+    import hashlib
+
+    class FakeReader:
+        def __init__(self, data):
+            self.data = data
+            self.read_sizes = []
+
+        def _visible_size(self):
+            return len(self.data)
+
+        def _read_bytes(self, offset, size):
+            self.read_sizes.append(size)
+            return self.data[offset:offset + size]
+
+        def _u8(self, offset):
+            return self.data[offset]
+
+    data = bytes(range(64))
+    reader = FakeReader(data)
+    adapter = _AccessorBytesAdapter(reader)
+    digest = hashlib.sha256()
+    adapter.update_hmac(digest, 0, len(data), chunk_size=7)
+
+    expected = hashlib.sha256(data).digest()
+    assert digest.digest() == expected
+    assert adapter.hmac_chunks == 10
+    assert max(reader.read_sizes) <= 7
+    assert adapter[3] == data[3]
+    assert adapter[5:12] == data[5:12]
+
+
+def test_python_reader_bypass_scan_blocks_whole_file_reader_paths():
+    surface_files = [
+        'reader.py',
+        'directory_reader.py',
+        'facade.py',
+        'explorer.py',
+        'netdata.py',
+        'verify.py',
+        '_verify_adapter.py',
+        'compress.py',
+    ]
+    forbidden = [
+        'self._buffer',
+        'reader._buffer',
+        'self._mmap',
+        'reader._mmap',
+        'decompress_zst_to_temp',
+        '_read_journal_file_bytes',
+    ]
+    base = REPO_ROOT / 'python' / 'journal'
+    violations = []
+    for name in surface_files:
+        text = (base / name).read_text(encoding='utf-8')
+        for pattern in forbidden:
+            if pattern in text:
+                violations.append(f'{name}: {pattern}')
+    assert violations == []
 
 
 def test_file_reader_refreshes_published_appends():
@@ -459,5 +866,3 @@ def test_reader_rejects_non_utf8_match_field_names():
                 raise AssertionError('expected non-UTF8 match field rejection')
         finally:
             reader.close()
-
-

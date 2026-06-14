@@ -6,9 +6,10 @@ from .compress import is_journal_file_name
 
 
 class DirectoryReader:
-    def __init__(self, path, readers=None):
+    def __init__(self, path, readers=None, options=None):
         self._path = path
         self._readers = readers or []
+        self._options = options
         self._index = -1
         self._realtime_seek = None
         self._realtime_seek_bound = None
@@ -29,36 +30,39 @@ class DirectoryReader:
         return False
 
     @staticmethod
-    def open(path):
+    def open(path, *, options=None):
         if not os.path.isdir(path):
             raise ValueError(f'not a directory: {path}')
 
         readers = []
         for journal_path in _collect_journal_files(path):
             try:
-                reader = FileReader.open(journal_path)
+                reader = FileReader.open(journal_path, options=options)
             except Exception:
                 reader = None
             if reader is not None:
                 readers.append(reader)
 
-        return DirectoryReader.from_readers(path, readers, allow_empty=True)
+        return DirectoryReader.from_readers(path, readers, allow_empty=True, options=options)
 
     @staticmethod
-    def open_files(paths):
+    def open_files(paths, *, options=None):
         readers = []
         for path in paths:
             if not is_journal_file_name(os.path.basename(path)):
                 raise ValueError(f'not a journal file: {path}')
-            readers.append(FileReader.open(path))
-        return DirectoryReader.from_readers('<files>', readers, allow_empty=False)
+            readers.append(FileReader.open(path, options=options))
+        return DirectoryReader.from_readers('<files>', readers, allow_empty=False, options=options)
 
     @staticmethod
-    def from_readers(path, readers, allow_empty=False):
+    def from_readers(path, readers, allow_empty=False, options=None):
         if not readers and not allow_empty:
             raise ValueError(f'no readable journal files in {path}')
         readers.sort(key=lambda r: (r.header()['head_entry_realtime'], r.header()['head_entry_seqnum']))
-        return DirectoryReader(path, readers)
+        return DirectoryReader(path, readers, options=options)
+
+    def access_stats(self):
+        return [reader.access_stats() for reader in self._readers]
 
     def seek_head(self):
         self._realtime_seek = None

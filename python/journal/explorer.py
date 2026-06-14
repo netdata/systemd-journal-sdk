@@ -1067,7 +1067,7 @@ def _enumerate_fields_indexed(reader):
     buckets = table_size // HASH_ITEM_SIZE
     for bucket in range(buckets):
         bucket_offset = table_offset + bucket * HASH_ITEM_SIZE
-        if len(reader._buffer) < bucket_offset + HASH_ITEM_SIZE:
+        if reader._visible_size() < bucket_offset + HASH_ITEM_SIZE:
             raise ValueError('field hash bucket exceeds buffer')
         offset = reader._UNPACK_U64(bucket_offset)
         while offset:

@@ -17,6 +17,14 @@ from .facade import (
     export_entry, json_entry, text_entry,
 )
 from .reader import FileReader
+from .reader_access import (
+    ReaderOptions,
+    READER_ACCESS_AUTO,
+    READER_ACCESS_MMAP,
+    READER_ACCESS_READ_AT,
+    READER_BOUNDS_LIVE,
+    READER_BOUNDS_SNAPSHOT,
+)
 from .directory_reader import DirectoryReader
 from .writer import (
     FIELD_NAME_POLICY_JOURNALD,
@@ -81,6 +89,8 @@ __all__ = [
     'OUTPUT_MODE_DEFAULT', 'OUTPUT_MODE_JSON', 'OUTPUT_MODE_EXPORT',
     'export_entry', 'json_entry', 'text_entry',
     'FileReader', 'DirectoryReader', 'Writer', 'Log',
+    'ReaderOptions', 'READER_ACCESS_AUTO', 'READER_ACCESS_MMAP', 'READER_ACCESS_READ_AT',
+    'READER_BOUNDS_LIVE', 'READER_BOUNDS_SNAPSHOT',
     'FIELD_NAME_POLICY_JOURNALD', 'FIELD_NAME_POLICY_JOURNAL_APP',
     'FIELD_NAME_POLICY_RAW',
     'LOG_OPEN_LAZY', 'LOG_OPEN_EAGER',

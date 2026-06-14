@@ -35,7 +35,6 @@ Stdlib-only. No `journal.*` runtime imports.
 from __future__ import annotations
 
 import grp
-import mmap
 import os
 import pathlib
 import pwd
@@ -2121,37 +2120,32 @@ def _read_file_header_realtime_bounds(path: str) -> "tuple[int, int]":
     Mirrors the `FileReader::open_with_options` + `reader.header()`
     step used by Rust `JournalSourceSummary::add_path` (L1757-1776):
     the reader captures the header snapshot without scanning entries.
-    In Python the cheapest equivalent is the `FileReader.open` prologue
-    (decompress `.journal.zst` to a temp file, mmap the file,
-    `parse_file_header`) — both bounds default to 0 for files with no
+    In Python the cheapest equivalent is a bounded header read
+    (stream-decompress `.journal.zst` to a temp file when needed, read the
+    header bytes, `parse_file_header`) — both bounds default to 0 for files with no
     entries, which the caller skips via the `!= 0` guard. Any failure
     (missing file, invalid header, too small) returns ``(0, 0)`` so the
     summary path leaves the bounds untouched and the file still
     contributes `files` + `total_size` from the prior `os.stat`.
     """
 
-    from .compress import is_zst_file, decompress_zst_to_temp
-    from .header import parse_file_header, HEADER_MIN_SIZE
+    from ._platform_io import read_at
+    from .compress import is_zst_file, stream_zst_to_temp
+    from .header import parse_file_header, HEADER_MIN_SIZE, HEADER_SIZE
 
     cleanup_dir: "Optional[str]" = None
-    mapped = None
     fd: "Optional[int]" = None
     try:
         open_path = str(path)
         if is_zst_file(open_path):
-            cleanup_dir = os.path.dirname(decompress_zst_to_temp(open_path))
+            cleanup_path = stream_zst_to_temp(open_path, prefix="python-sdk-netdata")
+            cleanup_dir = os.path.dirname(cleanup_path)
             open_path = os.path.join(cleanup_dir, "decompressed.journal")
         fd = os.open(open_path, os.O_RDONLY)
-        try:
-            size = os.fstat(fd).st_size
-            if size < HEADER_MIN_SIZE:
-                return (0, 0)
-            mapped = mmap.mmap(fd, 0, access=mmap.ACCESS_READ)
-        finally:
-            if mapped is None:
-                os.close(fd)
-                fd = None
-        header = parse_file_header(mapped)
+        size = os.fstat(fd).st_size
+        if size < HEADER_MIN_SIZE:
+            return (0, 0)
+        header = parse_file_header(read_at(fd, min(size, HEADER_SIZE), 0))
         return (
             int(header.get("head_entry_realtime", 0) or 0),
             int(header.get("tail_entry_realtime", 0) or 0),
@@ -2159,11 +2153,6 @@ def _read_file_header_realtime_bounds(path: str) -> "tuple[int, int]":
     except Exception:
         return (0, 0)
     finally:
-        if mapped is not None:
-            try:
-                mapped.close()
-            except Exception:
-                pass
         if fd is not None:
             try:
                 os.close(fd)
@@ -2209,8 +2198,8 @@ class JournalSourceSummary:
         file (Rust opens the file via `FileReader::open_with_options`
         which captures the header snapshot). The header path is the
         cheapest way to obtain the first/last entry realtime without
-        scanning entries: it mmaps the file, parses the journal
-        header, and closes; entries are never decoded.
+        scanning entries: it reads the bounded journal header and closes;
+        entries are never decoded.
         `head_entry_realtime == 0` (zero-entry file) and
         `tail_entry_realtime == 0` are skipped, mirroring the Rust
         guards. Files whose header cannot be parsed (too small, bad

@@ -15,6 +15,10 @@ sys.path.insert(0, str(PYTHON_ROOT))
 from journal import (  # noqa: E402
     DirectoryReader,
     FileReader,
+    ReaderOptions,
+    READER_ACCESS_AUTO,
+    READER_ACCESS_MMAP,
+    READER_ACCESS_READ_AT,
     SdJournalEnumerateAvailableData,
     SdJournalNext,
     SdJournalOpenDirectory,
@@ -80,17 +84,45 @@ def advance(reader, direction):
     return reader.previous() if direction == 'backward' else reader.next()
 
 
-def open_sdk_reader(inputs, surface):
+def benchmark_reader_options(args):
+    access_mode = benchmark_access_mode(args.mmap_strategy)
+    kwargs = {
+        'access_mode': access_mode,
+        'bounds': args.bounds,
+    }
+    window_size = int(args.window_size)
+    if window_size > 0:
+        kwargs['window_size'] = window_size
+    return ReaderOptions(**kwargs)
+
+
+def benchmark_access_mode(strategy):
+    normalized = str(strategy).lower().replace('_', '-')
+    aliases = {
+        'auto': READER_ACCESS_AUTO,
+        'mmap': READER_ACCESS_MMAP,
+        'windowed': READER_ACCESS_MMAP,
+        'read-at': READER_ACCESS_READ_AT,
+        'readat': READER_ACCESS_READ_AT,
+        'pread': READER_ACCESS_READ_AT,
+    }
+    try:
+        return aliases[normalized]
+    except KeyError as err:
+        raise ValueError(f'invalid Python mmap strategy: {strategy}') from err
+
+
+def open_sdk_reader(inputs, surface, options):
     if surface == 'file':
         if len(inputs) != 1:
             raise ValueError('file surface requires exactly one --input')
-        return FileReader.open(inputs[0])
+        return FileReader.open(inputs[0], options=options)
     if surface == 'directory':
         if len(inputs) != 1:
             raise ValueError('directory surface requires exactly one --input')
-        return DirectoryReader.open(inputs[0])
+        return DirectoryReader.open(inputs[0], options=options)
     if surface == 'open-files':
-        return DirectoryReader.open_files(inputs)
+        return DirectoryReader.open_files(inputs, options=options)
     raise ValueError(f'invalid surface: {surface}')
 
 
@@ -101,8 +133,8 @@ def seek_reader(reader, direction):
         reader.seek_head()
 
 
-def read_sdk(inputs, surface, mode, direction):
-    reader = open_sdk_reader(inputs, surface)
+def read_sdk(inputs, surface, mode, direction, options):
+    reader = open_sdk_reader(inputs, surface, options)
     try:
         seek_reader(reader, direction)
         counts = Counts()
@@ -117,23 +149,23 @@ def read_sdk(inputs, surface, mode, direction):
                 reader.visit_entry_payloads(counts.add_payload)
             else:
                 raise ValueError(f'invalid SDK mode: {mode}')
-        return counts
+        return counts, reader.access_stats()
     finally:
         reader.close()
 
 
-def open_facade(inputs, surface):
+def open_facade(inputs, surface, options):
     if surface == 'file' or surface == 'open-files':
-        return SdJournalOpenFiles(inputs, 0)
+        return SdJournalOpenFiles(inputs, 0, options=options)
     if surface == 'directory':
         if len(inputs) != 1:
             raise ValueError('directory surface requires exactly one --input')
-        return SdJournalOpenDirectory(inputs[0], 0)
+        return SdJournalOpenDirectory(inputs[0], 0, options=options)
     raise ValueError(f'invalid facade surface: {surface}')
 
 
-def read_facade(inputs, surface, mode, direction):
-    journal = open_facade(inputs, surface)
+def read_facade(inputs, surface, mode, direction, options):
+    journal = open_facade(inputs, surface, options)
     try:
         seek_reader(journal, direction)
         counts = Counts()
@@ -153,23 +185,24 @@ def read_facade(inputs, surface, mode, direction):
                     counts.add_payload(payload)
             else:
                 raise ValueError(f'invalid facade mode: {mode}')
-        return counts
+        return counts, journal.access_stats()
     finally:
         journal.close()
 
 
 def run(args):
+    options = benchmark_reader_options(args)
     status_before = process_status_kb()
     started = time.perf_counter()
     if args.mode in ('sdk-entry', 'sdk-payloads'):
-        counts = read_sdk(args.inputs, args.surface, args.mode, args.direction)
+        counts, access_stats = read_sdk(args.inputs, args.surface, args.mode, args.direction, options)
     elif args.mode in ('facade-next', 'facade-data'):
-        counts = read_facade(args.inputs, args.surface, args.mode, args.direction)
+        counts, access_stats = read_facade(args.inputs, args.surface, args.mode, args.direction, options)
     else:
         raise ValueError(f'invalid --mode for Python reader benchmark: {args.mode}')
     elapsed = time.perf_counter() - started
     status_after = process_status_kb()
-    return counts, elapsed, status_before, status_after
+    return counts, access_stats, elapsed, status_before, status_after
 
 
 def main():
@@ -183,7 +216,7 @@ def main():
     parser.add_argument('--mmap-strategy', default='mmap')
     args = parser.parse_args()
 
-    counts, read_seconds, status_before, status_after = run(args)
+    counts, access_stats, read_seconds, status_before, status_after = run(args)
     print(json.dumps({
         'language': 'python',
         'surface': args.surface,
@@ -201,6 +234,7 @@ def main():
         'window_size': args.window_size,
         'bounds': args.bounds,
         'mmap_strategy': args.mmap_strategy,
+        'access_stats': access_stats,
         'timer_excludes': ['fixture generation', 'process startup', 'external verification'],
         'process_status_before': status_before,
         'process_status_after': status_after,
