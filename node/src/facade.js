@@ -221,24 +221,24 @@ export class SdJournal {
     this.uniqueIndex = 0;
   }
 
-  static open(path) {
+  static open(path, options = {}) {
     if (isJournalFileName(path.split('/').pop())) {
-      return SdJournal.openFile(path);
+      return SdJournal.openFile(path, options);
     }
-    return SdJournal.openDirectory(path);
+    return SdJournal.openDirectory(path, options);
   }
 
-  static openFile(path) {
-    return new SdJournal(FileReader.open(path));
+  static openFile(path, options = {}) {
+    return new SdJournal(FileReader.open(path, options));
   }
 
-  static openDirectory(path) {
-    return new SdJournal(DirectoryReader.open(path));
+  static openDirectory(path, options = {}) {
+    return new SdJournal(DirectoryReader.open(path, options));
   }
 
-  static openFiles(paths) {
-    if (paths.length === 1) return SdJournal.openFile(paths[0]);
-    return new SdJournal(DirectoryReader.openFiles(paths));
+  static openFiles(paths, options = {}) {
+    if (paths.length === 1) return SdJournal.openFile(paths[0], options);
+    return new SdJournal(DirectoryReader.openFiles(paths, options));
   }
 
   close() { this.reader.close(); }
@@ -411,24 +411,24 @@ export const OUTPUT_MODE_EXPORT = 'export';
 // Standalone C-style wrapper functions for libsystemd-compatible API.
 // These delegate to SdJournal class methods.
 
-export function SdJournalOpen(path, flags) {
+export function SdJournalOpen(path, flags, options = {}) {
   if (flags !== 0) throw new Error('unsupported sd_journal_open flags');
-  return SdJournal.open(path);
+  return SdJournal.open(path, options);
 }
 
-export function SdJournalOpenFile(path, flags) {
+export function SdJournalOpenFile(path, flags, options = {}) {
   if (flags !== 0) throw new Error('unsupported sd_journal_open_file flags');
-  return SdJournal.openFile(path);
+  return SdJournal.openFile(path, options);
 }
 
-export function SdJournalOpenDirectory(path, flags) {
+export function SdJournalOpenDirectory(path, flags, options = {}) {
   if (flags !== 0) throw new Error('unsupported sd_journal_open_directory flags');
-  return SdJournal.openDirectory(path);
+  return SdJournal.openDirectory(path, options);
 }
 
-export function SdJournalOpenFiles(paths, flags) {
+export function SdJournalOpenFiles(paths, flags, options = {}) {
   if (flags !== 0) throw new Error('unsupported sd_journal_open_files flags');
-  return SdJournal.openFiles(paths);
+  return SdJournal.openFiles(paths, options);
 }
 
 export function SdJournalClose(journal) {

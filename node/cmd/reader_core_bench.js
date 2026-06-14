@@ -55,17 +55,17 @@ function advance(reader, direction) {
   return direction === 'backward' ? reader.previous() : reader.next();
 }
 
-function openSdkReader(inputs, surface) {
+function openSdkReader(inputs, surface, readerOptions) {
   if (surface === 'file') {
     if (inputs.length !== 1) throw new Error('file surface requires exactly one --input');
-    return FileReader.open(inputs[0]);
+    return FileReader.open(inputs[0], readerOptions);
   }
   if (surface === 'directory') {
     if (inputs.length !== 1) throw new Error('directory surface requires exactly one --input');
-    return DirectoryReader.open(inputs[0]);
+    return DirectoryReader.open(inputs[0], readerOptions);
   }
   if (surface === 'open-files') {
-    return DirectoryReader.openFiles(inputs);
+    return DirectoryReader.openFiles(inputs, readerOptions);
   }
   throw new Error(`invalid surface: ${surface}`);
 }
@@ -75,8 +75,8 @@ function seekReader(reader, direction) {
   else reader.seekHead();
 }
 
-function readSdk(inputs, surface, mode, direction) {
-  const reader = openSdkReader(inputs, surface);
+function readSdk(inputs, surface, mode, direction, readerOptions) {
+  const reader = openSdkReader(inputs, surface, readerOptions);
   try {
     seekReader(reader, direction);
     const counts = new Counts();
@@ -92,23 +92,23 @@ function readSdk(inputs, surface, mode, direction) {
         throw new Error(`invalid SDK mode: ${mode}`);
       }
     }
-    return counts;
+    return { counts, accessStats: collectAccessStats(reader) };
   } finally {
     reader.close();
   }
 }
 
-function openFacade(inputs, surface) {
-  if (surface === 'file' || surface === 'open-files') return SdJournalOpenFiles(inputs, 0);
+function openFacade(inputs, surface, readerOptions) {
+  if (surface === 'file' || surface === 'open-files') return SdJournalOpenFiles(inputs, 0, readerOptions);
   if (surface === 'directory') {
     if (inputs.length !== 1) throw new Error('directory surface requires exactly one --input');
-    return SdJournalOpenDirectory(inputs[0], 0);
+    return SdJournalOpenDirectory(inputs[0], 0, readerOptions);
   }
   throw new Error(`invalid facade surface: ${surface}`);
 }
 
-function readFacade(inputs, surface, mode, direction) {
-  const journal = openFacade(inputs, surface);
+function readFacade(inputs, surface, mode, direction, readerOptions) {
+  const journal = openFacade(inputs, surface, readerOptions);
   try {
     seekReader(journal, direction);
     const counts = new Counts();
@@ -129,7 +129,7 @@ function readFacade(inputs, surface, mode, direction) {
         throw new Error(`invalid facade mode: ${mode}`);
       }
     }
-    return counts;
+    return { counts, accessStats: collectAccessStats(journal.reader) };
   } finally {
     journal.close();
   }
@@ -142,6 +142,7 @@ function parseArgs(argv) {
     surface: 'file',
     direction: 'forward',
     windowSize: '0',
+    maxWindows: '0',
     bounds: 'live',
     mmapStrategy: 'buffer',
   });
@@ -156,8 +157,10 @@ function parseArgs(argv) {
     else if (arg === '--surface') args.surface = next();
     else if (arg === '--direction') args.direction = next();
     else if (arg === '--window-size') args.windowSize = next();
+    else if (arg === '--max-windows') args.maxWindows = next();
     else if (arg === '--bounds') args.bounds = next();
     else if (arg === '--mmap-strategy') args.mmapStrategy = next();
+    else if (arg === '--access-mode') args.mmapStrategy = next();
     else throw new Error(`unknown argument: ${arg}`);
   }
   if (args.inputs.length === 0) throw new Error('missing --input');
@@ -173,22 +176,41 @@ function stringifyResult(result) {
 function run(args) {
   const statusBefore = processStatusKb();
   const started = performance.now();
-  let counts;
+  const readerOptions = readerOptionsFromArgs(args);
+  let readResult;
   if (args.mode === 'sdk-entry' || args.mode === 'sdk-payloads') {
-    counts = readSdk(args.inputs, args.surface, args.mode, args.direction);
+    readResult = readSdk(args.inputs, args.surface, args.mode, args.direction, readerOptions);
   } else if (args.mode === 'facade-next' || args.mode === 'facade-data') {
-    counts = readFacade(args.inputs, args.surface, args.mode, args.direction);
+    readResult = readFacade(args.inputs, args.surface, args.mode, args.direction, readerOptions);
   } else {
     throw new Error(`invalid --mode for Node.js reader benchmark: ${args.mode}`);
   }
   const readSeconds = (performance.now() - started) / 1000;
   const statusAfter = processStatusKb();
-  return { counts, readSeconds, statusBefore, statusAfter };
+  return { ...readResult, readSeconds, statusBefore, statusAfter, readerOptions };
+}
+
+function readerOptionsFromArgs(args) {
+  const options = { accessMode: args.mmapStrategy, bounds: args.bounds };
+  const windowSizeBytes = Number(args.windowSize);
+  if (Number.isFinite(windowSizeBytes) && windowSizeBytes > 0) options.windowSizeBytes = windowSizeBytes;
+  const maxWindows = Number(args.maxWindows);
+  if (Number.isFinite(maxWindows) && maxWindows > 0) options.maxWindows = maxWindows;
+  return options;
+}
+
+function collectAccessStats(reader) {
+  if (!reader) return null;
+  if (typeof reader.accessStats === 'function') return reader.accessStats();
+  if (Array.isArray(reader.readers)) {
+    return reader.readers.map((item) => collectAccessStats(item));
+  }
+  return null;
 }
 
 try {
   const args = parseArgs(process.argv);
-  const { counts, readSeconds, statusBefore, statusAfter } = run(args);
+  const { counts, accessStats, readSeconds, statusBefore, statusAfter, readerOptions } = run(args);
   const result = {
     language: 'node',
     surface: args.surface,
@@ -204,8 +226,11 @@ try {
     read_bytes_per_second: readSeconds > 0 ? counts.bytes / readSeconds : 0.0,
     inputs: args.inputs,
     window_size: args.windowSize,
+    max_windows: args.maxWindows,
     bounds: args.bounds,
     mmap_strategy: args.mmapStrategy,
+    reader_options: readerOptions,
+    access_stats: accessStats,
     timer_excludes: ['fixture generation', 'process startup', 'external verification'],
     process_status_before: statusBefore,
     process_status_after: statusAfter,

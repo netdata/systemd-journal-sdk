@@ -60,6 +60,14 @@ import { verifyFile, verifyFileWithKey, VerificationError } from '../src/lib/ver
 import { SealOptions, COMPATIBLE_SEALED, COMPATIBLE_SEALED_CONTINUOUS } from '../src/lib/seal.js';
 import { WriterLock } from '../src/lib/lock.js';
 import {
+  READER_ACCESS_AUTO,
+  READER_ACCESS_READ_AT,
+  READER_ACCESS_MMAP,
+  READER_BOUNDS_LIVE,
+  READER_BOUNDS_SNAPSHOT,
+  UnsupportedAccessModeError,
+} from '../src/lib/reader-access.js';
+import {
   UNKNOWN_PROCESS_START_TIME,
   lockOwnerIsActive,
   parseLinuxProcStatStartTime,
@@ -321,6 +329,12 @@ export {
   COMPATIBLE_SEALED,
   COMPATIBLE_SEALED_CONTINUOUS,
   WriterLock,
+  READER_ACCESS_AUTO,
+  READER_ACCESS_READ_AT,
+  READER_ACCESS_MMAP,
+  READER_BOUNDS_LIVE,
+  READER_BOUNDS_SNAPSHOT,
+  UnsupportedAccessModeError,
   UNKNOWN_PROCESS_START_TIME,
   lockOwnerIsActive,
   parseLinuxProcStatStartTime,

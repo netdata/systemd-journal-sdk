@@ -38,6 +38,7 @@ import { decompressZstdDataPayload } from './compress.js';
 import { jenkinsHash64, sipHash24 } from './hash.js';
 import { decompressLz4DataPayload } from './lz4-block.js';
 import { decompressXzDataPayload } from './xz-block.js';
+import { byteSourceFromBuffer } from './verify-adapter.js';
 
 const OBJECT_TYPES = new Map([
   [OBJECT_TYPE_DATA, 'DATA'],
@@ -60,12 +61,12 @@ export class ObjectGraphVerificationError extends Error {
 }
 
 export function verifyObjectGraph(data) {
-  new GraphVerifier(data).verify();
+  new GraphVerifier(asByteSource(data)).verify();
 }
 
 class GraphVerifier {
-  constructor(data) {
-    this.data = data;
+  constructor(source) {
+    this.source = source;
     this.header = null;
     this.compact = false;
     this.spans = new Map();
@@ -89,10 +90,10 @@ class GraphVerifier {
   }
 
   readHeader() {
-    if (this.data.length < HEADER_MIN_SIZE) {
+    if (this.source.length < HEADER_MIN_SIZE) {
       throw new ObjectGraphVerificationError('file too small');
     }
-    this.header = parseFileHeader(this.data);
+    this.header = parseFileHeader(this.source.bytes(0, Math.min(this.source.length, 272)));
     this.compact = (this.header.incompatible_flags & INCOMPATIBLE_COMPACT) !== 0;
 
     const headerSize = this.hnum('header_size');
@@ -100,13 +101,13 @@ class GraphVerifier {
     if (headerSize < HEADER_MIN_SIZE) {
       throw new ObjectGraphVerificationError(`invalid header_size ${headerSize}`);
     }
-    if (headerSize > this.data.length) {
+    if (headerSize > this.source.length) {
       throw new ObjectGraphVerificationError(`header_size ${headerSize} exceeds file size`);
     }
     if (headerSize % 8 !== 0) {
       throw new ObjectGraphVerificationError(`header_size ${headerSize} is not aligned`);
     }
-    if (headerSize + arenaSize > this.data.length) {
+    if (headerSize + arenaSize > this.source.length) {
       throw new ObjectGraphVerificationError('header_size + arena_size exceeds file size');
     }
     if (![0, 1, 2].includes(this.header.state)) {
@@ -118,9 +119,9 @@ class GraphVerifier {
       );
     }
     for (let i = 17; i < 24; i++) {
-      if (this.data.readUInt8(i) !== 0) throw new ObjectGraphVerificationError('reserved header bytes are non-zero');
+      if (this.u8(i) !== 0) throw new ObjectGraphVerificationError('reserved header bytes are non-zero');
     }
-    if (this.compact && BigInt(this.data.length) > JOURNAL_COMPACT_SIZE_MAX) {
+    if (this.compact && BigInt(this.source.length) > JOURNAL_COMPACT_SIZE_MAX) {
       throw new ObjectGraphVerificationError('compact journal exceeds 32-bit size limit');
     }
   }
@@ -172,11 +173,11 @@ class GraphVerifier {
 
   readObjectFrame(offset, tail) {
     if (offset > tail) throw new ObjectGraphVerificationError('object walk skipped past tail_object_offset');
-    if (offset + OBJECT_HEADER_SIZE > this.data.length) {
+    if (offset + OBJECT_HEADER_SIZE > this.source.length) {
       throw new ObjectGraphVerificationError(`object header at offset ${offset} exceeds file bounds`);
     }
-    const typ = this.data.readUInt8(offset);
-    const flags = this.data.readUInt8(offset + 1);
+    const typ = this.u8(offset);
+    const flags = this.u8(offset + 1);
     const size = this.u64(offset + 8);
     const alignedSize = align8(size);
     const alignedSizeNumber = u64ToNumber(alignedSize, `aligned size at offset ${offset}`);
@@ -191,7 +192,7 @@ class GraphVerifier {
     if (size < BigInt(OBJECT_HEADER_SIZE)) {
       throw new ObjectGraphVerificationError(`object size ${size} too small at offset ${offset}`);
     }
-    if (alignedSize < size || alignedSize === 0n || end > this.data.length) {
+    if (alignedSize < size || alignedSize === 0n || end > this.source.length) {
       throw new ObjectGraphVerificationError(`object at offset ${offset} exceeds file bounds`);
     }
     if (offset % 8 !== 0) throw new ObjectGraphVerificationError(`object offset ${offset} is not aligned`);
@@ -320,7 +321,7 @@ class GraphVerifier {
     const payloadOffset = this.compact ? COMPACT_DATA_OBJECT_HEADER_SIZE : DATA_OBJECT_HEADER_SIZE;
     this.validateDataPayloadSize(offset, size, payloadOffset);
     const sizeNumber = u64ToNumber(size, `DATA size at offset ${offset}`);
-    const storedPayload = this.data.subarray(offset + payloadOffset, offset + sizeNumber);
+    const storedPayload = this.source.view(offset + payloadOffset, sizeNumber - payloadOffset);
     const hashPayload = this.dataHashPayload(flags, storedPayload, offset);
     const storedHash = this.u64(offset + 16);
     const computedHash = this.hash(hashPayload);
@@ -350,8 +351,8 @@ class GraphVerifier {
       entry_offset: this.u64n(offset + 40, 'DATA entry_offset'),
       entry_array_offset: this.u64n(offset + 48, 'DATA entry_array_offset'),
       n_entries: this.u64(offset + 56),
-      tail_entry_array_offset: this.compact ? this.data.readUInt32LE(offset + 64) : 0,
-      tail_entry_array_n_entries: this.compact ? this.data.readUInt32LE(offset + 68) : 0,
+      tail_entry_array_offset: this.compact ? this.u32(offset + 64) : 0,
+      tail_entry_array_n_entries: this.compact ? this.u32(offset + 68) : 0,
     };
   }
 
@@ -375,7 +376,7 @@ class GraphVerifier {
       throw new ObjectGraphVerificationError(`FIELD object at offset ${offset} has no payload`);
     }
     const sizeNumber = u64ToNumber(size, `FIELD size at offset ${offset}`);
-    const payload = this.data.subarray(offset + FIELD_OBJECT_HEADER_SIZE, offset + sizeNumber);
+    const payload = this.source.view(offset + FIELD_OBJECT_HEADER_SIZE, sizeNumber - FIELD_OBJECT_HEADER_SIZE);
     const storedHash = this.u64(offset + 16);
     const computedHash = this.hash(payload);
     if (storedHash !== computedHash) throw new ObjectGraphVerificationError(`FIELD hash mismatch at offset ${offset}`);
@@ -398,7 +399,7 @@ class GraphVerifier {
     const sizeNumber = u64ToNumber(size, `ENTRY size at offset ${offset}`);
     const itemOffsets = [];
     for (let itemOffset = offset + ENTRY_OBJECT_HEADER_SIZE; itemOffset < offset + sizeNumber; itemOffset += itemSize) {
-      const item = this.compact ? this.data.readUInt32LE(itemOffset) : this.u64n(itemOffset, 'ENTRY item');
+      const item = this.compact ? this.u32(itemOffset) : this.u64n(itemOffset, 'ENTRY item');
       if (item === 0) throw new ObjectGraphVerificationError(`ENTRY object at offset ${offset} has zero item`);
       this.validOffset(item, `ENTRY ${offset} item`);
       itemOffsets.push(item);
@@ -408,7 +409,7 @@ class GraphVerifier {
       seqnum: this.u64(offset + 16),
       realtime: this.u64(offset + 24),
       monotonic: this.u64(offset + 32),
-      boot_id: Buffer.from(this.data.subarray(offset + 40, offset + 56)),
+      boot_id: this.source.bytes(offset + 40, 16),
       items: itemOffsets,
     };
     if (entry.seqnum === 0n) throw new ObjectGraphVerificationError(`ENTRY object at offset ${offset} has zero seqnum`);
@@ -459,7 +460,7 @@ class GraphVerifier {
     const sizeNumber = u64ToNumber(size, `ENTRY_ARRAY size at offset ${offset}`);
     const items = [];
     for (let itemOffset = offset + OFFSET_ARRAY_OBJECT_HEADER_SIZE; itemOffset < offset + sizeNumber; itemOffset += itemSize) {
-      const item = this.compact ? this.data.readUInt32LE(itemOffset) : this.u64n(itemOffset, 'ENTRY_ARRAY item');
+      const item = this.compact ? this.u32(itemOffset) : this.u64n(itemOffset, 'ENTRY_ARRAY item');
       if (item !== 0) this.validOffset(item, `ENTRY_ARRAY ${offset} item`);
       items.push(item);
     }
@@ -712,16 +713,30 @@ class GraphVerifier {
   }
 
   headerHas(end) {
-    return this.header.header_size >= BigInt(end) && this.data.length >= end;
+    return this.header.header_size >= BigInt(end) && this.source.length >= end;
   }
 
   hnum(field) {
     return u64ToNumber(Reflect.get(this.header, field), field);
   }
 
+  u8(offset) {
+    if (offset + 1 > this.source.length) {
+      throw new ObjectGraphVerificationError(`uint8 read at ${offset} exceeds file bounds`);
+    }
+    return this.source.u8(offset);
+  }
+
+  u32(offset) {
+    if (offset + 4 > this.source.length) {
+      throw new ObjectGraphVerificationError(`uint32 read at ${offset} exceeds file bounds`);
+    }
+    return this.source.u32(offset);
+  }
+
   u64(offset) {
-    if (offset + 8 > this.data.length) throw new ObjectGraphVerificationError(`uint64 read at ${offset} exceeds file bounds`);
-    return this.data.readBigUInt64LE(offset);
+    if (offset + 8 > this.source.length) throw new ObjectGraphVerificationError(`uint64 read at ${offset} exceeds file bounds`);
+    return this.source.u64(offset);
   }
 
   u64n(offset, context) {
@@ -731,6 +746,20 @@ class GraphVerifier {
   count(typ) {
     return this.counts.get(typ) || 0n;
   }
+}
+
+function asByteSource(data) {
+  if (
+    data &&
+    typeof data.u8 === 'function' &&
+    typeof data.u32 === 'function' &&
+    typeof data.u64 === 'function' &&
+    typeof data.view === 'function' &&
+    typeof data.bytes === 'function'
+  ) {
+    return data;
+  }
+  return byteSourceFromBuffer(data);
 }
 
 function align8(value) {

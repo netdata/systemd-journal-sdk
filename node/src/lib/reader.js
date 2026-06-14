@@ -2,11 +2,8 @@
 // Reads .journal, .journal~, .journal.zst, .journal~.zst files.
 // Uses entry-array-based iteration (matching Go/Rust).
 
-import { readSync, closeSync } from 'node:fs';
-import { dirname } from 'node:path';
 import { TextDecoder } from 'node:util';
-import { readUint64LE, uuidToString } from './binary.js';
-import { safeOpenSync, safeReadFileSync, safeRmdirSync, safeStatSync, safeUnlinkSync } from './fs-safe.js';
+import { uuidToString } from './binary.js';
 import {
   parseFileHeader, parseObjectHeader,
   HEADER_MIN_SIZE, HEADER_SIZE, OBJECT_TYPE_ENTRY, OBJECT_TYPE_ENTRY_ARRAY,
@@ -17,11 +14,20 @@ import {
   INCOMPATIBLE_COMPRESSED_XZ, INCOMPATIBLE_COMPRESSED_ZSTD, INCOMPATIBLE_COMPRESSED_LZ4,
   COMPACT_ENTRY_ITEM_SIZE, COMPACT_DATA_OBJECT_HEADER_SIZE,
   FIELD_OBJECT_HEADER_SIZE, HASH_ITEM_SIZE,
+  ENTRY_OBJECT_HEADER_SIZE, OBJECT_COMPRESSED_XZ, OBJECT_COMPRESSED_LZ4, OBJECT_COMPRESSED_ZSTD,
 } from './header.js';
-import { decompressZstToTemp, isZstFile } from './compress.js';
-import { parseEntryObject, parseDataPayload } from './entry.js';
+import { decompressZstdDataPayload, isZstFile } from './compress.js';
+import { decompressLz4DataPayload } from './lz4-block.js';
+import { decompressXzDataPayload } from './xz-block.js';
 import { jenkinsHash64, sipHash24 } from './hash.js';
 import { exploreWithStrategy, exploreWithStrategyAndControl } from './explorer.js';
+import {
+  openReaderAccessor,
+  normalizeReaderOptions,
+  withSnapshotBounds,
+  READER_BOUNDS_SNAPSHOT,
+} from './reader-access.js';
+import { streamZstToTempSync } from './zst-stream.js';
 
 const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
 const SUPPORTED_INCOMPATIBLE_FLAGS = INCOMPATIBLE_KEYED_HASH |
@@ -29,6 +35,7 @@ const SUPPORTED_INCOMPATIBLE_FLAGS = INCOMPATIBLE_KEYED_HASH |
   INCOMPATIBLE_COMPRESSED_ZSTD |
   INCOMPATIBLE_COMPRESSED_LZ4 |
   INCOMPATIBLE_COMPACT;
+const OBJECT_COMPRESSED_MASK = OBJECT_COMPRESSED_XZ | OBJECT_COMPRESSED_LZ4 | OBJECT_COMPRESSED_ZSTD;
 
 const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 
@@ -50,11 +57,11 @@ function pushOwnArray(object, key, value) {
 }
 
 export class FileReader {
-  constructor(buffer, header, path, cleanupPath) {
-    this.buffer = buffer;
+  constructor(accessor, header, path, cleanup) {
+    this.accessor = accessor;
     this.header = header;
     this.path = path;
-    this.cleanupPath = cleanupPath;
+    this.cleanup = cleanup;
 
     this.entryOffsets = [];
     this.entryIndex = -1;
@@ -75,35 +82,39 @@ export class FileReader {
   }
 
   // Open a journal file, decompressing .zst if needed.
-  static open(path) {
-    let buffer;
-    let cleanupPath = null;
+  static open(path, options = {}) {
+    const readerOptions = normalizeReaderOptions(options);
+    let accessor = null;
+    let temp = null;
 
     try {
+      let openPath = path;
+      let openOptions = readerOptions;
       if (isZstFile(path)) {
-        cleanupPath = decompressZstToTemp(path, 'node-sdk-journal');
-        buffer = safeReadFileSync(cleanupPath);
-      } else {
-        buffer = safeReadFileSync(path);
+        temp = streamZstToTempSync(path, {
+          prefix: 'node-sdk-journal',
+          timeoutMs: readerOptions.zstdTimeoutMs,
+        });
+        openPath = temp.path;
+        openOptions = withSnapshotBounds(readerOptions);
       }
 
-      if (buffer.length < HEADER_MIN_SIZE) {
+      accessor = openReaderAccessor(openPath, openOptions);
+      if (accessor.size() < HEADER_MIN_SIZE) {
         throw new Error('file too small for journal header');
       }
 
-      const header = parseFileHeader(buffer);
+      const header = readHeaderFromAccessor(accessor);
 
       ensureSupportedHeader(header);
 
-      return new FileReader(buffer, header, path, cleanupPath);
+      return new FileReader(accessor, header, path, temp?.cleanup ?? null);
     } catch (err) {
-      if (cleanupPath) {
-        try { safeUnlinkSync(cleanupPath); } catch {
-          // Best-effort cleanup while preserving the original open failure.
-        }
-        try { safeRmdirSync(dirname(cleanupPath)); } catch {
-          // Best-effort cleanup while preserving the original open failure.
-        }
+      try { accessor?.close(); } catch {
+        // Best-effort cleanup while preserving the original open failure.
+      }
+      try { temp?.cleanup?.(); } catch {
+        // Best-effort cleanup while preserving the original open failure.
       }
       throw err;
     }
@@ -125,10 +136,19 @@ export class FileReader {
       offset: this.header.entry_array_offset,
       remaining: this.header.n_entries,
     };
+    const visited = new Set();
 
     while (state.offset !== 0n && state.remaining > 0n) {
+      const visitKey = state.offset.toString();
+      if (visited.has(visitKey)) {
+        throw new Error(`entry array chain cycle at offset ${state.offset}`);
+      }
+      visited.add(visitKey);
       const segment = this._readEntryArraySegment(state.offset, state.remaining);
       if (!segment) break;
+      if (segment.toRead <= 0) {
+        throw new Error(`entry array chain made no progress at offset ${state.offset}`);
+      }
       this._appendEntryArraySegmentOffsets(state.offsets, segment);
       state.remaining -= BigInt(segment.toRead);
       state.offset = segment.nextOffset;
@@ -138,7 +158,7 @@ export class FileReader {
   }
 
   _readEntryArraySegment(offset, remaining) {
-    const oh = parseObjectHeader(this.buffer, Number(offset));
+    const oh = this._readObjectHeaderAt(offset);
     if (!oh || oh.type !== OBJECT_TYPE_ENTRY_ARRAY) return null;
     const objSize = oh.size;
     if (objSize < BigInt(OFFSET_ARRAY_OBJECT_HEADER_SIZE)) return null;
@@ -151,7 +171,7 @@ export class FileReader {
     return {
       dataStart: Number(offset) + OFFSET_ARRAY_OBJECT_HEADER_SIZE,
       itemSize,
-      nextOffset: readUint64LE(this.buffer, Number(offset) + 16),
+      nextOffset: this._u64(Number(offset) + 16),
       toRead: Number(remaining < BigInt(capacity) ? remaining : BigInt(capacity)),
     };
   }
@@ -160,8 +180,8 @@ export class FileReader {
     for (let i = 0; i < segment.toRead; i++) {
       const itemOffset = segment.dataStart + i * segment.itemSize;
       const entryOff = this._isCompact()
-        ? BigInt(this.buffer.readUInt32LE(itemOffset))
-        : readUint64LE(this.buffer, itemOffset);
+        ? BigInt(this._u32(itemOffset))
+        : this._u64(itemOffset);
       if (entryOff !== 0n && this._validEntryOffset(entryOff)) offsets.push(entryOff);
     }
   }
@@ -171,8 +191,10 @@ export class FileReader {
   }
 
   _refreshEntryOffsets() {
-    if (this.cleanupPath) return false;
+    if (this.cleanup) return false;
+    if (this.accessor.stats().bounds === READER_BOUNDS_SNAPSHOT) return false;
 
+    const oldState = this._readerStateSnapshot();
     const snapshot = this._readRefreshSnapshot();
     if (!snapshot) return false;
 
@@ -182,21 +204,23 @@ export class FileReader {
       return false;
     }
 
-    return this._reloadEntryOffsetsFromDisk();
+    return this._reloadEntryOffsetsFromDisk(oldState);
   }
 
   _readRefreshSnapshot() {
+    const oldBounds = this.accessor.snapshotVisibleBounds();
     try {
-      const stat = safeStatSync(this.path);
-      if (!stat.isFile() || stat.size <= 0) return null;
-      return { size: stat.size, header: this._readCurrentHeader() };
+      this.accessor.refreshVisibleBounds();
+      if (this.accessor.size() <= 0) return null;
+      return { oldSize: oldBounds, size: this.accessor.size(), header: this._readCurrentHeader() };
     } catch {
+      this.accessor.restoreVisibleBounds(oldBounds);
       return null;
     }
   }
 
   _refreshSnapshotChanged(snapshot) {
-    return snapshot.size !== this.buffer.length ||
+    return snapshot.size !== snapshot.oldSize ||
       snapshot.header.n_entries !== this.header.n_entries ||
       snapshot.header.tail_entry_array_offset !== this.header.tail_entry_array_offset ||
       snapshot.header.tail_entry_array_n_entries !== this.header.tail_entry_array_n_entries;
@@ -204,31 +228,34 @@ export class FileReader {
 
   _readerStateSnapshot() {
     return {
-      buffer: this.buffer,
       header: this.header,
       offsets: this.entryOffsets,
       index: this.entryIndex,
+      visibleBounds: this.accessor.snapshotVisibleBounds(),
       compact: this.compact,
       entryItemSize: this.entryItemSize,
       offsetArrayItemSize: this.offsetArrayItemSizeValue,
       dataPayloadOffset: this.dataPayloadOffsetValue,
+      entryDataOffsets: this.entryDataOffsets,
+      entryDataOffsetsEntry: this.entryDataOffsetsEntry,
+      entryDataIndex: this.entryDataIndex,
+      entryDataStateActive: this.entryDataStateActive,
     };
   }
 
-  _reloadEntryOffsetsFromDisk() {
-    const oldState = this._readerStateSnapshot();
-
+  _reloadEntryOffsetsFromDisk(oldState = this._readerStateSnapshot()) {
     try {
-      const buffer = safeReadFileSync(this.path);
-      if (buffer.length < HEADER_MIN_SIZE) throw new Error('file too small for journal header');
-      const header = parseFileHeader(buffer);
+      if (this.accessor.size() < HEADER_MIN_SIZE) throw new Error('file too small for journal header');
+      const header = this._readCurrentHeader();
       ensureSupportedHeader(header);
-      this.buffer = buffer;
       this.header = header;
       this._updateLayoutCache();
       this.entryOffsets = this._readEntryArrayOffsets();
       this.entryIndex = Math.min(oldState.index, this.entryOffsets.length);
-      this._resetCachedEntryDataState();
+      this.entryDataOffsets = oldState.entryDataOffsets;
+      this.entryDataOffsetsEntry = oldState.entryDataOffsetsEntry;
+      this.entryDataIndex = oldState.entryDataIndex;
+      this.entryDataStateActive = oldState.entryDataStateActive;
       return (
         this.entryOffsets.length !== oldState.offsets.length ||
         (
@@ -239,13 +266,12 @@ export class FileReader {
       );
     } catch {
       this._restoreReaderState(oldState);
-      this._resetCachedEntryDataState();
       return false;
     }
   }
 
   _restoreReaderState(state) {
-    this.buffer = state.buffer;
+    this.accessor.restoreVisibleBounds(state.visibleBounds);
     this.header = state.header;
     this.entryOffsets = state.offsets;
     this.entryIndex = Math.min(state.index, this.entryOffsets.length);
@@ -253,54 +279,50 @@ export class FileReader {
     this.entryItemSize = state.entryItemSize;
     this.offsetArrayItemSizeValue = state.offsetArrayItemSize;
     this.dataPayloadOffsetValue = state.dataPayloadOffset;
+    this.entryDataOffsets = state.entryDataOffsets;
+    this.entryDataOffsetsEntry = state.entryDataOffsetsEntry;
+    this.entryDataIndex = state.entryDataIndex;
+    this.entryDataStateActive = state.entryDataStateActive;
   }
 
   _readCurrentHeader() {
-    const fd = safeOpenSync(this.path, 'r');
-    try {
-      const headerBuf = Buffer.alloc(HEADER_SIZE);
-      const bytesRead = readSync(fd, headerBuf, 0, HEADER_SIZE, 0);
-      if (bytesRead < HEADER_MIN_SIZE) throw new Error('file too small for journal header');
-      const header = parseFileHeader(headerBuf.subarray(0, bytesRead));
-      ensureSupportedHeader(header);
-      return header;
-    } finally {
-      closeSync(fd);
-    }
+    const header = readHeaderFromAccessor(this.accessor);
+    ensureSupportedHeader(header);
+    return header;
   }
 
   _validEntryOffset(offset) {
     const off = Number(offset);
-    if (off + OBJECT_HEADER_SIZE > this.buffer.length) return false;
-    const oh = parseObjectHeader(this.buffer, off);
+    if (off + OBJECT_HEADER_SIZE > this._visibleSize()) return false;
+    const oh = this._readObjectHeaderAt(off);
     if (!oh) return false;
     if (oh.type === 0 && oh.size === 0n) return false;
     if (oh.type !== OBJECT_TYPE_ENTRY) return false;
-    if (BigInt(off) + oh.size > BigInt(this.buffer.length)) return false;
+    if (BigInt(off) + oh.size > BigInt(this._visibleSize())) return false;
     return true;
   }
 
   seekHead() {
-    this._resetCachedEntryDataState();
+    this._clearRowForPositionChange();
     this.entryIndex = -1;
     this.direction = 0;
     this.realtimeSeek = null;
   }
 
   seekTail() {
-    this._resetCachedEntryDataState();
+    this._clearRowForPositionChange();
     this.entryIndex = this.entryOffsets.length;
     this.direction = 1;
     this.realtimeSeek = null;
   }
 
   seekRealtimeUsec(usec) {
-    this._resetCachedEntryDataState();
+    this._clearRowForPositionChange();
     this.realtimeSeek = BigInt(usec);
   }
 
   next() {
-    this._resetCachedEntryDataState();
+    this._clearRowForPositionChange();
     if (this.realtimeSeek !== null) {
       const idx = this._firstRealtimeIndexAtOrAfter(this.realtimeSeek);
       let effectiveIdx = idx;
@@ -340,7 +362,7 @@ export class FileReader {
   }
 
   previous() {
-    this._resetCachedEntryDataState();
+    this._clearRowForPositionChange();
     if (this.realtimeSeek !== null) {
       const idx = this._lastRealtimeIndexAtOrBefore(this.realtimeSeek);
       this.realtimeSeek = null;
@@ -385,7 +407,7 @@ export class FileReader {
 
   _entryRealtimeAtIndex(index) {
     const offset = this.entryOffsets.at(index);
-    return readUint64LE(this.buffer, Number(offset) + OBJECT_HEADER_SIZE + 8);
+    return this._u64(Number(offset) + OBJECT_HEADER_SIZE + 8);
   }
 
   step() {
@@ -475,7 +497,7 @@ export class FileReader {
   getRealtimeUsec() {
     if (this.entryIndex < 0 || this.entryIndex >= this.entryOffsets.length) return 0n;
     const offset = this.entryOffsets[this.entryIndex];
-    return readUint64LE(this.buffer, Number(offset) + OBJECT_HEADER_SIZE + 8);
+    return this._u64(Number(offset) + OBJECT_HEADER_SIZE + 8);
   }
 
   getCursor() {
@@ -510,7 +532,7 @@ export class FileReader {
     let offset = this._findFieldHeadDataOffset(field);
     while (offset !== 0n) {
       const data = this._readDataHeaderAt(offset);
-      const payload = this._readDataPayloadAt(offset);
+      const payload = this._readDataPayloadAt(offset, false);
       if (
         payload.length <= field.length ||
         !payload.subarray(0, field.length).equals(field) ||
@@ -541,10 +563,10 @@ export class FileReader {
     const buckets = tableSize / BigInt(HASH_ITEM_SIZE);
     for (let bucket = 0n; bucket < buckets; bucket++) {
       const bucketOffset = Number(tableOffset + bucket * BigInt(HASH_ITEM_SIZE));
-      if (this.buffer.length < bucketOffset + HASH_ITEM_SIZE) {
+      if (this._visibleSize() < bucketOffset + HASH_ITEM_SIZE) {
         throw new Error('field hash bucket exceeds buffer');
       }
-      let offset = readUint64LE(this.buffer, bucketOffset);
+      let offset = this._u64(bucketOffset);
       while (offset !== 0n) {
         const field = this._readFieldObjectAt(offset);
         const name = decodeUtf8OrNull(field.payload);
@@ -569,17 +591,14 @@ export class FileReader {
   }
 
   close() {
-    this._resetCachedEntryDataState();
-    if (this.cleanupPath) {
-      try { safeUnlinkSync(this.cleanupPath); } catch {
+    this._clearRowForPositionChange();
+    try { this.accessor?.close(); } finally {
+      this.accessor = null;
+      try { this.cleanup?.(); } catch {
         // Best-effort cleanup on reader close.
       }
-      try { safeRmdirSync(dirname(this.cleanupPath)); } catch {
-        // Best-effort cleanup on reader close.
-      }
-      this.cleanupPath = null;
+      this.cleanup = null;
     }
-    this.buffer = null;
   }
 
   // -------------------------------------------------------------------------
@@ -600,10 +619,10 @@ export class FileReader {
 
   _readEntryArrayObject(offset) {
     const pos = Number(offset);
-    if (this.buffer.length < pos + OFFSET_ARRAY_OBJECT_HEADER_SIZE) {
+    if (this._visibleSize() < pos + OFFSET_ARRAY_OBJECT_HEADER_SIZE) {
       throw new Error('buffer too small for entry array object');
     }
-    const oh = parseObjectHeader(this.buffer, pos);
+    const oh = this._readObjectHeaderAt(pos);
     if (!oh || oh.type !== OBJECT_TYPE_ENTRY_ARRAY) {
       throw new Error('corrupt ENTRY_ARRAY object');
     }
@@ -617,20 +636,20 @@ export class FileReader {
       dataStart: pos + OFFSET_ARRAY_OBJECT_HEADER_SIZE,
       itemSize,
       capacity,
-      nextOffset: readUint64LE(this.buffer, pos + 16),
+      nextOffset: this._u64(pos + 16),
     };
   }
 
   _readEntryArrayItemOffset(byteOffset) {
     if (this._isCompact()) {
-      const v = this.buffer.readUInt32LE(byteOffset);
+      const v = this._u32(byteOffset);
       return v === 0 ? 0n : BigInt(v);
     }
-    return readUint64LE(this.buffer, byteOffset);
+    return this._u64(byteOffset);
   }
 
   _entryRealtimeAtOffset(offset) {
-    return readUint64LE(this.buffer, Number(offset) + OBJECT_HEADER_SIZE + 8);
+    return this._u64(Number(offset) + OBJECT_HEADER_SIZE + 8);
   }
 
   // Public Explorer entry points. Implemented in ./explorer.js to keep
@@ -740,6 +759,15 @@ export class FileReader {
     this._resetCachedEntryDataState();
   }
 
+  accessStats() {
+    return this.accessor?.stats() ?? {};
+  }
+
+  _clearRowForPositionChange() {
+    this._resetCachedEntryDataState();
+    this.accessor?.clearRow();
+  }
+
   _resetCachedEntryDataState() {
     this.entryDataOffsets = [];
     this.entryDataOffsetsEntry = null;
@@ -765,54 +793,117 @@ export class FileReader {
   }
 
   _readEntryMetadataAndOffsets(offset, includeOffsets = true) {
-    const e = parseEntryObject(this.buffer, Number(offset), this.compact);
+    const e = this._readEntryObjectAt(offset);
     return {
       entry: e,
       dataOffsets: includeOffsets ? e.items.map((item) => item.offset).filter((itemOffset) => itemOffset !== 0n) : [],
     };
   }
 
-  _readDataPayloadAt(offset) {
-    return parseDataPayload(this.buffer, Number(offset), this.compact);
+  _readEntryObjectAt(offset) {
+    const position = Number(offset);
+    const oh = this._readObjectHeaderAt(position);
+    if (!oh || oh.type !== OBJECT_TYPE_ENTRY) {
+      throw new Error(`expected ENTRY (type ${OBJECT_TYPE_ENTRY}), got type ${oh?.type} at offset ${position}`);
+    }
+    if (oh.size < BigInt(ENTRY_OBJECT_HEADER_SIZE)) {
+      throw new Error(`entry object too small: ${oh.size}`);
+    }
+    if (BigInt(position) + oh.size > BigInt(this._visibleSize())) {
+      throw new Error(`entry object exceeds buffer at offset ${position}`);
+    }
+    const itemSize = this.compact ? COMPACT_ENTRY_ITEM_SIZE : REGULAR_ENTRY_ITEM_SIZE;
+    if ((oh.size - BigInt(ENTRY_OBJECT_HEADER_SIZE)) % BigInt(itemSize) !== 0n) {
+      throw new Error(`entry object item payload is not ${itemSize}-byte aligned`);
+    }
+    const items = [];
+    const nItems = Number((oh.size - BigInt(ENTRY_OBJECT_HEADER_SIZE)) / BigInt(itemSize));
+    const itemsStart = position + ENTRY_OBJECT_HEADER_SIZE;
+    for (let i = 0; i < nItems; i++) {
+      const itemOffset = itemsStart + i * itemSize;
+      const dataOffset = this.compact ? BigInt(this._u32(itemOffset)) : this._u64(itemOffset);
+      const dataHash = this.compact ? 0n : this._u64(itemOffset + 8);
+      if (dataOffset !== 0n) items.push({ offset: dataOffset, hash: dataHash });
+    }
+    return {
+      seqnum: this._u64(position + OBJECT_HEADER_SIZE),
+      realtime: this._u64(position + OBJECT_HEADER_SIZE + 8),
+      monotonic: this._u64(position + OBJECT_HEADER_SIZE + 16),
+      boot_id: this._readBytes(position + OBJECT_HEADER_SIZE + 24, 16),
+      xor_hash: this._u64(position + OBJECT_HEADER_SIZE + 40),
+      items,
+    };
+  }
+
+  _readDataPayloadAt(offset, rowLifetime = true) {
+    const position = Number(offset);
+    const oh = this._readObjectHeaderAt(position);
+    if (!oh || oh.type !== OBJECT_TYPE_DATA || oh.size < BigInt(this.dataPayloadOffsetValue)) {
+      throw new Error('corrupt DATA object');
+    }
+    if (BigInt(position) + oh.size > BigInt(this._visibleSize())) {
+      throw new Error(`data object exceeds buffer at offset ${offset}`);
+    }
+    const compressionFlags = oh.flags & OBJECT_COMPRESSED_MASK;
+    if ((oh.flags & ~OBJECT_COMPRESSED_MASK) !== 0) {
+      throw new Error(`unsupported DATA object flags: 0x${oh.flags.toString(16)}`);
+    }
+    if (compressionFlags !== 0 && (compressionFlags & (compressionFlags - 1)) !== 0) {
+      throw new Error(`unsupported DATA object compression flags: 0x${oh.flags.toString(16)}`);
+    }
+    const payloadOffset = position + this.dataPayloadOffsetValue;
+    const payloadSize = Number(oh.size) - this.dataPayloadOffsetValue;
+    if (compressionFlags === 0) {
+      return rowLifetime
+        ? this.accessor.rowView(payloadOffset, payloadSize)
+        : this.accessor.tempView(payloadOffset, payloadSize);
+    }
+    const compressed = this.accessor.tempView(payloadOffset, payloadSize);
+    let payload;
+    if (oh.flags & OBJECT_COMPRESSED_LZ4) payload = decompressLz4DataPayload(compressed);
+    else if (oh.flags & OBJECT_COMPRESSED_ZSTD) payload = decompressZstdDataPayload(compressed);
+    else if (oh.flags & OBJECT_COMPRESSED_XZ) payload = decompressXzDataPayload(compressed);
+    else payload = Buffer.from(compressed);
+    return rowLifetime ? this.accessor.rowBytes(payload) : payload;
   }
 
   _readDataHeaderAt(offset) {
     const position = Number(offset);
-    if (this.buffer.length < position + DATA_OBJECT_HEADER_SIZE) {
+    if (this._visibleSize() < position + DATA_OBJECT_HEADER_SIZE) {
       throw new Error('buffer too small for data object');
     }
-    const oh = parseObjectHeader(this.buffer, position);
+    const oh = this._readObjectHeaderAt(position);
     if (!oh || oh.type !== OBJECT_TYPE_DATA || oh.size < BigInt(this.dataPayloadOffsetValue)) {
       throw new Error('corrupt DATA object');
     }
     return {
-      hash: readUint64LE(this.buffer, position + 16),
-      nextHashOffset: readUint64LE(this.buffer, position + 24),
-      nextFieldOffset: readUint64LE(this.buffer, position + 32),
-      entryOffset: readUint64LE(this.buffer, position + 40),
-      entryArrayOffset: readUint64LE(this.buffer, position + 48),
-      nEntries: readUint64LE(this.buffer, position + 56),
+      hash: this._u64(position + 16),
+      nextHashOffset: this._u64(position + 24),
+      nextFieldOffset: this._u64(position + 32),
+      entryOffset: this._u64(position + 40),
+      entryArrayOffset: this._u64(position + 48),
+      nEntries: this._u64(position + 56),
     };
   }
 
   _readFieldObjectAt(offset) {
     const position = Number(offset);
-    if (this.buffer.length < position + FIELD_OBJECT_HEADER_SIZE) {
+    if (this._visibleSize() < position + FIELD_OBJECT_HEADER_SIZE) {
       throw new Error('buffer too small for field object');
     }
-    const oh = parseObjectHeader(this.buffer, position);
+    const oh = this._readObjectHeaderAt(position);
     if (!oh || oh.type !== OBJECT_TYPE_FIELD || oh.size < BigInt(FIELD_OBJECT_HEADER_SIZE)) {
       throw new Error('corrupt FIELD object');
     }
     const end = offset + oh.size;
-    if (end > BigInt(this.buffer.length)) {
+    if (end > BigInt(this._visibleSize())) {
       throw new Error(`field object exceeds buffer at offset ${offset}`);
     }
     return {
-      hash: readUint64LE(this.buffer, position + 16),
-      nextHashOffset: readUint64LE(this.buffer, position + 24),
-      headDataOffset: readUint64LE(this.buffer, position + 32),
-      payload: this.buffer.subarray(position + FIELD_OBJECT_HEADER_SIZE, Number(end)),
+      hash: this._u64(position + 16),
+      nextHashOffset: this._u64(position + 24),
+      headDataOffset: this._u64(position + 32),
+      payload: this.accessor.tempView(position + FIELD_OBJECT_HEADER_SIZE, Number(end) - position - FIELD_OBJECT_HEADER_SIZE),
     };
   }
 
@@ -824,10 +915,10 @@ export class FileReader {
     const buckets = tableSize / BigInt(HASH_ITEM_SIZE);
     if (buckets === 0n) return 0n;
     const bucketOffset = Number(tableOffset + (h % buckets) * BigInt(HASH_ITEM_SIZE));
-    if (this.buffer.length < bucketOffset + HASH_ITEM_SIZE) {
+    if (this._visibleSize() < bucketOffset + HASH_ITEM_SIZE) {
       throw new Error('field hash bucket exceeds buffer');
     }
-    let offset = readUint64LE(this.buffer, bucketOffset);
+    let offset = this._u64(bucketOffset);
     while (offset !== 0n) {
       const fieldObject = this._readFieldObjectAt(offset);
       if (fieldObject.hash === h && fieldObject.payload.equals(field)) {
@@ -844,6 +935,39 @@ export class FileReader {
     }
     return jenkinsHash64(payload);
   }
+
+  _readObjectHeaderAt(offset) {
+    const position = Number(offset);
+    if (this._visibleSize() < position + OBJECT_HEADER_SIZE) return null;
+    const header = this.accessor.tempView(position, OBJECT_HEADER_SIZE);
+    return parseObjectHeader(header, 0);
+  }
+
+  _dataObjectWasCompressedAt(offset) {
+    const position = Number(offset);
+    if (this._visibleSize() < position + 2) return false;
+    return (this._u8(position + 1) & OBJECT_COMPRESSED_MASK) !== 0;
+  }
+
+  _u8(offset) {
+    return this.accessor.u8(Number(offset));
+  }
+
+  _u32(offset) {
+    return this.accessor.u32(Number(offset));
+  }
+
+  _u64(offset) {
+    return this.accessor.u64(Number(offset));
+  }
+
+  _readBytes(offset, size) {
+    return this.accessor.readBytes(Number(offset), Number(size));
+  }
+
+  _visibleSize() {
+    return this.accessor.size();
+  }
 }
 
 // Read and parse the file header without loading the entire file.
@@ -851,34 +975,25 @@ export class FileReader {
 // but reads only the header bytes from the decompressed output.
 // Returns the parsed header object (same shape as FileReader.header).
 export function readFileHeader(path) {
-  let cleanupPath = null;
+  let temp = null;
+  let accessor = null;
 
   try {
     let openPath = path;
+    let options = {};
     if (isZstFile(path)) {
-      cleanupPath = decompressZstToTemp(path, 'node-sdk-journal-header');
-      openPath = cleanupPath;
+      temp = streamZstToTempSync(path, { prefix: 'node-sdk-journal-header' });
+      openPath = temp.path;
+      options = withSnapshotBounds();
     }
-
-    const fd = safeOpenSync(openPath, 'r');
-    try {
-      const headerBuf = Buffer.alloc(HEADER_SIZE);
-      const bytesRead = readSync(fd, headerBuf, 0, HEADER_SIZE, 0);
-      if (bytesRead < HEADER_MIN_SIZE) {
-        throw new Error('file too small for journal header');
-      }
-      return parseFileHeader(headerBuf.subarray(0, bytesRead));
-    } finally {
-      closeSync(fd);
-    }
+    accessor = openReaderAccessor(openPath, options);
+    return readHeaderFromAccessor(accessor);
   } finally {
-    if (cleanupPath) {
-      try { safeUnlinkSync(cleanupPath); } catch {
-        // Best-effort cleanup.
-      }
-      try { safeRmdirSync(dirname(cleanupPath)); } catch {
-        // Best-effort cleanup.
-      }
+    try { accessor?.close(); } catch {
+      // Best-effort cleanup.
+    }
+    try { temp?.cleanup?.(); } catch {
+      // Best-effort cleanup.
     }
   }
 }
@@ -984,6 +1099,14 @@ function ensureSupportedHeader(header) {
   if (header.incompatible_flags & ~SUPPORTED_INCOMPATIBLE_FLAGS) {
     throw new Error('unsupported journal: incompatible flags ' + header.incompatible_flags.toString(16));
   }
+}
+
+function readHeaderFromAccessor(accessor) {
+  if (accessor.size() < HEADER_MIN_SIZE) {
+    throw new Error('file too small for journal header');
+  }
+  const headerSize = Math.min(HEADER_SIZE, accessor.size());
+  return parseFileHeader(accessor.readBytes(0, headerSize));
 }
 
 function decodeUtf8OrNull(buf) {

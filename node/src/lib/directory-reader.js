@@ -19,25 +19,25 @@ export class DirectoryReader {
     this.bootNewest = new Map();
   }
 
-  static open(path) {
+  static open(path, options = {}) {
     const dr = new DirectoryReader();
 
     for (const file of collectJournalFiles(path)) {
       try {
-        dr.readers.push(FileReader.open(file));
+        dr.readers.push(FileReader.open(file, options));
       } catch { /* skip unreadable */ }
     }
 
     return DirectoryReader.fromReaders(dr.readers, true);
   }
 
-  static openFiles(paths) {
+  static openFiles(paths, options = {}) {
     const readers = [];
     for (const path of paths) {
       if (!isJournalFileName(String(path).split('/').pop())) {
         throw new Error(`not a journal file: ${path}`);
       }
-      readers.push(FileReader.open(path));
+      readers.push(FileReader.open(path, options));
     }
     return DirectoryReader.fromReaders(readers, false);
   }

@@ -85,6 +85,35 @@ load native mmap, native systemd, or libjournal runtime dependencies. It targets
 Linux, FreeBSD, macOS, and Windows for SDK import, file reading/writing,
 directory writing, and file-backed journalctl operation.
 
+Node.js core does not expose a portable mmap API, so the reader uses bounded
+rolling positioned-read windows. The default reader options use `accessMode:
+'auto'`, which selects the positioned-read backend and records the fallback
+reason in `reader.accessStats()`. Explicit `accessMode: 'mmap'` fails with
+`UnsupportedAccessModeError`; it never silently falls back.
+
+Reader memory is bounded by `windowSizeBytes * maxWindows` plus the current-row
+arena. Uncompressed current-row DATA returned by `visitEntryPayloads()` and the
+`SdJournal` DATA iterator remains valid until the next row is fetched or the
+reader is closed. Compressed DATA is expanded into the current-row arena.
+
+```javascript
+import {
+  FileReader,
+  READER_ACCESS_READ_AT,
+  READER_BOUNDS_SNAPSHOT,
+} from '@netdata/systemd-journal-sdk';
+
+const reader = FileReader.open('/path/to/system.journal', {
+  accessMode: READER_ACCESS_READ_AT,
+  bounds: READER_BOUNDS_SNAPSHOT,
+  windowSizeBytes: 32 * 1024 * 1024,
+  maxWindows: 4,
+});
+
+console.log(reader.accessStats());
+reader.close();
+```
+
 Automatic identity uses explicit caller options first. In `Log` auto mode,
 missing IDs are generated as SDK-local UUIDs. The core writer does not read
 host identity files or platform identity services. Pass `machineId` and
@@ -512,9 +541,8 @@ npm run typecheck
 
 - Full systemd object-graph verification parity is tracked separately
 - Node.js writer file access uses `Buffer` plus positioned `node:fs`
-  reads/writes. Node.js reader access uses whole-file Buffers plus small header
-  reads for active refresh. No native mmap dependency is loaded by the SDK
-  runtime path.
+  reads/writes. Node.js reader access uses bounded rolling positioned reads.
+  No native mmap dependency is loaded by the SDK runtime path.
 - Daemon-only operations not supported
 
 ## Dependencies

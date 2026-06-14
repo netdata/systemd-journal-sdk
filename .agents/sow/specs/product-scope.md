@@ -485,6 +485,15 @@ Readers must support applicable historical journal files represented by the shar
 
 Accepted reader API layers:
 
+- Rust, Go, Node.js, and Python readers use bounded reader-memory access for
+  production file reads. Rust, Go, and Python use rolling mmap where their
+  runtimes support it. Go and Python also expose rolling positioned-read
+  fallbacks. Node.js core has no portable mmap API, so Node.js uses bounded
+  rolling positioned-read windows and fails clearly on explicit mmap requests.
+  Production readers must not load a whole journal file into resident memory
+  as the default path. Current-row DATA returned by low-level/facade payload
+  enumeration remains valid until the reader advances to another row or closes;
+  compressed and cross-window DATA use row-scoped arena storage.
 - Idiomatic file and directory readers expose language-native entry objects,
   binary field values, repeated field values, cursor/realtime metadata, field
   enumeration, unique value enumeration, and boot listing for the accepted file
@@ -635,6 +644,12 @@ Current Go reader feature slice:
 
 - regular and compact journal files;
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
+- bounded rolling reader access with `ReaderAccessAuto` as the default.
+  `Auto` selects rolling mmap on supported Unix-family and Windows targets,
+  while explicit `ReadAt` uses bounded positioned-read windows for diagnostics
+  or constrained environments. Access stats expose the selected backend,
+  fallback reason, window budget, mapped/read-buffer bytes, row-arena peak, and
+  refresh counters;
 - whole-file zstd fixtures and zstd, xz, and lz4-compressed DATA objects
   through pure-Go dependencies;
 - historical unkeyed-hash journal reading, including LZ4-compressed DATA
@@ -835,7 +850,16 @@ Current Node.js reader feature slice:
 
 - regular and compact journal files;
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
-- whole-file zstd fixtures through Node.js built-in `node:zlib`;
+- bounded rolling positioned-read reader access through Node core
+  `fs.readSync()` with explicit offsets. Node.js core has no portable mmap API,
+  so default `accessMode: "auto"` selects the `read-at` backend and explicit
+  `accessMode: "mmap"` fails with `UnsupportedAccessModeError` instead of
+  silently downgrading. Access stats expose the selected backend, fallback
+  reason, window budget, read-buffer bytes, row-arena peak, and short-read
+  counters;
+- whole-file `.journal.zst` fixtures through Node.js built-in `node:zlib`,
+  streamed into a temporary `.journal` and then read through the same bounded
+  reader accessor as normal journal files;
 - zstd, xz, and lz4-compressed DATA objects through Node.js built-in
   `node:zlib` on Node.js v22.15 or newer, bundled `node-liblzma@5.0.1` WASM
   runtime files for XZ, and pure JavaScript `lz4js@0.2.0`;
@@ -852,10 +876,10 @@ Current Node.js reader feature slice:
   `entry.rawFieldValues`, `reader.getRaw()`, and `reader.getRawValues()`.
   `entry.fields` and `entry.fieldValues` remain UTF-8 string-keyed convenience
   maps and do not synthesize lossy names for non-UTF8 RAW field names;
-- active-file refresh at tail/end for live append visibility. Because the
-  accepted Node.js runtime path has no non-native mmap support, refresh uses
-  small header reads to detect published appends and reloads the file Buffer
-  only when published entry metadata changes;
+- active-file refresh at tail/end for live append visibility. Live refreshes
+  update the accessor-visible bounds only at controlled points and drop
+  unpinned cached windows so appended header/entry-array bytes become visible
+  without invalidating current-row Buffer views;
 - facade DATA enumeration and `getData()` use current-entry payload access
   instead of materializing full entries when the reader supports it;
 - systemd-compatible export/json/text formatting for the accepted fixture set;
@@ -876,10 +900,10 @@ Current Node.js reader/writer limitations:
 - automatic host boot ID discovery is not part of Node.js core writer auto
   identity mode. Auto identity uses explicit `bootId` or generated SDK-local
   IDs;
-- Node.js reader and writer file access uses `Buffer` plus positioned
-  `node:fs` reads/writes. npm mmap candidates checked during SOW-0054 were
-  native binding packages, so no mmap dependency is loaded by the SDK runtime
-  path;
+- Node.js writer file access uses `Buffer` plus positioned `node:fs`
+  reads/writes. Node.js reader file access uses bounded rolling positioned-read
+  windows. npm mmap candidates checked during SOW-0054 were native binding
+  packages, so no mmap dependency is loaded by the SDK runtime path;
 - daemon-only journalctl operations remain unsupported.
 
 Current Python writer feature slice:
@@ -938,8 +962,12 @@ Current Python reader feature slice:
 
 - regular and compact journal files;
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
-- mmap-backed file reads for normal and whole-file `.journal.zst` inputs
-  after repository-local decompression;
+- bounded rolling reader access with mmap as the production default on
+  supported Python runtimes and rolling positioned reads as an explicit
+  fallback/diagnostic mode. Access stats expose the selected backend, fallback
+  reason, window budget, mapped/read-buffer bytes, row-arena peak, and refresh
+  counters. Whole-file `.journal.zst` inputs are decompressed into temporary
+  `.journal` files and then read through the same bounded accessor;
 - active `.journal` / `.journal~` readers refresh header and entry-array
   state at tail/end so entries published after open become visible during the
   same reader session;

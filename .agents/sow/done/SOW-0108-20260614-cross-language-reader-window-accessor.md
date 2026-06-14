@@ -2,7 +2,7 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
 Sub-state: activated 2026-06-14 after the user explicitly chose to pause
 SOW-0105 and prioritize this foundational reader memory architecture work.
@@ -15,9 +15,12 @@ has been implemented locally, passed local Python/interoperability validation,
 and completed production review round 1 with two valid blocking findings. The
 round-1 fixes were implemented, locally revalidated, and production review
 round 2 passed with all six reviewers voting `PRODUCTION GRADE`. The Python
-phase is accepted. The active language phase is Node.js pre-code analysis;
-review round 5 passed with all six reviewers voting `READY FOR IMPLEMENTATION`.
-Node.js implementation may start from the recorded plan.
+phase is accepted. The active language phase is Node.js implementation. The
+Node.js pre-code reviewer gate passed in round 5 with all six reviewers voting
+`READY FOR IMPLEMENTATION`. Node.js implementation is locally complete and
+validated. Production review rounds 1 and 2 found valid blockers. The fixes
+were implemented and locally revalidated. Production review round 3 passed
+with all six reviewers voting `PRODUCTION GRADE`.
 
 ## Requirements
 
@@ -1344,7 +1347,8 @@ CRITICAL REPOSITORY BOUNDARY:
 
 ### Go Implementation Evidence - 2026-06-14
 
-Status: locally implemented; pending external `PRODUCTION GRADE` review.
+Status: locally implemented, validated, reviewed, and accepted. Production
+review passed in round 3.
 
 Changed Go reader architecture:
 
@@ -3071,6 +3075,16 @@ Acceptance criteria evidence:
   hot-path blockers; fixes are implemented and post-fix validation passed.
   Production review round 2 passed with all six reviewers voting
   `PRODUCTION GRADE`.
+- Node.js pre-code gate: passed in round 5. Reviewers `glm`, `kimi`, `mimo`,
+  `qwen`, `minimax`, and `deepseek` all voted `READY FOR IMPLEMENTATION`.
+- Node.js local implementation gate: passed on syntax checks, TypeScript
+  declaration checks, package tests, focused SOW-0108 tests, corrupted-fixture
+  hang checks, conformance manifest loop, interoperability matrix, directory
+  matrix, verification matrix, mixed-directory matrix, live matrix, journalctl
+  query matrix, bypass scan, and benchmark smoke. Production review round 1
+  and round 2 found valid blockers; fixes are implemented and locally
+  revalidated. Production review round 3 passed with all six reviewers voting
+  `PRODUCTION GRADE`.
 
 Tests or equivalent validation:
 
@@ -3099,6 +3113,22 @@ Tests or equivalent validation:
   - `python3 tests/interoperability/run_live_matrix.py --entries 10 --readers python stock --features regular zstd compact sealed`
   - Python reader-core benchmark smoke in explicit `mmap` and explicit
     `read-at` modes with `--window-size 65536 --bounds snapshot`
+- Node.js validation commands passed:
+  - `node --check` on changed Node runtime and test files
+  - `npm_config_cache=../.local/npm-cache npm run typecheck`
+  - `npm_config_cache=../.local/npm-cache npm test`
+  - full Node conformance manifest adapter loop with a 15 second per-case
+    timeout
+  - `python3 tests/interoperability/run_matrix.py --writers node --readers node stock --entries 10`
+  - `python3 tests/interoperability/run_directory_matrix.py --readers node stock`
+  - `python3 tests/interoperability/run_verify_matrix.py --skip-build`
+  - `PYTHONPATH=.local/python-deps python3 tests/interoperability/run_mixed_directory_matrix.py --readers node stock`
+  - `python3 tests/interoperability/run_live_matrix.py --entries 10 --readers node stock --features regular zstd compact sealed`
+  - `python3 tests/interoperability/run_journalctl_query_matrix.py`
+  - Node `reader_core_bench.js` smokes for `sdk-payloads`, `sdk-entry`,
+    `facade-data`, and `facade-next` with 128-byte windows and snapshot bounds
+  - `git diff --check`
+  - `.agents/sow/audit.sh`
 
 Real-use evidence:
 
@@ -3113,6 +3143,12 @@ Real-use evidence:
   201,326,592-byte Netdata raw journal: 123,210 records and 5,110,520 fields
   in each mode with identical checksum `3904379478172528663`; `auto`/`mmap`
   held 4 MiB mapped and `read-at` held 4 MiB read buffers.
+- Node.js reader-core smoke used 128-byte windows and one active window on a
+  generated compact Node journal, forcing bounded positioned-read windows in
+  all tested reader surfaces. `sdk-payloads`, `sdk-entry`, and `facade-data`
+  read 10 records and 44 fields with identical checksum
+  `11982092242414586274`; `facade-next` read 10 records. Access stats reported
+  `readBufferBytes: 128` and `readSyncUsesPosition: true`.
 
 Reviewer findings:
 
@@ -3304,12 +3340,213 @@ Reviewer findings:
     - Document the minimum supported Node runtime for the worker-thread Zstd
       path after implementation.
   - Disposition: pre-code gate passed. Node.js code changes can start.
+- 2026-06-14 Node.js production review round 1:
+  - Reviewer outputs are stored under
+    `.local/agent-reviews/sow-0108-node-prod-round1/`.
+  - Votes:
+    - `glm`: `NOT PRODUCTION GRADE`.
+    - `kimi`: `PRODUCTION GRADE`.
+    - `mimo`: `PRODUCTION GRADE`.
+    - `qwen`: `PRODUCTION GRADE`.
+    - `deepseek`: `PRODUCTION GRADE`.
+    - `minimax`: `PRODUCTION GRADE`.
+  - Gate result: failed. Node.js phase cannot close until the full reviewer
+    pool votes `PRODUCTION GRADE` after fixes.
+  - `glm` blockers accepted:
+    - Live-refresh rollback restored post-refresh accessor visible bounds
+      instead of the pre-refresh bounds required by the SOW.
+    - `queryUnique()` used row-lifetime DATA reads for FIELD-chain traversal
+      where the SOW requires temporary/internal reads.
+    - Focused Node accessor tests were below the SOW-required coverage and did
+      not guard the refresh and FIELD-chain bugs.
+  - Non-blocking `glm` watchpoint accepted:
+    - Netdata `CombinedResult` zero-count facet backfill read
+      `this.readerOptions` but the constructor never set it, so caller reader
+      options were not propagated to those backfill readers.
+  - Disposition: blockers and the option-propagation watchpoint are fixed.
+    Focused tests and local validation passed. Round 2 pending with the full
+    reviewer pool and the same whole-scope prompt.
+- 2026-06-14 Node.js production review round 2:
+  - Reviewer outputs are stored under
+    `.local/agent-reviews/sow-0108-node-prod-round2/`.
+  - Votes:
+    - `glm`: `PRODUCTION GRADE`.
+    - `kimi`: `PRODUCTION GRADE`.
+    - `mimo`: `PRODUCTION GRADE`.
+    - `deepseek`: `PRODUCTION GRADE`.
+    - `minimax`: `PRODUCTION GRADE`.
+    - `qwen`: `NOT PRODUCTION GRADE`.
+  - Gate result: failed. Node.js phase cannot close until the full reviewer
+    pool votes `PRODUCTION GRADE` after fixes.
+  - `qwen` blocker accepted:
+    - Explorer indexed facet/histogram FIELD-chain traversal used
+      row-lifetime DATA reads in `node/src/lib/explorer.js`, the same class of
+      bug as the round-1 `queryUnique()` issue.
+  - Non-blocking `minimax` watchpoint accepted:
+    - `CombinedResult.readerOptions` existed at runtime but was missing from
+      `node/index.d.ts`.
+  - Disposition: the blocker and type-surface gap are fixed. Focused test and
+    full Node package validation passed. Round 3 pending with the full reviewer
+    pool and the same whole-scope prompt.
+- 2026-06-14 Node.js production review round 3:
+  - Reviewer outputs are stored under
+    `.local/agent-reviews/sow-0108-node-prod-round3/`.
+  - Votes:
+    - `glm`: `PRODUCTION GRADE`.
+    - `kimi`: `PRODUCTION GRADE`.
+    - `mimo`: `PRODUCTION GRADE`.
+    - `qwen`: `PRODUCTION GRADE`.
+    - `deepseek`: `PRODUCTION GRADE`.
+    - `minimax`: `PRODUCTION GRADE`.
+  - Gate result: passed. Node.js phase review gate passed.
+  - Non-blocking watchpoints were reviewed and accepted as future-hardening or
+    rejected as non-actionable for this SOW because they do not violate
+    correctness, bounded-memory, row-lifetime, runtime-purity, or production
+    surface contracts.
+
+### Node.js Implementation Evidence - 2026-06-14
+
+Status: local Node.js implementation complete, validated, reviewed, and
+accepted. Production review passed in round 3.
+
+Implemented reader-memory changes:
+
+- Added `node/src/lib/reader-access.js`, which provides `ReaderOptions`,
+  `accessMode` normalization, explicit `UnsupportedAccessModeError` for
+  `mmap`, bounded rolling positioned-read windows, live/snapshot bounds,
+  row-pinned windows, a row-scoped arena for compressed and cross-window DATA,
+  row clearing, HMAC chunk reads, and access stats.
+- Refactored `node/src/lib/reader.js` so `FileReader` owns a reader accessor
+  rather than a whole-file resident Buffer. Normal `.journal` files and
+  temporary decompressed `.journal.zst` files now open through the same bounded
+  accessor.
+- Added `node/src/lib/zst-stream.js`, which streams whole-file `.journal.zst`
+  inputs to a temporary `.journal` through a synchronous worker-thread wrapper
+  around Node core streams and zstd decompression. The main thread owns temp
+  cleanup and terminates the worker after completion or error.
+- Added `node/src/lib/verify-adapter.js` and migrated file-based verification
+  in `node/src/lib/verify.js` and `node/src/lib/verify-graph.js` to a
+  byte-source abstraction. File verification no longer needs a whole-file
+  Buffer; direct Buffer graph verification remains available through an
+  adapter.
+- Migrated ENTRY, ENTRY_ARRAY, DATA, FIELD, hash-table, unique-value, Explorer
+  compression-flag, and strict verification reads to accessor-backed helpers.
+- Preserved owned `getEntry()` behavior through owned Buffer copies while
+  current-row payload iteration returns row-lifetime Buffer views backed by
+  pinned windows or the row arena.
+- Propagated reader options through `DirectoryReader`, facade open methods,
+  C-style facade helpers, the conformance adapter, Netdata function wrapper,
+  journalctl rewrite, and `reader_core_bench`.
+- Fixed Netdata combined-result zero-count facet backfill so it retains caller
+  reader options instead of silently falling back to defaults.
+- Updated `node/index.d.ts` and `node/README.md` with reader access options,
+  stats, Node's explicit no-core-mmap contract, and the bounded memory
+  envelope.
+- Added focused Node tests in `node/test/chunks/sow0108-reader-access.js` for
+  explicit mmap rejection, `auto` selecting `read-at`, row views surviving
+  window eviction pressure, owned `getEntry()` data surviving row advance,
+  option propagation through directory/facade surfaces, `.journal.zst`
+  accessor use, and mechanical bypass detection.
+
+Validation bugs found and fixed during local implementation:
+
+- Active live readers initially reused stale cached accessor windows after a
+  writer published new header/entry-array bytes without growing file size.
+  Fix: `ReadAtAccessor.refreshVisibleBounds()` now drops unpinned windows at
+  controlled live refresh points, while preserving row-pinned current-row
+  windows.
+- One corrupted systemd AFL fixture could hang in ENTRY_ARRAY chain traversal.
+  Fix: Node ENTRY_ARRAY traversal now detects chain cycles and zero-progress
+  segments and returns a controlled corruption error instead of spinning.
+- Snapshot readers initially refreshed appended header/entry-array metadata
+  when `refresh()` was called. Fix: snapshot-bounds readers now no-op refresh
+  before reading current header bytes, preserving the open-time row set.
+
+Production review round 1 fixes:
+
+- `glm` found that failed live refresh rollback restored post-refresh visible
+  bounds, not pre-refresh bounds. Fix: `_refreshEntryOffsets()` now snapshots
+  logical reader/accessor state before reading refreshed header bytes and
+  passes that state into reload rollback.
+- `glm` found that `queryUnique()` used row-lifetime DATA reads while walking
+  FIELD chains. Fix: `queryUnique()` now uses `_readDataPayloadAt(offset,
+  false)` so FIELD-chain traversal uses temporary/internal reads.
+- `glm` found focused coverage below the SOW-required Node accessor coverage.
+  Fix: `node/test/chunks/sow0108-reader-access.js` now covers explicit
+  `read-at`, `auto`, mmap rejection, temporary unique reads, row-lifetime
+  preservation under window pressure, same-row enumeration restart, oversized
+  and compressed row-arena paths, owned `getEntry()` lifetime, snapshot bounds,
+  refresh rollback, short reads, invalid offsets, corrupted ENTRY_ARRAY cycles,
+  directory/facade option propagation, `.journal.zst` bounded accessor use,
+  production bypass scanning, and Netdata combined-result option retention.
+- `glm` found that Netdata zero-count facet backfill did not retain caller
+  reader options. Fix: `CombinedResult` now stores `readerOptions`, and a
+  focused test guards the option-retention contract.
+
+Production review round 2 fixes:
+
+- `qwen` found that the Explorer indexed strategy still used row-lifetime DATA
+  reads while walking FIELD chains for facet and histogram counting. Fix:
+  `node/src/lib/explorer.js` now passes `false` to both FIELD-chain
+  `_readDataPayloadAt()` calls, matching the `queryUnique()` temporary-read
+  convention.
+- `minimax` found a non-blocking TypeScript surface gap for
+  `CombinedResult.readerOptions`. Fix: `node/index.d.ts` now declares the
+  constructor option and `readerOptions` field.
+- Added a focused regression test proving `ExplorerStrategy.Index` uses
+  temporary DATA reads for FIELD-chain facet and histogram collection.
+
+Local Node validation commands passed:
+
+- `node --check` on changed Node runtime/test files.
+- Direct `node/test/chunks/sow0108-reader-access.js` focused test run.
+- `npm_config_cache=../.local/npm-cache npm run typecheck`.
+- `npm_config_cache=../.local/npm-cache npm test`.
+- Direct corrupted-fixture open checks for zstd-truncated and AFL corrupted
+  fixtures, including the ENTRY_ARRAY cycle fixture that previously hung.
+- Full Node conformance manifest adapter loop with a 15 second per-case
+  timeout.
+- `python3 tests/interoperability/run_matrix.py --writers node --readers node stock --entries 10`
+  passed with 11/11 checks.
+- `python3 tests/interoperability/run_directory_matrix.py --readers node stock`
+  passed.
+- `python3 tests/interoperability/run_verify_matrix.py --skip-build` passed.
+- `PYTHONPATH=.local/python-deps python3 tests/interoperability/run_mixed_directory_matrix.py --readers node stock`
+  passed with 27/27 checks.
+- `python3 tests/interoperability/run_live_matrix.py --entries 10 --readers node stock --features regular zstd compact sealed`
+  passed with 16/16 checks.
+- `python3 tests/interoperability/run_journalctl_query_matrix.py` passed.
+- `git diff --check` passed.
+- `.agents/sow/audit.sh` passed.
+
+Node benchmark/accessor smoke:
+
+- `node node/cmd/reader_core_bench.js --input .local/interoperability/compact/none/node/node.journal --mode sdk-payloads --surface file --access-mode read-at --window-size 128 --max-windows 1 --bounds snapshot`
+  read 10 records and 44 fields with checksum `11982092242414586274`,
+  `readBufferBytes: 128`, and `readSyncUsesPosition: true`.
+- The same bounded 128-byte-window smoke passed for `sdk-entry`,
+  `facade-data`, and `facade-next`.
+
+Bypass scan result:
+
+- The production reader, directory reader, facade, Explorer, Netdata wrapper,
+  verification, journalctl, and benchmark surfaces no longer contain
+  `safeReadFileSync`, `decompressZstToTemp`, `this.buffer`, `reader.buffer`,
+  or `r.buffer` journal-file bypasses.
+- The remaining `readFileSync` hits in `node/adapter/index.js` are adapter
+  stdin/text-fixture reads, not journal-file reader paths. Wider scans also
+  found explicit helper/non-reader paths such as WASM loading, status reads,
+  optional lock/platform helpers, and direct bytes helper APIs.
 
 Same-failure scan:
 
 - Local same-failure search confirmed the removed `readOnlyMapping` reader path
   is no longer referenced by Go reader code. Writer `mappedArena` remains
   separate.
+- Node.js production reader-surface scan confirmed the migrated reader,
+  directory reader, facade, Explorer, Netdata wrapper, verification,
+  journalctl, benchmark, and adapter journal-file paths no longer use
+  reader-owned whole-file Buffer access.
 
 Sensitive data gate:
 
@@ -3318,27 +3555,35 @@ Sensitive data gate:
 
 Artifact maintenance gate:
 
-- Not complete. Go implementation changed public reader options/stats and
-  benchmark semantics; specs/docs must be updated before this SOW can close
-  after all language phases.
+- Completed. Go, Python, and Node.js implementations changed public reader
+  options/stats and benchmark semantics. Language README/API updates exist for
+  the implemented phases. The product-scope spec is updated for the current
+  reader-memory architecture. Status ledgers are updated during closeout.
 
 Specs update:
 
-- Pending after Go production-grade review and before SOW close.
+- `.agents/sow/specs/product-scope.md` updated for bounded rolling reader
+  access across Go, Python, and Node.js, including Node's no-core-mmap
+  contract.
 
 Project skills update:
 
-- Pending after all language phases or if reviewer findings require workflow
-  changes.
+- No project-skill update required. The existing journal-compatibility and
+  orchestration skills already require bounded reader hot paths, row-lifetime
+  compatibility, whole-SOW review batches, and reviewer consensus; this SOW did
+  not change the repository workflow.
 
 End-user/operator docs update:
 
-- Pending after all language phases or before the next public release that
-  exposes the new reader access options.
+- Language docs/API files have been updated for implemented public reader
+  option surfaces. Consumer wiki expansion for Python and Node remains tracked
+  by SOW-0106, which already owns Python/Node verified examples and published
+  wiki pages.
 
 End-user/operator skills update:
 
-- Pending implementation.
+- No end-user/operator skill update required. No external operator skill
+  currently consumes these reader internals.
 
 Lessons:
 
@@ -3347,19 +3592,45 @@ Lessons:
 
 Follow-up mapping:
 
-- Pending implementation.
+- Directory-level shared reader window budgets remain rejected for this SOW:
+  each file reader is bounded, and no reviewer found correctness or production
+  readiness risk requiring a shared directory budget now.
+- Optional native mmap for Node remains rejected for this SOW because Node core
+  has no mmap API and native addon use is outside the project policy.
+- Reviewer watchpoints around scratch-buffer comments, additional `.journal.zst`
+  header-only tests, `getEntry()` temporary-read micro-optimization,
+  `visitEntryPayloads()` callback-scope optimization, and indexed-query pin
+  pressure are accepted as future-hardening ideas but rejected as required
+  follow-up SOWs because they do not violate correctness, bounded-memory,
+  row-lifetime, compatibility, or runtime-purity contracts and all reviewers
+  still voted `PRODUCTION GRADE`.
 
 ## Outcome
 
-Pending.
+Completed. SOW-0108 delivered the cross-language bounded reader access
+architecture for Go, Python, and Node.js while preserving Rust as the mmap
+reference implementation. Go and Python now have bounded rolling accessors with
+mmap/read-at selection, and Node.js no longer has production whole-file reader
+Buffer paths; it uses bounded positioned-read windows, row-pinned current-row
+views, row-arena memory for compressed/cross-window payloads, and streaming
+`.journal.zst` temp files.
 
 ## Lessons Extracted
 
-Pending.
+- Boolean lifetime switches are easy to misuse in non-row FIELD-chain helpers.
+  Focused tests must explicitly assert temporary/internal read use for unique
+  value and indexed Explorer paths.
+- Small fixtures are not enough evidence for memory architecture changes.
+  Focused bounded-window, forced-eviction, row-arena, refresh-rollback, and
+  bypass-scan tests are mandatory for reader-access work.
+- Whole-file `.journal.zst` handling is a reader-memory risk even when normal
+  `.journal` access is bounded; streaming-to-temp must be part of the same
+  accessor contract.
 
 ## Followup
 
-None yet.
+No mandatory follow-up SOW is required from this SOW. Existing pending SOW-0106
+continues to own Python/Node consumer docs and verified examples.
 
 ## Regression Log
 

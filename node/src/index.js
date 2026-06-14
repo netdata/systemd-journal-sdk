@@ -51,10 +51,34 @@ import {
   CombinedResult,
   JournalFileCollection,
 } from './lib/netdata.js';
+import {
+  READER_ACCESS_AUTO,
+  READER_ACCESS_READ_AT,
+  READER_ACCESS_MMAP,
+  READER_BOUNDS_LIVE,
+  READER_BOUNDS_SNAPSHOT,
+  DEFAULT_WINDOW_SIZE_BYTES,
+  DEFAULT_MAX_WINDOWS,
+  DEFAULT_MAX_ROW_ARENA_BYTES,
+  DEFAULT_ROW_ARENA_SEGMENT_BYTES,
+  UnsupportedAccessModeError,
+} from './lib/reader-access.js';
 
 // Re-export everything
 export { FileReader, DirectoryReader, Writer, Log };
 export { WriterLock } from './lib/lock.js';
+export {
+  READER_ACCESS_AUTO,
+  READER_ACCESS_READ_AT,
+  READER_ACCESS_MMAP,
+  READER_BOUNDS_LIVE,
+  READER_BOUNDS_SNAPSHOT,
+  DEFAULT_WINDOW_SIZE_BYTES,
+  DEFAULT_MAX_WINDOWS,
+  DEFAULT_MAX_ROW_ARENA_BYTES,
+  DEFAULT_ROW_ARENA_SEGMENT_BYTES,
+  UnsupportedAccessModeError,
+} from './lib/reader-access.js';
 export {
   Direction,
   ExplorerAnchor,
@@ -121,6 +145,7 @@ export {
 export { parseMatchString, sipHash24, jenkinsHash64 } from './lib/hash.js';
 export { readUint64LE, writeUint64LE, writeUint32LE, writeUint8, align8, bufEqual, uuidToString, stringToUUID, isZeroUUID, randomUUID } from './lib/binary.js';
 export { decompressZstSync, isJournalFileName, isZstFile } from './lib/compress.js';
+export { verifyFile, verifyFileWithKey, VerificationError } from './lib/verify.js';
 export { parseEntryObject, parseDataObject, parseDataPayload } from './lib/entry.js';
 export {
   HEADER_SIZE, OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE,
@@ -132,8 +157,8 @@ export {
 } from './lib/header.js';
 
 // Convenience factory functions
-export function openJournal(path) {
-  return SdJournal.open(path);
+export function openJournal(path, options = {}) {
+  return SdJournal.open(path, options);
 }
 
 export function createJournal(path, options = {}) {
@@ -178,6 +203,16 @@ export default {
   JournalFileCollection,
   SdJournal, SdJournalOpen, SdJournalOpenDirectory,
   openJournal, createJournal, stringField, binaryField,
+  READER_ACCESS_AUTO,
+  READER_ACCESS_READ_AT,
+  READER_ACCESS_MMAP,
+  READER_BOUNDS_LIVE,
+  READER_BOUNDS_SNAPSHOT,
+  DEFAULT_WINDOW_SIZE_BYTES,
+  DEFAULT_MAX_WINDOWS,
+  DEFAULT_MAX_ROW_ARENA_BYTES,
+  DEFAULT_ROW_ARENA_SEGMENT_BYTES,
+  UnsupportedAccessModeError,
   FIELD_NAME_POLICY_JOURNALD, FIELD_NAME_POLICY_JOURNAL_APP, FIELD_NAME_POLICY_RAW,
   LOG_OPEN_LAZY, LOG_OPEN_EAGER,
   LOG_IDENTITY_AUTO, LOG_IDENTITY_STRICT,

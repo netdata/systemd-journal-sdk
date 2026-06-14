@@ -4,13 +4,6 @@ Last updated: 2026-06-14
 
 ## Current
 
-- SOW-0108 - Cross-Language Reader Window Accessor Architecture:
-  in-progress. Activated 2026-06-14 after the user explicitly chose to
-  pause SOW-0105 and prioritize the foundational reader memory architecture.
-  Implements a single logical reader accessor API hiding rolling mmap or
-  rolling positioned-read windows behind equivalent `Auto` / explicit mmap /
-  explicit pread-style modes. Implementation order is Rust -> Go -> Python ->
-  Node.js. The Rust phase starts first.
 - SOW-0105 - Node.js Explorer And Netdata Parity To Rust: paused. Paused
   2026-06-14 by explicit user decision so SOW-0108 can become the active
   implementation SOW first; remains the tracker for the remaining Node.js
@@ -67,6 +60,16 @@ Last updated: 2026-06-14
   shared primitives preserve historical compatibility and reader performance.
 ## Recently Closed Or Completed
 
+- SOW-0108 - Cross-Language Reader Window Accessor Architecture: completed.
+  Rust remains the mmap/windowing reference after platform evidence showed
+  `memmap2` covers Linux, FreeBSD, macOS, and Windows. Go and Python now expose
+  bounded rolling reader access with mmap/read-at selection and row-level
+  lifetime guarantees. Node.js production reader paths no longer use whole-file
+  resident Buffers; they use bounded positioned-read windows, row-pinned
+  current-row views, row-arena memory for compressed/cross-window payloads, and
+  streaming `.journal.zst` temp files. Go passed production review in round 3,
+  Python in round 2, and Node.js in round 3 with all six reviewers voting
+  `PRODUCTION GRADE`.
 - SOW-0104 - Python Explorer And Netdata Parity To Rust: completed. The
   Python SDK now carries the full Rust feature surface: Explorer
   (filters, facets, histogram, FTS, Traversal/Index/Compare strategies,

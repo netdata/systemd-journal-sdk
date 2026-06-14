@@ -1031,13 +1031,11 @@ function _currentExplorerRow(reader, realtimeUsec, stats, expand = true) {
 // compression state (e.g. they are about to decompress for filtering).
 // ---------------------------------------------------------------------------
 
-const _COMPRESSED_FLAG_MASK = 0x07; // OBJECT_COMPRESSED_XZ|LZ4|ZSTD in header.js:41-43
-
 function _dataObjectWasCompressed(reader, dataOffset) {
-  const pos = Number(dataOffset);
-  if (reader.buffer.length < pos + 2) return false;
-  const objFlags = reader.buffer.readUInt8(pos + 1);
-  return (objFlags & _COMPRESSED_FLAG_MASK) !== 0;
+  if (typeof reader._dataObjectWasCompressedAt === 'function') {
+    return reader._dataObjectWasCompressedAt(dataOffset);
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1624,7 +1622,7 @@ function _indexedCountFacetField(reader, field, candidates, result, query, contr
     let payload;
     try {
       dataHeader = reader._readDataHeaderAt(fieldOffset);
-      payload = reader._readDataPayloadAt(fieldOffset);
+      payload = reader._readDataPayloadAt(fieldOffset, false);
     } catch {
       break;
     }
@@ -1677,7 +1675,7 @@ function _indexedCountHistogram(reader, field, candidates, result, query, contro
     let payload;
     try {
       dataHeader = reader._readDataHeaderAt(fieldOffset);
-      payload = reader._readDataPayloadAt(fieldOffset);
+      payload = reader._readDataPayloadAt(fieldOffset, false);
     } catch {
       break;
     }

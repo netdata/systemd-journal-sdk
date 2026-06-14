@@ -24,6 +24,7 @@ import { parseMatchString } from '../src/lib/hash.js';
 import { verifyFile, verifyFileWithKey } from '../src/lib/verify.js';
 
 const ADAPTER_VERSION = '0.1.0';
+const DEFAULT_READER_OPTIONS = Object.freeze({});
 
 function main() {
   const args = process.argv.slice(2);
@@ -172,7 +173,7 @@ function parseUID(name) {
 function testFileHeaderParse(tc) {
   const path = resolveFixture(tc, 'journal_file');
   if (!path) return { status: 'SKIP', note: 'no journal_file fixture' };
-  const r = FileReader.open(path);
+  const r = FileReader.open(path, DEFAULT_READER_OPTIONS);
   try {
     if (!r.step()) return { status: 'FAIL', error: 'fixture has no entries' };
     r.getEntry(); // advance past first entry
@@ -254,7 +255,7 @@ function testMatchBooleanLogic() {
     w.append([{ name: 'TWO', value: 'two' }, { name: 'ONE', value: 'one' }]);
     w.close();
 
-    const r = FileReader.open(path);
+    const r = FileReader.open(path, DEFAULT_READER_OPTIONS);
     addSystemdComplexMatchExpression(r);
     const matched = [];
     while (r.step()) {
@@ -297,7 +298,7 @@ function addSystemdComplexMatchExpression(r) {
 function runStreamTest(tc) {
   const path = resolveFixture(tc, 'journal_dir');
   if (!path) return { status: 'SKIP', note: 'no journal_dir fixture' };
-  const r = DirectoryReader.open(path);
+  const r = DirectoryReader.open(path, DEFAULT_READER_OPTIONS);
   try {
     const entries = [];
     let count = 0;
@@ -318,7 +319,7 @@ function runStreamTest(tc) {
 function runCursorTest(tc) {
   const path = resolveFixture(tc, 'journal_dir');
   if (!path) return { status: 'SKIP', note: 'no journal_dir fixture' };
-  const r = SdJournalOpen(path, 0);
+  const r = SdJournalOpen(path, 0, DEFAULT_READER_OPTIONS);
   try {
     const cursorState = cursorTestInitialState(r);
     if (cursorState.status) return cursorState;
@@ -383,7 +384,7 @@ function checkMissingCursorBehavior(r, cursor, cursorRealtime) {
 function runEnumerationTest(tc) {
   const path = resolveFixture(tc, 'journal_dir');
   if (!path) return { status: 'SKIP', note: 'no journal_dir fixture' };
-  const r = DirectoryReader.open(path);
+  const r = DirectoryReader.open(path, DEFAULT_READER_OPTIONS);
   try {
     const fields = Array.from(r.enumerateFields()).sort();
     return { status: 'PASS', actual: fields, evidence: { field_count: fields.length } };
@@ -395,7 +396,7 @@ function runEnumerationTest(tc) {
 function runExportTest(tc) {
   const path = resolveFixture(tc, 'journal_dir');
   if (!path) return { status: 'SKIP', note: 'no journal_dir fixture' };
-  const r = DirectoryReader.open(path);
+  const r = DirectoryReader.open(path, DEFAULT_READER_OPTIONS);
   try {
     const exports = [];
     r.seekHead();
@@ -423,7 +424,7 @@ function runJournalctlTest(tc) {
 function testListBoots(tc) {
   const path = resolveFixture(tc, 'journal_dir');
   if (!path) return { status: 'SKIP', note: 'no journal_dir fixture' };
-  const r = DirectoryReader.open(path);
+  const r = DirectoryReader.open(path, DEFAULT_READER_OPTIONS);
   try {
     return { status: 'PASS', actual: r.listBoots() };
   } finally { r.close(); }
@@ -434,7 +435,7 @@ function testListBoots(tc) {
 function runCompressionTest(tc) {
   const path = resolveFixture(tc, 'journal_file');
   if (!path) return { status: 'SKIP', note: 'no journal_file fixture' };
-  const r = FileReader.open(path);
+  const r = FileReader.open(path, DEFAULT_READER_OPTIONS);
   try {
     if (!r.step()) return { status: 'FAIL', error: 'no entries in compressed fixture' };
     const entry = r.getEntry();
@@ -468,7 +469,7 @@ function runCorruptionTest(tc) {
     if (!path) continue;
     checked++;
     try {
-      const r = FileReader.open(path);
+      const r = FileReader.open(path, DEFAULT_READER_OPTIONS);
       for (let i = 0; i < 1000; i++) {
         if (!r.step()) break;
         try { r.getEntry(); } catch { readErrors++; break; }

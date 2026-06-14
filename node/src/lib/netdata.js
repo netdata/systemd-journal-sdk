@@ -1160,7 +1160,7 @@ class LocatedRow {
 }
 
 export class CombinedResult {
-  constructor() {
+  constructor({ readerOptions = null } = {}) {
     this.rows = [];
     this.facets = new Map();
     this.histogram = null;
@@ -1174,6 +1174,7 @@ export class CombinedResult {
     this.timedOut = false;
     this.cancelled = false;
     this.samplingEnabled = false;
+    this.readerOptions = readerOptions;
   }
 
   merge(path, result, direction, limit) {
@@ -1254,7 +1255,7 @@ export class CombinedResult {
     if (!fields || fields.length === 0 || this.matchedPaths.length === 0) return;
     for (const pathStr of this.matchedPaths) {
       let reader;
-      try { reader = FileReader.open(pathStr); }
+      try { reader = FileReader.open(pathStr, this.readerOptions ?? {}); }
       catch { continue; }
       try {
         for (const field of fields) {
@@ -2280,7 +2281,7 @@ export class NetdataJournalFunction {
   }
 
   _exploreFiles(paths, request, options, initialSkipped, initialErrors) {
-    const combined = new CombinedResult();
+    const combined = new CombinedResult({ readerOptions: options?.readerOptions ?? null });
     combined.skippedFiles = initialSkipped || 0;
     combined.fileErrors = (initialErrors || []).map(String);
     if (!paths || paths.length === 0) return combined;
@@ -2303,7 +2304,7 @@ export class NetdataJournalFunction {
         realtimeSlack = metadata.journalVsRealtimeDeltaUsec;
       }
       let reader;
-      try { reader = FileReader.open(pathStr); }
+      try { reader = FileReader.open(pathStr, options?.readerOptions ?? {}); }
       catch (err) { combined.skippedFiles += 1; combined.fileErrors.push(`${pathStr}: ${err.message}`); _emitProgressForCombined(options, combined, combined.matchedPaths.length + 1, totalFiles, deadline); continue; }
       try {
         const fileQuery = _requestToExplorerQuery(request, matchedFilesCount, reader, realtimeSlack);

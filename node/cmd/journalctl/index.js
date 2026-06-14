@@ -671,7 +671,7 @@ function verifyJournalFile(file, directoryInput, verifyKey, hasVerifyKey) {
 function readJournalSealedFlag(file, directoryInput) {
   let r = null;
   try {
-    r = FileReader.open(file);
+    r = FileReader.open(file, {});
     return (r.header.compatible_flags & COMPATIBLE_SEALED) !== 0;
   } catch (err) {
     if (directoryInput) return null;

@@ -236,6 +236,8 @@ const DECLARED_CLASSES = [
   'JournalFileCollection',
   'NetdataJournalFunction',
   'SdJournal',
+  'UnsupportedAccessModeError',
+  'VerificationError',
   'WriterLock',
 ];
 
@@ -268,6 +270,8 @@ const DECLARED_FUNCTIONS = [
   'normalizeTimeWindow',
   'journalFileSourceType',
   'collectJournalFiles',
+  'verifyFile',
+  'verifyFileWithKey',
   // SdJournal C-style function aliases
   'SdJournalOpen',
   'SdJournalOpenFile',
@@ -348,6 +352,15 @@ const DECLARED_CONSTANTS = [
   'LOG_LIFECYCLE_REASON_EAGER_OPEN',
   'LOG_LIFECYCLE_REASON_ROTATION',
   'LOG_LIFECYCLE_REASON_RETENTION',
+  'READER_ACCESS_AUTO',
+  'READER_ACCESS_READ_AT',
+  'READER_ACCESS_MMAP',
+  'READER_BOUNDS_LIVE',
+  'READER_BOUNDS_SNAPSHOT',
+  'DEFAULT_WINDOW_SIZE_BYTES',
+  'DEFAULT_MAX_WINDOWS',
+  'DEFAULT_MAX_ROW_ARENA_BYTES',
+  'DEFAULT_ROW_ARENA_SEGMENT_BYTES',
 ];
 
 function testConformanceClasses() {
@@ -378,7 +391,7 @@ function testConformanceFunctions() {
 const DECLARED_METHODS = {
   FileReader: ['close', 'addMatch', 'addDisjunction', 'addConjunction',
     'flushMatches', 'seekHead', 'seekTail', 'seekRealtimeUsec', 'queryUnique',
-    'enumerateFields'],
+    'enumerateFields', 'accessStats'],
   DirectoryReader: ['close', 'addMatch', 'addDisjunction', 'addConjunction',
     'flushMatches', 'seekHead', 'seekTail'],
   FilterBuilder: ['addMatch', 'addDisjunction', 'addConjunction', 'matches'],

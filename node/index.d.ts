@@ -59,6 +59,63 @@ declare module "@netdata/systemd-journal-sdk" {
     last_realtime: bigint;
   }
 
+  type ReaderAccessMode =
+    | typeof READER_ACCESS_AUTO
+    | typeof READER_ACCESS_READ_AT
+    | typeof READER_ACCESS_MMAP;
+
+  type ReaderBoundsMode =
+    | typeof READER_BOUNDS_LIVE
+    | typeof READER_BOUNDS_SNAPSHOT;
+
+  interface ReaderOptions {
+    accessMode?: ReaderAccessMode | "auto" | "read-at" | "readat" | "pread" | "mmap" | "buffer";
+    mmapStrategy?: ReaderAccessMode | "auto" | "read-at" | "readat" | "pread" | "mmap" | "buffer";
+    bounds?: ReaderBoundsMode | "live" | "snapshot";
+    windowSizeBytes?: number;
+    windowSize?: number;
+    maxWindows?: number;
+    maxRowArenaBytes?: number;
+    rowArenaSegmentBytes?: number;
+    zstdTimeoutMs?: number;
+  }
+
+  interface ReaderAccessStats {
+    requestedAccessMode: string;
+    selectedAccessMode: string;
+    selectedBackend: string;
+    fallbackReason: string;
+    bounds: string;
+    visibleSize: number;
+    windowSizeBytes: number;
+    maxWindows: number;
+    windowsCreated: number;
+    windowHits: number;
+    windowMisses: number;
+    evictions: number;
+    pinnedWindows: number;
+    readBufferBytes: number;
+    rowArenaPeakBytes: number;
+    tempCopyBytes: number;
+    tempCopyCount: number;
+    shortReads: number;
+    readSyncUsesPosition: boolean;
+  }
+
+  const READER_ACCESS_AUTO: "auto";
+  const READER_ACCESS_READ_AT: "read-at";
+  const READER_ACCESS_MMAP: "mmap";
+  const READER_BOUNDS_LIVE: "live";
+  const READER_BOUNDS_SNAPSHOT: "snapshot";
+  const DEFAULT_WINDOW_SIZE_BYTES: number;
+  const DEFAULT_MAX_WINDOWS: number;
+  const DEFAULT_MAX_ROW_ARENA_BYTES: number;
+  const DEFAULT_ROW_ARENA_SEGMENT_BYTES: number;
+
+  class UnsupportedAccessModeError extends Error {
+    accessMode: string;
+  }
+
   /**
    * Cooperating match filter used by the readers. Repeated `addMatch`
    * calls for the same field are OR alternatives; `addDisjunction` /
@@ -77,7 +134,7 @@ declare module "@netdata/systemd-journal-sdk" {
   // -----------------------------------------------------------------------
 
   class FileReader {
-    static open(path: string): FileReader;
+    static open(path: string, options?: ReaderOptions): FileReader;
     close(): void;
     readonly path: string | null;
     readonly header: FileHeader;
@@ -113,11 +170,12 @@ declare module "@netdata/systemd-journal-sdk" {
     explore(query: ExplorerQuery): ExplorerResult;
     exploreWithStrategy(query: ExplorerQuery, strategy: ExplorerStrategy): ExplorerResult;
     exploreWithStrategyAndControl(query: ExplorerQuery, strategy: ExplorerStrategy, control: ExplorerControl): ExplorerResult;
+    accessStats(): ReaderAccessStats;
   }
 
   class DirectoryReader {
-    static open(path: string): DirectoryReader;
-    static openFiles(paths: string[]): DirectoryReader;
+    static open(path: string, options?: ReaderOptions): DirectoryReader;
+    static openFiles(paths: string[], options?: ReaderOptions): DirectoryReader;
     close(): void;
 
     addMatch(data: string | Bytes): void;
@@ -651,10 +709,10 @@ declare module "@netdata/systemd-journal-sdk" {
   type UniqueValueVisitor = (value: Bytes) => void;
 
   class SdJournal {
-    static open(path: string): SdJournal;
-    static openFile(path: string): SdJournal;
-    static openDirectory(path: string): SdJournal;
-    static openFiles(paths: string[]): SdJournal;
+    static open(path: string, options?: ReaderOptions): SdJournal;
+    static openFile(path: string, options?: ReaderOptions): SdJournal;
+    static openDirectory(path: string, options?: ReaderOptions): SdJournal;
+    static openFiles(paths: string[], options?: ReaderOptions): SdJournal;
 
     reader: FileReader | DirectoryReader;
     outputMode: OutputMode;
@@ -699,10 +757,10 @@ declare module "@netdata/systemd-journal-sdk" {
     enumerateAvailableUnique(): Bytes | null;
   }
 
-  function SdJournalOpen(path: string, flags: number): SdJournal;
-  function SdJournalOpenFile(path: string, flags: number): SdJournal;
-  function SdJournalOpenDirectory(path: string, flags: number): SdJournal;
-  function SdJournalOpenFiles(paths: string[], flags: number): SdJournal;
+  function SdJournalOpen(path: string, flags: number, options?: ReaderOptions): SdJournal;
+  function SdJournalOpenFile(path: string, flags: number, options?: ReaderOptions): SdJournal;
+  function SdJournalOpenDirectory(path: string, flags: number, options?: ReaderOptions): SdJournal;
+  function SdJournalOpenFiles(paths: string[], flags: number, options?: ReaderOptions): SdJournal;
   function SdJournalClose(journal: SdJournal): void;
 
   function SdJournalAddMatch(journal: SdJournal, data: string | Bytes): void;
@@ -776,7 +834,7 @@ declare module "@netdata/systemd-journal-sdk" {
     defaultFacets?: string[];
     defaultViewKeys?: string[];
     defaultHistogram?: string;
-    readerOptions?: object | null;
+    readerOptions?: ReaderOptions | null;
     explorerStrategy?: ExplorerStrategy | null;
   }
 
@@ -788,7 +846,7 @@ declare module "@netdata/systemd-journal-sdk" {
     defaultFacets: string[];
     defaultViewKeys: string[];
     defaultHistogram: string;
-    readerOptions: object | null;
+    readerOptions: ReaderOptions | null;
     explorerStrategy: ExplorerStrategy | null;
     static systemdJournal(): NetdataFunctionConfig;
     backfillDefaults(): this;
@@ -843,6 +901,8 @@ declare module "@netdata/systemd-journal-sdk" {
   }
 
   class CombinedResult {
+    constructor(options?: { readerOptions?: ReaderOptions | null });
+
     rows: any[];
     facets: Map<string, Map<string, bigint>>;
     histogram: { field: Bytes; buckets: any[] } | null;
@@ -856,6 +916,7 @@ declare module "@netdata/systemd-journal-sdk" {
     timedOut: boolean;
     cancelled: boolean;
     samplingEnabled: boolean;
+    readerOptions: ReaderOptions | null;
 
     merge(path: string, result: ExplorerResult, direction: Direction, limit: number): void;
   }
@@ -926,14 +987,14 @@ declare module "@netdata/systemd-journal-sdk" {
   // Verification
   // -----------------------------------------------------------------------
 
-  function verifyFile(path: string): void;
-  function verifyFileWithKey(path: string, verificationKey: Bytes): void;
+  function verifyFile(path: string, options?: ReaderOptions): void;
+  function verifyFileWithKey(path: string, verificationKey: Bytes, options?: ReaderOptions): void;
 
   // -----------------------------------------------------------------------
   // Convenience factories
   // -----------------------------------------------------------------------
 
-  function openJournal(path: string): SdJournal;
+  function openJournal(path: string, options?: ReaderOptions): SdJournal;
   function createJournal(path: string, options?: WriterOptions): Writer;
   function stringField(name: string, value: string): Field;
   function binaryField(name: string | Bytes, value: Bytes): Field;

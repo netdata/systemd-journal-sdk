@@ -3,23 +3,19 @@
 // Sealed FSS tag/HMAC verification is implemented for sealed files with a key.
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { dirname } from 'node:path';
-import { FileReader } from './reader.js';
-import { safeReadFileSync, safeRmdirSync, safeUnlinkSync } from './fs-safe.js';
-import { parseEntryObject, parseDataObject } from './entry.js';
 import {
   INCOMPATIBLE_COMPACT, INCOMPATIBLE_COMPRESSED_XZ, INCOMPATIBLE_COMPRESSED_LZ4,
   INCOMPATIBLE_COMPRESSED_ZSTD, COMPATIBLE_SEALED, COMPATIBLE_SEALED_CONTINUOUS,
-  HEADER_MIN_SIZE, parseFileHeader, OBJECT_HEADER_SIZE, OBJECT_TYPE_DATA,
+  HEADER_MIN_SIZE, OBJECT_HEADER_SIZE, OBJECT_TYPE_DATA,
   OBJECT_TYPE_FIELD, OBJECT_TYPE_ENTRY, OBJECT_TYPE_DATA_HASH_TABLE,
   OBJECT_TYPE_FIELD_HASH_TABLE, OBJECT_TYPE_ENTRY_ARRAY, OBJECT_TYPE_TAG,
   DATA_OBJECT_HEADER_SIZE, COMPACT_DATA_OBJECT_HEADER_SIZE, FIELD_OBJECT_HEADER_SIZE,
   OBJECT_COMPRESSED_XZ, OBJECT_COMPRESSED_LZ4, OBJECT_COMPRESSED_ZSTD,
 } from './header.js';
-import { isZstFile, decompressZstToTemp } from './compress.js';
 import { fsprgGenMK, fsprgGenState0, fsprgSeek, fsprgGetKey, RECOMMENDED_SECPAR } from './fss.js';
 import { TAG_LENGTH } from './seal.js';
 import { ObjectGraphVerificationError, verifyObjectGraph } from './verify-graph.js';
+import { openVerificationByteSource } from './verify-adapter.js';
 
 const MAX_U64 = (1n << 64n) - 1n;
 
@@ -40,9 +36,13 @@ export class VerificationError extends Error {
  * For sealed journals, this validates structure only; use verifyFileWithKey()
  * when TAG/HMAC verification is required.
  */
-export function verifyFile(path) {
+export function verifyFile(path, options = {}) {
+  let reader = null;
   try {
-    verifyObjectGraph(readJournalFileForVerify(path));
+    const opened = openVerificationByteSource(path, options);
+    reader = opened.reader;
+    verifyObjectGraph(opened.source);
+    verifyReaderStrict(reader);
   } catch (err) {
     if (err instanceof ObjectGraphVerificationError) {
       throw new VerificationError(`journal verification failed: corrupt object graph: ${err.message}`);
@@ -50,61 +50,8 @@ export function verifyFile(path) {
     throw new VerificationError(
       `journal verification failed: corrupt or unreadable file: ${err.message}`
     );
-  }
-
-  let r;
-  try {
-    r = FileReader.open(path);
-  } catch (err) {
-    throw new VerificationError(
-      `journal verification failed: corrupt or unreadable file: ${err.message}`
-    );
-  }
-
-  try {
-    // Verification walks internal parser state so corrupt data objects fail
-    // instead of being skipped by the normal reader tolerance path.
-    const buf = r.buffer;
-    const compact = (r.header.incompatible_flags & INCOMPATIBLE_COMPACT) !== 0;
-    let entryMonotonic = 0n;
-    let entryMonotonicSet = false;
-    let entryBootID = Buffer.alloc(16);
-
-    for (const offset of r.entryOffsets) {
-      // Parse entry object strictly
-      let e;
-      try {
-        e = parseEntryObject(buf, Number(offset), compact);
-      } catch (err) {
-        throw new VerificationError(
-          `journal verification failed: corrupt entry object at offset ${offset}: ${err.message}`
-        );
-      }
-
-      if (entryMonotonicSet && e.boot_id.equals(entryBootID) && entryMonotonic > e.monotonic) {
-        throw new VerificationError(
-          `journal verification failed: entry monotonic out of sync (${entryMonotonic} > ${e.monotonic})`
-        );
-      }
-      entryMonotonic = e.monotonic;
-      entryBootID = e.boot_id;
-      entryMonotonicSet = true;
-
-      // Parse each referenced data object strictly
-      for (const item of e.items) {
-        const dataOff = Number(item.offset);
-        try {
-          parseDataObject(buf, dataOff, compact);
-        } catch (err) {
-          throw new VerificationError(
-            `journal verification failed: corrupt data object at offset ${dataOff} ` +
-            `for entry at offset ${offset}: ${err.message}`
-          );
-        }
-      }
-    }
   } finally {
-    r.close();
+    reader?.close();
   }
 }
 
@@ -113,57 +60,34 @@ export function verifyFile(path) {
  * For sealed files, parses the key and validates TAG/HMAC chains.
  * For unsealed files, behaves like verifyFile.
  */
-export function verifyFileWithKey(path, verificationKey) {
+export function verifyFileWithKey(path, verificationKey, options = {}) {
+  let reader = null;
   try {
-    var data = readJournalFileForVerify(path);
-  } catch (err) {
-    throw new VerificationError(
-      `journal verification failed: corrupt or unreadable file: ${err.message}`
-    );
-  }
+    const opened = openVerificationByteSource(path, options);
+    reader = opened.reader;
+    const { source } = opened;
+    if (source.length < HEADER_MIN_SIZE) {
+      throw new VerificationError('journal verification failed: file too small');
+    }
+    verifyObjectGraph(source);
 
-  if (data.length < HEADER_MIN_SIZE) {
-    throw new VerificationError('journal verification failed: file too small');
-  }
-
-  try {
-    verifyObjectGraph(data);
+    const header = reader.header;
+    const sealed = (header.compatible_flags & COMPATIBLE_SEALED) !== 0;
+    if (sealed) {
+      const { seed, startEpoch, intervalUsec } = parseVerificationKey(verificationKey);
+      verifySealed(source, header, seed, startEpoch, intervalUsec);
+    }
+    verifyReaderStrict(reader);
   } catch (err) {
     if (err instanceof ObjectGraphVerificationError) {
       throw new VerificationError(`journal verification failed: corrupt object graph: ${err.message}`);
     }
-    throw err;
-  }
-
-  const header = parseFileHeader(data);
-  const sealed = (header.compatible_flags & COMPATIBLE_SEALED) !== 0;
-
-  if (!sealed) {
-    return verifyFile(path);
-  }
-
-  const { seed, startEpoch, intervalUsec } = parseVerificationKey(verificationKey);
-  verifySealed(data, header, seed, startEpoch, intervalUsec);
-  return verifyFile(path);
-}
-
-function readJournalFileForVerify(path) {
-  let cleanupPath = null;
-  try {
-    if (isZstFile(path)) {
-      cleanupPath = decompressZstToTemp(path, 'node-sdk-verify');
-      return safeReadFileSync(cleanupPath);
-    }
-    return safeReadFileSync(path);
+    if (err instanceof VerificationError) throw err;
+    throw new VerificationError(
+      `journal verification failed: corrupt or unreadable file: ${err.message}`
+    );
   } finally {
-    if (cleanupPath) {
-      try { safeUnlinkSync(cleanupPath); } catch {
-        // Best-effort cleanup while preserving the verification result.
-      }
-      try { safeRmdirSync(dirname(cleanupPath)); } catch {
-        // Best-effort cleanup while preserving the verification result.
-      }
-    }
+    reader?.close();
   }
 }
 
@@ -236,6 +160,50 @@ function isHexCode(code) {
     (code >= 0x61 && code <= 0x66);
 }
 
+function verifyReaderStrict(reader) {
+  const compact = (reader.header.incompatible_flags & INCOMPATIBLE_COMPACT) !== 0;
+  let entryMonotonic = 0n;
+  let entryMonotonicSet = false;
+  let entryBootID = Buffer.alloc(16);
+
+  for (const offset of reader.entryOffsets) {
+    let entry;
+    try {
+      entry = reader._readEntryObjectAt(offset);
+    } catch (err) {
+      throw new VerificationError(
+        `journal verification failed: corrupt entry object at offset ${offset}: ${err.message}`
+      );
+    }
+
+    if (entryMonotonicSet && entry.boot_id.equals(entryBootID) && entryMonotonic > entry.monotonic) {
+      throw new VerificationError(
+        `journal verification failed: entry monotonic out of sync (${entryMonotonic} > ${entry.monotonic})`
+      );
+    }
+    entryMonotonic = entry.monotonic;
+    entryBootID = entry.boot_id;
+    entryMonotonicSet = true;
+
+    for (const item of entry.items) {
+      const dataOff = Number(item.offset);
+      try {
+        const payload = reader._readDataPayloadAt(dataOff, false);
+        if (payload.indexOf(0x3d) < 0) throw new Error('DATA object missing field separator');
+      } catch (err) {
+        throw new VerificationError(
+          `journal verification failed: corrupt data object at offset ${dataOff} ` +
+          `for entry at offset ${offset}: ${err.message}`
+        );
+      }
+    }
+  }
+
+  if (compact !== ((reader.header.incompatible_flags & INCOMPATIBLE_COMPACT) !== 0)) {
+    throw new VerificationError('journal verification failed: compact flag changed during verification');
+  }
+}
+
 function align8(v) {
   return (v + 7n) & ~7n;
 }
@@ -302,7 +270,7 @@ function readSealObjectFrame(data, context, offset) {
   if (offset + OBJECT_HEADER_SIZE > context.fileSize) {
     throw new VerificationError(`object header at offset ${offset} exceeds file bounds`);
   }
-  const size = data.readBigUInt64LE(offset + 8);
+  const size = data.u64(offset + 8);
   const alignedSize = align8(size);
   if (size < BigInt(OBJECT_HEADER_SIZE)) {
     throw new VerificationError(`object size ${size} too small at offset ${offset}`);
@@ -312,8 +280,8 @@ function readSealObjectFrame(data, context, offset) {
   }
   return {
     offset,
-    typ: data.readUInt8(offset),
-    flags: data.readUInt8(offset + 1),
+    typ: data.u8(offset),
+    flags: data.u8(offset + 1),
     size,
     alignedSizeNumber: u64ToNumber(alignedSize, `aligned object size at offset ${offset}`),
   };
@@ -381,10 +349,10 @@ function validateSealedEntry(data, header, state, frame) {
 
 function readSealEntry(data, offset) {
   return {
-    seqnum: data.readBigUInt64LE(offset + 16),
-    realtime: data.readBigUInt64LE(offset + 24),
-    monotonic: data.readBigUInt64LE(offset + 32),
-    bootID: data.slice(offset + 40, offset + 56),
+    seqnum: data.u64(offset + 16),
+    realtime: data.u64(offset + 24),
+    monotonic: data.u64(offset + 32),
+    bootID: data.bytes(offset + 40, 16),
   };
 }
 
@@ -412,8 +380,8 @@ function validateSealedTag(data, header, context, state, frame, seed, startEpoch
   if (frame.size !== BigInt(OBJECT_HEADER_SIZE + 8 + 8 + TAG_LENGTH)) {
     throw new VerificationError(`invalid tag object size ${frame.size} at offset ${frame.offset}`);
   }
-  const seqnum = data.readBigUInt64LE(frame.offset + 16);
-  const epoch = data.readBigUInt64LE(frame.offset + 24);
+  const seqnum = data.u64(frame.offset + 16);
+  const epoch = data.u64(frame.offset + 24);
   if (seqnum !== state.nTags + 1n) {
     throw new VerificationError(`tag seqnum mismatch: got ${seqnum}, want ${state.nTags + 1n} at offset ${frame.offset}`);
   }
@@ -456,7 +424,7 @@ function verifyTagHmac(data, context, state, frame, seed, epoch) {
   const hm = createTagHmac(data, context, state, seed, epoch);
   hmacSealedObjectRange(hm, data, context, state, frame.offset);
   const computed = hm.digest();
-  const stored = data.slice(frame.offset + 32, frame.offset + 32 + TAG_LENGTH);
+  const stored = data.bytes(frame.offset + 32, TAG_LENGTH);
   if (stored.length !== TAG_LENGTH || !timingSafeEqual(computed, stored)) {
     throw new VerificationError(`tag failed verification at offset ${frame.offset}`);
   }
@@ -467,10 +435,10 @@ function createTagHmac(data, context, state, seed, epoch) {
   const key = fsprgGetKey(fssState, TAG_LENGTH, 0);
   const hm = createHmac('sha256', key);
   if (state.nTags === 0n) {
-    hm.update(data.slice(0, 16));
-    hm.update(data.slice(24, 56));
-    hm.update(data.slice(72, 96));
-    hm.update(data.slice(104, 136));
+    data.updateHmac(hm, 0, 16);
+    data.updateHmac(hm, 24, 32);
+    data.updateHmac(hm, 72, 24);
+    data.updateHmac(hm, 104, 32);
   }
   return hm;
 }
@@ -488,7 +456,7 @@ function readHmacObjectFrame(data, context, offset) {
   if (offset + OBJECT_HEADER_SIZE > context.fileSize) {
     throw new VerificationError(`object header at offset ${offset} exceeds file bounds`);
   }
-  const size = data.readBigUInt64LE(offset + 8);
+  const size = data.u64(offset + 8);
   if (size < BigInt(OBJECT_HEADER_SIZE)) {
     throw new VerificationError(`HMAC object size ${size} too small at offset ${offset}`);
   }
@@ -500,7 +468,7 @@ function readHmacObjectFrame(data, context, offset) {
     throw new VerificationError(`HMAC object at offset ${offset} with aligned size ${alignedSize} exceeds file bounds`);
   }
   return {
-    typ: data.readUInt8(offset),
+    typ: data.u8(offset),
     size,
     alignedSizeNumber: u64ToNumber(alignedSize, `aligned object size at offset ${offset}`),
   };
@@ -551,28 +519,28 @@ function tagRealtimeRange(startEpoch, epoch, intervalUsec) {
 
 function hmacObject(hm, data, offset, typ, size, isCompact) {
   const sizeNumber = u64ToNumber(size, `object size at offset ${offset}`);
-  hm.update(data.slice(offset, offset + OBJECT_HEADER_SIZE));
+  data.updateHmac(hm, offset, OBJECT_HEADER_SIZE);
 
   switch (typ) {
     case OBJECT_TYPE_DATA:
-      hm.update(data.slice(offset + 16, offset + 24));
+      data.updateHmac(hm, offset + 16, 8);
       {
         let payloadOffset = DATA_OBJECT_HEADER_SIZE;
         if (isCompact) payloadOffset = COMPACT_DATA_OBJECT_HEADER_SIZE;
         if (size > BigInt(payloadOffset)) {
-          hm.update(data.slice(offset + payloadOffset, offset + sizeNumber));
+          data.updateHmac(hm, offset + payloadOffset, sizeNumber - payloadOffset);
         }
       }
       break;
     case OBJECT_TYPE_FIELD:
-      hm.update(data.slice(offset + 16, offset + 24));
+      data.updateHmac(hm, offset + 16, 8);
       if (size > BigInt(FIELD_OBJECT_HEADER_SIZE)) {
-        hm.update(data.slice(offset + FIELD_OBJECT_HEADER_SIZE, offset + sizeNumber));
+        data.updateHmac(hm, offset + FIELD_OBJECT_HEADER_SIZE, sizeNumber - FIELD_OBJECT_HEADER_SIZE);
       }
       break;
     case OBJECT_TYPE_ENTRY:
       if (size > BigInt(OBJECT_HEADER_SIZE)) {
-        hm.update(data.slice(offset + OBJECT_HEADER_SIZE, offset + sizeNumber));
+        data.updateHmac(hm, offset + OBJECT_HEADER_SIZE, sizeNumber - OBJECT_HEADER_SIZE);
       }
       break;
     case OBJECT_TYPE_DATA_HASH_TABLE:
@@ -581,7 +549,7 @@ function hmacObject(hm, data, offset, typ, size, isCompact) {
       // nothing beyond header
       break;
     case OBJECT_TYPE_TAG:
-      hm.update(data.slice(offset + OBJECT_HEADER_SIZE, offset + OBJECT_HEADER_SIZE + 16));
+      data.updateHmac(hm, offset + OBJECT_HEADER_SIZE, 16);
       break;
   }
 }
