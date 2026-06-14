@@ -4,6 +4,9 @@ Last updated: 2026-06-14
 
 ## Current
 
+- SOW-0110 - v0.7.0 Release: in-progress. Activates after SOW-0109 and
+  SOW-0105 closure to publish Rust crates at `0.7.0`, push `master`, and create
+  root plus Go submodule release tags for Netdata integration.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.

@@ -7,6 +7,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
+- `SOW-0110-20260614-v0-7-0-release.md` - in-progress. Activates after SOW-0109 and SOW-0105 closure to publish Rust crates at `0.7.0`, push `master`, and create root plus Go submodule release tags for Netdata integration.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
 
 ## Pending
