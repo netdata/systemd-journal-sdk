@@ -7,7 +7,6 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- `SOW-0110-20260614-v0-7-0-release.md` - in-progress. Activates after SOW-0109 and SOW-0105 closure to publish Rust crates at `0.7.0`, push `master`, and create root plus Go submodule release tags for Netdata integration.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
 
 ## Pending
@@ -22,6 +21,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - `SOW-0098-20260607-rust-legacy-core-duplication-debt.md` - open. Follow-up from the Codacy Rust/Go metrics audit for real Rust `jf`/`journal-core` duplication reduction.
 ## Done
 
+- `SOW-0110-20260614-v0-7-0-release.md` - completed. Rust crates were published to crates.io at `0.7.0`, `master` was pushed through release commit `556e79e1e9eabab84becb5f6d0658b6f39ba7075`, and annotated tags `v0.7.0` plus `go/v0.7.0` were pushed; both peel to the same release commit. Go tests, wiki validation, verified examples, Rust package dry-runs, `git diff --check`, and SOW audit passed.
 - `SOW-0109-20260614-python-node-netdata-edge-parity.md` - completed. Python and Node now match the Rust reference for the remaining scoped Netdata edge parity gaps discovered after SOW-0107: Python `data_only && delta` keeps analysis enabled, Python/Node expose and wire candidate-row callbacks, and Node no longer drops Explorer rows only because `commitRealtime` is zero. Focused tests, full Python/Node suites, Netdata function comparators, `git diff --check`, SOW audit, and all six reviewer votes passed.
 - `SOW-0105-20260611-node-explorer-netdata-parity.md` - completed after reconciliation. The Node Explorer API, Netdata function API, stdin wrapper, source selector labels, facade unique-values visitor, and TypeScript definitions landed in SOW-0105; the remaining review-discovered parity gaps were completed by SOW-0107 and SOW-0109 before closure.
 - `SOW-0107-20260613-python-node-explorer-sampling-engine.md` - completed. Python and Node now match the Rust Explorer/Netdata behavior for the scoped parity gaps: row-level sampling decision/estimation, Python Netdata FTS, Python `PRIORITY` facet sorting, Python/Node Index Compare validation, and O(1) indexed row collection. Local validation, four-peer high-row comparator evidence, `git diff --check`, and six production-grade reviewer votes passed; remaining reviewer-discovered edge parity items are tracked by SOW-0109.

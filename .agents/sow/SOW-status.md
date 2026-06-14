@@ -4,9 +4,6 @@ Last updated: 2026-06-14
 
 ## Current
 
-- SOW-0110 - v0.7.0 Release: in-progress. Activates after SOW-0109 and
-  SOW-0105 closure to publish Rust crates at `0.7.0`, push `master`, and create
-  root plus Go submodule release tags for Netdata integration.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
@@ -45,6 +42,12 @@ Last updated: 2026-06-14
   shared primitives preserve historical compatibility and reader performance.
 ## Recently Closed Or Completed
 
+- SOW-0110 - v0.7.0 Release: completed. Rust crates were published to crates.io
+  at `0.7.0`, `master` was pushed through release commit
+  `556e79e1e9eabab84becb5f6d0658b6f39ba7075`, and annotated tags `v0.7.0`
+  plus `go/v0.7.0` were pushed; both peel to the same release commit. Go tests,
+  wiki validation, verified examples, Rust package dry-runs, `git diff --check`,
+  and SOW audit passed.
 - SOW-0109 - Python And Node Netdata Edge Parity Closure: completed. Python and
   Node now match the Rust reference for the remaining scoped Netdata edge
   parity gaps discovered after SOW-0107: Python `data_only && delta` keeps
