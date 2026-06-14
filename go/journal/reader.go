@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"sort"
@@ -66,6 +65,7 @@ type ReaderAccessMode int
 const (
 	ReaderAccessReadAt ReaderAccessMode = iota
 	ReaderAccessMmap
+	ReaderAccessAuto
 )
 
 type ReaderBounds int
@@ -76,12 +76,21 @@ const (
 )
 
 type ReaderOptions struct {
-	AccessMode ReaderAccessMode
-	Bounds     ReaderBounds
+	AccessMode       ReaderAccessMode
+	Bounds           ReaderBounds
+	WindowSize       uint64
+	MaxWindows       int
+	MaxRowArenaBytes uint64
 }
 
 func DefaultReaderOptions() ReaderOptions {
-	return ReaderOptions{AccessMode: ReaderAccessMmap, Bounds: ReaderBoundsLive}
+	return ReaderOptions{
+		AccessMode:       ReaderAccessAuto,
+		Bounds:           ReaderBoundsLive,
+		WindowSize:       defaultReaderWindowSize,
+		MaxWindows:       defaultReaderMaxWindows,
+		MaxRowArenaBytes: defaultReaderMaxRowArenaBytes,
+	}
 }
 
 func (o ReaderOptions) WithAccessMode(mode ReaderAccessMode) ReaderOptions {
@@ -103,6 +112,21 @@ func (o ReaderOptions) WithBounds(bounds ReaderBounds) ReaderOptions {
 	return o
 }
 
+func (o ReaderOptions) WithWindowSize(size uint64) ReaderOptions {
+	o.WindowSize = size
+	return o
+}
+
+func (o ReaderOptions) WithMaxWindows(maxWindows int) ReaderOptions {
+	o.MaxWindows = maxWindows
+	return o
+}
+
+func (o ReaderOptions) WithMaxRowArenaBytes(size uint64) ReaderOptions {
+	o.MaxRowArenaBytes = size
+	return o
+}
+
 func (o ReaderOptions) WithSnapshot(enabled bool) ReaderOptions {
 	if enabled {
 		o.Bounds = ReaderBoundsSnapshot
@@ -113,13 +137,7 @@ func (o ReaderOptions) WithSnapshot(enabled bool) ReaderOptions {
 }
 
 func (o ReaderOptions) normalized() ReaderOptions {
-	if o.AccessMode != ReaderAccessMmap {
-		o.AccessMode = ReaderAccessReadAt
-	}
-	if o.Bounds != ReaderBoundsSnapshot {
-		o.Bounds = ReaderBoundsLive
-	}
-	return o
+	return normalizeReaderOptions(o)
 }
 
 // Reader reads one journal file. A Reader is not safe for concurrent use by
@@ -130,7 +148,7 @@ type Reader struct {
 	path        string
 	cleanupPath string
 	options     ReaderOptions
-	mapping     *readOnlyMapping
+	accessor    readerAccessor
 	fileSize    uint64
 
 	// Cached from immutable per-file layout flags; live refresh updates mutable
@@ -164,7 +182,7 @@ type readerRefreshSnapshot struct {
 	offsets  []uint64
 	index    int
 	fileSize uint64
-	mapping  *readOnlyMapping
+	visible  readerAccessorVisibleSnapshot
 }
 
 func OpenFile(path string) (*Reader, error) {
@@ -184,20 +202,22 @@ func openFileWithOptions(path string, opts ReaderOptions, loadEntries bool) (*Re
 		return nil, err
 	}
 
-	buf := make([]byte, headerSize)
-	if _, err := f.ReadAt(buf, 0); err != nil {
+	accessor, _, err := newReaderAccessor(f, opts)
+	if err != nil {
 		_ = closeJournalFile(f, cleanupPath)
 		return nil, err
 	}
 
-	header, err := parseHeader(buf)
+	header, err := readHeaderFromAccessor(accessor)
 	if err != nil {
+		_ = accessor.close()
 		_ = closeJournalFile(f, cleanupPath)
 		return nil, err
 	}
 
 	const supportedReaderIncompatible = incompatibleKeyedHash | incompatibleCompressedZSTD | incompatibleCompressedXZ | incompatibleCompressedLZ4 | incompatibleCompact
 	if header.incompatibleFlags&^supportedReaderIncompatible != 0 {
+		_ = accessor.close()
 		_ = closeJournalFile(f, cleanupPath)
 		return nil, errUnsupportedJournal
 	}
@@ -208,20 +228,10 @@ func openFileWithOptions(path string, opts ReaderOptions, loadEntries bool) (*Re
 		path:        path,
 		cleanupPath: cleanupPath,
 		options:     opts,
+		accessor:    accessor,
+		fileSize:    accessor.size(),
 	}
 	r.configureLayout()
-	if info, err := f.Stat(); err == nil {
-		r.fileSize = uint64(info.Size())
-	}
-	if opts.AccessMode == ReaderAccessMmap {
-		mapping, err := newReadOnlyMapping(f)
-		if err != nil {
-			_ = closeJournalFile(f, cleanupPath)
-			return nil, err
-		}
-		r.mapping = mapping
-		r.fileSize = mapping.size
-	}
 
 	if loadEntries {
 		if err := r.loadEntryArray(); err != nil {
@@ -246,13 +256,13 @@ func (r *Reader) configureLayout() {
 }
 
 func (r *Reader) Close() error {
-	var unmapErr error
-	if r.mapping != nil {
-		unmapErr = r.mapping.close()
-		r.mapping = nil
+	var accessErr error
+	if r.accessor != nil {
+		accessErr = r.accessor.close()
+		r.accessor = nil
 	}
 	closeErr := closeJournalFile(r.file, r.cleanupPath)
-	return errors.Join(unmapErr, closeErr)
+	return errors.Join(accessErr, closeErr)
 }
 
 func openJournalFile(path string) (*os.File, string, error) {
@@ -261,27 +271,26 @@ func openJournalFile(path string) (*os.File, string, error) {
 		return f, "", err
 	}
 
-	compressed, err := os.ReadFile(path)
+	src, err := openReaderFile(path)
 	if err != nil {
 		return nil, "", err
 	}
-	decoder, err := zstd.NewReader(nil)
+	decoder, err := zstd.NewReader(src)
 	if err != nil {
+		_ = src.Close()
 		return nil, "", err
 	}
-	defer decoder.Close()
-
-	decoded, err := decoder.DecodeAll(compressed, nil)
-	if err != nil {
-		return nil, "", err
-	}
+	defer func() {
+		decoder.Close()
+		_ = src.Close()
+	}()
 
 	tmp, err := os.CreateTemp("", "systemd-journal-sdk-*.journal")
 	if err != nil {
 		return nil, "", err
 	}
 	cleanupPath := tmp.Name()
-	if _, err := tmp.Write(decoded); err != nil {
+	if _, err := io.Copy(tmp, decoder); err != nil {
 		_ = closeJournalFile(tmp, cleanupPath)
 		return nil, "", err
 	}
@@ -326,25 +335,45 @@ func (h *journalHeader) HeaderSize() uint64 {
 }
 
 func (r *Reader) readAt(dst []byte, offset uint64) error {
-	if r.mapping != nil {
-		return r.mapping.readAt(dst, offset)
+	if r.accessor == nil {
+		return errInvalidJournal
 	}
-	_, err := r.file.ReadAt(dst, int64(offset))
-	return err
+	return r.accessor.readAt(dst, offset)
 }
 
 func (r *Reader) readSlice(offset, size uint64) ([]byte, error) {
-	if r.mapping != nil {
-		return r.mapping.bytesAt(offset, size)
+	if r.accessor == nil {
+		return nil, errInvalidJournal
 	}
-	if size > uint64(int(^uint(0)>>1)) {
-		return nil, fmt.Errorf("%w: reader request too large", errInvalidJournal)
+	return r.accessor.tempSlice(offset, size)
+}
+
+func (r *Reader) readRowSlice(offset, size uint64) ([]byte, error) {
+	if r.accessor == nil {
+		return nil, errInvalidJournal
 	}
-	buf := make([]byte, size)
-	if err := r.readAt(buf, offset); err != nil {
-		return nil, err
+	return r.accessor.rowSlice(offset, size)
+}
+
+func (r *Reader) rowCopy(src []byte) ([]byte, error) {
+	if r.accessor == nil {
+		return nil, errInvalidJournal
 	}
-	return buf, nil
+	return r.accessor.rowCopy(src)
+}
+
+func (r *Reader) SelectedAccessMode() ReaderAccessMode {
+	if r.accessor == nil {
+		return r.options.AccessMode
+	}
+	return r.accessor.selectedMode()
+}
+
+func (r *Reader) AccessStats() ReaderAccessStats {
+	if r.accessor == nil {
+		return ReaderAccessStats{RequestedAccessMode: r.options.AccessMode}
+	}
+	return r.accessor.stats()
 }
 
 func rawFieldKey(name []byte) string {
@@ -379,6 +408,9 @@ func (r *Reader) ClearEntryDataState() {
 func (r *Reader) clearCurrentEntryState() {
 	r.clearEntryDataState()
 	r.currentHeaderValid = false
+	if r.accessor != nil {
+		_ = r.accessor.clearRow()
+	}
 }
 
 func (r *Reader) currentEntryOffset() (uint64, error) {
@@ -389,23 +421,11 @@ func (r *Reader) currentEntryOffset() (uint64, error) {
 }
 
 func (r *Reader) readCurrentHeader() (journalHeader, uint64, error) {
-	buf := make([]byte, headerSize)
-	n, err := r.file.ReadAt(buf, 0)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return journalHeader{}, 0, err
-	}
-	if n < headerMinSize {
+	if r.accessor == nil {
 		return journalHeader{}, 0, errInvalidJournal
 	}
-	header, err := parseHeader(buf[:n])
-	if err != nil {
-		return journalHeader{}, 0, err
-	}
-	info, err := r.file.Stat()
-	if err != nil {
-		return journalHeader{}, 0, err
-	}
-	return header, uint64(info.Size()), nil
+	header, _, size, err := r.accessor.refreshVisibleBounds()
+	return header, size, err
 }
 
 func (r *Reader) Refresh() (bool, error) {
@@ -416,8 +436,10 @@ func (r *Reader) refreshEntryOffsets() (bool, error) {
 	if r.cleanupPath != "" || r.options.Bounds == ReaderBoundsSnapshot {
 		return false, nil
 	}
+	snapshot := r.refreshSnapshot()
 	header, size, err := r.readCurrentHeader()
 	if err != nil {
+		r.restoreRefreshSnapshot(snapshot)
 		return false, err
 	}
 	if r.sameEntryArrayState(header, size) {
@@ -427,25 +449,12 @@ func (r *Reader) refreshEntryOffsets() (bool, error) {
 		return false, nil
 	}
 
-	snapshot := r.refreshSnapshot()
-	newMapping, err := r.newRefreshMapping()
-	if err != nil {
-		return false, nil
-	}
-
-	r.applyRefreshState(header, size, newMapping)
-	r.clearCurrentEntryState()
+	r.applyRefreshState(header, size)
 	if err := r.loadEntryArray(); err != nil {
-		if newMapping != nil {
-			_ = newMapping.close()
-		}
 		r.restoreRefreshSnapshot(snapshot)
 		return false, nil
 	}
 	r.entryIndex = snapshot.index
-	if snapshot.mapping != nil {
-		_ = snapshot.mapping.close()
-	}
 	r.clampEntryIndex()
 	return true, nil
 }
@@ -469,25 +478,14 @@ func (r *Reader) refreshSnapshot() readerRefreshSnapshot {
 		offsets:  r.entryOffsets,
 		index:    r.entryIndex,
 		fileSize: r.fileSize,
-		mapping:  r.mapping,
+		visible:  r.accessor.snapshotVisibleBounds(),
 	}
 }
 
-func (r *Reader) newRefreshMapping() (*readOnlyMapping, error) {
-	if r.options.AccessMode != ReaderAccessMmap {
-		return nil, nil
-	}
-	return newReadOnlyMapping(r.file)
-}
-
-func (r *Reader) applyRefreshState(header journalHeader, size uint64, mapping *readOnlyMapping) {
+func (r *Reader) applyRefreshState(header journalHeader, size uint64) {
 	r.header = header
 	r.configureLayout()
 	r.fileSize = size
-	if mapping != nil {
-		r.mapping = mapping
-		r.fileSize = mapping.size
-	}
 }
 
 func (r *Reader) restoreRefreshSnapshot(snapshot readerRefreshSnapshot) {
@@ -496,8 +494,9 @@ func (r *Reader) restoreRefreshSnapshot(snapshot readerRefreshSnapshot) {
 	r.entryOffsets = snapshot.offsets
 	r.entryIndex = snapshot.index
 	r.fileSize = snapshot.fileSize
-	r.mapping = snapshot.mapping
-	r.clearCurrentEntryState()
+	if r.accessor != nil {
+		r.accessor.restoreVisibleBounds(snapshot.visible)
+	}
 }
 
 func (r *Reader) loadEntryArray() error {

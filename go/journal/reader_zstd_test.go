@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,6 +18,49 @@ func TestReaderSystemdZstdFixture(t *testing.T) {
 	}
 	if !sawTransport {
 		t.Fatal("systemd fixture did not expose _TRANSPORT in first 100 entries")
+	}
+}
+
+func TestReaderJournalZstdUsesTempAccessorAndCleansUp(t *testing.T) {
+	src := createReaderMessageJournal(t, 1, []Field{StringField("MESSAGE", "zst temp")})
+	zstPath := filepath.Join(t.TempDir(), "generated.journal.zst")
+	writeZstdFile(t, src, zstPath)
+
+	r, err := OpenFileWithOptions(
+		zstPath,
+		DefaultReaderOptions().
+			WithWindowSize(1024).
+			WithMaxWindows(1),
+	)
+	if err != nil {
+		t.Fatalf("OpenFileWithOptions(%s) error = %v", zstPath, err)
+	}
+	cleanupPath := r.cleanupPath
+	if cleanupPath == "" {
+		t.Fatal("cleanupPath is empty; want streamed .journal.zst temp file")
+	}
+	if _, err := os.Stat(cleanupPath); err != nil {
+		_ = r.Close()
+		t.Fatalf("temporary decompressed journal is not present: %v", err)
+	}
+	if ok, err := r.Step(); err != nil || !ok {
+		_ = r.Close()
+		t.Fatalf("Step() = %v, %v; want true, nil", ok, err)
+	}
+	entry, err := r.GetEntry()
+	if err != nil {
+		_ = r.Close()
+		t.Fatalf("GetEntry() error = %v", err)
+	}
+	if got := string(entry.Fields["MESSAGE"]); got != "zst temp" {
+		_ = r.Close()
+		t.Fatalf("MESSAGE = %q, want zst temp", got)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if _, err := os.Stat(cleanupPath); !os.IsNotExist(err) {
+		t.Fatalf("temporary decompressed journal still exists after close: %v", err)
 	}
 }
 

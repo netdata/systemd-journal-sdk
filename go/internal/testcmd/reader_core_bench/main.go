@@ -109,7 +109,7 @@ func checksumBytes(checksum uint64, payload []byte) uint64 {
 	return checksum
 }
 
-func parseOptions(bounds, mmapStrategy string) (journal.ReaderOptions, error) {
+func parseOptions(bounds, mmapStrategy string, windowSize uint64) (journal.ReaderOptions, error) {
 	opts := journal.DefaultReaderOptions()
 	switch bounds {
 	case "live":
@@ -122,11 +122,14 @@ func parseOptions(bounds, mmapStrategy string) (journal.ReaderOptions, error) {
 	switch mmapStrategy {
 	case "read-at", "buffer":
 		opts = opts.WithAccessMode(journal.ReaderAccessReadAt)
-	case "mmap", "whole-file":
+	case "mmap":
 		opts = opts.WithAccessMode(journal.ReaderAccessMmap)
+	case "auto":
+		opts = opts.WithAccessMode(journal.ReaderAccessAuto)
 	default:
 		return opts, fmt.Errorf("invalid --mmap-strategy: %s", mmapStrategy)
 	}
+	opts = opts.WithWindowSize(windowSize)
 	return opts, nil
 }
 
@@ -375,6 +378,11 @@ func readSDK(surface, mode, direction string, inputs []string, opts journal.Read
 	}
 
 	var result counts
+	if statsReader, ok := reader.(interface {
+		AccessStats() journal.ReaderAccessStats
+	}); ok {
+		result.extra = map[string]interface{}{"reader_access_stats": statsReader.AccessStats()}
+	}
 	for {
 		ok, err := stepSDKReader(reader, direction)
 		if err != nil {
@@ -613,7 +621,7 @@ func parseBenchConfig() (benchConfig, error) {
 	if *loops < 1 {
 		return benchConfig{}, fmt.Errorf("invalid --loops: %d", *loops)
 	}
-	opts, err := parseOptions(*bounds, *mmapStrategy)
+	opts, err := parseOptions(*bounds, *mmapStrategy, *windowSize)
 	if err != nil {
 		return benchConfig{}, err
 	}

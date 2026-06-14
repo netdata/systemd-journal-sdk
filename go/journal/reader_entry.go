@@ -29,7 +29,7 @@ func (r *Reader) VisitEntryPayloads(visitor func([]byte) error) error {
 		return err
 	}
 	for _, dataOff := range offsets {
-		payload, err := r.readDataPayload(dataOff)
+		payload, err := r.readDataPayloadTemp(dataOff)
 		if err != nil {
 			return err
 		}
@@ -125,7 +125,7 @@ func (r *Reader) EnumerateEntryPayload() ([]byte, bool, error) {
 	}
 	dataOff := r.entryDataOffsets[r.entryDataIndex]
 	r.entryDataIndex++
-	payload, err := r.readDataPayload(dataOff)
+	payload, err := r.readDataPayloadRow(dataOff)
 	if err != nil {
 		return nil, false, err
 	}
@@ -144,7 +144,7 @@ func (r *Reader) readEntryAt(offset uint64) (*Entry, error) {
 	payloads := make([][]byte, 0, len(entries))
 	rawFields := make([]RawField, 0, len(entries))
 	for _, dataOff := range entries {
-		payload, err := r.readDataPayload(dataOff)
+		payload, err := r.readDataPayloadTemp(dataOff)
 		if err != nil {
 			return nil, fmt.Errorf("read data object at offset %d for entry at offset %d: %w", dataOff, offset, err)
 		}
@@ -202,7 +202,7 @@ func formatCursorFromDirectoryKey(key directoryEntryKey) string {
 		key.seqnum)
 }
 
-func (r *Reader) readDataPayload(offset uint64) ([]byte, error) {
+func (r *Reader) readDataPayloadTemp(offset uint64) ([]byte, error) {
 	headerBuf, err := r.readSlice(offset, objectHeaderSize)
 	if err != nil {
 		return nil, err
@@ -227,6 +227,46 @@ func (r *Reader) readDataPayload(offset uint64) ([]byte, error) {
 		return nil, err
 	}
 	return decompressDataPayload(objHdr.flag, payload)
+}
+
+func (r *Reader) readDataPayloadRow(offset uint64) ([]byte, error) {
+	headerBuf, err := r.readSlice(offset, objectHeaderSize)
+	if err != nil {
+		return nil, err
+	}
+
+	objHdr, err := parseObjectHeader(headerBuf)
+	if err != nil {
+		return nil, err
+	}
+
+	if objHdr.typ != objectTypeData {
+		return nil, errCorruptObject
+	}
+	payloadOffset := r.dataPayloadOffset()
+	if objHdr.size < payloadOffset {
+		return nil, errCorruptObject
+	}
+
+	payloadLen := objHdr.size - payloadOffset
+	payloadStart := offset + payloadOffset
+	if objHdr.flag&objectCompressedMask != 0 {
+		payload, err := r.readSlice(payloadStart, payloadLen)
+		if err != nil {
+			return nil, err
+		}
+		decompressed, err := decompressDataPayload(objHdr.flag, payload)
+		if err != nil {
+			return nil, err
+		}
+		return r.rowCopy(decompressed)
+	}
+
+	payload, err := r.readRowSlice(payloadStart, payloadLen)
+	if err != nil {
+		return nil, err
+	}
+	return payload, nil
 }
 
 func (r *Reader) visitDataPayloadWithHeader(offset uint64, header dataHeader, visit func([]byte) error) error {

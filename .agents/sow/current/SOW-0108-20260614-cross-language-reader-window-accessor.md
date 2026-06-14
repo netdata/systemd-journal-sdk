@@ -12,6 +12,12 @@ Rust already has mmap support on Linux, FreeBSD, macOS, and Windows through
 the pre-code gate in reviewer round 5: `glm`, `kimi`, `mimo`, `qwen`,
 `minimax`, and `deepseek` all voted `READY FOR IMPLEMENTATION`. User design
 decisions are recorded before code, per the project decision-recording rule.
+Go implementation is now locally implemented and validated on Linux plus
+Windows/macOS/FreeBSD target checks. Reviewer round 2 found additional Go
+test-coverage blockers and one row-arena contract hardening item; those fixes
+are implemented and locally validated. Go production review round 3 passed with
+all six reviewers voting `PRODUCTION GRADE`. The Go phase is ready to commit
+before advancing to Python.
 
 ## Requirements
 
@@ -1336,6 +1342,267 @@ CRITICAL REPOSITORY BOUNDARY:
       `ReaderAccessMmap` must include or separately cover `ReaderAccessAuto`.
   - Gate result: Go implementation may start.
 
+### Go Implementation Evidence - 2026-06-14
+
+Status: locally implemented; pending external `PRODUCTION GRADE` review.
+
+Changed Go reader architecture:
+
+- Added `ReaderAccessAuto`, window sizing, max-window count, row-arena limit,
+  `SelectedAccessMode()`, and `AccessStats()`:
+  `go/journal/reader.go`, `go/journal/reader_access.go`.
+- Replaced reader-owned whole-file `readOnlyMapping` with
+  `accessor readerAccessor`:
+  `go/journal/reader.go`.
+- Added shared rolling accessor logic for window lookup, LRU eviction,
+  row-pinned windows, row-scoped arena, visible-bounds snapshots, and selected
+  backend stats:
+  `go/journal/reader_access.go`.
+- Added rolling Unix mmap backend using aligned `syscall.Mmap` windows:
+  `go/journal/reader_access_mmap_unix.go`.
+- Added rolling Windows mmap backend using `CreateFileMapping`,
+  `MapViewOfFile`, exact `UnmapViewOfFile` view pointers, and
+  `kernel32!GetSystemInfo` allocation granularity:
+  `go/journal/reader_access_mmap_windows.go`.
+- Added explicit unsupported mmap constructor for targets outside Unix and
+  Windows:
+  `go/journal/reader_access_mmap_unsupported.go`.
+- Removed the obsolete reader-only whole-file mapping/copy code from
+  `go/journal/mmap_unix.go` and `go/journal/mmap_other.go`. Writer
+  `mappedArena` remains in place.
+- Changed `.journal.zst` reader open from whole-file `os.ReadFile` +
+  `DecodeAll` to streaming zstd decompression into a temporary `.journal`,
+  which is then read through the same bounded accessor:
+  `go/journal/reader.go`.
+- Split DATA payload reads into temp/callback/internal and row-lifetime paths:
+  `readDataPayloadTemp()` and `readDataPayloadRow()` in
+  `go/journal/reader_entry.go`.
+- Preserved direct `Refresh()` row-lifetime guarantees by snapshotting logical
+  reader state and accessor visible bounds without calling `clearRow()`:
+  `go/journal/reader.go`.
+- Fixed a live `ReadAt` cache invalidation edge case discovered during local
+  tests: journal files can be preallocated, so header/entry-array metadata may
+  change while file size is unchanged. The rolling `ReadAt` backend now marks
+  cached windows stale on refresh after reading a fresh header directly inside
+  the accessor.
+- Fixed a Windows mmap growth edge case discovered during local review:
+  Windows file mapping objects are sized at `CreateFileMapping` time, so the
+  backend refreshes the mapping handle when the visible file size grows while
+  keeping existing mapped views valid until their normal unmap.
+- Updated Go reader tests to cover `ReaderAccessAuto`, selected backend stats,
+  row payload validity across refresh with a single 1 KiB window, and compressed
+  row-arena limit errors:
+  `go/journal/reader_test.go`.
+- Updated the Go reader benchmark helper so `--window-size` affects
+  `ReaderOptions`, `--mmap-strategy auto` is explicit, and Go `mmap` now means
+  rolling mmap, not whole-file:
+  `go/internal/testcmd/reader_core_bench/main.go`,
+  `tests/benchmarks/run_reader_core_benchmarks.py`.
+
+Local validation passed:
+
+- `cd go && go test ./...`
+- `cd go && GOOS=windows GOARCH=amd64 go test ./...`
+- `cd go && GOOS=darwin GOARCH=arm64 go test -exec=true ./...`
+- `cd go && GOOS=freebsd GOARCH=amd64 go test -exec=true ./...`
+- `python3 tests/interoperability/run_matrix.py --writers go --readers go stock --entries 20`
+  - result: 11 total checks, 11 passed, 0 failed.
+- `python3 tests/interoperability/run_directory_matrix.py --readers go stock`
+  - result: PASS, including Go `.journal.zst` directory extension coverage.
+- Go reader-core smoke on a real Netdata raw journal with 1 MiB windows:
+  - `auto`: 121,159 records, 5,028,947 fields, selected mode `mmap`, mapped
+    bytes 4 MiB, read buffers 0.
+  - `mmap`: 121,159 records, 5,028,947 fields, selected mode `mmap`, mapped
+    bytes 4 MiB, read buffers 0.
+  - `read-at`: 121,159 records, 5,028,947 fields, selected mode `read-at`,
+    mapped bytes 0, read buffers 4 MiB.
+
+Remaining Go gate before advancing:
+
+- Run the full reviewer pool against this SOW and the Go changed surface.
+- Iterate until `glm`, `kimi`, `mimo`, `qwen`, `minimax`, and `deepseek` all
+  vote `PRODUCTION GRADE`.
+
+### Go Production Review Round 1 - 2026-06-14
+
+Reviewer outputs are stored under `.local/agent-reviews/sow-0108-go-prod-round1/`.
+
+Votes:
+
+- `glm`: `PRODUCTION GRADE`.
+- `kimi`: `PRODUCTION GRADE`.
+- `mimo`: `PRODUCTION GRADE`.
+- `qwen`: `PRODUCTION GRADE`.
+- `deepseek`: `PRODUCTION GRADE`.
+- `minimax`: `NOT PRODUCTION GRADE`.
+
+Blocking finding accepted:
+
+- `minimax` found that `readDataPayloadRow()` used the row-lifetime path to
+  read compressed DATA bytes before decompression. This could pin a window or
+  consume row-arena budget for compressed bytes that are temporary and unused
+  after decompression. This violated the SOW rule that compressed DATA raw
+  bytes use the temp path and only decompressed bytes enter the row arena.
+
+Fixes after round 1:
+
+- `readDataPayloadRow()` now checks `objectCompressedMask` first. Compressed
+  DATA reads raw compressed bytes with `readSlice()` and copies only the
+  decompressed payload to the row arena; uncompressed DATA returns
+  `readRowSlice()` directly.
+- Row-arena growth now uses amortized capacity growth instead of exact-size
+  reallocation for each row-copy allocation.
+- Added `TestReaderOversizedPayloadUsesRowArena`, which forces a 512-byte
+  window and verifies a 2 KiB uncompressed payload is returned correctly and
+  uses the row arena.
+
+Post-fix validation passed:
+
+- `cd go && go test ./...`
+- `cd go && GOOS=windows GOARCH=amd64 go test ./...`
+- `cd go && GOOS=darwin GOARCH=arm64 go test -exec=true ./...`
+- `cd go && GOOS=freebsd GOARCH=amd64 go test -exec=true ./...`
+- `python3 tests/interoperability/run_matrix.py --writers go --readers go stock --entries 20`
+  - result: 11 total checks, 11 passed, 0 failed.
+- `python3 tests/interoperability/run_directory_matrix.py --readers go stock`
+  - result: PASS.
+- Go reader-core post-fix smoke on the same real Netdata raw journal with
+  1 MiB windows:
+  - `auto`: 121,159 records, 5,028,947 fields, selected mode `mmap`, mapped
+    bytes 4 MiB, read buffers 0.
+  - `mmap`: 121,159 records, 5,028,947 fields, selected mode `mmap`, mapped
+    bytes 4 MiB, read buffers 0.
+  - `read-at`: 121,159 records, 5,028,947 fields, selected mode `read-at`,
+    mapped bytes 0, read buffers 4 MiB.
+
+Round 2 reviewer gate:
+
+- Failed. Rerun round 3 with the same full review scope and the round-2 fixes
+  included. Require all six reviewers to vote `PRODUCTION GRADE`.
+
+### Go Production Review Round 2 - 2026-06-14
+
+Reviewer outputs are stored under `.local/agent-reviews/sow-0108-go-prod-round2/`.
+
+Votes:
+
+- `glm`: `PRODUCTION GRADE`.
+- `kimi`: `PRODUCTION GRADE`.
+- `mimo`: `PRODUCTION GRADE`.
+- `deepseek`: `NOT PRODUCTION GRADE`.
+- `minimax`: `NOT PRODUCTION GRADE`.
+- `qwen`: `NOT PRODUCTION GRADE`.
+
+Blocking findings accepted:
+
+- `deepseek` and `minimax` found that the SOW-required focused test coverage
+  was still incomplete for bounded large-file window behavior, cross-window
+  DATA object fallback, refresh failure rollback, callback/row lifetime
+  behavior, and `.journal.zst` streaming/temp cleanup.
+- `qwen` found that the single growing Go row arena could reallocate its backing
+  array while callers held previous row slices. Go keeps the old backing array
+  alive through those slices, so the exact use-after-free framing was not
+  correct. The finding was still accepted as a row-lifetime contract hardening
+  issue: returned row slices should be backed by segments that are never moved
+  during the row, so the implementation does not depend on subtle backing-array
+  lifetime reasoning.
+- During the refresh-failure test design, local review found that
+  `refreshEntryOffsets()` captured its rollback snapshot after
+  `readCurrentHeader()` had already refreshed accessor-visible bounds. This
+  meant an entry-array reload failure could restore entry/header state while
+  leaving the accessor with the newly visible file size. This violated the
+  intended previous-visible-state rollback contract.
+
+Fixes after round 2:
+
+- Replaced the single growing `rowArena []byte` with segmented row-arena
+  storage. Row allocations now return slices from non-moving segments; existing
+  slices are never invalidated by later row-arena growth. Inactive segments are
+  reused or released to keep allocated row-arena capacity bounded by
+  `MaxRowArenaBytes`.
+- Added row-arena snapshot/restore for failed cross-window `rowSlice()` reads,
+  so a failed positioned read rolls back only the attempted row allocation.
+- Moved `refreshEntryOffsets()` rollback snapshot capture before
+  `readCurrentHeader()`, so failed entry-array reload restores both old reader
+  state and previous accessor-visible bounds.
+- Added focused tests:
+  - `TestReaderRefreshFailureRestoresStateAndKeepsRowPayload`
+  - `TestReaderRowArenaSegmentsPreserveCompressedSlices`
+  - `TestReaderCrossWindowPayloadUsesRowArena`
+  - `TestReaderBoundedWindowsForLargePayload`
+  - `TestReaderRowPinsClearOnAdvance`
+  - `TestReaderJournalZstdUsesTempAccessorAndCleansUp`
+- Existing focused tests retained:
+  - `TestReaderRowPayloadSurvivesRefresh`
+  - `TestReaderRowArenaLimitForCompressedPayload`
+  - `TestReaderOversizedPayloadUsesRowArena`
+
+Post-round-2-fix validation passed:
+
+- `go test ./journal -run 'TestReader(RefreshFailureRestoresStateAndKeepsRowPayload|RowArenaSegmentsPreserveCompressedSlices|OversizedPayloadUsesRowArena|CrossWindowPayloadUsesRowArena|BoundedWindowsForLargePayload|RowPinsClearOnAdvance|JournalZstdUsesTempAccessorAndCleansUp)'`
+- `go test ./...`
+- `GOOS=windows GOARCH=amd64 go test ./...`
+- `GOOS=darwin GOARCH=arm64 go test -exec=true ./...`
+- `GOOS=freebsd GOARCH=amd64 go test -exec=true ./...`
+- `go test -race ./journal -run 'TestReader(RefreshFailureRestoresStateAndKeepsRowPayload|RowArenaSegmentsPreserveCompressedSlices|CrossWindowPayloadUsesRowArena|BoundedWindowsForLargePayload|RowPinsClearOnAdvance|JournalZstdUsesTempAccessorAndCleansUp)'`
+- `python3 tests/interoperability/run_matrix.py --writers go --readers go stock --entries 20`
+  - result: 11 total checks, 11 passed, 0 failed.
+- `python3 tests/interoperability/run_directory_matrix.py --readers go stock`
+  - result: PASS.
+- Go reader-core real-journal smoke on a 201,326,592-byte Netdata raw journal
+  with 1 MiB windows:
+  - `auto`: 123,210 records, 5,110,520 fields, checksum
+    `3904379478172528663`, selected `mmap`, mapped bytes 4 MiB,
+    read buffers 0.
+  - `mmap`: same records/fields/checksum, selected `mmap`, mapped bytes
+    4 MiB, read buffers 0.
+  - `read-at`: same records/fields/checksum, selected `read-at`, mapped bytes
+    0, read buffers 4 MiB.
+- `git diff --check`
+- `.agents/sow/audit.sh`
+
+Round 3 reviewer gate:
+
+- Passed. All six reviewers voted `PRODUCTION GRADE`.
+
+### Go Production Review Round 3 - 2026-06-14
+
+Reviewer outputs are stored under `.local/agent-reviews/sow-0108-go-prod-round3/`.
+The first `minimax` and `deepseek` round-3 processes timed out and were not
+counted as votes. They were rerun with the same full review scope; the rerun
+outputs are the counted votes.
+
+Votes:
+
+- `glm`: `PRODUCTION GRADE`.
+- `kimi`: `PRODUCTION GRADE`.
+- `mimo`: `PRODUCTION GRADE`.
+- `qwen`: `PRODUCTION GRADE`.
+- `deepseek`: `PRODUCTION GRADE` from rerun output.
+- `minimax`: `PRODUCTION GRADE` from rerun output.
+
+Blocking findings:
+
+- None.
+
+Non-blocking risks recorded:
+
+- No automated test directly forces `Auto` mmap probe failure and fallback to
+  `ReadAt`.
+- No automated test directly exercises explicit mmap on an unsupported
+  non-Unix/non-Windows target.
+- Windows `GetSystemInfo` failure is inferred from zero allocation granularity
+  rather than checked as a returned error.
+- Some close-after-error and short-read paths remain covered indirectly rather
+  than by one focused test per branch.
+
+Disposition:
+
+- These are accepted as non-blocking for the Go phase. They do not contradict
+  the rolling-window contract, row-lifetime guarantee, or runtime-purity
+  contract. They remain useful candidates if future SOW-0108 phases add
+  injected backend test hooks.
+
 ## Validation
 
 Acceptance criteria evidence:
@@ -1343,14 +1610,41 @@ Acceptance criteria evidence:
 - Go pre-code gate: passed. Round 5 reviewers `glm`, `kimi`, `mimo`, `qwen`,
   `minimax`, and `deepseek` all voted `READY FOR IMPLEMENTATION` for the Go
   implementation plan.
+- Go local implementation gate: passed on Linux tests, Windows target tests,
+  macOS target tests, FreeBSD target tests, interoperability matrix, directory
+  matrix, focused row-lifetime/window tests, focused race tests, and benchmark
+  smoke.
+- Go external `PRODUCTION GRADE` reviewer gate: passed in round 3 after reruns
+  for two timed-out reviewer processes.
 
 Tests or equivalent validation:
 
-- Pending implementation.
+- Go validation commands passed:
+  - `cd go && go test ./...`
+  - `cd go && GOOS=windows GOARCH=amd64 go test ./...`
+  - `cd go && GOOS=darwin GOARCH=arm64 go test -exec=true ./...`
+  - `cd go && GOOS=freebsd GOARCH=amd64 go test -exec=true ./...`
+  - `python3 tests/interoperability/run_matrix.py --writers go --readers go stock --entries 20`
+  - `python3 tests/interoperability/run_directory_matrix.py --readers go stock`
+- Post-review-fix validation repeated the same Go test/cross-target/
+  interoperability gates and the reader-core real-journal smoke.
+- Post-round-2-fix validation added focused bounded-window, cross-window,
+  segmented row-arena, refresh rollback, row-pin clearing, `.journal.zst`
+  cleanup, and race coverage.
 
 Real-use evidence:
 
-- Pending implementation.
+- Go reader-core smoke ran against a real Netdata raw journal:
+  121,159 records and 5,028,947 fields read in each of `auto`, `mmap`, and
+  `read-at` modes with 1 MiB windows before the round-2 test hardening.
+  `auto` selected `mmap`; `mmap` used mapped windows only; `read-at` used read
+  buffers only.
+- The same smoke was repeated after fixing the round-1 compressed DATA row path
+  finding, with identical counts and backend stats.
+- After round-2 fixes, Go reader-core smoke ran against a larger
+  201,326,592-byte Netdata raw journal: 123,210 records and 5,110,520 fields
+  in each mode with identical checksum `3904379478172528663`; `auto`/`mmap`
+  held 4 MiB mapped and `read-at` held 4 MiB read buffers.
 
 Reviewer findings:
 
@@ -1388,10 +1682,25 @@ Reviewer findings:
   - The SOW was revised after each round with concrete mechanical decisions and
     validation requirements.
   - Round 5 result: all six reviewers voted `READY FOR IMPLEMENTATION`.
+- 2026-06-14 Go production review round 1:
+  - Five reviewers voted `PRODUCTION GRADE`.
+  - `minimax` voted `NOT PRODUCTION GRADE` because compressed DATA raw bytes
+    were read through the row-lifetime path before decompression.
+  - Disposition: accepted and fixed.
+- 2026-06-14 Go production review round 2:
+  - `glm`, `kimi`, and `mimo` voted `PRODUCTION GRADE`.
+  - `deepseek`, `minimax`, and `qwen` voted `NOT PRODUCTION GRADE`.
+  - Disposition: accepted and fixed. Round 3 pending.
+- 2026-06-14 Go production review round 3:
+  - `glm`, `kimi`, `mimo`, `qwen`, `deepseek`, and `minimax` voted
+    `PRODUCTION GRADE`.
+  - Disposition: Go phase review gate passed.
 
 Same-failure scan:
 
-- Pending implementation.
+- Local same-failure search confirmed the removed `readOnlyMapping` reader path
+  is no longer referenced by Go reader code. Writer `mappedArena` remains
+  separate.
 
 Sensitive data gate:
 
@@ -1400,19 +1709,23 @@ Sensitive data gate:
 
 Artifact maintenance gate:
 
-- Pending close.
+- Not complete. Go implementation changed public reader options/stats and
+  benchmark semantics; specs/docs must be updated before this SOW can close
+  after all language phases.
 
 Specs update:
 
-- Pending implementation.
+- Pending after Go production-grade review and before SOW close.
 
 Project skills update:
 
-- Pending implementation.
+- Pending after all language phases or if reviewer findings require workflow
+  changes.
 
 End-user/operator docs update:
 
-- Pending implementation.
+- Pending after all language phases or before the next public release that
+  exposes the new reader access options.
 
 End-user/operator skills update:
 

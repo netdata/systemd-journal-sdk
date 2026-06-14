@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -71,6 +72,93 @@ func createReaderMessageJournal(t *testing.T, entries int, fields []Field) strin
 	return path
 }
 
+func createRawReaderPayloadJournal(t *testing.T, path string, payload []byte) {
+	t.Helper()
+	opts := testOptions()
+	opts.FieldNamePolicy = FieldNamePolicyRaw
+	w, err := Create(path, opts)
+	if err != nil {
+		t.Fatalf("Create(%s) error = %v", path, err)
+	}
+	if err := w.AppendRaw([][]byte{payload}, EntryOptions{RealtimeUsec: 1_700_004_500_000_000, MonotonicUsec: 1}); err != nil {
+		t.Fatalf("AppendRaw() error = %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func createMultiCompressedRowJournal(t *testing.T, path string) [][]byte {
+	t.Helper()
+	opts := testOptions()
+	opts.Compression = CompressionZSTD
+	opts.CompressThresholdBytes = 16
+	w, err := Create(path, opts)
+	if err != nil {
+		t.Fatalf("Create(%s) error = %v", path, err)
+	}
+	fields := []Field{
+		{Name: "COMPRESSED_A", Value: bytes.Repeat([]byte("A"), 8192)},
+		{Name: "COMPRESSED_B", Value: bytes.Repeat([]byte("B"), 8192)},
+		{Name: "COMPRESSED_C", Value: bytes.Repeat([]byte("C"), 8192)},
+	}
+	if err := w.Append(fields, EntryOptions{RealtimeUsec: 1_700_004_400_000_000, MonotonicUsec: 1}); err != nil {
+		t.Fatalf("Append(multi compressed) error = %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	snapshot := readJournalSnapshot(t, path)
+	compressedObjects := 0
+	for _, data := range snapshot.dataByPayload {
+		if data.header.object.flag&objectCompressedMask != 0 {
+			compressedObjects++
+		}
+	}
+	if compressedObjects != len(fields) {
+		t.Fatalf("compressed DATA objects = %d, want %d", compressedObjects, len(fields))
+	}
+	want := make([][]byte, 0, len(fields))
+	for _, field := range fields {
+		payload := append(append([]byte(field.Name), '='), field.Value...)
+		want = append(want, payload)
+	}
+	return want
+}
+
+func corruptHeaderUint64(t *testing.T, path string, offset int64, value uint64) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("OpenFile(%s) for corruption error = %v", path, err)
+	}
+	defer f.Close()
+	var buf [8]byte
+	binary.LittleEndian.PutUint64(buf[:], value)
+	if _, err := f.WriteAt(buf[:], offset); err != nil {
+		t.Fatalf("WriteAt(%s, %d) error = %v", path, offset, err)
+	}
+}
+
+func totalPayloadBytes(payloads [][]byte) int {
+	total := 0
+	for _, payload := range payloads {
+		total += len(payload)
+	}
+	return total
+}
+
+func readerTestCrossingWindowSize(t *testing.T, offset uint64, size uint64) uint64 {
+	t.Helper()
+	for windowSize := size + 1; windowSize <= size+64*1024; windowSize++ {
+		if offset%windowSize+size > windowSize {
+			return windowSize
+		}
+	}
+	t.Fatalf("could not find crossing window size for offset=%d size=%d", offset, size)
+	return 0
+}
+
 func mustOpenReaderFile(t *testing.T, path string) *Reader {
 	t.Helper()
 	r, err := OpenFile(path)
@@ -129,7 +217,7 @@ func TestReaderRawFieldPayloadAPIs(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	for _, accessMode := range []ReaderAccessMode{ReaderAccessReadAt, ReaderAccessMmap} {
+	for _, accessMode := range readerTestAccessModes() {
 		t.Run(accessModeName(accessMode), func(t *testing.T) {
 			r, err := OpenFileWithOptions(path, DefaultReaderOptions().WithAccessMode(accessMode))
 			if err != nil {
@@ -281,7 +369,7 @@ func TestReaderPayloadEnumerationReusesOffsetsAcrossEntries(t *testing.T) {
 				t.Fatalf("Close() error = %v", err)
 			}
 
-			for _, accessMode := range []ReaderAccessMode{ReaderAccessReadAt, ReaderAccessMmap} {
+			for _, accessMode := range readerTestAccessModes() {
 				t.Run(accessModeName(accessMode), func(t *testing.T) {
 					r, err := OpenFileWithOptions(path, DefaultReaderOptions().WithAccessMode(accessMode))
 					if err != nil {
@@ -351,10 +439,378 @@ func assertReaderPayloadReuseRows(t *testing.T, r *Reader, rows []struct {
 }
 
 func TestReaderBoundsControlLiveRefresh(t *testing.T) {
-	for _, accessMode := range []ReaderAccessMode{ReaderAccessReadAt, ReaderAccessMmap} {
+	for _, accessMode := range readerTestAccessModes() {
 		t.Run(accessModeName(accessMode), func(t *testing.T) {
 			assertReaderLiveRefresh(t, accessMode)
 			assertReaderSnapshotBounds(t, accessMode)
+		})
+	}
+}
+
+func TestReaderDefaultAutoSelectsMmap(t *testing.T) {
+	path := createReaderMessageJournal(t, 1, []Field{StringField("MESSAGE", "auto")})
+	r, err := OpenFile(path)
+	if err != nil {
+		t.Fatalf("OpenFile() error = %v", err)
+	}
+	defer r.Close()
+	stats := r.AccessStats()
+	if stats.RequestedAccessMode != ReaderAccessAuto {
+		t.Fatalf("requested access = %d, want auto", stats.RequestedAccessMode)
+	}
+	if stats.SelectedAccessMode != ReaderAccessMmap {
+		t.Fatalf("selected access = %d, want mmap", stats.SelectedAccessMode)
+	}
+}
+
+func TestReaderRowPayloadSurvivesRefresh(t *testing.T) {
+	for _, accessMode := range readerTestAccessModes() {
+		t.Run(accessModeName(accessMode), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "row-pins.journal")
+			w, err := Create(path, testOptions())
+			if err != nil {
+				t.Fatalf("Create(%s) error = %v", path, err)
+			}
+			appendMessage(t, w, "first", 1_700_004_200_000_000, 1)
+			r, err := OpenFileWithOptions(
+				path,
+				DefaultReaderOptions().
+					WithAccessMode(accessMode).
+					WithWindowSize(1024).
+					WithMaxWindows(1),
+			)
+			if err != nil {
+				t.Fatalf("OpenFileWithOptions(%s) error = %v", path, err)
+			}
+			defer w.Close()
+			defer r.Close()
+
+			if ok, err := r.Step(); err != nil || !ok {
+				t.Fatalf("Step() = %v, %v; want true, nil", ok, err)
+			}
+			if err := r.EntryDataRestart(); err != nil {
+				t.Fatalf("EntryDataRestart() error = %v", err)
+			}
+			payload, ok, err := r.EnumerateEntryPayload()
+			if err != nil || !ok {
+				t.Fatalf("EnumerateEntryPayload() = %q, %v, %v; want payload", payload, ok, err)
+			}
+			want := append([]byte(nil), payload...)
+
+			appendMessage(t, w, "second", 1_700_004_200_000_001, 2)
+			changed, err := r.Refresh()
+			if err != nil || !changed {
+				t.Fatalf("Refresh() = %v, %v; want true, nil", changed, err)
+			}
+			if !bytes.Equal(payload, want) {
+				t.Fatalf("row payload changed across refresh: got %q want %q", payload, want)
+			}
+		})
+	}
+}
+
+func TestReaderRefreshFailureRestoresStateAndKeepsRowPayload(t *testing.T) {
+	for _, accessMode := range readerTestAccessModes() {
+		t.Run(accessModeName(accessMode), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "refresh-rollback.journal")
+			w, err := Create(path, testOptions())
+			if err != nil {
+				t.Fatalf("Create(%s) error = %v", path, err)
+			}
+			appendMessage(t, w, "first", 1_700_004_240_000_000, 1)
+			r, err := OpenFileWithOptions(
+				path,
+				DefaultReaderOptions().
+					WithAccessMode(accessMode).
+					WithWindowSize(1024).
+					WithMaxWindows(1),
+			)
+			if err != nil {
+				t.Fatalf("OpenFileWithOptions(%s) error = %v", path, err)
+			}
+			defer r.Close()
+
+			if ok, err := r.Step(); err != nil || !ok {
+				t.Fatalf("Step() = %v, %v; want true, nil", ok, err)
+			}
+			payload, ok, err := r.EnumerateEntryPayload()
+			if err != nil || !ok {
+				t.Fatalf("EnumerateEntryPayload() = %q, %v, %v; want payload", payload, ok, err)
+			}
+			wantPayload := append([]byte(nil), payload...)
+			wantSize := r.AccessStats().FileSize
+
+			appendMessage(t, w, "second", 1_700_004_240_000_001, 2)
+			if err := w.Close(); err != nil {
+				t.Fatalf("Close writer error = %v", err)
+			}
+			corruptHeaderUint64(t, path, 176, wantSize+1)
+
+			changed, err := r.Refresh()
+			if err != nil || changed {
+				t.Fatalf("Refresh() = %v, %v; want false, nil rollback", changed, err)
+			}
+			if got := r.AccessStats().FileSize; got != wantSize {
+				t.Fatalf("restored accessor file size = %d, want %d", got, wantSize)
+			}
+			if !bytes.Equal(payload, wantPayload) {
+				t.Fatalf("row payload changed after failed refresh: got %q want %q", payload, wantPayload)
+			}
+		})
+	}
+}
+
+func TestReaderRowArenaLimitForCompressedPayload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "compressed-row-arena.journal")
+	createCompressedDataJournal(t, path, CompressionZSTD)
+
+	for _, accessMode := range readerTestAccessModes() {
+		t.Run(accessModeName(accessMode), func(t *testing.T) {
+			r, err := OpenFileWithOptions(
+				path,
+				DefaultReaderOptions().
+					WithAccessMode(accessMode).
+					WithMaxRowArenaBytes(32),
+			)
+			if err != nil {
+				t.Fatalf("OpenFileWithOptions() error = %v", err)
+			}
+			defer r.Close()
+			if ok, err := r.Step(); err != nil || !ok {
+				t.Fatalf("Step() = %v, %v; want true, nil", ok, err)
+			}
+			if err := r.EntryDataRestart(); err != nil {
+				t.Fatalf("EntryDataRestart() error = %v", err)
+			}
+			for {
+				_, ok, err := r.EnumerateEntryPayload()
+				if err != nil {
+					if !errors.Is(err, errInvalidJournal) {
+						t.Fatalf("EnumerateEntryPayload() error = %v; want row arena limit", err)
+					}
+					return
+				}
+				if !ok {
+					t.Fatal("compressed payload enumeration succeeded despite row arena limit")
+				}
+			}
+		})
+	}
+}
+
+func TestReaderRowArenaSegmentsPreserveCompressedSlices(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "multi-compressed-row.journal")
+	want := createMultiCompressedRowJournal(t, path)
+
+	for _, accessMode := range readerTestAccessModes() {
+		t.Run(accessModeName(accessMode), func(t *testing.T) {
+			r, err := OpenFileWithOptions(
+				path,
+				DefaultReaderOptions().
+					WithAccessMode(accessMode).
+					WithWindowSize(1024).
+					WithMaxWindows(1).
+					WithMaxRowArenaBytes(64*1024),
+			)
+			if err != nil {
+				t.Fatalf("OpenFileWithOptions() error = %v", err)
+			}
+			defer r.Close()
+			if ok, err := r.Step(); err != nil || !ok {
+				t.Fatalf("Step() = %v, %v; want true, nil", ok, err)
+			}
+
+			var retained [][]byte
+			for {
+				payload, ok, err := r.EnumerateEntryPayload()
+				if err != nil {
+					t.Fatalf("EnumerateEntryPayload() error = %v", err)
+				}
+				if !ok {
+					break
+				}
+				retained = append(retained, payload)
+			}
+			readerTestPayloadSetMatches(t, retained, want)
+			if stats := r.AccessStats(); stats.RowArenaPeakBytes < uint64(totalPayloadBytes(want)) {
+				t.Fatalf("RowArenaPeakBytes = %d, want at least %d", stats.RowArenaPeakBytes, totalPayloadBytes(want))
+			}
+
+			if err := r.EntryDataRestart(); err != nil {
+				t.Fatalf("EntryDataRestart() error = %v", err)
+			}
+			var retainedAfterRestart [][]byte
+			for {
+				payload, ok, err := r.EnumerateEntryPayload()
+				if err != nil {
+					t.Fatalf("EnumerateEntryPayload(restart) error = %v", err)
+				}
+				if !ok {
+					break
+				}
+				retainedAfterRestart = append(retainedAfterRestart, payload)
+			}
+			readerTestPayloadSetMatches(t, retained, want)
+			readerTestPayloadSetMatches(t, retainedAfterRestart, want)
+		})
+	}
+}
+
+func TestReaderOversizedPayloadUsesRowArena(t *testing.T) {
+	payload := append([]byte("MESSAGE="), bytes.Repeat([]byte("x"), 2048)...)
+	path := filepath.Join(t.TempDir(), "oversized-payload.journal")
+	opts := testOptions()
+	opts.FieldNamePolicy = FieldNamePolicyRaw
+	w, err := Create(path, opts)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err := w.AppendRaw([][]byte{payload}, EntryOptions{RealtimeUsec: 1_700_004_300_000_000, MonotonicUsec: 1}); err != nil {
+		t.Fatalf("AppendRaw() error = %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	for _, accessMode := range readerTestAccessModes() {
+		t.Run(accessModeName(accessMode), func(t *testing.T) {
+			r, err := OpenFileWithOptions(
+				path,
+				DefaultReaderOptions().
+					WithAccessMode(accessMode).
+					WithWindowSize(512).
+					WithMaxWindows(1).
+					WithMaxRowArenaBytes(uint64(len(payload)+64)),
+			)
+			if err != nil {
+				t.Fatalf("OpenFileWithOptions() error = %v", err)
+			}
+			defer r.Close()
+			if ok, err := r.Step(); err != nil || !ok {
+				t.Fatalf("Step() = %v, %v; want true, nil", ok, err)
+			}
+			got, ok, err := r.EnumerateEntryPayload()
+			if err != nil || !ok || !bytes.Equal(got, payload) {
+				t.Fatalf("EnumerateEntryPayload() = %q, %v, %v; want oversized payload", got, ok, err)
+			}
+			stats := r.AccessStats()
+			if stats.RowArenaPeakBytes < uint64(len(payload)) {
+				t.Fatalf("RowArenaPeakBytes = %d, want at least %d", stats.RowArenaPeakBytes, len(payload))
+			}
+		})
+	}
+}
+
+func TestReaderCrossWindowPayloadUsesRowArena(t *testing.T) {
+	payload := append([]byte("MESSAGE="), bytes.Repeat([]byte("x"), 1536)...)
+	path := filepath.Join(t.TempDir(), "cross-window-payload.journal")
+	createRawReaderPayloadJournal(t, path, payload)
+	snapshot := readJournalSnapshot(t, path)
+	data := snapshot.dataByPayload[string(payload)]
+	payloadStart := data.offset + dataObjectHeaderSize
+	windowSize := readerTestCrossingWindowSize(t, payloadStart, uint64(len(payload)))
+
+	for _, accessMode := range readerTestAccessModes() {
+		t.Run(accessModeName(accessMode), func(t *testing.T) {
+			r, err := OpenFileWithOptions(
+				path,
+				DefaultReaderOptions().
+					WithAccessMode(accessMode).
+					WithWindowSize(windowSize).
+					WithMaxWindows(1).
+					WithMaxRowArenaBytes(uint64(len(payload)+64)),
+			)
+			if err != nil {
+				t.Fatalf("OpenFileWithOptions() error = %v", err)
+			}
+			defer r.Close()
+			if ok, err := r.Step(); err != nil || !ok {
+				t.Fatalf("Step() = %v, %v; want true, nil", ok, err)
+			}
+			got, ok, err := r.EnumerateEntryPayload()
+			if err != nil || !ok || !bytes.Equal(got, payload) {
+				t.Fatalf("EnumerateEntryPayload() = %q, %v, %v; want cross-window payload", got, ok, err)
+			}
+			if stats := r.AccessStats(); stats.RowArenaPeakBytes < uint64(len(payload)) {
+				t.Fatalf("RowArenaPeakBytes = %d, want at least %d", stats.RowArenaPeakBytes, len(payload))
+			}
+		})
+	}
+}
+
+func TestReaderBoundedWindowsForLargePayload(t *testing.T) {
+	payload := append([]byte("MESSAGE="), bytes.Repeat([]byte("m"), 2*1024*1024)...)
+	path := filepath.Join(t.TempDir(), "bounded-large-payload.journal")
+	createRawReaderPayloadJournal(t, path, payload)
+
+	for _, accessMode := range readerTestAccessModes() {
+		t.Run(accessModeName(accessMode), func(t *testing.T) {
+			const windowSize = 64 * 1024
+			const maxWindows = 2
+			r, err := OpenFileWithOptions(
+				path,
+				DefaultReaderOptions().
+					WithAccessMode(accessMode).
+					WithWindowSize(windowSize).
+					WithMaxWindows(maxWindows),
+			)
+			if err != nil {
+				t.Fatalf("OpenFileWithOptions() error = %v", err)
+			}
+			defer r.Close()
+			if ok, err := r.Step(); err != nil || !ok {
+				t.Fatalf("Step() = %v, %v; want true, nil", ok, err)
+			}
+			visited := visitReaderPayloads(t, r)
+			if !readerTestContainsPayload(visited, payload) {
+				t.Fatalf("VisitEntryPayloads() did not include large payload")
+			}
+			stats := r.AccessStats()
+			budget := uint64(windowSize * maxWindows)
+			if stats.FileSize <= budget*4 {
+				t.Fatalf("test file size = %d, want much larger than window budget %d", stats.FileSize, budget)
+			}
+			if stats.MappedBytes > budget {
+				t.Fatalf("MappedBytes = %d, want <= window budget %d", stats.MappedBytes, budget)
+			}
+			if stats.ReadBufferBytes > budget {
+				t.Fatalf("ReadBufferBytes = %d, want <= window budget %d", stats.ReadBufferBytes, budget)
+			}
+		})
+	}
+}
+
+func TestReaderRowPinsClearOnAdvance(t *testing.T) {
+	path := createReaderMessageJournal(t, 1, []Field{StringField("MESSAGE", "pin-me")})
+
+	for _, accessMode := range readerTestAccessModes() {
+		t.Run(accessModeName(accessMode), func(t *testing.T) {
+			r, err := OpenFileWithOptions(
+				path,
+				DefaultReaderOptions().
+					WithAccessMode(accessMode).
+					WithWindowSize(1024).
+					WithMaxWindows(1),
+			)
+			if err != nil {
+				t.Fatalf("OpenFileWithOptions() error = %v", err)
+			}
+			defer r.Close()
+			if ok, err := r.Step(); err != nil || !ok {
+				t.Fatalf("Step() = %v, %v; want true, nil", ok, err)
+			}
+			if _, ok, err := r.EnumerateEntryPayload(); err != nil || !ok {
+				t.Fatalf("EnumerateEntryPayload() = %v, %v; want payload", ok, err)
+			}
+			if got := r.AccessStats().RowPinnedWindows; got == 0 {
+				t.Fatal("RowPinnedWindows = 0 after row payload enumeration; want pinned window")
+			}
+			if ok, err := r.Step(); err != nil || ok {
+				t.Fatalf("second Step() = %v, %v; want false, nil", ok, err)
+			}
+			if got := r.AccessStats().RowPinnedWindows; got != 0 {
+				t.Fatalf("RowPinnedWindows after row advance = %d, want 0", got)
+			}
 		})
 	}
 }
@@ -425,11 +881,19 @@ func assertReaderMessage(t *testing.T, r *Reader, context string, want string) {
 	}
 }
 
+func readerTestAccessModes() []ReaderAccessMode {
+	return []ReaderAccessMode{ReaderAccessReadAt, ReaderAccessMmap, ReaderAccessAuto}
+}
+
 func accessModeName(mode ReaderAccessMode) string {
-	if mode == ReaderAccessMmap {
+	switch mode {
+	case ReaderAccessMmap:
 		return "mmap"
+	case ReaderAccessAuto:
+		return "auto"
+	default:
+		return "read-at"
 	}
-	return "read-at"
 }
 
 func readerTestContainsPayload(payloads [][]byte, want []byte) bool {

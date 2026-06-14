@@ -3,20 +3,12 @@
 package journal
 
 import (
-	"errors"
 	"fmt"
-	"io"
 	"os"
 )
 
 type mappedArena struct {
 	file *os.File
-	size uint64
-}
-
-type readOnlyMapping struct {
-	file *os.File
-	data []byte
 	size uint64
 }
 
@@ -83,57 +75,5 @@ func (a *mappedArena) sync() error {
 
 func (a *mappedArena) close() error {
 	a.size = 0
-	return nil
-}
-
-func newReadOnlyMapping(file *os.File) (*readOnlyMapping, error) {
-	m := &readOnlyMapping{file: file}
-	if err := m.remap(); err != nil {
-		return nil, err
-	}
-	return m, nil
-}
-
-func (m *readOnlyMapping) remap() error {
-	info, err := m.file.Stat()
-	if err != nil {
-		return err
-	}
-	size := info.Size()
-	if size < 0 || uint64(size) > uint64(int(^uint(0)>>1)) {
-		return fmt.Errorf("%w: mapped reader file too large", errInvalidJournal)
-	}
-	data := make([]byte, int(size))
-	if len(data) > 0 {
-		n, err := m.file.ReadAt(data, 0)
-		if err != nil && !(errors.Is(err, io.EOF) && n == len(data)) {
-			return err
-		}
-	}
-	m.data = data
-	m.size = uint64(len(data))
-	return nil
-}
-
-func (m *readOnlyMapping) bytesAt(offset, size uint64) ([]byte, error) {
-	end, ok := checkedAdd(offset, size)
-	if !ok || end > m.size || end > uint64(len(m.data)) {
-		return nil, fmt.Errorf("%w: mapped reader access out of bounds", errInvalidJournal)
-	}
-	return m.data[int(offset):int(end)], nil
-}
-
-func (m *readOnlyMapping) readAt(dst []byte, offset uint64) error {
-	src, err := m.bytesAt(offset, uint64(len(dst)))
-	if err != nil {
-		return err
-	}
-	copy(dst, src)
-	return nil
-}
-
-func (m *readOnlyMapping) close() error {
-	m.data = nil
-	m.size = 0
 	return nil
 }
