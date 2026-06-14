@@ -3707,6 +3707,39 @@ class HistogramBoundsAreOriginalRequestBounds(unittest.TestCase):
         # clamp (before <= anchor - 1).
         self.assertEqual(query.before_realtime_usec, anchor_usec - 1)
 
+    def test_data_only_delta_disables_stop_when_rows_full(self):
+        config = n.NetdataFunctionConfig.systemd_journal()
+        request = n.NetdataRequest.parse(
+            {
+                "after": 1_700_000_000,
+                "before": 1_700_000_010,
+                "data_only": True,
+                "delta": True,
+                "direction": "backward",
+                "last": 5,
+                "facets": ["PRIORITY"],
+                "histogram": "PRIORITY",
+            },
+            config,
+        )
+        query = request.to_explorer_query(matched_files=1)
+        self.assertFalse(query.stop_when_rows_full)
+
+        request = n.NetdataRequest.parse(
+            {
+                "after": 1_700_000_000,
+                "before": 1_700_000_010,
+                "data_only": True,
+                "direction": "backward",
+                "last": 5,
+                "facets": ["PRIORITY"],
+                "histogram": "PRIORITY",
+            },
+            config,
+        )
+        query = request.to_explorer_query(matched_files=1)
+        self.assertTrue(query.stop_when_rows_full)
+
 
 class JournalFileOrderInfoFallbacks(unittest.TestCase):
     """Pin Python ``_journal_file_order_info`` to Rust

@@ -7,10 +7,12 @@ import {
   NetdataFunctionConfig,
   NetdataFunctionRunOptions,
   NetdataFunctionProgress,
+  NetdataRequest,
   NetdataFunctionState,
   NetdataJournalFileMetadata,
   SystemdJournalProfile,
   NETDATA_ACCEPTED_PARAMS,
+  _requestToExplorerQuery,
 } from '../../src/lib/netdata.js';
 import { Writer } from '../../src/lib/writer.js';
 
@@ -241,6 +243,34 @@ function testDataOnlyDeltaUsesDeltaVariantKeys() {
     assert.equal('items' in response, false);
     assert.ok(response.available_histograms.length >= 1);
   });
+}
+
+function testDataOnlyDeltaDisablesStopWhenRowsFull() {
+  const config = NetdataFunctionConfig.systemdJournal();
+  let request = NetdataRequest.parse({
+    after: 1700000000,
+    before: 1700000010,
+    data_only: true,
+    delta: true,
+    direction: 'backward',
+    last: 5,
+    facets: ['PRIORITY'],
+    histogram: 'PRIORITY',
+  }, config);
+  let query = _requestToExplorerQuery(request, 1, null);
+  assert.equal(query.stopWhenRowsFull, false);
+
+  request = NetdataRequest.parse({
+    after: 1700000000,
+    before: 1700000010,
+    data_only: true,
+    direction: 'backward',
+    last: 5,
+    facets: ['PRIORITY'],
+    histogram: 'PRIORITY',
+  }, config);
+  query = _requestToExplorerQuery(request, 1, null);
+  assert.equal(query.stopWhenRowsFull, true);
 }
 
 // ---------------------------------------------------------------------------
@@ -1105,6 +1135,7 @@ export async function run() {
   testDataOnlyDropsColumnsEnvelope();
   testDataOnlyOmitsFullMetadataKeys();
   testDataOnlyDeltaUsesDeltaVariantKeys();
+  testDataOnlyDeltaDisablesStopWhenRowsFull();
 
   testDeltaKeysPresent();
   testDeltaFacetsUseProfileRenderedNames();

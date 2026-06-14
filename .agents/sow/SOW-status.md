@@ -23,11 +23,6 @@ Last updated: 2026-06-14
   packaging after reader gates.
 - SOW-0050 - Netdata Vendored Journal Removal: open. Final cleanup after all
   Netdata component integrations are complete.
-- SOW-0109 - Python And Node Netdata Edge Parity Closure: open. Created from
-  SOW-0107 final review to audit and close remaining Python/Node edge parity
-  findings: Python delta/data-only stop behavior, Python candidate-row callback
-  parity, Node commit-realtime-zero handling, facet-only scan sampling, and
-  dead local sampling-state cleanup.
 - SOW-0106 - Python And Node.js Docs With Verified Examples: open. Activates
   after Python/Node parity closure. Adds Python-API/Node-API wiki pages and
   Python/Node columns to shared pages; extends the verified-examples harness to
@@ -51,6 +46,13 @@ Last updated: 2026-06-14
   shared primitives preserve historical compatibility and reader performance.
 ## Recently Closed Or Completed
 
+- SOW-0109 - Python And Node Netdata Edge Parity Closure: completed. Python and
+  Node now match the Rust reference for the remaining scoped Netdata edge
+  parity gaps discovered after SOW-0107: Python `data_only && delta` keeps
+  analysis enabled, Python/Node expose and wire candidate-row callbacks, and
+  Node no longer drops Explorer rows only because `commitRealtime` is zero.
+  Focused tests, full Python/Node suites, Netdata function comparators,
+  `git diff --check`, SOW audit, and all six reviewer votes passed.
 - SOW-0107 - Python And Node Explorer Engine Parity Gaps: completed. Python
   and Node now match the Rust Explorer/Netdata behavior for the scoped parity
   gaps: row-level sampling decision/estimation, Python Netdata FTS,

@@ -297,6 +297,7 @@ export class ExplorerControl {
     this.cancellation = null;
     this.progress = null;
     this.matchedRow = null;
+    this.candidateRow = null;
     this.sampling = null;
     this.progressIntervalMs = EXPLORER_PROGRESS_INTERVAL_MS;
     this.stopReason = null;
@@ -309,6 +310,7 @@ export class ExplorerControl {
   setCancellationCallback(cb) { this.cancellation = cb; }
   setProgressCallback(cb) { this.progress = cb; }
   setMatchedRowCallback(cb) { this.matchedRow = cb; }
+  setCandidateRowCallback(cb) { this.candidateRow = cb; }
   setSamplingState(sampling) { this.sampling = sampling; }
   setProgressIntervalMs(ms) { this.progressIntervalMs = Number(ms); }
   shouldStopAfterRows(rowsSeen, stats) {
@@ -345,6 +347,10 @@ export class ExplorerControl {
   emitMatchedRow(realtimeUsec, rowsMatched) {
     if (this.matchedRow === null) return false;
     return Boolean(this.matchedRow(realtimeUsec, rowsMatched));
+  }
+  emitCandidateRow(realtimeUsec) {
+    if (this.candidateRow === null) return null;
+    return Boolean(this.candidateRow(realtimeUsec));
   }
 }
 
@@ -1550,7 +1556,6 @@ function _scanExplorerMain(reader, query, accumulator, result, control) {
     rowsSeen += 1n;
     if (control !== null && control.shouldStopAfterRows(rowsSeen, result.stats)) break;
     const commitRealtime = reader.getRealtimeUsec();
-    if (commitRealtime === 0n) continue;
     if (_stopByCommitTime(query, commitRealtime)) break;
     if (_skipByCommitTime(query, commitRealtime)) continue;
     if (!_readerFilterMatches(reader)) continue;
@@ -1614,7 +1619,6 @@ function _scanExplorerCombined(reader, query, accumulator, result, includeFacets
     rowsSeen += 1n;
     if (control !== null && control.shouldStopAfterRows(rowsSeen, result.stats)) break;
     const commitRealtime = reader.getRealtimeUsec();
-    if (commitRealtime === 0n) continue;
     if (_stopByCommitTime(query, commitRealtime)) break;
     if (_skipByCommitTime(query, commitRealtime)) continue;
     if (!_readerFilterMatches(reader)) continue;
@@ -1684,8 +1688,10 @@ function _samplingStateForCombined(query, result, control) {
   return sampling;
 }
 
-function _combinedSamplingDecision(query, rows, commitRealtime, seqnum, sampling, control) {
-  const candidate = _rowCandidateToKeep(query, rows, commitRealtime);
+export function _combinedSamplingDecision(query, rows, commitRealtime, seqnum, sampling, control) {
+  let candidate = null;
+  if (control !== null) candidate = control.emitCandidateRow(commitRealtime);
+  if (candidate === null) candidate = _rowCandidateToKeep(query, rows, commitRealtime);
   if (control !== null && control.sampling !== null) {
     return control.sampling.decide(commitRealtime, seqnum, candidate);
   }
@@ -1759,7 +1765,6 @@ function _scanExplorerFacet(reader, query, accumulator, stats, control) {
     rowsSeen += 1n;
     if (control !== null && control.shouldStopAfterRows(rowsSeen, stats)) break;
     const commitRealtime = reader.getRealtimeUsec();
-    if (commitRealtime === 0n) continue;
     if (_stopByCommitTime(query, commitRealtime)) break;
     if (_skipByCommitTime(query, commitRealtime)) continue;
     if (!_readerFilterMatches(reader)) continue;
@@ -1888,7 +1893,6 @@ function _indexedCandidateSet(reader, query, excludedField) {
   const seen = new Set();
   while (_stepExplorer(reader, query.direction)) {
     const commitRealtime = reader.getRealtimeUsec();
-    if (commitRealtime === 0n) continue;
     if (_stopByCommitTime(query, commitRealtime)) break;
     if (_skipByCommitTime(query, commitRealtime)) continue;
     if (!_readerFilterMatches(reader)) continue;
@@ -1922,7 +1926,6 @@ function _indexedCollectRows(reader, query, result, candidates, control) {
     reader.entryIndex = index;
     reader._resetCachedEntryDataState();
     const commitRealtime = reader.getRealtimeUsec();
-    if (commitRealtime === 0n) continue;
     if (_stopByCommitTime(query, commitRealtime)) return;
     if (_skipByCommitTime(query, commitRealtime)) continue;
     if (!_timestampInRange(query, commitRealtime)) continue;
@@ -2048,7 +2051,6 @@ function _indexedCountHistogram(reader, field, candidates, result, query, contro
       if (candidateSet !== null && !candidateSet.has(entryOffset)) continue;
       rowsWithField.add(entryOffset);
       const commitRealtime = reader._entryRealtimeAtOffset(entryOffset);
-      if (commitRealtime === 0n) continue;
       if (!_timestampInRange(query, commitRealtime)) continue;
       const idx = _histogramBucketIndexFromBounds(
         commitRealtime, histogramStart, width, bucketCount,
@@ -2064,7 +2066,6 @@ function _indexedCountHistogram(reader, field, candidates, result, query, contro
   for (const entryOffset of sequence) {
     if (rowsWithField.has(entryOffset)) continue;
     const commitRealtime = reader._entryRealtimeAtOffset(entryOffset);
-    if (commitRealtime === 0n) continue;
     if (!_timestampInRange(query, commitRealtime)) continue;
     const idx = _histogramBucketIndexFromBounds(
       commitRealtime, histogramStart, width, bucketCount,

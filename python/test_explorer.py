@@ -47,7 +47,7 @@ from journal import (  # noqa: E402
     Writer,
     Log,
 )
-from journal.explorer import _ExplorerSamplingState  # noqa: E402
+from journal.explorer import _ExplorerSamplingState, _combined_sampling_decision  # noqa: E402
 
 
 # ----------------------------------------------------------------------------
@@ -446,6 +446,26 @@ def test_explorer_sampling_seqnum_estimate_clamps_progress_above_one():
     assert state is not None
     state.per_file_sampled = 10
     assert state._estimate_remaining_rows_by_seqnum(99) == 90
+
+
+def test_explorer_control_candidate_row_callback_feeds_sampling_decision():
+    class FakeSampling:
+        def __init__(self):
+            self.calls = []
+
+        def decide(self, commit_realtime, seqnum, candidate):
+            self.calls.append((commit_realtime, seqnum, candidate))
+            return None
+
+    q = ExplorerQuery()
+    q.limit = 0
+    control = ExplorerControl()
+    fake = FakeSampling()
+    control.set_sampling_state(fake)
+    control.set_candidate_row_callback(lambda realtime_usec: realtime_usec == 123)
+
+    assert _combined_sampling_decision(q, [], 123, 7, None, control) is None
+    assert fake.calls == [(123, 7, True)]
 
 
 def test_explorer_index_rejects_first_value_semantics():

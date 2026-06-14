@@ -1227,6 +1227,14 @@ class NetdataPageWindow {
     else this._observeForward(usec);
   }
 
+  candidateToKeep(realtimeUsec) {
+    const usec = Number(realtimeUsec);
+    if (this.limit === 0 || !this._entryWithinAnchorReadonly(usec)) return false;
+    if (this.heap.length < this.limit) return true;
+    if (this.oldestRetainedUsec === null || this.newestRetainedUsec === null) return false;
+    return usec >= this.oldestRetainedUsec && usec <= this.newestRetainedUsec;
+  }
+
   counters() {
     return {
       matched: this.matched,
@@ -1323,6 +1331,17 @@ class NetdataPageWindow {
         this.skipsBefore += 1;
         return false;
       }
+    }
+    return true;
+  }
+
+  _entryWithinAnchorReadonly(realtimeUsec) {
+    if (this.direction === ExplorerDirection.Backward) {
+      if (this.anchorStartUsec !== null && realtimeUsec >= this.anchorStartUsec) return false;
+      if (this.anchorStopUsec !== null && realtimeUsec <= this.anchorStopUsec) return false;
+    } else {
+      if (this.anchorStartUsec !== null && realtimeUsec <= this.anchorStartUsec) return false;
+      if (this.anchorStopUsec !== null && realtimeUsec >= this.anchorStopUsec) return false;
     }
     return true;
   }
@@ -2474,6 +2493,7 @@ export class NetdataJournalFunction {
         if (options?.cancellationCallback) control.setCancellationCallback(options.cancellationCallback);
         if (options?.progressInterval != null) control.setProgressIntervalMs(options.progressInterval * 1000);
         control.setSamplingState(samplingState);
+        control.setCandidateRowCallback((realtimeUsec) => pageWindow.candidateToKeep(realtimeUsec));
         control.setMatchedRowCallback((realtimeUsec) => {
           pageWindow.observe(realtimeUsec);
           return false;

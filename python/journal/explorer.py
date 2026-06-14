@@ -347,6 +347,7 @@ class ExplorerQuery:
 ProgressCallback = Callable[[ExplorerProgress], None]
 CancellationCallback = Callable[[], bool]
 MatchedRowCallback = Callable[[int, int], bool]
+CandidateRowCallback = Callable[[int], bool]
 
 
 @dataclass
@@ -362,6 +363,7 @@ class ExplorerControl:
     cancellation: Optional[CancellationCallback] = None
     progress: Optional[ProgressCallback] = None
     matched_row: Optional[MatchedRowCallback] = None
+    candidate_row: Optional[CandidateRowCallback] = None
     sampling: object = None
     progress_interval: float = EXPLORER_PROGRESS_INTERVAL_MS / 1000.0
     stop_reason: Optional[ExplorerStopReason] = None
@@ -381,6 +383,9 @@ class ExplorerControl:
 
     def set_matched_row_callback(self, callback):
         self.matched_row = callback
+
+    def set_candidate_row_callback(self, callback):
+        self.candidate_row = callback
 
     def set_sampling_state(self, sampling):
         self.sampling = sampling
@@ -421,6 +426,11 @@ class ExplorerControl:
         if self.matched_row is None:
             return False
         return bool(self.matched_row(int(realtime_usec), int(rows_matched)))
+
+    def emit_candidate_row(self, realtime_usec):
+        if self.candidate_row is None:
+            return None
+        return bool(self.candidate_row(int(realtime_usec)))
 
 
 @dataclass
@@ -1849,7 +1859,11 @@ def _sampling_state_for_combined(query, result, control):
 
 
 def _combined_sampling_decision(query, rows, commit_realtime, seqnum, sampling, control):
-    candidate = _row_candidate_to_keep(query, rows, commit_realtime)
+    candidate = None
+    if control is not None:
+        candidate = control.emit_candidate_row(commit_realtime)
+    if candidate is None:
+        candidate = _row_candidate_to_keep(query, rows, commit_realtime)
     if control is not None and control.sampling is not None:
         return control.sampling.decide(commit_realtime, seqnum, candidate)
     if sampling is not None:

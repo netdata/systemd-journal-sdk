@@ -32,6 +32,7 @@ import {
   ExplorerStopReason,
   ExplorerStrategy,
   ExplorerUnsupported,
+  _combinedSamplingDecision,
   _ExplorerSamplingState,
   UNSET_VALUE,
   DEFAULT_HISTOGRAM_TARGET_BUCKETS,
@@ -468,6 +469,23 @@ function testExplorerSamplingSeqnumEstimateClampsProgressAboveOne() {
   assert.equal(state._estimateRemainingRowsBySeqnum(99n), 90n);
 }
 
+function testExplorerControlCandidateRowCallbackFeedsSamplingDecision() {
+  const q = new ExplorerQuery();
+  q.limit = 0;
+  const calls = [];
+  const control = new ExplorerControl();
+  control.setSamplingState({
+    decide(commitRealtime, seqnum, candidate) {
+      calls.push([commitRealtime, seqnum, candidate]);
+      return null;
+    },
+  });
+  control.setCandidateRowCallback((realtimeUsec) => realtimeUsec === 123n);
+
+  assert.equal(_combinedSamplingDecision(q, [], 123n, 7n, null, control), null);
+  assert.deepEqual(calls, [[123n, 7n, true]]);
+}
+
 function testExplorerIndexRejectsFirstValueSemantics() {
   const tempDir = mkdtempSync(join(tmpdir(), 'node-explor-irejfv-'));
   try {
@@ -790,6 +808,28 @@ function testExplorerStopWhenRowsFullTruncatesScan() {
   }
 }
 
+function testExplorerTraversalKeepsZeroCommitRealtimeRows() {
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-explor-zero-'));
+  try {
+    const path = join(tempDir, 'zero.journal');
+    writeSimpleEntries(path, [
+      [0, [['MESSAGE', 'zero']]],
+      [1_000, [['MESSAGE', 'one']]],
+    ]);
+    const reader = FileReader.open(path);
+    try {
+      const result = reader.explore(new ExplorerQuery());
+      assert.equal(result.rows.length, 2);
+      assert.ok(result.rows.some(row => row.realtimeUsec === 0n));
+      assert.equal(result.stats.rowsMatched, 2n);
+    } finally {
+      reader.close();
+    }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // FTS terms: positive and negative patterns filter rows.
 // ---------------------------------------------------------------------------
@@ -950,6 +990,7 @@ export async function run() {
   testExplorerIndexCollectRowsDoesNotUseLinearIndexOf();
   testExplorerSamplingSkipsAndEstimatesRowsBeforeExpansion();
   testExplorerSamplingSeqnumEstimateClampsProgressAboveOne();
+  testExplorerControlCandidateRowCallbackFeedsSamplingDecision();
   testExplorerIndexRejectsFirstValueSemantics();
   testExplorerIndexRejectsFts();
   testExplorerRejectsDebugRowTraversalColumnCollection();
@@ -961,6 +1002,7 @@ export async function run() {
   testExplorerColumnFieldsComeFromFieldIndex();
   testExplorerFirstValueCountsOneValuePerField();
   testExplorerStopWhenRowsFullTruncatesScan();
+  testExplorerTraversalKeepsZeroCommitRealtimeRows();
   testExplorerFtsPositiveAndNegativePatternsFilterRows();
   testExplorerQueryValidationRejectsInvertedTimeWindow();
   testExplorerQueryValidationRejectsDuplicateFacets();

@@ -1461,6 +1461,16 @@ class _NetdataPageWindow:
         else:
             self._observe_forward(int(realtime_usec))
 
+    def candidate_to_keep(self, realtime_usec: int) -> bool:
+        realtime_usec = int(realtime_usec)
+        if self.limit == 0 or not self._entry_within_anchor_readonly(realtime_usec):
+            return False
+        if len(self.heap) < self.limit:
+            return True
+        if self.oldest_retained_usec is None or self.newest_retained_usec is None:
+            return False
+        return self.oldest_retained_usec <= realtime_usec <= self.newest_retained_usec
+
     def counters(self) -> _NetdataPageCounters:
         return _NetdataPageCounters(
             matched=self.matched,
@@ -1535,6 +1545,19 @@ class _NetdataPageWindow:
                 return False
             if self.anchor_stop_usec is not None and realtime_usec >= self.anchor_stop_usec:
                 self.skips_before += 1
+                return False
+        return True
+
+    def _entry_within_anchor_readonly(self, realtime_usec: int) -> bool:
+        if self.direction == Direction.BACKWARD:
+            if self.anchor_start_usec is not None and realtime_usec >= self.anchor_start_usec:
+                return False
+            if self.anchor_stop_usec is not None and realtime_usec <= self.anchor_stop_usec:
+                return False
+        else:
+            if self.anchor_start_usec is not None and realtime_usec <= self.anchor_start_usec:
+                return False
+            if self.anchor_stop_usec is not None and realtime_usec >= self.anchor_stop_usec:
                 return False
         return True
 
@@ -2199,9 +2222,10 @@ class NetdataRequest:
         query.realtime_slack_usec = _normalize_journal_vs_realtime_delta_usec(
             realtime_slack_usec
         )
-        # stop_when_rows_full: data_only && !tail_anchor (matches Rust L1609).
-        # Delta+data_only disables the per-file stop to allow full scan.
-        query.stop_when_rows_full = self.data_only and not tail_anchor
+        # Rust first sets data_only && !tail_anchor, then clears it
+        # for data_only+delta per-file queries so delta can scan the
+        # whole file.
+        query.stop_when_rows_full = self.data_only and not tail_anchor and not self.delta
         query.stop_when_rows_full_check_every = DATA_ONLY_CHECK_EVERY_ROWS
         query.sampling = sampling
         return query
@@ -3938,6 +3962,11 @@ class NetdataJournalFunction:
                 )
                 control.set_progress_callback(wrapped_progress)
                 control.set_sampling_state(sampling_state)
+                control.set_candidate_row_callback(
+                    lambda realtime_usec, window=page_window: (
+                        window.candidate_to_keep(int(realtime_usec))
+                    )
+                )
                 control.set_matched_row_callback(
                     lambda realtime_usec, _rows_matched, window=page_window: (
                         window.observe(int(realtime_usec)) or False

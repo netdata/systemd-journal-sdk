@@ -202,14 +202,15 @@ plugin keeps in its journal-file registry:
 The core journal reader does not persist this state. Persistence belongs to
 the Netdata integration layer that owns the registry.
 
-The SDK Netdata API also implements plugin-compatible sampling for full
-analysis requests when sampling is enabled, slice-style query bounds are
-available, and data-only mode is off. Sampling is disabled for data-only
-requests. The SDK uses the actual histogram bucket count as the sampling slot
-count, preserves returned-row candidates as full rows, reports skipped rows as
-`[unsampled]`, reports stop-and-estimate ranges as `[estimated]`, and follows
-the plugin's integer bucket distribution behavior without forcing leftover
-estimated rows into the final bucket.
+The SDK Netdata API also implements plugin-compatible sampling for analysis
+requests when sampling is enabled and slice-style query bounds are available.
+Analysis requests include full queries and data-only delta queries; data-only
+without delta skips analysis and therefore skips sampling. The SDK uses the
+actual histogram bucket count as the sampling slot count, preserves returned-row
+candidates as full rows, reports skipped rows as `[unsampled]`, reports
+stop-and-estimate ranges as `[estimated]`, and follows the plugin's integer
+bucket distribution behavior without forcing leftover estimated rows into the
+final bucket.
 This sampling contract is validated across the Rust, Go, Node.js, and Python
 Netdata API surfaces; SOW-0107 added the missing Python and Node row-level
 sampling decision engines and high-row counter fixtures.
@@ -686,7 +687,7 @@ Sampling is disabled when:
 
 - `sampling` is zero;
 - slice mode is off;
-- data-only mode is on;
+- data-only mode is on and `delta` is off;
 - no files matched;
 - timeframe information is invalid.
 
