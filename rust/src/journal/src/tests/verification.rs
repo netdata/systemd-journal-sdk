@@ -1,4 +1,5 @@
 use super::*;
+use crate::sealed_verify::{verify_file_with_key_options, verify_file_with_options};
 
 fn verification_key(opts: &SealOptions) -> String {
     let seed_hex = opts
@@ -129,6 +130,27 @@ fn verify_file_detects_corruption() {
 fn verify_file_passes_on_valid_fixture() {
     let path = repo_root().join("fixtures/systemd/test-data/no-rtc/system.journal.zst");
     verify_file(&path).expect("expected verification to pass for valid fixture");
+}
+
+#[test]
+fn verify_file_and_key_work_with_tiny_reader_windows() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let path = dir
+        .path()
+        .join("00000000-0000-0000-0000-000000000001/system.journal");
+    let seal = write_sealed_verify_file(&path);
+    let key = verification_key(&seal);
+    let size = std::fs::metadata(&path).expect("journal metadata").len();
+    let options = ReaderOptions::snapshot().with_window_size(4096);
+
+    assert!(
+        size > options.window_size,
+        "test journal size {size} must exceed forced window size {}",
+        options.window_size
+    );
+    verify_file_with_options(&path, options).expect("bounded structural verification should pass");
+    verify_file_with_key_options(&path, &key, options)
+        .expect("bounded sealed verification should pass");
 }
 
 #[test]

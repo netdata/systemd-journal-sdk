@@ -1,7 +1,6 @@
 package journal
 
 import (
-	"encoding/binary"
 	"fmt"
 	"math/bits"
 )
@@ -50,7 +49,7 @@ type graphWalkState struct {
 }
 
 type graphVerifier struct {
-	data                []byte
+	source              verifyByteSource
 	header              journalHeader
 	compacted           bool
 	spans               map[uint64]objectHeader
@@ -63,9 +62,9 @@ type graphVerifier struct {
 	mainEntryArrayFound bool
 }
 
-func verifyObjectGraph(data []byte) error {
+func verifyObjectGraph(source verifyByteSource) error {
 	v := &graphVerifier{
-		data:         data,
+		source:       source,
 		spans:        make(map[uint64]objectHeader),
 		dataObjects:  make(map[uint64]graphDataObject),
 		fieldObjects: make(map[uint64]struct{}),
@@ -95,10 +94,10 @@ func verifyObjectGraph(data []byte) error {
 }
 
 func (v *graphVerifier) readHeader() error {
-	if len(v.data) < headerMinSize {
+	if v.source.Len() < headerMinSize {
 		return fmt.Errorf("file too small")
 	}
-	header, err := parseHeader(v.data)
+	header, err := verifySourceHeader(v.source)
 	if err != nil {
 		return fmt.Errorf("invalid header: %w", err)
 	}
@@ -123,20 +122,20 @@ func (v *graphVerifier) validateHeader() error {
 	if err := v.validateReservedHeaderBytes(); err != nil {
 		return err
 	}
-	if v.compacted && uint64(len(v.data)) > journalCompactSizeMax {
+	if v.compacted && v.source.Len() > journalCompactSizeMax {
 		return fmt.Errorf("compact journal exceeds 32-bit size limit")
 	}
 	return nil
 }
 
 func (v *graphVerifier) validateHeaderBounds() error {
-	if v.header.headerSize > uint64(len(v.data)) {
+	if v.header.headerSize > v.source.Len() {
 		return fmt.Errorf("header_size %d exceeds file size", v.header.headerSize)
 	}
 	if v.header.headerSize%objectAlignment != 0 {
 		return fmt.Errorf("header_size %d is not aligned", v.header.headerSize)
 	}
-	if v.header.arenaSize > uint64(len(v.data))-v.header.headerSize {
+	if v.header.arenaSize > v.source.Len()-v.header.headerSize {
 		return fmt.Errorf("header_size + arena_size exceeds file size")
 	}
 	return nil
@@ -144,7 +143,11 @@ func (v *graphVerifier) validateHeaderBounds() error {
 
 func (v *graphVerifier) validateReservedHeaderBytes() error {
 	for i := 17; i < 24; i++ {
-		if v.data[i] != 0 {
+		value, err := verifySourceByte(v.source, uint64(i))
+		if err != nil {
+			return err
+		}
+		if value != 0 {
 			return fmt.Errorf("reserved header bytes are non-zero")
 		}
 	}
@@ -198,13 +201,25 @@ func (v *graphVerifier) readGraphObject(offset uint64, tail uint64) (objectHeade
 	if offset > tail {
 		return objectHeader{}, 0, fmt.Errorf("object walk skipped past tail_object_offset")
 	}
-	if offset > uint64(len(v.data))-objectHeaderSize {
+	if offset > v.source.Len()-objectHeaderSize {
 		return objectHeader{}, 0, fmt.Errorf("object header at offset %d exceeds file bounds", offset)
 	}
+	typ, err := verifySourceByte(v.source, offset)
+	if err != nil {
+		return objectHeader{}, 0, err
+	}
+	flag, err := verifySourceByte(v.source, offset+1)
+	if err != nil {
+		return objectHeader{}, 0, err
+	}
+	size, err := verifySourceU64(v.source, offset+8)
+	if err != nil {
+		return objectHeader{}, 0, err
+	}
 	obj := objectHeader{
-		typ:  v.data[offset],
-		flag: v.data[offset+1],
-		size: binary.LittleEndian.Uint64(v.data[offset+8 : offset+16]),
+		typ:  typ,
+		flag: flag,
+		size: size,
 	}
 	alignedSize := align8(obj.size)
 	if err := v.validateGraphObject(offset, obj, alignedSize); err != nil {
@@ -226,7 +241,7 @@ func (v *graphVerifier) validateGraphObject(offset uint64, obj objectHeader, ali
 	if alignedSize < obj.size || alignedSize == 0 {
 		return fmt.Errorf("object size %d overflows alignment at offset %d", obj.size, offset)
 	}
-	if alignedSize > uint64(len(v.data))-offset {
+	if alignedSize > v.source.Len()-offset {
 		return fmt.Errorf("object at offset %d exceeds file bounds", offset)
 	}
 	if offset%objectAlignment != 0 {
@@ -344,7 +359,10 @@ func (v *graphVerifier) processTagObject(offset uint64, obj objectHeader, state 
 	if obj.size != graphTagObjectSize {
 		return fmt.Errorf("invalid TAG size at offset %d", offset)
 	}
-	seqnum := binary.LittleEndian.Uint64(v.data[offset+16 : offset+24])
+	seqnum, err := verifySourceU64(v.source, offset+16)
+	if err != nil {
+		return err
+	}
 	if seqnum != v.counts[objectTypeTag] {
 		return fmt.Errorf("TAG seqnum mismatch at offset %d", offset)
 	}
@@ -378,12 +396,18 @@ func (v *graphVerifier) parseData(offset uint64, obj objectHeader) error {
 	if obj.size <= payloadOffset {
 		return fmt.Errorf("DATA object at offset %d has no payload", offset)
 	}
-	payload := v.data[offset+payloadOffset : offset+obj.size]
+	payload, err := v.source.Slice(offset+payloadOffset, obj.size-payloadOffset)
+	if err != nil {
+		return err
+	}
 	hashPayload, err := v.dataHashPayload(offset, obj.flag, payload)
 	if err != nil {
 		return err
 	}
-	storedHash := binary.LittleEndian.Uint64(v.data[offset+16 : offset+24])
+	storedHash, err := verifySourceU64(v.source, offset+16)
+	if err != nil {
+		return err
+	}
 	if computedHash := v.hash(hashPayload); storedHash != computedHash {
 		return fmt.Errorf("DATA hash mismatch at offset %d: %#x != %#x", offset, storedHash, computedHash)
 	}
@@ -417,22 +441,46 @@ func (v *graphVerifier) dataHashPayload(offset uint64, flags uint8, payload []by
 }
 
 func (v *graphVerifier) readGraphDataObject(offset uint64, storedHash uint64) (graphDataObject, error) {
-	entryOffset := binary.LittleEndian.Uint64(v.data[offset+40 : offset+48])
-	nEntries := binary.LittleEndian.Uint64(v.data[offset+56 : offset+64])
+	entryOffset, err := verifySourceU64(v.source, offset+40)
+	if err != nil {
+		return graphDataObject{}, err
+	}
+	nEntries, err := verifySourceU64(v.source, offset+56)
+	if err != nil {
+		return graphDataObject{}, err
+	}
+	nextHashOffset, err := verifySourceU64(v.source, offset+24)
+	if err != nil {
+		return graphDataObject{}, err
+	}
+	nextFieldOffset, err := verifySourceU64(v.source, offset+32)
+	if err != nil {
+		return graphDataObject{}, err
+	}
+	entryArrayOffset, err := verifySourceU64(v.source, offset+48)
+	if err != nil {
+		return graphDataObject{}, err
+	}
 	if (entryOffset == 0) != (nEntries == 0) {
 		return graphDataObject{}, fmt.Errorf("DATA object at offset %d has bad n_entries", offset)
 	}
 	data := graphDataObject{
 		hash:             storedHash,
-		nextHashOffset:   binary.LittleEndian.Uint64(v.data[offset+24 : offset+32]),
-		nextFieldOffset:  binary.LittleEndian.Uint64(v.data[offset+32 : offset+40]),
+		nextHashOffset:   nextHashOffset,
+		nextFieldOffset:  nextFieldOffset,
 		entryOffset:      entryOffset,
-		entryArrayOffset: binary.LittleEndian.Uint64(v.data[offset+48 : offset+56]),
+		entryArrayOffset: entryArrayOffset,
 		nEntries:         nEntries,
 	}
 	if v.compacted {
-		data.tailEntryArrayOffset = binary.LittleEndian.Uint32(v.data[offset+64 : offset+68])
-		data.tailEntryArrayNEntries = binary.LittleEndian.Uint32(v.data[offset+68 : offset+72])
+		data.tailEntryArrayOffset, err = verifySourceU32(v.source, offset+64)
+		if err != nil {
+			return graphDataObject{}, err
+		}
+		data.tailEntryArrayNEntries, err = verifySourceU32(v.source, offset+68)
+		if err != nil {
+			return graphDataObject{}, err
+		}
 	}
 	return data, nil
 }
@@ -463,13 +511,25 @@ func (v *graphVerifier) parseField(offset uint64, obj objectHeader) error {
 	if obj.size <= fieldObjectHeaderSize {
 		return fmt.Errorf("FIELD object at offset %d has no payload", offset)
 	}
-	payload := v.data[offset+fieldObjectHeaderSize : offset+obj.size]
-	storedHash := binary.LittleEndian.Uint64(v.data[offset+16 : offset+24])
+	payload, err := v.source.Slice(offset+fieldObjectHeaderSize, obj.size-fieldObjectHeaderSize)
+	if err != nil {
+		return err
+	}
+	storedHash, err := verifySourceU64(v.source, offset+16)
+	if err != nil {
+		return err
+	}
 	if computedHash := v.hash(payload); storedHash != computedHash {
 		return fmt.Errorf("FIELD hash mismatch at offset %d: %#x != %#x", offset, storedHash, computedHash)
 	}
-	nextHashOffset := binary.LittleEndian.Uint64(v.data[offset+24 : offset+32])
-	headDataOffset := binary.LittleEndian.Uint64(v.data[offset+32 : offset+40])
+	nextHashOffset, err := verifySourceU64(v.source, offset+24)
+	if err != nil {
+		return err
+	}
+	headDataOffset, err := verifySourceU64(v.source, offset+32)
+	if err != nil {
+		return err
+	}
 	if err := v.validOffset(nextHashOffset, fmt.Sprintf("FIELD %d next_hash_offset", offset)); err != nil {
 		return err
 	}
@@ -491,12 +551,28 @@ func (v *graphVerifier) parseEntry(offset uint64, obj objectHeader) (graphEntryO
 	if (obj.size-entryObjectHeaderSize)%itemSize != 0 {
 		return graphEntryObject{}, fmt.Errorf("ENTRY object at offset %d has unaligned items", offset)
 	}
-	entry := graphEntryObject{
-		seqnum:    binary.LittleEndian.Uint64(v.data[offset+16 : offset+24]),
-		realtime:  binary.LittleEndian.Uint64(v.data[offset+24 : offset+32]),
-		monotonic: binary.LittleEndian.Uint64(v.data[offset+32 : offset+40]),
+	seqnum, err := verifySourceU64(v.source, offset+16)
+	if err != nil {
+		return graphEntryObject{}, err
 	}
-	copy(entry.bootID[:], v.data[offset+40:offset+56])
+	realtime, err := verifySourceU64(v.source, offset+24)
+	if err != nil {
+		return graphEntryObject{}, err
+	}
+	monotonic, err := verifySourceU64(v.source, offset+32)
+	if err != nil {
+		return graphEntryObject{}, err
+	}
+	bootID, err := verifySourceUUID(v.source, offset+40)
+	if err != nil {
+		return graphEntryObject{}, err
+	}
+	entry := graphEntryObject{
+		seqnum:    seqnum,
+		realtime:  realtime,
+		monotonic: monotonic,
+		bootID:    bootID,
+	}
 	if entry.seqnum == 0 {
 		return graphEntryObject{}, fmt.Errorf("ENTRY object at offset %d has zero seqnum", offset)
 	}
@@ -506,9 +582,17 @@ func (v *graphVerifier) parseEntry(offset uint64, obj objectHeader) (graphEntryO
 	for itemOffset := offset + entryObjectHeaderSize; itemOffset < offset+obj.size; itemOffset += itemSize {
 		var item uint64
 		if v.compacted {
-			item = uint64(binary.LittleEndian.Uint32(v.data[itemOffset : itemOffset+4]))
+			value, err := verifySourceU32(v.source, itemOffset)
+			if err != nil {
+				return graphEntryObject{}, err
+			}
+			item = uint64(value)
 		} else {
-			item = binary.LittleEndian.Uint64(v.data[itemOffset : itemOffset+8])
+			value, err := verifySourceU64(v.source, itemOffset)
+			if err != nil {
+				return graphEntryObject{}, err
+			}
+			item = value
 		}
 		if item == 0 {
 			return graphEntryObject{}, fmt.Errorf("ENTRY object at offset %d has zero item", offset)
@@ -547,8 +631,14 @@ func (v *graphVerifier) parseHashTable(offset uint64, obj objectHeader) error {
 		return fmt.Errorf("hash table header size mismatch at offset %d", offset)
 	}
 	for itemOffset := offset + objectHeaderSize; itemOffset < offset+obj.size; itemOffset += hashItemSize {
-		head := binary.LittleEndian.Uint64(v.data[itemOffset : itemOffset+8])
-		tail := binary.LittleEndian.Uint64(v.data[itemOffset+8 : itemOffset+16])
+		head, err := verifySourceU64(v.source, itemOffset)
+		if err != nil {
+			return err
+		}
+		tail, err := verifySourceU64(v.source, itemOffset+8)
+		if err != nil {
+			return err
+		}
 		if (head == 0) != (tail == 0) {
 			return fmt.Errorf("hash bucket head/tail mismatch")
 		}
@@ -574,17 +664,30 @@ func (v *graphVerifier) parseEntryArray(offset uint64, obj objectHeader) error {
 		return fmt.Errorf("ENTRY_ARRAY object at offset %d has unaligned items", offset)
 	}
 	array := graphEntryArray{
-		next: binary.LittleEndian.Uint64(v.data[offset+16 : offset+24]),
+		next: 0,
 	}
+	next, err := verifySourceU64(v.source, offset+16)
+	if err != nil {
+		return err
+	}
+	array.next = next
 	if err := v.validOffset(array.next, fmt.Sprintf("ENTRY_ARRAY %d next", offset)); err != nil {
 		return err
 	}
 	for itemOffset := offset + offsetArrayObjectHeaderSize; itemOffset < offset+obj.size; itemOffset += itemSize {
 		var item uint64
 		if v.compacted {
-			item = uint64(binary.LittleEndian.Uint32(v.data[itemOffset : itemOffset+4]))
+			value, err := verifySourceU32(v.source, itemOffset)
+			if err != nil {
+				return err
+			}
+			item = uint64(value)
 		} else {
-			item = binary.LittleEndian.Uint64(v.data[itemOffset : itemOffset+8])
+			value, err := verifySourceU64(v.source, itemOffset)
+			if err != nil {
+				return err
+			}
+			item = value
 		}
 		if item != 0 {
 			if err := v.validOffset(item, fmt.Sprintf("ENTRY_ARRAY %d item", offset)); err != nil {
@@ -623,7 +726,7 @@ func (v *graphVerifier) validateHeaderCounts() error {
 		"n_entry_arrays": 240,
 	}
 	for field, value := range expected {
-		if headerContainsField(v.data, v.header.headerSize, fieldEnds[field]) && actual[field] != value {
+		if verifySourceHasHeaderField(v.source, v.header.headerSize, fieldEnds[field]) && actual[field] != value {
 			return fmt.Errorf("header %s mismatch: got %d, walked %d", field, actual[field], value)
 		}
 	}
@@ -651,7 +754,7 @@ func (v *graphVerifier) validateTailMetadata() error {
 	if err := v.validateHeadTailEntries(head, tail); err != nil {
 		return err
 	}
-	if headerContainsField(v.data, v.header.headerSize, 272) && v.header.tailEntryOffset != tailOffset {
+	if verifySourceHasHeaderField(v.source, v.header.headerSize, 272) && v.header.tailEntryOffset != tailOffset {
 		return fmt.Errorf("tail_entry_offset mismatch")
 	}
 	if headOffset == 0 {
@@ -738,8 +841,14 @@ func (v *graphVerifier) validateDataHashTable() error {
 	bucketCount := tableSize / hashItemSize
 	for bucketIndex := uint64(0); bucketIndex < bucketCount; bucketIndex++ {
 		itemOffset := tableOffset + bucketIndex*hashItemSize
-		current := binary.LittleEndian.Uint64(v.data[itemOffset : itemOffset+8])
-		tail := binary.LittleEndian.Uint64(v.data[itemOffset+8 : itemOffset+16])
+		current, err := verifySourceU64(v.source, itemOffset)
+		if err != nil {
+			return err
+		}
+		tail, err := verifySourceU64(v.source, itemOffset+8)
+		if err != nil {
+			return err
+		}
 		last := uint64(0)
 		seen := make(map[uint64]struct{})
 		for current != 0 {
@@ -899,7 +1008,10 @@ func (v *graphVerifier) dataObjectInHashTable(dataOffset, dataHash uint64) bool 
 	}
 	bucketCount := tableSize / hashItemSize
 	bucket := dataHash % bucketCount
-	current := binary.LittleEndian.Uint64(v.data[tableOffset+bucket*hashItemSize : tableOffset+bucket*hashItemSize+8])
+	current, err := verifySourceU64(v.source, tableOffset+bucket*hashItemSize)
+	if err != nil {
+		return false
+	}
 	seen := make(map[uint64]struct{})
 	for current != 0 {
 		if _, ok := seen[current]; ok {

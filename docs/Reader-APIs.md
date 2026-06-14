@@ -59,6 +59,9 @@ Performance rules:
 - use payload visitors for hot scans;
 - use field and unique APIs for index-backed metadata queries;
 - use full entry maps only for rows that will be returned or displayed.
+- use verifier APIs only for integrity checks; file-path verification is
+  bounded, but it still performs object-graph and sealed TAG/HMAC work that is
+  not part of the query hot path.
 
 ## Directory Reader
 

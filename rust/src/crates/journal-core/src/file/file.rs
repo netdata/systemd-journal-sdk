@@ -662,6 +662,11 @@ impl<M: MemoryMap> JournalFile<M> {
         Ok(self.window_manager.borrow_mut_checked()?.stats())
     }
 
+    #[doc(hidden)]
+    pub fn reader_file_size(&self) -> Result<u64> {
+        Ok(self.window_manager.borrow_mut_checked()?.stats().file_size)
+    }
+
     pub fn hash(&self, data: &[u8]) -> u64 {
         self.hash_parts(PayloadParts::raw(data))
     }
@@ -749,6 +754,13 @@ impl<M: MemoryMap> JournalFile<M> {
     /// Returns a copied Vec so no borrow on the window manager is held.
     pub fn read_bytes_at(&self, offset: u64, size: u64) -> Result<Vec<u8>> {
         validate_offset_alignment(NonZeroU64::new(offset).ok_or(JournalError::InvalidOffset)?)?;
+        let window_manager = self.window_manager.borrow_mut_checked()?;
+        let src = window_manager.get_slice(offset, size)?;
+        Ok(src.to_vec())
+    }
+
+    #[doc(hidden)]
+    pub fn read_unaligned_bytes_at(&self, offset: u64, size: u64) -> Result<Vec<u8>> {
         let window_manager = self.window_manager.borrow_mut_checked()?;
         let src = window_manager.get_slice(offset, size)?;
         Ok(src.to_vec())

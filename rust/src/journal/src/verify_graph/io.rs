@@ -1,6 +1,11 @@
 use super::*;
 use std::io::Read;
 
+pub(crate) trait VerifyByteSource {
+    fn len(&self) -> u64;
+    fn read_vec(&self, offset: u64, size: u64) -> Result<Vec<u8>, String>;
+}
+
 pub(super) fn decompress_payload(flags: u8, payload: &[u8]) -> Result<Vec<u8>, String> {
     if flags & OBJECT_COMPRESSED_ZSTD != 0 {
         let mut decoder =
@@ -59,61 +64,63 @@ pub(super) fn read_limited_to_end<R: Read>(reader: &mut R) -> Result<Vec<u8>, St
     }
 }
 
-pub(super) fn header_contains_field(data: &[u8], header_size: u64, end: usize) -> bool {
-    header_size >= end as u64 && data.len() >= end
+pub(super) fn header_contains_field(
+    source: &dyn VerifyByteSource,
+    header_size: u64,
+    end: usize,
+) -> bool {
+    header_size >= end as u64 && source.len() >= end as u64
 }
 
 pub(super) fn align8_checked(value: u64) -> Option<u64> {
     value.checked_add(7).map(|v| v & !7)
 }
 
-pub(super) fn byte_at(data: &[u8], offset: u64) -> Result<u8, String> {
-    let offset = usize::try_from(offset).map_err(|_| "offset is not representable".to_string())?;
-    data.get(offset)
-        .copied()
-        .ok_or_else(|| format!("byte read at {offset} exceeds file bounds"))
+pub(super) fn byte_at(source: &dyn VerifyByteSource, offset: u64) -> Result<u8, String> {
+    let bytes = source.read_vec(offset, 1)?;
+    Ok(bytes[0])
 }
 
-pub(super) fn u32_at(data: &[u8], offset: usize) -> Result<u32, String> {
-    let bytes = data
-        .get(offset..offset + 4)
-        .ok_or_else(|| format!("uint32 read at {offset} exceeds file bounds"))?;
+pub(super) fn u32_at(source: &dyn VerifyByteSource, offset: usize) -> Result<u32, String> {
+    let bytes = source.read_vec(offset as u64, 4)?;
     Ok(u32::from_le_bytes(bytes.try_into().unwrap()))
 }
 
-pub(super) fn u32_at_u64(data: &[u8], offset: u64) -> Result<u32, String> {
+pub(super) fn u32_at_u64(source: &dyn VerifyByteSource, offset: u64) -> Result<u32, String> {
     let offset = usize::try_from(offset).map_err(|_| "offset is not representable".to_string())?;
-    u32_at(data, offset)
+    u32_at(source, offset)
 }
 
-pub(super) fn u64_at(data: &[u8], offset: usize) -> Result<u64, String> {
-    let bytes = data
-        .get(offset..offset + 8)
-        .ok_or_else(|| format!("uint64 read at {offset} exceeds file bounds"))?;
+pub(super) fn u64_at(source: &dyn VerifyByteSource, offset: usize) -> Result<u64, String> {
+    let bytes = source.read_vec(offset as u64, 8)?;
     Ok(u64::from_le_bytes(bytes.try_into().unwrap()))
 }
 
-pub(super) fn u64_at_u64(data: &[u8], offset: u64) -> Result<u64, String> {
+pub(super) fn u64_at_u64(source: &dyn VerifyByteSource, offset: u64) -> Result<u64, String> {
     let offset = usize::try_from(offset).map_err(|_| "offset is not representable".to_string())?;
-    u64_at(data, offset)
+    u64_at(source, offset)
 }
 
-pub(super) fn bytes16_at(data: &[u8], offset: usize) -> Result<[u8; 16], String> {
-    let bytes = data
-        .get(offset..offset + 16)
-        .ok_or_else(|| format!("16-byte read at {offset} exceeds file bounds"))?;
+pub(super) fn bytes16_at(source: &dyn VerifyByteSource, offset: usize) -> Result<[u8; 16], String> {
+    let bytes = source.read_vec(offset as u64, 16)?;
     Ok(bytes.try_into().unwrap())
 }
 
-pub(super) fn bytes16_at_u64(data: &[u8], offset: u64) -> Result<[u8; 16], String> {
+pub(super) fn bytes16_at_u64(
+    source: &dyn VerifyByteSource,
+    offset: u64,
+) -> Result<[u8; 16], String> {
     let offset = usize::try_from(offset).map_err(|_| "offset is not representable".to_string())?;
-    bytes16_at(data, offset)
+    bytes16_at(source, offset)
 }
 
-pub(super) fn slice_u64(data: &[u8], start: u64, end: u64) -> Result<&[u8], String> {
-    let start =
-        usize::try_from(start).map_err(|_| "start offset is not representable".to_string())?;
-    let end = usize::try_from(end).map_err(|_| "end offset is not representable".to_string())?;
-    data.get(start..end)
-        .ok_or_else(|| format!("slice {start}..{end} exceeds file bounds"))
+pub(super) fn slice_u64(
+    source: &dyn VerifyByteSource,
+    start: u64,
+    end: u64,
+) -> Result<Vec<u8>, String> {
+    let size = end
+        .checked_sub(start)
+        .ok_or_else(|| format!("slice {start}..{end} is invalid"))?;
+    source.read_vec(start, size)
 }

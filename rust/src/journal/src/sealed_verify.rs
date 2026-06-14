@@ -4,8 +4,39 @@ use hmac::{Hmac, Mac};
 use journal_core::fss::{RECOMMENDED_SECPAR, gen_mk, gen_state0, get_key, seek};
 use journal_core::seal::TAG_LENGTH;
 use sha2::Sha256;
-use std::fs::File;
-use std::io::Read;
+use verify_graph::ByteSource;
+
+struct JournalFileVerifySource<'a> {
+    file: &'a JournalFile<Mmap>,
+    len: u64,
+}
+
+impl<'a> JournalFileVerifySource<'a> {
+    fn new(file: &'a JournalFile<Mmap>) -> Result<Self> {
+        Ok(Self {
+            file,
+            len: file.reader_file_size()?,
+        })
+    }
+}
+
+impl ByteSource for JournalFileVerifySource<'_> {
+    fn len(&self) -> u64 {
+        self.len
+    }
+
+    fn read_vec(&self, offset: u64, size: u64) -> std::result::Result<Vec<u8>, String> {
+        let end = offset
+            .checked_add(size)
+            .ok_or_else(|| format!("slice {offset}..+{size} overflows"))?;
+        if end > self.len {
+            return Err(format!("slice {offset}..{end} exceeds file bounds"));
+        }
+        self.file
+            .read_unaligned_bytes_at(offset, size)
+            .map_err(|err| err.to_string())
+    }
+}
 
 /// Validate the structural integrity of a journal file.
 ///
@@ -17,14 +48,17 @@ use std::io::Read;
 /// For sealed journals, this validates structure only; use `verify_file_with_key`
 /// when TAG/HMAC verification is required.
 pub fn verify_file(path: impl AsRef<Path>) -> Result<()> {
-    let path = path.as_ref();
-    let data = read_journal_file_for_verify(path)
-        .map_err(|err| SdkError::VerificationError(format!("open/decompression failed: {err}")))?;
-    verify_graph::verify_object_graph(&data)
-        .map_err(|err| SdkError::VerificationError(format!("corrupt object graph: {err}")))?;
+    verify_file_with_options(path, ReaderOptions::snapshot())
+}
 
-    let reader = FileReader::open(path)
+pub(crate) fn verify_file_with_options(
+    path: impl AsRef<Path>,
+    options: ReaderOptions,
+) -> Result<()> {
+    let path = path.as_ref();
+    let reader = FileReader::open_with_options(path, verify_reader_options(options))
         .map_err(|err| SdkError::VerificationError(format!("open/decompression failed: {err}")))?;
+    verify_reader_object_graph(&reader)?;
     reader.inner.with_file(verify_journal_file_strict)
 }
 
@@ -33,49 +67,59 @@ pub fn verify_file(path: impl AsRef<Path>) -> Result<()> {
 /// For sealed files, parses the key and validates TAG/HMAC chains.
 /// For unsealed files, behaves like `verify_file`.
 pub fn verify_file_with_key(path: impl AsRef<Path>, verification_key: &str) -> Result<()> {
-    let path = path.as_ref();
-    let data = read_journal_file_for_verify(path)
-        .map_err(|err| SdkError::VerificationError(format!("open/decompression failed: {err}")))?;
-
-    if data.len() < HEADER_MIN_SIZE as usize {
-        return Err(SdkError::VerificationError("file too small".into()));
-    }
-    verify_graph::verify_object_graph(&data)
-        .map_err(|err| SdkError::VerificationError(format!("corrupt object graph: {err}")))?;
-
-    let compatible_flags = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
-    let incompatible_flags = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
-    let sealed = (compatible_flags & 1) != 0;
-
-    if !sealed {
-        return verify_file(path);
-    }
-
-    let (seed, start_usec, interval_usec) = parse_verification_key(verification_key)
-        .map_err(|e| SdkError::VerificationError(format!("invalid verification key: {e}")))?;
-
-    verify_sealed(
-        &data,
-        compatible_flags,
-        incompatible_flags,
-        seed,
-        start_usec,
-        interval_usec,
-    )?;
-    verify_file(path)
+    verify_file_with_key_options(path, verification_key, ReaderOptions::snapshot())
 }
 
-fn read_journal_file_for_verify(path: &Path) -> std::io::Result<Vec<u8>> {
-    if is_zst_file(path) {
-        let source = File::open(path)?;
-        let mut decoder = ruzstd::decoding::StreamingDecoder::new(source)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
-        let mut data = Vec::new();
-        decoder.read_to_end(&mut data)?;
-        Ok(data)
-    } else {
-        std::fs::read(path)
-    }
+pub(crate) fn verify_file_with_key_options(
+    path: impl AsRef<Path>,
+    verification_key: &str,
+    options: ReaderOptions,
+) -> Result<()> {
+    let path = path.as_ref();
+    let reader = FileReader::open_with_options(path, verify_reader_options(options))
+        .map_err(|err| SdkError::VerificationError(format!("open/decompression failed: {err}")))?;
+
+    reader.inner.with_file(|file| {
+        let source = JournalFileVerifySource::new(file)?;
+        if source.len() < HEADER_MIN_SIZE {
+            return Err(SdkError::VerificationError("file too small".into()));
+        }
+        verify_graph::verify_object_graph_source(&source)
+            .map_err(|err| SdkError::VerificationError(format!("corrupt object graph: {err}")))?;
+
+        let compatible_flags = read_u32_for_verify(&source, 8, "compatible_flags")?;
+        let incompatible_flags = read_u32_for_verify(&source, 12, "incompatible_flags")?;
+        let sealed = (compatible_flags & 1) != 0;
+        if sealed {
+            let (seed, start_usec, interval_usec) = parse_verification_key(verification_key)
+                .map_err(|e| {
+                    SdkError::VerificationError(format!("invalid verification key: {e}"))
+                })?;
+            verify_sealed(
+                &source,
+                compatible_flags,
+                incompatible_flags,
+                seed,
+                start_usec,
+                interval_usec,
+            )?;
+        }
+        Ok(())
+    })?;
+    reader.inner.with_file(verify_journal_file_strict)
+}
+
+fn verify_reader_options(mut options: ReaderOptions) -> ReaderOptions {
+    options.bounds = ReaderBounds::Snapshot;
+    options
+}
+
+fn verify_reader_object_graph(reader: &FileReader) -> Result<()> {
+    reader.inner.with_file(|file| {
+        let source = JournalFileVerifySource::new(file)?;
+        verify_graph::verify_object_graph_source(&source)
+            .map_err(|err| SdkError::VerificationError(format!("corrupt object graph: {err}")))
+    })
 }
 
 fn parse_verification_key(key: &str) -> std::result::Result<([u8; 12], u64, u64), String> {
@@ -152,7 +196,12 @@ pub(super) fn align8(v: u64) -> u64 {
     v.checked_add(7).map(|value| value & !7).unwrap_or(0)
 }
 
-fn verify_slice<'a>(data: &'a [u8], offset: usize, len: usize, label: &str) -> Result<&'a [u8]> {
+fn read_verify_bytes(
+    source: &dyn ByteSource,
+    offset: u64,
+    len: u64,
+    label: &str,
+) -> Result<Vec<u8>> {
     let label_text = label.to_owned();
     let end = offset.checked_add(len).ok_or_else(|| {
         SdkError::VerificationError(format!(
@@ -160,16 +209,26 @@ fn verify_slice<'a>(data: &'a [u8], offset: usize, len: usize, label: &str) -> R
             label_text, offset
         ))
     })?;
-    data.get(offset..end).ok_or_else(|| {
-        SdkError::VerificationError(format!(
+    if end > source.len() {
+        return Err(SdkError::VerificationError(format!(
             "{} read at offset {} exceeds file bounds",
             label_text, offset
-        ))
-    })
+        )));
+    }
+    source
+        .read_vec(offset, len)
+        .map_err(|err| SdkError::VerificationError(format!("{label_text}: {err}")))
 }
 
-fn read_u64_for_verify(data: &[u8], offset: usize, label: &str) -> Result<u64> {
-    let bytes = verify_slice(data, offset, 8, label)?;
+fn read_u32_for_verify(source: &dyn ByteSource, offset: u64, label: &str) -> Result<u32> {
+    let bytes = read_verify_bytes(source, offset, 4, label)?;
+    Ok(u32::from_le_bytes(bytes.try_into().map_err(|_| {
+        SdkError::VerificationError(format!("{label} has invalid length"))
+    })?))
+}
+
+fn read_u64_for_verify(source: &dyn ByteSource, offset: u64, label: &str) -> Result<u64> {
+    let bytes = read_verify_bytes(source, offset, 8, label)?;
     Ok(u64::from_le_bytes(bytes.try_into().map_err(|_| {
         SdkError::VerificationError(format!("{label} has invalid length"))
     })?))
@@ -214,7 +273,7 @@ struct SealedVerifyEntry {
 }
 
 struct SealedVerifyState<'a> {
-    data: &'a [u8],
+    source: &'a dyn ByteSource,
     compatible_flags: u32,
     incompatible_flags: u32,
     seed: [u8; 12],
@@ -249,7 +308,7 @@ struct SealedVerifyState<'a> {
 }
 
 fn verify_sealed(
-    data: &[u8],
+    source: &dyn ByteSource,
     compatible_flags: u32,
     incompatible_flags: u32,
     seed: [u8; 12],
@@ -257,7 +316,7 @@ fn verify_sealed(
     interval_usec: u64,
 ) -> Result<()> {
     SealedVerifyState::new(
-        data,
+        source,
         compatible_flags,
         incompatible_flags,
         seed,
@@ -269,28 +328,28 @@ fn verify_sealed(
 
 impl<'a> SealedVerifyState<'a> {
     fn new(
-        data: &'a [u8],
+        source: &'a dyn ByteSource,
         compatible_flags: u32,
         incompatible_flags: u32,
         seed: [u8; 12],
         start_epoch: u64,
         interval_usec: u64,
     ) -> Result<Self> {
-        let header_size = read_u64_for_verify(data, 88, "header_size")?;
-        let file_size = data.len() as u64;
+        let header_size = read_u64_for_verify(source, 88, "header_size")?;
+        let file_size = source.len();
         if header_size < HEADER_MIN_SIZE || header_size > file_size {
             return Err(SdkError::VerificationError(format!(
                 "invalid header_size {header_size}"
             )));
         }
         let (msk, mpk) = gen_mk(&seed, RECOMMENDED_SECPAR);
-        let n_tags_header = if header_size >= 232 && data.len() >= 232 {
-            read_u64_for_verify(data, 224, "n_tags")?
+        let n_tags_header = if header_size >= 232 && source.len() >= 232 {
+            read_u64_for_verify(source, 224, "n_tags")?
         } else {
             0
         };
         Ok(Self {
-            data,
+            source,
             compatible_flags,
             incompatible_flags,
             seed,
@@ -300,12 +359,12 @@ impl<'a> SealedVerifyState<'a> {
             interval_usec,
             is_compact: (incompatible_flags & INCOMPATIBLE_COMPACT) != 0,
             header_size,
-            tail_object_offset: read_u64_for_verify(data, 136, "tail_object_offset")?,
+            tail_object_offset: read_u64_for_verify(source, 136, "tail_object_offset")?,
             file_size,
-            head_entry_seqnum: read_u64_for_verify(data, 168, "head_entry_seqnum")?,
-            head_entry_realtime: read_u64_for_verify(data, 184, "head_entry_realtime")?,
-            n_objects_header: read_u64_for_verify(data, 144, "n_objects")?,
-            n_entries_header: read_u64_for_verify(data, 152, "n_entries")?,
+            head_entry_seqnum: read_u64_for_verify(source, 168, "head_entry_seqnum")?,
+            head_entry_realtime: read_u64_for_verify(source, 184, "head_entry_realtime")?,
+            n_objects_header: read_u64_for_verify(source, 144, "n_objects")?,
+            n_entries_header: read_u64_for_verify(source, 152, "n_entries")?,
             n_tags_header,
             n_objects: 0,
             n_entries: 0,
@@ -350,11 +409,14 @@ impl<'a> SealedVerifyState<'a> {
                 "object header at offset {offset} exceeds file bounds"
             )));
         }
+        let header = read_verify_bytes(self.source, offset, OBJECT_HEADER_SIZE, "object header")?;
         let obj = SealedVerifyObject {
             offset,
-            typ: self.data[offset as usize],
-            flags: self.data[offset as usize + 1],
-            size: read_u64_for_verify(self.data, offset as usize + 8, "object size")?,
+            typ: header[0],
+            flags: header[1],
+            size: u64::from_le_bytes(header[8..16].try_into().map_err(|_| {
+                SdkError::VerificationError("object size has invalid length".into())
+            })?),
             aligned_size: 0,
         };
         let obj = SealedVerifyObject {
@@ -476,12 +538,12 @@ impl<'a> SealedVerifyState<'a> {
 
     fn read_entry(&self, offset: u64) -> Result<SealedVerifyEntry> {
         let mut boot_id = [0u8; 16];
-        let boot_id_bytes = verify_slice(self.data, offset as usize + 40, 16, "entry boot_id")?;
-        boot_id.copy_from_slice(boot_id_bytes);
+        let boot_id_bytes = read_verify_bytes(self.source, offset + 40, 16, "entry boot_id")?;
+        boot_id.copy_from_slice(&boot_id_bytes);
         Ok(SealedVerifyEntry {
-            seqnum: read_u64_for_verify(self.data, offset as usize + 16, "entry seqnum")?,
-            realtime: read_u64_for_verify(self.data, offset as usize + 24, "entry realtime")?,
-            monotonic: read_u64_for_verify(self.data, offset as usize + 32, "entry monotonic")?,
+            seqnum: read_u64_for_verify(self.source, offset + 16, "entry seqnum")?,
+            realtime: read_u64_for_verify(self.source, offset + 24, "entry realtime")?,
+            monotonic: read_u64_for_verify(self.source, offset + 32, "entry monotonic")?,
             boot_id,
         })
     }
@@ -562,8 +624,8 @@ impl<'a> SealedVerifyState<'a> {
                 obj.size, obj.offset
             )));
         }
-        let seqnum = read_u64_for_verify(self.data, obj.offset as usize + 16, "tag seqnum")?;
-        let epoch = read_u64_for_verify(self.data, obj.offset as usize + 24, "tag epoch")?;
+        let seqnum = read_u64_for_verify(self.source, obj.offset + 16, "tag seqnum")?;
+        let epoch = read_u64_for_verify(self.source, obj.offset + 24, "tag epoch")?;
         self.verify_tag_seqnum(obj, seqnum)?;
         self.verify_tag_epoch(obj, epoch)?;
         let rt = self.verify_tag_realtime_window(obj, epoch)?;
@@ -635,12 +697,11 @@ impl<'a> SealedVerifyState<'a> {
     fn verify_tag_hmac(&self, obj: SealedVerifyObject, epoch: u64) -> Result<()> {
         let mut hm = self.new_tag_hmac(epoch);
         if self.n_tags == 0 {
-            self.write_first_tag_header_hmac(&mut hm);
+            self.write_first_tag_header_hmac(&mut hm)?;
         }
         self.write_tag_object_hmacs(&mut hm, obj.offset)?;
-        let stored =
-            &self.data[(obj.offset as usize + 32)..(obj.offset as usize + 32 + TAG_LENGTH)];
-        if hm.verify_slice(stored).is_err() {
+        let stored = read_verify_bytes(self.source, obj.offset + 32, TAG_LENGTH as u64, "tag")?;
+        if hm.verify_slice(&stored).is_err() {
             return Err(SdkError::VerificationError(format!(
                 "tag failed verification at offset {}",
                 obj.offset
@@ -655,11 +716,12 @@ impl<'a> SealedVerifyState<'a> {
         Hmac::<Sha256>::new_from_slice(&key).expect("HMAC key length valid")
     }
 
-    fn write_first_tag_header_hmac(&self, hm: &mut Hmac<Sha256>) {
-        hm.update(&self.data[0..16]);
-        hm.update(&self.data[24..56]);
-        hm.update(&self.data[72..96]);
-        hm.update(&self.data[104..136]);
+    fn write_first_tag_header_hmac(&self, hm: &mut Hmac<Sha256>) -> Result<()> {
+        update_hmac_range(hm, self.source, 0, 16)?;
+        update_hmac_range(hm, self.source, 24, 32)?;
+        update_hmac_range(hm, self.source, 72, 24)?;
+        update_hmac_range(hm, self.source, 104, 32)?;
+        Ok(())
     }
 
     fn write_tag_object_hmacs(&self, hm: &mut Hmac<Sha256>, tag_offset: u64) -> Result<()> {
@@ -669,7 +731,7 @@ impl<'a> SealedVerifyState<'a> {
         }
         while offset <= tag_offset {
             let obj = self.read_hmac_object(offset)?;
-            hmac_object(hm, self.data, offset, obj.typ, obj.size, self.is_compact);
+            hmac_object(hm, self.source, offset, obj.typ, obj.size, self.is_compact)?;
             offset += obj.aligned_size;
         }
         Ok(())
@@ -681,7 +743,7 @@ impl<'a> SealedVerifyState<'a> {
                 "HMAC object header at offset {offset} exceeds file bounds"
             )));
         }
-        let size = read_u64_for_verify(self.data, offset as usize + 8, "HMAC object size")?;
+        let size = read_u64_for_verify(self.source, offset + 8, "HMAC object size")?;
         let aligned_size = align8(size);
         if size < OBJECT_HEADER_SIZE {
             return Err(SdkError::VerificationError(format!(
@@ -698,9 +760,10 @@ impl<'a> SealedVerifyState<'a> {
                 "HMAC object at offset {offset} with aligned size {aligned_size} exceeds file bounds"
             )));
         }
+        let typ = read_verify_bytes(self.source, offset, 1, "HMAC object type")?[0];
         Ok(SealedVerifyObject {
             offset,
-            typ: self.data[offset as usize],
+            typ,
             flags: 0,
             size,
             aligned_size,
@@ -764,46 +827,72 @@ fn tag_realtime_range(start_epoch: u64, epoch: u64, interval_usec: u64) -> Resul
 
 fn hmac_object(
     hm: &mut impl hmac::Mac,
-    data: &[u8],
+    source: &dyn ByteSource,
     offset: u64,
     typ: u8,
     size: u64,
     is_compact: bool,
-) {
-    hm.update(&data[offset as usize..(offset + OBJECT_HEADER_SIZE) as usize]);
+) -> Result<()> {
+    update_hmac_range(hm, source, offset, OBJECT_HEADER_SIZE)?;
 
     match typ {
         OBJECT_TYPE_DATA => {
-            hm.update(&data[(offset + 16) as usize..(offset + 24) as usize]);
+            update_hmac_range(hm, source, offset + 16, 8)?;
             let payload_offset = if is_compact {
                 COMPACT_DATA_OBJECT_HEADER_SIZE
             } else {
                 DATA_OBJECT_HEADER_SIZE
             };
             if size > payload_offset {
-                hm.update(&data[(offset + payload_offset) as usize..(offset + size) as usize]);
+                update_hmac_range(hm, source, offset + payload_offset, size - payload_offset)?;
             }
         }
         OBJECT_TYPE_FIELD => {
-            hm.update(&data[(offset + 16) as usize..(offset + 24) as usize]);
+            update_hmac_range(hm, source, offset + 16, 8)?;
             if size > FIELD_OBJECT_HEADER_SIZE {
-                hm.update(
-                    &data[(offset + FIELD_OBJECT_HEADER_SIZE) as usize..(offset + size) as usize],
-                );
+                update_hmac_range(
+                    hm,
+                    source,
+                    offset + FIELD_OBJECT_HEADER_SIZE,
+                    size - FIELD_OBJECT_HEADER_SIZE,
+                )?;
             }
         }
         OBJECT_TYPE_ENTRY => {
             if size > OBJECT_HEADER_SIZE {
-                hm.update(&data[(offset + OBJECT_HEADER_SIZE) as usize..(offset + size) as usize]);
+                update_hmac_range(
+                    hm,
+                    source,
+                    offset + OBJECT_HEADER_SIZE,
+                    size - OBJECT_HEADER_SIZE,
+                )?;
             }
         }
         OBJECT_TYPE_DATA_HASH_TABLE | OBJECT_TYPE_FIELD_HASH_TABLE | OBJECT_TYPE_ENTRY_ARRAY => {}
         OBJECT_TYPE_TAG => {
-            hm.update(
-                &data[(offset + OBJECT_HEADER_SIZE) as usize
-                    ..(offset + OBJECT_HEADER_SIZE + 16) as usize],
-            );
+            update_hmac_range(hm, source, offset + OBJECT_HEADER_SIZE, 16)?;
         }
         _ => {}
     }
+    Ok(())
+}
+
+fn update_hmac_range(
+    hm: &mut impl hmac::Mac,
+    source: &dyn ByteSource,
+    offset: u64,
+    size: u64,
+) -> Result<()> {
+    const HMAC_CHUNK_SIZE: u64 = 1 << 20;
+    let mut current = offset;
+    let end = offset
+        .checked_add(size)
+        .ok_or_else(|| SdkError::VerificationError("HMAC range overflow".into()))?;
+    while current < end {
+        let chunk = (end - current).min(HMAC_CHUNK_SIZE);
+        let bytes = read_verify_bytes(source, current, chunk, "HMAC range")?;
+        hm.update(&bytes);
+        current += chunk;
+    }
+    Ok(())
 }

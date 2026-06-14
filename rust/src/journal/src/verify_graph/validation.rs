@@ -42,7 +42,7 @@ impl<'a> GraphVerifier<'a> {
             ),
         ];
         for (name, walked, header_value, end) in expected {
-            if header_contains_field(self.data, self.header.header_size, end)
+            if header_contains_field(self.source, self.header.header_size, end)
                 && walked != header_value
             {
                 return Err(format!(
@@ -141,7 +141,7 @@ impl<'a> GraphVerifier<'a> {
     }
 
     pub(super) fn validate_tail_entry_offset(&self, tail_offset: u64) -> Result<(), String> {
-        if header_contains_field(self.data, self.header.header_size, 272)
+        if header_contains_field(self.source, self.header.header_size, 272)
             && self.header.tail_entry_offset != tail_offset
         {
             return Err("tail_entry_offset mismatch".to_string());
@@ -199,8 +199,8 @@ impl<'a> GraphVerifier<'a> {
         bucket_index: u64,
     ) -> Result<(), String> {
         let item_offset = table_offset + bucket_index * HASH_ITEM_SIZE;
-        let mut current = u64_at_u64(self.data, item_offset)?;
-        let tail = u64_at_u64(self.data, item_offset + 8)?;
+        let mut current = u64_at_u64(self.source, item_offset)?;
+        let tail = u64_at_u64(self.source, item_offset + 8)?;
         let mut last = 0;
         let mut seen = HashSet::new();
         while current != 0 {
@@ -400,7 +400,7 @@ impl<'a> GraphVerifier<'a> {
         }
         let bucket_count = table_size / HASH_ITEM_SIZE;
         let bucket = data_hash % bucket_count;
-        let mut current = match u64_at_u64(self.data, table_offset + bucket * HASH_ITEM_SIZE) {
+        let mut current = match u64_at_u64(self.source, table_offset + bucket * HASH_ITEM_SIZE) {
             Ok(value) => value,
             Err(_) => return false,
         };

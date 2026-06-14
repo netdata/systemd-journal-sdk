@@ -25,7 +25,7 @@ and Go APIs use native names, shown in the relevant tables.
 | raw byte-name entry APIs | low to medium | RAW mode can contain non-UTF8 field names. |
 | materialized entry maps | medium to high | Caller needs convenient field maps for selected rows. |
 | JSON/export/text formatters | high | Caller is producing external output. |
-| verifier APIs | high | Caller is validating integrity, not serving a query hot path. |
+| verifier APIs | high | Caller is validating integrity, not serving a query hot path. File-path verification is bounded but still walks the object graph and sealed HMAC ranges. |
 
 ## Writer Format Options
 

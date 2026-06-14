@@ -22,6 +22,22 @@ validated. Production review rounds 1 and 2 found valid blockers. The fixes
 were implemented and locally revalidated. Production review round 3 passed
 with all six reviewers voting `PRODUCTION GRADE`.
 
+Regression reopened 2026-06-14: the completed SOW missed public verification
+API parity. Rust `verify_file()` / `verify_file_with_key()` and Go
+`VerifyFile()` / `VerifyFileWithKey()` still materialize a whole journal file
+before object-graph and sealed-HMAC verification. Node.js and Python already
+verify through bounded reader access. This is a regression against the
+cross-language bounded access architecture because verification helpers were in
+the declared blast radius.
+
+Current regression sub-state: repaired, locally validated, externally reviewed,
+and completed. Rust and Go public file-path verifiers now use bounded
+reader-backed byte sources instead of materializing whole journal files.
+Production review round 1 found one process blocker, round 2 found one real Go
+mmap aliasing blocker, round 3 found one process-only ledger blocker, and round
+4 resolved the final process gate. All six reviewers ultimately voted
+`PRODUCTION GRADE` for the repaired regression surface.
+
 ## Requirements
 
 ### Purpose
@@ -3632,11 +3648,289 @@ views, row-arena memory for compressed/cross-window payloads, and streaming
 No mandatory follow-up SOW is required from this SOW. Existing pending SOW-0106
 continues to own Python/Node consumer docs and verified examples.
 
-## Regression Log
+## Regression - 2026-06-14
 
-None yet.
+### What Broke
 
-Append regression entries here only after this SOW was completed or closed and
-later testing or use found broken behavior. Use a dated `## Regression -
-YYYY-MM-DD` heading at the end of the file. Never prepend regression content
-above the original SOW narrative.
+Public verification APIs in Rust and Go still use whole-file resident byte
+buffers:
+
+- Rust `verify_file()` and `verify_file_with_key()` call
+  `read_journal_file_for_verify()`, which uses whole-file `std::fs::read()` for
+  normal journals and `.journal.zst` `read_to_end()` for repository compressed
+  files.
+- Go `VerifyFile()` and `VerifyFileWithKey()` call `readJournalFileBytes()`,
+  which uses `io.ReadAll()`.
+
+Node.js and Python verification helpers were already migrated to bounded
+reader-backed byte sources, so the completed SOW has a cross-language public API
+parity gap. The ordinary row readers are still bounded; the regression is in the
+verification surface.
+
+### Evidence
+
+- `rust/src/journal/src/sealed_verify.rs`: `verify_file()` loads a full `Vec<u8>`
+  before object-graph verification; `read_journal_file_for_verify()` uses
+  `std::fs::read()` / streaming decoder `read_to_end()`.
+- `go/journal/verify.go`: `VerifyFile()` / `VerifyFileWithKey()` load a full
+  `[]byte`; `readJournalFileBytes()` returns `io.ReadAll(f)`.
+- `node/src/lib/verify.js` and `node/src/lib/verify-adapter.js`: file-path
+  verification uses `FileReader` plus a bounded byte source.
+- `python/journal/verify.py` and `python/journal/_verify_adapter.py`: file-path
+  verification uses `FileReader` plus `_AccessorBytesAdapter`.
+- This SOW's original risk/blast-radius list included verification helpers.
+
+### Why Previous Validation Missed It
+
+The completed SOW focused on production reader paths and explicitly preserved
+Rust as the mmap/windowing reference. The Rust and Go verification helpers were
+not rechecked as public reader-adjacent APIs after Node.js and Python moved
+verification onto bounded byte sources.
+
+### Repair Plan
+
+- Reuse the existing verifier semantics; do not weaken object-graph, strict
+  entry/DATA, TAG, or HMAC validation.
+- Replace Rust and Go verifier inputs with bounded byte-source abstractions
+  backed by the existing reader/window accessor.
+- Keep compatibility test helpers that verify an in-memory buffer, but ensure
+  public file-path verification is bounded.
+- Avoid whole-file resident reads in Rust/Go public verification paths,
+  including `.journal.zst` handling and sealed HMAC verification.
+- Preserve ordinary reader hot-path performance; verification changes must not
+  change row traversal behavior.
+
+### Regression Repair Implementation
+
+Rust:
+
+- `rust/src/crates/journal-core/src/file/file.rs` exposes crate-hidden,
+  unaligned bounded byte reads on top of the existing `WindowManager` so the
+  verifier can read header bytes, object headers, TAG payloads, and HMAC ranges
+  without bypassing the reader window architecture.
+- `rust/src/journal/src/verify_graph/` now verifies object graphs through a
+  bounded `VerifyByteSource` instead of a whole-file `&[u8]`.
+- `rust/src/journal/src/sealed_verify.rs` opens a snapshot `FileReader`, wraps
+  the underlying `JournalFile<Mmap>` as a verifier byte source, performs
+  object-graph verification through that source, and reads sealed TAG/HMAC
+  ranges in bounded chunks. The public `verify_file()` and
+  `verify_file_with_key()` APIs no longer call a whole-file read helper.
+- `rust/src/journal/src/tests/verification.rs` adds a sealed-file regression
+  test with a 4 KiB reader window on a file larger than the window, covering
+  both structural and keyed verification.
+
+Go:
+
+- `go/journal/verify_source.go` adds the verifier byte-source abstraction and a
+  `Reader`-backed implementation. The source returns owned bytes read through
+  `Reader.readAt()` rather than borrowed temporary window slices, so verifier
+  code can safely hold a payload while later scalar reads map or evict other
+  windows.
+- `go/journal/verify_graph.go` now verifies object graphs through that bounded
+  byte source instead of a whole-file `[]byte`.
+- `go/journal/verify.go` opens a snapshot reader for `VerifyFile()` and
+  `VerifyFileWithKey()`, runs object-graph verification and sealed TAG/HMAC
+  validation through bounded source slices, and then runs strict reader
+  traversal on the same reader. The old `io.ReadAll()` helper is removed.
+- `go/journal/verify_test.go` adds a sealed-file regression test with explicit
+  `ReaderAccessReadAt` and explicit `ReaderAccessMmap`, 4 KiB windows, and one
+  maximum window on a file larger than the window.
+
+Same-failure search:
+
+- A focused source search of the Rust and Go verification surfaces found no
+  remaining `read_journal_file_for_verify`, `std::fs::read()`,
+  `read_to_end()`, `io.ReadAll`, or `readJournalFileBytes` use in the public
+  verification path.
+
+### Validation Plan
+
+- Add focused tests proving Rust and Go public verification can run through very
+  small windows on files larger than one window.
+- Add or update tests that fail if public Rust/Go verification calls the old
+  whole-file helper path.
+- Run Rust verification tests and affected Rust package tests.
+- Run Go verification tests and `go test ./...`.
+- Run `tests/interoperability/run_verify_matrix.py`.
+- Run `git diff --check` and `.agents/sow/audit.sh`.
+- After local validation, run the reviewer pool against the reopened SOW and
+  changed Rust/Go verification surfaces, and iterate until all reviewers vote
+  `PRODUCTION GRADE`.
+
+### Regression Repair Local Validation
+
+Passed:
+
+- `go test ./journal -run TestVerifyFileAndKeyWorkWithTinyReaderWindows -count=1`
+  from `go/`: passed after the round-2 mmap aliasing repair, covering both
+  explicit `ReaderAccessReadAt` and explicit `ReaderAccessMmap` with 4 KiB
+  windows and one maximum window.
+- `cargo test -p systemd-journal-sdk-core -p systemd-journal-sdk`
+  from `rust/`: 73 `journal-core` tests and 118 `journal` tests passed,
+  including `tests::verification::verify_file_and_key_work_with_tiny_reader_windows`.
+- `go test ./...` from `go/`: all Go packages passed, including
+  `TestVerifyFileAndKeyWorkWithTinyReaderWindows`.
+- `python3 tests/interoperability/run_verify_matrix.py`: `status: PASS`,
+  `failures: []`, 9 positive fixture classes and 12 negative corruption
+  classes passed across stock `journalctl`, Rust, Go, Node.js, and Python on
+  `systemd 260 (260.1-2-manjaro)`.
+- `python3 tests/docs/check_wiki_docs.py`: validated 15 wiki markdown files.
+- `git diff --check`: passed.
+- `.agents/sow/audit.sh`: passed; SOW initialization complete and clean.
+
+### Regression Repair Production Review Round 1
+
+Reviewer outputs are stored under
+`.local/agent-reviews/sow-0108-regression-round1/`.
+
+Votes:
+
+- `llm-netdata-cloud/glm-5.2-max`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/kimi-k2.7-code`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/qwen3.7-plus`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/minimax-m3-coder`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/deepseek-v4-pro`: `NOT PRODUCTION GRADE`.
+
+Blocking finding:
+
+- Deepseek reported that `go/journal/verify_source.go` was untracked, so a
+  final commit that forgot it would not compile from a clean checkout.
+
+Disposition:
+
+- Accepted as a real process blocker, not a verifier-code defect. The file is
+  staged explicitly before round 2 and before the final SOW close commit.
+
+Non-blocking findings and dispositions:
+
+- Rust `reader_file_size()` and `read_unaligned_bytes_at()` are `pub` and
+  `#[doc(hidden)]` instead of `pub(crate)`. Disposition: accepted as necessary
+  cross-crate verifier plumbing from `systemd-journal-sdk` into
+  `systemd-journal-sdk-core`; they remain hidden from docs and are only used by
+  the verifier.
+- Rust and Go verifier byte sources allocate per small scalar read.
+  Disposition: accepted for verification, which is not the query hot path. The
+  replacement removes file-sized resident buffers; a later optimization can add
+  scratch-buffer reads if verifier CPU/allocation cost matters.
+- Go `readerVerifySource.Len()` relied on the snapshot-reader invariant.
+  Disposition: accepted and clarified with a code comment because
+  `openVerifyReader()` forces `WithSnapshot(true)`.
+- Dedicated `.journal.zst` tiny-window verification tests and isolated
+  `readerVerifySource` bounds tests were suggested as hardening. Disposition:
+  not required for this regression because the interoperability verify matrix
+  covers `.journal.zst` and corrupted verifier cases across all readers, and
+  the new tiny-window tests prove the bounded source path for both structural
+  and keyed verification.
+
+### Regression Repair Production Review Round 2
+
+Reviewer outputs are stored under
+`.local/agent-reviews/sow-0108-regression-round2/`.
+
+Votes:
+
+- `llm-netdata-cloud/glm-5.2-max`: `NOT PRODUCTION GRADE`.
+- `llm-netdata-cloud/kimi-k2.7-code`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/qwen3.7-plus`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/minimax-m3-coder`: `NOT PRODUCTION GRADE`.
+- `llm-netdata-cloud/deepseek-v4-pro`: `PRODUCTION GRADE`.
+
+Blocking findings:
+
+- GLM reported a real Go verifier memory-safety bug: `readerVerifySource.Slice`
+  returned a borrowed window slice via `Reader.readSlice()` / `tempSlice()`.
+  `parseData()` and `parseField()` could hold that borrowed payload while later
+  verifier scalar reads mapped or evicted another window. In mmap mode that can
+  leave a slice pointing at unmapped memory.
+- Minimax reported a process blocker: the SOW still recorded round 2 as pending
+  and had not captured round-2 findings and dispositions.
+
+Disposition:
+
+- GLM finding accepted. `readerVerifySource.Slice()` now allocates an owned
+  buffer, fills it through `Reader.readAt()`, and returns that owned slice. This
+  mirrors the Rust verifier source contract and removes future aliasing hazards
+  from all `source.Slice()` call sites.
+- The Go focused test now exercises both explicit `ReaderAccessReadAt` and
+  explicit `ReaderAccessMmap` with 4 KiB windows and one maximum window.
+- Minimax finding accepted. Round-2 votes, blockers, and dispositions are
+  recorded here before round 3.
+
+Non-blocking findings and dispositions:
+
+- Rust hidden-public verifier helpers remain accepted cross-crate plumbing.
+- Per-scalar verifier allocations remain accepted because verification is an
+  integrity-check path, not the query hot path.
+- Dedicated `.journal.zst` tiny-window verification tests remain optional
+  hardening because `.journal.zst` verification is already covered by existing
+  sealed verification tests and the shared verify matrix.
+
+### Regression Repair Production Review Round 3
+
+Reviewer outputs are stored under
+`.local/agent-reviews/sow-0108-regression-round3/`.
+
+Votes:
+
+- `llm-netdata-cloud/glm-5.2-max`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/kimi-k2.7-code`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/mimo-v2.5-pro`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/qwen3.7-plus`: `PRODUCTION GRADE`.
+- `llm-netdata-cloud/minimax-m3-coder`: `NOT PRODUCTION GRADE`.
+- `llm-netdata-cloud/deepseek-v4-pro`: `PRODUCTION GRADE`.
+
+Blocking findings:
+
+- Minimax reported a process-only blocker: this SOW still named round 3 as the
+  current gate and had not yet recorded round-3 reviewer votes while round 3
+  was still running.
+
+Disposition:
+
+- Accepted as a SOW ledger blocker, not a verifier-code defect. Round-3 votes
+  and dispositions are now recorded before rerunning Minimax with the same full
+  review scope.
+
+Non-blocking findings and dispositions:
+
+- Rust hidden-public verifier helpers remain accepted cross-crate plumbing.
+- Per-scalar verifier allocations remain accepted because verification is an
+  integrity-check path, not the query hot path.
+- Dedicated `.journal.zst` tiny-window verification tests remain optional
+  hardening because `.journal.zst` verification is already covered by existing
+  sealed verification tests and the shared verify matrix.
+
+### Regression Repair Production Review Round 4 - Minimax Process Rerun
+
+Reviewer output is stored under
+`.local/agent-reviews/sow-0108-regression-round4-minimax/`.
+
+Vote:
+
+- `llm-netdata-cloud/minimax-m3-coder`: `PRODUCTION GRADE`.
+
+Disposition:
+
+- The round-3 process-only blocker is resolved. The round-4 review rechecked
+  the full Rust/Go verifier regression scope and found no blocking code,
+  documentation, SOW, or security issues.
+
+### Artifact Updates
+
+- Specs: `product-scope.md` now includes public file-path verification in the
+  bounded reader-memory contract and documents the accepted per-object scratch
+  allocation shape.
+- End-user docs: `docs/Reader-APIs.md`, `docs/Options-Reference.md`,
+  `docs/Go-API.md`, and `docs/Rust-API.md` describe verifier APIs as bounded
+  integrity-check paths, not query hot paths.
+- Project skills: no project skill change was needed. Existing compatibility
+  skill verifier guidance already requires `run_verify_matrix.py`; the missed
+  regression was an API-surface gap, now closed by specs and tests.
+- SOW status: root and canonical SOW status files record the reopened
+  regression repair and are updated again when this SOW moves back to `done/`.
+- Follow-up mapping: no new follow-up SOW is required for this regression.
+  Per-scalar verifier allocation and per-DATA-object scratch allocation remain
+  accepted verifier behavior because verification is an integrity-check path,
+  not a query hot path.

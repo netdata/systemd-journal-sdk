@@ -60,16 +60,14 @@ Last updated: 2026-06-14
   shared primitives preserve historical compatibility and reader performance.
 ## Recently Closed Or Completed
 
-- SOW-0108 - Cross-Language Reader Window Accessor Architecture: completed.
-  Rust remains the mmap/windowing reference after platform evidence showed
-  `memmap2` covers Linux, FreeBSD, macOS, and Windows. Go and Python now expose
-  bounded rolling reader access with mmap/read-at selection and row-level
-  lifetime guarantees. Node.js production reader paths no longer use whole-file
-  resident Buffers; they use bounded positioned-read windows, row-pinned
-  current-row views, row-arena memory for compressed/cross-window payloads, and
-  streaming `.journal.zst` temp files. Go passed production review in round 3,
-  Python in round 2, and Node.js in round 3 with all six reviewers voting
-  `PRODUCTION GRADE`.
+- SOW-0108 - Cross-Language Reader Window Accessor Architecture: completed
+  after regression repair. Rust and Go public file-path verification APIs now
+  use bounded reader-backed byte sources instead of materializing whole journal
+  files; Go verifier source slices return owned buffers to avoid mmap/window
+  aliasing hazards. Focused Rust/Go tiny-window sealed verifier tests,
+  `go test ./...`, affected Rust package tests, the shared verify matrix,
+  wiki docs validation, `git diff --check`, and SOW audit passed. All six
+  reviewers ultimately voted `PRODUCTION GRADE` after the reopened repair.
 - SOW-0104 - Python Explorer And Netdata Parity To Rust: completed. The
   Python SDK now carries the full Rust feature surface: Explorer
   (filters, facets, histogram, FTS, Traversal/Index/Compare strategies,

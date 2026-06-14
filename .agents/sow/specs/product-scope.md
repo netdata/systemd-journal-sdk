@@ -493,7 +493,10 @@ Accepted reader API layers:
   Production readers must not load a whole journal file into resident memory
   as the default path. Current-row DATA returned by low-level/facade payload
   enumeration remains valid until the reader advances to another row or closes;
-  compressed and cross-window DATA use row-scoped arena storage.
+  compressed and cross-window DATA use row-scoped arena storage. Public
+  file-path verification APIs are covered by the same bounded access contract:
+  object-graph and sealed TAG/HMAC verification read through reader-backed byte
+  sources rather than materializing the whole journal file in memory.
 - Idiomatic file and directory readers expose language-native entry objects,
   binary field values, repeated field values, cursor/realtime metadata, field
   enumeration, unique value enumeration, and boot listing for the accepted file
@@ -622,7 +625,10 @@ Accepted reader API layers:
   directories, and a wrong key fails.
 - Rust, Go, Node.js, and Python verification APIs and file-backed
   `journalctl --verify` perform raw object-graph verification for the supported
-  feature slices before normal reader traversal. The shared parity matrix
+  feature slices before normal reader traversal. File-path verification uses
+  bounded reader-backed byte sources; it may allocate per-object and
+  per-decompressed-payload scratch memory, but it must not load the whole
+  journal file into a resident byte buffer. The shared parity matrix
   `tests/interoperability/run_verify_matrix.py` validates stock systemd and all
   repository verifiers against positive regular, zstd/xz/lz4 DATA-compressed,
   compact, compact plus DATA-compressed, and sealed files, plus negative object

@@ -30,6 +30,54 @@ func TestVerifyFilePassesOnValidFixture(t *testing.T) {
 	}
 }
 
+func TestVerifyFileAndKeyWorkWithTinyReaderWindows(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "test.journal")
+
+	opts := Options{Seal: testSealOpts()}
+	w, err := Create(path, opts)
+	if err != nil {
+		t.Fatalf("create sealed writer: %v", err)
+	}
+	if err := w.Append([]Field{
+		StringField("MESSAGE", strings.Repeat("bounded verifier ", 128)),
+		StringField("PRIORITY", "6"),
+	}, EntryOptions{RealtimeUsec: 1500000}); err != nil {
+		t.Fatalf("append entry: %v", err)
+	}
+	if err := w.Append([]Field{
+		StringField("MESSAGE", strings.Repeat("second bounded verifier ", 128)),
+	}, EntryOptions{RealtimeUsec: 2500000}); err != nil {
+		t.Fatalf("append second entry: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat journal: %v", err)
+	}
+
+	for _, mode := range []ReaderAccessMode{ReaderAccessReadAt, ReaderAccessMmap} {
+		t.Run(accessModeName(mode), func(t *testing.T) {
+			readerOpts := DefaultReaderOptions().
+				WithSnapshot(true).
+				WithAccessMode(mode).
+				WithWindowSize(4096).
+				WithMaxWindows(1)
+			if uint64(info.Size()) <= readerOpts.WindowSize {
+				t.Fatalf("test journal size %d must exceed forced window size %d", info.Size(), readerOpts.WindowSize)
+			}
+			if err := verifyFileWithOptions(path, readerOpts); err != nil {
+				t.Fatalf("bounded VerifyFile failed: %v", err)
+			}
+			if err := verifyFileWithKeyOptions(path, testVerificationKey(opts.Seal), readerOpts); err != nil {
+				t.Fatalf("bounded VerifyFileWithKey failed: %v", err)
+			}
+		})
+	}
+}
+
 func TestVerifyFileWithKeySealedBasic(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "test.journal")

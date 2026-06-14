@@ -1,5 +1,5 @@
+use io::VerifyByteSource;
 use journal_core::file::journal_hash_data;
-use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 mod hash;
@@ -7,6 +7,8 @@ mod header;
 mod io;
 mod validation;
 mod walk;
+
+pub(super) use io::VerifyByteSource as ByteSource;
 
 const HEADER_MIN_SIZE: usize = 208;
 const OBJECT_HEADER_SIZE: u64 = 16;
@@ -123,12 +125,12 @@ struct ObjectWalkState {
     last_tag_realtime: u64,
 }
 
-pub(super) fn verify_object_graph(data: &[u8]) -> Result<(), String> {
-    GraphVerifier::new(data).verify()
+pub(super) fn verify_object_graph_source(source: &dyn VerifyByteSource) -> Result<(), String> {
+    GraphVerifier::new(source).verify()
 }
 
 struct GraphVerifier<'a> {
-    data: &'a [u8],
+    source: &'a dyn VerifyByteSource,
     header: Header,
     compact: bool,
     spans: HashMap<u64, ObjectHeader>,
@@ -141,9 +143,9 @@ struct GraphVerifier<'a> {
 }
 
 impl<'a> GraphVerifier<'a> {
-    fn new(data: &'a [u8]) -> Self {
+    fn new(source: &'a dyn VerifyByteSource) -> Self {
         Self {
-            data,
+            source,
             header: Header::empty(),
             compact: false,
             spans: HashMap::new(),

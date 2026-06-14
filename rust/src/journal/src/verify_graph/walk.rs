@@ -43,7 +43,9 @@ impl<'a> GraphVerifier<'a> {
         if offset > tail {
             return Err("object walk skipped past tail_object_offset".to_string());
         }
-        let max_header_offset = (self.data.len() as u64)
+        let max_header_offset = self
+            .source
+            .len()
             .checked_sub(OBJECT_HEADER_SIZE)
             .ok_or_else(|| "file too small for object header".to_string())?;
         if offset > max_header_offset {
@@ -56,9 +58,9 @@ impl<'a> GraphVerifier<'a> {
 
     pub(super) fn read_walk_object(&self, offset: u64) -> Result<(ObjectHeader, u64), String> {
         let obj = ObjectHeader {
-            typ: byte_at(self.data, offset)?,
-            flags: byte_at(self.data, offset + 1)?,
-            size: u64_at_u64(self.data, offset + 8)?,
+            typ: byte_at(self.source, offset)?,
+            flags: byte_at(self.source, offset + 1)?,
+            size: u64_at_u64(self.source, offset + 8)?,
         };
         let aligned_size = align8_checked(obj.size).ok_or_else(|| {
             format!(
@@ -92,7 +94,7 @@ impl<'a> GraphVerifier<'a> {
                 obj.size
             ));
         }
-        if aligned_size == 0 || aligned_size > self.data.len() as u64 - offset {
+        if aligned_size == 0 || aligned_size > self.source.len() - offset {
             return Err(format!("object at offset {offset} exceeds file bounds"));
         }
         if offset % 8 != 0 {
@@ -288,7 +290,7 @@ impl<'a> GraphVerifier<'a> {
         if obj.size != TAG_OBJECT_SIZE {
             return Err(format!("invalid TAG size at offset {offset}"));
         }
-        let seqnum = u64_at_u64(self.data, offset + 16)?;
+        let seqnum = u64_at_u64(self.source, offset + 16)?;
         if seqnum != self.counts[OBJECT_TYPE_TAG as usize] {
             return Err(format!("TAG seqnum mismatch at offset {offset}"));
         }
@@ -331,11 +333,7 @@ impl<'a> GraphVerifier<'a> {
         Ok(())
     }
 
-    pub(super) fn data_payload(
-        &self,
-        offset: u64,
-        obj: ObjectHeader,
-    ) -> Result<Cow<'_, [u8]>, String> {
+    pub(super) fn data_payload(&self, offset: u64, obj: ObjectHeader) -> Result<Vec<u8>, String> {
         let payload_offset = if self.compact {
             COMPACT_DATA_OBJECT_HEADER_SIZE
         } else {
@@ -344,12 +342,11 @@ impl<'a> GraphVerifier<'a> {
         if obj.size <= payload_offset {
             return Err(format!("DATA object at offset {offset} has no payload"));
         }
-        let payload = slice_u64(self.data, offset + payload_offset, offset + obj.size)?;
+        let payload = slice_u64(self.source, offset + payload_offset, offset + obj.size)?;
         if obj.flags == 0 {
-            return Ok(Cow::Borrowed(payload));
+            return Ok(payload);
         }
-        decompress_payload(obj.flags, payload)
-            .map(Cow::Owned)
+        decompress_payload(obj.flags, &payload)
             .map_err(|err| format!("DATA decompression failed at offset {offset}: {err}"))
     }
 
@@ -358,7 +355,7 @@ impl<'a> GraphVerifier<'a> {
         offset: u64,
         hash_payload: &[u8],
     ) -> Result<(), String> {
-        let stored_hash = u64_at_u64(self.data, offset + 16)?;
+        let stored_hash = u64_at_u64(self.source, offset + 16)?;
         let computed_hash = self.hash(hash_payload);
         if stored_hash == computed_hash {
             return Ok(());
@@ -369,14 +366,14 @@ impl<'a> GraphVerifier<'a> {
     }
 
     pub(super) fn read_data_object(&self, offset: u64) -> Result<DataObject, String> {
-        let entry_offset = u64_at_u64(self.data, offset + 40)?;
+        let entry_offset = u64_at_u64(self.source, offset + 40)?;
         Ok(DataObject {
-            hash: u64_at_u64(self.data, offset + 16)?,
-            next_hash_offset: u64_at_u64(self.data, offset + 24)?,
-            next_field_offset: u64_at_u64(self.data, offset + 32)?,
+            hash: u64_at_u64(self.source, offset + 16)?,
+            next_hash_offset: u64_at_u64(self.source, offset + 24)?,
+            next_field_offset: u64_at_u64(self.source, offset + 32)?,
             entry_offset,
-            entry_array_offset: u64_at_u64(self.data, offset + 48)?,
-            n_entries: u64_at_u64(self.data, offset + 56)?,
+            entry_array_offset: u64_at_u64(self.source, offset + 48)?,
+            n_entries: u64_at_u64(self.source, offset + 56)?,
         })
     }
 
@@ -454,10 +451,10 @@ impl<'a> GraphVerifier<'a> {
 
     pub(super) fn read_entry_object(&self, offset: u64) -> Result<EntryObject, String> {
         let entry = EntryObject {
-            seqnum: u64_at_u64(self.data, offset + 16)?,
-            realtime: u64_at_u64(self.data, offset + 24)?,
-            monotonic: u64_at_u64(self.data, offset + 32)?,
-            boot_id: bytes16_at_u64(self.data, offset + 40)?,
+            seqnum: u64_at_u64(self.source, offset + 16)?,
+            realtime: u64_at_u64(self.source, offset + 24)?,
+            monotonic: u64_at_u64(self.source, offset + 32)?,
+            boot_id: bytes16_at_u64(self.source, offset + 40)?,
             items: Vec::new(),
         };
         if entry.seqnum == 0 {
@@ -491,9 +488,9 @@ impl<'a> GraphVerifier<'a> {
 
     pub(super) fn read_entry_item(&self, item_offset: u64) -> Result<u64, String> {
         if self.compact {
-            return Ok(u32_at_u64(self.data, item_offset)? as u64);
+            return Ok(u32_at_u64(self.source, item_offset)? as u64);
         }
-        u64_at_u64(self.data, item_offset)
+        u64_at_u64(self.source, item_offset)
     }
 
     pub(super) fn validate_entry_items(
@@ -512,23 +509,23 @@ impl<'a> GraphVerifier<'a> {
             return Err(format!("FIELD object at offset {offset} has no payload"));
         }
         let payload = slice_u64(
-            self.data,
+            self.source,
             offset + FIELD_OBJECT_HEADER_SIZE,
             offset + obj.size,
         )?;
-        let stored_hash = u64_at_u64(self.data, offset + 16)?;
-        let computed_hash = self.hash(payload);
+        let stored_hash = u64_at_u64(self.source, offset + 16)?;
+        let computed_hash = self.hash(&payload);
         if stored_hash != computed_hash {
             return Err(format!(
                 "FIELD hash mismatch at offset {offset}: {stored_hash:#x} != {computed_hash:#x}"
             ));
         }
         self.valid_offset(
-            u64_at_u64(self.data, offset + 24)?,
+            u64_at_u64(self.source, offset + 24)?,
             "FIELD next_hash_offset",
         )?;
         self.valid_offset(
-            u64_at_u64(self.data, offset + 32)?,
+            u64_at_u64(self.source, offset + 32)?,
             "FIELD head_data_offset",
         )?;
         Ok(())
@@ -564,8 +561,8 @@ impl<'a> GraphVerifier<'a> {
         }
         let mut item_offset = offset + OBJECT_HEADER_SIZE;
         while item_offset < offset + obj.size {
-            let head = u64_at_u64(self.data, item_offset)?;
-            let tail = u64_at_u64(self.data, item_offset + 8)?;
+            let head = u64_at_u64(self.source, item_offset)?;
+            let tail = u64_at_u64(self.source, item_offset + 8)?;
             if (head == 0) != (tail == 0) {
                 return Err("hash bucket head/tail mismatch".to_string());
             }
@@ -597,16 +594,16 @@ impl<'a> GraphVerifier<'a> {
             ));
         }
         let mut array = EntryArray {
-            next: u64_at_u64(self.data, offset + 16)?,
+            next: u64_at_u64(self.source, offset + 16)?,
             items: Vec::new(),
         };
         self.valid_offset(array.next, "ENTRY_ARRAY next")?;
         let mut item_offset = offset + OFFSET_ARRAY_OBJECT_HEADER_SIZE;
         while item_offset < offset + obj.size {
             let item = if self.compact {
-                u32_at_u64(self.data, item_offset)? as u64
+                u32_at_u64(self.source, item_offset)? as u64
             } else {
-                u64_at_u64(self.data, item_offset)?
+                u64_at_u64(self.source, item_offset)?
             };
             if item != 0 {
                 self.valid_offset(item, "ENTRY_ARRAY item")?;

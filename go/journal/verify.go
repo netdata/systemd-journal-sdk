@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash"
-	"io"
 	"strconv"
 )
 
@@ -28,22 +27,28 @@ func (e *VerificationError) Error() string {
 // For sealed journals, this validates structure only; use VerifyFileWithKey
 // when TAG/HMAC verification is required.
 func VerifyFile(path string) error {
-	data, err := readJournalFileBytes(path)
+	return verifyFileWithOptions(path, DefaultReaderOptions())
+}
+
+func verifyFileWithOptions(path string, opts ReaderOptions) error {
+	r, err := openVerifyReader(path, opts)
 	if err != nil {
 		return &VerificationError{Reason: fmt.Sprintf("journal verification failed: corrupt or unreadable file: %v", err)}
 	}
-	if err := verifyObjectGraph(data); err != nil {
-		return &VerificationError{Reason: fmt.Sprintf("journal verification failed: corrupt object graph: %v", err)}
-	}
-
-	r, err := OpenFile(path)
-	if err != nil {
-		// Any open or decompression failure is a verification failure.
-		msg := fmt.Sprintf("journal verification failed: corrupt or unreadable file: %v", err)
-		return &VerificationError{Reason: msg}
-	}
 	defer r.Close()
 
+	source := readerVerifySource{reader: r}
+	if err := verifyObjectGraph(source); err != nil {
+		return &VerificationError{Reason: fmt.Sprintf("journal verification failed: corrupt object graph: %v", err)}
+	}
+	return verifyReaderStrict(r)
+}
+
+func openVerifyReader(path string, opts ReaderOptions) (*Reader, error) {
+	return OpenFileWithOptions(path, opts.WithSnapshot(true))
+}
+
+func verifyReaderStrict(r *Reader) error {
 	if err := r.SeekHead(); err != nil {
 		return &VerificationError{
 			Reason: fmt.Sprintf("journal verification failed: seek failed: %v", err),
@@ -85,30 +90,32 @@ func VerifyFile(path string) error {
 // For sealed files, it parses the verification key and validates TAG/HMAC chains.
 // For unsealed files, it behaves like VerifyFile.
 func VerifyFileWithKey(path string, verificationKey string) error {
-	data, err := readJournalFileBytes(path)
+	return verifyFileWithKeyOptions(path, verificationKey, DefaultReaderOptions())
+}
+
+func verifyFileWithKeyOptions(path string, verificationKey string, opts ReaderOptions) error {
+	r, err := openVerifyReader(path, opts)
 	if err != nil {
 		return &VerificationError{Reason: fmt.Sprintf("journal verification failed: corrupt or unreadable file: %v", err)}
 	}
+	defer r.Close()
 
-	if len(data) < headerMinSize {
+	source := readerVerifySource{reader: r}
+	if source.Len() < headerMinSize {
 		return &VerificationError{Reason: "journal verification failed: file too small"}
 	}
-	if err := verifyObjectGraph(data); err != nil {
+	if err := verifyObjectGraph(source); err != nil {
 		return &VerificationError{Reason: fmt.Sprintf("journal verification failed: corrupt object graph: %v", err)}
 	}
 
-	headerBytes := data
-	if len(headerBytes) > headerSize {
-		headerBytes = headerBytes[:headerSize]
-	}
-	header, err := parseHeader(headerBytes)
+	header, err := verifySourceHeader(source)
 	if err != nil {
 		return &VerificationError{Reason: fmt.Sprintf("journal verification failed: invalid header: %v", err)}
 	}
 
 	sealed := header.compatibleFlags&compatibleSealed != 0
 	if !sealed {
-		return VerifyFile(path)
+		return verifyReaderStrict(r)
 	}
 
 	seed, startEpoch, intervalUsec, err := parseVerificationKey(verificationKey)
@@ -116,20 +123,10 @@ func VerifyFileWithKey(path string, verificationKey string) error {
 		return &VerificationError{Reason: fmt.Sprintf("journal verification failed: %v", err)}
 	}
 
-	if err := verifySealed(data, header, seed, startEpoch, intervalUsec); err != nil {
+	if err := verifySealed(source, header, seed, startEpoch, intervalUsec); err != nil {
 		return err
 	}
-	return VerifyFile(path)
-}
-
-func readJournalFileBytes(path string) ([]byte, error) {
-	f, cleanupPath, err := openJournalFile(path)
-	if err != nil {
-		return nil, err
-	}
-	defer closeJournalFile(f, cleanupPath)
-
-	return io.ReadAll(f)
+	return verifyReaderStrict(r)
 }
 
 // parseVerificationKey parses a systemd-style verification key.
@@ -237,7 +234,7 @@ type sealedVerifyEntry struct {
 }
 
 type sealedVerifyState struct {
-	data         []byte
+	source       verifyByteSource
 	header       journalHeader
 	seed         [12]byte
 	msk          []byte
@@ -271,16 +268,16 @@ type sealedVerifyState struct {
 	minEntryRealtime  uint64
 }
 
-func verifySealed(data []byte, header journalHeader, seed [12]byte, startEpoch, intervalUsec uint64) error {
-	state, err := newSealedVerifyState(data, header, seed, startEpoch, intervalUsec)
+func verifySealed(source verifyByteSource, header journalHeader, seed [12]byte, startEpoch, intervalUsec uint64) error {
+	state, err := newSealedVerifyState(source, header, seed, startEpoch, intervalUsec)
 	if err != nil {
 		return err
 	}
 	return state.run()
 }
 
-func newSealedVerifyState(data []byte, header journalHeader, seed [12]byte, startEpoch, intervalUsec uint64) (*sealedVerifyState, error) {
-	fileSize := uint64(len(data))
+func newSealedVerifyState(source verifyByteSource, header journalHeader, seed [12]byte, startEpoch, intervalUsec uint64) (*sealedVerifyState, error) {
+	fileSize := source.Len()
 	if header.headerSize < headerMinSize || header.headerSize > fileSize {
 		return nil, &VerificationError{Reason: fmt.Sprintf("invalid header_size %d", header.headerSize)}
 	}
@@ -289,7 +286,7 @@ func newSealedVerifyState(data []byte, header journalHeader, seed [12]byte, star
 		return nil, &VerificationError{Reason: fmt.Sprintf("FSS setup failed: %v", err)}
 	}
 	return &sealedVerifyState{
-		data:             data,
+		source:           source,
 		header:           header,
 		seed:             seed,
 		msk:              msk,
@@ -328,11 +325,15 @@ func (s *sealedVerifyState) readObject(offset uint64) (sealedVerifyObject, error
 	if offset > s.fileSize-objectHeaderSize {
 		return sealedVerifyObject{}, &VerificationError{Reason: fmt.Sprintf("object header at offset %d exceeds file bounds", offset)}
 	}
+	header, err := s.source.Slice(offset, objectHeaderSize)
+	if err != nil {
+		return sealedVerifyObject{}, &VerificationError{Reason: fmt.Sprintf("object header at offset %d is unreadable: %v", offset, err)}
+	}
 	obj := sealedVerifyObject{
 		offset: offset,
-		typ:    s.data[offset],
-		flags:  s.data[offset+1],
-		size:   binary.LittleEndian.Uint64(s.data[offset+8 : offset+16]),
+		typ:    header[0],
+		flags:  header[1],
+		size:   binary.LittleEndian.Uint64(header[8:16]),
 	}
 	obj.alignedSize = align8(obj.size)
 	if err := s.verifyObjectEnvelope(obj); err != nil {
@@ -423,7 +424,10 @@ func (s *sealedVerifyState) verifyEntryObject(obj sealedVerifyObject) error {
 	if s.nTags == 0 {
 		return &VerificationError{Reason: fmt.Sprintf("first entry before first tag at offset %d", obj.offset)}
 	}
-	entry := s.readSealedEntry(obj.offset)
+	entry, err := s.readSealedEntry(obj.offset)
+	if err != nil {
+		return err
+	}
 	if err := s.verifyEntryRealtimeFloor(obj, entry); err != nil {
 		return err
 	}
@@ -441,13 +445,29 @@ func (s *sealedVerifyState) verifyEntryObject(obj sealedVerifyObject) error {
 	return nil
 }
 
-func (s *sealedVerifyState) readSealedEntry(offset uint64) sealedVerifyEntry {
-	var entry sealedVerifyEntry
-	entry.seqnum = binary.LittleEndian.Uint64(s.data[offset+16 : offset+24])
-	entry.realtime = binary.LittleEndian.Uint64(s.data[offset+24 : offset+32])
-	entry.monotonic = binary.LittleEndian.Uint64(s.data[offset+32 : offset+40])
-	copy(entry.bootID[:], s.data[offset+40:offset+56])
-	return entry
+func (s *sealedVerifyState) readSealedEntry(offset uint64) (sealedVerifyEntry, error) {
+	seqnum, err := verifySourceU64(s.source, offset+16)
+	if err != nil {
+		return sealedVerifyEntry{}, err
+	}
+	realtime, err := verifySourceU64(s.source, offset+24)
+	if err != nil {
+		return sealedVerifyEntry{}, err
+	}
+	monotonic, err := verifySourceU64(s.source, offset+32)
+	if err != nil {
+		return sealedVerifyEntry{}, err
+	}
+	bootID, err := verifySourceUUID(s.source, offset+40)
+	if err != nil {
+		return sealedVerifyEntry{}, err
+	}
+	return sealedVerifyEntry{
+		seqnum:    seqnum,
+		realtime:  realtime,
+		monotonic: monotonic,
+		bootID:    bootID,
+	}, nil
 }
 
 func (s *sealedVerifyState) verifyEntryRealtimeFloor(obj sealedVerifyObject, entry sealedVerifyEntry) error {
@@ -501,8 +521,14 @@ func (s *sealedVerifyState) verifyTagObject(obj sealedVerifyObject) error {
 	if obj.size != objectHeaderSize+8+8+tagLength {
 		return &VerificationError{Reason: fmt.Sprintf("invalid tag object size %d at offset %d", obj.size, obj.offset)}
 	}
-	seqnum := binary.LittleEndian.Uint64(s.data[obj.offset+16 : obj.offset+24])
-	epoch := binary.LittleEndian.Uint64(s.data[obj.offset+24 : obj.offset+32])
+	seqnum, err := verifySourceU64(s.source, obj.offset+16)
+	if err != nil {
+		return err
+	}
+	epoch, err := verifySourceU64(s.source, obj.offset+24)
+	if err != nil {
+		return err
+	}
 	if err := s.verifyTagSeqnum(obj, seqnum); err != nil {
 		return err
 	}
@@ -565,13 +591,18 @@ func (s *sealedVerifyState) verifyTagRealtimeWindow(obj sealedVerifyObject, epoc
 func (s *sealedVerifyState) verifyTagHMAC(obj sealedVerifyObject, epoch uint64) error {
 	hm := s.newTagHMAC(epoch)
 	if s.nTags == 0 {
-		s.writeFirstTagHeaderHMAC(hm)
+		if err := s.writeFirstTagHeaderHMAC(hm); err != nil {
+			return err
+		}
 	}
 	if err := s.writeTagObjectHMACs(hm, obj.offset); err != nil {
 		return err
 	}
 	computed := hm.Sum(nil)
-	stored := s.data[obj.offset+32 : obj.offset+32+tagLength]
+	stored, err := s.source.Slice(obj.offset+32, tagLength)
+	if err != nil {
+		return err
+	}
 	if !hmac.Equal(computed, stored) {
 		return &VerificationError{Reason: fmt.Sprintf("tag failed verification at offset %d", obj.offset)}
 	}
@@ -583,11 +614,17 @@ func (s *sealedVerifyState) newTagHMAC(epoch uint64) hash.Hash {
 	return hmac.New(sha256.New, fsprgGetKey(state, tagLength, 0))
 }
 
-func (s *sealedVerifyState) writeFirstTagHeaderHMAC(hm hash.Hash) {
-	hm.Write(s.data[0:16])
-	hm.Write(s.data[24:56])
-	hm.Write(s.data[72:96])
-	hm.Write(s.data[104:136])
+func (s *sealedVerifyState) writeFirstTagHeaderHMAC(hm hash.Hash) error {
+	if err := updateHMACRange(hm, s.source, 0, 16); err != nil {
+		return err
+	}
+	if err := updateHMACRange(hm, s.source, 24, 32); err != nil {
+		return err
+	}
+	if err := updateHMACRange(hm, s.source, 72, 24); err != nil {
+		return err
+	}
+	return updateHMACRange(hm, s.source, 104, 32)
 }
 
 func (s *sealedVerifyState) writeTagObjectHMACs(hm hash.Hash, tagOffset uint64) error {
@@ -600,7 +637,9 @@ func (s *sealedVerifyState) writeTagObjectHMACs(hm hash.Hash, tagOffset uint64) 
 		if err != nil {
 			return err
 		}
-		hmacObject(hm, s.data, q, obj.typ, obj.size, s.isCompact)
+		if err := hmacObject(hm, s.source, q, obj.typ, obj.size, s.isCompact); err != nil {
+			return err
+		}
 		q += obj.alignedSize
 	}
 	return nil
@@ -610,10 +649,14 @@ func (s *sealedVerifyState) readHMACObject(offset uint64) (sealedVerifyObject, e
 	if offset > s.fileSize-objectHeaderSize {
 		return sealedVerifyObject{}, &VerificationError{Reason: fmt.Sprintf("HMAC object header at offset %d exceeds file bounds", offset)}
 	}
+	header, err := s.source.Slice(offset, objectHeaderSize)
+	if err != nil {
+		return sealedVerifyObject{}, &VerificationError{Reason: fmt.Sprintf("HMAC object header at offset %d is unreadable: %v", offset, err)}
+	}
 	obj := sealedVerifyObject{
 		offset: offset,
-		typ:    s.data[offset],
-		size:   binary.LittleEndian.Uint64(s.data[offset+8 : offset+16]),
+		typ:    header[0],
+		size:   binary.LittleEndian.Uint64(header[8:16]),
 	}
 	obj.alignedSize = align8(obj.size)
 	if obj.size < objectHeaderSize {
@@ -665,31 +708,68 @@ func tagRealtimeRange(startEpoch, epoch, intervalUsec uint64) (uint64, uint64, e
 	return rt, rt + intervalUsec, nil
 }
 
-func hmacObject(hm hash.Hash, data []byte, offset uint64, typ uint8, size uint64, isCompact bool) {
-	hm.Write(data[offset : offset+objectHeaderSize])
+func hmacObject(hm hash.Hash, source verifyByteSource, offset uint64, typ uint8, size uint64, isCompact bool) error {
+	if err := updateHMACRange(hm, source, offset, objectHeaderSize); err != nil {
+		return err
+	}
 
 	switch typ {
 	case objectTypeData:
-		hm.Write(data[offset+16 : offset+24])
+		if err := updateHMACRange(hm, source, offset+16, 8); err != nil {
+			return err
+		}
 		payloadOffset := uint64(dataObjectHeaderSize)
 		if isCompact {
 			payloadOffset = uint64(compactDataObjectHeaderSize)
 		}
 		if size > payloadOffset {
-			hm.Write(data[offset+payloadOffset : offset+size])
+			if err := updateHMACRange(hm, source, offset+payloadOffset, size-payloadOffset); err != nil {
+				return err
+			}
 		}
 	case objectTypeField:
-		hm.Write(data[offset+16 : offset+24])
+		if err := updateHMACRange(hm, source, offset+16, 8); err != nil {
+			return err
+		}
 		if size > uint64(fieldObjectHeaderSize) {
-			hm.Write(data[offset+uint64(fieldObjectHeaderSize) : offset+size])
+			if err := updateHMACRange(hm, source, offset+uint64(fieldObjectHeaderSize), size-uint64(fieldObjectHeaderSize)); err != nil {
+				return err
+			}
 		}
 	case objectTypeEntry:
 		if size > objectHeaderSize {
-			hm.Write(data[offset+objectHeaderSize : offset+size])
+			if err := updateHMACRange(hm, source, offset+objectHeaderSize, size-objectHeaderSize); err != nil {
+				return err
+			}
 		}
 	case objectTypeDataHashTable, objectTypeFieldHashTable, objectTypeEntryArray:
 		// nothing beyond header
 	case objectTypeTag:
-		hm.Write(data[offset+objectHeaderSize : offset+objectHeaderSize+16])
+		if err := updateHMACRange(hm, source, offset+objectHeaderSize, 16); err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+func updateHMACRange(hm hash.Hash, source verifyByteSource, offset, size uint64) error {
+	const chunkSize = uint64(1 << 20)
+	current := offset
+	end, ok := checkedAdd(offset, size)
+	if !ok {
+		return &VerificationError{Reason: "HMAC range overflow"}
+	}
+	for current < end {
+		chunk := end - current
+		if chunk > chunkSize {
+			chunk = chunkSize
+		}
+		bytes, err := source.Slice(current, chunk)
+		if err != nil {
+			return err
+		}
+		_, _ = hm.Write(bytes)
+		current += chunk
+	}
+	return nil
 }
