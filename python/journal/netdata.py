@@ -35,6 +35,7 @@ Stdlib-only. No `journal.*` runtime imports.
 from __future__ import annotations
 
 import grp
+import heapq
 import os
 import pathlib
 import pwd
@@ -464,6 +465,19 @@ def _try_int(raw: str) -> Optional[int]:
     if parsed < 0:
         return None
     return parsed
+
+
+def _parse_priority_for_sort(raw: str) -> Optional[int]:
+    parsed = _try_int(raw)
+    if parsed is not None and parsed <= 255:
+        return parsed
+    return None
+
+
+def _priority_facet_sort_key(option: Mapping[str, Any]):
+    raw = str(option["id"])
+    parsed = _parse_priority_for_sort(raw)
+    return (parsed is not None, parsed if parsed is not None else 0, raw)
 
 
 def _priority_name(raw: str) -> Optional[str]:
@@ -983,6 +997,7 @@ from .explorer import (
     ExplorerAnchorKind,
     ExplorerControl,
     ExplorerFieldMode,
+    ExplorerFtsPattern,
     ExplorerHistogram,
     ExplorerHistogramBucket,
     ExplorerQuery,
@@ -991,6 +1006,7 @@ from .explorer import (
     ExplorerStats,
     ExplorerStopReason,
     ExplorerStrategy,
+    _ExplorerSamplingState,
     _explore_file_reader,
     _explore_files,
     _enumerate_fields_indexed,
@@ -1404,6 +1420,126 @@ class LocatedRow:
 
 
 @dataclass
+class _NetdataPageCounters:
+    matched: int
+    before: int
+    after: int
+
+
+class _NetdataPageWindow:
+    def __init__(self, request: "NetdataRequest"):
+        self.direction = request.direction
+        if request.tail and request.anchor.kind == ExplorerAnchorKind.REALTIME:
+            self.anchor_start_usec = None
+            self.anchor_stop_usec = int(request.anchor.realtime_usec)
+        elif request.anchor.kind == ExplorerAnchorKind.REALTIME:
+            self.anchor_start_usec = int(request.anchor.realtime_usec)
+            self.anchor_stop_usec = None
+        else:
+            self.anchor_start_usec = None
+            self.anchor_stop_usec = None
+        self.limit = int(request.limit)
+        self.heap: List[int] = []
+        self.oldest_retained_usec: Optional[int] = None
+        self.newest_retained_usec: Optional[int] = None
+        self.matched = 0
+        self.skips_before = 0
+        self.skips_after = (
+            1 if request.tail
+            and request.delta
+            and request.anchor.kind == ExplorerAnchorKind.REALTIME
+            else 0
+        )
+        self.shifts = 0
+
+    def observe(self, realtime_usec: int) -> None:
+        if not self._entry_within_anchor(int(realtime_usec)) or self.limit == 0:
+            return
+        self.matched += 1
+        if self.direction == Direction.BACKWARD:
+            self._observe_backward(int(realtime_usec))
+        else:
+            self._observe_forward(int(realtime_usec))
+
+    def counters(self) -> _NetdataPageCounters:
+        return _NetdataPageCounters(
+            matched=self.matched,
+            before=self.skips_before,
+            after=self.skips_after + self.shifts,
+        )
+
+    def _observe_backward(self, realtime_usec: int) -> None:
+        if len(self.heap) < self.limit:
+            heapq.heappush(self.heap, realtime_usec)
+            self._add_retained_bound(realtime_usec)
+            return
+        oldest = self.heap[0] if self.heap else None
+        if oldest is None:
+            heapq.heappush(self.heap, realtime_usec)
+            self._refresh_retained_bounds()
+            return
+        if realtime_usec < oldest:
+            self.skips_after += 1
+            return
+        heapq.heapreplace(self.heap, realtime_usec)
+        self._refresh_retained_bounds()
+        self.shifts += 1
+
+    def _observe_forward(self, realtime_usec: int) -> None:
+        heap_value = -int(realtime_usec)
+        if len(self.heap) < self.limit:
+            heapq.heappush(self.heap, heap_value)
+            self._add_retained_bound(realtime_usec)
+            return
+        newest = -self.heap[0] if self.heap else None
+        if newest is None:
+            heapq.heappush(self.heap, heap_value)
+            self._refresh_retained_bounds()
+            return
+        if realtime_usec > newest:
+            self.skips_before += 1
+            return
+        heapq.heapreplace(self.heap, heap_value)
+        self._refresh_retained_bounds()
+        self.shifts += 1
+
+    def _add_retained_bound(self, realtime_usec: int) -> None:
+        if self.oldest_retained_usec is None or realtime_usec < self.oldest_retained_usec:
+            self.oldest_retained_usec = realtime_usec
+        if self.newest_retained_usec is None or realtime_usec > self.newest_retained_usec:
+            self.newest_retained_usec = realtime_usec
+
+    def _refresh_retained_bounds(self) -> None:
+        if not self.heap:
+            self.oldest_retained_usec = None
+            self.newest_retained_usec = None
+            return
+        if self.direction == Direction.BACKWARD:
+            values = self.heap
+        else:
+            values = [-value for value in self.heap]
+        self.oldest_retained_usec = min(values)
+        self.newest_retained_usec = max(values)
+
+    def _entry_within_anchor(self, realtime_usec: int) -> bool:
+        if self.direction == Direction.BACKWARD:
+            if self.anchor_start_usec is not None and realtime_usec >= self.anchor_start_usec:
+                self.skips_before += 1
+                return False
+            if self.anchor_stop_usec is not None and realtime_usec <= self.anchor_stop_usec:
+                self.skips_after += 1
+                return False
+        else:
+            if self.anchor_start_usec is not None and realtime_usec <= self.anchor_start_usec:
+                self.skips_after += 1
+                return False
+            if self.anchor_stop_usec is not None and realtime_usec >= self.anchor_stop_usec:
+                self.skips_before += 1
+                return False
+        return True
+
+
+@dataclass
 class CombinedResult:
     """Mirror of `CombinedResult` (Rust L1828-1844).
 
@@ -1426,6 +1562,7 @@ class CombinedResult:
     timed_out: bool = False
     cancelled: bool = False
     sampling_enabled: bool = False
+    page_counters: Optional[_NetdataPageCounters] = None
 
     def merge(
         self,
@@ -1724,6 +1861,45 @@ def _request_query(request: Mapping[str, Any]) -> "Optional[str]":
     return value
 
 
+def _parse_fts_query_patterns(query: "Optional[str]"):
+    terms = []
+    positives = []
+    negatives = []
+    if not query:
+        return terms, positives, negatives
+
+    data = str(query).encode("utf-8")
+    index = 0
+    while index < len(data):
+        while index < len(data) and data[index] == 0x7C:  # |
+            index += 1
+        negative = False
+        if index < len(data) and data[index] == 0x21:  # !
+            negative = True
+            index += 1
+        pattern = bytearray()
+        escaped = False
+        while index < len(data):
+            byte = data[index]
+            index += 1
+            if byte == 0x5C and not escaped:  # backslash
+                escaped = True
+                continue
+            if byte == 0x7C and not escaped:  # |
+                break
+            pattern.append(byte)
+            escaped = False
+        if not pattern:
+            continue
+        value = bytes(pattern)
+        terms.append(ExplorerFtsPattern.substring(value, negative=negative))
+        if negative:
+            negatives.append(value)
+        else:
+            positives.append(value)
+    return terms, positives, negatives
+
+
 def _normalize_filter_value(field: str, value: str) -> bytes:
     """Mirror Rust `normalize_filter_value` (L3467-3474).
 
@@ -1830,6 +2006,9 @@ class NetdataRequest:
     facets: List[bytes]
     histogram: "Optional[str]"
     query: "Optional[str]"
+    fts_terms: List[ExplorerFtsPattern] = field(default_factory=list)
+    fts_patterns: List[bytes] = field(default_factory=list)
+    fts_negative_patterns: List[bytes] = field(default_factory=list)
     # Track which keys were explicitly set in the original request
     # body, so downstream code can distinguish user-supplied from
     # defaulted values (e.g. for the data_only histogram suppression).
@@ -1874,6 +2053,9 @@ class NetdataRequest:
         requested_histogram = _request_histogram(value)
         histogram = _request_histogram_or_default(requested_histogram, config)
         requested_query = _request_query(value)
+        fts_terms, fts_patterns, fts_negative_patterns = _parse_fts_query_patterns(
+            requested_query
+        )
         source_type, exact_sources = _parse_source_selection(
             value.get("selections")
         )
@@ -1916,6 +2098,9 @@ class NetdataRequest:
             facets=facets,
             histogram=histogram,
             query=requested_query,
+            fts_terms=fts_terms,
+            fts_patterns=fts_patterns,
+            fts_negative_patterns=fts_negative_patterns,
             _explicit_keys=explicit,
         )
 
@@ -1991,6 +2176,9 @@ class NetdataRequest:
         query.direction = self.direction
         query.limit = self.limit
         query.filters = list(self.filters)
+        query.fts_terms = list(self.fts_terms)
+        query.fts_patterns = list(self.fts_patterns)
+        query.fts_negative_patterns = list(self.fts_negative_patterns)
         if analysis_enabled:
             query.facets = [bytes(f) for f in self.facets]
             if self.histogram is not None:
@@ -2957,7 +3145,10 @@ def _build_facets_payload(
                 "name": name,
                 "count": int(count),
             })
-        options.sort(key=lambda o: (-int(o["count"]), str(o["id"])))
+        if field_name == "PRIORITY":
+            options.sort(key=_priority_facet_sort_key)
+        else:
+            options.sort(key=lambda o: (-int(o["count"]), str(o["id"])))
         for idx, option in enumerate(options, start=1):
             option["order"] = int(idx)
         out.append({
@@ -2987,21 +3178,31 @@ def _build_items_payload(
     evaluated = (
         combined.stats.rows_examined + unsampled + estimated
     )
-    matched = (
-        combined.stats.rows_matched + unsampled + estimated
+    fallback_source_rows = (
+        combined.stats.rows_examined
+        if unsampled != 0 or estimated != 0
+        else combined.stats.rows_matched
     )
-    raw_after = (
-        int(combined.stats.rows_matched - returned)
-        if combined.stats.rows_matched > returned
-        else 0
-    )
-    tail_anchor = (
-        request.tail
-        and request.delta
-        and request.anchor.kind == ExplorerAnchorKind.REALTIME
-    )
-    if tail_anchor:
-        raw_after += 1
+    if combined.page_counters is None:
+        page_matched = fallback_source_rows
+        page_before = 0
+        page_after = (
+            int(fallback_source_rows - returned)
+            if fallback_source_rows > returned
+            else 0
+        )
+        tail_anchor = (
+            request.tail
+            and request.delta
+            and request.anchor.kind == ExplorerAnchorKind.REALTIME
+        )
+        if tail_anchor:
+            page_after += 1
+    else:
+        page_matched = combined.page_counters.matched
+        page_before = combined.page_counters.before
+        page_after = combined.page_counters.after
+    matched = page_matched + unsampled + estimated
     return {
         "evaluated": int(evaluated),
         "matched": int(matched),
@@ -3009,8 +3210,8 @@ def _build_items_payload(
         "estimated": int(estimated),
         "returned": int(returned),
         "max_to_return": int(request.limit),
-        "before": 0,
-        "after": raw_after,
+        "before": int(page_before),
+        "after": int(page_after),
     }
 
 
@@ -3689,6 +3890,15 @@ class NetdataJournalFunction:
         matched_paths = overlap_matched_paths
         matched_files_count = len(matched_paths)
         total_files = matched_files_count
+        base_query = request.to_explorer_query(matched_files_count)
+        combined.sampling_enabled = base_query.sampling is not None
+        sampling_bucket_count = None
+        if base_query.histogram is not None:
+            sampling_bucket_count = len(_new_histogram(base_query.histogram, base_query).buckets)
+        sampling_state = _ExplorerSamplingState.for_query(
+            base_query, sampling_bucket_count
+        )
+        page_window = _NetdataPageWindow(request)
         for path_str in matched_paths:
             if _should_stop_before_file(combined, deadline, options):
                 break
@@ -3727,6 +3937,12 @@ class NetdataJournalFunction:
                     total_files, deadline
                 )
                 control.set_progress_callback(wrapped_progress)
+                control.set_sampling_state(sampling_state)
+                control.set_matched_row_callback(
+                    lambda realtime_usec, _rows_matched, window=page_window: (
+                        window.observe(int(realtime_usec)) or False
+                    )
+                )
                 try:
                     result = _explore_file_reader(
                         reader, file_query, ExplorerStrategy.TRAVERSAL, control
@@ -3767,20 +3983,7 @@ class NetdataJournalFunction:
                     reader.close()
                 except Exception:
                     pass
-        # Sampling post-pass (Rust L1536-1590, simplified). The
-        # chunk-1 explorer does not implement the full per-row
-        # sampling state, so we retroactively adjust the stats when
-        # the configured budget is exhausted. The exact Rust split is
-        # `sampled <= budget <= sampled + unsampled + estimated`; we
-        # mirror that contract with the budget exceeded.
-        analysis_enabled = not request.data_only or request.delta
-        if (
-            analysis_enabled
-            and request.sampling != 0
-            and matched_files_count != 0
-        ):
-            combined.sampling_enabled = True
-            _apply_sampling_budget(combined, int(request.sampling))
+        combined.page_counters = page_window.counters()
         # Facet vocabulary zero-count post-passes (Rust L428-443):
         # mirror the exact `!data_only` branch that widens the
         # facet vocabulary so the response matches what the FIELD
@@ -4184,49 +4387,6 @@ def _netdata_function_error(status: int, message: str) -> Dict[str, Any]:
         "status": int(status),
         "errorMessage": str(message),
     }
-
-
-def _apply_sampling_budget(combined: CombinedResult, budget: int) -> None:
-    """Retroactively split the explorer's `rows_matched` into
-    `sampling_sampled` / `sampling_unsampled` / `sampling_estimated`.
-
-    The chunk-1 explorer in Python does not implement the full
-    per-row sampling state. This wrapper-level pass ensures the
-    final stats satisfy the Rust contract:
-        sampled + unsampled + estimated >= rows_matched
-        sampled <= budget
-    while keeping the explorer's `rows_matched` accurate.
-    """
-
-    if budget <= 0:
-        return
-    s = combined.stats
-    rows = int(s.rows_matched)
-    if rows <= 0:
-        s.sampling_sampled = 0
-        s.sampling_unsampled = 0
-        s.sampling_estimated = 0
-        return
-    if rows <= budget:
-        s.sampling_sampled = rows
-        s.sampling_unsampled = 0
-        s.sampling_estimated = 0
-        return
-    # Budget exhausted. Sample exactly `budget` rows, mark the rest as
-    # unsampled (counted) and estimate the remainder.
-    s.sampling_sampled = int(budget)
-    remaining = rows - int(budget)
-    # Mirror Rust: when the explorer would have hit its limit, it
-    # stops and *estimates* the rest. We split remaining into
-    # unsampled (1-per-row) up to `limit` rows, then estimate the
-    # difference.
-    limit = max(1, int(getattr(s, "rows_returned", 0) or 0))
-    unsampled = min(remaining, limit)
-    estimated = remaining - unsampled
-    s.sampling_unsampled = int(unsampled)
-    s.sampling_estimated = int(estimated)
-    s.rows_unsampled = int(s.rows_unsampled) + int(unsampled)
-    s.rows_estimated = int(s.rows_estimated) + int(estimated)
 
 
 # ---------------------------------------------------------------------------

@@ -16,13 +16,16 @@
 // from row traversal.
 
 import { Buffer } from 'node:buffer';
-import { HASH_ITEM_SIZE } from './header.js';
+import { HASH_ITEM_SIZE, OBJECT_HEADER_SIZE } from './header.js';
 
 export const DEFAULT_HISTOGRAM_TARGET_BUCKETS = 150;
 export const DEFAULT_TIME_SLACK_USEC = 120_000_000n;
 export const EXPLORER_CONTROL_CHECK_EVERY_ROWS = 8192n;
 export const DEFAULT_ROWS_FULL_CHECK_EVERY_ROWS = 1n;
 export const EXPLORER_PROGRESS_INTERVAL_MS = 250;
+export const EXPLORER_SAMPLING_SLOTS_MAX = 1000;
+export const EXPLORER_SAMPLING_RECALIBRATE_ROWS = 10_000n;
+export const EXPLORER_SAMPLING_ESTIMATE_AFTER_PROGRESS = 0.01;
 export const EXPLORER_HISTOGRAM_MAX_BUCKETS = 1001;
 export const EXPLORER_HISTOGRAM_DEFAULT_WINDOW_USEC = 3_600_000_000n;
 
@@ -294,6 +297,7 @@ export class ExplorerControl {
     this.cancellation = null;
     this.progress = null;
     this.matchedRow = null;
+    this.sampling = null;
     this.progressIntervalMs = EXPLORER_PROGRESS_INTERVAL_MS;
     this.stopReason = null;
     this._started = Date.now();
@@ -305,6 +309,7 @@ export class ExplorerControl {
   setCancellationCallback(cb) { this.cancellation = cb; }
   setProgressCallback(cb) { this.progress = cb; }
   setMatchedRowCallback(cb) { this.matchedRow = cb; }
+  setSamplingState(sampling) { this.sampling = sampling; }
   setProgressIntervalMs(ms) { this.progressIntervalMs = Number(ms); }
   shouldStopAfterRows(rowsSeen, stats) {
     if (this._stopped) return true;
@@ -342,6 +347,230 @@ export class ExplorerControl {
     return Boolean(this.matchedRow(realtimeUsec, rowsMatched));
   }
 }
+
+export class _ExplorerSamplingState {
+  constructor(query, histogramBucketCount) {
+    const sampling = query.sampling;
+    if (
+      sampling === null
+      || sampling.budget === 0n
+      || sampling.matchedFiles === 0n
+      || query.afterRealtimeUsec === null
+      || query.beforeRealtimeUsec === null
+      || query.afterRealtimeUsec >= query.beforeRealtimeUsec
+    ) {
+      throw new Error('inactive sampling');
+    }
+
+    let slots = histogramBucketCount ?? query.histogramTargetBuckets;
+    slots = Math.max(2, Math.min(EXPLORER_SAMPLING_SLOTS_MAX, Number(slots)));
+    const delta = query.beforeRealtimeUsec - query.afterRealtimeUsec;
+    this.startRealtimeUsec = query.afterRealtimeUsec;
+    this.endRealtimeUsec = query.beforeRealtimeUsec;
+    this.stepRealtimeUsec = ((delta / BigInt(slots)) - 1n) > 1n
+      ? (delta / BigInt(slots)) - 1n
+      : 1n;
+    this.enableAfterSamples = sampling.budget / 2n;
+    this.perFileEnableAfterSamples = _maxBigInt(
+      BigInt(query.limit),
+      (sampling.budget / 4n) / _maxBigInt(1n, sampling.matchedFiles),
+    );
+    this.perSlotEnableAfterSamples = _maxBigInt(
+      BigInt(query.limit),
+      (sampling.budget / 4n) / BigInt(slots),
+    );
+    this.perSlotSampled = Array.from({ length: slots }, () => 0n);
+    this.perSlotUnsampled = Array.from({ length: slots }, () => 0n);
+    this.matchedFiles = _maxBigInt(1n, sampling.matchedFiles);
+    this.direction = query.direction;
+    this.sampled = 0n;
+    this.beginFile(sampling);
+  }
+
+  static forQuery(query, histogramBucketCount) {
+    try {
+      return new _ExplorerSamplingState(query, histogramBucketCount);
+    } catch {
+      return null;
+    }
+  }
+
+  beginFile(sampling) {
+    this.fileHeadRealtimeUsec = sampling.fileHeadRealtimeUsec;
+    this.fileTailRealtimeUsec = sampling.fileTailRealtimeUsec;
+    this.fileHeadSeqnum = sampling.fileHeadSeqnum;
+    this.fileTailSeqnum = sampling.fileTailSeqnum;
+    this.fileEntries = sampling.fileEntries;
+    this.firstRealtimeUsec = null;
+    this.perFileSampled = 0n;
+    this.perFileUnsampled = 0n;
+    this.perFileEvery = 0n;
+    this.perFileSkipped = 0n;
+    this.perFileRecalibrate = 0n;
+  }
+
+  decide(realtimeUsec, seqnum, candidateToKeep) {
+    realtimeUsec = BigInt(realtimeUsec);
+    seqnum = BigInt(seqnum ?? 0);
+    if (this.firstRealtimeUsec === null) this.firstRealtimeUsec = realtimeUsec;
+    if (candidateToKeep) return { action: 'full', sampled: false };
+
+    const slot = this._slotForRealtime(realtimeUsec);
+    let shouldSample;
+    if (
+      this.sampled < this.enableAfterSamples
+      || this.perFileSampled < this.perFileEnableAfterSamples
+      || this.perSlotSampled[slot] < this.perSlotEnableAfterSamples
+    ) {
+      shouldSample = true;
+    } else if (
+      this.perFileRecalibrate >= EXPLORER_SAMPLING_RECALIBRATE_ROWS
+      || this.perFileEvery === 0n
+    ) {
+      this._recalibrate(realtimeUsec, seqnum);
+      shouldSample = true;
+    } else if (this.perFileSkipped >= this.perFileEvery) {
+      this.perFileSkipped = 0n;
+      shouldSample = true;
+    } else {
+      this.perFileSkipped += 1n;
+      shouldSample = false;
+    }
+
+    if (shouldSample) {
+      this.sampled += 1n;
+      this.perFileSampled += 1n;
+      this.perSlotSampled[slot] += 1n;
+      return { action: 'full', sampled: true };
+    }
+
+    this.perFileRecalibrate += 1n;
+    this.perFileUnsampled += 1n;
+    this.perSlotUnsampled[slot] += 1n;
+
+    if (
+      this.perFileUnsampled > this.perFileSampled
+      && this._progressByTime(realtimeUsec) > EXPLORER_SAMPLING_ESTIMATE_AFTER_PROGRESS
+    ) {
+      const remainingRows = this._estimateRemainingRows(realtimeUsec, seqnum);
+      const [fromRealtimeUsec, toRealtimeUsec] = this._remainingRange(realtimeUsec);
+      return {
+        action: 'stop',
+        remainingRows,
+        fromRealtimeUsec,
+        toRealtimeUsec,
+      };
+    }
+    return { action: 'skip' };
+  }
+
+  _slotForRealtime(realtimeUsec) {
+    const clamped = _minBigInt(_maxBigInt(realtimeUsec, this.startRealtimeUsec), this.endRealtimeUsec);
+    const slot = Number((clamped - this.startRealtimeUsec) / this.stepRealtimeUsec);
+    return Math.min(slot, Math.max(0, this.perSlotSampled.length - 1));
+  }
+
+  _recalibrate(realtimeUsec, seqnum) {
+    const remaining = this._estimateRemainingRows(realtimeUsec, seqnum);
+    const wanted = _maxBigInt(1n, this.enableAfterSamples / this.matchedFiles);
+    this.perFileEvery = _maxBigInt(1n, remaining / wanted);
+    this.perFileRecalibrate = 0n;
+  }
+
+  _estimateRemainingRows(realtimeUsec, seqnum) {
+    const bySeqnum = this._estimateRemainingRowsBySeqnum(seqnum);
+    if (bySeqnum !== null) return bySeqnum;
+    return this._estimateRemainingRowsByTime(realtimeUsec);
+  }
+
+  _estimateRemainingRowsBySeqnum(seqnum) {
+    if (
+      this.fileEntries === 0n
+      || this.fileHeadSeqnum === 0n
+      || this.fileTailSeqnum === 0n
+      || seqnum === 0n
+    ) return null;
+    const scanned = this._scannedFileRows();
+    const span = this.direction === Direction.Forward
+      ? _saturatingSub(seqnum, this.fileHeadSeqnum)
+      : _saturatingSub(this.fileTailSeqnum, seqnum);
+    if (span === 0n) return null;
+    let proportion = Number(scanned) / Number(span);
+    if (proportion <= 0.0 || !Number.isFinite(proportion)) return null;
+    proportion = Math.min(proportion, 1.0);
+    const expected = BigInt(Math.trunc(proportion * Number(this.fileEntries)));
+    if (expected === 0n) return null;
+    return _maxBigInt(1n, _saturatingSub(expected, scanned));
+  }
+
+  _estimateRemainingRowsByTime(realtimeUsec) {
+    const scanned = this._scannedFileRows();
+    const [after, before] = this._overlappingTimeframe(realtimeUsec);
+    const [total, remaining] = this._remainingTimeDetails(realtimeUsec, after, before);
+    const elapsed = _maxBigInt(1n, _saturatingSub(total, remaining));
+    let proportion = Number(elapsed) / Number(_maxBigInt(1n, total));
+    if (proportion === 0.0 || proportion > 1.0 || !Number.isFinite(proportion)) proportion = 1.0;
+    let expectedTotal = BigInt(Math.trunc(Number(scanned) / proportion));
+    if (this.fileEntries !== 0n && expectedTotal > this.fileEntries) expectedTotal = this.fileEntries;
+    return _maxBigInt(1n, _saturatingSub(expectedTotal, scanned));
+  }
+
+  _scannedFileRows() {
+    return _maxBigInt(1n, this.perFileSampled + this.perFileUnsampled);
+  }
+
+  _progressByTime(realtimeUsec) {
+    const [after, before] = this._overlappingTimeframe(realtimeUsec);
+    const total = _maxBigInt(1n, before - after);
+    const elapsed = this.direction === Direction.Forward
+      ? _saturatingSub(realtimeUsec, after)
+      : _saturatingSub(before, realtimeUsec);
+    return Number(_minBigInt(elapsed, total)) / Number(total);
+  }
+
+  _overlappingTimeframe(realtimeUsec) {
+    if (this.direction === Direction.Forward) {
+      let oldest = this.firstRealtimeUsec ?? (this.fileHeadRealtimeUsec !== 0n ? this.fileHeadRealtimeUsec : this.startRealtimeUsec);
+      let newest = this.fileTailRealtimeUsec !== 0n
+        ? _minBigInt(this.endRealtimeUsec, this.fileTailRealtimeUsec)
+        : this.endRealtimeUsec;
+      if (newest <= oldest) newest = oldest + 1n;
+      if (realtimeUsec < oldest) oldest = _saturatingSub(realtimeUsec, 1n);
+      return [oldest, newest];
+    }
+    let newest = this.firstRealtimeUsec ?? (this.fileTailRealtimeUsec !== 0n ? this.fileTailRealtimeUsec : this.endRealtimeUsec);
+    const oldest = this.fileHeadRealtimeUsec !== 0n
+      ? _maxBigInt(this.startRealtimeUsec, this.fileHeadRealtimeUsec)
+      : this.startRealtimeUsec;
+    if (newest <= oldest) newest = oldest + 1n;
+    if (newest < realtimeUsec) newest = realtimeUsec + 1n;
+    return [oldest, newest];
+  }
+
+  _remainingRange(realtimeUsec) {
+    const [after, before] = this._overlappingTimeframe(realtimeUsec);
+    const [, , start, end] = this._remainingTimeDetails(realtimeUsec, after, before);
+    return [start, end];
+  }
+
+  _remainingTimeDetails(realtimeUsec, after, before) {
+    if (realtimeUsec <= after) after = _saturatingSub(realtimeUsec, 1n);
+    if (realtimeUsec >= before) before = realtimeUsec + 1n;
+    if (before <= after) before = after + 1n;
+    const remainingStart = this.direction === Direction.Forward ? realtimeUsec : after;
+    const remainingEnd = this.direction === Direction.Forward ? before : realtimeUsec;
+    return [
+      _maxBigInt(1n, before - after),
+      _saturatingSub(remainingEnd, remainingStart),
+      remainingStart,
+      remainingEnd,
+    ];
+  }
+}
+
+function _maxBigInt(a, b) { return a > b ? a : b; }
+function _minBigInt(a, b) { return a < b ? a : b; }
+function _saturatingSub(a, b) { return a > b ? a - b : 0n; }
 
 // ---------------------------------------------------------------------------
 // Byte/string/case-insensitive helpers.
@@ -941,6 +1170,40 @@ function _incrementCounter(counter, key, delta) {
   }
 }
 
+function _addSpecialHistogramValue(histogram, realtimeUsec, value, count, stats) {
+  if (histogram === null) return;
+  const idx = _histogramBucketIndex(histogram, realtimeUsec);
+  if (idx === null) return;
+  _incrementCounter(histogram.buckets[idx].values, value, BigInt(count));
+  stats.histogramUpdates += 1n;
+}
+
+function _addEstimatedHistogramRange(histogram, fromRealtimeUsec, toRealtimeUsec, entries, stats) {
+  if (histogram === null) return;
+  entries = BigInt(entries);
+  if (entries === 0n || fromRealtimeUsec >= toRealtimeUsec) return;
+  if (histogram.buckets.length === 0) return;
+  const first = histogram.buckets[0];
+  const last = histogram.buckets[histogram.buckets.length - 1];
+  const start = _maxBigInt(fromRealtimeUsec, first.startRealtimeUsec);
+  const end = _minBigInt(toRealtimeUsec, last.endRealtimeUsec);
+  if (start >= end) return;
+  const total = _maxBigInt(1n, end - start);
+  let touched = 0n;
+  for (const bucket of histogram.buckets) {
+    if (bucket.startRealtimeUsec > end) break;
+    const overlapStart = _maxBigInt(bucket.startRealtimeUsec, start);
+    const overlapEnd = _minBigInt(bucket.endRealtimeUsec, end);
+    if (overlapStart >= overlapEnd) continue;
+    const bucketEntries = ((overlapEnd - overlapStart) * entries) / total;
+    if (bucketEntries !== 0n) {
+      _incrementCounter(bucket.values, EXPLORER_ESTIMATED_VALUE, bucketEntries);
+    }
+    touched += 1n;
+  }
+  stats.histogramUpdates += touched;
+}
+
 // ---------------------------------------------------------------------------
 // Reader shim helpers (mirrors Python's _configure_filters and similar).
 // ---------------------------------------------------------------------------
@@ -1341,6 +1604,8 @@ function _scanExplorerCombined(reader, query, accumulator, result, includeFacets
   _seekForExplorer(reader, query);
   const useFirstValue = query.fieldMode === ExplorerFieldMode.FirstValue;
   const needsFts = _queryHasFts(query);
+  const includeMain = _queryNeedsMainPass(query);
+  const sampling = _samplingStateForCombined(query, result, control);
   let rowId = 0n;
   let rowsSeen = 0n;
   const apply = { deferred: [] };
@@ -1353,6 +1618,21 @@ function _scanExplorerCombined(reader, query, accumulator, result, includeFacets
     if (_stopByCommitTime(query, commitRealtime)) break;
     if (_skipByCommitTime(query, commitRealtime)) continue;
     if (!_readerFilterMatches(reader)) continue;
+    const decision = _combinedSamplingDecision(
+      query,
+      result.rows,
+      commitRealtime,
+      _readerCurrentEntrySeqnum(reader),
+      sampling,
+      control,
+    );
+    if (decision !== null) {
+      const action = _applyCombinedSamplingDecision(
+        decision, includeMain, includeFacets, result, commitRealtime,
+      );
+      if (action === 'skip') continue;
+      if (action === 'stop') break;
+    }
     apply.deferred.length = 0;
     rowId += 1n;
     const { ftsMatches, ftsNegative } = _scanRowData(
@@ -1393,6 +1673,74 @@ function _scanExplorerCombined(reader, query, accumulator, result, includeFacets
     ) break;
   }
   result.stats.rowsReturned = BigInt(result.rows.length);
+}
+
+function _samplingStateForCombined(query, result, control) {
+  const bucketCount = result.histogram !== null ? result.histogram.buckets.length : null;
+  const sampling = _ExplorerSamplingState.forQuery(query, bucketCount);
+  if (control !== null && control.sampling !== null && query.sampling !== null) {
+    control.sampling.beginFile(query.sampling);
+  }
+  return sampling;
+}
+
+function _combinedSamplingDecision(query, rows, commitRealtime, seqnum, sampling, control) {
+  const candidate = _rowCandidateToKeep(query, rows, commitRealtime);
+  if (control !== null && control.sampling !== null) {
+    return control.sampling.decide(commitRealtime, seqnum, candidate);
+  }
+  if (sampling !== null) return sampling.decide(commitRealtime, seqnum, candidate);
+  return null;
+}
+
+function _readerCurrentEntrySeqnum(reader) {
+  if (reader.entryIndex < 0 || reader.entryIndex >= reader.entryOffsets.length) return 0n;
+  return reader._u64(Number(reader.entryOffsets[reader.entryIndex]) + OBJECT_HEADER_SIZE);
+}
+
+function _applyCombinedSamplingDecision(decision, includeMain, includeFacets, result, commitRealtime) {
+  if (decision.action === 'full') {
+    if (decision.sampled) result.stats.samplingSampled += 1n;
+    return 'scan';
+  }
+  if (decision.action === 'skip') {
+    _recordCombinedUnsampledRow(result.stats, includeMain, includeFacets, commitRealtime, 1n, true);
+    _addSpecialHistogramValue(
+      result.histogram, commitRealtime, EXPLORER_UNSAMPLED_VALUE, 1n, result.stats,
+    );
+    return 'skip';
+  }
+  if (decision.action === 'stop') {
+    _recordCombinedUnsampledRow(
+      result.stats,
+      includeMain,
+      includeFacets,
+      commitRealtime,
+      decision.remainingRows,
+      false,
+    );
+    result.stats.rowsEstimated += decision.remainingRows;
+    result.stats.samplingEstimated += decision.remainingRows;
+    _addEstimatedHistogramRange(
+      result.histogram,
+      decision.fromRealtimeUsec,
+      decision.toRealtimeUsec,
+      decision.remainingRows,
+      result.stats,
+    );
+    return 'stop';
+  }
+  return 'scan';
+}
+
+function _recordCombinedUnsampledRow(
+  stats, includeMain, includeFacets, commitRealtime, rowCount, countRowsUnsampled,
+) {
+  _recordLastRealtime(stats, commitRealtime);
+  if (includeMain) stats.rowsMatched += BigInt(rowCount);
+  if (includeFacets) stats.facetRowsMatched += BigInt(rowCount);
+  if (countRowsUnsampled) stats.rowsUnsampled += BigInt(rowCount);
+  stats.samplingUnsampled += 1n;
 }
 
 function _scanExplorerFacet(reader, query, accumulator, stats, control) {
@@ -1543,6 +1891,7 @@ function _indexedCandidateSet(reader, query, excludedField) {
     if (commitRealtime === 0n) continue;
     if (_stopByCommitTime(query, commitRealtime)) break;
     if (_skipByCommitTime(query, commitRealtime)) continue;
+    if (!_readerFilterMatches(reader)) continue;
     if (reader.entryIndex < 0 || reader.entryIndex >= reader.entryOffsets.length) continue;
     const entryOffset = reader.entryOffsets[reader.entryIndex];
     if (!seen.has(entryOffset)) {
@@ -1560,12 +1909,16 @@ function _indexedCollectRows(reader, query, result, candidates, control) {
   const sequence = candidates.all
     ? reader.entryOffsets.slice()
     : candidates.offsets.slice();
+  const indexByOffset = new Map();
+  for (let i = 0; i < reader.entryOffsets.length; i++) {
+    indexByOffset.set(reader.entryOffsets[i], i);
+  }
   if (query.direction === Direction.Backward) sequence.reverse();
   for (const entryOffset of sequence) {
     if (control !== null && control._stopped) break;
     if (candidateSet !== null && !candidateSet.has(entryOffset)) continue;
-    const index = reader.entryOffsets.indexOf(entryOffset);
-    if (index < 0) continue;
+    const index = indexByOffset.get(entryOffset);
+    if (index === undefined) continue;
     reader.entryIndex = index;
     reader._resetCachedEntryDataState();
     const commitRealtime = reader.getRealtimeUsec();

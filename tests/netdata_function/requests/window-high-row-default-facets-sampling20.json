@@ -1,0 +1,12 @@
+{
+  "after": 1700000000,
+  "before": 1700000005,
+  "facets": [
+    "PRIORITY",
+    "SERVICE"
+  ],
+  "histogram": "PRIORITY",
+  "last": 5,
+  "sampling": 20,
+  "slice": true
+}

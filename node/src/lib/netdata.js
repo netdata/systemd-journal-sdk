@@ -686,9 +686,11 @@ import {
   ExplorerFilter,
   ExplorerFtsPattern,
   ExplorerQuery,
+  ExplorerSampling,
   ExplorerStats,
   ExplorerStrategy,
   ExplorerStopReason,
+  _ExplorerSamplingState,
   exploreWithStrategyAndControl,
   _newHistogram,
 } from './explorer.js';
@@ -1150,12 +1152,179 @@ function _buildEcho(input) {
 // LocatedRow + CombinedResult
 // ---------------------------------------------------------------------------
 
+function _heapPush(heap, value) {
+  heap.push(value);
+  let i = heap.length - 1;
+  while (i > 0) {
+    const parent = Math.floor((i - 1) / 2);
+    if (heap[parent] <= heap[i]) break;
+    [heap[parent], heap[i]] = [heap[i], heap[parent]];
+    i = parent;
+  }
+}
+
+function _heapSiftDown(heap, index) {
+  let i = index;
+  while (true) {
+    const left = i * 2 + 1;
+    const right = left + 1;
+    let smallest = i;
+    if (left < heap.length && heap[left] < heap[smallest]) smallest = left;
+    if (right < heap.length && heap[right] < heap[smallest]) smallest = right;
+    if (smallest === i) break;
+    [heap[i], heap[smallest]] = [heap[smallest], heap[i]];
+    i = smallest;
+  }
+}
+
+function _heapReplace(heap, value) {
+  if (heap.length === 0) {
+    heap.push(value);
+    return;
+  }
+  heap[0] = value;
+  _heapSiftDown(heap, 0);
+}
+
 class LocatedRow {
   constructor(filePath, realtimeUsec, cursor, payloads) {
     this.filePath = filePath;
     this.realtimeUsec = realtimeUsec;
     this.cursor = cursor;
     this.payloads = payloads;
+  }
+}
+
+class NetdataPageWindow {
+  constructor(request) {
+    this.direction = request.direction;
+    if (request.tail && request.anchor.kind === ExplorerAnchorKind.Realtime) {
+      this.anchorStartUsec = null;
+      this.anchorStopUsec = Number(request.anchor.realtimeUsec);
+    } else if (request.anchor.kind === ExplorerAnchorKind.Realtime) {
+      this.anchorStartUsec = Number(request.anchor.realtimeUsec);
+      this.anchorStopUsec = null;
+    } else {
+      this.anchorStartUsec = null;
+      this.anchorStopUsec = null;
+    }
+    this.limit = request.limit;
+    this.heap = [];
+    this.oldestRetainedUsec = null;
+    this.newestRetainedUsec = null;
+    this.matched = 0;
+    this.skipsBefore = 0;
+    this.skipsAfter = request.tail && request.delta &&
+      request.anchor.kind === ExplorerAnchorKind.Realtime ? 1 : 0;
+    this.shifts = 0;
+  }
+
+  observe(realtimeUsec) {
+    const usec = Number(realtimeUsec);
+    if (!this._entryWithinAnchor(usec) || this.limit === 0) return;
+    this.matched += 1;
+    if (this.direction === ExplorerDirection.Backward) this._observeBackward(usec);
+    else this._observeForward(usec);
+  }
+
+  counters() {
+    return {
+      matched: this.matched,
+      before: this.skipsBefore,
+      after: this.skipsAfter + this.shifts,
+    };
+  }
+
+  _observeBackward(realtimeUsec) {
+    if (this.heap.length < this.limit) {
+      _heapPush(this.heap, realtimeUsec);
+      this._addRetainedBound(realtimeUsec);
+      return;
+    }
+    const oldest = this.heap.length > 0 ? this.heap[0] : null;
+    if (oldest === null) {
+      _heapPush(this.heap, realtimeUsec);
+      this._refreshRetainedBounds();
+      return;
+    }
+    if (realtimeUsec < oldest) {
+      this.skipsAfter += 1;
+      return;
+    }
+    _heapReplace(this.heap, realtimeUsec);
+    this._refreshRetainedBounds();
+    this.shifts += 1;
+  }
+
+  _observeForward(realtimeUsec) {
+    const heapValue = -realtimeUsec;
+    if (this.heap.length < this.limit) {
+      _heapPush(this.heap, heapValue);
+      this._addRetainedBound(realtimeUsec);
+      return;
+    }
+    const newest = this.heap.length > 0 ? -this.heap[0] : null;
+    if (newest === null) {
+      _heapPush(this.heap, heapValue);
+      this._refreshRetainedBounds();
+      return;
+    }
+    if (realtimeUsec > newest) {
+      this.skipsBefore += 1;
+      return;
+    }
+    _heapReplace(this.heap, heapValue);
+    this._refreshRetainedBounds();
+    this.shifts += 1;
+  }
+
+  _addRetainedBound(realtimeUsec) {
+    if (this.oldestRetainedUsec === null || realtimeUsec < this.oldestRetainedUsec) {
+      this.oldestRetainedUsec = realtimeUsec;
+    }
+    if (this.newestRetainedUsec === null || realtimeUsec > this.newestRetainedUsec) {
+      this.newestRetainedUsec = realtimeUsec;
+    }
+  }
+
+  _refreshRetainedBounds() {
+    if (this.heap.length === 0) {
+      this.oldestRetainedUsec = null;
+      this.newestRetainedUsec = null;
+      return;
+    }
+    let oldest = Infinity;
+    let newest = 0;
+    for (const stored of this.heap) {
+      const value = this.direction === ExplorerDirection.Backward ? stored : -stored;
+      if (value < oldest) oldest = value;
+      if (value > newest) newest = value;
+    }
+    this.oldestRetainedUsec = oldest;
+    this.newestRetainedUsec = newest;
+  }
+
+  _entryWithinAnchor(realtimeUsec) {
+    if (this.direction === ExplorerDirection.Backward) {
+      if (this.anchorStartUsec !== null && realtimeUsec >= this.anchorStartUsec) {
+        this.skipsBefore += 1;
+        return false;
+      }
+      if (this.anchorStopUsec !== null && realtimeUsec <= this.anchorStopUsec) {
+        this.skipsAfter += 1;
+        return false;
+      }
+    } else {
+      if (this.anchorStartUsec !== null && realtimeUsec <= this.anchorStartUsec) {
+        this.skipsAfter += 1;
+        return false;
+      }
+      if (this.anchorStopUsec !== null && realtimeUsec >= this.anchorStopUsec) {
+        this.skipsBefore += 1;
+        return false;
+      }
+    }
+    return true;
   }
 }
 
@@ -1175,6 +1344,7 @@ export class CombinedResult {
     this.cancelled = false;
     this.samplingEnabled = false;
     this.readerOptions = readerOptions;
+    this.pageCounters = null;
   }
 
   merge(path, result, direction, limit) {
@@ -1872,15 +2042,26 @@ function _buildItemsPayload(request, combined, returned) {
   const unsampled = Number(combined.stats.rowsUnsampled);
   const estimated = Number(combined.stats.rowsEstimated);
   const evaluated = Number(combined.stats.rowsExamined) + unsampled + estimated;
-  const matched = Number(combined.stats.rowsMatched) + unsampled + estimated;
-  const rowsMatchedN = Number(combined.stats.rowsMatched);
-  let rawAfter = rowsMatchedN > returned ? rowsMatchedN - returned : 0;
-  const tailAnchor = request.tail && request.delta &&
-    request.anchor.kind === ExplorerAnchorKind.Realtime;
-  if (tailAnchor) rawAfter += 1;
+  const fallbackSourceRows = unsampled !== 0 || estimated !== 0
+    ? Number(combined.stats.rowsExamined)
+    : Number(combined.stats.rowsMatched);
+  let pageMatched, pageBefore, pageAfter;
+  if (combined.pageCounters == null) {
+    pageMatched = fallbackSourceRows;
+    pageBefore = 0;
+    pageAfter = fallbackSourceRows > returned ? fallbackSourceRows - returned : 0;
+    const tailAnchor = request.tail && request.delta &&
+      request.anchor.kind === ExplorerAnchorKind.Realtime;
+    if (tailAnchor) pageAfter += 1;
+  } else {
+    pageMatched = combined.pageCounters.matched;
+    pageBefore = combined.pageCounters.before;
+    pageAfter = combined.pageCounters.after;
+  }
+  const matched = pageMatched + unsampled + estimated;
   return {
     evaluated, matched, unsampled, estimated, returned,
-    max_to_return: request.limit, before: 0, after: rawAfter,
+    max_to_return: request.limit, before: pageBefore, after: pageAfter,
   };
 }
 
@@ -2066,33 +2247,6 @@ function _buildAvailableHistograms(request, _combined) {
     out.push({ id: name, name, order: orderByField.get(name) || 0 });
   }
   return out;
-}
-
-// ---------------------------------------------------------------------------
-// Sampling budget (mirror Rust L1536-1590)
-// ---------------------------------------------------------------------------
-
-function _applySamplingBudget(combined, budget) {
-  if (budget <= 0) return;
-  const s = combined.stats;
-  const rows = Number(s.rowsMatched);
-  if (rows <= 0) {
-    s.samplingSampled = 0n; s.samplingUnsampled = 0n; s.samplingEstimated = 0n;
-    return;
-  }
-  if (rows <= budget) {
-    s.samplingSampled = BigInt(rows); s.samplingUnsampled = 0n; s.samplingEstimated = 0n;
-    return;
-  }
-  s.samplingSampled = BigInt(budget);
-  const remaining = rows - budget;
-  const limit = Math.max(1, Number(s.rowsReturned) || 0);
-  const unsampled = Math.min(remaining, limit);
-  const estimated = remaining - unsampled;
-  s.samplingUnsampled = BigInt(unsampled);
-  s.samplingEstimated = BigInt(estimated);
-  s.rowsUnsampled += BigInt(unsampled);
-  s.rowsEstimated += BigInt(estimated);
 }
 
 // ---------------------------------------------------------------------------
@@ -2291,6 +2445,13 @@ export class NetdataJournalFunction {
     matchedPaths = matchedPaths.filter(p => _pathMatchesRequest(p, request, state));
     const matchedFilesCount = matchedPaths.length;
     const totalFiles = matchedFilesCount;
+    const baseQuery = _requestToExplorerQuery(request, matchedFilesCount, null);
+    combined.samplingEnabled = baseQuery.sampling !== null;
+    const samplingBucketCount = baseQuery.histogram !== null
+      ? _newHistogram(baseQuery.histogram, baseQuery).buckets.length
+      : null;
+    const samplingState = _ExplorerSamplingState.forQuery(baseQuery, samplingBucketCount);
+    const pageWindow = new NetdataPageWindow(request);
     for (const pathStr of matchedPaths) {
       if (_shouldStopBeforeFile(combined, deadline, options)) break;
       const metadata = _stateFileMetadata(state, pathStr);
@@ -2312,6 +2473,11 @@ export class NetdataJournalFunction {
         if (deadline != null) control.setDeadline(deadline);
         if (options?.cancellationCallback) control.setCancellationCallback(options.cancellationCallback);
         if (options?.progressInterval != null) control.setProgressIntervalMs(options.progressInterval * 1000);
+        control.setSamplingState(samplingState);
+        control.setMatchedRowCallback((realtimeUsec) => {
+          pageWindow.observe(realtimeUsec);
+          return false;
+        });
         let result;
         try {
           result = exploreWithStrategyAndControl(reader, fileQuery, ExplorerStrategy.Traversal, control);
@@ -2331,14 +2497,10 @@ export class NetdataJournalFunction {
         try { reader.close(); } catch {}
       }
     }
+    combined.pageCounters = pageWindow.counters();
     if (!request.dataOnly && !combined.cancelled) {
       combined.add_zero_count_facet_values_from_files(request.facets);
       combined.add_zero_count_selected_filter_values(request);
-    }
-    const analysisEnabled = !request.dataOnly || request.delta;
-    if (analysisEnabled && request.sampling !== 0 && matchedFilesCount !== 0) {
-      combined.samplingEnabled = true;
-      _applySamplingBudget(combined, request.sampling);
     }
     return combined;
   }
@@ -2380,11 +2542,8 @@ function _beforeRealtimeBoundExcludingAnchor(beforeRealtimeUsec, anchor) {
 }
 
 // Exported for internal tests only; not part of the public src/index.js surface.
-// `_matchedFiles` and `_reader` are reserved for the sampling-budget query
-// construction (Rust ExplorerSamplingState, explorer.rs:456-590), which is
-// not yet ported here or in the Python explorer; tracked by SOW-0107.
 export function _requestToExplorerQuery(
-  request, _matchedFiles, _reader,
+  request, matchedFiles, reader,
   realtimeSlackUsec = NETDATA_JOURNAL_VS_REALTIME_DELTA_DEFAULT_USEC,
 ) {
   const tailAnchor = request.tail
@@ -2442,5 +2601,29 @@ export function _requestToExplorerQuery(
   // early-stops. The combined guard equals Rust's two-step result.
   query.stopWhenRowsFull = request.dataOnly && !tailAnchor && !request.delta;
   query.stopWhenRowsFullCheckEvery = DATA_ONLY_CHECK_EVERY_ROWS;
+  if (
+    analysisEnabled
+    && request.sampling !== 0
+    && matchedFiles !== 0
+    && query.afterRealtimeUsec !== null
+    && query.beforeRealtimeUsec !== null
+  ) {
+    const header = reader != null ? reader.header : null;
+    const headSeq = header?.head_entry_seqnum ?? 0n;
+    const tailSeq = header?.tail_entry_seqnum ?? 0n;
+    let entries = header?.n_entries ?? 0n;
+    if (headSeq !== 0n && tailSeq !== 0n && tailSeq >= headSeq) {
+      entries = tailSeq - headSeq + 1n;
+    }
+    query.sampling = new ExplorerSampling({
+      budget: request.sampling,
+      matchedFiles,
+      fileHeadRealtimeUsec: header?.head_entry_realtime ?? 0n,
+      fileTailRealtimeUsec: header?.tail_entry_realtime ?? 0n,
+      fileHeadSeqnum: headSeq,
+      fileTailSeqnum: tailSeq,
+      fileEntries: entries,
+    });
+  }
   return query;
 }

@@ -210,6 +210,9 @@ count, preserves returned-row candidates as full rows, reports skipped rows as
 `[unsampled]`, reports stop-and-estimate ranges as `[estimated]`, and follows
 the plugin's integer bucket distribution behavior without forcing leftover
 estimated rows into the final bucket.
+This sampling contract is validated across the Rust, Go, Node.js, and Python
+Netdata API surfaces; SOW-0107 added the missing Python and Node row-level
+sampling decision engines and high-row counter fixtures.
 
 The SDK Netdata API always executes indexed slice semantics. The normalized
 request echo keeps `slice:true` because `slice` is part of the plugin request
@@ -757,8 +760,9 @@ Progress:
 - plugin progress is emitted to stdout every 250 ms of accumulated per-file
   query time (`systemd-journal-function.h:11`,
   `systemd-journal-execute.h:607-613`).
-- The Rust and Go SDK Netdata function APIs expose progress as a caller-provided
-  callback instead of writing to stdout. The callback receives the current
+- The Rust, Go, Node.js, and Python SDK Netdata function APIs expose progress as
+  a caller-provided callback instead of writing to stdout. The callback receives
+  the current
   query-file index, total query-selected files after source and time-window
   preselection, matched/skipped file counts, cumulative explorer stats, and
   elapsed time. The API emits file-end progress for small or fast files too, so
@@ -774,8 +778,9 @@ Timeout/cancellation:
   registers `ND_SD_JOURNAL_DEFAULT_TIMEOUT` (`60` seconds) as its default
   function timeout, so timeout budget ownership is Netdata integration policy,
   not a journal file-format rule.
-- The Rust and Go SDK Netdata function APIs expose timeout and cancellation as
-  caller-provided run options. Cancellation is a callback/token-equivalent
+- The Rust, Go, Node.js, and Python SDK Netdata function APIs expose timeout and
+  cancellation as caller-provided run options. Cancellation is a
+  callback/token-equivalent
   predicate checked before starting each query-selected file and at the
   Explorer row cadence during active scans. The SDK also re-checks the
   cancellation predicate after file-end progress callbacks so a final selected
@@ -875,8 +880,9 @@ non-content only when those columns have no returned-row value on either side.
 This preserves the Explorer production rule that column catalogs come from
 FIELD indexes while still rejecting any missing non-null returned field.
 
-The Rust and Go SDK Netdata function APIs validate and echo `data_only`, `delta`,
-`tail`, `sampling`, and `if_modified_since` using the same high-level rules:
+The Rust, Go, Node.js, and Python SDK Netdata function APIs validate and echo
+`data_only`, `delta`, `tail`, `sampling`, and `if_modified_since` using the same
+high-level rules:
 
 - `delta` is effective only when `data_only=true`;
 - `tail` is effective only when both `data_only=true` and

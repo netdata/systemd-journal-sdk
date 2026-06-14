@@ -32,6 +32,7 @@ import {
   ExplorerStopReason,
   ExplorerStrategy,
   ExplorerUnsupported,
+  _ExplorerSamplingState,
   UNSET_VALUE,
   DEFAULT_HISTOGRAM_TARGET_BUCKETS,
   DEFAULT_TIME_SLACK_USEC,
@@ -341,6 +342,130 @@ function testExplorerCompareStrategyVerifiesEqualityAndFillsComparison() {
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }
+}
+
+function testExplorerIndexCompareMatchesTraversalWithFilters() {
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-explor-cmp-filter-'));
+  try {
+    const path = join(tempDir, 'compare-filter.journal');
+    const entries = [
+      [1_000, [['MESSAGE', 'one'], ['SERVICE', 'api'], ['PRIORITY', '6']]],
+      [2_000, [['MESSAGE', 'two'], ['SERVICE', 'api'], ['PRIORITY', '5']]],
+      [3_000, [['MESSAGE', 'three'], ['SERVICE', 'worker'], ['PRIORITY', '6']]],
+      [4_000, [['MESSAGE', 'four'], ['SERVICE', 'api'], ['PRIORITY', '6']]],
+    ];
+    writeSimpleEntries(path, entries);
+    const reader = FileReader.open(path);
+    try {
+      const q = new ExplorerQuery()
+        .withFilter('SERVICE', ['api'])
+        .withFacet('PRIORITY')
+        .withHistogram('PRIORITY');
+      q.useSourceRealtime = false;
+      q.fieldMode = ExplorerFieldMode.AllValues;
+      q.limit = 10;
+      const result = reader.exploreWithStrategy(q, ExplorerStrategy.Compare);
+      assert.ok(result.comparison instanceof ExplorerComparison);
+      assert.equal(result.stats.rowsMatched, 3n);
+      assert.equal(facetCount(result, fieldHex('PRIORITY'), Buffer.from('6')), 2n);
+      assert.equal(facetCount(result, fieldHex('PRIORITY'), Buffer.from('5')), 1n);
+      assert.equal(histogramTotalForValue(result.histogram, Buffer.from('6')), 2n);
+      assert.equal(histogramTotalForValue(result.histogram, Buffer.from('5')), 1n);
+    } finally {
+      reader.close();
+    }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function testExplorerIndexCollectRowsDoesNotUseLinearIndexOf() {
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-explor-indexof-'));
+  try {
+    const path = join(tempDir, 'indexof.journal');
+    writeManyAlternating(path, 64);
+    const reader = FileReader.open(path);
+    try {
+      const originalIndexOf = reader.entryOffsets.indexOf;
+      reader.entryOffsets.indexOf = () => {
+        throw new Error('entryOffsets.indexOf must not be used in indexed row collection');
+      };
+      const q = new ExplorerQuery().withFacet('SERVICE').withHistogram('SERVICE');
+      q.useSourceRealtime = false;
+      q.fieldMode = ExplorerFieldMode.AllValues;
+      q.limit = 10;
+      try {
+        const result = reader.exploreWithStrategy(q, ExplorerStrategy.Index);
+        assert.equal(result.rows.length, 10);
+      } finally {
+        reader.entryOffsets.indexOf = originalIndexOf;
+      }
+    } finally {
+      reader.close();
+    }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function testExplorerSamplingSkipsAndEstimatesRowsBeforeExpansion() {
+  const tempDir = mkdtempSync(join(tmpdir(), 'node-explor-sampling-'));
+  try {
+    const path = join(tempDir, 'sampling.journal');
+    const count = 600;
+    const base = 1_700_000_000_000_000n;
+    writeManyAlternating(path, count);
+    const reader = FileReader.open(path);
+    try {
+      const q = new ExplorerQuery().withFacet('SERVICE').withHistogram('SERVICE');
+      q.useSourceRealtime = false;
+      q.limit = 5;
+      q.afterRealtimeUsec = base;
+      q.beforeRealtimeUsec = base + BigInt(count);
+      q.histogramTargetBuckets = 2;
+      q.sampling = new ExplorerSampling({
+        budget: 20,
+        matchedFiles: 1,
+        fileHeadRealtimeUsec: base,
+        fileTailRealtimeUsec: base + BigInt(count - 1),
+        fileEntries: count,
+      });
+      const result = reader.explore(q);
+      assert.ok(result.stats.samplingSampled > 0n);
+      assert.ok(result.stats.samplingUnsampled > 0n);
+      assert.ok(result.stats.rowsUnsampled > 0n || result.stats.rowsEstimated > 0n);
+      assert.ok(
+        histogramTotalForValue(result.histogram, Buffer.from('[unsampled]'))
+        + histogramTotalForValue(result.histogram, Buffer.from('[estimated]')) > 0n,
+      );
+      assert.ok(result.stats.rowsExamined < BigInt(count));
+    } finally {
+      reader.close();
+    }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function testExplorerSamplingSeqnumEstimateClampsProgressAboveOne() {
+  const q = new ExplorerQuery().withFacet('SERVICE');
+  q.afterRealtimeUsec = 1700000000_000000n;
+  q.beforeRealtimeUsec = 1700000001_000000n;
+  q.direction = Direction.Backward;
+  q.limit = 5;
+  q.sampling = new ExplorerSampling({
+    budget: 20,
+    matchedFiles: 1,
+    fileHeadRealtimeUsec: q.afterRealtimeUsec,
+    fileTailRealtimeUsec: q.beforeRealtimeUsec,
+    fileHeadSeqnum: 1,
+    fileTailSeqnum: 100,
+    fileEntries: 100,
+  });
+  const state = _ExplorerSamplingState.forQuery(q, null);
+  assert.ok(state !== null);
+  state.perFileSampled = 10n;
+  assert.equal(state._estimateRemainingRowsBySeqnum(99n), 90n);
 }
 
 function testExplorerIndexRejectsFirstValueSemantics() {
@@ -821,6 +946,10 @@ export async function run() {
   testExplorerTraversalFiltersFacetsHistogramAndRows();
   testExplorerIndexStrategyMatchesTraversalForAllValues();
   testExplorerCompareStrategyVerifiesEqualityAndFillsComparison();
+  testExplorerIndexCompareMatchesTraversalWithFilters();
+  testExplorerIndexCollectRowsDoesNotUseLinearIndexOf();
+  testExplorerSamplingSkipsAndEstimatesRowsBeforeExpansion();
+  testExplorerSamplingSeqnumEstimateClampsProgressAboveOne();
   testExplorerIndexRejectsFirstValueSemantics();
   testExplorerIndexRejectsFts();
   testExplorerRejectsDebugRowTraversalColumnCollection();

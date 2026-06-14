@@ -9,12 +9,13 @@
 # `realtime_usec` value, and uses `Optional[ExplorerStopReason]` for
 # "no stop" rather than Go's `ExplorerStopNone` sentinel.
 
+import math
 import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Callable, Dict, List, Optional, Set
 
-from .header import HASH_ITEM_SIZE
+from .header import HASH_ITEM_SIZE, OBJECT_HEADER_SIZE
 
 
 # Constants mirroring rust/src/journal/src/explorer.rs:6-16. Keep the
@@ -361,6 +362,7 @@ class ExplorerControl:
     cancellation: Optional[CancellationCallback] = None
     progress: Optional[ProgressCallback] = None
     matched_row: Optional[MatchedRowCallback] = None
+    sampling: object = None
     progress_interval: float = EXPLORER_PROGRESS_INTERVAL_MS / 1000.0
     stop_reason: Optional[ExplorerStopReason] = None
     _started: float = field(default_factory=time.monotonic, init=False, repr=False)
@@ -379,6 +381,9 @@ class ExplorerControl:
 
     def set_matched_row_callback(self, callback):
         self.matched_row = callback
+
+    def set_sampling_state(self, sampling):
+        self.sampling = sampling
 
     def set_progress_interval(self, interval):
         self.progress_interval = float(interval)
@@ -416,6 +421,251 @@ class ExplorerControl:
         if self.matched_row is None:
             return False
         return bool(self.matched_row(int(realtime_usec), int(rows_matched)))
+
+
+@dataclass
+class _SamplingDecision:
+    action: str
+    sampled: bool = False
+    remaining_rows: int = 0
+    from_realtime_usec: int = 0
+    to_realtime_usec: int = 0
+
+
+class _ExplorerSamplingState:
+    def __init__(
+        self,
+        query,
+        histogram_bucket_count,
+    ):
+        sampling = query.sampling
+        if (
+            sampling is None
+            or sampling.budget == 0
+            or sampling.matched_files == 0
+            or query.after_realtime_usec is None
+            or query.before_realtime_usec is None
+            or query.after_realtime_usec >= query.before_realtime_usec
+        ):
+            raise ValueError("inactive sampling")
+
+        slots = histogram_bucket_count
+        if slots is None:
+            slots = query.histogram_target_buckets
+        slots = max(2, min(EXPLORER_SAMPLING_SLOTS_MAX, int(slots)))
+        delta = max(0, int(query.before_realtime_usec) - int(query.after_realtime_usec))
+        self.start_realtime_usec = int(query.after_realtime_usec)
+        self.end_realtime_usec = int(query.before_realtime_usec)
+        self.step_realtime_usec = max(1, max(0, delta // slots - 1))
+        self.enable_after_samples = int(sampling.budget) // 2
+        self.per_file_enable_after_samples = max(
+            int(query.limit),
+            (int(sampling.budget) // 4) // max(1, int(sampling.matched_files)),
+        )
+        self.per_slot_enable_after_samples = max(
+            int(query.limit),
+            (int(sampling.budget) // 4) // slots,
+        )
+        self.per_slot_sampled = [0] * slots
+        self.per_slot_unsampled = [0] * slots
+        self.matched_files = max(1, int(sampling.matched_files))
+        self.direction = query.direction
+        self.sampled = 0
+        self.begin_file(sampling)
+
+    @staticmethod
+    def for_query(query, histogram_bucket_count):
+        try:
+            return _ExplorerSamplingState(query, histogram_bucket_count)
+        except ValueError:
+            return None
+
+    def begin_file(self, sampling):
+        self.file_head_realtime_usec = int(sampling.file_head_realtime_usec)
+        self.file_tail_realtime_usec = int(sampling.file_tail_realtime_usec)
+        self.file_head_seqnum = int(sampling.file_head_seqnum)
+        self.file_tail_seqnum = int(sampling.file_tail_seqnum)
+        self.file_entries = int(sampling.file_entries)
+        self.first_realtime_usec = None
+        self.per_file_sampled = 0
+        self.per_file_unsampled = 0
+        self.per_file_every = 0
+        self.per_file_skipped = 0
+        self.per_file_recalibrate = 0
+
+    def decide(self, realtime_usec, seqnum, candidate_to_keep):
+        realtime_usec = int(realtime_usec)
+        seqnum = int(seqnum or 0)
+        if self.first_realtime_usec is None:
+            self.first_realtime_usec = realtime_usec
+        if candidate_to_keep:
+            return _SamplingDecision("full", sampled=False)
+
+        slot = self._slot_for_realtime(realtime_usec)
+        if (
+            self.sampled < self.enable_after_samples
+            or self.per_file_sampled < self.per_file_enable_after_samples
+            or self.per_slot_sampled[slot] < self.per_slot_enable_after_samples
+        ):
+            should_sample = True
+        elif (
+            self.per_file_recalibrate >= EXPLORER_SAMPLING_RECALIBRATE_ROWS
+            or self.per_file_every == 0
+        ):
+            self._recalibrate(realtime_usec, seqnum)
+            should_sample = True
+        elif self.per_file_skipped >= self.per_file_every:
+            self.per_file_skipped = 0
+            should_sample = True
+        else:
+            self.per_file_skipped += 1
+            should_sample = False
+
+        if should_sample:
+            self.sampled += 1
+            self.per_file_sampled += 1
+            self.per_slot_sampled[slot] += 1
+            return _SamplingDecision("full", sampled=True)
+
+        self.per_file_recalibrate += 1
+        self.per_file_unsampled += 1
+        self.per_slot_unsampled[slot] += 1
+
+        if (
+            self.per_file_unsampled > self.per_file_sampled
+            and self._progress_by_time(realtime_usec) > EXPLORER_SAMPLING_ESTIMATE_AFTER_PROGRESS
+        ):
+            remaining = self._estimate_remaining_rows(realtime_usec, seqnum)
+            start, end = self._remaining_range(realtime_usec)
+            return _SamplingDecision(
+                "stop",
+                remaining_rows=remaining,
+                from_realtime_usec=start,
+                to_realtime_usec=end,
+            )
+        return _SamplingDecision("skip")
+
+    def _slot_for_realtime(self, realtime_usec):
+        clamped = min(max(int(realtime_usec), self.start_realtime_usec), self.end_realtime_usec)
+        slot = (clamped - self.start_realtime_usec) // self.step_realtime_usec
+        return min(int(slot), max(0, len(self.per_slot_sampled) - 1))
+
+    def _recalibrate(self, realtime_usec, seqnum):
+        remaining = self._estimate_remaining_rows(realtime_usec, seqnum)
+        wanted = max(1, self.enable_after_samples // self.matched_files)
+        self.per_file_every = max(1, remaining // wanted)
+        self.per_file_recalibrate = 0
+
+    def _estimate_remaining_rows(self, realtime_usec, seqnum):
+        by_seqnum = self._estimate_remaining_rows_by_seqnum(seqnum)
+        if by_seqnum is not None:
+            return by_seqnum
+        return self._estimate_remaining_rows_by_time(realtime_usec)
+
+    def _estimate_remaining_rows_by_seqnum(self, seqnum):
+        if (
+            self.file_entries == 0
+            or self.file_head_seqnum == 0
+            or self.file_tail_seqnum == 0
+            or seqnum == 0
+        ):
+            return None
+        scanned = self._scanned_file_rows()
+        if self.direction == Direction.FORWARD:
+            span = max(0, seqnum - self.file_head_seqnum)
+        else:
+            span = max(0, self.file_tail_seqnum - seqnum)
+        if span == 0:
+            return None
+        proportion = scanned / span
+        if proportion <= 0.0 or not math.isfinite(proportion):
+            return None
+        proportion = min(proportion, 1.0)
+        expected = int(proportion * self.file_entries)
+        if expected == 0:
+            return None
+        return max(1, max(0, expected - scanned))
+
+    def _estimate_remaining_rows_by_time(self, realtime_usec):
+        scanned = self._scanned_file_rows()
+        after, before = self._overlapping_timeframe(realtime_usec)
+        total, remaining, _, _ = self._remaining_time_details(realtime_usec, after, before)
+        elapsed = max(1, total - remaining)
+        proportion = elapsed / max(1, total)
+        if proportion == 0.0 or proportion > 1.0 or not math.isfinite(proportion):
+            proportion = 1.0
+        expected_total = int(scanned / proportion)
+        if self.file_entries != 0 and expected_total > self.file_entries:
+            expected_total = self.file_entries
+        return max(1, max(0, expected_total - scanned))
+
+    def _scanned_file_rows(self):
+        return max(1, self.per_file_sampled + self.per_file_unsampled)
+
+    def _progress_by_time(self, realtime_usec):
+        after, before = self._overlapping_timeframe(realtime_usec)
+        total = max(1, before - after)
+        if self.direction == Direction.FORWARD:
+            elapsed = max(0, int(realtime_usec) - after)
+        else:
+            elapsed = max(0, before - int(realtime_usec))
+        elapsed = min(elapsed, total)
+        return elapsed / total
+
+    def _overlapping_timeframe(self, realtime_usec):
+        realtime_usec = int(realtime_usec)
+        if self.direction == Direction.FORWARD:
+            oldest = self.first_realtime_usec
+            if oldest is None:
+                oldest = self.file_head_realtime_usec or self.start_realtime_usec
+            newest = (
+                min(self.end_realtime_usec, self.file_tail_realtime_usec)
+                if self.file_tail_realtime_usec != 0
+                else self.end_realtime_usec
+            )
+            if newest <= oldest:
+                newest = oldest + 1
+            if realtime_usec < oldest:
+                oldest = max(0, realtime_usec - 1)
+            return int(oldest), int(newest)
+
+        newest = self.first_realtime_usec
+        if newest is None:
+            newest = self.file_tail_realtime_usec or self.end_realtime_usec
+        oldest = (
+            max(self.start_realtime_usec, self.file_head_realtime_usec)
+            if self.file_head_realtime_usec != 0
+            else self.start_realtime_usec
+        )
+        if newest <= oldest:
+            newest = oldest + 1
+        if newest < realtime_usec:
+            newest = realtime_usec + 1
+        return int(oldest), int(newest)
+
+    def _remaining_range(self, realtime_usec):
+        after, before = self._overlapping_timeframe(realtime_usec)
+        _, _, start, end = self._remaining_time_details(realtime_usec, after, before)
+        return start, end
+
+    def _remaining_time_details(self, realtime_usec, after, before):
+        realtime_usec = int(realtime_usec)
+        if realtime_usec <= after:
+            after = max(0, realtime_usec - 1)
+        if realtime_usec >= before:
+            before = realtime_usec + 1
+        if before <= after:
+            before = after + 1
+        if self.direction == Direction.FORWARD:
+            remaining_start, remaining_end = realtime_usec, before
+        else:
+            remaining_start, remaining_end = after, realtime_usec
+        return (
+            max(1, before - after),
+            max(0, remaining_end - remaining_start),
+            int(remaining_start),
+            int(remaining_end),
+        )
 
 
 # ----------------------------------------------------------------------------
@@ -1048,6 +1298,46 @@ def _increment_counter(counter, key, delta):
         counter[key] = delta
 
 
+def _add_special_histogram_value(histogram, realtime_usec, value, count, stats):
+    if histogram is None:
+        return
+    idx = _histogram_bucket_index(histogram, realtime_usec)
+    if idx is None:
+        return
+    _increment_counter(histogram.buckets[idx].values, value, int(count))
+    stats.histogram_updates += 1
+
+
+def _add_estimated_histogram_range(histogram, from_realtime_usec, to_realtime_usec, entries, stats):
+    if histogram is None:
+        return
+    entries = int(entries)
+    if entries == 0 or from_realtime_usec >= to_realtime_usec:
+        return
+    if not histogram.buckets:
+        return
+    first = histogram.buckets[0]
+    last = histogram.buckets[-1]
+    start = max(int(from_realtime_usec), int(first.start_realtime_usec))
+    end = min(int(to_realtime_usec), int(last.end_realtime_usec))
+    if start >= end:
+        return
+    total = max(1, end - start)
+    touched = 0
+    for bucket in histogram.buckets:
+        if bucket.start_realtime_usec > end:
+            break
+        overlap_start = max(int(bucket.start_realtime_usec), start)
+        overlap_end = min(int(bucket.end_realtime_usec), end)
+        if overlap_start >= overlap_end:
+            continue
+        bucket_entries = ((overlap_end - overlap_start) * entries) // total
+        if bucket_entries:
+            _increment_counter(bucket.values, EXPLORER_ESTIMATED_VALUE, bucket_entries)
+        touched += 1
+    stats.histogram_updates += touched
+
+
 # ----------------------------------------------------------------------------
 # Field-enumeration (FIELD-index catalog path).
 # ----------------------------------------------------------------------------
@@ -1480,6 +1770,8 @@ def _scan_explorer_combined(reader, query, accumulator, result, include_facets, 
     _seek_for_explorer(reader, query)
     use_first_value = query.field_mode == ExplorerFieldMode.FIRST_VALUE
     needs_fts = _query_has_fts(query)
+    include_main = _query_needs_main_pass(query)
+    sampling = _sampling_state_for_combined(query, result, control)
     row_id = 0
     rows_seen = 0
     apply = _ScanApplyDeferred(deferred=[])
@@ -1496,6 +1788,22 @@ def _scan_explorer_combined(reader, query, accumulator, result, include_facets, 
             continue
         if not _reader_filter_matches(reader):
             continue
+        decision = _combined_sampling_decision(
+            query,
+            result.rows,
+            commit_realtime,
+            _reader_current_entry_seqnum(reader),
+            sampling,
+            control,
+        )
+        if decision is not None:
+            action = _apply_combined_sampling_decision(
+                decision, include_main, include_facets, result, commit_realtime
+            )
+            if action == "skip":
+                continue
+            if action == "stop":
+                break
         apply.deferred.clear()
         row_id += 1
         fts_match, fts_negative = _scan_row_data(reader, query, accumulator, row_id, apply, result.stats, needs_fts)
@@ -1530,6 +1838,77 @@ def _scan_explorer_combined(reader, query, accumulator, result, include_facets, 
         if stop_after_matched or _should_stop_when_rows_full(query, result.rows, effective, result.stats.rows_matched):
             break
     result.stats.rows_returned = len(result.rows)
+
+
+def _sampling_state_for_combined(query, result, control):
+    bucket_count = len(result.histogram.buckets) if result.histogram is not None else None
+    sampling = _ExplorerSamplingState.for_query(query, bucket_count)
+    if control is not None and control.sampling is not None and query.sampling is not None:
+        control.sampling.begin_file(query.sampling)
+    return sampling
+
+
+def _combined_sampling_decision(query, rows, commit_realtime, seqnum, sampling, control):
+    candidate = _row_candidate_to_keep(query, rows, commit_realtime)
+    if control is not None and control.sampling is not None:
+        return control.sampling.decide(commit_realtime, seqnum, candidate)
+    if sampling is not None:
+        return sampling.decide(commit_realtime, seqnum, candidate)
+    return None
+
+
+def _reader_current_entry_seqnum(reader):
+    if reader._entry_index < 0 or reader._entry_index >= len(reader._entry_offsets):
+        return 0
+    return reader._u64(reader._entry_offsets[reader._entry_index] + OBJECT_HEADER_SIZE)
+
+
+def _apply_combined_sampling_decision(decision, include_main, include_facets, result, commit_realtime):
+    if decision.action == "full":
+        if decision.sampled:
+            result.stats.sampling_sampled += 1
+        return "scan"
+    if decision.action == "skip":
+        _record_combined_unsampled_row(
+            result.stats, include_main, include_facets, commit_realtime, 1, True
+        )
+        _add_special_histogram_value(
+            result.histogram, commit_realtime, EXPLORER_UNSAMPLED_VALUE, 1, result.stats
+        )
+        return "skip"
+    if decision.action == "stop":
+        _record_combined_unsampled_row(
+            result.stats,
+            include_main,
+            include_facets,
+            commit_realtime,
+            decision.remaining_rows,
+            False,
+        )
+        result.stats.rows_estimated += int(decision.remaining_rows)
+        result.stats.sampling_estimated += int(decision.remaining_rows)
+        _add_estimated_histogram_range(
+            result.histogram,
+            decision.from_realtime_usec,
+            decision.to_realtime_usec,
+            decision.remaining_rows,
+            result.stats,
+        )
+        return "stop"
+    return "scan"
+
+
+def _record_combined_unsampled_row(
+    stats, include_main, include_facets, commit_realtime, row_count, count_rows_unsampled
+):
+    _record_last_realtime(stats, commit_realtime)
+    if include_main:
+        stats.rows_matched += int(row_count)
+    if include_facets:
+        stats.facet_rows_matched += int(row_count)
+    if count_rows_unsampled:
+        stats.rows_unsampled += int(row_count)
+    stats.sampling_unsampled += 1
 
 
 def _scan_explorer_facet(reader, query, accumulator, stats, control):
@@ -1688,6 +2067,8 @@ def _indexed_candidate_set(reader, query, excluded_field):
             break
         if _skip_by_commit_time(query, commit_realtime):
             continue
+        if not _reader_filter_matches(reader):
+            continue
         if 0 <= reader._entry_index < len(reader._entry_offsets):
             entry_offset = reader._entry_offsets[reader._entry_index]
             if entry_offset not in seen:
@@ -1700,10 +2081,13 @@ def _indexed_candidate_set(reader, query, excluded_field):
 def _indexed_collect_rows(reader, query, result, candidates, control):
     if query.limit == 0:
         return
+    index_by_offset = {
+        entry_offset: index for index, entry_offset in enumerate(reader._entry_offsets)
+    }
     for entry_offset in candidates:
         if control is not None and control._stopped:
             break
-        index = reader._index_for_entry_offset(entry_offset)
+        index = index_by_offset.get(entry_offset)
         if index is None:
             continue
         reader._position_at_index(index, query.direction)

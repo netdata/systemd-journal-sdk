@@ -60,6 +60,27 @@ function makeTwoMachineDir(tmp, {
   return { dir: tmp, fileA, fileB };
 }
 
+function makeHighRowSamplingDir(tmp) {
+  const sub = join(tmp, 'aabbccdd111111111111111111111111');
+  mkdirSync(sub, { recursive: true });
+  const file = join(sub, 'system.journal');
+  const baseTimeUsec = 1700000000_000000n;
+  const w = Writer.create(file, {
+    machineId: Buffer.from('aabbccdd111111111111111111111111', 'hex'),
+    bootId: Buffer.alloc(16, 0x11),
+    seqnumId: Buffer.alloc(16, 0x22),
+  });
+  for (let i = 0; i < 5000; i++) {
+    w.append([
+      { name: 'MESSAGE', value: enc(`high-row-${i}`) },
+      { name: 'PRIORITY', value: enc(String(3 + (i % 4))) },
+      { name: 'SERVICE', value: enc(`svc-${i % 6}`) },
+    ], { realtimeUsec: baseTimeUsec + BigInt(i) * 1000n });
+  }
+  w.close();
+  return { dir: tmp, file };
+}
+
 function withTmp(fn) {
   const dir = mkdtempSync(join(tmpdir(), 'netdata-2c-'));
   try { fn(dir); }
@@ -178,7 +199,7 @@ function testDeltaKeysPresent() {
 
 function testDataOnlyOmitsFullMetadataKeys() {
   withTmp((tmp) => {
-    makeTwoMachineDir(tmp, { countA: 5, countB: 3 });
+    makeTwoMachineDir(tmp, { countA: 50, countB: 30 });
     const fn = NetdataJournalFunction.systemdJournal();
     const response = fn.runDirectoryRequestJson(tmp, {
       last: 10,
@@ -262,10 +283,11 @@ function testIfModifiedSinceNewerRunsScan() {
 
 function testSamplingMathSmallBudget() {
   withTmp((tmp) => {
-    makeTwoMachineDir(tmp, { countA: 5, countB: 3 });
+    makeTwoMachineDir(tmp, { countA: 50, countB: 30 });
     const fn = NetdataJournalFunction.systemdJournal();
     const response = fn.runDirectoryRequestJson(tmp, {
       sampling: 2,
+      last: 2,
       after: 1577836800,
       before: 1893456000,
       facets: ['PRIORITY'],
@@ -278,7 +300,114 @@ function testSamplingMathSmallBudget() {
     }
     const stats = response._stats.sdk_explorer;
     const totalSampling = sampling.sampled + sampling.unsampled + sampling.estimated;
-    assert.ok(totalSampling >= Number(stats.rows_matched), 'total sampling >= rows_matched');
+    assert.ok(totalSampling > 0, 'sampling must trigger');
+    assert.ok(
+      totalSampling + Number(stats.rows_returned) >= Number(stats.rows_matched),
+      'sampling plus returned candidates covers rows_matched',
+    );
+  });
+}
+
+function testSamplingHighRowWindowMatchesRustAccounting() {
+  withTmp((tmp) => {
+    makeHighRowSamplingDir(tmp);
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      after: 1700000000,
+      before: 1700000005,
+      facets: ['PRIORITY', 'SERVICE'],
+      histogram: 'PRIORITY',
+      last: 5,
+      sampling: 20,
+      slice: true,
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.items, {
+      evaluated: 4604,
+      matched: 4604,
+      unsampled: 34,
+      estimated: 4554,
+      returned: 5,
+      max_to_return: 5,
+      before: 0,
+      after: 11,
+    });
+    assert.deepEqual(response._sampling, {
+      enabled: true,
+      sampled: 11,
+      unsampled: 35,
+      estimated: 4554,
+    });
+    const stats = response._stats.sdk_explorer;
+    assert.equal(stats.rows_examined, 16);
+    assert.equal(stats.rows_matched, 4604);
+    assert.equal(stats.rows_estimated, 4554);
+    assert.equal(stats.rows_unsampled, 34);
+  });
+}
+
+function testSamplingHighRowAnchorItemsMatchRustAccounting() {
+  withTmp((tmp) => {
+    makeHighRowSamplingDir(tmp);
+    const fn = NetdataJournalFunction.systemdJournal();
+    const cases = [
+      [
+        {
+          after: 1700000000,
+          before: 1700000005,
+          anchor: 1700000004990000,
+          facets: ['PRIORITY', 'SERVICE'],
+          histogram: 'PRIORITY',
+          last: 5,
+          sampling: 20,
+          slice: true,
+        },
+        {
+          evaluated: 4604,
+          matched: 4594,
+          unsampled: 34,
+          estimated: 4554,
+          returned: 5,
+          max_to_return: 5,
+          before: 10,
+          after: 1,
+        },
+      ],
+      [
+        {
+          after: 1700000000,
+          before: 1700000005,
+          anchor: 1700000000010000,
+          direction: 'forward',
+          facets: ['PRIORITY', 'SERVICE'],
+          histogram: 'PRIORITY',
+          last: 5,
+          sampling: 20,
+          slice: true,
+        },
+        {
+          evaluated: 4604,
+          matched: 4593,
+          unsampled: 34,
+          estimated: 4554,
+          returned: 5,
+          max_to_return: 5,
+          before: 0,
+          after: 11,
+        },
+      ],
+    ];
+    for (const [request, expected] of cases) {
+      const response = fn.runDirectoryRequestJson(tmp, request);
+      assert.equal(response.status, 200);
+      assert.deepEqual(response.items, expected);
+      assert.deepEqual(response._sampling, {
+        enabled: true,
+        sampled: 11,
+        unsampled: 35,
+        estimated: 4554,
+      });
+    }
   });
 }
 
@@ -774,6 +903,37 @@ function testHistogramBucketKeysAreGridSnapped() {
   });
 }
 
+function testPriorityFacetSortMatchesRustForNonU8Values() {
+  withTmp((tmp) => {
+    const sub = join(tmp, 'aabbccdd111111111111111111111111');
+    mkdirSync(sub, { recursive: true });
+    const file = join(sub, 'system.journal');
+    const w = Writer.create(file, {
+      machineId: Buffer.alloc(16, 0x11),
+      bootId: Buffer.alloc(16, 0xaa),
+      seqnumId: Buffer.alloc(16, 0x33),
+    });
+    const priorities = ['3', 'abc', '300', '6'];
+    for (let i = 0; i < priorities.length; i++) {
+      w.append([
+        { name: 'MESSAGE', value: enc('priority-edge-order') },
+        { name: 'PRIORITY', value: enc(priorities[i]) },
+      ], { realtimeUsec: 1700000000_000000n + BigInt(i) * 1_000_000n });
+    }
+    w.close();
+    const fn = NetdataJournalFunction.systemdJournal();
+    const response = fn.runDirectoryRequestJson(tmp, {
+      after: 1699999999,
+      before: 1700001000,
+      last: 50,
+      facets: ['PRIORITY'],
+    });
+    const priority = response.facets.find(f => f.id === 'PRIORITY');
+    assert.ok(priority);
+    assert.deepEqual(priority.options.map(o => o.id), ['300', 'abc', '3', '6']);
+  });
+}
+
 function testHistogramEmptyDataProducesGridSnappedBuckets() {
   withTmp((tmp) => {
     const sub = join(tmp, 'aabbccdd111111111111111111111111');
@@ -957,6 +1117,8 @@ export async function run() {
   testUnfilteredTailNoNewDataReturns304();
 
   testSamplingMathSmallBudget();
+  testSamplingHighRowWindowMatchesRustAccounting();
+  testSamplingHighRowAnchorItemsMatchRustAccounting();
   testSamplingZeroKeepsLegacyFields();
   testSamplingSkippedInDataOnlyWithoutDelta();
 
@@ -978,6 +1140,7 @@ export async function run() {
   testNonTailItemsAfterHasNoAnchorPlusOne();
 
   testHistogramBucketKeysAreGridSnapped();
+  testPriorityFacetSortMatchesRustForNonU8Values();
   testHistogramEmptyDataProducesGridSnappedBuckets();
   test304EnvelopeHasOnlyStatusAndErrorMessage();
 

@@ -14,13 +14,6 @@ Last updated: 2026-06-14
 
 ## Pending
 
-- SOW-0107 - Python And Node Explorer Engine Parity Gaps: open. Discovered
-  during SOW-0105 round-2 review: the Rust `ExplorerSamplingState` budget-based
-  sampling/estimation engine is unported in both the Python and Node Explorer
-  traversals (only the data structures and stats plumbing shipped). Zero
-  observable impact on every validated fixture/gate because no fixture exceeds
-  the sampling budget; needs a high-row fixture to validate and a faithful
-  engine port in both languages.
 - SOW-0047 - Netdata NetFlow SDK Integration: open. Component integration for
   NetFlow reader and writer paths after inventory and performance gates.
 - SOW-0048 - Netdata OTEL Writer SDK Integration: open. Component integration
@@ -30,17 +23,15 @@ Last updated: 2026-06-14
   packaging after reader gates.
 - SOW-0050 - Netdata Vendored Journal Removal: open. Final cleanup after all
   Netdata component integrations are complete.
-- SOW-0104 - Python Explorer And Netdata Parity To Rust: open. Activates after
-  SOW-0103. Ports Explorer, Netdata function API, stdin wrapper, and source
-  selector labels to Python; joins the Netdata function comparator matrices;
-  adds `pyproject.toml` (no publication).
-- SOW-0105 - Node.js Explorer And Netdata Parity To Rust: open. Activates
-  after SOW-0104. Same parity surface for Node.js plus hand-written `.d.ts`
-  TypeScript definitions with CI type-check; pure JS, no native addons.
+- SOW-0109 - Python And Node Netdata Edge Parity Closure: open. Created from
+  SOW-0107 final review to audit and close remaining Python/Node edge parity
+  findings: Python delta/data-only stop behavior, Python candidate-row callback
+  parity, Node commit-realtime-zero handling, facet-only scan sampling, and
+  dead local sampling-state cleanup.
 - SOW-0106 - Python And Node.js Docs With Verified Examples: open. Activates
-  after SOW-0105. Adds Python-API/Node-API wiki pages and Python/Node columns
-  to shared pages; extends the verified-examples harness to all four
-  languages.
+  after Python/Node parity closure. Adds Python-API/Node-API wiki pages and
+  Python/Node columns to shared pages; extends the verified-examples harness to
+  all four languages.
 - SOW-0066 - V1 Release And Registry Publication: open. Final `v1.0.0`
   release, language registry/package publication, and clean consumer install
   validation after compatibility, portability, corpus, integration, and parity
@@ -60,6 +51,13 @@ Last updated: 2026-06-14
   shared primitives preserve historical compatibility and reader performance.
 ## Recently Closed Or Completed
 
+- SOW-0107 - Python And Node Explorer Engine Parity Gaps: completed. Python
+  and Node now match the Rust Explorer/Netdata behavior for the scoped parity
+  gaps: row-level sampling decision/estimation, Python Netdata FTS,
+  Python `PRIORITY` facet sorting, Python/Node Index Compare validation, and
+  O(1) indexed row collection. Local validation, four-peer high-row comparator
+  evidence, `git diff --check`, and six production-grade reviewer votes passed.
+  Remaining reviewer-discovered edge parity items are tracked by SOW-0109.
 - SOW-0108 - Cross-Language Reader Window Accessor Architecture: completed
   after regression repair. Rust and Go public file-path verification APIs now
   use bounded reader-backed byte sources instead of materializing whole journal

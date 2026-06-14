@@ -776,6 +776,30 @@ def _make_two_machine_dir(tmp: str, base_time_usec: int = 1_700_000_000_000_000,
     return str(dir_path), str(file_a), str(file_b)
 
 
+def _make_high_row_sampling_dir(tmp: str):
+    dir_path = pathlib.Path(tmp)
+    sub = dir_path / "aabbccdd111111111111111111111111"
+    sub.mkdir()
+    file_path = sub / "system.journal"
+    base_time_usec = 1_700_000_000_000_000
+    w = Writer.create(str(file_path), {
+        "machine_id": bytes.fromhex("aabbccdd111111111111111111111111"),
+        "boot_id": b"\x11" * 16,
+        "seqnum_id": b"\x22" * 16,
+    })
+    for i in range(5000):
+        w.append(
+            [
+                {"name": "MESSAGE", "value": f"high-row-{i}".encode()},
+                {"name": "PRIORITY", "value": str(3 + (i % 4)).encode()},
+                {"name": "SERVICE", "value": f"svc-{i % 6}".encode()},
+            ],
+            {"realtime_usec": base_time_usec + i * 1000},
+        )
+    w.close()
+    return str(dir_path), str(file_path)
+
+
 class NetdataJournalFunctionConstructors(unittest.TestCase):
     """`NetdataJournalFunction` factories and the `new` selector backfill."""
 
@@ -2137,7 +2161,7 @@ class IfModifiedSince(unittest.TestCase):
 
     def test_if_modified_since_unchanged_returns_304(self):
         with tempfile.TemporaryDirectory() as tmp:
-            _make_two_machine_dir(tmp, count_a=5, count_b=3)
+            _make_two_machine_dir(tmp, count_a=50, count_b=30)
             fn = n.NetdataJournalFunction.systemd_journal()
             # Every file's last message is at or before
             # `base + 4*1000` (file_a) and `base + 100_000 + 2*1000`
@@ -2261,13 +2285,15 @@ class Sampling(unittest.TestCase):
 
     def test_sampling_math_small_budget(self):
         with tempfile.TemporaryDirectory() as tmp:
-            _make_two_machine_dir(tmp, count_a=5, count_b=3)
+            _make_two_machine_dir(tmp, count_a=50, count_b=30)
             fn = n.NetdataJournalFunction.systemd_journal()
-            # `sampling=2` means we may unsample rows after exhausting
-            # the budget. With 8 rows and a budget of 2, most rows
-            # are unsampled/estimated.
+            # `sampling=2` with `last=2` means rows outside the
+            # returned page may be sampled, unsampled, or estimated.
+            # Candidate rows kept for the page are intentionally not
+            # counted as sampled by Rust's ExplorerSamplingState.
             response = fn.run_directory_request_json(tmp, {
                 "sampling": 2,
+                "last": 2,
                 "after": 1577836800,
                 "before": 1893456000,
                 "facets": ["PRIORITY"],
@@ -2277,18 +2303,119 @@ class Sampling(unittest.TestCase):
             self.assertTrue(sampling["enabled"])
             for key in ("sampled", "unsampled", "estimated"):
                 self.assertIn(key, sampling)
-            # The three counters must cover every examined row:
-            # rows_matched (rows the explorer saw) ==
-            # sampled + unsampled + estimated. The exact split
-            # depends on the explorer's calibration, so we only
-            # assert the invariant.
+            # The sampling counters plus returned candidate rows must
+            # cover every matched row. The exact split depends on the
+            # explorer's calibration.
             stats = response["_stats"]["sdk_explorer"]
             total_sampling = (
                 sampling["sampled"]
                 + sampling["unsampled"]
                 + sampling["estimated"]
             )
-            self.assertGreaterEqual(total_sampling, stats["rows_matched"])
+            self.assertGreater(total_sampling, 0)
+            self.assertGreaterEqual(
+                total_sampling + stats["rows_returned"],
+                stats["rows_matched"],
+            )
+
+    def test_sampling_high_row_window_matches_rust_accounting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_high_row_sampling_dir(tmp)
+            fn = n.NetdataJournalFunction.systemd_journal()
+            response = fn.run_directory_request_json(tmp, {
+                "after": 1_700_000_000,
+                "before": 1_700_000_005,
+                "facets": ["PRIORITY", "SERVICE"],
+                "histogram": "PRIORITY",
+                "last": 5,
+                "sampling": 20,
+                "slice": True,
+            })
+            self.assertEqual(response["status"], 200)
+            self.assertEqual(response["items"], {
+                "evaluated": 4604,
+                "matched": 4604,
+                "unsampled": 34,
+                "estimated": 4554,
+                "returned": 5,
+                "max_to_return": 5,
+                "before": 0,
+                "after": 11,
+            })
+            self.assertEqual(response["_sampling"], {
+                "enabled": True,
+                "sampled": 11,
+                "unsampled": 35,
+                "estimated": 4554,
+            })
+            stats = response["_stats"]["sdk_explorer"]
+            self.assertEqual(stats["rows_examined"], 16)
+            self.assertEqual(stats["rows_matched"], 4604)
+            self.assertEqual(stats["rows_estimated"], 4554)
+            self.assertEqual(stats["rows_unsampled"], 34)
+
+    def test_sampling_high_row_anchor_items_match_rust_accounting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _make_high_row_sampling_dir(tmp)
+            fn = n.NetdataJournalFunction.systemd_journal()
+            cases = [
+                (
+                    {
+                        "after": 1_700_000_000,
+                        "before": 1_700_000_005,
+                        "anchor": 1_700_000_004_990_000,
+                        "facets": ["PRIORITY", "SERVICE"],
+                        "histogram": "PRIORITY",
+                        "last": 5,
+                        "sampling": 20,
+                        "slice": True,
+                    },
+                    {
+                        "evaluated": 4604,
+                        "matched": 4594,
+                        "unsampled": 34,
+                        "estimated": 4554,
+                        "returned": 5,
+                        "max_to_return": 5,
+                        "before": 10,
+                        "after": 1,
+                    },
+                ),
+                (
+                    {
+                        "after": 1_700_000_000,
+                        "before": 1_700_000_005,
+                        "anchor": 1_700_000_000_010_000,
+                        "direction": "forward",
+                        "facets": ["PRIORITY", "SERVICE"],
+                        "histogram": "PRIORITY",
+                        "last": 5,
+                        "sampling": 20,
+                        "slice": True,
+                    },
+                    {
+                        "evaluated": 4604,
+                        "matched": 4593,
+                        "unsampled": 34,
+                        "estimated": 4554,
+                        "returned": 5,
+                        "max_to_return": 5,
+                        "before": 0,
+                        "after": 11,
+                    },
+                ),
+            ]
+            for request, expected in cases:
+                with self.subTest(request=request):
+                    response = fn.run_directory_request_json(tmp, request)
+                    self.assertEqual(response["status"], 200)
+                    self.assertEqual(response["items"], expected)
+                    self.assertEqual(response["_sampling"], {
+                        "enabled": True,
+                        "sampled": 11,
+                        "unsampled": 35,
+                        "estimated": 4554,
+                    })
 
     def test_sampling_zero_keeps_legacy_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4524,6 +4651,122 @@ class TailDeltaFacetOptionNames(unittest.TestCase):
             self.assertIn("info", names)
             self.assertNotIn("3", names)
             self.assertNotIn("6", names)
+
+
+class PythonNetdataParityGaps(unittest.TestCase):
+    """Regression guards for SOW-0107 parity gaps already covered in Node."""
+
+    def test_priority_facet_sorts_numerically(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dir_path = pathlib.Path(tmp)
+            sub = dir_path / "aabbccddeeff00112233445566778899"
+            sub.mkdir()
+            w = Writer.create(str(sub / "system.journal"), {
+                "machine_id": bytes.fromhex("aabbccddeeff00112233445566778899"),
+                "boot_id": b"\x11" * 16,
+                "seqnum_id": b"\x22" * 16,
+            })
+            for idx, priority in enumerate([b"6"] * 5 + [b"3"] + [b"4"] * 3):
+                w.append(
+                    [
+                        {"name": "MESSAGE", "value": b"priority-order"},
+                        {"name": "PRIORITY", "value": priority},
+                    ],
+                    {"realtime_usec": 1_700_000_000_000_000 + idx * 1_000_000},
+                )
+            w.close()
+
+            fn = n.NetdataJournalFunction.systemd_journal()
+            response = fn.run_directory_request_json(tmp, {
+                "after": 1_699_999_999,
+                "before": 1_700_001_000,
+                "last": 50,
+                "facets": ["PRIORITY"],
+            })
+            priority = next(f for f in response["facets"] if f["id"] == "PRIORITY")
+            self.assertEqual(
+                [option["id"] for option in priority["options"]],
+                ["3", "4", "6"],
+            )
+
+    def test_priority_facet_sort_matches_rust_for_non_u8_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dir_path = pathlib.Path(tmp)
+            sub = dir_path / "aabbccddeeff00112233445566778899"
+            sub.mkdir()
+            w = Writer.create(str(sub / "system.journal"), {
+                "machine_id": bytes.fromhex("aabbccddeeff00112233445566778899"),
+                "boot_id": b"\x11" * 16,
+                "seqnum_id": b"\x22" * 16,
+            })
+            for idx, priority in enumerate([b"3", b"abc", b"300", b"6"]):
+                w.append(
+                    [
+                        {"name": "MESSAGE", "value": b"priority-edge-order"},
+                        {"name": "PRIORITY", "value": priority},
+                    ],
+                    {"realtime_usec": 1_700_000_000_000_000 + idx * 1_000_000},
+                )
+            w.close()
+
+            fn = n.NetdataJournalFunction.systemd_journal()
+            response = fn.run_directory_request_json(tmp, {
+                "after": 1_699_999_999,
+                "before": 1_700_001_000,
+                "last": 50,
+                "facets": ["PRIORITY"],
+            })
+            priority = next(f for f in response["facets"] if f["id"] == "PRIORITY")
+            self.assertEqual(
+                [option["id"] for option in priority["options"]],
+                ["300", "abc", "3", "6"],
+            )
+
+    def test_fts_query_is_applied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dir_path = pathlib.Path(tmp)
+            sub = dir_path / "aabbccddeeff00112233445566778899"
+            sub.mkdir()
+            w = Writer.create(str(sub / "system.journal"), {
+                "machine_id": bytes.fromhex("aabbccddeeff00112233445566778899"),
+                "boot_id": b"\x11" * 16,
+                "seqnum_id": b"\x22" * 16,
+            })
+            messages = [
+                b"Linux kernel started",
+                b"Machine reboot now",
+                b"RTPROP noise",
+                b"Linux and Machine both",
+                b"plain text",
+            ]
+            for idx, message in enumerate(messages):
+                w.append(
+                    [
+                        {"name": "MESSAGE", "value": message},
+                        {"name": "PRIORITY", "value": b"6"},
+                    ],
+                    {"realtime_usec": 1_700_000_000_000_000 + idx * 1_000_000},
+                )
+            w.close()
+
+            fn = n.NetdataJournalFunction.systemd_journal()
+            response = fn.run_directory_request_json(tmp, {
+                "after": 1_699_999_999,
+                "before": 1_700_001_000,
+                "last": 50,
+                "data_only": False,
+                "query": "Linux|Machine|!RTPROP",
+                "facets": ["PRIORITY"],
+            })
+            message_index = response["columns"]["MESSAGE"]["index"]
+            self.assertEqual(
+                sorted(row[message_index] for row in response["data"]),
+                [
+                    "Linux and Machine both",
+                    "Linux kernel started",
+                    "Machine reboot now",
+                ],
+            )
 
 
 class TailDeltaHistogramIntegerValues(unittest.TestCase):

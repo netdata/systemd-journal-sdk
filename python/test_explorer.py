@@ -47,6 +47,7 @@ from journal import (  # noqa: E402
     Writer,
     Log,
 )
+from journal.explorer import _ExplorerSamplingState  # noqa: E402
 
 
 # ----------------------------------------------------------------------------
@@ -249,11 +250,9 @@ def test_explorer_traversal_filters_facets_histogram_and_rows():
 # Index strategy matches Traversal on Index-supported shapes (mirrors Go
 # TestExplorerIndexStrategyMatchesTraversalForAllValues / Rust L3949).
 # Note: this test exercises the no-filter path, which is the simplest
-# Index-supported shape. The Traversal+filter+Index equality case is
-# exercised by the Compare strategy test below; the Index path's
-# candidate-set walk does not currently apply the reader's filter via
-# step() (it uses raw next/previous) so the no-filter case is the
-# scope of this chunk's Index parity test.
+# Index-supported shape. A separate Compare-mode test below pins the
+# filtered path so the indexed candidate-set walk cannot silently
+# drift from Traversal.
 # ----------------------------------------------------------------------------
 
 
@@ -333,6 +332,120 @@ def test_explorer_compare_strategy_verifies_equality_and_fills_comparison():
             assert _histogram_total_for_value(result.histogram, b'5') == 1
         finally:
             reader.close()
+
+
+def test_explorer_index_compare_matches_traversal_with_filters():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'compare-filter.journal')
+        entries = [
+            (1_000, [('MESSAGE', b'one'), ('SERVICE', b'api'), ('PRIORITY', b'6')]),
+            (2_000, [('MESSAGE', b'two'), ('SERVICE', b'api'), ('PRIORITY', b'5')]),
+            (3_000, [('MESSAGE', b'three'), ('SERVICE', b'worker'), ('PRIORITY', b'6')]),
+            (4_000, [('MESSAGE', b'four'), ('SERVICE', b'api'), ('PRIORITY', b'6')]),
+        ]
+        _write_simple_entries(path, entries)
+        reader = FileReader.open(path)
+        try:
+            q = (
+                ExplorerQuery()
+                .with_filter('SERVICE', ['api'])
+                .with_facet('PRIORITY')
+                .with_histogram('PRIORITY')
+            )
+            q.use_source_realtime = False
+            q.field_mode = ExplorerFieldMode.ALL_VALUES
+            q.limit = 10
+            result = reader.explore_with_strategy(q, ExplorerStrategy.COMPARE)
+            assert isinstance(result.comparison, ExplorerComparison)
+            assert result.stats.rows_matched == 3
+            assert _facet_count(result, b'PRIORITY', b'6') == 2
+            assert _facet_count(result, b'PRIORITY', b'5') == 1
+            assert _histogram_total_for_value(result.histogram, b'6') == 2
+            assert _histogram_total_for_value(result.histogram, b'5') == 1
+        finally:
+            reader.close()
+
+
+def test_explorer_index_collect_rows_does_not_use_linear_offset_lookup():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'index-offset-map.journal')
+        _write_many_alternating(path, 64)
+        reader = FileReader.open(path)
+        try:
+            original = reader._index_for_entry_offset
+
+            def forbidden(_entry_offset):
+                raise AssertionError(
+                    '_index_for_entry_offset must not be used in indexed row collection'
+                )
+
+            reader._index_for_entry_offset = forbidden
+            try:
+                q = ExplorerQuery().with_facet('SERVICE').with_histogram('SERVICE')
+                q.use_source_realtime = False
+                q.field_mode = ExplorerFieldMode.ALL_VALUES
+                q.limit = 10
+                result = reader.explore_with_strategy(q, ExplorerStrategy.INDEX)
+                assert len(result.rows) == 10
+            finally:
+                reader._index_for_entry_offset = original
+        finally:
+            reader.close()
+
+
+def test_explorer_sampling_skips_and_estimates_rows_before_expansion():
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, 'sampling.journal')
+        count = 600
+        base = 1_700_000_000_000_000
+        _write_many_alternating(path, count)
+        reader = FileReader.open(path)
+        try:
+            q = ExplorerQuery().with_facet('SERVICE').with_histogram('SERVICE')
+            q.use_source_realtime = False
+            q.limit = 5
+            q.after_realtime_usec = base
+            q.before_realtime_usec = base + count
+            q.histogram_target_buckets = 2
+            q.sampling = ExplorerSampling(
+                budget=20,
+                matched_files=1,
+                file_head_realtime_usec=base,
+                file_tail_realtime_usec=base + count - 1,
+                file_entries=count,
+            )
+            result = reader.explore(q)
+            assert result.stats.sampling_sampled > 0
+            assert result.stats.sampling_unsampled > 0
+            assert result.stats.rows_unsampled > 0 or result.stats.rows_estimated > 0
+            assert (
+                _histogram_total_for_value(result.histogram, b'[unsampled]')
+                + _histogram_total_for_value(result.histogram, b'[estimated]')
+            ) > 0
+            assert result.stats.rows_examined < count
+        finally:
+            reader.close()
+
+
+def test_explorer_sampling_seqnum_estimate_clamps_progress_above_one():
+    q = ExplorerQuery().with_facet('SERVICE')
+    q.after_realtime_usec = 1_700_000_000_000_000
+    q.before_realtime_usec = 1_700_000_001_000_000
+    q.direction = Direction.BACKWARD
+    q.limit = 5
+    q.sampling = ExplorerSampling(
+        budget=20,
+        matched_files=1,
+        file_head_realtime_usec=q.after_realtime_usec,
+        file_tail_realtime_usec=q.before_realtime_usec,
+        file_head_seqnum=1,
+        file_tail_seqnum=100,
+        file_entries=100,
+    )
+    state = _ExplorerSamplingState.for_query(q, None)
+    assert state is not None
+    state.per_file_sampled = 10
+    assert state._estimate_remaining_rows_by_seqnum(99) == 90
 
 
 def test_explorer_index_rejects_first_value_semantics():
