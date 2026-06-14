@@ -8,12 +8,10 @@ Sub-state: activated 2026-06-14 after the user explicitly chose to pause
 SOW-0105 and prioritize this foundational reader memory architecture work.
 Rust pread work was dropped by user decision after platform evidence showed
 Rust already has mmap support on Linux, FreeBSD, macOS, and Windows through
-`memmap2`. The current active planning target is Go. The first Go pre-code
-review round returned `PLAN NOT READY`; the Go plan has since been expanded
-with concrete accessor, lifetime, Windows mmap, `.journal.zst`, test, and
-benchmark requirements. Go implementation remains blocked until the full
-reviewer pool votes `READY FOR IMPLEMENTATION`. User design decisions are
-recorded before any code, per the project decision-recording rule.
+`memmap2`. The current active implementation target is Go. The Go plan passed
+the pre-code gate in reviewer round 5: `glm`, `kimi`, `mimo`, `qwen`,
+`minimax`, and `deepseek` all voted `READY FOR IMPLEMENTATION`. User design
+decisions are recorded before code, per the project decision-recording rule.
 
 ## Requirements
 
@@ -353,8 +351,7 @@ Node.js has no core mmap. If optional native mmap is implemented, it must be:
 
 ## Pre-Implementation Gate
 
-Status: Go plan revised after pre-code review blockers. Go implementation is
-still blocked until the full reviewer pool votes `READY FOR IMPLEMENTATION`.
+Status: Go pre-code gate passed; Go implementation may start.
 
 Activation context: SOW-0105 is paused by explicit user decision. This SOW is
 the active implementation SOW. Rust mmap-only scope was accepted after evidence
