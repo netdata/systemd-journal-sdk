@@ -2,14 +2,11 @@
 
 ## Status
 
-Status: paused
+Status: completed
 
-Sub-state: activated 2026-06-12 after SOW-0104 completed (close commit
-`ee5d0d20`); gate refreshed with a fresh Node-vs-Rust API-diff inventory
-(project-manager-verified); implementation starting with the SOW-0104
-porting playbook inherited. Paused 2026-06-14 by explicit user decision so
-SOW-0108 can become the active implementation SOW first; this SOW remains the
-tracker for the remaining Node.js Explorer and Netdata parity work.
+Sub-state: completed on 2026-06-14 after reconciliation. The primary Node.js
+Explorer/Netdata implementation landed in this SOW; later reviewer-discovered
+cross-language parity gaps were fixed and reviewed in SOW-0107 and SOW-0109.
 
 ## Requirements
 
@@ -446,23 +443,52 @@ Failure handling:
 
 Acceptance criteria evidence:
 
-- Pending implementation.
+- Node Explorer API, Netdata function API, stdin wrapper, source selector
+  labels, facade unique-values visitor, TypeScript definitions, and comparator
+  runner integration were implemented in this SOW, as recorded in the execution
+  log commits `c2d2c11f`, `cb1d0899`, `9583e5bb`, `314dade1`, `5e77d77f`,
+  `cc33aa14`, and `0afd96dc`.
+- Remaining sampling, FTS, sort, Index Compare, and O(1) indexed-row parity
+  gaps discovered during SOW-0105 review were fixed and reviewed in SOW-0107.
+- Remaining Python/Node Netdata edge parity gaps discovered after SOW-0107
+  were fixed and reviewed in SOW-0109.
+- Rust and Go sources were not modified by this SOW's Node implementation
+  closure.
 
 Tests or equivalent validation:
 
-- Pending implementation.
+- SOW-0105 recorded final one-shot comparator evidence: 10/10 for
+  `node_vs_sdk` and `node_vs_plugin` against the live journal read-only.
+- SOW-0105 recorded final stateful evidence: 5/5 sequences on a frozen
+  fresh-data fixture.
+- SOW-0105 recorded full Node package suite and TypeScript definition checks
+  passing after the Node implementation.
+- SOW-0107 recorded full Python/Node parity validation, four-peer high-row
+  comparator evidence, `git diff --check`, SOW audit, and six
+  `PRODUCTION GRADE` reviewer votes for the sampling/FTS/sort/Index repair
+  scope.
+- SOW-0109 recorded focused tests, full Python/Node suites, Netdata function
+  comparators, `git diff --check`, SOW audit, and six `PRODUCTION GRADE`
+  reviewer votes for the remaining edge parity scope.
 
 Real-use evidence:
 
-- Pending implementation.
+- The Node wrapper was compared against the installed Netdata
+  `systemd-journal.plugin` on live journal data in SOW-0105's one-shot
+  comparator gate and against frozen fresh-data stateful fixtures.
 
 Reviewer findings:
 
-- Pending implementation.
+- SOW-0105 ran multiple whole-scope review rounds. Validated findings were
+  fixed inside this SOW where they were Node-specific, or split into SOW-0107
+  and SOW-0109 when they were cross-language parity repairs.
+- SOW-0107 and SOW-0109 both closed with full reviewer-pool
+  `PRODUCTION GRADE` votes for the split repair scopes.
 
 Same-failure scan:
 
-- Pending implementation.
+- The same-failure scans and comparator gates from SOW-0107 and SOW-0109 cover
+  the follow-on parity gap classes that originally prevented SOW-0105 closure.
 
 Sensitive data gate:
 
@@ -470,43 +496,73 @@ Sensitive data gate:
 
 Artifact maintenance gate:
 
-- Pending close.
+- AGENTS.md: no update needed; this reconciliation changes SOW lifecycle only.
+- Runtime project skills: no update needed; the recurring parity lesson was
+  captured by SOW-0107/SOW-0109 validation practice.
+- Specs: Node Explorer/Netdata behavior is now represented by the current
+  systemd-journal plugin facets spec and SOW-0107/SOW-0109 updates.
+- End-user/operator docs: SOW-0106 remains open for Python/Node consumer docs
+  and verified examples.
+- End-user/operator skills: no update needed.
+- SOW lifecycle: SOW-0105 is moved to done after reconciliation with SOW-0107
+  and SOW-0109.
+- SOW-status.md: root and canonical ledgers updated.
 
 Specs update:
 
-- Pending implementation.
+- No direct spec edit in this reconciliation. Behavior updates landed through
+  SOW-0107 and SOW-0109.
 
 Project skills update:
 
-- Pending implementation.
+- No update needed.
 
 End-user/operator docs update:
 
-- Pending implementation.
+- No update in this SOW close. SOW-0106 owns Python/Node docs and verified
+  examples.
 
 End-user/operator skills update:
 
-- Pending implementation.
+- No update needed.
 
 Lessons:
 
-- Pending implementation.
+- Comparator fixtures alone are insufficient for threshold/conditional
+  features. SOW-0107 and SOW-0109 added focused tests for paths that the
+  original Node comparator gate did not exercise.
 
 Follow-up mapping:
 
-- Pending implementation.
+- SOW-0107 completed the sampling/FTS/sort/Index follow-up items split from
+  SOW-0105.
+- SOW-0109 completed the final Python/Node edge parity follow-up items split
+  from SOW-0107 review.
+- SOW-0106 remains open for Python/Node consumer documentation and verified
+  examples.
 
 ## Outcome
 
-Pending.
+SOW-0105 completed after reconciliation.
+
+The Node.js SDK now has the Rust peer Explorer API, Netdata function API,
+stdin wrapper, source selector label support, facade unique-values visitor, and
+TypeScript definitions. The implementation work was done in this SOW; the
+remaining review-discovered parity gaps were intentionally split into and
+completed by SOW-0107 and SOW-0109 before this SOW was closed.
 
 ## Lessons Extracted
 
-Pending.
+- A large language-port SOW should not close only on broad comparator success.
+  Features that activate only above thresholds, under FTS, or under alternate
+  strategies need focused triggering fixtures.
+- TypeScript declaration drift needs mechanical runtime export/prototype
+  checks; `tsc` alone cannot prove declarations match a dynamic JavaScript
+  module.
 
 ## Followup
 
-None yet.
+SOW-0106 remains open for Python/Node documentation and verified examples.
 
 ## Regression Log
 

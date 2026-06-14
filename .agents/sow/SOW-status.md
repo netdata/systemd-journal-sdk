@@ -4,10 +4,6 @@ Last updated: 2026-06-14
 
 ## Current
 
-- SOW-0105 - Node.js Explorer And Netdata Parity To Rust: paused. Paused
-  2026-06-14 by explicit user decision so SOW-0108 can become the active
-  implementation SOW first; remains the tracker for the remaining Node.js
-  Explorer and Netdata parity work.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
@@ -53,6 +49,11 @@ Last updated: 2026-06-14
   Node no longer drops Explorer rows only because `commitRealtime` is zero.
   Focused tests, full Python/Node suites, Netdata function comparators,
   `git diff --check`, SOW audit, and all six reviewer votes passed.
+- SOW-0105 - Node.js Explorer And Netdata Parity To Rust: completed after
+  reconciliation. The Node Explorer API, Netdata function API, stdin wrapper,
+  source selector labels, facade unique-values visitor, and TypeScript
+  definitions landed in SOW-0105; the remaining review-discovered parity gaps
+  were completed by SOW-0107 and SOW-0109 before closure.
 - SOW-0107 - Python And Node Explorer Engine Parity Gaps: completed. Python
   and Node now match the Rust Explorer/Netdata behavior for the scoped parity
   gaps: row-level sampling decision/estimation, Python Netdata FTS,

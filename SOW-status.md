@@ -7,7 +7,6 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- `SOW-0105-20260611-node-explorer-netdata-parity.md` - paused. Paused 2026-06-14 by explicit user decision so SOW-0108 can become the active implementation SOW first; remains the tracker for the remaining Node.js Explorer and Netdata parity work.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
 
 ## Pending
@@ -23,6 +22,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 ## Done
 
 - `SOW-0109-20260614-python-node-netdata-edge-parity.md` - completed. Python and Node now match the Rust reference for the remaining scoped Netdata edge parity gaps discovered after SOW-0107: Python `data_only && delta` keeps analysis enabled, Python/Node expose and wire candidate-row callbacks, and Node no longer drops Explorer rows only because `commitRealtime` is zero. Focused tests, full Python/Node suites, Netdata function comparators, `git diff --check`, SOW audit, and all six reviewer votes passed.
+- `SOW-0105-20260611-node-explorer-netdata-parity.md` - completed after reconciliation. The Node Explorer API, Netdata function API, stdin wrapper, source selector labels, facade unique-values visitor, and TypeScript definitions landed in SOW-0105; the remaining review-discovered parity gaps were completed by SOW-0107 and SOW-0109 before closure.
 - `SOW-0107-20260613-python-node-explorer-sampling-engine.md` - completed. Python and Node now match the Rust Explorer/Netdata behavior for the scoped parity gaps: row-level sampling decision/estimation, Python Netdata FTS, Python `PRIORITY` facet sorting, Python/Node Index Compare validation, and O(1) indexed row collection. Local validation, four-peer high-row comparator evidence, `git diff --check`, and six production-grade reviewer votes passed; remaining reviewer-discovered edge parity items are tracked by SOW-0109.
 - `SOW-0108-20260614-cross-language-reader-window-accessor.md` - completed after regression repair. Rust and Go public file-path verification APIs now use bounded reader-backed byte sources instead of materializing whole journal files; Go verifier source slices return owned buffers to avoid mmap/window aliasing hazards. Focused Rust/Go tiny-window sealed verifier tests, `go test ./...`, affected Rust package tests, the shared verify matrix, wiki docs validation, `git diff --check`, SOW audit, and all six reviewer votes passed.
 - `SOW-0104-20260611-python-explorer-netdata-parity.md` - completed. The Python SDK carries the full Rust feature surface (Explorer, Netdata logs function API with source selector labels and the complete tail/delta/sampling contract, stdin wrapper, `python/pyproject.toml` metadata, facade unique-values visitor). Parity proven by three-peer content comparison against the Rust wrapper and the installed Netdata plugin: 10/10 one-shot fixtures on the live journal and 5/5 stateful sequences on a frozen fixture; 5/5 `PRODUCTION GRADE: YES` reviewer verdicts in one round.
