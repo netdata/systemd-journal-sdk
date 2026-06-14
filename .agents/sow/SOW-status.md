@@ -10,8 +10,6 @@ Last updated: 2026-06-14
 
 ## Pending
 
-- SOW-0047 - Netdata NetFlow SDK Integration: open. Component integration for
-  NetFlow reader and writer paths after inventory and performance gates.
 - SOW-0048 - Netdata OTEL Writer SDK Integration: open. Component integration
   for OTEL writer paths after inventory and writer gates.
 - SOW-0049 - Netdata Reader Plugin SDK Integration: open. Component integration
@@ -42,6 +40,15 @@ Last updated: 2026-06-14
   shared primitives preserve historical compatibility and reader performance.
 ## Recently Closed Or Completed
 
+- SOW-0047 - Netdata NetFlow SDK Integration: completed. Read-only
+  verification of `ktsaou/netdata @ 36050079cfa9` showed the NetFlow plugin is
+  wired to the published `systemd-journal-sdk-*` crates at `0.7.0`, with writer
+  paths using SDK `journal_log_writer::Log` for raw and materialized tiers and
+  reader/query/facet paths using SDK `JournalFile<Mmap>`, `JournalReader`,
+  `JournalFileMap`, `data_ref`, and field DATA object iteration. No Netdata
+  build/test was run in this SDK closeout because that would write outside this
+  repository; remaining non-NetFlow component work stays tracked by SOW-0048,
+  SOW-0049, and SOW-0050.
 - SOW-0110 - v0.7.0 Release: completed. Rust crates were published to crates.io
   at `0.7.0`, `master` was pushed through release commit
   `556e79e1e9eabab84becb5f6d0658b6f39ba7075`, and annotated tags `v0.7.0`
