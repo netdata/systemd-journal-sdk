@@ -13,15 +13,15 @@ and Go APIs use native names, shown in the relevant tables.
 |---|---:|---|---|
 | `ReaderBounds::Live` | yes | Allows the reader to observe published appends during a session. | Use for live file-backed readers. |
 | `ReaderBounds::Snapshot` | no | Fixes file bounds at open time. | Use for polling/query workloads where entries appended after query start do not matter. |
-| windowed mmap | yes in Rust live readers | Maps rolling file windows. | Good default for large files and bounded virtual memory. |
+| windowed mmap | yes in Rust, Go, and Python live readers where supported | Maps rolling file windows. | Good default for large files and bounded virtual memory. |
 | whole-file mmap | internal/test only | Maps the full file. | Not a production or normal consumer option; retained only for controlled experiments and benchmarks. |
-| positioned `ReadAt` fallback | target-dependent | Reads through positioned file I/O when mmap is unavailable or explicitly selected in internal tools. | Tests, diagnostics, constrained-platform investigation, and fallback evidence only; not a production reader mode. |
+| positioned `ReadAt` fallback | target-dependent; default in Node.js package | Reads through positioned file I/O when mmap is unavailable or explicitly selected in internal tools. | Tests, diagnostics, constrained-platform investigation, and fallback evidence only for mmap-capable SDKs. Node.js uses this as its default package backend because Node core has no portable mmap API. |
 
 ## Entry Access Options
 
 | Surface | Cost | Use When |
 |---|---|---|
-| payload visitor | lowest | Consumer already works with `FIELD=value` bytes inside the callback. Go `VisitEntryPayloads` is not row-level-safe. |
+| payload visitor | lowest | Consumer already works with `FIELD=value` bytes inside the callback. Go `VisitEntryPayloads` is not row-level-safe; Python's visitor returns owned `bytes`. |
 | raw byte-name entry APIs | low to medium | RAW mode can contain non-UTF8 field names. |
 | materialized entry maps | medium to high | Caller needs convenient field maps for selected rows. |
 | JSON/export/text formatters | high | Caller is producing external output. |
@@ -64,16 +64,18 @@ Live publication is not durability. Filesystem sync and crash-consistency policy
 are separate operational choices.
 
 Rust low-level FSS uses `journal_core::seal::SealOptions`; Go uses
-`journal.SealOptions`. Rust low-level writer locks live under
-`journal_core::file::lock`; Go uses `journal.AcquireWriterLock`.
+`journal.SealOptions`; Python and Node.js expose `SealOptions` in their writer
+surfaces. Rust low-level writer locks live under `journal_core::file::lock`;
+Go uses `journal.AcquireWriterLock`; Python and Node.js use
+`WriterLock.acquire`.
 
 ## Field-Name Policy Options
 
-| Spec Policy | Rust | Go | Default | Effect | Use When |
-|---|---|---|---:|---|---|
-| `JOURNALD` | `FieldNamePolicy::Journald` | `FieldNamePolicyJournald` | yes | Trusted journald-compatible field names, including protected `_` fields. | Backend acts as journald or a trusted journal producer. |
-| `JOURNAL-APP` | `FieldNamePolicy::JournalApp` | `FieldNamePolicyJournalApp` | no | Untrusted application-facing journald rules; protected fields are dropped. | Emulate application logging through journald. |
-| `RAW` | `FieldNamePolicy::Raw` | `FieldNamePolicyRaw` | no | Allows any non-empty field name without `=`. | File-format-level tooling or tests; stock systemd compatibility is not guaranteed. |
+| Spec Policy | Rust | Go | Python | Node.js | Default | Effect | Use When |
+|---|---|---|---|---|---:|---|---|
+| `JOURNALD` | `FieldNamePolicy::Journald` | `FieldNamePolicyJournald` | `FIELD_NAME_POLICY_JOURNALD` | `FIELD_NAME_POLICY_JOURNALD` | yes | Trusted journald-compatible field names, including protected `_` fields. | Backend acts as journald or a trusted journal producer. |
+| `JOURNAL-APP` | `FieldNamePolicy::JournalApp` | `FieldNamePolicyJournalApp` | `FIELD_NAME_POLICY_JOURNAL_APP` | `FIELD_NAME_POLICY_JOURNAL_APP` | no | Untrusted application-facing journald rules; protected fields are dropped. | Emulate application logging through journald. |
+| `RAW` | `FieldNamePolicy::Raw` | `FieldNamePolicyRaw` | `FIELD_NAME_POLICY_RAW` | `FIELD_NAME_POLICY_RAW` | no | Allows any non-empty field name without `=`. | File-format-level tooling or tests; stock systemd compatibility is not guaranteed. |
 
 The SDK does not perform OTEL, Netdata, or application-specific remapping.
 Transform fields before calling the SDK.

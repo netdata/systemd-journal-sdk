@@ -163,7 +163,7 @@ declare module "@netdata/systemd-journal-sdk" {
     visitEntryPayloads(visitor: (payload: Bytes) => void): void;
 
     enumerateFields(): Set<string>;
-    queryUnique(fieldName: string | Bytes): string[];
+    queryUnique(fieldName: string | Bytes): Bytes[];
 
     explore(query: ExplorerQuery): ExplorerResult;
     exploreWithStrategy(query: ExplorerQuery, strategy: ExplorerStrategy): ExplorerResult;
@@ -202,7 +202,7 @@ declare module "@netdata/systemd-journal-sdk" {
     visitEntryPayloads(visitor: (payload: Bytes) => void): void;
 
     enumerateFields(): Set<string>;
-    queryUnique(fieldName: string | Bytes): string[];
+    queryUnique(fieldName: string | Bytes): Bytes[];
 
     listBoots(): BootInfo[];
   }

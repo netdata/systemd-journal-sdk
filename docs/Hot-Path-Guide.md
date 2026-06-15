@@ -64,6 +64,12 @@ Consumers that need data after advancing must copy it.
 Go `VisitEntryPayloads` is the exception: it is callback-scoped, not
 row-scoped. Use Go `EnumerateEntryPayload` for the row-level guarantee.
 
+Python `visit_entry_payloads()` returns owned `bytes`, so callers can retain
+values but pay the copy cost. Use Python `enumerate_entry_payload()` for the
+row-scoped current-entry path. Node.js default-package readers use bounded
+positioned-read windows, so treat current-row buffers as row-scoped even though
+the implementation is not mmap-backed.
+
 ## Compression And Explorer
 
 Compressed DATA stores the compressed `FIELD=value` payload. The field name is

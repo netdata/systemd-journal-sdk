@@ -49,6 +49,31 @@ import "github.com/netdata/systemd-journal-sdk/go/journal"
 The Go module is pure Go and does not use CGO. See [[Go-API|Go API]] for
 examples.
 
+## Install Python
+
+Install the Python package from the repository checkout:
+
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -e python/
+```
+
+The Python package is pure Python and does not use native journal bindings.
+See [[Python-API|Python API]] for examples.
+
+## Install Node.js
+
+Install the Node.js package from the repository checkout:
+
+```sh
+cd node
+npm install
+```
+
+The Node.js package is pure JavaScript and does not load native addons. See
+[[Node-API|Node.js API]] for examples.
+
 ## Pick The Reader API
 
 | Need | Start With |
@@ -102,6 +127,8 @@ For high-throughput ingestion:
 For high-throughput reads:
 
 - use mmap-backed readers on platforms that support them;
+- treat Node.js default-package readers as bounded positioned-read readers,
+  not mmap readers;
 - use snapshot bounds for query workloads where appends after query start do
   not matter;
 - use payload visitors for immediate processing, or Explorer instead of full

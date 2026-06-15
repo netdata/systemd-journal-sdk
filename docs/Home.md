@@ -1,7 +1,6 @@
 # systemd Journal SDK
 
-Pure systemd journal file SDKs for Rust and Go, with compatibility surfaces for
-Node.js and Python.
+Pure systemd journal file SDKs for Rust, Go, Python, and Node.js.
 
 The SDK reads and writes journal files directly. It does not link to
 libsystemd, does not call journal libraries, and does not require the local
@@ -19,14 +18,18 @@ answer the request.
   Netdata function boundary.
 - [[Go-API|Go API]]: Go examples for readers, writers, Explorer, and the
   Netdata function boundary.
+- [[Python-API|Python API]]: Python examples for readers, writers, Explorer,
+  and the Netdata function boundary.
+- [[Node-API|Node.js API]]: Node.js examples for readers, writers, Explorer,
+  and the Netdata function boundary.
 - [[Hot-Path-Guide|Hot Path Guide]]: performance rules that affect production
   ingestion and query speed.
 - [[Journalctl-CLI|Journalctl CLI]]: the file-backed journalctl rewrites for
   operators and scripts.
 
-Every Rust and Go code example in this wiki is compiled and executed against
-synthetic fixtures by repository CI, except blocks explicitly marked
-illustrative-only.
+Every Rust, Go, Python, and JavaScript code example in this wiki is compiled
+or syntax-checked and executed against synthetic fixtures by repository CI,
+except blocks explicitly marked illustrative-only.
 
 ## Production Rule
 
@@ -36,6 +39,8 @@ Use the narrowest API that matches the job.
 - Consumers that only need immediate current-row `FIELD=value` payloads should
   use payload visitors. Go consumers needing row-level lifetime should use
   `EnumerateEntryPayload` because `VisitEntryPayloads` is callback-scoped.
+  Python visitors return owned `bytes`; use `enumerate_entry_payload()` when
+  row-scoped current-entry DATA access matters.
 - Field-name and unique-value queries should use FIELD/DATA indexes.
 - Explorer queries should expand only fields needed for facets, histograms,
   FTS, or returned rows.

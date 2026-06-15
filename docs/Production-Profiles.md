@@ -55,8 +55,10 @@ Use this for pipelines that traverse rows and process payloads directly.
 Rust and Go are the production reader targets. Go production readers should use
 rolling mmap on supported Unix-family and Windows targets; a selected read-at
 fallback is a deployment signal to investigate, benchmark, and explicitly
-accept before production use. Node.js and Python are compatibility/parity
-surfaces today, not high-throughput reader baselines.
+accept before production use. Python uses mmap where the Python standard
+library supports it but remains a compatibility/parity surface today, not a
+high-throughput reader baseline. Node.js default-package readers use bounded
+positioned reads because Node core has no portable mmap API.
 
 Recommended:
 

@@ -106,7 +106,7 @@ invalid evidence.
 
 ## Netdata Function Boundary
 
-The Rust and Go SDKs expose Netdata-shaped logs function APIs over Explorer.
+All four SDKs expose Netdata-shaped logs function APIs over Explorer.
 
 That layer handles:
 

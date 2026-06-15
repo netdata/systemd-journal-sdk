@@ -253,14 +253,41 @@ Failure handling:
 - Updated the wiki authoring docs, project docs-authoring skill, validator
   comments/tests, and docs-examples workflow to cover Python and JavaScript
   verified examples. CI now watches `node/**` and sets up Node 26.
+- Added `docs/Python-API.md` and `docs/Node-API.md`, mirroring the
+  Rust/Go page structure with verified examples for readers, payload
+  visitors, row DATA enumeration, directory reads, snapshot bounds, unique
+  values, Explorer, direct and directory writers, field-name policy, optional
+  writer locks, Netdata function boundaries, custom source selectors, and
+  verification.
+- Updated shared wiki pages and navigation for Python/Node coverage:
+  `Home.md`, `Getting-Started.md`, `API-Overview.md`, `Reader-APIs.md`,
+  `Writer-APIs.md`, `Explorer-And-Netdata-Queries.md`,
+  `Options-Reference.md`, `Production-Profiles.md`,
+  `Hot-Path-Guide.md`, and `_Sidebar.md`.
+- While writing verified Node Netdata examples, found that `node/README.md`
+  and `node/index.d.ts` documented Netdata config/profile classes that were
+  already implemented but not exported by `node/src/index.js`. Exported those
+  public classes from the package entry point so the verified docs can import
+  the documented API.
+- Corrected `node/index.d.ts` for `FileReader.queryUnique()` and
+  `DirectoryReader.queryUnique()` from `string[]` to `Bytes[]`, matching the
+  runtime implementation and the documented unique-value examples.
 
 ## Validation
 
 Acceptance criteria evidence:
 
 - Harness language support for Python and JavaScript is implemented and
-  locally validated. New public Python/Node API pages and shared-page updates
-  are still pending in this SOW.
+  locally validated.
+- `docs/Python-API.md` and `docs/Node-API.md` exist with 17 verified examples
+  each.
+- Shared wiki pages and `_Sidebar.md` include Python/Node entries and keep
+  the production-performance guidance honest: Rust/Go remain the
+  high-throughput production targets; Python/Node remain compatibility and
+  integration surfaces unless workload-specific benchmarks prove otherwise.
+- Node package entry-point exports now match the Netdata classes documented by
+  `node/README.md` and `node/index.d.ts`; `queryUnique()` TypeScript return
+  types match the runtime `Bytes[]` return values.
 
 Tests or equivalent validation:
 
@@ -273,17 +300,31 @@ Tests or equivalent validation:
   - `python3 tests/docs/verify_examples.py`: passed 31/31 current wiki
     examples.
   - `git diff --check`: passed.
+- Python/Node docs chunk validation passed:
+  - `python3 tests/docs/test_check_wiki_docs.py`: 27/27 passed.
+  - `python3 tests/docs/test_verify_examples.py`: 56/56 passed.
+  - `python3 tests/docs/check_wiki_docs.py`: validated 17 wiki markdown files.
+  - `python3 tests/docs/verify_examples.py --docs-dir tests/docs/testdata`:
+    passed 7/7, covering Rust, Go, Python, and JavaScript.
+  - `python3 tests/docs/verify_examples.py`: passed 65/65 current wiki
+    examples: 14 Rust, 17 Go, 17 Python, and 17 JavaScript examples.
+  - `npm run typecheck` in `node/`: passed.
+  - Direct ES module import from `node/src/index.js` confirmed exported
+    `NetdataFunctionConfig`, `NetdataFunctionRunOptions`,
+    `SystemdJournalProfile`, and `WriterLock`.
+  - `npm test` in `node/`: passed.
+  - `git diff --check`: passed.
+  - `bash .agents/sow/audit.sh`: passed.
 
 Real-use evidence:
 
-- Testdata verification executed generated Python and JavaScript examples
-  against the same synthetic fixture corpus used by Rust and Go examples. No
-  live host journal was probed.
+- Testdata verification and full wiki verification executed generated Python
+  and JavaScript examples against the same synthetic fixture corpus used by
+  Rust and Go examples. No live host journal was probed.
 
 Reviewer findings:
 
-- Pending whole-SOW review after the new Python/Node pages and shared docs are
-  complete and locally validated.
+- Pending whole-SOW review after local SOW audit.
 
 Same-failure scan:
 
@@ -310,8 +351,9 @@ Project skills update:
 End-user/operator docs update:
 
 - Updated `docs/Wiki-Publishing.md` for the expanded verified-example language
-  set. New `Python-API.md`, `Node-API.md`, and shared page updates are still
-  pending in this SOW.
+  set.
+- Added `docs/Python-API.md` and `docs/Node-API.md`.
+- Updated shared wiki pages and navigation listed in the execution log.
 
 End-user/operator skills update:
 

@@ -5,19 +5,19 @@ consumer problem and carries a different cost.
 
 ## Quick Selection
 
-| Consumer Need | Rust | Go | Use This When |
-|---|---|---|---|
-| one file, scan rows | `FileReader` | `Reader` | caller owns file ordering |
-| many files, journal order | `DirectoryReader` | `DirectoryReader` | directory behaves like file-backed `journalctl` |
-| immediate payload callback | `visit_entry_payloads` | `VisitEntryPayloads` | callback can process `FIELD=value` bytes |
-| row-lifetime DATA enumeration | `enumerate_entry_payload` | `EnumerateEntryPayload` | porting libsystemd-style DATA loops |
-| convenient maps | `get_entry` | `GetEntry` | selected rows, not hot inner loops |
-| fields and unique values | `enumerate_fields`, `visit_unique_values` | `EnumerateFields`, `VisitUnique` | use FIELD/DATA indexes |
-| libsystemd-style port | `SdJournal*` facade | `SdJournalOpen*` functions returning a facade handle | compatibility with existing call shape |
-| facets/histogram/FTS | Explorer | Explorer | log explorer or UI query |
-| Netdata function output | `journal::netdata` | Netdata function API | Netdata request/response shape |
-| stock-like CLI behavior | journalctl rewrite | journalctl rewrite | operator/script use; see [[Journalctl-CLI|Journalctl CLI]] |
-| integrity validation | `verify_file` | `VerifyFile` | diagnostics and corpus gates |
+| Consumer Need | Rust | Go | Python | Node.js | Use This When |
+|---|---|---|---|---|---|
+| one file, scan rows | `FileReader` | `Reader` | `FileReader` | `FileReader` | caller owns file ordering |
+| many files, journal order | `DirectoryReader` | `DirectoryReader` | `DirectoryReader` | `DirectoryReader` | directory behaves like file-backed `journalctl` |
+| immediate payload callback | `visit_entry_payloads` | `VisitEntryPayloads` | `visit_entry_payloads` | `visitEntryPayloads` | callback can process `FIELD=value` bytes |
+| row-lifetime DATA enumeration | `enumerate_entry_payload` | `EnumerateEntryPayload` | `enumerate_entry_payload` | `enumerateEntryPayload` | porting libsystemd-style DATA loops |
+| convenient maps | `get_entry` | `GetEntry` | `get_entry` | `getEntry` | selected rows, not hot inner loops |
+| fields and unique values | `enumerate_fields`, `visit_unique_values` | `EnumerateFields`, `VisitUnique` | `enumerate_fields`, `query_unique` | `enumerateFields`, `queryUnique` | use FIELD/DATA indexes |
+| libsystemd-style port | `SdJournal*` facade | `SdJournalOpen*` functions returning a facade handle | `SdJournal*` facade | `SdJournal*` facade | compatibility with existing call shape |
+| facets/histogram/FTS | Explorer | Explorer | Explorer | Explorer | log explorer or UI query |
+| Netdata function output | `journal::netdata` | Netdata function API | Netdata function API | Netdata function API | Netdata request/response shape |
+| stock-like CLI behavior | journalctl rewrite | journalctl rewrite | journalctl rewrite | journalctl rewrite | operator/script use; see [[Journalctl-CLI|Journalctl CLI]] |
+| integrity validation | `verify_file` | `VerifyFile` | `verify_file` | `verifyFile` | diagnostics and corpus gates |
 
 ## Data Ownership
 
@@ -44,6 +44,12 @@ Go `VisitEntryPayloads` is not part of this row-level guarantee. Its callback
 slice is valid only until the callback returns. Go consumers that need row-level
 borrowed DATA must use `EnumerateEntryPayload`, and consumers that need longer
 ownership must copy or use owned helpers.
+
+Python `visit_entry_payloads()` returns owned `bytes`, so callbacks can retain
+values but pay the copy cost. Use Python `enumerate_entry_payload()` for the
+row-scoped current-entry DATA path. Node.js uses bounded positioned-read
+windows in the default package; its current-row payload buffers should still be
+treated as row-scoped.
 
 ## File Reader
 
