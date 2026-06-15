@@ -202,15 +202,20 @@ plugin keeps in its journal-file registry:
 The core journal reader does not persist this state. Persistence belongs to
 the Netdata integration layer that owns the registry.
 
-The SDK Netdata API also implements plugin-compatible sampling for analysis
-requests when sampling is enabled and slice-style query bounds are available.
-Analysis requests include full queries and data-only delta queries; data-only
-without delta skips analysis and therefore skips sampling. The SDK uses the
-actual histogram bucket count as the sampling slot count, preserves returned-row
-candidates as full rows, reports skipped rows as `[unsampled]`, reports
-stop-and-estimate ranges as `[estimated]`, and follows the plugin's integer
-bucket distribution behavior without forcing leftover estimated rows into the
-final bucket.
+The SDK Netdata API also implements Netdata-compatible sampling for analysis
+requests when sampling is enabled and bounded query timing is available. Full
+queries are analysis requests. Data-only requests without `delta` are exact row
+paging/tail requests and therefore skip sampling. Data-only requests with
+`delta` are analysis requests too: the returned rows remain exact, while
+`facets_delta`, `histogram_delta`, and `items_delta` may use sampling and
+estimation because a stale dashboard refresh can make the delta span a day,
+a week, or another very large range. This intentionally differs from the
+current C plugin, which disables sampling for every data-only request.
+The SDK uses the actual histogram bucket count as the sampling slot count,
+preserves returned-row candidates as full rows, reports skipped rows as
+`[unsampled]`, reports stop-and-estimate ranges as `[estimated]`, and follows
+the plugin's integer bucket distribution behavior without forcing leftover
+estimated rows into the final bucket.
 This sampling contract is validated across the Rust, Go, Node.js, and Python
 Netdata API surfaces; SOW-0107 added the missing Python and Node row-level
 sampling decision engines and high-row counter fixtures.
@@ -218,7 +223,10 @@ sampling decision engines and high-row counter fixtures.
 The SDK Netdata API always executes indexed slice semantics. The normalized
 request echo keeps `slice:true` because `slice` is part of the plugin request
 shape and the SDK replacement intentionally does not expose the plugin's slower
-non-slice fallback path.
+non-slice fallback path. Requests for `slice:false` are not part of the SDK
+behavior contract: the C plugin's brute-force fallback has different facet
+counting semantics, including same-field filter exclusion behavior, and should
+not be reintroduced into Rust, Go, Node.js, or Python SDK parity work.
 
 The Rust explorer now has an explicit
 `ExplorerQuery::exclude_facet_field_filters` switch:
@@ -683,15 +691,20 @@ timestamp delta. This is checked every 128 processed rows
 
 ## Sampling And Estimation
 
-Sampling is disabled when:
+At the SDK Netdata boundary, sampling is disabled when:
 
 - `sampling` is zero;
-- slice mode is off;
 - data-only mode is on and `delta` is off;
 - no files matched;
 - timeframe information is invalid.
 
-Evidence: `systemd-journal-sampling.h:9-73`.
+`slice:false` is not a sampling disablement condition in the SDK because the
+SDK Netdata boundary always executes indexed slice semantics. This intentionally
+differs from the current C plugin, where `sampling_query_init()` also disables
+sampling when slice mode is off and when any data-only request is active.
+
+Evidence: `systemd-journal-sampling.h:9-73`; SOW-0112 records the SDK product
+decision for data-only delta sampling and always-indexed slice semantics.
 
 The relevant current constants are:
 
@@ -889,7 +902,8 @@ high-level rules:
 - `tail` is effective only when both `data_only=true` and
   `if_modified_since` is non-zero;
 - data-only delta responses use `facets_delta`, `histogram_delta`, and
-  `items_delta`;
+  `items_delta`, and may sample or estimate those delta analysis outputs while
+  keeping returned rows exact;
 - full responses and tail responses include `last_modified`, derived from the
   latest journal realtime among matched rows.
 

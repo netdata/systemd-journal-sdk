@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-06-14
+Last updated: 2026-06-15
 
 ## Current
 
@@ -40,6 +40,11 @@ Last updated: 2026-06-14
   shared primitives preserve historical compatibility and reader performance.
 ## Recently Closed Or Completed
 
+- SOW-0112 - Netdata Sampling Contract Clarification: completed. Recorded the
+  SDK sampling and slice contract: data-only non-delta requests stay exact and
+  unsampled, data-only delta analysis may use sampling while returned rows remain
+  exact, `slice:false` fallback semantics are outside the SDK contract, and the
+  current Rust/Go implementation needs no change.
 - SOW-0047 - Netdata NetFlow SDK Integration: completed. Read-only
   verification of `ktsaou/netdata @ 36050079cfa9` showed the NetFlow plugin is
   wired to the published `systemd-journal-sdk-*` crates at `0.7.0`, with writer

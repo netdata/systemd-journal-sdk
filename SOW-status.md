@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-06-14
+Last updated: 2026-06-15
 
 This root file is a short convenience index. The canonical detailed SOW ledger
 is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
@@ -20,6 +20,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - `SOW-0098-20260607-rust-legacy-core-duplication-debt.md` - open. Follow-up from the Codacy Rust/Go metrics audit for real Rust `jf`/`journal-core` duplication reduction.
 ## Done
 
+- `SOW-0112-20260615-netdata-sampling-contract-clarification.md` - completed. Records the SDK sampling and slice contract: data-only non-delta requests stay exact and unsampled, data-only delta analysis may use sampling while returned rows remain exact, `slice:false` fallback semantics are outside the SDK contract, and current Rust/Go implementation needs no change.
 - `SOW-0047-20260528-netdata-netflow-sdk-integration.md` - completed. Read-only verification of `ktsaou/netdata @ 36050079cfa9` showed the NetFlow plugin uses published `systemd-journal-sdk-*` crates at `0.7.0` for writer, reader/query, and facet paths; no Netdata build/test was run in this SDK closeout because that would write outside this repository.
 - `SOW-0110-20260614-v0-7-0-release.md` - completed. Rust crates were published to crates.io at `0.7.0`, `master` was pushed through release commit `556e79e1e9eabab84becb5f6d0658b6f39ba7075`, and annotated tags `v0.7.0` plus `go/v0.7.0` were pushed; both peel to the same release commit. Go tests, wiki validation, verified examples, Rust package dry-runs, `git diff --check`, and SOW audit passed.
 - `SOW-0109-20260614-python-node-netdata-edge-parity.md` - completed. Python and Node now match the Rust reference for the remaining scoped Netdata edge parity gaps discovered after SOW-0107: Python `data_only && delta` keeps analysis enabled, Python/Node expose and wire candidate-row callbacks, and Node no longer drops Explorer rows only because `commitRealtime` is zero. Focused tests, full Python/Node suites, Netdata function comparators, `git diff --check`, SOW audit, and all six reviewer votes passed.
