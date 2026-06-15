@@ -272,6 +272,18 @@ Failure handling:
 - Corrected `node/index.d.ts` for `FileReader.queryUnique()` and
   `DirectoryReader.queryUnique()` from `string[]` to `Bytes[]`, matching the
   runtime implementation and the documented unique-value examples.
+- Ran the first whole-SOW external reviewer batch after local validation.
+  GLM, Kimi, Qwen, and DeepSeek voted production-grade; Mimo did not return a
+  usable verdict before the local wrapper failed while collecting logs, so Mimo
+  is being rerun with the second reviewer batch.
+- Addressed actionable reviewer findings:
+  - added `WriterLock.path` to `node/index.d.ts`, matching the runtime
+    property used by the verified writer-lock example;
+  - exported the already-declared seal, FSS, and output-format helper symbols
+    from `node/src/index.js`, aligning runtime named exports with the existing
+    TypeScript declarations;
+  - adjusted `docs/Options-Reference.md` to describe Python/Node seal options
+    as writer-surface options instead of implying identical class exports.
 
 ## Validation
 
@@ -315,6 +327,18 @@ Tests or equivalent validation:
   - `npm test` in `node/`: passed.
   - `git diff --check`: passed.
   - `bash .agents/sow/audit.sh`: passed.
+- Post-review fix validation passed:
+  - `python3 tests/docs/verify_examples.py`: passed 65/65 current wiki
+    examples: 14 Rust, 17 Go, 17 Python, and 17 JavaScript examples.
+  - `python3 tests/docs/check_wiki_docs.py`: validated 17 wiki markdown files.
+  - `npm run typecheck` in `node/`: passed.
+  - Direct ES module import from `node/src/index.js` confirmed
+    `SealOptions`, `SealState`, `exportEntry`, `exportEntryBuffer`,
+    `jsonEntry`, `textEntry`, `fsprgGenMK`, `fsprgGenState0`,
+    `fsprgEvolve`, `fsprgSeek`, `fsprgGetKey`, `fsprgGetEpoch`, and
+    `WriterLock` resolve as runtime functions.
+  - `npm test` in `node/`: passed.
+  - `git diff --check`: passed.
 
 Real-use evidence:
 
@@ -324,7 +348,27 @@ Real-use evidence:
 
 Reviewer findings:
 
-- Pending whole-SOW review after local SOW audit.
+- First whole-SOW review batch:
+  - DeepSeek: production-grade; found `WriterLock.path` was used by docs but
+    absent from `node/index.d.ts`. Fixed in `node/index.d.ts`.
+  - GLM: production-grade; found a pre-existing named export gap where
+    TypeScript declarations exposed seal, FSS, and output-format helper
+    symbols that `node/src/index.js` did not export. Fixed the named runtime
+    exports and included those symbols in the existing default export object.
+    GLM also noted close-section placeholders, which are expected until SOW
+    closure.
+  - Kimi: production-grade; noted Python writer examples could use context
+    managers. Disposition: no code/doc change; the current explicit
+    `try/finally` examples are verified and make close behavior obvious.
+  - Qwen: production-grade; noted the Node default export object is broader in
+    runtime than the `.d.ts` contract and not fully parallel to named exports.
+    Disposition: no additional change in this SOW; docs use named imports and
+    `index.d.ts` does not declare a default-export contract. Qwen also noted
+    Python `WriterLock` is not top-level; docs already import it from
+    `journal.lock`, so no issue exists.
+  - Mimo: no usable verdict in the first batch; rerun required in the second
+    batch.
+- Second whole-SOW review batch is pending after the post-review fixes above.
 
 Same-failure scan:
 

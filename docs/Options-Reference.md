@@ -64,7 +64,7 @@ Live publication is not durability. Filesystem sync and crash-consistency policy
 are separate operational choices.
 
 Rust low-level FSS uses `journal_core::seal::SealOptions`; Go uses
-`journal.SealOptions`; Python and Node.js expose `SealOptions` in their writer
+`journal.SealOptions`; Python and Node.js accept seal options in their writer
 surfaces. Rust low-level writer locks live under `journal_core::file::lock`;
 Go uses `journal.AcquireWriterLock`; Python and Node.js use
 `WriterLock.acquire`.

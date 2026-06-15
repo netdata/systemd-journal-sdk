@@ -44,6 +44,7 @@ import {
 } from './lib/directory-writer.js';
 import {
   SdJournal, SdJournalOpen, SdJournalOpenDirectory,
+  exportEntryBuffer, exportEntry, jsonEntry, textEntry,
 } from './facade.js';
 import {
   NetdataJournalFunction,
@@ -72,6 +73,11 @@ import {
   DEFAULT_ROW_ARENA_SEGMENT_BYTES,
   UnsupportedAccessModeError,
 } from './lib/reader-access.js';
+import { SealOptions, SealState } from './lib/seal.js';
+import {
+  fsprgGenMK, fsprgGenState0, fsprgEvolve,
+  fsprgSeek, fsprgGetKey, fsprgGetEpoch,
+} from './lib/fss.js';
 
 // Re-export everything
 export { FileReader, DirectoryReader, Writer, Log };
@@ -160,12 +166,18 @@ export {
   SdJournalEnumerateAvailableUnique, SdJournalVisitUniqueValues, SdJournalListBoots,
   SdJournalSetOutputMode, SdJournalProcessOutput,
   OUTPUT_MODE_DEFAULT, OUTPUT_MODE_JSON, OUTPUT_MODE_EXPORT,
+  exportEntryBuffer, exportEntry, jsonEntry, textEntry,
 } from './facade.js';
 export { parseMatchString, sipHash24, jenkinsHash64 } from './lib/hash.js';
 export { readUint64LE, writeUint64LE, writeUint32LE, writeUint8, align8, bufEqual, uuidToString, stringToUUID, isZeroUUID, randomUUID } from './lib/binary.js';
 export { decompressZstSync, isJournalFileName, isZstFile } from './lib/compress.js';
 export { verifyFile, verifyFileWithKey, VerificationError } from './lib/verify.js';
 export { parseEntryObject, parseDataObject, parseDataPayload } from './lib/entry.js';
+export { SealOptions, SealState } from './lib/seal.js';
+export {
+  fsprgGenMK, fsprgGenState0, fsprgEvolve,
+  fsprgSeek, fsprgGetKey, fsprgGetEpoch,
+} from './lib/fss.js';
 export {
   HEADER_SIZE, OBJECT_HEADER_SIZE, ENTRY_OBJECT_HEADER_SIZE,
   DATA_OBJECT_HEADER_SIZE, FIELD_OBJECT_HEADER_SIZE, HASH_ITEM_SIZE,
@@ -230,6 +242,18 @@ export default {
   NetdataRequest,
   CombinedResult,
   JournalFileCollection,
+  SealOptions,
+  SealState,
+  exportEntryBuffer,
+  exportEntry,
+  jsonEntry,
+  textEntry,
+  fsprgGenMK,
+  fsprgGenState0,
+  fsprgEvolve,
+  fsprgSeek,
+  fsprgGetKey,
+  fsprgGetEpoch,
   SdJournal, SdJournalOpen, SdJournalOpenDirectory,
   openJournal, createJournal, stringField, binaryField,
   READER_ACCESS_AUTO,

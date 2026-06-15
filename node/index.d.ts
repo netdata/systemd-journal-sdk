@@ -1019,6 +1019,7 @@ declare module "@netdata/systemd-journal-sdk" {
   // -----------------------------------------------------------------------
 
   class WriterLock {
+    path: string | null;
     static acquire(path: string): WriterLock;
     release(): void;
   }
