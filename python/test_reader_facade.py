@@ -46,6 +46,14 @@ from journal.reader_access import (
 from journal import reader_access as reader_access_module
 from journal._verify_adapter import _AccessorBytesAdapter
 
+
+def test_read_at_access_mode_not_exported_from_top_level_package():
+    import journal as journal_package
+
+    assert not hasattr(journal_package, 'READER_ACCESS_READ_AT')
+    assert 'READER_ACCESS_READ_AT' not in journal_package.__all__
+
+
 def test_facade_unique_binary_values():
     with tempfile.TemporaryDirectory() as td:
         path = os.path.join(td, 'test.journal')

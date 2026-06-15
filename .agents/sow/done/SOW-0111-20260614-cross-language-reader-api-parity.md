@@ -2,10 +2,10 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: whole-SOW reviewer pass found small parity gaps; fixes applied and
-locally validated, pending reviewer rerun before close.
+Sub-state: completed on 2026-06-15 after local validation, repeat
+whole-SOW reviewer pass, final reviewer-polish fixes, and SOW closeout audit.
 
 ## Requirements
 
@@ -443,15 +443,14 @@ User decisions on 2026-06-15:
 
 Implementer:
 
-- Pending user activation and routing decision. Current project default is the
-  external implementer model recorded in `AGENTS.md`, but this SOW is currently
-  only created and not active.
+- Direct implementation was used for the scoped closeout after the user asked
+  to continue. No external implementer was run for this SOW.
 
 Reviewers:
 
-- At implementation close, run the approved reviewer pool in read-only mode:
-  glm, kimi, mimo, qwen, minimax, and deepseek, with the implementer excluded if
-  an external implementer is used.
+- At implementation close, the approved reviewer pool was run in read-only
+  mode. No implementer model exclusion applied because no external implementer
+  was used.
 
 Repository boundary block for every external-agent prompt:
 
@@ -584,6 +583,13 @@ Tests or equivalent validation:
   - `python3 tests/docs/check_wiki_docs.py`: passed.
   - `python3 tests/docs/verify_examples.py`: passed, 31/31 examples.
   - `git diff --check`: passed.
+- After repeat-review polish:
+  - `PYTHONPATH=python python3 -m pytest python/test_reader_facade.py -q`:
+    passed, 27/27, including the new regression test proving
+    `READER_ACCESS_READ_AT` is not exported from the top-level Python package.
+  - `python3 tests/docs/check_wiki_docs.py`: passed.
+  - `git diff --check`: passed.
+  - `.agents/sow/audit.sh`: passed.
 - `git diff --check`: passed.
 - `.agents/sow/audit.sh`: passed.
 
@@ -619,6 +625,36 @@ Reviewer findings:
   in this SOW before reviewer rerun. The Python full-suite optional-`lz4`
   limitation remains recorded separately because targeted affected tests passed
   and no top-level read-at imports remain.
+- Repeat whole-SOW reviewer pass after commit `b1f6a36`:
+  - `llm-netdata-cloud/glm-5.2-max`: PRODUCTION GRADE: YES. Re-verified Rust,
+    Go, Node.js, Python, docs, diff hygiene, and SOW audit. Low findings:
+    optional Rust compile-fail guard for the hidden whole-file mmap boundary,
+    Python README sentence break, pre-existing Go README paragraph break, and
+    Node.js `mmapStrategy` alias naming friction.
+  - `llm-netdata-cloud/minimax-m3-coder`: PRODUCTION GRADE: YES. Low findings:
+    Node.js `mmapStrategy` name friction, missing Python top-level negative
+    export test, and optional stronger Rust public-boundary compile-fail guard.
+  - `llm-netdata-cloud/qwen3.7-plus`: PRODUCTION GRADE: YES. Low finding:
+    missing Python top-level negative export test.
+  - `llm-netdata-cloud/deepseek-v4-pro`: PRODUCTION GRADE: YES. Low findings:
+    Python inline docstring and Go mmap godoc wording brevity.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: output collection failed after the
+    process ID became unavailable; no final verdict was recovered.
+  - `llm-netdata-cloud/kimi-k2.7-code`: output collection failed after the
+    process ID became unavailable; no final verdict was recovered.
+- Repeat-pass disposition:
+  - Fixed the Python top-level negative export test and Python README sentence
+    break before close.
+  - Kept the Node.js `mmapStrategy` alias as compatibility surface until
+    SOW-0113 designs the optional mmap backend/package boundary.
+  - Did not add a Rust compile-fail harness in this closeout because normal
+    consumers already cannot name `journal::ExperimentalMmapStrategy`; the
+    remaining item is regression-harness strength, not a current contract hole.
+  - Did not modify Go mmap godoc wording because the production mmap path and
+    non-production read-at warnings are already documented at the public option
+    and README/API surfaces.
+  - The pre-existing Go README paragraph break is cosmetic and unrelated to the
+    SOW contract; it is not tracked as follow-up.
 
 Same-failure scan:
 
@@ -639,16 +675,18 @@ Sensitive data gate:
 
 Artifact maintenance gate:
 
-- AGENTS.md: pending implementation decision.
-- Runtime project skills: pending implementation decision.
+- AGENTS.md: no update needed; this SOW changed reader API contracts, not the
+  repository workflow, roles, or standing guardrails.
+- Runtime project skills: no update needed; existing
+  `project-journal-compatibility` and `project-docs-authoring` skills already
+  cover reader compatibility and docs validation requirements.
 - Specs: updated `.agents/sow/specs/product-scope.md`.
 - End-user/operator docs: updated Go wiki docs, Go README/API, Python README,
   Node README, options reference, production profiles, and Home page.
-- End-user/operator skills: pending implementation decision.
-- SOW lifecycle: activated in `.agents/sow/current/` with
-  `Status: in-progress`; SOW-0113 created in pending for optional Node.js
-  native mmap support.
-- SOW-status.md: updated canonical and root ledgers.
+- End-user/operator skills: no output/reference skills are present or affected.
+- SOW lifecycle: completed and moved to `.agents/sow/done/`; SOW-0113 remains
+  pending for optional Node.js native mmap support.
+- SOW-status.md: updated canonical and root ledgers for completion.
 
 Specs update:
 
@@ -657,8 +695,8 @@ Specs update:
 
 Project skills update:
 
-- Pending close decision. No durable workflow rule has changed yet; current
-  project skills already cover reader compatibility and docs authoring.
+- No update needed. No durable workflow rule changed; current project skills
+  already cover reader compatibility and docs authoring.
 
 End-user/operator docs update:
 
@@ -673,7 +711,7 @@ End-user/operator docs update:
 
 End-user/operator skills update:
 
-- Pending close decision. No output/reference skill is currently affected.
+- No update needed. No output/reference skill is currently affected.
 
 Lessons:
 
@@ -690,15 +728,36 @@ Follow-up mapping:
 
 ## Outcome
 
-Pending.
+Completed.
+
+- Rust no longer exposes whole-file mmap as a normal public `journal` option.
+- Go and Python retain weaker read-at paths only for internal/test/diagnostic or
+  controlled fallback evidence, with prominent non-production wording.
+- Python top-level package exports no longer include `READER_ACCESS_READ_AT`,
+  and a regression test now locks that boundary.
+- Node.js default package no longer advertises or exports mmap selection; native
+  mmap support is tracked separately by SOW-0113.
+- Go visitor lifetime and Python visitor copy-cost are documented separately
+  from row-level DATA enumeration.
+- Repeat reviewers that returned final verdicts rated the work production
+  grade; remaining notes were fixed, dispositioned, or already tracked.
 
 ## Lessons Extracted
 
-Pending.
+- Hiding a Rust public re-export can reveal internal tools that depended on the
+  facade instead of the core crate; workspace checks are required for this class
+  of API cleanup.
+- Type declarations alone are not enough for Node.js API cleanup; named/default
+  runtime exports need explicit negative tests.
+- Python facade export policy needs both import-path fixes for internal tools
+  and top-level negative tests so diagnostics stay available without becoming a
+  normal consumer API.
 
 ## Followup
 
-None yet.
+- SOW-0113 tracks optional native Node.js mmap support behind an explicit
+  opt-in package or equivalent boundary.
+- No other deferred items remain from this SOW.
 
 ## Regression Log
 

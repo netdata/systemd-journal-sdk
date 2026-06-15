@@ -4,12 +4,6 @@ Last updated: 2026-06-15
 
 ## Current
 
-- SOW-0111 - Cross-Language Reader API And Memory-Access Parity: in-progress.
-  Enforces Rust-source-of-truth reader parity: hide Rust whole-file mmap from
-  public consumers, make Go/Python read-at internal/test-only where practical
-  and prominently non-production, split Node.js native mmap behind an optional
-  package or equivalent explicit opt-in boundary, and prove no production
-  reader/verify path whole-maps or whole-loads journal files.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
@@ -49,6 +43,13 @@ Last updated: 2026-06-15
   shared primitives preserve historical compatibility and reader performance.
 ## Recently Closed Or Completed
 
+- SOW-0111 - Cross-Language Reader API And Memory-Access Parity: completed.
+  Rust whole-file mmap is hidden from normal public reader APIs; Go and Python
+  read-at paths are retained only for internal/test/diagnostic or controlled
+  fallback evidence with non-production wording; Node.js default package no
+  longer advertises or exports mmap selection; optional native Node.js mmap
+  support remains tracked by SOW-0113. Local validation and repeat reviewers
+  that returned final verdicts passed production-grade review.
 - SOW-0112 - Netdata Sampling Contract Clarification: completed. Recorded the
   SDK sampling and slice contract: data-only non-delta requests stay exact and
   unsampled, data-only delta analysis may use sampling while returned rows remain

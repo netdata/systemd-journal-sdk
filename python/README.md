@@ -493,7 +493,7 @@ normally.
 - `verify_file_with_key(path, verification_key)` - Verify sealed TAG/HMAC
   integrity and then journal structure
 - `FileReader.visit_entry_payloads(callback)` - Visit current-entry
-  `FIELD=value` payloads without materializing the full entry object
+  `FIELD=value` payloads without materializing the full entry object.
   The callback receives owned `bytes` values that are safe to retain, but this
   path copies each payload. Use `FileReader.enumerate_entry_payload()` when a
   row-scoped current-entry payload API is needed.
