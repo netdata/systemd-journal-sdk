@@ -10,6 +10,12 @@ Last updated: 2026-06-15
 
 ## Pending
 
+- SOW-0111 - Cross-Language Reader API And Memory-Access Parity: open. Tracks
+  strict Rust-source-of-truth reader parity: hide Rust whole-file mmap from
+  public consumers, make Go/Python read-at internal/test-only where practical
+  and prominently non-production, split Node.js native mmap behind an optional
+  package or equivalent explicit opt-in boundary, and prove no production
+  reader/verify path whole-maps or whole-loads journal files.
 - SOW-0048 - Netdata OTEL Writer SDK Integration: open. Component integration
   for OTEL writer paths after inventory and writer gates.
 - SOW-0049 - Netdata Reader Plugin SDK Integration: open. Component integration
