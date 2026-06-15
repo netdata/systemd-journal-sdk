@@ -121,20 +121,21 @@ Unknowns:
 - Python visitor and row-level payload APIs are documented distinctly:
   `visit_entry_payloads` currently returns owned bytes and is safe to retain but
   copies, while `enumerate_entry_payload` is the row-level API.
-- Node.js gains an `mmap-io` based mmap backend behind the same bounded
-  window/row-lifetime abstraction, while still allowing a clearly named
-  non-mmap fallback mode for consumers that cannot use native mmap.
-- Node.js TypeScript declarations and runtime behavior agree: public `mmap`
-  selection either works through the new backend or is not exposed as an
-  available mode.
+- Node.js default package keeps the current pure positioned-read backend and
+  does not silently gain a native mmap runtime dependency. Native mmap support
+  is split behind an optional package or equivalent explicit opt-in boundary,
+  tracked as follow-up work before this SOW closes.
+- Node.js TypeScript declarations and runtime behavior agree in the default
+  package: public `mmap` selection is not exposed as an available mode unless it
+  works through the optional backend boundary.
 - Reader and verification tests prove no production code path maps a whole
   journal file or reads a whole journal file into memory.
 - Cross-language parity tests cover file reader, directory reader, facade DATA
   enumeration, unique values, Explorer/Netdata paths where applicable,
   verification, `.journal.zst` temp-file behavior, small-window forced eviction,
   row-lifetime retention, and platform-specific mmap support.
-- Benchmarks show the mmap hot path is not regressed in Rust or Go, and quantify
-  Python/Node behavior before and after changes.
+- Benchmarks show the mmap hot path is not regressed in Rust, Go, or Python, and
+  quantify Node.js positioned-read behavior after default-package API cleanup.
 
 ## Analysis
 
@@ -286,10 +287,9 @@ Implementation plan:
    decide whether read-at remains internal-only, diagnostic-only, or removed;
    align docs/tests with the decided public contract, including explicit
    visitor-vs-row-level payload lifetime and copy-cost documentation.
-4. Node.js: evaluate and integrate `mmap-io` behind the existing bounded
-   accessor abstraction, keep a clearly named non-mmap fallback mode, and update
-   package metadata, docs, declarations, runtime access-mode behavior, and
-   tests.
+4. Node.js: keep the default package pure and positioned-read based, remove or
+   hide unsupported public `mmap` selection from default-package types/docs, and
+   create a separate pending SOW for optional native mmap package/API support.
 5. Add cross-language no-whole-file memory-access guards and performance
    benchmarks for mmap paths.
 6. Run local validation, then the full reviewer pool until production-grade.
@@ -303,8 +303,9 @@ Validation plan:
 - Go tests on Linux plus target checks for Windows, macOS, and FreeBSD; native
   macOS/Windows smoke where available.
 - Python tests for mmap-selected defaults and explicit non-mmap policy behavior.
-- Node.js tests for mmap backend, non-mmap fallback backend, row lifetime, small
-  windows, forced eviction, and unsupported-platform handling.
+- Node.js tests for default-package access-mode agreement, positioned-read row
+  lifetime, small windows, forced eviction, and unsupported mmap selection
+  handling.
 - Shared facade tests proving row-level DATA payload retention after field
   enumeration and until next row.
 - Shared verify matrix and `.journal.zst` tests.
@@ -427,7 +428,8 @@ User decisions on 2026-06-15:
 3. Implement Rust public whole-file mmap hiding/removal.
 4. Implement Go parity and visitor lifetime documentation/API clarity fixes.
 5. Implement Python access-mode parity.
-6. Implement Node.js `mmap-io` accessor and fallback abstraction.
+6. Clean up Node.js default-package access-mode declarations/runtime/docs and
+   create follow-up tracking for optional native mmap support.
 7. Add tests, docs, specs, benchmarks, and reviewer evidence.
 
 ## Delegation Plan
