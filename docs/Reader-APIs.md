@@ -9,7 +9,7 @@ consumer problem and carries a different cost.
 |---|---|---|---|
 | one file, scan rows | `FileReader` | `Reader` | caller owns file ordering |
 | many files, journal order | `DirectoryReader` | `DirectoryReader` | directory behaves like file-backed `journalctl` |
-| current-row payload bytes | `visit_entry_payloads` | `VisitEntryPayloads` | callback can process `FIELD=value` bytes |
+| immediate payload callback | `visit_entry_payloads` | `VisitEntryPayloads` | callback can process `FIELD=value` bytes |
 | row-lifetime DATA enumeration | `enumerate_entry_payload` | `EnumerateEntryPayload` | porting libsystemd-style DATA loops |
 | convenient maps | `get_entry` | `GetEntry` | selected rows, not hot inner loops |
 | fields and unique values | `enumerate_fields`, `visit_unique_values` | `EnumerateFields`, `VisitUnique` | use FIELD/DATA indexes |
@@ -40,6 +40,11 @@ advance row
 
 Consumers that keep values after advancing must copy them.
 
+Go `VisitEntryPayloads` is not part of this row-level guarantee. Its callback
+slice is valid only until the callback returns. Go consumers that need row-level
+borrowed DATA must use `EnumerateEntryPayload`, and consumers that need longer
+ownership must copy or use owned helpers.
+
 ## File Reader
 
 Use the file reader when the caller controls one file and wants direct access to
@@ -56,7 +61,7 @@ Good uses:
 Performance rules:
 
 - use snapshot bounds for query workloads that do not need appended rows;
-- use payload visitors for hot scans;
+- use payload visitors for hot scans when immediate callback processing is enough;
 - use field and unique APIs for index-backed metadata queries;
 - use full entry maps only for rows that will be returned or displayed.
 - use verifier APIs only for integrity checks; file-path verification is

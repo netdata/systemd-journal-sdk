@@ -86,7 +86,10 @@ for {
 ```
 
 This avoids entry map construction and lets the callback decide which payloads
-to inspect.
+to inspect. `VisitEntryPayloads` is callback-scoped in Go: the `[]byte` passed
+to the callback is valid only until that callback returns. It does not provide
+the row-level lifetime guarantee. Use `EnumerateEntryPayload` for row-level
+borrowed payloads, or copy/use `CollectEntryPayloads` when data must be kept.
 
 ## Enumerate Current-Row DATA With Row Lifetime
 

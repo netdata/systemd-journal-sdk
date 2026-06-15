@@ -60,7 +60,7 @@ surfaces today, not high-throughput reader baselines.
 
 Recommended:
 
-- payload visitor;
+- payload visitor for immediate payload processing;
 - snapshot bounds when appends during the scan do not matter;
 - FIELD/DATA index APIs for field names and unique values;
 - avoid formatting until the final output boundary.

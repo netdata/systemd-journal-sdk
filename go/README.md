@@ -354,9 +354,12 @@ for {
 ```
 
 `VisitEntryPayloads`, `EnumerateEntryPayload`, and the facade data enumerator
-are zero-copy paths. In mmap mode their payload slices may alias reader storage;
-copy the slice, or use `CollectEntryPayloads` / `GetEntryPayload`, when the data
-must outlive the current reader call.
+are zero-copy paths. In mmap mode their payload slices may alias reader storage.
+`VisitEntryPayloads` is callback-scoped and does not provide a row-level
+guarantee; do not retain its slice after the callback returns. Payloads returned
+by `EnumerateEntryPayload` and the facade data enumerator are row-scoped. Copy
+the slice, or use `CollectEntryPayloads` / `GetEntryPayload`, when the data must
+outlive the documented scope.
 For high-cardinality unique-value queries, prefer `VisitUnique` when the caller
 can stream results; `QueryUnique` is the owned-result convenience wrapper.
 

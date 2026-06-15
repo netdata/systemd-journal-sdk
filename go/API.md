@@ -103,9 +103,9 @@ payloads returned by `EnumerateEntryPayload` or
 `SdJournalEnumerateAvailableData` stay valid after end-of-row enumeration and
 until the reader advances, seeks, clears/restarts DATA enumeration,
 refreshes/remaps the file, or closes. Callback payload slices passed to
-`VisitEntryPayloads` remain callback-scoped. Use `CollectEntryPayloads`,
-`GetEntryPayload`, `GetRaw`, `GetRawValues`, or an explicit copy when longer
-ownership is required.
+`VisitEntryPayloads` remain callback-scoped and do not have the row-level
+guarantee. Use `CollectEntryPayloads`, `GetEntryPayload`, `GetRaw`,
+`GetRawValues`, or an explicit copy when longer ownership is required.
 
 ## Explorer And Netdata Function APIs
 

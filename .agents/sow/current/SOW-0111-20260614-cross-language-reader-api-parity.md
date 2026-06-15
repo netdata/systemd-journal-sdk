@@ -503,6 +503,9 @@ Failure handling:
   internal diagnostic constant under `journal.reader_access`.
 - Removed Node.js default-package TypeScript mmap mode advertisement while
   keeping runtime explicit-mmap rejection.
+- Reconciled the pending docs stash into current docs, keeping the useful Go
+  `VisitEntryPayloads` lifetime wording and making row-level users prefer
+  `EnumerateEntryPayload`.
 
 ## Validation
 
@@ -524,6 +527,9 @@ Acceptance criteria evidence:
   optional native mmap support is tracked by SOW-0113.
 - Product scope, Go/Python/Node docs, and SOW ledgers now record the updated
   reader access contract.
+- Consumer docs now consistently distinguish immediate payload visitors from
+  row-lifetime DATA enumeration, with explicit Go `VisitEntryPayloads`
+  callback-scope guidance.
 
 Tests or equivalent validation:
 
@@ -542,6 +548,9 @@ Tests or equivalent validation:
   `lz4` before reaching the touched reader-access tests.
 - `python3 tests/docs/check_wiki_docs.py`: passed.
 - `python3 tests/docs/verify_examples.py`: passed, 31/31 examples.
+- After the Go visitor lifetime docs reconciliation,
+  `python3 tests/docs/check_wiki_docs.py` passed again and
+  `python3 tests/docs/verify_examples.py` passed again, 31/31 examples.
 - `git diff --check`: passed.
 - `.agents/sow/audit.sh`: passed.
 
@@ -596,7 +605,10 @@ End-user/operator docs update:
 
 - Updated `docs/Go-API.md`, `docs/Options-Reference.md`,
   `docs/Production-Profiles.md`, `go/API.md`, `go/README.md`,
-  `python/README.md`, and `node/README.md`.
+  `python/README.md`, and `node/README.md`. Also reconciled
+  `docs/API-Overview.md`, `docs/Getting-Started.md`, `docs/Home.md`,
+  `docs/Hot-Path-Guide.md`, and `docs/Reader-APIs.md` so Go callback-scoped
+  visitor guidance is visible from general reader guidance pages.
 
 End-user/operator skills update:
 

@@ -53,7 +53,7 @@ examples.
 
 | Need | Start With |
 |---|---|
-| One file, row scan, maximum speed | payload visitor |
+| One file, row scan, maximum speed | payload visitor for immediate processing |
 | One file, convenient row maps | `FileReader` / `Reader` entry APIs |
 | Ordered reads across a directory | `DirectoryReader` |
 | Porting libsystemd-style code | facade API |
@@ -104,6 +104,7 @@ For high-throughput reads:
 - use mmap-backed readers on platforms that support them;
 - use snapshot bounds for query workloads where appends after query start do
   not matter;
-- use payload visitors or Explorer instead of full entry materialization.
+- use payload visitors for immediate processing, or Explorer instead of full
+  entry materialization.
 
 See [[Hot-Path-Guide|Hot Path Guide]] before choosing production options.

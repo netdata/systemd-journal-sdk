@@ -42,8 +42,8 @@ Start from the consumer problem, not from the lowest layer:
    (`Log`). Use the direct-file writer only when the caller owns one file's
    lifecycle. Use raw append only when valid `KEY=value` bytes already exist.
 2. "I read rows programmatically" - file or directory reader. Inside hot
-   loops use payload visitors; materialize full entry maps only for rows that
-   will be returned or displayed.
+   loops use payload visitors for immediate payload processing; materialize
+   full entry maps only for rows that will be returned or displayed.
 3. "I am porting libsystemd or sd_journal-style code" - the facade API. Keep
    the row-scoped data lifetime; do not add copies the original code did not
    have.
@@ -63,7 +63,7 @@ presents less. The layers below explain what each surface costs.
 
 | Surface | Best For | Performance Notes |
 |---|---|---|
-| payload visitor | scanning current-row `FIELD=value` bytes | avoids maps and copies uncompressed mmap data |
+| payload visitor | scanning current-row `FIELD=value` bytes | avoids maps and copies uncompressed mmap data; Go `VisitEntryPayloads` is callback-scoped |
 | file reader | one journal file with cursor, matches, metadata, fields | flexible, but full entry materialization is not the fastest path |
 | directory reader | ordered reads across active and archived files | merges files in journal order |
 | facade API | libsystemd-style ports | compatibility call shape over SDK reader primitives |
@@ -108,7 +108,9 @@ Reader hot paths use row-scoped data lifetimes:
   resets DATA enumeration, remaps, or closes;
 - callers that need data after advancing must copy it.
 
-This is the intended contract for high-throughput readers and facade ports.
+This is the intended contract for high-throughput readers and facade ports. Go
+`VisitEntryPayloads` is callback-scoped and does not provide this row-level
+guarantee; use Go `EnumerateEntryPayload` when row-level lifetime matters.
 
 ## Explorer Query Model
 
@@ -146,7 +148,8 @@ the caller selects systemd-compatible options:
 
 - Pick Rust or Go for high-throughput production ingestion or query paths.
 - Use structured append unless payloads are already `KEY=value` bytes.
-- Use payload visitors or Explorer instead of full entry maps inside hot loops.
+- Use payload visitors or Explorer instead of full entry maps inside hot loops;
+  in Go, use `EnumerateEntryPayload` when row-level payload lifetime is needed.
 - Use snapshot reader bounds for query workloads that do not need same-session
   appended rows.
 - Keep debug-only Explorer row traversal disabled.

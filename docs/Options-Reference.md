@@ -21,7 +21,7 @@ and Go APIs use native names, shown in the relevant tables.
 
 | Surface | Cost | Use When |
 |---|---|---|
-| payload visitor | lowest | Consumer already works with `FIELD=value` bytes. |
+| payload visitor | lowest | Consumer already works with `FIELD=value` bytes inside the callback. Go `VisitEntryPayloads` is not row-level-safe. |
 | raw byte-name entry APIs | low to medium | RAW mode can contain non-UTF8 field names. |
 | materialized entry maps | medium to high | Caller needs convenient field maps for selected rows. |
 | JSON/export/text formatters | high | Caller is producing external output. |

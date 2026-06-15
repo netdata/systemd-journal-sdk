@@ -6,7 +6,7 @@ This page lists the choices that most affect performance.
 
 | Need | Preferred Path | Avoid |
 |---|---|---|
-| Count or scan current-row payloads | payload visitor over `FIELD=value` bytes | materializing full entry maps |
+| Count or scan current-row payloads | payload visitor over `FIELD=value` bytes for immediate processing | materializing full entry maps |
 | Enumerate field names | FIELD hash table traversal | row scan over every entry |
 | Enumerate unique values for one field | FIELD object's DATA chain | row scan and de-duplication |
 | Exact filters | DATA entry posting lists / indexed candidate offsets | expanding every row and comparing strings |
@@ -60,6 +60,9 @@ provide it. The contract is row-scoped:
   row changes.
 
 Consumers that need data after advancing must copy it.
+
+Go `VisitEntryPayloads` is the exception: it is callback-scoped, not
+row-scoped. Use Go `EnumerateEntryPayload` for the row-level guarantee.
 
 ## Compression And Explorer
 

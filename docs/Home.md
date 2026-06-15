@@ -33,8 +33,9 @@ illustrative-only.
 Use the narrowest API that matches the job.
 
 - Structured producers should use structured append APIs.
-- Consumers that only need current-row `FIELD=value` payloads should use
-  payload visitors.
+- Consumers that only need immediate current-row `FIELD=value` payloads should
+  use payload visitors. Go consumers needing row-level lifetime should use
+  `EnumerateEntryPayload` instead of `VisitEntryPayloads`.
 - Field-name and unique-value queries should use FIELD/DATA indexes.
 - Explorer queries should expand only fields needed for facets, histograms,
   FTS, or returned rows.
