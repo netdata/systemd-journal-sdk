@@ -7,10 +7,6 @@ Last updated: 2026-06-15
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
-- SOW-0114 - v0.7.1 Release: in-progress. Release `0.7.1` for Rust and Go
-  consumers after full Rust/Go tests, reader/writer benchmark evidence, Rust
-  package dry-runs, crates.io publication, and matching `v0.7.1` plus
-  `go/v0.7.1` tags.
 
 ## Pending
 
@@ -43,6 +39,13 @@ Last updated: 2026-06-15
   shared primitives preserve historical compatibility and reader performance.
 ## Recently Closed Or Completed
 
+- SOW-0114 - v0.7.1 Release: completed. Rust crates were published to crates.io
+  at `0.7.1`, `master` was pushed through release commit
+  `1df0eae1a31f80459453e0ca6a696282372b609c`, and annotated tags `v0.7.1`
+  plus `go/v0.7.1` were pushed; both peel to the same release commit. Full
+  Rust/Go tests, reader/writer benchmark comparison against `v0.7.0`, wiki
+  validation, verified examples, Rust package dry-runs, `git diff --check`,
+  SOW audit, crates.io search, and Go module lookup passed.
 - SOW-0106 - Python And Node.js Docs With Verified Examples: completed.
   Added Python-API and Node-API wiki pages with 17 verified examples each,
   updated shared wiki pages and navigation for all four languages, extended

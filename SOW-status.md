@@ -8,7 +8,6 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 ## Current
 
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
-- `SOW-0114-20260615-v0-7-1-release.md` - in-progress. Release `0.7.1` for Rust and Go consumers after full Rust/Go tests, reader/writer benchmark evidence, Rust package dry-runs, crates.io publication, and matching `v0.7.1` plus `go/v0.7.1` tags.
 
 ## Pending
 - `SOW-0113-20260615-nodejs-optional-native-mmap-reader.md` - open. Follow-up from SOW-0111 to design and implement an explicit opt-in Node.js mmap backend or package boundary while keeping the default package pure positioned-read.
@@ -21,6 +20,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - `SOW-0098-20260607-rust-legacy-core-duplication-debt.md` - open. Follow-up from the Codacy Rust/Go metrics audit for real Rust `jf`/`journal-core` duplication reduction.
 ## Done
 
+- `SOW-0114-20260615-v0-7-1-release.md` - completed. Rust crates were published to crates.io at `0.7.1`, `master` was pushed through release commit `1df0eae1a31f80459453e0ca6a696282372b609c`, and annotated tags `v0.7.1` plus `go/v0.7.1` were pushed; both peel to the same release commit. Full Rust/Go tests, reader/writer benchmark comparison against `v0.7.0`, wiki validation, verified examples, Rust package dry-runs, `git diff --check`, SOW audit, crates.io search, and Go module lookup passed.
 - `SOW-0106-20260611-python-node-docs-and-verified-examples.md` - completed. Added Python-API and Node-API wiki pages with 17 verified examples each, updated shared wiki pages and navigation for all four languages, extended the verified-examples harness/CI to Python and JavaScript, corrected Node package entry-point/type gaps found by verified docs and reviewers, and passed local validation plus two production-grade whole-SOW reviewer batches.
 - `SOW-0111-20260614-cross-language-reader-api-parity.md` - completed. Rust whole-file mmap is hidden from normal public reader APIs; Go and Python read-at paths are retained only for internal/test/diagnostic or controlled fallback evidence with non-production wording; Node.js default package no longer advertises or exports mmap selection; optional native Node.js mmap support remains tracked by SOW-0113. Local validation and repeat reviewers that returned final verdicts passed production-grade review.
 - `SOW-0112-20260615-netdata-sampling-contract-clarification.md` - completed. Records the SDK sampling and slice contract: data-only non-delta requests stay exact and unsampled, data-only delta analysis may use sampling while returned rows remain exact, `slice:false` fallback semantics are outside the SDK contract, and current Rust/Go implementation needs no change.
