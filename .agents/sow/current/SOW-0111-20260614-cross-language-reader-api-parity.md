@@ -2,10 +2,10 @@
 
 ## Status
 
-Status: open
+Status: in-progress
 
-Sub-state: pending implementation; user decisions recorded for Go/Python
-read-at policy and Node.js mmap packaging direction.
+Sub-state: activated for implementation after recording user decisions for
+Go/Python read-at policy and Node.js mmap packaging direction.
 
 ## Requirements
 
@@ -475,6 +475,12 @@ Failure handling:
   row-lifetime read-at windows today, and Node TypeScript exposes mmap while
   runtime rejects it.
 
+### 2026-06-15
+
+- Recorded user decisions for Go read-at, Python read-at, and Node.js optional
+  mmap packaging direction.
+- Activated the SOW for implementation.
+
 ## Validation
 
 Acceptance criteria evidence:
@@ -509,7 +515,8 @@ Artifact maintenance gate:
 - Specs: pending implementation decision.
 - End-user/operator docs: pending implementation decision.
 - End-user/operator skills: pending implementation decision.
-- SOW lifecycle: pending SOW created in `.agents/sow/pending/`.
+- SOW lifecycle: activated in `.agents/sow/current/` with
+  `Status: in-progress`.
 - SOW-status.md: pending SOW entry added.
 
 Specs update:
