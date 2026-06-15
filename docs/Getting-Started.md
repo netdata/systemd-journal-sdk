@@ -19,7 +19,7 @@ Use the public Rust package for normal integrations:
 
 ```toml
 [dependencies]
-journal = { package = "systemd-journal-sdk", version = "0.7.0" }
+journal = { package = "systemd-journal-sdk", version = "0.7.1" }
 ```
 
 The alias keeps imports short:
@@ -36,7 +36,7 @@ layout.
 ## Install Go
 
 ```sh
-go get github.com/netdata/systemd-journal-sdk/go@v0.7.0
+go get github.com/netdata/systemd-journal-sdk/go@v0.7.1
 ```
 
 Then import:

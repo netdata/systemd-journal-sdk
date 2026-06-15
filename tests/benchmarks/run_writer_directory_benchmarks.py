@@ -497,7 +497,7 @@ def print_report_summary(report: dict[str, Any], report_path: Path) -> None:
 
 
 def _public_report_status(report: dict[str, Any]) -> str:
-    return "ok" if report.get("status") == "ok" else "fail"
+    return "ok" if report.get("status") == "PASS" else "fail"
 
 
 def _display_report_path(report_path: Path) -> str:

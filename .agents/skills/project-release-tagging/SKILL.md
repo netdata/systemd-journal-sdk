@@ -111,9 +111,14 @@ Before publishing Rust crates:
    cargo publish --manifest-path rust/src/journal/Cargo.toml --dry-run
    ```
 
-4. Publish in the same dependency order only after dry-runs pass and the SOW
-   review gate is satisfied.
-5. Never record crates.io tokens or credential details in durable artifacts.
+4. Cargo verifies publishable path dependencies against crates.io. For a new
+   release version, dependent crate dry-runs may fail until the previous crate
+   in dependency order has been published and indexed. In that case, dry-run
+   and publish one crate at a time in dependency order: dry-run `common`,
+   publish `common`, then dry-run `registry`, publish `registry`, and continue.
+5. Publish in the same dependency order only after the package's dry-run passes
+   and the SOW review gate is satisfied.
+6. Never record crates.io tokens or credential details in durable artifacts.
 
 ## Validation Checklist
 

@@ -8,6 +8,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 ## Current
 
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
+- `SOW-0114-20260615-v0-7-1-release.md` - in-progress. Release `0.7.1` for Rust and Go consumers after full Rust/Go tests, reader/writer benchmark evidence, Rust package dry-runs, crates.io publication, and matching `v0.7.1` plus `go/v0.7.1` tags.
 
 ## Pending
 - `SOW-0113-20260615-nodejs-optional-native-mmap-reader.md` - open. Follow-up from SOW-0111 to design and implement an explicit opt-in Node.js mmap backend or package boundary while keeping the default package pure positioned-read.

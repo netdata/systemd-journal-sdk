@@ -7,6 +7,10 @@ Last updated: 2026-06-15
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
+- SOW-0114 - v0.7.1 Release: in-progress. Release `0.7.1` for Rust and Go
+  consumers after full Rust/Go tests, reader/writer benchmark evidence, Rust
+  package dry-runs, crates.io publication, and matching `v0.7.1` plus
+  `go/v0.7.1` tags.
 
 ## Pending
 
