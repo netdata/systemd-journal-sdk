@@ -12,6 +12,8 @@ from ._platform_io import read_at, read_at_uses_pread
 
 READER_ACCESS_AUTO = "auto"
 READER_ACCESS_MMAP = "mmap"
+# Internal/test diagnostic fallback. This is intentionally not exported from
+# the top-level journal package and is not a production reader mode.
 READER_ACCESS_READ_AT = "read-at"
 READER_BOUNDS_LIVE = "live"
 READER_BOUNDS_SNAPSHOT = "snapshot"
@@ -23,6 +25,13 @@ DEFAULT_ROW_ARENA_SEGMENT_BYTES = 1024 * 1024
 
 
 class ReaderOptions:
+    """Reader byte-access options.
+
+    The production default is auto, which selects rolling mmap where Python's
+    standard library supports it. Explicit read-at aliases are retained for
+    tests, diagnostics, and fallback investigation only.
+    """
+
     def __init__(
         self,
         access_mode=READER_ACCESS_AUTO,

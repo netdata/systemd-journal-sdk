@@ -10,7 +10,8 @@ fn facade_uncompressed_data_uses_mmap_payload_for_whole_file_reader() {
 
     let mut reader = FileReader::open_with_options(
         &path,
-        ReaderOptions::snapshot().with_mmap_strategy(ExperimentalMmapStrategy::WholeFile),
+        ReaderOptions::snapshot()
+            .with_experimental_mmap_strategy(ExperimentalMmapStrategy::WholeFile),
     )
     .expect("open reader");
     assert!(reader.next().expect("first entry"));
@@ -167,7 +168,8 @@ fn visit_entry_payloads_clears_row_pins_when_visitor_returns_error() {
 
     let mut reader = FileReader::open_with_options(
         &path,
-        ReaderOptions::snapshot().with_mmap_strategy(ExperimentalMmapStrategy::WholeFile),
+        ReaderOptions::snapshot()
+            .with_experimental_mmap_strategy(ExperimentalMmapStrategy::WholeFile),
     )
     .expect("open reader");
     assert!(reader.next().expect("first entry"));
@@ -305,7 +307,8 @@ fn facade_whole_file_row_handles_mixed_compressed_and_uncompressed_payloads() {
 
     let mut reader = FileReader::open_with_options(
         &path,
-        ReaderOptions::snapshot().with_mmap_strategy(ExperimentalMmapStrategy::WholeFile),
+        ReaderOptions::snapshot()
+            .with_experimental_mmap_strategy(ExperimentalMmapStrategy::WholeFile),
     )
     .expect("open whole-file reader");
     assert!(reader.next().expect("first entry"));

@@ -27,6 +27,9 @@ Last updated: 2026-06-15
   after Python/Node parity closure. Adds Python-API/Node-API wiki pages and
   Python/Node columns to shared pages; extends the verified-examples harness to
   all four languages.
+- SOW-0113 - Node.js Optional Native Mmap Reader: open. Follow-up from
+  SOW-0111 to design and implement an explicit opt-in Node.js mmap backend or
+  package boundary while keeping the default package pure positioned-read.
 - SOW-0066 - V1 Release And Registry Publication: open. Final `v1.0.0`
   release, language registry/package publication, and clean consumer install
   validation after compatibility, portability, corpus, integration, and parity

@@ -61,16 +61,15 @@ declare module "@netdata/systemd-journal-sdk" {
 
   type ReaderAccessMode =
     | typeof READER_ACCESS_AUTO
-    | typeof READER_ACCESS_READ_AT
-    | typeof READER_ACCESS_MMAP;
+    | typeof READER_ACCESS_READ_AT;
 
   type ReaderBoundsMode =
     | typeof READER_BOUNDS_LIVE
     | typeof READER_BOUNDS_SNAPSHOT;
 
   interface ReaderOptions {
-    accessMode?: ReaderAccessMode | "auto" | "read-at" | "readat" | "pread" | "mmap" | "buffer";
-    mmapStrategy?: ReaderAccessMode | "auto" | "read-at" | "readat" | "pread" | "mmap" | "buffer";
+    accessMode?: ReaderAccessMode | "auto" | "read-at" | "readat" | "pread" | "buffer";
+    mmapStrategy?: ReaderAccessMode | "auto" | "read-at" | "readat" | "pread" | "buffer";
     bounds?: ReaderBoundsMode | "live" | "snapshot";
     windowSizeBytes?: number;
     windowSize?: number;
@@ -104,7 +103,6 @@ declare module "@netdata/systemd-journal-sdk" {
 
   const READER_ACCESS_AUTO: "auto";
   const READER_ACCESS_READ_AT: "read-at";
-  const READER_ACCESS_MMAP: "mmap";
   const READER_BOUNDS_LIVE: "live";
   const READER_BOUNDS_SNAPSHOT: "snapshot";
   const DEFAULT_WINDOW_SIZE_BYTES: number;

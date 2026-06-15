@@ -58,10 +58,10 @@ pub use facade::{
 };
 pub use journal_core::error::JournalError;
 pub use journal_core::file::{
-    BucketUtilization, Compression, Direction, EntryItemsType, ExperimentalMmapStrategy,
-    FieldNamePolicy, HashableObject, JournalFile, JournalReader, Location, Mmap,
-    WindowManagerStats,
+    BucketUtilization, Compression, Direction, EntryItemsType, FieldNamePolicy, HashableObject,
+    JournalFile, JournalReader, Location, Mmap, WindowManagerStats,
 };
+use journal_core::file::ExperimentalMmapStrategy;
 use journal_core::file::{CurrentRowMetadata, CurrentRowView};
 pub use journal_log_writer::{
     Config, EntryTimestamps, Log, LogLifecycleEvent, LogLifecycleObserver, RetentionPolicy,
@@ -170,7 +170,7 @@ impl Default for ReaderBounds {
 pub struct ReaderOptions {
     pub window_size: u64,
     pub bounds: ReaderBounds,
-    pub mmap_strategy: ExperimentalMmapStrategy,
+    mmap_strategy: ExperimentalMmapStrategy,
 }
 
 impl Default for ReaderOptions {
@@ -200,7 +200,13 @@ impl ReaderOptions {
         self
     }
 
-    pub fn with_mmap_strategy(mut self, strategy: ExperimentalMmapStrategy) -> Self {
+    pub fn with_bounds(mut self, bounds: ReaderBounds) -> Self {
+        self.bounds = bounds;
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn with_experimental_mmap_strategy(mut self, strategy: ExperimentalMmapStrategy) -> Self {
         self.mmap_strategy = strategy;
         self
     }

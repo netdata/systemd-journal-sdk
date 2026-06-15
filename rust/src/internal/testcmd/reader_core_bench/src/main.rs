@@ -549,11 +549,10 @@ fn reader_options(
         "snapshot" => ReaderBounds::Snapshot,
         other => return Err(anyhow!("invalid --bounds: {other}")),
     };
-    Ok(ReaderOptions {
-        window_size,
-        bounds,
-        mmap_strategy: strategy,
-    })
+    Ok(ReaderOptions::default()
+        .with_window_size(window_size)
+        .with_bounds(bounds)
+        .with_experimental_mmap_strategy(strategy))
 }
 
 fn read_sdk_file(path: &Path, cfg: &ReadConfig<'_>) -> Result<Counts> {

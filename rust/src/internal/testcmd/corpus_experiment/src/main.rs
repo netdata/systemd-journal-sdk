@@ -1,9 +1,10 @@
 use anyhow::{Context, Result, anyhow};
 use clap::{Args, Parser, Subcommand};
-use journal::{ExperimentalMmapStrategy, FileReader, ReaderBounds, ReaderOptions, SdkError};
+use journal::{FileReader, ReaderOptions, SdkError};
 use journal_core::file::{
-    Compression, DEFAULT_COMPRESS_THRESHOLD, EntryField, EntryWriteOptions, FieldNamePolicy,
-    JournalFile, JournalFileOptions, JournalState, JournalWriter, MmapMut,
+    Compression, DEFAULT_COMPRESS_THRESHOLD, EntryField, EntryWriteOptions,
+    ExperimentalMmapStrategy, FieldNamePolicy, JournalFile, JournalFileOptions, JournalState,
+    JournalWriter, MmapMut,
 };
 use journal_registry::repository::File as RepositoryFile;
 use serde_json::{Value, json};
@@ -206,11 +207,9 @@ fn raw_read_one(
 }
 
 fn open_raw_reader(path: &Path, access: &str, window_size: u64) -> Result<FileReader> {
-    let options = ReaderOptions {
-        window_size,
-        bounds: ReaderBounds::Snapshot,
-        mmap_strategy: parse_access_strategy(access)?,
-    };
+    let options = ReaderOptions::snapshot()
+        .with_window_size(window_size)
+        .with_experimental_mmap_strategy(parse_access_strategy(access)?);
     let mut reader = FileReader::open_with_options(path, options)?;
     reader.seek_head();
     Ok(reader)
@@ -354,11 +353,9 @@ fn dump_spool(args: DumpSpoolArgs) -> Result<()> {
 fn open_dump_reader(input: &Path) -> Result<FileReader> {
     let mut reader = FileReader::open_with_options(
         input,
-        ReaderOptions {
-            window_size: DEFAULT_WINDOW_SIZE,
-            bounds: ReaderBounds::Snapshot,
-            mmap_strategy: ExperimentalMmapStrategy::Windowed,
-        },
+        ReaderOptions::snapshot()
+            .with_window_size(DEFAULT_WINDOW_SIZE)
+            .with_experimental_mmap_strategy(ExperimentalMmapStrategy::Windowed),
     )
     .with_context(|| format!("failed to open {}", input.display()))?;
     reader.seek_head();

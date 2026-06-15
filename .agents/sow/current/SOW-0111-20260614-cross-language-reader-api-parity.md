@@ -5,7 +5,8 @@
 Status: in-progress
 
 Sub-state: activated for implementation after recording user decisions for
-Go/Python read-at policy and Node.js mmap packaging direction.
+Go/Python read-at policy and Node.js mmap packaging direction; local
+implementation chunk validated, pending whole-SOW reviewer pass before close.
 
 ## Requirements
 
@@ -141,11 +142,16 @@ Unknowns:
 
 Sources checked:
 
+- Python standard-library `mmap` documentation, Python 3.14.6:
+  `https://docs.python.org/3/library/mmap.html`
 - `rust/src/journal/src/lib.rs`
 - `rust/src/crates/journal-core/src/file/mmap.rs`
 - `rust/src/crates/journal-core/src/file/row_view.rs`
 - `go/journal/reader.go`
 - `go/journal/reader_access.go`
+- `go/journal/reader_access_mmap_unix.go`
+- `go/journal/reader_access_mmap_windows.go`
+- `go/journal/reader_access_mmap_unsupported.go`
 - `go/journal/reader_entry.go`
 - `python/journal/reader_access.py`
 - `python/journal/reader.py`
@@ -154,7 +160,7 @@ Sources checked:
 - `node/README.md`
 - `.agents/sow/specs/product-scope.md`
 
-Current state:
+Pre-implementation state reviewed:
 
 - Rust defaults to `ExperimentalMmapStrategy::Windowed` through
   `ReaderOptions::default`, but `ReaderOptions::with_mmap_strategy` can still
@@ -279,14 +285,16 @@ Implementation plan:
 1. Rust: hide or remove the public whole-file mmap option from consumer-facing
    APIs, preserve only internal/test/benchmark access if explicitly justified,
    and add tests/docs that prove normal consumers cannot select it.
-2. Go: investigate mmap availability on Linux, FreeBSD, macOS, and Windows;
-   decide whether read-at remains internal-only, diagnostic-only, or removed;
-   keep `VisitEntryPayloads` only if docs and tests clearly distinguish its
-   callback-scoped lifetime from row-level `EnumerateEntryPayload`.
-3. Python: investigate mmap availability on Linux, FreeBSD, macOS, and Windows;
-   decide whether read-at remains internal-only, diagnostic-only, or removed;
-   align docs/tests with the decided public contract, including explicit
-   visitor-vs-row-level payload lifetime and copy-cost documentation.
+2. Go: keep read-at for tests, diagnostics, constrained-platform investigation,
+   and controlled fallback evidence, but make it prominent that it is not a
+   production reader mode; keep `VisitEntryPayloads` only if docs and tests
+   clearly distinguish its callback-scoped lifetime from row-level
+   `EnumerateEntryPayload`.
+3. Python: keep read-at for tests, diagnostics, constrained-platform
+   investigation, and controlled fallback evidence, hide it from the top-level
+   package where practical, and align docs/tests with the decided public
+   contract, including explicit visitor-vs-row-level payload lifetime and
+   copy-cost documentation.
 4. Node.js: keep the default package pure and positioned-read based, remove or
    hide unsupported public `mmap` selection from default-package types/docs, and
    create a separate pending SOW for optional native mmap package/API support.
@@ -482,68 +490,128 @@ Failure handling:
 - Recorded user decisions for Go read-at, Python read-at, and Node.js optional
   mmap packaging direction.
 - Activated the SOW for implementation.
+- Verified Go has rolling mmap reader backends for `unix` and `windows`, with
+  only `!unix && !windows` using the unsupported mmap constructor. Verified
+  Python's standard-library `mmap` module documents both Unix and Windows
+  constructors and marks only WebAssembly/WASI unavailable.
+- Hid Rust whole-file mmap from normal `journal` public imports/options while
+  preserving hidden internal/test/benchmark hooks.
+- Made Go read-at prominent as non-production in Go API comments and public
+  docs, and changed the Go reader benchmark helper default from `read-at` to
+  `auto`.
+- Removed Python read-at from the top-level package export while retaining the
+  internal diagnostic constant under `journal.reader_access`.
+- Removed Node.js default-package TypeScript mmap mode advertisement while
+  keeping runtime explicit-mmap rejection.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Pending.
+- Rust normal `journal` public imports no longer re-export
+  `ExperimentalMmapStrategy`; `ReaderOptions` keeps the mmap strategy field
+  private and exposes only a doc-hidden internal/test/benchmark strategy hook.
+- Go keeps `ReaderAccessReadAt` for compatibility and tests, but Go comments,
+  API docs, README, wiki docs, and product scope now say it is not a production
+  reader mode. The Go reader benchmark helper now defaults to `auto`, not
+  `read-at`.
+- Python read-at remains available under `journal.reader_access` for tests,
+  diagnostics, constrained-platform investigation, and fallback evidence, but
+  it is no longer exported from the top-level `journal` package. Python README
+  now states that read-at is not a production reader mode.
+- Node.js default-package TypeScript declarations no longer advertise mmap as
+  an available access mode. Runtime explicit mmap rejection remains tested, and
+  optional native mmap support is tracked by SOW-0113.
+- Product scope, Go/Python/Node docs, and SOW ledgers now record the updated
+  reader access contract.
 
 Tests or equivalent validation:
 
-- Pending.
+- `cargo test -q -p systemd-journal-sdk default_reader_options_use_production_window_size`:
+  passed.
+- `cargo check -q --workspace`: passed after adding the explicit internal
+  `corpus_digest` dependency on `journal-core`.
+- `go test ./...`: passed.
+- `npm run typecheck`: passed.
+- `npm test`: passed.
+- Targeted Python reader-access validation passed:
+  top-level `journal.READER_ACCESS_READ_AT` absent, internal
+  `journal.reader_access.READER_ACCESS_READ_AT` present, and affected mmap,
+  read-at, fallback, row-arena, sparse-file, and directory reader tests passed.
+- `python3 test_all.py`: blocked by missing optional environment dependency
+  `lz4` before reaching the touched reader-access tests.
+- `python3 tests/docs/check_wiki_docs.py`: passed.
+- `python3 tests/docs/verify_examples.py`: passed, 31/31 examples.
+- `git diff --check`: passed.
+- `.agents/sow/audit.sh`: passed.
 
 Real-use evidence:
 
-- Pending.
+- Local Rust, Go, Python, and Node reader/package tests exercised synthetic
+  repository journal fixtures only. No live host journal was probed.
 
 Reviewer findings:
 
-- Pending.
+- Pending whole-SOW external reviewer pass before SOW close.
 
 Same-failure scan:
 
-- Pending.
+- `rg` scans for stale `with_mmap_strategy`, Node TypeScript mmap unions,
+  top-level Python read-at export, production read-at wording, and whole-file
+  mmap guidance found no unexpected public/default surfaces. Remaining matches
+  are intentional internal/test hooks, runtime explicit-mmap rejection tests,
+  Python internal diagnostic constants, or pre-implementation evidence text in
+  this SOW.
 
 Sensitive data gate:
 
-- Pending. This SOW currently contains only repository paths and sanitized
-  technical summaries.
+- Passed. Durable artifacts contain repository paths, public documentation URLs,
+  command names, and sanitized technical summaries only. `.agents/sow/audit.sh`
+  sensitive-data scan passed.
 
 Artifact maintenance gate:
 
 - AGENTS.md: pending implementation decision.
 - Runtime project skills: pending implementation decision.
-- Specs: pending implementation decision.
-- End-user/operator docs: pending implementation decision.
+- Specs: updated `.agents/sow/specs/product-scope.md`.
+- End-user/operator docs: updated Go wiki docs, Go README/API, Python README,
+  Node README, options reference, and production profiles.
 - End-user/operator skills: pending implementation decision.
 - SOW lifecycle: activated in `.agents/sow/current/` with
-  `Status: in-progress`.
-- SOW-status.md: pending SOW entry added.
+  `Status: in-progress`; SOW-0113 created in pending for optional Node.js
+  native mmap support.
+- SOW-status.md: updated canonical and root ledgers.
 
 Specs update:
 
-- Pending.
+- Updated `.agents/sow/specs/product-scope.md` with the final local reader
+  access contract for Rust, Go, Python, and Node.js default package behavior.
 
 Project skills update:
 
-- Pending.
+- Pending close decision. No durable workflow rule has changed yet; current
+  project skills already cover reader compatibility and docs authoring.
 
 End-user/operator docs update:
 
-- Pending.
+- Updated `docs/Go-API.md`, `docs/Options-Reference.md`,
+  `docs/Production-Profiles.md`, `go/API.md`, `go/README.md`,
+  `python/README.md`, and `node/README.md`.
 
 End-user/operator skills update:
 
-- Pending.
+- Pending close decision. No output/reference skill is currently affected.
 
 Lessons:
 
-- Pending.
+- Hiding a Rust re-export can expose internal test tools that were implicitly
+  depending on the public facade; workspace checks are required for this class
+  of change, not only public crate tests.
 
 Follow-up mapping:
 
-- Pending.
+- Optional native Node.js mmap support is tracked by
+  `.agents/sow/pending/SOW-0113-20260615-nodejs-optional-native-mmap-reader.md`.
 
 ## Outcome
 

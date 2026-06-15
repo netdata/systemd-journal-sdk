@@ -145,8 +145,9 @@ level and merges files in journal order.
 
 ## Use Snapshot Bounds For Query Workloads
 
-The default Go reader uses mmap-backed live bounds on Unix. Use snapshot bounds
-when a query may ignore entries appended after it starts.
+The default Go reader uses mmap-backed live bounds on supported Unix-family and
+Windows targets. Use snapshot bounds when a query may ignore entries appended
+after it starts.
 
 <!-- verify-example: lang=go id=go-snapshot-bounds -->
 ```go
@@ -163,8 +164,10 @@ if err != nil {
 defer r.Close()
 ```
 
-Use `WithAccessMode(journal.ReaderAccessReadAt)` only when mmap is undesirable
-for diagnostics or constrained environments.
+`ReaderAccessReadAt` is not a production reader mode. It is retained only for
+tests, diagnostics, constrained-platform investigation, and controlled fallback
+evidence. If `ReaderAccessAuto` selects read-at in production, treat that as a
+deployment issue to investigate and benchmark before accepting.
 
 ## Query Unique Values Through Indexes
 

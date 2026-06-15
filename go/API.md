@@ -87,11 +87,14 @@ field name and `Value` is the binary-safe raw field value.
 values without first materializing the full result set; use `QueryUnique` only
 when the caller needs an owned slice of all values.
 
-`DefaultReaderOptions()` uses live mmap-backed reads on Unix. Use
-`WithAccessMode(journal.ReaderAccessReadAt)` only when mmap is undesirable for
-diagnostics or a constrained environment. `ReaderBoundsLive` refreshes visible
-entries when active files grow; `ReaderBoundsSnapshot` fixes the visible file
-state at open time.
+`DefaultReaderOptions()` uses live mmap-backed reads on supported Unix-family
+and Windows targets. `ReaderAccessReadAt` is retained only for tests,
+diagnostics, constrained-platform investigation, and controlled fallback
+evidence. It is not a production reader mode. If `ReaderAccessAuto` selects
+read-at in production, treat that as a deployment issue to investigate and
+benchmark before accepting. `ReaderBoundsLive` refreshes visible entries when
+active files grow; `ReaderBoundsSnapshot` fixes the visible file state at open
+time.
 
 `VisitEntryPayloads`, `EnumerateEntryPayload`, and
 `SdJournalEnumerateAvailableData` are zero-copy hot paths. Returned or callback

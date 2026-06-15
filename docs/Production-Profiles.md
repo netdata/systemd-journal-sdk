@@ -52,10 +52,11 @@ Avoid:
 
 Use this for pipelines that traverse rows and process payloads directly.
 
-Rust and Go are the production reader targets. On platforms without mmap-backed
-access, Go falls back to positioned file I/O and should be re-benchmarked for
-the target workload. Node.js and Python are compatibility/parity surfaces today,
-not high-throughput reader baselines.
+Rust and Go are the production reader targets. Go production readers should use
+rolling mmap on supported Unix-family and Windows targets; a selected read-at
+fallback is a deployment signal to investigate, benchmark, and explicitly
+accept before production use. Node.js and Python are compatibility/parity
+surfaces today, not high-throughput reader baselines.
 
 Recommended:
 

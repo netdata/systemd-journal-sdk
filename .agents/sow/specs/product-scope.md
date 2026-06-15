@@ -135,9 +135,11 @@ Reader compatibility:
 - Every reader implementation must correctly handle online journal state, tail metadata changes, entry-array growth, data hash-table growth by chaining, and observable file-size changes without treating normal live updates as corruption.
 - Every reader implementation must support multiple readers observing the same live file concurrently.
 - Reader follow/tail behavior must be validated against stock `journalctl` semantics for file-backed operation.
-- Go reader default access mode is mmap-backed live reading on Unix, matching
-  the optimized reader hot path. `ReadAt` remains an explicit option for
-  diagnostics or constrained environments, not the production baseline.
+- Go reader default access mode is mmap-backed live reading on supported
+  Unix-family and Windows targets, matching the optimized reader hot path.
+  `ReadAt` remains an explicit option for tests, diagnostics,
+  constrained-platform investigation, and controlled fallback evidence only; it
+  is not a production reader mode.
 - Reader SDKs should expose a current-entry payload visitor/enumerator hot path
   so consumers that already operate on `FIELD=value` bytes do not need to
   materialize full entry maps.
@@ -487,9 +489,12 @@ Accepted reader API layers:
 
 - Rust, Go, Node.js, and Python readers use bounded reader-memory access for
   production file reads. Rust, Go, and Python use rolling mmap where their
-  runtimes support it. Go and Python also expose rolling positioned-read
-  fallbacks. Node.js core has no portable mmap API, so Node.js uses bounded
-  rolling positioned-read windows and fails clearly on explicit mmap requests.
+  runtimes support it. Go and Python retain rolling positioned-read fallbacks
+  for tests, diagnostics, constrained-platform investigation, and controlled
+  fallback evidence only; read-at is not a production reader mode. Node.js core
+  has no portable mmap API, so the default Node.js package uses bounded rolling
+  positioned-read windows, does not advertise mmap as an available TypeScript
+  mode, and fails clearly on explicit runtime mmap requests.
   Production readers must not load a whole journal file into resident memory
   as the default path. Current-row DATA returned by low-level/facade payload
   enumeration remains valid until the reader advances to another row or closes;
@@ -590,8 +595,8 @@ Accepted reader API layers:
   file. The end-of-data result for the current row does not release those
   slices, so consumers may cache field pointers during enumeration and process
   them after the inner data loop finishes. Rust returns uncompressed DATA
-  directly from whole-file mmap-backed journal payloads when that mode is
-  selected, stores compressed DATA in row-scoped owned buffers, and uses
+  directly from mmap-backed journal payloads only when pointer stability is
+  proven, stores compressed DATA in row-scoped owned buffers, and uses
   row-scoped owned buffers for windowed mmap when pointer stability cannot be
   proven. Go, Node.js, and Python expose the same row-scoped facade contract
   through their idiomatic borrowed or copy-on-iteration forms: Go returns
@@ -654,10 +659,10 @@ Current Go reader feature slice:
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
 - bounded rolling reader access with `ReaderAccessAuto` as the default.
   `Auto` selects rolling mmap on supported Unix-family and Windows targets,
-  while explicit `ReadAt` uses bounded positioned-read windows for diagnostics
-  or constrained environments. Access stats expose the selected backend,
-  fallback reason, window budget, mapped/read-buffer bytes, row-arena peak, and
-  refresh counters;
+  while explicit `ReadAt` uses bounded positioned-read windows for tests,
+  diagnostics, constrained-platform investigation, and controlled fallback
+  evidence only. Access stats expose the selected backend, fallback reason,
+  window budget, mapped/read-buffer bytes, row-arena peak, and refresh counters;
 - whole-file zstd fixtures and zstd, xz, and lz4-compressed DATA objects
   through pure-Go dependencies;
 - historical unkeyed-hash journal reading, including LZ4-compressed DATA
@@ -755,11 +760,12 @@ Current Rust reader feature slice:
   would exceed the cached end of file, while `Snapshot` mode fixes the file
   size at open time for polling/query use cases that do not need to observe
   appends during the current scan;
-- `ReaderOptions` exposes windowed and whole-file mmap strategies for live and
-  snapshot readers. Default Rust live readers remain windowed with a 32 MiB
-  window so indexed DATA-chain traversal does not remap per small object;
-  explicit live whole-file mmap is an experimental measurement/performance
-  option and increases virtual-memory pressure on large active files;
+- `ReaderOptions` exposes live/snapshot bounds and window size for public
+  consumers. Default Rust live readers remain windowed with a 32 MiB window so
+  indexed DATA-chain traversal does not remap per small object. Whole-file mmap
+  remains an internal/test/benchmark hook only and is not a production or
+  normal consumer option because it increases virtual-memory pressure on large
+  active files;
 - raw current-entry payload visitors on file and directory readers for
   allocation-light scans that operate on borrowed `FIELD=value` bytes;
 - single-file Rust optimized explorer API for exact indexed filters, selected
@@ -860,11 +866,12 @@ Current Node.js reader feature slice:
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
 - bounded rolling positioned-read reader access through Node core
   `fs.readSync()` with explicit offsets. Node.js core has no portable mmap API,
-  so default `accessMode: "auto"` selects the `read-at` backend and explicit
-  `accessMode: "mmap"` fails with `UnsupportedAccessModeError` instead of
-  silently downgrading. Access stats expose the selected backend, fallback
-  reason, window budget, read-buffer bytes, row-arena peak, and short-read
-  counters;
+  so default `accessMode: "auto"` selects the `read-at` backend. The default
+  package TypeScript declarations do not advertise mmap as an available mode,
+  and explicit runtime `accessMode: "mmap"` fails with
+  `UnsupportedAccessModeError` instead of silently downgrading. Access stats
+  expose the selected backend, fallback reason, window budget, read-buffer
+  bytes, row-arena peak, and short-read counters;
 - whole-file `.journal.zst` fixtures through Node.js built-in `node:zlib`,
   streamed into a temporary `.journal` and then read through the same bounded
   reader accessor as normal journal files;
@@ -971,9 +978,10 @@ Current Python reader feature slice:
 - regular and compact journal files;
 - files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
 - bounded rolling reader access with mmap as the production default on
-  supported Python runtimes and rolling positioned reads as an explicit
-  fallback/diagnostic mode. Access stats expose the selected backend, fallback
-  reason, window budget, mapped/read-buffer bytes, row-arena peak, and refresh
+  supported Python runtimes and rolling positioned reads retained only for
+  tests, diagnostics, constrained-platform investigation, and controlled
+  fallback evidence. Access stats expose the selected backend, fallback reason,
+  window budget, mapped/read-buffer bytes, row-arena peak, and refresh
   counters. Whole-file `.journal.zst` inputs are decompressed into temporary
   `.journal` files and then read through the same bounded accessor;
 - active `.journal` / `.journal~` readers refresh header and entry-array

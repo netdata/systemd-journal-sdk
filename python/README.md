@@ -99,6 +99,12 @@ targets load `fcntl` only when the caller enables the optional writer lock.
 Windows uses Python's standard-library `msvcrt` byte-range lock API for that
 optional helper.
 
+Reader access defaults to Python's standard-library mmap backend on supported
+production platforms. The internal `journal.reader_access.READER_ACCESS_READ_AT`
+mode remains available for tests, diagnostics, constrained-platform
+investigation, and fallback evidence, but it is not a production reader mode
+and is intentionally not exported from the top-level `journal` package.
+
 The writer uses `os.pread` / `os.pwrite` where Python provides them and falls
 back to seek-preserving `os.read` / `os.write` positional I/O otherwise. If a
 writable mmap cannot be created or resized, the direct writer falls back to the

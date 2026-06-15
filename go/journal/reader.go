@@ -63,8 +63,18 @@ func (e *Entry) Raw(name []byte) ([]byte, bool) {
 type ReaderAccessMode int
 
 const (
+	// ReaderAccessReadAt selects the rolling positioned-read backend.
+	//
+	// This mode exists for tests, diagnostics, constrained-platform
+	// investigation, and controlled fallback evidence. It is not a production
+	// reader mode; production callers should use ReaderAccessAuto or
+	// ReaderAccessMmap so supported targets use rolling mmap.
 	ReaderAccessReadAt ReaderAccessMode = iota
+	// ReaderAccessMmap selects rolling mmap-backed reader windows.
 	ReaderAccessMmap
+	// ReaderAccessAuto selects rolling mmap where supported and falls back to
+	// ReaderAccessReadAt only when mmap setup fails. Treat a read-at fallback
+	// in production as a deployment signal to investigate and benchmark.
 	ReaderAccessAuto
 )
 
@@ -93,11 +103,21 @@ func DefaultReaderOptions() ReaderOptions {
 	}
 }
 
+// WithAccessMode selects the reader byte-access backend.
+//
+// Production callers should prefer ReaderAccessAuto or ReaderAccessMmap.
+// ReaderAccessReadAt is retained for tests, diagnostics, and fallback
+// investigation only; it is not the production performance path.
 func (o ReaderOptions) WithAccessMode(mode ReaderAccessMode) ReaderOptions {
 	o.AccessMode = mode
 	return o
 }
 
+// WithMmap toggles the reader access backend.
+//
+// Passing false selects ReaderAccessReadAt, which is not a production reader
+// mode. Prefer DefaultReaderOptions or WithAccessMode(ReaderAccessMmap) for
+// production readers on supported targets.
 func (o ReaderOptions) WithMmap(enabled bool) ReaderOptions {
 	if enabled {
 		o.AccessMode = ReaderAccessMmap

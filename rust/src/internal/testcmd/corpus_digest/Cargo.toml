@@ -10,5 +10,6 @@ license.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 journal = { package = "systemd-journal-sdk", path = "../../../journal" }
+journal-core.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

@@ -1,9 +1,10 @@
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
-use journal::{ExperimentalMmapStrategy, FileReader, ReaderBounds, ReaderOptions};
+use journal::{FileReader, ReaderOptions};
 use journal_core::file::{
-    Compression, DEFAULT_COMPRESS_THRESHOLD, EntryField, EntryWriteOptions, FieldNamePolicy,
-    JournalFile, JournalFileOptions, JournalState, JournalWriter, MmapMut,
+    Compression, DEFAULT_COMPRESS_THRESHOLD, EntryField, EntryWriteOptions,
+    ExperimentalMmapStrategy, FieldNamePolicy, JournalFile, JournalFileOptions, JournalState,
+    JournalWriter, MmapMut,
 };
 use journal_registry::repository::File as RepositoryFile;
 use serde_json::json;
@@ -229,11 +230,9 @@ fn run(args: Args) -> Result<serde_json::Value> {
 }
 
 fn open_snapshot_reader(input: &Path, window_size: u64) -> Result<FileReader> {
-    let reader_options = ReaderOptions {
-        window_size,
-        bounds: ReaderBounds::Snapshot,
-        mmap_strategy: ExperimentalMmapStrategy::Windowed,
-    };
+    let reader_options = ReaderOptions::snapshot()
+        .with_window_size(window_size)
+        .with_experimental_mmap_strategy(ExperimentalMmapStrategy::Windowed);
     let mut reader = FileReader::open_with_options(input, reader_options)
         .with_context(|| format!("failed to open {}", input.display()))?;
     reader.seek_head();

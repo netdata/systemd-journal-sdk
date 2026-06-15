@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
-use journal::{ExperimentalMmapStrategy, FileReader, ReaderBounds, ReaderOptions};
+use journal::{FileReader, ReaderBounds, ReaderOptions};
+use journal_core::file::ExperimentalMmapStrategy;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -192,11 +193,10 @@ fn parse_mmap_strategy(value: &str) -> Result<ExperimentalMmapStrategy> {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let options = ReaderOptions {
-        window_size: args.window_size,
-        bounds: parse_bounds(&args.bounds)?,
-        mmap_strategy: parse_mmap_strategy(&args.mmap_strategy)?,
-    };
+    let options = ReaderOptions::default()
+        .with_window_size(args.window_size)
+        .with_bounds(parse_bounds(&args.bounds)?)
+        .with_experimental_mmap_strategy(parse_mmap_strategy(&args.mmap_strategy)?);
     let started = Instant::now();
     let mut reader = FileReader::open_with_options(&args.input, options)
         .with_context(|| format!("failed to open {}", args.input.display()))?;

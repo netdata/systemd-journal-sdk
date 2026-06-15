@@ -59,9 +59,12 @@ Current reader scope:
   through pure-Go dependencies;
 - historical unkeyed-hash journal reading, including LZ4-compressed DATA
   objects;
-- mmap-backed live reading by default on Unix, with explicit `ReadAt` access
-  available through `ReaderOptions` for diagnostics or constrained
-  environments. Non-Unix targets use the `ReadAt`-backed mapping fallback;
+- mmap-backed live reading by default on supported Unix-family and Windows
+  targets, with explicit `ReadAt` access retained through `ReaderOptions` only
+  for tests, diagnostics, constrained-platform investigation, and controlled
+  fallback evidence. `ReadAt` is not a production reader mode; unsupported
+  targets that fall back to it must be benchmarked and explicitly accepted
+  before production use;
 - directory reading across active and archived files with stock-compatible
   root plus one machine-id subdirectory traversal and interleaved multi-file
   ordering, including mixed regular/compact, compressed/uncompressed,

@@ -14,8 +14,8 @@ and Go APIs use native names, shown in the relevant tables.
 | `ReaderBounds::Live` | yes | Allows the reader to observe published appends during a session. | Use for live file-backed readers. |
 | `ReaderBounds::Snapshot` | no | Fixes file bounds at open time. | Use for polling/query workloads where entries appended after query start do not matter. |
 | windowed mmap | yes in Rust live readers | Maps rolling file windows. | Good default for large files and bounded virtual memory. |
-| whole-file mmap | explicit | Maps the full file. | Measure before enabling; it can reduce access overhead but increases virtual memory pressure. |
-| positioned `ReadAt` fallback | target-dependent | Reads through positioned file I/O when mmap is unavailable or disabled. | Diagnostic or portability path, not the high-throughput Unix baseline. |
+| whole-file mmap | internal/test only | Maps the full file. | Not a production or normal consumer option; retained only for controlled experiments and benchmarks. |
+| positioned `ReadAt` fallback | target-dependent | Reads through positioned file I/O when mmap is unavailable or explicitly selected in internal tools. | Tests, diagnostics, constrained-platform investigation, and fallback evidence only; not a production reader mode. |
 
 ## Entry Access Options
 

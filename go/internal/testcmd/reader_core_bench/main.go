@@ -595,7 +595,7 @@ func parseBenchConfig() (benchConfig, error) {
 	surface := flag.String("surface", "file", "")
 	direction := flag.String("direction", "forward", "")
 	bounds := flag.String("bounds", "live", "")
-	mmapStrategy := flag.String("mmap-strategy", "read-at", "")
+	mmapStrategy := flag.String("mmap-strategy", "auto", "")
 	windowSize := flag.Uint64("window-size", defaultWindowSize, "")
 	cpuProfile := flag.String("cpuprofile", "", "")
 	memProfile := flag.String("memprofile", "", "")

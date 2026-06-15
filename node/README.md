@@ -85,11 +85,14 @@ load native mmap, native systemd, or libjournal runtime dependencies. It targets
 Linux, FreeBSD, macOS, and Windows for SDK import, file reading/writing,
 directory writing, and file-backed journalctl operation.
 
-Node.js core does not expose a portable mmap API, so the reader uses bounded
-rolling positioned-read windows. The default reader options use `accessMode:
-'auto'`, which selects the positioned-read backend and records the fallback
-reason in `reader.accessStats()`. Explicit `accessMode: 'mmap'` fails with
-`UnsupportedAccessModeError`; it never silently falls back.
+Node.js core does not expose a portable mmap API, so the default package reader
+uses bounded rolling positioned-read windows. The default reader options use
+`accessMode: 'auto'`, which selects the positioned-read backend and records the
+fallback reason in `reader.accessStats()`. The default package TypeScript API
+does not advertise mmap as an available mode. Explicit runtime
+`accessMode: 'mmap'` fails with `UnsupportedAccessModeError`; it never silently
+falls back. Optional native mmap support is tracked as a separate package/API
+boundary.
 
 Reader memory is bounded by `windowSizeBytes * maxWindows` plus the current-row
 arena. Uncompressed current-row DATA returned by `visitEntryPayloads()` and the

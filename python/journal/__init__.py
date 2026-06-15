@@ -21,7 +21,6 @@ from .reader_access import (
     ReaderOptions,
     READER_ACCESS_AUTO,
     READER_ACCESS_MMAP,
-    READER_ACCESS_READ_AT,
     READER_BOUNDS_LIVE,
     READER_BOUNDS_SNAPSHOT,
 )
@@ -89,7 +88,7 @@ __all__ = [
     'OUTPUT_MODE_DEFAULT', 'OUTPUT_MODE_JSON', 'OUTPUT_MODE_EXPORT',
     'export_entry', 'json_entry', 'text_entry',
     'FileReader', 'DirectoryReader', 'Writer', 'Log',
-    'ReaderOptions', 'READER_ACCESS_AUTO', 'READER_ACCESS_MMAP', 'READER_ACCESS_READ_AT',
+    'ReaderOptions', 'READER_ACCESS_AUTO', 'READER_ACCESS_MMAP',
     'READER_BOUNDS_LIVE', 'READER_BOUNDS_SNAPSHOT',
     'FIELD_NAME_POLICY_JOURNALD', 'FIELD_NAME_POLICY_JOURNAL_APP',
     'FIELD_NAME_POLICY_RAW',
