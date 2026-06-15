@@ -59,12 +59,14 @@ python3 tests/docs/verify_examples.py
 ```
 
 The validator checks required wiki files, local Markdown links, wiki-style
-links, accidental local/private path leakage, and that every `rust` and `go`
-fenced block carries a verified-example or illustrative-only marker.
+links, accidental local/private path leakage, and that every `rust`, `go`,
+`python`, and `javascript` fenced block carries a verified-example or
+illustrative-only marker.
 
 The example verifier extracts marked examples, compiles them against the
-local Rust workspace and Go module, and runs them against synthetic fixtures.
-CI runs both on every docs change; a failing example blocks publication.
+local Rust workspace, Go module, Python package, and Node.js package source,
+and runs them against synthetic fixtures. CI runs both on every docs change; a
+failing example blocks publication.
 
 ## Verified Examples
 
@@ -75,8 +77,8 @@ marker is invisible in the rendered wiki:
 <!-- verify-example: lang=rust id=read-one-file -->
 ```
 
-Attributes: `lang` (`rust` or `go`), unique `id` (`[a-z0-9-]+` across all
-pages), optional `mode=build` for compile-only blocks, optional
+Attributes: `lang` (`rust`, `go`, `python`, or `javascript`), unique `id`
+(`[a-z0-9-]+` across all pages), optional `mode=build` for compile-only blocks, optional
 `fixture` (default `basic`), optional `prelude=<name>` for fragments that
 need registered setup code from `tests/docs/verify_examples.py`.
 

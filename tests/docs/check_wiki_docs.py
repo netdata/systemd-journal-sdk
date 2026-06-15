@@ -105,7 +105,7 @@ def check_forbidden_text(path: Path) -> None:
 # ---------------------------------------------------------------------------
 #
 # This check enforces the marker convention documented in
-# `docs/Wiki-Publishing.md`: every `rust` or `go` fenced code block in
+# `docs/Wiki-Publishing.md`: every supported-language fenced code block in
 # `docs/*.md` must be immediately preceded (ignoring blank lines) by either a
 # `<!-- verify-example: ... -->` marker or an `<!-- illustrative-only: ... -->`
 # marker, and verify-example markers must carry valid, unique attributes.
@@ -119,7 +119,8 @@ def check_forbidden_text(path: Path) -> None:
 # inside another fenced block are content, not markers or fences. The
 # documented marker syntax is itself shown inside ```markdown fences in
 # `docs/Wiki-Publishing.md`; those literal lines must be ignored, must not
-# require a following rust/go fence, and must not count toward id uniqueness.
+# require a following supported-language fence, and must not count toward id
+# uniqueness.
 
 
 def _load_grammar():
@@ -230,7 +231,7 @@ def check_verified_example_markers(
     *,
     seen_ids: dict[str, str],
 ) -> None:
-    """Reject unmarked rust/go fences and invalid verify-example markers.
+    """Reject unmarked supported-language fences and invalid markers.
 
     ``seen_ids`` is a per-run map of already-recorded verify-example ids to
     the file:line of their first occurrence, used to enforce global id
@@ -253,10 +254,10 @@ def check_verified_example_markers(
                 marker_kind, _attrs, _reason = payload
                 if marker_kind == kind_verify:
                     # Errors specific to verify-example markers without a
-                    # following rust/go fence are deferred until the next
-                    # non-blank line is known: if it is a rust/go fence
-                    # opener, the marker is fine; if not, it is an error
-                    # (verify-example must precede a rust/go fence).
+                    # following supported-language fence are deferred until
+                    # the next non-blank line is known: if it is a supported
+                    # fence opener, the marker is fine; if not, it is an
+                    # error.
                     pass
                 continue
 
@@ -272,9 +273,9 @@ def check_verified_example_markers(
                 )
             marker_line, marker_kind, attrs = preceding
             if marker_kind == kind_illustrative:
-                # Illustrative markers are allowed before any rust/go fence
-                # without further attribute validation. The marker itself
-                # does not carry an id and is not part of the
+                # Illustrative markers are allowed before any supported
+                # language fence without further attribute validation. The
+                # marker itself does not carry an id and is not part of the
                 # verify-example uniqueness set.
                 continue
             # marker_kind == kind_verify
@@ -306,12 +307,12 @@ def check_verified_example_markers(
 def check_verify_example_markers_followed_by_fence(
     paths: Iterable[Path],
 ) -> None:
-    """Reject verify-example markers that are not followed by a rust/go fence.
+    """Reject verify-example markers without a supported-language fence.
 
     Markers inside fenced blocks are content and are ignored. The check
     walks each file, ignoring content inside any fenced block, and reports
     a verify-example marker as an error if the next non-blank, non-marker
-    line is not a rust/go fence opener.
+    line is not a supported-language fence opener.
     """
     fence_open_re = _GRAMMAR["FENCE_OPEN_RE"]
     supported_langs = _GRAMMAR["SUPPORTED_LANGS"]
@@ -349,7 +350,7 @@ def check_verify_example_markers_followed_by_fence(
             if next_lang not in supported_langs:
                 fail(
                     f"{rel}:{idx + 1}: verify-example marker is followed by a "
-                    f"{next_lang!r} fence; expected a rust or go fence"
+                    f"{next_lang!r} fence; expected one of {', '.join(supported_langs)}"
                 )
 
 

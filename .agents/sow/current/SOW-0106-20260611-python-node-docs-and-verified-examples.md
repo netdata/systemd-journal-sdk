@@ -232,28 +232,63 @@ Failure handling:
   closure.
 - Refreshed the pre-implementation gate against current docs, Python README,
   Node README, TypeScript declarations, and the verified-example harness.
+- Attempted one external implementer run for the harness extension. The shell
+  prompt contained Markdown backticks, which were interpreted before launch and
+  mangled the prompt; the run was stopped by killing only the exact timeout and
+  child PIDs for this SOW. The worktree was clean afterward, so no implementer
+  changes were accepted from that run.
+- Implemented the verified-examples harness extension locally:
+  - `tests/docs/verify_examples.py` now supports `rust`, `go`, `python`, and
+    `javascript` verified examples;
+  - Python examples are syntax-checked with `py_compile` and executed with
+    `PYTHONPATH=python`;
+  - JavaScript examples are syntax-checked with `node --check`, executed with
+    Node.js, and package imports from `@netdata/systemd-journal-sdk` are
+    rewritten in generated sources to the local Node.js source entry point;
+  - all generated sources, scratch data, caches, and manifests remain under
+    `.local/docs-examples/`.
+- Added Python and JavaScript testdata examples so
+  `tests/docs/verify_examples.py --docs-dir tests/docs/testdata` exercises all
+  four languages.
+- Updated the wiki authoring docs, project docs-authoring skill, validator
+  comments/tests, and docs-examples workflow to cover Python and JavaScript
+  verified examples. CI now watches `node/**` and sets up Node 26.
 
 ## Validation
 
 Acceptance criteria evidence:
 
-- Pending implementation.
+- Harness language support for Python and JavaScript is implemented and
+  locally validated. New public Python/Node API pages and shared-page updates
+  are still pending in this SOW.
 
 Tests or equivalent validation:
 
-- Pending implementation.
+- Harness chunk validation passed:
+  - `python3 tests/docs/test_verify_examples.py`: 56/56 passed.
+  - `python3 tests/docs/test_check_wiki_docs.py`: 27/27 passed.
+  - `python3 tests/docs/check_wiki_docs.py`: validated 15 wiki markdown files.
+  - `python3 tests/docs/verify_examples.py --docs-dir tests/docs/testdata`:
+    passed 7/7, covering Rust, Go, Python, and JavaScript.
+  - `python3 tests/docs/verify_examples.py`: passed 31/31 current wiki
+    examples.
+  - `git diff --check`: passed.
 
 Real-use evidence:
 
-- Pending implementation.
+- Testdata verification executed generated Python and JavaScript examples
+  against the same synthetic fixture corpus used by Rust and Go examples. No
+  live host journal was probed.
 
 Reviewer findings:
 
-- Pending implementation.
+- Pending whole-SOW review after the new Python/Node pages and shared docs are
+  complete and locally validated.
 
 Same-failure scan:
 
-- Pending implementation.
+- Searched changed harness/docs for stale Rust/Go-only wording and corrected
+  the relevant validator, harness, wiki-publishing, and project-skill text.
 
 Sensitive data gate:
 
@@ -269,11 +304,14 @@ Specs update:
 
 Project skills update:
 
-- Pending implementation.
+- Updated `.agents/skills/project-docs-authoring/SKILL.md` because the
+  verified-example marker grammar and language support changed.
 
 End-user/operator docs update:
 
-- Pending implementation.
+- Updated `docs/Wiki-Publishing.md` for the expanded verified-example language
+  set. New `Python-API.md`, `Node-API.md`, and shared page updates are still
+  pending in this SOW.
 
 End-user/operator skills update:
 

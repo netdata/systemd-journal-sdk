@@ -248,7 +248,7 @@ class MarkedFenceTests(unittest.TestCase):
         )
         with _tmp_docs([("WrongLang.md", body)]) as docs:
             msg = _assert_fails_with(lambda: _run_marker_check(docs))
-        self.assertIn("expected a rust or go fence", msg)
+        self.assertIn("expected one of rust, go, python, javascript", msg)
 
     def test_illustrative_marker_does_not_consume_id_uniqueness(self):
         # Two illustrative-only markers with similar text in different docs
@@ -264,18 +264,29 @@ class MarkedFenceTests(unittest.TestCase):
         with _tmp_docs([("A.md", a), ("B.md", b)]) as docs:
             _run_marker_check(docs)
 
-    def test_non_rust_go_languages_are_exempt(self):
-        # toml, sh, json, text, python, js fences require no marker.
+    def test_non_supported_languages_are_exempt(self):
+        # toml, sh, json, text, and js fences require no marker. The canonical
+        # Node.js fence is javascript and is intentionally enforced.
         body = (
             "```toml\nx = 1\n```\n"
             "```sh\necho hi\n```\n"
             "```json\n{\"a\": 1}\n```\n"
             "```text\nplain\n```\n"
-            "```python\nprint(1)\n```\n"
             "```js\nconsole.log(1)\n```\n"
         )
         with _tmp_docs([("Exempt.md", body)]) as docs:
             _run_marker_check(docs)
+
+    def test_python_and_javascript_fences_require_markers(self):
+        body = "```python\nprint(1)\n```\n"
+        with _tmp_docs([("Py.md", body)]) as docs:
+            msg = _assert_fails_with(lambda: _run_marker_check(docs))
+        self.assertIn("python fenced code block is not preceded", msg)
+
+        body = "```javascript\nconsole.log(1)\n```\n"
+        with _tmp_docs([("Js.md", body)]) as docs:
+            msg = _assert_fails_with(lambda: _run_marker_check(docs))
+        self.assertIn("javascript fenced code block is not preceded", msg)
 
     def test_failure_message_includes_file_and_line(self):
         body = (
@@ -289,11 +300,11 @@ class MarkedFenceTests(unittest.TestCase):
         # Line 3 of the file is the fence opener.
         self.assertIn(":3:", msg)
 
-    def test_illustrative_only_with_no_following_rust_fence_is_fine(self):
+    def test_illustrative_only_with_no_following_supported_fence_is_fine(self):
         # An illustrative-only marker that is not followed by a fence
-        # (or followed by a non-rust fence) must not be flagged; the
-        # new check only requires that verify-example markers point to
-        # rust/go fences, and that rust/go fences are marked.
+        # (or followed by an unsupported fence) must not be flagged; the
+        # check only requires that verify-example markers point to supported
+        # language fences, and that supported-language fences are marked.
         body = (
             "<!-- illustrative-only: just a textual example -->\n"
             "```text\n"
@@ -311,7 +322,7 @@ class FenceAwareTests(unittest.TestCase):
         # This is the Wiki-Publishing.md case: the marker syntax is
         # documented inside a ```markdown block. Those literal lines
         # must not be treated as real markers, must not require a
-        # following rust/go fence, and must not count toward id
+        # following supported-language fence, and must not count toward id
         # uniqueness.
         body = (
             "## Verified Examples\n"
@@ -341,7 +352,7 @@ class FenceAwareTests(unittest.TestCase):
     def test_marker_inside_fence_is_not_required_to_have_following_fence(self):
         # A verify-example marker literal inside a ```markdown fence
         # must not be reported as a marker that lacks a following
-        # rust/go fence.
+        # supported-language fence.
         body = (
             "```markdown\n"
             "<!-- verify-example: lang=rust id=phantom -->\n"

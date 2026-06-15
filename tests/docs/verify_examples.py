@@ -4,8 +4,9 @@
 
 The harness is the machine that keeps documentation examples honest. It
 extracts marked fenced code examples from wiki markdown pages, materializes
-them as real programs compiled against the LOCAL Rust workspace and Go module,
-runs them against synthetic journal fixtures, and fails on any error.
+them as real programs checked against the LOCAL Rust workspace, Go module,
+Python package, and Node.js package source, runs them against synthetic journal
+fixtures, and fails on any error.
 
 The script is stdlib-only. It honors the runtime purity rules from
 `AGENTS.md` and never probes host identity, real journal paths, or
@@ -49,12 +50,14 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PYTHON_PKG_ROOT = REPO_ROOT / "python"
+NODE_PACKAGE_ROOT = REPO_ROOT / "node"
+NODE_ENTRYPOINT = NODE_PACKAGE_ROOT / "src" / "index.js"
 RUST_JOURNAL_PKG = REPO_ROOT / "rust" / "src" / "journal"
 RUST_LOG_WRITER_PKG = REPO_ROOT / "rust" / "src" / "crates" / "journal-log-writer"
 GO_MODULE_DIR = REPO_ROOT / "go"
 WORK_ROOT = REPO_ROOT / ".local" / "docs-examples"
 
-SUPPORTED_LANGS = ("rust", "go")
+SUPPORTED_LANGS = ("rust", "go", "python", "javascript")
 ID_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 MARKER_RE = re.compile(
     r"<!--\s*(?P<kind>verify-example|illustrative-only)\s*(?P<rest>.*?)\s*-->"
@@ -242,7 +245,8 @@ def extract_examples(
 
     Each dict has keys: page, lang, id, mode, fixture, prelude, body, info.
     Non-verified blocks (illustrative, no marker, unsupported lang) are
-    skipped; only `verify-example` markers on rust/go blocks are returned.
+    skipped; only `verify-example` markers on supported-language blocks are
+    returned.
 
     ``seen_ids`` is an optional id-first-seen map shared across the
     whole discovery scan. When provided, duplicate verify-example ids
@@ -541,6 +545,64 @@ def wrap_go_example(body: str, prelude_body: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Python wrapping
+# ---------------------------------------------------------------------------
+
+
+def wrap_python_example(body: str, prelude_body: str) -> str:
+    """Wrap a Python example body into a small script with ``run()``."""
+    combined = ""
+    if prelude_body:
+        combined += prelude_body.rstrip() + "\n"
+    if body:
+        combined += body.rstrip() + "\n"
+    if not combined.strip():
+        combined = "pass\n"
+    return (
+        "def run():\n"
+        f"{textwrap.indent(combined, '    ')}"
+        "\n"
+        "if __name__ == '__main__':\n"
+        "    run()\n"
+    )
+
+
+# ---------------------------------------------------------------------------
+# JavaScript wrapping
+# ---------------------------------------------------------------------------
+
+
+JS_PACKAGE_SPECIFIER = "@netdata/systemd-journal-sdk"
+
+
+def _rewrite_javascript_package_imports(text: str) -> str:
+    """Point package imports at the local Node.js source entry point."""
+    local_uri = NODE_ENTRYPOINT.as_uri()
+    patterns = (
+        (f"from '{JS_PACKAGE_SPECIFIER}'", f"from '{local_uri}'"),
+        (f'from "{JS_PACKAGE_SPECIFIER}"', f'from "{local_uri}"'),
+        (f"import('{JS_PACKAGE_SPECIFIER}')", f"import('{local_uri}')"),
+        (f'import("{JS_PACKAGE_SPECIFIER}")', f'import("{local_uri}")'),
+    )
+    out = text
+    for needle, replacement in patterns:
+        out = out.replace(needle, replacement)
+    return out
+
+
+def wrap_javascript_example(body: str, prelude_body: str) -> str:
+    """Wrap a JavaScript example body into an ES module script."""
+    combined = ""
+    if prelude_body:
+        combined += prelude_body.rstrip() + "\n"
+    if body:
+        combined += body.rstrip() + "\n"
+    if not combined.strip():
+        combined = "// empty example\n"
+    return _rewrite_javascript_package_imports(combined)
+
+
+# ---------------------------------------------------------------------------
 # Project generation
 # ---------------------------------------------------------------------------
 
@@ -687,6 +749,35 @@ def generate_go_project(examples: list[dict[str, Any]], go_dir: Path) -> None:
         (cmd_dir / "main.go").write_text(wrapped, encoding="utf-8")
 
 
+def generate_python_project(examples: list[dict[str, Any]], python_dir: Path) -> None:
+    ensure_clean_dir(python_dir)
+    for ex in examples:
+        prelude_body = ""
+        if ex["prelude"]:
+            prelude_body = PRELUDES[(ex["lang"], ex["prelude"])]
+        prelude_body = apply_path_substitution(prelude_body, Path(ex["_scratch_dir"]), Path(ex["_fixtures_dir"]))
+        body = apply_path_substitution(ex["body"], Path(ex["_scratch_dir"]), Path(ex["_fixtures_dir"]))
+        wrapped = wrap_python_example(body, prelude_body)
+        source_path = python_dir / f"{ex['id']}.py"
+        source_path.write_text(wrapped, encoding="utf-8")
+        ex["_source_path"] = str(source_path)
+
+
+def generate_javascript_project(examples: list[dict[str, Any]], javascript_dir: Path) -> None:
+    ensure_clean_dir(javascript_dir)
+    (javascript_dir / "package.json").write_text('{"type":"module"}\n', encoding="utf-8")
+    for ex in examples:
+        prelude_body = ""
+        if ex["prelude"]:
+            prelude_body = PRELUDES[(ex["lang"], ex["prelude"])]
+        prelude_body = apply_path_substitution(prelude_body, Path(ex["_scratch_dir"]), Path(ex["_fixtures_dir"]))
+        body = apply_path_substitution(ex["body"], Path(ex["_scratch_dir"]), Path(ex["_fixtures_dir"]))
+        wrapped = wrap_javascript_example(body, prelude_body)
+        source_path = javascript_dir / f"{ex['id']}.mjs"
+        source_path.write_text(wrapped, encoding="utf-8")
+        ex["_source_path"] = str(source_path)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures (synthetic journal files using the in-repo Python SDK)
 # ---------------------------------------------------------------------------
@@ -783,6 +874,23 @@ def _ensure_go_env(extra: dict[str, str]) -> dict[str, str]:
     return env
 
 
+def _ensure_python_env(extra: dict[str, str]) -> dict[str, str]:
+    env = dict(extra)
+    existing = env.get("PYTHONPATH") or os.environ.get("PYTHONPATH") or ""
+    if existing:
+        env["PYTHONPATH"] = str(PYTHON_PKG_ROOT) + os.pathsep + existing
+    else:
+        env["PYTHONPATH"] = str(PYTHON_PKG_ROOT)
+    env.setdefault("PIP_CACHE_DIR", str(WORK_ROOT / "caches" / "pip"))
+    return env
+
+
+def _ensure_javascript_env(extra: dict[str, str]) -> dict[str, str]:
+    env = dict(extra)
+    env.setdefault("npm_config_cache", str(WORK_ROOT / "caches" / "npm"))
+    return env
+
+
 def _ensure_scratch_dir(scratch_dir: Path) -> None:
     """Recreate the per-example scratch dir empty."""
     rmtree(scratch_dir)
@@ -790,7 +898,7 @@ def _ensure_scratch_dir(scratch_dir: Path) -> None:
 
 
 def _run_example(ex: dict[str, Any], *, build_dir: Path, cache_dir: Path,
-                 timeout: float) -> dict[str, Any]:
+                 timeout: float, env: dict[str, str] | None = None) -> dict[str, Any]:
     started = time.monotonic()
     detail: dict[str, Any] = {"phase": "run", "command": "", "stdout": "", "stderr": ""}
     try:
@@ -800,11 +908,15 @@ def _run_example(ex: dict[str, Any], *, build_dir: Path, cache_dir: Path,
         elif ex["lang"] == "go":
             binary = build_dir / "bin" / ex["id"]
             cmd = [str(binary)]
+        elif ex["lang"] == "python":
+            cmd = [sys.executable, str(build_dir / f"{ex['id']}.py")]
+        elif ex["lang"] == "javascript":
+            cmd = ["node", str(build_dir / f"{ex['id']}.mjs")]
         else:
             raise HarnessError(f"unsupported lang {ex['lang']!r}")
         detail["command"] = " ".join(_quote_token(t) for t in cmd)
         _ensure_scratch_dir(Path(ex["_scratch_dir"]))
-        result = run_subprocess(cmd, cwd=build_dir, timeout=timeout)
+        result = run_subprocess(cmd, cwd=build_dir, env=env, timeout=timeout)
         detail["stdout"] = result.stdout
         detail["stderr"] = result.stderr
         if result.returncode != 0:
@@ -922,6 +1034,80 @@ def _build_go(go_dir: Path, cache_dir: Path, env: dict[str, str], timeout: float
         }
 
 
+def _build_python(python_dir: Path, cache_dir: Path, env: dict[str, str], timeout: float,
+                  python_examples: list[dict[str, Any]]) -> dict[str, Any]:
+    started = time.monotonic()
+    full_env = _ensure_python_env(env)
+    aggregated_stdout = ""
+    aggregated_stderr = ""
+    try:
+        for ex in python_examples:
+            source = python_dir / f"{ex['id']}.py"
+            result = run_subprocess(
+                [sys.executable, "-m", "py_compile", str(source)],
+                cwd=python_dir, env=full_env, timeout=timeout,
+            )
+            aggregated_stdout += result.stdout
+            aggregated_stderr += result.stderr
+            if result.returncode != 0:
+                return {
+                    "returncode": result.returncode,
+                    "stdout": aggregated_stdout,
+                    "stderr": aggregated_stderr,
+                    "duration_ms": int((time.monotonic() - started) * 1000),
+                }
+        return {
+            "returncode": 0,
+            "stdout": aggregated_stdout,
+            "stderr": aggregated_stderr,
+            "duration_ms": int((time.monotonic() - started) * 1000),
+        }
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "returncode": None,
+            "stdout": exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or ""),
+            "stderr": (exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")) + "\n[harness timeout]",
+            "duration_ms": int((time.monotonic() - started) * 1000),
+        }
+
+
+def _build_javascript(javascript_dir: Path, cache_dir: Path, env: dict[str, str], timeout: float,
+                      javascript_examples: list[dict[str, Any]]) -> dict[str, Any]:
+    started = time.monotonic()
+    full_env = _ensure_javascript_env(env)
+    aggregated_stdout = ""
+    aggregated_stderr = ""
+    try:
+        for ex in javascript_examples:
+            source = javascript_dir / f"{ex['id']}.mjs"
+            result = run_subprocess(
+                ["node", "--check", str(source)],
+                cwd=javascript_dir, env=full_env, timeout=timeout,
+            )
+            aggregated_stdout += result.stdout
+            aggregated_stderr += result.stderr
+            if result.returncode != 0:
+                return {
+                    "returncode": result.returncode,
+                    "stdout": aggregated_stdout,
+                    "stderr": aggregated_stderr,
+                    "duration_ms": int((time.monotonic() - started) * 1000),
+                }
+        return {
+            "returncode": 0,
+            "stdout": aggregated_stdout,
+            "stderr": aggregated_stderr,
+            "duration_ms": int((time.monotonic() - started) * 1000),
+        }
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "returncode": None,
+            "stdout": exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or ""),
+            "stderr": (exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")) + "\n[harness timeout]",
+            "duration_ms": int((time.monotonic() - started) * 1000),
+        }
+
+
 def _resolve_per_example_paths(examples: list[dict[str, Any]], fixtures_dir: Path,
                               scratch_root: Path) -> None:
     for ex in examples:
@@ -930,9 +1116,12 @@ def _resolve_per_example_paths(examples: list[dict[str, Any]], fixtures_dir: Pat
 
 
 def _run_examples(examples: list[dict[str, Any]], *, rust_dir: Path, go_dir: Path,
-                  timeout: float, env: dict[str, str], cache_dir: Path) -> list[dict[str, Any]]:
+                  python_dir: Path, javascript_dir: Path, timeout: float,
+                  env: dict[str, str], cache_dir: Path) -> list[dict[str, Any]]:
     rust_examples = [ex for ex in examples if ex["lang"] == "rust"]
     go_examples = [ex for ex in examples if ex["lang"] == "go"]
+    python_examples = [ex for ex in examples if ex["lang"] == "python"]
+    javascript_examples = [ex for ex in examples if ex["lang"] == "javascript"]
 
     records: list[dict[str, Any]] = []
     build_records: list[dict[str, Any]] = []
@@ -1033,6 +1222,122 @@ def _run_examples(examples: list[dict[str, Any]], *, rust_dir: Path, go_dir: Pat
                     })
                     continue
                 run_record = _run_example(ex, build_dir=go_dir, cache_dir=cache_dir, timeout=timeout)
+                records.append({
+                    "id": ex["id"],
+                    "page": ex["page"],
+                    "lang": ex["lang"],
+                    "mode": ex["mode"],
+                    "fixture": ex["fixture"],
+                    "status": run_record["status"],
+                    "duration_ms": run_record["duration_ms"],
+                    "detail": run_record["detail"],
+                })
+
+    if python_examples:
+        info(f"building {len(python_examples)} python example(s) into {python_dir}")
+        outcome = _build_python(python_dir, cache_dir, env, timeout=timeout,
+                                python_examples=python_examples)
+        build_records.append({
+            "phase": "python-build",
+            "returncode": outcome["returncode"],
+            "stdout": outcome["stdout"],
+            "stderr": outcome["stderr"],
+            "duration_ms": outcome["duration_ms"],
+        })
+        if outcome["returncode"] != 0:
+            for ex in python_examples:
+                records.append({
+                    "id": ex["id"],
+                    "page": ex["page"],
+                    "lang": ex["lang"],
+                    "mode": ex["mode"],
+                    "fixture": ex["fixture"],
+                    "status": "fail",
+                    "duration_ms": 0,
+                    "detail": {
+                        "phase": "build",
+                        "returncode": outcome["returncode"],
+                        "stdout": outcome["stdout"],
+                        "stderr": outcome["stderr"],
+                    },
+                })
+        else:
+            run_env = _ensure_python_env(env)
+            for ex in python_examples:
+                if ex["mode"] == "build":
+                    records.append({
+                        "id": ex["id"],
+                        "page": ex["page"],
+                        "lang": ex["lang"],
+                        "mode": ex["mode"],
+                        "fixture": ex["fixture"],
+                        "status": "pass",
+                        "duration_ms": 0,
+                        "detail": {"phase": "build", "note": "compile-only"},
+                    })
+                    continue
+                run_record = _run_example(
+                    ex, build_dir=python_dir, cache_dir=cache_dir,
+                    timeout=timeout, env=run_env,
+                )
+                records.append({
+                    "id": ex["id"],
+                    "page": ex["page"],
+                    "lang": ex["lang"],
+                    "mode": ex["mode"],
+                    "fixture": ex["fixture"],
+                    "status": run_record["status"],
+                    "duration_ms": run_record["duration_ms"],
+                    "detail": run_record["detail"],
+                })
+
+    if javascript_examples:
+        info(f"building {len(javascript_examples)} javascript example(s) into {javascript_dir}")
+        outcome = _build_javascript(javascript_dir, cache_dir, env, timeout=timeout,
+                                    javascript_examples=javascript_examples)
+        build_records.append({
+            "phase": "javascript-build",
+            "returncode": outcome["returncode"],
+            "stdout": outcome["stdout"],
+            "stderr": outcome["stderr"],
+            "duration_ms": outcome["duration_ms"],
+        })
+        if outcome["returncode"] != 0:
+            for ex in javascript_examples:
+                records.append({
+                    "id": ex["id"],
+                    "page": ex["page"],
+                    "lang": ex["lang"],
+                    "mode": ex["mode"],
+                    "fixture": ex["fixture"],
+                    "status": "fail",
+                    "duration_ms": 0,
+                    "detail": {
+                        "phase": "build",
+                        "returncode": outcome["returncode"],
+                        "stdout": outcome["stdout"],
+                        "stderr": outcome["stderr"],
+                    },
+                })
+        else:
+            run_env = _ensure_javascript_env(env)
+            for ex in javascript_examples:
+                if ex["mode"] == "build":
+                    records.append({
+                        "id": ex["id"],
+                        "page": ex["page"],
+                        "lang": ex["lang"],
+                        "mode": ex["mode"],
+                        "fixture": ex["fixture"],
+                        "status": "pass",
+                        "duration_ms": 0,
+                        "detail": {"phase": "build", "note": "syntax-check-only"},
+                    })
+                    continue
+                run_record = _run_example(
+                    ex, build_dir=javascript_dir, cache_dir=cache_dir,
+                    timeout=timeout, env=run_env,
+                )
                 records.append({
                     "id": ex["id"],
                     "page": ex["page"],
@@ -1154,12 +1459,16 @@ def _main_impl(argv: list[str] | None) -> int:
     cache_dir = WORK_ROOT / "caches"
     rust_dir = WORK_ROOT / "rust-src"
     go_dir = WORK_ROOT / "go-src"
+    python_dir = WORK_ROOT / "python-src"
+    javascript_dir = WORK_ROOT / "javascript-src"
     manifest_path = WORK_ROOT / "manifest.json"
 
     rmtree(scratch_root)
     scratch_root.mkdir(parents=True, exist_ok=True)
     ensure_clean_dir(rust_dir)
     ensure_clean_dir(go_dir)
+    ensure_clean_dir(python_dir)
+    ensure_clean_dir(javascript_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     info(f"building fixtures under {fixtures_dir}")
@@ -1168,15 +1477,23 @@ def _main_impl(argv: list[str] | None) -> int:
     _resolve_per_example_paths(selected, fixtures_dir, scratch_root)
     rust_selected = [ex for ex in selected if ex["lang"] == "rust"]
     go_selected = [ex for ex in selected if ex["lang"] == "go"]
+    python_selected = [ex for ex in selected if ex["lang"] == "python"]
+    javascript_selected = [ex for ex in selected if ex["lang"] == "javascript"]
     if rust_selected:
         generate_rust_project(rust_selected, rust_dir)
     if go_selected:
         generate_go_project(go_selected, go_dir)
+    if python_selected:
+        generate_python_project(python_selected, python_dir)
+    if javascript_selected:
+        generate_javascript_project(javascript_selected, javascript_dir)
 
     records = _run_examples(
         selected,
         rust_dir=rust_dir,
         go_dir=go_dir,
+        python_dir=python_dir,
+        javascript_dir=javascript_dir,
         timeout=args.timeout,
         env={},
         cache_dir=cache_dir,

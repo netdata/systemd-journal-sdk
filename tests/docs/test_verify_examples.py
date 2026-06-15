@@ -74,11 +74,13 @@ class MarkerParsingTests(unittest.TestCase):
             "go-open-writer",
             "go-read-one-file",
             "go-write-three-entries",
+            "javascript-read-one-file",
+            "python-read-one-file",
             "rust-netdata-config-build",
             "rust-read-one-file",
         ])
         langs = {ex["lang"] for ex in examples}
-        self.assertEqual(langs, {"rust", "go"})
+        self.assertEqual(langs, {"rust", "go", "python", "javascript"})
 
     def test_illustrative_block_is_ignored(self):
         page = REPO_ROOT / "tests" / "docs" / "testdata" / "Sample-Page.md"
@@ -134,10 +136,10 @@ class MarkerParsingTests(unittest.TestCase):
 
     def test_marker_on_unsupported_lang_is_a_harness_error(self):
         body = (
-            "<!-- verify-example: lang=python id=py -->\n"
-            "```python\nprint(1)\n```\n"
+            "<!-- verify-example: lang=ruby id=rb -->\n"
+            "```ruby\nputs 1\n```\n"
         )
-        with self._tmp_md("py.md", body) as path:
+        with self._tmp_md("rb.md", body) as path:
             with self.assertRaises(ve.HarnessError):
                 ve.extract_examples(path)
 
@@ -395,6 +397,33 @@ class GoWrappingTests(unittest.TestCase):
         self.assertIn("return nil", run_section)
 
 
+class PythonWrappingTests(unittest.TestCase):
+    def test_python_body_is_wrapped_inside_run(self):
+        wrapped = ve.wrap_python_example("print('hello')", "")
+        self.assertIn("def run():", wrapped)
+        self.assertIn("    print('hello')", wrapped)
+        self.assertIn("if __name__ == '__main__':", wrapped)
+        self.assertIn("    run()", wrapped)
+
+    def test_python_prelude_precedes_body(self):
+        wrapped = ve.wrap_python_example("print(reader)", "reader = object()")
+        self.assertLess(wrapped.index("reader = object()"), wrapped.index("print(reader)"))
+
+
+class JavaScriptWrappingTests(unittest.TestCase):
+    def test_javascript_package_import_is_rewritten_to_local_entrypoint(self):
+        wrapped = ve.wrap_javascript_example(
+            "import { FileReader } from '@netdata/systemd-journal-sdk';\nconsole.log(FileReader);",
+            "",
+        )
+        self.assertIn(ve.NODE_ENTRYPOINT.as_uri(), wrapped)
+        self.assertNotIn("from '@netdata/systemd-journal-sdk'", wrapped)
+
+    def test_javascript_prelude_precedes_body(self):
+        wrapped = ve.wrap_javascript_example("console.log(reader);", "const reader = null;")
+        self.assertLess(wrapped.index("const reader = null;"), wrapped.index("console.log(reader);"))
+
+
 class PreludeRegistryTests(unittest.TestCase):
     def test_open_reader_prelude_in_journal_openfile(self):
         prelude = ve.PRELUDES[("go", "open-reader")]
@@ -595,6 +624,58 @@ class BuildTimeoutTests(unittest.TestCase):
                     env={},
                     timeout=1.0,
                     go_examples=[{"id": "x"}],
+                )
+            finally:
+                ve.run_subprocess = original
+            self.assertIsNone(outcome["returncode"])
+            self.assertIn("[harness timeout]", outcome["stderr"])
+            self.assertIsInstance(outcome["duration_ms"], int)
+            self.assertGreaterEqual(outcome["duration_ms"], 0)
+            self.assertEqual(outcome["stdout"], "")
+
+    def test_build_python_returns_timeout_outcome(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as td:
+            tmp = Path(td)
+
+            def raise_timeout(*args, **kwargs):
+                raise subprocess.TimeoutExpired(cmd=["python3", "-m", "py_compile"], timeout=1.0)
+
+            original = ve.run_subprocess
+            ve.run_subprocess = raise_timeout
+            try:
+                outcome = ve._build_python(
+                    python_dir=tmp / "python-src",
+                    cache_dir=tmp / "caches",
+                    env={},
+                    timeout=1.0,
+                    python_examples=[{"id": "x"}],
+                )
+            finally:
+                ve.run_subprocess = original
+            self.assertIsNone(outcome["returncode"])
+            self.assertIn("[harness timeout]", outcome["stderr"])
+            self.assertIsInstance(outcome["duration_ms"], int)
+            self.assertGreaterEqual(outcome["duration_ms"], 0)
+            self.assertEqual(outcome["stdout"], "")
+
+    def test_build_javascript_returns_timeout_outcome(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as td:
+            tmp = Path(td)
+
+            def raise_timeout(*args, **kwargs):
+                raise subprocess.TimeoutExpired(cmd=["node", "--check"], timeout=1.0)
+
+            original = ve.run_subprocess
+            ve.run_subprocess = raise_timeout
+            try:
+                outcome = ve._build_javascript(
+                    javascript_dir=tmp / "javascript-src",
+                    cache_dir=tmp / "caches",
+                    env={},
+                    timeout=1.0,
+                    javascript_examples=[{"id": "x"}],
                 )
             finally:
                 ve.run_subprocess = original
