@@ -4,6 +4,10 @@ Last updated: 2026-06-15
 
 ## Current
 
+- SOW-0106 - Python And Node.js Docs With Verified Examples: in-progress.
+  Adds Python-API/Node-API wiki pages and Python/Node columns to shared pages;
+  extends the verified-examples harness to all four languages after
+  Python/Node parity and reader API parity closure.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
@@ -17,10 +21,6 @@ Last updated: 2026-06-15
   packaging after reader gates.
 - SOW-0050 - Netdata Vendored Journal Removal: open. Final cleanup after all
   Netdata component integrations are complete.
-- SOW-0106 - Python And Node.js Docs With Verified Examples: open. Activates
-  after Python/Node parity closure. Adds Python-API/Node-API wiki pages and
-  Python/Node columns to shared pages; extends the verified-examples harness to
-  all four languages.
 - SOW-0113 - Node.js Optional Native Mmap Reader: open. Follow-up from
   SOW-0111 to design and implement an explicit opt-in Node.js mmap backend or
   package boundary while keeping the default package pure positioned-read.

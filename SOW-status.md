@@ -7,10 +7,10 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
+- `SOW-0106-20260611-python-node-docs-and-verified-examples.md` - in-progress. Adds Python-API/Node-API wiki pages and Python/Node columns to shared pages; extends the verified-examples harness to all four languages after Python/Node parity and reader API parity closure.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
 
 ## Pending
-- `SOW-0106-20260611-python-node-docs-and-verified-examples.md` - open. Activates after Python/Node parity closure. Adds Python-API/Node-API wiki pages and Python/Node columns to shared pages; extends the verified-examples harness to all four languages.
 - `SOW-0113-20260615-nodejs-optional-native-mmap-reader.md` - open. Follow-up from SOW-0111 to design and implement an explicit opt-in Node.js mmap backend or package boundary while keeping the default package pure positioned-read.
 - `SOW-0066-20260530-v1-release-and-registry-publication.md` - open. Publish the final stable `v1.0.0` SDK across language registries and versioned module tags after compatibility, portability, real-corpus validation, parity closure, and release checks pass.
 - `SOW-0048-20260528-netdata-otel-writer-sdk-integration.md` - open. Integrate the SDK compact-default structured writer into Netdata OTEL logs ingestion after the inventory and writer gates are accepted.

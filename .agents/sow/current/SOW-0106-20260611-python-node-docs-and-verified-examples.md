@@ -2,10 +2,10 @@
 
 ## Status
 
-Status: open
+Status: in-progress
 
-Sub-state: pending; activates after SOW-0105 closes (program order decided by
-the user on 2026-06-11).
+Sub-state: activated on 2026-06-15 after Python/Node parity closure and
+SOW-0111 reader API parity closure.
 
 ## Requirements
 
@@ -86,19 +86,37 @@ Risks:
 
 ## Pre-Implementation Gate
 
-Status: blocked
+Status: ready for implementation
 
-Blocked on: SOW-0105 close (user-decided program order). At activation,
-refresh this gate against the shipped Python/Node surfaces. Prepared content:
+Activation evidence:
+
+- SOW-0104, SOW-0105, SOW-0107, SOW-0109, and SOW-0111 are completed.
+- `python/README.md` and `node/README.md` now describe the shipped Python and
+  Node.js reader, writer, Explorer, Netdata, access-mode, and platform
+  contracts.
+- `node/index.d.ts` exists and documents the default-package public TypeScript
+  surface.
+- `tests/docs/verify_examples.py` currently supports only Rust and Go, so
+  Python and Node.js verified-example support is still the missing harness
+  work.
 
 Problem / root-cause model:
 
-- Wiki docs cover only the two production languages; once Python/Node reach
-  parity, missing docs would be the remaining inequality.
+- Wiki docs cover only the two production languages even though Python and
+  Node.js now have parity surfaces. Missing Python/Node pages and verified
+  examples leave users with unequal developer documentation and leave future
+  docs examples untested.
 
 Evidence reviewed:
 
 - Docs inventory listed in Analysis.
+- Current `docs/` pages: no `Python-API.md` or `Node-API.md`; shared reader,
+  writer, Explorer/Netdata, options, getting-started, production-profile, and
+  sidebar pages remain Rust/Go-focused.
+- Current `tests/docs/verify_examples.py`: `SUPPORTED_LANGS = ("rust", "go")`.
+- Current `tests/docs/check_wiki_docs.py`: marker validation depends on the
+  harness language list.
+- Current Python and Node READMEs and Node TypeScript declarations.
 
 Affected contracts and surfaces:
 
@@ -109,6 +127,8 @@ Existing patterns to reuse:
 
 - SOW-0103 marker convention, harness, fixtures, and page structure;
   Rust-API/Go-API page layout as the template.
+- Existing placeholder path substitution for repository-local synthetic
+  fixtures and per-example scratch paths.
 
 Risk and blast radius:
 
@@ -120,7 +140,7 @@ Sensitive data handling plan:
 
 Implementation plan:
 
-1. Extend harness language support (implementer model) to Python and Node.
+1. Extend harness language support to Python and Node.
 2. Write `Python-API.md` and `Node-API.md` (project manager prose, verified
    examples iterated to green).
 3. Update shared pages and navigation.
@@ -128,17 +148,27 @@ Implementation plan:
 
 Validation plan:
 
-- Harness green for all four languages locally and in CI; validator green;
-  reviewer batches; `.agents/sow/audit.sh`.
+- `python3 tests/docs/check_wiki_docs.py`.
+- `python3 tests/docs/verify_examples.py`, proving all Rust, Go, Python, and
+  Node.js verified examples compile/run against synthetic fixtures.
+- Relevant Python/Node package checks if harness changes require them.
+- Reviewer batches against the whole SOW after local validation.
+- `git diff --check`.
+- `.agents/sow/audit.sh`.
 
 Artifact impact plan:
 
 - AGENTS.md: no change expected.
-- Runtime project skills: docs-verification knowledge update if workflow
-  changes.
+- Runtime project skills: update `project-docs-authoring` if marker grammar,
+  verified-example language support, placeholders, validation commands, or CI
+  workflow contract changes.
 - Specs: no product behavior change expected.
 - End-user/operator docs: this SOW is the docs change.
-- SOW lifecycle: final child of the 2026-06-11 program; SOW-status.md updated.
+- End-user/operator skills: no output/reference skill expected; verify at
+  close.
+- SOW lifecycle: activate in `.agents/sow/current/`; close only after
+  validation and reviewer gates pass.
+- SOW-status.md: update canonical and root ledgers on activation and close.
 
 Open-source reference evidence:
 
@@ -195,6 +225,13 @@ Failure handling:
 
 - Created as pending final child of the docs-and-parity program; activates
   after SOW-0105.
+
+### 2026-06-15
+
+- Activated after Python/Node parity closure and SOW-0111 reader API parity
+  closure.
+- Refreshed the pre-implementation gate against current docs, Python README,
+  Node README, TypeScript declarations, and the verified-example harness.
 
 ## Validation
 
