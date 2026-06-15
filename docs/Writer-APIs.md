@@ -11,7 +11,7 @@ The writer API is split by lifecycle and append shape.
 | structured fields | `write_fields` | `Append` | `append` | `append` | producer already has field/value pairs |
 | prebuilt payloads | `write_entry` | `AppendRaw` | `append_raw` | `appendRaw` | caller already has `KEY=value` bytes |
 | optional lock | `journal_core::file::lock` | `AcquireWriterLock` | `WriterLock.acquire` | `WriterLock.acquire` | cooperating SDK writer exclusion |
-| FSS | `SealOptions` in core writer | `SealOptions` | `SealOptions` | `SealOptions` | tamper-evident journal files |
+| FSS | `SealOptions` in core writer | `SealOptions` | `seal` option | `seal: SealOptions` | tamper-evident journal files |
 
 ## Directory Writer
 

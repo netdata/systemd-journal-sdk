@@ -284,6 +284,13 @@ Failure handling:
     TypeScript declarations;
   - adjusted `docs/Options-Reference.md` to describe Python/Node seal options
     as writer-surface options instead of implying identical class exports.
+- Ran the second whole-SOW reviewer batch after those fixes. GLM, Kimi, Mimo,
+  Qwen, and DeepSeek all voted production-grade with no blocking findings.
+- Addressed two valid non-blocking second-batch findings:
+  - corrected `node/index.d.ts` so `SealOptions`, `SealState`, and
+    `WriterOptions.seal` match the actual Node.js runtime seal API;
+  - corrected `docs/Writer-APIs.md` so the FSS quick-selection row does not
+    imply Python exposes a top-level `SealOptions` import.
 
 ## Validation
 
@@ -339,6 +346,16 @@ Tests or equivalent validation:
     `WriterLock` resolve as runtime functions.
   - `npm test` in `node/`: passed.
   - `git diff --check`: passed.
+- Second-batch finding validation passed:
+  - `python3 tests/docs/verify_examples.py`: passed 65/65 current wiki
+    examples: 14 Rust, 17 Go, 17 Python, and 17 JavaScript examples.
+  - `python3 tests/docs/check_wiki_docs.py`: validated 17 wiki markdown files.
+  - `npm run typecheck` in `node/`: passed.
+  - Direct ES module construction confirmed `new SealOptions(Buffer.alloc(12),
+    1000000n, 0n)` and `new SealState(opts)` work through the package entry
+    point, with HMAC output length 32.
+  - `npm test` in `node/`: passed.
+  - `git diff --check`: passed.
 
 Real-use evidence:
 
@@ -368,7 +385,27 @@ Reviewer findings:
     `journal.lock`, so no issue exists.
   - Mimo: no usable verdict in the first batch; rerun required in the second
     batch.
-- Second whole-SOW review batch is pending after the post-review fixes above.
+- Second whole-SOW review batch:
+  - GLM: production-grade; noted the Node default export has no `.d.ts`
+    default-export declaration, `Bytes` maps to `Uint8Array` for TypeScript
+    ergonomics, and close-section placeholders were still pending. Disposition:
+    no code/doc change for default export or `Bytes`; docs use named imports,
+    no default export contract exists, and `Bytes` is a pre-existing ergonomic
+    tradeoff outside this docs SOW.
+  - Kimi: production-grade; independently confirmed the stale `SealOptions`
+    and `SealState` constructor declarations. Fixed in `node/index.d.ts`.
+    Kimi also noted `FileReader.path` nullability and default-export
+    inconsistency as pre-existing/out-of-scope.
+  - Mimo: production-grade; noted `WriterLock` is absent from the runtime
+    default export object and Python writer examples use `try/finally` instead
+    of context managers. Disposition: no code/doc change; docs use named
+    imports and the explicit close examples are verified and intentional.
+  - Qwen: production-grade; noted the runtime default export object does not
+    include every named export. Disposition: no code/doc change for the same
+    reason as above.
+  - DeepSeek: production-grade; found the `SealOptions`/`SealState`
+    TypeScript constructor mismatch and the `Writer-APIs.md` Python FSS cell
+    wording issue. Fixed both.
 
 Same-failure scan:
 

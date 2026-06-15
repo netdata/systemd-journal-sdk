@@ -332,8 +332,7 @@ declare module "@netdata/systemd-journal-sdk" {
     maxFileSize?: number;
     livePublishEveryEntries?: number;
     live_publish_every_entries?: number;
-    sealOptions?: SealOptions;
-    seal_options?: SealOptions;
+    seal?: SealOptions | SealOptionsLike;
     fieldNamePolicy?: FieldNamePolicy;
     field_name_policy?: FieldNamePolicy;
   }
@@ -355,14 +354,29 @@ declare module "@netdata/systemd-journal-sdk" {
   const DEFAULT_COMPRESS_THRESHOLD: number;
   const MIN_COMPRESS_THRESHOLD: number;
 
-  class SealOptions {
-    constructor(opts?: { secpar?: number; seedLen?: number });
-    secpar: number;
-    seedLen: number;
+  interface SealOptionsLike {
+    seed: Bytes;
+    intervalUsec: bigint | number;
+    startUsec: bigint | number;
+  }
+
+  class SealOptions implements SealOptionsLike {
+    constructor(seed: Bytes, intervalUsec: bigint | number, startUsec: bigint | number);
+    seed: Bytes;
+    intervalUsec: bigint | number;
+    startUsec: bigint | number;
   }
 
   class SealState {
-    constructor(secpar?: number, seedLen?: number);
+    constructor(opts: SealOptionsLike);
+    getEpoch(): bigint;
+    getGoalEpoch(realtime: bigint | number): bigint;
+    needEvolve(realtime: bigint | number): boolean;
+    evolveState(): void;
+    hmacStart(): void;
+    hmacWrite(data: Bytes): void;
+    hmacReset(): void;
+    hmacSum(): Bytes;
   }
 
   class Writer {
