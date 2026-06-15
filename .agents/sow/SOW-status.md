@@ -4,10 +4,6 @@ Last updated: 2026-06-15
 
 ## Current
 
-- SOW-0106 - Python And Node.js Docs With Verified Examples: in-progress.
-  Adds Python-API/Node-API wiki pages and Python/Node columns to shared pages;
-  extends the verified-examples harness to all four languages after
-  Python/Node parity and reader API parity closure.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
@@ -43,6 +39,12 @@ Last updated: 2026-06-15
   shared primitives preserve historical compatibility and reader performance.
 ## Recently Closed Or Completed
 
+- SOW-0106 - Python And Node.js Docs With Verified Examples: completed.
+  Added Python-API and Node-API wiki pages with 17 verified examples each,
+  updated shared wiki pages and navigation for all four languages, extended
+  the verified-examples harness/CI to Python and JavaScript, corrected Node
+  package entry-point/type gaps found by verified docs and reviewers, and
+  passed local validation plus two production-grade whole-SOW reviewer batches.
 - SOW-0111 - Cross-Language Reader API And Memory-Access Parity: completed.
   Rust whole-file mmap is hidden from normal public reader APIs; Go and Python
   read-at paths are retained only for internal/test/diagnostic or controlled

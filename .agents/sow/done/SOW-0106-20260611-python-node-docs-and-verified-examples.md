@@ -2,10 +2,10 @@
 
 ## Status
 
-Status: in-progress
+Status: completed
 
-Sub-state: activated on 2026-06-15 after Python/Node parity closure and
-SOW-0111 reader API parity closure.
+Sub-state: completed on 2026-06-15 after local validation, two reviewer
+batches, reviewer-finding fixes, and clean SOW audit.
 
 ## Requirements
 
@@ -418,11 +418,29 @@ Sensitive data gate:
 
 Artifact maintenance gate:
 
-- Pending close.
+- `AGENTS.md`: no change. The project-wide workflow, responsibilities, and
+  repository guardrails did not change.
+- Runtime project skills: updated `.agents/skills/project-docs-authoring`
+  because the verified-example marker grammar and language support changed to
+  include Python and JavaScript.
+- Specs: no `.agents/sow/specs/` update. Existing specs cover product scope,
+  Rust reader performance, systemd-journal plugin facets, and Codacy metrics;
+  this SOW changed consumer docs and docs-harness mechanics, not product
+  behavior that belongs in those specs.
+- End-user/operator docs: updated by this SOW, including new Python/Node pages
+  and shared wiki pages.
+- End-user/operator skills: no output/reference skills exist in this
+  repository, so no update was applicable.
+- SOW lifecycle: status set to `completed`; file will move from
+  `.agents/sow/current/` to `.agents/sow/done/` during close.
+- SOW status ledgers: canonical `.agents/sow/SOW-status.md` and root
+  `SOW-status.md` updated during close.
 
 Specs update:
 
-- Pending implementation.
+- No spec update was needed. The durable WHAT contracts affected here are the
+  end-user wiki pages themselves and the Node TypeScript declaration surface;
+  there is no matching product spec for wiki/example coverage.
 
 Project skills update:
 
@@ -438,27 +456,53 @@ End-user/operator docs update:
 
 End-user/operator skills update:
 
-- Pending implementation.
+- No end-user/operator output skill exists in this repository. The runtime
+  authoring skill was updated under Project skills.
 
 Lessons:
 
-- Pending implementation.
+- Quote-heavy shell prompts are unsafe for delegated runs unless passed via a
+  prompt file or equivalent argument-safe path; the failed implementer attempt
+  validated that this should remain the default for long prompts.
+- Verified examples are a useful compatibility forcing function: they exposed
+  real Node package entry-point/type gaps that ordinary prose review could
+  have missed.
+- A second reviewer batch after fixing first-round issues is valuable, but
+  small production-grade follow-up fixes can be closed with focused local
+  validation instead of restarting the full pool again.
 
 Follow-up mapping:
 
-- Pending implementation.
+- No new follow-up SOW is required. The only remaining reviewer observations
+  are explicit no-change dispositions: Node default-export completeness has no
+  declared TypeScript contract and docs use named imports; Python writer
+  examples intentionally use explicit `try/finally`; `Bytes` ergonomics and
+  `FileReader.path` nullability are pre-existing type ergonomics outside this
+  docs SOW and not exposed by the verified examples as incorrect behavior.
 
 ## Outcome
 
-Pending.
+Completed. Python and Node.js now have first-class wiki API pages with 17
+verified examples each, shared wiki pages cover all four languages, the docs
+harness verifies Rust, Go, Python, and JavaScript examples against synthetic
+fixtures, Node entry-point/type gaps found by the verified docs and reviewers
+were corrected, and two whole-SOW reviewer batches returned production-grade
+with no blocking findings.
 
 ## Lessons Extracted
 
-Pending.
+- Use `.local/*.txt` prompt files for long external-agent prompts that contain
+  Markdown, shell-sensitive characters, or fenced code.
+- Treat docs examples as public API tests: when an example needs an import,
+  the package entry point and type declarations must be checked, not only the
+  implementation module.
+- Keep Python/Node production guidance explicit. They are verified parity and
+  integration surfaces here, while Rust/Go remain the high-throughput
+  production targets unless workload benchmarks prove otherwise.
 
 ## Followup
 
-None yet.
+None.
 
 ## Regression Log
 

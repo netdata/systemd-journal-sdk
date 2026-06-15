@@ -7,7 +7,6 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- `SOW-0106-20260611-python-node-docs-and-verified-examples.md` - in-progress. Adds Python-API/Node-API wiki pages and Python/Node columns to shared pages; extends the verified-examples harness to all four languages after Python/Node parity and reader API parity closure.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
 
 ## Pending
@@ -21,6 +20,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - `SOW-0098-20260607-rust-legacy-core-duplication-debt.md` - open. Follow-up from the Codacy Rust/Go metrics audit for real Rust `jf`/`journal-core` duplication reduction.
 ## Done
 
+- `SOW-0106-20260611-python-node-docs-and-verified-examples.md` - completed. Added Python-API and Node-API wiki pages with 17 verified examples each, updated shared wiki pages and navigation for all four languages, extended the verified-examples harness/CI to Python and JavaScript, corrected Node package entry-point/type gaps found by verified docs and reviewers, and passed local validation plus two production-grade whole-SOW reviewer batches.
 - `SOW-0111-20260614-cross-language-reader-api-parity.md` - completed. Rust whole-file mmap is hidden from normal public reader APIs; Go and Python read-at paths are retained only for internal/test/diagnostic or controlled fallback evidence with non-production wording; Node.js default package no longer advertises or exports mmap selection; optional native Node.js mmap support remains tracked by SOW-0113. Local validation and repeat reviewers that returned final verdicts passed production-grade review.
 - `SOW-0112-20260615-netdata-sampling-contract-clarification.md` - completed. Records the SDK sampling and slice contract: data-only non-delta requests stay exact and unsampled, data-only delta analysis may use sampling while returned rows remain exact, `slice:false` fallback semantics are outside the SDK contract, and current Rust/Go implementation needs no change.
 - `SOW-0047-20260528-netdata-netflow-sdk-integration.md` - completed. Read-only verification of `ktsaou/netdata @ 36050079cfa9` showed the NetFlow plugin uses published `systemd-journal-sdk-*` crates at `0.7.0` for writer, reader/query, and facet paths; no Netdata build/test was run in this SDK closeout because that would write outside this repository.
