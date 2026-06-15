@@ -18,13 +18,13 @@ from journal import (  # noqa: E402
     ReaderOptions,
     READER_ACCESS_AUTO,
     READER_ACCESS_MMAP,
-    READER_ACCESS_READ_AT,
     SdJournalEnumerateAvailableData,
     SdJournalNext,
     SdJournalOpenDirectory,
     SdJournalOpenFiles,
     SdJournalRestartData,
 )
+from journal.reader_access import READER_ACCESS_READ_AT  # noqa: E402
 
 
 class Counts:

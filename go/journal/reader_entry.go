@@ -17,8 +17,9 @@ func (r *Reader) GetEntry() (*Entry, error) {
 }
 
 // VisitEntryPayloads calls visitor for each current DATA payload as FIELD=value
-// bytes. Uncompressed mmap mode may pass slices backed by the mapped file; do
-// not retain or mutate them after the visitor returns.
+// bytes. Payloads are callback-scoped: uncompressed mmap mode may pass slices
+// backed by the mapped file, so do not retain or mutate them after the visitor
+// returns. Use EnumerateEntryPayload when row-level lifetime is required.
 func (r *Reader) VisitEntryPayloads(visitor func([]byte) error) error {
 	if visitor == nil {
 		return nil

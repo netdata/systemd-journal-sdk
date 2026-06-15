@@ -4,9 +4,8 @@
 
 Status: in-progress
 
-Sub-state: activated for implementation after recording user decisions for
-Go/Python read-at policy and Node.js mmap packaging direction; local
-implementation chunk validated, pending whole-SOW reviewer pass before close.
+Sub-state: whole-SOW reviewer pass found small parity gaps; fixes applied and
+locally validated, pending reviewer rerun before close.
 
 ## Requirements
 
@@ -506,6 +505,24 @@ Failure handling:
 - Reconciled the pending docs stash into current docs, keeping the useful Go
   `VisitEntryPayloads` lifetime wording and making row-level users prefer
   `EnumerateEntryPayload`.
+- Ran whole-SOW external reviewer pass. Completed reviewers found actionable
+  gaps in Node.js runtime exports, Python benchmark imports, Go
+  `DirectoryReader.VisitEntryPayloads` godoc, Python visitor copy-cost docs,
+  Rust `with_bounds` coverage, and product-scope wording.
+- Fixed the accepted reviewer findings:
+  - removed `READER_ACCESS_MMAP` from the Node.js default package runtime
+    named/default exports while retaining internal explicit-mmap rejection;
+  - added a Node package regression test proving the default package does not
+    export `READER_ACCESS_MMAP`;
+  - fixed `python/cmd/reader_core_bench.py` to import
+    `READER_ACCESS_READ_AT` from `journal.reader_access`;
+  - added callback-scoped Go godoc to both file and directory
+    `VisitEntryPayloads` methods;
+  - documented Python `visit_entry_payloads` as owned-bytes/copying and pointed
+    row-lifetime users to `enumerate_entry_payload`;
+  - added a Rust `ReaderOptions::with_bounds` test;
+  - tightened product-scope wording around stable mmap-backed borrowed
+    payloads and row-scoped owned-buffer fallback.
 
 ## Validation
 
@@ -522,14 +539,17 @@ Acceptance criteria evidence:
   diagnostics, constrained-platform investigation, and fallback evidence, but
   it is no longer exported from the top-level `journal` package. Python README
   now states that read-at is not a production reader mode.
-- Node.js default-package TypeScript declarations no longer advertise mmap as
-  an available access mode. Runtime explicit mmap rejection remains tested, and
-  optional native mmap support is tracked by SOW-0113.
+- Node.js default-package TypeScript declarations and runtime exports no longer
+  advertise mmap as an available access mode. Internal explicit mmap rejection
+  remains tested through the internal reader-access module, and optional native
+  mmap support is tracked by SOW-0113.
 - Product scope, Go/Python/Node docs, and SOW ledgers now record the updated
   reader access contract.
 - Consumer docs now consistently distinguish immediate payload visitors from
   row-lifetime DATA enumeration, with explicit Go `VisitEntryPayloads`
   callback-scope guidance.
+- Python docs now distinguish the owned-copy visitor from the row-scoped
+  `enumerate_entry_payload` API.
 
 Tests or equivalent validation:
 
@@ -551,6 +571,19 @@ Tests or equivalent validation:
 - After the Go visitor lifetime docs reconciliation,
   `python3 tests/docs/check_wiki_docs.py` passed again and
   `python3 tests/docs/verify_examples.py` passed again, 31/31 examples.
+- After reviewer-fix changes:
+  - `cargo test -q -p systemd-journal-sdk reader_options_`: passed, 2/2.
+  - `cargo check -q --workspace`: passed.
+  - `go test ./...`: passed.
+  - `npm run typecheck`: passed.
+  - `npm test`: passed.
+  - `PYTHONPATH=python python3 python/cmd/reader_core_bench.py --help`:
+    passed, proving the benchmark import path.
+  - `PYTHONPATH=python python3 -m pytest python/test_reader_facade.py -q`:
+    passed, 26/26.
+  - `python3 tests/docs/check_wiki_docs.py`: passed.
+  - `python3 tests/docs/verify_examples.py`: passed, 31/31 examples.
+  - `git diff --check`: passed.
 - `git diff --check`: passed.
 - `.agents/sow/audit.sh`: passed.
 
@@ -561,7 +594,31 @@ Real-use evidence:
 
 Reviewer findings:
 
-- Pending whole-SOW external reviewer pass before SOW close.
+- First whole-SOW reviewer pass before close:
+  - `llm-netdata-cloud/qwen3.7-plus`: NOT PRODUCTION GRADE. Found
+    `python/cmd/reader_core_bench.py` top-level `READER_ACCESS_READ_AT`
+    import regression and Node.js default package runtime
+    `READER_ACCESS_MMAP` export gap.
+  - `llm-netdata-cloud/mimo-v2.5-pro`: NOT YET PRODUCTION GRADE. Found the
+    same Python benchmark import regression, missing Go
+    `DirectoryReader.VisitEntryPayloads` godoc, Node.js runtime/type export
+    mismatch, and minor Home-page wording gap.
+  - `llm-netdata-cloud/minimax-m3-coder`: PRODUCTION GRADE after recommended
+    pre-close cleanup. Recommended documenting Python visitor copy cost,
+    tightening product-scope wording, documenting or removing the Node.js
+    runtime mmap constant, and adding a small Rust `with_bounds` test.
+  - `llm-netdata-cloud/glm-5.2-max`: NOT PRODUCTION GRADE. Found Node.js
+    default package runtime `READER_ACCESS_MMAP` export as the blocking issue,
+    plus low-severity Rust public-boundary test coverage and Go godoc
+    suggestions.
+  - `llm-netdata-cloud/deepseek-v4-pro`: timed out after the 30-minute command
+    timeout with no review output.
+  - `llm-netdata-cloud/kimi-k2.7-code`: output collection failed because the
+    process ID was already unknown when polled; no findings were available.
+- Disposition: all concrete completed-reviewer findings were accepted and fixed
+  in this SOW before reviewer rerun. The Python full-suite optional-`lz4`
+  limitation remains recorded separately because targeted affected tests passed
+  and no top-level read-at imports remain.
 
 Same-failure scan:
 
@@ -571,6 +628,8 @@ Same-failure scan:
   are intentional internal/test hooks, runtime explicit-mmap rejection tests,
   Python internal diagnostic constants, or pre-implementation evidence text in
   this SOW.
+- After reviewer fixes, `rg -n "READER_ACCESS_MMAP" node/src/index.js
+  node/index.d.ts || true` returned no matches.
 
 Sensitive data gate:
 
@@ -584,7 +643,7 @@ Artifact maintenance gate:
 - Runtime project skills: pending implementation decision.
 - Specs: updated `.agents/sow/specs/product-scope.md`.
 - End-user/operator docs: updated Go wiki docs, Go README/API, Python README,
-  Node README, options reference, and production profiles.
+  Node README, options reference, production profiles, and Home page.
 - End-user/operator skills: pending implementation decision.
 - SOW lifecycle: activated in `.agents/sow/current/` with
   `Status: in-progress`; SOW-0113 created in pending for optional Node.js
@@ -608,7 +667,9 @@ End-user/operator docs update:
   `python/README.md`, and `node/README.md`. Also reconciled
   `docs/API-Overview.md`, `docs/Getting-Started.md`, `docs/Home.md`,
   `docs/Hot-Path-Guide.md`, and `docs/Reader-APIs.md` so Go callback-scoped
-  visitor guidance is visible from general reader guidance pages.
+  visitor guidance is visible from general reader guidance pages. After
+  reviewer feedback, `docs/Home.md` explicitly states that Go
+  `VisitEntryPayloads` is callback-scoped.
 
 End-user/operator skills update:
 
@@ -619,6 +680,8 @@ Lessons:
 - Hiding a Rust re-export can expose internal test tools that were implicitly
   depending on the public facade; workspace checks are required for this class
   of change, not only public crate tests.
+- Type declaration cleanup is not sufficient for Node.js package API cleanup;
+  the runtime named/default export surface needs an explicit negative test.
 
 Follow-up mapping:
 

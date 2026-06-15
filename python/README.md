@@ -494,6 +494,9 @@ normally.
   integrity and then journal structure
 - `FileReader.visit_entry_payloads(callback)` - Visit current-entry
   `FIELD=value` payloads without materializing the full entry object
+  The callback receives owned `bytes` values that are safe to retain, but this
+  path copies each payload. Use `FileReader.enumerate_entry_payload()` when a
+  row-scoped current-entry payload API is needed.
 - `FileReader.collect_entry_payloads()` - Collect current-entry full payloads
 - `FileReader.get_entry_payload(field_name)` - Get the first full payload for
   a UTF-8 or byte field name

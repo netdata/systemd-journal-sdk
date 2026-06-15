@@ -595,11 +595,11 @@ Accepted reader API layers:
   file. The end-of-data result for the current row does not release those
   slices, so consumers may cache field pointers during enumeration and process
   them after the inner data loop finishes. Rust returns uncompressed DATA
-  directly from mmap-backed journal payloads only when pointer stability is
-  proven, stores compressed DATA in row-scoped owned buffers, and uses
-  row-scoped owned buffers for windowed mmap when pointer stability cannot be
-  proven. Go, Node.js, and Python expose the same row-scoped facade contract
-  through their idiomatic borrowed or copy-on-iteration forms: Go returns
+  directly from stable mmap-backed journal payloads when that path preserves the
+  row-scoped lifetime, stores compressed DATA in row-scoped owned buffers, and
+  uses row-scoped owned buffers when a windowed mapping could invalidate a
+  borrowed pointer. Go, Node.js, and Python expose the same row-scoped facade
+  contract through their idiomatic borrowed or copy-on-iteration forms: Go returns
   mmap/read-at slices or fresh decompressed slices, Node.js returns `Buffer`
   slices or fresh decompressed `Buffer` objects, and Python returns `bytes`
   objects from the facade. Callback-style visitor APIs remain callback-scoped.

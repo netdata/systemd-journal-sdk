@@ -384,6 +384,12 @@ fn default_reader_options_use_production_window_size() {
 }
 
 #[test]
+fn reader_options_with_bounds_sets_bounds() {
+    let options = ReaderOptions::default().with_bounds(ReaderBounds::Snapshot);
+    assert_eq!(options.bounds, ReaderBounds::Snapshot);
+}
+
+#[test]
 fn directory_reader_uses_sequential_path_for_non_overlapping_files() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let first_path = dir.path().join("journals/first.journal");

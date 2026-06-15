@@ -273,6 +273,10 @@ func (dr *DirectoryReader) GetEntry() (*Entry, error) {
 	return dr.files[dr.index].GetEntry()
 }
 
+// VisitEntryPayloads calls visitor for each current DATA payload as FIELD=value
+// bytes. Payloads are callback-scoped and must not be retained or mutated after
+// the visitor returns; use EnumerateEntryPayload when row-level lifetime is
+// required.
 func (dr *DirectoryReader) VisitEntryPayloads(visitor func([]byte) error) error {
 	r, err := dr.currentReader()
 	if err != nil {

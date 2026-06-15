@@ -481,6 +481,8 @@ function testConformanceConstants() {
     assert.notEqual(actualModule[name], null, `d.ts constant ${name} is null`);
     assert.notEqual(actualModule[name], undefined, `d.ts constant ${name} is undefined`);
   }
+  assert.equal(actualModule.READER_ACCESS_MMAP, undefined,
+    'READER_ACCESS_MMAP must not be exported from the default package');
 }
 
 function testNoExtraneousFreeExploreFunctions() {
