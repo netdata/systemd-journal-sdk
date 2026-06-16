@@ -46,7 +46,7 @@ access mode on Unix and is the production hot path. `read-at` remains in the
 harness as an explicit comparison and diagnostic mode.
 
 The Go reader benchmark helper also accepts `--cpuprofile`, `--memprofile`,
-and `--loops` for targeted profiling outside the full Python harness. Keep
+and `--loops` for targeted profiling outside the full benchmark harness. Keep
 profile outputs under `.local/benchmarks/`; `--loops` repeats the selected
 read case inside one process to collect enough samples and is not used by the
 shared checksum-comparison harness.
@@ -129,10 +129,6 @@ Reader production comparisons always use this row order per surface:
 4. `rust:facade-data`
 5. `go:sdk-payloads`
 6. `go:facade-data`
-7. `node:sdk-payloads`
-8. `node:facade-data`
-9. `python:sdk-payloads`
-10. `python:facade-data`
 
 Reader reports always split `file` and `open-files` surfaces. `sdk-entry`,
 `core-next`, `core-offsets`, alternate bounds, alternate mmap strategies, and
@@ -155,8 +151,6 @@ Writer-core reports always use this language order:
 1. `systemd`
 2. `rust`
 3. `go`
-4. `node`
-5. `python`
 
 Writer-core change reports also include a `Configuration Differences`
 subsection when the same language was measured with different API modes or

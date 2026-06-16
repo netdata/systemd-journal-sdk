@@ -107,55 +107,6 @@ if err := w.Append([]journal.Field{
 }
 ```
 
-## Python Run-Mode Reader Example
-
-Open a file-backed reader, scan all entries, and count MESSAGE values.
-
-<!-- verify-example: lang=python id=python-read-one-file -->
-```python
-from journal import FileReader
-
-reader = FileReader.open("/var/log/journal/example/system.journal")
-try:
-    reader.seek_head()
-    count = 0
-    while reader.next():
-        entry = reader.get_entry()
-        if entry and entry["fields"].get("MESSAGE"):
-            count += 1
-    if count == 0:
-        raise RuntimeError("no entries seen")
-finally:
-    reader.close()
-```
-
-## JavaScript Run-Mode Reader Example
-
-Open a file-backed reader, scan all entries, and count MESSAGE values through
-the Node.js package surface.
-
-<!-- verify-example: lang=javascript id=javascript-read-one-file -->
-```javascript
-import { FileReader } from '@netdata/systemd-journal-sdk';
-
-const reader = FileReader.open('/var/log/journal/example/system.journal');
-try {
-  reader.seekHead();
-  let count = 0;
-  while (reader.step()) {
-    const entry = reader.getEntry();
-    if (entry.fields.MESSAGE) {
-      count += 1;
-    }
-  }
-  if (count === 0) {
-    throw new Error('no entries seen');
-  }
-} finally {
-  reader.close();
-}
-```
-
 ## Illustrative-Only Block
 
 This block is intentionally illustrative; the harness must skip it. The body

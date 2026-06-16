@@ -3,7 +3,7 @@
 This framework builds selected systemd versions under `.local/systemd-matrix/`,
 generates deterministic journal files with a systemd internal test helper, and
 runs a sanitized reader matrix against version-built `journalctl`, stock
-`journalctl`, and the Rust, Go, Python, and Node.js SDK readers.
+`journalctl`, and the Rust and Go SDK readers.
 
 It must not be used against the live host journal. Inputs are explicit generated
 files or caller-provided journal files, and stock systemd validation always uses
@@ -124,13 +124,11 @@ Reader matrix reports have:
 - `STOCK_READ_FAILED`: stock journalctl export read failed
 - `RUST_READ_FAILED`: Rust SDK digest helper failed
 - `GO_READ_FAILED`: Go SDK digest helper failed
-- `PYTHON_READ_FAILED`: Python SDK file-backed journalctl export failed
-- `NODE_READ_FAILED`: Node.js SDK file-backed journalctl export failed
 - `DIGEST_MISMATCH`: reader logical digest differs from the selected baseline
 - `COUNT_MISMATCH`: reader logical counts differ from the selected baseline
 - `VERSION_EXPORT_METADATA_DRIFT`: version-built `journalctl -o export`
-  differs from modern stock output while counts match; modern stock/Rust/Go/
-  Python/Node.js parity remains the pass/fail gate
+  differs from modern stock output while counts match; modern stock/Rust/Go
+  parity remains the pass/fail gate
 - `VERSION_JOURNALCTL_UNAVAILABLE`: version build did not produce journalctl
 - `VERIFY_KEY_MISSING`: sealed journal verification was requested but the
   runner could not find the matching verification key under `.local`

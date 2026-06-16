@@ -4,7 +4,7 @@
 
 Status: open
 
-Sub-state: pending final production release and language registry publication
+Sub-state: pending final production release and Rust/Go publication
 after SDK compatibility, portability, corpus validation, and integration gates
 are complete.
 
@@ -12,25 +12,23 @@ are complete.
 
 ### Purpose
 
-Publish the SDK as a stable `v1.0.0` multi-language project so downstream
+Publish the SDK as a stable `v1.0.0` Rust/Go project so downstream
 consumers can depend on language registry packages or versioned module tags
 without vendoring SDK source.
 
 ### User Request
 
 The user stated that once all work is done, the project needs to publish
-`v1.0.0` and register the project in language registries so consumers,
+`v1.0.0` and register the project in the relevant language registries so consumers,
 including Netdata, can use it without vendoring anything.
 
 ### Assistant Understanding
 
 Facts:
 
-- The SDK has four language surfaces: Rust, Go, Node.js, and Python.
+- The SDK product targets are Rust and Go after SOW-0116.
 - Go consumers need versioned module tags, including language-specific Go module
   tags when the Go module lives below the repository root.
-- Node.js consumers need npm package publication.
-- Python consumers need Python package metadata and registry publication.
 - Rust consumers need crate publication or a documented versioned git strategy
   if the workspace/crate structure is not yet registry-ready.
 - Secrets, registry tokens, account names, and credentials must not be written
@@ -51,7 +49,7 @@ Inferences:
 
 Unknowns:
 
-- Exact registry names and organization ownership for Rust, npm, and Python.
+- Exact registry names and organization ownership for Rust.
 - Whether every Rust crate in the workspace should be published or only a
   curated public subset.
 - Whether registry credentials are already configured locally or must be
@@ -61,11 +59,11 @@ Unknowns:
 
 ### Acceptance Criteria
 
-- Release readiness checklist passes for Rust, Go, Node.js, and Python.
+- Release readiness checklist passes for Rust and Go.
 - Public package metadata is complete: package names, versions, license,
   repository URL, descriptions, keywords/classifiers, README links, minimum
   runtime/compiler versions, dependency versions, and included files.
-- Installation instructions are documented for every language.
+- Installation instructions are documented for Rust and Go.
 - Registry dry-run/package validation passes for every package type before any
   real publish.
 - `v1.0.0` source tag is created only after tests, compatibility matrices,
@@ -74,9 +72,7 @@ Unknowns:
   module path still requires a submodule tag.
 - Rust crates are published to the selected registry or the SOW records an
   explicit user-approved alternative.
-- Node.js package is published to npm under the approved package name.
-- Python package is published to the approved Python registry package name.
-- A clean consumer install test proves each language can import/use the SDK from
+- A clean consumer install test proves each supported language can import/use the SDK from
   the published artifact or module tag without vendoring.
 - Release notes identify compatibility guarantees, platform support, known
   limitations, and migration guidance without leaking internal sensitive data.
@@ -88,7 +84,7 @@ Sources checked:
 - User request in this thread.
 - Existing release tagging project skill:
   `.agents/skills/project-release-tagging/SKILL.md`.
-- Existing package roots: `rust/`, `go/`, `node/`, and `python/`.
+- Existing product package roots: `rust/` and `go/`.
 - Existing project SOW/status dependency graph.
 
 Current state:
@@ -106,7 +102,7 @@ Risks:
 - Registry names may be unavailable or controlled by a different account.
 - Publishing credentials are sensitive and must be handled outside committed
   artifacts.
-- Multi-language version skew can confuse consumers.
+- Rust/Go version skew can confuse consumers.
 - Go module subdirectory tags are easy to miss, causing consumers to resolve the
   wrong version.
 
@@ -129,7 +125,7 @@ Evidence reviewed:
 
 Affected contracts and surfaces:
 
-- Public API stability for Rust, Go, Node.js, and Python.
+- Public API stability for Rust and Go.
 - Package metadata and registry artifacts.
 - Git tags and release notes.
 - Consumer installation docs.
@@ -162,7 +158,7 @@ Sensitive data handling plan:
 Implementation plan:
 
 1. Confirm release prerequisites and blockers.
-2. Audit package metadata and public API docs in all four languages.
+2. Audit package metadata and public API docs in Rust and Go.
 3. Add or repair packaging files and registry metadata.
 4. Run full test, conformance, interoperability, portability, corpus, and
    consumer-install validation.
@@ -178,9 +174,9 @@ Validation plan:
 - Full repository test suite and all compatibility matrices.
 - Cross-platform build/import/install checks.
 - Real-world corpus evaluation gate from SOW-0064.
-- Package dry-run validation for Rust, Node.js, and Python.
+- Package dry-run validation for Rust.
 - `go list` / clean module install test for Go at the release tag.
-- Clean consumer projects for all languages, using only registry/package/module
+- Clean consumer projects for Rust and Go, using only registry/package/module
   sources.
 - `.agents/sow/audit.sh` and `git diff --check`.
 - Whole-SOW read-only reviewer pass before publishing and after package metadata

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """File-backed journalctl query parity matrix.
 
-Generates repo-local fixtures and compares stock journalctl with the Rust, Go,
-Node.js, and Python journalctl rewrites for --since, --until, --boot, and
---follow behavior. Runtime artifacts stay under .local/interoperability/.
+Generates repo-local fixtures and compares stock journalctl with the Rust and
+Go journalctl rewrites for --since, --until, --boot, and --follow behavior.
+Runtime artifacts stay under .local/interoperability/.
 """
 
 from __future__ import annotations
@@ -13,18 +13,18 @@ import json
 import os
 import shutil
 import subprocess  # nosec B404
-import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+from go_fixture_writer import start_live_journal_writer, write_journal_file
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_DIR = REPO_ROOT / ".local" / "interoperability"
 BIN_DIR = LOCAL_DIR / "bin"
 FIXTURE_DIR = LOCAL_DIR / "journalctl-query"
-PYTHON = os.environ.get("PYTHON", "python3")
 
 MACHINE_ID = "00112233445566778899aabbccddeeff"
 BOOT_A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -49,8 +49,6 @@ READERS = {
     "stock": ReaderSpec("stock"),
     "go": ReaderSpec("go"),
     "rust": ReaderSpec("rust"),
-    "node": ReaderSpec("node"),
-    "python": ReaderSpec("python"),
 }
 
 
@@ -109,8 +107,6 @@ def build_env() -> dict[str, str]:
     env.setdefault("GOPATH", str(local / "go"))
     env.setdefault("CARGO_HOME", str(local / "cargo-home"))
     env.setdefault("CARGO_TARGET_DIR", str(local / "cargo-target"))
-    env.setdefault("npm_config_cache", str(local / "npm-cache"))
-    env.setdefault("PIP_CACHE_DIR", str(local / "pip-cache"))
     return env
 
 
@@ -170,37 +166,41 @@ def make_fixtures() -> dict[str, Path]:
 
 
 def write_journal(path: Path, rows: list[Row]) -> None:
-    sys.path.insert(0, str(REPO_ROOT / "python"))
-    from journal import Writer
-
     first = rows[0]
-    writer = Writer.create(
-        str(path),
-        {
-            "machine_id": MACHINE_ID,
-            "boot_id": first.boot_id,
-            "seqnum_id": "12121212121212121212121212121212",
-        },
-    )
-    try:
-        for i, row in enumerate(rows, start=1):
-            writer.append(
-                [
-                    {"name": "MESSAGE", "value": row.message},
-                    {"name": "TEST_ID", "value": "journalctl-query"},
-                    {"name": "_BOOT_ID", "value": row.boot_id},
-                    {"name": "_MACHINE_ID", "value": MACHINE_ID},
+    write_journal_file(
+        path,
+        machine_id=MACHINE_ID,
+        boot_id=first.boot_id,
+        seqnum_id="12121212121212121212121212121212",
+        entries=[
+            {
+                "realtime_usec": row.realtime,
+                "monotonic_usec": i,
+                "boot_id": row.boot_id,
+                "fields": [
+                    ("MESSAGE", row.message),
+                    ("TEST_ID", "journalctl-query"),
+                    ("_BOOT_ID", row.boot_id),
+                    ("_MACHINE_ID", MACHINE_ID),
                 ],
-                {
-                    "realtime_usec": row.realtime,
-                    "monotonic_usec": i,
-                    "boot_id": row.boot_id,
-                },
-            )
-        writer.close()
-    except Exception:
-        writer.close()
-        raise
+            }
+            for i, row in enumerate(rows, start=1)
+        ],
+    )
+
+
+def row_entry(message: str, realtime: int, monotonic: int, test_id: str) -> dict[str, object]:
+    return {
+        "realtime_usec": realtime,
+        "monotonic_usec": monotonic,
+        "boot_id": BOOT_A,
+        "fields": [
+            ("MESSAGE", message),
+            ("TEST_ID", test_id),
+            ("_BOOT_ID", BOOT_A),
+            ("_MACHINE_ID", MACHINE_ID),
+        ],
+    }
 
 
 def reader_command(reader: str, tools: dict[str, str], mode: str, path: Path, args: list[str]) -> list[str]:
@@ -210,10 +210,6 @@ def reader_command(reader: str, tools: dict[str, str], mode: str, path: Path, ar
         base = [tools["go_journalctl"], f"--{mode}", str(path), "--output=json"]
     elif reader == "rust":
         base = [tools["rust_journalctl"], f"--{mode}", str(path), "--output=json"]
-    elif reader == "node":
-        base = ["node", str(REPO_ROOT / "node/cmd/journalctl/index.js"), f"--{mode}", str(path), "--output=json"]
-    elif reader == "python":
-        base = [PYTHON, str(REPO_ROOT / "python/cmd/journalctl.py"), f"--{mode}", str(path), "--output=json"]
     else:
         raise ValueError(reader)
     return [*base, *args]
@@ -372,37 +368,42 @@ def run_follow_reader(
     write_path: Path,
     case: dict[str, object],
 ) -> tuple[list[str], int, str, list[str]]:
-    sys.path.insert(0, str(REPO_ROOT / "python"))
-    from journal import Writer
-
     if mode == "directory":
         read_path.mkdir(parents=True, exist_ok=True)
     write_path.parent.mkdir(parents=True, exist_ok=True)
-    writer = Writer.create(
-        str(write_path),
-        {
-            "machine_id": MACHINE_ID,
-            "boot_id": BOOT_A,
-            "seqnum_id": "34343434343434343434343434343434",
-        },
-    )
+    ready_file = write_path.with_suffix(write_path.suffix + ".ready")
     seq = 1
+    initial_entries = []
     for message, realtime in case["initial"]:
-        writer.append(
-            [
-                {"name": "MESSAGE", "value": message},
-                {"name": "TEST_ID", "value": case["test_id"]},
-                {"name": "_BOOT_ID", "value": BOOT_A},
-                {"name": "_MACHINE_ID", "value": MACHINE_ID},
-            ],
-            {
-                "realtime_usec": realtime,
-                "monotonic_usec": seq,
-                "boot_id": BOOT_A,
-            },
-        )
+        initial_entries.append(row_entry(message, realtime, seq, str(case["test_id"])))
         seq += 1
-    writer.sync()
+    append_entries = []
+    for message, realtime in case["appends"]:
+        append_entries.append(row_entry(message, realtime, seq, str(case["test_id"])))
+        seq += 1
+    writer_proc = start_live_journal_writer(
+        write_path,
+        ready_file=ready_file,
+        machine_id=MACHINE_ID,
+        boot_id=BOOT_A,
+        seqnum_id="34343434343434343434343434343434",
+        initial_entries=initial_entries,
+        append_entries=append_entries,
+    )
+    deadline = time.monotonic() + 5.0
+    while not ready_file.exists():
+        if writer_proc.poll() is not None:
+            stdout, stderr = writer_proc.communicate(timeout=1)
+            return [], writer_proc.returncode or 1, (stdout + stderr)[-1000:], []
+        if time.monotonic() > deadline:
+            writer_proc.terminate()
+            try:
+                stdout, stderr = writer_proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                writer_proc.kill()
+                stdout, stderr = writer_proc.communicate(timeout=2)
+            return [], 1, ("go live fixture writer did not become ready\n" + stdout + stderr)[-1000:], []
+        time.sleep(0.05)
     cmd = reader_command(
         reader,
         tools,
@@ -410,6 +411,7 @@ def run_follow_reader(
         read_path,
         [*case["args"], f"TEST_ID={case['test_id']}"],
     )
+    proc: subprocess.Popen[str] | None = None
     # nosemgrep
     # subprocess is required by this harness; commands are shell=False vectors.
     proc = subprocess.Popen(  # nosec B603
@@ -420,25 +422,15 @@ def run_follow_reader(
         stderr=subprocess.PIPE,
     )
     try:
-        time.sleep(0.25)
-        for message, realtime in case["appends"]:
-            writer.append(
-                [
-                    {"name": "MESSAGE", "value": message},
-                    {"name": "TEST_ID", "value": case["test_id"]},
-                    {"name": "_BOOT_ID", "value": BOOT_A},
-                    {"name": "_MACHINE_ID", "value": MACHINE_ID},
-                ],
-                {
-                    "realtime_usec": realtime,
-                    "monotonic_usec": seq,
-                    "boot_id": BOOT_A,
-                },
-            )
-            seq += 1
-            writer.sync()
-            time.sleep(0.15)
-
+        try:
+            writer_stdout, writer_stderr = writer_proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            writer_proc.terminate()
+            try:
+                writer_stdout, writer_stderr = writer_proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                writer_proc.kill()
+                writer_stdout, writer_stderr = writer_proc.communicate(timeout=2)
         time.sleep(0.7)
         proc.terminate()
         try:
@@ -447,7 +439,13 @@ def run_follow_reader(
             proc.kill()
             stdout, stderr = proc.communicate(timeout=5)
     finally:
-        writer.close()
+        if writer_proc.poll() is None:
+            writer_proc.terminate()
+            try:
+                writer_proc.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                writer_proc.kill()
+                writer_proc.communicate(timeout=2)
         if proc.poll() is None:
             proc.terminate()
             try:
@@ -458,6 +456,8 @@ def run_follow_reader(
 
     actual = parse_messages(stdout)
     expected = case["expected"]
+    if writer_proc.returncode != 0:
+        return actual, writer_proc.returncode or 1, (writer_stdout + writer_stderr + stderr)[-1000:], cmd
     return actual, 0 if actual == expected else proc.returncode or 1, stderr, cmd
 
 

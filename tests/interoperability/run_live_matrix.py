@@ -98,16 +98,12 @@ class LiveWorkspace:
 WRITERS = {
     "go": WriterSpec("go", "go-live-writer", "file"),
     "rust": WriterSpec("rust", "rust-live-writer", "directory"),
-    "node": WriterSpec("node", "node-live-writer", "file"),
-    "python": WriterSpec("python", "python-live-writer", "file"),
 }
 
 READERS = {
     "stock": ReaderSpec("stock"),
     "go": ReaderSpec("go"),
     "rust": ReaderSpec("rust"),
-    "node": ReaderSpec("node"),
-    "python": ReaderSpec("python"),
 }
 
 FEATURES = {
@@ -123,7 +119,7 @@ FEATURES = {
 }
 
 
-ALLOWED_COMMAND_NAMES = frozenset({"cargo", "cc", "go", "journalctl", "node", "python3"})
+ALLOWED_COMMAND_NAMES = frozenset({"cargo", "cc", "go", "journalctl"})
 
 
 def is_within(path: Path, root: Path) -> bool:
@@ -206,14 +202,6 @@ def build_env() -> dict[str, str]:
     env.setdefault("GOPATH", str(local / "go"))
     env.setdefault("CARGO_HOME", str(local / "cargo-home"))
     env.setdefault("CARGO_TARGET_DIR", str(local / "cargo-target"))
-    env.setdefault("npm_config_cache", str(local / "npm-cache"))
-    env.setdefault("PIP_CACHE_DIR", str(local / "pip-cache"))
-    python_deps = local / "python-deps"
-    env["PYTHONPATH"] = (
-        f"{python_deps}{os.pathsep}{env['PYTHONPATH']}"
-        if env.get("PYTHONPATH")
-        else str(python_deps)
-    )
     return env
 
 
@@ -351,18 +339,6 @@ def writer_cmd(
             tools["rust_livewriter"], path_flag, str(target), "--ready-file", str(ready),
             "--entries", str(entries), "--delay", delay, *extras,
         ]
-    if writer.name == "node":
-        return [
-            "node", str(REPO_ROOT / "node/internal/testcmd/livewriter.js"),
-            "--path", str(target), "--ready-file", str(ready),
-            "--entries", str(entries), "--delay", f"{delay_ms}ms", *extras,
-        ]
-    if writer.name == "python":
-        return [
-            "python3", str(REPO_ROOT / "python/cmd/livewriter.py"),
-            "--path", str(target), "--ready-file", str(ready),
-            "--entries", str(entries), "--delay", f"{delay_ms}ms", *extras,
-        ]
     raise ValueError(writer.name)
 
 
@@ -378,10 +354,6 @@ def reader_cmd(reader: ReaderSpec, tools: dict[str, str], journal_path: str, mat
         return [tools["go_journalctl"], "--file", journal_path, "--output=json", *matches]
     if reader.name == "rust":
         return [tools["rust_journalctl"], "--file", journal_path, "--output=json", *matches]
-    if reader.name == "node":
-        return ["node", str(REPO_ROOT / "node/cmd/journalctl/index.js"), "--file", journal_path, "--output=json", *matches]
-    if reader.name == "python":
-        return ["python3", str(REPO_ROOT / "python/cmd/journalctl.py"), "--file", journal_path, "--output=json", *matches]
     raise ValueError(reader.name)
 
 

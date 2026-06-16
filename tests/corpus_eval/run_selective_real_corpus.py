@@ -804,15 +804,6 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             "committed": False,
             "contains_raw_paths": True,
         },
-        "python_node_scope": {
-            "included": False,
-            "reason": (
-                "not included in this selective run because the existing "
-                "real-corpus harness is Rust/Go/systemd focused and "
-                "Python/Node are mapped to SOW-0065 parity closure unless a "
-                "small language-specific follow-up is requested"
-            ),
-        },
         "selection_policy": [
             {"feature_class": feature, "reason": reason}
             for feature, reason in FEATURE_POLICY

@@ -18,7 +18,7 @@ REJECTIONS = DATASETS / "rejections" / "corpus.jsonl"
 OUT = ROOT / ".local" / "datasets" / "ingesters"
 BIN = OUT / "bin"
 
-LANGUAGES = ("systemd", "rust", "go", "node", "python")
+LANGUAGES = ("systemd", "rust", "go")
 SEQNUM_ID = "22222222222222222222222222222222"
 DEFAULT_MAX_SIZE_BYTES = 64 * 1024 * 1024
 
@@ -41,10 +41,6 @@ def run(cmd: list[str], *, cwd: Path = ROOT, env: dict[str, str] | None = None) 
 
 def ensure_bins(language: str) -> tuple[Path | str, dict]:
     BIN.mkdir(parents=True, exist_ok=True)
-    if language == "python":
-        return sys.executable, {"script": str(ROOT / "python" / "cmd" / "dataset_ingester.py")}
-    if language == "node":
-        return "node", {"script": str(ROOT / "node" / "cmd" / "dataset_ingester.js")}
     if language == "go":
         output = BIN / "go-dataset-ingester"
         result = run(
@@ -108,10 +104,7 @@ def ingester_command(
     final_state: str,
     max_size_bytes: int | None,
 ) -> list[str]:
-    if language in {"python", "node"}:
-        cmd = [str(binary), metadata["script"]]
-    else:
-        cmd = [str(binary)]
+    cmd = [str(binary)]
     cmd += ["--dataset", str(dataset), "--output", str(output)]
     if rejection:
         cmd.append("--rejection-mode")

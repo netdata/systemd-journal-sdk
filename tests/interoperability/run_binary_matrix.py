@@ -53,16 +53,12 @@ class ReaderSpec:
 WRITERS = {
     "go": WriterSpec("go", "file"),
     "rust": WriterSpec("rust", "directory"),
-    "node": WriterSpec("node", "file"),
-    "python": WriterSpec("python", "file"),
 }
 
 READERS = {
     "stock": ReaderSpec("stock"),
     "go": ReaderSpec("go"),
     "rust": ReaderSpec("rust"),
-    "node": ReaderSpec("node"),
-    "python": ReaderSpec("python"),
 }
 
 
@@ -154,34 +150,6 @@ def writer_command(writer: WriterSpec, tools: dict[str, str], target: Path, read
         return [tools["go_livewriter"], "--path", str(target), "--ready-file", str(ready), "--entries", str(entries), "--delay", "1ms", "--binary-fixture"]
     if writer.name == "rust":
         return [tools["rust_livewriter"], "--dir", str(target), "--ready-file", str(ready), "--entries", str(entries), "--delay", "1ms", "--binary-fixture"]
-    if writer.name == "node":
-        return [
-            "node",
-            str(REPO_ROOT / "node/internal/testcmd/livewriter.js"),
-            "--path",
-            str(target),
-            "--ready-file",
-            str(ready),
-            "--entries",
-            str(entries),
-            "--delay",
-            "1ms",
-            "--binary-fixture",
-        ]
-    if writer.name == "python":
-        return [
-            "python3",
-            str(REPO_ROOT / "python/cmd/livewriter.py"),
-            "--path",
-            str(target),
-            "--ready-file",
-            str(ready),
-            "--entries",
-            str(entries),
-            "--delay",
-            "1ms",
-            "--binary-fixture",
-        ]
     raise ValueError(writer.name)
 
 
@@ -497,10 +465,6 @@ def _reader_json_cmd(reader: ReaderSpec, tools: dict[str, str], journal_path: st
         return [tools["go_journalctl"], "--file", journal_path, "--output=json", "TEST_ID=binary-interoperability"]
     if reader.name == "rust":
         return [tools["rust_journalctl"], "--file", journal_path, "--output=json", "TEST_ID=binary-interoperability"]
-    if reader.name == "node":
-        return ["node", str(REPO_ROOT / "node/cmd/journalctl/index.js"), "--file", journal_path, "--output", "json", "TEST_ID=binary-interoperability"]
-    if reader.name == "python":
-        return ["python3", str(REPO_ROOT / "python/cmd/journalctl.py"), "--file", journal_path, "--output", "json", "TEST_ID=binary-interoperability"]
     raise ValueError(reader.name)
 
 
@@ -511,10 +475,6 @@ def _reader_export_cmd(reader: ReaderSpec, tools: dict[str, str], journal_path: 
         return [tools["go_journalctl"], "--file", journal_path, "--output=export", "TEST_ID=binary-interoperability"]
     if reader.name == "rust":
         return [tools["rust_journalctl"], "--file", journal_path, "--output=export", "TEST_ID=binary-interoperability"]
-    if reader.name == "node":
-        return ["node", str(REPO_ROOT / "node/cmd/journalctl/index.js"), "--file", journal_path, "--output", "export", "TEST_ID=binary-interoperability"]
-    if reader.name == "python":
-        return ["python3", str(REPO_ROOT / "python/cmd/journalctl.py"), "--file", journal_path, "--output=export", "TEST_ID=binary-interoperability"]
     raise ValueError(reader.name)
 
 

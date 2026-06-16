@@ -60,12 +60,6 @@ SINGLE_FILE_CASES = [
     ("go", "file", "sdk-entry", "snapshot", "mmap"),
     ("go", "file", "sdk-payloads", "snapshot", "mmap"),
     ("go", "file", "facade-data", "snapshot", "mmap"),
-    ("python", "file", "sdk-entry", "live", "mmap"),
-    ("python", "file", "sdk-payloads", "live", "mmap"),
-    ("python", "file", "facade-data", "live", "mmap"),
-    ("node", "file", "sdk-entry", "live", "buffer"),
-    ("node", "file", "sdk-payloads", "live", "buffer"),
-    ("node", "file", "facade-data", "live", "buffer"),
     ("systemd", "file", "next", "", ""),
     ("systemd", "file", "data", "", ""),
 ]
@@ -89,12 +83,6 @@ OPEN_FILES_CASES = [
     ("go", "open-files", "sdk-entry", "live", "mmap"),
     ("go", "open-files", "sdk-payloads", "live", "mmap"),
     ("go", "open-files", "facade-data", "live", "mmap"),
-    ("python", "open-files", "sdk-entry", "live", "mmap"),
-    ("python", "open-files", "sdk-payloads", "live", "mmap"),
-    ("python", "open-files", "facade-data", "live", "mmap"),
-    ("node", "open-files", "sdk-entry", "live", "buffer"),
-    ("node", "open-files", "sdk-payloads", "live", "buffer"),
-    ("node", "open-files", "facade-data", "live", "buffer"),
     ("systemd", "open-files", "data", "", ""),
 ]
 
@@ -105,19 +93,7 @@ COMPARABLE_RUST_PAYLOAD_MODES = {
     "facade-data",
 }
 
-COMPARABLE_PYTHON_PAYLOAD_MODES = {
-    "sdk-entry",
-    "sdk-payloads",
-    "facade-data",
-}
-
 COMPARABLE_GO_PAYLOAD_MODES = {
-    "sdk-entry",
-    "sdk-payloads",
-    "facade-data",
-}
-
-COMPARABLE_NODE_PAYLOAD_MODES = {
     "sdk-entry",
     "sdk-payloads",
     "facade-data",
@@ -165,9 +141,6 @@ def build_env() -> dict[str, str]:
         "GOCACHE": str(local / "go-cache"),
         "GOMODCACHE": str(local / "go-mod-cache"),
         "GOPATH": str(local / "go-path"),
-        "npm_config_cache": str(local / "npm-cache"),
-        "PIP_CACHE_DIR": str(local / "pip-cache"),
-        "PYTHONPATH": str(ROOT / "python"),
     }
 
 
@@ -250,8 +223,6 @@ def build_tools(env: dict[str, str]) -> dict[str, list[str]]:
         "rust_writer": [str(ROOT / ".local" / "cargo-target" / "release" / "writer_core_bench")],
         "rust_reader": [str(ROOT / ".local" / "cargo-target" / "release" / "reader_core_bench")],
         "go_reader": [str(BIN_DIR / "go-reader-core-bench")],
-        "python_reader": [sys.executable, str(ROOT / "python" / "cmd" / "reader_core_bench.py")],
-        "node_reader": ["node", str(ROOT / "node" / "cmd" / "reader_core_bench.js")],
         "systemd_reader": [systemd_binary],
     }
 
@@ -379,41 +350,9 @@ def case_command(
             "--direction",
             direction,
         ]
-    elif language == "python":
-        cmd = [
-            *tools["python_reader"],
-            "--surface",
-            surface,
-            "--mode",
-            mode,
-            "--direction",
-            direction,
-            "--window-size",
-            str(window_size),
-            "--bounds",
-            bounds,
-            "--mmap-strategy",
-            mmap_strategy,
-        ]
     elif language == "go":
         cmd = [
             *tools["go_reader"],
-            "--surface",
-            surface,
-            "--mode",
-            mode,
-            "--direction",
-            direction,
-            "--window-size",
-            str(window_size),
-            "--bounds",
-            bounds,
-            "--mmap-strategy",
-            mmap_strategy,
-        ]
-    elif language == "node":
-        cmd = [
-            *tools["node_reader"],
             "--surface",
             surface,
             "--mode",
@@ -477,8 +416,6 @@ def is_comparable_checksum_result(result: dict[str, Any]) -> bool:
     return (
         (language == "rust" and mode in COMPARABLE_RUST_PAYLOAD_MODES)
         or (language == "go" and mode in COMPARABLE_GO_PAYLOAD_MODES)
-        or (language == "python" and mode in COMPARABLE_PYTHON_PAYLOAD_MODES)
-        or (language == "node" and mode in COMPARABLE_NODE_PAYLOAD_MODES)
     )
 
 

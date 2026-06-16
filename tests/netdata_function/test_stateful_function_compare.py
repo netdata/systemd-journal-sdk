@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess  # nosec B404
 import sys
 import tempfile
@@ -87,34 +88,13 @@ class StatefulFunctionCompareTest(unittest.TestCase):
 
 
 def _read_fixture_journal_bounds(fixture_dir: Path) -> tuple[int, int]:
-    """Open the fixture directory through the in-repo Python SDK
-    and return ``(first_entry_realtime_usec, last_entry_realtime_usec)``
-    from a single head-to-tail traversal. The directory must
-    already contain a system.journal file written by
+    """Return min/max realtime usec from a fixture written by
     ``make_static_fixture``."""
 
-    repo_python = Path(__file__).resolve().parent.parent.parent / "python"
-    if str(repo_python) not in sys.path:
-        sys.path.insert(0, str(repo_python))
-    from journal import DirectoryReader  # noqa: E402
-
-    reader = DirectoryReader.open(str(fixture_dir))
-    try:
-        reader.seek_head()
-        first = None
-        last = None
-        while reader.step() != 0:
-            rt = reader.get_realtime_usec()
-            if first is None:
-                first = rt
-            last = rt
-        if first is None or last is None:
-            raise AssertionError(
-                f"fixture {fixture_dir} contains no entries"
-            )
-        return first, last
-    finally:
-        reader.close()
+    timestamps = [int(entry["__REALTIME_TIMESTAMP"]) for entry in _read_fixture_entries(fixture_dir)]
+    if not timestamps:
+        raise AssertionError(f"fixture {fixture_dir} contains no entries")
+    return min(timestamps), max(timestamps)
 
 
 def _read_fixture_priorities(fixture_dir: Path) -> list[str]:
@@ -122,27 +102,25 @@ def _read_fixture_priorities(fixture_dir: Path) -> list[str]:
     entry in fixture order. The directory must already contain a
     system.journal file written by ``make_static_fixture``."""
 
-    repo_python = Path(__file__).resolve().parent.parent.parent / "python"
-    if str(repo_python) not in sys.path:
-        sys.path.insert(0, str(repo_python))
-    from journal import DirectoryReader  # noqa: E402
+    return [str(entry.get("PRIORITY", "")) for entry in _read_fixture_entries(fixture_dir)]
 
-    reader = DirectoryReader.open(str(fixture_dir))
-    try:
-        reader.seek_head()
-        priorities: list[str] = []
-        while reader.step() != 0:
-            raw = reader.get_entry_payload("PRIORITY")
-            if isinstance(raw, bytes):
-                text = raw.decode()
-                if "=" in text:
-                    text = text.split("=", 1)[1]
-                priorities.append(text)
-            else:
-                priorities.append(str(raw))
-        return priorities
-    finally:
-        reader.close()
+
+def _read_fixture_entries(fixture_dir: Path) -> list[dict[str, object]]:
+    journalctl = shutil.which("journalctl")
+    if journalctl is None:
+        raise unittest.SkipTest("journalctl is required to inspect generated fixture")
+    result = subprocess.run(  # nosec B603
+        [journalctl, "--directory", str(fixture_dir), "--output=json", "--no-pager"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            f"journalctl failed for fixture {fixture_dir}: {result.stderr[-1000:]}"
+        )
+    return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
 
 
 class StaticFixtureBuilderTest(unittest.TestCase):
@@ -218,13 +196,13 @@ class StaticFixtureBuilderTest(unittest.TestCase):
     def test_journal_contains_exactly_row_count_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             fixture_dir = Path(tmp) / "fixture"
-            make_static_fixture(
+            report = make_static_fixture(
                 fixture_dir, row_count=12, now_seconds=int(time.time())
             )
             first, last = _read_fixture_journal_bounds(fixture_dir)
             self.assertEqual(last - first, (12 - 1) * (2400 // (12 - 1)) * 1_000_000)
             # All entries are within the requested fresh-data window.
-            now = int(time.time())
+            now = int(report["now_seconds"])
             self.assertGreaterEqual(
                 first,
                 (now - STATIC_FIXTURE_LOWER_BOUND_SECONDS_AGO) * 1_000_000,

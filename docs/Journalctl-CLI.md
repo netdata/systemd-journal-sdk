@@ -1,12 +1,12 @@
 # Journalctl CLI
 
-Every SDK language ships a file-backed `journalctl` rewrite. It is the fifth
+Each product SDK language ships a file-backed `journalctl` rewrite. It is the fifth
 consumption surface: a command-line tool, not a library API. Use it when an
 operator or a script needs stock-like `journalctl` behavior against journal
 files or directories without systemd, libsystemd, or a running journald.
 
-All four rewrites implement the same file-backed contract and are validated
-against stock `journalctl` by the shared interoperability matrices: directory
+The Rust and Go rewrites implement the same file-backed contract and are
+validated against stock `journalctl` by the shared interoperability matrices: directory
 traversal, mixed-format directories, query/follow behavior, and verification.
 
 ## Scope
@@ -41,15 +41,10 @@ cargo run --manifest-path rust/Cargo.toml --bin journalctl -- \
 # Go
 go run ./go/cmd/journalctl --directory ./journal-dir --list-boots
 
-# Python
-python3 python/cmd/journalctl.py --file ./fixtures/system.journal --fields
-
-# Node.js
-node node/cmd/journalctl --file ./fixtures/system.journal --tail 20
 ```
 
-The four rewrites accept the same flags and produce matching output for the
-shared matrices' covered behavior. When outputs disagree, treat it as an SDK
+The Rust and Go rewrites accept the same flags and produce matching output for
+the shared matrices' covered behavior. When outputs disagree, treat it as an SDK
 bug and report it.
 
 ## When To Use The CLI Versus The APIs

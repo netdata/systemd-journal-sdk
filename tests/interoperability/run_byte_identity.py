@@ -13,7 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 INGESTER_RUNNER = ROOT / "tests" / "datasets" / "ingesters" / "run_dataset_ingesters.py"
 OUT = ROOT / ".local" / "datasets" / "ingesters"
-LANGUAGES = ("systemd", "rust", "go", "node", "python")
+LANGUAGES = ("systemd", "rust", "go")
 REFERENCE = "systemd"
 INGESTER_TIMEOUT_SECONDS = 300
 SEQNUM_ID = "22222222222222222222222222222222"

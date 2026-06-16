@@ -216,9 +216,9 @@ preserves returned-row candidates as full rows, reports skipped rows as
 `[unsampled]`, reports stop-and-estimate ranges as `[estimated]`, and follows
 the plugin's integer bucket distribution behavior without forcing leftover
 estimated rows into the final bucket.
-This sampling contract is validated across the Rust, Go, Node.js, and Python
-Netdata API surfaces; SOW-0107 added the missing Python and Node row-level
-sampling decision engines and high-row counter fixtures.
+This sampling contract is validated across the Rust and Go Netdata API
+surfaces. Historical Python/Node parity work is retired from product scope by
+SOW-0116.
 
 The SDK Netdata API always executes indexed slice semantics. The normalized
 request echo keeps `slice:true` because `slice` is part of the plugin request
@@ -226,7 +226,7 @@ shape and the SDK replacement intentionally does not expose the plugin's slower
 non-slice fallback path. Requests for `slice:false` are not part of the SDK
 behavior contract: the C plugin's brute-force fallback has different facet
 counting semantics, including same-field filter exclusion behavior, and should
-not be reintroduced into Rust, Go, Node.js, or Python SDK parity work.
+not be reintroduced into Rust/Go SDK parity work.
 
 The Rust explorer now has an explicit
 `ExplorerQuery::exclude_facet_field_filters` switch:
@@ -774,7 +774,7 @@ Progress:
 - plugin progress is emitted to stdout every 250 ms of accumulated per-file
   query time (`systemd-journal-function.h:11`,
   `systemd-journal-execute.h:607-613`).
-- The Rust, Go, Node.js, and Python SDK Netdata function APIs expose progress as
+- The Rust and Go SDK Netdata function APIs expose progress as
   a caller-provided callback instead of writing to stdout. The callback receives
   the current
   query-file index, total query-selected files after source and time-window
@@ -792,7 +792,7 @@ Timeout/cancellation:
   registers `ND_SD_JOURNAL_DEFAULT_TIMEOUT` (`60` seconds) as its default
   function timeout, so timeout budget ownership is Netdata integration policy,
   not a journal file-format rule.
-- The Rust, Go, Node.js, and Python SDK Netdata function APIs expose timeout and
+- The Rust and Go SDK Netdata function APIs expose timeout and
   cancellation as caller-provided run options. Cancellation is a
   callback/token-equivalent
   predicate checked before starting each query-selected file and at the
@@ -894,7 +894,7 @@ non-content only when those columns have no returned-row value on either side.
 This preserves the Explorer production rule that column catalogs come from
 FIELD indexes while still rejecting any missing non-null returned field.
 
-The Rust, Go, Node.js, and Python SDK Netdata function APIs validate and echo
+The Rust and Go SDK Netdata function APIs validate and echo
 `data_only`, `delta`, `tail`, `sampling`, and `if_modified_since` using the same
 high-level rules:
 

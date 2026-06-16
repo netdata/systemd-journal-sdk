@@ -3,8 +3,6 @@
 - [[API-Overview|API Overview]]
 - [[Rust-API|Rust API]]
 - [[Go-API|Go API]]
-- [[Python-API|Python API]]
-- [[Node-API|Node.js API]]
 - [[Rust-Crates-And-Packages|Rust Crates And Packages]]
 - [[Reader-APIs|Reader APIs]]
 - [[Writer-APIs|Writer APIs]]

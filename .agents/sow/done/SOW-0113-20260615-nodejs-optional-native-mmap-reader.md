@@ -2,9 +2,11 @@
 
 ## Status
 
-Status: open
+Status: closed
 
-Sub-state: follow-up from SOW-0111; tracking only, not activated.
+Sub-state: closed without implementation on 2026-06-16; superseded by SOW-0116,
+which retired Node.js as a product target and moved the implementation under
+`experiments/node/`.
 
 ## Requirements
 
@@ -13,6 +15,9 @@ Sub-state: follow-up from SOW-0111; tracking only, not activated.
 Give Node.js consumers an explicit choice between the current pure
 positioned-read reader and an optional mmap-backed reader without adding a
 native runtime dependency to the default package.
+
+Closed note: this requirement is no longer part of product scope after
+SOW-0116. The historical analysis below is preserved as record only.
 
 ### User Request
 
@@ -262,7 +267,7 @@ Follow-up mapping:
 
 ## Outcome
 
-Pending.
+Closed without implementation. Superseded by SOW-0116.
 
 ## Lessons Extracted
 

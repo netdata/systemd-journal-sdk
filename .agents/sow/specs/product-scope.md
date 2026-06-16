@@ -2,14 +2,13 @@
 
 ## Purpose
 
-This project produces pure SDKs and file-backed journalctl-compatible tools for systemd journal files.
+This project produces pure SDKs and file-backed journalctl-compatible tools for
+systemd journal files in Rust and Go.
 
 ## Language Targets
 
 - Rust
 - Go
-- Node.js
-- Python
 
 ## Rust Registry Packages
 
@@ -44,20 +43,18 @@ wiki publication workflow.
 
 ## Delivery Priority
 
-- Current exception: Rust writer parity/API work in SOW-0037 is allowed before
-  more Go work so Rust can be the audited project reference for the other
-  implementations.
-- The Go writer is the first implementation deliverable after the shared test harness is accepted and the SOW-0037 Rust reference slice is stable.
-- The Go writer is prioritized because the user needs a pure-Go journal writer for a Netdata plugin integration.
-- The Go writer must support binary field values before later SDK phases continue, because the Netdata plugin integration requires byte-safe payloads.
-- Rust, Go reader/journalctl completion, Node.js, Python, full interoperability, benchmarks, and optimization remain required, but they must not be started ahead of the Go writer unless the user changes this priority.
+- Rust and Go are the only required product language targets.
+- Go is required for Netdata Go integrations such as direct journal writing.
+- Rust is required for Netdata Rust integrations and remains the audited
+  reference for low-level journal behavior.
+- Python and Node.js implementations were retired from product scope by
+  SOW-0116 and moved under `experiments/`; they do not participate in parity,
+  release, validation, or documentation gates.
 
 ## Core Contracts
 
 - Implementations must not link to system journal libraries.
 - Go implementations must not use CGO.
-- Node.js implementations must not load or link native code at runtime. Dependency packages may ship native artifacts if the SDK runtime path is constrained and tested to use only non-native implementations (e.g. WASM).
-- Python implementations must not use native journal bindings.
 - Core journal readers and writers are file-format implementations only. They
   must not execute external programs, probe host identity, read host identity
   files or registries, or enforce writer locks by default.
@@ -78,11 +75,11 @@ wiki publication workflow.
   shell commands, subprocess APIs, and equivalent OS-specific identity sources
   are forbidden in core reader/writer runtime paths. They are allowed only in
   explicitly named optional helper code and tests for those helpers.
-- Each language must provide two API layers: an idiomatic SDK API and a libsystemd-compatible reader facade.
+- Each product language must provide two API layers: an idiomatic SDK API and a libsystemd-compatible reader facade.
 - The libsystemd-compatible reader facade is required unless a SOW records concrete evidence that it would require native bindings, violate the pure-language policy, or create an unsafe/unrepresentable API in that language.
 - Common compression-library dependencies are allowed after dependency review.
   Journal parsing/writing must not depend on systemd or libjournal libraries.
-- Cross-language interoperability is mandatory: every reader must read journal files produced by every writer.
+- Rust/Go interoperability is mandatory: every product reader must read journal files produced by every product writer.
 - The system must preserve systemd journal file concurrency expectations: one writer and multiple readers may operate on the same journal file according to journal rules.
 - Live concurrency compatibility is a MUST, not a follow-up optimization. No writer or reader implementation may be called production-compatible until this is confirmed with stock systemd tooling and the shared cross-language suite.
 - Writer live-reader publication cadence is configurable, but the default is
@@ -282,13 +279,11 @@ Writer API hierarchy:
   every appended entry. `0` disables explicit SDK live publication for
   latency-tolerant poll/snapshot consumers. `N > 1` publishes after every `N`
   appended entries. This setting controls live-reader publication and wakeup
-  behavior; it is not a durability sync or `fsync` cadence. Node.js and Python
-  direct writers use ordinary file writes, so the option controls explicit
-  publication calls but does not promise zero kernel-visible write events.
+  behavior; it is not a durability sync or `fsync` cadence.
 
 Current shared writer layout contract:
 
-- Deterministic regular uncompressed files written by Rust, Go, Node.js, Python,
+- Deterministic regular uncompressed files written by Rust, Go,
   and the systemd v260.1 reference ingester must be byte-for-byte identical for
   the accepted deterministic corpus across online/plain-close, offline-close,
   and archived-close final states.
@@ -334,7 +329,7 @@ Current shared writer layout contract:
   single-file writers preserve explicit caller-provided realtime and monotonic
   timestamps without rejecting or clamping, so callers can deliberately create
   byte-exact or corrupt-test files and are responsible for same-boot monotonic
-  validity. High-level Rust, Go, Node.js, and Python `Log` writers clamp
+  validity. High-level Rust and Go `Log` writers clamp
   non-progressing entry realtime and same-boot monotonic overrides, including
   explicit zero monotonic overrides, forward so ingestion outputs remain
   stock-verifiable. On reopen, high-level writers seed the monotonic clamp
@@ -345,15 +340,9 @@ Current writer performance certification status:
 
 - SOW-0042 certified Rust and Go writer performance for the accepted compact,
   no-compression, FSS-off direct and directory production baselines.
-- SOW-0042 certified Node.js and Python writer correctness for the same
-  baselines, including stock `journalctl --verify --file` and stock
-  `journalctl --directory` readback, but did not certify their writer
-  performance for high-throughput ingestion.
-- Node.js and Python writer performance remains a known limitation tracked by
-  SOW-0051. SOW-0042 measured Node.js and Python around 0.9k-1.0k append
-  rows/s on the accepted writer baselines, compared with about 31k-38k rows/s
-  for systemd C and about 45k-59k rows/s for Rust and Go depending on surface
-  and live publication cadence.
+- Python and Node.js writer certifications are historical only after SOW-0116;
+  those implementations now live under `experiments/` and are not product
+  performance or correctness gates.
 
 Current Go writer feature slice:
 
@@ -400,7 +389,7 @@ Current Go writer feature slice:
   numbers during exact journal regeneration. Normal writers leave it zero for
   auto-incrementing sequence numbers. Overrides must move forward from the
   writer's next sequence number; gaps are allowed and rewinds are rejected;
-- high-level Rust, Go, Node.js, and Python `Log` writers use `JOURNALD`
+- high-level Rust and Go `Log` writers use `JOURNALD`
   field-name policy by default, preserving caller-provided protected systemd
   fields such as `_HOSTNAME`. SDK-owned protected fields such as `_BOOT_ID` and
   `_SOURCE_REALTIME_TIMESTAMP` are injected internally under journald-compatible
@@ -421,15 +410,15 @@ Current Go writer feature slice:
 
 Current shared high-level directory writer API slice:
 
-- Rust, Go, Node.js, and Python expose lazy open by default and an eager open
+- Rust and Go expose lazy open by default and an eager open
   mode that creates or opens the active journal file during construction.
-- Rust, Go, Node.js, and Python apply configured retention once when an active
+- Rust and Go apply configured retention once when an active
   writer is opened or created. Existing-active reopen and eager open enforce
   retention during construction; lazy archived-only construction remains
   side-effect-free until the first append opens the active file, then retention
   runs before the first entry is written. The active/current file is protected
   and normal retention deletion lifecycle events are reused.
-- Rust, Go, Node.js, and Python derive default active-file rotation thresholds
+- Rust and Go derive default active-file rotation thresholds
   from retention when explicit rotation thresholds are omitted. If size
   retention is configured and rotation max file size is unset, the effective
   active-file max size is `retention_max_bytes / 20`, normalized with
@@ -440,46 +429,44 @@ Current shared high-level directory writer API slice:
   file size and max duration override these derived defaults. This contract
   makes default retention operate in 5% chunks by size, by time, or by both
   dimensions when both retention limits are configured.
-- Rust, Go, Node.js, and Python direct-file and high-level writers use the
+- Rust and Go direct-file and high-level writers use the
   effective max file size to choose systemd-compatible hash-table sizing:
   data buckets are `max(max_file_size * 4 / 768 / 3, 2047)` and field buckets
   are `1023`, unless the direct-file caller explicitly overrides bucket counts.
-- Rust, Go, Node.js, and Python strict systemd naming mode archives any stale
+- Rust and Go strict systemd naming mode archives any stale
   Netdata chain-named `ONLINE` active file before creating `<source>.journal`,
   preserving sequence continuity without leaving parallel active files in the
   same journal directory.
-- Rust, Go, Node.js, and Python high-level directory writers treat low-level
+- Rust and Go high-level directory writers treat low-level
   append-open `unsupported journal` failures on existing active files as
   replaceable active-file failures. They preserve sequence identity when the
   header can still be read, move the old active file to a collision-safe
   disposed `*.journal~` name, and create a fresh active file. Low-level direct
   writer opens still return controlled unsupported errors.
-- Rust, Go, Node.js, and Python expose a strict identity mode requiring
+- Rust and Go expose a strict identity mode requiring
   explicit machine ID and boot ID; default identity mode uses explicit IDs when
   provided, otherwise generates SDK-local IDs without probing host identity.
-- Rust, Go, Node.js, and Python expose configured-root, effective machine-id
+- Rust and Go expose configured-root, effective machine-id
   journal directory, active path, machine ID, boot ID, and source-prefix
   accessors on the high-level directory writer.
-- Rust, Go, Node.js, and Python lifecycle observers/callbacks report active
+- Rust and Go lifecycle observers/callbacks report active
   file creation, archive/rotation, and retention deletion with concrete journal
   paths. Callback failures are best-effort and do not roll back completed
   journal operations by default.
-- Rust, Go, Node.js, and Python high-level `Log` instances are single-writer
+- Rust and Go high-level `Log` instances are single-writer
   mutable objects. Callers must serialize method calls on one instance. The
   journal contract is one writer per file; optional SDK writer locks protect
   that contract across cooperating SDK instances only when explicitly enabled.
-- Rust, Go, Node.js, and Python support artifact-size providers/callbacks so
+- Rust and Go support artifact-size providers/callbacks so
   consumer-owned per-journal sidecar bytes are included in size-based retention
   decisions. Missing artifacts should be reported by returning zero; unexpected
   provider errors abort retention where the API can surface the error.
-- Rust, Go, Node.js, and Python high-level append paths support source realtime
+- Rust and Go high-level append paths support source realtime
   injection through `_SOURCE_REALTIME_TIMESTAMP` and clamp non-progressing
   realtime / monotonic overrides forward to preserve strict journal ordering,
   including explicit zero monotonic overrides.
-- Rust, Go, Node.js, and Python reject explicitly enabled zero policy limits in
-  the newer optional-policy API surface. Existing Node.js and Python legacy
-  numeric `max* = 0` options remain accepted as disabled-limit compatibility
-  aliases until their public package stability policy is finalized.
+- Rust and Go reject explicitly enabled zero policy limits in
+  the newer optional-policy API surface.
 
 ## Reader Target
 
@@ -487,14 +474,11 @@ Readers must support applicable historical journal files represented by the shar
 
 Accepted reader API layers:
 
-- Rust, Go, Node.js, and Python readers use bounded reader-memory access for
-  production file reads. Rust, Go, and Python use rolling mmap where their
-  runtimes support it. Go and Python retain rolling positioned-read fallbacks
-  for tests, diagnostics, constrained-platform investigation, and controlled
-  fallback evidence only; read-at is not a production reader mode. Node.js core
-  has no portable mmap API, so the default Node.js package uses bounded rolling
-  positioned-read windows, does not advertise mmap as an available TypeScript
-  mode, and fails clearly on explicit runtime mmap requests.
+- Rust and Go readers use bounded reader-memory access for
+  production file reads. Rust and Go use rolling mmap where their runtimes
+  support it. Go retains rolling positioned-read fallbacks for tests,
+  diagnostics, constrained-platform investigation, and controlled fallback
+  evidence only; read-at is not a production reader mode.
   Production readers must not load a whole journal file into resident memory
   as the default path. Current-row DATA returned by low-level/facade payload
   enumeration remains valid until the reader advances to another row or closes;
@@ -511,7 +495,7 @@ Accepted reader API layers:
   convenience views for UTF-8 field names and must not invent lossy replacement
   names for non-UTF8 RAW field names. Rust currently exposes split
   byte-preserving `Entry::raw_fields()`, `Entry::get_raw()`, and
-  `Entry::get_raw_values()` methods; Go, Node.js, and Python reader alignment
+  `Entry::get_raw_values()` methods; Go reader alignment
   SOWs must expose equivalent idiomatic byte-name surfaces before claiming RAW
   reader parity.
 - JSON output, field enumeration, unique queries, and `get_data`-style facade
@@ -532,12 +516,11 @@ Accepted reader API layers:
   payloads. Convenience entry materialization APIs may build maps, repeated
   value maps, owned payload vectors, and cursor strings and are not the
   primary hot path.
-- Rust, Go, Node.js, and Python expose optimized single-file log-explorer query
+- Rust and Go expose optimized single-file log-explorer query
   surfaces for exact indexed filters, selected facet counters, optional
   histogram, optional FTS, and optional returned rows. Rust exposes
-  `FileReader::explore()`; Go exposes `Reader.Explore()`; Node.js and Python
-  expose equivalent Explorer reader methods in their idiomatic SDK APIs. All
-  four use native filter indexes for exact slicing, lazy candidate-row
+  `FileReader::explore()`; Go exposes `Reader.Explore()`. Both
+  use native filter indexes for exact slicing, lazy candidate-row
   DATA-offset classification caches to avoid reprocessing reusable
   `FIELD=value` objects within each traversal pass, and owned cached value
   labels for required DATA that must be returned in facet, histogram, FTS, or
@@ -556,10 +539,10 @@ Accepted reader API layers:
   `ExplorerFieldMode::AllValues` is an explicit slower mode for exact
   duplicate-value accounting and scans the whole row for repeated-field
   correctness.
-- Rust, Go, Node.js, and Python also expose explicit Explorer execution
+- Rust and Go also expose explicit Explorer execution
   strategy controls through their idiomatic APIs. `ExplorerStrategy::Traversal`
-  is the default and remains the behavior of each language's ordinary Explorer
-  query method.
+  is the default and remains the behavior of each product language's ordinary
+  Explorer query method.
   `ExplorerStrategy::Index` walks FIELD/DATA chains and DATA entry posting
   lists to derive facet and histogram counts without candidate-row field
   traversal, but it is intentionally limited to exact `AllValues` accounting,
@@ -571,8 +554,8 @@ Accepted reader API layers:
   planner is enabled; SOW-0083 showed index aggregation is a large win for narrow
   unfiltered all-values queries and histogram-only queries, but slower for many
   facets and can be catastrophically slower for selective filters.
-- The libsystemd-compatible facade is available in Rust, Go, Node.js, and
-  Python for file-backed use. It includes open file, open directory, open files,
+- The libsystemd-compatible facade is available in Rust and Go for file-backed
+  use. It includes open file, open directory, open files,
   close, seek head/tail/realtime/cursor, next/previous/skip, add match,
   add conjunction/disjunction, flush matches, get entry, get data, restart and
   enumerate current-entry data, enumerate fields, direct unique queries as
@@ -598,11 +581,10 @@ Accepted reader API layers:
   directly from stable mmap-backed journal payloads when that path preserves the
   row-scoped lifetime, stores compressed DATA in row-scoped owned buffers, and
   uses row-scoped owned buffers when a windowed mapping could invalidate a
-  borrowed pointer. Go, Node.js, and Python expose the same row-scoped facade
-  contract through their idiomatic borrowed or copy-on-iteration forms: Go returns
-  mmap/read-at slices or fresh decompressed slices, Node.js returns `Buffer`
-  slices or fresh decompressed `Buffer` objects, and Python returns `bytes`
-  objects from the facade. Callback-style visitor APIs remain callback-scoped.
+  borrowed pointer. Go exposes the same row-scoped facade
+  contract through its idiomatic borrowed or copy-on-iteration forms: Go returns
+  mmap/read-at slices or fresh decompressed slices. Callback-style visitor APIs
+  remain callback-scoped.
 - Directory readers and `OpenFiles` merge candidate entries across all opened
   files using systemd-compatible ordering, including overlapping realtime
   ranges. Same seqnum-source entries compare by seqnum; same boot entries
@@ -630,7 +612,7 @@ Accepted reader API layers:
   verification without a key succeeds for unsealed-only directories and fails
   for sealed files; the correct `--verify-key` validates mixed sealed/unsealed
   directories, and a wrong key fails.
-- Rust, Go, Node.js, and Python verification APIs and file-backed
+- Rust and Go verification APIs and file-backed
   `journalctl --verify` perform raw object-graph verification for the supported
   feature slices before normal reader traversal. File-path verification uses
   bounded reader-backed byte sources; it may allocate per-object and
@@ -644,12 +626,12 @@ Accepted reader API layers:
   tail seqnum, tail monotonic, and TAG/FSS HMAC corruption classes.
 - Daemon-only libsystemd/journalctl operations remain outside the SDK facade
   target and must fail with controlled unsupported behavior when exposed.
-- Rust, Go, Node.js, and Python readers accept historical unkeyed-hash journal
+- Rust and Go readers accept historical unkeyed-hash journal
   files, including systemd 239-era LZ4-compressed DATA files with
   `header_size=240`. Core reader traversal exposes the current-systemd/file
   format entry set, not old systemd 239 same-file duplicate suppression in its
   CLI traversal.
-- Rust, Go, Node.js, and Python writers create keyed-hash journal files for
+- Rust and Go writers create keyed-hash journal files for
   the supported writer slice. Append-open on historical unkeyed-hash files is
   unsupported and must fail with a controlled error before entry mutation.
 
@@ -805,233 +787,9 @@ Current Rust reader limitations:
   `--boot` filtering scans entry `_BOOT_ID` values;
 - daemon-only journalctl operations remain unsupported.
 
-Current Node.js writer feature slice:
-
-- regular journal files by default and compact journal files when
-  `compact: true` or `format: 'compact'` is enabled;
-- uncompressed DATA objects by default;
-- optional zstd, xz, and lz4-compressed DATA object writing with configurable
-  compression threshold through Node.js built-in `node:zlib` on Node.js v22.15
-  or newer, bundled `node-liblzma@5.0.1` WASM runtime files for XZ
-  `CHECK_NONE` output, and pure JavaScript `lz4js@0.2.0`, using the shared
-  systemd threshold policy;
-- keyed hash tables using the journal file ID;
-- byte-safe field values through `Buffer`, `Uint8Array`, and string-compatible
-  field values;
-- direct-file writing through `Writer`, including structured append and raw
-  full-payload append;
-- high-level directory writing through `Log` with Netdata-compatible chain
-  active naming by default, structured append and raw full-payload append, and
-  an explicit strict systemd active naming option;
-- high-level `Log` append paths write indexed `_BOOT_ID=<boot-id>` metadata for
-  each entry and `_SOURCE_REALTIME_TIMESTAMP=<usec>` when source realtime is
-  supplied;
-- high-level Node.js `Log` automatic identity uses explicit caller options
-  first, then generated SDK-local UUIDs. Callers that need stable host identity
-  across process restarts must pass `machineId` and `bootId`, or select strict
-  identity mode;
-- writer file access uses `Buffer` plus positioned `node:fs` reads/writes; no
-  native mmap dependency is loaded by the Node.js SDK runtime path;
-- directory writer archive/rotation paths fsync file contents on every target.
-  POSIX targets also fsync parent directories through directory file
-  descriptors where Node.js exposes them. Windows skips parent-directory fsync
-  because Node.js does not expose a portable durable directory-handle sync path
-  there;
-- zero-entry crash-created active files are discarded on reopen before append so
-  sequence numbers continue from the existing chain tail;
-- entry-count, file-size, and active-file-duration rotation. Duration rotation
-  uses active file head realtime and the incoming entry realtime;
-- tracked journal-file-count, committed-byte-size, and archive-head-age
-  retention. The tracked active/current file counts toward retention envelopes
-  but is never selected for deletion to satisfy retention limits. Omitted or
-  zero-valued limits are disabled. `log.enforceRetention()` applies retention
-  without requiring a rotation or close;
-- optional pure cross-SDK cooperative lockfile with stale-owner detection when
-  callers explicitly acquire `WriterLock.acquire(path)`. Node.js uses Linux
-  `/proc` boot/process-start evidence when the optional helper is enabled and
-  available, and otherwise falls back to Node's portable process-liveness
-  probe;
-- Forward Secure Sealing TAG writing with configurable deterministic test
-  options and stock `journalctl --verify --verify-key` validation for generated
-  sealed files;
-- default live publication mode one-writer/multiple-reader compatibility with
-  stock `journalctl --file`, stock libsystemd readers, and all repository
-  readers for regular,
-  zstd/xz/lz4-compressed DATA, compact, compact plus compressed DATA, and
-  sealed writer slices.
-
-Current Node.js reader feature slice:
-
-- regular and compact journal files;
-- files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
-- bounded rolling positioned-read reader access through Node core
-  `fs.readSync()` with explicit offsets. Node.js core has no portable mmap API,
-  so default `accessMode: "auto"` selects the `read-at` backend. The default
-  package TypeScript declarations do not advertise mmap as an available mode,
-  and explicit runtime `accessMode: "mmap"` fails with
-  `UnsupportedAccessModeError` instead of silently downgrading. Access stats
-  expose the selected backend, fallback reason, window budget, read-buffer
-  bytes, row-arena peak, and short-read counters;
-- whole-file `.journal.zst` fixtures through Node.js built-in `node:zlib`,
-  streamed into a temporary `.journal` and then read through the same bounded
-  reader accessor as normal journal files;
-- zstd, xz, and lz4-compressed DATA objects through Node.js built-in
-  `node:zlib` on Node.js v22.15 or newer, bundled `node-liblzma@5.0.1` WASM
-  runtime files for XZ, and pure JavaScript `lz4js@0.2.0`;
-- directory iteration across active and archived files with stock-compatible
-  root plus one machine-id subdirectory traversal and interleaved multi-file
-  ordering;
-- forward/backward iteration, cursors, realtime and monotonic timestamps,
-  seqnum metadata, binary field values as `Buffer`, repeated field values,
-  field enumeration, current-entry data enumeration, and unique value
-  enumeration;
-- current-entry raw payload visitors on file and directory readers for
-  allocation-light scans over `FIELD=value` bytes;
-- byte-preserving RAW field-name representation through `entry.rawFields`,
-  `entry.rawFieldValues`, `reader.getRaw()`, and `reader.getRawValues()`.
-  `entry.fields` and `entry.fieldValues` remain UTF-8 string-keyed convenience
-  maps and do not synthesize lossy names for non-UTF8 RAW field names;
-- active-file refresh at tail/end for live append visibility. Live refreshes
-  update the accessor-visible bounds only at controlled points and drop
-  unpinned cached windows so appended header/entry-array bytes become visible
-  without invalidating current-row Buffer views;
-- facade DATA enumeration and `getData()` use current-entry payload access
-  instead of materializing full entries when the reader supports it;
-- systemd-compatible export/json/text formatting for the accepted fixture set;
-- libsystemd-style match tree behavior from `SdJournalAddMatch()`,
-  `SdJournalAddDisjunction()`, and `SdJournalAddConjunction()`;
-- file-backed Node.js journalctl behavior for `--file`, `--directory`,
-  text/json/export output, field listing, boot listing, realtime range
-  filtering with `--since`/`--until`, boot filtering with `--boot`, follow mode
-  with `--follow`, repeated same-field OR matches, and `+` disjunction;
-- Node.js conformance adapter support for reader, matching, importer,
-  compression, cursor, enumeration, stream, export, header parsing, and
-  file-backed journalctl cases.
-
-Current Node.js reader/writer limitations:
-
-- boot listing APIs use file-level boot metadata in this slice; file-backed
-  `--boot` filtering scans entry `_BOOT_ID` values;
-- automatic host boot ID discovery is not part of Node.js core writer auto
-  identity mode. Auto identity uses explicit `bootId` or generated SDK-local
-  IDs;
-- Node.js writer file access uses `Buffer` plus positioned `node:fs`
-  reads/writes. Node.js reader file access uses bounded rolling positioned-read
-  windows. npm mmap candidates checked during SOW-0054 were native binding
-  packages, so no mmap dependency is loaded by the SDK runtime path;
-- daemon-only journalctl operations remain unsupported.
-
-Current Python writer feature slice:
-
-- regular journal files by default and compact journal files when
-  `compact: True` or `format: 'compact'` is enabled;
-- uncompressed DATA objects by default;
-- optional zstd, xz, and lz4-compressed DATA object writing with configurable
-  compression threshold through Python `compression.zstd`, standard-library
-  `lzma`, and `lz4==4.4.5`, using the shared systemd threshold policy;
-- keyed hash tables using the journal file ID;
-- byte-safe field values through `bytes`, `bytearray`, `memoryview`, and
-  string-compatible field values;
-- direct-file writing through `Writer`, including structured append and raw
-  full-payload append;
-- high-level directory writing through `Log` with Netdata-compatible chain
-  active naming by default, structured append and raw full-payload append, and
-  an explicit strict systemd active naming option;
-- high-level `Log` append paths write indexed `_BOOT_ID=<boot-id>` metadata for
-  each entry and `_SOURCE_REALTIME_TIMESTAMP=<usec>` when source realtime is
-  supplied;
-- direct-file writer hot-path reads and writes use a whole-file mapped arena,
-  with a positional file-I/O arena fallback when mmap is unavailable and fd
-  fallback before mapping and during cleanup;
-- zero-entry crash-created active files are discarded on reopen before append so
-  sequence numbers continue from the existing chain tail;
-- entry-count, file-size, and active-file-duration rotation. Duration rotation
-  uses active file head realtime and the incoming entry realtime;
-- tracked journal-file-count, committed-byte-size, and archive-head-age
-  retention. The tracked active/current file counts toward retention envelopes
-  but is never selected for deletion to satisfy retention limits. Omitted or
-  zero-valued limits are disabled. `log.enforce_retention()` applies retention
-  without requiring a rotation or close;
-- optional pure cross-SDK cooperative lockfile with stale-owner detection, plus
-  a secondary platform file lock on the lock file, when callers explicitly
-  acquire `journal.lock.WriterLock.acquire(path)`. POSIX targets use
-  `fcntl.flock`; Windows uses the Python standard-library `msvcrt` byte-range
-  lock API. On non-Linux targets without procfs process start times,
-  stale-owner cleanup uses conservative process-liveness checks so a live PID
-  is never treated as stale only because its start time is unavailable;
-- directory writer archive/rotation paths fsync file contents on every target.
-  POSIX targets also fsync parent directories through directory file
-  descriptors where Python exposes them. Windows skips parent-directory fsync
-  because Python's standard library exposes file `_commit`/`fsync`, not a
-  durable directory-handle sync API;
-- Forward Secure Sealing TAG writing with configurable deterministic test
-  options and stock `journalctl --verify --verify-key` validation for generated
-  sealed files;
-- default live publication mode one-writer/multiple-reader compatibility with
-  stock `journalctl --file`, stock libsystemd readers, and all repository
-  readers for regular,
-  zstd/xz/lz4-compressed DATA, compact, compact plus compressed DATA, and
-  sealed writer slices.
-
-Current Python reader feature slice:
-
-- regular and compact journal files;
-- files named `.journal`, `.journal~`, `.journal.zst`, and `.journal~.zst`;
-- bounded rolling reader access with mmap as the production default on
-  supported Python runtimes and rolling positioned reads retained only for
-  tests, diagnostics, constrained-platform investigation, and controlled
-  fallback evidence. Access stats expose the selected backend, fallback reason,
-  window budget, mapped/read-buffer bytes, row-arena peak, and refresh
-  counters. Whole-file `.journal.zst` inputs are decompressed into temporary
-  `.journal` files and then read through the same bounded accessor;
-- active `.journal` / `.journal~` readers refresh header and entry-array
-  state at tail/end so entries published after open become visible during the
-  same reader session;
-- whole-file zstd fixtures and zstd-compressed DATA objects through Python
-  `compression.zstd` where the optional standard-library module is available;
-- xz and lz4-compressed DATA objects through standard-library `lzma` and
-  `lz4==4.4.5`;
-- directory iteration across active and archived files with stock-compatible
-  root plus one machine-id subdirectory traversal and interleaved multi-file
-  ordering;
-- forward/backward iteration, cursors, realtime and monotonic timestamps,
-  seqnum metadata, binary field values as `bytes`, repeated field values,
-  field enumeration, current-entry data enumeration, raw current-entry payload
-  visitation, and unique value enumeration;
-- byte-preserving RAW field-name representation through full `FIELD=value`
-  payloads, `raw_fields`, `raw_field_values`, `FileReader.get_raw()`, and
-  `FileReader.get_raw_values()`. String-keyed `fields` and `field_values`
-  remain UTF-8 convenience maps and do not synthesize lossy names for non-UTF8
-  RAW field names;
-- context-manager cleanup for Python `FileReader`, `DirectoryReader`,
-  `SdJournal`, and `Writer` resource owners;
-- match filtering remains a systemd-compatible UTF-8 field-name convenience
-  path; non-UTF8 RAW field names are available through raw byte APIs rather
-  than `add_match()` string filters;
-- systemd-compatible export/json/text formatting for the accepted fixture set;
-- libsystemd-style match tree behavior from `SdJournalAddMatch()`,
-  `SdJournalAddDisjunction()`, and `SdJournalAddConjunction()`;
-- file-backed Python journalctl behavior for `--file`, `--directory`,
-  text/json/export output, field listing, boot listing, realtime range
-  filtering with `--since`/`--until`, boot filtering with `--boot`, follow mode
-  with `--follow`, repeated same-field OR matches, and `+` disjunction;
-- Python conformance adapter support for reader, matching, importer,
-  compression, cursor, enumeration, stream, export, header parsing, and
-  file-backed journalctl cases.
-
-Current Python reader/writer limitations:
-
-- boot listing APIs use file-level boot metadata in this slice; file-backed
-  `--boot` filtering scans entry `_BOOT_ID` values;
-- Python facade current-entry DATA enumeration returns `bytes` per iteration
-  rather than borrowed mmap slices. It avoids pre-materializing the whole entry,
-  but it remains a copy-on-iteration API because Python cannot safely expose
-  libsystemd-style pointer lifetime semantics through ordinary `bytes`;
-- daemon-only journalctl operations remain unsupported.
-
 ## journalctl Target
 
-Implement journalctl rewrites in Rust, Go, Node.js, and Python for file-backed/query behavior.
+Implement journalctl rewrites in Rust and Go for file-backed/query behavior.
 
 Matching semantics:
 

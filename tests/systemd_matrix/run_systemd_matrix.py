@@ -59,8 +59,6 @@ DISCREPANCY_CODES = {
     "STOCK_READ_FAILED": "stock journalctl export read failed",
     "RUST_READ_FAILED": "Rust SDK digest helper failed",
     "GO_READ_FAILED": "Go SDK digest helper failed",
-    "PYTHON_READ_FAILED": "Python SDK file-backed journalctl export failed",
-    "NODE_READ_FAILED": "Node.js SDK file-backed journalctl export failed",
     "DIGEST_MISMATCH": "reader logical digest differs from the selected baseline",
     "COUNT_MISMATCH": "reader logical counts differ from the selected baseline",
     "VERSION_EXPORT_METADATA_DRIFT": (
@@ -587,8 +585,6 @@ REQUIRED_MATRIX_ROLES = {
     "stock_journalctl_read",
     "rust_sdk_read",
     "go_sdk_read",
-    "python_sdk_read",
-    "node_sdk_read",
 }
 
 ROLE_FAILURE_CODES = {
@@ -598,8 +594,6 @@ ROLE_FAILURE_CODES = {
     "stock_journalctl_read": "STOCK_READ_FAILED",
     "rust_sdk_read": "RUST_READ_FAILED",
     "go_sdk_read": "GO_READ_FAILED",
-    "python_sdk_read": "PYTHON_READ_FAILED",
-    "node_sdk_read": "NODE_READ_FAILED",
 }
 
 
@@ -730,56 +724,6 @@ def add_compiled_sdk_readers(
         discrepancies.append({"code": "BUILD_FAILED", "tool": "go-corpus-digest"})
 
 
-def add_python_reader(
-    args: argparse.Namespace,
-    env: dict[str, str],
-    results: list[dict[str, Any]],
-    journal_path: Path,
-) -> None:
-    results.append(
-        read_with_export_command(
-            "python_sdk_read",
-            [
-                sys.executable,
-                str(ROOT / "python" / "cmd" / "journalctl.py"),
-                "--file",
-                str(journal_path),
-                "--output=export",
-            ],
-            env=env,
-            timeout=args.timeout,
-        )
-    )
-
-
-def add_node_reader(
-    args: argparse.Namespace,
-    env: dict[str, str],
-    results: list[dict[str, Any]],
-    discrepancies: list[dict[str, Any]],
-    journal_path: Path,
-) -> None:
-    node = shutil.which("node")
-    if not node:
-        discrepancies.append({"code": "MISSING_TOOL", "tool": "node"})
-        return
-    results.append(
-        read_with_export_command(
-            "node_sdk_read",
-            [
-                node,
-                str(ROOT / "node" / "cmd" / "journalctl" / "index.js"),
-                "--file",
-                str(journal_path),
-                "--output",
-                "export",
-            ],
-            env=env,
-            timeout=args.timeout,
-        )
-    )
-
-
 def append_failed_result_discrepancies(results: list[dict[str, Any]], discrepancies: list[dict[str, Any]]) -> None:
     for row in results:
         if row.get("status") == "ok":
@@ -846,8 +790,6 @@ def test_matrix(args: argparse.Namespace) -> dict[str, Any]:
     add_version_journalctl_results(args, env, tools, results, discrepancies, version_journalctl_path(args, build), journal_path, verification_key)
     add_stock_journalctl_results(args, env, tools, results, discrepancies, journal_path, verification_key)
     add_compiled_sdk_readers(args, env, results, discrepancies, journal_path, rust_digest, go_digest)
-    add_python_reader(args, env, results, journal_path)
-    add_node_reader(args, env, results, discrepancies, journal_path)
     append_failed_result_discrepancies(results, discrepancies)
     baseline, compare_discrepancies, observations = compare_readers(results)
     discrepancies.extend(compare_discrepancies)

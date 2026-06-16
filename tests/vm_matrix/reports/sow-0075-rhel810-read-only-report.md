@@ -6,7 +6,6 @@
 - Observed systemd: `systemd 239 (239-82.el8_10.16)`
 - OS release: `rhel 8.10`
 - Host stock systemd: `systemd 260 (260.1-2-manjaro)`
-- Python runtime: `repo-local-python-with-lz4-4.4.5`
 
 ## Remote Journal Summary
 

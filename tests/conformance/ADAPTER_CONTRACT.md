@@ -2,7 +2,7 @@
 
 ## Role
 
-Each language SDK (Rust, Go, Node.js, Python) ships an **adapter executable** that:
+Each product SDK (Rust and Go) ships an **adapter executable** that:
 
 1. Receives a test case from the shared conformance harness
 2. Runs the test against the language's journal implementation
@@ -141,22 +141,6 @@ Exposes `run`, `list`, `probe` subcommands.
 
 ```
 go/adapter --help
-```
-
-Exposes `run`, `list`, `probe` subcommands.
-
-### Node.js Adapter
-
-```
-node/adapter --help
-```
-
-Exposes `run`, `list`, `probe` subcommands.
-
-### Python Adapter
-
-```
-python/adapter --help
 ```
 
 Exposes `run`, `list`, `probe` subcommands.

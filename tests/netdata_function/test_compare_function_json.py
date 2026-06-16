@@ -470,8 +470,8 @@ def _doc_with_source_option_info(info: str) -> dict:
 class SourceOptionInfoSkewToleranceTest(unittest.TestCase):
     """Live-journal race: the source-option `info` string embeds
     `covering <duration>, last entry at <iso>` from the live tail. A
-    slow peer (Python) can see a tail seconds newer than the fast
-    peers (Rust/Go). The comparator tolerates a bounded skew on
+    slower peer can see a tail seconds newer than a faster peer. The
+    comparator tolerates a bounded skew on
     ONLY those two components. File counts and total sizes stay
     strict. `off`/`unknown` literals compare exactly.
     """

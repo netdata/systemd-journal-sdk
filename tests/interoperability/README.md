@@ -6,16 +6,15 @@ validation.
 
 ## Byte-Identity Matrix (`run_byte_identity.py`)
 
-Runs the deterministic systemd C ingester plus the Rust, Go, Node.js, and
-Python dataset ingesters, then compares the accepted-corpus output files
-byte-for-byte.
+Runs the deterministic systemd C ingester plus the Rust and Go dataset
+ingesters, then compares the accepted-corpus output files byte-for-byte.
 
 ```bash
 python3 tests/interoperability/run_byte_identity.py --final-state all
 ```
 
 The byte-identity runner validates the strongest current regular-writer
-contract: deterministic uncompressed files from all SDK writers must be
+contract: deterministic uncompressed files from supported SDK writers must be
 identical to the systemd v260.1 reference writer for the accepted corpus. On
 mismatch, it reports exact byte offsets plus header-field or object-span
 context. It also runs stock `journalctl --verify --file` for every generated
@@ -23,7 +22,7 @@ accepted-corpus file.
 
 The accepted corpus includes deliberate DATA hash-bucket collisions. The runner
 requires the generated header `data_hash_chain_depth` to equal the systemd
-reference value (`3`) for every language and final state, so hash-chain
+reference value (`3`) for every supported language and final state, so hash-chain
 publication cannot silently fall back to the no-collision path.
 
 Use `--final-state online`, `--final-state offline`, or `--final-state archived`
@@ -33,9 +32,9 @@ to isolate one systemd close path. `online` matches plain `journal_file_close()`
 
 ## Closed-File Matrix (`run_matrix.py`)
 
-Generates synthetic journal files with the current Go, Rust, Node.js, and
-Python writers, then reads each generated file with stock journalctl plus every
-repository journalctl implementation.
+Generates synthetic journal files with the current Go and Rust writers, then
+reads each generated file with stock journalctl plus the supported repository
+journalctl implementations.
 
 ```bash
 python3 tests/interoperability/run_matrix.py
@@ -45,7 +44,7 @@ Useful options:
 
 ```bash
 python3 tests/interoperability/run_matrix.py --entries 100
-python3 tests/interoperability/run_matrix.py --writers go python --readers stock python
+python3 tests/interoperability/run_matrix.py --writers go rust --readers stock go rust
 ```
 
 For each writer/reader pair, the matrix validates:
@@ -62,8 +61,9 @@ For each generated writer file, stock `journalctl --verify --file` must pass.
 
 ## Live Matrix (`run_live_matrix.py`)
 
-Starts one writer per language and polls multiple readers (stock journalctl plus
-all four repository readers) while the writer is actively appending entries.
+Starts one writer per supported language and polls multiple readers (stock
+journalctl plus the Rust/Go repository readers) while the writer is actively
+appending entries.
 After the writer exits, final reader snapshots are collected and validated.
 
 ```bash
@@ -95,9 +95,9 @@ For each writer language, the matrix proves all of the following:
    `--verify-key`. For the Rust directory writer, the runner discovers the
    active `.journal` file and verifies that file directly.
 
-4. **Cross-language live compatibility**: Go, Rust, Node.js, and Python
-   repository readers plus stock journalctl all succeed against Go, Rust,
-   Node.js, and Python writers while each writer is active.
+4. **Cross-language live compatibility**: Go and Rust repository readers plus
+   stock journalctl all succeed against Go and Rust writers while each writer
+   is active.
 
 5. **Stock libsystemd live compatibility**: the C helper built from
    `tests/conformance/live/libsystemd_live_reader.c` opens the active file with
@@ -186,8 +186,8 @@ python3 tests/interoperability/run_binary_matrix.py
 Useful options:
 
 ```bash
-python3 tests/interoperability/run_binary_matrix.py --writers go python
-python3 tests/interoperability/run_binary_matrix.py --readers stock rust python
+python3 tests/interoperability/run_binary_matrix.py --writers go rust
+python3 tests/interoperability/run_binary_matrix.py --readers stock rust go
 ```
 
 Each writer fixture includes:
@@ -226,19 +226,19 @@ python3 tests/interoperability/run_compression_matrix.py
 Useful options:
 
 ```bash
-python3 tests/interoperability/run_compression_matrix.py --writers go python
-python3 tests/interoperability/run_compression_matrix.py --readers stock rust python
-python3 tests/interoperability/run_compression_matrix.py --writers go rust python --readers stock go rust python --compression xz
-python3 tests/interoperability/run_compression_matrix.py --writers go rust node python --readers stock go rust node python --compression lz4
+python3 tests/interoperability/run_compression_matrix.py --writers go rust
+python3 tests/interoperability/run_compression_matrix.py --readers stock rust go
+python3 tests/interoperability/run_compression_matrix.py --writers go rust --readers stock go rust --compression xz
+python3 tests/interoperability/run_compression_matrix.py --writers go rust --readers stock go rust --compression lz4
 ```
 
 By default the runner exercises zstd across all writers/readers. Use
 `--compression xz lz4` with writers/readers that support those algorithms.
 Current support is:
 
-- zstd: Go, Rust, Node.js, and Python writers/readers;
-- xz: Go, Rust, Node.js, and Python writers/readers;
-- lz4: Go, Rust, Node.js, and Python writers/readers.
+- zstd: Go and Rust writers/readers;
+- xz: Go and Rust writers/readers;
+- lz4: Go and Rust writers/readers.
 
 Each writer fixture enables DATA compression with a low threshold and
 includes:
@@ -258,7 +258,7 @@ For each generated writer file, the compression matrix validates:
 - at least one DATA object has the expected compression object flag;
 - stock `journalctl --verify --file` succeeds;
 - stock journalctl and stock libsystemd read decompressed field values;
-- Go, Rust, Node.js, and Python journalctl rewrites return matching JSON and
+- Go and Rust journalctl rewrites return matching JSON and
   export output;
 - `COMPRESSED_MATCH=<value>` works as a file-backed match through argv for stock
   journalctl and every repository journalctl rewrite.
@@ -276,8 +276,8 @@ python3 tests/interoperability/run_compact_matrix.py
 Useful options:
 
 ```bash
-python3 tests/interoperability/run_compact_matrix.py --writers go python
-python3 tests/interoperability/run_compact_matrix.py --readers stock rust python
+python3 tests/interoperability/run_compact_matrix.py --writers go rust
+python3 tests/interoperability/run_compact_matrix.py --readers stock rust go
 python3 tests/interoperability/run_compact_matrix.py --compression zstd --compression-threshold-bytes 8
 ```
 
@@ -295,7 +295,7 @@ compressed. For each generated writer file, the compact matrix validates:
 - compact ENTRY_ARRAY layout is present and linked;
 - stock `journalctl --verify --file` succeeds;
 - stock journalctl and stock libsystemd read binary fields;
-- Go, Rust, Node.js, and Python journalctl rewrites return matching JSON and
+- Go and Rust journalctl rewrites return matching JSON and
   export output.
 
 The `--compression` option can be used to validate compact journals whose DATA
@@ -347,8 +347,8 @@ For each holder/contender pair, the lock matrix validates:
 ## Journalctl Query Matrix (`run_journalctl_query_matrix.py`)
 
 Generates deterministic file and directory fixtures with multiple boot IDs and
-realtime ranges, then compares stock journalctl with the Rust, Go, Node.js, and
-Python file-backed rewrites.
+realtime ranges, then compares stock journalctl with the Rust and Go
+file-backed rewrites.
 
 ```bash
 python3 tests/interoperability/run_journalctl_query_matrix.py
@@ -375,14 +375,14 @@ completion unless `--keep-files` is passed.
 
 | Gap | Status | Evidence | Follow-up |
 |-----|--------|----------|-----------|
-| Deterministic uncompressed byte identity | Complete for accepted corpus | `run_byte_identity.py` compares systemd, Rust, Go, Node.js, and Python byte-for-byte | Closed in SOW-0016 |
+| Deterministic uncompressed byte identity | Complete for accepted corpus | `run_byte_identity.py` compares systemd, Rust, and Go byte-for-byte | Closed in SOW-0016 |
 | zstd compressed DATA object writing | Complete | `run_compression_matrix.py` validates structural layout, zstd header/object flags, stock reads, libsystemd reads, and repository reads | Closed in SOW-0008 |
-| xz compressed DATA object writing | Complete | Rust, Go, Node.js, and Python write/read xz; stock journalctl, stock libsystemd, and all repository readers pass | Closed in SOW-0021 |
-| lz4 compressed DATA object writing | Complete | Rust, Go, Node.js, and Python write/read lz4 when Python `lz4==4.4.5` is installed; stock journalctl, stock libsystemd, and all repository readers pass | Closed in SOW-0017 |
+| xz compressed DATA object writing | Complete | Rust and Go write/read xz; stock journalctl, stock libsystemd, and supported repository readers pass | Closed in SOW-0021 |
+| lz4 compressed DATA object writing | Complete | Rust and Go write/read lz4; stock journalctl, stock libsystemd, and supported repository readers pass | Closed in SOW-0017 |
 | Compact journal format | Complete | `run_compact_matrix.py` validates compact structural layout plus stock/repository reads across all writers and compression modes | Closed in SOW-0018 |
 | Forward Secure Sealing / verification | Complete | Sealed writers and `--verify-key` APIs/CLIs pass stock and repository validation for generated sealed files | Closed in SOW-0019 |
 | Cross-language binary stress | Complete | `run_binary_matrix.py` passes 52/52 across all writer/reader pairs plus stock libsystemd | Closed |
 | Writer locking parity | Complete | `run_lock_matrix.py` passes 8/8; all SDK writer pairs reject concurrent writers and stale locks left by crashed writers are cleaned | Closed |
-| Directory reader subdirectory traversal | Complete | `run_directory_matrix.py` passes across stock journalctl plus Rust, Go, Node.js, and Python rewrites | Closed in SOW-0020 |
-| Mixed-format directory readers | Complete | `run_mixed_directory_matrix.py` passes 72/72 across stock journalctl plus Rust, Go, Node.js, and Python rewrites | Closed in SOW-0024 |
-| File-backed journalctl query/follow parity | Complete | `run_journalctl_query_matrix.py` compares stock journalctl with Rust, Go, Node.js, and Python for `--since`, `--until`, `--boot`, and live file/directory `--follow` cases | Closed in SOW-0034 |
+| Directory reader subdirectory traversal | Complete | `run_directory_matrix.py` passes across stock journalctl plus Rust and Go rewrites | Closed in SOW-0020 |
+| Mixed-format directory readers | Complete | `run_mixed_directory_matrix.py` passes across stock journalctl plus Rust and Go rewrites | Closed in SOW-0024 |
+| File-backed journalctl query/follow parity | Complete | `run_journalctl_query_matrix.py` compares stock journalctl with Rust and Go for `--since`, `--until`, `--boot`, and live file/directory `--follow` cases | Closed in SOW-0034 |

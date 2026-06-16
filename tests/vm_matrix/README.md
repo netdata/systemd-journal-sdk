@@ -67,8 +67,7 @@ schema: systemd-journal-sdk-vm-matrix-v1
 
 Each case records sanitized target metadata, VM-side stock `journalctl`
 verification status, host-side stock verification status, Rust and Go reader
-logical digests, and Python/Node reader results when their command paths are
-available.
+logical digests, and discrepancy codes.
 
 Discrepancy codes:
 
@@ -83,7 +82,5 @@ Discrepancy codes:
 - `STOCK_READ_FAILED`: host stock `journalctl --file -o export` digest failed.
 - `RUST_READ_FAILED`: Rust digest helper failed.
 - `GO_READ_FAILED`: Go digest helper failed.
-- `PYTHON_READ_FAILED`: Python file-backed export failed.
-- `NODE_READ_FAILED`: Node file-backed export failed.
 - `<READER>_DIGEST_MISMATCH`: a reader digest differs from the host stock
   baseline.

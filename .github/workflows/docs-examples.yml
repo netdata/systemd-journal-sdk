@@ -9,8 +9,6 @@ on:
       - tests/docs/**
       - rust/**
       - go/**
-      - python/**
-      - node/**
       - .github/workflows/docs-examples.yml
   pull_request:
     paths:
@@ -18,8 +16,6 @@ on:
       - tests/docs/**
       - rust/**
       - go/**
-      - python/**
-      - node/**
       - .github/workflows/docs-examples.yml
   workflow_dispatch:
 
@@ -47,11 +43,6 @@ jobs:
         with:
           go-version-file: go/go.mod
 
-      - name: Setup Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
-        with:
-          node-version: "26"
-
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
@@ -61,7 +52,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .local/docs-examples/caches
-          key: docs-examples-${{ hashFiles('rust/Cargo.lock', 'go/go.sum', 'node/package-lock.json') }}
+          key: docs-examples-${{ hashFiles('rust/Cargo.lock', 'go/go.sum') }}
           restore-keys: |
             docs-examples-
 

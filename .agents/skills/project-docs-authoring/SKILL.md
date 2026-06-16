@@ -7,9 +7,8 @@ description: "Mandatory rules when creating or editing consumer wiki documentati
 ## Purpose
 
 Keep the consumer wiki (`docs/`) decision-oriented, honest, and machine
-verified: every Rust, Go, Python, and JavaScript code example is compiled or
-syntax-checked and executed in CI, so examples are contracts, not
-illustrations.
+verified: every Rust and Go code example is compiled and executed in CI, so
+examples are contracts, not illustrations.
 
 ## Scope
 
@@ -29,9 +28,9 @@ Do not use this skill for `documentation/` (internal notes, not published).
 - `docs/` is the published GitHub wiki source (SOW-0100). Internal links use
   `[[Page-Name|Label]]`; internal `*.md` Markdown links are rejected by the
   validator.
-- Every fenced `rust`, `go`, `python`, or `javascript` block in `docs/` must
+- Every fenced `rust` or `go` block in `docs/` must
   be immediately preceded by an HTML-comment marker: either
-  `<!-- verify-example: lang=<rust|go|python|javascript> id=<unique-slug> -->` or
+  `<!-- verify-example: lang=<rust|go> id=<unique-slug> -->` or
   `<!-- illustrative-only: <reason> -->`. Markers are invisible in the
   rendered wiki.
 - `verify-example` attributes: `lang` (required, must match the fence),
@@ -49,34 +48,29 @@ Do not use this skill for `documentation/` (internal notes, not published).
   lines start with `# ` (kept in compiled code, hidden in rendered docs); a
   final `# Ok::<(), Box<dyn std::error::Error>>(())` line marks Result-main
   wrapping. Go examples are function-body fragments that may `return err`;
-  the harness wraps them in `func run() error`. Python examples are function
-  body fragments wrapped in `run()` and executed with `PYTHONPATH=python`.
-  JavaScript examples are ES modules executed by Node.js; package imports from
-  `@netdata/systemd-journal-sdk` are rewritten to the local Node.js source
-  entry point by the harness.
+  the harness wraps them in `func run() error`.
 - Examples must be standalone-compilable after wrapping: in Go, do not bind
   variables that are never used, and do not re-declare prelude variables
   with `:=` (use `if err := ...; err != nil` forms).
 - Fixtures are synthetic and deterministic, built by the harness with the
-  in-repo Python SDK; never reference the host journal in examples, and
+  in-repo Go SDK; never reference the host journal in examples, and
   never use real identities.
 - Local validation before push:
   `python3 tests/docs/check_wiki_docs.py` and
   `python3 tests/docs/verify_examples.py`. CI runs both
   (`.github/workflows/wiki.yml` validates and publishes;
   `.github/workflows/docs-examples.yml` compiles and runs examples).
-- When validation tooling runs `cargo`, `go`, Python, or Node.js locally,
+- When validation tooling runs `cargo`, `go`, or Python test scripts locally,
   export cache redirection (`CARGO_HOME`, `CARGO_TARGET_DIR`, `GOMODCACHE`,
-  `GOCACHE`, `PIP_CACHE_DIR`, `npm_config_cache` under repo-local `.local/`
-  paths) per the orchestration skill cache rules.
+  `GOCACHE` under repo-local `.local/` paths) per the orchestration skill
+  cache rules. Python is used only as repository tooling here.
 - Wiki pages document marker syntax inside ```markdown fences
   (`docs/Wiki-Publishing.md`); the validator and harness are fence-aware and
   ignore marker text inside fenced blocks. Preserve that property when
   changing either tool.
 - Performance guidance honesty rule: `docs/Production-Profiles.md` names
-  Rust and Go as production throughput targets and Python/Node.js as
-  compatibility surfaces. Do not weaken that statement without benchmark
-  evidence recorded in an active SOW.
+  Rust and Go as the product throughput targets. Do not weaken that statement
+  without benchmark evidence recorded in an active SOW.
 - The docs perception model: pages are organized around choosing an API
   surface (idiomatic SDK, facade, Explorer, Netdata function boundary,
   journalctl rewrite CLI, verifier). New content should answer "which
@@ -85,8 +79,8 @@ Do not use this skill for `documentation/` (internal notes, not published).
 ## Workflow Checklist
 
 1. Edit or add the page; keep wiki-style links.
-2. Mark every rust/go/python/javascript fence (verify-example or
-   illustrative-only with a reason).
+2. Mark every Rust/Go fence (verify-example or illustrative-only with a
+   reason).
 3. Run both validators locally; iterate until green.
 4. For new example shapes, extend the harness (preludes, fixtures,
    substitutions) through the active SOW's implementer routing, with unit

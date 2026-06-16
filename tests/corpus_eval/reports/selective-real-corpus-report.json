@@ -18,10 +18,6 @@
     "previous-bug-exposure": "not-present-in-discovered-corpus-or-not-detected"
   },
   "purpose": "repeatable feature-selected real-corpus verification without a full corpus run",
-  "python_node_scope": {
-    "included": false,
-    "reason": "not included in this selective run because the existing real-corpus harness is Rust/Go/systemd focused and Python/Node are mapped to SOW-0065 parity closure unless a small language-specific follow-up is requested"
-  },
   "raw_path_manifest": {
     "committed": false,
     "contains_raw_paths": true,

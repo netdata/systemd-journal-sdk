@@ -32,15 +32,15 @@
 |---|---|
 | `rhel810` | Running and reachable through the configured SSH alias. Read-only journal validation is recorded in `sow-0075-rhel810-read-only-report.md`. Direct generic cloud-user checks still fail public-key authentication and are not the approved access path. No modification was made. |
 
-## Python Reader Dependency Finding
+## Retired Reader Dependency Finding
 
-The original Python mismatch on Ubuntu 18.04 archived files was reproduced with
-system `python3` because `lz4` was not importable. The missing DATA objects were
-LZ4-compressed payloads; Python raised `RuntimeError: lz4 decompression not
-available` internally and the high-level entry path skipped those payloads.
-After creating a repo-local `.local/sow-0075/python-venv` from
-`python/requirements.txt`, Python reader parity passed for all Ubuntu VM cases
-and for the RHEL 8.10 archived sample. No host package was installed.
+The original retired-reader mismatch on Ubuntu 18.04 archived files was
+reproduced with the system interpreter because `lz4` was not importable. The
+missing DATA objects were LZ4-compressed payloads; the retired high-level entry
+path skipped those payloads after reporting that decompression was unavailable.
+After creating a repo-local `.local/sow-0075/reader-venv` with the required
+dependencies, retired-reader parity passed for all Ubuntu VM cases and for the
+RHEL 8.10 archived sample. No host package was installed.
 
 ## Resources Remaining
 

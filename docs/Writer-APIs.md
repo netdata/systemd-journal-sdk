@@ -4,14 +4,14 @@ The writer API is split by lifecycle and append shape.
 
 ## Quick Selection
 
-| Consumer Need | Rust | Go | Python | Node.js | Use This When |
-|---|---|---|---|---|---|
-| directory backend | `Log` | `Log` | `Log` | `Log` | production ingestion with rotation and retention |
-| one file | low-level writer | `Writer` | `Writer` | `Writer` | caller owns lifecycle |
-| structured fields | `write_fields` | `Append` | `append` | `append` | producer already has field/value pairs |
-| prebuilt payloads | `write_entry` | `AppendRaw` | `append_raw` | `appendRaw` | caller already has `KEY=value` bytes |
-| optional lock | `journal_core::file::lock` | `AcquireWriterLock` | `WriterLock.acquire` | `WriterLock.acquire` | cooperating SDK writer exclusion |
-| FSS | `SealOptions` in core writer | `SealOptions` | `seal` option | `seal: SealOptions` | tamper-evident journal files |
+| Consumer Need | Rust | Go | Use This When |
+|---|---|---|---|
+| directory backend | `Log` | `Log` | production ingestion with rotation and retention |
+| one file | low-level writer | `Writer` | caller owns lifecycle |
+| structured fields | `write_fields` | `Append` | producer already has field/value pairs |
+| prebuilt payloads | `write_entry` | `AppendRaw` | caller already has `KEY=value` bytes |
+| optional lock | `journal_core::file::lock` | `AcquireWriterLock` | cooperating SDK writer exclusion |
+| FSS | `SealOptions` in core writer | `SealOptions` | tamper-evident journal files |
 
 ## Directory Writer
 
@@ -73,18 +73,6 @@ Go:
 - directory writer: `Log.Append([]journal.Field, journal.EntryOptions)`;
 - helper: `journal.StringField(name, value)`.
 
-Python:
-
-- direct writer: `Writer.append([{name, value}], options)`;
-- directory writer: `Log.append([{name, value}], options)`;
-- values are `bytes`, `bytearray`, `memoryview`, or strings encoded as UTF-8.
-
-Node.js:
-
-- direct writer: `writer.append([{ name, value }], options)`;
-- directory writer: `log.append([{ name, value }], options)`;
-- helpers: `stringField(name, value)` and `binaryField(name, value)`.
-
 ## Raw Append
 
 Raw append accepts full `KEY=value` bytes. The first `=` splits the field name
@@ -101,11 +89,11 @@ avoidable work.
 
 ## Field-Name Policies
 
-| Spec Policy | Rust | Go | Python | Node.js | Use Case | Stock systemd |
-|---|---|---|---|---|---|---|
-| `JOURNALD` | `FieldNamePolicy::Journald` | `FieldNamePolicyJournald` | `FIELD_NAME_POLICY_JOURNALD` | `FIELD_NAME_POLICY_JOURNALD` | trusted journald-like producer | intended friendly |
-| `RAW` | `FieldNamePolicy::Raw` | `FieldNamePolicyRaw` | `FIELD_NAME_POLICY_RAW` | `FIELD_NAME_POLICY_RAW` | file-format-level tools and tests | not guaranteed |
-| `JOURNAL-APP` | `FieldNamePolicy::JournalApp` | `FieldNamePolicyJournalApp` | `FIELD_NAME_POLICY_JOURNAL_APP` | `FIELD_NAME_POLICY_JOURNAL_APP` | untrusted app input under journald rules | intended friendly |
+| Spec Policy | Rust | Go | Use Case | Stock systemd |
+|---|---|---|---|---|
+| `JOURNALD` | `FieldNamePolicy::Journald` | `FieldNamePolicyJournald` | trusted journald-like producer | intended friendly |
+| `RAW` | `FieldNamePolicy::Raw` | `FieldNamePolicyRaw` | file-format-level tools and tests | not guaranteed |
+| `JOURNAL-APP` | `FieldNamePolicy::JournalApp` | `FieldNamePolicyJournalApp` | untrusted app input under journald rules | intended friendly |
 
 Producer-specific remapping does not belong in the SDK. Transform fields before
 calling the writer.

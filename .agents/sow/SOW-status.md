@@ -1,6 +1,6 @@
 # SOW Status
 
-Last updated: 2026-06-15
+Last updated: 2026-06-16
 
 ## Current
 
@@ -10,6 +10,21 @@ Last updated: 2026-06-15
 
 ## Pending
 
+- SOW-0115 - Portable writer identity & monotonic helpers: open,
+  blocked-on-user-decisions after repeat external review. Design a strict OS-agnostic
+  writer contract where
+  `_MACHINE_ID`, `_BOOT_ID`, and generated-entry `__MONOTONIC_TIMESTAMP` are
+  mandatory caller-provided anchors, plus a separate optional Layer-3 helper
+  API/package that produces local-host values on Linux/FreeBSD/macOS/Windows
+  when that is the caller's intended identity source. User accepted FreeBSD
+  locked state-backed boot-id synthesis under `/var/run` by default with caller
+  path override, Rust/Go product scope after SOW-0116, and hard
+  native-only/no-subprocess policy. Initial external review on 2026-06-16
+  returned 7/7 NOT READY TO IMPLEMENT votes; after SOW hardening, repeat review
+  returned 6/7 NOT READY TO IMPLEMENT votes and 1/7 READY vote before the
+  language-scope reduction. The SOW must resolve non-Linux boot-id strategy,
+  state-file locking/security, Rust helper relocation/clock semantics, and
+  breaking-change migration before implementation.
 - SOW-0048 - Netdata OTEL Writer SDK Integration: open. Component integration
   for OTEL writer paths after inventory and writer gates.
 - SOW-0049 - Netdata Reader Plugin SDK Integration: open. Component integration
@@ -17,11 +32,9 @@ Last updated: 2026-06-15
   packaging after reader gates.
 - SOW-0050 - Netdata Vendored Journal Removal: open. Final cleanup after all
   Netdata component integrations are complete.
-- SOW-0113 - Node.js Optional Native Mmap Reader: open. Follow-up from
-  SOW-0111 to design and implement an explicit opt-in Node.js mmap backend or
-  package boundary while keeping the default package pure positioned-read.
 - SOW-0066 - V1 Release And Registry Publication: open. Final `v1.0.0`
-  release, language registry/package publication, and clean consumer install
+  Rust/Go release, Rust registry publication where applicable, Go module tags,
+  and clean consumer install
   validation after compatibility, portability, corpus, integration, and parity
   gates are complete.
 - SOW-0094 - Rust Explorer Lazy Compressed Field Inference Experiment: open.
@@ -39,6 +52,21 @@ Last updated: 2026-06-15
   shared primitives preserve historical compatibility and reader performance.
 ## Recently Closed Or Completed
 
+- SOW-0116 - Retire Python and Node.js product targets: completed. Python and
+  Node.js tracked implementations were moved under `experiments/` as
+  non-product retired experiments; active product docs, specs, CI, validation
+  defaults, project skills, and pending/current SOW scope now target Rust and Go
+  only. Validation included docs checks, verified examples, runtime purity,
+  Netdata function tests, coverage script checks, SOW audit, `git diff
+  --check`, and end-to-end interoperability matrices for query, compact,
+  compression, mixed-directory, lock, verify, directory, binary, live, and byte
+  identity paths. Final external review returned 6/7 `READY TO COMPLETE`; the
+  remaining reviewer finding was explicit staging of new files, resolved during
+  close.
+- SOW-0113 - Node.js Optional Native Mmap Reader: closed without
+  implementation on 2026-06-16. Superseded by SOW-0116, which retired the
+  Node.js implementation to `experiments/` and removed it from product SDK
+  scope.
 - SOW-0114 - v0.7.1 Release: completed. Rust crates were published to crates.io
   at `0.7.1`, `master` was pushed through release commit
   `1df0eae1a31f80459453e0ca6a696282372b609c`, and annotated tags `v0.7.1`
@@ -56,8 +84,8 @@ Last updated: 2026-06-15
   Rust whole-file mmap is hidden from normal public reader APIs; Go and Python
   read-at paths are retained only for internal/test/diagnostic or controlled
   fallback evidence with non-production wording; Node.js default package no
-  longer advertises or exports mmap selection; optional native Node.js mmap
-  support remains tracked by SOW-0113. Local validation and repeat reviewers
+  longer advertises or exports mmap selection; the optional native Node.js mmap
+  follow-up was later closed by SOW-0116. Local validation and repeat reviewers
   that returned final verdicts passed production-grade review.
 - SOW-0112 - Netdata Sampling Contract Clarification: completed. Recorded the
   SDK sampling and slice contract: data-only non-delta requests stay exact and

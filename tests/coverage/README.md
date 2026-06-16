@@ -7,8 +7,6 @@ Reports are written under `.local/coverage/` by default:
 
 ```bash
 tests/coverage/run_go_coverage.sh
-tests/coverage/run_python_coverage.sh
-tests/coverage/run_node_coverage.sh
 tests/coverage/run_rust_coverage.sh
 ```
 

@@ -52,70 +52,6 @@ jobs:
             .local/coverage/go/coverage.txt
           if-no-files-found: error
 
-  python:
-    name: Python coverage
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.14"
-          cache: pip
-          cache-dependency-path: python/requirements.txt
-
-      - name: Install Python dependencies
-        run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install --upgrade -r python/requirements.txt coverage==7.14.1
-
-      - name: Generate Python coverage
-        run: tests/coverage/run_python_coverage.sh
-
-      - name: Upload Python coverage artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: coverage-python
-          path: |
-            .local/coverage/python/cobertura.xml
-            .local/coverage/python/coverage.txt
-          if-no-files-found: error
-
-  node:
-    name: Node.js coverage
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: "26"
-          cache: npm
-          cache-dependency-path: node/package-lock.json
-
-      - name: Install Node.js dependencies
-        working-directory: node
-        run: npm ci
-
-      - name: Generate Node.js coverage
-        run: tests/coverage/run_node_coverage.sh
-
-      - name: Upload Node.js coverage artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: coverage-node
-          path: |
-            .local/coverage/node/lcov.info
-          if-no-files-found: error
-
   rust:
     name: Rust coverage
     runs-on: ubuntu-latest
@@ -152,8 +88,6 @@ jobs:
     timeout-minutes: 20
     needs:
       - go
-      - python
-      - node
       - rust
 
     steps:

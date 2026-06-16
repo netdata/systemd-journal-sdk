@@ -52,13 +52,13 @@ The Git dependency was removed to avoid checking out the full upstream
 monorepo in package builds. Local parity tests cover the upstream edge cases
 used by this SDK.
 
-The Node.js SDK vendors the WASM runtime files from `node-liblzma` for XZ DATA
-object support:
+The retired Node.js experiment vendors the WASM runtime files from
+`node-liblzma` for XZ DATA object support:
 
 - **Package**: `node-liblzma`
 - **Version**: `5.0.1`
 - **Repository**: `https://github.com/oorabona/node-liblzma`
-- **Local path**: `node/vendor/node-liblzma-wasm/`
+- **Local path**: `experiments/node/vendor/node-liblzma-wasm/`
 - **Included files**: `liblzma.js`, `liblzma.wasm`, `LICENSE`, `README.md`
 - **License**: LGPL-3.0
 - **Vendored file SHA-256 values**:
@@ -68,7 +68,7 @@ object support:
 
 Only the WASM runtime files are included. The full npm package's native addon
 prebuilds and install hook are intentionally not included in this repository or
-the published Node.js package.
+the retired Node.js experiment package.
 
 ## Modifications
 

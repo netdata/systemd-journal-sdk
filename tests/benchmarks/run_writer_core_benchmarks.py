@@ -27,7 +27,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT = ROOT / ".local" / "benchmarks" / "writer-core"
 BIN_DIR = ROOT / ".local" / "benchmarks" / "bin"
-LANGUAGES = ("systemd", "rust", "go", "node", "python")
+LANGUAGES = ("systemd", "rust", "go")
 INCOMPATIBLE_COMPRESSED_XZ = 1 << 0
 INCOMPATIBLE_COMPRESSED_LZ4 = 1 << 1
 INCOMPATIBLE_COMPRESSED_ZSTD = 1 << 3
@@ -78,18 +78,11 @@ def build_env() -> dict[str, str]:
         "GOPATH": str(local / "go-path"),
         "CARGO_HOME": str(local / "cargo-home"),
         "CARGO_TARGET_DIR": str(local / "cargo-target"),
-        "npm_config_cache": str(local / "npm-cache"),
-        "PIP_CACHE_DIR": str(local / "pip-cache"),
-        "PYTHONPATH": str(ROOT / "python"),
     }
 
 
 def build_tool(language: str, env: dict[str, str]) -> tuple[list[str], dict[str, Any]]:
     BIN_DIR.mkdir(parents=True, exist_ok=True)
-    if language == "python":
-        return [sys.executable, str(ROOT / "python" / "cmd" / "writer_core_bench.py")], {}
-    if language == "node":
-        return ["node", str(ROOT / "node" / "internal" / "testcmd" / "writer-core-bench.js")], {}
     if language == "go":
         output = BIN_DIR / "go-writer-core-bench"
         require_ok(
@@ -663,7 +656,6 @@ def environment_report(env: dict[str, str], output_dir: Path) -> dict[str, Any]:
     return {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "platform": platform.platform(),
-        "python": sys.version.split()[0],
         "cpu_count": os.cpu_count(),
         "cpu_model": cpu_model(),
         "cpu_governor": cpu_governor(),
@@ -671,7 +663,6 @@ def environment_report(env: dict[str, str], output_dir: Path) -> dict[str, Any]:
         "go": first_line(["go", "version"], env),
         "rustc": first_line(["rustc", "--version"], env),
         "cargo": first_line(["cargo", "--version"], env),
-        "node": first_line(["node", "--version"], env),
         "journalctl": first_line(["journalctl", "--version"], env),
     }
 

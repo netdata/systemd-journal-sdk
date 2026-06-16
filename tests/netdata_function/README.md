@@ -55,12 +55,11 @@ N files, total size S, covering <duration>, last entry at <iso>
 ```
 
 The two `covering` (duration) and `last entry at` (RFC-3339 UTC)
-components are reported from the live tail. With a third peer added
-(Python, SOW-0104) the slow peer can see a tail several seconds newer
-than the fast peers; observed up to ~6 seconds while SDK and plugin
-agree to the second. The 2-peer design relied on back-to-back
-invocations; with a third slow peer the race is structural, not a
-transient timing bug.
+components are reported from the live tail. With any optional third
+experiment peer, the slow peer can see a tail several seconds newer than
+the fast peers; observed up to ~6 seconds while SDK and plugin agree to
+the second. The 2-peer design relied on back-to-back invocations; with a
+third slow peer the race is structural, not a transient timing bug.
 
 The comparator therefore accepts a bounded skew on those two
 components only:
@@ -152,14 +151,14 @@ anchors from response rows. The committed sequence suite covers:
 The stateful harness uses `after=1` as its default lower bound. In Netdata
 request semantics, `after=0` is a relative UI window, not the Unix epoch.
 
-The three-peer stateful gate (SDK, plugin, Python) freezes a fresh-data
-synthetic fixture so a slow third peer is not divergent because of live
-tail movement. The runner exposes `--make-static-fixture <dir>` which
+The stateful gate freezes a fresh-data synthetic fixture so an optional
+extra peer is not divergent because of live tail movement. The runner
+exposes `--make-static-fixture <dir>` which
 generates a fresh fixture (100 entries by default, timestamped in
 `[now-3000s, now-600s]`, well inside every peer's `[now-3600, now]`
-window even with the ±60s parse skew observed at the 3-peer stateful
-gate) using the in-repo Python SDK, and writes a JSON report describing
-the fixture. The runner does not invoke the SDK/plugin binaries in
+window even with the ±60s parse skew observed at the stateful gate) using
+the in-repo Go SDK, and writes a JSON report describing the fixture. The
+runner does not invoke the SDK/plugin binaries in
 fixture mode. Default behavior (no flag) is unchanged: the runner
 expects `--dir` to point at an existing directory and runs the sequences
 against it.

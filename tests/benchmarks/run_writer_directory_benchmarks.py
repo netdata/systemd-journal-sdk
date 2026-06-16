@@ -29,7 +29,7 @@ from run_writer_core_benchmarks import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
-LANGUAGES = ("systemd", "rust", "go", "node", "python")
+LANGUAGES = ("systemd", "rust", "go")
 
 
 def bench_command(

@@ -22,8 +22,7 @@ def path_class(path: str | None) -> str:
     for prefix in (
         "rust/",
         "go/",
-        "node/",
-        "python/",
+        "experiments/",
         "tests/",
         "fixtures/",
         "documentation/",

@@ -3,7 +3,6 @@
 - Schema: `systemd-journal-sdk-vm-matrix-v1`
 - Status: `ok`
 - Canonical digest schema: `systemd-journal-sdk-corpus-logical-v1`
-- Python runtime: `repo-local-python-with-lz4-4.4.5`
 - Discrepancies: `none`
 
 | target | observed systemd | cases | status | discrepancy codes |

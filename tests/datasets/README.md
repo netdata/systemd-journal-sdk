@@ -1,7 +1,7 @@
 # Deterministic Ingestion Dataset
 
-This directory contains the language-neutral ingestion dataset used by later
-systemd C, Rust, Go, Node.js, and Python ingesters.
+This directory contains the language-neutral ingestion dataset used by the
+systemd C, Rust, and Go ingesters.
 
 ## Files
 

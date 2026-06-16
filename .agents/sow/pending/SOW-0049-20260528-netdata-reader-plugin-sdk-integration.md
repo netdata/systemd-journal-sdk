@@ -34,8 +34,8 @@ Facts:
 
 Inferences:
 
-- This SOW should wait for Rust/Go/Python/Node.js reader parity and performance
-  decisions where they affect Netdata.
+- This SOW should wait for Rust/Go reader parity and performance decisions
+  where they affect Netdata.
 
 Unknowns:
 

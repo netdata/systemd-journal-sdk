@@ -184,7 +184,7 @@ def check_bridge() -> bool:
 
 
 REQUIRED_PREFLIGHT_TOOLS = ["virsh", "virt-install", "qemu-img", "genisoimage", "ssh", "scp", "curl", "journalctl"]
-OPTIONAL_PREFLIGHT_TOOLS = ["cargo", "go", "python3", "node"]
+OPTIONAL_PREFLIGHT_TOOLS = ["cargo", "go"]
 
 
 def preflight_tools() -> dict[str, str | None]:
@@ -837,28 +837,6 @@ def add_compiled_reader(
     readers[driver] = {"digest": digest, "stats": stats}
 
 
-def add_python_reader(readers: dict[str, Any], path: Path) -> None:
-    py = os.environ.get("SOW0075_PYTHON") or which("python3")
-    if not py:
-        return
-    digest, stats = digest_export_command(
-        "python",
-        [py, str(ROOT / "python" / "cmd" / "journalctl.py"), "--file", str(path), "--output=export"],
-    )
-    readers["python"] = {"digest": digest, "stats": stats}
-
-
-def add_node_reader(readers: dict[str, Any], path: Path) -> None:
-    node = which("node")
-    if not node:
-        return
-    digest, stats = digest_export_command(
-        "node",
-        [node, str(ROOT / "node" / "cmd" / "journalctl" / "index.js"), "--file", str(path), "--output", "export"],
-    )
-    readers["node"] = {"digest": digest, "stats": stats}
-
-
 def compare_case_readers(readers: dict[str, Any], baseline: str | None) -> list[str]:
     discrepancies: list[str] = []
     for driver, row in readers.items():
@@ -885,8 +863,6 @@ def validate_case(path: Path, helpers: dict[str, Path | None], vm_verify: dict[s
         discrepancies.append("STOCK_READ_FAILED")
     for driver in ("rust", "go"):
         add_compiled_reader(readers, discrepancies, helpers, driver, path)
-    add_python_reader(readers, path)
-    add_node_reader(readers, path)
     discrepancies.extend(compare_case_readers(readers, stock_digest.get("logical_digest") if stock_digest else None))
     vm_row = vm_verify.get(case_id)
     if vm_row and int(vm_row.get("returncode", 1)) != 0:
@@ -935,7 +911,6 @@ def validate(targets: list[Target], report_json: Path, report_md: Path) -> dict[
         "kind": "vm-reader-matrix",
         "generated_at_unix": int(time.time()),
         "canonical_digest_schema": SCHEMA_VERSION,
-        "python_runtime": os.environ.get("SOW0075_PYTHON_LABEL", "python3"),
         "caps": {"max_new_vms": 4, "name_prefix": "sdjournal-", "vcpus": 1, "memory_mib": 1024, "disk_gib": 4},
         "targets": target_reports,
         "status": "ok" if not discrepancies and all(t["status"] == "ok" for t in target_reports) else "discrepancy",
@@ -954,7 +929,6 @@ def append_markdown_header(lines: list[str], report: dict[str, Any]) -> None:
         f"- Schema: `{report['schema']}`",
         f"- Status: `{report['status']}`",
         f"- Canonical digest schema: `{report['canonical_digest_schema']}`",
-        f"- Python runtime: `{report.get('python_runtime', 'python3')}`",
         f"- Discrepancies: `{', '.join(report['discrepancies']) if report['discrepancies'] else 'none'}`",
         "",
         "| target | observed systemd | cases | status | discrepancy codes |",

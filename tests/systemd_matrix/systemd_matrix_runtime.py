@@ -109,11 +109,6 @@ def matrix_env(out: Path) -> dict[str, str]:
             "GOCACHE": str(cache / "go-cache"),
             "GOMODCACHE": str(cache / "go-mod-cache"),
             "GOPATH": str(cache / "go-path"),
-            "npm_config_cache": str(cache / "npm-cache"),
-            "PIP_CACHE_DIR": str(cache / "pip-cache"),
-            "PYTHONPATH": os.pathsep.join(
-                [str(ROOT / ".local" / "python-deps"), str(ROOT / "python")]
-            ),
         }
     )
     return env

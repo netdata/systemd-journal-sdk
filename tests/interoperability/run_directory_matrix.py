@@ -15,18 +15,17 @@ import json
 import os
 import shutil
 import subprocess  # nosec B404
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+
+from go_fixture_writer import write_journal_file
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_DIR = REPO_ROOT / ".local" / "interoperability"
 BIN_DIR = LOCAL_DIR / "bin"
 FIXTURE_DIR = LOCAL_DIR / "directory"
-
-PYTHON = os.environ.get("PYTHON", "python3")
 
 MACHINE_A = "00112233445566778899aabbccddeeff"
 MACHINE_B = "102132435465768798a9babbdcddedef"
@@ -53,8 +52,6 @@ READERS = {
     "stock": ReaderSpec("stock"),
     "go": ReaderSpec("go"),
     "rust": ReaderSpec("rust"),
-    "node": ReaderSpec("node"),
-    "python": ReaderSpec("python"),
 }
 
 
@@ -260,35 +257,29 @@ def write_zst_fixture(zst_dir: Path) -> None:
 
 
 def write_journal(path: Path, machine_id: str, boot_id: str, seqnum_id: str, rows: list[FixtureRow]) -> None:
-    sys.path.insert(0, str(REPO_ROOT / "python"))
-    from journal import Writer
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    writer = Writer.create(
-        str(path),
-        {
-            "machine_id": machine_id,
-            "boot_id": boot_id,
-            "seqnum_id": seqnum_id,
-        },
-    )
-    try:
-        for row in rows:
-            writer.append(
-                [
-                    {"name": "TEST_ID", "value": "directory-parity"},
-                    {"name": "_BOOT_ID", "value": boot_id},
-                    {"name": "_MACHINE_ID", "value": machine_id},
-                    {"name": "MESSAGE", "value": row.message},
-                    {"name": "PRIORITY", "value": "6"},
-                    {"name": "DIRECTORY_SEQ", "value": row.seq},
-                    {"name": "LIVE_SEQ", "value": row.seq},
-                    {"name": "DIRECTORY_GROUP", "value": row.group},
+    write_journal_file(
+        path,
+        machine_id=machine_id,
+        boot_id=boot_id,
+        seqnum_id=seqnum_id,
+        entries=[
+            {
+                "realtime_usec": row.realtime,
+                "monotonic_usec": row.monotonic,
+                "fields": [
+                    ("TEST_ID", "directory-parity"),
+                    ("_BOOT_ID", boot_id),
+                    ("_MACHINE_ID", machine_id),
+                    ("MESSAGE", row.message),
+                    ("PRIORITY", "6"),
+                    ("DIRECTORY_SEQ", row.seq),
+                    ("LIVE_SEQ", row.seq),
+                    ("DIRECTORY_GROUP", row.group),
                 ],
-                {"realtime_usec": row.realtime, "monotonic_usec": row.monotonic},
-            )
-    finally:
-        writer.close()
+            }
+            for row in rows
+        ],
+    )
 
 
 def reader_command(reader: ReaderSpec, tools: dict[str, str], mode: str, directory: Path, args: list[str]) -> list[str]:
@@ -305,10 +296,6 @@ def reader_base_command(reader: ReaderSpec, tools: dict[str, str], directory: Pa
         return [tools["go_journalctl"], "--directory", str(directory)]
     if reader.name == "rust":
         return [tools["rust_journalctl"], "--directory", str(directory)]
-    if reader.name == "node":
-        return ["node", str(REPO_ROOT / "node/cmd/journalctl/index.js"), "--directory", str(directory)]
-    if reader.name == "python":
-        return [PYTHON, str(REPO_ROOT / "python/cmd/journalctl.py"), "--directory", str(directory)]
     raise ValueError(reader.name)
 
 

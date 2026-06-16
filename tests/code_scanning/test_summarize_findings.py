@@ -99,18 +99,18 @@ def test_codacy_issue_summary_handles_cloud_shape(tmp_path: Path) -> None:
     export = {
         "data": [
             {
-                "filePath": "python/journal/reader.py",
+                "filePath": "go/journal/reader.go",
                 "severity": "Medium",
                 "category": "ErrorProne",
-                "toolInfo": {"name": "Ruff"},
-                "patternInfo": {"id": "F401"},
+                "toolInfo": {"name": "golangci-lint"},
+                "patternInfo": {"id": "ineffassign"},
             },
             {
-                "filePath": "python/journal/writer.py",
+                "filePath": "go/journal/writer.go",
                 "severity": "Medium",
                 "category": "ErrorProne",
-                "toolInfo": {"name": "Ruff"},
-                "patternInfo": {"id": "F401"},
+                "toolInfo": {"name": "golangci-lint"},
+                "patternInfo": {"id": "ineffassign"},
             },
         ]
     }
@@ -121,9 +121,9 @@ def test_codacy_issue_summary_handles_cloud_shape(tmp_path: Path) -> None:
     summary = build_summary(findings, limit=10)
 
     assert summary["total"] == 2
-    assert summary["by_tool"] == [{"tool": "Ruff", "count": 2}]
+    assert summary["by_tool"] == [{"tool": "golangci-lint", "count": 2}]
     assert summary["by_rule"] == [
-        {"tool": "Ruff", "rule": "F401", "severity": "Medium", "count": 2}
+        {"tool": "golangci-lint", "rule": "ineffassign", "severity": "Medium", "count": 2}
     ]
 
 

@@ -248,7 +248,7 @@ class MarkedFenceTests(unittest.TestCase):
         )
         with _tmp_docs([("WrongLang.md", body)]) as docs:
             msg = _assert_fails_with(lambda: _run_marker_check(docs))
-        self.assertIn("expected one of rust, go, python, javascript", msg)
+        self.assertIn("expected one of rust, go", msg)
 
     def test_illustrative_marker_does_not_consume_id_uniqueness(self):
         # Two illustrative-only markers with similar text in different docs
@@ -265,28 +265,25 @@ class MarkedFenceTests(unittest.TestCase):
             _run_marker_check(docs)
 
     def test_non_supported_languages_are_exempt(self):
-        # toml, sh, json, text, and js fences require no marker. The canonical
-        # Node.js fence is javascript and is intentionally enforced.
+        # Only Rust and Go are product documentation languages. Other fences
+        # are exempt from verified-example markers.
         body = (
             "```toml\nx = 1\n```\n"
             "```sh\necho hi\n```\n"
             "```json\n{\"a\": 1}\n```\n"
             "```text\nplain\n```\n"
             "```js\nconsole.log(1)\n```\n"
+            "```python\nprint(1)\n```\n"
+            "```javascript\nconsole.log(1)\n```\n"
         )
         with _tmp_docs([("Exempt.md", body)]) as docs:
             _run_marker_check(docs)
 
-    def test_python_and_javascript_fences_require_markers(self):
-        body = "```python\nprint(1)\n```\n"
-        with _tmp_docs([("Py.md", body)]) as docs:
+    def test_go_fence_requires_marker(self):
+        body = "```go\npackage main\n```\n"
+        with _tmp_docs([("Go.md", body)]) as docs:
             msg = _assert_fails_with(lambda: _run_marker_check(docs))
-        self.assertIn("python fenced code block is not preceded", msg)
-
-        body = "```javascript\nconsole.log(1)\n```\n"
-        with _tmp_docs([("Js.md", body)]) as docs:
-            msg = _assert_fails_with(lambda: _run_marker_check(docs))
-        self.assertIn("javascript fenced code block is not preceded", msg)
+        self.assertIn("go fenced code block is not preceded", msg)
 
     def test_failure_message_includes_file_and_line(self):
         body = (

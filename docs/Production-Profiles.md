@@ -6,9 +6,7 @@ Use this for NetFlow, SNMP traps, OTEL logs, and similar structured producers.
 
 Rust and Go are the production ingestion targets. Current shared writer
 certification measured Rust/Go tens of thousands of append rows/s on the
-32-field benchmark, while Node.js and Python were around 0.9k-1.0k append
-rows/s. Do not choose Node.js or Python for high-throughput ingestion without a
-fresh workload-specific benchmark.
+32-field benchmark.
 
 Recommended:
 
@@ -55,10 +53,7 @@ Use this for pipelines that traverse rows and process payloads directly.
 Rust and Go are the production reader targets. Go production readers should use
 rolling mmap on supported Unix-family and Windows targets; a selected read-at
 fallback is a deployment signal to investigate, benchmark, and explicitly
-accept before production use. Python uses mmap where the Python standard
-library supports it but remains a compatibility/parity surface today, not a
-high-throughput reader baseline. Node.js default-package readers use bounded
-positioned reads because Node core has no portable mmap API.
+accept before production use.
 
 Recommended:
 

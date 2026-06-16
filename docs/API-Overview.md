@@ -1,8 +1,8 @@
 # API Overview
 
-This page explains the public API model. The language pages show exact Rust,
-Go, Python, and Node.js code, and every example in those languages is compiled
-or syntax-checked and executed against synthetic fixtures by repository CI.
+This page explains the public API model. The language pages show exact Rust and
+Go code, and every example in those languages is compiled or executed against
+synthetic fixtures by repository CI.
 Examples are contracts, not illustrations, unless a page explicitly marks a
 block illustrative-only.
 
@@ -64,7 +64,7 @@ presents less. The layers below explain what each surface costs.
 
 | Surface | Best For | Performance Notes |
 |---|---|---|
-| payload visitor | scanning current-row `FIELD=value` bytes | avoids maps and copies uncompressed mmap data where the language can expose that path; Go `VisitEntryPayloads` is callback-scoped and Python visitors return owned `bytes` |
+| payload visitor | scanning current-row `FIELD=value` bytes | avoids maps and copies uncompressed mmap data where the language can expose that path; Go `VisitEntryPayloads` is callback-scoped |
 | file reader | one journal file with cursor, matches, metadata, fields | flexible, but full entry materialization is not the fastest path |
 | directory reader | ordered reads across active and archived files | merges files in journal order |
 | facade API | libsystemd-style ports | compatibility call shape over SDK reader primitives |
@@ -112,11 +112,6 @@ Reader hot paths use row-scoped data lifetimes:
 This is the intended contract for high-throughput readers and facade ports. Go
 `VisitEntryPayloads` is callback-scoped and does not provide this row-level
 guarantee; use Go `EnumerateEntryPayload` when row-level lifetime matters.
-Python's visitor shape returns owned `bytes` and therefore copies; use Python
-`enumerate_entry_payload()` when row-scoped DATA access matters. Node.js uses
-bounded positioned-read windows in the default package, so treat returned
-current-row buffers as row-scoped even though the backing implementation is not
-mmap.
 
 ## Explorer Query Model
 
@@ -153,9 +148,6 @@ the caller selects systemd-compatible options:
 ## Production Checklist
 
 - Pick Rust or Go for high-throughput production ingestion or query paths.
-- Use Python and Node.js for compatibility, automation, integration, and
-  verified parity surfaces unless a workload benchmark proves they fit the
-  production path.
 - Use structured append unless payloads are already `KEY=value` bytes.
 - Use payload visitors or Explorer instead of full entry maps inside hot loops;
   in Go, use `EnumerateEntryPayload` when row-level payload lifetime is needed.

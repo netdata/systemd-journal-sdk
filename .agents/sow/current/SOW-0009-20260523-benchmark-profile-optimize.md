@@ -6,11 +6,9 @@ Status: paused
 
 Sub-state: retained as the umbrella performance program. The writer side is
 split into SOW-0042 after SOW-0037/SOW-0040/SOW-0041. The reader side is split
-into SOW-0044, SOW-0052, SOW-0053, and SOW-0054 after SOW-0043 defines the
-reader compatibility target and after the user changed priority to
-Rust -> Python -> Node.js full-language ports. SOW-0060 completed the Rust
-reader absolute hot-path profiling pass after later Go results set a stricter
-performance bar.
+into SOW-0044, SOW-0052, and SOW-0060 after SOW-0043 defines the reader
+compatibility target. SOW-0116 retired Python and Node.js as product targets,
+so active performance work now focuses on Rust and Go only.
 
 ## Requirements
 
@@ -64,8 +62,7 @@ Unknowns:
 
 - Final production pass/fail thresholds per Netdata component.
 - Final benchmark hardware normalization and CPU governor policy.
-- Whether Python and Node.js are expected to be production hot-path
-  replacements or portability/reference implementations after measurement.
+- Final Rust/Go pass/fail thresholds for each Netdata component.
 
 ### Acceptance Criteria
 
@@ -75,8 +72,8 @@ Unknowns:
 - Rust reader baseline/parity and optimization are tracked by SOW-0043,
   SOW-0044, SOW-0052, and SOW-0060.
 - Go reader alignment and optimization are tracked by SOW-0045.
-- Python reader/writer Rust-port work is tracked by SOW-0053.
-- Node.js reader/writer Rust-port work is tracked by SOW-0054.
+- Historical Python/Node reader/writer port work is superseded by SOW-0116 for
+  product planning.
 - Netdata integration remains blocked by the relevant child SOWs unless the
   user explicitly accepts a staged exception.
 - Benchmark reports must record production-relevant settings: file size,
@@ -134,7 +131,7 @@ Evidence reviewed:
 Affected contracts and surfaces:
 
 - Writer and reader benchmark harnesses.
-- Rust, Go, Node.js, and Python SDK performance claims.
+- Rust and Go SDK performance claims.
 - Netdata replacement readiness for NetFlow, OTEL, SNMP traps, signal viewer,
   and no-libsystemd systemd journal reading.
 
@@ -214,9 +211,9 @@ Open decisions:
 5. Complete SOW-0052 Rust reader last-mile optimization.
 6. Complete SOW-0060 Rust reader absolute hot-path profiling. Completed on
    2026-05-29.
-7. Complete SOW-0053 Python reader/writer Rust-port work.
-8. Complete SOW-0054 Node.js reader/writer Rust-port work.
-9. Use the results to unblock SOW-0026 and component Netdata integration SOWs.
+7. Treat historical Python/Node port work as superseded by SOW-0116 for
+   product planning.
+8. Use the results to unblock SOW-0026 and component Netdata integration SOWs.
 
 ## Delegation Plan
 
@@ -259,14 +256,13 @@ Failure handling:
   improve performance without sacrificing accuracy or robustness.
 - SOW-0060 completed the Rust absolute reader hot-path profiling pass,
   implemented Rust ordered-directory non-overlap sequential stepping, and
-  established the Rust row-scoped current-entry facade payload lifetime. Go,
-  Node.js, and Python facade parity for that strengthened lifetime remains
-  tracked by this reader-performance umbrella before the reader phase can
-  close.
-- SOW-0061 completed Go, Node.js, and Python facade DATA enumeration parity for
-  the Rust row-scoped current-entry payload lifetime contract. Public docs,
-  product specs, and tests now record that cached current-row payload
-  references/objects remain valid after end-of-row enumeration and until the
+  established the Rust row-scoped current-entry facade payload lifetime. Go
+  parity for that strengthened lifetime remains tracked by this
+  reader-performance umbrella before the reader phase can close.
+- SOW-0061 completed Go facade DATA enumeration parity for the Rust row-scoped
+  current-entry payload lifetime contract. Public docs, product specs, and
+  tests now record that cached current-row payload references/objects remain
+  valid after end-of-row enumeration and until the
   next row/lifecycle boundary.
 - Added SOW-0062 as the active Rust-first, Go-second writer absolute
   performance pass after the user stated that Netdata NetFlow, OTEL logs, and
@@ -338,8 +334,8 @@ Follow-up mapping:
 - Writer certification: SOW-0042.
 - Rust reader parity/performance: SOW-0043, SOW-0044, and SOW-0052.
 - Go reader performance: SOW-0045.
-- Python reader/writer Rust-port work: SOW-0053.
-- Node.js reader/writer Rust-port work: SOW-0054.
+- Historical Python/Node reader/writer Rust-port work: superseded by SOW-0116
+  for product planning.
 - Cross-language row-scoped current-entry facade payload lifetime parity:
   completed by SOW-0061.
 - Rust and Go writer absolute performance: SOW-0062.
@@ -359,8 +355,6 @@ Pending.
 - SOW-0044 - Rust Reader Hot-Path Optimization.
 - SOW-0045 - Go Reader Alignment Optimization.
 - SOW-0052 - Rust Reader Last-Mile Optimization.
-- SOW-0053 - Python Reader And Writer Rust Port.
-- SOW-0054 - Node.js Reader And Writer Rust Port.
 - SOW-0062 - Rust And Go Writer Absolute Performance.
 
 ## Regression Log

@@ -13,24 +13,18 @@ import json
 import os
 import shutil
 import subprocess  # nosec B404
-import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Iterable
+
+from go_fixture_writer import write_journal_file
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_DIR = REPO_ROOT / ".local" / "interoperability"
 BIN_DIR = LOCAL_DIR / "bin"
 FIXTURE_DIR = LOCAL_DIR / "verify"
-PYTHON = os.environ.get("PYTHON", sys.executable)
-
-sys.path.insert(0, str(REPO_ROOT / ".local" / "python-deps"))
-sys.path.insert(0, str(REPO_ROOT / "python"))
-
-from journal import Writer  # noqa: E402
-from journal.seal import SealOptions  # noqa: E402
 
 
 MACHINE_ID = "00112233445566778899aabbccddeeff"
@@ -40,11 +34,11 @@ VERIFY_SEED_HEX = "000000000000000000000000"
 VERIFY_START_USEC = 1_000_000
 VERIFY_INTERVAL_USEC = 1_000_000
 VERIFY_KEY = f"{VERIFY_SEED_HEX}/{VERIFY_START_USEC // VERIFY_INTERVAL_USEC:x}-{VERIFY_INTERVAL_USEC:x}"
-SEAL_OPTS = SealOptions(
-    seed=bytes.fromhex(VERIFY_SEED_HEX),
-    interval_usec=VERIFY_INTERVAL_USEC,
-    start_usec=VERIFY_START_USEC,
-)
+SEAL_OPTS = {
+    "seed": bytes.fromhex(VERIFY_SEED_HEX),
+    "interval_usec": VERIFY_INTERVAL_USEC,
+    "start_usec": VERIFY_START_USEC,
+}
 LONG_PAYLOAD = bytes((idx % 26) + 0x41 for idx in range(512))
 BINARY_PAYLOAD = bytes([0x00, 0x01, 0x02, 0x41, 0x0A, 0x7F, 0x80, 0xFF])
 
@@ -151,14 +145,6 @@ def build_env() -> dict[str, str]:
     env.setdefault("GOPATH", str(local / "go"))
     env.setdefault("CARGO_HOME", str(local / "cargo-home"))
     env.setdefault("CARGO_TARGET_DIR", str(local / "cargo-target"))
-    env.setdefault("npm_config_cache", str(local / "npm-cache"))
-    env.setdefault("PIP_CACHE_DIR", str(local / "pip-cache"))
-    python_deps = local / "python-deps"
-    env["PYTHONPATH"] = (
-        f"{REPO_ROOT / 'python'}{os.pathsep}{python_deps}{os.pathsep}{env['PYTHONPATH']}"
-        if env.get("PYTHONPATH")
-        else f"{REPO_ROOT / 'python'}{os.pathsep}{python_deps}"
-    )
     return env
 
 
@@ -228,36 +214,35 @@ def make_fixtures() -> tuple[dict[str, Path], dict[str, Path]]:
 
 
 def write_positive(path: Path, spec: FixtureSpec) -> None:
-    opts = {
-        "machine_id": MACHINE_ID,
-        "boot_id": BOOT_ID,
-        "seqnum_id": SEQNUM_ID,
-        "compact": spec.compact,
-        "compression": spec.compression,
-        "compression_threshold_bytes": 16,
-    }
-    if spec.sealed:
-        opts["seal"] = SEAL_OPTS
-    writer = Writer.create(str(path), opts)
-    try:
-        for idx in range(5):
-            writer.append(
-                [
-                    {"name": "_MACHINE_ID", "value": MACHINE_ID},
-                    {"name": "_BOOT_ID", "value": BOOT_ID},
-                    {"name": "TEST_ID", "value": "verify-parity"},
-                    {"name": "MESSAGE", "value": f"verify parity {spec.name}"},
-                    {"name": "PRIORITY", "value": "6"},
-                    {"name": "LIVE_SEQ", "value": f"{idx:06d}"},
-                    {"name": "VERIFY_KIND", "value": spec.name},
-                    {"name": "SHARED_VALUE", "value": "shared"},
-                    {"name": "LONG_PAYLOAD", "value": LONG_PAYLOAD},
-                    {"name": "BINARY_PAYLOAD", "value": BINARY_PAYLOAD},
+    write_journal_file(
+        path,
+        machine_id=MACHINE_ID,
+        boot_id=BOOT_ID,
+        seqnum_id=SEQNUM_ID,
+        compact=spec.compact,
+        compression=spec.compression,
+        compression_threshold_bytes=16,
+        seal=SEAL_OPTS if spec.sealed else None,
+        entries=[
+            {
+                "realtime_usec": 1_500_000 + idx * 1_000,
+                "monotonic_usec": idx + 1,
+                "fields": [
+                    ("_MACHINE_ID", MACHINE_ID),
+                    ("_BOOT_ID", BOOT_ID),
+                    ("TEST_ID", "verify-parity"),
+                    ("MESSAGE", f"verify parity {spec.name}"),
+                    ("PRIORITY", "6"),
+                    ("LIVE_SEQ", f"{idx:06d}"),
+                    ("VERIFY_KIND", spec.name),
+                    ("SHARED_VALUE", "shared"),
+                    ("LONG_PAYLOAD", LONG_PAYLOAD),
+                    ("BINARY_PAYLOAD", BINARY_PAYLOAD),
                 ],
-                {"realtime_usec": 1_500_000 + idx * 1_000, "monotonic_usec": idx + 1},
-            )
-    finally:
-        writer.close()
+            }
+            for idx in range(5)
+        ],
+    )
 
 
 def corrupt(data: bytearray, name: str) -> None:
@@ -411,10 +396,6 @@ def verify_command(reader: str, tools: dict[str, str], path: Path, verify_key: s
         cmd = [tools["go"], "--verify"]
     elif reader == "rust":
         cmd = [tools["rust"], "--verify"]
-    elif reader == "node":
-        cmd = ["node", str(REPO_ROOT / "node/cmd/journalctl/index.js"), "--verify"]
-    elif reader == "python":
-        cmd = [PYTHON, str(REPO_ROOT / "python/cmd/journalctl.py"), "--verify"]
     else:
         raise ValueError(reader)
     if verify_key:
@@ -490,7 +471,7 @@ def main() -> int:
         tools = build_tools()
 
     positives, negatives = make_fixtures()
-    readers = ["stock", "go", "rust", "node", "python"]
+    readers = ["stock", "go", "rust"]
     results = []
 
     for spec in POSITIVE_SPECS:

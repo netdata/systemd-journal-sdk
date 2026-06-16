@@ -23,7 +23,7 @@ from pathlib import Path
 from run_live_matrix import BIN_DIR, LOCAL_DIR, REPO_ROOT, build_tools, run, systemd_version
 
 
-WRITERS = ("go", "rust", "node", "python")
+WRITERS = ("go", "rust")
 
 
 def writer_cmd(name: str, tools: dict[str, str], path: Path, ready: Path, entries: int, delay_ms: int, *, crash_after: int = 0) -> list[str]:
@@ -32,32 +32,6 @@ def writer_cmd(name: str, tools: dict[str, str], path: Path, ready: Path, entrie
         cmd = [tools["go_livewriter"], "--path", str(path), "--ready-file", str(ready), "--entries", str(entries), "--delay", delay]
     elif name == "rust":
         cmd = [tools["rust_livewriter"], "--path", str(path), "--ready-file", str(ready), "--entries", str(entries), "--delay", delay]
-    elif name == "node":
-        cmd = [
-            "node",
-            str(REPO_ROOT / "node/internal/testcmd/livewriter.js"),
-            "--path",
-            str(path),
-            "--ready-file",
-            str(ready),
-            "--entries",
-            str(entries),
-            "--delay",
-            delay,
-        ]
-    elif name == "python":
-        cmd = [
-            "python3",
-            str(REPO_ROOT / "python/cmd/livewriter.py"),
-            "--path",
-            str(path),
-            "--ready-file",
-            str(ready),
-            "--entries",
-            str(entries),
-            "--delay",
-            delay,
-        ]
     else:
         raise ValueError(name)
     if crash_after > 0:

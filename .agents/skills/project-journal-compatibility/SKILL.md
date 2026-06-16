@@ -13,7 +13,7 @@ Keep all implementations aligned with the systemd journal file format, Netdata R
 Use this skill when:
 
 - importing or adapting Rust journal code;
-- implementing journal readers or writers in Rust, Go, Node.js, or Python;
+- implementing journal readers or writers in Rust or Go;
 - porting systemd tests or fixtures;
 - building shared interoperability tests;
 - implementing journalctl rewrites.
@@ -30,9 +30,9 @@ Do not use this skill for:
 - Do not implement daemon-only journalctl commands such as daemon sync, flush, rotate, or relinquish-var operations.
 - journalctl already treats repeated matches for the same field as OR alternatives and different fields as AND.
 - The `+` separator is a systemd journalctl disjunction feature to replicate for file-backed journalctl behavior; it is not a new extension.
-- Each language must provide two API layers: idiomatic SDK API plus a libsystemd-compatible reader facade. The facade is required unless a SOW records concrete evidence that it would require native bindings, violate the pure-language policy, or create an unsafe/unrepresentable API in that language.
-- Each language writer must expose two compatible append shapes: a systemd-compatible raw full-field `KEY=value` byte payload layer and a structured binary-safe `{name, value}` SDK layer. Structured is the SDK hot path for already-structured producers; raw full payloads are the systemd-compatible low-level layer.
-- Each language writer must expose the same three field-name policy layers: `RAW`, `JOURNALD`, and `JOURNAL-APP`. `JOURNALD` is the default and preserves trusted protected fields such as `_HOSTNAME`; `JOURNAL-APP` emulates untrusted application-facing journald restrictions and drops invalid caller fields; `RAW` allows every field name the DATA structure can represent directly, currently non-empty and no `=` in the field name.
+- Each product language must provide two API layers: idiomatic SDK API plus a libsystemd-compatible reader facade. The facade is required unless a SOW records concrete evidence that it would require native bindings, violate the pure-language policy, or create an unsafe/unrepresentable API in that language.
+- Each product-language writer must expose two compatible append shapes: a systemd-compatible raw full-field `KEY=value` byte payload layer and a structured binary-safe `{name, value}` SDK layer. Structured is the SDK hot path for already-structured producers; raw full payloads are the systemd-compatible low-level layer.
+- Each product-language writer must expose the same three field-name policy layers: `RAW`, `JOURNALD`, and `JOURNAL-APP`. `JOURNALD` is the default and preserves trusted protected fields such as `_HOSTNAME`; `JOURNAL-APP` emulates untrusted application-facing journald restrictions and drops invalid caller fields; `RAW` allows every field name the DATA structure can represent directly, currently non-empty and no `=` in the field name.
 - The SDK must not perform producer-specific field-name remapping. Do not add or keep SDK behavior that emits project-specific mapping marker fields or project-specific mapped field prefixes. Consumers that need naming transformations must perform them before calling the SDK.
 - Core journal readers and writers are file-format implementations only. They must not execute external programs, discover host identity, read host identity sources, or enforce cooperating-writer locks by default. They must operate on explicit caller-provided paths, bytes, timestamps, machine IDs, boot IDs, seqnum IDs, and options.
 - Systemd/journald compatibility is a policy/API layer above the file-format core. It may require caller-provided machine and boot identity, but it must not silently probe host identity. Callers that want automatic identity discovery must explicitly call the optional identity helper and pass the result in.
@@ -75,14 +75,14 @@ Do not use this skill for:
   claims with that switch enabled are invalid and must be treated as an
   explorer defect.
 - Smoke tests are not sufficient evidence for production compatibility. SOW validation must record exact stock systemd version, commands/helpers, stress duration, entry counts, reader counts, and failure criteria.
-- Common compression-library dependencies are allowed after dependency review. Journal parsing/writing must not depend on systemd/libjournal; CGO, native Node.js runtime addon loading, and linking to system journal libraries remain disallowed unless the user explicitly changes those separate constraints. Dependency packages may ship native artifacts if the SDK runtime path is constrained and tested to use only non-native implementations (e.g. WASM) and does not load or link native code at runtime.
+- Common compression-library dependencies are allowed after dependency review. Journal parsing/writing must not depend on systemd/libjournal; CGO and linking to system journal libraries remain disallowed unless the user explicitly changes those separate constraints.
 - Every external-agent prompt must include the canonical repository-boundary block verbatim from `AGENTS.md` or `.agents/skills/project-agent-orchestration/SKILL.md`.
 - Compatibility probing must not use the workstation's live journal. Do not run `systemd-cat`, `logger`, live `journalctl`, or write under `/var/log/journal` or `/run/log/journal`; stock-reader validation must use `journalctl --file` or repository-local `--directory` fixtures only.
 
 ## Best Practices
 
 - Treat systemd source and tests as the compatibility authority when documentation and implementation disagree.
-- Keep shared tests language-neutral and run them against all SDKs.
+- Keep shared tests language-neutral and run them against both product SDKs.
 - Add shared live-concurrency tests before accepting a writer or reader as production-compatible.
 - Prove cross-language interoperability with files written by each implementation and read by every implementation.
 - Prove stock-reader interoperability while repository writers are actively appending, not only after close.
@@ -116,23 +116,23 @@ Do not use this skill for:
   constructors after SOW-0071.
 - For directory reader or file-backed `journalctl --directory` changes, run
   `tests/interoperability/run_directory_matrix.py` and require stock
-  journalctl plus Rust, Go, Node.js, and Python rewrites to agree on traversal,
+  journalctl plus Rust and Go rewrites to agree on traversal,
   ordering, filtering, boot listing, corrupt-file skipping, empty directories,
   and repository `.journal.zst` directory discovery.
 - For mixed directory feature changes, run
   `tests/interoperability/run_mixed_directory_matrix.py` and require stock
-  journalctl plus Rust, Go, Node.js, and Python rewrites to agree on mixed
+  journalctl plus Rust and Go rewrites to agree on mixed
   regular/compact files, uncompressed and zstd/xz/lz4 DATA-compressed files,
   sealed/unsealed reads, directory verification with and without keys, and the
   repository whole-file `.journal.zst` directory extension.
 - For file-backed journalctl query or follow changes, run
   `tests/interoperability/run_journalctl_query_matrix.py` and require stock
-  journalctl plus Rust, Go, Node.js, and Python rewrites to agree on
+  journalctl plus Rust and Go rewrites to agree on
   `--since`/`--until` realtime ranges, `--boot` descriptors, and live
   `--follow` reads from actively appended file and directory inputs, including
   no-tail, default-tail, and boot-plus-since cases.
 - For verifier changes, run `tests/interoperability/run_verify_matrix.py` and
-  require stock `journalctl --verify --file` plus Rust, Go, Node.js, and Python
+  require stock `journalctl --verify --file` plus Rust and Go
   verification paths to agree on positive regular, zstd/xz/lz4 DATA-compressed,
   compact, compact plus DATA-compressed, and sealed files, and on negative
   object type, object size, payload hash, hash-chain, entry-array,
@@ -146,7 +146,7 @@ Do not use this skill for:
 - Do not rely on one language's tests as sufficient for all languages.
 - Do not claim compatibility from closed-file `journalctl --verify` alone.
 - Do not treat live-reader smoke tests as sufficient for production compatibility.
-- Do not load or link native code at runtime in any SDK implementation to pass tests; dependency packages may ship native artifacts if the SDK runtime path uses only non-native implementations and does not load or link native code.
+- Do not load or link system journal libraries at runtime in any SDK implementation to pass tests.
 - Do not silently skip corrupted fixture behavior; record expected errors and recovery behavior.
 
 ## Workflow Checklist
@@ -172,7 +172,7 @@ Before claiming production-grade compatibility:
 - Each targeted reader reads live files produced by each targeted writer.
 - Reader follow/tail behavior is compared with stock `journalctl` file-backed behavior.
 - Daemon-only journalctl commands are not implemented and have documented behavior.
-- Dependency audit confirms no CGO, native Node.js runtime addon loading/linking, or system journal library linkage in the SDK runtime path unless a SOW records an explicit user policy change.
+- Dependency audit confirms no CGO or system journal library linkage in the SDK runtime path unless a SOW records an explicit user policy change.
 
 ## Evidence
 

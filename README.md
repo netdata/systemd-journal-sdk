@@ -1,13 +1,13 @@
 # systemd Journal SDK
 
 Pure systemd journal file readers, writers, and file-backed `journalctl`
-implementations for Rust, Go, Node.js, and Python.
+implementations for Rust and Go.
 
 ## Purpose
 
 This project provides SDKs that can read and write systemd journal files without
 linking to libsystemd or other external journal libraries. Files written by one
-language are expected to be readable by the other SDKs and by compatible stock
+language are expected to be readable by the other SDK and by compatible stock
 systemd tools when the selected field policy and file options target systemd
 compatibility.
 
@@ -50,8 +50,8 @@ explicit accepted reason.
 
 - `rust/` - Rust SDK and journalctl implementation.
 - `go/` - Go SDK and journalctl implementation.
-- `node/` - Node.js SDK and journalctl implementation.
-- `python/` - Python SDK and journalctl implementation.
+- `experiments/` - retired non-product experiments, currently including the old
+  Python and Node.js implementations.
 
 Shared tests, interoperability matrices, corpus evaluation tooling, and
 benchmarks live under `tests/`.

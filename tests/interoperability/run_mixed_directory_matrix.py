@@ -22,36 +22,32 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
+from go_fixture_writer import write_journal_file
+from journal_structure import inspect_journal_structure
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_DIR = REPO_ROOT / ".local" / "interoperability"
 BIN_DIR = LOCAL_DIR / "bin"
 FIXTURE_DIR = LOCAL_DIR / "mixed-directory"
-PYTHON = os.environ.get("PYTHON", sys.executable)
 
-sys.path.insert(0, str(REPO_ROOT / "python"))
-from journal import Writer  # noqa: E402
-from journal.header import (  # noqa: E402
-    HEADER_MIN_SIZE,
-    INCOMPATIBLE_COMPRESSED_XZ,
-    INCOMPATIBLE_COMPRESSED_LZ4,
-    INCOMPATIBLE_KEYED_HASH,
-    INCOMPATIBLE_COMPRESSED_ZSTD,
-    INCOMPATIBLE_COMPACT,
-    COMPATIBLE_SEALED,
-    OBJECT_TYPE_DATA,
-    OBJECT_HEADER_SIZE,
-    OBJECT_COMPRESSED_XZ,
-    OBJECT_COMPRESSED_LZ4,
-    OBJECT_COMPRESSED_ZSTD,
-)
-from journal.seal import SealOptions  # noqa: E402
+HEADER_MIN_SIZE = 208
+OBJECT_HEADER_SIZE = 16
+OBJECT_TYPE_DATA = 1
+INCOMPATIBLE_COMPRESSED_XZ = 1 << 0
+INCOMPATIBLE_COMPRESSED_LZ4 = 1 << 1
+INCOMPATIBLE_KEYED_HASH = 1 << 2
+INCOMPATIBLE_COMPRESSED_ZSTD = 1 << 3
+INCOMPATIBLE_COMPACT = 1 << 4
+COMPATIBLE_SEALED = 1 << 0
+OBJECT_COMPRESSED_XZ = 1 << 0
+OBJECT_COMPRESSED_LZ4 = 1 << 1
+OBJECT_COMPRESSED_ZSTD = 1 << 2
 
 
 MACHINE_ID = "00112233445566778899aabbccddeeff"
 BASE_REALTIME = 1_500_000
 PAYLOAD = bytes((idx % 26) + 0x41 for idx in range(256))
-SEAL_OPTS = SealOptions(seed=bytes(12), interval_usec=1_000_000, start_usec=1_000_000)
+SEAL_OPTS = {"seed": bytes(12), "interval_usec": 1_000_000, "start_usec": 1_000_000}
 VERIFY_KEY = "000000000000000000000000/1-f4240"
 WRONG_VERIFY_KEY = "000000000000000000000001/1-f4240"
 
@@ -97,8 +93,6 @@ READERS = {
     "stock": ReaderSpec("stock"),
     "go": ReaderSpec("go"),
     "rust": ReaderSpec("rust"),
-    "node": ReaderSpec("node"),
-    "python": ReaderSpec("python"),
 }
 
 STOCK_SPECS = [
@@ -167,8 +161,6 @@ def build_env() -> dict[str, str]:
     env.setdefault("GOPATH", str(local / "go"))
     env.setdefault("CARGO_HOME", str(local / "cargo-home"))
     env.setdefault("CARGO_TARGET_DIR", str(local / "cargo-target"))
-    env.setdefault("npm_config_cache", str(local / "npm-cache"))
-    env.setdefault("PIP_CACHE_DIR", str(local / "pip-cache"))
     return env
 
 
@@ -255,39 +247,37 @@ def make_fixtures() -> dict[str, Path]:
 
 
 def write_journal(path: Path, spec: FixtureSpec) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    opts = {
-        "machine_id": MACHINE_ID,
-        "boot_id": spec.boot_id,
-        "seqnum_id": spec.seqnum_id,
-        "compact": spec.compact,
-        "compression": spec.compression,
-        "compression_threshold_bytes": 16,
-    }
-    if spec.sealed:
-        opts["seal"] = SEAL_OPTS
-    writer = Writer.create(str(path), opts)
-    try:
-        writer.append(
-            [
-                {"name": "TEST_ID", "value": "mixed-directory"},
-                {"name": "_BOOT_ID", "value": spec.boot_id},
-                {"name": "_MACHINE_ID", "value": MACHINE_ID},
-                {"name": "MESSAGE", "value": spec.message},
-                {"name": "PRIORITY", "value": "6"},
-                {"name": "MIXED_SEQ", "value": spec.seq},
-                {"name": "LIVE_SEQ", "value": spec.seq},
-                {"name": "MIXED_KIND", "value": spec.kind},
-                {"name": "MIXED_COMPACT", "value": "1" if spec.compact else "0"},
-                {"name": "MIXED_COMPRESSION", "value": spec.compression},
-                {"name": "MIXED_SEALED", "value": "1" if spec.sealed else "0"},
-                {"name": "MIXED_WHOLE_FILE_ZST", "value": "1" if spec.whole_file_zst else "0"},
-                {"name": "MIXED_PAYLOAD", "value": PAYLOAD},
-            ],
-            {"realtime_usec": spec.realtime, "monotonic_usec": spec.monotonic},
-        )
-    finally:
-        writer.close()
+    write_journal_file(
+        path,
+        machine_id=MACHINE_ID,
+        boot_id=spec.boot_id,
+        seqnum_id=spec.seqnum_id,
+        compact=spec.compact,
+        compression=spec.compression,
+        compression_threshold_bytes=16,
+        seal=SEAL_OPTS if spec.sealed else None,
+        entries=[
+            {
+                "realtime_usec": spec.realtime,
+                "monotonic_usec": spec.monotonic,
+                "fields": [
+                    ("TEST_ID", "mixed-directory"),
+                    ("_BOOT_ID", spec.boot_id),
+                    ("_MACHINE_ID", MACHINE_ID),
+                    ("MESSAGE", spec.message),
+                    ("PRIORITY", "6"),
+                    ("MIXED_SEQ", spec.seq),
+                    ("LIVE_SEQ", spec.seq),
+                    ("MIXED_KIND", spec.kind),
+                    ("MIXED_COMPACT", "1" if spec.compact else "0"),
+                    ("MIXED_COMPRESSION", spec.compression),
+                    ("MIXED_SEALED", "1" if spec.sealed else "0"),
+                    ("MIXED_WHOLE_FILE_ZST", "1" if spec.whole_file_zst else "0"),
+                    ("MIXED_PAYLOAD", PAYLOAD),
+                ],
+            }
+        ],
+    )
 
 
 def inspect_journal_features(path: Path) -> dict:
@@ -380,10 +370,6 @@ def reader_base_command(reader: ReaderSpec, tools: dict[str, str], directory: Pa
         return [tools["go_journalctl"], "--directory", str(directory)]
     if reader.name == "rust":
         return [tools["rust_journalctl"], "--directory", str(directory)]
-    if reader.name == "node":
-        return ["node", str(REPO_ROOT / "node/cmd/journalctl/index.js"), "--directory", str(directory)]
-    if reader.name == "python":
-        return [PYTHON, str(REPO_ROOT / "python/cmd/journalctl.py"), "--directory", str(directory)]
     raise ValueError(reader.name)
 
 

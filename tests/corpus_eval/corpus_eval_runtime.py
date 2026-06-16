@@ -69,9 +69,6 @@ def run_env() -> dict[str, str]:
             "GOCACHE": str(local / "go-cache"),
             "GOMODCACHE": str(local / "go-mod-cache"),
             "GOPATH": str(local / "go-path"),
-            "npm_config_cache": str(local / "npm-cache"),
-            "PIP_CACHE_DIR": str(local / "pip-cache"),
-            "PYTHONPATH": str(ROOT / "python"),
         }
     )
     return env

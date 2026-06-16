@@ -66,9 +66,9 @@ All validation commands passed for all 8 generated files:
 - Go SDK corpus digest helper.
 
 SOW-0073 added a supplemental v239 historical unkeyed/LZ4 reader matrix using
-the shared runner after it was extended to include Python and Node.js SDK
+the shared runner after it was extended to include all then-supported SDK
 readers. The supplemental offline and online compressed v239 files both passed:
-current stock `journalctl`, Rust, Go, Python, and Node.js all produced 7
+current stock `journalctl` and all then-supported SDK readers produced 7
 entries, 39 payloads, and the same current logical digest
 `af7a90eed5d9b803c411065a615a896ef263e0e421b25070cdd5e92869eae00a`.
 The v239-built `journalctl` still produced matching counts but the known legacy

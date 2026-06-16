@@ -19,18 +19,18 @@
 
 ## Goals
 
-This project produces pure SDKs for reading and writing systemd journal files in Rust, Go, Node.js, and Python.
+This project produces pure SDKs for reading and writing systemd journal files in Rust and Go.
 
 Success means:
 
 - SDKs read existing journal files without linking to system journal libraries.
-- SDKs write valid journal files without CGO, native Node.js runtime addon loading/linking, or external journal libraries. Dependency packages may ship native artifacts if the SDK runtime path is constrained and tested to use only non-native implementations (e.g. WASM).
+- SDKs write valid journal files without CGO or external journal libraries.
 - Journal files written by one language can be read by every other language and by compatible systemd tooling where applicable.
 - The same shared conformance suite, fixtures, interoperability tests, benchmarks, and profiling workflows apply to every implementation.
 - SDK APIs exercise the journal format's native performance features.
 - Correct output is not enough when the format has an index, hash table, object chain, offset array, mmap, or reusable object path.
 - Use those structures to avoid row scans, repeated parsing, unnecessary decompression, unnecessary allocation, or avoidable syscalls.
-- journalctl rewrites exist for Rust, Go, Node.js, and Python for file-backed/query behavior.
+- journalctl rewrites exist for Rust and Go for file-backed/query behavior.
 - Daemon-only journalctl operations are not implemented in this project.
 
 Project SOW status: initialized
@@ -445,9 +445,9 @@ Output/reference skills:
 - Provide two API layers per language: idiomatic SDK API plus a libsystemd-compatible reader facade. The facade is required unless a SOW records concrete evidence that it would require native bindings, violate the pure-language policy, or create an unsafe/unrepresentable API in that language.
 - journalctl repeated matches for the same field already provide OR semantics. No new `KEY in [values]` syntax is required.
 - The `+` separator is a systemd journalctl disjunction feature to replicate for file-backed journalctl behavior; it is not a new extension.
-- Implement journalctl rewrites for file-backed/query behavior in Rust, Go, Node.js, and Python.
+- Implement journalctl rewrites for file-backed/query behavior in Rust and Go.
 - Do not implement daemon-only journalctl commands, including daemon sync, flush, rotate, and relinquish-var operations.
-- Common compression-library dependencies are allowed after dependency review. Journal parsing/writing must not depend on systemd/libjournal; CGO, native Node.js runtime addon loading/linking, and linking to system journal libraries remain disallowed unless the user explicitly changes those separate constraints. Dependency packages may ship native artifacts if the SDK runtime path is constrained and tested to use only non-native implementations (e.g. WASM) and does not load or link native code at runtime.
+- Common compression-library dependencies are allowed after dependency review. Journal parsing/writing must not depend on systemd/libjournal; CGO and linking to system journal libraries remain disallowed unless the user explicitly changes those separate constraints.
 - Before Netdata integration or stable release work advances, GitHub code scanning and Codacy analysis findings must be fixed or explicitly dispositioned under the active SOW policy. Raw SARIF, Codacy exports, and scanner logs must stay under `.local/`; durable artifacts may contain only sanitized aggregate summaries and evidence.
 - Current implementation routing (user decision 2026-06-11): code implementation is delegated to the external implementer model `llm-netdata-cloud/minimax-m3-coder` (fallback `llm-netdata-cloud/glm-5.1`, failure recorded in the active SOW), run in normal coding mode via `opencode run`. Only `llm-netdata-cloud` models may be used for implementer and reviewer runs. The project manager writes documentation prose and validates all delegated work.
 - Reviewer pool: `llm-netdata-cloud/glm-5.1`, `llm-netdata-cloud/kimi-k2.6`, `llm-netdata-cloud/mimo-v2.5-pro`, `llm-netdata-cloud/qwen3.7-plus`, `llm-netdata-cloud/minimax-m3-coder`, and `llm-netdata-cloud/deepseek-v4-pro`. The model acting as implementer for a SOW is excluded from reviewing that SOW; the other five review. The `qwen3.6-plus` entry was updated to `qwen3.7-plus` on 2026-06-11 to match the available pool.

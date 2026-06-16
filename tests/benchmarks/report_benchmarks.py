@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 
-LANGUAGE_ORDER = ["systemd", "rust", "go", "node", "python"]
+LANGUAGE_ORDER = ["systemd", "rust", "go"]
 SURFACE_ORDER = ["file", "open-files", "directory", "writer-core"]
 
 READER_PRODUCTION_ORDER = [
@@ -21,10 +21,6 @@ READER_PRODUCTION_ORDER = [
     ("rust", "facade-data", "live", "windowed"),
     ("go", "sdk-payloads", "live", "mmap"),
     ("go", "facade-data", "live", "mmap"),
-    ("node", "sdk-payloads", "live", "buffer"),
-    ("node", "facade-data", "live", "buffer"),
-    ("python", "sdk-payloads", "live", "mmap"),
-    ("python", "facade-data", "live", "mmap"),
 ]
 
 READER_MODE_ORDER = [
