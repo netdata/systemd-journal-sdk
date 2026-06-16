@@ -4,11 +4,6 @@ Last updated: 2026-06-17
 
 ## Current
 
-- SOW-0117 - v0.7.2 Release: in-progress. Publish Rust/Go `0.7.2`
-  containing the SOW-0116 Python/Node product-scope retirement, push
-  `master`, create/push annotated `v0.7.2` and `go/v0.7.2` tags on the same
-  release commit, verify crates.io and Go module consumption, then close the
-  release SOW.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
@@ -57,6 +52,13 @@ Last updated: 2026-06-17
   shared primitives preserve historical compatibility and reader performance.
 ## Recently Closed Or Completed
 
+- SOW-0117 - v0.7.2 Release: completed. Rust crates were published to
+  crates.io at `0.7.2`, `master` was pushed through release commit
+  `400bddde36d1e41a2b17943076752567a0826407`, and annotated tags `v0.7.2`
+  plus `go/v0.7.2` were pushed; both peel to the same release commit. Full
+  Rust/Go tests, wiki validation, verified examples, `git diff --check`, SOW
+  audit, six read-only reviewer votes, crates.io search, and Go module lookup
+  passed.
 - SOW-0116 - Retire Python and Node.js product targets: completed. Python and
   Node.js tracked implementations were moved under `experiments/` as
   non-product retired experiments; active product docs, specs, CI, validation

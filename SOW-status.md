@@ -7,7 +7,6 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
-- `SOW-0117-20260617-v0-7-2-release.md` - in-progress. Publish Rust/Go `0.7.2` containing the SOW-0116 Python/Node product-scope retirement, push `master`, create/push annotated `v0.7.2` and `go/v0.7.2` tags on the same release commit, verify crates.io and Go module consumption, then close the release SOW.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
 
 ## Pending
@@ -21,6 +20,7 @@ is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 - `SOW-0098-20260607-rust-legacy-core-duplication-debt.md` - open. Follow-up from the Codacy Rust/Go metrics audit for real Rust `jf`/`journal-core` duplication reduction.
 ## Done
 
+- `SOW-0117-20260617-v0-7-2-release.md` - completed. Rust crates were published to crates.io at `0.7.2`, `master` was pushed through release commit `400bddde36d1e41a2b17943076752567a0826407`, and annotated tags `v0.7.2` plus `go/v0.7.2` were pushed; both peel to the same release commit. Full Rust/Go tests, wiki validation, verified examples, `git diff --check`, SOW audit, six read-only reviewer votes, crates.io search, and Go module lookup passed.
 - `SOW-0116-20260616-retire-python-node-targets.md` - completed. Python and Node.js tracked implementations were moved under `experiments/` as non-product retired experiments; active product docs, specs, CI, validation defaults, project skills, and pending/current SOW scope now target Rust and Go only. Validation included docs checks, verified examples, runtime purity, Netdata function tests, coverage script checks, SOW audit, `git diff --check`, and end-to-end interoperability matrices for query, compact, compression, mixed-directory, lock, verify, directory, binary, live, and byte identity paths. Final external review returned 6/7 `READY TO COMPLETE`; the remaining reviewer finding was explicit staging of new files, resolved during close.
 - `SOW-0113-20260615-nodejs-optional-native-mmap-reader.md` - closed without implementation on 2026-06-16. Superseded by SOW-0116, which retired the Node.js implementation to `experiments/` and removed it from product SDK scope.
 - `SOW-0114-20260615-v0-7-1-release.md` - completed. Rust crates were published to crates.io at `0.7.1`, `master` was pushed through release commit `1df0eae1a31f80459453e0ca6a696282372b609c`, and annotated tags `v0.7.1` plus `go/v0.7.1` were pushed; both peel to the same release commit. Full Rust/Go tests, reader/writer benchmark comparison against `v0.7.0`, wiki validation, verified examples, Rust package dry-runs, `git diff --check`, SOW audit, crates.io search, and Go module lookup passed.
