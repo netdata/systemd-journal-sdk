@@ -1,12 +1,13 @@
 # SOW Status
 
-Last updated: 2026-06-16
+Last updated: 2026-06-17
 
 This root file is a short convenience index. The canonical detailed SOW ledger
 is `.agents/sow/SOW-status.md`; if summaries differ, the canonical ledger wins.
 
 ## Current
 
+- `SOW-0117-20260617-v0-7-2-release.md` - in-progress. Publish Rust/Go `0.7.2` containing the SOW-0116 Python/Node product-scope retirement, push `master`, create/push annotated `v0.7.2` and `go/v0.7.2` tags on the same release commit, verify crates.io and Go module consumption, then close the release SOW.
 - `SOW-0009-20260523-benchmark-profile-optimize.md` - paused umbrella. Writer and reader performance work is split into focused child SOWs.
 
 ## Pending

@@ -8,7 +8,7 @@ The normal Rust dependency is the public SDK package:
 <!-- illustrative-only: crates.io dependency declaration -->
 ```toml
 [dependencies]
-journal = { package = "systemd-journal-sdk", version = "0.7.1" }
+journal = { package = "systemd-journal-sdk", version = "0.7.2" }
 ```
 
 Use the lower-level packages only when the public package does not expose the
@@ -18,8 +18,8 @@ type you need. For example, structured directory writes currently use
 <!-- illustrative-only: crates.io dependency declaration -->
 ```toml
 [dependencies]
-journal = { package = "systemd-journal-sdk", version = "0.7.1" }
-journal_log_writer = { package = "systemd-journal-sdk-log-writer", version = "0.7.1" }
+journal = { package = "systemd-journal-sdk", version = "0.7.2" }
+journal_log_writer = { package = "systemd-journal-sdk-log-writer", version = "0.7.2" }
 ```
 
 ## Read One File

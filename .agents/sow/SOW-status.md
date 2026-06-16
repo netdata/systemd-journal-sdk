@@ -1,9 +1,14 @@
 # SOW Status
 
-Last updated: 2026-06-16
+Last updated: 2026-06-17
 
 ## Current
 
+- SOW-0117 - v0.7.2 Release: in-progress. Publish Rust/Go `0.7.2`
+  containing the SOW-0116 Python/Node product-scope retirement, push
+  `master`, create/push annotated `v0.7.2` and `go/v0.7.2` tags on the same
+  release commit, verify crates.io and Go module consumption, then close the
+  release SOW.
 - SOW-0009 - Benchmark Profile Optimize: paused umbrella. Writer and reader
   performance work is split into focused child SOWs; this file remains the
   program index.
